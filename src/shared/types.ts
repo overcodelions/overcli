@@ -6,6 +6,25 @@ import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/sc
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
 import type { Schedule } from './flows/schedule';
 import type { FlowRiskFinding } from './flows/riskScan';
+import type { ImportSet, ImportedService } from './servicesImport';
+import type { WorktreeChoice } from './worktrees';
+import type { BranchChoice } from './refChoices';
+import type {
+  LeaseDecision,
+  MachineEntry,
+  MachineValueNeed,
+  PortHolderKind,
+  MachineValuesView,
+  ServiceOption,
+  ServiceBinding,
+  ServiceProposal,
+  ServiceFinding,
+  ServiceRuntime,
+  ReadinessProbe,
+  RemovedServices,
+  ServiceSpec,
+  StackView,
+} from './services';
 import type {
   Worker,
   WorkerContract,
@@ -650,6 +669,21 @@ export interface WorktreeClaim {
   adoptedConvIds?: UUID[];
 }
 
+/// A daemon the OS runs for you. Mirrors `MachineService` in
+/// `main/services/machineServices.ts`; shared code cannot import from main.
+export interface MachineServiceView {
+  id: string;
+  name: string;
+  manager: 'brew' | 'systemd' | 'systemd-user' | 'windows';
+  status: 'running' | 'stopped' | 'error' | 'unknown';
+  port?: number;
+  cache?: 'redis' | 'memcached';
+  /// Start and stop need rights overcli cannot get without a prompt.
+  needsAdmin?: boolean;
+  user?: string;
+  pid?: number;
+}
+
 export interface WorktreeSweepEntry {
   worktreePath: string;
   projectPath: string;
@@ -1064,6 +1098,15 @@ export interface AppSettings {
   backendDefaultEfforts?: Partial<Record<Backend, EffortLevel>>;
   agentBranchPrefix: string;
   showCost: boolean;
+  /// Whether the Services tab is available at all. Off by default: most
+  /// projects have nothing to run, and a tab that is always empty is clutter
+  /// for everyone it does not apply to. Turning it on is the one decision
+  /// needed before anything else in that pane means something.
+  servicesEnabled?: boolean;
+  /// Stop every running service when overcli quits. On by default, because a
+  /// service left behind is a port held by a process the user has no way to
+  /// find. Turn it off to keep a database or a backend up between sessions.
+  servicesStopOnQuit?: boolean;
   /// Initial value for the chat's "show tool activity" toggle at app
   /// launch. The toggle itself remains a per-session runtime flag so
   /// users can flip it mid-conversation without touching Settings.
@@ -1125,6 +1168,8 @@ export interface AppSettings {
   editorPaneWidth: number;
   /// Width of the file-tree column inside the standalone explorer view.
   explorerTreeWidth: number;
+  /// Width of the service list beside its detail pane.
+  servicesListWidth?: number;
   /// How the primary sidebar is organised.
   ///
   /// 'stream' is one flat, newest-first list of everything you have worked
@@ -2715,6 +2760,241 @@ export interface IPCInvokeMap {
     /// and with any flow edit it delegates to.
     attachments?: Attachment[];
   }) => { ok: true; jobDescription?: string; flow?: Flow; note: string } | { ok: false; error: string };
+
+  // ── services ─────────────────────────────────────────────────────────────
+  /// A workspace's services, their bindings and their live state. Cheap and
+  /// side-effect free: a workspace with no services must not create anything
+  /// on disk just by being looked at.
+  'services:view': (workspaceId: string) => StackView;
+  /// Buffered output for one service. Pulled on selection; new lines arrive
+  /// on the `serviceLine` event.
+  /// Every workspace that has services. The pane shows them all at once: a
+  /// stack left running in another workspace is still holding ports, and
+  /// having to go looking for it is how you end up with two copies of one
+  /// service.
+  'services:viewAll': (workspaceIds: string[]) => StackView[];
+  'services:log': (args: { workspaceId: string; serviceId: string }) => string[];
+  'services:clearLog': (args: { workspaceId: string; serviceId: string }) => void;
+  /// The folder holding this service's own config — the one whose contents
+  /// are injected or linked into whichever worktree it is bound to.
+  'services:configDir': (args: { workspaceId: string; serviceId: string }) => string;
+  /// Reveal that folder in Finder, so putting an .env or a properties file
+  /// there is a drag rather than a path to memorise.
+  'services:revealConfigDir': (args: { workspaceId: string; serviceId: string }) => void;
+  /// Start a service and whatever it waits on. A port held by ANOTHER stack
+  /// comes back as `started: false` with the lease decision, so the pane can
+  /// offer taking the port, running alongside on an offset, or leaving it —
+  /// never resolved silently. Pass `offset` to take one of those options.
+  'services:start': (args: {
+    workspaceId: string;
+    serviceId: string;
+    offset?: number;
+    /// Skip the check for an outside holder — for a port that belongs to
+    /// overcli itself, where the saved port is the thing that is wrong.
+    ignoreHeld?: boolean;
+  }) => { started: boolean; lease?: LeaseDecision };
+  'services:stop': (args: { workspaceId: string; serviceId: string }) => void;
+  'services:restart': (args: { workspaceId: string; serviceId: string }) => void;
+  /// Point one service at a different checkout: stop, reproject its config,
+  /// restart, re-wait for readiness. The identity, its log and its place in
+  /// the graph are untouched.
+  'services:rebind': (args: {
+    workspaceId: string;
+    serviceId: string;
+    ref: string;
+    path: string;
+    portOffset?: number;
+  }) => void;
+  /// The bulk case, since several services usually share one worktree.
+  /// Resolves the ids that actually moved — pinned services stay put.
+  'services:rebindAll': (args: {
+    workspaceId: string;
+    targets: { serviceId: string; ref: string; path: string }[];
+  }) => string[];
+  'services:add': (args: {
+    workspaceId: string;
+    spec: ServiceSpec;
+    binding?: Omit<ServiceBinding, 'serviceId'>;
+  }) => void;
+  /// Take services out of a stack, stopping any that are running. Resolves
+  /// what was taken, which is what `services:restore` puts back.
+  'services:removeMany': (args: { workspaceId: string; serviceIds: string[] }) => RemovedServices;
+  /// Undo a removal: back in their places, bound where they were, stopped.
+  'services:restore': (args: { workspaceId: string; removed: RemovedServices }) => void;
+  /// What kind of thing this is — free text, because the useful grouping in
+  /// one shop is meaningless in the next.
+  'services:setGroup': (args: { workspaceId: string; serviceId: string; group?: string }) => void;
+  /// Replace a service's own startup options. On a base, these are the shared
+  /// set every copy inherits.
+  'services:setOptions': (args: {
+    workspaceId: string;
+    serviceId: string;
+    options: ServiceOption[];
+  }) => void;
+  /// Replace what a service runs, as argv. Takes effect on the next start.
+  'services:setCommand': (args: { workspaceId: string; serviceId: string; command: string[] }) => void;
+  /// Change launch mode, restarting the service immediately when it is live.
+  'services:setDebug': (args: {
+    workspaceId: string;
+    serviceId: string;
+    enabled: boolean;
+    debugPort?: number;
+  }) => void;
+  /// What "up" means for a service, and how long it gets before the pane calls
+  /// it slow. Takes effect on the next start.
+  'services:setReady': (args: {
+    workspaceId: string;
+    serviceId: string;
+    ready: ReadinessProbe;
+    readyTimeoutSec?: number;
+  }) => void;
+  /// Whether a service runs once and exits rather than staying up.
+  'services:setTask': (args: { workspaceId: string; serviceId: string; task: boolean }) => void;
+  /// What a service waits for before it starts. A loop or an unknown id is
+  /// dropped rather than saved.
+  'services:setDeps': (args: { workspaceId: string; serviceId: string; deps: string[] }) => void;
+  /// One-off tasks worth offering for the checkout a service is bound to.
+  'services:taskPresets': (args: {
+    workspaceId: string;
+    serviceId: string;
+  }) => import('./services').TaskPreset[];
+  /// A task in the same checkout as a service, optionally run before it.
+  /// Resolves the new task's id.
+  'services:addTask': (args: {
+    workspaceId: string;
+    serviceId: string;
+    name: string;
+    command: string[];
+    subpath?: string;
+    runBefore: boolean;
+  }) => string | null;
+  /// Another service off the same module and checkout, differing only in the
+  /// options it states — one Gradle module becoming five processors that can
+  /// all run at once. Resolves the new service's id.
+  'services:duplicate': (args: {
+    workspaceId: string;
+    serviceId: string;
+    name: string;
+    group?: string;
+    options?: ServiceOption[];
+    debugPort?: number;
+  }) => string | null;
+  /// Why a service failed to start — deterministic rules over the output, the
+  /// environment it was given and the repo, each finding carrying the evidence
+  /// that produced it.
+  'services:explainFailure': (args: {
+    workspaceId: string;
+    serviceId: string;
+  }) => ServiceFinding[];
+  /// Every checkout of the repo at this path. Asked of the main process
+  /// because `git worktree` is not on the renderer's git allowlist, and a
+  /// refusal there was indistinguishable from a repo with one checkout.
+  'services:worktrees': (checkout: string) => WorktreeChoice[];
+  /// Everywhere a service could run: the checkouts that exist, and the
+  /// branches that do not have one yet. Two lists rather than one, because
+  /// pointing at a checkout is free and checking a branch out moves a working
+  /// tree somebody else may be in.
+  'services:refs': (checkout: string) => {
+    worktrees: WorktreeChoice[];
+    branches: BranchChoice[];
+    defaultBranch?: string;
+  };
+  /// Check a branch out into the checkout this service is bound to. Refused on
+  /// a dirty tree — discarding uncommitted work to start a service is not a
+  /// trade the app makes on its own.
+  'services:checkoutRef': (args: {
+    workspaceId: string;
+    serviceId: string;
+    ref: string;
+  }) => { ok: true } | { ok: false; reason: string };
+  /// Ask a model why a service would not start, after the deterministic rules
+  /// have had their say. Everything it is told — the command, the resolved
+  /// options, the environment — is scrubbed of known credentials first.
+  'services:askAi': (args: { workspaceId: string; serviceId: string }) =>
+    /// `command` is a start command the answer proposes, when it proposes one.
+    | { ok: true; backend: Backend; text: string; command?: string }
+    | { ok: false; error: string };
+  'services:cancelAskAi': (args: { workspaceId: string; serviceId: string }) => boolean;
+  /// Stop whatever is listening on a port. For the service overcli started
+  /// that outlived the app, and now cannot have its port back. Never
+  /// automatic: the process there might be something the user cares about.
+  'services:freePort': (port: number) => { stopped: string[]; refused: string[] };
+  /// Whether anything still answers on a port, and its name when it can be
+  /// found — for clearing a "port taken" banner once the port is free.
+  'services:portStatus': (
+    port: number,
+    asking?: { workspaceId: string; serviceId: string },
+  ) => { open: boolean; holder?: string; holderKind?: PortHolderKind };
+  /// Values shared by every service on this machine — a database user, an SQS
+  /// prefix — filled into any `${NAME}` in an option or injected variable.
+  /// Secrets come back without their values — see `MachineEntry`.
+  'services:machineValues': () => MachineValuesView;
+  'services:saveMachineValues': (entries: MachineEntry[]) => void;
+  /// `${NAME}`s these stacks use that are not defined, and who uses each.
+  'services:machineValueNeeds': (workspaceIds: string[]) => MachineValueNeed[];
+  /// What a service will actually start with, shared and own options merged.
+  'services:resolvedOptions': (args: { workspaceId: string; serviceId: string }) => {
+    key: string;
+    value?: string;
+    origin: 'shared' | 'own';
+    overrides?: boolean;
+  }[];
+  /// Pin a service to a ref so a bulk rebind leaves it alone, or unpin it.
+  'services:setPinned': (args: {
+    workspaceId: string;
+    serviceId: string;
+    pinnedRef?: string;
+  }) => void;
+  /// Configuration these projects already have — IntelliJ run configurations,
+  /// a VS Code launch.json, a Tiltfile, a compose file, a Procfile. Offered
+  /// before detection, because a file that states the options beats a guess.
+  'services:findImports': (args: {
+    projects: { id: string; name: string; path: string }[];
+  }) => { projectId: string; sets: ImportSet[] }[];
+  /// Pick one configuration file anywhere on disk and read it. Null when the
+  /// dialog was cancelled.
+  'services:importFile': () => ({ file: string } & ({ set: ImportSet } | { error: string })) | null;
+  /// Daemons installed on this machine rather than in a checkout — mariadb,
+  /// memcached, redis — from brew, systemd or Windows services. Empty where
+  /// none of those exist.
+  'machine:list': () => MachineServiceView[];
+  'machine:control': (args: {
+    name: string;
+    manager: MachineServiceView['manager'];
+    action: 'start' | 'stop' | 'restart';
+  }) => { ok: true } | { ok: false; reason: string };
+  /// Flush a cache: `flush_all` to memcached, `FLUSHALL` to redis.
+  'machine:clearCache': (args: { kind: 'redis' | 'memcached'; port: number }) =>
+    | { ok: true }
+    | { ok: false; reason: string };
+  /// Add an imported set. Configurations of one module become a base plus a
+  /// copy each carrying only its differences, and credentials in the shared
+  /// set are lifted into the machine values.
+  'services:import': (args: {
+    workspaceId: string;
+    projectId: string;
+    projectPath: string;
+    projectName: string;
+    services: ImportedService[];
+    /// The workspace's other projects, where a module named in this project's
+    /// config may actually live.
+    siblings?: { id: string; name: string; path: string }[];
+    /// `skipped` is what could not be added, with why — nothing says which
+    /// project it belongs to, or the repo it names is not in the workspace.
+    /// `needsCommand` was added, bound where it lives, but nothing says how to
+    /// start it.
+  }) => {
+    added: string[];
+    lifted: string[];
+    skipped: { name: string; reason: string }[];
+    needsCommand: string[];
+  };
+  /// Propose services for a set of checkouts, with the evidence each
+  /// conclusion came from. Adds nothing: a proposal the user has not seen is
+  /// not a decision they have made.
+  'services:scan': (args: {
+    projects: { id: string; name: string; path: string }[];
+  }) => { projectId: string; serviceId: string; proposal: ServiceProposal }[];
 }
 
 /// One local subresource of an HTML preview. Stylesheets come back as
@@ -3314,6 +3594,32 @@ export type MainToRendererEvent =
     }
   /// Auto-updater lifecycle (see src/main/updater.ts). Not tied to a
   /// conversation — consumed by the global UpdateToast.
+  | {
+      /// A service changed state — spawned, became ready, exited, failed. The
+      /// pane keeps no state machine of its own; this is the whole story.
+      type: 'serviceStatus';
+      workspaceId: string;
+      runtime: ServiceRuntime;
+    }
+  | {
+      /// One line of a service's output, stdout and stderr interleaved as
+      /// they actually arrived.
+      type: 'serviceLine';
+      workspaceId: string;
+      serviceId: string;
+      line: string;
+    }
+  | {
+      /// A service was pointed at a different checkout. Carried separately
+      /// from `serviceStatus` so the log can show a marker where the binding
+      /// changed — which is what makes "this broke when I switched branches"
+      /// visible rather than remembered.
+      type: 'serviceRebound';
+      workspaceId: string;
+      serviceId: string;
+      from: string;
+      to: string;
+    }
   | { type: 'update:available'; payload: { version: string } }
   | { type: 'update:progress'; payload: { percent: number } }
   | { type: 'update:downloaded'; payload: { version: string } };
@@ -3328,12 +3634,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   backendDefaultEfforts: {},
   agentBranchPrefix: 'agent/',
   showCost: false,
+  servicesEnabled: false,
+  servicesStopOnQuit: true,
   defaultShowToolActivity: false,
   autoDowngrade: true,
   theme: 'system',
   sidebarWidth: 260,
   editorPaneWidth: 540,
   explorerTreeWidth: 280,
+  servicesListWidth: 480,
   sidebarLayout: 'stream',
   showActiveSidebarSection: true,
   showDebug: false,

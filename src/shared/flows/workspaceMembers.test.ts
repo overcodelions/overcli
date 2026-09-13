@@ -11,11 +11,11 @@ const projects = [
 ];
 
 const workspaces = [
-  { rootPath: '/ws/unifyr', projectIds: ['p-a', 'p-b', 'p-c'] as never[] },
+  { rootPath: '/ws/acme', projectIds: ['p-a', 'p-b', 'p-c'] as never[] },
   { rootPath: '/ws/other', projectIds: ['p-a'] as never[] },
 ];
 
-function runWith(memberPaths: string[], sourceProjectPath = '/ws/unifyr') {
+function runWith(memberPaths: string[], sourceProjectPath = '/ws/acme') {
   return {
     sourceProjectPath,
     workspaceWorktrees: memberPaths.map((p, i) => ({
@@ -42,10 +42,10 @@ describe('pendingWorkspaceMembers', () => {
 
   it('ignores a run with no minted worktrees (single-project or runIn cwd)', () => {
     expect(
-      pendingWorkspaceMembers({ sourceProjectPath: '/ws/unifyr', workspaceWorktrees: [] }, workspaces, projects),
+      pendingWorkspaceMembers({ sourceProjectPath: '/ws/acme', workspaceWorktrees: [] }, workspaces, projects),
     ).toEqual([]);
     expect(
-      pendingWorkspaceMembers({ sourceProjectPath: '/ws/unifyr' }, workspaces, projects),
+      pendingWorkspaceMembers({ sourceProjectPath: '/ws/acme' }, workspaces, projects),
     ).toEqual([]);
   });
 
@@ -62,19 +62,19 @@ describe('pendingWorkspaceMembers', () => {
   it('matches by path, so a project re-added under a new id is not pending twice', () => {
     // charlie re-added: same path, fresh id, and the run already has it.
     const reAdded = [...projects, { id: 'p-c2' as never, name: 'charlie', path: '/repo/charlie' }];
-    const ws = [{ rootPath: '/ws/unifyr', projectIds: ['p-a', 'p-b', 'p-c2'] as never[] }];
+    const ws = [{ rootPath: '/ws/acme', projectIds: ['p-a', 'p-b', 'p-c2'] as never[] }];
     const run = runWith(['/repo/alpha', '/repo/bravo', '/repo/charlie']);
     expect(pendingWorkspaceMembers(run, ws, reAdded)).toEqual([]);
   });
 
   it('does not report a member REMOVED from the workspace (adoption is additive)', () => {
-    const ws = [{ rootPath: '/ws/unifyr', projectIds: ['p-a'] as never[] }];
+    const ws = [{ rootPath: '/ws/acme', projectIds: ['p-a'] as never[] }];
     const run = runWith(['/repo/alpha', '/repo/bravo']);
     expect(pendingWorkspaceMembers(run, ws, projects)).toEqual([]);
   });
 
   it('skips workspace ids with no matching project record', () => {
-    const ws = [{ rootPath: '/ws/unifyr', projectIds: ['p-a', 'p-gone'] as never[] }];
+    const ws = [{ rootPath: '/ws/acme', projectIds: ['p-a', 'p-gone'] as never[] }];
     const run = runWith(['/repo/alpha']);
     expect(pendingWorkspaceMembers(run, ws, projects)).toEqual([]);
   });

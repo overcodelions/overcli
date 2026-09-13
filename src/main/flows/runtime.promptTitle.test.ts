@@ -19,8 +19,8 @@ describe('buildStepPromptTitle', () => {
   });
 
   it('takes the first meaningful line and strips markdown syntax', () => {
-    const title = buildStepPromptTitle(run('\n\n## RED-6936 breadcrumbs\n\nmore detail here'), step);
-    expect(title).toContain('— RED-6936 breadcrumbs');
+    const title = buildStepPromptTitle(run('\n\n## XYZ-6936 breadcrumbs\n\nmore detail here'), step);
+    expect(title).toContain('— XYZ-6936 breadcrumbs');
     expect(title).not.toContain('#');
     expect(title).not.toContain('more detail');
   });

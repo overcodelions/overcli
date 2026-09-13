@@ -1186,7 +1186,7 @@ describe('WorkerEngine errands', () => {
   it('plans an errand through the job description and worker contract', async () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.engine.start();
-    const instruction = 'the WOW-4921 spec is flaky on CI — find out why and fix it';
+    const instruction = 'the ABC-4921 spec is flaky on CI — find out why and fix it';
     const res = await h.engine.runErrand('worker-1', instruction);
 
     expect(res.ok).toBe(true);
@@ -2050,7 +2050,7 @@ describe('WorkerEngine daily errand conversations', () => {
     h.engine.start();
     // Two settled errands already on the books, newest last by createdAt.
     for (const [id, ask, reply, at, intent] of [
-      ['e1', 'which spec is flaky', 'WOW-4921 is.', today + 1_000, 'chat'],
+      ['e1', 'which spec is flaky', 'ABC-4921 is.', today + 1_000, 'chat'],
       ['e2', 'why', 'A race in the fixture.', today + 2_000, 'work'],
     ] as const) {
       h.orchestrations.set(
@@ -2076,7 +2076,7 @@ describe('WorkerEngine daily errand conversations', () => {
     await h.engine.runErrand('worker-1', 'fix it then');
     const turns = h.parked[0].priorTurns;
     expect(turns).toEqual([
-      { prompt: 'which spec is flaky', reply: 'WOW-4921 is.' },
+      { prompt: 'which spec is flaky', reply: 'ABC-4921 is.' },
       { prompt: 'why', reply: 'A race in the fixture.' },
     ]);
   });
@@ -2101,7 +2101,7 @@ describe('WorkerEngine daily errand conversations', () => {
         },
         producer: {
           prompt: 'assembled prompt',
-          reply: 'WOW-4921 has a fixture race.',
+          reply: 'ABC-4921 has a fixture race.',
         },
         items: [],
       }),
@@ -2112,7 +2112,7 @@ describe('WorkerEngine daily errand conversations', () => {
     expect(h.parked[0].priorTurns).toBeUndefined();
     expect(h.parked[0].prompt).toContain('PREVIOUS CONVERSATION HANDOFF');
     expect(h.parked[0].prompt).toContain('which spec is flaky');
-    expect(h.parked[0].prompt).toContain('WOW-4921 has a fixture race.');
+    expect(h.parked[0].prompt).toContain('ABC-4921 has a fixture race.');
   });
 
   it('carries no thread on the first errand, and ignores shifts', async () => {
@@ -2366,7 +2366,7 @@ describe('WorkerEngine delegation', () => {
 
   it('sends a shift handoff on as an errand stamped with the sender', async () => {
     const h = delegationHarness();
-    seedReply(h, 'Nothing for me today.\n<handoff to="Triage">RED-6814 bundles six issues. Split it.</handoff>');
+    seedReply(h, 'Nothing for me today.\n<handoff to="Triage">XYZ-6814 bundles six issues. Split it.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -2376,7 +2376,7 @@ describe('WorkerEngine delegation', () => {
     expect(errand!.origin).toMatchObject({
       workerId: 'triage',
       task: 'errand',
-      errand: 'RED-6814 bundles six issues. Split it.',
+      errand: 'XYZ-6814 bundles six issues. Split it.',
       from: { workerId: CHIEF, workerName: 'Chief of Staff' },
     });
 
@@ -2416,7 +2416,7 @@ describe('WorkerEngine delegation', () => {
         },
         producer: {
           prompt: 'p',
-          reply: 'Nothing material. <handoff to="Triage">Look at RED-6814.</handoff>',
+          reply: 'Nothing material. <handoff to="Triage">Look at XYZ-6814.</handoff>',
         },
         items: [],
       }),
@@ -2439,7 +2439,7 @@ describe('WorkerEngine delegation', () => {
         }),
       ],
     });
-    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    seedReply(h, '<handoff to="Triage">Look at XYZ-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -2456,7 +2456,7 @@ describe('WorkerEngine delegation', () => {
 
   it('reports a handoff aimed at nobody instead of dropping it', async () => {
     const h = delegationHarness();
-    seedReply(h, '<handoff to="Ticket Triage">Look at RED-6814.</handoff>');
+    seedReply(h, '<handoff to="Ticket Triage">Look at XYZ-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -2477,7 +2477,7 @@ describe('WorkerEngine delegation', () => {
         }),
       ],
     });
-    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    seedReply(h, '<handoff to="Triage">Look at XYZ-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -2490,7 +2490,7 @@ describe('WorkerEngine delegation', () => {
     const h = delegationHarness({
       chief: { caps: { maxItemsPerShift: 3, runIn: 'worktree' } },
     });
-    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    seedReply(h, '<handoff to="Triage">Look at XYZ-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -2501,7 +2501,7 @@ describe('WorkerEngine delegation', () => {
 
   it('gives no roster to a delegating worker still on probation', async () => {
     const h = delegationHarness({ chief: { trust: 'probation' } });
-    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    seedReply(h, '<handoff to="Triage">Look at XYZ-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -2524,7 +2524,7 @@ describe('WorkerEngine delegation', () => {
       queued: 0,
       excluded: 0,
     });
-    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    seedReply(h, '<handoff to="Triage">Look at XYZ-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -2562,7 +2562,7 @@ describe('WorkerEngine delegation', () => {
   /// morning, and the receiver has no way to notice: each arrival looks new.
   it('tells the next shift what it already handed over', async () => {
     const h = delegationHarness();
-    seedReply(h, '<handoff to="Triage">Split RED-6814 into its six issues.</handoff>');
+    seedReply(h, '<handoff to="Triage">Split XYZ-6814 into its six issues.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -2572,7 +2572,7 @@ describe('WorkerEngine delegation', () => {
     await h.flush();
 
     expect(h.parked[0].prompt).toContain('ALREADY HANDED OVER');
-    expect(h.parked[0].prompt).toContain('Split RED-6814 into its six issues.');
+    expect(h.parked[0].prompt).toContain('Split XYZ-6814 into its six issues.');
   });
 
   /// A narrowing that names a worker who has been deleted or moved is a
@@ -2634,7 +2634,7 @@ describe('WorkerEngine delegation', () => {
       queued: 0,
       excluded: 0,
     });
-    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    seedReply(h, '<handoff to="Triage">Look at XYZ-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();

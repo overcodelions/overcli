@@ -77,7 +77,7 @@ export function deskMatchesQuery(
   query: string,
   /// What the worker's project or workspace is CALLED (see `workerHomeName`).
   /// Optional so callers without the project list keep working; passing it is
-  /// what lets `zift` or `ocli` narrow the roster to one crew, which on a
+  /// what lets `acme` or `ocli` narrow the roster to one crew, which on a
   /// nineteen-worker board is the search people actually want to run.
   homeName?: string,
 ): boolean {

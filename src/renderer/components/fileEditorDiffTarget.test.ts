@@ -7,15 +7,15 @@ import { resolveDiffTarget } from './FileEditorPane';
 const ROOT = '/Users/x/Library/Application Support/overcli/coordinators/run-1';
 const MEMBERS = [
   {
-    name: 'zift-ecm-admin',
-    path: '/Users/x/.overcli/worktrees/zift-ecm-admin/RED-6644',
-    projectPath: '/Users/x/git-services/zift-ecm-admin',
+    name: 'acme-admin-console',
+    path: '/Users/x/.overcli/worktrees/acme-admin-console/XYZ-6644',
+    projectPath: '/Users/x/git-services/acme-admin-console',
     baseBranch: 'master',
     baselineCommit: 'abc123',
   },
   {
     name: 'gitrepo',
-    path: '/Users/x/.overcli/worktrees/gitrepo/RED-6644',
+    path: '/Users/x/.overcli/worktrees/gitrepo/XYZ-6644',
     projectPath: '/Users/x/gitrepo',
     baseBranch: 'master',
     baselineCommit: 'def456',
@@ -25,7 +25,7 @@ const MEMBERS = [
 describe('resolveDiffTarget', () => {
   it('peels the bare `<member>/…` prefix onto the member worktree', () => {
     expect(resolveDiffTarget('gitrepo/src/Main.java', ROOT, MEMBERS, null)).toEqual({
-      cwd: '/Users/x/.overcli/worktrees/gitrepo/RED-6644',
+      cwd: '/Users/x/.overcli/worktrees/gitrepo/XYZ-6644',
       path: 'src/Main.java',
       baseBranch: 'master',
       baselineCommit: 'def456',
@@ -37,10 +37,10 @@ describe('resolveDiffTarget', () => {
     // absolute path, which matched neither the worktree nor the project
     // root, so git ran in the coordinator dir and failed on HEAD.
     expect(
-      resolveDiffTarget(`${ROOT}/zift-ecm-admin/ecm-adminui/src/app/a.service.ts`, ROOT, MEMBERS, null),
+      resolveDiffTarget(`${ROOT}/acme-admin-console/admin-console-ui/src/app/a.service.ts`, ROOT, MEMBERS, null),
     ).toEqual({
-      cwd: '/Users/x/.overcli/worktrees/zift-ecm-admin/RED-6644',
-      path: 'ecm-adminui/src/app/a.service.ts',
+      cwd: '/Users/x/.overcli/worktrees/acme-admin-console/XYZ-6644',
+      path: 'admin-console-ui/src/app/a.service.ts',
       baseBranch: 'master',
       baselineCommit: 'abc123',
     });
@@ -48,7 +48,7 @@ describe('resolveDiffTarget', () => {
 
   it('treats the member symlink root itself as the repo root', () => {
     expect(resolveDiffTarget(`${ROOT}/gitrepo`, ROOT, MEMBERS, null)).toEqual({
-      cwd: '/Users/x/.overcli/worktrees/gitrepo/RED-6644',
+      cwd: '/Users/x/.overcli/worktrees/gitrepo/XYZ-6644',
       path: '.',
       baseBranch: 'master',
       baselineCommit: 'def456',
@@ -57,13 +57,13 @@ describe('resolveDiffTarget', () => {
 
   it('still maps the worktree and upstream-project absolute forms', () => {
     expect(
-      resolveDiffTarget('/Users/x/.overcli/worktrees/gitrepo/RED-6644/src/Main.java', ROOT, MEMBERS, null),
-    ).toMatchObject({ cwd: '/Users/x/.overcli/worktrees/gitrepo/RED-6644', path: 'src/Main.java' });
+      resolveDiffTarget('/Users/x/.overcli/worktrees/gitrepo/XYZ-6644/src/Main.java', ROOT, MEMBERS, null),
+    ).toMatchObject({ cwd: '/Users/x/.overcli/worktrees/gitrepo/XYZ-6644', path: 'src/Main.java' });
     expect(
-      resolveDiffTarget('/Users/x/git-services/zift-ecm-admin/ecm-adminui/a.ts', ROOT, MEMBERS, null),
+      resolveDiffTarget('/Users/x/git-services/acme-admin-console/admin-console-ui/a.ts', ROOT, MEMBERS, null),
     ).toMatchObject({
-      cwd: '/Users/x/.overcli/worktrees/zift-ecm-admin/RED-6644',
-      path: 'ecm-adminui/a.ts',
+      cwd: '/Users/x/.overcli/worktrees/acme-admin-console/XYZ-6644',
+      path: 'admin-console-ui/a.ts',
     });
   });
 

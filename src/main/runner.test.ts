@@ -235,7 +235,7 @@ describe('isBrokerPromptToolMissingError', () => {
   it('matches the real "permission-prompt-tool not found" failure', () => {
     const stderr =
       'Error: MCP tool mcp__overcli__approve (passed via --permission-prompt-tool) not found. ' +
-      'Available MCP tools: mcp__claude_ai_Unifyr_MCP__authenticate, mcp__aws-knowledge-mcp-server__aws___recommend';
+      'Available MCP tools: mcp__claude_ai_Acme_MCP__authenticate, mcp__aws-knowledge-mcp-server__aws___recommend';
     expect(isBrokerPromptToolMissingError(stderr)).toBe(true);
   });
 

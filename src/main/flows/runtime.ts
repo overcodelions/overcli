@@ -257,8 +257,8 @@ interface StepStreamBuffer {
 /// Pick a worktree/branch name that's free in EVERY given repo, starting
 /// from `base` and appending `-2`, `-3`, … on collision. Workspace runs
 /// reuse one name across member repos, so it has to clear all of them —
-/// otherwise a clean ticket name like `WOW-1234` run twice would fail the
-/// second time instead of becoming `WOW-1234-2`.
+/// otherwise a clean ticket name like `ABC-1234` run twice would fail the
+/// second time instead of becoming `ABC-1234-2`.
 function uniqueWorktreeName(repoPaths: string[], base: string, branchPrefix: string): string {
   let name = base;
   let n = 2;

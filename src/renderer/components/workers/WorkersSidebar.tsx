@@ -173,7 +173,7 @@ export function WorkersSidebar({
   // worker by what it did at least as often as by what it is called.
   // What each worker's project or workspace is called, resolved once for the
   // whole roster: the row shows it, and the search box matches it, so "ocli"
-  // or "zift" narrows a nineteen-worker board to one crew.
+  // or "acme" narrows a nineteen-worker board to one crew.
   const homeByWorkerId = useMemo(() => {
     const out: Record<string, string> = {};
     for (const worker of Object.values(workers)) {
@@ -1235,7 +1235,7 @@ function RosterRow({
                 floor.
 
                 The project leads because it is the one thing on the row you
-                SCAN for rather than read: finding every zift worker among
+                SCAN for rather than read: finding every acme worker among
                 nineteen means the label holds the same place on every row and
                 survives truncation, which the status text does not need to.
 

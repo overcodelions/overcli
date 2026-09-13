@@ -164,10 +164,10 @@ describe('the instructions name what each system actually calls things', () => {
 
 describe('a flow deployed across a workspace', () => {
   const ws = {
-    name: 'unifyr',
+    name: 'acme',
     members: [
-      { name: 'api', dir: 'api', remote: 'https://github.com/unifyr/api.git' },
-      { name: 'web', dir: 'web', remote: 'git@github.com:unifyr/web.git' },
+      { name: 'api', dir: 'api', remote: 'https://github.com/acme/api.git' },
+      { name: 'web', dir: 'web', remote: 'git@github.com:acme/web.git' },
     ],
     unreachable: [] as string[],
   };
@@ -176,7 +176,7 @@ describe('a flow deployed across a workspace', () => {
 
   it('checks every member out and runs across them', () => {
     const gh = plan('github').files[1].contents;
-    expect(gh).toContain('repository: unifyr/api');
+    expect(gh).toContain('repository: acme/api');
     expect(gh).toContain('path: workspace/web');
     expect(gh).toContain('--cwd workspace');
   });
@@ -184,11 +184,11 @@ describe('a flow deployed across a workspace', () => {
   it('assembles the workspace on Jenkins, which has no checkout action', () => {
     const j = plan('jenkins').files[1].contents;
     expect(j).toContain("stage('Assemble workspace')");
-    expect(j).toContain('git clone --depth 1 https://github.com/unifyr/api.git workspace/api');
+    expect(j).toContain('git clone --depth 1 https://github.com/acme/api.git workspace/api');
   });
 
   it('blocks the project write — a workspace is a scope, not a repository', () => {
-    expect(plan('github').block?.reason).toContain('unifyr');
+    expect(plan('github').block?.reason).toContain('acme');
     expect(plan('github').block?.remedy).toContain('2 member repositories');
   });
 

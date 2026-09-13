@@ -6,14 +6,14 @@ const ctx: GroupingContext = {
   homeDir: '/Users/x',
   projects: [
     { name: 'overcli', path: '/Users/x/git-services/overcli' },
-    { name: 'Unifyr Services', path: '/Users/x/Documents/Overcli Projects/Unifyr Services' },
+    { name: 'Acme Services', path: '/Users/x/Documents/Overcli Projects/Acme Services' },
   ],
-  workspaces: [{ id: 'ws-1', name: 'Unifyr' }],
+  workspaces: [{ id: 'ws-1', name: 'Acme' }],
   coordinators: new Map([
     // Evicted from the runs store before ownerPath existed — flow name only.
     ['run-1', { flowName: 'Release Warden' }],
     // Knows the workspace it was launched from.
-    ['run-2', { flowName: 'Daily Executive Brief', ownerPath: '/Users/x/Documents/Overcli Projects/Unifyr Services' }],
+    ['run-2', { flowName: 'Daily Executive Brief', ownerPath: '/Users/x/Documents/Overcli Projects/Acme Services' }],
   ]),
 };
 
@@ -39,9 +39,9 @@ describe('classifyProject', () => {
   });
 
   it('groups a worktree of a multi-word (space-bearing) project name', () => {
-    const c = classifyProject('/Users/x//overcli/worktrees/Unifyr/Services/read/these', ctx);
+    const c = classifyProject('/Users/x//overcli/worktrees/Acme/Services/read/these', ctx);
     expect(c.groupKind).toBe('repo');
-    expect(c.groupName).toBe('Unifyr Services');
+    expect(c.groupName).toBe('Acme Services');
     expect(c.leafName).toBe('read-these');
   });
 
@@ -55,7 +55,7 @@ describe('classifyProject', () => {
   it('folds a coordinator root into the project that launched the run', () => {
     const c = classifyProject('/Users/x/Library/Application Support/Overcli/coordinators/run/2', ctx);
     expect(c.groupKind).toBe('repo');
-    expect(c.groupName).toBe('Unifyr Services');
+    expect(c.groupName).toBe('Acme Services');
     expect(c.leafName).toBe('Daily Executive Brief · run-2');
   });
 
@@ -76,7 +76,7 @@ describe('classifyProject', () => {
 
   it('groups a workspace root by its workspace name', () => {
     const c = classifyProject('/Users/x/Library/Application Support/Overcli/workspaces/ws/1', ctx);
-    expect(c.groupName).toBe('Unifyr');
+    expect(c.groupName).toBe('Acme');
     expect(c.groupKind).toBe('workspace');
   });
 
@@ -86,9 +86,9 @@ describe('classifyProject', () => {
   });
 
   it('matches a real checkout whose folder name has a space in it', () => {
-    const c = classifyProject('/Users/x/Documents/Overcli/Projects/Unifyr/Services', ctx);
+    const c = classifyProject('/Users/x/Documents/Overcli/Projects/Acme/Services', ctx);
     expect(c.groupKind).toBe('repo');
-    expect(c.groupName).toBe('Unifyr Services');
+    expect(c.groupName).toBe('Acme Services');
     expect(c.leafName).toBe('main checkout');
   });
 });

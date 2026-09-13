@@ -9,7 +9,7 @@ const slugFor = (project: string, tree: string) =>
   claudeProjectSlug(path.join(managedWorktreeRoot(), project, tree));
 
 describe('isOrphanTranscriptDir', () => {
-  const live = new Set([slugFor('overcli', 'shift-18'), slugFor('unifyr', 'WOW-4062')]);
+  const live = new Set([slugFor('overcli', 'shift-18'), slugFor('acme', 'ABC-4062')]);
 
   it('claims a folder whose worktree is gone', () => {
     expect(isOrphanTranscriptDir(slugFor('overcli', 'shift-01'), live, rootSlug)).toBe(true);
@@ -17,7 +17,7 @@ describe('isOrphanTranscriptDir', () => {
 
   it('leaves a folder whose worktree still exists', () => {
     expect(isOrphanTranscriptDir(slugFor('overcli', 'shift-18'), live, rootSlug)).toBe(false);
-    expect(isOrphanTranscriptDir(slugFor('unifyr', 'WOW-4062'), live, rootSlug)).toBe(false);
+    expect(isOrphanTranscriptDir(slugFor('acme', 'ABC-4062'), live, rootSlug)).toBe(false);
   });
 
   it('never touches a transcript from a real project checkout', () => {

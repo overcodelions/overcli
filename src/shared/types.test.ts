@@ -19,6 +19,7 @@ describe('DEFAULT_SETTINGS', () => {
       sidebarWidth: 260,
       editorPaneWidth: 540,
       explorerTreeWidth: 280,
+      servicesListWidth: 480,
       sidebarLayout: 'stream',
       showActiveSidebarSection: true,
       showDebug: false,
@@ -39,6 +40,10 @@ describe('DEFAULT_SETTINGS', () => {
       installedRegistryFlows: [],
       updateChannel: 'stable',
       idleSessionTimeoutMinutes: 30,
+      // Services is off until asked for: most projects have nothing to run,
+      // and a permanently empty tab is clutter for everyone else.
+      servicesEnabled: false,
+      servicesStopOnQuit: true,
     });
   });
 

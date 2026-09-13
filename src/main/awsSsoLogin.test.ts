@@ -28,7 +28,7 @@ const login = (
 ) =>
   runAwsSsoLogin({
     binary: '/opt/homebrew/bin/aws',
-    target: 'Zift',
+    target: 'Acme',
     kind: 'profile',
     env: {},
     ...overrides,
@@ -41,8 +41,8 @@ afterEach(() => {
 
 describe('awsSsoLoginArgs', () => {
   it('uses --profile for a profile and --sso-session for a session', () => {
-    expect(awsSsoLoginArgs('Zift', 'profile', true)).toEqual([
-      'sso', 'login', '--profile', 'Zift', '--no-browser',
+    expect(awsSsoLoginArgs('Acme', 'profile', true)).toEqual([
+      'sso', 'login', '--profile', 'Acme', '--no-browser',
     ]);
     expect(awsSsoLoginArgs('corp', 'sso-session', true)).toEqual([
       'sso', 'login', '--sso-session', 'corp', '--no-browser',
@@ -50,14 +50,14 @@ describe('awsSsoLoginArgs', () => {
   });
 
   it('omits --no-browser when not asked for', () => {
-    expect(awsSsoLoginArgs('Zift', 'profile', false)).not.toContain('--no-browser');
+    expect(awsSsoLoginArgs('Acme', 'profile', false)).not.toContain('--no-browser');
   });
 });
 
 describe('awsSsoLoginCommand', () => {
   it('builds a shell line free of the metacharacters terminal.ts refuses', () => {
-    const cmd = awsSsoLoginCommand('/opt/homebrew/bin/aws', 'Zift', 'profile');
-    expect(cmd).toBe('/opt/homebrew/bin/aws sso login --profile "Zift"');
+    const cmd = awsSsoLoginCommand('/opt/homebrew/bin/aws', 'Acme', 'profile');
+    expect(cmd).toBe('/opt/homebrew/bin/aws sso login --profile "Acme"');
     expect(/[`$;&|<>\n\r]/.test(cmd)).toBe(false);
   });
 
@@ -68,7 +68,7 @@ describe('awsSsoLoginCommand', () => {
   });
 
   it('quotes a binary path containing spaces', () => {
-    expect(awsSsoLoginCommand('C:\\Program Files\\aws.exe', 'Zift', 'profile')).toContain(
+    expect(awsSsoLoginCommand('C:\\Program Files\\aws.exe', 'Acme', 'profile')).toContain(
       '"C:\\Program Files\\aws.exe"',
     );
   });
@@ -80,7 +80,7 @@ describe('runAwsSsoLogin', () => {
     const p = login();
     expect(spawnMock.mock.calls[0][0]).toBe('/opt/homebrew/bin/aws');
     expect(spawnMock.mock.calls[0][1]).toEqual([
-      'sso', 'login', '--profile', 'Zift', '--no-browser',
+      'sso', 'login', '--profile', 'Acme', '--no-browser',
     ]);
     child.emit('close', 0);
     await p;
@@ -161,7 +161,7 @@ describe('runAwsSsoLogin', () => {
     const r = await p;
     expect(r.ok).toBe(true);
     expect(spawnMock).toHaveBeenCalledTimes(2);
-    expect(spawnMock.mock.calls[1][1]).toEqual(['sso', 'login', '--profile', 'Zift']);
+    expect(spawnMock.mock.calls[1][1]).toEqual(['sso', 'login', '--profile', 'Acme']);
     // The old CLI opens its own browser; passing onUrl on would open a second tab.
     expect(onUrl).not.toHaveBeenCalled();
   });
