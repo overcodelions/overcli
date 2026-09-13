@@ -450,6 +450,35 @@ describe('importing services that live in another project', () => {
     ]);
   });
 
+  it('falls back to the Tiltfile helper command when nothing is detected', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-portal-'));
+    try {
+      const { mgr } = manager();
+      const tail = ['sh', '-c', 'exec tail -F /var/log/apache2/error_log'];
+      const outcome = mgr.importServices('ws1', {
+        projectId: 'tilt',
+        projectPath: repo,
+        projectName: 'acme-local-dev',
+        services: [
+          {
+            name: 'legacy-portal',
+            repoHint: path.basename(home),
+            helperCommand: tail,
+            options: [],
+            env: {},
+            source: 'tiltfile',
+          },
+        ],
+        siblings: [{ id: 'acme-portal', name: 'legacy-portal', path: home }],
+      });
+
+      expect(outcome.needsCommand).toEqual([]);
+      expect(mgr.view('ws1').services[0].command).toEqual(tail);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('adds what it knows the home of but not the command, bound there', () => {
     // legacy-portal: the Tiltfile names the repo, but what it runs is Apache, and
     // nothing in the repo is detectable. Recreating it by hand was the only way
@@ -464,13 +493,13 @@ describe('importing services that live in another project', () => {
         services: [
           { name: 'legacy-portal', repoHint: path.basename(home), options: [], env: {}, source: 'tiltfile' },
         ],
-        siblings: [{ id: 'z123', name: 'legacy-portal', path: home }],
+        siblings: [{ id: 'acme-portal', name: 'legacy-portal', path: home }],
       });
 
       expect(outcome.skipped).toEqual([]);
       expect(outcome.needsCommand).toEqual(['legacy-portal']);
       const view = mgr.view('ws1');
-      expect(view.services[0]).toMatchObject({ name: 'legacy-portal', projectId: 'z123', command: [] });
+      expect(view.services[0]).toMatchObject({ name: 'legacy-portal', projectId: 'acme-portal', command: [] });
       expect(view.bindings[0].path).toBe(home);
 
       mgr.setCommand('ws1', view.services[0].id, ['sh', '-c', 'tail -F /var/log/apache2/error_log']);
@@ -484,7 +513,7 @@ describe('importing services that live in another project', () => {
         services: [
           { name: 'legacy-portal', repoHint: path.basename(home), options: [], env: {}, source: 'tiltfile' },
         ],
-        siblings: [{ id: 'z123', name: 'legacy-portal', path: home }],
+        siblings: [{ id: 'acme-portal', name: 'legacy-portal', path: home }],
       });
       expect(mgr.view('ws1').services).toHaveLength(1);
       expect(mgr.view('ws1').services[0].command).toEqual([
@@ -533,5 +562,33 @@ describe('ServicesManager tasks', () => {
 
     mgr.setDeps('w1', 'api', ['lib', 'lib']);
     expect(mgr.view('w1').services.find((s) => s.id === 'api')?.deps).toEqual(['lib']);
+  });
+});
+
+describe('local config on a worktree swap', () => {
+  it('brings the main checkout local config into the worktree a service is rebound to', async () => {
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: repo, stdio: 'ignore', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+    git('init', '-q', '-b', 'main');
+    fs.mkdirSync(path.join(repo, 'billing/src/main/resources/config'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'application-local.properties\n');
+    fs.writeFileSync(path.join(repo, 'billing/src/main/resources/config/application.properties'), 'a=1\n');
+    fs.writeFileSync(path.join(repo, 'billing/src/main/resources/config/application-local.properties'), 'acme.url=http://localhost\n');
+    git('add', '.');
+    git('-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'init');
+    const worktree = path.join(repo, '..', `${path.basename(repo)}-wt`);
+    git('worktree', 'add', '-q', '-b', 'feature/x', worktree);
+
+    try {
+      const { mgr } = manager();
+      mgr.addService('ws1', spec, { ref: 'main', path: repo });
+      await mgr.rebind('ws1', spec.id, { ref: 'feature/x', path: worktree });
+
+      const linked = path.join(worktree, 'billing/src/main/resources/config/application-local.properties');
+      expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(linked, 'utf8')).toContain('acme.url');
+    } finally {
+      fs.rmSync(worktree, { recursive: true, force: true });
+    }
   });
 });

@@ -501,6 +501,74 @@ local_resource(
     expect(dir?.command).toBeUndefined();
     expect(dir?.group).toBe('ui');
   });
+
+  // An Apache-served checkout: nothing in the repo to detect, so the helper's
+  // own shell line is the only start command there is.
+  const apache = `
+SERVICES_DIR = os.path.abspath(os.getenv('SERVICES_DIR', '..'))
+LEGACY_REPO = SERVICES_DIR + '/legacy-portal'
+ERR_LOG = '/var/log/apache2/error_log'
+NVM_INIT = 'source ~/.nvm/nvm.sh && '
+
+def _flag(name):
+    return '/tmp/tilt-worktree-' + name
+
+def apache_frontend(name, repo_path, url, err_log):
+    f = _flag(name)
+    sync = 'SEL="$(cat ' + f + ' || echo ' + repo_path + ')"; '
+    ready = 'until curl -sf ' + url + '; do sleep 2; done; '
+    ready += ('echo "Serving ' + name +
+              ' at ' + url + '"; ')
+    serve = sync + ready + 'exec tail -F ' + err_log
+    local_resource(name, serve_cmd=['sh', '-c', serve], labels=['4-ui'])
+    serve = 'something after the resource'
+
+def frontend(name, start, subdir=''):
+    resolve = 'cd app; '
+    if subdir != '':
+        resolve = resolve + 'cd "' + subdir + '"; '
+    local_resource(name, serve_cmd=['sh', '-c', resolve + start])
+
+apache_frontend('legacy-portal', LEGACY_REPO, 'http://local.legacy-portal.com', ERR_LOG)
+frontend('acme-web', 'npm start')
+local_resource('acme-directory', serve_cmd=NVM_INIT + 'npm run dev')
+`;
+
+  it('reads a helper command built from parameters, locals, globals and one-line helpers', () => {
+    const found = parseTiltfile(apache, undefined, { dir: '/work/acme-local-dev', env: {} });
+    const portal = found.find((s) => s.name === 'legacy-portal');
+    expect(portal?.command).toBeUndefined();
+    expect(portal?.helperCommand).toEqual([
+      'sh',
+      '-c',
+      'SEL="$(cat /tmp/tilt-worktree-legacy-portal || echo /work/legacy-portal)"; ' +
+        'until curl -sf http://local.legacy-portal.com; do sleep 2; done; ' +
+        'echo "Serving legacy-portal at http://local.legacy-portal.com"; ' +
+        'exec tail -F /var/log/apache2/error_log',
+    ]);
+  });
+
+  it('takes the environment over a getenv default', () => {
+    const found = parseTiltfile(apache, undefined, { dir: '/work/acme-local-dev', env: { SERVICES_DIR: '/srv' } });
+    expect(found.find((s) => s.name === 'legacy-portal')?.helperCommand?.[2]).toContain('echo /srv/legacy-portal');
+  });
+
+  it('leaves a path it cannot resolve unknown rather than half-built', () => {
+    // No context: os.getenv has nothing to read, so the whole line is unknown.
+    expect(parseTiltfile(apache).find((s) => s.name === 'legacy-portal')?.helperCommand).toBeUndefined();
+  });
+
+  it('does not guess at a local set inside an if', () => {
+    expect(parseTiltfile(apache).find((s) => s.name === 'acme-web')?.helperCommand).toBeUndefined();
+  });
+
+  it('reads a direct resource command joined from a global', () => {
+    expect(parseTiltfile(apache).find((s) => s.name === 'acme-directory')?.command).toEqual([
+      'sh',
+      '-c',
+      'source ~/.nvm/nvm.sh && npm run dev',
+    ]);
+  });
 });
 
 // ── the reason importing beats copy-pasting ─────────────────────────────────
