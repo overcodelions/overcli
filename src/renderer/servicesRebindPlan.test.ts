@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bulkRefOptions, handoffOffer, planBulkRebind } from './servicesRebindPlan';
+import { bulkRefOptions, handoffOffer, planBulkRebind, planPinRebind } from './servicesRebindPlan';
 import type { ServiceSpec } from '@shared/services';
 import type { WorktreeChoice } from './worktreeChoices';
 
@@ -79,6 +79,22 @@ describe('bulkRefOptions', () => {
   it('counts a repo once even if a ref appears twice in its list', () => {
     const options = bulkRefOptions({ api: [choice('dup', '/a'), choice('dup', '/b')] });
     expect(options).toEqual([{ ref: 'dup', reachable: 1 }]);
+  });
+});
+
+describe('planPinRebind', () => {
+  it('replaces an older pin and pins services already on the chosen branch', () => {
+    const plan = planPinRebind(services, choices, onMaster, 'feat/x');
+    expect(plan.targets.map((target) => target.serviceId)).toEqual(['api', 'web']);
+    expect(plan.pinIds).toEqual(['api', 'web']);
+    expect(plan.skipped).toContainEqual({ serviceId: 'security', reason: 'no-such-ref' });
+  });
+
+  it('does not restart a service merely to pin the branch it is already on', () => {
+    const plan = planPinRebind([spec({ id: 'api' })], choices, { api: 'feat/x' }, 'feat/x');
+    expect(plan.targets).toEqual([]);
+    expect(plan.pinIds).toEqual(['api']);
+    expect(plan.skipped).toContainEqual({ serviceId: 'api', reason: 'already-there' });
   });
 });
 

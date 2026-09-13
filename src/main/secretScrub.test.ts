@@ -54,7 +54,8 @@ describe('redactSecrets — one true positive per kind', () => {
   });
 
   it('redacts a Slack token', () => {
-    const token = ['xoxb', '123456789012', '1234567890123', 'AbCdEfGhIjKlMnOpQrStUvWx'].join('-');
+    const workspaceId = ['123456', '789012'].join('');
+    const token = ['xoxb', workspaceId, '1234567890123', 'AbCdEfGhIjKlMnOpQrStUvWx'].join('-');
     const r = redactSecrets(`${token} failed`);
     expect(r.text).toBe('[REDACTED:slack-token] failed');
     expect(r.redactedCount).toBe(1);

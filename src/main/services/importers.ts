@@ -16,6 +16,8 @@
 // Every parser here is pure text in, data out, so the awkward real files can
 // be pinned in tests.
 
+import path from 'node:path';
+
 import { parse as parseYaml } from 'yaml';
 
 import { parseOptions } from './options';
@@ -393,10 +395,15 @@ export function parseProcfile(text: string): ImportedService[] {
 /// `local_resource` with one of its own parameters as the name is a template,
 /// and every call to it is a service — its name, port, group and Gradle module
 /// read from the arguments, bound to the parameters the way Starlark would.
-/// It does not evaluate string concatenation, so a helper's command stays
-/// unknown and detection supplies it; what it does read is the JVM args
-/// script a helper points at, because that is where the fifty-seven options
-/// live.
+/// It also reads the JVM args script a helper points at, because that is where
+/// the fifty-seven options live.
+///
+/// A command is read wherever it is only strings joined with `+`: literals,
+/// parameters, globals, the helper's own straight-line locals, and one-line
+/// `return` helpers like `_flag(name)`. Anything more — a conditional, a
+/// loop, a local set inside an `if` — leaves it unknown. A helper's command is
+/// a fallback: detection still wins where it finds one, since it knows the
+/// module the options belong to.
 ///
 /// A `local_resource` with only `cmd=` runs once and exits — a publish to
 /// Maven local, an image build — and comes in as a task, with its
@@ -404,10 +411,12 @@ export function parseProcfile(text: string): ImportedService[] {
 export function parseTiltfile(
   text: string,
   readFile?: (relative: string) => string | null,
+  context?: TiltfileContext,
 ): ImportedService[] {
   const source = stripStarlarkComments(text);
   const defs = findDefs(source);
   const globals = findGlobals(source);
+  const starlark = starlarkEvaluator(defs, globals, context);
   const insideDef = (index: number) => defs.some((d) => index >= d.start && index < d.end);
   const found: { index: number; service: ImportedService }[] = [];
 
@@ -424,7 +433,7 @@ export function parseTiltfile(
       index: call.index,
       service: {
         name,
-        command: commandLiteral(run.value),
+        command: commandValue(starlark.evaluate(run.value, starlark.global)),
         options: [],
         env: {},
         group: labelGroup(call.args.find((a) => a.key === 'labels')?.value),
@@ -480,11 +489,19 @@ export function parseTiltfile(
       const lookup = (id: string) => bound[id] ?? globals[id];
       const repoArg = bound.repo ?? bound.repo_path ?? bound.repo_dir;
       const subdir = stringLiteral(bound.subdir);
+      const { serveCmd, resourceAt } = def.template;
+      const helperCommand =
+        serveCmd === undefined
+          ? undefined
+          : commandValue(
+              starlark.evaluate(serveCmd, starlark.bodyScope(def, call.args, starlark.global, resourceAt)),
+            );
 
       found.push({
         index: call.index,
         service: {
           name,
+          helperCommand,
           options,
           env: {},
           port: port !== undefined && port > 0 ? port : localhostPort(Object.values(bound)),
@@ -566,9 +583,224 @@ interface StarlarkDef {
   body: string;
   start: number;
   end: number;
+  /// The expression of a body that is nothing but `return <expression>`.
+  returns?: string;
   /// Set when the body declares a resource named by one of the parameters,
-  /// with the `labels` and `serve_dir` that resource was given.
-  template?: { nameParam: string; labels?: string; serveDir?: string; resourceDeps?: string };
+  /// with the `labels`, `serve_dir` and `serve_cmd` that resource was given.
+  template?: {
+    nameParam: string;
+    labels?: string;
+    serveDir?: string;
+    serveCmd?: string;
+    resourceDeps?: string;
+    /// Where in the body the resource is declared; locals after it are not
+    /// part of its command.
+    resourceAt: number;
+  };
+}
+
+/// Where a Tiltfile's `os.getenv` and `os.path.abspath` look: the folder it
+/// sits in and the environment Tilt would run it under.
+export interface TiltfileContext {
+  dir: string;
+  env: Record<string, string | undefined>;
+}
+
+type StarlarkValue = string | string[] | undefined;
+type StarlarkLookup = (id: string) => StarlarkValue;
+
+/// How deep an expression may nest calls and names before it is unknown.
+const EVAL_DEPTH_LIMIT = 16;
+
+/// Just enough Starlark to read a command built from strings: literals, `+`,
+/// names, lists, `str()`, `os.getenv`, `os.path.abspath`, and calls to helpers
+/// whose whole body is one `return`. Everything else is unknown — never a
+/// guess.
+function starlarkEvaluator(
+  defs: StarlarkDef[],
+  globals: Record<string, string>,
+  context: TiltfileContext | undefined,
+) {
+  const cache = new Map<string, StarlarkValue>();
+  const resolving = new Set<string>();
+
+  const global: StarlarkLookup = (id) => {
+    if (cache.has(id)) return cache.get(id);
+    const expression = globals[id];
+    if (expression === undefined || resolving.has(id)) return undefined;
+    resolving.add(id);
+    const value = evaluate(expression, global, 0);
+    resolving.delete(id);
+    cache.set(id, value);
+    return value;
+  };
+
+  function evaluate(expression: string, lookup: StarlarkLookup, depth = 0): StarlarkValue {
+    if (depth > EVAL_DEPTH_LIMIT) return undefined;
+    const terms = splitTopLevel(expression, '+').map((t) => t.trim());
+    if (terms.length === 1) return term(terms[0], lookup, depth);
+    let out = '';
+    for (const piece of terms) {
+      const value = term(piece, lookup, depth);
+      if (typeof value !== 'string') return undefined;
+      out += value;
+    }
+    return out;
+  }
+
+  function term(text: string, lookup: StarlarkLookup, depth: number): StarlarkValue {
+    if (text === '') return undefined;
+    const literal = /^(['"])((?:\\.|(?!\1)[^\\])*)\1$/s.exec(text);
+    if (literal) return unescapeStarlark(literal[2]);
+    if (/^\d+$/.test(text)) return text;
+    if (/^[A-Za-z_]\w*$/.test(text)) return lookup(text);
+    if (text[0] === '(' && bracketed(text, 0)?.end === text.length) {
+      return evaluate(text.slice(1, -1), lookup, depth + 1);
+    }
+    if (text[0] === '[' && bracketed(text, 0)?.end === text.length) {
+      const items = splitArgs(text.slice(1, -1)).map((a) =>
+        a.key ? undefined : evaluate(a.value, lookup, depth + 1),
+      );
+      return items.every((i): i is string => typeof i === 'string') ? items : undefined;
+    }
+    const call = /^([A-Za-z_][\w.]*)\s*\(/.exec(text);
+    const inner = call ? bracketed(text, call[0].length - 1) : null;
+    if (!call || !inner || inner.end !== text.length) return undefined;
+    const args = splitArgs(inner.inner);
+    const arg = (i: number) =>
+      args[i] && !args[i].key ? evaluate(args[i].value, lookup, depth + 1) : undefined;
+
+    switch (call[1]) {
+      case 'str':
+        return typeof arg(0) === 'string' ? arg(0) : undefined;
+      case 'os.getenv': {
+        const name = arg(0);
+        if (!context || typeof name !== 'string') return undefined;
+        return context.env[name] ?? arg(1);
+      }
+      case 'os.path.abspath': {
+        const value = arg(0);
+        return context && typeof value === 'string' ? path.resolve(context.dir, value) : undefined;
+      }
+    }
+    const def = defs.find((d) => d.name === call[1]);
+    if (!def?.returns) return undefined;
+    return evaluate(def.returns, paramScope(def, args, lookup, depth), depth + 1);
+  }
+
+  /// A helper's parameters: what the call passed, evaluated where it was
+  /// called, else the default. A parameter nobody set is unknown, not the
+  /// global of the same name.
+  function paramScope(
+    def: StarlarkDef,
+    args: StarlarkArg[],
+    caller: StarlarkLookup,
+    depth: number,
+  ): StarlarkLookup {
+    const values = new Map<string, () => StarlarkValue>();
+    for (const p of def.params) {
+      const fallback = p.default;
+      values.set(p.name, () => (fallback === undefined ? undefined : evaluate(fallback, global, depth + 1)));
+    }
+    let position = 0;
+    for (const a of args) {
+      const name = a.key ?? def.params[position++]?.name;
+      if (name) values.set(name, () => evaluate(a.value, caller, depth + 1));
+    }
+    return (id) => (values.has(id) ? values.get(id)!() : global(id));
+  }
+
+  /// Parameters plus the locals a helper assigns before `until`, in order —
+  /// `ready += (...)` included. One set inside an `if` or a loop may or may
+  /// not have happened, so it is unknown from there on.
+  function bodyScope(
+    def: StarlarkDef,
+    args: StarlarkArg[],
+    caller: StarlarkLookup,
+    until: number,
+  ): StarlarkLookup {
+    const params = paramScope(def, args, caller, 0);
+    const locals = new Map<string, StarlarkValue>();
+    const lookup: StarlarkLookup = (id) => (locals.has(id) ? locals.get(id) : params(id));
+    for (const assignment of bodyAssignments(def.body, until)) {
+      if (assignment.nested) {
+        locals.set(assignment.name, undefined);
+        continue;
+      }
+      const value = evaluate(assignment.expression, lookup, 1);
+      if (assignment.op === '=') {
+        locals.set(assignment.name, value);
+      } else {
+        const prior = lookup(assignment.name);
+        locals.set(
+          assignment.name,
+          typeof prior === 'string' && typeof value === 'string' ? prior + value : undefined,
+        );
+      }
+    }
+    return lookup;
+  }
+
+  return { global, evaluate, bodyScope };
+}
+
+/// `name = expr` and `name += expr` statements in a def body before `until`,
+/// each marked when it sits deeper than the body's own indentation.
+function bodyAssignments(
+  body: string,
+  until: number,
+): { name: string; op: '=' | '+='; expression: string; nested: boolean }[] {
+  const out: { name: string; op: '=' | '+='; expression: string; nested: boolean }[] = [];
+  let base: number | undefined;
+  let i = 0;
+  while (i < until && i < body.length) {
+    const newline = body.indexOf('\n', i);
+    const line = body.slice(i, newline === -1 ? body.length : newline);
+    const trimmed = line.trimStart();
+    if (trimmed === '') {
+      i = newline === -1 ? body.length : newline + 1;
+      continue;
+    }
+    const indent = line.length - trimmed.length;
+    base ??= indent;
+    const assignment = /^([A-Za-z_]\w*)\s*(\+?=)(?!=)\s*/.exec(trimmed);
+    const start = assignment ? i + indent + assignment[0].length : i;
+    const end = statementEnd(body, start);
+    if (assignment) {
+      out.push({
+        name: assignment[1],
+        op: assignment[2] as '=' | '+=',
+        expression: body.slice(start, end),
+        nested: indent > base,
+      });
+    }
+    i = end + 1;
+  }
+  return out;
+}
+
+/// The newline a statement starting at `start` ends on — the first one outside
+/// strings and brackets, so a call spread over lines is one statement.
+function statementEnd(text: string, start: number): number {
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' || c === "'") {
+      i = skipString(text, i);
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === '\n' && depth <= 0) return i;
+    i++;
+  }
+  return text.length;
+}
+
+function unescapeStarlark(text: string): string {
+  const escapes: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"', '\n': '' };
+  return text.replace(/\\([\s\S])/g, (whole, c: string) => escapes[c] ?? whole);
 }
 
 /// Where a string literal starting at `i` ends.
@@ -697,6 +929,8 @@ function findDefs(text: string): StarlarkDef[] {
     );
     const nameArg = resource?.args.find((a) => !a.key) ?? resource?.args.find((a) => a.key === 'name');
     const nameParam = params.find((p) => p.name === nameArg?.value)?.name;
+    const statements = body.split('\n').map((l) => l.trim()).filter(Boolean);
+    const returns = statements.length === 1 ? /^return\s+(.+)$/.exec(statements[0])?.[1] : undefined;
 
     out.push({
       name: match[1],
@@ -704,12 +938,15 @@ function findDefs(text: string): StarlarkDef[] {
       body,
       start: match.index!,
       end,
-      template: nameParam
+      returns,
+      template: nameParam && resource
         ? {
             nameParam,
-            labels: resource?.args.find((a) => a.key === 'labels')?.value,
-            serveDir: resource?.args.find((a) => a.key === 'serve_dir')?.value,
-            resourceDeps: resource?.args.find((a) => a.key === 'resource_deps')?.value.trim(),
+            labels: resource.args.find((a) => a.key === 'labels')?.value,
+            serveDir: resource.args.find((a) => a.key === 'serve_dir')?.value,
+            serveCmd: resource.args.find((a) => a.key === 'serve_cmd')?.value,
+            resourceDeps: resource.args.find((a) => a.key === 'resource_deps')?.value.trim(),
+            resourceAt: resource.index,
           }
         : undefined,
     });
@@ -783,22 +1020,18 @@ function intLiteral(value: string | undefined): number | undefined {
   return Number(value.trim());
 }
 
-/// `'npm run dev'` or `['sh', '-c', '...']` — only when every piece is a
-/// literal. A command built by concatenation is not one this can read.
+/// An evaluated `serve_cmd` or `cmd` as argv: `'npm run dev'` or
+/// `['sh', '-c', '...']`.
 ///
 /// Tilt hands a string command to `sh -c`, so one that uses the shell —
 /// `cd ../common && ./gradlew publishToMavenLocal` — goes to one here too.
 /// Split on spaces it would run a program called `cd`.
-function commandLiteral(value: string): string[] | undefined {
-  const single = stringLiteral(value);
-  if (single !== undefined) {
-    if (/[&|;<>$`]|^\s*cd\s/.test(single)) return ['sh', '-c', single];
-    return single.split(/\s+/).filter(Boolean);
-  }
-  const list = /^\[([\s\S]*)\]$/.exec(value.trim());
-  if (!list) return undefined;
-  const parts = splitArgs(list[1]).map((a) => stringLiteral(a.value));
-  return parts.every((p): p is string => p !== undefined) ? parts : undefined;
+function commandValue(value: StarlarkValue): string[] | undefined {
+  if (Array.isArray(value)) return value.length > 0 ? value : undefined;
+  if (value === undefined) return undefined;
+  if (/[&|;<>$`]|^\s*cd\s/.test(value)) return ['sh', '-c', value];
+  const argv = value.split(/\s+/).filter(Boolean);
+  return argv.length > 0 ? argv : undefined;
 }
 
 /// `['a', 'b']` as its strings. Anything built rather than written — a

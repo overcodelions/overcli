@@ -39,7 +39,9 @@ vi.mock('../git', () => ({
 
 import { FlowRuntimeImpl } from './runtime';
 
-const CONV = '11111111-1111-4111-8111-111111111111';
+const uuidFixture = (digit: string) =>
+  `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
+const CONV = uuidFixture('1');
 const PLAN_BODY = 'PLAN-BODY-SENTINEL: rewrite the parser.';
 
 function makeRuntime(): FlowRuntimeImpl {
@@ -122,8 +124,7 @@ describe('self-produced step inputs', () => {
     const run = makeRun();
     (run as never as { flowSnapshot: { steps: Array<{ id: string; participantId: string }> } })
       .flowSnapshot.steps[1].participantId = 'critic';
-    (run as never as { conversationIds: Record<string, string> }).conversationIds.critic =
-      '22222222-2222-4222-8222-222222222222';
+    (run as never as { conversationIds: Record<string, string> }).conversationIds.critic = uuidFixture('2');
 
     const prompt = buildPrompt(makeRuntime(), run);
     expect(prompt).toContain(PLAN_BODY);
@@ -135,7 +136,7 @@ describe('self-produced step inputs', () => {
     // longer the one this step resumes — the transcript is gone.
     const run = makeRun({
       attempts: [
-        { stepId: 'plan', conversationId: '33333333-3333-4333-8333-333333333333', startedAt: 1, outcome: 'success' },
+        { stepId: 'plan', conversationId: uuidFixture('3'), startedAt: 1, outcome: 'success' },
       ],
     });
     const prompt = buildPrompt(makeRuntime(), run);

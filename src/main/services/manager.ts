@@ -43,7 +43,7 @@ import { parseBranchRefs, type BranchChoice } from '../../shared/refChoices';
 import { applyMirror, findLocalConfig, planMirror } from './mirror';
 import { describeOwners, freePort, holderKind, portOwners, type OwnerContext } from './portOwners';
 import { portInUse, triage } from './triage';
-import { buildFixPrompt } from './askModel';
+import { buildCommandPrompt, buildFixPrompt } from './askModel';
 import { ensureExcluded } from './projection';
 import {
   ensureServiceConfigDir,
@@ -221,6 +221,7 @@ export class ServicesManager {
   }
 
   async restart(workspaceId: string, serviceId: string): Promise<void> {
+    this.mirrorLocalConfig(workspaceId, serviceId);
     await this.supervisor(workspaceId).restart(serviceId);
   }
 
@@ -229,6 +230,10 @@ export class ServicesManager {
     serviceId: string,
     binding: { ref: string; path: string; portOffset?: number },
   ): Promise<void> {
+    // Before the supervisor relaunches it in the new checkout: a running
+    // service moved to a worktree starts there straight away, and start()'s
+    // mirror is never on that path.
+    this.mirrorLocalConfig(workspaceId, serviceId, binding.path);
     await this.supervisor(workspaceId).rebind(serviceId, binding);
     this.persistBinding(workspaceId, { ...binding, serviceId });
     this.excludeProjectedPaths(workspaceId, serviceId);
@@ -240,6 +245,7 @@ export class ServicesManager {
     workspaceId: string,
     targets: readonly { serviceId: string; ref: string; path: string }[],
   ): Promise<string[]> {
+    for (const target of targets) this.mirrorLocalConfig(workspaceId, target.serviceId, target.path);
     const moved = await this.supervisor(workspaceId).rebindAll(targets);
     for (const target of targets) {
       if (moved.includes(target.serviceId)) this.persistBinding(workspaceId, target);
@@ -598,6 +604,23 @@ export class ServicesManager {
         binding: binding ? { ref: binding.ref, path: binding.path } : undefined,
         findings: this.explainFailure(workspaceId, serviceId),
         secrets: Object.values(machine),
+      }),
+      cwd: binding?.path ?? this.dataDir,
+    };
+  }
+
+  /// What a model needs to propose a start command for a service that has
+  /// none, and the checkout to read while it works one out.
+  commandPrompt(workspaceId: string, serviceId: string): { prompt: string; cwd: string } | undefined {
+    const stack = this.stack(workspaceId);
+    const spec = stack.services.find((s) => s.id === serviceId);
+    if (!spec) return undefined;
+    const binding = stack.bindings.find((b) => b.serviceId === serviceId);
+    return {
+      prompt: buildCommandPrompt({
+        spec,
+        binding: binding ? { ref: binding.ref, path: binding.path } : undefined,
+        secrets: Object.values(this.allMachineValues()),
       }),
       cwd: binding?.path ?? this.dataDir,
     };
@@ -1050,9 +1073,12 @@ export class ServicesManager {
       // runs first — and an Angular 11 app under today's Node does not start.
       const detected = match?.spec.command;
       const stated = first?.command !== undefined;
+      // A Tiltfile helper's own shell line comes last: detection knows the
+      // module, but Apache-served checkouts and the like have nothing to detect.
       const command =
         first?.command ??
         (detected && first?.nodeVersion ? withNodeVersion(detected, first.nodeVersion) : detected) ??
+        first?.helperCommand ??
         [];
       const names = factored.perService.map((entry) => entry.service.name);
 
@@ -1275,21 +1301,25 @@ export class ServicesManager {
   /// else. Running from one then fails on a placeholder that has always
   /// resolved — nothing wrong with the branch, the config simply is not there.
   ///
-  /// Runs before every start rather than once: a worktree made five minutes
-  /// ago has never been mirrored, and the operation is a no-op when everything
-  /// is already in place.
-  private mirrorLocalConfig(workspaceId: string, serviceId: string): void {
+  /// Runs before every start, restart and rebind rather than once: a worktree
+  /// made five minutes ago has never been mirrored, and the operation is a
+  /// no-op when everything is already in place. `checkout` is the one a rebind
+  /// is about to move to, before the saved binding says so.
+  private mirrorLocalConfig(workspaceId: string, serviceId: string, checkout?: string): void {
     const stack = this.stack(workspaceId);
     const spec = stack.services.find((s) => s.id === serviceId);
-    const binding = stack.bindings.find((b) => b.serviceId === serviceId);
-    if (!spec || !binding) return;
+    const target = checkout ?? stack.bindings.find((b) => b.serviceId === serviceId)?.path;
+    if (!spec || !target) return;
     if (spec.config.mirrorLocalConfig === false) return;
 
     try {
-      const primary = primaryCheckout(binding.path);
-      if (!primary || path.resolve(primary) === path.resolve(binding.path)) return;
-      const relatives = findLocalConfig(primary);
-      const linked = applyMirror(planMirror(primary, binding.path, relatives));
+      const primary = primaryCheckout(target);
+      if (!primary || path.resolve(primary) === path.resolve(target)) return;
+      const relatives = findLocalConfig(primary, {
+        include: spec.config.mirrorInclude,
+        exclude: spec.config.mirrorExclude,
+      });
+      const linked = applyMirror(planMirror(primary, target, relatives));
       if (linked.length > 0) {
         this.emit({
           kind: 'line',
@@ -1569,10 +1599,14 @@ export function discoverImports(root: string): ImportSet[] {
     // The Tiltfile's helpers read JVM args out of scripts beside it. Only files
     // under the Tiltfile's own folder — the path comes from the file, and a
     // `../` in it is not a reason to read anywhere else on the machine.
-    const services = parseTiltfile(tiltfile, (relative) => {
-      const full = path.resolve(root, relative);
-      return full.startsWith(path.resolve(root) + path.sep) ? read(full) : null;
-    });
+    const services = parseTiltfile(
+      tiltfile,
+      (relative) => {
+        const full = path.resolve(root, relative);
+        return full.startsWith(path.resolve(root) + path.sep) ? read(full) : null;
+      },
+      { dir: root, env: process.env },
+    );
     if (services.length > 0) sets.push({ source: 'tiltfile', file: 'Tiltfile', services });
   }
 
@@ -1609,10 +1643,14 @@ export function importFile(file: string): { set: ImportSet } | { error: string }
     const dir = path.dirname(file);
     return set(
       'tiltfile',
-      parseTiltfile(text, (relative) => {
-        const full = path.resolve(dir, relative);
-        return full.startsWith(path.resolve(dir) + path.sep) ? read(full) : null;
-      }),
+      parseTiltfile(
+        text,
+        (relative) => {
+          const full = path.resolve(dir, relative);
+          return full.startsWith(path.resolve(dir) + path.sep) ? read(full) : null;
+        },
+        { dir, env: process.env },
+      ),
     );
   }
   if (base === 'launch.json') return set('vscode', parseVsCodeLaunch(text));

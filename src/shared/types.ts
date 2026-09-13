@@ -2910,7 +2910,9 @@ export interface IPCInvokeMap {
   /// Ask a model why a service would not start, after the deterministic rules
   /// have had their say. Everything it is told — the command, the resolved
   /// options, the environment — is scrubbed of known credentials first.
-  'services:askAi': (args: { workspaceId: string; serviceId: string }) =>
+  /// `kind: 'command'` asks instead for the start command of a service that has
+  /// none, read out of its checkout and the file it was imported from.
+  'services:askAi': (args: { workspaceId: string; serviceId: string; kind?: 'fix' | 'command' }) =>
     /// `command` is a start command the answer proposes, when it proposes one.
     | { ok: true; backend: Backend; text: string; command?: string }
     | { ok: false; error: string };
