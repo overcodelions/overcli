@@ -1,2 +1,11 @@
 #!/bin/sh
-node scripts/check-no-forbidden-identities.mjs --all
+zero=0000000000000000000000000000000000000000
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ]; then
+    revision=$local_sha
+  else
+    revision=$remote_sha..$local_sha
+  fi
+  node scripts/check-no-forbidden-identities.mjs --revision "$revision" || exit 1
+done

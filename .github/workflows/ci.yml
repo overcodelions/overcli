@@ -30,8 +30,13 @@ jobs:
       - name: Scan tracked files without printing matched IDs
         run: npm run security:aws-account-ids
 
-      - name: Scan commit identities without printing private addresses
+      - name: Scan pushed identities and messages without printing private addresses
+        if: github.event_name != 'pull_request'
         run: npm run security:identities
+
+      - name: Scan PR identities and messages without printing private addresses
+        if: github.event_name == 'pull_request'
+        run: npm run security:identities -- --pull-request
 
   build:
     name: Test, typecheck & build
