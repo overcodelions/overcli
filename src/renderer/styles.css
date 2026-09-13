@@ -162,6 +162,72 @@
   cursor: not-allowed;
 }
 
+/* Compact toolbar button. `review-btn` is sized for a sheet's footer, where a
+ * button is the point of the screen; in a dense toolbar or on a 38px list row
+ * the same size reads as shouting. Same colours, two-thirds the presence. */
+.svc-btn,
+.svc-btn-primary,
+.svc-btn-go,
+.svc-btn-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  height: 22px;
+  padding: 0 0.5rem;
+  border-radius: 0.3125rem;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.svc-btn {
+  background: var(--c-card-bg-strong);
+  border-color: var(--c-card-border);
+  color: var(--c-ink-muted);
+}
+.svc-btn:hover:not(:disabled) {
+  border-color: var(--c-card-border-strong);
+  color: var(--c-ink);
+}
+.svc-btn-primary {
+  background: color-mix(in srgb, var(--c-accent) 18%, var(--c-surface-elevated));
+  border-color: color-mix(in srgb, var(--c-accent) 36%, var(--c-card-border));
+  color: var(--c-accent);
+}
+.svc-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-accent) 28%, var(--c-surface-elevated));
+}
+.svc-btn:disabled,
+.svc-btn-primary:disabled,
+.svc-btn-go:disabled,
+.svc-btn-stop:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Start and stop carry meaning, and a row of identical grey buttons makes the
+ * reader parse three words to find the one they want. Tinted from the app's
+ * own diff greens and reds so they belong to the palette rather than shouting
+ * in primary colours. */
+.svc-btn-go {
+  background: color-mix(in srgb, var(--c-diff-add-ink) 14%, var(--c-surface-elevated));
+  border-color: color-mix(in srgb, var(--c-diff-add-ink) 34%, var(--c-card-border));
+  color: var(--c-diff-add-ink);
+}
+.svc-btn-go:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-diff-add-ink) 24%, var(--c-surface-elevated));
+}
+.svc-btn-stop {
+  background: color-mix(in srgb, var(--c-diff-remove-ink) 12%, var(--c-surface-elevated));
+  border-color: color-mix(in srgb, var(--c-diff-remove-ink) 30%, var(--c-card-border));
+  color: var(--c-diff-remove-ink);
+}
+.svc-btn-stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-diff-remove-ink) 22%, var(--c-surface-elevated));
+}
+
 /* Per-project card in the flow/workspace review sheets. Themed fill +
  * border so the card has a visible boundary in light mode (white-alpha
  * tints disappear on the near-white surface). */

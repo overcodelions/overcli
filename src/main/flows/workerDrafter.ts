@@ -253,7 +253,7 @@ function flowRequestFromJob(contract: WorkerContract): string {
 /// A worker is two halves: the JOB DESCRIPTION (the planning half — what it
 /// scans each shift, what a good proposal looks like) and its FLOW (the
 /// execution half — how each approved item is carried out). A change like
-/// "file a WOW ticket for every test you fix" needs BOTH: the flow gains a
+/// "file an ABC ticket for every test you fix" needs BOTH: the flow gains a
 /// ticket-filing step, and the job description must tell the planner to put
 /// the ticket-worthy details in each candidate. This turn routes one
 /// instruction to the right half or halves.
