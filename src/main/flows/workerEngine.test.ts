@@ -396,7 +396,7 @@ describe('WorkerEngine on-demand workers', () => {
         title: 'Reviewed LG Thailand',
         note: 'One report filed.',
       });
-      await h.engine.runErrand('worker-1', '/run LG Electronics USA');
+      await h.engine.runErrand('worker-1', '/run Initech USA');
       const prompt = h.direct[0].prompt;
       // Skipping the planning turn skipped what the planning turn knew. All
       // three pieces travel with the work instead.
