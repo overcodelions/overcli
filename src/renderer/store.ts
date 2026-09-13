@@ -127,7 +127,9 @@ export type ActiveSheet =
   /// Launch a flow from outside the Flows pane (today: the ⌘K palette).
   /// Renders bare — the launcher panel is already a floating card, so the
   /// sheet host must not wrap it in a second one.
-  | { type: 'flowLaunch'; flowId: string }
+  /// `target` preselects the launcher's project/workspace, in its
+  /// `project:<path>` | `workspace:<rootPath>` form.
+  | { type: 'flowLaunch'; flowId: string; target?: string }
   /// One worker turn, at reading size, with find and notes. Carries both ids
   /// rather than the turn itself: a sheet holding a copy of an orchestration
   /// would keep rendering it after the desk deleted it.
@@ -148,6 +150,7 @@ export type ActiveSheet =
 
 export type DetailMode =
   | 'conversation'
+  | 'services'
   | 'stats'
   | 'local'
   | 'explorer'
@@ -214,6 +217,10 @@ interface StoreState {
   explorerRootPath: string | null;
   showHiddenConversations: boolean;
   sidebarVisible: boolean;
+  /// Whether the conversations sidebar is wanted in Services — the one tab
+  /// that brings its own navigation and so opens without it. Kept apart from
+  /// `sidebarVisible` so no transition can leave the other one hidden.
+  servicesSidebarVisible: boolean;
   /// Global toggle: show tool-use / tool-result cards in chat. Off
   /// collapses the chat to just the model's assistant text for a cleaner
   /// reading view. Seeded from `settings.defaultShowToolActivity` at
@@ -4360,6 +4367,20 @@ export const useStore = create<StoreState>((set, get) => ({
     } else if (event.type === 'workerDeleted') {
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().removeLocal(event.id);
+      });
+    } else if (
+      event.type === 'serviceStatus' ||
+      event.type === 'serviceLine' ||
+      event.type === 'serviceRebound'
+    ) {
+      // Services are long-lived runtime shared by the whole workspace, so
+      // they live in their own store — see servicesStore.ts.
+      void import('./servicesStore').then(({ useServicesStore }) => {
+        const store = useServicesStore.getState();
+        if (event.type === 'serviceStatus') store.ingestStatus(event.workspaceId, event.runtime);
+        else if (event.type === 'serviceLine')
+          store.ingestLine(event.workspaceId, event.serviceId, event.line);
+        else store.ingestRebound(event.workspaceId, event.serviceId, event.from, event.to);
       });
     }
   },

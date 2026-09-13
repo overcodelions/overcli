@@ -115,7 +115,10 @@ import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { host } from './host';
-import { installElectronHost } from './hostElectron';
+import { ServicesManager, importFile as importServicesFile } from './services/manager';
+import { clearCache, controlMachineService, listMachineServices } from './services/machineServices';
+import { splitSuggestedCommand, tidySuggestion } from './services/askModel';
+import { electronSecretCipher, installElectronHost } from './hostElectron';
 import {
   configuredWebhookAuthHeader,
   configuredWebhookToken,
@@ -218,6 +221,10 @@ let orchestrator: OrchestratorImpl | null = null;
 let scheduler: SchedulerEngine | null = null;
 let workerEngine: WorkerEngine | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
+/// Long-lived service processes, one supervisor per workspace. Built lazily
+/// because most sessions never open the Services pane, and because it needs
+/// the host's data directory, which is installed at boot.
+let servicesManager: ServicesManager | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -278,6 +285,53 @@ function emitToRenderer(event: MainToRendererEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('main:event', event);
   }
+}
+
+/// The services manager, built on first use. Its events are translated here
+/// rather than in the engine: `main/services/` stays free of Electron so it
+/// can be unit-tested without a main process, and wrapped by a CLI later.
+///
+/// `workspaces` under the data directory is passed as a forbidden launch
+/// root — a symlink farm exists so the AGENT's cwd can see every member side
+/// by side, and launching a service there makes node resolve modules out of
+/// the repo and git find the wrong root.
+function services(): ServicesManager {
+  if (servicesManager) return servicesManager;
+  servicesManager = new ServicesManager(
+    host().dataDir(),
+    (event) => {
+      if (event.kind === 'status') {
+        emitToRenderer({
+          type: 'serviceStatus',
+          workspaceId: event.workspaceId,
+          runtime: event.runtime,
+        });
+        return;
+      }
+      if (event.kind === 'line') {
+        emitToRenderer({
+          type: 'serviceLine',
+          workspaceId: event.workspaceId,
+          serviceId: event.serviceId,
+          line: event.line,
+        });
+        return;
+      }
+      emitToRenderer({
+        type: 'serviceRebound',
+        workspaceId: event.workspaceId,
+        serviceId: event.serviceId,
+        from: event.from,
+        to: event.to,
+      });
+    },
+    [path.join(host().dataDir(), 'workspaces')],
+    electronSecretCipher,
+    // In development overcli's own vite and tsc run from this checkout, and
+    // must never be named as something to stop.
+    app.isPackaged ? undefined : app.getAppPath(),
+  );
+  return servicesManager;
 }
 
 /// Watch the event stream for files agents write, so the viewer can open them
@@ -1436,6 +1490,161 @@ export function registerIpc(): void {
   );
   ipcMain.handle('workspace:removeCoordinatorSymlinkRoot', (_e, coordinatorId: string) =>
     removeCoordinatorSymlinkRoot(coordinatorId),
+  );
+
+  ipcMain.handle('services:view', (_e, workspaceId: string) => services().view(workspaceId));
+  ipcMain.handle('services:viewAll', (_e, workspaceIds: string[]) => services().viewAll(workspaceIds));
+  ipcMain.handle('services:configDir', (_e, { workspaceId, serviceId }) =>
+    services().configDir(workspaceId, serviceId),
+  );
+  ipcMain.handle('services:revealConfigDir', (_e, { workspaceId, serviceId }) => {
+    shell.showItemInFolder(services().configDir(workspaceId, serviceId));
+  });
+  ipcMain.handle('services:log', (_e, { workspaceId, serviceId }) => [
+    ...services().log(workspaceId, serviceId),
+  ]);
+  ipcMain.handle('services:clearLog', (_e, { workspaceId, serviceId }) =>
+    services().clearLog(workspaceId, serviceId),
+  );
+  ipcMain.handle('services:start', (_e, { workspaceId, serviceId, offset, ignoreHeld }) =>
+    services().start(workspaceId, serviceId, { offset, ignoreHeld }),
+  );
+  ipcMain.handle('services:stop', (_e, { workspaceId, serviceId }) =>
+    services().stop(workspaceId, serviceId),
+  );
+  ipcMain.handle('services:restart', (_e, { workspaceId, serviceId }) =>
+    services().restart(workspaceId, serviceId),
+  );
+  ipcMain.handle('services:rebind', (_e, { workspaceId, serviceId, ref, path: checkout, portOffset }) =>
+    services().rebind(workspaceId, serviceId, { ref, path: checkout, portOffset }),
+  );
+  ipcMain.handle('services:rebindAll', (_e, { workspaceId, targets }) =>
+    services().rebindAll(workspaceId, targets),
+  );
+  ipcMain.handle('services:add', (_e, { workspaceId, spec, binding }) =>
+    services().addService(workspaceId, spec, binding),
+  );
+  ipcMain.handle('services:removeMany', (_e, { workspaceId, serviceIds }) =>
+    services().removeServices(workspaceId, serviceIds),
+  );
+  ipcMain.handle('services:restore', (_e, { workspaceId, removed }) =>
+    services().restoreServices(workspaceId, removed),
+  );
+  ipcMain.handle('services:setPinned', (_e, { workspaceId, serviceId, pinnedRef }) =>
+    services().setPinned(workspaceId, serviceId, pinnedRef),
+  );
+  ipcMain.handle('services:scan', (_e, { projects }) => services().scan(projects));
+  ipcMain.handle('services:findImports', (_e, { projects }) => services().findImports(projects));
+  ipcMain.handle('machine:list', () => listMachineServices());
+  ipcMain.handle('machine:control', (_e, { name, manager, action }) =>
+    controlMachineService({ name, manager }, action),
+  );
+  ipcMain.handle('machine:clearCache', (_e, { kind, port }) => clearCache(kind, port));
+  ipcMain.handle('services:importFile', async () => {
+    if (!mainWindow) return null;
+    const res = await dialog.showOpenDialog(mainWindow, {
+      title: 'Import services from a file',
+      properties: ['openFile', 'showHiddenFiles'],
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+    const file = res.filePaths[0];
+    return { file, ...importServicesFile(file) };
+  });
+  ipcMain.handle('services:import', (_e, { workspaceId, projectId, projectPath, projectName, services: imported, siblings }) =>
+    services().importServices(workspaceId, { projectId, projectPath, projectName, services: imported, siblings }),
+  );
+  ipcMain.handle('services:setGroup', (_e, { workspaceId, serviceId, group }) =>
+    services().setGroup(workspaceId, serviceId, group),
+  );
+  ipcMain.handle('services:setOptions', (_e, { workspaceId, serviceId, options }) =>
+    services().setOptions(workspaceId, serviceId, options),
+  );
+  ipcMain.handle('services:setCommand', (_e, { workspaceId, serviceId, command }) =>
+    services().setCommand(workspaceId, serviceId, command),
+  );
+  ipcMain.handle('services:setDebug', (_e, { workspaceId, serviceId, enabled, debugPort }) =>
+    services().setDebug(workspaceId, serviceId, enabled, debugPort),
+  );
+  ipcMain.handle('services:setReady', (_e, { workspaceId, serviceId, ready, readyTimeoutSec }) =>
+    services().setReady(workspaceId, serviceId, ready, readyTimeoutSec),
+  );
+  ipcMain.handle('services:setTask', (_e, { workspaceId, serviceId, task }) =>
+    services().setTask(workspaceId, serviceId, task),
+  );
+  ipcMain.handle('services:setDeps', (_e, { workspaceId, serviceId, deps }) =>
+    services().setDeps(workspaceId, serviceId, deps),
+  );
+  ipcMain.handle('services:taskPresets', (_e, { workspaceId, serviceId }) =>
+    services().taskPresets(workspaceId, serviceId),
+  );
+  ipcMain.handle('services:addTask', (_e, { workspaceId, serviceId, name, command, subpath, runBefore }) =>
+    services().addTask(workspaceId, serviceId, { name, command, subpath, runBefore }),
+  );
+  ipcMain.handle('services:duplicate', (_e, { workspaceId, serviceId, name, group, options, debugPort }) =>
+    services().duplicate(workspaceId, serviceId, { name, group, options, debugPort }),
+  );
+  ipcMain.handle('services:explainFailure', (_e, { workspaceId, serviceId }) =>
+    services().explainFailure(workspaceId, serviceId),
+  );
+  ipcMain.handle('services:worktrees', (_e, checkout: string) =>
+    services().worktreesFor(checkout),
+  );
+  ipcMain.handle('services:refs', (_e, checkout: string) => services().refsFor(checkout));
+  ipcMain.handle('services:checkoutRef', (_e, { workspaceId, serviceId, ref }) =>
+    services().checkoutRef(workspaceId, serviceId, ref),
+  );
+  // The long tail of "why did this not start", after the deterministic rules
+  // have had their say. A second step on purpose: the model is asked only
+  // where the rules were going to be silent, and the pane labels what comes
+  // back as a guess.
+  ipcMain.handle('services:askAi', async (_e, { workspaceId, serviceId }) => {
+    const ask = services().fixPrompt(workspaceId, serviceId);
+    if (!ask) return { ok: false as const, error: 'That service is gone.' };
+
+    const settings = Store.load().settings;
+    const healthy = await healthyBackends(settings.backendPaths);
+    const backend = pickDrafterBackend({
+      preferred: settings.preferredBackend,
+      isHealthy: (candidate) => healthy.has(candidate),
+      isEnabled: (candidate) => settings.disabledBackends[candidate] !== true,
+    });
+    if (!backend) {
+      return { ok: false as const, error: 'No signed-in model is available to ask.' };
+    }
+
+    const result = await runner!.oneShot({
+      backend,
+      model: resolveProducerModel(backend, undefined, settings.flowModelDefaults),
+      prompt: ask.prompt,
+      cwd: ask.cwd,
+      // Reading the checkout is most of the value — the answer is usually in a
+      // properties file. Planning mode lets it read and stops it editing.
+      permissionMode: 'plan',
+      timeoutMs: 120_000,
+      idleTimeoutMs: 45_000,
+      skipGlobalMcp: true,
+      cancelKey: `services:askAi:${workspaceId}:${serviceId}`,
+    });
+    if (!result.ok) return { ok: false as const, error: result.error };
+    const { text, command } = splitSuggestedCommand(result.text);
+    return { ok: true as const, backend, text: tidySuggestion(text), command };
+  });
+  ipcMain.handle('services:cancelAskAi', (_e, { workspaceId, serviceId }) =>
+    runner!.cancelOneShot(`services:askAi:${workspaceId}:${serviceId}`),
+  );
+  ipcMain.handle('services:freePort', (_e, port: number) => services().freePort(port));
+  ipcMain.handle(
+    'services:portStatus',
+    (_e, port: number, asking?: { workspaceId: string; serviceId: string }) =>
+      services().portStatus(port, asking),
+  );
+  ipcMain.handle('services:machineValues', () => services().machineValues());
+  ipcMain.handle('services:saveMachineValues', (_e, values) => services().saveMachineValues(values));
+  ipcMain.handle('services:machineValueNeeds', (_e, workspaceIds: string[]) =>
+    services().machineValueNeeds(Array.isArray(workspaceIds) ? workspaceIds : []),
+  );
+  ipcMain.handle('services:resolvedOptions', (_e, { workspaceId, serviceId }) =>
+    services().resolvedOptions(workspaceId, serviceId),
   );
 
   ipcMain.handle('app:openExternal', (_e, url: string) => {
@@ -3169,6 +3378,11 @@ app.on('window-all-closed', () => {
 let flushedRuns = false;
 app.on('before-quit', (event) => {
   runner?.killAll();
+  // A service left running after the window closes is a port held by a
+  // process the user has no way to find — so stopping them is the default.
+  // Turning it off is for the person who deliberately keeps a database up
+  // between sessions.
+  if (Store.load().settings?.servicesStopOnQuit !== false) void servicesManager?.stopAll();
   symbolLookup?.dispose();
   closeAllTreeWatchers();
   // Drop the pending timers so a quit can't fire a schedule or a worker

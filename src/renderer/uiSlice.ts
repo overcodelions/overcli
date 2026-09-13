@@ -101,6 +101,15 @@ export interface UiSliceState {
   fileEditorSide: 'inline' | 'side';
   explorerRootPath: string | null;
   sidebarVisible: boolean;
+  /// Whether the conversations sidebar is wanted in Services, which is the one
+  /// tab that brings its own navigation and so opens without it.
+  ///
+  /// A SEPARATE preference rather than a value some transition overwrites.
+  /// Hiding shared chrome as a side effect of entering a tab means every path
+  /// that leaves it has to remember to undo that — and one of them (the
+  /// history arrows, which write state directly) never will. Two fields and a
+  /// choice at render time cannot leak.
+  servicesSidebarVisible: boolean;
   showToolActivity: boolean;
   /// Parent Task tool_use id currently being inspected in the
   /// SubagentDrawer. `null` means the drawer is closed.
@@ -201,6 +210,7 @@ export const uiSliceInitialState: UiSliceState = {
   fileEditorSide: 'inline',
   explorerRootPath: null,
   sidebarVisible: true,
+  servicesSidebarVisible: false,
   showToolActivity: false,
   subagentDrawerParentId: null,
   subagentDrawerConversationId: null,
@@ -483,7 +493,10 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
       }) as (s: T) => Partial<T>);
     },
     toggleSidebar() {
-      set(((s) => ({ sidebarVisible: !s.sidebarVisible })) as (s: T) => Partial<T>);
+      set(((s) =>
+        s.detailMode === 'services'
+          ? { servicesSidebarVisible: !s.servicesSidebarVisible }
+          : { sidebarVisible: !s.sidebarVisible }) as (s: T) => Partial<T>);
     },
     toggleToolActivity() {
       set(((s) => ({ showToolActivity: !s.showToolActivity })) as (s: T) => Partial<T>);

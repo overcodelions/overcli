@@ -10,8 +10,8 @@ const AI_ANALYSIS = '/Users/x/git/ai-analysis';
 
 const TREE: Record<string, string[]> = {
   [WORKSPACE]: [
-    `${WORKSPACE}/bedrock-agentcore/main.py`,
-    `${WORKSPACE}/bedrock-agentcore/tests/test_frames.py`,
+    `${WORKSPACE}/bedrock-agent/main.py`,
+    `${WORKSPACE}/bedrock-agent/tests/test_frames.py`,
     `${WORKSPACE}/acme-local-dev/src/store.ts`,
   ],
   [AWS_COST_REDUX]: [`${AWS_COST_REDUX}/main.py`, `${AWS_COST_REDUX}/scanners/base.py`],
@@ -35,7 +35,7 @@ describe('resolveFilePath', () => {
     // The regression: `main.py` clicked in a workspace conversation used to
     // land on aws-cost-redux/main.py, a project the user never opened.
     expect(resolveFilePath('main.py', deps(WORKSPACE))).toBe(
-      `${WORKSPACE}/bedrock-agentcore/main.py`,
+      `${WORKSPACE}/bedrock-agent/main.py`,
     );
   });
 
@@ -44,8 +44,8 @@ describe('resolveFilePath', () => {
   });
 
   it('prefers a direct join under the caller root over a deeper match', () => {
-    expect(resolveFilePath('bedrock-agentcore/main.py', deps(WORKSPACE))).toBe(
-      `${WORKSPACE}/bedrock-agentcore/main.py`,
+    expect(resolveFilePath('bedrock-agent/main.py', deps(WORKSPACE))).toBe(
+      `${WORKSPACE}/bedrock-agent/main.py`,
     );
   });
 
@@ -76,8 +76,8 @@ describe('resolveFilePath', () => {
   });
 
   it('scores trailing segments when only a fuzzy match exists', () => {
-    expect(resolveFilePath('bedrock-agentcore/tests/test_frames.py', deps(AI_ANALYSIS))).toBe(
-      `${WORKSPACE}/bedrock-agentcore/tests/test_frames.py`,
+    expect(resolveFilePath('bedrock-agent/tests/test_frames.py', deps(AI_ANALYSIS))).toBe(
+      `${WORKSPACE}/bedrock-agent/tests/test_frames.py`,
     );
   });
 
@@ -145,7 +145,7 @@ describe('resolveFilePath', () => {
           return TREE[root] ?? [];
         },
       }),
-    ).toBe(`${WORKSPACE}/bedrock-agentcore/main.py`);
+    ).toBe(`${WORKSPACE}/bedrock-agent/main.py`);
   });
 });
 
@@ -158,8 +158,8 @@ describe('resolveWriteTarget', () => {
   it('anchors a member-prefixed path on the coordinator root', () => {
     // The regression: the editor sent this hint unresolved, so
     // `writeFileSync` resolved it against the main process cwd and ENOENTed.
-    expect(resolveWriteTarget('acme-lambda-runner/lambda-runner/gradle.properties', COORDINATOR)).toBe(
-      `${COORDINATOR}/acme-lambda-runner/lambda-runner/gradle.properties`,
+    expect(resolveWriteTarget('acme-jobs-runner/jobs-runner/gradle.properties', COORDINATOR)).toBe(
+      `${COORDINATOR}/acme-jobs-runner/jobs-runner/gradle.properties`,
     );
   });
 

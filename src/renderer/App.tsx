@@ -11,6 +11,7 @@ import { Sidebar } from './components/Sidebar';
 import { ConversationPane } from './components/ConversationPane';
 import { StatsPage } from './components/StatsPage';
 import { LocalPane } from './components/LocalPane';
+import { ServicesPane } from './components/ServicesPane';
 import { WelcomePane } from './components/WelcomePane';
 import { ExplorerPane } from './components/ExplorerPane';
 import { DocumentsPane } from './components/DocumentsPane';
@@ -52,6 +53,7 @@ export function App() {
   const init = useStore((s) => s.init);
   const ingest = useStore((s) => s.ingestMainEvent);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const servicesSidebarVisible = useStore((s) => s.servicesSidebarVisible);
   const backendHealth = useStore((s) => s.backendHealth);
   const detailMode = useStore((s) => s.detailMode);
   const explorerRootPath = useStore((s) => s.explorerRootPath);
@@ -413,7 +415,12 @@ export function App() {
   // yet" as onboarding costs nothing (with zero projects there's nothing in
   // the sidebar to miss) and keeps the first frame stable.
   const onboarding = projects.length === 0 && !anyBackendReady(backendHealth);
-  const showSidebar = sidebarVisible && !onboarding;
+  // Services brings its own navigation — the service list IS what you move
+  // between there — so it reads its own preference and opens without the
+  // conversations sidebar. Computed here rather than written into state, so no
+  // path out of the tab can leave the sidebar hidden behind it.
+  const showSidebar =
+    (detailMode === 'services' ? servicesSidebarVisible : sidebarVisible) && !onboarding;
 
   // What's left for the preview once everything it shares the row with has
   // taken its share. Recomputed on window resize so a maximised window can
@@ -494,6 +501,8 @@ export function App() {
             <OrchestratorPane />
           ) : detailMode === 'workers' ? (
             <WorkersPane />
+          ) : detailMode === 'services' ? (
+            <ServicesPane />
           ) : selectedConversationId ? (
             <ConversationPane />
           ) : (
