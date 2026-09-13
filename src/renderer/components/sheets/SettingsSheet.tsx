@@ -32,6 +32,7 @@ type Section =
   | 'local'
   | 'agents'
   | 'flows'
+  | 'services'
   | 'conversations'
   | 'autoTidy'
   | 'advanced';
@@ -85,6 +86,7 @@ export function SettingsSheet() {
           <NavItem label="Local models" active={section === 'local'} onClick={() => setSection('local')} />
           <NavItem label="Agents" active={section === 'agents'} onClick={() => setSection('agents')} />
           <NavItem label="Flows" active={section === 'flows'} onClick={() => setSection('flows')} />
+          <NavItem label="Services" active={section === 'services'} onClick={() => setSection('services')} />
           <NavItem label="Conversations" active={section === 'conversations'} onClick={() => setSection('conversations')} />
           <NavItem label="Auto-tidy" active={section === 'autoTidy'} onClick={() => setSection('autoTidy')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
@@ -103,6 +105,7 @@ export function SettingsSheet() {
           {section === 'local' && <OllamaPane local={local} patch={patch} />}
           {section === 'agents' && <AgentsPane local={local} patch={patch} />}
           {section === 'flows' && <FlowsPane local={local} patch={patch} />}
+          {section === 'services' && <ServicesSettingsPane local={local} patch={patch} />}
           {section === 'conversations' && <ConversationsPane />}
           {section === 'autoTidy' && <AutoTidyPane />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}
@@ -988,6 +991,36 @@ function HealthBadge({ kind, message }: { kind: string; message?: string }) {
     >
       {kind}
     </span>
+  );
+}
+
+/// Services settings. The first control is whether the feature exists at all:
+/// most projects have nothing to run, and a tab that is permanently empty is
+/// clutter for everyone it does not apply to.
+function ServicesSettingsPane({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  return (
+    <div className="space-y-5">
+      <Group title="Services">
+        <Toggle
+          label="Show the Services tab"
+          help="Lets overcli start and stop the things your projects run — a server, a web app, a database — and point them at whichever branch you are working on. Off unless you want it."
+          value={local.servicesEnabled ?? false}
+          onChange={(v) => patch({ servicesEnabled: v })}
+        />
+        <Toggle
+          label="Stop everything when overcli quits"
+          help="On by default: a service left running holds its port, and there is no easy way to find the process afterwards. Turn it off if you deliberately keep something like a database up between sessions."
+          value={local.servicesStopOnQuit !== false}
+          onChange={(v) => patch({ servicesStopOnQuit: v })}
+        />
+      </Group>
+    </div>
   );
 }
 

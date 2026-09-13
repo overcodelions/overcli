@@ -74,7 +74,7 @@ export function SheetHost() {
         onClick={() => close(null)}
       >
         <div className="w-full max-w-[720px]" onClick={(e) => e.stopPropagation()}>
-          {sheet.type === 'flowLaunch' && <FlowLaunchSheet flowId={sheet.flowId} />}
+          {sheet.type === 'flowLaunch' && <FlowLaunchSheet flowId={sheet.flowId} target={sheet.target} />}
         </div>
       </div>
     );

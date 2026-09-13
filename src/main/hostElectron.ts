@@ -13,6 +13,7 @@ import { app, Notification, safeStorage } from 'electron';
 import { log } from './diagnostics';
 import { setHost, type HostEnv, type HostSecrets } from './host';
 import { withWebhookNotify } from './webhookNotify';
+import type { SecretCipher } from './services/machineSecrets';
 
 function authFilePath(): string {
   return path.join(app.getPath('userData'), 'flows-registry-auth.json');
@@ -62,6 +63,15 @@ const electronSecrets: HostSecrets = {
     writeStore(s);
     return true;
   },
+};
+
+/// The keychain, for callers that must NOT fall back to plain text when it is
+/// unavailable — the services pane's secret machine values. `electronSecrets`
+/// above degrades to base64 on purpose; this does not.
+export const electronSecretCipher: SecretCipher = {
+  available: () => safeStorage.isEncryptionAvailable(),
+  encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
+  decrypt: (cipher) => safeStorage.decryptString(Buffer.from(cipher, 'base64')),
 };
 
 /// Build the Electron host. `onNotifyClick` is how index.ts brings its window
