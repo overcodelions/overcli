@@ -101,7 +101,7 @@ export function buildCandidates(args: {
         projectName: entry.projectName,
         name: service.name,
         module: service.moduleHint,
-        command: service.command ? service.command.join(' ') : (service.moduleHint ?? ''),
+        command: (service.command ?? service.helperCommand)?.join(' ') ?? service.moduleHint ?? '',
         port: service.port,
         detail: optionsDetail(service.options.length),
         imported: service,

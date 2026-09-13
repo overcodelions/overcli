@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildFixPrompt, splitSuggestedCommand, tidySuggestion } from './askModel';
+import { buildCommandPrompt, buildFixPrompt, splitSuggestedCommand, tidySuggestion } from './askModel';
 import type { ServiceSpec } from './types';
 
 const spec: ServiceSpec = {
@@ -90,6 +90,37 @@ describe('what the file that described it says', () => {
     expect(p).toContain("'v12.22.5'");
     expect(p).toContain('Runs from: admin-ui');
     expect(p).toContain('COMMAND:');
+  });
+});
+
+describe('asking for a command a service never had', () => {
+  const bare: ServiceSpec = {
+    ...spec,
+    name: 'legacy-portal',
+    command: [],
+    importedFrom: {
+      source: 'tiltfile',
+      project: 'acme-local-dev',
+      excerpt: "apache_frontend('legacy-portal', LEGACY_REPO)",
+    },
+  };
+
+  it('asks how it starts, with the checkout and the file it came from', () => {
+    const p = buildCommandPrompt({ spec: bare, binding: { ref: 'main', path: '/work/legacy-portal' } });
+    expect(p).toContain('has no start command yet');
+    expect(p).toContain('Checkout: /work/legacy-portal on main');
+    expect(p).toContain("apache_frontend('legacy-portal', LEGACY_REPO)");
+    expect(p).toContain('COMMAND:');
+    expect(p).not.toContain('failed to start');
+  });
+
+  it('says when there is no checkout to read', () => {
+    expect(buildCommandPrompt({ spec: bare })).toContain('not bound to a checkout');
+  });
+
+  it('scrubs known secrets out of the excerpt', () => {
+    const leaky = { ...bare, importedFrom: { ...bare.importedFrom!, excerpt: 'DB_PASS=hunter2secret' } };
+    expect(buildCommandPrompt({ spec: leaky, secrets: ['hunter2secret'] })).not.toContain('hunter2secret');
   });
 });
 

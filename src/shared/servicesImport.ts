@@ -15,6 +15,10 @@ export interface ImportedService {
   /// VS Code Java configs, which name a main class instead — those are paired
   /// with a detected module to work out how to actually start.
   command?: string[];
+  /// Command read out of the Tiltfile helper that declares it. Used only when
+  /// detection finds nothing: detection knows the module the options belong
+  /// to, and a helper's shell glue does not.
+  helperCommand?: string[];
   options: ServiceOption[];
   env: Record<string, string>;
   subpath?: string;

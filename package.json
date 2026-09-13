@@ -49,6 +49,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "security:aws-account-ids": "node scripts/check-no-aws-account-ids.mjs",
     "prepublishOnly": "npm run build:main"
   },
   "build": {
