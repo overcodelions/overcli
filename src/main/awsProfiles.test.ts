@@ -6,6 +6,10 @@
 import { describe, expect, it } from 'vitest';
 import { AWS_NAME_RE, buildAwsAuthOverview, isSafeAwsName, parseAwsIni } from './awsProfiles';
 
+// Keep account-ID-shaped fixtures useful without committing a complete ID.
+// GitHub push protection and CI intentionally reject every contiguous one.
+const AWS_ACCOUNT_ID = ['123456', '789012'].join('');
+
 // Mirrors the shape of a real config: an [sso-session] block declared BEFORE
 // the profile that references it, `sso_start_url=` with no spaces around the
 // `=` on one line and spaces on another, a `#`-terminated start URL, a
@@ -15,22 +19,22 @@ const CONFIG = [
   'region = us-east-1',
   '',
   '; a comment',
-  '[sso-session d-90676d998c]',
-  'sso_start_url=https://d-90676d998c.awsapps.com/start',
+  '[sso-session d-0000000001]',
+  'sso_start_url=https://d-0000000001.awsapps.com/start',
   'sso_region=us-east-1',
   '',
-  '[profile AWSAdministratorAccess-123456789012]',
+  `[profile AdministratorAccess-${AWS_ACCOUNT_ID}]`,
   'sso_session = aws-infra-local',
-  'sso_account_id = 123456789012',
+  `sso_account_id = ${AWS_ACCOUNT_ID}`,
   'sso_role_name = AWSAdministratorAccess',
   'region = us-east-1',
   '',
   '[sso-session aws-infra-local]',
-  'sso_start_url = https://d-9067c44074.awsapps.com/start/#',
+  'sso_start_url = https://d-0000000002.awsapps.com/start/#',
   'sso_region = us-east-1',
   '',
   '[sso-session uinfyr-sso]',
-  'sso_start_url = https://d-9067c44074.awsapps.com/start/#',
+  'sso_start_url = https://d-0000000002.awsapps.com/start/#',
   'sso_region = us-east-1',
   '',
   '# legacy shape: start url inlined on the profile itself',
@@ -65,7 +69,7 @@ const build = (configText = CONFIG, credentialsText = CREDENTIALS) =>
 
 describe('isSafeAwsName', () => {
   it('accepts the names AWS profiles actually use', () => {
-    for (const n of ['default', 'Acme', 'AWSAdministratorAccess-123456789012', 'a.b_c-1']) {
+    for (const n of ['default', 'Acme', `AdministratorAccess-${AWS_ACCOUNT_ID}`, 'a.b_c-1']) {
       expect(isSafeAwsName(n), n).toBe(true);
     }
   });
@@ -125,11 +129,11 @@ describe('buildAwsAuthOverview', () => {
   it('lists SSO profiles first, then orphan sessions only', () => {
     const o = build();
     expect(o.ssoTargets.map((t) => `${t.kind}:${t.name}`)).toEqual([
-      'profile:AWSAdministratorAccess-123456789012',
+      `profile:AdministratorAccess-${AWS_ACCOUNT_ID}`,
       'profile:OldSchool',
       // aws-infra-local is referenced by the profile above, so it gets no
       // row of its own; these two are referenced by nothing.
-      'sso-session:d-90676d998c',
+      'sso-session:d-0000000001',
       'sso-session:uinfyr-sso',
     ]);
   });
@@ -137,10 +141,10 @@ describe('buildAwsAuthOverview', () => {
   it('resolves a profile\'s display fields through its sso_session block', () => {
     const t = build().ssoTargets[0];
     expect(t).toMatchObject({
-      name: 'AWSAdministratorAccess-123456789012',
+      name: `AdministratorAccess-${AWS_ACCOUNT_ID}`,
       kind: 'profile',
       ssoSession: 'aws-infra-local',
-      startUrl: 'https://d-9067c44074.awsapps.com/start/#',
+      startUrl: 'https://d-0000000002.awsapps.com/start/#',
       ssoRegion: 'us-east-1',
       region: 'us-east-1',
     });

@@ -15,7 +15,8 @@
 
 import { create } from 'zustand';
 import type { WorktreeChoice } from '@shared/worktrees';
-import { planBulkRebind } from './servicesRebindPlan';
+import { planBulkRebind, planPinRebind } from './servicesRebindPlan';
+import { runWithConcurrency, startLayers } from './servicesStartPlan';
 import type {
   LeaseDecision,
   MachineEntry,
@@ -118,8 +119,8 @@ interface ServicesState {
   clearChecked(): void;
   setAnchor(key: string | undefined): void;
   toggleCollapsed(key: string): void;
-  /// Start rows by key, one after another — a later one may depend on an
-  /// earlier one. Unlike `start`, this does not select each in turn.
+  /// Start independent rows concurrently, in dependency-ordered layers.
+  /// Unlike `start`, this does not select each in turn.
   startMany(keys: string[]): Promise<void>;
   stopMany(keys: string[]): Promise<void>;
   /// Gone from the list at once, stopped if running, and undoable.
@@ -133,7 +134,7 @@ interface ServicesState {
   setChoices(choices: Record<string, WorktreeChoice[]>): void;
   /// Move rows by key onto a branch, each in its own repository. Services whose
   /// repo has no such branch, or that are pinned, stay put and are counted.
-  switchKeys(keys: string[], ref: string): Promise<void>;
+  switchKeys(keys: string[], ref: string, pin?: boolean): Promise<void>;
   /// What the last switch did, in a line.
   notice?: { text: string; sub?: string };
   dismissNotice(): void;
@@ -163,7 +164,7 @@ interface ServicesState {
   saveMachine(entries: MachineEntry[]): Promise<void>;
   revealConfig(workspaceId: string, serviceId: string): Promise<void>;
   explain(workspaceId: string, serviceId: string): Promise<void>;
-  askAi(workspaceId: string, serviceId: string): Promise<void>;
+  askAi(workspaceId: string, serviceId: string, kind?: 'fix' | 'command'): Promise<void>;
   cancelAskAi(workspaceId: string, serviceId: string): Promise<void>;
   checkoutRef(
     workspaceId: string,
@@ -394,15 +395,28 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   },
 
   async startMany(keys) {
+    const requested = new Map<string, string[]>();
     for (const key of keys) {
       const { workspaceId, serviceId } = splitKey(key);
-      const runtime = get().stacks[workspaceId]?.runtimes.find((r) => r.serviceId === serviceId);
-      if (runtime && isServiceLive(runtime.status)) continue;
-      const result = await window.overcli.invoke('services:start', { workspaceId, serviceId });
-      if (!result.started && result.lease) {
-        set((s) => ({
-          pendingLease: { ...s.pendingLease, [workspaceId]: { serviceId, lease: result.lease! } },
-        }));
+      requested.set(workspaceId, [...(requested.get(workspaceId) ?? []), serviceId]);
+    }
+
+    // Keep workspaces serial: their supervisors coordinate port claims, and
+    // starting two stacks at the exact same instant could race that check.
+    for (const [workspaceId, serviceIds] of requested) {
+      const stack = get().stacks[workspaceId];
+      if (!stack) continue;
+      for (const layer of startLayers(stack.services, serviceIds)) {
+        await runWithConcurrency(layer, 4, async (serviceId) => {
+          const runtime = get().stacks[workspaceId]?.runtimes.find((r) => r.serviceId === serviceId);
+          if (runtime && isServiceLive(runtime.status)) return;
+          const result = await window.overcli.invoke('services:start', { workspaceId, serviceId });
+          if (!result.started && result.lease) {
+            set((s) => ({
+              pendingLease: { ...s.pendingLease, [workspaceId]: { serviceId, lease: result.lease! } },
+            }));
+          }
+        });
       }
     }
   },
@@ -477,7 +491,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     set({ choices });
   },
 
-  async switchKeys(keys, ref) {
+  async switchKeys(keys, ref, pin = false) {
     const { stacks, choices } = get();
     const byStack = new Map<string, Set<string>>();
     for (const key of keys) {
@@ -486,18 +500,43 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     }
 
     let moved = 0;
+    let pinned = 0;
     const skipped = { 'no-such-ref': 0, pinned: 0, 'already-there': 0 };
     for (const [workspaceId, ids] of byStack) {
       const stack = stacks[workspaceId];
       if (!stack) continue;
-      const plan = planBulkRebind(
-        stack.services.filter((s) => ids.has(s.id)),
-        choices,
-        Object.fromEntries(stack.bindings.map((b) => [b.serviceId, b.ref])),
-        ref,
-      );
+      const selected = stack.services.filter((s) => ids.has(s.id));
+      const currentRefs = Object.fromEntries(stack.bindings.map((b) => [b.serviceId, b.ref]));
+      const pinPlan = pin ? planPinRebind(selected, choices, currentRefs, ref) : undefined;
+      const plan = pinPlan ?? planBulkRebind(selected, choices, currentRefs, ref);
+      const pinIds = pinPlan?.pinIds ?? [];
+
+      // A pin click is an explicit replacement of any old pin. Clear it
+      // before rebinding or the supervisor will correctly refuse the move.
+      if (pin) {
+        await Promise.all(
+          selected
+            .filter((s) => pinIds.includes(s.id) && s.pinnedRef && s.pinnedRef !== ref)
+            .map((s) => window.overcli.invoke('services:setPinned', {
+              workspaceId,
+              serviceId: s.id,
+              pinnedRef: undefined,
+            })),
+        );
+      }
       for (const s of plan.skipped) skipped[s.reason] += 1;
       if (plan.targets.length > 0) moved += (await get().rebindAll(workspaceId, plan.targets)).length;
+      if (pin) {
+        await Promise.all(
+          pinIds.map((serviceId) => window.overcli.invoke('services:setPinned', {
+            workspaceId,
+            serviceId,
+            pinnedRef: ref,
+          })),
+        );
+        pinned += pinIds.length;
+        await get().load(workspaceId);
+      }
     }
 
     // Saying what stayed matters as much as what moved: in a workspace of
@@ -511,7 +550,11 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
       .join(' · ');
     set({
       notice: {
-        text: moved > 0 ? `Moved ${moved} to ${ref}` : `Nothing moved to ${ref}`,
+        text: pin
+          ? `Pinned ${pinned} to ${ref}${moved > 0 ? ` · moved ${moved}` : ''}`
+          : moved > 0
+            ? `Moved ${moved} to ${ref}`
+            : `Nothing moved to ${ref}`,
         sub: sub || undefined,
       },
     });
@@ -540,10 +583,10 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   /// Ask a model, once, because the rules had nothing. Separate from
   /// `explain` on purpose: those answers are free and arrive unbidden, this
   /// one spends a subprocess and comes back labelled as a guess.
-  async askAi(workspaceId, serviceId) {
+  async askAi(workspaceId, serviceId, kind) {
     const key = logKey(workspaceId, serviceId);
     set((s) => ({ suggestions: { ...s.suggestions, [key]: { status: 'asking' } } }));
-    const result = await window.overcli.invoke('services:askAi', { workspaceId, serviceId });
+    const result = await window.overcli.invoke('services:askAi', { workspaceId, serviceId, kind });
     set((s) => ({
       suggestions: {
         ...s.suggestions,

@@ -94,7 +94,7 @@ export function parseAwsIni(text: string, keep: Set<string> = SSO_KEYS): AwsIniS
     if (!keep.has(key)) continue;
     // No inline-comment stripping: a `#` is legal inside an SSO start URL
     // and real configs end them that way
-    // (`https://d-9067c44074.awsapps.com/start/#`). Trimming at the first
+    // (`https://d-0000000002.awsapps.com/start/#`). Trimming at the first
     // `#` would silently truncate the URL we display.
     current.values[key] = kv[2].trim();
   }

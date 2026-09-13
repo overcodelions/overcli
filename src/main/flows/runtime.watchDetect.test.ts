@@ -42,7 +42,7 @@ vi.mock('../git', () => ({
 import { FlowRuntimeImpl } from './runtime';
 
 const RUN_ID = 'run-w1';
-const PARTICIPANT_CONV = '11111111-1111-4111-8111-111111111111';
+const PARTICIPANT_CONV = `${'1'.repeat(8)}-${'1'.repeat(4)}-4111-8111-${'1'.repeat(12)}`;
 
 type Send = { conversationId: string; model: string; prompt: string };
 

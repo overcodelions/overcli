@@ -871,7 +871,7 @@ function SwitchMenu({ keys, label, quiet }: { keys: string[]; label: string; qui
       label={quiet ? undefined : 'Switch'}
       title={label}
       quiet={quiet}
-      onPick={(ref) => void switchKeys(keys, ref)}
+      onPick={(ref, pin) => void switchKeys(keys, ref, pin)}
     />
   );
 }
@@ -902,7 +902,7 @@ function BulkRefPicker({
   label?: string;
   title: string;
   quiet?: boolean;
-  onPick: (ref: string) => void;
+  onPick: (ref: string, pin: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -975,24 +975,36 @@ function BulkRefPicker({
                 <div key={section.title} className={i > 0 ? 'mt-1 border-t border-card pt-1.5' : ''}>
                   <SectionHead title={section.title} note={section.note} />
                   {section.rows.map((row) => (
-                    <button
-                      key={row.ref}
-                      className="flex w-full items-center gap-2 rounded-[5px] px-2.5 py-1.5 text-left hover:bg-card-strong"
-                      onClick={() => {
-                        close();
-                        onPick(row.ref);
-                      }}
-                    >
-                      {row.kind === 'main' ? <BranchIcon /> : <FolderIcon current={false} />}
-                      <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]" title={row.ref}>
-                        {row.ref}
-                      </span>
-                      {row.reachable < total && (
-                        <span className="flex-shrink-0 text-[10px] text-ink-faint">
-                          {row.reachable} of {total}
+                    <div key={row.ref} className="group/ref flex items-center rounded-[5px] hover:bg-card-strong">
+                      <button
+                        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left"
+                        onClick={() => {
+                          close();
+                          onPick(row.ref, false);
+                        }}
+                      >
+                        {row.kind === 'main' ? <BranchIcon /> : <FolderIcon current={false} />}
+                        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]" title={row.ref}>
+                          {row.ref}
                         </span>
-                      )}
-                    </button>
+                        {row.reachable < total && (
+                          <span className="flex-shrink-0 text-[10px] text-ink-faint">
+                            {row.reachable} of {total}
+                          </span>
+                        )}
+                      </button>
+                      <button
+                        className="mr-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-40 hover:bg-surface hover:text-accent hover:opacity-100 group-hover/ref:opacity-100"
+                        title={`Switch and pin ${total === 1 ? 'this service' : `these ${total} services`} to ${row.ref}`}
+                        aria-label={`Switch and pin to ${row.ref}`}
+                        onClick={() => {
+                          close();
+                          onPick(row.ref, true);
+                        }}
+                      >
+                        <PinIcon />
+                      </button>
+                    </div>
                   ))}
                 </div>
               ))}
@@ -1528,7 +1540,12 @@ function Detail() {
             live={isServiceLive(runtime?.status ?? 'stopped')}
           />
           {binding && (
-            <RebindMenu workspaceId={stack.workspaceId} serviceId={spec.id} binding={binding} />
+            <RebindMenu
+              workspaceId={stack.workspaceId}
+              serviceId={spec.id}
+              binding={binding}
+              pinnedRef={spec.pinnedRef}
+            />
           )}
         </div>
         <div className="mt-1 flex items-center gap-2 text-[10.5px] text-ink-faint">
@@ -2253,6 +2270,84 @@ function CommandEditor({ workspaceId, spec }: { workspaceId: string; spec: Servi
             ? 'Uses a shell feature, so it runs through sh -c.'
             : 'Runs in the checkout it is bound to, from the next start.'}
       </span>
+      {spec.command.length === 0 && (
+        <SuggestCommand workspaceId={workspaceId} serviceId={spec.id} onUse={setDraft} />
+      )}
+    </div>
+  );
+}
+
+/// A model's read of the checkout and the imported file, for a service that
+/// arrived without a command. Fills the box rather than saving: it is a guess,
+/// and Save is where someone agrees with it.
+function SuggestCommand({
+  workspaceId,
+  serviceId,
+  onUse,
+}: {
+  workspaceId: string;
+  serviceId: string;
+  onUse: (command: string) => void;
+}) {
+  const askAi = useServicesStore((s) => s.askAi);
+  const cancelAskAi = useServicesStore((s) => s.cancelAskAi);
+  const state = useServicesStore((s) => s.suggestions[logKey(workspaceId, serviceId)]);
+  const ask = () => void askAi(workspaceId, serviceId, 'command');
+
+  if (!state) {
+    return (
+      <div>
+        <button className="svc-btn" onClick={ask}>
+          Suggest a command
+        </button>
+      </div>
+    );
+  }
+
+  if (state.status === 'asking') {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-[10.5px] text-ink-muted">Reading the checkout…</span>
+        <button className="svc-btn" onClick={() => void cancelAskAi(workspaceId, serviceId)}>
+          Stop
+        </button>
+      </div>
+    );
+  }
+
+  if (state.status === 'failed') {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-[10.5px] text-ink-faint">{state.error}</span>
+        <button className="svc-btn" onClick={ask}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1 rounded border border-card-strong px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <span className="rounded border border-card-strong px-1 py-px text-[9.5px] leading-none text-ink-faint">
+          a guess · {state.backend}
+        </span>
+        <div className="flex-1" />
+        <button className="text-[10px] text-ink-faint hover:text-ink" onClick={ask}>
+          Ask again
+        </button>
+      </div>
+      {state.text && (
+        <p className="whitespace-pre-wrap text-[10.5px] leading-4 text-ink-muted">{state.text}</p>
+      )}
+      {state.command && (
+        <div className="flex items-start gap-2">
+          <code className="min-w-0 flex-1 break-all font-mono text-[10.5px]">{state.command}</code>
+          <button className="svc-btn" onClick={() => onUse(state.command!)}>
+            Use this
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -3187,12 +3282,15 @@ function RebindMenu({
   workspaceId,
   serviceId,
   binding,
+  pinnedRef,
 }: {
   workspaceId: string;
   serviceId: string;
   binding: { ref: string; path: string };
+  pinnedRef?: string;
 }) {
   const rebind = useServicesStore((s) => s.rebind);
+  const setPinned = useServicesStore((s) => s.setPinned);
   const checkoutRef = useServicesStore((s) => s.checkoutRef);
   const [open, setOpen] = useState(false);
   const [refs, setRefs] = useState<{
@@ -3234,6 +3332,45 @@ function RebindMenu({
     setOpen(false);
     setQuery('');
     setRefused(null);
+  }
+
+  async function clearOlderPin(nextRef: string): Promise<void> {
+    if (pinnedRef && pinnedRef !== nextRef) {
+      await setPinned(workspaceId, serviceId, undefined);
+    }
+  }
+
+  async function restorePinAfterFailure(): Promise<void> {
+    if (pinnedRef) await setPinned(workspaceId, serviceId, pinnedRef);
+  }
+
+  async function chooseCheckout(choice: WorktreeChoice, pin: boolean): Promise<void> {
+    if (pin) await clearOlderPin(choice.ref);
+    try {
+      if (choice.path !== binding.path || choice.ref !== binding.ref) {
+        await rebind(workspaceId, serviceId, choice.ref, choice.path);
+      }
+      if (pin) await setPinned(workspaceId, serviceId, choice.ref);
+      close();
+    } catch (error) {
+      if (pin) await restorePinAfterFailure();
+      throw error;
+    }
+  }
+
+  async function chooseBranch(choice: BranchChoice, pin: boolean): Promise<void> {
+    // A tracked remote `origin/feature/x` is checked out locally as
+    // `feature/x`; the pin must match what git reports after the checkout.
+    const nextRef = choice.remote ? choice.ref.replace(/^[^/]+\//, '') : choice.ref;
+    if (pin) await clearOlderPin(nextRef);
+    const outcome = await checkoutRef(workspaceId, serviceId, choice.ref);
+    if (!outcome.ok) {
+      if (pin) await restorePinAfterFailure();
+      setRefused(outcome.reason);
+      return;
+    }
+    if (pin) await setPinned(workspaceId, serviceId, nextRef);
+    close();
   }
   const now = Date.now();
 
@@ -3277,21 +3414,18 @@ function RebindMenu({
                     // By path, not ref: two detached trees can sit on one sha.
                     const here = choice.path === binding.path;
                     return (
-                      <button
-                        key={choice.path}
-                        className="flex w-full items-start gap-2 rounded-[5px] px-2.5 py-1.5 text-left hover:bg-card-strong"
-                        onClick={async () => {
-                          close();
-                          await rebind(workspaceId, serviceId, choice.ref, choice.path);
-                        }}
-                      >
-                        <span className="pt-0.5">
-                          <FolderIcon current={here} />
-                        </span>
+                      <div key={choice.path} className="group/ref flex items-start rounded-[5px] hover:bg-card-strong">
+                        <button
+                          className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-1.5 text-left"
+                          onClick={() => void chooseCheckout(choice, false)}
+                        >
+                          <span className="pt-0.5">
+                            <FolderIcon current={here} />
+                          </span>
                         {/* Two lines rather than two columns. Side by side, a
                             long folder path crushed the branch name down to
                             "feature/…" — the one thing the row is for. */}
-                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                           <span className="flex min-w-0 items-center gap-1.5">
                             <span
                               className={`min-w-0 flex-1 truncate font-mono text-[11.5px] ${
@@ -3319,8 +3453,17 @@ function RebindMenu({
                               </span>
                             )}
                           </span>
-                        </span>
-                      </button>
+                          </span>
+                        </button>
+                        <button
+                          className="mr-1 mt-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-40 hover:bg-surface hover:text-accent hover:opacity-100 group-hover/ref:opacity-100"
+                          title={`Switch and pin this service to ${choice.ref}`}
+                          aria-label={`Switch and pin to ${choice.ref}`}
+                          onClick={() => void chooseCheckout(choice, true)}
+                        >
+                          <PinIcon />
+                        </button>
+                      </div>
                     );
                   })}
                   {rows.hiddenCheckouts > 0 && (
@@ -3339,33 +3482,49 @@ function RebindMenu({
                       pointing at a checkout that already exists. */}
                   <SectionHead title="Branches" note="checked out into this folder" />
                   {rows.branches.map((choice) => (
-                    <button
-                      key={choice.ref}
-                      className="flex w-full items-center gap-2 rounded-[5px] px-2.5 py-1.5 text-left hover:bg-card-strong disabled:opacity-50"
-                      disabled={busy}
-                      onClick={async () => {
-                        setBusy(true);
-                        setRefused(null);
-                        try {
-                          const outcome = await checkoutRef(workspaceId, serviceId, choice.ref);
-                          if (outcome.ok) close();
-                          else setRefused(outcome.reason);
-                        } finally {
-                          setBusy(false);
-                        }
-                      }}
-                    >
-                      <BranchIcon />
-                      <span className="flex-1 truncate font-mono text-[11.5px]">{choice.ref}</span>
-                      {choice.when && (
-                        <span className="text-[10px] text-ink-faint">{choice.when}</span>
-                      )}
-                      {choice.ref === refs?.defaultBranch ? (
-                        <Tag>default</Tag>
-                      ) : choice.remote ? (
-                        <Tag>remote</Tag>
-                      ) : null}
-                    </button>
+                    <div key={choice.ref} className="group/ref flex items-center rounded-[5px] hover:bg-card-strong">
+                      <button
+                        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left disabled:opacity-50"
+                        disabled={busy}
+                        onClick={async () => {
+                          setBusy(true);
+                          setRefused(null);
+                          try {
+                            await chooseBranch(choice, false);
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        <BranchIcon />
+                        <span className="flex-1 truncate font-mono text-[11.5px]">{choice.ref}</span>
+                        {choice.when && (
+                          <span className="text-[10px] text-ink-faint">{choice.when}</span>
+                        )}
+                        {choice.ref === refs?.defaultBranch ? (
+                          <Tag>default</Tag>
+                        ) : choice.remote ? (
+                          <Tag>remote</Tag>
+                        ) : null}
+                      </button>
+                      <button
+                        className="mr-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-40 hover:bg-surface hover:text-accent hover:opacity-100 disabled:opacity-20 group-hover/ref:opacity-100"
+                        disabled={busy}
+                        title={`Check out and pin this service to ${choice.ref}`}
+                        aria-label={`Check out and pin to ${choice.ref}`}
+                        onClick={async () => {
+                          setBusy(true);
+                          setRefused(null);
+                          try {
+                            await chooseBranch(choice, true);
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        <PinIcon />
+                      </button>
+                    </div>
                   ))}
                   {rows.hiddenBranches > 0 && (
                     <div className="px-2.5 pt-1 text-[10px] text-ink-faint">

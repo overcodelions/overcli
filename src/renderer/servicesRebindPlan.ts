@@ -29,6 +29,12 @@ export interface BulkRebindPlan {
   skipped: { serviceId: string; reason: 'pinned' | 'no-such-ref' | 'already-there' }[];
 }
 
+export interface PinRebindPlan extends BulkRebindPlan {
+  /// Services that can actually reach the ref and should be pinned after the
+  /// move. A missing branch is never turned into a misleading pin.
+  pinIds: string[];
+}
+
 /// What moving every unpinned service to `ref` would do.
 export function planBulkRebind(
   services: readonly ServiceSpec[],
@@ -59,6 +65,31 @@ export function planBulkRebind(
   }
 
   return { targets, skipped };
+}
+
+/// A pin click is stronger than a normal bulk move: it deliberately replaces
+/// an older pin, moves what is not already there, then pins every reachable
+/// service (including ones already on the selected ref).
+export function planPinRebind(
+  services: readonly ServiceSpec[],
+  choicesByService: Readonly<Record<string, WorktreeChoice[]>>,
+  currentRefs: Readonly<Record<string, string | undefined>>,
+  ref: string,
+): PinRebindPlan {
+  const plan = planBulkRebind(
+    services.map((service) => ({ ...service, pinnedRef: undefined })),
+    choicesByService,
+    currentRefs,
+    ref,
+  );
+  return {
+    ...plan,
+    pinIds: services
+      .filter((service) =>
+        (choicesByService[service.id] ?? []).some((choice) => choice.ref === ref),
+      )
+      .map((service) => service.id),
+  };
 }
 
 /// Refs a bulk move could go to, most useful first: the ones the most
