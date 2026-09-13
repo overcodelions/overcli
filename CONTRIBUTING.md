@@ -19,8 +19,9 @@ git config core.hooksPath .githooks
 npm run dev
 ```
 
-The repository hooks reject private maintainer identities before commit and
-scan reachable history again before push. CI enforces the same policy.
+The repository hooks reject private maintainer identities and commit-message
+trailers before commit, then scan outgoing history again before push. CI
+enforces the same policy.
 
 The full development loop runs the Vite renderer, the main-process TypeScript compiler, and Electron concurrently. See the [README](README.md#development) for the script reference.
 
