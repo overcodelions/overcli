@@ -69,6 +69,11 @@ export interface ConfigProjection {
   /// else, so a service running from one is missing the `application-local`
   /// file it has always been able to read.
   mirrorLocalConfig?: boolean;
+  /// Extra globs to mirror when gitignored, beyond files that look like config
+  /// — `run-*-local.sh`. A glob with no `/` matches the file name anywhere.
+  mirrorInclude?: string[];
+  /// Globs never to mirror, even when they look like config.
+  mirrorExclude?: string[];
 }
 
 /// One startup option: `-Dprocessor.types=PROC`, `--reload`, `-Xmx4096m`.

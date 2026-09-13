@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
-import { applyMirror, findLocalConfig, LOCAL_CONFIG_NAMES, planMirror, type MirrorFs } from './mirror';
+import {
+  applyMirror,
+  findLocalConfig,
+  isLocalConfig,
+  LOCAL_CONFIG_NAMES,
+  planMirror,
+  type MirrorFs,
+} from './mirror';
 
 /// A directory tree described by its file paths.
 class FakeFs implements MirrorFs {
@@ -88,6 +95,80 @@ describe('findLocalConfig', () => {
     // mirroring it would be linking a file over itself.
     expect(findLocalConfig(primary, { fs: mixed })).toEqual(['svc/.env.local']);
     expect(LOCAL_CONFIG_NAMES).toContain('application-local.properties');
+  });
+});
+
+describe('findLocalConfig from what git ignores', () => {
+  it('takes every ignored file that looks like config, whatever it is called', () => {
+    const found = findLocalConfig(primary, {
+      fs: FakeFs.from([]),
+      ignored: [
+        'billing-rest/src/main/resources/config/application-local-docker.properties',
+        'web/.env',
+        'web/.env.development.local',
+        'api/appsettings.Development.json',
+        'api/config/local.toml',
+        'svc/application-dev.yml',
+        '.DS_Store',
+        'AcmeAdmin/war/temp/partner_export.xls',
+        'AcmeAdmin/AcmeAdmin.iml',
+      ],
+    });
+    expect(found).toEqual([
+      'api/appsettings.Development.json',
+      'api/config/local.toml',
+      'billing-rest/src/main/resources/config/application-local-docker.properties',
+      'svc/application-dev.yml',
+      'web/.env',
+      'web/.env.development.local',
+    ]);
+  });
+
+  it('leaves editor, agent and build folders alone even when they hold json', () => {
+    const found = findLocalConfig(primary, {
+      fs: FakeFs.from([]),
+      ignored: ['.vscode/launch.json', '.claude/settings.local.json', 'web/dist/manifest.json', 'build/', 'node_modules/'],
+    });
+    expect(found).toEqual([]);
+  });
+
+  it('looks inside a folder ignored as a whole, but not one that is build output', () => {
+    const fs = FakeFs.from([
+      `${primary}/svc/secrets/db.properties`,
+      `${primary}/svc/secrets/notes.txt`,
+      `${primary}/svc/build/resources/main/application-local.properties`,
+    ]);
+    expect(findLocalConfig(primary, { fs, ignored: ['svc/secrets/', 'svc/build/'] })).toEqual([
+      'svc/secrets/db.properties',
+    ]);
+  });
+
+  it('mirrors what a service asks for and skips what it rules out', () => {
+    const found = findLocalConfig(primary, {
+      fs: FakeFs.from([]),
+      ignored: ['run-billing-local.sh', 'svc/application-local.properties', 'svc/huge-fixture.json'],
+      include: ['run-*-local.sh'],
+      exclude: ['svc/*.json'],
+    });
+    expect(found).toEqual(['run-billing-local.sh', 'svc/application-local.properties']);
+  });
+
+  it('falls back to the known names when git cannot say', () => {
+    expect(findLocalConfig(primary, { fs: tree(), ignored: null })).toEqual([...localFiles].sort());
+  });
+});
+
+describe('isLocalConfig', () => {
+  it('knows config by its extension or an .env name', () => {
+    expect(isLocalConfig('a/b/application-local.properties')).toBe(true);
+    expect(isLocalConfig('.env.local')).toBe(true);
+    expect(isLocalConfig('a/secrets.txt')).toBe(false);
+  });
+
+  it('does not take a lockfile for config', () => {
+    expect(isLocalConfig('web/src/package-lock.json')).toBe(false);
+    expect(isLocalConfig('web/pnpm-lock.yaml')).toBe(false);
+    expect(isLocalConfig('web/yarn.lock')).toBe(false);
   });
 });
 

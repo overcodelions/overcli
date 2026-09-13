@@ -121,6 +121,47 @@ export function buildFixPrompt(ctx: AskContext): string {
   return scrub(parts.join('\n'));
 }
 
+/// A service that has never had a command: nothing failed, there is no output,
+/// and "why did it not start" is the wrong question. What is wanted is the one
+/// line that starts it — read out of the checkout and whatever file it was
+/// imported from.
+export function buildCommandPrompt(ctx: {
+  spec: ServiceSpec;
+  binding?: { ref: string; path: string };
+  secrets?: readonly string[];
+}): string {
+  const parts: string[] = [
+    'A local service has no start command yet. Work out the command that starts it for local development.',
+    '',
+    `Service: ${ctx.spec.name}`,
+  ];
+  if (ctx.binding) parts.push(`Checkout: ${ctx.binding.path} on ${ctx.binding.ref}`);
+  else parts.push('It is not bound to a checkout, so there is no project folder to read.');
+  if (ctx.spec.subpath) parts.push(`Runs from: ${ctx.spec.subpath} inside the checkout`);
+  if (ctx.spec.port !== undefined) parts.push(`Expected port: ${ctx.spec.port}`);
+
+  const from = ctx.spec.importedFrom;
+  if (from) {
+    parts.push('', `It was imported from the ${from.source} in ${from.project}, which did not state a command overcli could read.`);
+    if (from.excerpt) {
+      parts.push('This is what defines it there — the real start line is often in it:', '```', from.excerpt, '```');
+    }
+  }
+
+  parts.push(
+    '',
+    'Read the checkout to find it: package.json scripts, a Gradle or Maven build, a Makefile or justfile, a Procfile, a README.',
+    'The command must stay in the foreground and keep running while the service is up; do not daemonise it.',
+    'Reply with at most three lines of plain text saying where the command comes from,',
+    'then end with one line: COMMAND: <the complete command line>.',
+    'It is run from the folder above, without a shell unless it uses && or |, in which case through sh -c.',
+    'If nothing you can read says how it starts, say what is missing and leave the COMMAND line out.',
+    'No preamble, no markdown headings.',
+  );
+
+  return redactSecrets(parts.join('\n'), [...(ctx.secrets ?? [])]).text;
+}
+
 /// The `COMMAND:` line the prompt asks for, taken out of the answer. The last
 /// one wins — a model that changes its mind mid-answer means the later one.
 export function splitSuggestedCommand(text: string): { text: string; command?: string } {

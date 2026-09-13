@@ -1597,8 +1597,13 @@ export function registerIpc(): void {
   // have had their say. A second step on purpose: the model is asked only
   // where the rules were going to be silent, and the pane labels what comes
   // back as a guess.
-  ipcMain.handle('services:askAi', async (_e, { workspaceId, serviceId }) => {
-    const ask = services().fixPrompt(workspaceId, serviceId);
+  // `kind: 'command'` is the same ask for a service with no command at all:
+  // nothing failed, so the question is how it starts, not why it did not.
+  ipcMain.handle('services:askAi', async (_e, { workspaceId, serviceId, kind }) => {
+    const ask =
+      kind === 'command'
+        ? services().commandPrompt(workspaceId, serviceId)
+        : services().fixPrompt(workspaceId, serviceId);
     if (!ask) return { ok: false as const, error: 'That service is gone.' };
 
     const settings = Store.load().settings;
