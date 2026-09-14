@@ -148,6 +148,21 @@ describe('Supervisor.start', () => {
     expect(sup.runtime('api').port).toBe(8080);
   });
 
+  it('runs a command naming ${CHECKOUT} against whichever worktree it is switched to', async () => {
+    const { deps, spawns } = harness();
+    const web = spec({ id: 'web', command: ['sh', '-c', 'ln -sfn "${CHECKOUT}" /srv/web-active'] });
+    const sup = new Supervisor('mine', [web], [binding('web')], deps);
+
+    await sup.start('web');
+    await sup.rebind('web', { ref: 'feat/x', path: '/wt/x' });
+
+    expect(spawns.map((s) => s.command[2])).toEqual([
+      'ln -sfn "/repos/main" /srv/web-active',
+      'ln -sfn "/wt/x" /srv/web-active',
+    ]);
+    expect(spawns[1].env.OVERCLI_CHECKOUT).toBe('/wt/x');
+  });
+
   it('brings dependencies up first, in order', async () => {
     const { deps, spawns } = harness();
     const specs = [spec({ id: 'web', deps: ['api'] }), spec({ id: 'api', deps: ['db'] }), spec({ id: 'db' })];
@@ -428,6 +443,24 @@ describe('a task', () => {
     expect(sup.claims()).toEqual([]);
   });
 
+  it('shows its dependent as waiting, and a stop while it waits calls the start off', async () => {
+    const { deps, spawns, procs } = harness();
+    const specs = [spec({ id: 'api', deps: ['publish'] }), spec({ id: 'publish', task: true })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    const run = sup.start('api');
+    await settle();
+    expect(sup.runtime('api')).toMatchObject({ status: 'starting', waitingOn: 'publish' });
+
+    await sup.stop('api');
+    expect(sup.runtime('api').status).toBe('stopped');
+    procs[0].emitExit(0);
+    await run;
+
+    expect(spawns.map((s) => s.command[1])).toEqual(['publish']);
+    expect(sup.runtime('api')).toMatchObject({ status: 'stopped', waitingOn: undefined });
+  });
+
   it('runs before its dependent, which waits for it to finish', async () => {
     const { deps, spawns, procs } = harness();
     const specs = [spec({ id: 'api', deps: ['publish'] }), spec({ id: 'publish', task: true })];
@@ -565,5 +598,100 @@ describe('Supervisor.update', () => {
     procs[0].emitExit(null);
 
     expect(sup.runtime('api').status).toBe('ready');
+  });
+});
+
+describe('Supervisor local config mirror', () => {
+  function mirroring() {
+    const calls: [string, string][] = [];
+    const h = harness({
+      mirrorLocalConfig: (serviceId, checkout) => {
+        calls.push([serviceId, checkout]);
+        return ['src/main/resources/application-local.properties'];
+      },
+    });
+    return { ...h, calls };
+  }
+
+  it('mirrors into the checkout before every launch, and says so in the log', async () => {
+    const { deps, calls, spawns } = mirroring();
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api', 'master', '/wt/a')], deps);
+
+    await sup.start('api');
+
+    expect(calls).toEqual([['api', '/wt/a']]);
+    expect(spawns).toHaveLength(1);
+    expect(sup.log('api').some((l) => l.includes('brought 1 local config file in'))).toBe(true);
+  });
+
+  it('mirrors into the NEW checkout when a branch switch relaunches the service', async () => {
+    // The switch restarted acme-rest on its feature worktree without its
+    // application-local.properties; pressing Start afterwards brought them in.
+    const { deps, calls, spawns } = mirroring();
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api', 'master', '/repos/main')], deps);
+    await sup.start('api');
+    calls.length = 0;
+
+    await sup.rebind('api', { ref: 'feat/x', path: '/wt/x' });
+
+    expect(calls).toEqual([['api', '/wt/x']]);
+    expect(spawns.map((s) => s.cwd)).toEqual(['/repos/main', '/wt/x']);
+  });
+
+  it('mirrors on restart, for a dependency started first, and for a dependent restarted after', async () => {
+    const { deps, calls } = mirroring();
+    const specs = [spec({ id: 'api', restartDependents: true }), spec({ id: 'web', deps: ['api'] })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.start('web');
+    expect(calls.map(([id]) => id)).toEqual(['api', 'web']);
+
+    calls.length = 0;
+    await sup.restart('api');
+    expect(calls.map(([id]) => id)).toEqual(['api', 'web']);
+  });
+
+  it('writes no marker when nothing needed linking', async () => {
+    const { deps } = harness({ mirrorLocalConfig: () => [] });
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+
+    await sup.start('api');
+
+    expect(sup.log('api').some((l) => l.includes('local config'))).toBe(false);
+  });
+});
+
+describe('Supervisor stopping and switching', () => {
+  it('waits for the old process to exit before launching the next', async () => {
+    // A JVM still holding :8088 made the new launch look ready at once.
+    const { deps, spawns, procs } = harness();
+    deps.probe = { ...deps.probe, sleep: () => new Promise<void>(() => {}) };
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+    await sup.start('api');
+
+    const restarting = sup.restart('api');
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(spawns).toHaveLength(1);
+
+    procs[0].emitExit(null);
+    await restarting;
+    expect(spawns).toHaveLength(2);
+  });
+
+  it('mirrors into the new checkout of a stopped service without starting it', async () => {
+    const calls: string[] = [];
+    const { deps, spawns } = harness({
+      mirrorLocalConfig: async (_id, checkout) => {
+        calls.push(checkout);
+        return ['a.properties', 'b.properties'];
+      },
+    });
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api', 'master', '/repos/main')], deps);
+
+    await sup.rebind('api', { ref: 'feat/x', path: '/wt/x' });
+
+    expect(calls).toEqual(['/wt/x']);
+    expect(spawns).toHaveLength(0);
+    expect(sup.log('api').some((l) => l.includes('brought 2 local config files in'))).toBe(true);
   });
 });

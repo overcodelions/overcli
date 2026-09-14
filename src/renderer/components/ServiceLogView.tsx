@@ -11,17 +11,24 @@
 // date, thread, logger, message — so the lines are split into those parts and
 // laid out in columns. `Raw` puts them back exactly as written.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { collapseCarriageReturns, parseAnsi } from '../ansi';
-import { countLevels, describeFilter, filterLog, highlightRuns, type LogLevel } from '../logFilter';
-import { groupLog, isTraceHeader } from '../stackFrames';
-import { parseLogLine, summarizeLong, type Level, type ParsedLogLine } from '../logLine';
+import { countLevels, describeFilter, filterLog, highlightRuns, parsedLine, type LogLevel } from '../logFilter';
+import { exceptionMessage, groupLog, isTraceHeader } from '../stackFrames';
+import { listExceptions, type CaughtException, type ExceptionLog } from '@shared/exceptions';
+import { summarizeLong, type Level, type ParsedLogLine } from '../logLine';
 import { SelectionMenu } from './SelectionMenu';
 
 /// Past this, a line is folded: a classpath dump is one "line" of eight
 /// thousand characters, and wrapped it pushes everything else off screen.
 const LONG_LINE = 400;
+
+/// Rows off screen skip layout and paint until scrolled to — thousands of lines
+/// of output otherwise cost the same to lay out as the forty on screen. Only
+/// while wrapping: unwrapped, the pane's width comes from its widest row, which
+/// a skipped row cannot report.
+const OFFSCREEN_ROW: CSSProperties = { contentVisibility: 'auto', containIntrinsicSize: 'auto 17px' };
 
 /// Wrapping is a preference about how someone reads logs, not about one
 /// service, so it is remembered once for every log view.
@@ -39,8 +46,14 @@ export function LogView({
   lines,
   onClear,
   selection,
+  file,
+  exceptions,
 }: {
   lines: readonly string[];
+  /// The full output on disk, past what the pane holds. Absent, no Log file menu.
+  file?: LogFileActions;
+  /// Exceptions pulled out of the output, kept past the line cap.
+  exceptions?: ExceptionLog;
   /// Empties the output. Absent, there is no Clear button.
   onClear?: () => void;
   /// What selected text can be handed to. Absent, selecting is just selecting.
@@ -56,6 +69,8 @@ export function LogView({
   const [formatted, setFormatted] = useState(true);
   const [hidden, setHidden] = useState<ReadonlySet<Level>>(new Set());
   const [wrap, setWrap] = useState(readWrap);
+  const [showExceptions, setShowExceptions] = useState(false);
+  const caught = useMemo(() => (exceptions ? listExceptions(exceptions) : []), [exceptions]);
   const scroller = useRef<HTMLDivElement>(null);
 
   const shown = useMemo(
@@ -153,6 +168,19 @@ export function LogView({
         >
           Raw
         </button>
+        {caught.length > 0 && (
+          <button
+            className={showExceptions ? 'svc-btn-primary' : 'svc-btn'}
+            onClick={() => setShowExceptions((v) => !v)}
+            title="Each distinct exception once, with a count — kept after its lines scroll out"
+          >
+            Exceptions
+            <span className="rounded-full bg-red-500/15 px-1.5 font-semibold text-red-600 dark:text-red-300">
+              {caught.length}
+            </span>
+          </button>
+        )}
+        {file && <LogFileMenu file={file} />}
         {onClear && (
           <button
             className="svc-btn"
@@ -168,6 +196,7 @@ export function LogView({
         )}
         <span className="text-[10px] text-ink-faint">{lines.length.toLocaleString()} lines</span>
       </div>
+      {showExceptions && caught.length > 0 && <ExceptionsPanel items={caught} onAsk={selection?.onAsk} />}
 
       <div
         ref={scroller}
@@ -198,11 +227,12 @@ export function LogView({
                   key={`frames-${item.indices[0]}-${i}`}
                   data-line={item.indices[0]}
                   data-line-end={item.indices[item.indices.length - 1]}
+                  style={wrap ? OFFSCREEN_ROW : undefined}
                 >
                   <Frames indices={item.indices} byIndex={byIndex} raw={lines} />
                 </div>
               ) : (
-                <div key={item.index} data-line={item.index}>
+                <div key={item.index} data-line={item.index} style={wrap ? OFFSCREEN_ROW : undefined}>
                   <Line
                     text={byIndex.get(item.index)?.text ?? ''}
                     matches={byIndex.get(item.index)?.matches ?? []}
@@ -291,7 +321,9 @@ function Frames({
   );
 }
 
-function Line({
+/// Memoised: a batch of new lines re-renders the list, and every row already
+/// on it is unchanged.
+const Line = memo(function Line({
   text,
   matches,
   raw,
@@ -334,7 +366,7 @@ function Line({
   // A line that carries its own colour is already formatted by the process
   // that wrote it; only a plain line is laid out here.
   if (formatted && raw === text) {
-    const parsed = parseLogLine(text);
+    const parsed = parsedLine(text);
     if (parsed) return <Structured line={parsed} />;
     if (text.length > LONG_LINE) return <Fold text={text} />;
   }
@@ -356,7 +388,7 @@ function Line({
       {text === '' && ' '}
     </div>
   );
-}
+});
 
 const LEVEL_ORDER: readonly Level[] = ['error', 'warn', 'info', 'debug', 'trace'];
 
@@ -471,5 +503,249 @@ function Fold({ text }: { text: string }) {
         {open ? 'show less' : `… ${hidden.toLocaleString()} more characters`}
       </button>
     </span>
+  );
+}
+
+export interface LogFileActions {
+  reveal: () => void;
+  path: () => Promise<string>;
+  /// Start a conversation pointed at the file.
+  onAsk?: (file: string) => void;
+}
+
+/// The whole log, not the pane's window onto it: reveal it, copy its path to
+/// drop into a conversation already running, or start one about it.
+function LogFileMenu({ file }: { file: LogFileActions }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const menu = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!menu.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const item = 'block w-full px-3 py-1.5 text-left text-[11px] hover:bg-card-strong';
+  return (
+    <div ref={menu} className="relative">
+      <button
+        className="svc-btn"
+        onClick={() => setOpen((o) => !o)}
+        title="Every line this service has printed, on disk"
+      >
+        {copied ? 'Copied' : 'Log file'}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-20 mt-1 min-w-[200px] rounded-md border border-card-strong bg-surface-elevated py-1 shadow-lg">
+          <button
+            className={item}
+            onClick={async () => {
+              setOpen(false);
+              await navigator.clipboard.writeText(await file.path());
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1_500);
+            }}
+          >
+            Copy path
+          </button>
+          <button
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              file.reveal();
+            }}
+          >
+            Reveal in Finder
+          </button>
+          {file.onAsk && (
+            <button
+              className={item}
+              onClick={async () => {
+                setOpen(false);
+                file.onAsk?.(await file.path());
+              }}
+            >
+              Ask an agent what went wrong
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// One row per distinct exception, however many times it was thrown and
+/// however long ago its lines left the buffer. The count leads the row: an
+/// exception thrown fifteen times is a different problem from one thrown once.
+function ExceptionsPanel({
+  items,
+  onAsk,
+}: {
+  items: readonly CaughtException[];
+  onAsk?: (text: string) => void;
+}) {
+  const [order, setOrder] = useState<'recent' | 'frequent'>('recent');
+  const [openSignature, setOpenSignature] = useState<string | null>(null);
+  const sorted = useMemo(
+    () => (order === 'recent' ? items : [...items].sort((a, b) => b.count - a.count || b.lastAt - a.lastAt)),
+    [items, order],
+  );
+  const thrown = items.reduce((sum, item) => sum + item.count, 0);
+  const open = items.find((item) => item.signature === openSignature);
+
+  return (
+    <div className="flex max-h-[40%] flex-shrink-0 flex-col border-b border-card bg-surface-muted text-[11px]">
+      <div className="flex flex-shrink-0 items-center gap-2 px-4 pb-1 pt-1.5 text-[10.5px] text-ink-faint">
+        <span>
+          {items.length} distinct · {thrown.toLocaleString()} thrown
+        </span>
+        <div className="flex-1" />
+        <button
+          className={order === 'recent' ? 'svc-btn-primary' : 'svc-btn'}
+          onClick={() => setOrder('recent')}
+        >
+          Newest
+        </button>
+        <button
+          className={order === 'frequent' ? 'svc-btn-primary' : 'svc-btn'}
+          onClick={() => setOrder('frequent')}
+        >
+          Most frequent
+        </button>
+      </div>
+      <div className="min-h-0 overflow-y-auto px-4 pb-1">
+        {sorted.map((item) => {
+          const parsed = exceptionMessage(item.header);
+          const text = item.sample.join('\n');
+          return (
+            <div key={item.signature} className="flex items-center gap-2 border-t border-card py-1">
+              <CountPill count={item.count} />
+              <button
+                className="min-w-0 flex-1 truncate text-left hover:underline"
+                onClick={() => setOpenSignature(item.signature)}
+                title="Open the trace"
+              >
+                <span className={`font-mono ${LEVEL_TONE.error.badge}`}>{parsed?.type ?? (item.header || 'Stack trace')}</span>
+                {parsed?.message && <span className="text-ink-muted"> {parsed.message}</span>}
+              </button>
+              <span className="text-[10px] text-ink-faint">{new Date(item.lastAt).toLocaleTimeString()}</span>
+              <button className="svc-btn" onClick={() => void navigator.clipboard.writeText(text)}>
+                Copy
+              </button>
+              {onAsk && (
+                <button className="svc-btn" onClick={() => onAsk(text)}>
+                  Ask
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {open && <ExceptionModal item={open} onAsk={onAsk} onClose={() => setOpenSignature(null)} />}
+    </div>
+  );
+}
+
+function CountPill({ count, large = false }: { count: number; large?: boolean }) {
+  const repeated = count > 1;
+  return (
+    <span
+      className={`inline-flex flex-shrink-0 items-center justify-center rounded-full font-mono font-semibold tabular-nums ${
+        large ? 'h-6 min-w-[44px] px-2 text-[12px]' : 'h-[18px] min-w-[38px] px-1.5 text-[10.5px]'
+      } ${
+        repeated
+          ? 'bg-red-500/20 text-red-700 ring-1 ring-red-500/40 dark:text-red-300'
+          : 'bg-card-strong text-ink-faint'
+      }`}
+      title={`Thrown ${count.toLocaleString()} time${count === 1 ? '' : 's'}`}
+    >
+      ×{count.toLocaleString()}
+    </span>
+  );
+}
+
+/// The whole trace, readable: the panel row is one truncated line, and a
+/// Spring message is often the longest thing on the screen.
+function ExceptionModal({
+  item,
+  onAsk,
+  onClose,
+}: {
+  item: CaughtException;
+  onAsk?: (text: string) => void;
+  onClose: () => void;
+}) {
+  const parsed = exceptionMessage(item.header);
+  const text = item.sample.join('\n');
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="flex max-h-[80vh] w-[min(980px,calc(100vw-48px))] flex-col overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 border-b border-card px-4 py-3">
+          <CountPill count={item.count} large />
+          <div className="min-w-0 flex-1">
+            <div className={`font-mono text-sm font-semibold ${LEVEL_TONE.error.badge}`}>
+              {parsed?.type ?? (item.header || 'Stack trace')}
+            </div>
+            {parsed?.message && (
+              <div className="mt-0.5 break-words text-xs text-ink">{parsed.message}</div>
+            )}
+            <div className="mt-1 text-[10.5px] text-ink-faint">
+              Thrown {item.count.toLocaleString()} time{item.count === 1 ? '' : 's'}
+              {' · '}first {new Date(item.firstAt).toLocaleTimeString()}
+              {item.count > 1 && ` · last ${new Date(item.lastAt).toLocaleTimeString()}`}
+            </div>
+          </div>
+          <button className="px-2 text-ink-muted hover:text-ink" onClick={onClose} title="Close (Esc)">
+            ✕
+          </button>
+        </div>
+        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre px-4 py-3 font-mono text-[11px] leading-[17px] text-ink-muted">
+          {text}
+        </pre>
+        <div className="flex items-center gap-2 border-t border-card px-4 py-2.5">
+          <span className="flex-1 text-[10.5px] text-ink-faint">
+            As first seen — the line before the exception, the trace and its causes.
+          </span>
+          <button
+            className="svc-btn"
+            onClick={async () => {
+              await navigator.clipboard.writeText(text);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1_500);
+            }}
+          >
+            {copied ? 'Copied' : 'Copy trace'}
+          </button>
+          {onAsk && (
+            <button
+              className="svc-btn-primary"
+              onClick={() => {
+                onClose();
+                onAsk(text);
+              }}
+            >
+              Ask an agent
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
