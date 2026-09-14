@@ -98,6 +98,10 @@ const SETTLE_MS = 150;
 interface NavHistoryState {
   back: NavLocation[];
   forward: NavLocation[];
+  /// Exact conversation or run that Services/Workers interrupted. Captured
+  /// synchronously by the tab click so multi-store root changes cannot
+  /// coalesce away the active run before Chat has a destination to restore.
+  chatReturn: NavLocation | null;
   /// Where we believe the user is right now. Kept here rather than re-read
   /// from the stores so a push knows what to file away as the *previous*
   /// page without racing the store update that triggered it.
@@ -114,6 +118,7 @@ interface NavHistoryState {
 export const useNavHistory = create<NavHistoryState>((set, get) => ({
   back: [],
   forward: [],
+  chatReturn: null,
   current: null,
   applying: false,
 
@@ -169,6 +174,7 @@ export const useNavHistory = create<NavHistoryState>((set, get) => ({
     set({
       back: [],
       forward: [],
+      chatReturn: null,
       current,
       applying: false,
     });
@@ -245,19 +251,19 @@ function applyLocation(loc: NavLocation): void {
     useFlowsStore.getState().closeEditor();
     useOrchestratorStore.getState().setActiveOrchestration(loc.activeOrchestrationId);
     useWorkersStore.getState().selectWorker(loc.selectedWorkerId);
-    // AFTER selectWorker, which clears the active run — picking a worker in
-    // the UI means "show me the desk", and the Workers tab renders a worker's
-    // run in place of its desk. A restored location is the authority on both,
-    // so it sets the worker first and then says which run was open.
-    useFlowsStore.getState().setActiveRun(loc.activeRunId);
-    // AFTER selectWorker too, which forces the desk: picking a worker means
-    // "show me the desk", but a restored location already knows whether the
-    // desk was what was on screen.
+    // AFTER selectWorker, which forces the desk: picking a worker means "show
+    // me the desk", but a restored location already knows whether the desk
+    // was what was on screen.
     if (loc.workersView === 'today') useWorkersStore.getState().showToday();
     else if (loc.workersView === 'queue') useWorkersStore.getState().showQueue();
     else if (loc.workersView === 'calendar') useWorkersStore.getState().showCalendar();
     else if (loc.workersView === 'funds') useWorkersStore.getState().showFunds();
     else if (loc.workersView === 'report') useWorkersStore.getState().showReport();
+    // LAST: selectWorker and every Workers subview action call leavePane(),
+    // which clears the active run. Flow locations still carry the globally
+    // remembered Workers view, so restoring that view after the run used to
+    // erase the run and leave the Flows library on screen.
+    useFlowsStore.getState().setActiveRun(loc.activeRunId);
     void window.overcli.invoke('store:saveSelection', loc.selectedConversationId);
     if (loc.selectedConversationId) {
       void useStore.getState().loadHistoryIfNeeded(loc.selectedConversationId);
@@ -304,17 +310,74 @@ export function installNavHistory(): () => void {
 /// otherwise) also meant the button did different things depending on state
 /// you can't see.
 ///
-/// Retracing your steps is the Back arrow's job, and it still restores the
-/// run, the desk, or the chat exactly — that's the control whose whole
-/// promise is "where I was", and it doesn't have to share it with the tabs.
+/// Generic tab clicks open their roots. Chat is the exception: after Services
+/// or Workers, it may resume the content those tabs interrupted.
 ///
 /// `toRoot` stays owned by the title bar, which is where each tab's idea of
 /// its front page belongs.
-export function navigateToTab(toRoot: () => void): void {
+export function navigateToTab(
+  toRoot: () => void,
+  options: { rememberForChat?: boolean } = {},
+): void {
   // Bank the page we're leaving before it moves, so Back returns to it
   // rather than to whatever preceded it.
   flushPending();
+  if (options.rememberForChat) {
+    const departure = readLocation();
+    // Preserve the original snapshot while crossing between auxiliary tabs.
+    // A worker-owned run is different: it belongs to Workers, not Chat, so
+    // leaving one for Services must clear any older Chat destination.
+    const continuingDetour = departure.detailMode === 'services' ||
+      (departure.detailMode === 'workers' && departure.activeRunId === null);
+    if (!continuingDetour) {
+      useNavHistory.setState({
+        chatReturn: isChatContentLocation(departure) ? departure : null,
+      });
+    }
+  }
   toRoot();
+}
+
+/// Resume the conversation or Flows-owned run interrupted by Services or
+/// Workers. Worker-owned runs stay owned by the Workers tab.
+export function navigateToChat(toRoot: () => void): void {
+  flushPending();
+  const { back, chatReturn, current } = useNavHistory.getState();
+  if (current?.detailMode !== 'services' && current?.detailMode !== 'workers') {
+    toRoot();
+    return;
+  }
+
+  const target = chatReturn && isValidChatContentLocation(chatReturn)
+    ? chatReturn
+    : [...back].reverse().find(isValidChatContentLocation);
+  if (!target) {
+    toRoot();
+    return;
+  }
+
+  useNavHistory.setState({
+    back: current ? [...back, current].slice(-MAX_DEPTH) : back,
+    forward: [],
+    current: target,
+  });
+  applyLocation(target);
+}
+
+function isChatContentLocation(location: NavLocation): boolean {
+  return location.detailMode === 'conversation' ||
+    (location.detailMode === 'flows' && location.activeRunId !== null);
+}
+
+function isValidChatContentLocation(location: NavLocation): boolean {
+  if (location.detailMode === 'conversation') {
+    return !location.selectedConversationId || Boolean(
+      findConversation(useStore.getState(), location.selectedConversationId),
+    );
+  }
+  return location.detailMode === 'flows' &&
+    location.activeRunId !== null &&
+    Boolean(useFlowsStore.getState().runs[location.activeRunId]);
 }
 
 /// Plain-language name for a place, for the history arrows' tooltips.
