@@ -84,6 +84,35 @@ export function parseClaudeUsage(text: string, capturedAt: number): ClaudeUsageS
   };
 }
 
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const RESET =
+  /^(?:([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?(?:,?\s+at)?\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i;
+
+/// Turn a printed reset ("Aug 19 at 6:59pm", or just "6:59pm") into an epoch,
+/// read in local time — Claude Code prints the machine's own timezone, which
+/// `parseClaudeUsage` has already stripped. `reference` is when the text was
+/// captured: the reset is always after it, which settles the missing year
+/// (a Jan 2 reset seen on Dec 31) and the missing day for a bare time.
+export function parseResetLabel(label: string, reference: number): number | null {
+  const m = RESET.exec(label.trim());
+  if (!m) return null;
+  let hour = Number(m[4]) % 12;
+  if (m[6].toLowerCase() === 'pm') hour += 12;
+  const minute = m[5] ? Number(m[5]) : 0;
+  if (!m[1]) {
+    const d = new Date(reference);
+    d.setHours(hour, minute, 0, 0);
+    if (d.getTime() < reference) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  const month = MONTHS.indexOf(m[1].toLowerCase());
+  if (month < 0) return null;
+  const year = m[3] ? Number(m[3]) : new Date(reference).getFullYear();
+  const d = new Date(year, month, Number(m[2]), hour, minute, 0, 0);
+  if (!m[3] && d.getTime() < reference - 86_400_000) d.setFullYear(year + 1);
+  return d.getTime();
+}
+
 function cachePath(): string | null {
   try {
     return path.join(host().dataDir(), 'claude-usage.json');

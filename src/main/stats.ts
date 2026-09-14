@@ -27,7 +27,14 @@ import {
 } from '../shared/types';
 import { logSilent } from './diagnostics';
 import { recordDailyHistory } from './statsHistory';
-import { readClaudeUsage } from './claudeUsage';
+import { parseResetLabel, readClaudeUsage } from './claudeUsage';
+import {
+  computeRecentUsage,
+  LimitWindow,
+  RECENT_BUCKET_MS,
+  RECENT_RANGE_MS,
+  RecentTranscript,
+} from './recentUsage';
 import { modelSpeed } from '../shared/modelCatalog';
 import { loadAllRuns } from './flows/runsStore';
 import { loadRunSummaries, RunSummary } from './flows/runSummaryLog';
@@ -92,8 +99,9 @@ export function computeStats(opts: ComputeStatsOptions = {}): StatsReport {
   const geminiAgg = newBackendAgg('gemini');
   const ollamaAgg = newBackendAgg('ollama');
   const byProject = new Map<string, ProjectAgg>();
+  const recentTranscripts: RecentTranscript[] = [];
 
-  scanClaude(byProject, claudeAgg, byModel, daily, now, homeDir);
+  scanClaude(byProject, claudeAgg, byModel, daily, now, homeDir, recentTranscripts);
   scanCodex(byProject, codexAgg, byModel, daily, now, homeDir);
   scanGemini(byProject, geminiAgg, byModel, daily, now, homeDir);
   scanOllama(byProject, ollamaAgg, byModel, daily, now);
@@ -209,7 +217,24 @@ export function computeStats(opts: ComputeStatsOptions = {}): StatsReport {
     quotas: buildQuotas(byBackend, undefined, homeDir),
     flowImpact: computeFlowImpact(flowRuns, runSummaries),
     daily: filledDaily,
+    recent: computeRecentUsage(recentTranscripts, now, claudeLimitWindow()),
   };
+}
+
+/// The 5h window `/usage` last described, placed in time from its printed
+/// reset. Null when there's no snapshot, the wording didn't parse, or the
+/// snapshot predates that window (it would be describing the one before).
+function claudeLimitWindow(): LimitWindow | null {
+  const snap = readClaudeUsage();
+  const w = snap?.windows.find(
+    (x) => x.windowMinutes === 300 && x.resetsLabel && x.usedPercent !== null,
+  );
+  if (!snap || !w?.resetsLabel || w.usedPercent === null) return null;
+  const resetsAt = parseResetLabel(w.resetsLabel, snap.capturedAt);
+  if (resetsAt === null) return null;
+  const start = resetsAt - w.windowMinutes * 60_000;
+  if (snap.capturedAt < start) return null;
+  return { start, resetsAt, usedPercent: w.usedPercent };
 }
 
 // ---------- Claude ----------
@@ -219,16 +244,28 @@ interface ClaudeAssistantEvent {
   outT: number;
   cacheR: number;
   cacheC: number;
+  /// The 1-hour-TTL share of `cacheC` (bills at 2× input, not 1.25×).
+  cacheC1h: number;
   model: string;
   ts: number | null;
   msgAdded: number;
   msgDeleted: number;
+  /// tool_use names in the reply, repeats kept.
+  tools: string[];
 }
 
 /// Mtime-keyed cache so repeat stats requests skip the line-by-line
 /// JSON.parse on transcripts that haven't changed since the last scan.
 /// Module-level — survives across IPC calls within a single app run.
-const claudeFileCache = new Map<string, { mtimeMs: number; events: ClaudeAssistantEvent[] }>();
+const claudeFileCache = new Map<
+  string,
+  { mtimeMs: number; events: ClaudeAssistantEvent[]; title?: string }
+>();
+
+/// The `ai-title` Claude Code wrote into a transcript, as of its last parse.
+export function claudeTranscriptTitle(filePath: string): string | undefined {
+  return claudeFileCache.get(filePath)?.title;
+}
 
 /// Parse a claude transcript file into the per-event contributions the
 /// aggregator needs. Returns the cached list when the file's mtime
@@ -248,12 +285,23 @@ export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] 
     return [];
   }
   const events: ClaudeAssistantEvent[] = [];
+  // Claude Code writes one line per content block of a reply (thinking, text,
+  // each tool_use) and repeats the reply's full usage on every one of them.
+  // Counting lines double- or quadruple-counts tokens and turns, so lines are
+  // merged by message id.
+  const byMessageId = new Map<string, ClaudeAssistantEvent>();
+  let title: string | undefined;
   for (const line of raw.split('\n')) {
     if (!line) continue;
     let json: any;
     try {
       json = JSON.parse(line);
     } catch {
+      continue;
+    }
+    // Rewritten as the conversation drifts; the last one is current.
+    if (json?.type === 'ai-title' && typeof json.aiTitle === 'string' && json.aiTitle) {
+      title = json.aiTitle;
       continue;
     }
     if (json?.type !== 'assistant') continue;
@@ -272,17 +320,37 @@ export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] 
     const ts = !isNaN(tsParsed) ? tsParsed : null;
     let msgAdded = 0;
     let msgDeleted = 0;
+    const tools: string[] = [];
     if (Array.isArray(message.content)) {
       for (const block of message.content) {
         if (block?.type !== 'tool_use') continue;
+        if (typeof block.name === 'string') tools.push(block.name);
         const { added, deleted } = countToolUseLines(block.name, block.input);
         msgAdded += added;
         msgDeleted += deleted;
       }
     }
-    events.push({ inT, outT, cacheR, cacheC, model, ts, msgAdded, msgDeleted });
+    const cacheC1h = intVal(usage.cache_creation?.ephemeral_1h_input_tokens);
+    const messageId = typeof message.id === 'string' && message.id ? message.id : null;
+    const prev = messageId ? byMessageId.get(messageId) : undefined;
+    if (prev) {
+      // Usage is repeated, not split — keep the largest in case a later line
+      // carries the final count.
+      prev.inT = Math.max(prev.inT, inT);
+      prev.outT = Math.max(prev.outT, outT);
+      prev.cacheR = Math.max(prev.cacheR, cacheR);
+      prev.cacheC = Math.max(prev.cacheC, cacheC);
+      prev.cacheC1h = Math.max(prev.cacheC1h, cacheC1h);
+      prev.msgAdded += msgAdded;
+      prev.msgDeleted += msgDeleted;
+      prev.tools.push(...tools);
+      continue;
+    }
+    const event = { inT, outT, cacheR, cacheC, cacheC1h, model, ts, msgAdded, msgDeleted, tools };
+    events.push(event);
+    if (messageId) byMessageId.set(messageId, event);
   }
-  claudeFileCache.set(filePath, { mtimeMs, events });
+  claudeFileCache.set(filePath, { mtimeMs, events, title });
   return events;
 }
 
@@ -293,9 +361,11 @@ function scanClaude(
   daily: Map<string, DailyBucket>,
   now: number,
   homeDir: string,
+  recent: RecentTranscript[],
 ): void {
   const root = path.join(homeDir, '.claude', 'projects');
   if (!fs.existsSync(root)) return;
+  const recentCutoff = now - RECENT_RANGE_MS - RECENT_BUCKET_MS;
   let slugs: string[] = [];
   try {
     slugs = fs.readdirSync(root);
@@ -321,6 +391,18 @@ function scanClaude(
       // as their own "active today" session.
       const sessionKey = entry.isTopLevel ? entry.path : path.dirname(entry.path);
       const events = parseClaudeFileCached(entry.path);
+      if (events.some((e) => e.ts !== null && e.ts >= recentCutoff)) {
+        // `<session>.jsonl` or `<session>/subagents/agent-*.jsonl` — either
+        // way the first path segment names the session.
+        const first = path.relative(projDir, entry.path).split(path.sep)[0];
+        recent.push({
+          sessionId: first.replace(/\.jsonl$/, ''),
+          projectPath: displayPath,
+          isSubagent: !entry.isTopLevel,
+          title: claudeTranscriptTitle(entry.path),
+          events,
+        });
+      }
       for (const e of events) {
         proj.turns += 1;
         proj.inputTokens += e.inT;
