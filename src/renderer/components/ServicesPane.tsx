@@ -35,10 +35,12 @@ import type {
 } from '@shared/services';
 import { DEFAULT_READY_TIMEOUT_SEC, type TaskPreset } from '@shared/services';
 import { isSecretName } from '@shared/machineValues';
+import { hardcodedCheckouts, useCheckoutPlaceholder } from '@shared/checkoutPaths';
 import { useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import {
   blockedReason,
+  explainKey,
   isServiceLive,
   logKey,
   splitKey,
@@ -71,6 +73,7 @@ import { ResizableDivider } from './ResizableDivider';
 import { AddServicesSheet, type AddStack } from './AddServicesSheet';
 import { optionsToText, parseOptionText } from './optionText';
 import { parseCommandLine } from '../commandLine';
+import { joinSteps, splitSteps } from '../commandSteps';
 
 export function ServicesPane() {
   const workspaces = useStore((s) => s.workspaces);
@@ -1249,7 +1252,9 @@ function Trouble({
   }
   if (runtime.status === 'starting') {
     return (
-      <span className="flex-shrink-0 text-[10px] text-ink-faint">{spec.task ? 'running…' : 'starting…'}</span>
+      <span className="flex-shrink-0 truncate text-[10px] text-ink-faint" title={runtime.waitingOn ? `Starts once ${runtime.waitingOn} is ready` : undefined}>
+        {runtime.waitingOn ? `waiting for ${runtime.waitingOn}…` : spec.task ? 'running…' : 'starting…'}
+      </span>
     );
   }
   // Rebound since it last ran: what it published came from another branch,
@@ -1490,6 +1495,15 @@ function Detail() {
   useEffect(() => {
     if (failedAt) setTab('output');
   }, [failedAt]);
+  // Picking a service is asking to see what it is doing. Settings stay one
+  // click away, but they are not what the next service opens on.
+  const selectedKey = Object.entries(selected)
+    .filter(([, id]) => id)
+    .map(([ws, id]) => `${ws}:${id}`)
+    .join(',');
+  useEffect(() => {
+    setTab('output');
+  }, [selectedKey]);
 
   const found = Object.values(stacks)
     .map((stack) => {
@@ -1592,7 +1606,14 @@ function Detail() {
       {tab === 'output' && (
         <Output workspaceId={stack.workspaceId} spec={spec} runtime={runtime} binding={binding} />
       )}
-      {tab === 'settings' && <Settings workspaceId={stack.workspaceId} spec={spec} />}
+      {tab === 'settings' && (
+        <Settings
+          key={`${stack.workspaceId}:${spec.id}`}
+          workspaceId={stack.workspaceId}
+          spec={spec}
+          binding={binding}
+        />
+      )}
       {tab === 'overrides' && <Options workspaceId={stack.workspaceId} spec={spec} stack={stack} />}
     </div>
   );
@@ -1898,6 +1919,7 @@ function Output({
   binding?: { ref: string; path: string };
 }) {
   const lines = useServicesStore((s) => s.logs[logKey(workspaceId, spec.id)]) ?? [];
+  const caught = useServicesStore((s) => s.exceptions[logKey(workspaceId, spec.id)]);
   const projects = useStore((s) => s.projects);
   const flows = useFlowsStore((s) => s.flows);
   const flowsLoaded = useFlowsStore((s) => s.loaded);
@@ -1920,8 +1942,10 @@ function Output({
     return { store, target, prompt };
   };
 
-  const askAbout = async (text: string) => {
-    const { store, target, prompt } = placeFor(text);
+  const askAbout = (text: string) => askWith(placeFor(text).prompt);
+
+  const askWith = async (prompt: string) => {
+    const { store, target } = placeFor('');
     if (!target) return;
     if (target.kind === 'worktree') {
       const conv = await store.newConversationInWorktree({
@@ -1939,6 +1963,22 @@ function Output({
     store.setDraft('__welcome__', prompt);
     if (target.kind === 'project') store.startNewConversation(target.projectId);
     else store.startNewConversationInWorkspace(target.workspaceId);
+  };
+
+  // The whole log, by path: a failure an hour back is long gone from any
+  // selection, and an agent can read the file itself.
+  const askAboutFile = (file: string) => {
+    const command = spec.command.join(' ').replace(/`/g, '');
+    const prompt = [
+      `The service **${spec.name}**${binding?.ref ? ` (on \`${binding.ref}\`)` : ''} is misbehaving.`,
+      command ? `It runs \`${command}\`.` : '',
+      '',
+      `Its full output, timestamped, is in \`${file}\` — runs are separated by \`── start …\` lines and end with \`── failed/stopped …\`.`,
+      'Read the most recent run and tell me what went wrong.',
+    ]
+      .filter((l, i) => l !== '' || i === 2)
+      .join('\n');
+    return askWith(prompt);
   };
 
   const runFlow = (flowId: string, text: string) => {
@@ -2053,10 +2093,19 @@ function Output({
         <Failure workspaceId={workspaceId} spec={spec} runtime={runtime} />
       )}
 
+      {/* Keyed per service: the search and level toggles are about the log
+          being read, and must not follow the user to the next one. */}
       <LogView
+        key={logKey(workspaceId, spec.id)}
         lines={lines}
         onClear={() => void useServicesStore.getState().clearLog(workspaceId, spec.id)}
         selection={{ onAsk: (text) => void askAbout(text), flows, onRunFlow: runFlow }}
+        exceptions={caught}
+        file={{
+          reveal: () => void useServicesStore.getState().revealLogFile(workspaceId, spec.id),
+          path: () => useServicesStore.getState().logFile(workspaceId, spec.id),
+          onAsk: (file) => void askAboutFile(file),
+        }}
       />
     </>
   );
@@ -2065,86 +2114,165 @@ function Output({
 /// Where this service's settings live, and what reaches the process. The
 /// answer to "how do my local properties survive a branch switch": they are
 /// not in the checkout at all.
-function Settings({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
+function Settings({
+  workspaceId,
+  spec,
+  binding,
+}: {
+  workspaceId: string;
+  spec: ServiceSpec;
+  binding?: { ref: string; path: string };
+}) {
   const revealConfig = useServicesStore((s) => s.revealConfig);
+  // Every checkout of this service's repo the pane knows of: a command that
+  // names any of them is pinned to it, whichever one the service is bound to.
+  const choices = useServicesStore((s) => s.choices[spec.id]);
+  const checkouts = useMemo(
+    () => [binding?.path, ...(choices ?? []).map((c) => c.path)].filter((p): p is string => !!p),
+    [binding?.path, choices],
+  );
   const setGroup = useServicesStore((s) => s.setGroup);
   const [group, setGroupText] = useState(spec.group ?? '');
+  const groupDirty = group.trim() !== (spec.group ?? '');
+  const saveGroup = () => {
+    if (groupDirty) void setGroup(workspaceId, spec.id, group.trim());
+  };
   const injected = Object.entries(spec.config.inject ?? {});
   const linked = Object.keys(spec.config.link ?? {});
   const rendered = Object.keys(spec.config.render ?? {});
 
+  // Grouped by the question someone arrives with — how does it start, where
+  // does it run, what does it wait on — rather than a column of every field.
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-      <Section title="Command">
-        <CommandEditor key={spec.id} workspaceId={workspaceId} spec={spec} />
-      </Section>
+    <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="flex flex-col gap-4">
+        <SettingsCard title="How it starts">
+          <SettingsField label="Command">
+            <CommandEditor key={spec.id} workspaceId={workspaceId} spec={spec} checkouts={checkouts} />
+          </SettingsField>
+          <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
+            <SettingsField label="Runs">
+              <TaskToggle workspaceId={workspaceId} spec={spec} />
+            </SettingsField>
+            {/* A task is ready when it has finished; there is nothing to probe. */}
+            {!spec.task && (
+              <SettingsField label="Ready when" note="what anything waiting on it waits for">
+                <ReadyEditor key={spec.id} workspaceId={workspaceId} spec={spec} />
+              </SettingsField>
+            )}
+          </div>
+        </SettingsCard>
 
-      <Section title="Group">
-        <div className="flex items-center gap-2">
-          <input
-            className="field w-[220px] px-2 py-1 text-xs"
-            value={group}
-            placeholder="REST services"
-            onChange={(e) => setGroupText(e.target.value)}
-            onBlur={() => {
-              if (group !== (spec.group ?? '')) void setGroup(workspaceId, spec.id, group.trim());
-            }}
-          />
-          <span className="text-[10.5px] text-ink-faint">
-            Anything you like — the list groups by it.
-          </span>
+        <div className="grid items-start gap-4 xl:grid-cols-2">
+          <SettingsCard title="Where it runs">
+            <SettingsField label="Checkout">
+              {binding ? (
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="flex-shrink-0 font-mono text-[11.5px] text-accent">{shortRef(binding.ref)}</span>
+                  <span title={binding.path} className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
+                    {binding.path}
+                  </span>
+                  <RebindMenu
+                    workspaceId={workspaceId}
+                    serviceId={spec.id}
+                    binding={binding}
+                    pinnedRef={spec.pinnedRef}
+                  />
+                </div>
+              ) : (
+                <span className="text-[11px] text-ink-faint">Not on a checkout yet.</span>
+              )}
+            </SettingsField>
+
+            <SettingsField label="Local settings" note="kept outside every checkout, so they survive a switch">
+              <div className="flex items-start gap-3">
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  {injected.map(([key, value]) => (
+                    <div key={key} className="truncate font-mono text-[10.5px]">
+                      <span className="text-ink">{key}</span>
+                      <span className="text-ink-faint">={value}</span>
+                    </div>
+                  ))}
+                  {linked.map((file) => (
+                    <div key={file} className="truncate font-mono text-[10.5px] text-ink">
+                      {file} <span className="text-ink-faint">— linked in from that folder</span>
+                    </div>
+                  ))}
+                  {rendered.map((file) => (
+                    <div key={file} className="truncate font-mono text-[10.5px] text-ink">
+                      {file} <span className="text-ink-faint">— written per branch</span>
+                    </div>
+                  ))}
+                  {injected.length + linked.length + rendered.length === 0 && (
+                    <span className="text-[11px] text-ink-faint">
+                      Nothing set. A properties or .env file dropped in the folder reaches the next start.
+                    </span>
+                  )}
+                </div>
+                <button className="svc-btn flex-shrink-0" onClick={() => void revealConfig(workspaceId, spec.id)}>
+                  Open the folder
+                </button>
+              </div>
+            </SettingsField>
+
+            <SettingsField label="Group" note="the list groups by it">
+              <div className="flex items-center gap-2">
+                <input
+                  className="field w-[220px] px-2 py-1 text-xs"
+                  value={group}
+                  placeholder="REST services"
+                  onChange={(e) => setGroupText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') saveGroup();
+                    if (e.key === 'Escape') setGroupText(spec.group ?? '');
+                  }}
+                  onBlur={saveGroup}
+                />
+                {groupDirty && (
+                  <button className="svc-btn-primary" onMouseDown={(e) => e.preventDefault()} onClick={saveGroup}>
+                    Save
+                  </button>
+                )}
+              </div>
+            </SettingsField>
+          </SettingsCard>
+
+          <SettingsCard title="Startup order">
+            <SettingsField label="Waits for" note="started first, and must be ready">
+              <DepsPicker workspaceId={workspaceId} spec={spec} />
+            </SettingsField>
+          </SettingsCard>
         </div>
-      </Section>
+      </div>
+    </div>
+  );
+}
 
-      <Section title="Local settings">
-        <p className="mb-2 text-[10.5px] leading-4 text-ink-faint">
-          These live in this service's own folder, outside every checkout — which is why they
-          survive switching branches. Drop a properties or .env file in there and it reaches the
-          process on the next start.
-        </p>
-        <div className="flex flex-col gap-1">
-          {injected.map(([key, value]) => (
-            <div key={key} className="font-mono text-[10.5px]">
-              <span className="text-ink">{key}</span>
-              <span className="text-ink-faint">={value}</span>
-            </div>
-          ))}
-          {linked.map((file) => (
-            <div key={file} className="font-mono text-[10.5px] text-ink">
-              {file} <span className="text-ink-faint">— linked in from that folder</span>
-            </div>
-          ))}
-          {rendered.map((file) => (
-            <div key={file} className="font-mono text-[10.5px] text-ink">
-              {file} <span className="text-ink-faint">— written per branch</span>
-            </div>
-          ))}
-          {injected.length + linked.length + rendered.length === 0 && (
-            <span className="text-[10.5px] text-ink-faint">Nothing set.</span>
-          )}
-        </div>
-        <button
-          className="svc-btn mt-2"
-          onClick={() => void revealConfig(workspaceId, spec.id)}
-        >
-          Open the folder
-        </button>
-      </Section>
+function SettingsCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-md border border-card-strong bg-surface-muted">
+      <h3 className="border-b border-card px-3.5 py-2.5 text-[12px] font-semibold text-ink">{title}</h3>
+      <div className="flex flex-col gap-4 px-3.5 py-3.5">{children}</div>
+    </section>
+  );
+}
 
-      <Section title="Runs">
-        <TaskToggle workspaceId={workspaceId} spec={spec} />
-      </Section>
-
-      <Section title="Waits for">
-        <DepsPicker workspaceId={workspaceId} spec={spec} />
-      </Section>
-
-      {/* A task is ready when it has finished; there is nothing to probe. */}
-      {!spec.task && (
-        <Section title="Ready when">
-          <ReadyEditor key={spec.id} workspaceId={workspaceId} spec={spec} />
-        </Section>
-      )}
+function SettingsField({
+  label,
+  note,
+  children,
+}: {
+  label: string;
+  note?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] font-medium text-ink-muted">{label}</span>
+        {note && <span className="text-[10.5px] text-ink-faint">{note}</span>}
+      </div>
+      {children}
     </div>
   );
 }
@@ -2214,18 +2342,35 @@ function commandText(command: readonly string[]): string {
 
 /// What the service runs. Saved with a button, like the readiness probe — a
 /// half-typed command is not one anyone meant to start.
-function CommandEditor({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
+///
+/// Shown one step per line and saved as the one line it was: see
+/// `commandSteps`. A command that already holds newlines is left as written.
+function CommandEditor({
+  workspaceId,
+  spec,
+  checkouts,
+}: {
+  workspaceId: string;
+  spec: ServiceSpec;
+  checkouts: readonly string[];
+}) {
   const setCommand = useServicesStore((s) => s.setCommand);
+  const askAi = useServicesStore((s) => s.askAi);
+  const cancelAskAi = useServicesStore((s) => s.cancelAskAi);
+  const explanation = useServicesStore((s) => s.suggestions[explainKey(workspaceId, spec.id)]);
   const saved = commandText(spec.command);
-  const [draft, setDraft] = useState(saved);
+  const asWritten = saved.includes('\n');
+  const initial = splitSteps(saved).join('\n');
+  const [draft, setDraft] = useState(initial);
   useEffect(() => {
-    setDraft(saved);
-  }, [saved]);
+    setDraft(initial);
+  }, [initial]);
 
-  const text = draft.trim();
+  const text = (asWritten ? draft : joinSteps(draft)).trim();
   const parsed = parseCommandLine(text);
   const argv = commandArgv(text);
   const changed = text !== saved;
+  const pinnedTo = hardcodedCheckouts(draft, checkouts);
   const save = () => {
     if (changed && argv.length > 0) void setCommand(workspaceId, spec.id, argv);
   };
@@ -2241,35 +2386,120 @@ function CommandEditor({ workspaceId, spec }: { workspaceId: string; spec: Servi
   }, [draft]);
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2">
+      <textarea
+        ref={box}
+        rows={1}
+        spellCheck={false}
+        className="field w-full resize-none overflow-hidden whitespace-pre-wrap break-all !bg-surface px-2.5 py-2 font-mono text-[11.5px] leading-[19px]"
+        value={draft}
+        placeholder="npm run dev"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          // Enter is a new step now; the save is a deliberate chord.
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            save();
+          }
+          if (e.key === 'Escape') setDraft(initial);
+        }}
+      />
+      {pinnedTo.length > 0 && (
+        <div className="flex items-start gap-2.5 rounded border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[11px] leading-4">
+          <span className="min-w-0 flex-1 text-ink">
+            Keeps using <code className="break-all font-mono text-amber-700 dark:text-amber-300">{pinnedTo[0]}</code>
+            {pinnedTo.length > 1 ? ` and ${pinnedTo.length - 1} more` : ''} after a switch to another worktree.{' '}
+            <span className="text-ink-muted">
+              <code className="font-mono">{'${CHECKOUT}'}</code> becomes whichever checkout it is on.
+            </span>
+          </span>
+          <button className="svc-btn-primary flex-shrink-0" onClick={() => setDraft(useCheckoutPlaceholder(draft, checkouts))}>
+            Replace with {'${CHECKOUT}'}
+          </button>
+        </div>
+      )}
       <div className="flex items-start gap-2">
-        <textarea
-          ref={box}
-          rows={1}
-          spellCheck={false}
-          className="field min-w-0 flex-1 resize-none overflow-hidden whitespace-pre-wrap break-all px-2 py-1 font-mono text-xs leading-[18px]"
-          value={draft}
-          placeholder="npm run dev"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            // One command, so Enter saves rather than starting a second line.
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              save();
-            }
-          }}
-        />
-        <button className="svc-btn" disabled={!changed || argv.length === 0} onClick={save}>
+        <p className="min-w-0 flex-1 text-[10.5px] leading-4 text-ink-faint">
+          {spec.command.length === 0 ? (
+            'Nothing said how to start this, so it will not start until this is set.'
+          ) : (
+            <>
+              {parsed.needsShell ? 'Runs through sh -c, saved as one line. ' : 'Runs in the checkout it is on. '}
+              <code className="font-mono text-ink-muted">{'${CHECKOUT}'}</code> and{' '}
+              <code className="font-mono text-ink-muted">{'${REF}'}</code> follow a switch; scripts can read{' '}
+              <code className="font-mono text-ink-muted">$OVERCLI_CHECKOUT</code>. ⌘↩ saves.
+            </>
+          )}
+        </p>
+        {text !== '' && (
+          <button
+            className="svc-btn"
+            title="Ask a model what this command does, step by step"
+            disabled={explanation?.status === 'asking'}
+            onClick={() => void askAi(workspaceId, spec.id, 'explain', draft)}
+          >
+            {explanation?.status === 'asking' ? 'Explaining…' : 'Explain'}
+          </button>
+        )}
+        {changed && (
+          <button className="svc-btn" onClick={() => setDraft(initial)}>
+            Revert
+          </button>
+        )}
+        <button className="svc-btn-primary" disabled={!changed || argv.length === 0} onClick={save}>
           Save
         </button>
       </div>
-      <span className="text-[10.5px] text-ink-faint">
-        {spec.command.length === 0
-          ? 'Nothing said how to start this, so it will not start until this is set.'
-          : parsed.needsShell
-            ? 'Uses a shell feature, so it runs through sh -c.'
-            : 'Runs in the checkout it is bound to, from the next start.'}
-      </span>
+      {explanation?.status === 'asking' && (
+        <div className="flex items-center gap-2">
+          <span className="text-[10.5px] text-ink-muted">Reading the command…</span>
+          <button className="svc-btn" onClick={() => void cancelAskAi(workspaceId, spec.id, 'explain')}>
+            Stop
+          </button>
+        </div>
+      )}
+      {explanation?.status === 'failed' && (
+        <div className="flex items-center gap-2">
+          <span className="text-[10.5px] text-ink-faint">{explanation.error}</span>
+          <button className="svc-btn" onClick={() => void askAi(workspaceId, spec.id, 'explain', draft)}>
+            Try again
+          </button>
+        </div>
+      )}
+      {explanation?.status === 'answered' && (
+        <div className="flex flex-col gap-2 rounded border border-card-strong bg-surface px-2.5 py-2">
+          <div className="flex items-center gap-2">
+            <span className="rounded border border-card-strong px-1 py-px text-[9.5px] leading-none text-ink-faint">
+              a guess · {explanation.backend}
+            </span>
+            <div className="flex-1" />
+            <button
+              className="text-[10px] text-ink-faint hover:text-ink"
+              onClick={() => void askAi(workspaceId, spec.id, 'explain', draft)}
+            >
+              Ask again
+            </button>
+            <button
+              className="text-[10px] text-ink-faint hover:text-ink"
+              onClick={() => void cancelAskAi(workspaceId, spec.id, 'explain')}
+            >
+              Dismiss
+            </button>
+          </div>
+          {explanation.text && (
+            <p className="whitespace-pre-wrap text-[11px] leading-[17px] text-ink-muted">{explanation.text}</p>
+          )}
+          {explanation.command && (
+            <div className="flex items-start gap-2">
+              <code className="min-w-0 flex-1 break-all font-mono text-[10.5px] text-ink">{explanation.command}</code>
+              {/* Into the box, not saved: it is a guess, and Save is where someone agrees. */}
+              <button className="svc-btn" onClick={() => setDraft(splitSteps(explanation.command!).join('\n'))}>
+                Use this
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {spec.command.length === 0 && (
         <SuggestCommand workspaceId={workspaceId} serviceId={spec.id} onUse={setDraft} />
       )}
@@ -2726,6 +2956,9 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
           seconds, then call it slow and keep checking.
         </div>
       )}
+      {/* Only once there is something to save: a Save sitting under an
+          unchanged probe reads as a step still to do. */}
+      {(dirty || problem) && (
       <div className="flex items-center gap-2">
         <button
           className="svc-btn-primary"
@@ -2746,6 +2979,7 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
           {problem ?? (dirty ? 'Takes effect on the next start.' : '')}
         </span>
       </div>
+      )}
     </div>
   );
 }

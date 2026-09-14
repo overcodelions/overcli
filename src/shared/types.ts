@@ -2775,6 +2775,16 @@ export interface IPCInvokeMap {
   'services:viewAll': (workspaceIds: string[]) => StackView[];
   'services:log': (args: { workspaceId: string; serviceId: string }) => string[];
   'services:clearLog': (args: { workspaceId: string; serviceId: string }) => void;
+  /// Every line a service has printed, timestamped, on disk — past the pane's
+  /// cap and across restarts of the app. Handed to agents by path.
+  'services:logFile': (args: { workspaceId: string; serviceId: string }) => string;
+  'services:revealLogFile': (args: { workspaceId: string; serviceId: string }) => void;
+  /// Distinct exceptions in a service's output, newest first — kept after the
+  /// lines they came from have been trimmed.
+  'services:exceptions': (args: {
+    workspaceId: string;
+    serviceId: string;
+  }) => import('./exceptions').CaughtException[];
   /// The folder holding this service's own config — the one whose contents
   /// are injected or linked into whichever worktree it is bound to.
   'services:configDir': (args: { workspaceId: string; serviceId: string }) => string;
@@ -2912,7 +2922,14 @@ export interface IPCInvokeMap {
   /// options, the environment — is scrubbed of known credentials first.
   /// `kind: 'command'` asks instead for the start command of a service that has
   /// none, read out of its checkout and the file it was imported from.
-  'services:askAi': (args: { workspaceId: string; serviceId: string; kind?: 'fix' | 'command' }) =>
+  /// `kind: 'explain'` explains `command` — the editor's text, unsaved edits
+  /// included — step by step.
+  'services:askAi': (args: {
+    workspaceId: string;
+    serviceId: string;
+    kind?: 'fix' | 'command' | 'explain';
+    command?: string;
+  }) =>
     /// `command` is a start command the answer proposes, when it proposes one.
     | { ok: true; backend: Backend; text: string; command?: string }
     | { ok: false; error: string };

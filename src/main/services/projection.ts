@@ -61,6 +61,10 @@ export interface ProjectionPlan {
   /// path.
   cwd: string;
   env: Record<string, string>;
+  /// The service's command with the checkout placeholders filled in, so one
+  /// written as `ln -sfn ${CHECKOUT} …` follows the service to whichever
+  /// worktree it is switched to.
+  command: string[];
   links: LinkPlan[];
   renders: RenderPlan[];
 }
@@ -127,10 +131,20 @@ export function planProjection(
   const port = opts.port ?? spec.port;
   const vars = { root, cwd, ref: binding.ref, port, configDir: opts.configDir };
 
-  const env: Record<string, string> = {};
+  // Always there, so a script can find the checkout without being told the
+  // placeholder syntax. An injected variable of the same name still wins.
+  const env: Record<string, string> = {
+    OVERCLI_CHECKOUT: cwd,
+    OVERCLI_ROOT: root,
+    OVERCLI_REF: binding.ref,
+    ...(port === undefined ? {} : { OVERCLI_PORT: String(port) }),
+  };
   for (const [key, value] of Object.entries(spec.config.inject ?? {})) {
     env[key] = substitute(value, vars);
   }
+  // Unset placeholders stay as written here: a shell command's own `${PORT}`
+  // is its business, not a blank.
+  const command = spec.command.map((arg) => substitute(arg, vars, { keepUnset: true }));
 
   const links: LinkPlan[] = Object.entries(spec.config.link ?? {}).map(([relative, target]) => ({
     relative,
@@ -146,22 +160,26 @@ export function planProjection(
     }),
   );
 
-  return { cwd, env, links, renders };
+  return { cwd, env, command, links, renders };
 }
 
 /// Replace the handful of placeholders a config value may carry. Deliberately
-/// not a template language: these four are what a local config needs, and
-/// anything cleverer belongs in a rendered file.
+/// not a template language: these are what a local config needs, and anything
+/// cleverer belongs in a rendered file.
 export function substitute(
   value: string,
   vars: { root: string; cwd: string; ref: string; port?: number; configDir?: string },
+  opts: { keepUnset?: boolean } = {},
 ): string {
+  // Functions, not strings: a path with a `$` in it is not a replacement pattern.
+  const fill = (known: string | undefined) => (whole: string) =>
+    known ?? (opts.keepUnset ? whole : '');
   return value
-    .replace(/\$\{CHECKOUT\}/g, vars.cwd)
-    .replace(/\$\{ROOT\}/g, vars.root)
-    .replace(/\$\{REF\}/g, vars.ref)
-    .replace(/\$\{SERVICE_CONFIG_DIR\}/g, vars.configDir ?? '')
-    .replace(/\$\{PORT\}/g, vars.port === undefined ? '' : String(vars.port));
+    .replace(/\$\{CHECKOUT\}/g, fill(vars.cwd))
+    .replace(/\$\{ROOT\}/g, fill(vars.root))
+    .replace(/\$\{REF\}/g, fill(vars.ref))
+    .replace(/\$\{SERVICE_CONFIG_DIR\}/g, fill(vars.configDir))
+    .replace(/\$\{PORT\}/g, fill(vars.port === undefined ? undefined : String(vars.port)));
 }
 
 /// Carry out a plan: create the symlinks, render the templates, and make sure
