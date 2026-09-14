@@ -14,6 +14,7 @@ import {
   describeLocation,
   installNavHistory,
   locationKey,
+  navigateToChat,
   navigateToTab,
   readLocation,
   useNavHistory,
@@ -22,8 +23,14 @@ import {
 
 /// Enough of a run for the conversation index to walk it; nav only cares
 /// that the id resolves.
-function makeRun(): unknown {
-  return { id: 'run-9', conversationIds: {}, attempts: [], flowSnapshot: { steps: [] } };
+function makeRun(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    id: 'run-9',
+    conversationIds: {},
+    attempts: [],
+    flowSnapshot: { steps: [] },
+    ...overrides,
+  };
 }
 
 function baseLocation(overrides: Partial<NavLocation> = {}): NavLocation {
@@ -361,6 +368,124 @@ describe('nav history', () => {
   it('runs the tab default on the first visit of the session', () => {
     const fallback = vi.fn(() => useStore.getState().setDetailMode('flows'));
     navigateToTab(fallback);
+    expect(fallback).toHaveBeenCalledOnce();
+  });
+
+  it('resumes a flow run from Services and Back returns to Services', () => {
+    useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
+    // Workers view is global even while Flows is visible. Its navigation
+    // actions clear activeRunId, which is the real-world state that exposed
+    // the restore-order bug and left the flow library on screen.
+    useWorkersStore.getState().showToday();
+    useFlowsStore.getState().setActiveRun('run-9');
+    useStore.getState().setDetailMode('flows');
+    settle();
+    navigateToTab(
+      () => useStore.getState().setDetailMode('services'),
+      { rememberForChat: true },
+    );
+    expect(useNavHistory.getState().chatReturn).toMatchObject({
+      detailMode: 'flows',
+      activeRunId: 'run-9',
+    });
+    settle();
+
+    const fallback = vi.fn();
+    navigateToChat(fallback);
+    expect(fallback).not.toHaveBeenCalled();
+    expect(readLocation()).toMatchObject({ detailMode: 'flows', activeRunId: 'run-9' });
+
+    useNavHistory.getState().goBack();
+    expect(useStore.getState().detailMode).toBe('services');
+  });
+
+  it('does not treat a worker-owned flow run as Chat content', () => {
+    useFlowsStore.setState({
+      runs: { 'run-9': makeRun({ workerId: 'worker-1' }) } as never,
+    });
+    useWorkersStore.setState({ selectedWorkerId: 'worker-1', view: 'worker' });
+    useFlowsStore.getState().setActiveRun('run-9');
+    useStore.getState().setDetailMode('workers');
+    settle();
+    navigateToTab(
+      () => useStore.getState().setDetailMode('services'),
+      { rememberForChat: true },
+    );
+    expect(useNavHistory.getState().chatReturn).toBeNull();
+    settle();
+
+    const fallback = vi.fn();
+    navigateToChat(fallback);
+    expect(fallback).not.toHaveBeenCalled();
+    expect(readLocation()).toMatchObject({
+      detailMode: 'conversation',
+      activeRunId: null,
+      selectedWorkerId: null,
+    });
+  });
+
+  it('resumes a flow run from Workers', () => {
+    useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
+    useFlowsStore.getState().setActiveRun('run-9');
+    useStore.getState().setDetailMode('flows');
+    settle();
+    navigateToTab(
+      () => {
+        useWorkersStore.getState().selectWorker(null);
+        useWorkersStore.getState().showToday();
+        useStore.getState().setDetailMode('workers');
+      },
+      { rememberForChat: true },
+    );
+    settle();
+
+    const fallback = vi.fn();
+    navigateToChat(fallback);
+    expect(fallback).not.toHaveBeenCalled();
+    expect(readLocation()).toMatchObject({ detailMode: 'flows', activeRunId: 'run-9' });
+  });
+
+  it('finds a flow run past Services and Workers', () => {
+    useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
+    useFlowsStore.getState().setActiveRun('run-9');
+    useStore.getState().setDetailMode('flows');
+    settle();
+    navigateToTab(
+      () => useStore.getState().setDetailMode('services'),
+      { rememberForChat: true },
+    );
+    settle();
+    navigateToTab(
+      () => {
+        useWorkersStore.getState().selectWorker(null);
+        useWorkersStore.getState().showToday();
+        useStore.getState().setDetailMode('workers');
+      },
+      { rememberForChat: true },
+    );
+    settle();
+
+    const fallback = vi.fn();
+    navigateToChat(fallback);
+    expect(fallback).not.toHaveBeenCalled();
+    expect(readLocation()).toMatchObject({ detailMode: 'flows', activeRunId: 'run-9' });
+  });
+
+  it('falls back when the remembered flow run was removed', () => {
+    useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
+    useFlowsStore.getState().setActiveRun('run-9');
+    useStore.getState().setDetailMode('flows');
+    settle();
+    useNavHistory.getState().reset(readLocation());
+    navigateToTab(
+      () => useStore.getState().setDetailMode('services'),
+      { rememberForChat: true },
+    );
+    settle();
+    useFlowsStore.setState({ runs: {} });
+
+    const fallback = vi.fn();
+    navigateToChat(fallback);
     expect(fallback).toHaveBeenCalledOnce();
   });
 
