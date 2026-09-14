@@ -15,6 +15,7 @@
 
 import { create } from 'zustand';
 import type { WorktreeChoice } from '@shared/worktrees';
+import { emptyExceptionLog, feedException, type ExceptionLog } from '@shared/exceptions';
 import { planBulkRebind, planPinRebind } from './servicesRebindPlan';
 import { runWithConcurrency, startLayers } from './servicesStartPlan';
 import type {
@@ -38,14 +39,25 @@ export interface ResolvedOption {
 }
 
 /// Lines kept per service in the renderer. The main process keeps more; this
-/// is what the pane can usefully scroll.
-const LOG_LIMIT = 2_000;
+/// is what the pane can usefully scroll; everything is also on disk.
+const LOG_LIMIT = 10_000;
+
+/// Lines waiting to reach the store. Fifteen running services write hundreds of
+/// lines a second between them, and one store update per line meant the log on
+/// screen was re-filtered and re-rendered hundreds of times a second. Collected
+/// here and applied together, a few times a second — still reads as live.
+const FLUSH_MS = 100;
+const pendingLines = new Map<string, string[]>();
+let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface ServicesState {
   /// Keyed by workspace id. A workspace nobody has opened is simply absent —
   /// loading one must not create anything.
   stacks: Record<string, StackView>;
   logs: Record<string, string[]>;
+  /// Exceptions pulled out of each log, keyed like the logs. They outlive the
+  /// lines they came from: a burst of traces is what pushes the cause out.
+  exceptions: Record<string, ExceptionLog>;
   /// Which service the log pane is showing, per workspace.
   selected: Record<string, string | undefined>;
   /// A clash waiting on the user: another stack holds the port. Parked here
@@ -163,9 +175,14 @@ interface ServicesState {
   loadMachine(): Promise<void>;
   saveMachine(entries: MachineEntry[]): Promise<void>;
   revealConfig(workspaceId: string, serviceId: string): Promise<void>;
+  revealLogFile(workspaceId: string, serviceId: string): Promise<void>;
+  /// Where the full output is on disk — every line, not just what the pane keeps.
+  logFile(workspaceId: string, serviceId: string): Promise<string>;
   explain(workspaceId: string, serviceId: string): Promise<void>;
-  askAi(workspaceId: string, serviceId: string, kind?: 'fix' | 'command'): Promise<void>;
-  cancelAskAi(workspaceId: string, serviceId: string): Promise<void>;
+  /// `'explain'` explains `command`, the editor's text, and keeps its answer
+  /// under `explainKey` so it never replaces a fix shown on the output.
+  askAi(workspaceId: string, serviceId: string, kind?: 'fix' | 'command' | 'explain', command?: string): Promise<void>;
+  cancelAskAi(workspaceId: string, serviceId: string, kind?: 'fix' | 'command' | 'explain'): Promise<void>;
   checkoutRef(
     workspaceId: string,
     serviceId: string,
@@ -184,7 +201,6 @@ interface ServicesState {
   /// Empties a service's output here and in the engine, so reselecting it
   /// does not bring the old lines back.
   clearLog(workspaceId: string, serviceId: string): Promise<void>;
-  ingestRebound(workspaceId: string, serviceId: string, from: string, to: string): void;
 }
 
 /// One key per service's log, so a workspace's services never collide.
@@ -192,9 +208,19 @@ export function logKey(workspaceId: string, serviceId: string): string {
   return `${workspaceId}/${serviceId}`;
 }
 
+/// Where an explanation of a service's command is kept among the suggestions.
+export function explainKey(workspaceId: string, serviceId: string): string {
+  return `${logKey(workspaceId, serviceId)}#explain`;
+}
+
+function suggestionKey(workspaceId: string, serviceId: string, kind?: string): string {
+  return kind === 'explain' ? explainKey(workspaceId, serviceId) : logKey(workspaceId, serviceId);
+}
+
 export const useServicesStore = create<ServicesState>((set, get) => ({
   stacks: {},
   logs: {},
+  exceptions: {},
   selected: {},
   pendingLease: {},
   machine: [],
@@ -248,12 +274,16 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     // One selection across every workspace: picking in one group replaces the
     // pick in another, because there is one detail pane.
     set((s) => ({ selected: { ...blank(s.selected), [workspaceId]: serviceId } }));
-    const [lines, resolved] = await Promise.all([
+    const [lines, resolved, caught] = await Promise.all([
       window.overcli.invoke('services:log', { workspaceId, serviceId }),
       window.overcli.invoke('services:resolvedOptions', { workspaceId, serviceId }),
+      window.overcli.invoke('services:exceptions', { workspaceId, serviceId }),
     ]);
+    // Anything queued is already in the snapshot; applying it too would print it twice.
+    pendingLines.delete(logKey(workspaceId, serviceId));
     set((s) => ({
       logs: { ...s.logs, [logKey(workspaceId, serviceId)]: lines },
+      exceptions: { ...s.exceptions, [logKey(workspaceId, serviceId)]: { items: caught, recent: [] } },
       resolved: { ...s.resolved, [logKey(workspaceId, serviceId)]: resolved },
     }));
   },
@@ -583,10 +613,10 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   /// Ask a model, once, because the rules had nothing. Separate from
   /// `explain` on purpose: those answers are free and arrive unbidden, this
   /// one spends a subprocess and comes back labelled as a guess.
-  async askAi(workspaceId, serviceId, kind) {
-    const key = logKey(workspaceId, serviceId);
+  async askAi(workspaceId, serviceId, kind, command) {
+    const key = suggestionKey(workspaceId, serviceId, kind);
     set((s) => ({ suggestions: { ...s.suggestions, [key]: { status: 'asking' } } }));
-    const result = await window.overcli.invoke('services:askAi', { workspaceId, serviceId, kind });
+    const result = await window.overcli.invoke('services:askAi', { workspaceId, serviceId, kind, command });
     set((s) => ({
       suggestions: {
         ...s.suggestions,
@@ -597,11 +627,16 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     }));
   },
 
-  async cancelAskAi(workspaceId, serviceId) {
-    await window.overcli.invoke('services:cancelAskAi', { workspaceId, serviceId });
+  async cancelAskAi(workspaceId, serviceId, kind) {
+    const key = suggestionKey(workspaceId, serviceId, kind);
+    // Only a question still running has anything to stop; dismissing an
+    // answer must not cancel a different ask in flight for the same service.
+    if (get().suggestions[key]?.status === 'asking') {
+      await window.overcli.invoke('services:cancelAskAi', { workspaceId, serviceId });
+    }
     set((s) => {
       const next = { ...s.suggestions };
-      delete next[logKey(workspaceId, serviceId)];
+      delete next[key];
       return { suggestions: next };
     });
   },
@@ -618,6 +653,14 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
 
   async revealConfig(workspaceId, serviceId) {
     await window.overcli.invoke('services:revealConfigDir', { workspaceId, serviceId });
+  },
+
+  async revealLogFile(workspaceId, serviceId) {
+    await window.overcli.invoke('services:revealLogFile', { workspaceId, serviceId });
+  },
+
+  logFile(workspaceId, serviceId) {
+    return window.overcli.invoke('services:logFile', { workspaceId, serviceId });
   },
 
   dismissLease(workspaceId) {
@@ -699,26 +742,40 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
 
   async clearLog(workspaceId, serviceId) {
     const key = logKey(workspaceId, serviceId);
-    set((s) => ({ logs: { ...s.logs, [key]: [] } }));
+    pendingLines.delete(key);
+    set((s) => ({ logs: { ...s.logs, [key]: [] }, exceptions: { ...s.exceptions, [key]: emptyExceptionLog() } }));
     await window.overcli.invoke('services:clearLog', { workspaceId, serviceId });
   },
 
   ingestLine(workspaceId, serviceId, line) {
-    set((s) => {
-      const key = logKey(workspaceId, serviceId);
-      const lines = [...(s.logs[key] ?? []), line];
-      // Trim from the front so the newest output is always what survives.
-      if (lines.length > LOG_LIMIT) lines.splice(0, lines.length - LOG_LIMIT);
-      return { logs: { ...s.logs, [key]: lines } };
-    });
+    const key = logKey(workspaceId, serviceId);
+    const queue = pendingLines.get(key);
+    if (queue) queue.push(line);
+    else pendingLines.set(key, [line]);
+    if (flushTimer !== undefined) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined;
+      const batch = [...pendingLines];
+      pendingLines.clear();
+      if (batch.length === 0) return;
+      const now = Date.now();
+      set((s) => {
+        const logs = { ...s.logs };
+        const exceptions = { ...s.exceptions };
+        for (const [batchKey, incoming] of batch) {
+          const lines = [...(logs[batchKey] ?? []), ...incoming];
+          // Trim from the front so the newest output is always what survives.
+          if (lines.length > LOG_LIMIT) lines.splice(0, lines.length - LOG_LIMIT);
+          logs[batchKey] = lines;
+          let caught = exceptions[batchKey] ?? emptyExceptionLog();
+          for (const line of incoming) caught = feedException(caught, line, now);
+          exceptions[batchKey] = caught;
+        }
+        return { logs, exceptions };
+      });
+    }, FLUSH_MS);
   },
 
-  ingestRebound(workspaceId, serviceId, from, to) {
-    // The engine already wrote a marker into its own buffer; mirror it here so
-    // a pane that was open when the rebind happened shows the same break in
-    // the stream rather than a silent jump to different output.
-    get().ingestLine(workspaceId, serviceId, `── rebound ${from || '(unbound)'} → ${to} ──`);
-  },
 }));
 
 /// The other half of `logKey`. Workspace ids never contain a slash; service
