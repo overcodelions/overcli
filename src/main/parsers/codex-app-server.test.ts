@@ -165,6 +165,25 @@ describe('parseCodexAppServerNotification', () => {
     expect(ev.kind.text).toBe('boom');
   });
 
+  it('renders warning, deprecationNotice and configWarning text from their own fields', () => {
+    const text = (method: string, params: any) => {
+      const ev = parse(method, params).result.events[0];
+      if (ev.kind.type !== 'systemNotice') throw new Error();
+      return ev.kind.text;
+    };
+    expect(text('warning', { message: 'heads up' })).toBe('heads up');
+    expect(
+      text('deprecationNotice', { summary: 'old flag is deprecated', details: 'use new flag' }),
+    ).toBe('old flag is deprecated — use new flag');
+    expect(text('deprecationNotice', { summary: 'old flag is deprecated', details: null })).toBe(
+      'old flag is deprecated',
+    );
+    expect(
+      text('configWarning', { summary: 'unknown key', path: '/tmp/config.toml', details: null }),
+    ).toBe('unknown key (/tmp/config.toml)');
+    expect(text('deprecationNotice', {})).toBe('deprecationNotice');
+  });
+
   it('dedupes the same error text across error and turn/completed notifications', () => {
     const state = makeCodexAppServerParserState();
     const text = "You've hit your usage limit. Upgrade to Pro …";

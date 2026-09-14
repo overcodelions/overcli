@@ -367,6 +367,10 @@ export function buildResumeRequest(
     method: 'thread/resume',
     params: {
       threadId,
+      // Overcli owns and renders the persisted transcript. Asking app-server
+      // to hydrate every historical turn is redundant and deprecated for
+      // paginated threads; resume only needs to re-attach the live session.
+      excludeTurns: true,
       model: opts.model || null,
       approvalPolicy: opts.approval,
       sandbox: opts.sandbox,
