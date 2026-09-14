@@ -26,6 +26,11 @@ describe('buildResumeRequest', () => {
     expect(r.params.threadId).toBe('thr-abc-123');
   });
 
+  it('skips deprecated full-history hydration because Overcli owns the transcript', () => {
+    const r = buildResumeRequest(opts, 'thr-1');
+    expect(r.params.excludeTurns).toBe(true);
+  });
+
   it('passes model + approvalPolicy + sandbox so codex applies the latest config to the resumed thread', () => {
     const r = buildResumeRequest(opts, 'thr-1');
     expect(r.params.model).toBe('gpt-5');
