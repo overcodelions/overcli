@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { parseClaudeFileCached, parseCodexFileCached } from './stats';
+import { claudeTranscriptTitle, parseClaudeFileCached, parseCodexFileCached } from './stats';
 
 let tmp: string;
 
@@ -64,6 +64,41 @@ describe('parseClaudeFileCached', () => {
     const b = parseClaudeFileCached(file);
     expect(b).not.toBe(a);
     expect(b[0].inT).toBe(999);
+  });
+
+  it('merges the per-block lines of one reply instead of counting its usage each time', () => {
+    const block = (content: unknown[]) =>
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: 1700000000000,
+        message: {
+          id: 'msg_1',
+          model: 'claude-opus-5',
+          usage: {
+            input_tokens: 2,
+            output_tokens: 300,
+            cache_read_input_tokens: 40_000,
+            cache_creation_input_tokens: 900,
+            cache_creation: { ephemeral_1h_input_tokens: 900, ephemeral_5m_input_tokens: 0 },
+          },
+          content,
+        },
+      });
+    const file = path.join(tmp, 'sess.jsonl');
+    fs.writeFileSync(
+      file,
+      [
+        block([{ type: 'thinking', thinking: '' }]),
+        block([{ type: 'tool_use', name: 'Read', input: {} }]),
+        block([{ type: 'tool_use', name: 'Write', input: { content: 'a\nb' } }]),
+        JSON.stringify({ type: 'ai-title', aiTitle: 'Fix the parser', sessionId: 'sess' }),
+      ].join('\n') + '\n',
+    );
+    const events = parseClaudeFileCached(file);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ inT: 2, outT: 300, cacheR: 40_000, cacheC: 900, cacheC1h: 900, msgAdded: 2 });
+    expect(events[0].tools).toEqual(['Read', 'Write']);
+    expect(claudeTranscriptTitle(file)).toBe('Fix the parser');
   });
 
   it('returns empty for a missing file (and caches nothing fatal)', () => {

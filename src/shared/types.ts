@@ -3249,6 +3249,74 @@ export interface StatsReport {
   /// persisted daily snapshots so days whose transcripts have since been
   /// pruned are still in here.
   daily: DailyBucket[];
+  /// Claude activity over the trailing 8 hours, for "where did my limit
+  /// go". Weighted by estimated API cost, not raw tokens — a cache read
+  /// costs a tenth of fresh input, so raw counts blame the wrong session.
+  recent: RecentUsage;
+}
+
+export interface RecentUsage {
+  start: number;
+  end: number;
+  bucketMs: number;
+  buckets: RecentBucket[];
+  /// Sorted by estimated cost, heaviest first.
+  sessions: RecentSession[];
+  /// Single replies, costliest first.
+  heaviestTurns: RecentTurn[];
+  byType: {
+    input: RecentTypeTotal;
+    output: RecentTypeTotal;
+    cacheRead: RecentTypeTotal;
+    cacheWrite: RecentTypeTotal;
+  };
+  /// Claude's 5h session window, when `/usage` gave us a reset time that
+  /// overlaps this range. Absent rather than guessed otherwise.
+  limitWindow?: { start: number; resetsAt: number; usedPercent: number };
+}
+
+export interface RecentBucket {
+  start: number;
+  costUSD: number;
+  tokens: number;
+  /// Estimated cost per session id within the bucket.
+  bySession: Record<string, number>;
+}
+
+export interface RecentTypeTotal {
+  tokens: number;
+  costUSD: number;
+}
+
+export interface RecentSession {
+  /// Claude session id — the transcript file name, and `Conversation.sessionId`.
+  id: string;
+  title?: string;
+  projectPath: string;
+  models: string[];
+  /// Replies on the main thread (subagent replies are in the totals but not here).
+  turns: number;
+  subagents: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUSD: number;
+  /// Mean prompt size per main-thread reply — what each reply re-sends.
+  avgContextTokens: number;
+  firstTs: number;
+  lastTs: number;
+}
+
+export interface RecentTurn {
+  ts: number;
+  sessionId: string;
+  model: string;
+  isSubagent: boolean;
+  tokens: number;
+  costUSD: number;
+  /// Tool calls in the reply, e.g. ["Task ×6", "Read"].
+  tools: string[];
 }
 
 export type ModelTier = 'frontier' | 'thinking' | 'standard' | 'fast' | 'local';
