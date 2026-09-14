@@ -11,6 +11,7 @@ import { isServiceLive, useServicesStore } from '../servicesStore';
 import {
   describeLocation,
   navigateBack,
+  navigateToChat,
   navigateForward,
   navigateToTab,
   useNavHistory,
@@ -125,15 +126,13 @@ export function TitleBar() {
     setDetailMode('flows');
   }
 
-  // Each tab's front page — where the tab lands you on the first visit of the
-  // session, and where clicking it while you're already inside it takes you
-  // back up to.
+  // Each tab's front page — where a first visit lands, and where generic tab
+  // clicks take you. Chat also uses its root when there is no conversation or
+  // flow run to resume after Services or Workers.
   function chatRoot(): void {
-    // Chat's front page is the conversation you were last in, not the empty
-    // composer. Every other tab's front page is a list you can look at and
-    // choose from; Chat's would be a blank prompt, which answers "start
-    // something new" — a question the sidebar's + already answers, and not
-    // the one you're asking when you press Chat.
+    // Chat's first-visit/no-restorable-target front page is the conversation
+    // you were last in, not the empty composer. The Chat button normally
+    // resumes the conversation or flow run interrupted by Services/Workers.
     //
     // Always the latest, even when an older thread is already open. Ranked
     // the way the sidebar ranks Recent, so the destination is the row at the
@@ -203,15 +202,13 @@ export function TitleBar() {
       </button>
       <HistoryArrows />
       <div className="flex items-center gap-1 no-drag">
-        {/* Every tab click means the same thing: take me to this tab's front
-            page. Not "where I last was inside it" — that made the button you
-            press to escape a run the one control that wouldn't, and made the
-            click do different things depending on state you can't see.
-            Retracing your steps is the Back arrow's job. */}
+        {/* Generic tabs take you to their front pages. Chat may instead resume
+            the conversation or flow run interrupted by Services or Workers;
+            the Back arrow still retraces every step. */}
         <NavButton
           label="Chat"
           active={detailMode === 'conversation'}
-          onClick={() => navigateToTab(chatRoot)}
+          onClick={() => navigateToChat(chatRoot)}
         />
         {/* The only tab that carries a count. Without it the fact that runs
             are waiting is invisible from every other tab — you had to open
@@ -231,7 +228,7 @@ export function TitleBar() {
         <NavButton
           label="Workers"
           active={detailMode === 'workers'}
-          onClick={() => navigateToTab(workersRoot)}
+          onClick={() => navigateToTab(workersRoot, { rememberForChat: true })}
           badge={workersBadge}
         />
         {/* Hidden unless asked for. Most projects have nothing to run, and a
@@ -242,7 +239,10 @@ export function TitleBar() {
           <NavButton
             label="Services"
             active={detailMode === 'services'}
-            onClick={() => navigateToTab(() => setDetailMode('services'))}
+            onClick={() => navigateToTab(
+              () => setDetailMode('services'),
+              { rememberForChat: true },
+            )}
             badge={servicesBadge}
           />
         )}
@@ -258,7 +258,7 @@ export function TitleBar() {
             status={status}
             onClick={
               status.source === 'worker'
-                ? () => navigateToTab(workersRoot)
+                ? () => navigateToTab(workersRoot, { rememberForChat: true })
                 : openSchedules
             }
           />
