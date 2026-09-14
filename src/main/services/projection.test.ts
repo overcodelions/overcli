@@ -149,6 +149,14 @@ describe('substitute', () => {
   it('renders an unset port as empty rather than "undefined"', () => {
     expect(substitute('${PORT}', { root: '/wt', cwd: '/wt', ref: 'main' })).toBe('');
   });
+
+  it('leaves an unset placeholder alone when asked, for a shell to read', () => {
+    expect(substitute('${PORT}', { root: '/wt', cwd: '/wt', ref: 'main' }, { keepUnset: true })).toBe('${PORT}');
+  });
+
+  it('does not read a dollar in a path as a replacement pattern', () => {
+    expect(substitute('${CHECKOUT}', { root: '/w$&t', cwd: '/w$&t', ref: 'main' })).toBe('/w$&t');
+  });
 });
 
 describe('planProjection', () => {
@@ -162,6 +170,26 @@ describe('planProjection', () => {
       linkPath: path.join('/wt/cost-ceiling', 'application-local.yml'),
       target: '/cfg/billing-rest/application-local.yml',
     });
+  });
+
+  it('hands the checkout, branch and port to the process as env', () => {
+    const plan = planProjection({ ...spec, subpath: 'services/api' }, binding, { fs: fsWithCheckout() });
+    expect(plan.env).toMatchObject({
+      OVERCLI_CHECKOUT: '/wt/cost-ceiling',
+      OVERCLI_ROOT: '/wt/cost-ceiling/services/api',
+      OVERCLI_REF: 'feat/cost-ceiling',
+      OVERCLI_PORT: '8080',
+    });
+  });
+
+  it('fills checkout placeholders in the command and keeps a shell\'s own', () => {
+    const withCommand: ServiceSpec = {
+      ...spec,
+      port: undefined,
+      command: ['sh', '-c', 'ln -sfn "${CHECKOUT}" /srv/app-active && echo ${REF} ${PORT} $HOME'],
+    };
+    const plan = planProjection(withCommand, binding, { fs: fsWithCheckout() });
+    expect(plan.command[2]).toBe('ln -sfn "/wt/cost-ceiling" /srv/app-active && echo feat/cost-ceiling ${PORT} $HOME');
   });
 
   it('uses the offset port when one was handed in', () => {

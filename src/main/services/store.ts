@@ -45,6 +45,13 @@ export function serviceConfigDir(dataDir: string, workspaceId: string, serviceId
   return path.join(stackDir(dataDir, workspaceId), serviceId);
 }
 
+/// A service's output on disk. Beside the config directory, never in it: that
+/// directory's contents are linked into worktrees.
+export function serviceLogFile(dataDir: string, workspaceId: string, serviceId: string): string {
+  if (!ID_RE.test(serviceId)) throw new Error('Invalid service id');
+  return path.join(stackDir(dataDir, workspaceId), 'logs', `${serviceId}.log`);
+}
+
 /// Values shared by every service on this machine. One file, not one per
 /// workspace: a database password retyped into forty services is how forty
 /// services end up with thirty-nine different passwords.

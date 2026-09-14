@@ -4369,18 +4369,17 @@ export const useStore = create<StoreState>((set, get) => ({
         useWorkersStore.getState().removeLocal(event.id);
       });
     } else if (
+      // `serviceRebound` needs nothing here: the engine writes the marker into
+      // the log, and it arrives as a line like any other.
       event.type === 'serviceStatus' ||
-      event.type === 'serviceLine' ||
-      event.type === 'serviceRebound'
+      event.type === 'serviceLine'
     ) {
       // Services are long-lived runtime shared by the whole workspace, so
       // they live in their own store — see servicesStore.ts.
       void import('./servicesStore').then(({ useServicesStore }) => {
         const store = useServicesStore.getState();
         if (event.type === 'serviceStatus') store.ingestStatus(event.workspaceId, event.runtime);
-        else if (event.type === 'serviceLine')
-          store.ingestLine(event.workspaceId, event.serviceId, event.line);
-        else store.ingestRebound(event.workspaceId, event.serviceId, event.from, event.to);
+        else store.ingestLine(event.workspaceId, event.serviceId, event.line);
       });
     }
   },

@@ -162,6 +162,54 @@ export function buildCommandPrompt(ctx: {
   return redactSecrets(parts.join('\n'), [...(ctx.secrets ?? [])]).text;
 }
 
+/// A command someone is reading rather than one that failed: what does this
+/// do, step by step, and what about it will not survive a switch to another
+/// worktree. `command` is the editor's text — unsaved edits included, one step
+/// per line — because the question is usually about the change being made.
+export function buildExplainPrompt(ctx: {
+  spec: ServiceSpec;
+  command: string;
+  binding?: { ref: string; path: string };
+  secrets?: readonly string[];
+}): string {
+  const steps = ctx.command
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const parts: string[] = [
+    'Explain what this local service start command does, for someone who did not write it.',
+    '',
+    `Service: ${ctx.spec.name}`,
+  ];
+  if (ctx.binding) parts.push(`Checkout: ${ctx.binding.path} on ${ctx.binding.ref}`);
+  if (ctx.spec.subpath) parts.push(`Runs from: ${ctx.spec.subpath} inside the checkout`);
+  if (ctx.spec.port !== undefined) parts.push(`Expected port: ${ctx.spec.port}`);
+
+  parts.push(
+    '',
+    'The command, one step per line and numbered (it runs as one line, through sh -c if it uses the shell):',
+    '```',
+    ...steps.map((step, i) => `${i + 1}: ${step}`),
+    '```',
+    '',
+    'How it is run: the service can be switched between git worktrees of its repository, and is restarted in',
+    'the new one. It starts with its working directory set to the checkout it is on. Before it runs,',
+    '${CHECKOUT} and ${ROOT} are replaced with that checkout, ${REF} with its branch and ${PORT} with its port;',
+    'the same values are in the environment as OVERCLI_CHECKOUT, OVERCLI_ROOT, OVERCLI_REF and OVERCLI_PORT.',
+    '',
+    'You may read files in the checkout if the command refers to them. Then reply with at most eight lines of plain text:',
+    'first one sentence saying what the command does overall;',
+    'then one line per step worth a note, starting with its number, like "3: waits until Apache answers" —',
+    'skip steps that are obvious, and group a loop into one line;',
+    'then, if any, one line starting "Watch out:" for anything that will not follow a worktree switch',
+    '(a checkout path written out in full instead of ${CHECKOUT}) or that depends on something else being up first.',
+    'No preamble, no markdown headings, no bullet characters.',
+    'Only if there is a clear fix for a "Watch out", end with one extra line: COMMAND: <the complete fixed command on one line>.',
+  );
+
+  return redactSecrets(parts.join('\n'), [...(ctx.secrets ?? [])]).text;
+}
+
 /// The `COMMAND:` line the prompt asks for, taken out of the answer. The last
 /// one wins — a model that changes its mind mid-answer means the later one.
 export function splitSuggestedCommand(text: string): { text: string; command?: string } {
