@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { parseClaudeUsage } from './claudeUsage';
+import { parseClaudeUsage, parseResetLabel } from './claudeUsage';
+
+describe('parseResetLabel', () => {
+  const REF = new Date(2026, 7, 19, 14, 0).getTime(); // Aug 19 2026, 2:00pm local
+
+  it('reads a month, day and time in local time', () => {
+    expect(parseResetLabel('Aug 19 at 6:59pm', REF)).toBe(new Date(2026, 7, 19, 18, 59).getTime());
+    expect(parseResetLabel('Aug 25 at 10:59am', REF)).toBe(new Date(2026, 7, 25, 10, 59).getTime());
+  });
+
+  it('handles hour-only times and 12am/12pm', () => {
+    expect(parseResetLabel('Aug 19 at 7pm', REF)).toBe(new Date(2026, 7, 19, 19, 0).getTime());
+    expect(parseResetLabel('Aug 20 at 12am', REF)).toBe(new Date(2026, 7, 20, 0, 0).getTime());
+    expect(parseResetLabel('Aug 19 at 12pm', REF)).toBe(new Date(2026, 7, 19, 12, 0).getTime());
+  });
+
+  it('rolls a yearless date into next year when it would already be past', () => {
+    const dec31 = new Date(2026, 11, 31, 22, 0).getTime();
+    expect(parseResetLabel('Jan 1 at 2:59am', dec31)).toBe(new Date(2027, 0, 1, 2, 59).getTime());
+  });
+
+  it('treats a bare time as the next occurrence', () => {
+    expect(parseResetLabel('6:59pm', REF)).toBe(new Date(2026, 7, 19, 18, 59).getTime());
+    expect(parseResetLabel('9am', REF)).toBe(new Date(2026, 7, 20, 9, 0).getTime());
+  });
+
+  it('returns null for wording it does not recognise', () => {
+    expect(parseResetLabel('in 2 hours', REF)).toBeNull();
+    expect(parseResetLabel('Foo 19 at 6pm', REF)).toBeNull();
+  });
+});
 
 /// Captured verbatim from `claude -p "/usage"`.
 const REAL = `You are currently using your subscription to power your Claude Code usage
