@@ -33,7 +33,7 @@ const CONFIG = [
   'sso_start_url = https://d-0000000002.awsapps.com/start/#',
   'sso_region = us-east-1',
   '',
-  '[sso-session uinfyr-sso]',
+  '[sso-session acme-sso]',
   'sso_start_url = https://d-0000000002.awsapps.com/start/#',
   'sso_region = us-east-1',
   '',
@@ -134,7 +134,7 @@ describe('buildAwsAuthOverview', () => {
       // aws-infra-local is referenced by the profile above, so it gets no
       // row of its own; these two are referenced by nothing.
       'sso-session:d-0000000001',
-      'sso-session:uinfyr-sso',
+      'sso-session:acme-sso',
     ]);
   });
 

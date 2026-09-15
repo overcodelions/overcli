@@ -86,7 +86,7 @@ describe('rangeFrom', () => {
 
 describe('tableRows', () => {
   const q = queue({
-    running: [row('live', { status: 'running', title: 'Reconcile partner groups' })],
+    running: [row('live', { status: 'running', title: 'Reconcile order batches' })],
     needsYou: [row('ask', { status: 'paused' })],
     finished: [
       row('today'),
@@ -110,7 +110,7 @@ describe('tableRows', () => {
   it('narrows by state, worker and text at once', () => {
     expect(tableRows(q, f({ state: 'needsYou' }), NOON).map((r) => r.key)).toEqual(['ask']);
     expect(tableRows(q, f({ range: '7d', workerId: 'w2' }), NOON).map((r) => r.key)).toEqual(['yesterday']);
-    expect(tableRows(q, f({ query: 'partner' }), NOON).map((r) => r.key)).toEqual(['live']);
+    expect(tableRows(q, f({ query: 'order' }), NOON).map((r) => r.key)).toEqual(['live']);
   });
 });
 
