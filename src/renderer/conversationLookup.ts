@@ -178,9 +178,32 @@ export function serviceWorkspaceIdsForConversation(src: LookupSource, id: UUID):
   const hit = findConvLocation(src, id);
   if (!hit) return [];
   if (hit.kind === 'workspace') return [hit.workspace.id];
+  if (hit.kind === 'flow') return serviceWorkspaceIdsForFlowRun(src, hit.run);
   const projectIds = hit.kind === 'project'
     ? [hit.project.id]
-    : src.projects.filter((project) => project.path === hit.run.projectPath).map((project) => project.id);
+    : [];
+  return src.workspaces
+    .filter((workspace) => projectIds.some((projectId) => workspace.projectIds.includes(projectId)))
+    .map((workspace) => workspace.id);
+}
+
+/// Service stacks for a flow run must be resolved from the checkout it came
+/// from, not only its current cwd: worktree runs use a freshly minted path
+/// that intentionally differs from every saved project/workspace root.
+export function serviceWorkspaceIdsForFlowRun(src: LookupSource, run: FlowRun): UUID[] {
+  const sourceRoot = run.sourceProjectPath ?? run.projectPath;
+  const exact = src.workspaces
+    .filter((workspace) => workspace.rootPath === sourceRoot || workspace.rootPath === run.projectPath)
+    .map((workspace) => workspace.id);
+  if (exact.length > 0) return exact;
+
+  const sourcePaths = new Set([
+    sourceRoot,
+    ...(run.workspaceWorktrees?.map((worktree) => worktree.projectPath) ?? []),
+  ]);
+  const projectIds = src.projects
+    .filter((project) => sourcePaths.has(project.path))
+    .map((project) => project.id);
   return src.workspaces
     .filter((workspace) => projectIds.some((projectId) => workspace.projectIds.includes(projectId)))
     .map((workspace) => workspace.id);

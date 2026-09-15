@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   SERVICE_LOG_CHAR_LIMIT,
   SERVICE_LOG_LINE_LIMIT,
   appendServiceLogContext,
+  attachMentionedServiceLogs,
   runningServiceMentions,
   serviceMentionIds,
 } from './serviceLogContext';
@@ -30,6 +31,33 @@ describe('service log mentions', () => {
       ],
     } as unknown as StackView;
     expect(runningServiceMentions([stack]).map((entry) => entry.serviceId)).toEqual(['api', 'web']);
+  });
+
+  it('fetches and attaches only mentioned services with a live process', async () => {
+    const stack = {
+      workspaceId: 'ws',
+      services: [
+        { id: 'api', name: 'API' },
+        { id: 'web', name: 'Web' },
+        { id: 'job', name: 'Job' },
+      ],
+      bindings: [],
+      runtimes: [
+        { serviceId: 'api', status: 'ready' },
+        { serviceId: 'web', status: 'ready' },
+        { serviceId: 'job', status: 'stopped' },
+      ],
+    } as unknown as StackView;
+    const log = vi.fn(async () => ['latest line']);
+    const result = await attachMentionedServiceLogs(
+      'inspect @service:api and @service:job',
+      ['ws'],
+      { views: async () => [stack], log },
+    );
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith('ws', 'api');
+    expect(result).toContain('<service-log workspace="ws" id="api"');
+    expect(result).not.toContain('id="job"');
   });
 
   it('keeps the newest 5,000 lines and labels the data as untrusted', () => {

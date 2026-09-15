@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useStore } from '../store';
 import { PLAIN } from '@shared/plainLanguage';
 
@@ -75,6 +75,7 @@ export function ChangesBar({
   branch,
   worktree = false,
   plain = false,
+  action,
 }: {
   files: FileChangeSummary[];
   /// Ref the counts were measured against, e.g. `origin/master`. When it's
@@ -92,6 +93,9 @@ export function ChangesBar({
   /// at, and a global flag meant that trying one everyday project silently
   /// relabelled the changes bar in every repo the user owns.
   plain?: boolean;
+  /// Rendered at the right of the header, outside the expand toggle — e.g.
+  /// running the owning services on this branch.
+  action?: ReactNode;
 }) {
   const openFile = useStore((s) => s.openFile);
   const [expanded, setExpanded] = useState(false);
@@ -117,20 +121,23 @@ export function ChangesBar({
     { additions: 0, deletions: 0 },
   );
   return (
-    <div className="rounded-xl border border-card bg-card text-xs overflow-hidden">
-      <button
-        onClick={() => setExpanded((e) => !e)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-card-strong"
-      >
-        <span className="text-ink-faint">{expanded ? '▾' : '▸'}</span>
-        <span className="text-ink font-medium">
-          {files.length} file{files.length === 1 ? '' : 's'} changed
-        </span>
-        <span className="diff-add-ink">+{totals.additions}</span>
-        <span className="diff-remove-ink">-{totals.deletions}</span>
-        {branchChip && <BranchChip {...branchChip} />}
-        {baseRef && <span className="ml-auto text-ink-faint">vs {baseRef}</span>}
-      </button>
+    <div className="rounded-xl border border-card bg-card text-xs">
+      <div className="flex items-center hover:bg-card-strong rounded-t-xl">
+        <button
+          onClick={() => setExpanded((e) => !e)}
+          className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 text-left"
+        >
+          <span className="text-ink-faint">{expanded ? '▾' : '▸'}</span>
+          <span className="text-ink font-medium">
+            {files.length} file{files.length === 1 ? '' : 's'} changed
+          </span>
+          <span className="diff-add-ink">+{totals.additions}</span>
+          <span className="diff-remove-ink">-{totals.deletions}</span>
+          {branchChip && <BranchChip {...branchChip} />}
+          {baseRef && <span className="ml-auto text-ink-faint">vs {baseRef}</span>}
+        </button>
+        {action && <div className="shrink-0 pr-2">{action}</div>}
+      </div>
       {expanded && (
         // Runs that touch dozens of files would otherwise push the composer
         // off-screen, so the list scrolls once it outgrows ~14 rows.

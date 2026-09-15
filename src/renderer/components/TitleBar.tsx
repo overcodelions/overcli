@@ -1,6 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../store';
+import {
+  attentionInbox,
+  attentionLabel,
+  attentionLevel,
+  groupAttention,
+  type AttentionItem,
+  type AttentionLevel,
+} from '../attentionInbox';
+import { WorkerAvatar } from './workers/WorkerAvatar';
+import { relativeTime } from './workers/workerDeskSelectors';
 import { mostRecentConversationId } from '../conversationLookup';
 import { useFlowsStore } from '../flowsStore';
 import { flowsLandingSegment, runAttentionBadge } from './flows/runTriage';
@@ -20,7 +30,6 @@ import { formatShortcutDef, SHORTCUTS } from '../shortcuts';
 import {
   SCHEDULE_LABELS,
   SHIFT_LABELS,
-  awaitingApproval,
   headlineStatus,
   scheduleSubjects,
   workerSubjects,
@@ -51,7 +60,13 @@ export function TitleBar() {
   const shiftProgress = useWorkersStore((s) => s.shiftProgress);
   const pendingHire = useWorkersStore((s) => s.pendingHire);
   const hireRunning = useWorkersStore((s) => s.hire.startedAt !== null);
+  const allocation = useWorkersStore((s) => s.allocation);
+  const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
+  const showFunds = useWorkersStore((s) => s.showFunds);
+  const resumeHire = useWorkersStore((s) => s.resumeHire);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  const setActiveOrchestration = useOrchestratorStore((s) => s.setActiveOrchestration);
+  const requestOrchestrationDetail = useOrchestratorStore((s) => s.requestOrchestrationDetail);
 
   const flowsBadge = useMemo(() => runAttentionBadge(flowRuns), [flowRuns]);
 
@@ -67,21 +82,9 @@ export function TitleBar() {
     return live > 0 ? { count: live, tone: 'running' } : undefined;
   }, [serviceStacks]);
 
-  // Workers carries the same kind of count, for the one thing on that tab
-  // that happens while you are somewhere else: a hire. It drafts for minutes
-  // and then sits on a review screen you cannot see from here, which read as
-  // the hire having quietly failed. Violet once it is drafted and waiting on
-  // you, sky while it is still being written.
-  const workersBadge: { count: number; tone: 'waiting' | 'running' } | undefined = pendingHire
-    ? { count: 1, tone: 'waiting' }
-    : hireRunning
-      ? { count: 1, tone: 'running' }
-      : undefined;
-
-  // The idle state shows a countdown, which is a lie the moment it's painted
-  // unless something re-renders it. One 30s tick, and only while something is
-  // actually armed — the indicators aren't on screen otherwise, so neither is
-  // the timer.
+  // The idle state shows a countdown, and the needs-you alert escalates with
+  // age; both are lies the moment they're painted unless something re-renders
+  // them. One 30s tick, and only while one of them is on screen.
   const anyArmed = useMemo(
     () =>
       Object.values(schedules).some((s) => s.enabled) ||
@@ -89,11 +92,88 @@ export function TitleBar() {
     [schedules, workers],
   );
   const [tick, setTick] = useState(0);
+
+  // Everything waiting on you, from every tab — see `attentionInbox`.
+  const inbox = useMemo(
+    () =>
+      attentionInbox({
+        runs: flowRuns,
+        orchestrations,
+        workers,
+        funding: allocation?.byWorker ?? null,
+        pendingHire,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [flowRuns, orchestrations, workers, allocation, pendingHire, tick],
+  );
+  const inboxLevel = attentionLevel(inbox);
+
   useEffect(() => {
-    if (!anyArmed) return;
+    if (!anyArmed && inbox.length === 0) return;
     const t = setInterval(() => setTick((n) => n + 1), 30_000);
     return () => clearInterval(t);
-  }, [anyArmed]);
+  }, [anyArmed, inbox.length]);
+
+  // Workers carries its share of the same list — a worker's proposals, its
+  // paused runs, an unfunded worker, a drafted hire — so the tab and the alert
+  // can't disagree. Sky while a hire is still being written.
+  const workersWaiting = inbox.filter((it) => it.workerId !== null || it.kind === 'hire').length;
+  const workersBadge: { count: number; tone: 'waiting' | 'running' } | undefined =
+    workersWaiting > 0
+      ? { count: workersWaiting, tone: 'waiting' }
+      : hireRunning
+        ? { count: 1, tone: 'running' }
+        : undefined;
+
+  function openAttention(item: AttentionItem): void {
+    switch (item.kind) {
+      case 'run':
+        // The run pane, not the worker's desk: Continue lives there.
+        navigateToTab(() => {
+          closeFlowEditor();
+          setActiveRun(item.runId);
+          setDetailMode('flows');
+        });
+        return;
+      case 'approval':
+        if (item.workerId) {
+          navigateToTab(
+            () => {
+              openWorkerActivity(item.workerId as string, item.orchestrationId, item.at);
+              setDetailMode('workers');
+            },
+            { rememberForChat: true },
+          );
+        } else {
+          navigateToTab(() => {
+            setActiveRun(null);
+            closeFlowEditor();
+            setActiveOrchestration(item.orchestrationId);
+            requestOrchestrationDetail(item.orchestrationId);
+            setDetailMode('orchestrator');
+          });
+        }
+        return;
+      case 'hire':
+        navigateToTab(
+          () => {
+            resumeHire();
+            setDetailMode('workers');
+          },
+          { rememberForChat: true },
+        );
+        return;
+      case 'unfunded':
+        navigateToTab(
+          () => {
+            closeWorkerEditor();
+            showFunds();
+            setDetailMode('workers');
+          },
+          { rememberForChat: true },
+        );
+    }
+  }
 
   // ONE chip for both species, naming whichever is actually asking for
   // attention. Shifts are listed first only as the tie-break: two sides in the
@@ -105,13 +185,15 @@ export function TitleBar() {
         {
           source: 'worker',
           subjects: workerSubjects(workers, nextShiftAt, shiftProgress),
-          waiting: awaitingApproval(orchestrations, 'worker'),
+          // Parked batches are the needs-you alert's to announce now; saying
+          // it here too would put the same fact on the bar twice.
+          waiting: 0,
           labels: SHIFT_LABELS,
         },
         {
           source: 'schedule',
           subjects: scheduleSubjects(schedules, nextFireAt),
-          waiting: awaitingApproval(orchestrations, 'schedule'),
+          waiting: 0,
           labels: SCHEDULE_LABELS,
         },
       ]),
@@ -253,6 +335,14 @@ export function TitleBar() {
           They stay text tabs (they swap the main pane), with a divider
           before the icon buttons so "tabs | icons" reads cleanly. */}
       <div className="flex items-center gap-1 no-drag">
+        {inboxLevel && (
+          <AttentionAlert
+            items={inbox}
+            level={inboxLevel}
+            workers={workers}
+            onOpen={openAttention}
+          />
+        )}
         {status && (
           <AutomationIndicator
             status={status}
@@ -303,6 +393,164 @@ export function TitleBar() {
         </svg>
       </button>
     </div>
+  );
+}
+
+/// The one loud thing the bar is allowed: everything waiting on you, from any
+/// tab, as a chip that opens a tray of the items themselves. How loud comes
+/// from `attentionLevel` — a tint when fresh, a slow violet breath once it has
+/// waited, amber and quicker for a stopped run.
+function AttentionAlert({
+  items,
+  level,
+  workers,
+  onOpen,
+}: {
+  items: AttentionItem[];
+  level: AttentionLevel;
+  workers: Record<string, Parameters<typeof WorkerAvatar>[0]['worker']>;
+  onOpen: (item: AttentionItem) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const chip =
+    level === 'blocking'
+      ? 'border border-amber-400/60 bg-amber-400/15 text-amber-700 dark:text-amber-300 font-semibold needs-you-loud'
+      : level === 'waiting'
+        ? 'border border-violet-400/60 bg-violet-400/20 text-violet-700 dark:text-violet-200 font-semibold needs-you-breathe'
+        : 'bg-violet-400/10 text-violet-700 dark:text-violet-300';
+  const now = Date.now();
+
+  return (
+    <div ref={ref} className="relative mr-1">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Things waiting on you"
+        className={'h-6 px-2.5 rounded-full text-xs flex items-center gap-1.5 ' + chip}
+      >
+        {level === 'calm' ? (
+          <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400" />
+        ) : (
+          <svg aria-hidden width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
+            <rect x="3" y="2.5" width="2" height="7" rx="0.6" />
+            <rect x="7" y="2.5" width="2" height="7" rx="0.6" />
+          </svg>
+        )}
+        {attentionLabel(items)}
+        <svg
+          aria-hidden
+          width="9"
+          height="9"
+          viewBox="0 0 10 10"
+          fill="none"
+          className={open ? '' : 'rotate-180'}
+        >
+          <path d="M2.5 6.5 5 4l2.5 2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1.5 z-50 w-[420px] rounded-lg border border-card-strong bg-surface-elevated shadow-2xl overflow-hidden">
+          <div className="px-3.5 py-2 border-b border-card-strong text-[10px] font-semibold uppercase tracking-wider text-violet-700 dark:text-violet-400">
+            Needs you · {items.length}
+          </div>
+          <div className="max-h-[60vh] overflow-y-auto">
+            {groupAttention(items).map((group) => (
+              <div key={group.kind}>
+                {/* Sticky, so thirty rows still say which pile you're in. */}
+                <div className="sticky top-0 z-10 flex items-center justify-between bg-surface-elevated px-3.5 pb-1 pt-2 text-[10px] text-ink-faint">
+                  <span>{group.title}</span>
+                  <span>{group.items.length}</span>
+                </div>
+                {group.items.map((item) => {
+                  const worker = item.workerId ? workers[item.workerId] : undefined;
+                  return (
+                    <button
+                      key={item.key}
+                      onClick={() => {
+                        setOpen(false);
+                        onOpen(item);
+                      }}
+                      className="group w-full flex items-center gap-2.5 px-3.5 py-2 text-left hover:bg-card-strong"
+                    >
+                      <span className="flex w-6 shrink-0 justify-center">
+                        {worker ? (
+                          <WorkerAvatar worker={worker} size="sm" />
+                        ) : (
+                          <AttentionGlyph kind={item.kind} />
+                        )}
+                      </span>
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="truncate text-xs text-ink">{item.title}</span>
+                        <span
+                          className={
+                            'truncate text-[11px] ' +
+                            (item.kind === 'run' && item.urgent
+                              ? 'text-amber-600 dark:text-amber-400'
+                              : 'text-ink-muted')
+                          }
+                        >
+                          {item.reason}
+                        </span>
+                      </span>
+                      {item.at !== null && (
+                        <span className="shrink-0 text-[11px] text-ink-faint">
+                          {relativeTime(item.at, now)}
+                        </span>
+                      )}
+                      {/* Every row the same weight — colour matches the row's
+                          reason, so only a run that is truly stuck goes amber. */}
+                      <span
+                        className={
+                          'shrink-0 rounded-md border px-2.5 py-0.5 text-[11px] font-medium ' +
+                          (item.kind === 'run' && item.urgent
+                            ? 'border-amber-400/40 bg-amber-400/15 text-amber-700 group-hover:bg-amber-400/25 dark:text-amber-300'
+                            : 'border-violet-400/40 bg-violet-400/15 text-violet-700 group-hover:bg-violet-400/25 dark:text-violet-300')
+                        }
+                      >
+                        Open
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// Stand-in for the avatar on rows that don't belong to a worker.
+function AttentionGlyph({ kind }: { kind: AttentionItem['kind'] }) {
+  return (
+    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-card-strong text-ink-muted">
+      <svg aria-hidden width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        {kind === 'run' ? (
+          <path d="M3 4h4v8H3zM9 4h4v8H9z" />
+        ) : kind === 'approval' ? (
+          <path d="M3 8.5 6.5 12 13 4.5" />
+        ) : (
+          <path d="M8 3v10M3 8h10" />
+        )}
+      </svg>
+    </span>
   );
 }
 
