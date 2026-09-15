@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { restartDependents, shouldRestartOnChange, startOrder } from './types';
+import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
 import type { ServiceSpec } from './types';
 
 function spec(over: Partial<ServiceSpec> & { id: string }): ServiceSpec {
@@ -27,6 +27,14 @@ describe('shouldRestartOnChange', () => {
 
   it('does nothing when nothing is watched', () => {
     expect(shouldRestartOnChange({ selfReloads: false })).toBe(false);
+  });
+});
+
+describe('normalizeWatchPatterns', () => {
+  it('keeps unique checkout-relative globs and rejects paths that escape it', () => {
+    expect(normalizeWatchPatterns([
+      ' src/** ', 'src/**', 'app\\**\\*.py', '../other/**', '/tmp/**', 'C:\\tmp\\**',
+    ])).toEqual(['src/**', 'app/**/*.py']);
   });
 });
 

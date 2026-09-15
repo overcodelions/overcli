@@ -226,6 +226,62 @@ describe('Supervisor.start', () => {
   });
 });
 
+describe('Supervisor code watching', () => {
+  it('debounces matching changes and restarts an opted-in live service', async () => {
+    vi.useFakeTimers();
+    try {
+      let changed: ((path: string) => void) | undefined;
+      const close = vi.fn();
+      const { deps, spawns } = harness({
+        watchFiles: (_checkout, _patterns, onChange) => {
+          changed = onChange;
+          return { close };
+        },
+      });
+      const api = spec({ id: 'api', watch: ['src/**'] });
+      const sup = new Supervisor('mine', [api], [binding('api')], deps);
+
+      await sup.start('api');
+      changed?.('src/App.java');
+      changed?.('src/Other.java');
+      await vi.advanceTimersByTimeAsync(499);
+      expect(spawns).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(spawns).toHaveLength(2);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(sup.log('api')).toContain('── code changed · src/Other.java · restarting ──');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not install an outer watcher for a self-reloading service', async () => {
+    const watchFiles = vi.fn(() => ({ close: vi.fn() }));
+    const { deps } = harness({ watchFiles });
+    const vite = spec({ id: 'web', selfReloads: true, watch: ['src/**'] });
+    const sup = new Supervisor('mine', [vite], [binding('web')], deps);
+
+    await sup.start('web');
+
+    expect(watchFiles).not.toHaveBeenCalled();
+  });
+
+  it('reconfigures watching when service settings change without restarting it', async () => {
+    const close = vi.fn();
+    const watchFiles = vi.fn(() => ({ close }));
+    const { deps, spawns } = harness({ watchFiles });
+    const api = spec({ id: 'api' });
+    const sup = new Supervisor('mine', [api], [binding('api')], deps);
+    await sup.start('api');
+
+    sup.update([{ ...api, watch: ['app/**'] }], [binding('api')]);
+
+    expect(spawns).toHaveLength(1);
+    expect(watchFiles).toHaveBeenCalledWith('/repos/main', ['app/**'], expect.any(Function));
+  });
+});
+
 describe('Supervisor readiness', () => {
   it('waits for the log pattern a dev server prints', async () => {
     const { deps, procs } = harness();

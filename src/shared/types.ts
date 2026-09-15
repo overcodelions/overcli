@@ -2843,6 +2843,12 @@ export interface IPCInvokeMap {
   }) => void;
   /// Replace what a service runs, as argv. Takes effect on the next start.
   'services:setCommand': (args: { workspaceId: string; serviceId: string; command: string[] }) => void;
+  'services:setWatch': (args: {
+    workspaceId: string;
+    serviceId: string;
+    selfReloads: boolean;
+    watch: string[];
+  }) => void;
   /// Change launch mode, restarting the service immediately when it is live.
   'services:setDebug': (args: {
     workspaceId: string;
