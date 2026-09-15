@@ -610,6 +610,28 @@ html, body {
   50%      { opacity: 0.7;  transform: translateY(3px); }
 }
 
+/* Title-bar "needs you" alert. Two speeds on purpose: violet breathes slowly
+ * for work that has waited a while, amber pulses faster for a run stopped
+ * mid-flight. A fresh item gets no motion at all — see attentionLevel. */
+.needs-you-breathe {
+  animation: needs-you-breathe 2400ms ease-in-out infinite;
+}
+@keyframes needs-you-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.45); }
+  50%      { box-shadow: 0 0 0 4px rgba(167, 139, 250, 0.12); }
+}
+.needs-you-loud {
+  animation: needs-you-loud 1400ms ease-in-out infinite;
+}
+@keyframes needs-you-loud {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.55); }
+  50%      { box-shadow: 0 0 0 5px rgba(251, 191, 36, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .needs-you-breathe,
+  .needs-you-loud { animation: none; }
+}
+
 .placeholder-konami::placeholder {
   color: color-mix(in srgb, var(--c-ink-faint) 74%, var(--c-accent));
   text-shadow: 0 0 5px color-mix(in srgb, var(--c-accent) 22%, transparent);
