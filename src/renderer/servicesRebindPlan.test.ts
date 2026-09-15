@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bulkRefOptions, handoffOffer, planBulkRebind, planPinRebind } from './servicesRebindPlan';
+import { bulkRefOptions, handoffOffer, planBulkRebind, planChangedFilesRebind, planPinRebind } from './servicesRebindPlan';
 import type { ServiceSpec } from '@shared/services';
 import type { WorktreeChoice } from './worktreeChoices';
 
@@ -123,5 +123,82 @@ describe('handoffOffer', () => {
   it('does not offer to move only pinned services', () => {
     const pinnedOnly = [spec({ id: 'security', pinnedRef: 'master' })];
     expect(handoffOffer(pinnedOnly, choices, onMaster, 'feat/x')).toBeNull();
+  });
+});
+
+describe('planChangedFilesRebind', () => {
+  const stack = [
+    spec({ id: 'acme-api', subpath: 'api' }),
+    spec({ id: 'acme-web', subpath: './web/' }),
+    spec({ id: 'billing' }),
+  ];
+  const repoChoices = {
+    'acme-api': [choice('master', '/repos/acme'), choice('feat/x', '/wt/acme-x')],
+    'acme-web': [choice('master', '/repos/acme'), choice('feat/x', '/wt/acme-x')],
+    billing: [choice('master', '/repos/billing')],
+  };
+  const onMain = { 'acme-api': '/repos/acme', 'acme-web': '/repos/acme', billing: '/repos/billing' };
+
+  it('moves only the services whose subpath holds a changed file', () => {
+    const plan = planChangedFilesRebind(stack, onMain, repoChoices, [{ path: '/wt/acme-x' }], [
+      'web/src/app.ts',
+      'README.md',
+    ]);
+    expect(plan.targets).toEqual([{ serviceId: 'acme-web', ref: 'feat/x', path: '/wt/acme-x' }]);
+    expect(plan.pinned).toEqual([]);
+    expect(plan.alreadyThere).toEqual([]);
+  });
+
+  it('treats a service with no subpath as owning its whole repo', () => {
+    const plan = planChangedFilesRebind(
+      [spec({ id: 'billing' })],
+      onMain,
+      { billing: [choice('master', '/repos/billing'), choice('fix/y', '/wt/billing-y')] },
+      [{ path: '/wt/billing-y' }],
+      ['anything.ts'],
+    );
+    expect(plan.targets).toEqual([{ serviceId: 'billing', ref: 'fix/y', path: '/wt/billing-y' }]);
+  });
+
+  it('ignores services from repos the conversation did not touch', () => {
+    const plan = planChangedFilesRebind(stack, onMain, repoChoices, [{ path: '/wt/acme-x' }], ['api/a.ts']);
+    expect(plan.targets.map((t) => t.serviceId)).toEqual(['acme-api']);
+  });
+
+  it('strips a workspace member prefix before matching subpaths', () => {
+    const plan = planChangedFilesRebind(
+      stack,
+      onMain,
+      repoChoices,
+      [{ path: '/wt/acme-x', prefix: 'acme' }],
+      ['acme/api/a.ts', 'billing/api/b.ts'],
+    );
+    expect(plan.targets.map((t) => t.serviceId)).toEqual(['acme-api']);
+  });
+
+  it('reports a pin in the way instead of planning a move the engine will refuse', () => {
+    const plan = planChangedFilesRebind(
+      [spec({ id: 'acme-api', subpath: 'api', pinnedRef: 'master' })],
+      onMain,
+      repoChoices,
+      [{ path: '/wt/acme-x' }],
+      ['api/a.ts'],
+    );
+    expect(plan.targets).toEqual([]);
+    expect(plan.pinned).toEqual([
+      { serviceId: 'acme-api', pinnedRef: 'master', target: { serviceId: 'acme-api', ref: 'feat/x', path: '/wt/acme-x' } },
+    ]);
+  });
+
+  it('marks owners already running from the checkout', () => {
+    const plan = planChangedFilesRebind(
+      stack,
+      { ...onMain, 'acme-api': '/wt/acme-x/' },
+      repoChoices,
+      [{ path: '/wt/acme-x' }],
+      ['api/a.ts'],
+    );
+    expect(plan.alreadyThere).toEqual(['acme-api']);
+    expect(plan.targets).toEqual([]);
   });
 });

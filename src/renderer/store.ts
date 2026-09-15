@@ -61,12 +61,7 @@ import {
   isActiveConversation,
   serviceWorkspaceIdsForConversation,
 } from './conversationLookup';
-import {
-  appendServiceLogContext,
-  isRunningServiceStatus,
-  serviceMentionIds,
-  type ServiceLogSnapshot,
-} from './serviceLogContext';
+import { attachMentionedServiceLogs } from './serviceLogContext';
 import {
   createUiSlice,
   uiSliceInitialState,
@@ -3368,36 +3363,16 @@ export const useStore = create<StoreState>((set, get) => ({
     // model receives a fresh bounded tail from every matching live service.
     // Resolve at send time rather than completion time so the attached output
     // includes everything printed while the user finished typing.
-    const mentionedServiceIds = serviceMentionIds(prompt);
-    if (mentionedServiceIds.length > 0) {
-      const workspaceIds = serviceWorkspaceIdsForConversation(lookupSource(state), conversationId);
-      if (workspaceIds.length > 0) {
-        try {
-          const views = await window.overcli.invoke('services:viewAll', workspaceIds);
-          const targets = views.flatMap((view) => mentionedServiceIds.flatMap((serviceId) => {
-            const spec = view.services.find((service) => service.id === serviceId);
-            const runtime = view.runtimes.find((candidate) => candidate.serviceId === serviceId);
-            return spec && runtime && isRunningServiceStatus(runtime.status)
-              ? [{ view, spec, runtime }]
-              : [];
-          }));
-          const snapshots: ServiceLogSnapshot[] = await Promise.all(targets.map(async ({ view, spec, runtime }) => ({
-            workspaceId: view.workspaceId,
-            serviceId: spec.id,
-            name: spec.name,
-            status: runtime.status,
-            lines: await window.overcli.invoke('services:log', {
-              workspaceId: view.workspaceId,
-              serviceId: spec.id,
-            }),
-          })));
-          outgoingPrompt = appendServiceLogContext(outgoingPrompt, snapshots);
-        } catch (err) {
-          // Log attachment is additive. A stale service supervisor must not
-          // eat the user's actual turn or leave its optimistic runner stuck.
-          logToMain('warn', 'renderer.serviceLogContext', `Could not attach service logs: ${String(err)}`);
-        }
-      }
+    const workspaceIds = serviceWorkspaceIdsForConversation(lookupSource(state), conversationId);
+    try {
+      outgoingPrompt = await attachMentionedServiceLogs(outgoingPrompt, workspaceIds, {
+        views: (ids) => window.overcli.invoke('services:viewAll', ids),
+        log: (workspaceId, serviceId) => window.overcli.invoke('services:log', { workspaceId, serviceId }),
+      });
+    } catch (err) {
+      // Log attachment is additive. A stale service supervisor must not
+      // eat the user's actual turn or leave its optimistic runner stuck.
+      logToMain('warn', 'renderer.serviceLogContext', `Could not attach service logs: ${String(err)}`);
     }
 
     // Stamped BEFORE the send goes out, not after it comes back. Hitting
@@ -4412,16 +4387,18 @@ export const useStore = create<StoreState>((set, get) => ({
         useWorkersStore.getState().removeLocal(event.id);
       });
     } else if (
-      // `serviceRebound` needs nothing here: the engine writes the marker into
-      // the log, and it arrives as a line like any other.
+      // The rebind marker also reaches the log as a line; the event itself
+      // moves the row's branch chip without waiting for the rebind to finish.
       event.type === 'serviceStatus' ||
-      event.type === 'serviceLine'
+      event.type === 'serviceLine' ||
+      event.type === 'serviceRebound'
     ) {
       // Services are long-lived runtime shared by the whole workspace, so
       // they live in their own store — see servicesStore.ts.
       void import('./servicesStore').then(({ useServicesStore }) => {
         const store = useServicesStore.getState();
         if (event.type === 'serviceStatus') store.ingestStatus(event.workspaceId, event.runtime);
+        else if (event.type === 'serviceRebound') store.ingestRebound(event.workspaceId, event.serviceId, event.to);
         else store.ingestLine(event.workspaceId, event.serviceId, event.line);
       });
     }

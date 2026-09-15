@@ -2915,6 +2915,10 @@ export interface IPCInvokeMap {
     branches: BranchChoice[];
     defaultBranch?: string;
   };
+  /// Which of these service folders have a package.json but no node_modules —
+  /// a fresh worktree, where a start would fail on missing modules. Returns
+  /// the folders that need an install, as given.
+  'services:needsInstall': (dirs: string[]) => string[];
   /// Check a branch out into the checkout this service is bound to. Refused on
   /// a dirty tree — discarding uncommitted work to start a service is not a
   /// trade the app makes on its own.

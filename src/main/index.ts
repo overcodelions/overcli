@@ -1603,6 +1603,16 @@ export function registerIpc(): void {
     services().worktreesFor(checkout),
   );
   ipcMain.handle('services:refs', (_e, checkout: string) => services().refsFor(checkout));
+  // Existence checks only — nothing is read, so this cannot leak file contents.
+  ipcMain.handle('services:needsInstall', (_e, dirs: string[]) =>
+    (Array.isArray(dirs) ? dirs : []).filter(
+      (dir) =>
+        typeof dir === 'string' &&
+        path.isAbsolute(dir) &&
+        fs.existsSync(path.join(dir, 'package.json')) &&
+        !fs.existsSync(path.join(dir, 'node_modules')),
+    ),
+  );
   ipcMain.handle('services:checkoutRef', (_e, { workspaceId, serviceId, ref }) =>
     services().checkoutRef(workspaceId, serviceId, ref),
   );

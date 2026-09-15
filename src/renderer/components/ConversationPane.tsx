@@ -9,6 +9,8 @@ import { FileEditorPane } from './FileEditorPane';
 import { ExplorerPane } from './ExplorerPane';
 import { ResizableDivider } from './ResizableDivider';
 import { ChangesBar } from './ChangesBar';
+import { RunOnBranchButton } from './RunOnBranchButton';
+import { serviceWorkspaceIdsForConversation } from '../conversationLookup';
 import { isEverydayProject } from '@shared/everydayProjects';
 import { RunningIndicator } from './RunningIndicator';
 import { ManualCommand } from './ManualCommand';
@@ -45,6 +47,16 @@ export function ConversationPane() {
   const events = useRunnerEvents(convId);
   const gitStatus = useStore((s) => (convId ? s.gitStatusByConv[convId] : undefined));
   const refreshGitStatus = useStore((s) => s.refreshGitStatus);
+  const projects = useStore((s) => s.projects);
+  const workspaces = useStore((s) => s.workspaces);
+  const serviceWorkspaceIds = useMemo(
+    () => (convId ? serviceWorkspaceIdsForConversation({ projects, workspaces }, convId) : []),
+    [projects, workspaces, convId],
+  );
+  const changedPaths = useMemo(
+    () => (gitStatus?.changes ?? []).map((c) => c.path),
+    [gitStatus?.changes],
+  );
   // Count of file-modifying tool uses in this conversation. When it
   // changes we re-probe git — that keeps the ChangesBar and the
   // header +/- badge in lockstep with the working tree.
@@ -139,6 +151,15 @@ export function ConversationPane() {
             // minted, not in the project's checkout.
             worktree={!!conv?.worktreePath}
             plain={plainLanguage}
+            action={
+              conv?.worktreePath && !plainLanguage ? (
+                <RunOnBranchButton
+                  workspaceIds={serviceWorkspaceIds}
+                  checkouts={[{ path: conv.worktreePath }]}
+                  files={changedPaths}
+                />
+              ) : undefined
+            }
           />
           <InputBar conversationId={convId} />
           <StatsFooter conversationId={convId} />

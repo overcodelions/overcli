@@ -199,6 +199,9 @@ interface ServicesState {
 
   ingestStatus(workspaceId: string, runtime: ServiceRuntime): void;
   ingestLine(workspaceId: string, serviceId: string, line: string): void;
+  /// A service was pointed at another checkout. The ref shows at once; the
+  /// path follows from a reload, since the event does not carry it.
+  ingestRebound(workspaceId: string, serviceId: string, to: string): void;
   /// Empties a service's output here and in the engine, so reselecting it
   /// does not bring the old lines back.
   clearLog(workspaceId: string, serviceId: string): Promise<void>;
@@ -751,6 +754,26 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     pendingLines.delete(key);
     set((s) => ({ logs: { ...s.logs, [key]: [] }, exceptions: { ...s.exceptions, [key]: emptyExceptionLog() } }));
     await window.overcli.invoke('services:clearLog', { workspaceId, serviceId });
+  },
+
+  ingestRebound(workspaceId, serviceId, to) {
+    // Whoever asked for the rebind is still awaiting it — the call resolves
+    // only once the relaunched service is ready, minutes for a cold build —
+    // so the row must not wait on that caller's reload to show where it went.
+    set((s) => {
+      const stack = s.stacks[workspaceId];
+      if (!stack) return {};
+      return {
+        stacks: {
+          ...s.stacks,
+          [workspaceId]: {
+            ...stack,
+            bindings: stack.bindings.map((b) => (b.serviceId === serviceId ? { ...b, ref: to } : b)),
+          },
+        },
+      };
+    });
+    if (get().stacks[workspaceId]) void get().loadAll([workspaceId]);
   },
 
   ingestLine(workspaceId, serviceId, line) {

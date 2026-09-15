@@ -63,6 +63,9 @@ import { placeWorkerExchanges } from './workerExchangeTimeline';
 import { useWorkersStore } from '../../workersStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { orchestrationForRun } from '../workers/workerDeskSelectors';
+import { serviceWorkspaceIdsForFlowRun } from '../../conversationLookup';
+import { attachMentionedServiceLogs } from '../../serviceLogContext';
+import { RunOnBranchButton } from '../RunOnBranchButton';
 
 // Bounds for the worktree file-browser tree (same feel as ExplorerPane).
 const TREE_MIN = 200;
@@ -1897,6 +1900,22 @@ function HijackComposer({
   //     directly off `run.workspaceWorktrees`.
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
+  const serviceWorkspaceIds = useMemo(
+    () => serviceWorkspaceIdsForFlowRun({ projects, workspaces }, run),
+    [projects, workspaces, run],
+  );
+  const changedPaths = useMemo(() => changes.map((c) => c.path), [changes]);
+  // Where this run's changes live, for running their services there. Only
+  // minted worktrees: an in-place run already is the checkout services use.
+  const changedCheckouts = useMemo(
+    () =>
+      run.workspaceWorktrees && run.workspaceWorktrees.length > 0
+        ? run.workspaceWorktrees.map((w) => ({ path: w.worktreePath, prefix: w.name }))
+        : run.worktreePath
+          ? [{ path: run.worktreePath }]
+          : [],
+    [run.workspaceWorktrees, run.worktreePath],
+  );
   const workspaceProjects = useMemo(() => {
     if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
       // Branch name and captured fork point travel in separate slots: main
@@ -2074,21 +2093,27 @@ function HijackComposer({
     // a disconnected fresh thread rather than the step's. Undefined when
     // this participant hasn't run yet — then it correctly starts fresh.
     const resumeSessionId = run.sessionIdsByParticipant?.[participant.id];
-    void window.overcli.invoke('runner:send', {
-      conversationId: id,
-      prompt,
-      backend: participant.backend,
-      cwd: run.projectPath,
-      model: effectiveModel,
-      sessionId: resumeSessionId,
-      // Hijack turns inherit the run's default permission — bypass for
-      // worker/primary participants that need write access, default
-      // otherwise. The user can be more conservative by adjusting
-      // settings; runtime's preflight already gated the run.
-      permissionMode: 'bypassPermissions',
-      chrome: run.chrome,
-      attachments,
-    });
+    void attachMentionedServiceLogs(prompt, serviceWorkspaceIds, {
+      views: (ids) => window.overcli.invoke('services:viewAll', ids),
+      log: (workspaceId, serviceId) => window.overcli.invoke('services:log', { workspaceId, serviceId }),
+    })
+      .catch(() => prompt)
+      .then((outgoingPrompt) => window.overcli.invoke('runner:send', {
+        conversationId: id,
+        prompt: outgoingPrompt,
+        displayText: prompt,
+        backend: participant.backend,
+        cwd: run.projectPath,
+        model: effectiveModel,
+        sessionId: resumeSessionId,
+        // Hijack turns inherit the run's default permission — bypass for
+        // worker/primary participants that need write access, default
+        // otherwise. The user can be more conservative by adjusting
+        // settings; runtime's preflight already gated the run.
+        permissionMode: 'bypassPermissions',
+        chrome: run.chrome,
+        attachments,
+      }));
     // Tell the run the user just drove it. Both kinds of turn count — a
     // button-driven compact turn is still the user's click — and neither
     // reaches the run any other way, since `runner:send` is
@@ -2134,6 +2159,13 @@ function HijackComposer({
         // when `workspaceWorktrees` is set; otherwise the run works in the
         // project's own checkout and the chip says so.
         worktree={!!run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0}
+        action={
+          <RunOnBranchButton
+            workspaceIds={serviceWorkspaceIds}
+            checkouts={changedCheckouts}
+            files={changedPaths}
+          />
+        }
       />
       {run.pendingSteer && (
         <div className="flex items-center gap-2 text-[11px] min-w-0 rounded-md border border-violet-500/35 bg-violet-500/10 px-2 py-1">
@@ -2155,6 +2187,8 @@ function HijackComposer({
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
+        rootPath={run.projectPath}
+        serviceWorkspaceIds={serviceWorkspaceIds}
         onSend={chromeGuard.send}
         onStop={() => {
           if (convId) void stop(convId);
@@ -3101,4 +3135,3 @@ function formatTokens(n: number): string {
 
 // Re-exported types referenced by sibling components in this folder.
 export type { FlowStepAttempt };
-

@@ -11,6 +11,11 @@ export interface ServiceLogSnapshot {
   lines: string[];
 }
 
+export interface ServiceLogSource {
+  views(workspaceIds: string[]): Promise<StackView[]>;
+  log(workspaceId: string, serviceId: string): Promise<string[]>;
+}
+
 export function isRunningServiceStatus(status: ServiceRuntime['status']): boolean {
   return status === 'ready' || status === 'starting' || status === 'unready';
 }
@@ -41,6 +46,29 @@ export function runningServiceMentions(stacks: StackView[]): Array<{
       }];
     }),
   );
+}
+
+/// Resolve every live `@service:<id>` reference at send time. Keeping this
+/// transport concern here lets regular conversations and flow hijack turns
+/// attach the same bounded, untrusted log context without duplicating IPC
+/// and runtime-status rules.
+export async function attachMentionedServiceLogs(
+  prompt: string,
+  workspaceIds: string[],
+  source: ServiceLogSource,
+): Promise<string> {
+  const mentionedIds = serviceMentionIds(prompt);
+  if (mentionedIds.length === 0 || workspaceIds.length === 0) return prompt;
+
+  const mentions = runningServiceMentions(await source.views(workspaceIds))
+    .filter((service) => mentionedIds.includes(service.serviceId));
+  const snapshots: ServiceLogSnapshot[] = await Promise.all(
+    mentions.map(async (service) => ({
+      ...service,
+      lines: await source.log(service.workspaceId, service.serviceId),
+    })),
+  );
+  return appendServiceLogContext(prompt, snapshots);
 }
 
 /// Add runtime output to the model-facing prompt. The renderer still gives

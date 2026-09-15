@@ -15,6 +15,7 @@
 
 import type { ServiceSpec } from '@shared/services';
 import type { WorktreeChoice } from './worktreeChoices';
+import { isSamePath } from '@shared/pathScope';
 
 export interface RebindTarget {
   serviceId: string;
@@ -108,6 +109,73 @@ export function bulkRefOptions(
   return [...counts.entries()]
     .map(([ref, reachable]) => ({ ref, reachable }))
     .sort((a, b) => b.reachable - a.reachable || a.ref.localeCompare(b.ref));
+}
+
+/// A checkout a conversation changed files in. `prefix` is set for workspace
+/// runs, whose change lists name each file `<member>/<path>`.
+export interface ChangedCheckout {
+  path: string;
+  prefix?: string;
+}
+
+export interface ChangedFilesPlan {
+  /// Services that own a changed file and can move to the checkout it is in.
+  targets: RebindTarget[];
+  /// Owners that already run from that checkout — nothing to move, but still
+  /// worth a restart so they pick the changes up.
+  alreadyThere: string[];
+  /// Owners pinned to another ref. The supervisor refuses to move them, so
+  /// they are shown with the pin that is in the way rather than dropped.
+  pinned: { serviceId: string; pinnedRef: string; target: RebindTarget }[];
+}
+
+function normalizeSubpath(subpath: string | undefined): string {
+  return (subpath ?? '').replace(/\\/g, '/').replace(/^\.\/?/, '').replace(/\/+$/, '');
+}
+
+/// Which services the changes in these checkouts belong to, and what it takes
+/// to run them there.
+///
+/// Matched by checkout PATH, not by branch name: git lists every worktree of a
+/// service's repo, so the service whose repo has a worktree at the path the
+/// conversation edited is the one in that repo — regardless of whether the
+/// tree is on a branch or detached. Within a repo, a service owns a change when
+/// the file is under its subpath (or it has none: the whole repo is its code).
+export function planChangedFilesRebind(
+  services: readonly ServiceSpec[],
+  currentPaths: Readonly<Record<string, string | undefined>>,
+  choicesByService: Readonly<Record<string, WorktreeChoice[]>>,
+  checkouts: readonly ChangedCheckout[],
+  files: readonly string[],
+): ChangedFilesPlan {
+  const plan: ChangedFilesPlan = { targets: [], alreadyThere: [], pinned: [] };
+
+  for (const spec of services) {
+    const choices = choicesByService[spec.id] ?? [];
+    for (const checkout of checkouts) {
+      const match = choices.find((c) => isSamePath(c.path, checkout.path));
+      if (!match) continue;
+
+      const lead = checkout.prefix ? `${checkout.prefix}/` : '';
+      const inCheckout = files
+        .map((f) => f.replace(/\\/g, '/'))
+        .filter((f) => f.startsWith(lead))
+        .map((f) => f.slice(lead.length));
+      const sub = normalizeSubpath(spec.subpath);
+      const owns = inCheckout.some((f) => !sub || f === sub || f.startsWith(`${sub}/`));
+      if (!owns) continue;
+
+      const target = { serviceId: spec.id, ref: match.ref, path: match.path };
+      const current = currentPaths[spec.id];
+      if (current && isSamePath(current, match.path)) plan.alreadyThere.push(spec.id);
+      else if (spec.pinnedRef && spec.pinnedRef !== match.ref) {
+        plan.pinned.push({ serviceId: spec.id, pinnedRef: spec.pinnedRef, target });
+      } else plan.targets.push(target);
+      break;
+    }
+  }
+
+  return plan;
 }
 
 export interface HandoffOffer {

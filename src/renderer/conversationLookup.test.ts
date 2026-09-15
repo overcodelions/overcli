@@ -7,8 +7,10 @@ import {
   findOwnerProject,
   mostRecentConversationId,
   serviceWorkspaceIdsForConversation,
+  serviceWorkspaceIdsForFlowRun,
 } from './conversationLookup';
 import type { Conversation, Project, Workspace } from '../shared/types';
+import type { FlowRun } from '../shared/flows/schema';
 
 function conv(id: string, overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -103,6 +105,42 @@ describe('conversationLookup', () => {
     const src = { projects: [p], workspaces: [direct, alsoContains, unrelated] };
     expect(serviceWorkspaceIdsForConversation(src, 'project-conv')).toEqual(['ws1', 'ws2']);
     expect(serviceWorkspaceIdsForConversation(src, 'workspace-conv')).toEqual(['ws1']);
+  });
+
+  it('resolves services for a single-project flow running in a minted worktree', () => {
+    const p = project('p1', '/repo', []);
+    const ws = { ...workspace('ws1', '/workspace', []), projectIds: ['p1'] };
+    const run = {
+      id: 'run1',
+      createdAt: 0,
+      projectPath: '/tmp/flow-worktree',
+      sourceProjectPath: '/repo',
+      conversationIds: { builder: 'flow-conv' },
+      flowSnapshot: {
+        participants: [{ id: 'builder', name: 'Builder', backend: 'claude', model: 'sonnet' }],
+      },
+    } as unknown as FlowRun;
+    expect(serviceWorkspaceIdsForFlowRun({ projects: [p], workspaces: [ws] }, run)).toEqual(['ws1']);
+    expect(serviceWorkspaceIdsForConversation({
+      projects: [p],
+      workspaces: [ws],
+      flowRuns: { run1: run },
+    }, 'flow-conv')).toEqual(['ws1']);
+  });
+
+  it('resolves services for a workspace flow running in member worktrees', () => {
+    const api = project('api', '/repos/api', []);
+    const web = project('web', '/repos/web', []);
+    const ws = { ...workspace('ws1', '/workspace', []), projectIds: ['api', 'web'] };
+    const run = {
+      projectPath: '/tmp/coordinator',
+      sourceProjectPath: '/workspace',
+      workspaceWorktrees: [
+        { name: 'api', projectPath: '/repos/api', worktreePath: '/tmp/api', branchName: 'flow/run' },
+        { name: 'web', projectPath: '/repos/web', worktreePath: '/tmp/web', branchName: 'flow/run' },
+      ],
+    } as unknown as FlowRun;
+    expect(serviceWorkspaceIdsForFlowRun({ projects: [api, web], workspaces: [ws] }, run)).toEqual(['ws1']);
   });
 
   it('reuses the cached index across consecutive lookups', () => {
