@@ -1572,6 +1572,9 @@ export function registerIpc(): void {
   ipcMain.handle('services:setCommand', (_e, { workspaceId, serviceId, command }) =>
     services().setCommand(workspaceId, serviceId, command),
   );
+  ipcMain.handle('services:setWatch', (_e, { workspaceId, serviceId, selfReloads, watch }) =>
+    services().setWatch(workspaceId, serviceId, selfReloads, watch),
+  );
   ipcMain.handle('services:setDebug', (_e, { workspaceId, serviceId, enabled, debugPort }) =>
     services().setDebug(workspaceId, serviceId, enabled, debugPort),
   );

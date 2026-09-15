@@ -61,10 +61,11 @@ import {
 } from './machineSecrets';
 import { isSecretName, SECRET_MASK } from '../../shared/machineValues';
 import { createLogSink } from './logFile';
+import { watchServiceFiles } from './fileWatch';
 import type { CaughtException } from '../../shared/exceptions';
 import { Supervisor, type SupervisorEvent } from './supervisor';
 import { taskPresets } from './taskPresets';
-import { startOrder } from './types';
+import { normalizeWatchPatterns, startOrder } from './types';
 import type {
   MachineEntry,
   MachineValuesView,
@@ -346,6 +347,17 @@ export class ServicesManager {
   /// whose detected command was wrong. Takes effect on the next start.
   setCommand(workspaceId: string, serviceId: string, command: string[]): void {
     this.patchService(workspaceId, serviceId, (spec) => ({ ...spec, command, commandEdited: true }));
+  }
+
+  /// Choose who reacts to source edits. `selfReloads` means the child owns
+  /// reloads; watch globs mean Overcli restarts it; neither means leave it.
+  setWatch(workspaceId: string, serviceId: string, selfReloads: boolean, watch: string[]): void {
+    const cleaned = normalizeWatchPatterns(watch);
+    this.patchService(workspaceId, serviceId, (spec) => ({
+      ...spec,
+      selfReloads,
+      watch: selfReloads || cleaned.length === 0 ? undefined : cleaned,
+    }));
   }
 
   /// The spec an import is about to save, with the command someone typed kept.
@@ -1369,6 +1381,7 @@ export class ServicesManager {
       secretValues: () => Object.values(loadSecretValues(this.dataDir, this.cipher)),
       mirrorLocalConfig: (serviceId, checkout) => this.mirrorLocalConfig(workspaceId, serviceId, checkout),
       logSink: createLogSink((serviceId) => serviceLogFile(this.dataDir, workspaceId, serviceId)),
+      watchFiles: watchServiceFiles,
     });
     supervisor.on((event) => this.emit({ ...event, workspaceId }));
     this.supervisors.set(workspaceId, supervisor);

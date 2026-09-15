@@ -1272,6 +1272,9 @@ function Trouble({
   if (spec.selfReloads && runtime.status === 'ready') {
     return <span className="flex-shrink-0 text-[10px] text-ink-faint">reloads itself</span>;
   }
+  if ((spec.watch?.length ?? 0) > 0 && runtime.status === 'ready') {
+    return <span className="flex-shrink-0 text-[10px] text-ink-faint">restarts on changes</span>;
+  }
   return null;
 }
 
@@ -2161,6 +2164,11 @@ function Settings({
               </SettingsField>
             )}
           </div>
+          {!spec.task && (
+            <SettingsField label="Code changes" note="choose who reloads this service">
+              <ReloadEditor workspaceId={workspaceId} spec={spec} />
+            </SettingsField>
+          )}
         </SettingsCard>
 
         <div className="grid items-start gap-4 xl:grid-cols-2">
@@ -2245,6 +2253,77 @@ function Settings({
         </div>
       </div>
     </div>
+  );
+}
+
+function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
+  const setWatch = useServicesStore((s) => s.setWatch);
+  const mode = spec.selfReloads ? 'self' : (spec.watch?.length ?? 0) > 0 ? 'overcli' : 'off';
+  const [patterns, setPatterns] = useState((spec.watch ?? ['src/**']).join(', '));
+  useEffect(() => setPatterns((spec.watch ?? ['src/**']).join(', ')), [spec.id, spec.watch]);
+  const savePatterns = () => {
+    const watch = patterns.split(',').map((pattern) => pattern.trim()).filter(Boolean);
+    if (watch.length > 0) void setWatch(workspaceId, spec.id, false, watch);
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap gap-1.5">
+        <ReloadChoice on={mode === 'self'} onClick={() => void setWatch(workspaceId, spec.id, true, [])}>
+          Reloads itself
+        </ReloadChoice>
+        <ReloadChoice on={mode === 'overcli'} onClick={() => void setWatch(workspaceId, spec.id, false, spec.watch ?? ['src/**'])}>
+          Restart service
+        </ReloadChoice>
+        <ReloadChoice on={mode === 'off'} onClick={() => void setWatch(workspaceId, spec.id, false, [])}>
+          Do nothing
+        </ReloadChoice>
+      </div>
+      {mode === 'overcli' && (
+        <input
+          className="field w-full px-2 py-1.5 font-mono text-[11px]"
+          value={patterns}
+          onChange={(e) => setPatterns(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') savePatterns();
+            if (e.key === 'Escape') setPatterns((spec.watch ?? []).join(', '));
+          }}
+          onBlur={savePatterns}
+          placeholder="src/**, config/**"
+        />
+      )}
+      <span className="text-[10.5px] text-ink-faint">
+        {mode === 'self'
+          ? 'Vite, devtools, or the framework watches its own process.'
+          : mode === 'overcli'
+            ? 'Changes are debounced, then the process restarts and readiness is checked again.'
+            : 'The running process is left alone when files change.'}
+      </span>
+    </div>
+  );
+}
+
+function ReloadChoice({
+  on,
+  onClick,
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'rounded-full border px-2.5 py-1 text-[10.5px] transition ' +
+        (on
+          ? 'border-accent/60 bg-accent/15 text-ink'
+          : 'border-card-strong text-ink-muted hover:bg-card')
+      }
+    >
+      {children}
+    </button>
   );
 }
 

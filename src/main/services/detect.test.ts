@@ -464,6 +464,15 @@ describe('detectService — python, go, compose', () => {
     const proposal = detectService(repo({ 'pyproject.toml': 'fastapi = "^0.110"' }), 'api');
     expect(proposal?.confidence).toBe('low');
     expect(proposal?.spec.command[0]).toBe('uvicorn');
+    expect(proposal?.spec.selfReloads).toBe(true);
+    expect(proposal?.spec.watch).toBeUndefined();
+  });
+
+  it('restarts plain Flask on Python changes because debug reload is not guaranteed', () => {
+    const proposal = detectService(repo({ 'requirements.txt': 'Flask==3.1.0' }), 'api');
+    expect(proposal?.spec.command).toEqual(['flask', 'run']);
+    expect(proposal?.spec.selfReloads).toBe(false);
+    expect(proposal?.spec.watch).toEqual(['**/*.py']);
   });
 
   it('recognises go without inventing a port', () => {

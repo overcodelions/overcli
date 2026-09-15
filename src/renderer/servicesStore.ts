@@ -153,6 +153,7 @@ interface ServicesState {
   setGroup(workspaceId: string, serviceId: string, group?: string): Promise<void>;
   setOptions(workspaceId: string, serviceId: string, options: ServiceOption[]): Promise<void>;
   setCommand(workspaceId: string, serviceId: string, command: string[]): Promise<void>;
+  setWatch(workspaceId: string, serviceId: string, selfReloads: boolean, watch: string[]): Promise<void>;
   setDebug(workspaceId: string, serviceId: string, enabled: boolean): Promise<void>;
   setReady(
     workspaceId: string,
@@ -301,6 +302,11 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
 
   async setCommand(workspaceId, serviceId, command) {
     await window.overcli.invoke('services:setCommand', { workspaceId, serviceId, command });
+    await get().load(workspaceId);
+  },
+
+  async setWatch(workspaceId, serviceId, selfReloads, watch) {
+    await window.overcli.invoke('services:setWatch', { workspaceId, serviceId, selfReloads, watch });
     await get().load(workspaceId);
   },
 

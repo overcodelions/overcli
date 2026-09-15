@@ -28,7 +28,7 @@ import { applyProjection, planProjection, type ProjectionFs } from './projection
 import type { LogSink } from './logFile';
 import { waitUntilReady, type ProbeDeps } from './readiness';
 import type { ServiceBinding, ServiceRuntime, ServiceSpec } from './types';
-import { restartDependents, startOrder } from './types';
+import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
 import { DEFAULT_READY_TIMEOUT_SEC } from '../../shared/services';
 import { SECRET_MASK } from '../../shared/machineValues';
 import {
@@ -58,6 +58,10 @@ export interface SpawnRequest {
   command: readonly string[];
   cwd: string;
   env: Record<string, string>;
+}
+
+export interface ServiceFileWatcher {
+  close(): void | Promise<void>;
 }
 
 export interface SupervisorDeps {
@@ -91,6 +95,13 @@ export interface SupervisorDeps {
   /// get it — the manager calling it on some of those paths is how a branch
   /// switch came to start without its local properties. Returns what it linked.
   mirrorLocalConfig?(serviceId: string, checkout: string): Promise<readonly string[]> | readonly string[];
+  /// Watch paths relative to a service's bound checkout. Optional keeps the
+  /// supervisor deterministic in tests and usable by non-Electron hosts.
+  watchFiles?(
+    checkout: string,
+    patterns: readonly string[],
+    onChange: (relativePath: string) => void,
+  ): ServiceFileWatcher;
 }
 
 export type SupervisorEvent =
@@ -109,6 +120,7 @@ const LOG_LIMIT = 20_000;
 /// restart launched straight away beside a JVM still holding its port, and a
 /// port probe then called the NEW process ready on the old one's socket.
 const STOP_WAIT_MS = 7_000;
+const CHANGE_DEBOUNCE_MS = 500;
 
 export class Supervisor {
   private readonly procs = new Map<string, SpawnedProcess>();
@@ -121,6 +133,10 @@ export class Supervisor {
   private readonly finishing = new Map<string, Promise<void>>();
   /// Settles when each service's current process has exited, however it exits.
   private readonly exits = new Map<string, Promise<void>>();
+  private readonly watchers = new Map<string, ServiceFileWatcher>();
+  private readonly changeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly restartingFromChange = new Set<string>();
+  private readonly queuedChanges = new Map<string, string>();
 
   constructor(
     readonly stackId: string,
@@ -252,9 +268,13 @@ export class Supervisor {
     }
     this.specs = specs;
     this.bindings = bindings;
+    // A settings edit can turn watching on/off or change its globs without
+    // bouncing the service merely to apply the watcher configuration.
+    for (const [id, proc] of this.procs) this.startWatcher(id, proc);
   }
 
   async stop(serviceId: string): Promise<void> {
+    this.stopWatcher(serviceId);
     const proc = this.procs.get(serviceId);
     if (!proc) {
       // Waiting on something it depends on: nothing to kill yet, but the
@@ -467,6 +487,7 @@ export class Supervisor {
     proc.onError((err) => {
       finish();
       if (this.procs.get(spec.id) !== proc) return;
+      this.stopWatcher(spec.id);
       this.procs.delete(spec.id);
       this.setStatus(spec.id, {
         status: 'failed', lastError: err.message, pid: undefined,
@@ -476,6 +497,7 @@ export class Supervisor {
     proc.onExit((code) => {
       finish();
       if (this.procs.get(spec.id) !== proc) return;
+      this.stopWatcher(spec.id);
       this.procs.delete(spec.id);
       if (spec.task && code === 0) {
         this.setStatus(spec.id, {
@@ -496,6 +518,7 @@ export class Supervisor {
     });
 
     this.setStatus(spec.id, { pid: proc.pid });
+    this.startWatcher(spec.id, proc);
 
     // A task has nothing to probe: it is ready when it is finished.
     if (spec.task) {
@@ -570,6 +593,64 @@ export class Supervisor {
         serviceId,
         `── brought ${mirrored.length} local config file${mirrored.length === 1 ? '' : 's'} in from the main checkout ──`,
       );
+    }
+  }
+
+  private startWatcher(serviceId: string, proc: SpawnedProcess): void {
+    this.stopWatcher(serviceId);
+    const spec = this.spec(serviceId);
+    const binding = this.binding(serviceId);
+    if (
+      !spec || spec.task || !binding || !this.deps.watchFiles ||
+      !shouldRestartOnChange(spec) || this.procs.get(serviceId) !== proc
+    ) return;
+    const patterns = normalizeWatchPatterns(spec.watch ?? []);
+    if (patterns.length === 0) return;
+    const watcher = this.deps.watchFiles(binding.path, patterns, (changedPath) => {
+      if (this.procs.get(serviceId) !== proc) return;
+      this.scheduleChangeRestart(serviceId, changedPath);
+    });
+    this.watchers.set(serviceId, watcher);
+  }
+
+  private stopWatcher(serviceId: string): void {
+    const timer = this.changeTimers.get(serviceId);
+    if (timer) clearTimeout(timer);
+    this.changeTimers.delete(serviceId);
+    this.queuedChanges.delete(serviceId);
+    const watcher = this.watchers.get(serviceId);
+    this.watchers.delete(serviceId);
+    if (watcher) void watcher.close();
+  }
+
+  private scheduleChangeRestart(serviceId: string, changedPath: string): void {
+    if (this.restartingFromChange.has(serviceId)) {
+      this.queuedChanges.set(serviceId, changedPath);
+      return;
+    }
+    const previous = this.changeTimers.get(serviceId);
+    if (previous) clearTimeout(previous);
+    this.changeTimers.set(serviceId, setTimeout(() => {
+      this.changeTimers.delete(serviceId);
+      void this.restartForChange(serviceId, changedPath);
+    }, CHANGE_DEBOUNCE_MS));
+  }
+
+  private async restartForChange(serviceId: string, changedPath: string): Promise<void> {
+    const spec = this.spec(serviceId);
+    if (!spec || !shouldRestartOnChange(spec) || !this.procs.has(serviceId)) return;
+    this.restartingFromChange.add(serviceId);
+    this.append(serviceId, `── code changed · ${changedPath} · restarting ──`);
+    try {
+      await this.restart(serviceId);
+    } finally {
+      this.restartingFromChange.delete(serviceId);
+      const queued = this.queuedChanges.get(serviceId);
+      this.queuedChanges.delete(serviceId);
+      // A save that landed while the process was relaunching deserves one
+      // more restart, but a compile burst before it began was debounced into
+      // the restart we just completed.
+      if (queued && this.procs.has(serviceId)) this.scheduleChangeRestart(serviceId, queued);
     }
   }
 
