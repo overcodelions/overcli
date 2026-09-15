@@ -184,6 +184,21 @@ describe('ServicesManager stack editing', () => {
     });
   });
 
+  it('persists restart-on-change mode and keeps its globs inside the checkout', () => {
+    const { mgr } = manager();
+    mgr.addService('ws1', spec, { ref: 'master', path: repo });
+
+    mgr.setWatch('ws1', 'api', false, [' src/** ', '../outside/**', 'src/**']);
+    expect(new ServicesManager(dataDir, () => {}).view('ws1').services[0]).toMatchObject({
+      selfReloads: false,
+      watch: ['src/**'],
+    });
+
+    mgr.setWatch('ws1', 'api', true, ['ignored/**']);
+    expect(mgr.view('ws1').services[0]).toMatchObject({ selfReloads: true });
+    expect(mgr.view('ws1').services[0].watch).toBeUndefined();
+  });
+
   it('pins and unpins a service', () => {
     // "Pin the backends, float the frontend" is one flag per service.
     const { mgr } = manager();

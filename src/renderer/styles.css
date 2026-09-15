@@ -68,6 +68,13 @@
   /* Peak color a live flow monogram's letter brightens toward. Light mode
    * darkens to near-black so the letter "lights up" against the pale tile. */
   --c-monogram-live-peak: #101014;
+  /* Categorical series for charts, fixed order, validated for colour-vision
+     deficiency against each theme's surface. Slot 1 goes to the largest series. */
+  --c-viz-1: #2a78d6;
+  --c-viz-2: #eb6834;
+  --c-viz-3: #1baf7a;
+  --c-viz-4: #eda100;
+  --c-viz-5: #e87ba4;
 }
 
 :root.dark {
@@ -109,6 +116,11 @@
   --c-running-pulse: #4ade80;
   /* Dark mode brightens the letter toward white. */
   --c-monogram-live-peak: #ffffff;
+  --c-viz-1: #3987e5;
+  --c-viz-2: #d95926;
+  --c-viz-3: #199e70;
+  --c-viz-4: #c98500;
+  --c-viz-5: #d55181;
 }
 
 /* Diff rows share one set of semantic classes across every renderer

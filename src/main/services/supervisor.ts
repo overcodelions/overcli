@@ -25,11 +25,19 @@ import { buildCommand, missingMachineValues, resolveOptions } from './options';
 import { debugLaunch } from './debug';
 import { leaseFor, portForOffset, type LeaseDecision, type PortClaim } from './ports';
 import { applyProjection, planProjection, type ProjectionFs } from './projection';
+import type { LogSink } from './logFile';
 import { waitUntilReady, type ProbeDeps } from './readiness';
 import type { ServiceBinding, ServiceRuntime, ServiceSpec } from './types';
-import { restartDependents, startOrder } from './types';
+import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
 import { DEFAULT_READY_TIMEOUT_SEC } from '../../shared/services';
 import { SECRET_MASK } from '../../shared/machineValues';
+import {
+  emptyExceptionLog,
+  feedException,
+  listExceptions,
+  type CaughtException,
+  type ExceptionLog,
+} from '../../shared/exceptions';
 
 /// A running child, reduced to what the supervisor actually needs.
 export interface SpawnedProcess {
@@ -50,6 +58,10 @@ export interface SpawnRequest {
   command: readonly string[];
   cwd: string;
   env: Record<string, string>;
+}
+
+export interface ServiceFileWatcher {
+  close(): void | Promise<void>;
 }
 
 export interface SupervisorDeps {
@@ -74,6 +86,22 @@ export interface SupervisorDeps {
   /// Gradle init script that injects JDWP into bootRun without depending on a
   /// project's private -PjvmArgs convention.
   gradleDebugInit?: string;
+  /// Where every line also goes, past the in-memory cap — the file an agent
+  /// is pointed at when asked what went wrong.
+  logSink?: LogSink;
+  /// Bring the main checkout's gitignored local config into the checkout about
+  /// to be launched from. Called from `launch`, so a start, a restart, a
+  /// rebind, a dependency brought up first and a dependent restarted after all
+  /// get it — the manager calling it on some of those paths is how a branch
+  /// switch came to start without its local properties. Returns what it linked.
+  mirrorLocalConfig?(serviceId: string, checkout: string): Promise<readonly string[]> | readonly string[];
+  /// Watch paths relative to a service's bound checkout. Optional keeps the
+  /// supervisor deterministic in tests and usable by non-Electron hosts.
+  watchFiles?(
+    checkout: string,
+    patterns: readonly string[],
+    onChange: (relativePath: string) => void,
+  ): ServiceFileWatcher;
 }
 
 export type SupervisorEvent =
@@ -84,16 +112,31 @@ export type SupervisorEvent =
   | { kind: 'rebound'; serviceId: string; from: string; to: string };
 
 /// How many lines of output to keep per service. Enough to cover a startup
-/// and the failure after it; the pane is not a log archive.
-const LOG_LIMIT = 5_000;
+/// and the failure after it; the full history goes to `logSink`.
+const LOG_LIMIT = 20_000;
+
+/// How long a stop waits for the process to actually exit. The adapter sends
+/// SIGKILL after five seconds, so this is that and a margin. Without the wait a
+/// restart launched straight away beside a JVM still holding its port, and a
+/// port probe then called the NEW process ready on the old one's socket.
+const STOP_WAIT_MS = 7_000;
+const CHANGE_DEBOUNCE_MS = 500;
 
 export class Supervisor {
   private readonly procs = new Map<string, SpawnedProcess>();
   private readonly runtimes = new Map<string, ServiceRuntime>();
   private readonly logs = new Map<string, string[]>();
+  /// Exceptions seen in each log, kept past the line cap that drops their lines.
+  private readonly caught = new Map<string, ExceptionLog>();
   private readonly listeners = new Set<(e: SupervisorEvent) => void>();
   /// Tasks still running, settled when they exit however they exit.
   private readonly finishing = new Map<string, Promise<void>>();
+  /// Settles when each service's current process has exited, however it exits.
+  private readonly exits = new Map<string, Promise<void>>();
+  private readonly watchers = new Map<string, ServiceFileWatcher>();
+  private readonly changeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly restartingFromChange = new Set<string>();
+  private readonly queuedChanges = new Map<string, string>();
 
   constructor(
     readonly stackId: string,
@@ -115,9 +158,15 @@ export class Supervisor {
     return this.logs.get(serviceId) ?? [];
   }
 
+  exceptions(serviceId: string): CaughtException[] {
+    const log = this.caught.get(serviceId);
+    return log ? listExceptions(log) : [];
+  }
+
   /// Empties the buffer. The process, if any, keeps running and writing.
   clearLog(serviceId: string): void {
     this.logs.delete(serviceId);
+    this.caught.delete(serviceId);
   }
 
   /// Ports this supervisor is holding, in the shape the lease check wants.
@@ -166,8 +215,20 @@ export class Supervisor {
 
     for (const depId of startOrder(this.specs, serviceId)) {
       if (this.satisfied(depId)) continue;
-      await this.start(depId, { foreign: opts.foreign });
       const dep = this.spec(depId);
+      // Starting, from the moment Start is pressed: a backend can take a minute
+      // to come up, and a row that still reads stopped all that time looks as
+      // though the press did nothing.
+      this.setStatus(serviceId, {
+        status: 'starting',
+        waitingOn: dep?.name ?? depId,
+        exitCode: undefined,
+        lastError: undefined,
+      });
+      await this.start(depId, { foreign: opts.foreign });
+      // Stopped while it waited. There was no process to kill, so this is the
+      // only thing that keeps the stop from being undone by the launch below.
+      if (this.runtime(serviceId).status !== 'starting') return { started: false };
       // The one dependency worth refusing over. A backend that is not up yet
       // gets reconnected to; a publish that failed means starting against
       // whatever jars were there before, which fails later and misleadingly.
@@ -199,21 +260,36 @@ export class Supervisor {
       if (!kept.has(id)) this.runtimes.delete(id);
     }
     for (const id of [...this.logs.keys()]) {
-      if (!kept.has(id)) this.logs.delete(id);
+      if (!kept.has(id)) {
+        this.logs.delete(id);
+        this.caught.delete(id);
+        this.deps.logSink?.close(id);
+      }
     }
     this.specs = specs;
     this.bindings = bindings;
+    // A settings edit can turn watching on/off or change its globs without
+    // bouncing the service merely to apply the watcher configuration.
+    for (const [id, proc] of this.procs) this.startWatcher(id, proc);
   }
 
   async stop(serviceId: string): Promise<void> {
+    this.stopWatcher(serviceId);
     const proc = this.procs.get(serviceId);
-    if (!proc) return;
+    if (!proc) {
+      // Waiting on something it depends on: nothing to kill yet, but the
+      // start has to be called off.
+      if (this.runtime(serviceId).waitingOn) this.setStatus(serviceId, { status: 'stopped' });
+      return;
+    }
     this.procs.delete(serviceId);
+    const exited = this.exits.get(serviceId);
     proc.kill('SIGTERM');
     this.setStatus(serviceId, {
       status: 'stopped', pid: undefined, port: undefined,
       debugKind: undefined, debugPort: undefined,
     });
+    if (exited) await Promise.race([exited, this.deps.probe.sleep(STOP_WAIT_MS)]);
   }
 
   async restart(serviceId: string): Promise<void> {
@@ -253,6 +329,9 @@ export class Supervisor {
     // A service that was not running stays not running: rebinding is not a
     // request to start something you had deliberately stopped.
     if (wasRunning) await this.launch(spec, binding.portOffset ?? 0);
+    // Not relaunched, but the checkout should still have its local config for
+    // the next start, or for running it from an IDE.
+    else await this.mirrorInto(serviceId, binding.path);
   }
 
   /// Move every unpinned service to a ref at once — the bulk case, since
@@ -327,6 +406,7 @@ export class Supervisor {
 
     this.setStatus(spec.id, {
       status: 'starting',
+      waitingOn: undefined,
       port,
       startedAt: this.deps.probe.now(),
       exitCode: undefined,
@@ -335,6 +415,14 @@ export class Supervisor {
       debugKind: undefined,
       debugPort: undefined,
     });
+
+    // After the status says starting: finding the local config reads the main
+    // checkout's ignored files, which takes seconds on a large repository.
+    if (this.deps.mirrorLocalConfig) {
+      await this.mirrorInto(spec.id, binding.path);
+      // Stopped, restarted or rebound while that ran — that call owns it now.
+      if (this.runtime(spec.id).status !== 'starting' || this.procs.has(spec.id)) return;
+    }
 
     // Options are resolved at launch, not stored resolved: a copy inherits its
     // base's set, and editing the base has to reach every copy without anyone
@@ -351,7 +439,7 @@ export class Supervisor {
       });
       return;
     }
-    const baseCommand = buildCommand(spec, options);
+    const baseCommand = buildCommand({ ...spec, command: plan.command }, options);
     const preferredDebugPort = spec.debugEnabled ? spec.debugPort : undefined;
     const actualDebugPort = preferredDebugPort === undefined
       ? undefined
@@ -372,6 +460,12 @@ export class Supervisor {
     // the repo root of acme-admin-console finds no package.json. Projection has
     // always used the subpath; the spawn has to agree with it.
     const cwd = spec.subpath ? path.join(plan.cwd, spec.subpath) : plan.cwd;
+    // File only: the pane already shows the status, but a log read later by an
+    // agent needs to know where one run ends and the next begins.
+    this.deps.logSink?.write(
+      spec.id,
+      `── start ${binding.ref} · ${cwd} · ${debug.command.join(' ')} ──`,
+    );
     const proc = this.deps.spawn({ command: debug.command, cwd, env: debug.env });
     this.procs.set(spec.id, proc);
 
@@ -379,6 +473,7 @@ export class Supervisor {
     // below otherwise ignore — or a dependent waiting on it would wait forever.
     let finish = () => {};
     const finished = new Promise<void>((resolve) => (finish = resolve));
+    this.exits.set(spec.id, finished);
 
     let matchedLog = false;
     proc.onLine((line) => {
@@ -392,6 +487,7 @@ export class Supervisor {
     proc.onError((err) => {
       finish();
       if (this.procs.get(spec.id) !== proc) return;
+      this.stopWatcher(spec.id);
       this.procs.delete(spec.id);
       this.setStatus(spec.id, {
         status: 'failed', lastError: err.message, pid: undefined,
@@ -401,6 +497,7 @@ export class Supervisor {
     proc.onExit((code) => {
       finish();
       if (this.procs.get(spec.id) !== proc) return;
+      this.stopWatcher(spec.id);
       this.procs.delete(spec.id);
       if (spec.task && code === 0) {
         this.setStatus(spec.id, {
@@ -421,6 +518,7 @@ export class Supervisor {
     });
 
     this.setStatus(spec.id, { pid: proc.pid });
+    this.startWatcher(spec.id, proc);
 
     // A task has nothing to probe: it is ready when it is finished.
     if (spec.task) {
@@ -488,6 +586,74 @@ export class Supervisor {
     }
   }
 
+  private async mirrorInto(serviceId: string, checkout: string): Promise<void> {
+    const mirrored = (await this.deps.mirrorLocalConfig?.(serviceId, checkout)) ?? [];
+    if (mirrored.length > 0) {
+      this.append(
+        serviceId,
+        `── brought ${mirrored.length} local config file${mirrored.length === 1 ? '' : 's'} in from the main checkout ──`,
+      );
+    }
+  }
+
+  private startWatcher(serviceId: string, proc: SpawnedProcess): void {
+    this.stopWatcher(serviceId);
+    const spec = this.spec(serviceId);
+    const binding = this.binding(serviceId);
+    if (
+      !spec || spec.task || !binding || !this.deps.watchFiles ||
+      !shouldRestartOnChange(spec) || this.procs.get(serviceId) !== proc
+    ) return;
+    const patterns = normalizeWatchPatterns(spec.watch ?? []);
+    if (patterns.length === 0) return;
+    const watcher = this.deps.watchFiles(binding.path, patterns, (changedPath) => {
+      if (this.procs.get(serviceId) !== proc) return;
+      this.scheduleChangeRestart(serviceId, changedPath);
+    });
+    this.watchers.set(serviceId, watcher);
+  }
+
+  private stopWatcher(serviceId: string): void {
+    const timer = this.changeTimers.get(serviceId);
+    if (timer) clearTimeout(timer);
+    this.changeTimers.delete(serviceId);
+    this.queuedChanges.delete(serviceId);
+    const watcher = this.watchers.get(serviceId);
+    this.watchers.delete(serviceId);
+    if (watcher) void watcher.close();
+  }
+
+  private scheduleChangeRestart(serviceId: string, changedPath: string): void {
+    if (this.restartingFromChange.has(serviceId)) {
+      this.queuedChanges.set(serviceId, changedPath);
+      return;
+    }
+    const previous = this.changeTimers.get(serviceId);
+    if (previous) clearTimeout(previous);
+    this.changeTimers.set(serviceId, setTimeout(() => {
+      this.changeTimers.delete(serviceId);
+      void this.restartForChange(serviceId, changedPath);
+    }, CHANGE_DEBOUNCE_MS));
+  }
+
+  private async restartForChange(serviceId: string, changedPath: string): Promise<void> {
+    const spec = this.spec(serviceId);
+    if (!spec || !shouldRestartOnChange(spec) || !this.procs.has(serviceId)) return;
+    this.restartingFromChange.add(serviceId);
+    this.append(serviceId, `── code changed · ${changedPath} · restarting ──`);
+    try {
+      await this.restart(serviceId);
+    } finally {
+      this.restartingFromChange.delete(serviceId);
+      const queued = this.queuedChanges.get(serviceId);
+      this.queuedChanges.delete(serviceId);
+      // A save that landed while the process was relaunching deserves one
+      // more restart, but a compile burst before it began was debounced into
+      // the restart we just completed.
+      if (queued && this.procs.has(serviceId)) this.scheduleChangeRestart(serviceId, queued);
+    }
+  }
+
   private spec(serviceId: string): ServiceSpec | undefined {
     return this.specs.find((s) => s.id === serviceId);
   }
@@ -498,7 +664,16 @@ export class Supervisor {
 
   private setStatus(serviceId: string, patch: Partial<ServiceRuntime>): void {
     const next = { ...this.runtime(serviceId), ...patch, serviceId };
+    // Waiting is a kind of starting; any other status ends it.
+    if (next.status !== 'starting') next.waitingOn = undefined;
     this.runtimes.set(serviceId, next);
+    if (patch.status === 'failed' || patch.status === 'stopped' || patch.status === 'done') {
+      const detail = [
+        patch.exitCode !== undefined && patch.exitCode !== null ? `exit ${patch.exitCode}` : '',
+        patch.lastError ?? '',
+      ].filter(Boolean).join(' · ');
+      this.deps.logSink?.write(serviceId, `── ${patch.status}${detail ? ` · ${detail}` : ''} ──`);
+    }
     this.emit({ kind: 'status', serviceId, runtime: next });
   }
 
@@ -508,6 +683,8 @@ export class Supervisor {
     lines.push(line);
     if (lines.length > LOG_LIMIT) lines.splice(0, lines.length - LOG_LIMIT);
     this.logs.set(serviceId, lines);
+    this.deps.logSink?.write(serviceId, line);
+    this.caught.set(serviceId, feedException(this.caught.get(serviceId) ?? emptyExceptionLog(), line, Date.now()));
     this.emit({ kind: 'line', serviceId, line });
   }
 

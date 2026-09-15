@@ -2775,6 +2775,16 @@ export interface IPCInvokeMap {
   'services:viewAll': (workspaceIds: string[]) => StackView[];
   'services:log': (args: { workspaceId: string; serviceId: string }) => string[];
   'services:clearLog': (args: { workspaceId: string; serviceId: string }) => void;
+  /// Every line a service has printed, timestamped, on disk — past the pane's
+  /// cap and across restarts of the app. Handed to agents by path.
+  'services:logFile': (args: { workspaceId: string; serviceId: string }) => string;
+  'services:revealLogFile': (args: { workspaceId: string; serviceId: string }) => void;
+  /// Distinct exceptions in a service's output, newest first — kept after the
+  /// lines they came from have been trimmed.
+  'services:exceptions': (args: {
+    workspaceId: string;
+    serviceId: string;
+  }) => import('./exceptions').CaughtException[];
   /// The folder holding this service's own config — the one whose contents
   /// are injected or linked into whichever worktree it is bound to.
   'services:configDir': (args: { workspaceId: string; serviceId: string }) => string;
@@ -2833,6 +2843,12 @@ export interface IPCInvokeMap {
   }) => void;
   /// Replace what a service runs, as argv. Takes effect on the next start.
   'services:setCommand': (args: { workspaceId: string; serviceId: string; command: string[] }) => void;
+  'services:setWatch': (args: {
+    workspaceId: string;
+    serviceId: string;
+    selfReloads: boolean;
+    watch: string[];
+  }) => void;
   /// Change launch mode, restarting the service immediately when it is live.
   'services:setDebug': (args: {
     workspaceId: string;
@@ -2912,7 +2928,14 @@ export interface IPCInvokeMap {
   /// options, the environment — is scrubbed of known credentials first.
   /// `kind: 'command'` asks instead for the start command of a service that has
   /// none, read out of its checkout and the file it was imported from.
-  'services:askAi': (args: { workspaceId: string; serviceId: string; kind?: 'fix' | 'command' }) =>
+  /// `kind: 'explain'` explains `command` — the editor's text, unsaved edits
+  /// included — step by step.
+  'services:askAi': (args: {
+    workspaceId: string;
+    serviceId: string;
+    kind?: 'fix' | 'command' | 'explain';
+    command?: string;
+  }) =>
     /// `command` is a start command the answer proposes, when it proposes one.
     | { ok: true; backend: Backend; text: string; command?: string }
     | { ok: false; error: string };
@@ -3249,6 +3272,74 @@ export interface StatsReport {
   /// persisted daily snapshots so days whose transcripts have since been
   /// pruned are still in here.
   daily: DailyBucket[];
+  /// Claude activity over the trailing 8 hours, for "where did my limit
+  /// go". Weighted by estimated API cost, not raw tokens — a cache read
+  /// costs a tenth of fresh input, so raw counts blame the wrong session.
+  recent: RecentUsage;
+}
+
+export interface RecentUsage {
+  start: number;
+  end: number;
+  bucketMs: number;
+  buckets: RecentBucket[];
+  /// Sorted by estimated cost, heaviest first.
+  sessions: RecentSession[];
+  /// Single replies, costliest first.
+  heaviestTurns: RecentTurn[];
+  byType: {
+    input: RecentTypeTotal;
+    output: RecentTypeTotal;
+    cacheRead: RecentTypeTotal;
+    cacheWrite: RecentTypeTotal;
+  };
+  /// Claude's 5h session window, when `/usage` gave us a reset time that
+  /// overlaps this range. Absent rather than guessed otherwise.
+  limitWindow?: { start: number; resetsAt: number; usedPercent: number };
+}
+
+export interface RecentBucket {
+  start: number;
+  costUSD: number;
+  tokens: number;
+  /// Estimated cost per session id within the bucket.
+  bySession: Record<string, number>;
+}
+
+export interface RecentTypeTotal {
+  tokens: number;
+  costUSD: number;
+}
+
+export interface RecentSession {
+  /// Claude session id — the transcript file name, and `Conversation.sessionId`.
+  id: string;
+  title?: string;
+  projectPath: string;
+  models: string[];
+  /// Replies on the main thread (subagent replies are in the totals but not here).
+  turns: number;
+  subagents: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUSD: number;
+  /// Mean prompt size per main-thread reply — what each reply re-sends.
+  avgContextTokens: number;
+  firstTs: number;
+  lastTs: number;
+}
+
+export interface RecentTurn {
+  ts: number;
+  sessionId: string;
+  model: string;
+  isSubagent: boolean;
+  tokens: number;
+  costUSD: number;
+  /// Tool calls in the reply, e.g. ["Task ×6", "Read"].
+  tools: string[];
 }
 
 export type ModelTier = 'frontier' | 'thinking' | 'standard' | 'fast' | 'local';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCommandPrompt, buildFixPrompt, splitSuggestedCommand, tidySuggestion } from './askModel';
+import { buildCommandPrompt, buildExplainPrompt, buildFixPrompt, splitSuggestedCommand, tidySuggestion } from './askModel';
 import type { ServiceSpec } from './types';
 
 const spec: ServiceSpec = {
@@ -121,6 +121,31 @@ describe('asking for a command a service never had', () => {
   it('scrubs known secrets out of the excerpt', () => {
     const leaky = { ...bare, importedFrom: { ...bare.importedFrom!, excerpt: 'DB_PASS=hunter2secret' } };
     expect(buildCommandPrompt({ spec: leaky, secrets: ['hunter2secret'] })).not.toContain('hunter2secret');
+  });
+});
+
+describe('explaining a command someone is reading', () => {
+  const shell: ServiceSpec = { ...spec, name: 'acme-web', command: ['sh', '-c', 'x'] };
+
+  it('numbers the steps as the editor shows them and says how checkouts are filled in', () => {
+    const p = buildExplainPrompt({
+      spec: shell,
+      command: 'SEL="/work/acme-web";\n\n  ln -sfn "$SEL" /srv/acme-web-active;\nexec tail -F /var/log/web.log',
+      binding: { ref: 'main', path: '/work/acme-web' },
+    });
+    expect(p).toContain('1: SEL="/work/acme-web";');
+    expect(p).toContain('2: ln -sfn "$SEL" /srv/acme-web-active;');
+    expect(p).toContain('3: exec tail -F /var/log/web.log');
+    expect(p).toContain('Checkout: /work/acme-web on main');
+    expect(p).toContain('${CHECKOUT}');
+    expect(p).toContain('OVERCLI_CHECKOUT');
+    expect(p).toContain('Watch out:');
+    expect(p).not.toContain('failed to start');
+  });
+
+  it('scrubs known secrets out of the command', () => {
+    const p = buildExplainPrompt({ spec: shell, command: 'DB_PASS=hunter2secret ./run', secrets: ['hunter2secret'] });
+    expect(p).not.toContain('hunter2secret');
   });
 });
 

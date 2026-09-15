@@ -43,10 +43,11 @@ import { parseBranchRefs, type BranchChoice } from '../../shared/refChoices';
 import { applyMirror, findLocalConfig, planMirror } from './mirror';
 import { describeOwners, freePort, holderKind, portOwners, type OwnerContext } from './portOwners';
 import { portInUse, triage } from './triage';
-import { buildCommandPrompt, buildFixPrompt } from './askModel';
+import { buildCommandPrompt, buildExplainPrompt, buildFixPrompt } from './askModel';
 import { ensureExcluded } from './projection';
 import {
   ensureServiceConfigDir,
+  serviceLogFile,
   loadMachineValues,
   loadStack,
   saveMachineValues,
@@ -59,9 +60,12 @@ import {
   type SecretCipher,
 } from './machineSecrets';
 import { isSecretName, SECRET_MASK } from '../../shared/machineValues';
+import { createLogSink } from './logFile';
+import { watchServiceFiles } from './fileWatch';
+import type { CaughtException } from '../../shared/exceptions';
 import { Supervisor, type SupervisorEvent } from './supervisor';
 import { taskPresets } from './taskPresets';
-import { startOrder } from './types';
+import { normalizeWatchPatterns, startOrder } from './types';
 import type {
   MachineEntry,
   MachineValuesView,
@@ -80,10 +84,17 @@ export type { StackView };
 
 const execFileAsync = promisify(execFile);
 
+/// How long a scan of a main checkout's ignored files is reused.
+const IGNORED_SCAN_TTL_MS = 60_000;
+
 /// A machine value's name has to be something `${NAME}` can refer to.
 const MACHINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export class ServicesManager {
+  /// Main checkout per checkout — see `localConfigScan`.
+  private readonly primaries = new Map<string, Promise<string | null>>();
+  /// Ignored files per main checkout, with when they were read.
+  private readonly ignoredScans = new Map<string, { at: number; files: Promise<string[] | null> }>();
   private readonly supervisors = new Map<string, Supervisor>();
   private readonly stacks = new Map<string, StackConfig>();
 
@@ -161,6 +172,15 @@ export class ServicesManager {
     return this.supervisors.get(workspaceId)?.log(serviceId) ?? [];
   }
 
+  exceptions(workspaceId: string, serviceId: string): CaughtException[] {
+    return this.supervisors.get(workspaceId)?.exceptions(serviceId) ?? [];
+  }
+
+  /// The full output on disk. Clear empties the pane, not this.
+  logFile(workspaceId: string, serviceId: string): string {
+    return serviceLogFile(this.dataDir, workspaceId, serviceId);
+  }
+
   clearLog(workspaceId: string, serviceId: string): void {
     this.supervisors.get(workspaceId)?.clearLog(serviceId);
   }
@@ -212,7 +232,6 @@ export class ServicesManager {
     // been put there yet.
     ensureServiceConfigDir(this.dataDir, workspaceId, serviceId);
     this.excludeProjectedPaths(workspaceId, serviceId);
-    this.mirrorLocalConfig(workspaceId, serviceId);
     return supervisor.start(serviceId, { foreign: this.foreignClaims(workspaceId), offset: opts.offset });
   }
 
@@ -221,7 +240,6 @@ export class ServicesManager {
   }
 
   async restart(workspaceId: string, serviceId: string): Promise<void> {
-    this.mirrorLocalConfig(workspaceId, serviceId);
     await this.supervisor(workspaceId).restart(serviceId);
   }
 
@@ -230,10 +248,6 @@ export class ServicesManager {
     serviceId: string,
     binding: { ref: string; path: string; portOffset?: number },
   ): Promise<void> {
-    // Before the supervisor relaunches it in the new checkout: a running
-    // service moved to a worktree starts there straight away, and start()'s
-    // mirror is never on that path.
-    this.mirrorLocalConfig(workspaceId, serviceId, binding.path);
     await this.supervisor(workspaceId).rebind(serviceId, binding);
     this.persistBinding(workspaceId, { ...binding, serviceId });
     this.excludeProjectedPaths(workspaceId, serviceId);
@@ -245,7 +259,6 @@ export class ServicesManager {
     workspaceId: string,
     targets: readonly { serviceId: string; ref: string; path: string }[],
   ): Promise<string[]> {
-    for (const target of targets) this.mirrorLocalConfig(workspaceId, target.serviceId, target.path);
     const moved = await this.supervisor(workspaceId).rebindAll(targets);
     for (const target of targets) {
       if (moved.includes(target.serviceId)) this.persistBinding(workspaceId, target);
@@ -334,6 +347,17 @@ export class ServicesManager {
   /// whose detected command was wrong. Takes effect on the next start.
   setCommand(workspaceId: string, serviceId: string, command: string[]): void {
     this.patchService(workspaceId, serviceId, (spec) => ({ ...spec, command, commandEdited: true }));
+  }
+
+  /// Choose who reacts to source edits. `selfReloads` means the child owns
+  /// reloads; watch globs mean Overcli restarts it; neither means leave it.
+  setWatch(workspaceId: string, serviceId: string, selfReloads: boolean, watch: string[]): void {
+    const cleaned = normalizeWatchPatterns(watch);
+    this.patchService(workspaceId, serviceId, (spec) => ({
+      ...spec,
+      selfReloads,
+      watch: selfReloads || cleaned.length === 0 ? undefined : cleaned,
+    }));
   }
 
   /// The spec an import is about to save, with the command someone typed kept.
@@ -534,7 +558,7 @@ export class ServicesManager {
   /// environment it handed over, the repo, and the config files sitting next
   /// to the service. No model: these answers are cheap, offline and checkable,
   /// and each carries the evidence that produced it.
-  explainFailure(workspaceId: string, serviceId: string): ServiceFinding[] {
+  async explainFailure(workspaceId: string, serviceId: string): Promise<ServiceFinding[]> {
     const stack = this.stack(workspaceId);
     const spec = stack.services.find((s) => s.id === serviceId);
     const binding = stack.bindings.find((b) => b.serviceId === serviceId);
@@ -553,6 +577,9 @@ export class ServicesManager {
       env[key] = env[key].replace(/\$\{SERVICE_CONFIG_DIR\}/g, configDir);
     }
 
+    // Read once, asynchronously: both rules below want the main checkout's
+    // ignored config, and scanning a large repository takes seconds.
+    const local = binding ? await this.localConfigScan(binding.path) : null;
     return triage({
       lines,
       spec,
@@ -568,8 +595,12 @@ export class ServicesManager {
                 ? { port: takenPort, holder: describeOwners(owners), kind: holderKind(owners) }
                 : undefined;
             })(),
-      missingLocalConfig: binding ? this.missingLocalConfig(binding.path) : undefined,
-      findDefinitions: binding ? (key) => findPropertyDefinitions(binding.path, key) : undefined,
+      missingLocalConfig: binding
+        ? local
+          ? planMirror(local.primary, binding.path, local.files).map((l) => l.relative)
+          : []
+        : undefined,
+      findDefinitions: binding ? (key) => findPropertyDefinitions(binding.path, key, local) : undefined,
       importOptions: this.importOptionsFor(spec),
     });
   }
@@ -582,7 +613,7 @@ export class ServicesManager {
   /// checkout it ran in — and those differing from what the user believes is
   /// the usual bug. Machine values go in as known secrets so the scrubber can
   /// catch them by value, not just by shape.
-  fixPrompt(workspaceId: string, serviceId: string): { prompt: string; cwd: string } | undefined {
+  async fixPrompt(workspaceId: string, serviceId: string): Promise<{ prompt: string; cwd: string } | undefined> {
     const stack = this.stack(workspaceId);
     const spec = stack.services.find((s) => s.id === serviceId);
     if (!spec) return undefined;
@@ -602,7 +633,7 @@ export class ServicesManager {
         env,
         options: resolveOptions(stack.services, spec, machine),
         binding: binding ? { ref: binding.ref, path: binding.path } : undefined,
-        findings: this.explainFailure(workspaceId, serviceId),
+        findings: await this.explainFailure(workspaceId, serviceId),
         secrets: Object.values(machine),
       }),
       cwd: binding?.path ?? this.dataDir,
@@ -626,15 +657,75 @@ export class ServicesManager {
     };
   }
 
-  /// Local config the main checkout has and this one does not.
-  private missingLocalConfig(checkout: string): string[] {
-    try {
-      const primary = primaryCheckout(checkout);
-      if (!primary || path.resolve(primary) === path.resolve(checkout)) return [];
-      return planMirror(primary, checkout, findLocalConfig(primary)).map((l) => l.relative);
-    } catch {
-      return [];
-    }
+  /// What a model needs to explain a command someone is reading — the
+  /// editor's text, which may not be saved yet.
+  explainPrompt(
+    workspaceId: string,
+    serviceId: string,
+    command: string,
+  ): { prompt: string; cwd: string } | undefined {
+    const stack = this.stack(workspaceId);
+    const spec = stack.services.find((s) => s.id === serviceId);
+    if (!spec) return undefined;
+    const binding = stack.bindings.find((b) => b.serviceId === serviceId);
+    return {
+      prompt: buildExplainPrompt({
+        spec,
+        command,
+        binding: binding ? { ref: binding.ref, path: binding.path } : undefined,
+        secrets: Object.values(this.allMachineValues()),
+      }),
+      cwd: binding?.path ?? this.dataDir,
+    };
+  }
+
+  /// The main checkout of the repository `checkout` belongs to, and the local
+  /// config it has. Null for the main checkout itself, or outside a repository.
+  ///
+  /// Both halves shell out to git, and on a large repository both take seconds
+  /// — `git ls-files --ignored` measured thirteen. They used to run
+  /// synchronously on the main process, once per service per switch, which is
+  /// the pinwheel. Now asynchronous, the primary remembered for good (a
+  /// worktree's main checkout does not move) and the ignored list for a minute,
+  /// shared by every service a switch moves at once.
+  private async localConfigScan(
+    checkout: string,
+    patterns: { include?: readonly string[]; exclude?: readonly string[] } = {},
+  ): Promise<{ primary: string; files: string[] } | null> {
+    const primary = await this.primaryOf(checkout);
+    if (!primary || path.resolve(primary) === path.resolve(checkout)) return null;
+    const ignored = await this.ignoredIn(primary);
+    return { primary, files: findLocalConfig(primary, { ...patterns, ignored }) };
+  }
+
+  private primaryOf(checkout: string): Promise<string | null> {
+    const key = path.resolve(checkout);
+    const hit = this.primaries.get(key);
+    if (hit) return hit;
+    const found = execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd: checkout, encoding: 'utf8' })
+      .then(({ stdout }) => /^worktree (.+)$/m.exec(stdout)?.[1] ?? null)
+      .catch(() => null)
+      .then((primary) => {
+        // Not a repository yet is not a permanent answer.
+        if (!primary) this.primaries.delete(key);
+        return primary;
+      });
+    this.primaries.set(key, found);
+    return found;
+  }
+
+  private ignoredIn(primary: string): Promise<string[] | null> {
+    const cached = this.ignoredScans.get(primary);
+    if (cached && Date.now() - cached.at < IGNORED_SCAN_TTL_MS) return cached.files;
+    const files = execFileAsync(
+      'git',
+      ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
+      { cwd: primary, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+    )
+      .then(({ stdout }) => stdout.split('\0').filter(Boolean))
+      .catch(() => null);
+    this.ignoredScans.set(primary, { at: Date.now(), files });
+    return files;
   }
 
   /// A config file beside the project that carries options this service lacks.
@@ -1288,6 +1379,9 @@ export class ServicesManager {
       // start rather than on the next restart of the app.
       machineValues: () => this.allMachineValues(),
       secretValues: () => Object.values(loadSecretValues(this.dataDir, this.cipher)),
+      mirrorLocalConfig: (serviceId, checkout) => this.mirrorLocalConfig(workspaceId, serviceId, checkout),
+      logSink: createLogSink((serviceId) => serviceLogFile(this.dataDir, workspaceId, serviceId)),
+      watchFiles: watchServiceFiles,
     });
     supervisor.on((event) => this.emit({ ...event, workspaceId }));
     this.supervisors.set(workspaceId, supervisor);
@@ -1301,36 +1395,24 @@ export class ServicesManager {
   /// else. Running from one then fails on a placeholder that has always
   /// resolved — nothing wrong with the branch, the config simply is not there.
   ///
-  /// Runs before every start, restart and rebind rather than once: a worktree
+  /// The supervisor calls this before every launch rather than once: a worktree
   /// made five minutes ago has never been mirrored, and the operation is a
-  /// no-op when everything is already in place. `checkout` is the one a rebind
-  /// is about to move to, before the saved binding says so.
-  private mirrorLocalConfig(workspaceId: string, serviceId: string, checkout?: string): void {
-    const stack = this.stack(workspaceId);
-    const spec = stack.services.find((s) => s.id === serviceId);
-    const target = checkout ?? stack.bindings.find((b) => b.serviceId === serviceId)?.path;
-    if (!spec || !target) return;
-    if (spec.config.mirrorLocalConfig === false) return;
+  /// no-op when everything is already in place. Returns what it linked.
+  private async mirrorLocalConfig(workspaceId: string, serviceId: string, target: string): Promise<string[]> {
+    const spec = this.stack(workspaceId).services.find((s) => s.id === serviceId);
+    if (!spec || spec.config.mirrorLocalConfig === false) return [];
 
     try {
-      const primary = primaryCheckout(target);
-      if (!primary || path.resolve(primary) === path.resolve(target)) return;
-      const relatives = findLocalConfig(primary, {
+      const local = await this.localConfigScan(target, {
         include: spec.config.mirrorInclude,
         exclude: spec.config.mirrorExclude,
       });
-      const linked = applyMirror(planMirror(primary, target, relatives));
-      if (linked.length > 0) {
-        this.emit({
-          kind: 'line',
-          serviceId,
-          workspaceId,
-          line: `── brought ${linked.length} local config file${linked.length === 1 ? '' : 's'} in from the main checkout ──`,
-        });
-      }
+      if (!local) return [];
+      return applyMirror(planMirror(local.primary, target, local.files));
     } catch {
       // A repo we cannot read, a read-only worktree. The service may still
       // start; a failure here is not a reason to refuse.
+      return [];
     }
   }
 
@@ -1428,6 +1510,7 @@ export function primaryCheckout(checkout: string): string | null {
 export function findPropertyDefinitions(
   checkout: string,
   key: string,
+  local?: { primary: string; files: readonly string[] } | null,
 ): { file: string; presentInBinding: boolean }[] {
   const out: { file: string; presentInBinding: boolean }[] = [];
   const pattern = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[=:]`, 'm');
@@ -1466,13 +1549,10 @@ export function findPropertyDefinitions(
   // The main checkout may define it in a file this one does not have at all —
   // the gitignored case, which is the interesting one.
   try {
-    const primary = primaryCheckout(checkout);
-    if (primary && path.resolve(primary) !== path.resolve(checkout)) {
-      for (const relative of findLocalConfig(primary)) {
-        if (out.some((d) => d.file === relative)) continue;
-        const text = fs.readFileSync(path.join(primary, relative), 'utf8');
-        if (pattern.test(text)) out.push({ file: relative, presentInBinding: false });
-      }
+    for (const relative of local?.files ?? []) {
+      if (out.some((d) => d.file === relative)) continue;
+      const text = fs.readFileSync(path.join(local!.primary, relative), 'utf8');
+      if (pattern.test(text)) out.push({ file: relative, presentInBinding: false });
     }
   } catch {
     // No repo, or nothing readable. The rules cope with an empty answer.

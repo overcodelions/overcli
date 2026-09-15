@@ -23,16 +23,9 @@ export interface FrameGroup {
 
 export type LogItem = LogRow | FrameGroup;
 
-/// A line that is a stack frame rather than a message.
-///
-/// Covers the JVM's `at com.acme.Thing.method(File.java:40)`, its `... 11
-/// more` tail, and node's `at Object.<anonymous> (/path:1:2)` — the three
-/// spellings that actually fill a log.
-const FRAME = /^\s+at\s+\S|^\s*\.\.\.\s+\d+\s+more\s*$/;
+import { isStackFrame } from '@shared/exceptions';
 
-export function isStackFrame(line: string): boolean {
-  return FRAME.test(line);
-}
+export { isStackFrame };
 
 /// How many consecutive frames are worth hiding. Two is not a wall, and
 /// collapsing them costs a click to read something that was already readable.

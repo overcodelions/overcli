@@ -12,6 +12,39 @@ import { parseLogLine, type Level } from './logLine';
 
 export type LogLevel = 'all' | 'problems';
 
+/// Shared by every unmatched line, so a memoised row sees the same value
+/// between renders instead of a fresh empty array. Never mutated.
+const NO_MATCHES: [number, number][] = [];
+
+/// The log is re-filtered every time lines arrive, and most of those lines
+/// were already seen on the last pass. Stripping escapes and parsing a line are
+/// the expensive parts, and both depend on nothing but the line — so remember
+/// them. Bounded: a service left running all day must not grow this forever.
+const CACHE_LIMIT = 50_000;
+const plainCache = new Map<string, string>();
+const parseCache = new Map<string, ReturnType<typeof parseLogLine>>();
+
+function remember<T>(cache: Map<string, T>, key: string, make: (key: string) => T): T {
+  const hit = cache.get(key);
+  if (hit !== undefined || cache.has(key)) return hit as T;
+  if (cache.size >= CACHE_LIMIT) cache.clear();
+  const value = make(key);
+  cache.set(key, value);
+  return value;
+}
+
+/// A line as the user sees it, escape codes removed.
+export function plainText(line: string): string {
+  // Most lines carry no colour at all; those need no parser and no cache slot.
+  if (!line.includes('\x1b')) return line;
+  return remember(plainCache, line, stripAnsi);
+}
+
+/// `parseLogLine`, remembered.
+export function parsedLine(text: string): ReturnType<typeof parseLogLine> {
+  return remember(parseCache, text, parseLogLine);
+}
+
 export interface FilteredLine {
   /// Index in the original list, so "3 of 412" and jump-to-line stay honest.
   index: number;
@@ -55,9 +88,9 @@ export function filterLog(
 
   for (let index = 0; index < lines.length; index++) {
     // Search sees what the user sees, not the escape codes behind it.
-    const text = stripAnsi(lines[index]);
+    const text = plainText(lines[index]);
     if (opts.hidden && opts.hidden.size > 0) {
-      const parsed = parseLogLine(text);
+      const parsed = parsedLine(text);
       if (parsed) record = parsed.level;
       // Before the first record — a banner, Gradle's own output — always shows.
       if (record !== undefined && opts.hidden.has(record)) continue;
@@ -66,7 +99,7 @@ export function filterLog(
     if (level === 'problems' && !problem) continue;
 
     if (!needle) {
-      out.push({ index, text, matches: [], problem });
+      out.push({ index, text, matches: NO_MATCHES, problem });
       continue;
     }
 
@@ -124,7 +157,7 @@ export function describeFilter(total: number, shown: number): string | null {
 export function countLevels(lines: readonly string[]): Record<Level, number> {
   const out: Record<Level, number> = { error: 0, warn: 0, info: 0, debug: 0, trace: 0 };
   for (const line of lines) {
-    const parsed = parseLogLine(stripAnsi(line));
+    const parsed = parsedLine(plainText(line));
     if (parsed) out[parsed.level]++;
   }
   return out;

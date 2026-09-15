@@ -222,6 +222,8 @@ export interface ServiceRuntime {
   readyAt?: number;
   exitCode?: number | null;
   lastError?: string;
+  /// While `starting`: the name of what it is waiting on before it launches.
+  waitingOn?: string;
   /// For a task: the ref it last finished on, and when. What it produced —
   /// jars in `~/.m2` — is shared by every checkout on the machine, so which
   /// branch it came from is the one thing worth knowing about it.

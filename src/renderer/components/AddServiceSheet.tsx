@@ -38,6 +38,8 @@ export function AddServiceSheet({ target, onClose }: { target: AddTarget; onClos
   const [readyPattern, setReadyPattern] = useState('');
   const [options, setOptions] = useState('');
   const [selfReloads, setSelfReloads] = useState(false);
+  const [restartOnChange, setRestartOnChange] = useState(false);
+  const [watch, setWatch] = useState('src/**');
   const [busy, setBusy] = useState(false);
 
   const project = target.projects.find((p) => p.id === projectId);
@@ -62,6 +64,9 @@ export function AddServiceSheet({ target, onClose }: { target: AddTarget; onClos
         port: portNumber,
         ready: buildProbe(readyKind, portNumber, readyPath, readyPattern),
         selfReloads,
+        watch: !selfReloads && restartOnChange
+          ? watch.split(',').map((pattern) => pattern.trim()).filter(Boolean)
+          : undefined,
         group: group.trim() || undefined,
         options: parseOptionText(options),
         config: {},
@@ -241,6 +246,27 @@ export function AddServiceSheet({ target, onClose }: { target: AddTarget; onClos
             It reloads itself when files change
             <span className="text-ink-faint">— overcli will leave it alone</span>
           </label>
+          {!selfReloads && (
+            <div className="flex flex-col gap-1.5">
+              <label className="flex cursor-pointer items-center gap-2 text-[11px] text-ink-muted">
+                <input
+                  type="checkbox"
+                  checked={restartOnChange}
+                  onChange={(e) => setRestartOnChange(e.target.checked)}
+                />
+                Restart it when matching files change
+              </label>
+              {restartOnChange && (
+                <input
+                  className="field ml-5 px-2 py-1.5 font-mono text-[11px]"
+                  value={watch}
+                  onChange={(e) => setWatch(e.target.value)}
+                  placeholder="src/**, config/**"
+                  aria-label="Files that restart the service"
+                />
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 border-t border-card px-4 py-3">

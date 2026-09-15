@@ -43,6 +43,16 @@ export function shouldRestartOnChange(spec: Pick<ServiceSpec, 'selfReloads' | 'w
   return (spec.watch?.length ?? 0) > 0;
 }
 
+/// Watch globs are always checkout-relative. Besides avoiding accidental
+/// watching of a whole home directory, this keeps a service rebound to a new
+/// worktree watching that worktree instead of an old absolute location.
+export function normalizeWatchPatterns(patterns: readonly string[]): string[] {
+  return [...new Set(patterns.map((pattern) => pattern.trim().replace(/\\/g, '/')).filter((pattern) => {
+    if (!pattern || pattern.startsWith('/') || /^[A-Za-z]:\//.test(pattern)) return false;
+    return !pattern.split('/').includes('..');
+  }))];
+}
+
 /// The services that must be ready before `serviceId` starts, in start order,
 /// excluding the service itself. Depth-first so a dependency's own
 /// dependencies come first; cycles are broken rather than thrown, because a

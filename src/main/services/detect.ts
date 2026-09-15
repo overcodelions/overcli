@@ -690,6 +690,7 @@ function detectPython(repo: RepoReader, name: string, dir: string): ServicePropo
 
   const command = fastapi ? ['uvicorn', 'app.main:app', '--reload'] : ['flask', 'run'];
   const port = fastapi ? 8000 : 5000;
+  const pythonWatch = [dir ? `${dir}/**/*.py` : '**/*.py'];
   return {
     spec: {
       name,
@@ -701,7 +702,11 @@ function detectPython(repo: RepoReader, name: string, dir: string): ServicePropo
       debugKind: 'debugpy',
       debugPort: 5678,
       ready: { kind: 'tcp', port },
-      selfReloads: true,
+      // uvicorn was explicitly launched with --reload. Plain `flask run`
+      // was not: its reloader depends on debug mode, which detection cannot
+      // assume, so Overcli owns restarts for Python edits in that case.
+      selfReloads: fastapi,
+      watch: fastapi ? undefined : pythonWatch,
       config: { link: { '.env': '${SERVICE_CONFIG_DIR}/.env' } },
     },
     evidence: [
@@ -712,6 +717,12 @@ function detectPython(repo: RepoReader, name: string, dir: string): ServicePropo
       },
       { field: 'command', why: 'guessed module path — check this one' },
       { field: 'port', why: `${fastapi ? 'uvicorn' : 'flask'} default` },
+      {
+        field: 'selfReloads',
+        why: fastapi
+          ? 'uvicorn starts with --reload — overcli will leave it alone'
+          : 'plain flask run does not promise a reloader — overcli restarts it on Python changes',
+      },
       { field: 'config', why: '.env is linked in from your service config folder' },
     ],
     confidence: 'low',

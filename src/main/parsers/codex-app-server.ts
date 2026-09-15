@@ -115,7 +115,7 @@ export function parseCodexAppServerNotification(
           event(
             {
               type: 'systemNotice',
-              text: typeof params?.message === 'string' ? params.message : method,
+              text: noticeText(params) ?? method,
             },
             raw,
           ),
@@ -131,6 +131,17 @@ export function parseCodexAppServerNotification(
     default:
       return { events: [event({ type: 'other', label: `codex:${method}` }, raw)] };
   }
+}
+
+// `warning` carries `message`; `deprecationNotice` and `configWarning`
+// carry `summary` plus optional `details` (and `path` for config).
+function noticeText(params: any): string | undefined {
+  if (typeof params?.message === 'string' && params.message) return params.message;
+  if (typeof params?.summary !== 'string' || !params.summary) return undefined;
+  const parts = [params.summary];
+  if (typeof params.path === 'string' && params.path) parts.push(`(${params.path})`);
+  if (typeof params.details === 'string' && params.details) parts.push(`— ${params.details}`);
+  return parts.join(' ');
 }
 
 function parseItemStarted(

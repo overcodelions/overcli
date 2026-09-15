@@ -7,11 +7,14 @@ import {
   ModelTier,
   ProjectGroupStats,
   QuotaWindow,
+  RecentSession,
+  RecentUsage,
   StatsReport,
   TierStats,
 } from '@shared/types';
 import { RANGE_DAYS, RANGE_KEYS, RangeKey, movingAverage, sliceRange } from './statsRange';
 import { backendColor, backendFromModel, backendName } from '../theme';
+import { useStore } from '../store';
 
 export function StatsPage() {
   const [report, setReport] = useState<StatsReport | null>(null);
@@ -95,6 +98,8 @@ export function StatsPage() {
         </div>
 
         <QuotaBand quotas={report.quotas} refreshing={refreshingLimits} />
+
+        {report.recent && <RecentUsagePanel recent={report.recent} />}
 
         {/* Model mix — the fast vs premium question */}
         <ModelMixPanel rows={report.byTier} />
@@ -363,6 +368,386 @@ function TrendLine({ values, max }: { values: number[]; max: number }) {
     >
       <polyline points={points} fill="none" stroke="currentColor" strokeWidth="0.6" vectorEffect="non-scaling-stroke" className="text-ink-faint" />
     </svg>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Last 8 hours — where a limit went                                  */
+/* ------------------------------------------------------------------ */
+
+/// Fixed slot order; the heaviest session takes slot 1. Everything past the
+/// last slot folds into "Other" rather than inventing a sixth hue.
+const SESSION_SLOTS = 5;
+const OTHER_COLOR = 'var(--c-ink-faint)';
+
+function RecentUsagePanel({ recent }: { recent: RecentUsage }) {
+  const projects = useStore((s) => s.projects);
+  const workspaces = useStore((s) => s.workspaces);
+  const selectConversation = useStore((s) => s.selectConversation);
+
+  /// Claude session id → the overcli conversation that owns it, for the
+  /// row name and click-through.
+  const convBySession = useMemo(() => {
+    const m = new Map<string, { id: string; name: string }>();
+    for (const p of projects) {
+      for (const c of p.conversations) if (c.sessionId) m.set(c.sessionId, { id: c.id, name: c.name });
+    }
+    for (const w of workspaces) {
+      for (const c of w.conversations ?? []) if (c.sessionId) m.set(c.sessionId, { id: c.id, name: c.name });
+    }
+    return m;
+  }, [projects, workspaces]);
+
+  const totalCost = recent.buckets.reduce((s, b) => s + b.costUSD, 0);
+  if (totalCost === 0) {
+    return (
+      <Panel title="Last 8 hours">
+        <EmptyState>No Claude activity in the last 8 hours.</EmptyState>
+      </Panel>
+    );
+  }
+
+  const top = recent.sessions.slice(0, SESSION_SLOTS);
+  const colorFor = (id: string) => {
+    const i = top.findIndex((s) => s.id === id);
+    return i >= 0 ? `var(--c-viz-${i + 1})` : OTHER_COLOR;
+  };
+  const nameFor = (s: RecentSession | undefined, id: string) =>
+    convBySession.get(id)?.name ?? s?.title ?? (s ? leafName(s.projectPath) : id.slice(0, 8));
+  const sessionById = new Map(recent.sessions.map((s) => [s.id, s]));
+  const totalTokens = recent.buckets.reduce((s, b) => s + b.tokens, 0);
+  const totalTurns = recent.sessions.reduce((s, x) => s + x.turns, 0);
+  const totalSubagents = recent.sessions.reduce((s, x) => s + x.subagents, 0);
+  const cacheReadTokenPct = totalTokens > 0 ? (recent.byType.cacheRead.tokens / totalTokens) * 100 : 0;
+
+  return (
+    <Panel
+      title="Last 8 hours"
+      aside={
+        <span className="text-ink-faint tabular-nums">
+          Claude · {formatClock(recent.start)} – {formatClock(recent.end)} · weighted by estimated API cost
+        </span>
+      }
+    >
+      {recent.limitWindow && (
+        <LimitBanner recent={recent} nameFor={(id) => nameFor(sessionById.get(id), id)} />
+      )}
+
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        <StatTile
+          label="Estimated cost"
+          value={fmtUSD(totalCost)}
+          hint={`${fmtCompact(totalTokens)} tokens · ${Math.round(cacheReadTokenPct)}% cache reads`}
+        />
+        <StatTile
+          label="Turns"
+          value={totalTurns.toLocaleString()}
+          hint={`${recent.sessions.length} sessions · ${totalSubagents} subagents`}
+        />
+      </div>
+
+      <RecentChart recent={recent} top={top} colorFor={colorFor} nameFor={nameFor} sessionById={sessionById} />
+
+      <div className="h-6" />
+
+      <Panel title="Where it went" aside={<span className="text-ink-faint">sessions ranked by estimated cost · click to open</span>}>
+        <DataTable
+          head={['Session', 'Model', 'Share', 'Turns', 'Subagents', 'Context / turn', 'Output', 'Cache read', 'Est. cost']}
+          align="lllrrrrrr"
+        >
+          {recent.sessions.slice(0, 10).map((s) => {
+            const conv = convBySession.get(s.id);
+            return (
+              <tr
+                key={s.id}
+                className={`border-t border-card hover:bg-card-strong/60 transition-colors ${conv ? 'cursor-pointer' : ''}`}
+                onClick={conv ? () => selectConversation(conv.id) : undefined}
+                title={conv ? 'Open conversation' : undefined}
+              >
+                <Td>
+                  <div className="flex items-center min-w-0">
+                    <Dot color={colorFor(s.id)} />
+                    <div className="min-w-0">
+                      <div className="truncate max-w-[340px]">{nameFor(s, s.id)}</div>
+                      <div className="text-[11px] text-ink-faint tabular-nums">
+                        {leafName(s.projectPath)} · {formatClock(s.firstTs)}–{formatClock(s.lastTs)}
+                      </div>
+                    </div>
+                  </div>
+                </Td>
+                <Td mono faint>{s.models.map(shortModel).join(', ')}</Td>
+                <Td>
+                  <div className="flex items-center gap-2">
+                    <div className="h-1.5 w-24 rounded bg-card-strong overflow-hidden">
+                      <div className="h-full bg-accent" style={{ width: `${(s.costUSD / top[0].costUSD) * 100}%` }} />
+                    </div>
+                    <span className="text-[11px] text-ink-muted tabular-nums">
+                      {Math.round((s.costUSD / totalCost) * 100)}%
+                    </span>
+                  </div>
+                </Td>
+                <Td right>{s.turns.toLocaleString()}</Td>
+                <Td right>{s.subagents ? s.subagents : '—'}</Td>
+                <Td right>
+                  <span className={s.avgContextTokens >= 150_000 ? 'text-amber-500 dark:text-amber-400' : ''}>
+                    {s.turns ? fmtCompact(s.avgContextTokens) : '—'}
+                  </span>
+                </Td>
+                <Td right>{fmtCompact(s.outputTokens)}</Td>
+                <Td right>{fmtCompact(s.cacheReadTokens)}</Td>
+                <Td right>
+                  <span className="font-medium">{fmtUSD(s.costUSD)}</span>
+                </Td>
+              </tr>
+            );
+          })}
+        </DataTable>
+      </Panel>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-6">
+        <TokenTypePanel recent={recent} totalCost={totalCost} totalTokens={totalTokens} />
+        <Panel title="Heaviest turns" aside={<span className="text-ink-faint">single replies, costliest first</span>}>
+          <DataTable head={['Time', 'Session', 'Tools', 'Tokens', 'Est. cost']} align="lllrr">
+            {recent.heaviestTurns.map((t, i) => (
+              <tr key={`${t.sessionId}-${t.ts}-${i}`} className="border-t border-card hover:bg-card-strong/60 transition-colors">
+                <Td faint>{formatClock(t.ts)}</Td>
+                <Td>
+                  <div className="flex items-center min-w-0">
+                    <Dot color={colorFor(t.sessionId)} />
+                    <span className="truncate max-w-[200px]">{nameFor(sessionById.get(t.sessionId), t.sessionId)}</span>
+                    {t.isSubagent && <span className="ml-2 text-[10px] uppercase tracking-wider text-ink-faint">subagent</span>}
+                  </div>
+                </Td>
+                <Td faint>
+                  <span className="truncate max-w-[220px] inline-block align-middle">{t.tools.join(', ') || '—'}</span>
+                </Td>
+                <Td right>{fmtCompact(t.tokens)}</Td>
+                <Td right>
+                  <span className="font-medium">{fmtUSD(t.costUSD)}</span>
+                </Td>
+              </tr>
+            ))}
+          </DataTable>
+        </Panel>
+      </div>
+    </Panel>
+  );
+}
+
+function LimitBanner({ recent, nameFor }: { recent: RecentUsage; nameFor: (id: string) => string }) {
+  const lw = recent.limitWindow!;
+  // Cost that landed inside the window, and which session carried most of it.
+  const inWindow = recent.buckets.filter((b) => b.start + recent.bucketMs > lw.start && b.start < lw.resetsAt);
+  const windowCost = inWindow.reduce((s, b) => s + b.costUSD, 0);
+  const perSession = new Map<string, number>();
+  for (const b of inWindow) {
+    for (const [id, c] of Object.entries(b.bySession)) perSession.set(id, (perSession.get(id) ?? 0) + c);
+  }
+  const [topId, topCost] = Array.from(perSession.entries()).sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
+  const hit = lw.usedPercent >= 100;
+  const hot = lw.usedPercent >= 85;
+  const past = lw.resetsAt <= Date.now();
+
+  return (
+    <div
+      className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3.5 py-2.5 mb-3 text-xs ${
+        hot ? 'border-rose-500/35 bg-rose-500/[0.07]' : 'border-card bg-card'
+      }`}
+    >
+      <span className="tabular-nums">
+        {hit
+          ? `Claude's 5-hour limit was reached — window ${formatClock(lw.start)}–${formatClock(lw.resetsAt)}`
+          : `Claude's 5-hour window is ${Math.round(lw.usedPercent)}% used — ${past ? 'reset at' : 'resets'} ${formatClock(lw.resetsAt)}`}
+      </span>
+      {windowCost > 0 && topId && (
+        <span className="ml-auto text-ink-muted">
+          <span className="text-ink font-medium tabular-nums">{Math.round((topCost / windowCost) * 100)}%</span> of it went to{' '}
+          <span className="text-ink">{nameFor(topId)}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+function RecentChart({
+  recent,
+  top,
+  colorFor,
+  nameFor,
+  sessionById,
+}: {
+  recent: RecentUsage;
+  top: RecentSession[];
+  colorFor: (id: string) => string;
+  nameFor: (s: RecentSession | undefined, id: string) => string;
+  sessionById: Map<string, RecentSession>;
+}) {
+  const range = recent.end - recent.start;
+  const pct = (ts: number) => `${Math.min(100, Math.max(0, ((ts - recent.start) / range) * 100))}%`;
+  const axisMax = niceCeil(Math.max(...recent.buckets.map((b) => b.costUSD)));
+  const topIds = new Set(top.map((s) => s.id));
+  const lw = recent.limitWindow;
+
+  const ticks: number[] = [];
+  const firstHour = new Date(recent.start);
+  firstHour.setMinutes(0, 0, 0);
+  for (let t = firstHour.getTime() + 3600_000; t < recent.end; t += 3600_000) ticks.push(t);
+
+  return (
+    <div className="rounded-lg bg-card border border-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <span className="text-[10px] uppercase tracking-wider text-ink-faint">Estimated cost per 15 minutes · by session</span>
+        <div className="flex flex-wrap items-center gap-3 text-[11px] text-ink-muted">
+          {top.map((s) => (
+            <div key={s.id} className="flex items-center gap-1.5 min-w-0">
+              <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: colorFor(s.id) }} />
+              <span className="truncate max-w-[160px]">{nameFor(s, s.id)}</span>
+            </div>
+          ))}
+          {recent.sessions.length > top.length && (
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-sm" style={{ background: OTHER_COLOR }} />
+              <span>Other</span>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="flex gap-2.5">
+        <div className="w-10 flex flex-col justify-between text-right text-[9px] text-ink-faint tabular-nums pt-4">
+          <span>{fmtUSD(axisMax)}</span>
+          <span>{fmtUSD(axisMax / 2)}</span>
+          <span>$0</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="relative h-4 text-[9px] tabular-nums">
+            {lw && lw.start > recent.start && (
+              <span className="absolute text-accent whitespace-nowrap pl-1" style={{ left: pct(lw.start) }}>
+                5h window
+              </span>
+            )}
+            {lw && lw.resetsAt < recent.end && (
+              <span
+                className={`absolute -translate-x-full whitespace-nowrap pr-1 ${lw.usedPercent >= 100 ? 'text-rose-500' : 'text-accent'}`}
+                style={{ left: pct(lw.resetsAt) }}
+              >
+                resets {formatClock(lw.resetsAt)}
+              </span>
+            )}
+          </div>
+          <div className="relative h-40 border-b border-card-strong">
+            <div className="absolute inset-x-0 top-0 border-t border-dashed border-card" />
+            <div className="absolute inset-x-0 top-1/2 border-t border-dashed border-card" />
+            {lw && (
+              <div
+                className="absolute inset-y-0 bg-accent/[0.06] border-l border-accent/35"
+                style={{ left: pct(lw.start), width: `calc(${pct(lw.resetsAt)} - ${pct(lw.start)})` }}
+              />
+            )}
+            {lw && lw.resetsAt < recent.end && (
+              <div
+                className={`absolute inset-y-0 border-l-[1.5px] ${lw.usedPercent >= 100 ? 'border-rose-500' : 'border-accent'}`}
+                style={{ left: pct(lw.resetsAt) }}
+              />
+            )}
+            <div className="absolute inset-0 flex items-end gap-[2px]">
+              {recent.buckets.map((b) => {
+                const entries = Object.entries(b.bySession);
+                const topSegs = top
+                  .map((s) => ({ id: s.id, cost: b.bySession[s.id] ?? 0 }))
+                  .filter((x) => x.cost > 0);
+                const other = entries.filter(([id]) => !topIds.has(id)).reduce((s, [, c]) => s + c, 0);
+                const tip =
+                  `${formatClock(b.start)} · ${fmtUSD(b.costUSD)} · ${fmtCompact(b.tokens)} tokens` +
+                  entries
+                    .sort((x, y) => y[1] - x[1])
+                    .map(([id, c]) => `\n${nameFor(sessionById.get(id), id)}: ${fmtUSD(c)}`)
+                    .join('');
+                return (
+                  <div key={b.start} className="flex-1 h-full relative group" title={b.costUSD > 0 ? tip : formatClock(b.start)}>
+                    <div
+                      className="absolute bottom-0 w-full rounded-t-[4px] overflow-hidden flex flex-col-reverse gap-px opacity-90 group-hover:opacity-100 transition-opacity"
+                      style={{ height: `${(b.costUSD / axisMax) * 100}%`, minHeight: b.costUSD > 0 ? 2 : 0 }}
+                    >
+                      {topSegs.map((x) => (
+                        <div key={x.id} className="shrink-0" style={{ height: `${(x.cost / b.costUSD) * 100}%`, background: colorFor(x.id) }} />
+                      ))}
+                      {other > 0 && (
+                        <div className="shrink-0" style={{ height: `${(other / b.costUSD) * 100}%`, background: OTHER_COLOR }} />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="relative h-4 mt-1.5 text-[9px] text-ink-faint tabular-nums">
+            {ticks.map((t) => (
+              <span key={t} className="absolute -translate-x-1/2 whitespace-nowrap" style={{ left: pct(t) }}>
+                {formatClock(t)}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const TOKEN_TYPES: Array<{ key: keyof RecentUsage['byType']; label: string; fill: string }> = [
+  { key: 'cacheRead', label: 'Cache read', fill: 'bg-accent' },
+  { key: 'cacheWrite', label: 'Cache write', fill: 'bg-accent/70' },
+  { key: 'output', label: 'Output', fill: 'bg-accent/45' },
+  { key: 'input', label: 'Input', fill: 'bg-accent/25' },
+];
+
+function TokenTypePanel({
+  recent,
+  totalCost,
+  totalTokens,
+}: {
+  recent: RecentUsage;
+  totalCost: number;
+  totalTokens: number;
+}) {
+  const cr = recent.byType.cacheRead;
+  const crTokenPct = totalTokens > 0 ? Math.round((cr.tokens / totalTokens) * 100) : 0;
+  const crCostPct = totalCost > 0 ? Math.round((cr.costUSD / totalCost) * 100) : 0;
+  return (
+    <Panel title="Cost by token type" aside={<span className="text-ink-faint">tokens don't all weigh the same</span>}>
+      <div className="rounded-lg bg-card border border-card p-4">
+        <div className="flex h-3 w-full gap-[2px] overflow-hidden rounded-full bg-card-strong">
+          {TOKEN_TYPES.map((t) => {
+            const share = (recent.byType[t.key].costUSD / totalCost) * 100;
+            return share > 0 ? (
+              <div key={t.key} className={t.fill} style={{ width: `${share}%` }} title={`${t.label}: ${share.toFixed(1)}%`} />
+            ) : null;
+          })}
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+          {TOKEN_TYPES.map((t) => {
+            const v = recent.byType[t.key];
+            return (
+              <div key={t.key}>
+                <div className="flex items-center gap-1.5 text-[11px] text-ink-muted">
+                  <span className={`w-2 h-2 rounded-sm ${t.fill}`} />
+                  {t.label}
+                </div>
+                <div className="text-lg leading-none mt-1.5 tabular-nums">{fmtUSD(v.costUSD)}</div>
+                <div className="text-[11px] text-ink-faint mt-1 tabular-nums">
+                  {Math.round((v.costUSD / totalCost) * 100)}% · {fmtCompact(v.tokens)} tokens
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {crTokenPct >= 50 && (
+          <div className="mt-4 pt-3 border-t border-card text-[11px] leading-relaxed text-ink-muted">
+            {crTokenPct}% of tokens were cache reads but only {crCostPct}% of the cost — that's the context each reply
+            re-sends. It adds up in long sessions; compacting or starting fresh keeps it down.
+          </div>
+        )}
+      </div>
+    </Panel>
   );
 }
 
@@ -831,6 +1216,31 @@ function formatDurationMs(ms: number): string {
   const h = Math.floor(m / 60);
   const rm = m % 60;
   return rm === 0 ? `${h}h` : `${h}h ${rm}m`;
+}
+
+function fmtUSD(n: number): string {
+  if (!isFinite(n) || n <= 0) return '$0';
+  if (n < 0.01) return '<$0.01';
+  if (n >= 100) return `$${Math.round(n).toLocaleString()}`;
+  return `$${n.toFixed(2)}`;
+}
+
+/// Round an axis maximum up to 1 / 2 / 2.5 / 5 × 10ⁿ so gridline labels are clean.
+function niceCeil(n: number): number {
+  if (!isFinite(n) || n <= 0) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(n)));
+  for (const step of [1, 2, 2.5, 5, 10]) {
+    if (n <= step * pow) return step * pow;
+  }
+  return 10 * pow;
+}
+
+function leafName(p: string): string {
+  return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+}
+
+function shortModel(model: string): string {
+  return model.replace(/^claude-/, '');
 }
 
 function formatClock(ts: number): string {

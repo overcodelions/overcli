@@ -1503,6 +1503,16 @@ export function registerIpc(): void {
   ipcMain.handle('services:log', (_e, { workspaceId, serviceId }) => [
     ...services().log(workspaceId, serviceId),
   ]);
+  ipcMain.handle('services:exceptions', (_e, { workspaceId, serviceId }) =>
+    services().exceptions(workspaceId, serviceId),
+  );
+  ipcMain.handle('services:logFile', (_e, { workspaceId, serviceId }) =>
+    services().logFile(workspaceId, serviceId),
+  );
+  ipcMain.handle('services:revealLogFile', (_e, { workspaceId, serviceId }) => {
+    const file = services().logFile(workspaceId, serviceId);
+    shell.showItemInFolder(fs.existsSync(file) ? file : path.dirname(file));
+  });
   ipcMain.handle('services:clearLog', (_e, { workspaceId, serviceId }) =>
     services().clearLog(workspaceId, serviceId),
   );
@@ -1562,6 +1572,9 @@ export function registerIpc(): void {
   ipcMain.handle('services:setCommand', (_e, { workspaceId, serviceId, command }) =>
     services().setCommand(workspaceId, serviceId, command),
   );
+  ipcMain.handle('services:setWatch', (_e, { workspaceId, serviceId, selfReloads, watch }) =>
+    services().setWatch(workspaceId, serviceId, selfReloads, watch),
+  );
   ipcMain.handle('services:setDebug', (_e, { workspaceId, serviceId, enabled, debugPort }) =>
     services().setDebug(workspaceId, serviceId, enabled, debugPort),
   );
@@ -1599,11 +1612,14 @@ export function registerIpc(): void {
   // back as a guess.
   // `kind: 'command'` is the same ask for a service with no command at all:
   // nothing failed, so the question is how it starts, not why it did not.
-  ipcMain.handle('services:askAi', async (_e, { workspaceId, serviceId, kind }) => {
+  // `kind: 'explain'` reads a command someone has in the editor, unsaved or not.
+  ipcMain.handle('services:askAi', async (_e, { workspaceId, serviceId, kind, command }) => {
     const ask =
       kind === 'command'
         ? services().commandPrompt(workspaceId, serviceId)
-        : services().fixPrompt(workspaceId, serviceId);
+        : kind === 'explain'
+          ? services().explainPrompt(workspaceId, serviceId, command ?? '')
+          : await services().fixPrompt(workspaceId, serviceId);
     if (!ask) return { ok: false as const, error: 'That service is gone.' };
 
     const settings = Store.load().settings;
@@ -1631,8 +1647,8 @@ export function registerIpc(): void {
       cancelKey: `services:askAi:${workspaceId}:${serviceId}`,
     });
     if (!result.ok) return { ok: false as const, error: result.error };
-    const { text, command } = splitSuggestedCommand(result.text);
-    return { ok: true as const, backend, text: tidySuggestion(text), command };
+    const { text, command: suggested } = splitSuggestedCommand(result.text);
+    return { ok: true as const, backend, text: tidySuggestion(text), command: suggested };
   });
   ipcMain.handle('services:cancelAskAi', (_e, { workspaceId, serviceId }) =>
     runner!.cancelOneShot(`services:askAi:${workspaceId}:${serviceId}`),
