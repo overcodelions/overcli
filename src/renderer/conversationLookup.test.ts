@@ -6,6 +6,7 @@ import {
   findConversation,
   findOwnerProject,
   mostRecentConversationId,
+  serviceWorkspaceIdsForConversation,
 } from './conversationLookup';
 import type { Conversation, Project, Workspace } from '../shared/types';
 
@@ -90,6 +91,18 @@ describe('conversationLookup', () => {
     const hit = findConvWithProjectPath({ projects: [p], workspaces: [] }, 'c1');
     expect(hit?.conv).toBe(c);
     expect(hit?.ownerProjectPath).toBe('/repo');
+  });
+
+  it('scopes service mentions to the owning workspace or workspaces containing the project', () => {
+    const projectConv = conv('project-conv');
+    const workspaceConv = conv('workspace-conv');
+    const p = project('p1', '/repo', [projectConv]);
+    const direct = { ...workspace('ws1', '/ws1', [workspaceConv]), projectIds: ['p1'] };
+    const alsoContains = { ...workspace('ws2', '/ws2', []), projectIds: ['p1'] };
+    const unrelated = { ...workspace('ws3', '/ws3', []), projectIds: ['p2'] };
+    const src = { projects: [p], workspaces: [direct, alsoContains, unrelated] };
+    expect(serviceWorkspaceIdsForConversation(src, 'project-conv')).toEqual(['ws1', 'ws2']);
+    expect(serviceWorkspaceIdsForConversation(src, 'workspace-conv')).toEqual(['ws1']);
   });
 
   it('reuses the cached index across consecutive lookups', () => {

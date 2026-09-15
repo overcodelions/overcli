@@ -4,6 +4,8 @@ import { UUID } from '@shared/types';
 import { Composer } from './Composer';
 import { useChromeCommandGuard } from './ChromeCommandGuard';
 import { useConversation, useConversationRoot, useSlashCommands } from '../hooks';
+import { serviceWorkspaceIdsForConversation } from '../conversationLookup';
+import { useMemo } from 'react';
 
 export function InputBar({ conversationId }: { conversationId: UUID }) {
   const send = useStore((s) => s.send);
@@ -13,6 +15,12 @@ export function InputBar({ conversationId }: { conversationId: UUID }) {
   const isRunning = useRunnerIsRunning(conversationId);
   const rootPath = useConversationRoot(conversationId);
   const conv = useConversation(conversationId);
+  const projects = useStore((s) => s.projects);
+  const workspaces = useStore((s) => s.workspaces);
+  const serviceWorkspaceIds = useMemo(
+    () => serviceWorkspaceIdsForConversation({ projects, workspaces }, conversationId),
+    [projects, workspaces, conversationId],
+  );
   const slashCommands = useSlashCommands(conv?.primaryBackend, conversationId);
   const hasSlash = slashCommands.length > 0;
   // `/chrome <prose>` never reaches the model — rewrite it, or offer the
@@ -32,6 +40,7 @@ export function InputBar({ conversationId }: { conversationId: UUID }) {
         variant="compact"
         isRunning={isRunning}
         rootPath={rootPath ?? undefined}
+        serviceWorkspaceIds={serviceWorkspaceIds}
         slashCommands={slashCommands}
         autoFocus
         onSend={chrome.send}

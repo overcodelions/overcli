@@ -197,6 +197,14 @@ export function WelcomePane() {
     const fromPath = pathBasename(selectedProject.path).trim();
     return fromPath || selectedProject.name;
   }, [selectedProject]);
+  const serviceWorkspaceIds = useMemo(
+    () => focusedWorkspace
+      ? [focusedWorkspace.id]
+      : selectedProject
+        ? workspaces.filter((workspace) => workspace.projectIds.includes(selectedProject.id)).map((workspace) => workspace.id)
+        : [],
+    [focusedWorkspace, selectedProject, workspaces],
+  );
   // `false` once probed and the folder isn't a git repo. We use this to
   // reframe the welcome screen as a "work folder" — review data, build
   // reports, investigate — rather than the build/code framing that fits a
@@ -530,6 +538,7 @@ export function WelcomePane() {
       focusSignal={welcomeFocusToken + composerFocusNudge}
       variant="welcome"
       rootPath={selectedProject?.path}
+      serviceWorkspaceIds={serviceWorkspaceIds}
       slashCommands={slashCommands}
       placeholder={placeholder}
       onSend={handleSend}
