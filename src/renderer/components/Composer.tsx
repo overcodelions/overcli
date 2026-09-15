@@ -4,6 +4,7 @@ import { useRunnerEvents, useRunnersStore } from '../runnersStore';
 import { Attachment, StreamEvent } from '@shared/types';
 import { ATTACHMENT_ACCEPT, intakeAttachments } from '../attachmentIntake';
 import { AttachmentChip } from './AttachmentChip';
+import { runningServiceMentions } from '../serviceLogContext';
 
 export interface ComposerProps {
   /// Key into the store's drafts + attachments maps. Use the conversation
@@ -45,6 +46,9 @@ export interface ComposerProps {
   /// one inserts its path (relative to this root) into the draft. Omit
   /// to disable the feature.
   rootPath?: string;
+  /// Workspace stacks whose live services join file results in the @ menu.
+  /// Picking one inserts `@service:<id>`; send resolves its newest log tail.
+  serviceWorkspaceIds?: string[];
   /// Slash commands available to the active backend. When a non-empty
   /// list is provided, typing `/` at the start of the draft opens a
   /// filterable popover. Names are bare (no leading `/`).
@@ -106,6 +110,11 @@ function pickOwenLine(): string {
 /// always returns the same reference when no attachments are queued.
 const EMPTY_ATTACHMENTS: ReadonlyArray<Attachment> = Object.freeze([]);
 
+type ServiceMentionEntry = ReturnType<typeof runningServiceMentions>[number];
+type MentionEntry =
+  | { kind: 'service'; service: ServiceMentionEntry }
+  | { kind: 'file'; path: string };
+
 export function Composer({
   draftKey,
   onSend,
@@ -119,6 +128,7 @@ export function Composer({
   autoFocus,
   focusSignal,
   rootPath,
+  serviceWorkspaceIds = [],
   slashCommands,
   disabled,
   historyConvId,
@@ -195,6 +205,7 @@ export function Composer({
   // lazily on first `@` and reused thereafter.
   const [mention, setMention] = useState<{ at: number; query: string } | null>(null);
   const [mentionFiles, setMentionFiles] = useState<string[] | null>(null);
+  const [mentionServices, setMentionServices] = useState<ServiceMentionEntry[] | null>(null);
   const [mentionSelected, setMentionSelected] = useState(0);
 
   useEffect(() => {
@@ -208,10 +219,28 @@ export function Composer({
     };
   }, [mention, rootPath, mentionFiles]);
 
+  const serviceScopeKey = serviceWorkspaceIds.join('\0');
+  useEffect(() => setMentionServices(null), [serviceScopeKey]);
+  useEffect(() => {
+    if (!mention || serviceWorkspaceIds.length === 0 || mentionServices) return;
+    let cancelled = false;
+    window.overcli.invoke('services:viewAll', serviceWorkspaceIds).then((views) => {
+      if (cancelled) return;
+      setMentionServices(runningServiceMentions(views));
+    });
+    return () => { cancelled = true; };
+  }, [mention, serviceScopeKey, mentionServices]);
+
   const mentionMatches = useMemo(() => {
-    if (!mention || !rootPath) return [];
-    return rankMentionMatches(mentionFiles ?? [], mention.query, rootPath).slice(0, 8);
-  }, [mention, mentionFiles, rootPath]);
+    if (!mention) return [];
+    const services = rankServiceMentionMatches(mentionServices ?? [], mention.query)
+      .map((service): MentionEntry => ({ kind: 'service', service }));
+    const files = rootPath
+      ? rankMentionMatches(mentionFiles ?? [], mention.query, rootPath)
+          .map((path): MentionEntry => ({ kind: 'file', path }))
+      : [];
+    return [...services, ...files].slice(0, 8);
+  }, [mention, mentionFiles, mentionServices, rootPath]);
 
   useEffect(() => {
     setMentionSelected(0);
@@ -219,13 +248,14 @@ export function Composer({
 
   const closeMention = () => setMention(null);
 
-  const applyMention = (absPath: string) => {
-    if (!mention || !rootPath) return;
-    const rel = relativeTo(absPath, rootPath);
+  const applyMention = (entry: MentionEntry) => {
+    if (!mention) return;
     const before = draft.slice(0, mention.at);
     const afterStart = mention.at + 1 + mention.query.length;
     const after = draft.slice(afterStart);
-    const insertion = `@${rel} `;
+    const insertion = entry.kind === 'service'
+      ? `@service:${entry.service.serviceId} `
+      : `@${relativeTo(entry.path, rootPath ?? '')} `;
     const next = before + insertion + after;
     setDraft(draftKey, next);
     setMention(null);
@@ -290,7 +320,7 @@ export function Composer({
   };
 
   const updateMentionFromCaret = (value: string, caret: number) => {
-    if (!rootPath) return;
+    if (!rootPath && serviceWorkspaceIds.length === 0) return;
     // Walk backward from the caret looking for an `@` that's either at
     // start-of-text or preceded by whitespace, with no whitespace between
     // it and the caret. That's our trigger — anything else closes the
@@ -728,11 +758,11 @@ function MentionPopover({
   onPick,
 }: {
   variant: 'welcome' | 'compact';
-  matches: string[];
+  matches: MentionEntry[];
   selected: number;
   rootPath: string;
   onHover: (i: number) => void;
-  onPick: (absPath: string) => void;
+  onPick: (entry: MentionEntry) => void;
 }) {
   return (
     <div
@@ -742,22 +772,29 @@ function MentionPopover({
       }
     >
       <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-ink-faint border-b border-card">
-        Reference a file
+        Reference a running service or file
       </div>
       <div className="max-h-[260px] overflow-y-auto py-1">
-        {matches.map((p, i) => {
-          const rel = relativeTo(p, rootPath);
+        {matches.map((entry, i) => {
+          const rel = entry.kind === 'file' ? relativeTo(entry.path, rootPath) : '';
           const slash = rel.lastIndexOf('/');
-          const name = slash >= 0 ? rel.slice(slash + 1) : rel;
-          const dir = slash >= 0 ? rel.slice(0, slash) : '';
+          const name = entry.kind === 'service'
+            ? entry.service.name
+            : slash >= 0 ? rel.slice(slash + 1) : rel;
+          const detail = entry.kind === 'service'
+            ? `service · ${entry.service.status}`
+            : slash >= 0 ? rel.slice(0, slash) : '';
+          const key = entry.kind === 'service'
+            ? `service:${entry.service.workspaceId}:${entry.service.serviceId}`
+            : `file:${entry.path}`;
           return (
             <button
-              key={p}
+              key={key}
               // Use mousedown so the textarea's onBlur doesn't fire first
               // and tear down the popover before the click registers.
               onMouseDown={(e) => {
                 e.preventDefault();
-                onPick(p);
+                onPick(entry);
               }}
               onMouseEnter={() => onHover(i)}
               className={
@@ -766,7 +803,7 @@ function MentionPopover({
               }
             >
               <span className="truncate">{name}</span>
-              {dir && <span className="text-[10px] text-ink-faint truncate">{dir}</span>}
+              {detail && <span className="text-[10px] text-ink-faint truncate">{detail}</span>}
             </button>
           );
         })}
@@ -868,4 +905,24 @@ function rankMentionMatches(files: string[], query: string, root: string): strin
   }
   scored.sort((a, b) => b[1] - a[1]);
   return scored.map((x) => x[0]);
+}
+
+function rankServiceMentionMatches(
+  services: ServiceMentionEntry[],
+  query: string,
+): ServiceMentionEntry[] {
+  const q = query.toLowerCase().replace(/^service:/, '');
+  if (!q) return [...services].sort((a, b) => a.name.localeCompare(b.name));
+  return services
+    .map((service): [ServiceMentionEntry, number] => {
+      const id = service.serviceId.toLowerCase();
+      const name = service.name.toLowerCase();
+      if (id === q || name === q) return [service, 1_000];
+      if (id.startsWith(q) || name.startsWith(q)) return [service, 500 - name.length];
+      if (id.includes(q) || name.includes(q)) return [service, 300 - name.length];
+      return [service, -1];
+    })
+    .filter((entry) => entry[1] >= 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([service]) => service);
 }

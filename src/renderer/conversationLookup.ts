@@ -171,6 +171,21 @@ export function findContainerPath(src: LookupSource, id: UUID): string | null {
   return hit.conversation.coordinatorRootPath ?? hit.conversation.worktreePath ?? hit.workspace.rootPath;
 }
 
+/// Service stacks relevant to a conversation. Workspace conversations own an
+/// exact stack; project conversations can see stacks containing that project.
+/// Flow participants use the same path fallback when launched from a project.
+export function serviceWorkspaceIdsForConversation(src: LookupSource, id: UUID): UUID[] {
+  const hit = findConvLocation(src, id);
+  if (!hit) return [];
+  if (hit.kind === 'workspace') return [hit.workspace.id];
+  const projectIds = hit.kind === 'project'
+    ? [hit.project.id]
+    : src.projects.filter((project) => project.path === hit.run.projectPath).map((project) => project.id);
+  return src.workspaces
+    .filter((workspace) => projectIds.some((projectId) => workspace.projectIds.includes(projectId)))
+    .map((workspace) => workspace.id);
+}
+
 /// Like findConvLocation but unwraps to the (conv, owning-project-path)
 /// pair the legacy store helpers want. ownerProjectPath is null for
 /// workspace-hosted conversations.
