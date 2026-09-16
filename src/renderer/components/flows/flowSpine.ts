@@ -49,7 +49,13 @@ export function stepWrites(step: FlowStep): boolean {
 /// Strips the vendor prefix, restores dotted version numbers, and turns
 /// the remaining word-separating dashes into spaces.
 export function compactStepModel(flow: Flow, step: FlowStep): string {
-  const m = resolveStepModel(flow, step).model;
+  return compactModelLabel(resolveStepModel(flow, step).model);
+}
+
+/// The same formatting for a bare model id — a step's critic is a model
+/// reference rather than a step, and it deserves to be named in the same
+/// shape as the step it critiques.
+export function compactModelLabel(m: string | undefined): string {
   if (!m) return '(no model)';
   if (m.startsWith('claude-')) {
     return m
@@ -61,18 +67,45 @@ export function compactStepModel(flow: Flow, step: FlowStep): string {
   return m;
 }
 
-/// What the flow amounts to, said once above the steps: scale, cost, and
-/// consequence. A list of step names reads as five labels; "5 steps · 2
-/// models · edits your files" reads as a piece of work — which is what
-/// someone deciding whether to run it is actually weighing.
-export function flowSpineSummary(flow: Flow): string {
+/// What the flow amounts to: scale, cost, and consequence. A list of step
+/// names reads as five labels; "5 steps · 2 models · edits your files"
+/// reads as a piece of work — which is what someone deciding whether to
+/// run it is actually weighing.
+///
+/// Returned in pieces rather than pre-joined because callers disagree
+/// about which pieces earn their place. The overview drawer draws every
+/// critic loop on the step it belongs to, so repeating the count in the
+/// summary line is noise there; the launch panel has no such drawing and
+/// needs it.
+export function flowSpineFacts(flow: Flow): {
+  steps: string;
+  models: string;
+  loops: string | null;
+  writes: boolean;
+} {
   const models = new Set(flow.steps.map((s) => compactStepModel(flow, s)));
-  const parts = [`${flow.steps.length} ${flow.steps.length === 1 ? 'step' : 'steps'}`];
-  // One model: name it, since that IS the useful fact. Several: count
-  // them, because listing four ids here would out-shout the step list.
-  parts.push(models.size === 1 ? [...models][0] : `${models.size} models`);
   const loops = flow.steps.filter((s) => s.rebound).length;
-  if (loops > 0) parts.push(`${loops} critic ${loops === 1 ? 'loop' : 'loops'}`);
-  parts.push(flow.steps.some(stepWrites) ? 'edits your files' : 'read-only');
-  return parts.join(' · ');
+  return {
+    steps: `${flow.steps.length} ${flow.steps.length === 1 ? 'step' : 'steps'}`,
+    // One model: name it, since that IS the useful fact. Several: count
+    // them, because listing four ids here would out-shout the step list.
+    models: models.size === 1 ? [...models][0] : `${models.size} models`,
+    loops: loops > 0 ? `${loops} critic ${loops === 1 ? 'loop' : 'loops'}` : null,
+    writes: flow.steps.some(stepWrites),
+  };
+}
+
+export function flowSpineSummary(flow: Flow): string {
+  const { steps, models, loops, writes } = flowSpineFacts(flow);
+  return [steps, models, loops, writes ? 'edits your files' : 'read-only']
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/// How a step is referred to when something else points at it. A number
+/// is easier to find in a vertical list than an id is — "back to step 2"
+/// beats "back to write-tests" when the reader has to go look.
+export function stepOrdinal(flow: Flow, stepId: string): string {
+  const idx = flow.steps.findIndex((s) => s.id === stepId);
+  return idx < 0 ? stepId : `step ${idx + 1}`;
 }

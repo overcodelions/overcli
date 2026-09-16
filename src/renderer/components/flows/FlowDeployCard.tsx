@@ -51,6 +51,15 @@ export interface DeployScope {
   members?: number;
 }
 
+function CiIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden className="flex-shrink-0 text-sky-500 dark:text-sky-300">
+      <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M8 4.4 V8 L10.4 9.6" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function FlowDeployCard({
   flow,
   projects,
@@ -83,20 +92,25 @@ export function FlowDeployCard({
 
   return (
     <>
-      <div className="rounded-xl border border-card-strong p-3">
-        <div className="flex items-center gap-2">
-          <div className="text-[11px] uppercase tracking-wider text-ink-faint">Deploy to CI</div>
+      {/* A docked floor for the drawer, not a card in its flow: on the
+          page surface, full width, under a rule. As a bordered box in the
+          column it read as the pipeline's last stage. */}
+      <div className="border-t border-card bg-surface px-5 py-4">
+        <div className="flex items-center gap-2.5">
+          <CiIcon />
+          <span className="text-[13px] font-medium text-ink">Run in CI instead</span>
           <AlphaBadge />
-          <button
-            onClick={() => setOpen(true)}
-            className="ml-auto text-[11px] text-accent hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
-          >
-            Set up…
-          </button>
         </div>
-        <p className="mt-2 text-xs text-ink-muted">
-          Run this flow on GitHub Actions or Jenkins instead of here.
+        <p className="mt-2 mb-3 text-xs leading-relaxed text-ink-muted">
+          Put this pipeline on GitHub Actions or Jenkins, so it runs on a push instead of from
+          this window.
         </p>
+        <button
+          onClick={() => setOpen(true)}
+          className="text-xs px-3.5 py-1.5 rounded-md border border-card-strong bg-[var(--c-surface-muted)] text-ink hover:border-accent/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+        >
+          Set up…
+        </button>
       </div>
 
       {open && (

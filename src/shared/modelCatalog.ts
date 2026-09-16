@@ -211,6 +211,15 @@ export function modelSpeed(model: string): ModelSpeed {
   return MODEL_SPEED[model] ?? 'standard';
 }
 
+/// A model's speed tier, widened with `local` for anything running on the
+/// machine. Local models are recognised by their tag (`qwen3.5:9b`) rather
+/// than by the step's backend, because a bare id is all some call sites
+/// have — and an on-device model's tier is the fact that it is on-device,
+/// not where it lands on a cloud capability ladder it was never ranked on.
+export function modelTier(model: string): ModelSpeed | 'local' {
+  return model === 'ollama' || model.includes(':') ? 'local' : modelSpeed(model);
+}
+
 /// Pretty label for a backend+model combo. Used in the flow editor's
 /// unified picker and in run UI breadcrumbs.
 ///
