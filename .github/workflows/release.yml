@@ -41,6 +41,22 @@ jobs:
       - name: Compile main + renderer
         run: npm run build
 
+      - name: Fetch the Intel esbuild binary (macOS)
+        # esbuild ships its binary as per-platform optional packages and npm
+        # installs only the one matching the runner. The runner is arm64, so
+        # without this the x64 dmg carries an arm64 esbuild and the React
+        # preview (src/main/reactPreviewBundle.ts) dies on Intel with
+        # "you installed esbuild for another platform". Both variants can sit
+        # in node_modules together; esbuild picks by process.arch at runtime.
+        # --force is required because npm refuses a foreign-cpu package.
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ESBUILD_VERSION=$(node -p "require('./node_modules/esbuild/package.json').version")
+          npm i --no-save --force "@esbuild/darwin-x64@${ESBUILD_VERSION}"
+          test -d node_modules/@esbuild/darwin-x64
+          ls node_modules/@esbuild
+
       - name: Package with electron-builder
         shell: bash
         env:
@@ -92,6 +108,30 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Create stable-named copies
+        # Permanent, version-free filenames so overcli.app and the README can
+        # link at /releases/latest/download/<name> and never go stale.
+        shell: bash
+        run: |
+          mkdir -p stable
+          shopt -s nullglob
+          cd artifacts
+          for f in *; do
+            case "$f" in
+              *arm64*mac*.zip)  cp "$f" "../stable/Overcli-mac-arm64.zip" ;;
+              *arm64.dmg)       cp "$f" "../stable/Overcli-mac-arm64.dmg" ;;
+              *mac*.zip)        cp "$f" "../stable/Overcli-mac-x64.zip" ;;
+              *.dmg)            cp "$f" "../stable/Overcli-mac-x64.dmg" ;;
+              *arm64*.exe)      cp "$f" "../stable/Overcli-win-arm64.exe" ;;
+              *Setup*.exe)      cp "$f" "../stable/Overcli-win-x64.exe" ;;
+              *arm64.AppImage)  cp "$f" "../stable/Overcli-linux-arm64.AppImage" ;;
+              *.AppImage)       cp "$f" "../stable/Overcli-linux-x64.AppImage" ;;
+              *arm64.deb)       cp "$f" "../stable/Overcli-linux-arm64.deb" ;;
+              *amd64.deb)       cp "$f" "../stable/Overcli-linux-x64.deb" ;;
+            esac
+          done
+          ls -la ../stable
+
       - name: Generate SHA256 checksums
         working-directory: artifacts
         run: |
@@ -116,11 +156,56 @@ jobs:
             artifacts/*.AppImage
             artifacts/*.deb
 
+      - name: Compose release notes
+        # The table is generated from what actually built. If an arch fails to
+        # package, its row is omitted rather than shipping a dead link.
+        shell: bash
+        run: |
+          row () {  # $1 = label, $2... = filenames
+            local label="$1"; shift
+            local links=() f
+            for f in "$@"; do
+              [ -f "stable/$f" ] || continue
+              links+=("[\`${f##*.}\`](https://github.com/${{ github.repository }}/releases/latest/download/$f)")
+            done
+            [ ${#links[@]} -eq 0 ] && return 0
+            local joined="${links[0]}" i
+            for ((i = 1; i < ${#links[@]}; i++)); do joined+=" · ${links[i]}"; done
+            echo "| $label | $joined |" >> notes.md
+          }
+          {
+            echo "## Download"
+            echo
+            echo "| Platform | Download |"
+            echo "|---|---|"
+          } > notes.md
+          row "**macOS** · Apple Silicon" Overcli-mac-arm64.dmg Overcli-mac-arm64.zip
+          row "**macOS** · Intel"        Overcli-mac-x64.dmg   Overcli-mac-x64.zip
+          row "**Windows** · x64"        Overcli-win-x64.exe
+          row "**Windows** · ARM64"      Overcli-win-arm64.exe
+          row "**Linux** · x64"          Overcli-linux-x64.AppImage   Overcli-linux-x64.deb
+          row "**Linux** · ARM64"        Overcli-linux-arm64.AppImage Overcli-linux-arm64.deb
+          cat >> notes.md <<'EOF'
+
+          macOS builds are signed and notarized. Windows builds are not yet signed —
+          SmartScreen warns on first run: **More info → Run anyway**. The Linux
+          AppImage needs `chmod +x` before it will run.
+
+          The `latest*.yml` files in the asset list are auto-updater metadata, not
+          downloads. `SHA256SUMS.txt` and the CycloneDX SBOM are for verification.
+
+          ---
+          EOF
+          cat notes.md
+
       - uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           draft: true
           generate_release_notes: true
-          files: artifacts/*
+          body_path: notes.md
+          files: |
+            artifacts/*
+            stable/*
 
   npm:
     name: Publish CLI to npm
