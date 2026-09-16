@@ -894,15 +894,17 @@ function ArtifactCard({
 }) {
   const path = use.filePath ?? args.file_path ?? '';
   const headline = artifactHeadline(args.title, path);
-  // The published URL comes back in the result body rather than the input.
-  // Absent while the call is still in flight, and after a failure.
-  const url = result && !result.isError ? firstArtifactUrl(result.content) : null;
+  const url = artifactUrl(args, result);
+  const action = artifactActionLabel(args.action);
   return (
     <div className="rounded-lg border border-card-strong bg-surface-elevated shadow-sm px-3 py-2.5 text-xs">
       <div className="flex items-center gap-2">
         <span className="text-[10px] uppercase tracking-wider text-backend-claude font-medium">
           Artifact
         </span>
+        {action && (
+          <span className="text-[10px] uppercase tracking-wider text-ink-faint">{action}</span>
+        )}
         <StatusBadge result={result} />
       </div>
       {headline && <div className="mt-1 text-sm font-medium text-ink truncate">{headline}</div>}
@@ -970,6 +972,53 @@ export function artifactHeadline(title: unknown, path: string): string {
 export function firstArtifactUrl(content: string): string | null {
   const m = content.match(/https:\/\/claude\.ai\/[A-Za-z0-9/_-]*artifact[A-Za-z0-9/_-]*/);
   return m ? m[0] : null;
+}
+
+/// Everything the Artifact tool can be asked to do, so a value we don't
+/// recognise paints nothing rather than raw model output.
+const ARTIFACT_ACTIONS = new Set([
+  'publish',
+  'read',
+  'list',
+  'delete',
+  'open',
+  'pin',
+  'unpin',
+  'quickstart',
+]);
+
+/// The page this card links to.
+///
+/// A publish announces its URL in the result body, which is where this used to
+/// look and nowhere else. But publish is only one of the tool's actions: a
+/// read, an open, a pin or an update to an existing page is *given* its URL on
+/// the input and answers with prose that need not repeat it. Those calls
+/// rendered as a card with an eyebrow, a tick and nothing else — no title
+/// (there's no `file_path` to name it from either) and, worse, no way to reach
+/// the artifact the call was about. The URL was on the input the whole time.
+///
+/// A successful delete is the one case with nothing to point at: the page is
+/// gone and the link would 404.
+export function artifactUrl(
+  args: Record<string, any>,
+  result?: ToolResultBlock,
+): string | null {
+  if (result && !result.isError) {
+    const published = firstArtifactUrl(result.content);
+    if (published) return published;
+    if (args.action === 'delete') return null;
+  }
+  return typeof args.url === 'string' ? firstArtifactUrl(args.url) : null;
+}
+
+/// Second word for the eyebrow. Publish is the default action and the card's
+/// shape already says so, so only the others are worth naming — and naming
+/// them is what keeps a `list` or a `quickstart`, which has neither file nor
+/// URL, from rendering as an empty box.
+export function artifactActionLabel(action: unknown): string {
+  const name = typeof action === 'string' ? action.trim().toLowerCase() : '';
+  if (!name || name === 'publish') return '';
+  return ARTIFACT_ACTIONS.has(name) ? name : '';
 }
 
 function FileWriteCard({ use, args, result, onOpen }: { use: ToolUseBlock; args: Record<string, any>; result?: ToolResultBlock; onOpen: (p: string) => void }) {

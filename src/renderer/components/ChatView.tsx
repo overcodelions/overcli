@@ -7,6 +7,7 @@ import { Backend, Conversation, StreamEvent, ToolResultBlock, ToolUseBlock, UUID
 import { UserBubble } from './UserBubble';
 import { AssistantBubble } from './AssistantBubble';
 import { ToolUseCard } from './ToolUseCard';
+import { hasAlwaysVisibleTool, shouldFlash } from './toolCardPolicy';
 import { ToolResultCard, AGENT_TOOLS } from './ToolResultCard';
 import { PermissionCard } from './PermissionCard';
 import { CodexApprovalCard } from './CodexApprovalCard';
@@ -691,47 +692,13 @@ function shortenPath(p: string): string {
   return `${parts[0]}/…/${parts.slice(-2).join('/')}`;
 }
 
-// Tool names that represent user-blocking interactive prompts. These must
-// stay visible even when tool activity is hidden — otherwise the
-// conversation deadlocks silently on a question the user can't see.
-const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
-
-// Tool names whose cards stay *fully* visible even when tool activity is
-// hidden — edits/writes are the meaningful output of a turn, not noise.
-// TodoWrite stays visible too: the todo list is live state the user is
-// tracking against, not a transient lookup.
-// Keep in sync with the matching list in AssistantBubble.tsx.
-// 'Task'/'Agent' are kept persistent so that an assistant bubble whose
-// only payload is a subagent dispatch (common while the subagent is
-// still running and the parent hasn't produced final text yet) survives
-// filterRendered when showToolActivity is off — otherwise the inline
-// SubagentCard, which is the user's only entry point into the drawer,
-// vanishes from the transcript mid-flight.
-export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite', 'Task', 'Agent', 'Artifact']);
-
-// Tools handled elsewhere in the transcript and therefore skipped by
-// the transient flash slot: PERSISTENT_TOOLS and INTERACTIVE_TOOLS both
-// render their full card in the assistant bubble regardless of the
-// toggle, so flashing them would duplicate. Everything else flashes —
-// suppressing unknown tools makes long turns (subagents, MCP calls,
-// skills) feel like nothing is happening.
-const FLASH_SKIP = new Set([
-  'Edit',
-  'MultiEdit',
-  'Write',
-  'TodoWrite',
-  'AskUserQuestion',
-  'ExitPlanMode',
-  // Subagents carry their own live state inside the inline SubagentCard
-  // (current tool + elapsed time, per parallel agent). Flashing them
-  // would duplicate that card and collapse N parallel runs into one.
-  'Task',
-  'Agent',
-]);
-
-function shouldFlash(name: string): boolean {
-  return !FLASH_SKIP.has(name);
-}
+// Which tools stay visible when tool activity is hidden, and which the
+// transient flash slot may show, both live in toolCardPolicy.ts — the two
+// answers are one invariant (a card that renders inline must not also
+// flash) and keeping them apart is what let Artifact paint twice.
+//
+// Everything outside that policy flashes: suppressing unknown tools makes
+// long turns (subagents, MCP calls, skills) feel like nothing is happening.
 
 // Floor on how long the slot keeps showing one tool before a newer one is
 // allowed to replace it. Protects against bursts where 5 tools fire in
@@ -877,10 +844,6 @@ const CONFIRMATION_TOOLS = new Set([
   // same card, so the standalone result row is redundant noise.
   'Bash',
 ]);
-
-function hasAlwaysVisibleTool(uses: Array<{ name: string }>): boolean {
-  return uses.some((u) => INTERACTIVE_TOOLS.has(u.name) || PERSISTENT_TOOLS.has(u.name));
-}
 
 function filterRendered(
   events: StreamEvent[],
