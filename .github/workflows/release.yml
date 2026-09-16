@@ -41,6 +41,22 @@ jobs:
       - name: Compile main + renderer
         run: npm run build
 
+      - name: Fetch the Intel esbuild binary (macOS)
+        # esbuild ships its binary as per-platform optional packages and npm
+        # installs only the one matching the runner. The runner is arm64, so
+        # without this the x64 dmg carries an arm64 esbuild and the React
+        # preview (src/main/reactPreviewBundle.ts) dies on Intel with
+        # "you installed esbuild for another platform". Both variants can sit
+        # in node_modules together; esbuild picks by process.arch at runtime.
+        # --force is required because npm refuses a foreign-cpu package.
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ESBUILD_VERSION=$(node -p "require('./node_modules/esbuild/package.json').version")
+          npm i --no-save --force "@esbuild/darwin-x64@${ESBUILD_VERSION}"
+          test -d node_modules/@esbuild/darwin-x64
+          ls node_modules/@esbuild
+
       - name: Package with electron-builder
         shell: bash
         env:
