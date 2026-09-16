@@ -61,7 +61,7 @@ By opening a pull request you confirm that:
    Sign your commits off with `git commit -s`.
 2. **Your contribution is licensed to everyone under [Apache-2.0](LICENSE)**,
    the same terms as the rest of the project.
-3. **You also grant Lionel Farr a perpetual, worldwide, non-exclusive,
+3. **You also grant Lionel Farr and Owen Farr a perpetual, worldwide, non-exclusive,
    irrevocable right to license your contribution under other terms** —
    a different open-source license, or a commercial one.
 

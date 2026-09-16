@@ -1,7 +1,7 @@
 # Trademark policy
 
 **Overcli**, the Overcli name, the Overcodelions name, and the project logos and
-icons are trademarks of Lionel Farr (unregistered, "™").
+icons are trademarks of Lionel Farr and Owen Farr (unregistered, "™").
 
 The [Apache-2.0 license](LICENSE) covers the **code**. It does not grant any
 right to use the project's *name* or *logo*. This policy explains what we ask,
