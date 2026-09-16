@@ -20,12 +20,26 @@ export function isRunningServiceStatus(status: ServiceRuntime['status']): boolea
   return status === 'ready' || status === 'starting' || status === 'unready';
 }
 
-export function serviceMentionIds(prompt: string): string[] {
-  const ids = new Set<string>();
-  const re = /(?:^|\s)@service:([A-Za-z0-9_-]+)/g;
+export function serviceMentionReferences(prompt: string): string[] {
+  const references = new Set<string>();
+  const re = /(?:^|\s)@service:(?:"((?:\\.|[^"\\])*)"|([A-Za-z0-9_-]+))/g;
   let match: RegExpExecArray | null;
-  while ((match = re.exec(prompt)) !== null) ids.add(match[1]);
-  return [...ids];
+  while ((match = re.exec(prompt)) !== null) {
+    const reference = match[1]
+      ? match[1].replace(/\\([\\"])/g, '$1')
+      : match[2];
+    if (reference) references.add(reference);
+  }
+  return [...references];
+}
+
+/// Kept for callers that used the original ID-only terminology. Mentions now
+/// carry a friendly service name, while old `@service:<id>` text still works.
+export const serviceMentionIds = serviceMentionReferences;
+
+export function formatServiceMention(name: string): string {
+  if (/^[A-Za-z0-9_-]+$/.test(name)) return `@service:${name}`;
+  return `@service:"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 export function runningServiceMentions(stacks: StackView[]): Array<{
@@ -48,7 +62,9 @@ export function runningServiceMentions(stacks: StackView[]): Array<{
   );
 }
 
-/// Resolve every live `@service:<id>` reference at send time. Keeping this
+/// Resolve every live `@service:<name>` reference at send time. Old ID-based
+/// mentions remain valid so drafts and conversation history do not go stale.
+/// Keeping this
 /// transport concern here lets regular conversations and flow hijack turns
 /// attach the same bounded, untrusted log context without duplicating IPC
 /// and runtime-status rules.
@@ -57,11 +73,15 @@ export async function attachMentionedServiceLogs(
   workspaceIds: string[],
   source: ServiceLogSource,
 ): Promise<string> {
-  const mentionedIds = serviceMentionIds(prompt);
-  if (mentionedIds.length === 0 || workspaceIds.length === 0) return prompt;
+  const mentionedReferences = serviceMentionReferences(prompt);
+  if (mentionedReferences.length === 0 || workspaceIds.length === 0) return prompt;
+  const normalizedReferences = new Set(mentionedReferences.map((reference) => reference.toLowerCase()));
 
   const mentions = runningServiceMentions(await source.views(workspaceIds))
-    .filter((service) => mentionedIds.includes(service.serviceId));
+    .filter((service) =>
+      normalizedReferences.has(service.serviceId.toLowerCase()) ||
+      normalizedReferences.has(service.name.toLowerCase()),
+    );
   const snapshots: ServiceLogSnapshot[] = await Promise.all(
     mentions.map(async (service) => ({
       ...service,

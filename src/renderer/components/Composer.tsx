@@ -4,7 +4,7 @@ import { useRunnerEvents, useRunnersStore } from '../runnersStore';
 import { Attachment, StreamEvent } from '@shared/types';
 import { ATTACHMENT_ACCEPT, intakeAttachments } from '../attachmentIntake';
 import { AttachmentChip } from './AttachmentChip';
-import { runningServiceMentions } from '../serviceLogContext';
+import { formatServiceMention, runningServiceMentions } from '../serviceLogContext';
 
 export interface ComposerProps {
   /// Key into the store's drafts + attachments maps. Use the conversation
@@ -47,7 +47,7 @@ export interface ComposerProps {
   /// to disable the feature.
   rootPath?: string;
   /// Workspace stacks whose live services join file results in the @ menu.
-  /// Picking one inserts `@service:<id>`; send resolves its newest log tail.
+  /// Picking one inserts `@service:<name>`; send resolves its newest log tail.
   serviceWorkspaceIds?: string[];
   /// Slash commands available to the active backend. When a non-empty
   /// list is provided, typing `/` at the start of the draft opens a
@@ -254,7 +254,7 @@ export function Composer({
     const afterStart = mention.at + 1 + mention.query.length;
     const after = draft.slice(afterStart);
     const insertion = entry.kind === 'service'
-      ? `@service:${entry.service.serviceId} `
+      ? `${formatServiceMention(entry.service.name)} `
       : `@${relativeTo(entry.path, rootPath ?? '')} `;
     const next = before + insertion + after;
     setDraft(draftKey, next);
@@ -782,7 +782,7 @@ function MentionPopover({
             ? entry.service.name
             : slash >= 0 ? rel.slice(slash + 1) : rel;
           const detail = entry.kind === 'service'
-            ? `service · ${entry.service.status}`
+            ? `${formatServiceMention(entry.service.name)} · ${entry.service.status}`
             : slash >= 0 ? rel.slice(0, slash) : '';
           const key = entry.kind === 'service'
             ? `service:${entry.service.workspaceId}:${entry.service.serviceId}`
