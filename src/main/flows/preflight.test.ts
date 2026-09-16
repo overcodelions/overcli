@@ -369,3 +369,72 @@ describe('preflightRun — happy path', () => {
     expect(result.problems).toHaveLength(0);
   });
 });
+
+// ─── discarded outputs ────────────────────────────────────────────────────────
+
+describe('discarded output warnings', () => {
+  const PROJECT = '/tmp/project';
+
+  async function run(steps: FlowStep[]) {
+    return preflightRun({ flow: flow([participant()], steps), projectPath: PROJECT, settings: SETTINGS });
+  }
+
+  it('warns when a later step overwrites an artifact it never reads', async () => {
+    const result = await run([
+      step({ id: 'report', role: 'technical-writer', inputs: ['user_prompt'], output: 'report.md' }),
+      step({ id: 'report-brief', role: 'technical-writer', inputs: ['user_prompt'], output: 'report.md' }),
+    ]);
+    const warnings = result.problems.filter((p) => p.severity === 'warning');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].path).toBe('steps[1].output');
+    expect(warnings[0].message).toContain('"report-brief" overwrites "report.md" from step "report"');
+  });
+
+  it('does not block the run — the flow is wasteful, not broken', async () => {
+    const result = await run([
+      step({ id: 'report', inputs: ['user_prompt'], output: 'report.md' }),
+      step({ id: 'report-brief', inputs: ['user_prompt'], output: 'report.md' }),
+    ]);
+    expect(result.ok).toBe(true);
+  });
+
+  it('stays silent when the later step extends the artifact it rewrites', async () => {
+    // The deliberate pattern: `tests` reads `diff` and writes it back.
+    const result = await run([
+      step({ id: 'build', inputs: ['user_prompt'], output: 'diff' }),
+      step({ id: 'tests', inputs: ['user_prompt', 'diff'], output: 'diff' }),
+    ]);
+    expect(result.problems.filter((p) => p.severity === 'warning')).toEqual([]);
+  });
+
+  it('stays silent when every step writes a distinct artifact', async () => {
+    const result = await run([
+      step({ id: 'plan', inputs: ['user_prompt'], output: 'plan.md' }),
+      step({ id: 'build', inputs: ['user_prompt', 'plan.md'], output: 'diff' }),
+    ]);
+    expect(result.problems.filter((p) => p.severity === 'warning')).toEqual([]);
+  });
+
+  it('flags each discarding step when an artifact is rewritten repeatedly', async () => {
+    const result = await run([
+      step({ id: 'a', inputs: ['user_prompt'], output: 'report.md' }),
+      step({ id: 'b', inputs: ['user_prompt'], output: 'report.md' }),
+      step({ id: 'c', inputs: ['user_prompt'], output: 'report.md' }),
+    ]);
+    const warnings = result.problems.filter((p) => p.severity === 'warning');
+    // `b` discards `a`; `c` discards `b`. The blame names the immediate predecessor.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0].message).toContain('from step "a"');
+    expect(warnings[1].message).toContain('from step "b"');
+  });
+});
+
+describe('formatPreflight with warnings', () => {
+  it('shows warnings even though the result passed', () => {
+    const result: PreflightResult = {
+      ok: true,
+      problems: [{ severity: 'warning', path: 'steps[1].output', message: 'Work is discarded.', hint: 'Delete it.' }],
+    };
+    expect(formatPreflight(result)).toBe('• Warning: Work is discarded. (Delete it.)');
+  });
+});

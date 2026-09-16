@@ -9,15 +9,16 @@ import fs from 'node:fs';
 
 import type { AppSettings, Backend, BackendHealth } from '../../shared/types';
 import { resolveStepModel, type Flow, type FlowModelRef } from '../../shared/flows/schema';
+import { lintFlow } from '../../shared/flows/lint';
 import { isSupportedPremiumModel } from '../../shared/modelCatalog';
 import { probeBackendHealth } from '../health';
 import { detectOllama } from '../ollama';
 
 export interface PreflightProblem {
   /// Severity. `error` blocks the run; `warning` is surfaced but allows
-  /// the run to start. v1 only emits errors, but the renderer can treat
-  /// them differently if we add warnings later.
-  severity: 'error';
+  /// the run to start — it flags a flow that will run correctly but waste
+  /// a step's worth of tokens doing it.
+  severity: 'error' | 'warning';
   /// Where the problem comes from — `flow`, `project`, or `steps[N].field`.
   /// Renderer can highlight the offending step / field in the editor.
   path: string;
@@ -195,7 +196,15 @@ export async function preflightRun(input: PreflightInput): Promise<PreflightResu
     }
   }
 
-  return { ok: problems.length === 0, problems };
+  // 4. Static cost lint. Shared with the editor (shared/flows/lint.ts), which
+  // runs the same rules as the user types. These never block a run — the flow
+  // is valid and will produce its deliverable — but they cost money on every
+  // run, so a user who launches without opening the editor still sees them.
+  for (const w of lintFlow(flow)) {
+    problems.push({ severity: 'warning', path: w.path, message: w.message, hint: w.hint });
+  }
+
+  return { ok: !problems.some((p) => p.severity === 'error'), problems };
 }
 
 function checkModelRef(args: {
@@ -244,8 +253,14 @@ function checkModelRef(args: {
 
 /// Friendly multi-line summary of preflight problems for renderer banners.
 export function formatPreflight(result: PreflightResult): string {
-  if (result.ok) return 'Preflight ok.';
+  // Keyed off `problems`, not `ok`: a result can pass (no errors) and still
+  // carry warnings worth showing. Reporting "Preflight ok." over a warning
+  // would hide the very thing the warning exists to surface.
+  if (result.problems.length === 0) return 'Preflight ok.';
   return result.problems
-    .map((p) => `• ${p.message}${p.hint ? ` (${p.hint})` : ''}`)
+    .map((p) => {
+      const prefix = p.severity === 'warning' ? '• Warning: ' : '• ';
+      return `${prefix}${p.message}${p.hint ? ` (${p.hint})` : ''}`;
+    })
     .join('\n');
 }

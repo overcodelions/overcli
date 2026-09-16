@@ -10,7 +10,7 @@
 // nothing is written to disk — the user still has to hit Save — so Undo here
 // is just restoring the previous in-memory draft.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import type { Flow } from '@shared/flows/schema';
 import { serializeFlow } from '@shared/flows/yaml';
@@ -42,7 +42,15 @@ const EXAMPLES = [
   'Drop the test-writing step',
 ];
 
-export function FlowAiEdit({ draft }: { draft: Flow }) {
+/// A prompt pushed in from outside (the cost-lint panel's "Fix with AI").
+/// `key` is what triggers the fill — the same text can be seeded twice, and
+/// comparing text alone would swallow the second press.
+export interface AiEditSeed {
+  text: string;
+  key: number;
+}
+
+export function FlowAiEdit({ draft, seed }: { draft: Flow; seed?: AiEditSeed | null }) {
   const updateDraft = useFlowsStore((s) => s.updateDraft);
   const backendHealth = useStore((s) => s.backendHealth);
   const settings = useStore((s) => s.settings);
@@ -56,6 +64,15 @@ export function FlowAiEdit({ draft }: { draft: Flow }) {
   const [applied, setApplied] = useState<
     { previous: Flow; changes: string[]; revisedYaml: string } | null
   >(null);
+
+  // Fill the box from a seed, but never send it: the user reads and edits
+  // first. Expanding the box is what makes the fill visible, since at rest
+  // this collapses to a single row.
+  useEffect(() => {
+    if (!seed) return;
+    setInstruction(seed.text);
+    setFocused(true);
+  }, [seed?.key]);
 
   // Undo restores a whole snapshot, so it's only safe while the draft is
   // still exactly what the revision produced. Once the user hand-edits on top
