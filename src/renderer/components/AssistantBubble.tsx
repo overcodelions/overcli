@@ -5,23 +5,12 @@ import { Markdown } from './Markdown';
 import { useStore } from '../store';
 import { openPathWithHighlight, useOpenFile } from '../openFile';
 import { ToolUseCard } from './ToolUseCard';
+import { rendersWhenToolActivityHidden } from './toolCardPolicy';
 import { parseOutputHandoff } from './flows/outputPointer';
 import { isDesignUnavailableNotice } from '@shared/claudeArtifacts';
 import { isChromeUnavailableNotice } from '@shared/claudeChrome';
 import { useConversation } from '../hooks';
 import { useRunForConversation } from '../flowsStore';
-
-/// Tool names that must stay visible when tool activity is hidden,
-/// because they block the conversation on user input.
-const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
-
-/// Tool names whose cards stay visible even when tool activity is hidden
-/// — edits and writes are meaningful output, TodoWrite is live state the
-/// user is tracking against, and Task/Agent dispatches are the inline
-/// SubagentCard, which is the user's only handle to open the drawer and
-/// see what the subagent is doing. Keep in sync with PERSISTENT_TOOLS
-/// in ChatView.tsx.
-const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite', 'Task', 'Agent', 'Artifact']);
 
 export function AssistantBubble({
   info,
@@ -67,9 +56,7 @@ export function AssistantBubble({
   const dedupedToolUses = dedupeAskUserQuestion(info.toolUses);
   const visibleToolUses = showToolActivity
     ? dedupedToolUses
-    : dedupedToolUses.filter(
-        (u) => INTERACTIVE_TOOLS.has(u.name) || PERSISTENT_TOOLS.has(u.name),
-      );
+    : dedupedToolUses.filter(rendersWhenToolActivityHidden);
 
   // Hide the machine-readable <watch_report> block the flow watcher emits for
   // the runtime to parse — the human-facing status already shows in the watch

@@ -6,8 +6,10 @@ import {
   attentionLabel,
   attentionLevel,
   groupAttention,
+  recentWork,
   type AttentionItem,
   type AttentionLevel,
+  type RecentItem,
 } from '../attentionInbox';
 import { WorkerAvatar } from './workers/WorkerAvatar';
 import { relativeTime } from './workers/workerDeskSelectors';
@@ -108,11 +110,20 @@ export function TitleBar() {
   );
   const inboxLevel = attentionLevel(inbox);
 
+  // What you were just in the middle of — see `recentWork`. Pure, so it needs
+  // no bookkeeping and survives a reload.
+  const recent = useMemo(
+    () => recentWork({ runs: flowRuns, orchestrations }, inbox, Date.now()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [flowRuns, orchestrations, inbox, tick],
+  );
+
   useEffect(() => {
-    if (!anyArmed && inbox.length === 0) return;
+    // Finished work ages out, so the tick has to outlive the last waiting item.
+    if (!anyArmed && inbox.length === 0 && recent.length === 0) return;
     const t = setInterval(() => setTick((n) => n + 1), 30_000);
     return () => clearInterval(t);
-  }, [anyArmed, inbox.length]);
+  }, [anyArmed, inbox.length, recent.length]);
 
   // Workers carries its share of the same list — a worker's proposals, its
   // paused runs, an unfunded worker, a drafted hire — so the tab and the alert
@@ -335,9 +346,10 @@ export function TitleBar() {
           They stay text tabs (they swap the main pane), with a divider
           before the icon buttons so "tabs | icons" reads cleanly. */}
       <div className="flex items-center gap-1 no-drag">
-        {inboxLevel && (
+        {(inboxLevel || recent.length > 0) && (
           <AttentionAlert
             items={inbox}
+            recent={recent}
             level={inboxLevel}
             workers={workers}
             onOpen={openAttention}
@@ -402,12 +414,16 @@ export function TitleBar() {
 /// waited, amber and quicker for a stopped run.
 function AttentionAlert({
   items,
+  recent,
   level,
   workers,
   onOpen,
 }: {
   items: AttentionItem[];
-  level: AttentionLevel;
+  recent: RecentItem[];
+  /// Null once nothing is waiting: the chip stays, grey and quiet, for as long
+  /// as there is recent work to get back to.
+  level: AttentionLevel | null;
   workers: Record<string, Parameters<typeof WorkerAvatar>[0]['worker']>;
   onOpen: (item: AttentionItem) => void;
 }) {
@@ -434,17 +450,23 @@ function AttentionAlert({
       ? 'border border-amber-400/60 bg-amber-400/15 text-amber-700 dark:text-amber-300 font-semibold needs-you-loud'
       : level === 'waiting'
         ? 'border border-violet-400/60 bg-violet-400/20 text-violet-700 dark:text-violet-200 font-semibold needs-you-breathe'
-        : 'bg-violet-400/10 text-violet-700 dark:text-violet-300';
+        : level === 'calm'
+          ? 'bg-violet-400/10 text-violet-700 dark:text-violet-300'
+          : // Quiet, not absent: ink-faint on an unfilled chip is invisible on
+            // a dark title bar, and a doorway you can't find is no doorway.
+            'border border-card-strong bg-card-strong/60 text-ink-muted';
   const now = Date.now();
 
   return (
     <div ref={ref} className="relative mr-1">
       <button
         onClick={() => setOpen((o) => !o)}
-        title="Things waiting on you"
+        title={level ? 'Things waiting on you' : 'Nothing waiting — what you were just doing'}
         className={'h-6 px-2.5 rounded-full text-xs flex items-center gap-1.5 ' + chip}
       >
-        {level === 'calm' ? (
+        {level === null ? (
+          <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-ink-faint" />
+        ) : level === 'calm' ? (
           <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400" />
         ) : (
           <svg aria-hidden width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
@@ -452,7 +474,7 @@ function AttentionAlert({
             <rect x="7" y="2.5" width="2" height="7" rx="0.6" />
           </svg>
         )}
-        {attentionLabel(items)}
+        {level === null ? quietLabel(recent) : attentionLabel(items)}
         <svg
           aria-hidden
           width="9"
@@ -466,9 +488,11 @@ function AttentionAlert({
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1.5 z-50 w-[420px] rounded-lg border border-card-strong bg-surface-elevated shadow-2xl overflow-hidden">
-          <div className="px-3.5 py-2 border-b border-card-strong text-[10px] font-semibold uppercase tracking-wider text-violet-700 dark:text-violet-400">
-            Needs you · {items.length}
-          </div>
+          {items.length > 0 && (
+            <div className="px-3.5 py-2 border-b border-card-strong text-[10px] font-semibold uppercase tracking-wider text-violet-700 dark:text-violet-400">
+              Needs you · {items.length}
+            </div>
+          )}
           <div className="max-h-[60vh] overflow-y-auto">
             {groupAttention(items).map((group) => (
               <div key={group.kind}>
@@ -530,11 +554,95 @@ function AttentionAlert({
                 })}
               </div>
             ))}
+            {recent.length > 0 && (
+              <div className={items.length > 0 ? 'border-t border-card-strong' : undefined}>
+                {/* Two headers, not one: these no longer share a lifetime —
+                    the top half lives as long as the work does, the bottom
+                    half has minutes left. A row crossing between them is the
+                    flow finishing, which is worth seeing. */}
+                {recentSections(recent).map((section) => (
+                  <div key={section.title}>
+                    <div className="sticky top-0 z-10 flex items-center justify-between bg-surface-elevated px-3.5 pb-1 pt-2 text-[10px] text-ink-faint">
+                      <span>{section.title}</span>
+                      <span>{section.rows.length}</span>
+                    </div>
+                    {section.rows.map(({ item, at, status }) => (
+                      <button
+                        key={item.key}
+                        onClick={() => {
+                          setOpen(false);
+                          onOpen(item);
+                        }}
+                        className={
+                          'group w-full flex items-center gap-2.5 px-3.5 py-2 text-left hover:bg-card-strong hover:opacity-100 ' +
+                          // Still moving, so it keeps its weight; finished work
+                          // recedes.
+                          (status.continuing ? 'opacity-95' : 'opacity-70')
+                        }
+                      >
+                    <span className="flex w-6 shrink-0 justify-center">
+                      {item.workerId && workers[item.workerId] ? (
+                        <WorkerAvatar
+                          worker={workers[item.workerId] as Parameters<typeof WorkerAvatar>[0]['worker']}
+                          size="sm"
+                        />
+                      ) : (
+                        <AttentionGlyph kind={item.kind} />
+                      )}
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span
+                        className={
+                          'truncate text-xs ' + (status.continuing ? 'text-ink' : 'text-ink-muted')
+                        }
+                      >
+                        {item.title}
+                      </span>
+                      {/* Its old pause reason is stale the moment it leaves;
+                          what it is doing now is the thing worth reading. */}
+                      <span
+                        className={
+                          'truncate text-[11px] ' +
+                          (status.continuing
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-ink-faint')
+                        }
+                      >
+                        {status.label} · {relativeTime(at, now)}
+                      </span>
+                    </span>
+                        <span className="shrink-0 text-[11px] text-ink-faint group-hover:text-ink-muted">
+                          Open
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
     </div>
   );
+}
+
+/// The chip when nothing is waiting. A count of what is still moving is the
+/// useful half — "3 recent" tells you only that time passed.
+function quietLabel(recent: RecentItem[]): string {
+  const going = recent.filter((c) => c.status.continuing).length;
+  if (going > 0) return `${going} carrying on`;
+  return recent.length === 1 ? '1 just finished' : `${recent.length} just finished`;
+}
+
+/// Live work first, and an empty half is simply absent.
+function recentSections(recent: RecentItem[]): { title: string; rows: RecentItem[] }[] {
+  const going = recent.filter((c) => c.status.continuing);
+  const over = recent.filter((c) => !c.status.continuing);
+  return [
+    { title: 'Carrying on', rows: going },
+    { title: 'Just finished', rows: over },
+  ].filter((s) => s.rows.length > 0);
 }
 
 /// Stand-in for the avatar on rows that don't belong to a worker.

@@ -51,7 +51,8 @@
     "test:coverage": "vitest run --coverage",
     "security:aws-account-ids": "node scripts/check-no-aws-account-ids.mjs",
     "security:identities": "node scripts/check-no-forbidden-identities.mjs --all",
-    "prepublishOnly": "npm run build:main"
+    "prepublishOnly": "npm run build:main",
+    "lint:flow": "node scripts/lint-flow.mjs"
   },
   "build": {
     "appId": "com.overcli.app",
@@ -117,7 +118,7 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSAppleEventsUsageDescription": "Overcli opens Terminal.app to run commands you asked for \u2014 CLI logins and Ollama install/update \u2014 so you can watch them and answer any prompts."
+        "NSAppleEventsUsageDescription": "Overcli opens Terminal.app to run commands you asked for — CLI logins and Ollama install/update — so you can watch them and answer any prompts."
       }
     },
     "dmg": {

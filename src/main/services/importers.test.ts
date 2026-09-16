@@ -656,6 +656,27 @@ describe('suggestMachineValues', () => {
       [],
     );
   });
+
+  it('gives one name to a credential written twice', () => {
+    expect(
+      suggestMachineValues([
+        { key: '-Ddatabase.password', value: '5qlpa55' },
+        { key: '-Ddatabase.password', value: '5qlpa55' },
+      ]),
+    ).toEqual([{ name: 'DATABASE_PASSWORD', value: '5qlpa55', key: '-Ddatabase.password' }]);
+  });
+
+  it('gives two names to one key holding two different credentials', () => {
+    expect(
+      suggestMachineValues([
+        { key: '-Dmart.database.password', value: 'one' },
+        { key: '-Dmart.database.password', value: 'two' },
+      ]),
+    ).toEqual([
+      { name: 'MART_DATABASE_PASSWORD', value: 'one', key: '-Dmart.database.password' },
+      { name: 'MART_DATABASE_PASSWORD_2', value: 'two', key: '-Dmart.database.password' },
+    ]);
+  });
 });
 
 describe('uniqueEnvName', () => {
@@ -673,9 +694,20 @@ describe('applyMachineValues', () => {
     expect(
       applyMachineValues(
         [{ key: '-Ddatabase.password', value: '5qlpa55' }, { key: '-Xmx1g' }],
-        [{ name: 'DATABASE_PASSWORD', key: '-Ddatabase.password' }],
+        [{ name: 'DATABASE_PASSWORD', key: '-Ddatabase.password', value: '5qlpa55' }],
       ),
     ).toEqual([{ key: '-Ddatabase.password', value: '${DATABASE_PASSWORD}' }, { key: '-Xmx1g' }]);
+  });
+
+  it('leaves a key alone when it holds a value that was not lifted', () => {
+    // The same flag, a different secret: it has a name of its own, and must
+    // not be rewritten to point at somebody else's.
+    expect(
+      applyMachineValues(
+        [{ key: '-Ddatabase.password', value: 'another' }],
+        [{ name: 'DATABASE_PASSWORD', key: '-Ddatabase.password', value: '5qlpa55' }],
+      ),
+    ).toEqual([{ key: '-Ddatabase.password', value: 'another' }]);
   });
 });
 

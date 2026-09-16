@@ -13,7 +13,10 @@
 // decision about what counts and how loud to be is tested here.
 
 import type { Orchestration } from '@shared/flows/orchestration';
-import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
+import {
+  isOrchestrationAwaitingApproval,
+  isOrchestrationComplete,
+} from '@shared/flows/orchestration';
 import { flowRunActivityAt, flowRunTitle, type FlowRun } from '@shared/flows/schema';
 import type { WorkerFunding } from '@shared/flows/treasury';
 import type { Worker } from '@shared/flows/worker';
@@ -218,4 +221,149 @@ export function attentionLabel(items: AttentionItem[]): string {
   if (runs > 0 && runs === total) return runs === 1 ? 'Run paused' : `${runs} runs paused`;
   if (runs > 0) return `Run paused · ${total} need you`;
   return total === 1 ? '1 needs you' : `${total} need you`;
+}
+
+/// Work you were just in the middle of: still going, or finished a few
+/// minutes ago. The tray shows it under the things that are waiting, as a way
+/// back to what you were doing.
+///
+/// Derived from the runs themselves rather than from what leaves
+/// `attentionInbox`. An earlier version watched rows depart the inbox, which
+/// meant a flow only ever qualified if it had sat there paused while the app
+/// was open — a run you finished or closed without it ever waiting on you was
+/// invisible, and a reload forgot everything. Reading the store has neither
+/// problem.
+///
+/// Emphatically not part of `attentionInbox`: none of this is waiting on you,
+/// so it must never reach the chip's count or `attentionLevel`, or the badge
+/// becomes something you can't clear.
+export interface RecentItem {
+  item: AttentionItem;
+  /// Last activity, which for a finished run is when it finished.
+  at: number;
+  status: RecentStatus;
+}
+
+export interface RecentStatus {
+  /// The work is still going. Worth watching, and it never ages out.
+  continuing: boolean;
+  label: string;
+}
+
+/// How long *finished* work lingers. Anything still going ignores this: a flow
+/// can run for half an hour, and dropping it at ten minutes hides the very
+/// thing you are waiting on.
+export const RECENT_WINDOW_MS = 10 * 60 * 1000;
+/// Live work takes these slots first, so a burst of finished runs can never
+/// push something still going off the list.
+export const RECENT_MAX = 5;
+
+export function recentWork(
+  src: Pick<AttentionSources, 'runs' | 'orchestrations'>,
+  waiting: AttentionItem[],
+  now: number = Date.now(),
+): RecentItem[] {
+  const waitingKeys = new Set(waiting.map((it) => it.key));
+  const rows: RecentItem[] = [];
+
+  // An errand is a worker run you asked for by hand, so it belongs here; its
+  // shifts do not. The run itself carries no `task`, only the batch that
+  // launched it does, so the ids come the long way round.
+  const errandRuns = new Set<string>();
+  for (const o of Object.values(src.orchestrations)) {
+    if (o.origin?.kind !== 'worker' || o.origin.task !== 'errand') continue;
+    for (const it of o.items) if (it.runId) errandRuns.add(it.runId);
+  }
+
+  for (const run of Object.values(src.runs)) {
+    const key = `run:${run.id}`;
+    if (waitingKeys.has(key)) continue;
+    // Work nobody sat through. A shift or a scheduled run reports to the
+    // worker's desk; putting it here buries the flow you were actually on
+    // under a roster's background noise. It gets in only when it is waiting on
+    // you, which is `attentionInbox`'s job, not this one.
+    if ((run.workerId || run.scheduleId) && !errandRuns.has(run.id)) continue;
+    // A paused run that isn't in the inbox is one the inbox gave up on as
+    // stale; it is not work in progress.
+    if (run.state.kind === 'paused') continue;
+    // Never started, so there is nothing to go back to.
+    if (run.attempts.length === 0) continue;
+    const status = runStatus(run);
+    const at = flowRunActivityAt(run);
+    if (!status.continuing && now - at >= RECENT_WINDOW_MS) continue;
+    rows.push({
+      item: {
+        kind: 'run',
+        key,
+        runId: run.id,
+        workerId: run.workerId ?? null,
+        title: flowRunTitle(run),
+        reason: status.label,
+        at,
+        urgent: false,
+      },
+      at,
+      status,
+    });
+  }
+
+  for (const o of Object.values(src.orchestrations)) {
+    const key = `approval:${o.id}`;
+    if (waitingKeys.has(key) || isOrchestrationAwaitingApproval(o)) continue;
+    // Same cut as the runs: a shift's batch and a scheduled one are the
+    // roster's business until they need you.
+    if (o.origin?.kind === 'schedule') continue;
+    if (o.origin?.kind === 'worker' && o.origin.task !== 'errand') continue;
+    const complete = isOrchestrationComplete(o);
+    const at = o.completedAt ?? o.createdAt;
+    if (complete && now - at >= RECENT_WINDOW_MS) continue;
+    if (!complete && o.items.every((it) => it.status === 'proposed')) continue;
+    const left = o.items.filter(
+      (it) => it.status !== 'done' && it.status !== 'failed' && it.status !== 'cancelled',
+    ).length;
+    rows.push({
+      item: {
+        kind: 'approval',
+        key,
+        orchestrationId: o.id,
+        workerId: o.origin?.kind === 'worker' ? o.origin.workerId : null,
+        title: o.title,
+        reason: complete ? 'Finished' : `Running · ${left} left`,
+        at,
+      },
+      at,
+      status: complete
+        ? { continuing: false, label: 'Finished' }
+        : { continuing: true, label: `Running · ${left} left` },
+    });
+  }
+
+  return rows
+    .sort(
+      (a, b) =>
+        Number(b.status.continuing) - Number(a.status.continuing) || b.at - a.at,
+    )
+    .slice(0, RECENT_MAX);
+}
+
+function runStatus(run: FlowRun): RecentStatus {
+  switch (run.state.kind) {
+    case 'running': {
+      const step = runStepPosition(run);
+      return {
+        continuing: true,
+        label: step ? `Running · at ${step.step} ${step.position}/${step.total}` : 'Running',
+      };
+    }
+    case 'watching':
+      return { continuing: true, label: 'Watching for changes' };
+    case 'done':
+      return { continuing: false, label: run.state.success ? 'Finished' : 'Finished · failed' };
+    case 'aborted':
+      return { continuing: false, label: 'Stopped' };
+    case 'archived':
+      return { continuing: false, label: 'Closed' };
+    default:
+      return { continuing: false, label: 'Handled' };
+  }
 }

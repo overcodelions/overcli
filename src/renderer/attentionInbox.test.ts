@@ -9,6 +9,10 @@ import {
   attentionLabel,
   attentionLevel,
   groupAttention,
+  type AttentionItem,
+  recentWork,
+  RECENT_MAX,
+  RECENT_WINDOW_MS,
   type AttentionSources,
 } from './attentionInbox';
 import { STALL_AFTER_MS } from './components/flows/runTriage';
@@ -189,5 +193,122 @@ describe('attentionLabel', () => {
 
   it('counts everything else as needing you', () => {
     expect(attentionLabel(attentionInbox(sources({ orchestrations: { o: batch('o') } }), NOW))).toBe('1 needs you');
+  });
+});
+
+describe('recentWork', () => {
+  const attempt = { stepId: 'plan', startedAt: NOW - MIN, endedAt: NOW };
+  const ran = (id: string, state: object, endedAt = NOW) =>
+    run(id, { state, attempts: [{ ...attempt, endedAt }] } as unknown as Partial<FlowRun>);
+  const running = (id: string) => ran(id, { kind: 'running', currentStepId: 'push' });
+  const done = (id: string, endedAt = NOW) => ran(id, { kind: 'done', success: true }, endedAt);
+  const src = (runs: Record<string, FlowRun>, orchestrations = {}) => ({ runs, orchestrations });
+
+  it('shows a flow you finished, which never had to be waiting first', () => {
+    // The whole point: this run was never paused, so nothing ever watched it
+    // leave the inbox.
+    expect(recentWork(src({ a: done('a') }), [], NOW).map((r) => [r.item.title, r.status.label])).toEqual([
+      ['Acme lead forwarding broken', 'Finished'],
+    ]);
+  });
+
+  it('labels a closed and a stopped run for what they are', () => {
+    const rows = recentWork(
+      src({ a: ran('a', { kind: 'archived' }), b: ran('b', { kind: 'aborted' }) }),
+      [],
+      NOW,
+    );
+    expect(rows.map((r) => r.status.label).sort()).toEqual(['Closed', 'Stopped']);
+  });
+
+  it('keeps work that is still going, however long it runs', () => {
+    const rows = recentWork(src({ a: running('a') }), [], NOW + 10 * RECENT_WINDOW_MS);
+    expect(rows.map((r) => [r.item.key, r.status])).toEqual([
+      ['run:a', { continuing: true, label: 'Running · at push 2/2' }],
+    ]);
+  });
+
+  it('forgets finished work once it is past the window', () => {
+    expect(recentWork(src({ a: done('a') }), [], NOW + MIN)).toHaveLength(1);
+    expect(recentWork(src({ a: done('a') }), [], NOW + RECENT_WINDOW_MS)).toEqual([]);
+  });
+
+  it('never repeats something that is still waiting on you', () => {
+    const waiting = attentionInbox(sources({ runs: { a: run('a') } }), NOW);
+    expect(waiting.map((it) => it.key)).toEqual(['run:a']);
+    expect(recentWork(src({ a: run('a') }), waiting, NOW)).toEqual([]);
+  });
+
+  it('ignores a run that never started', () => {
+    expect(recentWork(src({ a: run('a', { state: { kind: 'done', success: true } } as Partial<FlowRun>) }), [], NOW)).toEqual([]);
+  });
+
+  it('puts live work first and caps the list', () => {
+    const runs: Record<string, FlowRun> = {};
+    for (let i = 0; i < RECENT_MAX + 2; i++) runs[`d${i}`] = done(`d${i}`, NOW - i * 1000);
+    runs.live = running('live');
+    const rows = recentWork(src(runs), [], NOW);
+    expect(rows).toHaveLength(RECENT_MAX);
+    expect(rows[0]?.item.key).toBe('run:live');
+    // Then the most recently finished, newest first.
+    expect(rows.slice(1).map((r) => r.item.key)).toEqual(['run:d0', 'run:d1', 'run:d2', 'run:d3']);
+  });
+
+  it('leaves the roster alone: no shifts, no scheduled work', () => {
+    const shift = run('w', {
+      workerId: 'worker-1',
+      state: { kind: 'done', success: true },
+      attempts: [attempt],
+    } as unknown as Partial<FlowRun>);
+    const scheduled = run('s', {
+      scheduleId: 'sched-1',
+      state: { kind: 'done', success: true },
+      attempts: [attempt],
+    } as unknown as Partial<FlowRun>);
+    expect(recentWork(src({ w: shift, s: scheduled }), [], NOW)).toEqual([]);
+
+    // A shift's batch is the roster's business too, as is a scheduled one.
+    const shiftBatch = batch('o', {
+      items: [{ status: 'done' }],
+      completedAt: NOW,
+      origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Triage', task: 'shift' },
+    } as unknown as Partial<Orchestration>);
+    expect(recentWork(src({}, { o: shiftBatch }), [], NOW)).toEqual([]);
+  });
+
+  it('keeps an errand, which is a worker run you asked for by hand', () => {
+    const errandRun = run('e', {
+      workerId: 'worker-1',
+      state: { kind: 'done', success: true },
+      attempts: [attempt],
+    } as unknown as Partial<FlowRun>);
+    const errand = batch('o', {
+      items: [{ status: 'done', runId: 'e' }],
+      completedAt: NOW,
+      origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Triage', task: 'errand' },
+    } as unknown as Partial<Orchestration>);
+    expect(recentWork(src({ e: errandRun }, { o: errand }), [], NOW).map((r) => r.item.key)).toEqual(
+      ['run:e', 'approval:o'],
+    );
+  });
+
+  it('carries a finished batch, and drops one still waiting to be approved', () => {
+    const parked = batch('o');
+    expect(recentWork(src({}, { o: parked }), [], NOW)).toEqual([]);
+
+    const over = batch('o', {
+      items: [{ status: 'done' }, { status: 'failed' }],
+      completedAt: NOW,
+    } as Partial<Orchestration>);
+    expect(recentWork(src({}, { o: over }), [], NOW).map((r) => r.status)).toEqual([
+      { continuing: false, label: 'Finished' },
+    ]);
+
+    const going = batch('o', {
+      items: [{ status: 'done' }, { status: 'running' }],
+    } as Partial<Orchestration>);
+    expect(recentWork(src({}, { o: going }), [], NOW).map((r) => r.status)).toEqual([
+      { continuing: true, label: 'Running · 1 left' },
+    ]);
   });
 });

@@ -35,7 +35,7 @@ import {
   RECENT_RANGE_MS,
   RecentTranscript,
 } from './recentUsage';
-import { modelSpeed } from '../shared/modelCatalog';
+import { modelTier } from '../shared/modelCatalog';
 import { loadAllRuns } from './flows/runsStore';
 import { loadRunSummaries, RunSummary } from './flows/runSummaryLog';
 import { readOllamaUsage } from './ollamaUsageLog';
@@ -151,8 +151,7 @@ export function computeStats(opts: ComputeStatsOptions = {}): StatsReport {
     }
   >();
   for (const m of modelRows) {
-    const tier: import('../shared/types').ModelTier =
-      m.model === 'ollama' || m.model.includes(':') ? 'local' : modelSpeed(m.model);
+    const tier: import('../shared/types').ModelTier = modelTier(m.model);
     const cur = tierAgg.get(tier) ?? {
       models: new Set<string>(),
       turns: 0,

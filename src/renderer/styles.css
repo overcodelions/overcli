@@ -915,3 +915,26 @@ body.dragging-divider iframe {
   background: color-mix(in srgb, var(--c-accent) 12%, transparent);
   border-color: var(--c-accent);
 }
+
+/* The flow pipeline's rail, drawn once when the overview drawer opens.
+   A vertical list of steps has no inherent direction, and the numbers
+   alone only say it after you read them — a line that draws itself
+   downward says it before you do. One orchestrated pass, then still:
+   a drawer you open to READ should not have something looping in it. */
+@keyframes flow-rail-draw {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+.flow-rail {
+  transform-origin: top center;
+  animation: flow-rail-draw 620ms ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow-rail {
+    animation: none;
+  }
+}

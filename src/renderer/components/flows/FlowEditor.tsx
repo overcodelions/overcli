@@ -13,7 +13,8 @@ import { serializeFlow } from '@shared/flows/yaml';
 import { flowProjectPath, normalizeFlowTag } from '@shared/flows/schema';
 import { TAG_AXES } from '@shared/flows/tagTaxonomy';
 import { validateFlow } from '@shared/flows/validation';
-import { FlowAiEdit } from './FlowAiEdit';
+import { lintFlow, optimizeInstructionFor } from '@shared/flows/lint';
+import { FlowAiEdit, type AiEditSeed } from './FlowAiEdit';
 import { FlowStepCard } from './FlowStepCard';
 import { FlowPipelineDiagram } from './FlowPipelineDiagram';
 import { FlowParticipantsCard } from './FlowParticipantsCard';
@@ -52,9 +53,15 @@ export function FlowEditor() {
   const [yamlText, setYamlText] = useState('');
   const [saving, setSaving] = useState(false);
   const [showYaml, setShowYaml] = useState(false);
+  // Set by the cost panel's "Fix with AI"; fills the AI box without sending.
+  const [aiSeed, setAiSeed] = useState<AiEditSeed | null>(null);
 
   const yaml = useMemo(() => (draft ? serializeFlow(draft) : ''), [draft]);
   const validation = useMemo(() => (draft ? validateFlow(draft) : null), [draft]);
+  // Cost lint, not correctness: these never gate saving. Same rules the
+  // runtime applies at launch (main/flows/preflight.ts), run here so the
+  // user sees them while they can still cheaply act on them.
+  const lint = useMemo(() => (draft ? lintFlow(draft) : []), [draft]);
 
   // Sync the YAML textarea to the draft when not in yaml-mode (so switching
   // out of structured mode reflects current edits) — when in yaml mode we
@@ -166,7 +173,34 @@ export function FlowEditor() {
           CLI that drafts a flow from scratch, pointed at this draft. It
           patches the in-memory draft only, so the Save button below stays
           the single point where anything reaches disk. */}
-      <FlowAiEdit draft={draft} />
+      <FlowAiEdit draft={draft} seed={aiSeed} />
+
+      {/* Cost warnings sit with the AI editor, above the two-column body,
+          not at the foot of the step list: a flow is long, and a warning
+          you only meet after scrolling past every step card arrives too
+          late to change what you were about to do. Never gates Save —
+          the flow is valid, just pricier than it needs to be. */}
+      {lint.length > 0 && (
+        <div className="mb-4 text-xs text-sky-700 dark:text-sky-300 bg-sky-500/10 border border-sky-500/20 rounded-lg p-3">
+          <div className="flex items-start gap-3 mb-1">
+            <div className="font-semibold flex-1">This flow will run — but it costs more than it needs to</div>
+            <button
+              onClick={() => setAiSeed({ text: optimizeInstructionFor(lint), key: Date.now() })}
+              className="shrink-0 text-[11px] px-2 py-0.5 rounded border border-sky-500/30 hover:bg-sky-500/10 transition-colors"
+            >
+              ✨ Fix with AI
+            </button>
+          </div>
+          <ul className="space-y-1">
+            {lint.map((w, i) => (
+              <li key={i}>
+                <span className="text-sky-700 dark:text-sky-200">{w.path}</span>: {w.message}
+                {w.hint && <span className="text-ink-faint"> {w.hint}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Two-column layout: left = flow body (pipeline, header card,
           participants, step cards, validation). Right = sticky YAML
@@ -285,6 +319,7 @@ export function FlowEditor() {
               </ul>
             </div>
           )}
+
         </div>
 
         {/* RIGHT — sticky YAML pane */}

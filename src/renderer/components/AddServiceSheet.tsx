@@ -16,10 +16,16 @@ import { useServicesStore } from '../servicesStore';
 
 type ReadyKind = 'none' | 'tcp' | 'http' | 'log';
 
+/// The two entries in the project picker that are not projects: the folder
+/// already picked, and the one that opens the dialog.
+const FOLDER = '\u0000folder';
+const PICK = '\u0000pick';
+
 export interface AddTarget {
   /// The stack this lands in — a workspace id, or a lone project's id.
   stackId: string;
-  /// Projects it could run in. One means no picker.
+  /// Projects it could run in. A folder can be picked instead, so this being
+  /// empty is not a dead end.
   projects: { id: string; name: string; path: string }[];
 }
 
@@ -29,6 +35,11 @@ export function AddServiceSheet({ target, onClose }: { target: AddTarget; onClos
 
   const [name, setName] = useState('');
   const [projectId, setProjectId] = useState(target.projects[0]?.id ?? '');
+  // A checkout that is not in the workspace. Nothing downstream needs a
+  // project: the launch directory comes from the binding, and a project id is
+  // only a hint for "ask about this output". So a service can live anywhere on
+  // disk, which is the way to add one whose repo is not set up here.
+  const [folder, setFolder] = useState<string | null>(null);
   const [subpath, setSubpath] = useState('');
   const [command, setCommand] = useState('');
   const [group, setGroup] = useState('');
@@ -42,22 +53,33 @@ export function AddServiceSheet({ target, onClose }: { target: AddTarget; onClos
   const [watch, setWatch] = useState('src/**');
   const [busy, setBusy] = useState(false);
 
-  const project = target.projects.find((p) => p.id === projectId);
+  const project = folder === null ? target.projects.find((p) => p.id === projectId) : undefined;
+  const place =
+    folder !== null
+      ? folderPlace(folder)
+      : project
+        ? { id: project.id, path: project.path, projectId: project.id }
+        : undefined;
   const parsed = useMemo(() => parseCommandLine(command), [command]);
   const portNumber = port.trim() === '' ? undefined : Number.parseInt(port, 10);
   const portValid = portNumber === undefined || (portNumber > 0 && portNumber < 65_536);
   const canSave =
-    name.trim() !== '' && parsed.argv.length > 0 && !parsed.needsShell && !!project && portValid;
+    name.trim() !== '' && parsed.argv.length > 0 && !parsed.needsShell && !!place && portValid;
+
+  async function pickFolder() {
+    const picked = await window.overcli.invoke('fs:pickDirectory');
+    if (picked && picked.length > 0) setFolder(picked[0]);
+  }
 
   async function save() {
-    if (!project) return;
+    if (!place) return;
     setBusy(true);
     try {
-      const id = `${project.id}-${slug(name)}`;
+      const id = `${place.id}-${slug(name)}`;
       const spec: ServiceSpec = {
         id,
         name: name.trim(),
-        projectId: project.id,
+        projectId: place.projectId,
         subpath: subpath.trim() || undefined,
         runner: 'command',
         command: parsed.argv,
@@ -74,7 +96,7 @@ export function AddServiceSheet({ target, onClose }: { target: AddTarget; onClos
       await window.overcli.invoke('services:add', {
         workspaceId: target.stackId,
         spec,
-        binding: { ref: 'HEAD', path: project.path },
+        binding: { ref: 'HEAD', path: place.path },
       });
       await load(target.stackId);
       await select(target.stackId, id);
@@ -131,23 +153,31 @@ export function AddServiceSheet({ target, onClose }: { target: AddTarget; onClos
           </Field>
 
           <div className="flex gap-3">
-            <Field label="In this project" className="flex-1">
-              {target.projects.length > 1 ? (
-                <select
-                  className="field w-full px-2 py-1.5 text-xs"
-                  value={projectId}
-                  onChange={(e) => setProjectId(e.target.value)}
-                >
-                  {target.projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div className="truncate px-2 py-1.5 font-mono text-[11px] text-ink-muted">
-                  {project?.name ?? '—'}
-                </div>
+            <Field label="Runs in" className="flex-1">
+              <select
+                className="field w-full px-2 py-1.5 text-xs"
+                value={folder !== null ? FOLDER : projectId}
+                onChange={(e) => {
+                  if (e.target.value === PICK) {
+                    void pickFolder();
+                    return;
+                  }
+                  setFolder(null);
+                  setProjectId(e.target.value);
+                }}
+              >
+                {target.projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+                {folder !== null && <option value={FOLDER}>{baseName(folder)}</option>}
+                <option value={PICK}>Choose a folder…</option>
+              </select>
+              {folder !== null && (
+                <p className="mt-1 truncate font-mono text-[10px] text-ink-faint" title={folder}>
+                  {folder}
+                </p>
               )}
             </Field>
             <Field label="Subfolder" className="w-[180px]">
@@ -295,6 +325,36 @@ function buildProbe(
   if (kind === 'http' && port !== undefined) return { kind: 'http', path: path || '/', port };
   if (kind === 'log' && pattern.trim()) return { kind: 'log', pattern: pattern.trim() };
   return { kind: 'none' };
+}
+
+/// A folder picked from disk, standing in for a project. The id carries the
+/// path, not just its name: two checkouts called `api` in different trees are
+/// two services, and an id collision would overwrite the first.
+export function folderPlace(folder: string): {
+  id: string;
+  path: string;
+  projectId: undefined;
+} {
+  return {
+    id: `folder-${slug(baseName(folder))}-${pathTag(folder)}`,
+    path: folder,
+    projectId: undefined,
+  };
+}
+
+/// The last segment of a path, either separator — `path` is Node's, and this
+/// runs in the renderer.
+function baseName(target: string): string {
+  const parts = target.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? target;
+}
+
+/// A few stable characters standing for a whole path, to keep two folders of
+/// the same name apart in a service id.
+function pathTag(target: string): string {
+  let hash = 0;
+  for (const char of target) hash = (Math.imul(hash, 31) + char.codePointAt(0)!) | 0;
+  return (hash >>> 0).toString(36).slice(0, 6);
 }
 
 function slug(text: string): string {

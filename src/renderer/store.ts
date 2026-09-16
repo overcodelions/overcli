@@ -3359,7 +3359,7 @@ export const useStore = create<StoreState>((set, get) => ({
       conv.responseMode,
     );
 
-    // `@service:<id>` stays compact in the visible user turn, while the
+    // `@service:<name>` stays compact in the visible user turn, while the
     // model receives a fresh bounded tail from every matching live service.
     // Resolve at send time rather than completion time so the attached output
     // includes everything printed while the user finished typing.

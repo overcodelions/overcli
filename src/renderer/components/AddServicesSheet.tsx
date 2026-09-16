@@ -324,6 +324,11 @@ export function AddServicesSheet({
                 {skipped.length > 2 ? '…' : ''}
               </span>
             )}
+            {skipped.length > 0 && (
+              <span className="truncate text-ink-muted">
+                Add its folder to this workspace, or “+ Add one by hand” and point at the folder.
+              </span>
+            )}
             {needsCommand.length > 0 && (
               <span className="truncate" title={needsCommand.join(', ')}>
                 {needsCommand.length} added without a command — set it under Settings:{' '}

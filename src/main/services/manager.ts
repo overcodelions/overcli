@@ -1171,6 +1171,9 @@ export class ServicesManager {
         (detected && first?.nodeVersion ? withNodeVersion(detected, first.nodeVersion) : detected) ??
         first?.helperCommand ??
         [];
+      // Whose command ended up on the spec, which is also whose directory it
+      // has to run in.
+      const usingDetected = !stated && detected !== undefined;
       const names = factored.perService.map((entry) => entry.service.name);
 
       // Nowhere to put it and nothing to run: a service bound to the wrong
@@ -1179,6 +1182,8 @@ export class ServicesManager {
         const reason = first?.repoHint
           ? `${first.repoHint} is not a project in this workspace`
           : 'nothing says where it lives or how to start it';
+        // Both reasons have the same two fixes, said once in the sheet's footer
+        // rather than repeated on every skipped name.
         skipped.push(...names.map((name) => ({ name, reason })));
         continue;
       }
@@ -1188,7 +1193,13 @@ export class ServicesManager {
       if (command.length === 0) needsCommand.push(...names);
 
       const current = this.machineValues();
-      const secrets = suggestMachineValues(factored.shared);
+      // Every option, not only the shared ones: a module with a single
+      // configuration shares nothing at all, and a password that differs
+      // between two configurations is still a password.
+      const secrets = suggestMachineValues([
+        ...factored.shared,
+        ...factored.perService.flatMap((entry) => entry.own),
+      ]);
       const fresh = secrets.filter((secret) => !current.entries.some((e) => e.name === secret.name));
       if (fresh.length > 0) {
         // Lifted because they look like credentials, so they go straight into
@@ -1213,7 +1224,11 @@ export class ServicesManager {
         projectId: place.id,
         runner: match?.spec.runner ?? 'command',
         command,
-        subpath: match?.spec.subpath ?? first?.subpath,
+        // The cwd has to agree with whose command this is. A detected Gradle
+        // module runs `./gradlew` from the repo root and so deliberately has
+        // no subpath; inheriting the run config's module directory instead
+        // spawns the wrapper somewhere it does not exist.
+        subpath: usingDetected ? match?.spec.subpath : (first?.subpath ?? match?.spec.subpath),
         port: first?.port ?? match?.spec.port,
         debugKind: match?.spec.debugKind,
         debugPort: first?.debugPort ?? match?.spec.debugPort,
@@ -1331,7 +1346,7 @@ export class ServicesManager {
     // rather than asking anyone to delete and re-add.
     const services: ServiceSpec[] = [];
     for (const saved of loaded.services) {
-      services.push(withDebugDefaults(daemonOff(saved), services));
+      services.push(withDebugDefaults(gradleRunsFromRoot(daemonOff(saved)), services));
     }
     const changed =
       repaired.some((b, i) => b.ref !== loaded.bindings[i].ref) ||
@@ -1565,6 +1580,21 @@ export function findPropertyDefinitions(
 /// reused, with the environment it was started with — so a variable set for
 /// THIS launch never reaches the forked JVM. Detection has always added the
 /// flag since; this catches what was saved before.
+/// A Gradle module runs the wrapper from the repo root, so a saved subpath
+/// spawns `./gradlew` in a directory that has no wrapper in it — `spawn
+/// ./gradlew ENOENT`, every time. Imports before this inherited the run
+/// configuration's module directory; repair the saved spec rather than asking
+/// anyone to delete and re-add.
+export function gradleRunsFromRoot(spec: ServiceSpec): ServiceSpec {
+  if (spec.runner !== 'gradle' || !spec.subpath) return spec;
+  // Either shape the wrapper appears in: its own argument, or inside the
+  // shell line of a service that builds before it runs. Both resolve it
+  // against the cwd.
+  if (!spec.command.some((c) => c.includes('./gradlew'))) return spec;
+  const { subpath: _subpath, ...rooted } = spec;
+  return rooted;
+}
+
 export function daemonOff(spec: ServiceSpec): ServiceSpec {
   if (spec.runner !== 'gradle') return spec;
   if (!spec.command.some((c) => /(^|:)bootRun$/.test(c))) return spec;

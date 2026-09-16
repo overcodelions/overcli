@@ -1143,20 +1143,35 @@ export function factorCommon(services: readonly ImportedService[]): FactoredImpo
 /// not sit in forty option lists; a value that is IDENTICAL across every
 /// imported service and looks machine-specific (a path under home, a personal
 /// queue prefix) is the same story with a different cause.
+///
+/// Every option is fair game, shared or not. Sharing is about how many
+/// services repeat a value, and a credential imported once is still a
+/// credential.
 export function suggestMachineValues(
-  shared: readonly ServiceOption[],
+  options: readonly ServiceOption[],
 ): { name: string; value: string; key: string }[] {
   const out: { name: string; value: string; key: string }[] = [];
   const used = new Set<string>();
+  const named = new Set<string>();
 
-  for (const option of shared) {
+  for (const option of options) {
     if (!option.value) continue;
     if (!looksSecret(option.key)) continue;
+    // One name per distinct credential. The same key holding a DIFFERENT
+    // value in two configurations is two credentials, and collapsing them
+    // would start one service with the other's password.
+    const identity = optionIdentity(option.key, option.value);
+    if (named.has(identity)) continue;
     const name = uniqueEnvName(option.key, used);
     used.add(name);
+    named.add(identity);
     out.push({ name, value: option.value, key: option.key });
   }
   return out;
+}
+
+function optionIdentity(key: string, value: string): string {
+  return `${key}\u0000${value}`;
 }
 
 function looksSecret(key: string): boolean {
@@ -1176,14 +1191,18 @@ export function uniqueEnvName(key: string, used: ReadonlySet<string>): string {
 }
 
 /// Rewrite the options that hold a lifted value to refer to it instead.
+/// Matched on key AND value: two configurations setting one flag to different
+/// secrets were lifted to two names, and each has to reach its own.
 export function applyMachineValues(
   options: readonly ServiceOption[],
-  lifted: readonly { name: string; key: string }[],
+  lifted: readonly { name: string; key: string; value: string }[],
 ): ServiceOption[] {
-  const byKey = new Map(lifted.map((l) => [l.key, l.name]));
-  return options.map((option) =>
-    byKey.has(option.key) ? { ...option, value: `\${${byKey.get(option.key)}}` } : option,
-  );
+  const byOption = new Map(lifted.map((l) => [optionIdentity(l.key, l.value), l.name]));
+  return options.map((option) => {
+    const name =
+      option.value === undefined ? undefined : byOption.get(optionIdentity(option.key, option.value));
+    return name ? { ...option, value: `\${${name}}` } : option;
+  });
 }
 
 // ── small helpers ───────────────────────────────────────────────────────────
