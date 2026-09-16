@@ -292,4 +292,6 @@ Issues, bug reports, and PRs welcome — please open an issue first for anything
 
 Licensed under the [Apache License, Version 2.0](LICENSE). See the [`NOTICE`](NOTICE) file for third-party attributions.
 
+The **Overcli** name and logo are trademarks and are not covered by that license — forks are welcome under their own name. See [`TRADEMARKS.md`](TRADEMARKS.md).
+
 Copyright © 2026 Lionel Farr and Owen Farr.

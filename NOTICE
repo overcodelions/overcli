@@ -9,3 +9,6 @@ The official `claude`, `codex`, `gemini`, and `copilot` command-line tools
 invoked by this application are the property of their respective owners.
 `ollama` is distributed under its own open-source license. Overcli is not
 affiliated with Anthropic, OpenAI, Google, GitHub, or the Ollama project.
+
+The project name and logo are trademarks of Lionel Farr. The Apache-2.0
+license does not grant permission to use them. See TRADEMARKS.md.
