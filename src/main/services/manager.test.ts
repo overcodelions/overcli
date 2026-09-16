@@ -369,6 +369,56 @@ describe('repairing services saved by older versions', () => {
     const { mgr } = manager();
     expect(mgr.view('ws1').services[0].command).toEqual(['true']);
   });
+
+  it('drops the module directory off a Gradle service that could never start there', () => {
+    // `spawn ./gradlew ENOENT`: imported from a run configuration that named
+    // the module as its working directory, where there is no wrapper.
+    saveStack(dataDir, {
+      workspaceId: 'ws1',
+      services: [
+        {
+          ...spec,
+          runner: 'gradle',
+          subpath: 'AcmeProcessor',
+          command: ['./gradlew', ':AcmeProcessor:bootRun', '-Dorg.gradle.daemon=false'],
+        },
+      ],
+      bindings: [],
+    });
+    const { mgr } = manager();
+    expect(mgr.view('ws1').services[0].subpath).toBeUndefined();
+    // And keeps it, so the repair happens once.
+    expect(loadStack(dataDir, 'ws1').services[0].subpath).toBeUndefined();
+  });
+
+  it('repairs a Gradle service that builds before it runs', () => {
+    saveStack(dataDir, {
+      workspaceId: 'ws1',
+      services: [
+        {
+          ...spec,
+          runner: 'gradle',
+          subpath: 'schema-updater',
+          command: ['sh', '-c', './gradlew :schema-updater:build && java -jar build/libs/app.jar'],
+        },
+      ],
+      bindings: [],
+    });
+    const { mgr } = manager();
+    expect(mgr.view('ws1').services[0].subpath).toBeUndefined();
+  });
+
+  it('leaves a subpath alone when the wrapper is not what runs', () => {
+    // A module started by something other than the root wrapper runs where it
+    // lives, and taking its directory away would break it.
+    saveStack(dataDir, {
+      workspaceId: 'ws1',
+      services: [{ ...spec, runner: 'gradle', subpath: 'tooling', command: ['gradle', 'bootRun'] }],
+      bindings: [],
+    });
+    const { mgr } = manager();
+    expect(mgr.view('ws1').services[0].subpath).toBe('tooling');
+  });
 });
 
 describe('a service with nothing to run', () => {
@@ -539,6 +589,134 @@ describe('importing services that live in another project', () => {
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe('importing a run configuration for a Gradle module', () => {
+  /// A multi-module build: the wrapper is at the root and each module is a
+  /// directory under it, which is the shape an IntelliJ run config describes
+  /// by naming the module directory as its working directory.
+  function gradleRoot(): void {
+    fs.writeFileSync(path.join(repo, 'gradlew'), '#!/bin/sh\n');
+    fs.writeFileSync(path.join(repo, 'settings.gradle'), "include ':content-service'\n");
+    fs.mkdirSync(path.join(repo, 'content-service/src/main/resources'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, 'content-service/build.gradle'),
+      "plugins { id 'org.springframework.boot' }\ndependencies { implementation 'org.springframework.boot:spring-boot-starter-web' }\n",
+    );
+    fs.writeFileSync(path.join(repo, 'content-service/src/main/resources/application.yml'), 'server:\n  port: 5024\n');
+  }
+
+  const runConfig = (over: Record<string, unknown> = {}) => ({
+    name: 'ContentAdmin',
+    moduleHint: 'content-service',
+    // What IntelliJ called the working directory: the module, not the root.
+    subpath: 'content-service',
+    options: [],
+    env: {},
+    source: 'intellij' as const,
+    ...over,
+  });
+
+  it('runs the detected wrapper from the repo root, not the module directory', () => {
+    // `spawn ./gradlew ENOENT`: the wrapper is at the root, so a service that
+    // inherited the run config's module directory could never start.
+    gradleRoot();
+    const { mgr } = manager();
+    const outcome = mgr.importServices('ws1', {
+      projectId: 'p1',
+      projectPath: repo,
+      projectName: 'acme-platform',
+      services: [runConfig()],
+      siblings: [],
+    });
+
+    expect(outcome.skipped).toEqual([]);
+    const service = mgr.view('ws1').services[0];
+    expect(service.command[0]).toBe('./gradlew');
+    expect(service.subpath).toBeUndefined();
+  });
+
+  it('keeps the run config directory when the command is the file own', () => {
+    // Nothing detected the command, so nothing knows better than the file
+    // about where it runs.
+    gradleRoot();
+    const { mgr } = manager();
+    mgr.importServices('ws1', {
+      projectId: 'p1',
+      projectPath: repo,
+      projectName: 'acme-platform',
+      services: [runConfig({ command: ['sh', '-c', 'exec ./run-local.sh'] })],
+      siblings: [],
+    });
+
+    expect(mgr.view('ws1').services[0].subpath).toBe('content-service');
+  });
+
+  it('lifts the credentials of a single configuration, which shares nothing', () => {
+    // Factoring finds nothing in common in a group of one, so the options
+    // used to go to disk exactly as IntelliJ held them: passwords included.
+    gradleRoot();
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    const outcome = mgr.importServices('ws1', {
+      projectId: 'p1',
+      projectPath: repo,
+      projectName: 'acme-platform',
+      services: [
+        runConfig({
+          options: [
+            { key: '-Ddatabase.password', value: 'hunter2hunter2' },
+            { key: '-Daws.secretKey', value: '/ytENUo9lfzO2JoZpz' },
+            { key: '-Xmx1024m' },
+          ],
+        }),
+      ],
+      siblings: [],
+    });
+
+    expect(outcome.lifted).toEqual(['DATABASE_PASSWORD', 'AWS_SECRETKEY']);
+    expect(mgr.view('ws1').services[0].options).toEqual([
+      { key: '-Ddatabase.password', value: '${DATABASE_PASSWORD}' },
+      { key: '-Daws.secretKey', value: '${AWS_SECRETKEY}' },
+      { key: '-Xmx1024m' },
+    ]);
+    expect(JSON.stringify(loadStack(dataDir, 'ws1'))).not.toContain('hunter2');
+  });
+
+  it('lifts a credential that only one of several configurations sets', () => {
+    // Factored out as the difference between the two configurations, which is
+    // exactly the half that was never scanned.
+    gradleRoot();
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    const withPassword = (name: string, value: string) =>
+      runConfig({
+        name,
+        options: [
+          { key: '-Ddatabase.password', value: 'shared-one' },
+          { key: '-Dmart.database.password', value },
+        ],
+      });
+    const outcome = mgr.importServices('ws1', {
+      projectId: 'p1',
+      projectPath: repo,
+      projectName: 'acme-platform',
+      services: [withPassword('ContentAdmin', 'mart-one'), withPassword('ContentBatch', 'mart-two')],
+      siblings: [],
+    });
+
+    // One name each: collapsing them would start one service on the other's
+    // credentials.
+    expect(outcome.lifted).toEqual([
+      'DATABASE_PASSWORD',
+      'MART_DATABASE_PASSWORD',
+      'MART_DATABASE_PASSWORD_2',
+    ]);
+    const copies = mgr.view('ws1').services.filter((s) => s.copyOf);
+    expect(copies.map((s) => s.options)).toEqual([
+      [{ key: '-Dmart.database.password', value: '${MART_DATABASE_PASSWORD}' }],
+      [{ key: '-Dmart.database.password', value: '${MART_DATABASE_PASSWORD_2}' }],
+    ]);
+    expect(JSON.stringify(loadStack(dataDir, 'ws1'))).not.toContain('mart-one');
   });
 });
 
