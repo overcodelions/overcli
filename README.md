@@ -135,13 +135,19 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 
 See **[overcli.app](https://overcli.app)** for an overview of what Overcli does.
 
-Builds are produced by the release workflow and land on the [GitHub Releases page](https://github.com/overcodelions/overcli/releases) — grab the latest one for your platform.
+These links always resolve to the newest stable release.
 
-| Platform | Artifacts |
+| Platform | Download |
 |---|---|
-| **macOS** · arm64 (Apple Silicon) | `.dmg` · `.zip` |
-| **Windows** · x64 + arm64 | NSIS installer |
-| **Linux** · x64 + arm64 | `.AppImage` · `.deb` |
+| **macOS** · Apple Silicon | [`Overcli-mac-arm64.dmg`](https://github.com/overcodelions/overcli/releases/latest/download/Overcli-mac-arm64.dmg) |
+| **macOS** · Intel | [`Overcli-mac-x64.dmg`](https://github.com/overcodelions/overcli/releases/latest/download/Overcli-mac-x64.dmg) |
+| **Windows** · x64 | [`Overcli-win-x64.exe`](https://github.com/overcodelions/overcli/releases/latest/download/Overcli-win-x64.exe) |
+| **Windows** · ARM64 | [`Overcli-win-arm64.exe`](https://github.com/overcodelions/overcli/releases/latest/download/Overcli-win-arm64.exe) |
+| **Linux** · x64 | [`.AppImage`](https://github.com/overcodelions/overcli/releases/latest/download/Overcli-linux-x64.AppImage) · [`.deb`](https://github.com/overcodelions/overcli/releases/latest/download/Overcli-linux-x64.deb) |
+| **Linux** · ARM64 | [`.AppImage`](https://github.com/overcodelions/overcli/releases/latest/download/Overcli-linux-arm64.AppImage) · [`.deb`](https://github.com/overcodelions/overcli/releases/latest/download/Overcli-linux-arm64.deb) |
+
+Every build, with checksums, SBOM and provenance attestation, is on the
+[releases page](https://github.com/overcodelions/overcli/releases).
 
 > **First-run notes per platform:**
 > - **macOS** — builds are **signed & notarized**, so they open normally (no "unidentified developer" workaround needed). On first launch macOS asks to allow **"Overcli Safe Storage"** keychain access — that's just the app encrypting its own local session data, the standard Electron mechanism Chrome, Slack, and VS Code all use. It can't read anything else in your keychain. Click **Always Allow**.
