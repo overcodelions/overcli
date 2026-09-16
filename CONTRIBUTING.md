@@ -49,3 +49,28 @@ Attach a screenshot or a short transcript if relevant. Please scrub anything tha
 ## Security
 
 Don't file public issues for security bugs. See [`SECURITY.md`](SECURITY.md).
+
+## Contribution terms
+
+Small thing, stated once so it never has to be revisited.
+
+By opening a pull request you confirm that:
+
+1. **You wrote it, or you have the right to submit it.** This is the
+   [Developer Certificate of Origin 1.1](https://developercertificate.org/).
+   Sign your commits off with `git commit -s`.
+2. **Your contribution is licensed to everyone under [Apache-2.0](LICENSE)**,
+   the same terms as the rest of the project.
+3. **You also grant Lionel Farr a perpetual, worldwide, non-exclusive,
+   irrevocable right to license your contribution under other terms** —
+   a different open-source license, or a commercial one.
+
+Point 3 exists so the project's license can change later without having to
+track down every past contributor for permission. It does not take anything
+away from you: you keep the copyright in your work, and everything you
+contribute stays available to everyone under Apache-2.0, permanently.
+
+## Trademarks
+
+The code is Apache-2.0; the *name* and *logo* are not. Forks are welcome —
+please give yours its own name. See [TRADEMARKS.md](TRADEMARKS.md).
