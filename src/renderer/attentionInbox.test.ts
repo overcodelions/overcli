@@ -254,6 +254,44 @@ describe('recentWork', () => {
     expect(rows.slice(1).map((r) => r.item.key)).toEqual(['run:d0', 'run:d1', 'run:d2', 'run:d3']);
   });
 
+  it('leaves the roster alone: no shifts, no scheduled work', () => {
+    const shift = run('w', {
+      workerId: 'worker-1',
+      state: { kind: 'done', success: true },
+      attempts: [attempt],
+    } as unknown as Partial<FlowRun>);
+    const scheduled = run('s', {
+      scheduleId: 'sched-1',
+      state: { kind: 'done', success: true },
+      attempts: [attempt],
+    } as unknown as Partial<FlowRun>);
+    expect(recentWork(src({ w: shift, s: scheduled }), [], NOW)).toEqual([]);
+
+    // A shift's batch is the roster's business too, as is a scheduled one.
+    const shiftBatch = batch('o', {
+      items: [{ status: 'done' }],
+      completedAt: NOW,
+      origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Triage', task: 'shift' },
+    } as unknown as Partial<Orchestration>);
+    expect(recentWork(src({}, { o: shiftBatch }), [], NOW)).toEqual([]);
+  });
+
+  it('keeps an errand, which is a worker run you asked for by hand', () => {
+    const errandRun = run('e', {
+      workerId: 'worker-1',
+      state: { kind: 'done', success: true },
+      attempts: [attempt],
+    } as unknown as Partial<FlowRun>);
+    const errand = batch('o', {
+      items: [{ status: 'done', runId: 'e' }],
+      completedAt: NOW,
+      origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Triage', task: 'errand' },
+    } as unknown as Partial<Orchestration>);
+    expect(recentWork(src({ e: errandRun }, { o: errand }), [], NOW).map((r) => r.item.key)).toEqual(
+      ['run:e', 'approval:o'],
+    );
+  });
+
   it('carries a finished batch, and drops one still waiting to be approved', () => {
     const parked = batch('o');
     expect(recentWork(src({}, { o: parked }), [], NOW)).toEqual([]);

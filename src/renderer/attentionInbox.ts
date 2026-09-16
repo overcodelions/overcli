@@ -266,9 +266,23 @@ export function recentWork(
   const waitingKeys = new Set(waiting.map((it) => it.key));
   const rows: RecentItem[] = [];
 
+  // An errand is a worker run you asked for by hand, so it belongs here; its
+  // shifts do not. The run itself carries no `task`, only the batch that
+  // launched it does, so the ids come the long way round.
+  const errandRuns = new Set<string>();
+  for (const o of Object.values(src.orchestrations)) {
+    if (o.origin?.kind !== 'worker' || o.origin.task !== 'errand') continue;
+    for (const it of o.items) if (it.runId) errandRuns.add(it.runId);
+  }
+
   for (const run of Object.values(src.runs)) {
     const key = `run:${run.id}`;
     if (waitingKeys.has(key)) continue;
+    // Work nobody sat through. A shift or a scheduled run reports to the
+    // worker's desk; putting it here buries the flow you were actually on
+    // under a roster's background noise. It gets in only when it is waiting on
+    // you, which is `attentionInbox`'s job, not this one.
+    if ((run.workerId || run.scheduleId) && !errandRuns.has(run.id)) continue;
     // A paused run that isn't in the inbox is one the inbox gave up on as
     // stale; it is not work in progress.
     if (run.state.kind === 'paused') continue;
@@ -296,6 +310,10 @@ export function recentWork(
   for (const o of Object.values(src.orchestrations)) {
     const key = `approval:${o.id}`;
     if (waitingKeys.has(key) || isOrchestrationAwaitingApproval(o)) continue;
+    // Same cut as the runs: a shift's batch and a scheduled one are the
+    // roster's business until they need you.
+    if (o.origin?.kind === 'schedule') continue;
+    if (o.origin?.kind === 'worker' && o.origin.task !== 'errand') continue;
     const complete = isOrchestrationComplete(o);
     const at = o.completedAt ?? o.createdAt;
     if (complete && now - at >= RECENT_WINDOW_MS) continue;
