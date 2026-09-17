@@ -60,9 +60,15 @@ describe('isArtifactPublish', () => {
   });
 
   it('counts a publish that leaves no local file behind', () => {
-    // A create from a type_url, and an update that only swaps `files`.
-    expect(isArtifactPublish(use('Artifact', { type_url: 't', title: 'Deck' }))).toBe(true);
+    // An update that only swaps supporting `files`.
     expect(isArtifactPublish(use('Artifact', { url: 'u', files: { 'a.css': 'a.css' } }))).toBe(true);
+  });
+
+  it('skips the empty shell a type_url create mints, and keeps the call that fills it', () => {
+    expect(isArtifactPublish(use('Artifact', { type_url: 't', title: 'Launch deck' }))).toBe(false);
+    expect(isArtifactPublish(use('Artifact', { url: 'u', file_path: 'canvas.json' }))).toBe(true);
+    // A create that brings its content along in the same call is not a shell.
+    expect(isArtifactPublish(use('Artifact', { type_url: 't', file_path: 'a.html' }))).toBe(true);
   });
 
   it('rejects the read-only and management actions', () => {
