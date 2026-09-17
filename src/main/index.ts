@@ -71,7 +71,7 @@ import { commitAllAsync, readVersionDiff } from './git';
 import { scanWorktrees, sweepWorktrees, conversationWorktreeStates } from './worktreeSweep';
 import { flowRunClaims } from './flowRunClaims';
 import { scanOrphanTranscripts, removeOrphanTranscripts } from './transcriptSweep';
-import { computeStats } from './stats';
+import { computeStatsOffThread, stopStatsWorker } from './statsService';
 import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
 import { findBrowser, openInBrowser } from './openInBrowser';
@@ -1690,7 +1690,7 @@ export function registerIpc(): void {
       detail: 'Electron GUI wrapper around the Claude CLI.\nPorted from the Swift/SwiftUI build.',
     });
   });
-  ipcMain.handle('app:reloadStats', () => computeStats());
+  ipcMain.handle('app:reloadStats', () => computeStatsOffThread());
   ipcMain.handle('app:refreshClaudeUsage', async () => (await refreshClaudeUsage()) !== null);
 
   // Cross-platform "an agent finished, look at me" attention nudge.
@@ -3421,6 +3421,7 @@ app.on('before-quit', (event) => {
   scheduler?.dispose();
   workerEngine?.dispose();
   ollamaServer.stop();
+  stopStatsWorker();
   // Store writes are debounced now (see store.save). Take the freshest
   // snapshot synchronously so a quit inside the debounce window can't drop
   // the last mutation.
