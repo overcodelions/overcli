@@ -20,6 +20,33 @@ export function isRunningServiceStatus(status: ServiceRuntime['status']): boolea
   return status === 'ready' || status === 'starting' || status === 'unready';
 }
 
+/// Fingerprint of everything the mention menu would currently offer.
+///
+/// `runningServiceMentions` lists only services that are running, so the
+/// composer's cached list goes stale the moment one starts or stops. Keying
+/// the cache on the workspace list alone was not enough: a first `@` typed
+/// before anything was up cached an empty list, and because an empty array is
+/// truthy the loader's own guard then skipped every refetch for the rest of
+/// the session. This is the signal that tells the composer to drop it.
+///
+/// Status is part of the fingerprint because each entry carries its own, so a
+/// service that changes state re-reads rather than showing the old one.
+export function runningServiceSignature(
+  stacks: Record<string, StackView>,
+  workspaceIds: string[],
+): string {
+  return workspaceIds
+    .map((id) => stacks[id])
+    .filter((stack): stack is StackView => !!stack)
+    .flatMap((stack) =>
+      stack.runtimes
+        .filter((runtime) => isRunningServiceStatus(runtime.status))
+        .map((runtime) => `${stack.workspaceId}:${runtime.serviceId}:${runtime.status}`),
+    )
+    .sort()
+    .join('\0');
+}
+
 export function serviceMentionReferences(prompt: string): string[] {
   const references = new Set<string>();
   const re = /(?:^|\s)@service:(?:"((?:\\.|[^"\\])*)"|([A-Za-z0-9_-]+))/g;

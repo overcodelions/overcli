@@ -4,7 +4,12 @@ import { useRunnerEvents, useRunnersStore } from '../runnersStore';
 import { Attachment, StreamEvent } from '@shared/types';
 import { ATTACHMENT_ACCEPT, intakeAttachments } from '../attachmentIntake';
 import { AttachmentChip } from './AttachmentChip';
-import { formatServiceMention, runningServiceMentions } from '../serviceLogContext';
+import {
+  formatServiceMention,
+  runningServiceMentions,
+  runningServiceSignature,
+} from '../serviceLogContext';
+import { useServicesStore } from '../servicesStore';
 
 export interface ComposerProps {
   /// Key into the store's drafts + attachments maps. Use the conversation
@@ -220,7 +225,16 @@ export function Composer({
   }, [mention, rootPath, mentionFiles]);
 
   const serviceScopeKey = serviceWorkspaceIds.join('\0');
-  useEffect(() => setMentionServices(null), [serviceScopeKey]);
+  // The menu offers only services that are RUNNING, so the cached list is
+  // stale as soon as one starts or stops. Resetting on the workspace list
+  // alone left a first `@` typed before anything was up holding an empty list
+  // for the rest of the session: `[]` is truthy, so the loader below returned
+  // early every time after. Watching what is actually live fixes that at the
+  // source, and costs one IPC call the next time the menu opens.
+  const liveServiceKey = useServicesStore((s) =>
+    runningServiceSignature(s.stacks, serviceWorkspaceIds),
+  );
+  useEffect(() => setMentionServices(null), [serviceScopeKey, liveServiceKey]);
   useEffect(() => {
     if (!mention || serviceWorkspaceIds.length === 0 || mentionServices) return;
     let cancelled = false;
