@@ -6,6 +6,7 @@ import {
   attachMentionedServiceLogs,
   formatServiceMention,
   runningServiceMentions,
+  runningServiceSignature,
   serviceMentionReferences,
 } from './serviceLogContext';
 import type { StackView } from '@shared/services';
@@ -40,6 +41,49 @@ describe('service log mentions', () => {
       ],
     } as unknown as StackView;
     expect(runningServiceMentions([stack]).map((entry) => entry.serviceId)).toEqual(['api', 'web']);
+  });
+
+  it('signs the mention menu so a service starting later invalidates the cache', () => {
+    const stacks = (status: string): Record<string, StackView> => ({
+      ws: {
+        workspaceId: 'ws',
+        services: [{ id: 'api', name: 'API' }],
+        bindings: [],
+        runtimes: [{ serviceId: 'api', status }],
+      } as unknown as StackView,
+    });
+
+    // The reported bug: nothing up when the menu first opened, so the empty
+    // list was cached and never refetched. These two must not be equal.
+    const beforeStart = runningServiceSignature(stacks('stopped'), ['ws']);
+    expect(beforeStart).toBe('');
+    expect(runningServiceSignature(stacks('ready'), ['ws'])).not.toBe(beforeStart);
+
+    // A status change within "running" still re-reads, because each entry
+    // carries its own status.
+    expect(runningServiceSignature(stacks('unready'), ['ws'])).not.toBe(
+      runningServiceSignature(stacks('ready'), ['ws']),
+    );
+  });
+
+  it('signs only the workspaces in scope, and is stable across stack order', () => {
+    const stack = (workspaceId: string, serviceId: string): StackView =>
+      ({
+        workspaceId,
+        services: [{ id: serviceId, name: serviceId }],
+        bindings: [],
+        runtimes: [{ serviceId, status: 'ready' }],
+      }) as unknown as StackView;
+    const stacks = { a: stack('a', 'api'), b: stack('b', 'web') };
+
+    expect(runningServiceSignature(stacks, ['a'])).not.toContain('b:web');
+    // Order of the workspace list must not change the fingerprint, or the
+    // cache would drop on every render.
+    expect(runningServiceSignature(stacks, ['a', 'b'])).toBe(
+      runningServiceSignature(stacks, ['b', 'a']),
+    );
+    // A workspace with no stack yet is simply absent, not a crash.
+    expect(runningServiceSignature(stacks, ['missing'])).toBe('');
   });
 
   it('fetches and attaches only mentioned services with a live process', async () => {
