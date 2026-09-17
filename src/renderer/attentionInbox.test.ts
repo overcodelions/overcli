@@ -254,6 +254,36 @@ describe('recentWork', () => {
     expect(rows.slice(1).map((r) => r.item.key)).toEqual(['run:d0', 'run:d1', 'run:d2', 'run:d3']);
   });
 
+  it('keeps a finished run you are still working in', () => {
+    // Steps stopped an hour ago; the user is chatting at it right now. The
+    // backend clock alone would have dropped it.
+    const stopped = NOW - 6 * RECENT_WINDOW_MS;
+    const chatting = run('a', {
+      state: { kind: 'done', success: true },
+      createdAt: stopped,
+      attempts: [{ ...attempt, startedAt: stopped, endedAt: stopped }],
+      lastUserTurnAt: NOW - MIN,
+    } as unknown as Partial<FlowRun>);
+    expect(recentWork(src({ a: chatting }), [], NOW).map((r) => r.item.key)).toEqual(['run:a']);
+
+    const abandoned = run('a', {
+      state: { kind: 'done', success: true },
+      createdAt: stopped,
+      attempts: [{ ...attempt, startedAt: stopped, endedAt: stopped }],
+    } as unknown as Partial<FlowRun>);
+    expect(recentWork(src({ a: abandoned }), [], NOW)).toEqual([]);
+  });
+
+  it('keeps a long run that just finished, though you last touched it at launch', () => {
+    const launched = NOW - 6 * RECENT_WINDOW_MS;
+    const longRun = run('a', {
+      state: { kind: 'done', success: true },
+      createdAt: launched,
+      attempts: [{ ...attempt, startedAt: launched, endedAt: NOW - MIN }],
+    } as unknown as Partial<FlowRun>);
+    expect(recentWork(src({ a: longRun }), [], NOW).map((r) => r.item.key)).toEqual(['run:a']);
+  });
+
   it('leaves the roster alone: no shifts, no scheduled work', () => {
     const shift = run('w', {
       workerId: 'worker-1',

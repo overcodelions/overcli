@@ -21,6 +21,7 @@ import { flowRunActivityAt, flowRunTitle, type FlowRun } from '@shared/flows/sch
 import type { WorkerFunding } from '@shared/flows/treasury';
 import type { Worker } from '@shared/flows/worker';
 import { STALL_AFTER_MS } from './components/flows/runTriage';
+import { flowRunPromptedAt } from './components/sidebarItems';
 import { pauseReasonLabel, runStepPosition } from './components/workers/deskRunRail';
 
 export type AttentionItem =
@@ -289,7 +290,14 @@ export function recentWork(
     // Never started, so there is nothing to go back to.
     if (run.attempts.length === 0) continue;
     const status = runStatus(run);
-    const at = flowRunActivityAt(run);
+    // Two clocks, and the window takes whichever is later. `flowRunActivityAt`
+    // is the backend's — when the steps stopped — and on its own it drops a
+    // finished run you are still working in, because chatting at it moves no
+    // step. `flowRunPromptedAt` is yours (launch, Continue, your last turn),
+    // and on its own it drops a long run that just finished, because you last
+    // touched it hours ago when you launched it. Neither is the answer; the
+    // later of the two is.
+    const at = Math.max(flowRunActivityAt(run), flowRunPromptedAt(run));
     if (!status.continuing && now - at >= RECENT_WINDOW_MS) continue;
     rows.push({
       item: {
