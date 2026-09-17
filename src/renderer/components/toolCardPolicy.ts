@@ -58,9 +58,17 @@ export function rendersWhenToolActivityHidden(use: ToolUseBlock): boolean {
 ///
 /// `action` defaults to publish when omitted, which is the common case: most
 /// publishes name only a `file_path`. A recorded `filePath` settles it on its
-/// own, since main only attaches one to a call that wrote a page. Every other
-/// publish shape counts too — a create from a `type_url`, an update that only
-/// swaps `files` — so the test is the action, not the presence of a file.
+/// own, since main only attaches one to a call that wrote a page. A publish
+/// that only swaps `files` counts as well — the test is the action, not the
+/// presence of one particular key.
+///
+/// The exception is the shell: creating from a `type_url` with no content is
+/// half a handshake. It mints an empty private page and hands back its URL,
+/// and the content is published to that URL in a later call — which, for a
+/// design canvas, is several artboards and a manifest later. A card for the
+/// shell is a link to a page reading "this canvas has no artboards yet", and
+/// it sits directly above the card for the publish that actually filled it.
+/// The fill gets the card; the handshake doesn't.
 export function isArtifactPublish(use: ToolUseBlock): boolean {
   if (use.filePath) return true;
   let args: Record<string, any>;
@@ -73,7 +81,9 @@ export function isArtifactPublish(use: ToolUseBlock): boolean {
     return false;
   }
   const action = typeof args.action === 'string' ? args.action.trim().toLowerCase() : '';
-  return !action || action === 'publish';
+  if (action && action !== 'publish') return false;
+  const carriesContent = !!args.file_path || !!args.files;
+  return carriesContent || !args.type_url;
 }
 
 /// May the transient "now doing…" slot show this call? Anything that renders
