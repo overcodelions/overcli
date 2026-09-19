@@ -192,7 +192,7 @@ jobs:
           git tag -f nightly
           git push origin nightly --force
 
-      - uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: v${{ needs.check.outputs.nightly-version }}
           name: Nightly
