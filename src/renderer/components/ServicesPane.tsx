@@ -829,8 +829,13 @@ function SelectionBar() {
     return runtime ? isServiceLive(runtime.status) : false;
   }).length;
 
+  // Wraps rather than overflows. This bar lives in the service list column,
+  // which the user can drag down to 300px — narrower than its own controls,
+  // which then painted over the divider and into the detail pane. The spacer
+  // is `flex-1` (basis 0), so it absorbs slack without ever being the reason
+  // a line breaks.
   return (
-    <div className="flex h-[40px] flex-shrink-0 items-center gap-1 border-t border-card-strong bg-surface-muted pl-3.5 pr-1.5">
+    <div className="flex min-h-[40px] flex-shrink-0 flex-wrap items-center gap-x-1 gap-y-1 border-t border-card-strong bg-surface-muted py-1 pl-3.5 pr-1.5">
       <span className="whitespace-nowrap text-[12px] font-medium">{keys.length} selected</span>
       <div className="flex-1" />
       <SwitchMenu keys={keys} label="Switch" />
