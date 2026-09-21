@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -321,6 +321,30 @@ describe('choosing where a service runs', () => {
 
     expect(await mgr.checkoutRef('ws1', 'api', 'feature/x')).toEqual({ ok: true });
     expect(mgr.view('ws1').bindings[0].ref).toBe('feature/x');
+  });
+
+  it('reuses a checkout\'s branch for a few seconds rather than shelling out per look', async () => {
+    // `view` runs on every look at the pane, on every service event it
+    // refreshes on, and on every `@` typed in the composer. Reading the ref
+    // meant a synchronous `git rev-parse` per service folder on the main
+    // process each time, which is the pause before the mention menu draws.
+    gitRepo();
+    const { mgr } = manager();
+    mgr.addService('ws1', spec, { ref: 'master', path: repo });
+    expect(mgr.view('ws1').bindings[0].ref).toBe('master');
+
+    execFileSync('git', ['checkout', '-q', 'feature/x'], { cwd: repo, stdio: 'ignore' });
+    expect(mgr.view('ws1').bindings[0].ref).toBe('master');
+
+    // A branch someone moves in a terminal is still picked up — just not more
+    // often than a human could move it.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 10_000);
+      expect(mgr.view('ws1').bindings[0].ref).toBe('feature/x');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refuses to check out over uncommitted work', async () => {

@@ -87,6 +87,10 @@ const execFileAsync = promisify(execFile);
 /// How long a scan of a main checkout's ignored files is reused.
 const IGNORED_SCAN_TTL_MS = 60_000;
 
+/// How long a checkout's current branch is reused before git is asked again.
+/// See `refFor`.
+const REF_TTL_MS = 5_000;
+
 /// A machine value's name has to be something `${NAME}` can refer to.
 const MACHINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -97,6 +101,8 @@ export class ServicesManager {
   private readonly ignoredScans = new Map<string, { at: number; files: Promise<string[] | null> }>();
   private readonly supervisors = new Map<string, Supervisor>();
   private readonly stacks = new Map<string, StackConfig>();
+  /// The branch each bound checkout was last seen on, with when it was read.
+  private readonly refs = new Map<string, { ref: string; at: number }>();
 
   constructor(
     private readonly dataDir: string,
@@ -137,18 +143,40 @@ export class ServicesManager {
   /// Branches move under us: `git checkout master` in a terminal changes what
   /// a checkout is on, and a binding that only learned its ref when overcli
   /// did the checkout keeps saying the old branch forever. Re-read on every
-  /// look — once per folder, not once per service.
+  /// look — once per folder, not once per service, and at most once per
+  /// folder per `REF_TTL_MS`.
+  ///
+  /// The TTL is what keeps `view` cheap. Every look at the pane, every
+  /// service event it refreshes on, and every `@` typed in the composer runs
+  /// this, and each folder cost a synchronous `git rev-parse` on the MAIN
+  /// process — ten services is ten process spawns with the whole app blocked
+  /// behind them, which is exactly the pause before the mention menu draws.
+  /// A branch someone changes in a terminal is still picked up; it is just
+  /// not re-read more often than a human could change it.
+  /// Read a checkout's branch now, and remember it. Used where the answer
+  /// must be current — straight after overcli checked something out — so the
+  /// cached copy agrees with what we just did rather than expiring into it.
+  private readRef(path: string): string {
+    const ref = currentRef(path);
+    this.refs.set(path, { ref, at: Date.now() });
+    return ref;
+  }
+
+  private refFor(path: string): string {
+    const now = Date.now();
+    const hit = this.refs.get(path);
+    if (hit && now - hit.at < REF_TTL_MS) return hit.ref;
+    // A folder a flow deleted mid-session keeps its last known ref: that
+    // is still the best description of where the service was.
+    const ref = fs.existsSync(path) ? currentRef(path) : '';
+    this.refs.set(path, { ref, at: now });
+    return ref;
+  }
+
   private refreshRefs(stack: StackConfig): StackConfig {
-    const refs = new Map<string, string>();
     let changed = false;
     const bindings = stack.bindings.map((b) => {
-      let ref = refs.get(b.path);
-      if (ref === undefined) {
-        // A folder a flow deleted mid-session keeps its last known ref: that
-        // is still the best description of where the service was.
-        ref = fs.existsSync(b.path) ? currentRef(b.path) : '';
-        refs.set(b.path, ref);
-      }
+      const ref = this.refFor(b.path);
       if (!ref || ref === 'HEAD' || ref === b.ref) return b;
       changed = true;
       return { ...b, ref };
@@ -871,7 +899,7 @@ export class ServicesManager {
     }
 
     await this.rebind(workspaceId, serviceId, {
-      ref: currentRef(binding.path),
+      ref: this.readRef(binding.path),
       path: binding.path,
     });
     return { ok: true };
@@ -1243,7 +1271,7 @@ export class ServicesManager {
           : undefined,
       };
       this.addService(workspaceId, this.keepEditedCommand(workspaceId, baseSpec, { stated, detected }), {
-        ref: currentRef(place.path),
+        ref: this.readRef(place.path),
         path: place.path,
       });
       added.push(baseId);
@@ -1271,7 +1299,7 @@ export class ServicesManager {
             },
             { stated, detected },
           ),
-          { ref: currentRef(place.path), path: place.path },
+          { ref: this.readRef(place.path), path: place.path },
         );
         added.push(id);
         idByName.set(entry.service.name, id);
@@ -1338,7 +1366,7 @@ export class ServicesManager {
     // anything — every chip in the list read the same. Resolve them to the
     // branch each checkout is actually on, once, and keep it.
     const repaired = loaded.bindings.map((b) =>
-      b.ref === 'HEAD' ? { ...b, ref: currentRef(b.path) } : b,
+      b.ref === 'HEAD' ? { ...b, ref: this.readRef(b.path) } : b,
     );
     // And services detected before Gradle's daemon was turned off still start
     // with it on — so the environment they are given never reaches the JVM,

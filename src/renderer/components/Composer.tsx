@@ -10,6 +10,7 @@ import {
   runningServiceSignature,
 } from '../serviceLogContext';
 import { useServicesStore } from '../servicesStore';
+import type { StackView } from '@shared/services';
 
 export interface ComposerProps {
   /// Key into the store's drafts + attachments maps. Use the conversation
@@ -235,6 +236,24 @@ export function Composer({
     runningServiceSignature(s.stacks, serviceWorkspaceIds),
   );
   useEffect(() => setMentionServices(null), [serviceScopeKey, liveServiceKey]);
+
+  // What the services store already knows, drawn the moment `@` is typed.
+  // The fetch below is a round trip to the main process, so waiting on it
+  // meant the menu opened with no services in it and filled them in a beat
+  // later — which reads as "it did not find them" and is why anyone would
+  // stop typing and look. Subscribing to the signature rather than to
+  // `stacks` matters: the stacks object is replaced several times a second
+  // while services are logging, and depending on it would re-render the
+  // composer on every batch of output.
+  const storeServices = useMemo(
+    () =>
+      runningServiceMentions(
+        serviceWorkspaceIds
+          .map((id) => useServicesStore.getState().stacks[id])
+          .filter((stack): stack is StackView => !!stack),
+      ),
+    [serviceScopeKey, liveServiceKey],
+  );
   useEffect(() => {
     if (!mention || serviceWorkspaceIds.length === 0 || mentionServices) return;
     let cancelled = false;
@@ -247,14 +266,14 @@ export function Composer({
 
   const mentionMatches = useMemo(() => {
     if (!mention) return [];
-    const services = rankServiceMentionMatches(mentionServices ?? [], mention.query)
+    const services = rankServiceMentionMatches(mentionServices ?? storeServices, mention.query)
       .map((service): MentionEntry => ({ kind: 'service', service }));
     const files = rootPath
       ? rankMentionMatches(mentionFiles ?? [], mention.query, rootPath)
           .map((path): MentionEntry => ({ kind: 'file', path }))
       : [];
     return [...services, ...files].slice(0, 8);
-  }, [mention, mentionFiles, mentionServices, rootPath]);
+  }, [mention, mentionFiles, mentionServices, storeServices, rootPath]);
 
   useEffect(() => {
     setMentionSelected(0);
