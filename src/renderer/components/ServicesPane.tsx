@@ -902,6 +902,7 @@ function ReloadMenu({ keys }: { keys: string[] }) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const up = useOpensUp(anchor, open, 180);
+  const right = useAnchorsRight(anchor, open, 280);
 
   const modes = new Set(
     keys.map((key) => {
@@ -944,7 +945,8 @@ function ReloadMenu({ keys }: { keys: string[] }) {
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div
             className={
-              'absolute right-0 z-20 w-[280px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl ' +
+              'absolute z-20 w-[280px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl ' +
+              (right ? 'right-0 ' : 'left-0 ') +
               (up ? 'bottom-full mb-1' : 'top-full mt-1')
             }
           >
@@ -1012,6 +1014,7 @@ function BulkRefPicker({
   const [query, setQuery] = useState('');
   const anchor = useRef<HTMLButtonElement>(null);
   const up = useOpensUp(anchor, open, 420);
+  const right = useAnchorsRight(anchor, open, 360);
 
   const sections = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -1055,7 +1058,8 @@ function BulkRefPicker({
           <div className="fixed inset-0 z-10" onClick={close} />
           <div
             className={
-              'absolute right-0 z-20 w-[360px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl ' +
+              'absolute z-20 w-[360px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl ' +
+              (right ? 'right-0 ' : 'left-0 ') +
               (up ? 'bottom-full mb-1' : 'top-full mt-1')
             }
           >
@@ -1122,6 +1126,28 @@ function BulkRefPicker({
 
 /// Whether a menu anchored here should open upward: a row near the bottom of
 /// the list opened its menu past the window edge, where nobody could reach it.
+/// Whether a panel of this width can hang from the anchor's RIGHT edge and
+/// still be on screen.
+///
+/// These panels are wider than the service list column they open in, so a
+/// button near the left of a narrow column put the whole panel off the left
+/// of the window — the search box and half the branch names with it. When
+/// there is no room that way it hangs from the left edge instead and
+/// overflows to the right, over the detail pane, which is what a popover is
+/// allowed to do.
+function useAnchorsRight(
+  anchor: React.RefObject<HTMLElement | null>,
+  open: boolean,
+  width: number,
+): boolean {
+  const [right, setRight] = useState(true);
+  useEffect(() => {
+    if (!open || !anchor.current) return;
+    setRight(anchor.current.getBoundingClientRect().right - width >= 8);
+  }, [open, anchor, width]);
+  return right;
+}
+
 function useOpensUp(anchor: React.RefObject<HTMLElement | null>, open: boolean, height: number): boolean {
   const [up, setUp] = useState(false);
   useEffect(() => {
