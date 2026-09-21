@@ -443,6 +443,21 @@ describe('Supervisor.rebind', () => {
 
     expect(moved).toEqual(['api', 'web']);
   });
+
+  it('moves a service pinned to the ref it is being moved TO', async () => {
+    // A pin holds a service to one ref; it is not a refusal to go there. This
+    // was the shape that stuck: "switch to master and pin there" wrote the pin
+    // and skipped the move, and running it again could never repair it —
+    // the pin blocking the move was the one the move had just written.
+    const { deps } = harness();
+    const specs = [spec({ id: 'api', pinnedRef: 'master' })];
+    const sup = new Supervisor('mine', specs, [binding('api', 'feat/x', '/wt/x')], deps);
+
+    const moved = await sup.rebindAll([{ serviceId: 'api', ref: 'master', path: '/repos/main' }]);
+
+    expect(moved).toEqual(['api']);
+    expect(sup.binding('api')).toMatchObject({ ref: 'master', path: '/repos/main' });
+  });
 });
 
 describe('Supervisor.restart', () => {
