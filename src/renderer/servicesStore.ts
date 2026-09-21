@@ -18,6 +18,7 @@ import type { WorktreeChoice } from '@shared/worktrees';
 import { emptyExceptionLog, feedException, type ExceptionLog } from '@shared/exceptions';
 import { planBulkRebind, planPinRebind } from './servicesRebindPlan';
 import { runWithConcurrency, startLayers } from './servicesStartPlan';
+import { watchForMode, type ReloadMode } from './serviceReloadMode';
 import type {
   LeaseDecision,
   MachineEntry,
@@ -163,6 +164,9 @@ interface ServicesState {
   setOptions(workspaceId: string, serviceId: string, options: ServiceOption[]): Promise<void>;
   setCommand(workspaceId: string, serviceId: string, command: string[]): Promise<void>;
   setWatch(workspaceId: string, serviceId: string, selfReloads: boolean, watch: string[]): Promise<void>;
+  /// The same choice across ticked rows. Each service keeps its own globs —
+  /// see `watchForMode` — so this sets what they do, not what they watch.
+  setWatchMany(keys: string[], mode: ReloadMode): Promise<void>;
   setDebug(workspaceId: string, serviceId: string, enabled: boolean): Promise<void>;
   setReady(
     workspaceId: string,
@@ -345,6 +349,21 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   async setWatch(workspaceId, serviceId, selfReloads, watch) {
     await window.overcli.invoke('services:setWatch', { workspaceId, serviceId, selfReloads, watch });
     await get().load(workspaceId);
+  },
+
+  async setWatchMany(keys, mode) {
+    const { stacks } = get();
+    await Promise.all(
+      keys.map((key) => {
+        const { workspaceId, serviceId } = splitKey(key);
+        const spec = stacks[workspaceId]?.services.find((s) => s.id === serviceId);
+        const { selfReloads, watch } = watchForMode(spec ?? {}, mode);
+        return window.overcli.invoke('services:setWatch', { workspaceId, serviceId, selfReloads, watch });
+      }),
+    );
+    // One reload per workspace rather than one per service: fifteen rows in
+    // one stack is one answer, not fifteen.
+    await get().loadAll([...new Set(keys.map((key) => splitKey(key).workspaceId))]);
   },
 
   async setReady(workspaceId, serviceId, ready, readyTimeoutSec) {

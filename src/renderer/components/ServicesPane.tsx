@@ -67,6 +67,7 @@ import {
   type WorktreeChoice,
 } from '../worktreeChoices';
 import { LogView } from './ServiceLogView';
+import { reloadModeOf, watchForMode, type ReloadMode } from '../serviceReloadMode';
 import { MachineServicesSection } from './MachineServicesSection';
 import { chatTargetFor, flowTargetFor, outputPrompt } from '../askAboutOutput';
 import { ResizableDivider } from './ResizableDivider';
@@ -833,6 +834,7 @@ function SelectionBar() {
       <span className="whitespace-nowrap text-[12px] font-medium">{keys.length} selected</span>
       <div className="flex-1" />
       <SwitchMenu keys={keys} label="Switch" />
+      <ReloadMenu keys={keys} />
       <button className="svc-btn-go" disabled={live === keys.length} onClick={() => void startMany(keys)}>
         Start
       </button>
@@ -878,6 +880,100 @@ function SwitchMenu({ keys, label, quiet }: { keys: string[]; label: string; qui
     />
   );
 }
+
+/// What the ticked rows do when their files change — the bulk form of the
+/// Reload setting on one service.
+///
+/// Services imported before watching existed have no `watch` at all, so a
+/// stack of them is uniformly "do nothing" and turning that around was a trip
+/// into each service's settings in turn.
+///
+/// Patterns are deliberately not part of the choice: each service keeps its
+/// own globs (see `watchForMode`), because one glob across a selection is
+/// wrong the moment two of them live in different repositories.
+function ReloadMenu({ keys }: { keys: string[] }) {
+  const setWatchMany = useServicesStore((s) => s.setWatchMany);
+  const stacks = useServicesStore((s) => s.stacks);
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  const up = useOpensUp(anchor, open, 180);
+
+  const modes = new Set(
+    keys.map((key) => {
+      const { workspaceId, serviceId } = splitKey(key);
+      const spec = stacks[workspaceId]?.services.find((s) => s.id === serviceId);
+      return spec ? reloadModeOf(spec) : 'off';
+    }),
+  );
+  // One answer only when they agree; saying "Do nothing" over a mixed
+  // selection would be a claim about services it is not true of.
+  const current = modes.size === 1 ? [...modes][0] : undefined;
+
+  const choices: { mode: ReloadMode; label: string; note: string }[] = [
+    { mode: 'restart', label: 'Restart on change', note: 'overcli watches and restarts the process' },
+    { mode: 'self', label: 'Reloads itself', note: 'the runner patches its own process' },
+    { mode: 'off', label: 'Do nothing', note: 'left alone when files change' },
+  ];
+
+  return (
+    <span className="relative flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+      <button
+        ref={anchor}
+        title="What these do when their files change"
+        onClick={() => setOpen((o) => !o)}
+        className="flex h-[22px] max-w-[200px] items-center gap-1 rounded border border-card bg-card px-1.5 text-[11px] text-ink-muted hover:border-card-strong hover:text-ink"
+      >
+        <span className="truncate">
+          Reload
+          <span className="text-ink-faint">
+            {' · '}
+            {current ? RELOAD_SHORT[current] : 'mixed'}
+          </span>
+        </span>
+        <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <path d="M4 6l4 4 4-4" />
+        </svg>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div
+            className={
+              'absolute right-0 z-20 w-[280px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl ' +
+              (up ? 'bottom-full mb-1' : 'top-full mt-1')
+            }
+          >
+            {choices.map((choice) => (
+              <button
+                key={choice.mode}
+                className="flex w-full flex-col items-start gap-0.5 px-2.5 py-1.5 text-left hover:bg-card-strong"
+                onClick={() => {
+                  setOpen(false);
+                  void setWatchMany(keys, choice.mode);
+                }}
+              >
+                <span className="text-[11.5px] text-ink">
+                  {current === choice.mode && <span className="text-accent">✓ </span>}
+                  {choice.label}
+                </span>
+                <span className="text-[10.5px] text-ink-faint">{choice.note}</span>
+              </button>
+            ))}
+            <div className="border-t border-card px-2.5 py-1.5 text-[10.5px] text-ink-faint">
+              Each service keeps its own watch patterns.
+            </div>
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
+const RELOAD_SHORT: Record<ReloadMode, string> = {
+  self: 'itself',
+  restart: 'on change',
+  off: 'nothing',
+};
 
 /// Where a ref lives, for the bulk pickers. The same name can be the main
 /// checkout in one repo and a worktree in another; main wins, because moving
@@ -2258,9 +2354,13 @@ function Settings({
 
 function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
   const setWatch = useServicesStore((s) => s.setWatch);
-  const mode = spec.selfReloads ? 'self' : (spec.watch?.length ?? 0) > 0 ? 'overcli' : 'off';
-  const [patterns, setPatterns] = useState((spec.watch ?? ['src/**']).join(', '));
-  useEffect(() => setPatterns((spec.watch ?? ['src/**']).join(', ')), [spec.id, spec.watch]);
+  const mode = reloadModeOf(spec);
+  const [patterns, setPatterns] = useState(() => watchForMode(spec, 'restart').watch.join(', '));
+  useEffect(
+    () => setPatterns(watchForMode(spec, 'restart').watch.join(', ')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the patterns are what matter, not the object
+    [spec.id, spec.watch],
+  );
   const savePatterns = () => {
     const watch = patterns.split(',').map((pattern) => pattern.trim()).filter(Boolean);
     if (watch.length > 0) void setWatch(workspaceId, spec.id, false, watch);
@@ -2271,14 +2371,20 @@ function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: Servic
         <ReloadChoice on={mode === 'self'} onClick={() => void setWatch(workspaceId, spec.id, true, [])}>
           Reloads itself
         </ReloadChoice>
-        <ReloadChoice on={mode === 'overcli'} onClick={() => void setWatch(workspaceId, spec.id, false, spec.watch ?? ['src/**'])}>
+        <ReloadChoice
+          on={mode === 'restart'}
+          onClick={() => {
+            const { selfReloads, watch } = watchForMode(spec, 'restart');
+            void setWatch(workspaceId, spec.id, selfReloads, watch);
+          }}
+        >
           Restart service
         </ReloadChoice>
         <ReloadChoice on={mode === 'off'} onClick={() => void setWatch(workspaceId, spec.id, false, [])}>
           Do nothing
         </ReloadChoice>
       </div>
-      {mode === 'overcli' && (
+      {mode === 'restart' && (
         <input
           className="field w-full px-2 py-1.5 font-mono text-[11px]"
           value={patterns}
@@ -2294,7 +2400,7 @@ function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: Servic
       <span className="text-[10.5px] text-ink-faint">
         {mode === 'self'
           ? 'Vite, devtools, or the framework watches its own process.'
-          : mode === 'overcli'
+          : mode === 'restart'
             ? 'Changes are debounced, then the process restarts and readiness is checked again.'
             : 'The running process is left alone when files change.'}
       </span>
