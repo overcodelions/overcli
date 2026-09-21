@@ -65,7 +65,54 @@ describe('branch', () => {
       ref: 'TASK-1',
       spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'TASK-1' },
     });
-    expect(planBulkEdit([pinned], { ref: 'master' }).rows[0].blocks[0].reason).toBe('pinned to TASK-1');
+    expect(planBulkEdit([pinned], { ref: 'master' }).rows[0].blocks[0].reason).toMatch(/^pinned to TASK-1/);
+  });
+
+  it('says the pin is being replaced, rather than doing it quietly', () => {
+    // The move and the repin are two different things happening to the row,
+    // and a service already sitting on the target ref showed nothing at all
+    // while its pin was being rewritten underneath it.
+    const pinned = service({
+      key: 'a',
+      ref: 'master',
+      spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'TASK-1' },
+    });
+    const plan = planBulkEdit([pinned], { ref: 'master', pin: true });
+    expect(plan.changing).toBe(1);
+    expect(plan.rows[0].changes).toEqual([
+      { field: 'pin', now: 'pinned TASK-1', after: 'pinned master' },
+    ]);
+  });
+
+  it('shows the move and the repin as separate changes', () => {
+    const pinned = service({
+      key: 'a',
+      ref: 'TASK-1',
+      spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'TASK-1' },
+    });
+    const plan = planBulkEdit([pinned], { ref: 'master', pin: true });
+    expect(plan.rows[0].changes.map((c) => c.field)).toEqual(['branch', 'pin']);
+  });
+
+  it('does not repin one already pinned where it is going', () => {
+    const pinned = service({
+      key: 'a',
+      ref: 'TASK-1',
+      spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'master' },
+    });
+    const plan = planBulkEdit([pinned], { ref: 'master', pin: true });
+    expect(plan.rows[0].changes.map((c) => c.field)).toEqual(['branch']);
+  });
+
+  it('names the box that would let a pinned service move', () => {
+    const pinned = service({
+      key: 'a',
+      ref: 'TASK-1',
+      spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'TASK-1' },
+    });
+    expect(planBulkEdit([pinned], { ref: 'master' }).rows[0].blocks[0].reason).toBe(
+      'pinned to TASK-1 — tick Pin to move it',
+    );
   });
 
   it('lets an explicit pin replace an older one', () => {

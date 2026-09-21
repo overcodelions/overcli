@@ -27,7 +27,7 @@ export type ReadyShape =
   | { kind: 'log'; pattern: string }
   | { kind: 'none' };
 
-export type FieldKey = 'branch' | 'reload' | 'group' | 'ready';
+export type FieldKey = 'branch' | 'pin' | 'reload' | 'group' | 'ready';
 
 /// What the user set. Every field is optional, and absent means untouched.
 export interface BulkEdits {
@@ -100,13 +100,27 @@ function planOne(service: BulkService, edits: BulkEdits): BulkRow {
 
   if (edits.ref !== undefined) {
     const pinnedElsewhere = spec.pinnedRef && spec.pinnedRef !== edits.ref;
-    // A pin is a deliberate replacement of an older pin, so it outranks one.
+    // A pin is a deliberate replacement of an older pin, so it outranks one —
+    // but only when the user asked for a pin. Otherwise the pin wins and the
+    // row says which box would let it move.
     if (pinnedElsewhere && !edits.pin) {
-      blocks.push({ field: 'branch', reason: `pinned to ${spec.pinnedRef}` });
+      blocks.push({ field: 'branch', reason: `pinned to ${spec.pinnedRef} — tick Pin to move it` });
     } else if (!service.reachableRefs.includes(edits.ref)) {
       blocks.push({ field: 'branch', reason: 'no such branch in its repo' });
-    } else if (service.ref !== edits.ref) {
-      changes.push({ field: 'branch', now: service.ref ?? '—', after: edits.ref });
+    } else {
+      if (service.ref !== edits.ref) {
+        changes.push({ field: 'branch', now: service.ref ?? '—', after: edits.ref });
+      }
+      // Replacing a pin is a change in its own right. It used to happen
+      // quietly behind the move, so a row already sitting on the target ref
+      // showed nothing at all while its pin was being rewritten.
+      if (edits.pin && spec.pinnedRef !== edits.ref) {
+        changes.push({
+          field: 'pin',
+          now: spec.pinnedRef ? `pinned ${spec.pinnedRef}` : 'not pinned',
+          after: `pinned ${edits.ref}`,
+        });
+      }
     }
   }
 

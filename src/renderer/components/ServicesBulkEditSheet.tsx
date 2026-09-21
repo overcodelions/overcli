@@ -27,6 +27,7 @@ import {
 /// which rows move branch, and which only change what they do on a save.
 const FIELD_TINT: Record<FieldKey, { bg: string; ink: string; dot: string }> = {
   branch: { bg: 'rgba(124,139,255,0.16)', ink: '#aab3ff', dot: 'rgba(124,139,255,0.7)' },
+  pin: { bg: 'rgba(244,114,182,0.16)', ink: '#f9a8d4', dot: 'rgba(244,114,182,0.7)' },
   reload: { bg: 'rgba(61,206,215,0.16)', ink: '#5fdbe2', dot: 'rgba(61,206,215,0.7)' },
   group: { bg: 'rgba(181,135,255,0.16)', ink: '#c8a6ff', dot: 'rgba(181,135,255,0.7)' },
   ready: { bg: 'rgba(52,211,153,0.16)', ink: '#6ee7b7', dot: 'rgba(52,211,153,0.7)' },
@@ -34,6 +35,7 @@ const FIELD_TINT: Record<FieldKey, { bg: string; ink: string; dot: string }> = {
 
 const FIELD_LABEL: Record<FieldKey, string> = {
   branch: 'branch',
+  pin: 'pin',
   reload: 'on change',
   group: 'group',
   ready: 'ready when',
