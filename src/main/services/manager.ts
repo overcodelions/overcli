@@ -140,19 +140,6 @@ export class ServicesManager {
     };
   }
 
-  /// Branches move under us: `git checkout master` in a terminal changes what
-  /// a checkout is on, and a binding that only learned its ref when overcli
-  /// did the checkout keeps saying the old branch forever. Re-read on every
-  /// look — once per folder, not once per service, and at most once per
-  /// folder per `REF_TTL_MS`.
-  ///
-  /// The TTL is what keeps `view` cheap. Every look at the pane, every
-  /// service event it refreshes on, and every `@` typed in the composer runs
-  /// this, and each folder cost a synchronous `git rev-parse` on the MAIN
-  /// process — ten services is ten process spawns with the whole app blocked
-  /// behind them, which is exactly the pause before the mention menu draws.
-  /// A branch someone changes in a terminal is still picked up; it is just
-  /// not re-read more often than a human could change it.
   /// Read a checkout's branch now, and remember it. Used where the answer
   /// must be current — straight after overcli checked something out — so the
   /// cached copy agrees with what we just did rather than expiring into it.
@@ -162,6 +149,15 @@ export class ServicesManager {
     return ref;
   }
 
+  /// A checkout's branch, from the cache while it is fresh.
+  ///
+  /// The TTL is what keeps `view` cheap. Every look at the pane, every
+  /// service event it refreshes on, and every `@` typed in the composer runs
+  /// this, and each folder cost a synchronous `git rev-parse` on the MAIN
+  /// process — ten services is ten process spawns with the whole app blocked
+  /// behind them, which is exactly the pause before the mention menu draws.
+  /// A branch someone changes in a terminal is still picked up; it is just
+  /// not re-read more often than a human could change it.
   private refFor(path: string): string {
     const now = Date.now();
     const hit = this.refs.get(path);
@@ -173,6 +169,11 @@ export class ServicesManager {
     return ref;
   }
 
+  /// Branches move under us: `git checkout master` in a terminal changes what
+  /// a checkout is on, and a binding that only learned its ref when overcli
+  /// did the checkout keeps saying the old branch forever. Re-read on every
+  /// look — once per folder, not once per service, and no more often than
+  /// `refFor`'s TTL allows.
   private refreshRefs(stack: StackConfig): StackConfig {
     let changed = false;
     const bindings = stack.bindings.map((b) => {
