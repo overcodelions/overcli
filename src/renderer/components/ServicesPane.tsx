@@ -1304,12 +1304,15 @@ function Trouble({
   if (runtime.status === 'done' && runtime.finishedAt) {
     return <span className="flex-shrink-0 text-[10px] text-ink-faint">done {since(runtime.finishedAt)} ago</span>;
   }
-  if (spec.selfReloads && runtime.status === 'ready') {
-    return <span className="flex-shrink-0 text-[10px] text-ink-faint">reloads itself</span>;
-  }
-  if ((spec.watch?.length ?? 0) > 0 && runtime.status === 'ready') {
-    return <span className="flex-shrink-0 text-[10px] text-ink-faint">restarts on changes</span>;
-  }
+  // Nothing for how a service reacts to a save. Everything else in this
+  // column is a STATE — it changed on its own and may want an answer. That
+  // is a SETTING: it never changes unless someone changes it, it rendered
+  // only in the `ready` case where the row should be quiet, and once a stack
+  // is set up it is true of nearly every row, which is where a label stops
+  // carrying information and starts costing the name beside it its width.
+  //
+  // What matters is still visible: a watch that fires prints
+  // `── code changed · <path> · restarting ──` and the row goes to starting.
   return null;
 }
 
