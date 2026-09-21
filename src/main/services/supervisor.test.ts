@@ -449,14 +449,15 @@ describe('Supervisor.rebind', () => {
     // was the shape that stuck: "switch to master and pin there" wrote the pin
     // and skipped the move, and running it again could never repair it —
     // the pin blocking the move was the one the move had just written.
-    const { deps } = harness();
+    const { deps, spawns } = harness();
     const specs = [spec({ id: 'api', pinnedRef: 'master' })];
     const sup = new Supervisor('mine', specs, [binding('api', 'feat/x', '/wt/x')], deps);
+    await sup.start('api');
 
     const moved = await sup.rebindAll([{ serviceId: 'api', ref: 'master', path: '/repos/main' }]);
 
     expect(moved).toEqual(['api']);
-    expect(sup.binding('api')).toMatchObject({ ref: 'master', path: '/repos/main' });
+    expect(spawns.map((s) => s.cwd)).toEqual(['/wt/x', '/repos/main']);
   });
 });
 

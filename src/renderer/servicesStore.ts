@@ -420,7 +420,27 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
 
     // Reuses the ordinary bulk switch: it already plans per repository, keeps
     // a pin from being overwritten by accident, and reports what stayed put.
-    if (edits.ref !== undefined) await get().switchKeys(keys, edits.ref, edits.pin);
+    if (edits.ref !== undefined) {
+      // Asked to move the pinned ones without re-pinning them: clear those
+      // pins first, or the switch will correctly refuse the very services the
+      // user just said to move. A pin the user has chosen to drop is not a
+      // pin any more.
+      if (edits.unpin && !edits.pin) {
+        await Promise.all(
+          keys.map((key) => {
+            const spec = specOf(key);
+            if (!spec?.pinnedRef || spec.pinnedRef === edits.ref) return undefined;
+            const { workspaceId, serviceId } = splitKey(key);
+            return window.overcli.invoke('services:setPinned', {
+              workspaceId,
+              serviceId,
+              pinnedRef: undefined,
+            });
+          }),
+        );
+      }
+      await get().switchKeys(keys, edits.ref, edits.pin);
+    }
     else await get().loadAll([...new Set(keys.map((key) => splitKey(key).workspaceId))]);
   },
 

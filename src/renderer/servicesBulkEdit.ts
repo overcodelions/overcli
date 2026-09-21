@@ -34,6 +34,11 @@ export interface BulkEdits {
   ref?: string;
   /// Pin the services that can reach `ref` to it. Only meaningful with `ref`.
   pin?: boolean;
+  /// Move the ones pinned somewhere else too, dropping those pins. A pin is
+  /// there to stop a sweeping switch dragging a service along; ticking rows
+  /// in a sheet that shows the consequence is not that, so the answer is a
+  /// warning and a choice rather than a refusal.
+  unpin?: boolean;
   reload?: ReloadMode;
   /// `''` clears the group; `undefined` leaves it alone. The two are
   /// different answers and the type has to keep them apart.
@@ -103,8 +108,11 @@ function planOne(service: BulkService, edits: BulkEdits): BulkRow {
     // A pin is a deliberate replacement of an older pin, so it outranks one —
     // but only when the user asked for a pin. Otherwise the pin wins and the
     // row says which box would let it move.
-    if (pinnedElsewhere && !edits.pin) {
-      blocks.push({ field: 'branch', reason: `pinned to ${spec.pinnedRef} — tick Pin to move it` });
+    if (pinnedElsewhere && !edits.pin && !edits.unpin) {
+      blocks.push({
+        field: 'branch',
+        reason: `pinned to ${spec.pinnedRef} — tick one of the pin boxes to move it`,
+      });
     } else if (!service.reachableRefs.includes(edits.ref)) {
       blocks.push({ field: 'branch', reason: 'no such branch in its repo' });
     } else {
@@ -119,6 +127,14 @@ function planOne(service: BulkService, edits: BulkEdits): BulkRow {
           field: 'pin',
           now: spec.pinnedRef ? `pinned ${spec.pinnedRef}` : 'not pinned',
           after: `pinned ${edits.ref}`,
+        });
+      } else if (!edits.pin && edits.unpin && pinnedElsewhere) {
+        // Dropping a pin is the more surprising of the two, so it says so in
+        // the row the same way taking one on does.
+        changes.push({
+          field: 'pin',
+          now: `pinned ${spec.pinnedRef}`,
+          after: 'not pinned',
         });
       }
     }

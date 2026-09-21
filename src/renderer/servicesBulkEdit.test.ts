@@ -111,8 +111,50 @@ describe('branch', () => {
       spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'TASK-1' },
     });
     expect(planBulkEdit([pinned], { ref: 'master' }).rows[0].blocks[0].reason).toBe(
-      'pinned to TASK-1 — tick Pin to move it',
+      'pinned to TASK-1 — tick one of the pin boxes to move it',
     );
+  });
+
+  it('moves a pinned service when told to drop the pin, and says both', () => {
+    // A pin stops a sweeping switch dragging a service along. Ticking two
+    // rows in a sheet that shows the consequence is not that, so the answer
+    // is a warning and a choice rather than a refusal.
+    const pinned = service({
+      key: 'a',
+      ref: 'TASK-1',
+      spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'TASK-1' },
+    });
+    const plan = planBulkEdit([pinned], { ref: 'master', unpin: true });
+    expect(plan.blocked).toBe(0);
+    expect(plan.rows[0].changes).toEqual([
+      { field: 'branch', now: 'TASK-1', after: 'master' },
+      { field: 'pin', now: 'pinned TASK-1', after: 'not pinned' },
+    ]);
+  });
+
+  it('leaves a pin alone when it already points at the destination', () => {
+    // Nothing to drop: the pin and the move agree.
+    const pinned = service({
+      key: 'a',
+      ref: 'TASK-1',
+      spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'master' },
+    });
+    const plan = planBulkEdit([pinned], { ref: 'master', unpin: true });
+    expect(plan.rows[0].changes.map((c) => c.field)).toEqual(['branch']);
+  });
+
+  it('prefers pinning over unpinning when both are asked for', () => {
+    const pinned = service({
+      key: 'a',
+      ref: 'TASK-1',
+      spec: { selfReloads: false, ready: { kind: 'none' }, pinnedRef: 'TASK-1' },
+    });
+    const plan = planBulkEdit([pinned], { ref: 'master', pin: true, unpin: true });
+    expect(plan.rows[0].changes).toContainEqual({
+      field: 'pin',
+      now: 'pinned TASK-1',
+      after: 'pinned master',
+    });
   });
 
   it('lets an explicit pin replace an older one', () => {

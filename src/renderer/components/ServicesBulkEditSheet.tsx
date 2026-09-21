@@ -81,7 +81,15 @@ export function ServicesBulkEditSheet({ keys, onClose }: { keys: string[]; onClo
   );
 
   const plan = useMemo(() => planBulkEdit(services, edits), [services, edits]);
-  const touched = (Object.keys(edits) as (keyof BulkEdits)[]).filter((k) => k !== 'pin' && edits[k] !== undefined);
+  /// Selected services held to some OTHER branch. Their pins are the only
+  /// thing that can refuse a move the user has explicitly asked for, so the
+  /// sheet says so and offers the two ways through rather than just refusing.
+  const pinnedElsewhere = services.filter(
+    (s) => s.spec.pinnedRef && s.spec.pinnedRef !== edits.ref,
+  ).length;
+  const touched = (Object.keys(edits) as (keyof BulkEdits)[]).filter(
+    (k) => k !== 'pin' && k !== 'unpin' && edits[k] !== undefined,
+  );
   const activeFields = new Set(plan.rows.flatMap((r) => r.changes.map((c) => c.field)));
 
   const refOptions = useMemo(() => {
@@ -136,7 +144,7 @@ export function ServicesBulkEditSheet({ keys, onClose }: { keys: string[]; onClo
               help="Each one moves inside its own repository. Any that has no such branch stays put."
               value={edits.ref}
               mixed={mixedOf(services.map((s) => s.ref ?? ''))}
-              onClear={() => setEdits((e) => ({ ...e, ref: undefined, pin: undefined }))}
+              onClear={() => setEdits((e) => ({ ...e, ref: undefined, pin: undefined, unpin: undefined }))}
               options={refOptions.map(([ref, n]) => ({
                 value: ref,
                 label: ref,
@@ -151,10 +159,28 @@ export function ServicesBulkEditSheet({ keys, onClose }: { keys: string[]; onClo
                 <input
                   type="checkbox"
                   checked={!!edits.pin}
-                  onChange={(e) => setEdits((prev) => ({ ...prev, pin: e.target.checked }))}
+                  onChange={(e) =>
+                    setEdits((prev) => ({ ...prev, pin: e.target.checked, unpin: undefined }))
+                  }
                 />
                 <span>Pin them there, so later switches leave them alone</span>
               </label>
+            )}
+            {edits.ref !== undefined && pinnedElsewhere > 0 && !edits.pin && (
+              <div className="-mt-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2">
+                <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                  {pinnedElsewhere === 1 ? 'One is' : `${pinnedElsewhere} are`} pinned to another
+                  branch, so {pinnedElsewhere === 1 ? 'it stays' : 'they stay'} put.
+                </div>
+                <label className="mt-1.5 flex cursor-pointer items-center gap-2 text-[11px] text-ink-muted">
+                  <input
+                    type="checkbox"
+                    checked={!!edits.unpin}
+                    onChange={(e) => setEdits((prev) => ({ ...prev, unpin: e.target.checked }))}
+                  />
+                  <span>Move {pinnedElsewhere === 1 ? 'it' : 'them'} anyway and drop the pin</span>
+                </label>
+              </div>
             )}
 
             <Field
