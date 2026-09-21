@@ -422,8 +422,8 @@ describe('repairing services saved by older versions', () => {
         {
           ...spec,
           runner: 'gradle',
-          subpath: 'schema-updater',
-          command: ['sh', '-c', './gradlew :schema-updater:build && java -jar build/libs/app.jar'],
+          subpath: 'acme-updater',
+          command: ['sh', '-c', './gradlew :acme-updater:build && java -jar build/libs/app.jar'],
         },
       ],
       bindings: [],
