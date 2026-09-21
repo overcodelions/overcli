@@ -19,6 +19,7 @@ import { emptyExceptionLog, feedException, type ExceptionLog } from '@shared/exc
 import { planBulkRebind, planPinRebind } from './servicesRebindPlan';
 import { runWithConcurrency, startLayers } from './servicesStartPlan';
 import { watchForMode, type ReloadMode } from './serviceReloadMode';
+import { buildProbe, portFor, type BulkEdits } from './servicesBulkEdit';
 import type {
   LeaseDecision,
   MachineEntry,
@@ -167,6 +168,9 @@ interface ServicesState {
   /// The same choice across ticked rows. Each service keeps its own globs —
   /// see `watchForMode` — so this sets what they do, not what they watch.
   setWatchMany(keys: string[], mode: ReloadMode): Promise<void>;
+  /// Write every field the bulk sheet set, across the ticked rows, in one go.
+  /// Fields left unset are not written — see `planBulkEdit`.
+  applyBulkEdit(keys: string[], edits: BulkEdits): Promise<void>;
   setDebug(workspaceId: string, serviceId: string, enabled: boolean): Promise<void>;
   setReady(
     workspaceId: string,
@@ -364,6 +368,60 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     // One reload per workspace rather than one per service: fifteen rows in
     // one stack is one answer, not fifteen.
     await get().loadAll([...new Set(keys.map((key) => splitKey(key).workspaceId))]);
+  },
+
+  async applyBulkEdit(keys, edits) {
+    const { stacks } = get();
+    const specOf = (key: string) => {
+      const { workspaceId, serviceId } = splitKey(key);
+      return stacks[workspaceId]?.services.find((s) => s.id === serviceId);
+    };
+
+    // Config first, the branch last. A rebind relaunches whatever was
+    // running, so the options it comes back up with should already be the
+    // new ones rather than the ones it is about to be told to forget.
+    if (edits.group !== undefined) {
+      await Promise.all(
+        keys.map((key) => {
+          const { workspaceId, serviceId } = splitKey(key);
+          if ((specOf(key)?.group ?? '') === edits.group) return undefined;
+          return window.overcli.invoke('services:setGroup', {
+            workspaceId,
+            serviceId,
+            group: edits.group || undefined,
+          });
+        }),
+      );
+    }
+
+    if (edits.ready !== undefined) {
+      const shape = edits.ready;
+      await Promise.all(
+        keys.map((key) => {
+          const spec = specOf(key);
+          if (!spec) return undefined;
+          // A service with no port cannot take an http or tcp probe. The
+          // sheet already said so in its row; silently skip it here rather
+          // than write a probe pointing at nothing.
+          const probe = buildProbe(shape, portFor(spec));
+          if (!probe) return undefined;
+          const { workspaceId, serviceId } = splitKey(key);
+          return window.overcli.invoke('services:setReady', {
+            workspaceId,
+            serviceId,
+            ready: probe,
+            readyTimeoutSec: spec.readyTimeoutSec,
+          });
+        }),
+      );
+    }
+
+    if (edits.reload !== undefined) await get().setWatchMany(keys, edits.reload);
+
+    // Reuses the ordinary bulk switch: it already plans per repository, keeps
+    // a pin from being overwritten by accident, and reports what stayed put.
+    if (edits.ref !== undefined) await get().switchKeys(keys, edits.ref, edits.pin);
+    else await get().loadAll([...new Set(keys.map((key) => splitKey(key).workspaceId))]);
   },
 
   async setReady(workspaceId, serviceId, ready, readyTimeoutSec) {
