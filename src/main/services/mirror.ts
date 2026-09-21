@@ -23,9 +23,12 @@
 // The Tiltfile this pane was modelled on does exactly this, for exactly this
 // reason. It is not a workaround; it is what running from a worktree requires.
 
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
+import { execFile } from 'node:child_process';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 /// The names mirrored when git cannot say what is ignored. The old rule, kept
 /// as the fallback because it is always safe.
@@ -88,15 +91,24 @@ const SKIP = new Set([
 const IGNORED_DIR_DEPTH = 3;
 const IGNORED_DIR_FILES = 200;
 
+/// Promise-based throughout: this runs in the MAIN process, and a scan that
+/// stats its way through a monorepo synchronously freezes every window for as
+/// long as it takes. See the same note on `ProjectionFs`.
 export interface MirrorFs {
-  existsSync(p: string): boolean;
-  readdirSync(p: string, opts: { withFileTypes: true }): { name: string; isDirectory(): boolean }[];
-  lstatSync(p: string): { isSymbolicLink(): boolean };
-  mkdirSync(p: string, opts: { recursive: true }): void;
-  symlinkSync(target: string, linkPath: string, type: 'file'): void;
+  readdir(p: string, opts: { withFileTypes: true }): Promise<{ name: string; isDirectory(): boolean }[]>;
+  lstat(p: string): Promise<{ isSymbolicLink(): boolean }>;
+  mkdir(p: string, opts: { recursive: true }): Promise<void>;
+  symlink(target: string, linkPath: string, type: 'file'): Promise<void>;
 }
 
-const realFs = fs as unknown as MirrorFs;
+const realFs: MirrorFs = {
+  readdir: (p, opts) => fsp.readdir(p, opts),
+  lstat: (p) => fsp.lstat(p),
+  mkdir: async (p, opts) => {
+    await fsp.mkdir(p, opts);
+  },
+  symlink: (target, linkPath, type) => fsp.symlink(target, linkPath, type),
+};
 
 export interface MirrorPatterns {
   /// Globs always mirrored when ignored, whatever their extension —
@@ -128,7 +140,7 @@ export function isLocalConfig(relative: string, patterns: MirrorPatterns = {}): 
 /// folder, so a monorepo's build output costs a line, not a walk. When git
 /// cannot answer (not a repo, no git), the fixed names are looked for instead,
 /// depth-limited because the answer is always a few levels down.
-export function findLocalConfig(
+export async function findLocalConfig(
   root: string,
   opts: MirrorPatterns & {
     fs?: MirrorFs;
@@ -137,9 +149,9 @@ export function findLocalConfig(
     ignored?: readonly string[] | null;
     maxDepth?: number;
   } = {},
-): string[] {
+): Promise<string[]> {
   const io = opts.fs ?? realFs;
-  const listed = opts.ignored !== undefined ? opts.ignored : listIgnored(root);
+  const listed = opts.ignored !== undefined ? opts.ignored : await listIgnored(root);
   if (listed === null) return findByName(root, io, opts.maxDepth ?? 6);
 
   const found = new Set<string>();
@@ -152,7 +164,7 @@ export function findLocalConfig(
     // folders that never hold config, and only so far.
     const dir = entry.replace(/\/+$/, '');
     if (dir.split('/').some((part) => SKIP.has(part))) continue;
-    for (const file of filesUnder(root, dir, io)) {
+    for (const file of await filesUnder(root, dir, io)) {
       if (isLocalConfig(file, opts)) found.add(file);
     }
   }
@@ -160,50 +172,50 @@ export function findLocalConfig(
 }
 
 /// Ignored, untracked paths as git reports them; directories end in `/`.
-function listIgnored(root: string): string[] | null {
+async function listIgnored(root: string): Promise<string[] | null> {
   try {
-    const out = execFileSync(
+    const { stdout } = await execFileAsync(
       'git',
       ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
-      { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 },
+      { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
     );
-    return out.split('\0').filter(Boolean);
+    return stdout.split('\0').filter(Boolean);
   } catch {
     return null;
   }
 }
 
-function filesUnder(root: string, dir: string, io: MirrorFs): string[] {
+async function filesUnder(root: string, dir: string, io: MirrorFs): Promise<string[]> {
   const out: string[] = [];
-  const walk = (relative: string, depth: number): void => {
+  const walk = async (relative: string, depth: number): Promise<void> => {
     if (out.length >= IGNORED_DIR_FILES) return;
     let entries: { name: string; isDirectory(): boolean }[];
     try {
-      entries = io.readdirSync(path.join(root, relative), { withFileTypes: true });
+      entries = await io.readdir(path.join(root, relative), { withFileTypes: true });
     } catch {
       return;
     }
     for (const entry of entries) {
       const next = path.join(relative, entry.name);
       if (entry.isDirectory()) {
-        if (depth < IGNORED_DIR_DEPTH && !SKIP.has(entry.name)) walk(next, depth + 1);
+        if (depth < IGNORED_DIR_DEPTH && !SKIP.has(entry.name)) await walk(next, depth + 1);
       } else if (out.length < IGNORED_DIR_FILES) {
         out.push(next);
       }
     }
   };
-  walk(dir, 1);
+  await walk(dir, 1);
   return out;
 }
 
-function findByName(root: string, io: MirrorFs, maxDepth: number): string[] {
+async function findByName(root: string, io: MirrorFs, maxDepth: number): Promise<string[]> {
   const names = new Set(LOCAL_CONFIG_NAMES);
   const found: string[] = [];
 
-  function walk(relative: string, depth: number): void {
+  async function walk(relative: string, depth: number): Promise<void> {
     let entries: { name: string; isDirectory(): boolean }[];
     try {
-      entries = io.readdirSync(relative ? path.join(root, relative) : root, { withFileTypes: true });
+      entries = await io.readdir(relative ? path.join(root, relative) : root, { withFileTypes: true });
     } catch {
       return;
     }
@@ -211,14 +223,14 @@ function findByName(root: string, io: MirrorFs, maxDepth: number): string[] {
       const next = relative ? path.join(relative, entry.name) : entry.name;
       if (entry.isDirectory()) {
         if (depth >= maxDepth || SKIP.has(entry.name)) continue;
-        walk(next, depth + 1);
+        await walk(next, depth + 1);
         continue;
       }
       if (names.has(entry.name)) found.push(next);
     }
   }
 
-  walk('', 0);
+  await walk('', 0);
   return found.sort();
 }
 
@@ -254,12 +266,12 @@ export interface MirrorLink {
 
 /// What mirroring would do. Pure, so the pane can say "4 files" before
 /// anything is written and this can be tested without a filesystem.
-export function planMirror(
+export async function planMirror(
   primary: string,
   target: string,
   relatives: readonly string[],
   opts: { fs?: MirrorFs } = {},
-): MirrorLink[] {
+): Promise<MirrorLink[]> {
   const io = opts.fs ?? realFs;
   // Mirroring a checkout into itself is the ordinary case for a service on the
   // main branch, and it must do nothing at all.
@@ -270,20 +282,23 @@ export function planMirror(
     const to = path.join(target, relative);
     // Anything already there — a real file the user wrote, or a link from a
     // previous run — is left alone. This never overwrites.
-    if (lexists(io, to)) continue;
+    if (await lexists(io, to)) continue;
     out.push({ from: path.join(primary, relative), to, relative });
   }
   return out;
 }
 
 /// Carry out the plan. Returns what was linked, for the log.
-export function applyMirror(links: readonly MirrorLink[], opts: { fs?: MirrorFs } = {}): string[] {
+export async function applyMirror(
+  links: readonly MirrorLink[],
+  opts: { fs?: MirrorFs } = {},
+): Promise<string[]> {
   const io = opts.fs ?? realFs;
   const done: string[] = [];
   for (const link of links) {
     try {
-      io.mkdirSync(path.dirname(link.to), { recursive: true });
-      io.symlinkSync(link.from, link.to, 'file');
+      await io.mkdir(path.dirname(link.to), { recursive: true });
+      await io.symlink(link.from, link.to, 'file');
       done.push(link.relative);
     } catch {
       // A race with the build, a read-only tree. One file failing is not worth
@@ -293,11 +308,11 @@ export function applyMirror(links: readonly MirrorLink[], opts: { fs?: MirrorFs 
   return done;
 }
 
-/// `existsSync` follows symlinks, so a link left pointing at something that
-/// has gone reads as absent and would be created again over itself.
-function lexists(io: MirrorFs, p: string): boolean {
+/// A plain `exists` follows symlinks, so a link left pointing at something
+/// that has gone reads as absent and would be created again over itself.
+async function lexists(io: MirrorFs, p: string): Promise<boolean> {
   try {
-    io.lstatSync(p);
+    await io.lstat(p);
     return true;
   } catch {
     return false;

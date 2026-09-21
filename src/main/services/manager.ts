@@ -259,7 +259,7 @@ export class ServicesManager {
     // projection that points at it resolves on a machine where nothing has
     // been put there yet.
     ensureServiceConfigDir(this.dataDir, workspaceId, serviceId);
-    this.excludeProjectedPaths(workspaceId, serviceId);
+    await this.excludeProjectedPaths(workspaceId, serviceId);
     return supervisor.start(serviceId, { foreign: this.foreignClaims(workspaceId), offset: opts.offset });
   }
 
@@ -278,7 +278,7 @@ export class ServicesManager {
   ): Promise<void> {
     await this.supervisor(workspaceId).rebind(serviceId, binding);
     this.persistBinding(workspaceId, { ...binding, serviceId });
-    this.excludeProjectedPaths(workspaceId, serviceId);
+    await this.excludeProjectedPaths(workspaceId, serviceId);
   }
 
   /// Move every unpinned service in one go — the bulk case, since several
@@ -608,6 +608,11 @@ export class ServicesManager {
     // Read once, asynchronously: both rules below want the main checkout's
     // ignored config, and scanning a large repository takes seconds.
     const local = binding ? await this.localConfigScan(binding.path) : null;
+    const missingLocalConfig = binding
+      ? local
+        ? (await planMirror(local.primary, binding.path, local.files)).map((l) => l.relative)
+        : []
+      : undefined;
     return triage({
       lines,
       spec,
@@ -623,11 +628,7 @@ export class ServicesManager {
                 ? { port: takenPort, holder: describeOwners(owners), kind: holderKind(owners) }
                 : undefined;
             })(),
-      missingLocalConfig: binding
-        ? local
-          ? planMirror(local.primary, binding.path, local.files).map((l) => l.relative)
-          : []
-        : undefined,
+      missingLocalConfig,
       findDefinitions: binding ? (key) => findPropertyDefinitions(binding.path, key, local) : undefined,
       importOptions: this.importOptionsFor(spec),
     });
@@ -723,7 +724,7 @@ export class ServicesManager {
     const primary = await this.primaryOf(checkout);
     if (!primary || path.resolve(primary) === path.resolve(checkout)) return null;
     const ignored = await this.ignoredIn(primary);
-    return { primary, files: findLocalConfig(primary, { ...patterns, ignored }) };
+    return { primary, files: await findLocalConfig(primary, { ...patterns, ignored }) };
   }
 
   private primaryOf(checkout: string): Promise<string | null> {
@@ -1451,7 +1452,7 @@ export class ServicesManager {
         exclude: spec.config.mirrorExclude,
       });
       if (!local) return [];
-      return applyMirror(planMirror(local.primary, target, local.files));
+      return applyMirror(await planMirror(local.primary, target, local.files));
     } catch {
       // A repo we cannot read, a read-only worktree. The service may still
       // start; a failure here is not a reason to refuse.
@@ -1462,7 +1463,7 @@ export class ServicesManager {
   /// Keep projected files out of `git status` in every worktree of the repo.
   /// Cheap and idempotent, so it runs on every start and rebind rather than
   /// being remembered once and lost when a new worktree appears.
-  private excludeProjectedPaths(workspaceId: string, serviceId: string): void {
+  private async excludeProjectedPaths(workspaceId: string, serviceId: string): Promise<void> {
     const stack = this.stack(workspaceId);
     const spec = stack.services.find((s) => s.id === serviceId);
     const binding = stack.bindings.find((b) => b.serviceId === serviceId);
@@ -1472,7 +1473,7 @@ export class ServicesManager {
       ...Object.keys(spec.config.render ?? {}),
     ].map((rel) => (spec.subpath ? path.join(spec.subpath, rel) : rel));
     try {
-      ensureExcluded(binding.path, relatives);
+      await ensureExcluded(binding.path, relatives);
     } catch {
       // A worktree that has gone is handled with a real message at start; an
       // exclude write is not worth failing anything over.

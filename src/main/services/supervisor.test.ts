@@ -5,44 +5,70 @@ import type { ServiceBinding, ServiceSpec } from './types';
 
 /// A checkout that exists and resolves to itself; enough for projection.
 const fs: ProjectionFs = {
-  existsSync: () => true,
-  realpathSync: (p) => p,
-  readFileSync: () => '',
-  writeFileSync: () => {},
-  mkdirSync: () => {},
-  symlinkSync: () => {},
-  lstatSync: () => ({ isSymbolicLink: () => false }),
-  statSync: () => ({ isDirectory: () => true }),
-  readlinkSync: () => '',
-  unlinkSync: () => {},
+  exists: async () => true,
+  realpath: async (p) => p,
+  readFile: async () => '',
+  writeFile: async () => {},
+  mkdir: async () => {},
+  symlink: async () => {},
+  lstat: async () => ({ isSymbolicLink: () => false }),
+  stat: async () => ({ isDirectory: () => true }),
+  readlink: async () => '',
+  unlink: async () => {},
 };
 
+/// A spawned process a test can drive.
+///
+/// Output emitted before the supervisor has attached its handler is HELD and
+/// replayed on attach, exactly as a real pipe holds bytes written before
+/// anything reads them. Without that, a test racing the launch loses the line
+/// it emitted and then waits forever for a readiness that can no longer
+/// arrive — and how long the launch takes is not a test's business.
 class FakeProc implements SpawnedProcess {
   pid = 4242;
   killed: NodeJS.Signals[] = [];
-  private lineCb: (line: string) => void = () => {};
-  private exitCb: (code: number | null) => void = () => {};
-  private errorCb: (err: Error) => void = () => {};
+  private lineCb?: (line: string) => void;
+  private exitCb?: (code: number | null) => void;
+  private errorCb?: (err: Error) => void;
+  private heldLines: string[] = [];
+  private heldExit?: number | null;
+  private heldError?: Error;
   kill(signal?: NodeJS.Signals) {
     this.killed.push(signal ?? 'SIGTERM');
   }
   onLine(cb: (line: string) => void) {
     this.lineCb = cb;
+    const held = this.heldLines;
+    this.heldLines = [];
+    for (const line of held) cb(line);
   }
   onExit(cb: (code: number | null) => void) {
     this.exitCb = cb;
+    if (this.heldExit !== undefined) {
+      const code = this.heldExit;
+      this.heldExit = undefined;
+      cb(code);
+    }
   }
   onError(cb: (err: Error) => void) {
     this.errorCb = cb;
+    if (this.heldError) {
+      const err = this.heldError;
+      this.heldError = undefined;
+      cb(err);
+    }
   }
   emitLine(line: string) {
-    this.lineCb(line);
+    if (this.lineCb) this.lineCb(line);
+    else this.heldLines.push(line);
   }
   emitExit(code: number | null) {
-    this.exitCb(code);
+    if (this.exitCb) this.exitCb(code);
+    else this.heldExit = code;
   }
   emitError(err: Error) {
-    this.errorCb(err);
+    if (this.errorCb) this.errorCb(err);
+    else this.heldError = err;
   }
 }
 
@@ -50,11 +76,17 @@ function harness(over: Partial<SupervisorDeps> = {}) {
   const spawns: SpawnRequest[] = [];
   const procs: FakeProc[] = [];
   let clock = 0;
+  /// What a process should do the moment it is spawned — see `onSpawn`.
+  let script: (proc: FakeProc) => void = () => {};
   const deps: SupervisorDeps = {
     spawn: (req) => {
       spawns.push(req);
       const proc = new FakeProc();
       procs.push(proc);
+      // Before the supervisor attaches its handlers, so whatever this emits is
+      // held by the process and replayed on attach — a service that prints its
+      // ready line immediately, which is the case worth testing.
+      script(proc);
       return proc;
     },
     probe: {
@@ -62,13 +94,22 @@ function harness(over: Partial<SupervisorDeps> = {}) {
       tcpOpen: async () => true,
       exitCode: async () => 0,
       now: () => clock++,
+      // Instant, so a test that drives the clock itself is not also waiting on
+      // one. Safe only because `now` advances: a readiness wait is a loop of
+      // `sleep` and a clock check, so with an instant sleep the clock is the
+      // only thing that can end it.
       sleep: async () => {},
     },
     fs,
     configDir: (id) => `/cfg/${id}`,
     ...over,
   };
-  return { deps, spawns, procs };
+  /// Drive a service's output deterministically: what it prints or does the
+  /// instant it starts, rather than racing the launch from outside it.
+  const onSpawn = (fn: (proc: FakeProc) => void) => {
+    script = fn;
+  };
+  return { deps, spawns, procs, onSpawn };
 }
 
 function spec(over: Partial<ServiceSpec> & { id: string }): ServiceSpec {
@@ -86,6 +127,7 @@ function spec(over: Partial<ServiceSpec> & { id: string }): ServiceSpec {
 function binding(serviceId: string, ref = 'master', path = '/repos/main'): ServiceBinding {
   return { serviceId, ref, path };
 }
+
 
 describe('maskSecrets', () => {
   it('masks every occurrence of a known secret, longest first', () => {
@@ -200,7 +242,7 @@ describe('Supervisor.start', () => {
   it('fails with a plain reason when the worktree has gone', async () => {
     // Flows delete their scratch worktree mid-session; this is routine and
     // the message has to say what actually happened.
-    const gone: ProjectionFs = { ...fs, existsSync: () => false };
+    const gone: ProjectionFs = { ...fs, exists: async () => false };
     const { deps } = harness({ fs: gone });
     const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api', 'feat/x', '/wt/gone')], deps);
 
@@ -284,38 +326,37 @@ describe('Supervisor code watching', () => {
 
 describe('Supervisor readiness', () => {
   it('waits for the log pattern a dev server prints', async () => {
-    const { deps, procs } = harness();
+    const { deps, onSpawn } = harness();
     const web = spec({ id: 'web', ready: { kind: 'log', pattern: 'Compiled successfully' } });
     const sup = new Supervisor('mine', [web], [binding('web')], deps);
 
-    const started = sup.start('web');
-    // The line arrives after the spawn, as it does in life.
-    await Promise.resolve();
-    procs[0]?.emitLine('✔ Compiled successfully.');
-    await started;
+    // The line comes from the process itself, as it does in life.
+    onSpawn((proc) => proc.emitLine('✔ Compiled successfully.'));
+    await sup.start('web');
 
     expect(sup.runtime('web').status).toBe('ready');
   });
 
   it('keeps the exit reason when a service dies on its way up', async () => {
-    const { deps, procs } = harness({
+    let clock = 0;
+    const { deps, onSpawn } = harness({
       probe: {
         httpStatus: async () => {
           throw new Error('ECONNREFUSED');
         },
         tcpOpen: async () => false,
         exitCode: async () => 1,
-        now: () => 0,
+        // Has to advance: a readiness wait gives up on elapsed time, and a
+        // clock frozen at zero is a wait that can never time out.
+        now: () => clock++,
         sleep: async () => {},
       },
     });
     const api = spec({ id: 'api', port: 8080, ready: { kind: 'tcp', port: 8080 } });
     const sup = new Supervisor('mine', [api], [binding('api')], deps);
 
-    const started = sup.start('api');
-    await Promise.resolve();
-    procs[0]?.emitExit(1);
-    await started;
+    onSpawn((proc) => proc.emitExit(1));
+    await sup.start('api');
 
     // `failed` with an exit code, not the vaguer `unready`.
     expect(sup.runtime('api').status).toBe('failed');
@@ -330,10 +371,10 @@ describe('Supervisor spawn failures', () => {
     const { deps, procs } = harness();
     const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
 
-    const started = sup.start('api');
-    await Promise.resolve();
-    procs[0]?.emitError(new Error('spawn ./mvnw ENOENT'));
-    await started;
+    // After the start has resolved: node reports a spawn failure on the child
+    // rather than throwing, so it lands on a service already believed to be up.
+    await sup.start('api');
+    procs[0].emitError(new Error('spawn ./mvnw ENOENT'));
 
     expect(sup.runtime('api').status).toBe('failed');
     expect(sup.runtime('api').lastError).toMatch(/ENOENT/);

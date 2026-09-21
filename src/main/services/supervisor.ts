@@ -375,7 +375,7 @@ export class Supervisor {
 
     let plan;
     try {
-      plan = planProjection(spec, binding, {
+      plan = await planProjection(spec, binding, {
         symlinkRoots: this.deps.symlinkRoots,
         fs: this.deps.fs,
         port,
@@ -391,7 +391,7 @@ export class Supervisor {
 
     const env = plan.env;
     try {
-      applyProjection(plan, { fs: this.deps.fs });
+      await applyProjection(plan, { fs: this.deps.fs });
     } catch (err) {
       // A permission problem, a read-only checkout, a link that cannot be
       // written. The service has failed to start, which is a status with a
