@@ -46,6 +46,14 @@ export function RunOnBranchButton({
   const [needsInstall, setNeedsInstall] = useState<string[]>([]);
   /// Set between the click and the first sign the engine picked it up.
   const [initiating, setInitiating] = useState(false);
+  /// The popover opens on the click and fills in behind this: `refresh` runs
+  /// `git worktree list` per checkout, which on a few repos is long enough for
+  /// the click to read as dead if the popover waits for it.
+  const [refreshing, setRefreshing] = useState(false);
+  /// Rows whose own Restart button is in flight. That invoke resolves only
+  /// once the service is ready again, and without this the button says exactly
+  /// what it said before for the whole of a cold restart.
+  const [restarting, setRestarting] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   /// What the last click asked to start, until each is live or has failed.
   /// Without it a service queued behind a slow dependency reads as "stopped"
@@ -155,6 +163,23 @@ export function RunOnBranchButton({
       return next.length === keys.length ? keys : next;
     });
   }, [rows, initiating]);
+  // Outside-click close. A full-screen overlay would be simpler, but it would
+  // also sit on top of the log drawer this popover opens — and reading a log
+  // while picking the next service to start is the whole point of that link.
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const el = e.target instanceof Element ? e.target : null;
+      if (!el) return;
+      if (root.current?.contains(el)) return;
+      if (el.closest('[data-service-log-drawer]')) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
   useEffect(() => {
     if (!initiating) return;
     const t = setTimeout(() => setInitiating(false), 8000);
@@ -163,6 +188,9 @@ export function RunOnBranchButton({
 
   if (rows.length === 0) return null;
   const key = (r: Row) => logKey(r.workspaceId, r.serviceId);
+  /// Whether a row starts ticked. Pinned services are opt-in: unpinning is a
+  /// stronger act than moving.
+  const defaultTick = (r: Row) => r.kind !== 'pinned' && !(r.kind === 'here' && isServiceLive(r.status));
   // Already running from this checkout: nothing to switch, so not part of the
   // bulk action — a restart there is its own button, and ticking one by
   // accident would bounce a service that is mid-start.
@@ -178,19 +206,44 @@ export function RunOnBranchButton({
   const startingHere = liveHere.length - readyHere;
   const failedHere = hereRows.filter((r) => r.status === 'failed').length;
 
-  const openPopover = async () => {
-    const next = await refresh().catch(() => rows);
-    setRows(next);
-    // Pinned services are opt-in: unpinning is a stronger act than moving.
-    setTicked(
-      Object.fromEntries(
-        next.map((r) => [key(r), r.kind !== 'pinned' && !(r.kind === 'here' && isServiceLive(r.status))]),
-      ),
-    );
+  const openPopover = () => {
+    // Open on the click, with the rows already in hand — status and rebind
+    // events have been keeping them current all along. The refresh below only
+    // confirms them.
     setError(null);
+    setTicked(Object.fromEntries(rows.map((r) => [key(r), defaultTick(r)])));
     setOpen(true);
-    const dirs = [...new Set(next.map(serviceDir))];
-    setNeedsInstall(await window.overcli.invoke('services:needsInstall', dirs).catch(() => []));
+    setRefreshing(true);
+    void (async () => {
+      const next = await refresh().catch(() => rows);
+      setRows(next);
+      // Ticks the user has already changed win: the refresh is a confirmation,
+      // not a reason to undo a choice made while it was in flight.
+      setTicked((t) =>
+        Object.fromEntries(next.map((r) => [key(r), key(r) in t ? t[key(r)] : defaultTick(r)])),
+      );
+      setRefreshing(false);
+      const dirs = [...new Set(next.map(serviceDir))];
+      setNeedsInstall(await window.overcli.invoke('services:needsInstall', dirs).catch(() => []));
+    })();
+  };
+
+  /// Its output, in the side drawer. Deliberately does not close the popover:
+  /// the usual move is reading one service's log and then starting the next.
+  const openLog = (r: Row) => {
+    void useServicesStore.getState().openLogDrawer(r.workspaceId, r.serviceId);
+  };
+
+  const restartRow = (r: Row) => {
+    const k = key(r);
+    if (restarting.includes(k)) return;
+    setRestarting((keys) => [...keys, k]);
+    // Resolves only once the service is ready again, which is exactly how long
+    // the button should keep saying so.
+    void window.overcli
+      .invoke('services:restart', { workspaceId: r.workspaceId, serviceId: r.serviceId })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setRestarting((keys) => keys.filter((x) => x !== k)));
   };
 
   const run = () => {
@@ -278,14 +331,14 @@ export function RunOnBranchButton({
   }
 
   return (
-    <div className="relative flex items-center gap-1.5">
+    <div ref={root} className="relative flex items-center gap-1.5">
       {error && (
         <span className="max-w-[16rem] truncate text-[11px] text-red-600 dark:text-red-300" title={error}>
           {error}
         </span>
       )}
       <button
-        onClick={() => void (open ? setOpen(false) : openPopover())}
+        onClick={() => (open ? setOpen(false) : openPopover())}
         title={
           hereRows.length > 0
             ? `${readyHere} ready, ${startingHere} starting, ${failedHere} failed on this checkout — click to manage`
@@ -307,7 +360,6 @@ export function RunOnBranchButton({
       </button>
       {open && (
         <>
-          <div className="fixed inset-0 z-40 bg-black/20" onClick={() => setOpen(false)} />
           <div className="absolute bottom-full right-0 z-50 mb-2 w-96 overflow-hidden rounded-lg border border-accent/60 bg-surface-elevated text-xs shadow-2xl ring-1 ring-black/10">
             <div className="border-b border-card-strong bg-accent/10 px-3 py-2">
               <div className="text-[13px] font-semibold text-ink">Run services on this branch</div>
@@ -363,6 +415,7 @@ export function RunOnBranchButton({
                     />
                     <span className="flex-1 truncate text-ink">{r.name}</span>
                     <StatusChip row={r} />
+                    <LogsLink row={r} onOpen={openLog} />
                     <span className="shrink-0 rounded bg-card-strong px-1.5 py-0.5 text-[10px] text-ink-muted">
                       {r.kind === 'move' && (isServiceLive(r.status) ? 'move + restart' : 'move + start')}
                       {r.kind === 'here' && 'start'}
@@ -375,17 +428,15 @@ export function RunOnBranchButton({
                     <span aria-hidden className="inline-block w-[13px]" />
                     <span className="flex-1 truncate text-ink">{r.name}</span>
                     <StatusChip row={r} />
+                    <LogsLink row={r} onOpen={openLog} />
                     <button
                       type="button"
+                      disabled={restarting.includes(key(r))}
                       title="Restart now — it is already running this branch"
-                      className="shrink-0 rounded border border-card-strong px-1.5 py-0.5 text-[10px] text-ink-muted hover:border-accent hover:text-accent"
-                      onClick={() =>
-                        void window.overcli
-                          .invoke('services:restart', { workspaceId: r.workspaceId, serviceId: r.serviceId })
-                          .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-                      }
+                      className="shrink-0 rounded border border-card-strong px-1.5 py-0.5 text-[10px] text-ink-muted hover:border-accent hover:text-accent disabled:opacity-60 disabled:hover:border-card-strong disabled:hover:text-ink-muted"
+                      onClick={() => restartRow(r)}
                     >
-                      ↻ Restart
+                      {restarting.includes(key(r)) ? '⟳ Restarting…' : '↻ Restart'}
                     </button>
                   </div>
                 ),
@@ -413,6 +464,26 @@ export function RunOnBranchButton({
         </>
       )}
     </div>
+  );
+}
+
+/// Takes the user to this service's output without taking them out of the
+/// conversation — see `ServiceLogDrawer`. Inside a <label>, so the click has to
+/// be kept off the checkbox it would otherwise toggle.
+function LogsLink({ row, onOpen }: { row: Row; onOpen: (row: Row) => void }) {
+  return (
+    <button
+      type="button"
+      title="Show this service's output beside the chat"
+      className="shrink-0 rounded px-1 py-0.5 text-[10px] text-ink-faint hover:bg-card-strong hover:text-accent"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onOpen(row);
+      }}
+    >
+      logs
+    </button>
   );
 }
 
