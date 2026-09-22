@@ -1072,6 +1072,10 @@ export class ServicesManager {
     }
     saveSecretCiphertext(this.dataDir, secret);
     saveMachineValues(this.dataDir, plain);
+    // The other writer of the secret store, and the same reason: a supervisor
+    // that masked a line before this ran holds a list without these values,
+    // and would go on writing them to the log in the clear all session.
+    for (const supervisor of this.supervisors.values()) supervisor.clearSecretCache();
     this.migrated = true;
   }
 
