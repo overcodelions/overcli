@@ -191,6 +191,7 @@ import {
   ArtifactPreviewResult,
   Backend,
   MainToRendererEvent,
+  MenuCommand,
   ProjectPreviewCommand,
   ProjectPreviewHintsResult,
   StreamEventKind,
@@ -225,6 +226,8 @@ let symbolLookup: SymbolLookupManager | null = null;
 /// because most sessions never open the Services pane, and because it needs
 /// the host's data directory, which is installed at boot.
 let servicesManager: ServicesManager | null = null;
+const pendingServiceLines = new Map<string, { workspaceId: string; serviceId: string; lines: string[] }>();
+let serviceLinesFlush: NodeJS.Immediate | undefined;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -309,11 +312,14 @@ function services(): ServicesManager {
         return;
       }
       if (event.kind === 'line') {
-        emitToRenderer({
-          type: 'serviceLine',
-          workspaceId: event.workspaceId,
-          serviceId: event.serviceId,
-          line: event.line,
+        const key = `${event.workspaceId}/${event.serviceId}`;
+        const pending = pendingServiceLines.get(key) ?? { workspaceId: event.workspaceId, serviceId: event.serviceId, lines: [] };
+        pending.lines.push(event.line);
+        pendingServiceLines.set(key, pending);
+        if (!serviceLinesFlush) serviceLinesFlush = setImmediate(() => {
+          serviceLinesFlush = undefined;
+          for (const batch of pendingServiceLines.values()) emitToRenderer({ type: 'serviceLines', ...batch });
+          pendingServiceLines.clear();
         });
         return;
       }
@@ -1674,6 +1680,7 @@ export function registerIpc(): void {
   );
   ipcMain.handle('services:machineValues', () => services().machineValues());
   ipcMain.handle('services:saveMachineValues', (_e, values) => services().saveMachineValues(values));
+  ipcMain.handle('services:deleteMachineBackup', () => services().deleteMachineBackup());
   ipcMain.handle('services:machineValueNeeds', (_e, workspaceIds: string[]) =>
     services().machineValueNeeds(Array.isArray(workspaceIds) ? workspaceIds : []),
   );
@@ -1995,7 +2002,23 @@ export function registerIpc(): void {
   ipcMain.handle('flows:upsertRegistry', (_e, args) => upsertRegistry(args));
   ipcMain.handle('flows:removeRegistry', (_e, args) => removeRegistry(args));
   ipcMain.handle('flows:browseRegistry', (_e, args) => browseRegistries(args ?? {}));
-  ipcMain.handle('flows:installFromRegistry', (_e, args) => installFromRegistry(args));
+  ipcMain.handle('flows:installFromRegistry', (_e, args) =>
+    // Bind the installed copy to what this machine can run — the same inputs
+    // the new-flow picker hands `resolveTemplateForUser`, minus any backend
+    // the user switched off, which is not "available" however healthy it is.
+    installFromRegistry(args, async () => {
+      const settings = Store.load().settings;
+      const [healthy, ollama] = await Promise.all([
+        healthyBackends(settings.backendPaths),
+        detectOllama().catch(() => null),
+      ]);
+      return {
+        healthyBackends: [...healthy].filter((b) => settings.disabledBackends[b] !== true),
+        ollamaModels: ollama?.running ? ollama.models.map((m) => m.name) : [],
+        modelDefaults: settings.flowModelDefaults,
+      };
+    }),
+  );
   ipcMain.handle('flows:previewRegistryFlow', (_e, args) => previewRegistryFlow(args));
 
   // Orchestrator: producer turn + batch dispatch over flows.
@@ -2479,6 +2502,9 @@ export function registerIpc(): void {
       {
         jobDescription,
         attachments,
+        // Names only — `list()` would build a scorecard per worker, which is
+        // two whole-file log reads each for a prompt line.
+        crew: workerEngine ? workerEngine.workerNames() : [],
         flows: loadAllFlows({
           projectPaths: store.projects.map((p) => p.path),
         }).map((f) => ({
@@ -3273,12 +3299,7 @@ function buildMenu(): void {
         {
           label: 'New Conversation',
           accelerator: 'CmdOrCtrl+N',
-          click: () =>
-            emitToRenderer({
-              type: 'running',
-              conversationId: '__menu_new_conversation__',
-              isRunning: false,
-            }),
+          click: () => menuCommand('newConversation'),
         },
         { type: 'separator' },
         { role: 'close' },
@@ -3325,8 +3346,50 @@ function buildMenu(): void {
     },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
+    {
+      // Everything the app knew how to explain about itself used to be
+      // reachable only by pressing a key nobody had been told about, or by
+      // having zero projects. A menu is where people look when they are
+      // stuck, so this is where those surfaces live now.
+      role: 'help',
+      submenu: [
+        { label: 'How Overcli Works', click: () => menuCommand('basics') },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+/',
+          // Shown, not registered — same reason as Undo/Redo above. The
+          // renderer binds Cmd+/ itself and skips it inside an editor, so
+          // CodeMirror keeps Mod-/ for toggling comments.
+          registerAccelerator: false,
+          click: () => menuCommand('shortcuts'),
+        },
+        { type: 'separator' },
+        { label: 'Setup — CLIs and Git', click: () => menuCommand('setup') },
+        { label: 'Settings…', click: () => menuCommand('settings') },
+        { type: 'separator' },
+        { label: "What's New", click: () => menuCommand('whatsNew') },
+        { label: 'About Overcli', click: () => menuCommand('about') },
+        { type: 'separator' },
+        {
+          label: 'Documentation',
+          click: () => void shell.openExternal('https://overcli.app'),
+        },
+        {
+          label: 'Report an Issue',
+          click: () =>
+            void shell.openExternal('https://github.com/overcodelions/overcli/issues/new'),
+        },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/// A menu item the renderer has to carry out — opening a sheet, starting a
+/// conversation. Sent straight out rather than through any batching path:
+/// one click, one event.
+function menuCommand(command: MenuCommand): void {
+  emitToRenderer({ type: 'menuCommand', command });
 }
 
 // Skia Graphite (Chromium's Metal GPU backend, default on macOS) produces

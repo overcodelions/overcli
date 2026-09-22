@@ -37,6 +37,8 @@ export interface WorkerDraft {
   /// The one-line "what this is" under the name on the roster. Blank is
   /// allowed — the roster falls back to the job description's opening.
   tagline?: string;
+  /// Example errands offered at the desk — see `Worker.errandStarters`.
+  errandStarters?: string[];
   jobDescription: string;
   projectPath: string;
   /// `null` means on demand — no clock at all. See `Worker.cadence`.
@@ -523,6 +525,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     id: w.id,
     name: w.name,
     tagline: w.tagline ?? '',
+    errandStarters: w.errandStarters,
     jobDescription: w.jobDescription,
     projectPath: w.projectPath,
     cadence: structuredClone(w.cadence),
@@ -549,6 +552,7 @@ export function draftFromContract(
   return {
     name: contract.name,
     tagline: contract.tagline ?? '',
+    errandStarters: contract.errandStarters,
     jobDescription: contract.jobDescription,
     projectPath,
     cadence: structuredClone(contract.cadence),
@@ -1414,6 +1418,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         worker: {
           ...draft,
           tagline: draft.tagline?.trim() || undefined,
+          // Same rule as the tagline: no starters is an ABSENT field, so the
+          // desk falls back. A stored [] would mean "this worker has none",
+          // which is a thing nobody ever wants to say.
+          errandStarters: draft.errandStarters?.length ? draft.errandStarters : undefined,
           flowIds,
         },
       });

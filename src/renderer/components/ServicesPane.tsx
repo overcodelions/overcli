@@ -28,12 +28,14 @@ import type {
   MachineValueNeed,
   MachineValues,
   ReadinessProbe,
+  ServiceBinding,
   ServiceOption,
   ServiceRuntime,
   ServiceSpec,
   StackView,
 } from '@shared/services';
 import { DEFAULT_READY_TIMEOUT_SEC, type TaskPreset } from '@shared/services';
+import { describeDrift, driftedTasks, shortCommit, taskDrift } from '@shared/taskDrift';
 import { isSecretName } from '@shared/machineValues';
 import { hardcodedCheckouts, useCheckoutPlaceholder } from '@shared/checkoutPaths';
 import { useStore } from '../store';
@@ -70,6 +72,18 @@ import { LogView } from './ServiceLogView';
 import { reloadModeOf, watchForMode } from '../serviceReloadMode';
 import { ServicesBulkEditSheet } from './ServicesBulkEditSheet';
 import { MachineServicesSection } from './MachineServicesSection';
+import {
+  LandingColumns,
+  LANDING_MARK_W,
+  LandingHero,
+  LandingPage,
+  Chips,
+  PrimaryAction,
+  Specimen,
+  SpecimenRow,
+  Terms,
+} from './onboarding/landing';
+import { ServiceAskDemo, StackSpecimen } from './onboarding/specimens';
 import { chatTargetFor, flowTargetFor, outputPrompt } from '../askAboutOutput';
 import { ResizableDivider } from './ResizableDivider';
 import { AddServicesSheet, type AddStack } from './AddServicesSheet';
@@ -156,6 +170,7 @@ export function ServicesPane() {
       ),
     [stacks, byCheckout],
   );
+  const storeLoaded = useStore((s) => s.storeLoaded);
   // Every switch control reads the same answer from the store.
   const setChoices = useServicesStore((s) => s.setChoices);
   useEffect(() => {
@@ -169,6 +184,10 @@ export function ServicesPane() {
     ...loose.map((p) => ({ id: p.id, name: p.name })),
   ];
   const withServices = owners.filter((o) => (stacks[o.id]?.services.length ?? 0) > 0);
+  // Nothing until the projects and workspaces this is derived from are in.
+  // Both start empty in the store because `store:load` has not answered yet,
+  // not because the machine has none — see `storeLoaded`.
+  if (!storeLoaded) return <div className="flex-1" />;
   if (withServices.length === 0) {
     return (
       <>
@@ -763,7 +782,19 @@ function Row({
         <span className={'min-w-0 flex-1 truncate text-[12.5px] ' + (selected ? 'font-medium' : '')}>
           {spec.name}
         </span>
-        <Trouble runtime={runtime} spec={spec} blocked={blocked} boundRef={binding?.ref} />
+        <Trouble runtime={runtime} spec={spec} blocked={blocked} binding={binding} />
+        {/* Not a status: a task is a different KIND of row, and the list is
+            where someone goes looking for one after seeing its name in
+            another service's startup order. Nothing else here says so, and a
+            task that has never run says nothing at all. */}
+        {spec.task && (
+          <span
+            className="flex-shrink-0 rounded bg-card-strong px-1 text-[10px] text-ink-faint"
+            title="Runs once and stops"
+          >
+            once
+          </span>
+        )}
         {/* The ref chip only appears off the default branch, so a service
             kept on master said nothing about being kept there — and that is
             the common pin. The pin says it whatever the ref. */}
@@ -1176,6 +1207,16 @@ function Chevron({ open }: { open: boolean }) {
 /// A feature branch. Master and main never get one — see `servicesList`.
 const refChip = 'min-w-0 max-w-[40%] flex-shrink truncate rounded bg-accent/15 px-1 font-mono text-[10.5px] text-accent';
 
+/// `svc-btn`'s shape in the amber every drift marker uses, for the one button
+/// in a header that is worth pressing when what a task installed is older than
+/// the checkout. A header of identical grey buttons says everything is equally
+/// worth doing, which on a stale stack is the one thing that is not true.
+const staleBtn =
+  'inline-flex h-[24px] items-center gap-1 whitespace-nowrap rounded-[5px] border border-amber-500/50 ' +
+  'bg-amber-500/15 px-[9px] text-[11.5px] font-medium leading-none text-amber-700 transition-colors ' +
+  'hover:bg-amber-500/25 disabled:border-transparent disabled:bg-transparent disabled:text-ink-faint ' +
+  'disabled:cursor-not-allowed dark:text-amber-300';
+
 /// Always on the row: what you can do next is part of how the service is. A
 /// running one offers stop and restart, a stopped one offers play, tinted like
 /// the footer's Start and Stop so the verb reads before the icon does.
@@ -1242,12 +1283,12 @@ function Trouble({
   runtime,
   spec,
   blocked,
-  boundRef,
+  binding,
 }: {
   runtime: ServiceRuntime;
   spec: ServiceSpec;
   blocked?: string | null;
-  boundRef?: string;
+  binding?: ServiceBinding;
 }) {
   // Nothing was spawned, so there is no status to show — but there is a
   // reason, and it belongs on the row that refused rather than only on a
@@ -1292,12 +1333,31 @@ function Trouble({
       </span>
     );
   }
-  // Rebound since it last ran: what it published came from another branch,
-  // and the next dependent to start will run it again.
-  if (runtime.status === 'done' && runtime.ranRef && boundRef && runtime.ranRef !== boundRef) {
+  // Done, but not from here. Either the checkout was rebound since — what it
+  // published came from another branch, and the next dependent to start will
+  // run it again — or the branch has moved on under it, which nothing else on
+  // the row would show: the status stays green while the jar in `~/.m2` gets
+  // older than the source beside it.
+  const drift = taskDrift(runtime, binding);
+  if (drift) {
     return (
-      <span className="flex-shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300">
-        ran from {shortRef(runtime.ranRef)}
+      <span
+        className="flex-shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300"
+        title={describeDrift(spec.name, drift)}
+      >
+        {drift.kind === 'commit' ? 'older than the branch' : `ran from ${shortRef(drift.ran)}`}
+      </span>
+    );
+  }
+  // Running from before the app was reopened. Not trouble — but not nothing
+  // either, because its output is not arriving here until a restart.
+  if (runtime.adopted) {
+    return (
+      <span
+        className="flex-shrink-0 rounded bg-card-strong px-1 text-[10px] text-ink-faint"
+        title="Already running when overcli opened. Restart it to get its output back."
+      >
+        adopted
       </span>
     );
   }
@@ -1565,6 +1625,7 @@ function Detail() {
   const { stack, spec } = found;
   const binding = stack.bindings.find((b) => b.serviceId === spec.id);
   const runtime = stack.runtimes.find((r) => r.serviceId === spec.id);
+  const headerDrift = taskDrift(runtime, binding);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col border-l border-card">
@@ -1580,8 +1641,21 @@ function Detail() {
             <span className="rounded bg-card-strong px-1.5 py-px text-[10px] text-ink-muted">runs once</span>
           )}
           {(runtime?.status === 'ready' || runtime?.status === 'done') && (
-            <span className="rounded bg-green-500/15 px-1.5 py-px text-[10px] text-green-700 dark:text-green-300">
-              {runtime.status === 'done' && runtime.ranRef ? `done on ${shortRef(runtime.ranRef)}` : runtime.status}
+            // Amber when what it published is not what its checkout says now:
+            // `done` is then true and beside the point, and green here is the
+            // whole reason a stale artifact goes unnoticed.
+            <span
+              className={
+                'rounded px-1.5 py-px text-[10px] ' +
+                (headerDrift
+                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                  : 'bg-green-500/15 text-green-700 dark:text-green-300')
+              }
+              title={headerDrift ? describeDrift(spec.name, headerDrift) : undefined}
+            >
+              {runtime.status === 'done' && runtime.ranRef
+                ? `done on ${headerDrift?.kind === 'commit' ? shortCommit(headerDrift.ran) : shortRef(runtime.ranRef)}`
+                : runtime.status}
             </span>
           )}
           <div className="flex-1" />
@@ -1656,6 +1730,89 @@ function Detail() {
         />
       )}
       {tab === 'overrides' && <Options workspaceId={stack.workspaceId} spec={spec} stack={stack} />}
+    </div>
+  );
+}
+
+/// A service that was already running when overcli opened.
+///
+/// Everything works except the one thing the pane is mostly for: its output
+/// went to the process that started it, so what is below is whatever reached
+/// the log file before the app was last closed, and nothing new will arrive.
+/// Said here, once, with the restart that fixes it — leaving someone to
+/// conclude from a log that stopped an hour ago that the service has hung is
+/// worse than a line of explanation.
+function Adopted({
+  workspaceId,
+  spec,
+  runtime,
+}: {
+  workspaceId: string;
+  spec: ServiceSpec;
+  runtime: ServiceRuntime;
+}) {
+  const restart = useServicesStore((s) => s.restart);
+  return (
+    <div className="flex flex-shrink-0 items-center gap-2 border-b border-card bg-card-strong px-4 py-2 text-xs">
+      <span className="min-w-0 flex-1">
+        Already running when overcli opened
+        {runtime.pid ? <span className="font-mono text-ink-faint"> · pid {runtime.pid}</span> : null}
+        {runtime.port ? <span className="font-mono text-ink-faint"> · :{runtime.port}</span> : null} — its
+        output goes to the process that started it, so nothing new appears below until it is restarted.
+      </span>
+      <button className="svc-btn" onClick={() => void restart(workspaceId, spec.id)}>
+        Restart it
+      </button>
+    </div>
+  );
+}
+
+/// What the tasks this service waits on actually installed, when that is no
+/// longer what their checkout says — or when nothing here installed it.
+///
+/// The one thing about a task its status cannot show: a publish reads `done`
+/// forever, while the branch it came from moves on. The service that resolves
+/// the artifact — a jar, an image tag, a linked package — then builds against
+/// something nobody chose, and the question that produces an hour later, why
+/// is my change not in it, is asked about the dependent, which is not where
+/// the answer is.
+///
+/// Said here, where the output is read, with the re-run beside it. Never done
+/// on its own: a publish is minutes of Gradle, and a task kept on master on
+/// purpose is a normal way to work.
+function StaleTasks({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
+  const stack = useServicesStore((s) => s.stacks[workspaceId]);
+  const start = useServicesStore((s) => s.start);
+  const drifted = useMemo(
+    () => (stack ? driftedTasks(spec, stack.services, stack.runtimes, stack.bindings) : []),
+    [spec, stack],
+  );
+  if (drifted.length === 0) return null;
+
+  return (
+    <div className="flex-shrink-0 border-b border-amber-500/30 bg-amber-500/10">
+      {drifted.map(({ task, drift }) => {
+        const status = stack?.runtimes.find((r) => r.serviceId === task.id)?.status ?? 'stopped';
+        const running = isServiceLive(status);
+        return (
+          <div key={task.id} className="flex items-center gap-2 px-4 py-2 text-xs">
+            <span className="min-w-0 flex-1">
+              {describeDrift(task.name, drift)} —{' '}
+              {drift.kind === 'unknown'
+                ? 'run it if this should build against your local changes.'
+                : 'what it installed is what this builds against.'}
+            </span>
+            <button
+              className="svc-btn"
+              disabled={running}
+              title={commandText(task.command)}
+              onClick={() => void start(workspaceId, task.id)}
+            >
+              {running ? `${task.name}…` : drift.kind === 'unknown' ? 'Run it' : 'Run it again'}
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1875,18 +2032,26 @@ function TaskActions({ workspaceId, spec }: { workspaceId: string; spec: Service
   const tasks = (spec.deps ?? [])
     .map((id) => stack?.services.find((s) => s.id === id))
     .filter((s): s is ServiceSpec => !!s?.task);
+  // Which of them is out of date, so the button can say so — the same rule the
+  // banner below uses, keyed by task.
+  const drift = new Map(
+    (stack ? driftedTasks(spec, stack.services, stack.runtimes, stack.bindings) : []).map(
+      (d) => [d.task.id, d.drift] as const,
+    ),
+  );
 
   return (
     <>
       {tasks.map((task) => {
         const status = stack?.runtimes.find((r) => r.serviceId === task.id)?.status ?? 'stopped';
         const running = isServiceLive(status);
+        const stale = drift.get(task.id);
         return (
           <button
             key={task.id}
-            className="svc-btn"
+            className={stale ? staleBtn : 'svc-btn'}
             disabled={running}
-            title={commandText(task.command)}
+            title={stale ? describeDrift(task.name, stale) : commandText(task.command)}
             onClick={() => void start(workspaceId, task.id)}
           >
             {running ? `${task.name}…` : `Run ${task.name}`}
@@ -2133,6 +2298,8 @@ function Output({
       {runtime?.status === 'failed' && (
         <Failure workspaceId={workspaceId} spec={spec} runtime={runtime} />
       )}
+      {runtime?.adopted && <Adopted workspaceId={workspaceId} spec={spec} runtime={runtime} />}
+      <StaleTasks workspaceId={workspaceId} spec={spec} />
 
       {/* Keyed per service: the search and level toggles are about the log
           being read, and must not follow the user to the next one. */}
@@ -2214,8 +2381,8 @@ function Settings({
             <SettingsField label="Checkout">
               {binding ? (
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="flex-shrink-0 font-mono text-[11.5px] text-accent">{shortRef(binding.ref)}</span>
-                  <span title={binding.path} className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
+                  <span className="flex-shrink-0 font-mono text-[12.5px] text-accent">{shortRef(binding.ref)}</span>
+                  <span title={binding.path} className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink-faint">
                     {binding.path}
                   </span>
                   <RebindMenu
@@ -2226,7 +2393,7 @@ function Settings({
                   />
                 </div>
               ) : (
-                <span className="text-[11px] text-ink-faint">Not on a checkout yet.</span>
+                <span className="text-[12px] text-ink-faint">Not on a checkout yet.</span>
               )}
             </SettingsField>
 
@@ -2234,23 +2401,23 @@ function Settings({
               <div className="flex items-start gap-3">
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   {injected.map(([key, value]) => (
-                    <div key={key} className="truncate font-mono text-[10.5px]">
+                    <div key={key} className="truncate font-mono text-[11.5px]">
                       <span className="text-ink">{key}</span>
                       <span className="text-ink-faint">={value}</span>
                     </div>
                   ))}
                   {linked.map((file) => (
-                    <div key={file} className="truncate font-mono text-[10.5px] text-ink">
+                    <div key={file} className="truncate font-mono text-[11.5px] text-ink">
                       {file} <span className="text-ink-faint">— linked in from that folder</span>
                     </div>
                   ))}
                   {rendered.map((file) => (
-                    <div key={file} className="truncate font-mono text-[10.5px] text-ink">
+                    <div key={file} className="truncate font-mono text-[11.5px] text-ink">
                       {file} <span className="text-ink-faint">— written per branch</span>
                     </div>
                   ))}
                   {injected.length + linked.length + rendered.length === 0 && (
-                    <span className="text-[11px] text-ink-faint">
+                    <span className="text-[12px] text-ink-faint">
                       Nothing set. A properties or .env file dropped in the folder reaches the next start.
                     </span>
                   )}
@@ -2328,7 +2495,7 @@ function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: Servic
       </div>
       {mode === 'restart' && (
         <input
-          className="field w-full px-2 py-1.5 font-mono text-[11px]"
+          className="field w-full px-2 py-1.5 font-mono text-[12px]"
           value={patterns}
           onChange={(e) => setPatterns(e.target.value)}
           onKeyDown={(e) => {
@@ -2339,7 +2506,7 @@ function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: Servic
           placeholder="src/**, config/**"
         />
       )}
-      <span className="text-[10.5px] text-ink-faint">
+      <span className="text-[11.5px] text-ink-faint">
         {mode === 'self'
           ? 'Vite, devtools, or the framework watches its own process.'
           : mode === 'restart'
@@ -2364,7 +2531,7 @@ function ReloadChoice({
       type="button"
       onClick={onClick}
       className={
-        'rounded-full border px-2.5 py-1 text-[10.5px] transition ' +
+        'rounded-full border px-2.5 py-1 text-[11.5px] transition ' +
         (on
           ? 'border-accent/60 bg-accent/15 text-ink'
           : 'border-card-strong text-ink-muted hover:bg-card')
@@ -2378,7 +2545,7 @@ function ReloadChoice({
 function SettingsCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="rounded-md border border-card-strong bg-surface-muted">
-      <h3 className="border-b border-card px-3.5 py-2.5 text-[12px] font-semibold text-ink">{title}</h3>
+      <h3 className="border-b border-card px-3.5 py-2.5 text-[12.5px] font-semibold text-ink">{title}</h3>
       <div className="flex flex-col gap-4 px-3.5 py-3.5">{children}</div>
     </section>
   );
@@ -2396,8 +2563,8 @@ function SettingsField({
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-baseline gap-2">
-        <span className="text-[11px] font-medium text-ink-muted">{label}</span>
-        {note && <span className="text-[10.5px] text-ink-faint">{note}</span>}
+        <span className="text-[12px] font-medium text-ink-muted">{label}</span>
+        {note && <span className="text-[11.5px] text-ink-faint">{note}</span>}
       </div>
       {children}
     </div>
@@ -2434,7 +2601,7 @@ function SuggestedCommand({
 
   return (
     <div className="mt-1.5 flex items-start gap-2">
-      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded border border-card-strong bg-surface px-2 py-1 font-mono text-[10.5px] leading-4 text-ink">
+      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded border border-card-strong bg-surface px-2 py-1 font-mono text-[11.5px] leading-4 text-ink">
         {command}
       </code>
       <button
@@ -2518,7 +2685,7 @@ function CommandEditor({
         ref={box}
         rows={1}
         spellCheck={false}
-        className="field w-full resize-none overflow-hidden whitespace-pre-wrap break-all !bg-surface px-2.5 py-2 font-mono text-[11.5px] leading-[19px]"
+        className="field w-full resize-none overflow-hidden whitespace-pre-wrap break-all !bg-surface px-2.5 py-2 font-mono text-[12.5px] leading-[19px]"
         value={draft}
         placeholder="npm run dev"
         onChange={(e) => setDraft(e.target.value)}
@@ -2532,7 +2699,7 @@ function CommandEditor({
         }}
       />
       {pinnedTo.length > 0 && (
-        <div className="flex items-start gap-2.5 rounded border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[11px] leading-4">
+        <div className="flex items-start gap-2.5 rounded border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[12px] leading-4">
           <span className="min-w-0 flex-1 text-ink">
             Keeps using <code className="break-all font-mono text-amber-700 dark:text-amber-300">{pinnedTo[0]}</code>
             {pinnedTo.length > 1 ? ` and ${pinnedTo.length - 1} more` : ''} after a switch to another worktree.{' '}
@@ -2546,7 +2713,7 @@ function CommandEditor({
         </div>
       )}
       <div className="flex items-start gap-2">
-        <p className="min-w-0 flex-1 text-[10.5px] leading-4 text-ink-faint">
+        <p className="min-w-0 flex-1 text-[11.5px] leading-4 text-ink-faint">
           {spec.command.length === 0 ? (
             'Nothing said how to start this, so it will not start until this is set.'
           ) : (
@@ -2579,7 +2746,7 @@ function CommandEditor({
       </div>
       {explanation?.status === 'asking' && (
         <div className="flex items-center gap-2">
-          <span className="text-[10.5px] text-ink-muted">Reading the command…</span>
+          <span className="text-[11.5px] text-ink-muted">Reading the command…</span>
           <button className="svc-btn" onClick={() => void cancelAskAi(workspaceId, spec.id, 'explain')}>
             Stop
           </button>
@@ -2587,7 +2754,7 @@ function CommandEditor({
       )}
       {explanation?.status === 'failed' && (
         <div className="flex items-center gap-2">
-          <span className="text-[10.5px] text-ink-faint">{explanation.error}</span>
+          <span className="text-[11.5px] text-ink-faint">{explanation.error}</span>
           <button className="svc-btn" onClick={() => void askAi(workspaceId, spec.id, 'explain', draft)}>
             Try again
           </button>
@@ -2596,29 +2763,29 @@ function CommandEditor({
       {explanation?.status === 'answered' && (
         <div className="flex flex-col gap-2 rounded border border-card-strong bg-surface px-2.5 py-2">
           <div className="flex items-center gap-2">
-            <span className="rounded border border-card-strong px-1 py-px text-[9.5px] leading-none text-ink-faint">
+            <span className="rounded border border-card-strong px-1 py-px text-[11px] leading-none text-ink-faint">
               a guess · {explanation.backend}
             </span>
             <div className="flex-1" />
             <button
-              className="text-[10px] text-ink-faint hover:text-ink"
+              className="text-[11px] text-ink-faint hover:text-ink"
               onClick={() => void askAi(workspaceId, spec.id, 'explain', draft)}
             >
               Ask again
             </button>
             <button
-              className="text-[10px] text-ink-faint hover:text-ink"
+              className="text-[11px] text-ink-faint hover:text-ink"
               onClick={() => void cancelAskAi(workspaceId, spec.id, 'explain')}
             >
               Dismiss
             </button>
           </div>
           {explanation.text && (
-            <p className="whitespace-pre-wrap text-[11px] leading-[17px] text-ink-muted">{explanation.text}</p>
+            <p className="whitespace-pre-wrap text-[12px] leading-[17px] text-ink-muted">{explanation.text}</p>
           )}
           {explanation.command && (
             <div className="flex items-start gap-2">
-              <code className="min-w-0 flex-1 break-all font-mono text-[10.5px] text-ink">{explanation.command}</code>
+              <code className="min-w-0 flex-1 break-all font-mono text-[11.5px] text-ink">{explanation.command}</code>
               {/* Into the box, not saved: it is a guess, and Save is where someone agrees. */}
               <button className="svc-btn" onClick={() => setDraft(splitSteps(explanation.command!).join('\n'))}>
                 Use this
@@ -2664,7 +2831,7 @@ function SuggestCommand({
   if (state.status === 'asking') {
     return (
       <div className="flex items-center gap-2">
-        <span className="text-[10.5px] text-ink-muted">Reading the checkout…</span>
+        <span className="text-[11.5px] text-ink-muted">Reading the checkout…</span>
         <button className="svc-btn" onClick={() => void cancelAskAi(workspaceId, serviceId)}>
           Stop
         </button>
@@ -2675,7 +2842,7 @@ function SuggestCommand({
   if (state.status === 'failed') {
     return (
       <div className="flex items-center gap-2">
-        <span className="text-[10.5px] text-ink-faint">{state.error}</span>
+        <span className="text-[11.5px] text-ink-faint">{state.error}</span>
         <button className="svc-btn" onClick={ask}>
           Try again
         </button>
@@ -2686,20 +2853,20 @@ function SuggestCommand({
   return (
     <div className="flex flex-col gap-1 rounded border border-card-strong px-2 py-1.5">
       <div className="flex items-center gap-2">
-        <span className="rounded border border-card-strong px-1 py-px text-[9.5px] leading-none text-ink-faint">
+        <span className="rounded border border-card-strong px-1 py-px text-[11px] leading-none text-ink-faint">
           a guess · {state.backend}
         </span>
         <div className="flex-1" />
-        <button className="text-[10px] text-ink-faint hover:text-ink" onClick={ask}>
+        <button className="text-[11px] text-ink-faint hover:text-ink" onClick={ask}>
           Ask again
         </button>
       </div>
       {state.text && (
-        <p className="whitespace-pre-wrap text-[10.5px] leading-4 text-ink-muted">{state.text}</p>
+        <p className="whitespace-pre-wrap text-[11.5px] leading-4 text-ink-muted">{state.text}</p>
       )}
       {state.command && (
         <div className="flex items-start gap-2">
-          <code className="min-w-0 flex-1 break-all font-mono text-[10.5px]">{state.command}</code>
+          <code className="min-w-0 flex-1 break-all font-mono text-[11.5px]">{state.command}</code>
           <button className="svc-btn" onClick={() => onUse(state.command!)}>
             Use this
           </button>
@@ -2776,6 +2943,7 @@ function waitsOn(services: readonly ServiceSpec[], from: string, target: string)
 function DepsPicker({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
   const services = useServicesStore((s) => s.stacks[workspaceId]?.services) ?? [];
   const setDeps = useServicesStore((s) => s.setDeps);
+  const select = useServicesStore((s) => s.select);
   const [adding, setAdding] = useState(false);
 
   const deps = spec.deps ?? [];
@@ -2789,21 +2957,35 @@ function DepsPicker({ workspaceId, spec }: { workspaceId: string; spec: ServiceS
     <div className="flex flex-col gap-2">
       {deps.length > 0 ? (
         <div className="flex flex-wrap gap-1">
-          {deps.map((id) => (
-            <span key={id} className="flex items-center gap-1 rounded bg-card-strong px-1.5 py-0.5 text-[11px]">
-              {nameOf(id)}
-              <button
-                className="text-ink-faint hover:text-ink"
-                title="Stop waiting for this"
-                onClick={() => void setDeps(workspaceId, spec.id, deps.filter((d) => d !== id))}
-              >
-                ×
-              </button>
-            </span>
-          ))}
+          {deps.map((id) => {
+            const dep = services.find((s) => s.id === id);
+            return (
+              <span key={id} className="flex items-center gap-1 rounded bg-card-strong px-1.5 py-0.5 text-[12px]">
+                {/* The name is the way to it. This chip is where anyone
+                    looking for a task ends up — it is the only place the task
+                    is named from the service that needs it — and it used to
+                    be a dead end. */}
+                <button
+                  className="hover:text-accent hover:underline"
+                  title={`Open ${nameOf(id)}${dep?.task ? ' — it runs once' : ''}`}
+                  onClick={() => void select(workspaceId, id)}
+                >
+                  {nameOf(id)}
+                </button>
+                {dep?.task && <span className="text-[11px] text-ink-faint">once</span>}
+                <button
+                  className="text-ink-faint hover:text-ink"
+                  title="Stop waiting for this"
+                  onClick={() => void setDeps(workspaceId, spec.id, deps.filter((d) => d !== id))}
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
         </div>
       ) : (
-        <span className="text-[10.5px] text-ink-faint">Starts without waiting for anything.</span>
+        <span className="text-[11.5px] text-ink-faint">Starts without waiting for anything.</span>
       )}
       <div className="flex flex-wrap items-center gap-2">
         <select
@@ -2880,14 +3062,14 @@ function AddTaskSheet({
     <Sheet onClose={onClose}>
       <div className="border-b border-card px-4 py-3">
         <div className="text-sm font-semibold">A task for {spec.name}</div>
-        <div className="mt-0.5 text-[11px] text-ink-muted">
+        <div className="mt-0.5 text-[12px] text-ink-muted">
           Runs once, in the same checkout, and moves with it when you switch branches.
         </div>
       </div>
 
       <div className="flex max-h-[60vh] flex-col gap-3 overflow-y-auto px-4 py-3.5">
         <div className="flex flex-col gap-1">
-          {presets === null && <span className="text-[11px] text-ink-faint">Looking at the checkout…</span>}
+          {presets === null && <span className="text-[12px] text-ink-faint">Looking at the checkout…</span>}
           {presets?.map((preset) => (
             <button
               key={preset.id}
@@ -2898,8 +3080,8 @@ function AddTaskSheet({
               }
             >
               <div className="text-xs font-medium">{preset.label}</div>
-              <div className="truncate font-mono text-[10.5px] text-ink-muted">{commandText(preset.command)}</div>
-              <div className="text-[10px] text-ink-faint">{preset.why}</div>
+              <div className="truncate font-mono text-[11.5px] text-ink-muted">{commandText(preset.command)}</div>
+              <div className="text-[11px] text-ink-faint">{preset.why}</div>
             </button>
           ))}
           <button
@@ -2923,21 +3105,21 @@ function AddTaskSheet({
         </Field>
         <Field label="Command">
           <input
-            className="field w-full px-2 py-1.5 font-mono text-[11px]"
+            className="field w-full px-2 py-1.5 font-mono text-[12px]"
             value={command}
             placeholder="./gradlew publishToMavenLocal"
             onChange={(e) => setCommand(e.target.value)}
           />
-          {subpath && <p className="mt-1 text-[10px] text-ink-faint">Runs in {subpath}.</p>}
+          {subpath && <p className="mt-1 text-[11px] text-ink-faint">Runs in {subpath}.</p>}
         </Field>
-        <label className="flex items-center gap-2 text-[11px] text-ink-muted">
+        <label className="flex items-center gap-2 text-[12px] text-ink-muted">
           <Checkbox on={runBefore} onClick={() => setRunBefore((on) => !on)} className="flex" />
           Run it before {spec.name} starts
         </label>
       </div>
 
       <div className="flex items-center gap-2 border-t border-card px-4 py-3">
-        <span className="flex-1 text-[10.5px] text-ink-faint">Options can be added on the task afterwards.</span>
+        <span className="flex-1 text-[11.5px] text-ink-faint">Options can be added on the task afterwards.</span>
         <button className="review-btn" onClick={onClose}>
           Cancel
         </button>
@@ -2976,7 +3158,7 @@ function TaskToggle({ workspaceId, spec }: { workspaceId: string; spec: ServiceS
         <option value="once">once, to completion</option>
       </select>
       {spec.task && (
-        <p className="text-[10.5px] text-ink-faint">
+        <p className="text-[11.5px] text-ink-faint">
           Anything that waits on this runs it first, unless it has already finished on the branch it is
           on now. A failure stops them starting.
         </p>
@@ -3046,7 +3228,7 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
         )}
         {draft.kind === 'http' && (
           <>
-            <span className="font-mono text-[11px] text-ink-faint">GET :</span>
+            <span className="font-mono text-[12px] text-ink-faint">GET :</span>
             {portField}
             <input
               className="field w-[180px] px-2 py-1 font-mono text-xs"
@@ -3058,7 +3240,7 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
         )}
         {draft.kind === 'tcp' && (
           <>
-            <span className="font-mono text-[11px] text-ink-faint">:</span>
+            <span className="font-mono text-[12px] text-ink-faint">:</span>
             {portField}
           </>
         )}
@@ -3072,7 +3254,7 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
         )}
       </div>
       {draft.kind !== 'none' && (
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-ink-muted">
+        <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-ink-muted">
           Allow up to
           <input
             className="field w-[56px] px-2 py-1 text-xs"
@@ -3102,7 +3284,7 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
         >
           Save
         </button>
-        <span className={'text-[10.5px] ' + (problem ? 'text-red-600 dark:text-red-400' : 'text-ink-faint')}>
+        <span className={'text-[11.5px] ' + (problem ? 'text-red-600 dark:text-red-400' : 'text-ink-faint')}>
           {problem ?? (dirty ? 'Takes effect on the next start.' : '')}
         </span>
       </div>
@@ -3137,20 +3319,20 @@ function Options({
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
       {base && (
         <Section title={`Shared with every copy of ${base.name}`}>
-          <p className="mb-2 text-[10.5px] text-ink-faint">Edit once and all of them follow.</p>
+          <p className="mb-2 text-[11.5px] text-ink-faint">Edit once and all of them follow.</p>
           <div className="flex flex-wrap gap-1">
             {resolved
               .filter((o) => o.origin === 'shared')
               .map((o) => (
                 <span
                   key={o.key}
-                  className="rounded bg-card-strong px-1.5 py-0.5 font-mono text-[10.5px] text-ink-muted"
+                  className="rounded bg-card-strong px-1.5 py-0.5 font-mono text-[11.5px] text-ink-muted"
                 >
                   {renderOption(o)}
                 </span>
               ))}
             {resolved.every((o) => o.origin !== 'shared') && (
-              <span className="text-[10.5px] text-ink-faint">Nothing shared yet.</span>
+              <span className="text-[11.5px] text-ink-faint">Nothing shared yet.</span>
             )}
           </div>
         </Section>
@@ -3160,7 +3342,7 @@ function Options({
         {editing ? (
           <>
             <textarea
-              className="field h-[160px] w-full px-2 py-1.5 font-mono text-[11px]"
+              className="field h-[160px] w-full px-2 py-1.5 font-mono text-[12px]"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
@@ -3177,7 +3359,7 @@ function Options({
               <button className="svc-btn" onClick={() => setEditing(false)}>
                 Cancel
               </button>
-              <span className="self-center text-[10.5px] text-ink-faint">
+              <span className="self-center text-[11.5px] text-ink-faint">
                 Takes effect on the next start.
               </span>
             </div>
@@ -3186,7 +3368,7 @@ function Options({
           <>
             <div className="flex flex-col gap-0.5">
               {(spec.options ?? []).length === 0 && (
-                <span className="text-[10.5px] text-ink-faint">
+                <span className="text-[11.5px] text-ink-faint">
                   {base
                     ? 'Identical to the original so far.'
                     : 'None — the command runs as written above.'}
@@ -3196,12 +3378,12 @@ function Options({
                 const r = resolved.find((x) => x.key === o.key && x.origin === 'own');
                 return (
                   <div key={o.key} className="flex items-center gap-2 py-0.5">
-                    <span className="w-[240px] truncate font-mono text-[11px] text-ink">{o.key}</span>
-                    <span className="flex-1 truncate font-mono text-[11px] text-green-700 dark:text-green-300">
+                    <span className="w-[240px] truncate font-mono text-[12px] text-ink">{o.key}</span>
+                    <span className="flex-1 truncate font-mono text-[12px] text-green-700 dark:text-green-300">
                       {o.value ?? ''}
                     </span>
                     {r?.overrides && (
-                      <span className="text-[10px] text-ink-faint">replaces the shared one</span>
+                      <span className="text-[11px] text-ink-faint">replaces the shared one</span>
                     )}
                   </div>
                 );
@@ -3222,30 +3404,46 @@ function Options({
 
       {spec.debugPort !== undefined && (
         <Section title="Debugger">
-          <label className="flex cursor-pointer items-center gap-2.5">
+          {/* The whole row toggles. It was a `label` around a switch with no
+              input in it, so the text beside the switch read as clickable and
+              was not — and the switch alone is a 30px target. */}
+          <button
+            type="button"
+            className="flex w-full items-center gap-2.5 text-left"
+            onClick={() => void setDebug(workspaceId, spec.id, !spec.debugEnabled)}
+          >
+            {/* The off state was a dark track under a knob the colour of the
+                surface behind it: the switch was invisible, and the label
+                read as a sentence indented from nothing. Same track and knob
+                as the switches in Schedules and Workers. */}
             <span
               className={
                 'relative h-[17px] w-[30px] flex-shrink-0 rounded-full transition-colors ' +
-                (spec.debugEnabled ? 'bg-amber-500' : 'bg-card-border-strong')
+                (spec.debugEnabled ? 'bg-amber-500' : 'bg-white/15')
               }
-              onClick={() => void setDebug(workspaceId, spec.id, !spec.debugEnabled)}
             >
               <span
                 className={
-                  'absolute top-[2px] h-[13px] w-[13px] rounded-full bg-surface transition-all ' +
+                  'absolute top-[2px] h-[13px] w-[13px] rounded-full bg-white transition-all ' +
                   (spec.debugEnabled ? 'right-[2px]' : 'left-[2px]')
                 }
               />
             </span>
-            <span className="text-[11.5px]">
-              Attach on <span className="font-mono">:{attachPort}</span>
+            {/* The whole address, once. It was the port here and the host on a
+                line of its own under the buttons, where it read as a value
+                someone had left behind rather than the thing to attach to. */}
+            <span className="text-[12.5px]">
+              Attach on <span className="font-mono">127.0.0.1:{attachPort}</span>
             </span>
-            <span className="text-[10.5px] text-ink-faint">
-              — a running service restarts immediately
-            </span>
-          </label>
+          </button>
+          {/* Its own line, like the notes below it. Trailing off the end of
+              the row it dangled, and it is a consequence of the switch rather
+              than part of what the switch says. */}
+          <p className="mt-1 text-[11.5px] text-ink-faint">
+            Turning this on or off restarts the service if it is running.
+          </p>
           {attachKind && attachPort && (
-            <div className="mt-2 flex items-center gap-2">
+            <div className="mt-2 flex flex-wrap items-center gap-2">
               <button
                 className="svc-btn"
                 onClick={() => void navigator.clipboard.writeText(attachConfiguration(spec.name, attachKind, attachPort))}
@@ -3257,14 +3455,13 @@ function Options({
                   Reveal bound checkout
                 </button>
               )}
-              <span className="font-mono text-[10.5px] text-ink-faint">127.0.0.1:{attachPort}</span>
             </div>
           )}
           {attachKind === 'debugpy' && (
-            <p className="mt-2 text-[10.5px] text-ink-faint">Requires debugpy in this service's Python environment.</p>
+            <p className="mt-2 text-[11.5px] text-ink-faint">Requires debugpy in this service's Python environment.</p>
           )}
           {attachKind === 'delve' && (
-            <p className="mt-2 text-[10.5px] text-ink-faint">Requires the dlv command on Overcli's PATH.</p>
+            <p className="mt-2 text-[11.5px] text-ink-faint">Requires the dlv command on Overcli's PATH.</p>
           )}
         </Section>
       )}
@@ -3343,6 +3540,9 @@ function MachineValuesSheet({
   const machine = useServicesStore((s) => s.machine);
   const secureStorage = useServicesStore((s) => s.secureStorage);
   const saveMachine = useServicesStore((s) => s.saveMachine);
+  const migrationError = useServicesStore((s) => s.migrationError);
+  const backupPath = useServicesStore((s) => s.backupPath);
+  const deleteMachineBackup = useServicesStore((s) => s.deleteMachineBackup);
   const [rows, setRows] = useState<MachineRow[]>(() => {
     // What is needed goes first, empty and waiting, marked secret by name.
     const wanted = needs
@@ -3386,13 +3586,13 @@ function MachineValuesSheet({
     <Sheet onClose={onClose} width="w-[760px]">
       <div className="border-b border-card px-5 py-4">
         <div className="text-[15px] font-semibold">Machine values</div>
-        <div className="mt-1 text-[12px] leading-relaxed text-ink-muted">
+        <div className="mt-1 text-[12.5px] leading-relaxed text-ink-muted">
           Shared by every service. Refer to one from any option or variable as{' '}
-          <span className="rounded bg-card-strong px-1 font-mono text-[11px]">${'{NAME}'}</span>.
+          <span className="rounded bg-card-strong px-1 font-mono text-[12px]">${'{NAME}'}</span>.
           Paste a .env block into a name to add several at once.
         </div>
         {needs.length > 0 && (
-          <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] leading-relaxed text-amber-800 dark:text-amber-200">
+          <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12.5px] leading-relaxed text-amber-800 dark:text-amber-200">
             {neededCount > 0 ? (
               <>
                 Your services refer to{' '}
@@ -3408,10 +3608,15 @@ function MachineValuesSheet({
             )}
           </div>
         )}
+        {migrationError && <div className="mt-3 text-[12.5px] text-red-600 dark:text-red-300">{migrationError}</div>}
+        {backupPath && <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12.5px] text-amber-800 dark:text-amber-200">
+          Cleartext backup retained: <span className="font-mono">{backupPath}</span>
+          <button className="svc-btn ml-2" onClick={() => void deleteMachineBackup()}>Delete backup</button>
+        </div>}
       </div>
 
       <div className="max-h-[60vh] overflow-y-auto px-5 py-4">
-        <div className="mb-2 flex items-center gap-3 px-1 text-[10.5px] font-medium uppercase tracking-wide text-ink-faint">
+        <div className="mb-2 flex items-center gap-3 px-1 text-[11.5px] font-medium uppercase tracking-wide text-ink-faint">
           <span className="w-[36%]">Name</span>
           <span className="flex-1">Value</span>
           <span className="w-8" />
@@ -3439,10 +3644,10 @@ function MachineValuesSheet({
           + Add value
         </button>
 
-        {error && <p className="mt-3 text-[11.5px] text-red-600 dark:text-red-300">{error}</p>}
+        {error && <p className="mt-3 text-[12.5px] text-red-600 dark:text-red-300">{error}</p>}
       </div>
 
-      <div className="border-t border-card px-5 py-3 text-[11px] leading-relaxed text-ink-faint">
+      <div className="border-t border-card px-5 py-3 text-[12px] leading-relaxed text-ink-faint">
         {secureStorage ? (
           <>
             <span className="text-amber-600 dark:text-amber-300">🔒 Secrets</span> are encrypted
@@ -4011,16 +4216,172 @@ function SetUp({
     [workspaces, projects, loose],
   );
   if (stacks.length === 0) {
-    return (
-      <div className="flex flex-1 items-center justify-center p-8 text-center text-xs text-ink-muted">
-        Add a project and overcli can look through it for anything that starts.
-      </div>
-    );
+    return <ServicesLanding />;
   }
   return (
     <AddServicesSheet stacks={stacks} existing={new Set()} onClose={() => {}} standalone />
   );
 }
+
+/// A stack: three processes, one of them down. The dot that is not green is
+/// the point — this tab exists for the moment something stops.
+function ServicesMark() {
+  const rows = [
+    { y: 6, tint: '#34d399', w: 168 },
+    { y: 28, tint: '#34d399', w: 136 },
+    { y: 50, tint: '#f59e0b', w: 108 },
+  ];
+  return (
+    <svg width={LANDING_MARK_W} height={92} viewBox="0 0 216 66" fill="none" aria-hidden>
+      {rows.map((r) => (
+        <g key={r.y}>
+          <circle cx="8" cy={r.y + 5} r="6" fill={`color-mix(in srgb, ${r.tint} 60%, transparent)`} />
+          <rect
+            x="26"
+            y={r.y}
+            width={r.w}
+            height="10"
+            rx="5"
+            fill="color-mix(in srgb, var(--c-ink) 9%, transparent)"
+          />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/// Services with nowhere to look yet.
+///
+/// Same document set as the other tabs (see components/onboarding/landing):
+/// what the noun IS, the terms you are agreeing to, and a specimen of the
+/// thing running. The specimen matters more here than anywhere else — a
+/// service list is the one surface where a screenshot explains the feature
+/// faster than a sentence can.
+function ServicesLanding() {
+  const pickProject = useStore((s) => s.pickProject);
+  return (
+    <LandingPage
+      title="Services"
+      subtitle="The processes a project needs running — started, watched and logged beside the code."
+    >
+      <LandingHero
+        mark={<ServicesMark />}
+        eyebrow="Nothing running"
+        title={
+          <>
+            A service is the command
+            <br />
+            your project needs running.
+          </>
+        }
+        lead={
+          <>
+            Point overcli at a repo and it works out how the thing boots — the Vite dev
+            server, the Spring module, the Postgres in your compose file — by reading your
+            run configurations first, since those state the options, then the build files.
+            It shows you what it found and why it concluded each thing, you tick what you
+            want, and from then on those processes live here: started, watched, restarted
+            and logged beside the code instead of across five terminal tabs whose order
+            you have to remember. When one refuses to start, a CLI you have already
+            signed into reads the log and the resolved command and tells you what it
+            thinks went wrong.
+          </>
+        }
+        actions={
+          <>
+            <PrimaryAction label="Add a project" onClick={() => void pickProject()} />
+            <span className="text-[12px] text-ink-faint">
+              then overcli sweeps it for anything that starts
+            </span>
+          </>
+        }
+      />
+
+      {/* The real question on this tab is "will it know MY stack", and the
+          honest answer is a list of the detectors that exist. */}
+      <Chips
+        title="Stacks it already knows"
+        aside="and anything it doesn't, you type the command once"
+        items={KNOWN_STACKS}
+      />
+
+      <LandingColumns wide>
+        <Terms title="How overcli keeps them" items={SERVICE_TERMS} />
+        <div className="flex flex-col gap-5">
+          <StackSpecimen />
+          <ServiceAskDemo />
+        </div>
+      </LandingColumns>
+    </LandingPage>
+  );
+}
+
+/// One per detector in src/main/services/detect.ts. If a detector is added
+/// there and not here the list is a lie, which is the only way this strip can
+/// fail — so it is worth keeping honest.
+const KNOWN_STACKS = [
+  'Node · npm, pnpm, yarn, bun',
+  'Vite',
+  'Angular',
+  'Spring · Gradle & Maven',
+  'Python',
+  'Go',
+  'Rust',
+  'Ruby',
+  'Elixir',
+  'PHP',
+  'Deno',
+  '.NET',
+  'Docker Compose',
+];
+
+const SERVICE_TERMS = [
+  {
+    label: 'The sweep',
+    value:
+      'Overcli looks through each project for anything that starts — run configurations first, since those state the options, then the build files.',
+  },
+  {
+    label: 'The process',
+    value:
+      'A real child process with its own working directory and branch. Start it, stop it, or move it to another branch without leaving the pane.',
+  },
+  {
+    label: 'The log',
+    value:
+      'Kept while it runs and after it exits, so "it worked an hour ago" is a thing you can read rather than remember.',
+  },
+  {
+    label: 'The handoff',
+    value: (
+      <>
+        Type <code className="rounded bg-card px-1 py-0.5 font-mono text-[11px]">@</code> in
+        any chat and every running service is offered by name — see it happen on the
+        right. The turn carries that service&apos;s newest output to the model; your
+        message stays one line.
+      </>
+    ),
+  },
+  {
+    label: 'The help',
+    value:
+      'When one will not start, overcli checks the things worth checking deterministically first — a port already held, a missing tool, a bad option — and only asks a CLI when those come up empty. What it says back is labelled a guess, and it reads the tail of the log, the command and the options as they were actually resolved, with credentials scrubbed. It can also work out a start command for a stack the sweep did not recognise, or explain one somebody else wrote.',
+  },
+  {
+    label: 'The upkeep',
+    value:
+      'Nothing starts itself. Overcli only runs what you asked for, and tells you plainly when one dies.',
+  },
+];
+
+/// Not a screenshot: the four processes almost every project actually has,
+/// in the states you meet them in.
+const SERVICE_SPECIMEN: { name: string; port: string; state: string; tint: string }[] = [
+  { name: 'web', port: ':3000', state: 'running · vite, ready in 412ms', tint: '#34d399' },
+  { name: 'api', port: ':8080', state: 'running · 2 requests in flight', tint: '#34d399' },
+  { name: 'worker', port: '—', state: 'restarting · exited 1, log kept', tint: '#f59e0b' },
+  { name: 'postgres', port: ':5432', state: 'stopped · started with the stack', tint: '#64748b' },
+];
 
 /// And afterwards: the same screen, over the pane.
 function Footer({
@@ -4099,7 +4460,7 @@ function Sheet({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[11px] text-ink-muted">{label}</span>
+      <span className="text-[12px] text-ink-muted">{label}</span>
       {children}
     </label>
   );
@@ -4108,7 +4469,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="mb-4">
-      <div className="mb-1.5 text-[10px] uppercase tracking-wide text-ink-faint">{title}</div>
+      <div className="mb-1.5 text-[11px] uppercase tracking-wide text-ink-faint">{title}</div>
       {children}
     </div>
   );

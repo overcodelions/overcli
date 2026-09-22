@@ -67,6 +67,7 @@ const TAIL_READ_SLACK = 4;
 interface LoadedHistory {
   events: StreamEvent[];
   truncated: boolean;
+  readError?: boolean;
 }
 
 export function loadHistory(args: {
@@ -85,7 +86,9 @@ export function loadHistory(args: {
   const synthetic = new Set(args.syntheticPrompts ?? []);
   const budget = Math.max(1, args.budgetBytes ?? HISTORY_TAIL_BUDGET_BYTES);
   const loaded = loadFullHistory(args, synthetic, budget);
-  return trimHistoryForReplay(loaded.events, budget, loaded.truncated);
+  const replay = trimHistoryForReplay(loaded.events, budget, loaded.truncated);
+  if (loaded.readError) replay.unshift(event({ type: 'systemNotice', text: 'Could not read this transcript; check file permissions or disk health.' }, '', Date.now()));
+  return replay;
 }
 
 function loadFullHistory(
@@ -130,12 +133,12 @@ function loadFullHistory(
 function readTailLines(
   file: string,
   budgetBytes: number,
-): { lines: string[]; truncated: boolean } {
+): { lines: string[]; truncated: boolean; error?: true } {
   let fd: number;
   try {
     fd = fs.openSync(file, 'r');
   } catch {
-    return { lines: [], truncated: false };
+    return { lines: [], truncated: false, error: true };
   }
   try {
     const size = fs.fstatSync(fd).size;
@@ -155,7 +158,7 @@ function readTailLines(
     const nl = text.indexOf('\n');
     return { lines: nl === -1 ? [] : text.slice(nl + 1).split('\n'), truncated: true };
   } catch {
-    return { lines: [], truncated: false };
+    return { lines: [], truncated: false, error: true };
   } finally {
     fs.closeSync(fd);
   }
@@ -397,7 +400,7 @@ function loadClaudeHistory(
   const dir = resolveClaudeProjectDir(slug);
   const file = path.join(dir, `${sessionId}.jsonl`);
   if (!fs.existsSync(file)) return { events: [], truncated: false };
-  const { lines, truncated } = readTailLines(file, budgetBytes);
+  const { lines, truncated, error } = readTailLines(file, budgetBytes);
   const out: StreamEvent[] = [];
   for (const line of lines) {
     const evs = parseClaudeHistoryLine(line);
@@ -408,7 +411,7 @@ function loadClaudeHistory(
       out.push(ev);
     }
   }
-  return { events: out, truncated };
+  return { events: out, truncated, readError: error };
 }
 
 export function parseClaudeHistoryLine(line: string): StreamEvent[] {
@@ -601,6 +604,7 @@ function loadCodexHistory(
   if (!allPaths.length) return { events: [], truncated: false };
   const merged: StreamEvent[] = [];
   let truncated = false;
+  let readError = false;
   for (const p of allPaths) {
     if (!fs.existsSync(p)) continue;
     // Budget-sized tail PER FILE. The union of those tails is a superset of
@@ -608,6 +612,7 @@ function loadCodexHistory(
     // reading every file whole — see `readTailLines`.
     const tail = readTailLines(p, budgetBytes);
     truncated ||= tail.truncated;
+    readError ||= !!tail.error;
     for (const line of tail.lines) {
       const ev = parseCodexHistoryLine(line);
       if (!ev) continue;
@@ -618,7 +623,7 @@ function loadCodexHistory(
     }
   }
   merged.sort((a, b) => a.timestamp - b.timestamp);
-  return { events: dedupeCodexEvents(merged), truncated };
+  return { events: dedupeCodexEvents(merged), truncated, readError };
 }
 
 function findCodexRolloutPaths(

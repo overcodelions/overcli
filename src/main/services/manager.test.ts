@@ -339,6 +339,19 @@ describe('choosing where a service runs', () => {
     expect(mgr.view('ws1').bindings[0].ref).toBe('feature/x');
   });
 
+  it('puts the commit a checkout is on into the view, and never into the file', () => {
+    // The branch alone cannot tell a fresh publish from one three pulls old,
+    // which is what `taskDrift` compares. Saving the sha instead would rewrite
+    // the stack file on every commit and still be stale by the next look.
+    gitRepo();
+    const { mgr } = manager();
+    mgr.addService('ws1', spec, { ref: 'master', path: repo });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+
+    expect(mgr.view('ws1').bindings[0].head).toBe(head);
+    expect(loadStack(dataDir, 'ws1').bindings[0].head).toBeUndefined();
+  });
+
   it('reuses a checkout\'s branch for a few seconds rather than shelling out per look', async () => {
     // `view` runs on every look at the pane, on every service event it
     // refreshes on, and on every `@` typed in the composer. Reading the ref

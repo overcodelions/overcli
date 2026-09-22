@@ -20,6 +20,7 @@ import { useOrchestratorStore } from '../../orchestratorStore';
 import { useRunningMap } from '../../runnersStore';
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
+import { CrewGrid } from './CrewGrid';
 import { PAUSE_TEXT } from './pauseCopy';
 import { PausedActions } from './PausedActions';
 import { WorkerAvatar, useWorkerColors } from './WorkerAvatar';
@@ -142,6 +143,13 @@ export function TodayPane() {
           </p>
         )}
       </div>
+
+      {/* The spine is a DAY; the crew is a ROSTER. On a quiet morning the
+          spine is four rows and the rest of this pane was nine hundred
+          pixels of nothing, while the sidebar had folded most of the crew
+          away for being quiet — so the one place with room to show you who
+          you employ was the one place showing you nothing. */}
+      <CrewGrid />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -93,9 +93,8 @@ export async function openInBrowser(
   browser: Browser,
 ): Promise<{ ok: true; browser: string } | { ok: false; error: string }> {
   return new Promise((resolve) => {
-    // execFile, not exec: the path is user data and must never reach a shell.
-    execFile(browser.exec, [...browser.args, file], (err) => {
-      resolve(err ? { ok: false, error: err.message } : { ok: true, browser: browser.name });
-    });
+    const child = spawn(browser.exec, [...browser.args, file], { detached: true, stdio: 'ignore', windowsHide: true });
+    child.once('spawn', () => { child.unref(); resolve({ ok: true, browser: browser.name }); });
+    child.on('error', (err) => resolve({ ok: false, error: err.message }));
   });
 }

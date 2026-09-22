@@ -36,11 +36,26 @@ import { FlowOverviewPanel } from './FlowOverviewPanel';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
+import type { FlowTemplate } from '@shared/flows/templates';
 import { BrowseLibraryModal } from './BrowseLibraryModal';
+import {
+  LandingColumns,
+  LANDING_MARK_W,
+  LandingHero,
+  LandingPage,
+  PrimaryAction,
+  QuietAction,
+  Specimen,
+  SpecimenRow,
+  StarterCard,
+  StarterGrid,
+  Terms,
+} from '../onboarding/landing';
 import { FlowMonogram } from './FlowMonogram';
 import { resolveOwner } from './FlowRunSidebarRow';
 import { FlowRunLauncher } from './FlowLaunch';
-import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
+import { FlowsAboutModal } from './FlowsAbout';
+import { ModelUpgradeModal, ModelUpgradeStrip, usePendingModelUpgrades } from './ModelUpgradeReview';
 import { SchedulesPane } from './SchedulesPane';
 import { useSchedulesStore } from '../../schedulesStore';
 import { useWorkersStore } from '../../workersStore';
@@ -65,11 +80,16 @@ export function FlowsLibraryPane() {
   // "Browse library" sit underneath the drawer.
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /// Set when the landing's job board picked a template: the picker opens
+  /// straight into it instead of showing its menu.
+  const [pickerTemplate, setPickerTemplate] = useState<string | undefined>(undefined);
   const [browseOpen, setBrowseOpen] = useState(false);
   // Seeded from the library's own filter when the user browses out of a
   // failed local search, so they don't retype it in the modal.
   const [browseQuery, setBrowseQuery] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const modelUpgrades = usePendingModelUpgrades(flows);
   // Schedules are a segment here rather than a top-level tab: a schedule is a
   // trigger on a flow, not a separate kind of work, and a fourth tab would
   // have made a third place to launch a run from. The segment lives in the
@@ -283,13 +303,34 @@ export function FlowsLibraryPane() {
         <RunsOverview standalone />
       ) : (
         <>
-          <ScheduleStrip onOpen={showSchedules} />
-          <RunsStrip onOpen={() => setSegment('runs')} />
+          {/* Both strips are about flows you already have. Above an empty
+              library they are a non-sequitur, and they pushed this tab's
+              landing 60px below every other tab's. */}
+          {flows.length > 0 && (
+            <>
+              <ScheduleStrip onOpen={showSchedules} />
+              <RunsStrip onOpen={() => setSegment('runs')} />
+              <ModelUpgradeStrip upgrades={modelUpgrades} onOpen={() => setUpgradeOpen(true)} />
+            </>
+          )}
 
           {!loaded ? (
             <div className="text-sm text-ink-muted">Loading flows…</div>
           ) : flows.length === 0 ? (
-            <EmptyState onCreate={() => setPickerOpen(true)} />
+            <EmptyState
+              onCreate={() => {
+                setPickerTemplate(undefined);
+                setPickerOpen(true);
+              }}
+              onBrowse={() => {
+                setBrowseQuery('');
+                setBrowseOpen(true);
+              }}
+              onPickTemplate={(id) => {
+                setPickerTemplate(id);
+                setPickerOpen(true);
+              }}
+            />
           ) : (
             <FlowLibraryList
               flows={flows}
@@ -301,7 +342,15 @@ export function FlowsLibraryPane() {
         </>
       )}
 
-      {pickerOpen && <NewFlowPicker onClose={() => setPickerOpen(false)} />}
+      {pickerOpen && (
+        <NewFlowPicker
+          autoTemplateId={pickerTemplate}
+          onClose={() => {
+            setPickerOpen(false);
+            setPickerTemplate(undefined);
+          }}
+        />
+      )}
       {browseOpen && (
         <BrowseLibraryModal
           initialQuery={browseQuery}
@@ -310,6 +359,13 @@ export function FlowsLibraryPane() {
             // Pick up anything installed while the modal was open.
             void reload(projectPaths);
           }}
+        />
+      )}
+      {upgradeOpen && modelUpgrades.length > 0 && (
+        <ModelUpgradeModal
+          upgrades={modelUpgrades}
+          projectPaths={projectPaths}
+          onClose={() => setUpgradeOpen(false)}
         />
       )}
       {aboutOpen && (
@@ -1198,31 +1254,189 @@ function SectionHeading({
   );
 }
 
-function EmptyState({ onCreate }: { onCreate: () => void }) {
-  // No flows yet → use the empty-state card as the "About flows" page
-  // itself. The About modal in the header has the exact same content,
-  // but a first-time user shouldn't have to know to click it.
+/// The pipeline drawn as it runs: four stations, three handoffs, the last one
+/// open because a flow ends at a branch you still have to read.
+function FlowsMark() {
+  const stops = [
+    { x: 14, tint: 'var(--c-backend-claude)' },
+    { x: 80, tint: '#34d399' },
+    { x: 146, tint: 'var(--c-backend-codex)' },
+    { x: 212, tint: 'var(--c-accent)' },
+  ];
   return (
-    <div className="rounded-xl border border-card bg-card/30 p-6 shadow-sm">
-      <div className="flex items-baseline gap-3 mb-5">
-        <div className="text-lg font-semibold">Flows orchestrate multiple models</div>
-        <div className="text-xs text-ink-faint">— here's what you get</div>
-      </div>
-      <FlowsAboutContent compact />
-      <div className="mt-6 pt-4 border-t border-card flex items-center gap-3">
-        <button
-          onClick={onCreate}
-          className="text-xs px-4 py-2 rounded-md bg-accent text-white hover:opacity-90 font-medium"
-        >
-          + Create your first flow
-        </button>
-        <span className="text-[11px] text-ink-faint">
-          Start from a template or describe one — Claude can draft it.
-        </span>
-      </div>
-    </div>
+    <svg width={LANDING_MARK_W} height={85} viewBox="0 0 226 64" fill="none" aria-hidden>
+      <path
+        d="M14 32h198"
+        stroke="color-mix(in srgb, var(--c-ink) 14%, transparent)"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray="4 7"
+      />
+      {stops.map((s, i) => (
+        <circle
+          key={s.x}
+          cx={s.x}
+          cy="32"
+          r={i === stops.length - 1 ? 9 : 11}
+          fill={i === stops.length - 1 ? 'none' : `color-mix(in srgb, ${s.tint} 45%, transparent)`}
+          stroke={`color-mix(in srgb, ${s.tint} 70%, transparent)`}
+          strokeWidth="2"
+        />
+      ))}
+    </svg>
   );
 }
+
+/// Flows with an empty library.
+///
+/// The library page of the document set (components/onboarding/landing): what
+/// a flow IS, the terms of running one, and a pipeline mid-run beside it.
+/// The specimen is the whole argument here — "four steps, four models, three
+/// artifacts" is a sentence nobody believes until they see the handoff drawn.
+function EmptyState({
+  onCreate,
+  onBrowse,
+  onPickTemplate,
+}: {
+  onCreate: () => void;
+  onBrowse: () => void;
+  onPickTemplate: (templateId: string) => void;
+}) {
+  return (
+    <LandingPage gutter={false}>
+      <LandingHero
+        mark={<FlowsMark />}
+        eyebrow="No flows yet"
+        title={
+          <>
+            A flow is a chain of models,
+            <br />
+            each with one job.
+          </>
+        }
+        lead={
+          <>
+            One ask runs through a sequence of steps instead of one long chat, and each
+            step picks its own model. The frontier model reads the ask and writes the
+            plan; a fast or local model does the typing, which is the expensive part by
+            volume; the frontier model comes back to review the diff. You pay top rates
+            on the two steps that decide things and nothing on the hours of work in
+            between — and because each step is handed exactly one artifact, none of them
+            carries a chat transcript that grew all afternoon.
+          </>
+        }
+        actions={
+          <>
+            <PrimaryAction label="Create your first flow" onClick={onCreate} />
+            <QuietAction label="or browse the published library" onClick={onBrowse} />
+          </>
+        }
+        note="Start from a template below, or describe the pipeline you want and let a CLI draft the YAML."
+      />
+
+      {/* Templates before terms, for the same reason the Workers tab puts its
+          job board first: "what would I run one for" comes before "how does
+          one work", and every card here opens a real editable pipeline. */}
+      <FlowPostings onPick={onPickTemplate} />
+
+      <LandingColumns wide>
+        <Terms title="How a flow runs" items={FLOW_TERMS} />
+        <Specimen
+          label="Solve a ticket"
+          aside="four steps, three artifacts"
+          tint="var(--c-accent)"
+          footnote="Each step sees only what it needs: the builder gets the plan, the reviewer gets the diff. Nothing is copy-pasted between models, and you pay premium rates only on the two steps that earn them."
+        >
+          {FLOW_SPECIMEN.map((step, i) => (
+            <SpecimenRow
+              key={step.role}
+              lead={`0${i + 1}`}
+              leadClass="w-6"
+              tint={step.tint}
+              title={step.role}
+              titleClass="w-20"
+              detail={step.model}
+              trailing={
+                <code className="shrink-0 rounded bg-card px-1.5 py-0.5 font-mono text-[10.5px] text-ink-muted">
+                  {step.artifact}
+                </code>
+              }
+            />
+          ))}
+        </Specimen>
+      </LandingColumns>
+    </LandingPage>
+  );
+}
+
+/// Six shipped templates as a board. Clicking one opens the editor on that
+/// pipeline, already rebound to the models this machine actually has — the
+/// picker does the resolving, so nothing here has to know about Ollama.
+function FlowPostings({ onPick }: { onPick: (templateId: string) => void }) {
+  const [templates, setTemplates] = useState<FlowTemplate[]>([]);
+  useEffect(() => {
+    void window.overcli
+      .invoke('flows:listTemplates')
+      .then(setTemplates)
+      .catch(() => setTemplates([]));
+  }, []);
+  if (templates.length === 0) return null;
+  return (
+    <StarterGrid
+      title="Start from one of these"
+      aside="each opens in the editor, already bound to the models on this machine"
+    >
+      {templates.slice(0, 6).map((t) => (
+        <StarterCard
+          key={t.id}
+          title={t.name}
+          body={t.description}
+          tint="var(--c-accent)"
+          onClick={() => onPick(t.id)}
+        />
+      ))}
+    </StarterGrid>
+  );
+}
+
+/// The terms of a pipeline: the four things that make it different from
+/// sending the same prompt four times yourself.
+const FLOW_TERMS = [
+  {
+    label: 'The economics',
+    value:
+      'A frontier model is worth its price for judgement — what to change, and whether the change is right. It is poor value for typing. A flow is how you buy only the first, while a fast or local model absorbs the volume.',
+  },
+  {
+    label: 'The steps',
+    value:
+      'A sequence you write once. Each step names a model, a role and the tools it may use; one participant can own several steps and remember across them.',
+  },
+  {
+    label: 'The artifacts',
+    value:
+      'Output flows forward as files — plan.md, the diff, review.md. The handoff is the point: no copy-paste, and every step is judged on what the last one actually produced.',
+  },
+  {
+    label: 'The worktree',
+    value:
+      'Optionally run the whole pipeline in a fresh git worktree off your base branch. Fire it, close the laptop, come back to a diff.',
+  },
+  {
+    label: 'The checkpoints',
+    value:
+      'Pause before any step to read what came before it, or hijack a participant mid-flight from its own tab without advancing the flow.',
+  },
+];
+
+/// A real template, not an illustration — this is the shape of "Solve a
+/// ticket", down to which model does which job.
+const FLOW_SPECIMEN: { role: string; model: string; artifact: string; tint: string }[] = [
+  { role: 'Plan', model: 'Claude Opus', artifact: 'plan.md', tint: 'var(--c-backend-claude)' },
+  { role: 'Build', model: 'qwen2.5-coder, local', artifact: 'diff', tint: '#34d399' },
+  { role: 'Review', model: 'GPT-5.5', artifact: 'review.md', tint: 'var(--c-backend-codex)' },
+  { role: 'Ship', model: 'you, at a checkpoint', artifact: 'branch', tint: 'var(--c-accent)' },
+];
 
 function FlowTableRow({
   flow,

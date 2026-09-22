@@ -14,6 +14,22 @@ import {
 } from '@shared/flows/worker';
 import { flowRunMatchesQuery, runIsLive } from '../flows/FlowRunSidebarRow';
 
+export interface WorkerHistoryIndex {
+  runs: Record<string, FlowRun[]>;
+  orchestrations: Record<string, Orchestration[]>;
+}
+
+/// Build the worker history buckets once; callers rendering a roster must not
+/// rescan all historical runs once for every worker row.
+export function indexWorkerHistory(runs: Record<string, FlowRun>, orchestrations: Record<string, Orchestration>): WorkerHistoryIndex {
+  const index: WorkerHistoryIndex = { runs: {}, orchestrations: {} };
+  for (const run of Object.values(runs)) if (isWorkerRun(run) && run.workerId) (index.runs[run.workerId] ??= []).push(run);
+  for (const item of Object.values(orchestrations)) if (item.origin?.kind === 'worker' && item.origin.workerId) (index.orchestrations[item.origin.workerId] ??= []).push(item);
+  for (const group of Object.values(index.runs)) group.sort((a, b) => b.createdAt - a.createdAt);
+  for (const group of Object.values(index.orchestrations)) group.sort((a, b) => b.createdAt - a.createdAt);
+  return index;
+}
+
 /// Runs are claimed by worker identity, not by owner path: a workspace worker
 /// can launch a run whose logical owner is a member repository.
 export function workerDeskRuns(runs: Record<string, FlowRun>, workerId: string): FlowRun[] {
@@ -257,6 +273,10 @@ export function workerActivity(
   return workerDeskOrchestrations(orchestrations, workerId)
     .mine.slice(0, limit)
     .map(toWorkerActivity);
+}
+
+export function indexedWorkerActivity(orchestrations: readonly Orchestration[], limit = WORKER_ACTIVITY_LIMIT): WorkerActivity[] {
+  return orchestrations.slice(0, limit).map(toWorkerActivity);
 }
 
 /// The same list across every worker — what the Workers sidebar shows at the

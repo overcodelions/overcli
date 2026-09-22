@@ -81,7 +81,7 @@ export function saveMachineValues(dataDir: string, values: MachineValues): void 
   fs.mkdirSync(servicesRoot(dataDir), { recursive: true });
   const file = machineValuesFile(dataDir);
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(values, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(tmp, `${JSON.stringify(values, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 
@@ -97,6 +97,10 @@ export function loadStack(dataDir: string, workspaceId: string): StackConfig {
       workspaceId,
       services: Array.isArray(parsed.services) ? parsed.services : [],
       bindings: Array.isArray(parsed.bindings) ? parsed.bindings : [],
+      // Absent in every stack written before tasks recorded what they
+      // installed, which is the same as not knowing — the shape the pane
+      // already says out loud.
+      ...(parsed.lastRuns && typeof parsed.lastRuns === 'object' ? { lastRuns: parsed.lastRuns } : {}),
     };
   } catch {
     // A truncated or hand-edited file should not take the pane down with it.

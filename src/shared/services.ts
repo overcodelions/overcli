@@ -185,14 +185,36 @@ export interface ServiceBinding {
   /// Set when this binding runs on an offset port because another stack holds
   /// the service's usual one.
   portOffset?: number;
+  /// The commit the checkout is on right now, filled in when a stack is read
+  /// and never saved: a sha written to disk on every pull would rewrite the
+  /// stack file for a fact that is only true until the next one. What it is
+  /// for is `taskDrift` — a task that published from an earlier commit of the
+  /// branch it is still on is otherwise indistinguishable from a fresh one.
+  head?: string;
 }
 
 /// A workspace's services and where they currently point — the whole
 /// persisted document.
+/// What a task last put on this machine, by service id.
+///
+/// Runtime state lives in memory and dies with the app. What a task INSTALLED
+/// does not: the jar in the local Maven repository, the image tag, the linked
+/// package are all still there tomorrow. Forgetting which commit they came
+/// from is forgetting the only fact that can answer "is what I am building
+/// against current" — and the answer after every restart would be silence,
+/// which reads exactly like "yes".
+export interface TaskRun {
+  ref: string;
+  commit?: string;
+  at: number;
+}
+
 export interface StackConfig {
   workspaceId: string;
   services: ServiceSpec[];
   bindings: ServiceBinding[];
+  /// Keyed by service id, and only for tasks.
+  lastRuns?: Record<string, TaskRun>;
 }
 
 export type ServiceStatus =
@@ -220,14 +242,23 @@ export interface ServiceRuntime {
   debugPort?: number;
   startedAt?: number;
   readyAt?: number;
+  /// Running from before the app was reopened, taken back rather than started
+  /// here — see `Supervisor.adopt`. Everything works except the output: its
+  /// stdout went to a process that no longer exists, so the log is whatever is
+  /// already on disk until a restart puts it back on a pipe we hold.
+  adopted?: boolean;
   exitCode?: number | null;
   lastError?: string;
   /// While `starting`: the name of what it is waiting on before it launches.
   waitingOn?: string;
-  /// For a task: the ref it last finished on, and when. What it produced —
-  /// jars in `~/.m2` — is shared by every checkout on the machine, so which
-  /// branch it came from is the one thing worth knowing about it.
+  /// For a task: the ref it last finished on, and when. Where a task installs
+  /// to — the local Maven repository, an image tag, a linked package, a
+  /// GOPATH — is shared by every checkout on the machine, so which branch it
+  /// came from is the one thing worth knowing about it.
   ranRef?: string;
+  /// And the commit that ref was on when it ran, so a publish followed by a
+  /// pull on the same branch is still visibly older than the checkout.
+  ranCommit?: string;
   finishedAt?: number;
 }
 
@@ -332,6 +363,8 @@ export interface MachineValuesView {
   /// False when this machine has no keychain to encrypt secrets with. The
   /// pane then refuses to mark anything secret rather than pretending.
   secureStorage: boolean;
+  migrationError?: string;
+  backupPath?: string;
 }
 
 /// What the pane renders: the stack plus everything live about it.

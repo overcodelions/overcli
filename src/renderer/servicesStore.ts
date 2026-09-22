@@ -75,6 +75,8 @@ interface ServicesState {
   machine: MachineEntry[];
   /// Whether secrets can be encrypted here at all.
   secureStorage: boolean;
+  migrationError?: string;
+  backupPath?: string;
   /// The Machine values sheet, when open. `needs` are values services refer
   /// to that are not set yet — present when the sheet was opened to fill them
   /// in, after adding services or from a "missing machine values" failure.
@@ -215,7 +217,8 @@ interface ServicesState {
   recheckLease(workspaceId: string): Promise<void>;
 
   ingestStatus(workspaceId: string, runtime: ServiceRuntime): void;
-  ingestLine(workspaceId: string, serviceId: string, line: string): void;
+  ingestLines(workspaceId: string, serviceId: string, lines: string[]): void;
+  deleteMachineBackup(): Promise<void>;
   /// A service was pointed at another checkout. The ref shows at once; the
   /// path follows from a reload, since the event does not carry it.
   ingestRebound(workspaceId: string, serviceId: string, to: string): void;
@@ -247,6 +250,8 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   pendingLease: {},
   machine: [],
   secureStorage: false,
+  migrationError: undefined,
+  backupPath: undefined,
   machineSheet: undefined,
 
   openMachineSheet(needs = []) {
@@ -483,13 +488,18 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
 
   async loadMachine() {
     const view = await window.overcli.invoke('services:machineValues');
-    set({ machine: view.entries, secureStorage: view.secureStorage });
+    set({ machine: view.entries, secureStorage: view.secureStorage, migrationError: view.migrationError, backupPath: view.backupPath });
   },
 
   async saveMachine(entries) {
     await window.overcli.invoke('services:saveMachineValues', entries);
     // Re-read rather than keep what was sent: what was typed into a secret
     // must not linger in renderer state once it is in the keychain.
+    await get().loadMachine();
+  },
+
+  async deleteMachineBackup() {
+    await window.overcli.invoke('services:deleteMachineBackup');
     await get().loadMachine();
   },
 
@@ -911,11 +921,11 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     if (get().stacks[workspaceId]) void get().loadAll([workspaceId]);
   },
 
-  ingestLine(workspaceId, serviceId, line) {
+  ingestLines(workspaceId, serviceId, lines) {
     const key = logKey(workspaceId, serviceId);
     const queue = pendingLines.get(key);
-    if (queue) queue.push(line);
-    else pendingLines.set(key, [line]);
+    if (queue) queue.push(...lines);
+    else pendingLines.set(key, [...lines]);
     if (flushTimer !== undefined) return;
     flushTimer = setTimeout(() => {
       flushTimer = undefined;

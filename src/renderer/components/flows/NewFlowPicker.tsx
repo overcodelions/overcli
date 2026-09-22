@@ -16,7 +16,17 @@ import { backendName } from '../../theme';
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 
-export function NewFlowPicker({ onClose }: { onClose: () => void }) {
+export function NewFlowPicker({
+  onClose,
+  autoTemplateId,
+}: {
+  onClose: () => void;
+  /// Start this template the moment the list arrives and close, without the
+  /// menu ever painting. Set by the landing's job board, where the user has
+  /// already chosen — showing them the picker again would be a second ask
+  /// for a decision they just made.
+  autoTemplateId?: string;
+}) {
   const openEditor = useFlowsStore((s) => s.openEditor);
   const backendHealth = useStore((s) => s.backendHealth);
   const settings = useStore((s) => s.settings);
@@ -40,7 +50,13 @@ export function NewFlowPicker({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     void window.overcli
       .invoke('flows:listTemplates')
-      .then(setTemplates)
+      .then((list) => {
+        setTemplates(list);
+        if (!autoTemplateId) return;
+        const picked = list.find((t) => t.id === autoTemplateId);
+        if (picked) startFromTemplate(picked);
+        else onClose();
+      })
       .catch(() => setTemplates([]));
     // Pull installed ollama models so the resolver can prefer them for
     // fast-tier steps. Detection is cheap (cached after the first call)

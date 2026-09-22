@@ -17,7 +17,6 @@
 // launch these" stays answerable.
 
 import { randomUUID } from 'node:crypto';
-import os from 'node:os';
 
 import type {
   AppSettings,
@@ -282,7 +281,8 @@ export class OrchestratorImpl {
     const model = resolveProducerModel(backend, args.model, settings.flowModelDefaults);
     // Run in the project so MCP servers scoped to that repo (and the model's
     // own file tools) resolve; fall back to home if no project path given.
-    const cwd = args.projectPath?.trim() || os.homedir();
+    const cwd = args.projectPath?.trim();
+    if (!cwd) return { ok: false, error: 'No project selected for the batch.' };
     const prompt = buildProducerPrompt({ ...args, warmResume: !!args.resumeSessionId });
 
     // Producer turns can be slow (tool round-trips against a remote source),

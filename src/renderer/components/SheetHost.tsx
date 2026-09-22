@@ -17,6 +17,8 @@ import { FileFinderSheet } from './sheets/FileFinderSheet';
 import { QuickSwitcherSheet } from './sheets/QuickSwitcherSheet';
 import { FlowLaunchSheet } from './sheets/FlowLaunchSheet';
 import { ShortcutsHelpSheet } from './sheets/ShortcutsHelpSheet';
+import { SetupSheet } from './sheets/SetupSheet';
+import { BasicsSheet } from './sheets/BasicsSheet';
 import { WhatsNewSheet } from './sheets/WhatsNewSheet';
 import { WorktreeDiffSheet } from './sheets/WorktreeDiffSheet';
 import { ProjectDiffSheet } from './sheets/ProjectDiffSheet';
@@ -96,6 +98,10 @@ export function SheetHost() {
   // than max-h so the frame doesn't jump between a two-row pane and a long
   // one as you move down the rail.
   const isSettings = sheet.type === 'settings';
+  // The two help sheets are About's smaller siblings: a hero band, cards and
+  // a specimen panel all need more than the default 680px, which squeezed the
+  // concept grid into one column and wrapped every term onto four lines.
+  const isHelp = sheet.type === 'basics' || sheet.type === 'setup';
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
@@ -115,7 +121,9 @@ export function SheetHost() {
               : 'max-w-[1240px] h-[88vh]'
             : isAbout
               ? 'max-w-[1040px] max-h-[90vh]'
-              : isSettings
+              : isHelp
+                ? 'max-w-[900px] max-h-[86vh]'
+                : isSettings
                 ? 'max-w-[940px] max-h-[88vh]'
                 : isPalette
                   ? 'max-w-[760px] h-[560px] max-h-[78vh]'
@@ -175,6 +183,8 @@ export function SheetHost() {
         {sheet.type === 'fileFinder' && <FileFinderSheet rootPath={sheet.rootPath} />}
         {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet initialScope={sheet.scope} />}
         {sheet.type === 'shortcutsHelp' && <ShortcutsHelpSheet />}
+        {sheet.type === 'setup' && <SetupSheet />}
+        {sheet.type === 'basics' && <BasicsSheet />}
         {sheet.type === 'whatsNew' && <WhatsNewSheet />}
       </div>
     </div>

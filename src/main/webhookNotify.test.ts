@@ -208,6 +208,21 @@ describe('postWebhookNotification', () => {
 });
 
 describe('sendWebhookNotification', () => {
+  it('refuses redirects without issuing a second authenticated request', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 302 } as Response);
+
+    await expect(
+      sendWebhookNotification(URL_OK, { title: 'a', body: 'b' }, { header: 'Authorization', token: 'Bearer secret' }),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'Webhook redirected; refusing to resend to another origin.',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: 'manual' });
+    expect(headersOf()).toMatchObject({ Authorization: 'Bearer secret' });
+  });
+
   it('reports success and failure instead of swallowing (the Send-test path)', async () => {
     await expect(sendWebhookNotification(URL_OK, { title: 'a', body: 'b' })).resolves.toEqual({
       ok: true,

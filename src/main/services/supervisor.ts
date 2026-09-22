@@ -24,11 +24,13 @@ import path from 'node:path';
 import { buildCommand, missingMachineValues, resolveOptions } from './options';
 import { debugLaunch } from './debug';
 import { leaseFor, portForOffset, type LeaseDecision, type PortClaim } from './ports';
+import type { PortOwner, ProcessMatch } from './portOwners';
 import { applyProjection, planProjection, type ProjectionFs } from './projection';
 import type { LogSink } from './logFile';
 import { waitUntilReady, type ProbeDeps } from './readiness';
-import type { ServiceBinding, ServiceRuntime, ServiceSpec } from './types';
+import type { ServiceBinding, ServiceRuntime, ServiceSpec, TaskRun } from './types';
 import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
+import { describeDrift, driftedTasks } from '../../shared/taskDrift';
 import { DEFAULT_READY_TIMEOUT_SEC } from '../../shared/services';
 import { SECRET_MASK } from '../../shared/machineValues';
 import {
@@ -95,6 +97,31 @@ export interface SupervisorDeps {
   /// get it — the manager calling it on some of those paths is how a branch
   /// switch came to start without its local properties. Returns what it linked.
   mirrorLocalConfig?(serviceId: string, checkout: string): Promise<readonly string[]> | readonly string[];
+  /// Who is listening on each of these ports and what they are to the service
+  /// that wants it. A LIST, answered in one pass: a lookup per service is two
+  /// `lsof`s and a `ps` each, and a stack's worth of them started together
+  /// time each other out. Without it nothing is adopted, which is the right
+  /// default for a host that cannot tell a leftover from a database.
+  portOwners?(
+    wanted: readonly { port: number; serviceId: string }[],
+  ): Promise<ReadonlyMap<number, readonly PortOwner[]>>;
+  /// Which process, if any, is already running each of these services — for
+  /// the ones with no port, where the command line and the checkout are the
+  /// only evidence there is. See `matchingProcesses`.
+  matchProcesses?(
+    targets: readonly { serviceId: string; tokens: readonly string[] }[],
+  ): Promise<ReadonlyMap<string, ProcessMatch>>;
+  /// Stop a process by pid, SIGTERM then SIGKILL. The portless counterpart of
+  /// `stopHolder`.
+  stopProcess?(pid: number): Promise<void>;
+  /// Stop whatever holds a port: SIGTERM, then SIGKILL for the one that
+  /// ignores it. Only ever used on an adopted process, which this supervisor
+  /// has no handle to kill.
+  stopHolder?(port: number, serviceId: string): Promise<void>;
+  /// The commit a checkout is on, for recording what a task published from
+  /// and for noticing later that it has moved. Optional: without it a task
+  /// still records its branch, and only the commit comparison goes quiet.
+  headOf?(checkout: string): string | undefined;
   /// Watch paths relative to a service's bound checkout. Optional keeps the
   /// supervisor deterministic in tests and usable by non-Electron hosts.
   watchFiles?(
@@ -144,7 +171,23 @@ export class Supervisor {
     private specs: ServiceSpec[],
     private bindings: ServiceBinding[],
     private readonly deps: SupervisorDeps,
-  ) {}
+    /// What each task last installed, from the stack file. Statuses are
+    /// otherwise a fresh sheet every launch — and a task reading `stopped`
+    /// after a restart says nothing about the jar it left behind, which is
+    /// still what everything here resolves.
+    lastRuns: Readonly<Record<string, TaskRun>> = {},
+  ) {
+    for (const [serviceId, run] of Object.entries(lastRuns)) {
+      if (!this.spec(serviceId)?.task) continue;
+      this.runtimes.set(serviceId, {
+        serviceId,
+        status: 'done',
+        ranRef: run.ref,
+        ranCommit: run.commit,
+        finishedAt: run.at,
+      });
+    }
+  }
 
   on(listener: (e: SupervisorEvent) => void): () => void {
     this.listeners.add(listener);
@@ -248,6 +291,171 @@ export class Supervisor {
     return { started: true };
   }
 
+  /// Take back the services still running from before the app was reopened.
+  ///
+  /// Statuses live in memory and start empty, but a service left running by a
+  /// quit that was asked not to stop it is still there, still holding its
+  /// port. Reading every row as `stopped` is worse than merely wrong: the
+  /// first Start hits the busy port and offers to kill the thing that was
+  /// working.
+  ///
+  /// Only a holder that is a leftover of THIS service is taken. `other` is
+  /// someone's terminal or their database, `self` is overcli, and neither is
+  /// ours to claim — the same three-way rule the port lookup already applies
+  /// before offering to stop anything.
+  ///
+  /// What cannot be taken back is the output. Its stdout was piped to a
+  /// process that no longer exists, so the log holds what is on disk and
+  /// nothing new arrives until a restart. Said in the log rather than left to
+  /// be discovered.
+  async adopt(): Promise<void> {
+    const lookup = this.deps.portOwners;
+    if (!lookup) return;
+
+    const wanted = this.specs.flatMap((spec) =>
+      !spec.task && spec.port !== undefined && this.adoptable(spec.id)
+        ? [{ port: spec.port, serviceId: spec.id }]
+        : [],
+    );
+    if (wanted.length === 0) return;
+    const held = await lookup(wanted);
+
+    for (const spec of this.specs) {
+      if (spec.task || spec.port === undefined) continue;
+      const owners = held.get(spec.port) ?? [];
+      if (owners.length === 0 || !owners.every((o) => o.kind === 'stale')) continue;
+      // The lookup shells out; a start may have happened while it ran.
+      if (!this.adoptable(spec.id)) continue;
+
+      // The port is held, which for a port check IS the readiness check. A log
+      // match cannot be rerun against output we never received, so the held
+      // port stands in for it rather than reporting a service that is up as
+      // never having come up.
+      const probe = { ...this.deps.probe, logMatched: () => true };
+      const ready = await waitUntilReady(spec.ready, probe, { isAlive: () => true, timeoutMs: 2_000 });
+
+      const pid = owners[0].root ?? owners[0].pid;
+      const at = this.deps.probe.now();
+      this.append(spec.id, `── adopted · pid ${pid} was already listening on :${spec.port} ──`);
+      this.append(spec.id, '── its output went to the process that started it; restart to get it back ──');
+      this.setStatus(spec.id, {
+        status: ready.ready ? 'ready' : 'unready',
+        adopted: true,
+        pid,
+        port: spec.port,
+        startedAt: at,
+        readyAt: ready.ready ? at : undefined,
+        exitCode: undefined,
+        lastError: undefined,
+      });
+    }
+
+    await this.adoptPortless();
+  }
+
+  /// The same, for services that listen on nothing.
+  ///
+  /// These are the ones a double launch actually hurts: two copies of a queue
+  /// consumer both take work, and nothing complains the way a taken port does.
+  /// `leaseFor` cannot help — a service that binds nothing collides with
+  /// nothing — so the command line and the checkout have to stand in for the
+  /// port, and a match is only accepted when it is unambiguous.
+  private async adoptPortless(): Promise<void> {
+    const match = this.deps.matchProcesses;
+    if (!match) return;
+
+    const targets = this.specs.flatMap((spec) =>
+      !spec.task && spec.port === undefined && this.adoptable(spec.id)
+        ? [{ serviceId: spec.id, tokens: this.launchTokens(spec) }]
+        : [],
+    );
+    if (targets.length === 0) return;
+
+    for (const [serviceId, found] of await match(targets)) {
+      if (found.kind !== 'stale' || !this.adoptable(serviceId)) continue;
+      const pid = found.root ?? found.pid;
+      this.append(serviceId, `── adopted · pid ${pid} was already running this ──`);
+      this.append(serviceId, '── its output went to the process that started it; restart to get it back ──');
+      this.setStatus(serviceId, {
+        status: 'ready',
+        adopted: true,
+        pid,
+        startedAt: this.deps.probe.now(),
+        readyAt: this.deps.probe.now(),
+        exitCode: undefined,
+        lastError: undefined,
+      });
+    }
+  }
+
+  /// Whether this service is already running, in which case it is taken over
+  /// rather than started again. A process that is somebody's own run is left
+  /// alone and said out loud: starting beside it is their call to make, but
+  /// not one to make without being told.
+  private async claimRunning(spec: ServiceSpec): Promise<boolean> {
+    const found = await this.findRunning(spec);
+    if (!found) return false;
+    if (found.kind !== 'stale') {
+      // Somebody's own run. A port clash explains itself when the start fails;
+      // a portless second copy would not, so say it before starting one.
+      if (spec.port === undefined) {
+        this.append(spec.id, `── pid ${found.pid} is already running this from outside overcli; starting another ──`);
+      }
+      return false;
+    }
+
+    const pid = found.root ?? found.pid;
+    const at = this.deps.probe.now();
+    this.append(spec.id, `── already running as pid ${pid}; adopted rather than started a second time ──`);
+    this.append(spec.id, '── its output went to the process that started it; restart to get it back ──');
+    this.setStatus(spec.id, {
+      status: 'ready',
+      adopted: true,
+      pid,
+      port: spec.port,
+      startedAt: at,
+      readyAt: at,
+      exitCode: undefined,
+      lastError: undefined,
+    });
+    return true;
+  }
+
+  /// A running copy of this service, by its command line first — that finds a
+  /// leftover still booting, before it has bound anything — and then by its
+  /// port.
+  private async findRunning(spec: ServiceSpec): Promise<ProcessMatch | undefined> {
+    const byCommand = await this.deps.matchProcesses?.([{ serviceId: spec.id, tokens: this.launchTokens(spec) }]);
+    const match = byCommand?.get(spec.id);
+    if (match) return match;
+
+    if (spec.port === undefined || !this.deps.portOwners) return undefined;
+    const owners = (await this.deps.portOwners([{ port: spec.port, serviceId: spec.id }])).get(spec.port) ?? [];
+    if (owners.length === 0) return undefined;
+    const first = owners[0];
+    return owners.every((o) => o.kind === 'stale')
+      ? { pid: first.pid, command: first.command, kind: 'stale', root: first.root }
+      : { pid: first.pid, command: first.command, kind: 'other' };
+  }
+
+  /// What this service's command line would be, options included — the part
+  /// that tells four copies of one processor apart. Without the projection or
+  /// the debugger wrapper, which is why a match is containment rather than
+  /// equality: everything here appears in the real argv, with more around it.
+  private launchTokens(spec: ServiceSpec): string[] {
+    const machine = this.deps.machineValues?.() ?? {};
+    try {
+      return buildCommand(spec, resolveOptions(this.specs, spec, machine));
+    } catch {
+      return [...spec.command];
+    }
+  }
+
+  /// Nothing of ours already running or on its way up.
+  private adoptable(serviceId: string): boolean {
+    return !this.procs.has(serviceId) && this.runtime(serviceId).status === 'stopped';
+  }
+
   /// Take an edited stack in place. Replacing the supervisor used to be how an
   /// edit took effect, and it cost far more than the edit: every other
   /// service's output went with it, and anything still running lost its
@@ -279,9 +487,33 @@ export class Supervisor {
     this.stopWatcher(serviceId);
     const proc = this.procs.get(serviceId);
     if (!proc) {
+      const runtime = this.runtime(serviceId);
+      // Adopted: there is no child of ours to signal, so the port is what we
+      // have to go on — the same stop the pane offers for a leftover copy.
+      // By pid whenever there is one: that is the root of the leftover's tree,
+      // and stopping the tree is what frees everything it holds. Through the
+      // port only as a fallback, which reaches the listener and nothing above.
+      if (runtime.adopted && runtime.pid && this.deps.stopProcess) {
+        this.append(serviceId, `── stopping the adopted process, pid ${runtime.pid}, and everything under it ──`);
+        await this.deps.stopProcess(runtime.pid);
+        this.setStatus(serviceId, {
+          status: 'stopped', adopted: undefined, pid: undefined,
+          debugKind: undefined, debugPort: undefined,
+        });
+        return;
+      }
+      if (runtime.adopted && runtime.port !== undefined && this.deps.stopHolder) {
+        this.append(serviceId, `── stopping the adopted process on :${runtime.port} ──`);
+        await this.deps.stopHolder(runtime.port, serviceId);
+        this.setStatus(serviceId, {
+          status: 'stopped', adopted: undefined, pid: undefined, port: undefined,
+          debugKind: undefined, debugPort: undefined,
+        });
+        return;
+      }
       // Waiting on something it depends on: nothing to kill yet, but the
       // start has to be called off.
-      if (this.runtime(serviceId).waitingOn) this.setStatus(serviceId, { status: 'stopped' });
+      if (runtime.waitingOn) this.setStatus(serviceId, { status: 'stopped' });
       return;
     }
     this.procs.delete(serviceId);
@@ -379,7 +611,18 @@ export class Supervisor {
       return;
     }
 
+    // Already running from before the app was reopened? Then take it over
+    // rather than start a second copy. Not only the portless: adoption looks
+    // once, when the pane first opens, and a leftover still booting then — a
+    // JVM a minute from binding its port — is invisible to it. `leaseFor`
+    // cannot catch it either; it only knows about ports overcli handed out.
+    // So the check that matters is this one, at the moment of starting.
+    if (!spec.task && (await this.claimRunning(spec))) return;
+
     const port = spec.port === undefined ? undefined : portForOffset(spec.port, offset);
+    // Read now, not on exit: a commit made while a ten-minute publish runs is
+    // not in what it published.
+    const ranCommit = spec.task ? this.deps.headOf?.(binding.path) : undefined;
 
     let plan;
     try {
@@ -420,6 +663,8 @@ export class Supervisor {
       exitCode: undefined,
       lastError: undefined,
       ranRef: undefined,
+      ranCommit: undefined,
+      adopted: undefined,
       debugKind: undefined,
       debugPort: undefined,
     });
@@ -470,10 +715,7 @@ export class Supervisor {
     const cwd = spec.subpath ? path.join(plan.cwd, spec.subpath) : plan.cwd;
     // File only: the pane already shows the status, but a log read later by an
     // agent needs to know where one run ends and the next begins.
-    this.deps.logSink?.write(
-      spec.id,
-      maskSecrets(`── start ${binding.ref} · ${cwd} · ${debug.command.join(' ')} ──`, this.secrets()),
-    );
+    this.writeLog(spec.id, `── start ${binding.ref} · ${cwd} · ${debug.command.join(' ')} ──`);
     const proc = this.deps.spawn({ command: debug.command, cwd, env: debug.env });
     this.procs.set(spec.id, proc);
 
@@ -513,6 +755,7 @@ export class Supervisor {
           exitCode: code,
           pid: undefined,
           ranRef: binding.ref,
+          ranCommit,
           finishedAt: this.deps.probe.now(),
           debugKind: undefined,
           debugPort: undefined,
@@ -572,25 +815,30 @@ export class Supervisor {
   /// Whether a dependency needs nothing more before its dependent starts. A
   /// task is satisfied only by a finish on the ref it is bound to NOW: after a
   /// rebind, what it published came from somewhere else.
+  ///
+  /// The commit is deliberately not part of this. Re-running a publish costs
+  /// minutes, and doing it on its own because someone pulled would be a worse
+  /// surprise than the stale jar — so a task that has moved on within its
+  /// branch is reported by `noteTaskRefs` and by the pane, beside a button,
+  /// and left for whoever is looking to decide.
   private satisfied(serviceId: string): boolean {
     const runtime = this.runtime(serviceId);
     if (!this.spec(serviceId)?.task) return runtime.status === 'ready';
     return runtime.status === 'done' && runtime.ranRef === this.binding(serviceId)?.ref;
   }
 
-  /// Say so in the output when a task this service waits on ran from a
-  /// different branch of the same project. `~/.m2` holds one copy of each
-  /// artifact for the whole machine, so this service is about to build
-  /// against the task's branch, not its own — legitimate when the task is
-  /// pinned to master, and baffling when nobody meant it.
+  /// Say so in the output when what a task this service waits on published is
+  /// not what its checkout says now. `~/.m2` holds one copy of each artifact
+  /// for the whole machine, so this service is about to build against
+  /// whatever the task last put there — another branch, or the same branch
+  /// several commits ago. Legitimate when a task is pinned to master, and
+  /// baffling when nobody meant it, which is why it is said rather than acted
+  /// on. The same comparison the pane shows, from the same rule.
   private noteTaskRefs(spec: ServiceSpec): void {
-    const ref = this.binding(spec.id)?.ref;
-    if (!ref || !spec.projectId) return;
-    for (const depId of spec.deps ?? []) {
-      const dep = this.spec(depId);
-      const ran = this.runtime(depId).ranRef;
-      if (!dep?.task || dep.projectId !== spec.projectId || !ran || ran === ref) continue;
-      this.append(spec.id, `── ${dep.name} last ran from ${ran}; this starts from ${ref} ──`);
+    const bindings = this.bindings.map((b) => ({ ...b, head: this.deps.headOf?.(b.path) }));
+    const runtimes = this.specs.map((s) => this.runtime(s.id));
+    for (const { task, drift } of driftedTasks(spec, this.specs, runtimes, bindings)) {
+      this.append(spec.id, `── ${describeDrift(task.name, drift)} ──`);
     }
   }
 
@@ -680,10 +928,7 @@ export class Supervisor {
         patch.exitCode !== undefined && patch.exitCode !== null ? `exit ${patch.exitCode}` : '',
         patch.lastError ?? '',
       ].filter(Boolean).join(' · ');
-      this.deps.logSink?.write(
-        serviceId,
-        maskSecrets(`── ${patch.status}${detail ? ` · ${detail}` : ''} ──`, this.secrets()),
-      );
+      this.writeLog(serviceId, `── ${patch.status}${detail ? ` · ${detail}` : ''} ──`);
     }
     this.emit({ kind: 'status', serviceId, runtime: next });
   }
@@ -693,6 +938,7 @@ export class Supervisor {
   /// paints every window. Read once; `clearSecretCache` drops it when the
   /// secret store is written.
   private secretCache: readonly string[] | undefined;
+  private maskCache: readonly string[] | undefined;
 
   private secrets(): readonly string[] {
     if (this.secretCache === undefined) this.secretCache = this.deps.secretValues?.() ?? [];
@@ -701,23 +947,33 @@ export class Supervisor {
 
   clearSecretCache(): void {
     this.secretCache = undefined;
+    this.maskCache = undefined;
+  }
+
+  private mask(raw: string): string {
+    if (this.maskCache === undefined) this.maskCache = [...this.secrets()].sort((a, b) => b.length - a.length);
+    return maskSecretsSorted(raw, this.maskCache);
   }
 
   private append(serviceId: string, raw: string): void {
-    const line = maskSecrets(raw, this.secrets());
+    const line = this.mask(raw);
     const lines = this.logs.get(serviceId) ?? [];
     lines.push(line);
     // Trimming one element off a 20k array per line is an O(20k) memmove per
     // line, forever. Trim in blocks; the reader slices to the exact cap.
     if (lines.length > LOG_LIMIT + LOG_TRIM_BLOCK) lines.splice(0, lines.length - LOG_LIMIT);
     this.logs.set(serviceId, lines);
-    this.deps.logSink?.write(serviceId, line);
+    this.writeLog(serviceId, line);
     this.caught.set(serviceId, feedException(this.caught.get(serviceId) ?? emptyExceptionLog(), line, Date.now()));
     this.emit({ kind: 'line', serviceId, line });
   }
 
   private emit(event: SupervisorEvent): void {
     for (const listener of this.listeners) listener(event);
+  }
+
+  private writeLog(serviceId: string, raw: string): void {
+    this.deps.logSink?.write(serviceId, this.mask(raw));
   }
 }
 
@@ -730,8 +986,12 @@ const MIN_MASKED_LEN = 6;
 /// readable one. `split`/`join` rather than a regex: a password can contain
 /// any regex metacharacter.
 export function maskSecrets(line: string, secrets: readonly string[]): string {
+  return maskSecretsSorted(line, [...secrets].sort((a, b) => b.length - a.length));
+}
+
+function maskSecretsSorted(line: string, secrets: readonly string[]): string {
   let out = line;
-  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+  for (const secret of secrets) {
     if (secret.length < MIN_MASKED_LEN || !out.includes(secret)) continue;
     out = out.split(secret).join(SECRET_MASK);
   }

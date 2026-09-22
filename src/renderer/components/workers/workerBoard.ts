@@ -55,6 +55,9 @@ export interface BoardEntry {
   /// read off this, so a worker that did nothing today has an empty array and
   /// renders as visibly empty rather than as a stale yesterday.
   today: WorkerActivity[];
+  /// The bounded activity list used by the expanded roster row. Keeping it on
+  /// the board entry prevents every row from rescanning the orchestration map.
+  recent: WorkerActivity[];
   /// The newest turn of any day — what "worked today" degrades to for a
   /// worker whose last act was Tuesday.
   newest: WorkerActivity | null;
@@ -178,6 +181,18 @@ export const DAY_MARKS: ReadonlyArray<{ label: string; pos: number }> = [
   { label: '12p', pos: 12 / 24 },
   { label: '6p', pos: 18 / 24 },
 ];
+
+/// How far through the local day `now` is, on the SAME 0..1 rule the ticks
+/// are placed on.
+///
+/// The strip is a whole day wide from the moment it is drawn, so at 10am six
+/// tenths of every row is a future rendered as empty — and "quiet since
+/// breakfast" and "it is only breakfast" came out as the same pixels. The
+/// rule now carries its own present: everything past this fraction is shaded
+/// as not-yet, and the boundary is drawn.
+export function dayProgress(now: number): number {
+  return Math.min(1, Math.max(0, (now - startOfDay(now)) / DAY_MS));
+}
 
 export function tickKind(item: WorkerActivity): TickKind {
   if (item.running > 0) return 'running';

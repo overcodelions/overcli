@@ -14,11 +14,13 @@
 /// Words that say "credential" on their own. One of these wins outright, even
 /// over a locator suffix: SECRET_ID is Vault AppRole's actual credential, not
 /// an identifier.
-const UNAMBIGUOUS = ['password', 'passwd', 'pwd', 'passphrase', 'secret', 'credential'];
+const UNAMBIGUOUS = [
+  'password', 'passwd', 'pwd', 'passphrase', 'secret', 'credential', 'authorization', 'bearer',
+];
 
 /// Words that only suggest one, and defer to a locator: AUTH_URL and
 /// SSH_KEY_PATH name where something lives, not what it is.
-const AMBIGUOUS = ['token', 'apikey', 'privatekey', 'key', 'auth', 'pass', 'private'];
+const AMBIGUOUS = ['token', 'apikey', 'privatekey', 'auth', 'pass', 'private'];
 
 /// Names ending in one of these describe where something is, not what it is.
 const LOCATOR_TOKENS = new Set(['url', 'uri', 'host', 'hostname', 'endpoint', 'port', 'path', 'dir', 'file', 'name', 'id']);
@@ -27,7 +29,10 @@ const LOCATOR_TOKENS = new Set(['url', 'uri', 'host', 'hostname', 'endpoint', 'p
 /// and calling those non-secret is the one mistake this file exists to avoid.
 /// Matched as a substring, so every word here is long enough not to fire on an
 /// ordinary one: `pass` matches as a whole piece only, never inside PASSENGER.
-const EMBEDDABLE = new Set(['password', 'passwd', 'passphrase', 'secret', 'credential', 'apikey', 'privatekey', 'token']);
+const EMBEDDABLE = new Set([
+  'password', 'passwd', 'passphrase', 'secret', 'credential', 'apikey', 'privatekey',
+  'secretkey', 'authorization', 'bearer', 'token',
+]);
 
 function carries(part: string, words: readonly string[]): boolean {
   return words.some((w) => (EMBEDDABLE.has(w) ? part.includes(w) : part === w));
@@ -40,8 +45,13 @@ export function isSecretName(name: string): boolean {
     .map((p) => p.toLowerCase());
   if (parts.length === 0) return false;
   if (parts.some((p) => carries(p, UNAMBIGUOUS))) return true;
+  if (parts.at(-1) === 'threshold') return false;
   if (LOCATOR_TOKENS.has(parts[parts.length - 1])) return false;
-  return parts.some((p) => carries(p, AMBIGUOUS));
+  if (parts.some((p) => carries(p, AMBIGUOUS))) return true;
+  // A bare key is usually a sorting/routing/configuration key. Treat it as
+  // secret only when another token identifies credential material.
+  return parts.some((p, i) => p === 'key' && parts.some((q, j) => j !== i &&
+    ['api', 'aws', 'secret', 'private', 'auth', 'credential', 'bearer'].includes(q)));
 }
 
 /// What a secret's value becomes anywhere it is shown: the Overrides tab, a

@@ -39,6 +39,7 @@ import {
   enabledBackends,
   isBackendEnabled,
   modeLabel,
+  permissionNote,
   permissionTone,
 } from './conversationHeaderHelpers';
 
@@ -312,6 +313,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
             .map((m) => ({
               value: m,
               label: modeLabel(m),
+              note: permissionNote(m),
             }))}
           onPick={(v) => void setPermission(conversationId, v as PermissionMode)}
         />

@@ -48,9 +48,11 @@ function hireSystemPrompt(
   backend: Backend,
   flows: HireFlowOption[],
   projects: HireProjectOption[],
+  crew: string[],
   modelDefaults?: FlowModelDefaults,
 ): string {
   const hints = drafterModelHints(backend, modelDefaults);
+  const crewLines = crew.length > 0 ? crew.map((n) => `  - ${n}`) : ['  (nobody hired yet)'];
   const flowLines =
     flows.length > 0
       ? flows.map((f) => `  - id: "${f.id}" — ${f.name}${f.description ? `: ${f.description}` : ''}`)
@@ -66,8 +68,9 @@ function hireSystemPrompt(
     '',
     '<worker>',
     '{',
-    '  "name": "short persona name, e.g. Scout",',
+    '  "name": "what you CALL this worker — a given name, one word, e.g. Nadia",',
     '  "tagline": "one line under the name — what this worker IS, e.g. \'the overcli innovator\' or \'watches CI and files the flakes\'",',
+    '  "errandStarters": ["two or three one-off things the USER would plausibly ask this worker, in the user\'s own voice — e.g. \'what is stuck?\', \'recheck this morning\' — short, lowercase, no trailing period"],',
     '  "jobDescription": "the job, rewritten to be self-contained and explicit — the worker plans every shift from ONLY this text plus its own journal",',
     '  "cadence": { "kind": "daily", "time": "09:00", "days": [1, 2, 3, 4, 5] },',
     `  "maxItemsPerShift": ${Math.min(3, WORKER_MAX_ITEMS_PER_SHIFT)},`,
@@ -76,6 +79,9 @@ function hireSystemPrompt(
     '  "flowRequest": "Describe the flow needed for the worker\'s daily work."',
     '}',
     '</worker>',
+    '',
+    'THE CREW ALREADY HIRED (the names in use — never reuse one):',
+    ...crewLines,
     '',
     'EXISTING FLOWS (pick flowId from these, or omit it and write flowRequest):',
     ...flowLines,
@@ -89,6 +95,16 @@ function hireSystemPrompt(
     '',
     'Rules:',
     '  - The block MUST be valid JSON (double quotes, no trailing commas, no comments).',
+    '  - NAME: give the worker a name the way a person on the floor has one — a given name,',
+    '    one word, the kind you would say out loud to get someone\'s attention ("Nadia",',
+    '    "Theo", "Imani", "Roscoe"). NOT the job ("Test Coverage Warden"), NOT a tool or a',
+    '    function ("Triage", "Sweeper", "Mender", "Forge"), NOT a product or service name,',
+    '    and no surname, title, punctuation or project suffix. The tagline says what it',
+    '    does; the name is only what you call it. Two reasons it has to be addressable:',
+    '    the user talks TO it, and a colleague delegating work retypes the name EXACTLY —',
+    '    an inexact name silently reaches nobody. So it must also be unique against the',
+    '    crew above. Reach past the first names that come to mind and vary the cultural',
+    '    origin across hires; do not echo the job description, the project or the tools.',
     '  - Exactly one of flowId / flowRequest. Prefer an existing flow when one genuinely fits.',
     '  - flowRequest: describe ONE shift\'s work in 1–3 sentences and ask for the SHORTEST',
     '    flow that delivers it. The worker runs this flow on every item of every shift, so',
@@ -140,6 +156,10 @@ export async function draftWorkerFromPrompt(
     jobDescription: string;
     flows: HireFlowOption[];
     projects: HireProjectOption[];
+    /// The names already on the roster, so the drafter names in the same
+    /// register and never collides with one — a duplicate name resolves to
+    /// nobody at handoff time (see `resolveHandoffTarget`).
+    crew?: string[];
     /// Files the user attached to the hire — a spec for the job, an example
     /// of the deliverable, a screenshot of the board to work from. They ride
     /// with BOTH turns: the contract turn and, when one runs, the flow draft.
@@ -155,7 +175,7 @@ export async function draftWorkerFromPrompt(
 
   const out = await oneShotDraftText(deps, {
     buildSystemPrompt: (backend) =>
-      hireSystemPrompt(backend, args.flows, args.projects, deps.settings.flowModelDefaults),
+      hireSystemPrompt(backend, args.flows, args.projects, args.crew ?? [], deps.settings.flowModelDefaults),
     userMessage: attachmentAwareMessage(`JOB DESCRIPTION:\n${jobDescription}`, args.attachments),
     attachments: args.attachments,
     verb: 'hire',

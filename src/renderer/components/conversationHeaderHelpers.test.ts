@@ -4,9 +4,11 @@ import {
   enabledBackends,
   isBackendEnabled,
   modeLabel,
+  permissionNote,
   permissionTone,
   pickDefaultBackend,
 } from './conversationHeaderHelpers';
+import type { PermissionMode } from '@shared/types';
 
 describe('modeLabel', () => {
   it('renders human-friendly names for each mode', () => {
@@ -15,6 +17,32 @@ describe('modeLabel', () => {
     expect(modeLabel('acceptEdits')).toBe('Accept edits');
     expect(modeLabel('bypassPermissions')).toBe('Bypass (dangerous)');
     expect(modeLabel('default')).toBe('Default');
+  });
+});
+
+describe('permissionNote', () => {
+  const MODES: PermissionMode[] = [
+    'plan',
+    'default',
+    'auto',
+    'acceptEdits',
+    'bypassPermissions',
+  ];
+
+  it('explains every mode in a distinct sentence', () => {
+    const notes = MODES.map(permissionNote);
+    for (const note of notes) expect(note.length).toBeGreaterThan(10);
+    // A duplicate would mean two modes reading identically in the menu,
+    // which is the same as explaining neither.
+    expect(new Set(notes).size).toBe(MODES.length);
+  });
+
+  it('says out loud that bypass asks for nothing', () => {
+    expect(permissionNote('bypassPermissions')).toMatch(/nothing asks/i);
+  });
+
+  it('does not promise plan mode can edit', () => {
+    expect(permissionNote('plan')).toMatch(/no edits/i);
   });
 });
 

@@ -10,5 +10,12 @@ invoked by this application are the property of their respective owners.
 `ollama` is distributed under its own open-source license. Overcli is not
 affiliated with Anthropic, OpenAI, Google, GitHub, or the Ollama project.
 
+Bricolage Grotesque (src/renderer/fonts) is Copyright 2022 The Bricolage
+Grotesque Project Authors (https://github.com/ateliertriay/bricolage). It is
+licensed under the SIL Open Font License, Version 1.1; the full license is
+bundled beside the font file at src/renderer/fonts/OFL-BricolageGrotesque.txt.
+The font is redistributed unmodified and under its original name, and is not
+sold separately from this application.
+
 The project name and logo are trademarks of Lionel Farr. The Apache-2.0
 license does not grant permission to use them. See TRADEMARKS.md.

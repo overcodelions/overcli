@@ -197,7 +197,16 @@ export function portInUse(lines: readonly string[]): { line: string; port?: numb
     /EADDRINUSE|address already in use|port .* (is|was) already in use/i.test(l),
   );
   if (!line) return null;
-  const match = /\bport\s+(\d{2,5})\b/i.exec(line) ?? /:(\d{2,5})\b(?!.*:\d)/.exec(line);
+  // A bare `:NNN` is not a port. Java log patterns put the source line after
+  // the logger — `[o.s.c.a.AnnotationConfigApplicationContext:551]` — and
+  // timestamps are colons and digits throughout, so the last `:NNN` on a JVM
+  // line was reported as the port it could not bind. Only a colon after
+  // something that is actually an address counts: a host, an IP, `[::]`,
+  // `:::` or `*`. The JVM's own BindException names no port at all, and
+  // saying so beats naming the wrong one.
+  const match =
+    /\bport\s+(\d{2,5})\b/i.exec(line) ??
+    /(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]*\]|::|\*):(\d{2,5})\b/i.exec(line);
   return { line, port: match ? Number(match[1]) : undefined };
 }
 
@@ -238,14 +247,23 @@ function portTaken(ctx: TriageContext): Finding[] {
       },
     ];
   }
+  // Nothing to aim a stop at: the output did not say which port, and the
+  // service has none saved. Offering "Stop it and start" there stops nothing.
+  if (port === undefined) {
+    return [
+      {
+        ...base,
+        title: 'Something already holds a port it binds',
+        detail:
+          'The output does not say which port. Most often it is a copy of this service still running — ' +
+          'from before overcli was reopened, or from a terminal. Stop that copy, then start this one.',
+      },
+    ];
+  }
   return [
     {
       ...base,
-      title: owner
-        ? `Port ${port} is held by ${owner.holder}`
-        : port !== undefined
-          ? `Port ${port} is already taken`
-          : 'Its port is already taken',
+      title: owner ? `Port ${port} is held by ${owner.holder}` : `Port ${port} is already taken`,
       detail:
         (owner
           ? 'Check what it is before stopping it — it may be another project, or this one run from a terminal. '

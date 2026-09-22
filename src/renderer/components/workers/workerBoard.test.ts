@@ -8,6 +8,7 @@ import {
   boardGroup,
   boardLine,
   boardReasons,
+  dayProgress,
   dayTicks,
   groupBoard,
   tickKind,
@@ -80,6 +81,7 @@ function entry(overrides: Partial<BoardEntry> = {}): BoardEntry {
     starved: false,
     live: false,
     today: [],
+    recent: [],
     newest: null,
     target: null,
     ...overrides,
@@ -200,5 +202,29 @@ describe('project labels', () => {
     // in its own tone, and colour on this board is reserved for state.
     expect(boardLine(entry({ review: 3 }), 'running', 'tagline')).toBe('3 to review · running');
     expect(boardLine(entry(), null, '')).toBeNull();
+  });
+});
+
+describe('dayProgress', () => {
+  it('reads noon as half the day, on the same rule the ticks use', () => {
+    expect(dayProgress(NOON)).toBeCloseTo(0.5, 5);
+  });
+
+  it('puts midnight at the very start, so nothing of the day is shaded yet', () => {
+    expect(dayProgress(startOfDay(NOON))).toBe(0);
+  });
+
+  it('stays inside the rule at the last minute of the day', () => {
+    const lastMinute = startOfDay(NOON) + 24 * 60 * 60 * 1000 - 60_000;
+    const progress = dayProgress(lastMinute);
+    expect(progress).toBeLessThanOrEqual(1);
+    expect(progress).toBeGreaterThan(0.999);
+  });
+
+  it('agrees with dayTicks about where a turn sits', () => {
+    // The shading and the ticks are two readings of one clock; if they ever
+    // disagree the strip draws a turn in a future it has already shaded.
+    const [tick] = dayTicks([activity('turn-1', NOON)], NOON);
+    expect(tick.pos).toBeCloseTo(dayProgress(NOON), 5);
   });
 });

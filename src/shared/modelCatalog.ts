@@ -9,10 +9,13 @@ import type { Backend } from './types';
 /// surface in every picker that imports `PREMIUM_MODELS`. The first
 /// entry per backend is the auto-pick default — the "(pick a model)"
 /// fallback and the template resolver's per-tier substitution both take
-/// the first matching id. We keep `claude-opus-5` first so it's the
-/// default Claude model (the newest Opus-tier thinking model).
+/// the first matching id. We keep `claude-opus-5-5` first so it's the
+/// default Claude model (the newest Opus-tier thinking model). Opus 5
+/// stays directly behind it: nothing here falls back on its own — the id
+/// goes straight to `claude --model` — so a machine whose CLI predates
+/// 5.5 needs the previous Opus one click away in every picker.
 /// `claude-fable-5-1` is the most premium/advanced model (roughly 2x the
-/// cost of Opus), listed right after the default for anyone who
+/// cost of Opus), listed after the Opus entries for anyone who
 /// explicitly wants it. Order also picks the per-tier default: the
 /// template resolver substitutes the *first* id at a given speed tier, so
 /// `claude-sonnet-5` precedes `claude-sonnet-4-6` to make Sonnet 5 the
@@ -22,7 +25,7 @@ import type { Backend } from './types';
 /// auto-lifted to the next-highest version in the same family on load —
 /// see `liftMissingModel`.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   // `gpt-6-astra` is OpenAI's frontier model (Sept 2026) — the GPT-6
   // generation's flagship, priced well above the 5.6 line. It sits second
   // for the same reason `claude-fable-5-1` does: the frontier tier is
@@ -79,7 +82,7 @@ export function canonicalizePremiumModel(
 /// run of digits: everything before is the `prefix`, everything after is
 /// the `suffix`, and the run itself becomes a numeric `version` tuple. The
 /// `familyKey` (prefix + suffix) identifies the model *line* independent of
-/// version, so `claude-opus-4-7`, `claude-opus-4-8`, and `claude-opus-5`
+/// version, so `claude-opus-4-8`, `claude-opus-5`, and `claude-opus-5-5`
 /// all share the key `claude-opus|` while `gpt-5.4-mini`/`gpt-5.6-mini`
 /// share `gpt|mini`. Returns null for ids with no numeric version.
 function parseModelVersion(id: string): { familyKey: string; version: number[] } | null {
@@ -142,6 +145,37 @@ export function liftMissingModel(backend: Exclude<Backend, 'ollama'>, model: str
   return highest[0].id;
 }
 
+/// The newest catalog model in the same family AND the same speed tier as
+/// `model` — the id an "upgrade my flows" pass should offer. Returns `model`
+/// itself when nothing newer ships, or when the id isn't in the catalog
+/// (`liftMissingModel` owns retired ids; this is only for ones still listed).
+///
+/// Deliberately narrower than `snapToTierDefault`: the drafter may swap Haiku
+/// for Sonnet because *it* picked the tier, but a model the user chose by hand
+/// only ever moves within its own line — Opus 5 → Opus 5.5, Sonnet 4.6 →
+/// Sonnet 5 — so an upgrade never changes what kind of model a step runs, and
+/// staying inside the tier keeps a frontier release from ambushing a
+/// thinking-tier pin.
+export function newestInFamily(backend: Exclude<Backend, 'ollama'>, model: string): string {
+  const list = PREMIUM_MODELS[backend];
+  if (!list || !list.includes(model)) return model;
+  const target = parseModelVersion(model);
+  if (!target) return model;
+  const tier = modelSpeed(model);
+  let best = model;
+  let bestVersion = target.version;
+  for (const id of list) {
+    if (modelSpeed(id) !== tier) continue;
+    const parsed = parseModelVersion(id);
+    if (!parsed || parsed.familyKey !== target.familyKey) continue;
+    if (compareModelVersion(parsed.version, bestVersion) > 0) {
+      best = id;
+      bestVersion = parsed.version;
+    }
+  }
+  return best;
+}
+
 /// Speed tier per model id. Drives a ⚡ marker in the picker so users
 /// can spot the fast/cheap tier at a glance.
 ///   - 'fast': low latency, low cost; good for workers and quick tasks
@@ -161,6 +195,7 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   // to it renders its tier marker correctly until `liftMissingModel` moves
   // it forward.
   'claude-fable-5': 'frontier',
+  'claude-opus-5-5': 'thinking',
   'claude-opus-5': 'thinking',
   'claude-opus-4-8': 'thinking',
   'claude-sonnet-5': 'fast',

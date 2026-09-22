@@ -73,29 +73,25 @@ import {
   type Worker,
 } from "@shared/flows/worker";
 import type { TreasuryAllocation } from "@shared/flows/treasury";
+import { useWorkerBoard, ACTIVITY_SCAN } from "./useWorkerBoard";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { TRUST_LABEL } from "./WorkerRowParts";
 import {
   describeActivity,
-  deskMatchesQuery,
-  orchestrationForRun,
   relativeTime,
-  summarizeDesk,
-  workerActivity,
   sidebarActivity,
   sidebarShifts,
   startOfDay,
   workerDeskOrchestrations,
   workerDeskRuns,
-  workerHomeName,
   type WorkerActivity,
 } from "./workerDeskSelectors";
 import {
   DAY_MARKS,
   boardLine,
+  dayProgress,
   boardReasons,
   dayTicks,
-  groupBoard,
   type BoardEntry,
   type DayTick,
 } from "./workerBoard";
@@ -116,8 +112,6 @@ const NESTED_TURNS = 5;
 /// newest plus whatever still owes you a decision. Only a worker holding an
 /// implausible pile of unreviewed shifts hits this.
 const NESTED_SHIFTS = 4;
-/// How deep we look for those turns before the day filter runs.
-const ACTIVITY_SCAN = 40;
 
 export function WorkersSidebar({
   query,
@@ -169,36 +163,15 @@ export function WorkersSidebar({
     if (view === "worker" && selectedWorkerId) onExpand(selectedWorkerId);
   }, [view, selectedWorkerId, onExpand]);
 
-  // Search matches a worker's own runs too, not just its name — you look for a
-  // worker by what it did at least as often as by what it is called.
-  // What each worker's project or workspace is called, resolved once for the
-  // whole roster: the row shows it, and the search box matches it, so "ocli"
-  // or "acme" narrows a nineteen-worker board to one crew.
-  const homeByWorkerId = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const worker of Object.values(workers)) {
-      out[worker.id] = workerHomeName(worker, projects, workspaces);
-    }
-    return out;
-  }, [workers, projects, workspaces]);
-  // Only worth drawing when the crew spans more than one home. On a
-  // single-project board the label annotates nothing — it would be the same
-  // word under every name, which is the noise rule 5 exists for.
-  const showHome = useMemo(
-    () => new Set(Object.values(homeByWorkerId).filter(Boolean)).size > 1,
-    [homeByWorkerId],
-  );
-  const roster = useMemo(
-    () =>
-      sortRoster(
-        Object.values(workers).filter((w) =>
-          query
-            ? deskMatchesQuery(w, workerDeskRuns(runs, w.id), query, homeByWorkerId[w.id])
-            : true,
-        ),
-      ),
-    [workers, query, runs, homeByWorkerId],
-  );
+  // Everything this column draws, reduced once. It used to be a `useMemo`
+  // right here, which was right while the sidebar was the only surface that
+  // drew a roster; the crew grid on the Today page draws the same workers
+  // from the same stores, so the reduction moved to a hook they share.
+  // `roster` is the query already applied — search matches a worker's own
+  // runs and its project name too, not just what it is called.
+  const board = useWorkerBoard(query);
+  const { roster } = board;
+
   const dropWorker = useWorkersStore((s) => s.dropWorker);
   // A nudge moves the worker within the group it is DRAWN in. Resolved
   // against the full roster (not the search-filtered one) so ordering while a
@@ -214,78 +187,6 @@ export function WorkersSidebar({
   const hirePath = workspaces[0]?.rootPath ?? projects[0]?.path ?? "";
   const [hireMenuOpen, setHireMenuOpen] = useState(false);
   const hireEveryday = projects.find((project) => project.path === hirePath)?.everyday;
-
-  // Everything the board needs, reduced once per worker. Built here because
-  // this is the component that owns the stores; every decision made FROM it
-  // lives in `workerBoard`, where it can be tested without a renderer.
-  //
-  // `now` is read once per pass rather than per row, so thirteen strips are
-  // all drawn against the same midnight — otherwise a row rendered either
-  // side of it would silently use a different day.
-  const board = useMemo(() => {
-    const now = Date.now();
-    const starved = new Set(
-      (allocation?.byWorker ?? [])
-        .filter((f) => f.blocked === "pool")
-        .map((f) => f.workerId),
-    );
-    const entries: BoardEntry[] = roster.map((worker) => {
-      const awaiting = workerDeskOrchestrations(orchestrations, worker.id)
-        .awaiting;
-      const review = awaiting.reduce(
-        (count, o) =>
-          count + o.items.filter((item) => item.status === "proposed").length,
-        0,
-      );
-      const claimed = workerDeskRuns(runs, worker.id);
-      const pausedRuns = claimed.filter((run) => run.state.kind === "paused");
-      const summary = summarizeDesk(
-        claimed,
-        awaiting,
-        runners,
-        !!shiftProgress[worker.id],
-      );
-      const recent = workerActivity(orchestrations, worker.id, ACTIVITY_SCAN);
-      const today = recent.filter(
-        (item) => startOfDay(item.at) === startOfDay(now),
-      );
-      // Where the click LANDS: the turn holding the decision, not the
-      // worker. Selecting the worker opens the desk on today, and the
-      // thing that needs you may be a turn from Tuesday — a "needs you"
-      // row that lands on a clean desk is a door painted on a wall.
-      // Proposed work outranks a paused run, the newest of either stands
-      // for the rest, and the desk shows that turn's whole day anyway.
-      const focusOn =
-        awaiting[0] ??
-        (pausedRuns[0]
-          ? orchestrationForRun(orchestrations, pausedRuns[0].id)
-          : null);
-      return {
-        worker,
-        review,
-        pausedRuns: pausedRuns.length,
-        home: showHome ? homeByWorkerId[worker.id] ?? "" : "",
-        runs: claimed,
-        starved: starved.has(worker.id),
-        live: summary.live,
-        today,
-        newest: recent[0] ?? null,
-        target: focusOn
-          ? { orchestrationId: focusOn.id, at: focusOn.createdAt }
-          : null,
-      };
-    });
-    return { now, groups: groupBoard(entries), entries };
-  }, [
-    roster,
-    orchestrations,
-    runs,
-    runners,
-    shiftProgress,
-    allocation,
-    homeByWorkerId,
-    showHome,
-  ]);
 
   // The quiet workers and the bench each fold to a single row. Local rather
   // than in the Sidebar's persisted set, which holds worker ids: these are two
@@ -865,7 +766,8 @@ const FOLD_FACES = 4;
 /// crew's day is readable straight down the column. A worker that did nothing
 /// draws an empty rule rather than nothing at all — the emptiness IS the
 /// answer, and a missing strip would just look like a layout bug.
-function DayStrip({ ticks, name }: { ticks: DayTick[]; name: string }) {
+function DayStrip({ ticks, name, now }: { ticks: DayTick[]; name: string; now: number }) {
+  const progress = dayProgress(now);
   return (
     <span
       title={
@@ -875,6 +777,19 @@ function DayStrip({ ticks, name }: { ticks: DayTick[]; name: string }) {
       }
       className="relative block h-3 w-[60px] shrink-0 overflow-hidden rounded-[2px] border border-card bg-card-strong"
     >
+      {/* The rest of the day, drawn as a thing that has not happened rather
+          than as room the worker failed to fill. Under the ticks, never over
+          them: a tick at 23:00 on a worker that is mid-turn is still a tick. */}
+      <span
+        aria-hidden
+        className="absolute inset-y-0 right-0 bg-[color:var(--c-surface)]/45"
+        style={{ left: `${(progress * 100).toFixed(2)}%` }}
+      />
+      <span
+        aria-hidden
+        className="absolute inset-y-0 w-px bg-accent/70"
+        style={{ left: `${(progress * 100).toFixed(2)}%` }}
+      />
       {ticks.map((tick) => (
         <span
           key={tick.id}
@@ -928,8 +843,8 @@ function TickLegend() {
     <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-2 pt-3 text-[9px] text-ink-faint">
       {(
         [
-          ["shift", "shift"],
-          ["errand", "errand"],
+          ["shift", "shift \u00b7 it decided"],
+          ["errand", "errand \u00b7 you asked"],
           ["review", "to review"],
           ["running", "running"],
         ] as Array<[DayTick["kind"], string]>
@@ -1110,18 +1025,17 @@ function RosterRow({
   compact?: boolean;
 }) {
   const { worker } = entry;
-  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
 
   const recent = useMemo(
     () =>
       sidebarActivity(
-        workerActivity(orchestrations, worker.id, ACTIVITY_SCAN),
+        entry.recent,
         now,
         ACTIVITY_SCAN,
       ),
-    [orchestrations, worker.id, now],
+    [entry.recent, now],
   );
   // The strip reads off the board's own day slice, not off `recent` — which
   // falls back to yesterday's last turn when today is empty, and a yesterday
@@ -1291,7 +1205,7 @@ function RosterRow({
                 would be answering a question nobody asked. */}
             {!compact && !query && (
               <span className="shrink-0 transition-opacity duration-150 group-hover/row:opacity-0">
-                <DayStrip ticks={ticks} name={worker.name} />
+                <DayStrip ticks={ticks} name={worker.name} now={now} />
               </span>
             )}
           </span>

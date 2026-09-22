@@ -15,6 +15,11 @@ export function BrowseLibraryModal({ onClose, initialQuery = '' }: { onClose: ()
   const [installing, setInstalling] = useState<string | null>(null);
   const [installErrors, setInstallErrors] = useState<Record<string, string>>({});
   const [justInstalled, setJustInstalled] = useState<Set<string>>(new Set());
+  // What each install had to rebind, keyed like `justInstalled`. Only this
+  // session's installs — a flow installed last week needs no explanation.
+  const [adaptedByKey, setAdaptedByKey] = useState<
+    Record<string, Array<{ where: string; from: string; to: string }>>
+  >({});
   const [query, setQuery] = useState(initialQuery);
   // Installs from PREVIOUS sessions, recovered from settings. Without this
   // the modal forgets everything on close and re-offers "Install" for flows
@@ -82,6 +87,8 @@ export function BrowseLibraryModal({ onClose, initialQuery = '' }: { onClose: ()
       setInstallErrors((prev) => ({ ...prev, [key]: result.error || 'Install failed' }));
     } else {
       setJustInstalled((prev) => new Set([...prev, key]));
+      const adapted = result.adapted ?? [];
+      if (adapted.length > 0) setAdaptedByKey((prev) => ({ ...prev, [key]: adapted }));
       setInstallErrors((prev) => {
         const { [key]: _, ...rest } = prev;
         return rest;
@@ -258,6 +265,7 @@ export function BrowseLibraryModal({ onClose, initialQuery = '' }: { onClose: ()
               installing={installing === `${selectedEntry.registryId}:${selectedEntry.id}`}
               installed={installed.has(`${selectedEntry.registryId}:${selectedEntry.id}`)}
               error={installErrors[`${selectedEntry.registryId}:${selectedEntry.id}`]}
+              adapted={adaptedByKey[`${selectedEntry.registryId}:${selectedEntry.id}`]}
               onInstall={() => handleInstall(selectedEntry)}
               fetchFlow={previewRegistryFlow}
               onTagClick={(tag) => setSelectedTags((prev) => {
@@ -282,6 +290,7 @@ function PreviewPane({
   installing,
   installed,
   error,
+  adapted,
   onInstall,
   onTagClick,
   fetchFlow,
@@ -290,6 +299,7 @@ function PreviewPane({
   installing: boolean;
   installed: boolean;
   error?: string;
+  adapted?: Array<{ where: string; from: string; to: string }>;
   onInstall: () => void;
   onTagClick: (tag: string) => void;
   fetchFlow: (args: { registryId: string; id: string; version: string }) => Promise<{ ok: true; flow: Flow; risks: FlowRiskFinding[] } | { ok: false; error: string }>;
@@ -417,6 +427,19 @@ function PreviewPane({
         >
           {installing ? 'Installing…' : installed ? '✓ Installed' : 'Install flow'}
         </button>
+        {/* Said once, right where the install happened. Without it the flow
+            the user opens next names different models than the preview they
+            just read, with nothing to say why. */}
+        {installed && adapted && adapted.length > 0 && (
+          <div className="text-xs text-ink-muted bg-card rounded px-2 py-1.5 space-y-1">
+            <div>Bound to the models this machine can run:</div>
+            {adapted.map((a) => (
+              <div key={a.where} className="font-mono text-[11px]">
+                {a.where}: <span className="text-ink-faint">{a.from}</span> → {a.to}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

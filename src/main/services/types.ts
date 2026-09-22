@@ -30,6 +30,7 @@ export type {
   ServiceSpec,
   ServiceStatus,
   StackConfig,
+  TaskRun,
   StackView,
 } from '../../shared/services';
 

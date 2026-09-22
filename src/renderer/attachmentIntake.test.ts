@@ -81,6 +81,15 @@ describe('intakeAttachments — size rejection', () => {
     expect(rejections[0]).toContain('max is 25 MB');
   });
 
+  it('rounds a 25.4 MB rejected file up without rounding the 25 MB cap up', async () => {
+    const big = new File(['x'], 'fractional.txt', { type: 'text/plain' });
+    Object.defineProperty(big, 'size', { value: 25.4 * 1024 * 1024 });
+
+    const { rejections } = await intakeAttachments([big]);
+
+    expect(rejections[0]).toContain('is 26 MB; max is 25 MB');
+  });
+
   it('still attaches a file at or under the limit', async () => {
     const ok = new File(['x'], 'ok.txt', { type: 'text/plain' });
     Object.defineProperty(ok, 'size', { value: MAX_LLM_ATTACHMENT_BYTES });

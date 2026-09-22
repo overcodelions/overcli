@@ -148,6 +148,11 @@ export type ActiveSheet =
       baseBranch?: string;
     }
   | { type: 'shortcutsHelp' }
+  /// The CLI/git setup guide, and the concept explainer the first-run
+  /// screen shows once. Both are reachable from the Help menu — see
+  /// buildMenu in src/main/index.ts.
+  | { type: 'setup' }
+  | { type: 'basics' }
   | { type: 'whatsNew' };
 
 export type DetailMode =
@@ -183,6 +188,11 @@ export interface GitStatus {
 export type { RunnerState } from './runnersStore';
 
 interface StoreState {
+  /// False until `init()` has put the persisted state in. Nothing that keys
+  /// off "the user has no projects" may render before this flips, or it
+  /// renders the answer for an empty disk and then takes it back — which is
+  /// what made the welcome screen flash on every launch.
+  storeLoaded: boolean;
   // Persistent model
   projects: Project[];
   workspaces: Workspace[];
@@ -1226,10 +1236,20 @@ export const useStore = create<StoreState>((set, get) => ({
   projectIsGitRepo: {},
   documentRevisions: {},
   versionRestoreToken: 0,
+  storeLoaded: false,
   ...createUiSlice<StoreState>(set, get),
 
   async init() {
-    const state = await window.overcli.invoke('store:load');
+    let state: Awaited<ReturnType<typeof window.overcli.invoke<'store:load'>>>;
+    try {
+      state = await window.overcli.invoke('store:load');
+    } catch (err) {
+      // A load that never resolves would otherwise leave the app on a blank
+      // pane forever, since the empty-state screens now wait on this flag.
+      // An unreadable store IS an empty one as far as the UI goes.
+      set({ storeLoaded: true });
+      throw err;
+    }
     // Restore the non-conversation part of the last view (detail mode, focused
     // project/workspace) so a renderer reload — e.g. after a long macOS sleep
     // discards and reloads the render process — lands the user back where they
@@ -1242,6 +1262,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // health spawns only bought a blank app for several seconds on startup.
     const view = state.view;
     set({
+      storeLoaded: true,
       projects: state.projects,
       workspaces: state.workspaces,
       colosseums: state.colosseums,
@@ -4117,8 +4138,6 @@ export const useStore = create<StoreState>((set, get) => ({
       });
       if (initForGlobal) set({ lastInit: initForGlobal });
     } else if (event.type === 'running') {
-      // Ignore the menu-sentinel used for Cmd+N; routed separately.
-      if (event.conversationId === '__menu_new_conversation__') return;
       const wasRunning = getRunner(event.conversationId)?.isRunning ?? false;
       const justCompleted = wasRunning && !event.isRunning;
       const justStarted = !wasRunning && event.isRunning;
@@ -4390,7 +4409,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // The rebind marker also reaches the log as a line; the event itself
       // moves the row's branch chip without waiting for the rebind to finish.
       event.type === 'serviceStatus' ||
-      event.type === 'serviceLine' ||
+      event.type === 'serviceLines' ||
       event.type === 'serviceRebound'
     ) {
       // Services are long-lived runtime shared by the whole workspace, so
@@ -4399,7 +4418,7 @@ export const useStore = create<StoreState>((set, get) => ({
         const store = useServicesStore.getState();
         if (event.type === 'serviceStatus') store.ingestStatus(event.workspaceId, event.runtime);
         else if (event.type === 'serviceRebound') store.ingestRebound(event.workspaceId, event.serviceId, event.to);
-        else store.ingestLine(event.workspaceId, event.serviceId, event.line);
+        else store.ingestLines(event.workspaceId, event.serviceId, event.lines);
       });
     }
   },

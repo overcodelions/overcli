@@ -118,4 +118,31 @@ describe('history tail reads', () => {
     // Same tail either way — the extra budget is spent going further back.
     expect(large.slice(-small.length)).toEqual(small);
   });
+
+  it('distinguishes an unreadable transcript from a genuinely empty one', () => {
+    const { projectPath, sessionId } = writeClaudeTranscript(1, 0);
+    vi.spyOn(fs, 'openSync').mockImplementationOnce(() => { throw new Error('EACCES'); });
+
+    const failed = loadHistory({ backend: 'claude', projectPath, sessionId });
+    expect(failed[0].kind).toMatchObject({
+      type: 'systemNotice',
+      text: 'Could not read this transcript; check file permissions or disk health.',
+    });
+
+    vi.restoreAllMocks();
+    const empty = writeClaudeTranscript(0, 0);
+    expect(loadHistory({ backend: 'claude', ...empty })).toEqual([]);
+  });
+
+  it('surfaces a read failure after a transcript was opened', () => {
+    const { projectPath, sessionId } = writeClaudeTranscript(1, 100);
+    vi.spyOn(fs, 'readSync').mockImplementationOnce(() => { throw new Error('EIO'); });
+
+    const failed = loadHistory({ backend: 'claude', projectPath, sessionId, budgetBytes: 1 });
+
+    expect(failed[0].kind).toMatchObject({
+      type: 'systemNotice',
+      text: 'Could not read this transcript; check file permissions or disk health.',
+    });
+  });
 });

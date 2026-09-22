@@ -1867,7 +1867,9 @@ export class FlowRuntimeImpl {
       model: effectiveParticipantModel(run, prior.participantId),
       permissionMode: 'default',
       flowStep: true,
-      chrome: run.chrome,
+      // A run with no interactive owner does not inherit the global Chrome
+      // setting; only an explicit `flows:setChrome` turns it on.
+      chrome: run.chrome ?? false,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -3049,7 +3051,7 @@ export class FlowRuntimeImpl {
       permissionMode: this.resolvePermissionMode(run, step),
       // Runtime-driven, not a user hijack — see SendArgs.flowStep.
       flowStep: true,
-      chrome: run.chrome,
+      chrome: run.chrome ?? false,
       turbo: step.turbo,
       reviewBackend: step.rebound?.critic.backend ?? null,
       reviewMode: step.rebound?.mode ?? null,
@@ -3170,7 +3172,7 @@ export class FlowRuntimeImpl {
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, next),
       turbo: next.turbo,
-      chrome: run.chrome,
+      chrome: run.chrome ?? false,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -3638,7 +3640,7 @@ export class FlowRuntimeImpl {
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
       flowStep: true,
-      chrome: run.chrome,
+      chrome: run.chrome ?? false,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
