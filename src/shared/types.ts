@@ -1224,6 +1224,10 @@ export interface AppSettings {
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
+  /// Flow model upgrades the user declined in the library's "Upgrade
+  /// models" review, keyed by `modelUpgradeSkipKey` (flow + from + to).
+  /// Keyed on the target too, so a newer release is offered afresh.
+  skippedModelUpgrades?: string[];
   /// Where a flow launched from the start page or the Flows library runs
   /// by default: 'cwd' works directly in the project/workspace tree,
   /// 'worktree' mints a fresh worktree off the base branch. The launcher's

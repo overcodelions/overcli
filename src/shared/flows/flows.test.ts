@@ -33,7 +33,7 @@ describe('flow yaml round-trip', () => {
     expect(flow.steps).toHaveLength(5);
     expect(flow.steps[0].id).toBe('plan');
     expect(flow.steps[0].role).toBe('planner');
-    expect(flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-5' });
+    expect(flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-5-5' });
     expect(flow.steps[0].rebound?.critic.model).toBe('claude-sonnet-4-6');
     expect(flow.steps[0].rebound?.maxIters).toBe(3);
   });

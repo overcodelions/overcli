@@ -7,6 +7,7 @@ import {
   modelSpeed,
   modelTierLabel,
   latestAtTier,
+  newestInFamily,
   snapToTierDefault,
   tierDefault,
   PREMIUM_MODELS,
@@ -27,8 +28,15 @@ describe('PREMIUM_MODELS', () => {
     }
   });
 
-  it('lists claude-opus-5 first so it is the default Claude model', () => {
-    expect(PREMIUM_MODELS.claude[0]).toBe('claude-opus-5');
+  it('lists claude-opus-5-5 first so it is the default Claude model', () => {
+    expect(PREMIUM_MODELS.claude[0]).toBe('claude-opus-5-5');
+  });
+
+  it('keeps the previous Opus one entry behind the default', () => {
+    // Nothing falls back on its own — the id goes straight to
+    // `claude --model` — so a CLI that predates 5.5 needs Opus 5 visible
+    // right next to it in every picker.
+    expect(PREMIUM_MODELS.claude[1]).toBe('claude-opus-5');
   });
 
   it('has retired claude-opus-4-7', () => {
@@ -63,7 +71,7 @@ describe('liftMissingModel', () => {
 
   it('falls back to the highest in-family version when nothing is newer', () => {
     // A hypothetical opus 6: nothing higher ships, so settle for the top.
-    expect(liftMissingModel('claude', 'claude-opus-6')).toBe('claude-opus-5');
+    expect(liftMissingModel('claude', 'claude-opus-6')).toBe('claude-opus-5-5');
   });
 
   it('stays within the model family (sonnet lifts to sonnet, not opus)', () => {
@@ -231,6 +239,7 @@ describe('modelSpeed', () => {
   it.each([
     ['claude-fable-5-1', 'frontier'],
     ['claude-fable-5', 'frontier'],
+    ['claude-opus-5-5', 'thinking'],
     ['claude-opus-5', 'thinking'],
     ['claude-opus-4-8', 'thinking'],
     ['claude-sonnet-5', 'fast'],
@@ -306,7 +315,7 @@ describe('modelTierLabel', () => {
 
 describe('latestAtTier', () => {
   it('resolves each backend to its current model per tier', () => {
-    expect(latestAtTier('claude', 'thinking')).toBe('claude-opus-5');
+    expect(latestAtTier('claude', 'thinking')).toBe('claude-opus-5-5');
     expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5');
     expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5-1');
     expect(latestAtTier('codex', 'thinking')).toBe('gpt-5.6-sol');
@@ -344,9 +353,9 @@ describe('latestAtTier', () => {
 
 describe('tierDefault', () => {
   it('falls back to auto when no override is set', () => {
-    expect(tierDefault('claude', 'thinking')).toBe('claude-opus-5');
-    expect(tierDefault('claude', 'thinking', {})).toBe('claude-opus-5');
-    expect(tierDefault('claude', 'thinking', { claude: {} })).toBe('claude-opus-5');
+    expect(tierDefault('claude', 'thinking')).toBe('claude-opus-5-5');
+    expect(tierDefault('claude', 'thinking', {})).toBe('claude-opus-5-5');
+    expect(tierDefault('claude', 'thinking', { claude: {} })).toBe('claude-opus-5-5');
   });
 
   it("honours the user's pin", () => {
@@ -370,7 +379,7 @@ describe('tierDefault', () => {
 
   it('ignores a pin we no longer ship rather than poisoning every flow', () => {
     expect(tierDefault('claude', 'thinking', { claude: { thinking: 'claude-opus-4-1' } })).toBe(
-      'claude-opus-5',
+      'claude-opus-5-5',
     );
     expect(tierDefault('claude', 'fast', { claude: { fast: '  ' } })).toBe('claude-sonnet-5');
   });
@@ -381,11 +390,12 @@ describe('snapToTierDefault', () => {
     // The exact pair that shipped in a drafted flow: both ids validate, both
     // are a generation behind.
     expect(snapToTierDefault('codex', 'gpt-5.4-mini')).toBe('gpt-5.6-luna');
-    expect(snapToTierDefault('claude', 'claude-opus-4-8')).toBe('claude-opus-5');
+    expect(snapToTierDefault('claude', 'claude-opus-4-8')).toBe('claude-opus-5-5');
+    expect(snapToTierDefault('claude', 'claude-opus-5')).toBe('claude-opus-5-5');
   });
 
   it('leaves a current id alone', () => {
-    expect(snapToTierDefault('claude', 'claude-opus-5')).toBe('claude-opus-5');
+    expect(snapToTierDefault('claude', 'claude-opus-5-5')).toBe('claude-opus-5-5');
     expect(snapToTierDefault('claude', 'claude-fable-5-1')).toBe('claude-fable-5-1');
   });
 
@@ -406,5 +416,32 @@ describe('snapToTierDefault', () => {
     // drafting error.
     expect(snapToTierDefault('claude', 'claude-opus-9')).toBe('claude-opus-9');
     expect(snapToTierDefault('claude', 'totally-made-up')).toBe('totally-made-up');
+  });
+});
+
+describe('newestInFamily', () => {
+  it('moves a pin up its own line', () => {
+    expect(newestInFamily('claude', 'claude-opus-5')).toBe('claude-opus-5-5');
+    expect(newestInFamily('claude', 'claude-opus-4-8')).toBe('claude-opus-5-5');
+    expect(newestInFamily('claude', 'claude-sonnet-4-6')).toBe('claude-sonnet-5');
+    expect(newestInFamily('gemini', 'gemini-3.6-flash')).toBe('gemini-3.7-flash');
+    expect(newestInFamily('gemini', 'gemini-3.1-flash-lite')).toBe('gemini-3.5-flash-lite');
+  });
+
+  it('never crosses into another family, even at the same tier', () => {
+    // snapToTierDefault would turn Haiku into Sonnet; a hand-picked Haiku stays.
+    expect(newestInFamily('claude', 'claude-haiku-4-5')).toBe('claude-haiku-4-5');
+    expect(newestInFamily('codex', 'gpt-5.4-mini')).toBe('gpt-5.4-mini');
+  });
+
+  it('never crosses tiers within a family', () => {
+    // gpt-5.4 (standard) and gpt-5.5 (thinking) share the `gpt|` family key.
+    expect(newestInFamily('codex', 'gpt-5.4')).toBe('gpt-5.4');
+  });
+
+  it('leaves current and unknown ids alone', () => {
+    expect(newestInFamily('claude', 'claude-opus-5-5')).toBe('claude-opus-5-5');
+    expect(newestInFamily('claude', 'claude-fable-5-1')).toBe('claude-fable-5-1');
+    expect(newestInFamily('claude', 'claude-opus-4-1')).toBe('claude-opus-4-1');
   });
 });

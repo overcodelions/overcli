@@ -41,6 +41,7 @@ import { FlowMonogram } from './FlowMonogram';
 import { resolveOwner } from './FlowRunSidebarRow';
 import { FlowRunLauncher } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
+import { ModelUpgradeModal, ModelUpgradeStrip, usePendingModelUpgrades } from './ModelUpgradeReview';
 import { SchedulesPane } from './SchedulesPane';
 import { useSchedulesStore } from '../../schedulesStore';
 import { useWorkersStore } from '../../workersStore';
@@ -70,6 +71,8 @@ export function FlowsLibraryPane() {
   // failed local search, so they don't retype it in the modal.
   const [browseQuery, setBrowseQuery] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const modelUpgrades = usePendingModelUpgrades(flows);
   // Schedules are a segment here rather than a top-level tab: a schedule is a
   // trigger on a flow, not a separate kind of work, and a fourth tab would
   // have made a third place to launch a run from. The segment lives in the
@@ -285,6 +288,7 @@ export function FlowsLibraryPane() {
         <>
           <ScheduleStrip onOpen={showSchedules} />
           <RunsStrip onOpen={() => setSegment('runs')} />
+          <ModelUpgradeStrip upgrades={modelUpgrades} onOpen={() => setUpgradeOpen(true)} />
 
           {!loaded ? (
             <div className="text-sm text-ink-muted">Loading flows…</div>
@@ -310,6 +314,13 @@ export function FlowsLibraryPane() {
             // Pick up anything installed while the modal was open.
             void reload(projectPaths);
           }}
+        />
+      )}
+      {upgradeOpen && modelUpgrades.length > 0 && (
+        <ModelUpgradeModal
+          upgrades={modelUpgrades}
+          projectPaths={projectPaths}
+          onClose={() => setUpgradeOpen(false)}
         />
       )}
       {aboutOpen && (

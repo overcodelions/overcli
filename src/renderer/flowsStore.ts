@@ -10,6 +10,7 @@ import type { Flow, FlowModelRef, FlowParticipant, FlowRun, FlowStep } from '@sh
 import { flowProjectPath, flowStarKey, MAX_RUN_TITLE_LENGTH } from '@shared/flows/schema';
 import type { UUID } from '@shared/types';
 import type { FlowRiskFinding } from '@shared/flows/riskScan';
+import { applyFlowModelUpgrade, type FlowModelUpgrade } from '@shared/flows/modelUpgrade';
 import { friendlyModelLabel as friendlyModelLabelImported, isSupportedPremiumModel } from '@shared/modelCatalog';
 
 /// Pointer to the flow currently open in the editor. `'new'` is the
@@ -154,6 +155,14 @@ interface FlowsActions {
     projectPaths: string[],
   ): Promise<{ ok: boolean; error?: string }>;
   dismissJustSaved(): void;
+  /// Save each flow with its reviewed model upgrades applied (see
+  /// shared/flows/modelUpgrade.ts), writing back to the layer it came from,
+  /// then reload once. Keeps going past a failed save so one unwritable
+  /// project file doesn't strand the rest; failures come back by flow name.
+  upgradeFlowModels(
+    upgrades: FlowModelUpgrade[],
+    projectPaths: string[],
+  ): Promise<{ upgraded: number; errors: string[] }>;
   /// Set (or clear) the per-participant model override for a run. Pass
   /// `null` to revert to the participant's declared model. Persists on the
   /// run in the main process and drives ALL subsequent turns for that
@@ -208,9 +217,9 @@ const BLANK_FLOW: Flow = {
   participants: [
     {
       id: 'primary',
-      name: 'Claude Opus 5',
+      name: 'Claude Opus 5.5',
       backend: 'claude',
-      model: 'claude-opus-5',
+      model: 'claude-opus-5-5',
       kind: 'primary',
     },
   ],
@@ -653,6 +662,28 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
 
   dismissJustSaved() {
     set({ justSaved: null });
+  },
+
+  async upgradeFlowModels(upgrades, projectPaths) {
+    let upgraded = 0;
+    const errors: string[] = [];
+    for (const { flow, changes } of upgrades) {
+      if (changes.length === 0) continue;
+      const projectPath = flowProjectPath(flow);
+      if (flow.source === 'project' && !projectPath) {
+        errors.push(`${flow.name}: could not resolve its project.`);
+        continue;
+      }
+      const result = await window.overcli.invoke('flows:save', {
+        flow: applyFlowModelUpgrade(flow, changes),
+        target: flow.source,
+        projectPath,
+      });
+      if (result.ok) upgraded++;
+      else errors.push(`${flow.name}: ${result.error}`);
+    }
+    await get().reload(projectPaths);
+    return { upgraded, errors };
   },
 
   async setParticipantModelOverride(runId, participantId, model) {

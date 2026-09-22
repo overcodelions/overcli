@@ -9,16 +9,21 @@ export interface ModelPrice {
   input: number;
   /// USD per million output tokens.
   output: number;
+  /// USD per million cache-read tokens, for models whose cache reads aren't
+  /// the usual tenth of input. Absent means 0.1× input.
+  cacheRead?: number;
 }
 
 /// First prefix match wins, so older, pricier ids sit above the family
 /// catch-alls (`claude-opus-4-1` before `claude-opus`).
 const PRICES: Array<[string, ModelPrice]> = [
+  ['claude-fable-5-1', { input: 10, output: 50, cacheRead: 0.25 }],
   ['claude-fable', { input: 10, output: 50 }],
   ['claude-mythos', { input: 10, output: 50 }],
   ['claude-opus-4-1', { input: 15, output: 75 }],
   ['claude-opus-4-2', { input: 15, output: 75 }],
   ['claude-3-opus', { input: 15, output: 75 }],
+  ['claude-opus-5-5', { input: 4, output: 20, cacheRead: 0.2 }],
   ['claude-opus', { input: 5, output: 25 }],
   ['claude-sonnet-5', { input: 2, output: 10 }],
   ['claude-sonnet', { input: 3, output: 15 }],
@@ -56,13 +61,14 @@ export interface CostBreakdown {
   total: number;
 }
 
-/// Cache reads bill at 0.1× input, 5-minute cache writes at 1.25×, 1-hour
+/// Cache reads bill at the model's own cache-read rate (0.1× input unless the
+/// table says otherwise), 5-minute cache writes at 1.25× input, 1-hour
 /// writes at 2×.
 export function estimateCost(model: string, mix: TokenMix): CostBreakdown {
   const p = claudeModelPrice(model);
   const input = (mix.input * p.input) / 1e6;
   const output = (mix.output * p.output) / 1e6;
-  const cacheRead = (mix.cacheRead * p.input * 0.1) / 1e6;
+  const cacheRead = (mix.cacheRead * (p.cacheRead ?? p.input * 0.1)) / 1e6;
   const cacheWrite = (mix.cacheWrite5m * p.input * 1.25 + mix.cacheWrite1h * p.input * 2) / 1e6;
   return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
