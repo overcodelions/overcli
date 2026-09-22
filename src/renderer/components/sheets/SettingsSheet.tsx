@@ -967,7 +967,7 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
         />
         <Toggle
           label="Claude in Chrome"
-          help="Default for new and untouched conversations: launch Claude with `--chrome` so it can drive a real browser tab through the Claude in Chrome extension — clicking, filling forms, reading pages. Needs the extension installed and enabled in the Chrome profile you actually browse in. This is the fallback only — each conversation has its own Chrome picker in the header that overrides it, so leaving this off still lets you switch it on per chat. Leave it off unless you want unattended shifts and worker errands driving your signed-in browser too; browser actions still go through permission prompts either way."
+          help="Default for new and untouched conversations: launch Claude with `--chrome` so it can drive a real browser tab through the Claude in Chrome extension — clicking, filling forms, reading pages. Needs the extension installed and enabled in the Chrome profile you actually browse in. This is the fallback only — each conversation has its own Chrome picker in the header that overrides it, so leaving this off still lets you switch it on per chat. Leave it off unless you want unattended shifts and worker errands driving your signed-in browser too — those follow the run's own permission policy, so a run set to approve automatically will not ask before a browser action. Hidden one-shot turns never get the browser either way."
           value={local.claudeChrome ?? false}
           onChange={(v) => patch({ claudeChrome: v })}
         />

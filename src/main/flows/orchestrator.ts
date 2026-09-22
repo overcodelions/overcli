@@ -176,6 +176,7 @@ export class OrchestratorImpl {
   /// childRunId → orchestrationId, so `onRunUpdate` can route a terminal
   /// run back to its batch in O(1).
   private runToBatch = new Map<UUID, UUID>();
+  private readonly unattended: boolean;
 
   constructor(
     private runner: RunnerManager,
@@ -185,6 +186,9 @@ export class OrchestratorImpl {
     private getSettings: () => AppSettings,
     private launchPolicy: { unattended?: boolean; unattendedAllowedTools?: string[] } = {},
   ) {
+    // Omitting the policy must not hand a turn MORE authority than asking for
+    // it would. An unnamed caller is unattended.
+    this.unattended = this.launchPolicy.unattended ?? true;
     // Restore persisted batches as a read-only ledger. loadAll already
     // demoted any `running` item to `failed` (its child subprocess died on
     // exit) and any `queued` item to `cancelled` (we do NOT auto-launch new
@@ -269,7 +273,7 @@ export class OrchestratorImpl {
           'No CLI is signed in to investigate with. Set up Claude, Codex, Gemini, or Copilot in Settings first.',
       };
     }
-    const enabledTools = this.launchPolicy.unattended
+    const enabledTools = this.unattended
       ? (this.launchPolicy.unattendedAllowedTools ?? [])
       : undefined;
     // Never trust a pinned model against a backend it may not belong to: the
@@ -308,7 +312,7 @@ export class OrchestratorImpl {
       // a genuinely stalled one — or a runaway — gets cut.
       timeoutMs: 30 * 60_000,
       idleTimeoutMs: 5 * 60_000,
-      permissionMode: this.launchPolicy.unattended ? 'acceptEdits' : 'bypassPermissions',
+      permissionMode: this.unattended ? 'acceptEdits' : 'bypassPermissions',
       enabledTools,
       onProgress: (snap) => {
         const now = Date.now();

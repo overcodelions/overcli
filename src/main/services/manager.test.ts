@@ -93,6 +93,22 @@ describe('ServicesManager machine values', () => {
     expect(fs.readFileSync(plainFile(), 'utf8')).not.toContain('ytENUo9');
   });
 
+  it('backs up machine.json before migrating secrets out of it, so a rollback has a copy', () => {
+    fs.mkdirSync(path.join(dataDir, 'services'), { recursive: true });
+    fs.writeFileSync(plainFile(), JSON.stringify({ DB_PASSWORD: 'hunter2', SQS_PREFIX: 'acme-dev' }));
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    const view = mgr.machineValues();
+
+    const plain = fs.readFileSync(plainFile(), 'utf8');
+    expect(plain).not.toContain('DB_PASSWORD');
+    expect(plain).toContain('SQS_PREFIX');
+
+    expect(fs.existsSync(`${plainFile()}.pre-secrets.bak`)).toBe(true);
+    expect(fs.readFileSync(`${plainFile()}.pre-secrets.bak`, 'utf8')).toContain('hunter2');
+
+    expect(view.entries).toContainEqual({ name: 'DB_PASSWORD', secret: true, stored: true });
+  });
+
   it('refuses to store a secret without a keychain rather than writing it in plain text', () => {
     const mgr = new ServicesManager(dataDir, () => {});
     expect(() =>

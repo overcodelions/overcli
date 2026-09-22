@@ -435,6 +435,9 @@ export function registerIpc(): void {
     flowAwareEmit,
     () => Store.load().projects,
     () => Store.load().settings,
+    // Explicitly interactive: a producer turn in the desktop app has a window
+    // behind it. Omitting this now fails closed — see OrchestratorImpl.
+    { unattended: false },
   );
   // The scheduler is the other thing that launches runs nobody is watching.
   // It borrows the orchestrator for `orchestrate` targets, which is why it's

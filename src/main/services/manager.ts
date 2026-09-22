@@ -47,6 +47,7 @@ import { buildCommandPrompt, buildExplainPrompt, buildFixPrompt } from './askMod
 import { ensureExcluded } from './projection';
 import {
   ensureServiceConfigDir,
+  machineValuesFile,
   serviceLogFile,
   loadMachineValues,
   loadStack,
@@ -664,7 +665,12 @@ export class ServicesManager {
         options: resolveOptions(stack.services, spec, machine),
         binding: binding ? { ref: binding.ref, path: binding.path } : undefined,
         findings: await this.explainFailure(workspaceId, serviceId),
-        secrets: Object.values(machine),
+        secrets: [
+          ...Object.values(machine),
+          // A credential typed straight into a service's injected env is in no
+          // machine value, so nothing else would catch it by value.
+          ...Object.entries(env).filter(([k]) => isSecretName(k)).map(([, v]) => v),
+        ],
       }),
       cwd: binding?.path ?? this.dataDir,
     };
@@ -986,6 +992,9 @@ export class ServicesManager {
     // both files, never a password that was in neither.
     saveSecretCiphertext(this.dataDir, secret);
     saveMachineValues(this.dataDir, plain);
+    // A supervisor caches the decrypted list; a changed secret must reach the
+    // masker on the next line, not the next app start.
+    for (const supervisor of this.supervisors.values()) supervisor.clearSecretCache();
   }
 
   /// Machine values these stacks refer to and this machine does not define,
@@ -1032,7 +1041,6 @@ export class ServicesManager {
   /// text.
   private migratePlainSecrets(): void {
     if (this.migrated || !this.cipher?.available()) return;
-    this.migrated = true;
     const plain = loadMachineValues(this.dataDir);
     const isExistingPath = (value: string) => {
       if (!/^(~\/|\/|\.\.?\/)/.test(value)) return false;
@@ -1042,14 +1050,29 @@ export class ServicesManager {
     const moving = Object.entries(plain).filter(
       ([name, value]) => value !== '' && isSecretName(name) && !isExistingPath(value),
     );
-    if (moving.length === 0) return;
+    // Nothing to move is a settled answer, not a retry.
+    if (moving.length === 0) {
+      this.migrated = true;
+      return;
+    }
     const secret = loadSecretCiphertext(this.dataDir);
+    // One-way and irreversible otherwise: safeStorage ciphertext is bound to
+    // this login keychain, so a restored backup or a rollback would have no
+    // copy of these values at all. 0600, beside the file it came from.
+    try {
+      fs.copyFileSync(machineValuesFile(this.dataDir), `${machineValuesFile(this.dataDir)}.pre-secrets.bak`);
+      fs.chmodSync(`${machineValuesFile(this.dataDir)}.pre-secrets.bak`, 0o600);
+    } catch {
+      // No backup, no migration — never delete the only copy.
+      return;
+    }
     for (const [name, value] of moving) {
       secret[name] = this.cipher.encrypt(value);
       delete plain[name];
     }
     saveSecretCiphertext(this.dataDir, secret);
     saveMachineValues(this.dataDir, plain);
+    this.migrated = true;
   }
 
   /// Pin a service to the ref it is on, or unpin it. This is how "pin the

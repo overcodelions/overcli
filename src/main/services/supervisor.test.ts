@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { maskSecrets, Supervisor, type SpawnRequest, type SpawnedProcess, type SupervisorDeps } from './supervisor';
+import { LOG_LIMIT, maskSecrets, Supervisor, type SpawnRequest, type SpawnedProcess, type SupervisorDeps } from './supervisor';
 import type { ProjectionFs } from './projection';
 import type { ServiceBinding, ServiceSpec } from './types';
 
@@ -138,6 +138,62 @@ describe('maskSecrets', () => {
 
   it('leaves values too short to be anything but ordinary words', () => {
     expect(maskSecrets('connecting as root', ['root'])).toBe('connecting as root');
+  });
+});
+
+describe('Supervisor log cost per line', () => {
+  // Every one of these guards a change that is invisible until a service gets
+  // chatty: the pane keeps working, it just takes the main process with it.
+  it('reads the secret store once for a whole run of output, not once per line', async () => {
+    let reads = 0;
+    const { deps, procs } = harness({
+      secretValues: () => {
+        reads += 1;
+        return ['hunter2hunter2'];
+      },
+    });
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+    await sup.start('api');
+
+    for (let i = 0; i < 500; i++) procs[0].emitLine(`line ${i} password=hunter2hunter2`);
+
+    // One per run, not 500. Each read is a keychain round-trip per stored
+    // secret, on the thread that paints every window.
+    expect(reads).toBe(1);
+    expect(sup.log('api').at(-1)).toBe('line 499 password=\u2022\u2022\u2022\u2022\u2022\u2022');
+  });
+
+  it('picks up an edited secret on the next line once the cache is dropped', async () => {
+    let current = ['firstsecret'];
+    const { deps, procs } = harness({ secretValues: () => [...current] });
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+    await sup.start('api');
+
+    procs[0].emitLine('using firstsecret');
+    current = ['secondsecret'];
+    procs[0].emitLine('still using secondsecret');
+    // Not yet invalidated, so the new value is not masked.
+    expect(sup.log('api').at(-1)).toBe('still using secondsecret');
+
+    sup.clearSecretCache();
+    procs[0].emitLine('now using secondsecret');
+    expect(sup.log('api').at(-1)).toBe('now using \u2022\u2022\u2022\u2022\u2022\u2022');
+  });
+
+  it('holds the buffer at the cap without paying an O(cap) trim on every line', async () => {
+    const { deps, procs } = harness();
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+    await sup.start('api');
+
+    // Comfortably past the cap and past one trim block, so both the batched
+    // trim and the reader's slice are exercised.
+    for (let i = 0; i < LOG_LIMIT + 2_500; i++) procs[0].emitLine(`line ${i}`);
+
+    const lines = sup.log('api');
+    expect(lines).toHaveLength(LOG_LIMIT);
+    // The newest survive and the oldest are gone: trimming from the front.
+    expect(lines.at(-1)).toBe(`line ${LOG_LIMIT + 2_499}`);
+    expect(lines[0]).toBe(`line ${2_500}`);
   });
 });
 

@@ -215,6 +215,15 @@ describe('isSecretName', () => {
     expect(isSecretName('API_TOKEN')).toBe(true);
     expect(isSecretName('SQS_PREFIX')).toBe(false);
   });
+
+  it('skips locators and still catches run-together names', () => {
+    for (const n of ['KEYCLOAK_URL', 'AUTH_URL', 'PASSENGER_ROOT', 'SSH_KEY_PATH']) {
+      expect(isSecretName(n)).toBe(false);
+    }
+    for (const n of ['DB_PASSWORD', 'GITHUB_TOKEN', 'AWS_SECRETKEY', 'apiKey', 'dbPassword']) {
+      expect(isSecretName(n)).toBe(true);
+    }
+  });
 });
 
 describe('copiesOf', () => {

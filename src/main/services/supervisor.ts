@@ -113,7 +113,8 @@ export type SupervisorEvent =
 
 /// How many lines of output to keep per service. Enough to cover a startup
 /// and the failure after it; the full history goes to `logSink`.
-const LOG_LIMIT = 20_000;
+export const LOG_LIMIT = 20_000;
+const LOG_TRIM_BLOCK = 1_000;
 
 /// How long a stop waits for the process to actually exit. The adapter sends
 /// SIGKILL after five seconds, so this is that and a margin. Without the wait a
@@ -155,7 +156,8 @@ export class Supervisor {
   }
 
   log(serviceId: string): readonly string[] {
-    return this.logs.get(serviceId) ?? [];
+    const lines = this.logs.get(serviceId) ?? [];
+    return lines.length > LOG_LIMIT ? lines.slice(lines.length - LOG_LIMIT) : lines;
   }
 
   exceptions(serviceId: string): CaughtException[] {
@@ -470,7 +472,7 @@ export class Supervisor {
     // agent needs to know where one run ends and the next begins.
     this.deps.logSink?.write(
       spec.id,
-      `── start ${binding.ref} · ${cwd} · ${debug.command.join(' ')} ──`,
+      maskSecrets(`── start ${binding.ref} · ${cwd} · ${debug.command.join(' ')} ──`, this.secrets()),
     );
     const proc = this.deps.spawn({ command: debug.command, cwd, env: debug.env });
     this.procs.set(spec.id, proc);
@@ -678,16 +680,36 @@ export class Supervisor {
         patch.exitCode !== undefined && patch.exitCode !== null ? `exit ${patch.exitCode}` : '',
         patch.lastError ?? '',
       ].filter(Boolean).join(' · ');
-      this.deps.logSink?.write(serviceId, `── ${patch.status}${detail ? ` · ${detail}` : ''} ──`);
+      this.deps.logSink?.write(
+        serviceId,
+        maskSecrets(`── ${patch.status}${detail ? ` · ${detail}` : ''} ──`, this.secrets()),
+      );
     }
     this.emit({ kind: 'status', serviceId, runtime: next });
   }
 
+  /// Decrypting a machine secret is an OS keychain round-trip. Calling the
+  /// thunk per log line put thousands of them per second on the thread that
+  /// paints every window. Read once; `clearSecretCache` drops it when the
+  /// secret store is written.
+  private secretCache: readonly string[] | undefined;
+
+  private secrets(): readonly string[] {
+    if (this.secretCache === undefined) this.secretCache = this.deps.secretValues?.() ?? [];
+    return this.secretCache;
+  }
+
+  clearSecretCache(): void {
+    this.secretCache = undefined;
+  }
+
   private append(serviceId: string, raw: string): void {
-    const line = maskSecrets(raw, this.deps.secretValues?.() ?? []);
+    const line = maskSecrets(raw, this.secrets());
     const lines = this.logs.get(serviceId) ?? [];
     lines.push(line);
-    if (lines.length > LOG_LIMIT) lines.splice(0, lines.length - LOG_LIMIT);
+    // Trimming one element off a 20k array per line is an O(20k) memmove per
+    // line, forever. Trim in blocks; the reader slices to the exact cap.
+    if (lines.length > LOG_LIMIT + LOG_TRIM_BLOCK) lines.splice(0, lines.length - LOG_LIMIT);
     this.logs.set(serviceId, lines);
     this.deps.logSink?.write(serviceId, line);
     this.caught.set(serviceId, feedException(this.caught.get(serviceId) ?? emptyExceptionLog(), line, Date.now()));
