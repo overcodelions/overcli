@@ -47,7 +47,11 @@ export function planBulkRebind(
   const skipped: BulkRebindPlan['skipped'] = [];
 
   for (const spec of services) {
-    if (spec.pinnedRef) {
+    // A pin refuses a move somewhere ELSE. Going to the ref it is already
+    // pinned to is what the pin asked for, and refusing that stranded any
+    // service whose pin had been written without its move landing: the plan
+    // said it would move, and the switch it fed silently would not.
+    if (spec.pinnedRef && spec.pinnedRef !== ref) {
       skipped.push({ serviceId: spec.id, reason: 'pinned' });
       continue;
     }

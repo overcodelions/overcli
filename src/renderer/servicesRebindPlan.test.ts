@@ -48,6 +48,19 @@ describe('planBulkRebind', () => {
     expect(plan.skipped).toContainEqual({ serviceId: 'security', reason: 'pinned' });
   });
 
+  it('moves a pinned service to the ref it is pinned to', () => {
+    // A pin refuses a move somewhere ELSE; going where the pin points is what
+    // it asked for. Refusing that stranded any service whose pin had been
+    // written without its move landing — every later attempt planned the move
+    // and then skipped it, so it could never come back.
+    const stranded = [spec({ id: 'security', pinnedRef: 'master' })];
+    const plan = planBulkRebind(stranded, choices, { security: 'feat/x' }, 'master');
+    expect(plan.skipped).toEqual([]);
+    expect(plan.targets).toEqual([
+      { serviceId: 'security', ref: 'master', path: '/repos/security' },
+    ]);
+  });
+
   it('says which services do not have the branch rather than quietly skipping them', () => {
     // One flow usually touches two of six repos; the other four not having
     // the branch is unremarkable, but it should be visible before the move.

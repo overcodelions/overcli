@@ -18,6 +18,8 @@ import type { WorktreeChoice } from '@shared/worktrees';
 import { emptyExceptionLog, feedException, type ExceptionLog } from '@shared/exceptions';
 import { planBulkRebind, planPinRebind } from './servicesRebindPlan';
 import { runWithConcurrency, startLayers } from './servicesStartPlan';
+import { watchForMode, type ReloadMode } from './serviceReloadMode';
+import { buildProbe, portFor, type BulkEdits } from './servicesBulkEdit';
 import type {
   LeaseDecision,
   MachineEntry,
@@ -60,6 +62,10 @@ interface ServicesState {
   exceptions: Record<string, ExceptionLog>;
   /// Which service the log pane is showing, per workspace.
   selected: Record<string, string | undefined>;
+  /// The service whose output is open in the side drawer, when one is. Its
+  /// own pick, deliberately not `selected`: the drawer is read from a chat,
+  /// and opening it must not move what the Services pane is showing.
+  logDrawer?: { workspaceId: string; serviceId: string };
   /// A clash waiting on the user: another stack holds the port. Parked here
   /// rather than resolved, because taking a port from a flow nobody was
   /// watching is not a decision the app gets to make.
@@ -118,6 +124,11 @@ interface ServicesState {
   /// the user go and find it is how two copies of one service happen.
   loadAll(workspaceIds: string[]): Promise<void>;
   select(workspaceId: string, serviceId: string): Promise<void>;
+  /// Show a service's output in the side drawer, from wherever the user is.
+  /// Lines stream into the store for every service regardless of selection
+  /// (see `ingestLine`), so this only has to fetch the snapshot behind them.
+  openLogDrawer(workspaceId: string, serviceId: string): Promise<void>;
+  closeLogDrawer(): void;
   start(workspaceId: string, serviceId: string, offset?: number, ignoreHeld?: boolean): Promise<void>;
   stop(workspaceId: string, serviceId: string): Promise<void>;
   restart(workspaceId: string, serviceId: string): Promise<void>;
@@ -154,6 +165,12 @@ interface ServicesState {
   setOptions(workspaceId: string, serviceId: string, options: ServiceOption[]): Promise<void>;
   setCommand(workspaceId: string, serviceId: string, command: string[]): Promise<void>;
   setWatch(workspaceId: string, serviceId: string, selfReloads: boolean, watch: string[]): Promise<void>;
+  /// The same choice across ticked rows. Each service keeps its own globs —
+  /// see `watchForMode` — so this sets what they do, not what they watch.
+  setWatchMany(keys: string[], mode: ReloadMode): Promise<void>;
+  /// Write every field the bulk sheet set, across the ticked rows, in one go.
+  /// Fields left unset are not written — see `planBulkEdit`.
+  applyBulkEdit(keys: string[], edits: BulkEdits): Promise<void>;
   setDebug(workspaceId: string, serviceId: string, enabled: boolean): Promise<void>;
   setReady(
     workspaceId: string,
@@ -226,6 +243,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   logs: {},
   exceptions: {},
   selected: {},
+  logDrawer: undefined,
   pendingLease: {},
   machine: [],
   secureStorage: false,
@@ -292,6 +310,30 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     }));
   },
 
+  async openLogDrawer(workspaceId, serviceId) {
+    // Open first, fetch second: the snapshot is an IPC round trip and the
+    // drawer sliding in is the answer to the click.
+    set({ logDrawer: { workspaceId, serviceId } });
+    // Opened from a chat, this workspace's stack may never have been loaded —
+    // without it the drawer has no name, branch or status to show.
+    if (!get().stacks[workspaceId]) void get().loadAll([workspaceId]);
+    const key = logKey(workspaceId, serviceId);
+    const [lines, caught] = await Promise.all([
+      window.overcli.invoke('services:log', { workspaceId, serviceId }),
+      window.overcli.invoke('services:exceptions', { workspaceId, serviceId }),
+    ]);
+    // Anything queued is already in the snapshot; applying it too would print it twice.
+    pendingLines.delete(key);
+    set((s) => ({
+      logs: { ...s.logs, [key]: lines },
+      exceptions: { ...s.exceptions, [key]: { items: caught, recent: [] } },
+    }));
+  },
+
+  closeLogDrawer() {
+    set({ logDrawer: undefined });
+  },
+
   async setGroup(workspaceId, serviceId, group) {
     await window.overcli.invoke('services:setGroup', { workspaceId, serviceId, group });
     await get().load(workspaceId);
@@ -311,6 +353,95 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   async setWatch(workspaceId, serviceId, selfReloads, watch) {
     await window.overcli.invoke('services:setWatch', { workspaceId, serviceId, selfReloads, watch });
     await get().load(workspaceId);
+  },
+
+  async setWatchMany(keys, mode) {
+    const { stacks } = get();
+    await Promise.all(
+      keys.map((key) => {
+        const { workspaceId, serviceId } = splitKey(key);
+        const spec = stacks[workspaceId]?.services.find((s) => s.id === serviceId);
+        const { selfReloads, watch } = watchForMode(spec ?? {}, mode);
+        return window.overcli.invoke('services:setWatch', { workspaceId, serviceId, selfReloads, watch });
+      }),
+    );
+    // One reload per workspace rather than one per service: fifteen rows in
+    // one stack is one answer, not fifteen.
+    await get().loadAll([...new Set(keys.map((key) => splitKey(key).workspaceId))]);
+  },
+
+  async applyBulkEdit(keys, edits) {
+    const { stacks } = get();
+    const specOf = (key: string) => {
+      const { workspaceId, serviceId } = splitKey(key);
+      return stacks[workspaceId]?.services.find((s) => s.id === serviceId);
+    };
+
+    // Config first, the branch last. A rebind relaunches whatever was
+    // running, so the options it comes back up with should already be the
+    // new ones rather than the ones it is about to be told to forget.
+    if (edits.group !== undefined) {
+      await Promise.all(
+        keys.map((key) => {
+          const { workspaceId, serviceId } = splitKey(key);
+          if ((specOf(key)?.group ?? '') === edits.group) return undefined;
+          return window.overcli.invoke('services:setGroup', {
+            workspaceId,
+            serviceId,
+            group: edits.group || undefined,
+          });
+        }),
+      );
+    }
+
+    if (edits.ready !== undefined) {
+      const shape = edits.ready;
+      await Promise.all(
+        keys.map((key) => {
+          const spec = specOf(key);
+          if (!spec) return undefined;
+          // A service with no port cannot take an http or tcp probe. The
+          // sheet already said so in its row; silently skip it here rather
+          // than write a probe pointing at nothing.
+          const probe = buildProbe(shape, portFor(spec));
+          if (!probe) return undefined;
+          const { workspaceId, serviceId } = splitKey(key);
+          return window.overcli.invoke('services:setReady', {
+            workspaceId,
+            serviceId,
+            ready: probe,
+            readyTimeoutSec: spec.readyTimeoutSec,
+          });
+        }),
+      );
+    }
+
+    if (edits.reload !== undefined) await get().setWatchMany(keys, edits.reload);
+
+    // Reuses the ordinary bulk switch: it already plans per repository, keeps
+    // a pin from being overwritten by accident, and reports what stayed put.
+    if (edits.ref !== undefined) {
+      // Asked to move the pinned ones without re-pinning them: clear those
+      // pins first, or the switch will correctly refuse the very services the
+      // user just said to move. A pin the user has chosen to drop is not a
+      // pin any more.
+      if (edits.unpin && !edits.pin) {
+        await Promise.all(
+          keys.map((key) => {
+            const spec = specOf(key);
+            if (!spec?.pinnedRef || spec.pinnedRef === edits.ref) return undefined;
+            const { workspaceId, serviceId } = splitKey(key);
+            return window.overcli.invoke('services:setPinned', {
+              workspaceId,
+              serviceId,
+              pinnedRef: undefined,
+            });
+          }),
+        );
+      }
+      await get().switchKeys(keys, edits.ref, edits.pin);
+    }
+    else await get().loadAll([...new Set(keys.map((key) => splitKey(key).workspaceId))]);
   },
 
   async setReady(workspaceId, serviceId, ready, readyTimeoutSec) {
@@ -487,6 +618,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     set((s) => {
       const stacks = { ...s.stacks };
       const selected = { ...s.selected };
+      let logDrawer = s.logDrawer;
       for (const [workspaceId, ids] of byStack) {
         const stack = stacks[workspaceId];
         if (!stack) continue;
@@ -498,8 +630,11 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
           runtimes: stack.runtimes.filter((r) => !gone.has(r.serviceId)),
         };
         if (selected[workspaceId] && gone.has(selected[workspaceId]!)) selected[workspaceId] = undefined;
+        // A drawer left open on a service that no longer exists would sit
+        // there showing the last lines of something the user just removed.
+        if (logDrawer?.workspaceId === workspaceId && gone.has(logDrawer.serviceId)) logDrawer = undefined;
       }
-      return { stacks, selected, checked: {}, anchor: undefined };
+      return { stacks, selected, logDrawer, checked: {}, anchor: undefined };
     });
 
     const entries = await Promise.all(

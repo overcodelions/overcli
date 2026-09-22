@@ -17,9 +17,16 @@
 //            genuinely differ between checkouts (an Apache vhost's
 //            DocumentRoot, a substituted port).
 //
-// Planning is pure and tested; only `applyProjection` touches disk.
+// Planning reads only enough disk to resolve the checkout; `applyProjection`
+// is what writes.
+//
+// Every one of these calls is promise-based, and deliberately so: this module
+// runs in the MAIN process, on the same event loop as every window. The
+// synchronous version of it stalled the whole UI for the length of a stat
+// storm each time a service launched — which is every restart, and a restart
+// is something the user is watching.
 
-import nodeFs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import type { ServiceBinding, ServiceSpec } from './types';
@@ -27,19 +34,41 @@ import type { ServiceBinding, ServiceSpec } from './types';
 /// The slice of `fs` this module uses, so tests can drive it with a fake and
 /// the real thing needs no wrapper.
 export interface ProjectionFs {
-  existsSync(p: string): boolean;
-  realpathSync(p: string): string;
-  readFileSync(p: string, enc: 'utf8'): string;
-  writeFileSync(p: string, data: string, enc: 'utf8'): void;
-  mkdirSync(p: string, opts: { recursive: true }): void;
-  symlinkSync(target: string, linkPath: string, type: 'file' | 'dir'): void;
-  lstatSync(p: string): { isSymbolicLink(): boolean };
-  statSync(p: string): { isDirectory(): boolean };
-  readlinkSync(p: string): string;
-  unlinkSync(p: string): void;
+  /// Follows symlinks, so a dangling link reads as absent — see `lexists` for
+  /// the cases where that distinction matters.
+  exists(p: string): Promise<boolean>;
+  realpath(p: string): Promise<string>;
+  readFile(p: string, enc: 'utf8'): Promise<string>;
+  writeFile(p: string, data: string, enc: 'utf8'): Promise<void>;
+  mkdir(p: string, opts: { recursive: true }): Promise<void>;
+  symlink(target: string, linkPath: string, type: 'file' | 'dir'): Promise<void>;
+  lstat(p: string): Promise<{ isSymbolicLink(): boolean }>;
+  stat(p: string): Promise<{ isDirectory(): boolean }>;
+  readlink(p: string): Promise<string>;
+  unlink(p: string): Promise<void>;
 }
 
-const realFs: ProjectionFs = nodeFs as unknown as ProjectionFs;
+const realFs: ProjectionFs = {
+  async exists(p) {
+    try {
+      await fsp.stat(p);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  realpath: (p) => fsp.realpath(p),
+  readFile: (p, enc) => fsp.readFile(p, enc),
+  writeFile: (p, data, enc) => fsp.writeFile(p, data, enc),
+  mkdir: async (p, opts) => {
+    await fsp.mkdir(p, opts);
+  },
+  symlink: (target, linkPath, type) => fsp.symlink(target, linkPath, type),
+  lstat: (p) => fsp.lstat(p),
+  stat: (p) => fsp.stat(p),
+  readlink: (p) => fsp.readlink(p),
+  unlink: (p) => fsp.unlink(p),
+};
 
 export interface LinkPlan {
   /// Absolute path inside the checkout where the file must appear.
@@ -82,15 +111,15 @@ export class ProjectionError extends Error {}
 /// look. So every launch resolves through the symlink to the real checkout,
 /// and a path that still sits under a known symlink root is refused rather
 /// than quietly producing a process that misbehaves in three subtle ways.
-export function resolveLaunchCwd(
+export async function resolveLaunchCwd(
   checkoutPath: string,
   opts: { symlinkRoots?: readonly string[]; fs?: ProjectionFs } = {},
-): string {
+): Promise<string> {
   const fs = opts.fs ?? realFs;
-  if (!fs.existsSync(checkoutPath)) {
+  if (!(await fs.exists(checkoutPath))) {
     throw new ProjectionError(`Checkout no longer exists: ${checkoutPath}`);
   }
-  const real = fs.realpathSync(checkoutPath);
+  const real = await fs.realpath(checkoutPath);
   for (const root of opts.symlinkRoots ?? []) {
     if (isInside(real, root)) {
       throw new ProjectionError(
@@ -109,10 +138,10 @@ export function isInside(child: string, parent: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-/// What projecting this service into this binding would do. Pure: no disk is
-/// touched, so the pane can show it before anything happens and tests can
-/// assert on it directly.
-export function planProjection(
+/// What projecting this service into this binding would do. Nothing is
+/// written, so the pane can show it before anything happens and tests can
+/// assert on it directly — only the checkout itself is resolved on disk.
+export async function planProjection(
   spec: ServiceSpec,
   binding: ServiceBinding,
   opts: {
@@ -125,8 +154,8 @@ export function planProjection(
     /// symlink to a literal `${SERVICE_CONFIG_DIR}` directory next to the app.
     configDir?: string;
   } = {},
-): ProjectionPlan {
-  const cwd = resolveLaunchCwd(binding.path, opts);
+): Promise<ProjectionPlan> {
+  const cwd = await resolveLaunchCwd(binding.path, opts);
   const root = spec.subpath ? path.join(cwd, spec.subpath) : cwd;
   const port = opts.port ?? spec.port;
   const vars = { root, cwd, ref: binding.ref, port, configDir: opts.configDir };
@@ -184,47 +213,47 @@ export function substitute(
 
 /// Carry out a plan: create the symlinks, render the templates, and make sure
 /// git ignores both. Returns the paths it wrote, for the log.
-export function applyProjection(
+export async function applyProjection(
   plan: ProjectionPlan,
   opts: { fs?: ProjectionFs } = {},
-): { linked: string[]; rendered: string[] } {
+): Promise<{ linked: string[]; rendered: string[] }> {
   const fs = opts.fs ?? realFs;
   const linked: string[] = [];
   const rendered: string[] = [];
 
   for (const link of plan.links) {
-    fs.mkdirSync(path.dirname(link.linkPath), { recursive: true });
+    await fs.mkdir(path.dirname(link.linkPath), { recursive: true });
 
     // The file being linked TO has to exist, or the link is dangling and the
     // runtime reports a missing file rather than an empty one. An empty file
     // in the service's config folder is also the invitation to edit it.
-    fs.mkdirSync(path.dirname(link.target), { recursive: true });
-    if (!fs.existsSync(link.target)) fs.writeFileSync(link.target, '', 'utf8');
+    await fs.mkdir(path.dirname(link.target), { recursive: true });
+    if (!(await fs.exists(link.target))) await fs.writeFile(link.target, '', 'utf8');
 
-    // `existsSync` FOLLOWS symlinks, so a link left over from a failed attempt
+    // `exists` FOLLOWS symlinks, so a link left over from a failed attempt
     // — pointing at something that no longer exists — reads as absent and the
     // symlink call then fails with EEXIST. Ask about the link itself.
-    const present = lexists(fs, link.linkPath);
+    const present = await lexists(fs, link.linkPath);
     if (present) {
       // Already ours and pointing at the right file: leave it. Pointing
       // somewhere else: replace it, since the service's config is the
       // authority. A real file (not a symlink) is the user's own, and
       // clobbering it would silently destroy local config they wrote — so
       // that one is left alone and reported by its absence from `linked`.
-      if (!fs.lstatSync(link.linkPath).isSymbolicLink()) continue;
-      if (fs.readlinkSync(link.linkPath) === link.target) {
+      if (!(await fs.lstat(link.linkPath)).isSymbolicLink()) continue;
+      if ((await fs.readlink(link.linkPath)) === link.target) {
         linked.push(link.linkPath);
         continue;
       }
-      fs.unlinkSync(link.linkPath);
+      await fs.unlink(link.linkPath);
     }
-    fs.symlinkSync(link.target, link.linkPath, 'file');
+    await fs.symlink(link.target, link.linkPath, 'file');
     linked.push(link.linkPath);
   }
 
   for (const render of plan.renders) {
-    fs.mkdirSync(path.dirname(render.filePath), { recursive: true });
-    fs.writeFileSync(render.filePath, fs.readFileSync(render.templatePath, 'utf8'), 'utf8');
+    await fs.mkdir(path.dirname(render.filePath), { recursive: true });
+    await fs.writeFile(render.filePath, await fs.readFile(render.templatePath, 'utf8'), 'utf8');
     rendered.push(render.filePath);
   }
 
@@ -239,23 +268,26 @@ export function applyProjection(
 /// file pointing at `<common>/worktrees/<name>`, whose `commondir` points back
 /// up — follow both and the projected files never show as untracked in any
 /// checkout.
-export function gitCommonDir(checkout: string, opts: { fs?: ProjectionFs } = {}): string | null {
+export async function gitCommonDir(
+  checkout: string,
+  opts: { fs?: ProjectionFs } = {},
+): Promise<string | null> {
   const fs = opts.fs ?? realFs;
   const dotGit = path.join(checkout, '.git');
-  if (!fs.existsSync(dotGit)) return null;
+  if (!(await fs.exists(dotGit))) return null;
 
   let gitDir = dotGit;
   // A linked worktree's `.git` is a file: "gitdir: /abs/path".
-  if (!isDirectory(fs, dotGit)) {
-    const pointer = fs.readFileSync(dotGit, 'utf8').trim();
+  if (!(await isDirectory(fs, dotGit))) {
+    const pointer = (await fs.readFile(dotGit, 'utf8')).trim();
     const match = /^gitdir:\s*(.+)$/.exec(pointer);
     if (!match) return null;
     gitDir = path.resolve(checkout, match[1]);
   }
 
   const commonFile = path.join(gitDir, 'commondir');
-  if (fs.existsSync(commonFile)) {
-    return path.resolve(gitDir, fs.readFileSync(commonFile, 'utf8').trim());
+  if (await fs.exists(commonFile)) {
+    return path.resolve(gitDir, (await fs.readFile(commonFile, 'utf8')).trim());
   }
   return gitDir;
 }
@@ -263,19 +295,19 @@ export function gitCommonDir(checkout: string, opts: { fs?: ProjectionFs } = {})
 /// Add the projected paths to the repo's shared exclude file, once. Returns
 /// the entries it added — empty when they were all already there, which is
 /// the common case after the first bind.
-export function ensureExcluded(
+export async function ensureExcluded(
   checkout: string,
   relatives: readonly string[],
   opts: { fs?: ProjectionFs } = {},
-): string[] {
+): Promise<string[]> {
   const fs = opts.fs ?? realFs;
   if (relatives.length === 0) return [];
-  const common = gitCommonDir(checkout, opts);
+  const common = await gitCommonDir(checkout, opts);
   if (!common) return [];
 
   const infoDir = path.join(common, 'info');
   const excludeFile = path.join(infoDir, 'exclude');
-  const existing = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '';
+  const existing = (await fs.exists(excludeFile)) ? await fs.readFile(excludeFile, 'utf8') : '';
   const lines = new Set(
     existing
       .split('\n')
@@ -286,10 +318,10 @@ export function ensureExcluded(
   const added = relatives.map(toExcludePattern).filter((entry) => !lines.has(entry));
   if (added.length === 0) return [];
 
-  fs.mkdirSync(infoDir, { recursive: true });
+  await fs.mkdir(infoDir, { recursive: true });
   const header = existing.includes(EXCLUDE_HEADER) ? '' : `${EXCLUDE_HEADER}\n`;
   const prefix = existing === '' || existing.endsWith('\n') ? '' : '\n';
-  fs.writeFileSync(excludeFile, `${existing}${prefix}${header}${added.join('\n')}\n`, 'utf8');
+  await fs.writeFile(excludeFile, `${existing}${prefix}${header}${added.join('\n')}\n`, 'utf8');
   return added;
 }
 
@@ -303,20 +335,20 @@ function toExcludePattern(relative: string): string {
 }
 
 /// Whether anything is at this path — a file, a directory, or a symlink
-/// INCLUDING a broken one. `existsSync` answers no for a dangling link, which
-/// is the one case that matters here.
-function lexists(fs: ProjectionFs, p: string): boolean {
+/// INCLUDING a broken one. `exists` answers no for a dangling link, which is
+/// the one case that matters here.
+async function lexists(fs: ProjectionFs, p: string): Promise<boolean> {
   try {
-    fs.lstatSync(p);
+    await fs.lstat(p);
     return true;
   } catch {
     return false;
   }
 }
 
-function isDirectory(fs: ProjectionFs, p: string): boolean {
+async function isDirectory(fs: ProjectionFs, p: string): Promise<boolean> {
   try {
-    return fs.statSync(p).isDirectory();
+    return (await fs.stat(p)).isDirectory();
   } catch {
     return false;
   }

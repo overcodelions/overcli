@@ -19,6 +19,7 @@ import { exceptionMessage, groupLog, isTraceHeader } from '../stackFrames';
 import { listExceptions, type CaughtException, type ExceptionLog } from '@shared/exceptions';
 import { summarizeLong, type Level, type ParsedLogLine } from '../logLine';
 import { SelectionMenu } from './SelectionMenu';
+import { useDividerDragging } from './ResizableDivider';
 
 /// Past this, a line is folded: a classpath dump is one "line" of eight
 /// thousand characters, and wrapped it pushes everything else off screen.
@@ -43,7 +44,7 @@ function readWrap(): boolean {
 }
 
 export function LogView({
-  lines,
+  lines: incoming,
   onClear,
   selection,
   file,
@@ -70,6 +71,15 @@ export function LogView({
   const [hidden, setHidden] = useState<ReadonlySet<Level>>(new Set());
   const [wrap, setWrap] = useState(readWrap);
   const [showExceptions, setShowExceptions] = useState(false);
+  // Hold the output still while a divider is being dragged. A live service
+  // pushes a batch of lines several times a second, and re-filtering,
+  // regrouping and re-rendering ten thousand rows between two pointer moves is
+  // what makes resizing a busy log pane crawl. Nothing is lost: the next
+  // render after release has every line.
+  const dragging = useDividerDragging();
+  const held = useRef(incoming);
+  if (!dragging) held.current = incoming;
+  const lines = held.current;
   const caught = useMemo(() => (exceptions ? listExceptions(exceptions) : []), [exceptions]);
   const scroller = useRef<HTMLDivElement>(null);
 
@@ -85,6 +95,36 @@ export function LogView({
   const byIndex = useMemo(() => new Map(shown.map((l) => [l.index, l])), [shown]);
   const summary = describeFilter(lines.length, shown.length);
   const problems = useMemo(() => filterLog(lines, { level: 'problems' }).length, [lines]);
+
+  // The rows themselves, memoised: this component re-renders whenever anything
+  // around it does, and handing React the same element array lets it skip
+  // reconciling ten thousand children for a render that changed a toolbar
+  // count.
+  const rows = useMemo(
+    () =>
+      items.map((item, i) =>
+        item.kind === 'frames' ? (
+          <div
+            key={`frames-${item.indices[0]}-${i}`}
+            data-line={item.indices[0]}
+            data-line-end={item.indices[item.indices.length - 1]}
+            style={wrap ? OFFSCREEN_ROW : undefined}
+          >
+            <Frames indices={item.indices} byIndex={byIndex} raw={lines} />
+          </div>
+        ) : (
+          <div key={item.index} data-line={item.index} style={wrap ? OFFSCREEN_ROW : undefined}>
+            <Line
+              text={byIndex.get(item.index)?.text ?? ''}
+              matches={byIndex.get(item.index)?.matches ?? []}
+              raw={lines[item.index]}
+              formatted={formatted}
+            />
+          </div>
+        ),
+      ),
+    [items, byIndex, lines, wrap, formatted],
+  );
 
   // Follow the output, but stop the moment someone scrolls up: nothing is
   // more annoying than reading a stack trace that keeps yanking itself away.
@@ -221,27 +261,7 @@ export function LogView({
               No line matches. {lines.length.toLocaleString()} are hidden.
             </span>
           ) : (
-            items.map((item, i) =>
-              item.kind === 'frames' ? (
-                <div
-                  key={`frames-${item.indices[0]}-${i}`}
-                  data-line={item.indices[0]}
-                  data-line-end={item.indices[item.indices.length - 1]}
-                  style={wrap ? OFFSCREEN_ROW : undefined}
-                >
-                  <Frames indices={item.indices} byIndex={byIndex} raw={lines} />
-                </div>
-              ) : (
-                <div key={item.index} data-line={item.index} style={wrap ? OFFSCREEN_ROW : undefined}>
-                  <Line
-                    text={byIndex.get(item.index)?.text ?? ''}
-                    matches={byIndex.get(item.index)?.matches ?? []}
-                    raw={lines[item.index]}
-                    formatted={formatted}
-                  />
-                </div>
-              ),
-            )
+            rows
           )}
         </div>
       </div>

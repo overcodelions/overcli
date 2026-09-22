@@ -1,4 +1,25 @@
-import { useEffect, useRef, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore, type RefObject } from 'react';
+
+/// Whether any divider is being dragged right now. A drag writes one
+/// `style.width` per pointer event; anything expensive that re-renders on its
+/// own clock (a log streaming ten thousand lines) can hold still for the
+/// gesture instead of competing with it for the frame.
+let dragging = false;
+const dragWatchers = new Set<(v: boolean) => void>();
+
+function setDragging(value: boolean): void {
+  if (dragging === value) return;
+  dragging = value;
+  for (const watch of dragWatchers) watch(value);
+}
+
+export function useDividerDragging(): boolean {
+  const subscribe = useCallback((onChange: () => void) => {
+    dragWatchers.add(onChange);
+    return () => dragWatchers.delete(onChange);
+  }, []);
+  return useSyncExternalStore(subscribe, () => dragging, () => false);
+}
 
 export interface ResizableDividerProps {
   width: number;
@@ -58,6 +79,7 @@ export function ResizableDivider({
   useEffect(
     () => () => {
       document.body.classList.remove('cursor-col-resize', 'select-none', 'dragging-divider');
+      setDragging(false);
     },
     [],
   );
@@ -69,6 +91,7 @@ export function ResizableDivider({
     const handle = e.currentTarget;
     const pointerId = e.pointerId;
     draggingRef.current = true;
+    setDragging(true);
     document.body.classList.add('cursor-col-resize', 'select-none', 'dragging-divider');
     // Capture the pointer to the handle so every move for this gesture is
     // delivered here regardless of what it passes over. Without it the panes
@@ -94,6 +117,7 @@ export function ResizableDivider({
     };
     const onUp = () => {
       draggingRef.current = false;
+      setDragging(false);
       document.body.classList.remove('cursor-col-resize', 'select-none', 'dragging-divider');
       handle.removeEventListener('pointermove', onMove);
       handle.removeEventListener('pointerup', onUp);

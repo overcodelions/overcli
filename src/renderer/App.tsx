@@ -26,6 +26,8 @@ import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
 import { SubagentDrawer } from './components/SubagentDrawer';
+import { ServiceLogDrawer } from './components/ServiceLogDrawer';
+import { useServicesStore } from './servicesStore';
 import { FileEditorPane } from './components/FileEditorPane';
 import { CompareView } from './components/CompareView';
 import { useWorkersStore } from './workersStore';
@@ -37,6 +39,9 @@ const SIDEBAR_MAX = 520;
 const SUBAGENT_DRAWER_MIN = 320;
 const SUBAGENT_DRAWER_MAX = 820;
 const SUBAGENT_DRAWER_DEFAULT = 480;
+const LOG_DRAWER_MIN = 360;
+const LOG_DRAWER_MAX = 900;
+const LOG_DRAWER_DEFAULT = 520;
 const SIDE_FILE_MIN = 420;
 const SIDE_FILE_DEFAULT = 640;
 /// The narrowest the main column may be squeezed to when a side pane is
@@ -105,6 +110,20 @@ export function App() {
   // Workers tab and not on Chat. State is set once, on release.
   const sidebarPanel = useRef<HTMLDivElement>(null);
   const drawerPanel = useRef<HTMLDivElement>(null);
+  // A service's output, opened from wherever the user is (the changes bar's
+  // "run on this branch" popover, today). Its own slot: it must not displace
+  // the conversation the user is reading it from.
+  // Not in the Services pane: that pane already shows a service's output, and
+  // two log views side by side showing two different services is a puzzle. The
+  // drawer keeps its service and comes back when the user leaves the pane.
+  const logDrawerTarget = useServicesStore((s) => s.logDrawer);
+  const logDrawerOpen = !!logDrawerTarget && detailMode !== 'services';
+  const logDrawerPanel = useRef<HTMLDivElement>(null);
+  const [logDrawerWidth, setLogDrawerWidth] = useState(LOG_DRAWER_DEFAULT);
+  useEffect(() => {
+    const el = logDrawerPanel.current;
+    if (el) el.style.width = `${logDrawerWidth}px`;
+  }, [logDrawerWidth, logDrawerOpen]);
   const sideFilePanel = useRef<HTMLDivElement>(null);
   const selectedConversationId = useStore((s) => s.selectedConversationId);
   const selectConversation = useStore((s) => s.selectConversation);
@@ -430,6 +449,7 @@ export function App() {
     windowWidth -
       (showSidebar ? sidebarWidth : 0) -
       (subagentDrawerParentId && drawerConvId ? subagentDrawerWidth : 0) -
+      (logDrawerOpen ? logDrawerWidth : 0) -
       MAIN_MIN,
   );
   // Shrinking the window can strand the pane above its new ceiling; the
@@ -525,6 +545,29 @@ export function App() {
               className="flex-shrink-0 h-full overflow-hidden"
             >
               <SubagentDrawer conversationId={drawerConvId} />
+            </div>
+          </>
+        )}
+        {logDrawerOpen && (
+          <>
+            <ResizableDivider
+              panel={logDrawerPanel}
+              width={logDrawerWidth}
+              onChange={setLogDrawerWidth}
+              minWidth={LOG_DRAWER_MIN}
+              maxWidth={LOG_DRAWER_MAX}
+              side="right"
+            />
+            {/* Width is written by the effect above, never by an inline
+                style: App re-renders on every ingested main event, and a log
+                streaming lines mid-drag would re-apply the pre-drag width
+                between pointer moves — the drag fighting the render loop is
+                exactly what reads as jumpy. */}
+            <div
+              ref={logDrawerPanel}
+              className="flex-shrink-0 h-full overflow-hidden border-l border-card"
+            >
+              <ServiceLogDrawer />
             </div>
           </>
         )}

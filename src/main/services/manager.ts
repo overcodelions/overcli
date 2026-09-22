@@ -87,6 +87,10 @@ const execFileAsync = promisify(execFile);
 /// How long a scan of a main checkout's ignored files is reused.
 const IGNORED_SCAN_TTL_MS = 60_000;
 
+/// How long a checkout's current branch is reused before git is asked again.
+/// See `refFor`.
+const REF_TTL_MS = 5_000;
+
 /// A machine value's name has to be something `${NAME}` can refer to.
 const MACHINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -97,6 +101,8 @@ export class ServicesManager {
   private readonly ignoredScans = new Map<string, { at: number; files: Promise<string[] | null> }>();
   private readonly supervisors = new Map<string, Supervisor>();
   private readonly stacks = new Map<string, StackConfig>();
+  /// The branch each bound checkout was last seen on, with when it was read.
+  private readonly refs = new Map<string, { ref: string; at: number }>();
 
   constructor(
     private readonly dataDir: string,
@@ -134,21 +140,44 @@ export class ServicesManager {
     };
   }
 
+  /// Read a checkout's branch now, and remember it. Used where the answer
+  /// must be current — straight after overcli checked something out — so the
+  /// cached copy agrees with what we just did rather than expiring into it.
+  private readRef(path: string): string {
+    const ref = currentRef(path);
+    this.refs.set(path, { ref, at: Date.now() });
+    return ref;
+  }
+
+  /// A checkout's branch, from the cache while it is fresh.
+  ///
+  /// The TTL is what keeps `view` cheap. Every look at the pane, every
+  /// service event it refreshes on, and every `@` typed in the composer runs
+  /// this, and each folder cost a synchronous `git rev-parse` on the MAIN
+  /// process — ten services is ten process spawns with the whole app blocked
+  /// behind them, which is exactly the pause before the mention menu draws.
+  /// A branch someone changes in a terminal is still picked up; it is just
+  /// not re-read more often than a human could change it.
+  private refFor(path: string): string {
+    const now = Date.now();
+    const hit = this.refs.get(path);
+    if (hit && now - hit.at < REF_TTL_MS) return hit.ref;
+    // A folder a flow deleted mid-session keeps its last known ref: that
+    // is still the best description of where the service was.
+    const ref = fs.existsSync(path) ? currentRef(path) : '';
+    this.refs.set(path, { ref, at: now });
+    return ref;
+  }
+
   /// Branches move under us: `git checkout master` in a terminal changes what
   /// a checkout is on, and a binding that only learned its ref when overcli
   /// did the checkout keeps saying the old branch forever. Re-read on every
-  /// look — once per folder, not once per service.
+  /// look — once per folder, not once per service, and no more often than
+  /// `refFor`'s TTL allows.
   private refreshRefs(stack: StackConfig): StackConfig {
-    const refs = new Map<string, string>();
     let changed = false;
     const bindings = stack.bindings.map((b) => {
-      let ref = refs.get(b.path);
-      if (ref === undefined) {
-        // A folder a flow deleted mid-session keeps its last known ref: that
-        // is still the best description of where the service was.
-        ref = fs.existsSync(b.path) ? currentRef(b.path) : '';
-        refs.set(b.path, ref);
-      }
+      const ref = this.refFor(b.path);
       if (!ref || ref === 'HEAD' || ref === b.ref) return b;
       changed = true;
       return { ...b, ref };
@@ -231,7 +260,7 @@ export class ServicesManager {
     // projection that points at it resolves on a machine where nothing has
     // been put there yet.
     ensureServiceConfigDir(this.dataDir, workspaceId, serviceId);
-    this.excludeProjectedPaths(workspaceId, serviceId);
+    await this.excludeProjectedPaths(workspaceId, serviceId);
     return supervisor.start(serviceId, { foreign: this.foreignClaims(workspaceId), offset: opts.offset });
   }
 
@@ -250,7 +279,7 @@ export class ServicesManager {
   ): Promise<void> {
     await this.supervisor(workspaceId).rebind(serviceId, binding);
     this.persistBinding(workspaceId, { ...binding, serviceId });
-    this.excludeProjectedPaths(workspaceId, serviceId);
+    await this.excludeProjectedPaths(workspaceId, serviceId);
   }
 
   /// Move every unpinned service in one go — the bulk case, since several
@@ -580,6 +609,11 @@ export class ServicesManager {
     // Read once, asynchronously: both rules below want the main checkout's
     // ignored config, and scanning a large repository takes seconds.
     const local = binding ? await this.localConfigScan(binding.path) : null;
+    const missingLocalConfig = binding
+      ? local
+        ? (await planMirror(local.primary, binding.path, local.files)).map((l) => l.relative)
+        : []
+      : undefined;
     return triage({
       lines,
       spec,
@@ -595,11 +629,7 @@ export class ServicesManager {
                 ? { port: takenPort, holder: describeOwners(owners), kind: holderKind(owners) }
                 : undefined;
             })(),
-      missingLocalConfig: binding
-        ? local
-          ? planMirror(local.primary, binding.path, local.files).map((l) => l.relative)
-          : []
-        : undefined,
+      missingLocalConfig,
       findDefinitions: binding ? (key) => findPropertyDefinitions(binding.path, key, local) : undefined,
       importOptions: this.importOptionsFor(spec),
     });
@@ -695,7 +725,7 @@ export class ServicesManager {
     const primary = await this.primaryOf(checkout);
     if (!primary || path.resolve(primary) === path.resolve(checkout)) return null;
     const ignored = await this.ignoredIn(primary);
-    return { primary, files: findLocalConfig(primary, { ...patterns, ignored }) };
+    return { primary, files: await findLocalConfig(primary, { ...patterns, ignored }) };
   }
 
   private primaryOf(checkout: string): Promise<string | null> {
@@ -871,7 +901,7 @@ export class ServicesManager {
     }
 
     await this.rebind(workspaceId, serviceId, {
-      ref: currentRef(binding.path),
+      ref: this.readRef(binding.path),
       path: binding.path,
     });
     return { ok: true };
@@ -1243,7 +1273,7 @@ export class ServicesManager {
           : undefined,
       };
       this.addService(workspaceId, this.keepEditedCommand(workspaceId, baseSpec, { stated, detected }), {
-        ref: currentRef(place.path),
+        ref: this.readRef(place.path),
         path: place.path,
       });
       added.push(baseId);
@@ -1271,7 +1301,7 @@ export class ServicesManager {
             },
             { stated, detected },
           ),
-          { ref: currentRef(place.path), path: place.path },
+          { ref: this.readRef(place.path), path: place.path },
         );
         added.push(id);
         idByName.set(entry.service.name, id);
@@ -1338,7 +1368,7 @@ export class ServicesManager {
     // anything — every chip in the list read the same. Resolve them to the
     // branch each checkout is actually on, once, and keep it.
     const repaired = loaded.bindings.map((b) =>
-      b.ref === 'HEAD' ? { ...b, ref: currentRef(b.path) } : b,
+      b.ref === 'HEAD' ? { ...b, ref: this.readRef(b.path) } : b,
     );
     // And services detected before Gradle's daemon was turned off still start
     // with it on — so the environment they are given never reaches the JVM,
@@ -1423,7 +1453,7 @@ export class ServicesManager {
         exclude: spec.config.mirrorExclude,
       });
       if (!local) return [];
-      return applyMirror(planMirror(local.primary, target, local.files));
+      return applyMirror(await planMirror(local.primary, target, local.files));
     } catch {
       // A repo we cannot read, a read-only worktree. The service may still
       // start; a failure here is not a reason to refuse.
@@ -1434,7 +1464,7 @@ export class ServicesManager {
   /// Keep projected files out of `git status` in every worktree of the repo.
   /// Cheap and idempotent, so it runs on every start and rebind rather than
   /// being remembered once and lost when a new worktree appears.
-  private excludeProjectedPaths(workspaceId: string, serviceId: string): void {
+  private async excludeProjectedPaths(workspaceId: string, serviceId: string): Promise<void> {
     const stack = this.stack(workspaceId);
     const spec = stack.services.find((s) => s.id === serviceId);
     const binding = stack.bindings.find((b) => b.serviceId === serviceId);
@@ -1444,7 +1474,7 @@ export class ServicesManager {
       ...Object.keys(spec.config.render ?? {}),
     ].map((rel) => (spec.subpath ? path.join(spec.subpath, rel) : rel));
     try {
-      ensureExcluded(binding.path, relatives);
+      await ensureExcluded(binding.path, relatives);
     } catch {
       // A worktree that has gone is handled with a real message at start; an
       // exclude write is not worth failing anything over.

@@ -67,6 +67,8 @@ import {
   type WorktreeChoice,
 } from '../worktreeChoices';
 import { LogView } from './ServiceLogView';
+import { reloadModeOf, watchForMode } from '../serviceReloadMode';
+import { ServicesBulkEditSheet } from './ServicesBulkEditSheet';
 import { MachineServicesSection } from './MachineServicesSection';
 import { chatTargetFor, flowTargetFor, outputPrompt } from '../askAboutOutput';
 import { ResizableDivider } from './ResizableDivider';
@@ -820,6 +822,7 @@ function SelectionBar() {
   const stopMany = useServicesStore((s) => s.stopMany);
   const removeMany = useServicesStore((s) => s.removeMany);
   const clearChecked = useServicesStore((s) => s.clearChecked);
+  const [editing, setEditing] = useState(false);
 
   const keys = Object.keys(checked);
   const live = keys.filter((key) => {
@@ -828,11 +831,18 @@ function SelectionBar() {
     return runtime ? isServiceLive(runtime.status) : false;
   }).length;
 
+  // Wraps rather than overflows. This bar lives in the service list column,
+  // which the user can drag down to 300px — narrower than its own controls,
+  // which then painted over the divider and into the detail pane. The spacer
+  // is `flex-1` (basis 0), so it absorbs slack without ever being the reason
+  // a line breaks.
   return (
-    <div className="flex h-[40px] flex-shrink-0 items-center gap-1 border-t border-card-strong bg-surface-muted pl-3.5 pr-1.5">
+    <div className="flex min-h-[40px] flex-shrink-0 flex-wrap items-center gap-x-1 gap-y-1 border-t border-card-strong bg-surface-muted py-1 pl-3.5 pr-1.5">
       <span className="whitespace-nowrap text-[12px] font-medium">{keys.length} selected</span>
       <div className="flex-1" />
-      <SwitchMenu keys={keys} label="Switch" />
+      <button className="svc-btn" onClick={() => setEditing(true)}>
+        Edit…
+      </button>
       <button className="svc-btn-go" disabled={live === keys.length} onClick={() => void startMany(keys)}>
         Start
       </button>
@@ -850,6 +860,7 @@ function SelectionBar() {
       <IconButton title="Clear selection (Esc)" onClick={clearChecked}>
         <path d="M4 4l8 8M12 4l-8 8" />
       </IconButton>
+      {editing && <ServicesBulkEditSheet keys={keys} onClose={() => setEditing(false)} />}
     </div>
   );
 }
@@ -911,6 +922,7 @@ function BulkRefPicker({
   const [query, setQuery] = useState('');
   const anchor = useRef<HTMLButtonElement>(null);
   const up = useOpensUp(anchor, open, 420);
+  const right = useAnchorsRight(anchor, open, 360);
 
   const sections = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -954,7 +966,8 @@ function BulkRefPicker({
           <div className="fixed inset-0 z-10" onClick={close} />
           <div
             className={
-              'absolute right-0 z-20 w-[360px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl ' +
+              'absolute z-20 w-[360px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl ' +
+              (right ? 'right-0 ' : 'left-0 ') +
               (up ? 'bottom-full mb-1' : 'top-full mt-1')
             }
           >
@@ -1021,6 +1034,28 @@ function BulkRefPicker({
 
 /// Whether a menu anchored here should open upward: a row near the bottom of
 /// the list opened its menu past the window edge, where nobody could reach it.
+/// Whether a panel of this width can hang from the anchor's RIGHT edge and
+/// still be on screen.
+///
+/// These panels are wider than the service list column they open in, so a
+/// button near the left of a narrow column put the whole panel off the left
+/// of the window — the search box and half the branch names with it. When
+/// there is no room that way it hangs from the left edge instead and
+/// overflows to the right, over the detail pane, which is what a popover is
+/// allowed to do.
+function useAnchorsRight(
+  anchor: React.RefObject<HTMLElement | null>,
+  open: boolean,
+  width: number,
+): boolean {
+  const [right, setRight] = useState(true);
+  useEffect(() => {
+    if (!open || !anchor.current) return;
+    setRight(anchor.current.getBoundingClientRect().right - width >= 8);
+  }, [open, anchor, width]);
+  return right;
+}
+
 function useOpensUp(anchor: React.RefObject<HTMLElement | null>, open: boolean, height: number): boolean {
   const [up, setUp] = useState(false);
   useEffect(() => {
@@ -1269,12 +1304,15 @@ function Trouble({
   if (runtime.status === 'done' && runtime.finishedAt) {
     return <span className="flex-shrink-0 text-[10px] text-ink-faint">done {since(runtime.finishedAt)} ago</span>;
   }
-  if (spec.selfReloads && runtime.status === 'ready') {
-    return <span className="flex-shrink-0 text-[10px] text-ink-faint">reloads itself</span>;
-  }
-  if ((spec.watch?.length ?? 0) > 0 && runtime.status === 'ready') {
-    return <span className="flex-shrink-0 text-[10px] text-ink-faint">restarts on changes</span>;
-  }
+  // Nothing for how a service reacts to a save. Everything else in this
+  // column is a STATE — it changed on its own and may want an answer. That
+  // is a SETTING: it never changes unless someone changes it, it rendered
+  // only in the `ready` case where the row should be quiet, and once a stack
+  // is set up it is true of nearly every row, which is where a label stops
+  // carrying information and starts costing the name beside it its width.
+  //
+  // What matters is still visible: a watch that fires prints
+  // `── code changed · <path> · restarting ──` and the row goes to starting.
   return null;
 }
 
@@ -2258,9 +2296,13 @@ function Settings({
 
 function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
   const setWatch = useServicesStore((s) => s.setWatch);
-  const mode = spec.selfReloads ? 'self' : (spec.watch?.length ?? 0) > 0 ? 'overcli' : 'off';
-  const [patterns, setPatterns] = useState((spec.watch ?? ['src/**']).join(', '));
-  useEffect(() => setPatterns((spec.watch ?? ['src/**']).join(', ')), [spec.id, spec.watch]);
+  const mode = reloadModeOf(spec);
+  const [patterns, setPatterns] = useState(() => watchForMode(spec, 'restart').watch.join(', '));
+  useEffect(
+    () => setPatterns(watchForMode(spec, 'restart').watch.join(', ')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the patterns are what matter, not the object
+    [spec.id, spec.watch],
+  );
   const savePatterns = () => {
     const watch = patterns.split(',').map((pattern) => pattern.trim()).filter(Boolean);
     if (watch.length > 0) void setWatch(workspaceId, spec.id, false, watch);
@@ -2271,14 +2313,20 @@ function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: Servic
         <ReloadChoice on={mode === 'self'} onClick={() => void setWatch(workspaceId, spec.id, true, [])}>
           Reloads itself
         </ReloadChoice>
-        <ReloadChoice on={mode === 'overcli'} onClick={() => void setWatch(workspaceId, spec.id, false, spec.watch ?? ['src/**'])}>
+        <ReloadChoice
+          on={mode === 'restart'}
+          onClick={() => {
+            const { selfReloads, watch } = watchForMode(spec, 'restart');
+            void setWatch(workspaceId, spec.id, selfReloads, watch);
+          }}
+        >
           Restart service
         </ReloadChoice>
         <ReloadChoice on={mode === 'off'} onClick={() => void setWatch(workspaceId, spec.id, false, [])}>
           Do nothing
         </ReloadChoice>
       </div>
-      {mode === 'overcli' && (
+      {mode === 'restart' && (
         <input
           className="field w-full px-2 py-1.5 font-mono text-[11px]"
           value={patterns}
@@ -2294,7 +2342,7 @@ function ReloadEditor({ workspaceId, spec }: { workspaceId: string; spec: Servic
       <span className="text-[10.5px] text-ink-faint">
         {mode === 'self'
           ? 'Vite, devtools, or the framework watches its own process.'
-          : mode === 'overcli'
+          : mode === 'restart'
             ? 'Changes are debounced, then the process restarts and readiness is checked again.'
             : 'The running process is left alone when files change.'}
       </span>

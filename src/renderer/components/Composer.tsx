@@ -4,7 +4,13 @@ import { useRunnerEvents, useRunnersStore } from '../runnersStore';
 import { Attachment, StreamEvent } from '@shared/types';
 import { ATTACHMENT_ACCEPT, intakeAttachments } from '../attachmentIntake';
 import { AttachmentChip } from './AttachmentChip';
-import { formatServiceMention, runningServiceMentions } from '../serviceLogContext';
+import {
+  formatServiceMention,
+  runningServiceMentions,
+  runningServiceSignature,
+} from '../serviceLogContext';
+import { useServicesStore } from '../servicesStore';
+import type { StackView } from '@shared/services';
 
 export interface ComposerProps {
   /// Key into the store's drafts + attachments maps. Use the conversation
@@ -220,7 +226,34 @@ export function Composer({
   }, [mention, rootPath, mentionFiles]);
 
   const serviceScopeKey = serviceWorkspaceIds.join('\0');
-  useEffect(() => setMentionServices(null), [serviceScopeKey]);
+  // The menu offers only services that are RUNNING, so the cached list is
+  // stale as soon as one starts or stops. Resetting on the workspace list
+  // alone left a first `@` typed before anything was up holding an empty list
+  // for the rest of the session: `[]` is truthy, so the loader below returned
+  // early every time after. Watching what is actually live fixes that at the
+  // source, and costs one IPC call the next time the menu opens.
+  const liveServiceKey = useServicesStore((s) =>
+    runningServiceSignature(s.stacks, serviceWorkspaceIds),
+  );
+  useEffect(() => setMentionServices(null), [serviceScopeKey, liveServiceKey]);
+
+  // What the services store already knows, drawn the moment `@` is typed.
+  // The fetch below is a round trip to the main process, so waiting on it
+  // meant the menu opened with no services in it and filled them in a beat
+  // later — which reads as "it did not find them" and is why anyone would
+  // stop typing and look. Subscribing to the signature rather than to
+  // `stacks` matters: the stacks object is replaced several times a second
+  // while services are logging, and depending on it would re-render the
+  // composer on every batch of output.
+  const storeServices = useMemo(
+    () =>
+      runningServiceMentions(
+        serviceWorkspaceIds
+          .map((id) => useServicesStore.getState().stacks[id])
+          .filter((stack): stack is StackView => !!stack),
+      ),
+    [serviceScopeKey, liveServiceKey],
+  );
   useEffect(() => {
     if (!mention || serviceWorkspaceIds.length === 0 || mentionServices) return;
     let cancelled = false;
@@ -233,14 +266,14 @@ export function Composer({
 
   const mentionMatches = useMemo(() => {
     if (!mention) return [];
-    const services = rankServiceMentionMatches(mentionServices ?? [], mention.query)
+    const services = rankServiceMentionMatches(mentionServices ?? storeServices, mention.query)
       .map((service): MentionEntry => ({ kind: 'service', service }));
     const files = rootPath
       ? rankMentionMatches(mentionFiles ?? [], mention.query, rootPath)
           .map((path): MentionEntry => ({ kind: 'file', path }))
       : [];
     return [...services, ...files].slice(0, 8);
-  }, [mention, mentionFiles, mentionServices, rootPath]);
+  }, [mention, mentionFiles, mentionServices, storeServices, rootPath]);
 
   useEffect(() => {
     setMentionSelected(0);

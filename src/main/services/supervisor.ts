@@ -342,7 +342,13 @@ export class Supervisor {
     const moved: string[] = [];
     for (const target of targets) {
       const spec = this.spec(target.serviceId);
-      if (!spec || spec.pinnedRef) continue;
+      // A pin holds a service to ONE ref, so it only refuses a move somewhere
+      // else — the same rule `rebind` applies. Refusing every pinned service
+      // made "switch to master and pin there" a silent no-op for anything
+      // already pinned to master but bound elsewhere: the pin wrote, the move
+      // did not, and running it again could never repair it, because the pin
+      // that blocked the move was the one the move had just written.
+      if (!spec || (spec.pinnedRef && spec.pinnedRef !== target.ref)) continue;
       await this.rebind(target.serviceId, { ref: target.ref, path: target.path });
       moved.push(target.serviceId);
     }
@@ -375,7 +381,7 @@ export class Supervisor {
 
     let plan;
     try {
-      plan = planProjection(spec, binding, {
+      plan = await planProjection(spec, binding, {
         symlinkRoots: this.deps.symlinkRoots,
         fs: this.deps.fs,
         port,
@@ -391,7 +397,7 @@ export class Supervisor {
 
     const env = plan.env;
     try {
-      applyProjection(plan, { fs: this.deps.fs });
+      await applyProjection(plan, { fs: this.deps.fs });
     } catch (err) {
       // A permission problem, a read-only checkout, a link that cannot be
       // written. The service has failed to start, which is a status with a

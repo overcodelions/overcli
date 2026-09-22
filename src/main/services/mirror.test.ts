@@ -20,10 +20,7 @@ class FakeFs implements MirrorFs {
     return new FakeFs(new Set(paths));
   }
 
-  existsSync(p: string): boolean {
-    return this.files.has(p) || this.links.has(p);
-  }
-  readdirSync(dir: string) {
+  async readdir(dir: string) {
     const prefix = dir.endsWith('/') ? dir : `${dir}/`;
     const names = new Map<string, boolean>();
     for (const file of [...this.files, ...this.links.keys()]) {
@@ -35,14 +32,14 @@ class FakeFs implements MirrorFs {
     }
     return [...names].map(([name, isDir]) => ({ name, isDirectory: () => isDir }));
   }
-  lstatSync(p: string) {
+  async lstat(p: string) {
     if (!this.files.has(p) && !this.links.has(p)) throw new Error(`ENOENT ${p}`);
     return { isSymbolicLink: () => this.links.has(p) };
   }
-  mkdirSync(p: string) {
+  async mkdir(p: string) {
     this.dirs.add(p);
   }
-  symlinkSync(target: string, linkPath: string) {
+  async symlink(target: string, linkPath: string) {
     this.links.set(linkPath, target);
   }
 }
@@ -68,24 +65,24 @@ function tree(extra: string[] = []): FakeFs {
 }
 
 describe('findLocalConfig', () => {
-  it('finds the local config each module keeps', () => {
-    expect(findLocalConfig(primary, { fs: tree() })).toEqual([...localFiles].sort());
+  it('finds the local config each module keeps', async () => {
+    expect(await findLocalConfig(primary, { fs: tree() })).toEqual([...localFiles].sort());
   });
 
-  it('does not walk into build output or dependencies', () => {
+  it('does not walk into build output or dependencies', async () => {
     // A monorepo's build output dwarfs its source and holds no hand-written
     // config; walking it on every start is a cost nobody agreed to.
-    const found = findLocalConfig(primary, { fs: tree() });
+    const found = await findLocalConfig(primary, { fs: tree() });
     expect(found.some((f) => f.includes('node_modules'))).toBe(false);
     expect(found.some((f) => f.includes('build/'))).toBe(false);
   });
 
-  it('stops at the depth limit', () => {
+  it('stops at the depth limit', async () => {
     const deep = FakeFs.from([`${primary}/a/b/c/d/e/f/g/application-local.properties`]);
-    expect(findLocalConfig(primary, { fs: deep, maxDepth: 3 })).toEqual([]);
+    expect(await findLocalConfig(primary, { fs: deep, maxDepth: 3 })).toEqual([]);
   });
 
-  it('knows the handful of names worth mirroring', () => {
+  it('knows the handful of names worth mirroring', async () => {
     const mixed = FakeFs.from([
       `${primary}/svc/.env.local`,
       `${primary}/svc/application.properties`,
@@ -93,14 +90,14 @@ describe('findLocalConfig', () => {
     ]);
     // `application.properties` is committed and already in the worktree;
     // mirroring it would be linking a file over itself.
-    expect(findLocalConfig(primary, { fs: mixed })).toEqual(['svc/.env.local']);
+    expect(await findLocalConfig(primary, { fs: mixed })).toEqual(['svc/.env.local']);
     expect(LOCAL_CONFIG_NAMES).toContain('application-local.properties');
   });
 });
 
 describe('findLocalConfig from what git ignores', () => {
-  it('takes every ignored file that looks like config, whatever it is called', () => {
-    const found = findLocalConfig(primary, {
+  it('takes every ignored file that looks like config, whatever it is called', async () => {
+    const found = await findLocalConfig(primary, {
       fs: FakeFs.from([]),
       ignored: [
         'billing-rest/src/main/resources/config/application-local-docker.properties',
@@ -124,27 +121,27 @@ describe('findLocalConfig from what git ignores', () => {
     ]);
   });
 
-  it('leaves editor, agent and build folders alone even when they hold json', () => {
-    const found = findLocalConfig(primary, {
+  it('leaves editor, agent and build folders alone even when they hold json', async () => {
+    const found = await findLocalConfig(primary, {
       fs: FakeFs.from([]),
       ignored: ['.vscode/launch.json', '.claude/settings.local.json', 'web/dist/manifest.json', 'build/', 'node_modules/'],
     });
     expect(found).toEqual([]);
   });
 
-  it('looks inside a folder ignored as a whole, but not one that is build output', () => {
+  it('looks inside a folder ignored as a whole, but not one that is build output', async () => {
     const fs = FakeFs.from([
       `${primary}/svc/secrets/db.properties`,
       `${primary}/svc/secrets/notes.txt`,
       `${primary}/svc/build/resources/main/application-local.properties`,
     ]);
-    expect(findLocalConfig(primary, { fs, ignored: ['svc/secrets/', 'svc/build/'] })).toEqual([
+    expect(await findLocalConfig(primary, { fs, ignored: ['svc/secrets/', 'svc/build/'] })).toEqual([
       'svc/secrets/db.properties',
     ]);
   });
 
-  it('mirrors what a service asks for and skips what it rules out', () => {
-    const found = findLocalConfig(primary, {
+  it('mirrors what a service asks for and skips what it rules out', async () => {
+    const found = await findLocalConfig(primary, {
       fs: FakeFs.from([]),
       ignored: ['run-billing-local.sh', 'svc/application-local.properties', 'svc/huge-fixture.json'],
       include: ['run-*-local.sh'],
@@ -153,8 +150,8 @@ describe('findLocalConfig from what git ignores', () => {
     expect(found).toEqual(['run-billing-local.sh', 'svc/application-local.properties']);
   });
 
-  it('falls back to the known names when git cannot say', () => {
-    expect(findLocalConfig(primary, { fs: tree(), ignored: null })).toEqual([...localFiles].sort());
+  it('falls back to the known names when git cannot say', async () => {
+    expect(await findLocalConfig(primary, { fs: tree(), ignored: null })).toEqual([...localFiles].sort());
   });
 });
 
@@ -173,62 +170,61 @@ describe('isLocalConfig', () => {
 });
 
 describe('planMirror', () => {
-  it('links every file the worktree is missing', () => {
-    const plan = planMirror(primary, worktree, localFiles, { fs: tree() });
+  it('links every file the worktree is missing', async () => {
+    const plan = await planMirror(primary, worktree, localFiles, { fs: tree() });
     expect(plan.map((l) => l.relative)).toEqual(localFiles);
     expect(plan[0].from).toBe(path.join(primary, localFiles[0]));
     expect(plan[0].to).toBe(path.join(worktree, localFiles[0]));
   });
 
-  it('does nothing for a service running in the main checkout', () => {
+  it('does nothing for a service running in the main checkout', async () => {
     // The ordinary case. Mirroring a checkout into itself must be a no-op,
     // not a file linked over itself.
-    expect(planMirror(primary, primary, localFiles, { fs: tree() })).toEqual([]);
+    expect(await planMirror(primary, primary, localFiles, { fs: tree() })).toEqual([]);
   });
 
-  it('never overwrites a file the worktree already has', () => {
+  it('never overwrites a file the worktree already has', async () => {
     // That one is the user's own, and may be deliberately different.
     const withOwn = tree([`${worktree}/${localFiles[0]}`]);
-    const plan = planMirror(primary, worktree, localFiles, { fs: withOwn });
+    const plan = await planMirror(primary, worktree, localFiles, { fs: withOwn });
     expect(plan.map((l) => l.relative)).toEqual(localFiles.slice(1));
   });
 
-  it('leaves a link from a previous run alone', () => {
+  it('leaves a link from a previous run alone', async () => {
     const fs = tree();
-    applyMirror(planMirror(primary, worktree, localFiles, { fs }), { fs });
-    expect(planMirror(primary, worktree, localFiles, { fs })).toEqual([]);
+    await applyMirror(await planMirror(primary, worktree, localFiles, { fs }), { fs });
+    expect(await planMirror(primary, worktree, localFiles, { fs })).toEqual([]);
   });
 });
 
 describe('applyMirror', () => {
-  it('symlinks rather than copies, so one file stays the source of truth', () => {
+  it('symlinks rather than copies, so one file stays the source of truth', async () => {
     // Editing it in the main checkout has to reach every worktree at once.
     const fs = tree();
-    const done = applyMirror(planMirror(primary, worktree, localFiles, { fs }), { fs });
+    const done = await applyMirror(await planMirror(primary, worktree, localFiles, { fs }), { fs });
     expect(done).toEqual(localFiles);
     expect(fs.links.get(`${worktree}/${localFiles[0]}`)).toBe(`${primary}/${localFiles[0]}`);
   });
 
-  it('creates the directories the file needs', () => {
+  it('creates the directories the file needs', async () => {
     const fs = tree();
-    applyMirror(planMirror(primary, worktree, localFiles, { fs }), { fs });
+    await applyMirror(await planMirror(primary, worktree, localFiles, { fs }), { fs });
     expect(fs.dirs.has(`${worktree}/AcmeProcessor/src/main/resources/config`)).toBe(true);
   });
 
-  it('one file failing does not refuse the rest', () => {
+  it('one file failing does not refuse the rest', async () => {
     const fs = tree();
     const failing = {
       ...fs,
-      readdirSync: fs.readdirSync.bind(fs),
-      lstatSync: fs.lstatSync.bind(fs),
-      existsSync: fs.existsSync.bind(fs),
-      mkdirSync: fs.mkdirSync.bind(fs),
-      symlinkSync: (target: string, link: string) => {
+      readdir: fs.readdir.bind(fs),
+      lstat: fs.lstat.bind(fs),
+      mkdir: fs.mkdir.bind(fs),
+      symlink: async (target: string, link: string) => {
         if (link.includes('acme-core')) throw new Error('EACCES');
-        fs.symlinkSync(target, link);
+        await fs.symlink(target, link);
       },
     } as MirrorFs;
-    const done = applyMirror(planMirror(primary, worktree, localFiles, { fs }), { fs: failing });
+    const done = await applyMirror(await planMirror(primary, worktree, localFiles, { fs }), { fs: failing });
     expect(done).toHaveLength(2);
   });
 });
