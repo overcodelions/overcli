@@ -127,6 +127,20 @@ import { WorkQueuePane } from "./WorkQueuePane";
 import { pinnedToBottom, shouldFollowLive } from "./deskFollow";
 import { runStepPosition } from "./deskRunRail";
 import { fetchDeliverables } from "../../deliverablesCache";
+import {
+  LandingColumns,
+  LandingHero,
+  LandingPage,
+  PrimaryAction,
+  QuietAction,
+  Specimen,
+  SpecimenRow,
+  Terms,
+  StarterCard,
+  StarterGrid,
+} from "../onboarding/landing";
+import { LANDING_SERIF } from "../onboarding/landing";
+import { RotaSpecimen, TrustLadderMark } from "../onboarding/specimens";
 
 // Zustand selectors are consumed through React's useSyncExternalStore. Returning
 // a new [] while this worker's journal is still loading makes the snapshot look
@@ -157,6 +171,8 @@ export function WorkersPane() {
   const hiring = useWorkersStore((st) => st.hire.open);
   const hireRunning = useWorkersStore((st) => st.hire.startedAt !== null);
   const openHire = useWorkersStore((st) => st.openHire);
+  // The landing's job board hands the hire screen a contract to open with.
+  const patchHire = useWorkersStore((st) => st.patchHire);
   const pendingHire = useWorkersStore((st) => st.pendingHire);
   const resumeHire = useWorkersStore((st) => st.resumeHire);
   const discardPendingHire = useWorkersStore((st) => st.discardPendingHire);
@@ -244,8 +260,18 @@ export function WorkersPane() {
       {(showRosterHeader || showProgressNotices) && (
         <div className="shrink-0 px-6 pt-6">
           {showRosterHeader && (
-            <div className="flex items-center gap-3 mb-2">
-              <div className="text-2xl font-semibold">Workers</div>
+            <div className="flex items-start gap-3 mb-6">
+              <div>
+                <div className="text-2xl font-semibold">Workers</div>
+                {/* Every tab's header is a title and one line under it — see
+                    components/onboarding/landing. Without this line the title
+                    sat alone and the page below it started 20px higher than
+                    every other tab, so switching tabs made the header hop. */}
+                <div className="mt-2 text-xs text-ink-muted">
+                  Standing hires that work their own shifts, keep a journal, and earn
+                  the right to act unattended.
+                </div>
+              </div>
               {/* Only with Debug on. The empty state is the screen you can never
             reach again once you have hired anyone, so it needs a way to be
             looked at that is not "fire everybody". */}
@@ -396,7 +422,9 @@ export function WorkersPane() {
       ) : view === "funds" ? (
         <FundsPane />
       ) : rows.length === 0 ? (
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+        // LandingPage brings its own scroll container and measure — see
+        // components/onboarding/landing.
+        <div className="flex min-h-0 flex-1 flex-col">
           <WorkersEmptyState
             canHire={canHire}
             onHire={() => openHire(defaultProjectPath)}
@@ -411,6 +439,10 @@ export function WorkersPane() {
                 projectPaths: projects.map((p) => p.path),
               })
             }
+            onPickPosting={(job) => {
+              openHire(defaultProjectPath);
+              patchHire({ jobDescription: job, error: null });
+            }}
           />
         </div>
       ) : selected ? (
@@ -451,97 +483,124 @@ function WorkersEmptyState({
   onHire,
   onAddByHand,
   onImport,
+  onPickPosting,
 }: {
   canHire: boolean;
   onHire: () => void;
   onAddByHand: () => void;
   onImport: () => void;
+  /// Opens the hire screen with this job description already written. The
+  /// catalog is the fastest honest answer to "what would I even use this
+  /// for", and it was buried one click inside a screen nobody empty-handed
+  /// had a reason to open.
+  onPickPosting: (job: string) => void;
 }) {
   return (
-    // The posting stays a narrow document — a column you read — and the width
-    // the pane actually has goes to the thing the width is FOR: a desk. Terms
-    // tell you what you are agreeing to; the specimen tells you what it is
-    // like, which no list of terms can.
-    <div className="flex flex-wrap items-start gap-x-10 gap-y-10 py-2">
-      <div className="min-w-[380px] max-w-[620px] flex-1">
-        <TrustLadderMark />
+    <LandingPage>
+      <LandingHero
+        mark={<TrustLadderMark scale={1.15} />}
+        eyebrow="Open position"
+        title={
+          <>
+            A worker is a job description
+            <br />
+            with a clock.
+          </>
+        }
+        lead={
+          <>
+            Hire one to triage the new tickets every weekday morning and hand you
+            ready-to-run fixes. Or to sweep the repo for bugs nobody filed. Or to read
+            last week&apos;s runs and write you a Monday brief. You describe the job once;
+            it turns up on its own schedule, re-reads the project and its own journal,
+            decides what today&apos;s most valuable version of that job is, does the work,
+            and leaves it for you to approve.
+          </>
+        }
+        actions={
+          <>
+            <PrimaryAction label="Hire a worker" onClick={onHire} disabled={!canHire} />
+            <QuietAction
+              label="or write the contract yourself"
+              onClick={onAddByHand}
+              disabled={!canHire}
+            />
+            {/* The third way to fill a vacancy, and the fastest one for
+                anyone joining a team that already runs workers: take theirs. */}
+            <QuietAction label="or import one" onClick={onImport} disabled={!canHire} />
+          </>
+        }
+        note={
+          // An empty screen has to say what to do next, and "hire" is not the
+          // next thing when there is nowhere for a worker to work.
+          canHire ? undefined : (
+            <span className="text-amber-500">
+              Add a project or workspace first — a worker is hired onto one.
+            </span>
+          )
+        }
+      />
 
-        <div className="mt-7 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
-          Open position
+      {/* The postings come BEFORE the terms. Someone opening this tab wants to
+          know what they would use it for, not what they are agreeing to, and
+          every one of these is a real contract the hire screen will load. */}
+      <Postings canHire={canHire} onPick={onPickPosting} />
+
+      <LandingColumns wide>
+        <Terms title="The terms" items={TERMS} />
+        <div className="flex flex-col gap-5">
+          <RotaSpecimen />
+          <ErrandBlock />
         </div>
-        <h2
-          className="mt-2 text-[26px] leading-[1.25] text-ink"
-          style={{ fontFamily: SERIF }}
-        >
-          A worker is a job description
-          <br />
-          with a clock.
-        </h2>
-
-        <p className="mt-4 text-[13px] leading-relaxed text-ink-muted">
-          Write what you want done. It turns up on its own schedule, re-reads
-          the project and its own journal, decides what today&apos;s most
-          valuable version of that job is, and files the work for you to
-          approve. Not a saved prompt on a timer — a standing persona that plans
-          each shift itself.
-        </p>
-
-        <dl className="mt-7 border-t border-card-strong">
-          {TERMS.map((term) => (
-            <div
-              key={term.label}
-              className="flex gap-6 border-b border-card-strong py-2.5 text-[12px]"
-            >
-              <dt className="w-24 shrink-0 uppercase tracking-[0.12em] text-[10px] leading-5 text-ink-faint">
-                {term.label}
-              </dt>
-              <dd className="min-w-0 flex-1 leading-relaxed text-ink-muted">
-                {term.value}
-              </dd>
-            </div>
-          ))}
-        </dl>
-
-        <div className="mt-7 flex items-center gap-4">
-          <button
-            disabled={!canHire}
-            onClick={onHire}
-            className="rounded-md bg-accent px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
-          >
-            ✨ Hire a worker
-          </button>
-          <button
-            disabled={!canHire}
-            onClick={onAddByHand}
-            className="text-[12px] text-ink-faint hover:text-ink disabled:opacity-40"
-          >
-            or write the contract yourself
-          </button>
-          {/* The third way to fill a vacancy, and the fastest one for anyone
-              joining a team that already runs workers: take theirs. */}
-          <button
-            disabled={!canHire}
-            onClick={onImport}
-            className="text-[12px] text-ink-faint hover:text-ink disabled:opacity-40"
-          >
-            or import one
-          </button>
-        </div>
-
-        {/* An empty screen has to say what to do next, and "hire" is not the
-          next thing when there is nowhere for a worker to work. */}
-        {!canHire && (
-          <p className="mt-3 text-[12px] text-amber-500">
-            Add a project or workspace first — a worker is hired onto one.
-          </p>
-        )}
-      </div>
-
-      <DayRota />
-      <ErrandBlock />
-    </div>
+      </LandingColumns>
+    </LandingPage>
   );
 }
+
+/// Six standing jobs off the catalog, as a job board.
+///
+/// Deliberately the real presets rather than invented copy: clicking one opens
+/// the hire screen with that contract already written, so the fastest path
+/// from "what is this" to "I have hired one" is two clicks and an edit.
+function Postings({
+  canHire,
+  onPick,
+}: {
+  canHire: boolean;
+  onPick: (job: string) => void;
+}) {
+  const featured = FEATURED_POSTINGS.map((name) => ({
+    preset: PERSONA_PRESETS.find((p) => p.name === name)!,
+  })).filter((x) => x.preset);
+  return (
+    <StarterGrid
+      title="Hire one of these"
+      aside="click one and its contract is written for you — edit it before you hire"
+    >
+      {featured.map(({ preset }) => (
+        <StarterCard
+          key={preset.name}
+          title={preset.name.replace(/^The /, "")}
+          body={preset.tagline}
+          tint={preset.group === "code" ? "#38bdf8" : "#a78bfa"}
+          onClick={() => canHire && onPick(preset.job)}
+        />
+      ))}
+    </StarterGrid>
+  );
+}
+
+/// Three that work on the code and three that do not, because "it only does
+/// codebase chores" is the wrong idea to leave someone with — any folder and
+/// any connected tool is fair game.
+const FEATURED_POSTINGS = [
+  "The Support Triage Worker",
+  "The Bug Sweeper",
+  "The Test Warden",
+  "The Personal Assistant",
+  "The Note Aggregator",
+  "The Customer Success Scout",
+];
 
 /// One Tuesday, as a rota — the half of the story that happens without you.
 ///
@@ -558,48 +617,6 @@ function WorkersEmptyState({
 /// half of the story rather than a detail of this one, and the two panels make
 /// the point by contrast: a rota has times and no you; a desk has you and no
 /// times.
-function DayRota() {
-  return (
-    <div className="min-w-[340px] max-w-[460px] flex-1">
-      <div className="flex items-baseline gap-2">
-        <span className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
-          A Tuesday
-        </span>
-        <span className="text-[10px] text-ink-faint">
-          · nobody asked for any of it
-        </span>
-      </div>
-
-      <div className="mt-3 border-t border-card-strong">
-        {ROTA.map((entry) => (
-          <div
-            key={entry.at}
-            className="flex items-baseline gap-3 border-b border-card-strong py-2 text-[11px]"
-          >
-            <span className="w-11 shrink-0 tabular-nums text-ink-faint">
-              {entry.at}
-            </span>
-            <span
-              className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
-              style={{ background: entry.tint }}
-            />
-            <span className="w-28 shrink-0 truncate text-ink">{entry.who}</span>
-            <span className="min-w-0 flex-1 text-ink-muted">{entry.what}</span>
-          </div>
-        ))}
-      </div>
-
-      <p className="mt-3 text-[11px] leading-relaxed text-ink-faint">
-        Three hires, one day, no prompting. Each one re-read the project and its
-        own journal that morning and decided what today&apos;s version of its
-        job was.
-      </p>
-    </div>
-  );
-}
-
-/// The sidebar's errand mark, small: an errand is speech, and speech came
-/// from you.
 function ErrandGlyph() {
   return (
     <svg
@@ -626,119 +643,63 @@ function ErrandGlyph() {
 function ErrandBlock() {
   const tint = "#34d399";
   return (
-    <div className="min-w-[300px] max-w-[380px] flex-1">
-      <div className="flex items-baseline gap-2">
-        <span className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
-          An errand
-        </span>
-        <span className="text-[10px] text-ink-faint">
-          · 11:04, the same Tuesday
-        </span>
-      </div>
-
-      <div className="mt-3 rounded-xl border border-card-strong bg-card p-3">
-        <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-faint">
-          <ErrandGlyph />
-          <span>You, to Test Runner</span>
-        </div>
-
-        <div className="flex justify-end">
-          <div className="max-w-[88%] rounded-xl bg-accent/20 px-2.5 py-1.5 text-[11px] leading-snug text-ink">
-            dig into why the nightly build got slower this week
+    <div>
+      <Specimen
+        label="An errand"
+        aside="11:04, the same Tuesday"
+        tint="var(--c-accent)"
+        footnote="You asked the one whose job it already was. It planned the answer through the same job description and journal, ran the work, and filed what it made — where you can still find it next month."
+      >
+        <div className="px-4 py-3">
+          <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-faint">
+            <ErrandGlyph />
+            <span>You, to Test Runner</span>
           </div>
-        </div>
 
-        <div
-          className="relative mt-2 overflow-hidden rounded-xl"
-          style={{
-            background: `color-mix(in srgb, ${tint} 5%, transparent)`,
-            border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
-          }}
-        >
+          <div className="flex justify-end">
+            <div className="max-w-[88%] rounded-xl bg-accent/20 px-2.5 py-1.5 text-[11px] leading-snug text-ink">
+              dig into why the nightly build got slower this week
+            </div>
+          </div>
+
           <div
-            className="absolute bottom-0 left-0 top-0 w-[2px]"
-            style={{ background: tint }}
-          />
-          <div className="px-3 py-2 pl-[11px]">
+            className="relative mt-2 overflow-hidden rounded-xl"
+            style={{
+              background: `color-mix(in srgb, ${tint} 5%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
+            }}
+          >
             <div
-              className="mb-1 text-[9px] font-medium"
-              style={{ color: tint }}
-            >
-              Test Runner
-            </div>
-            <div className="text-[11px] leading-snug text-ink-muted">
-              Two things changed on Tuesday: the dependency install stopped
-              hitting the cache, and a new integration suite added 4m12s on its
-              own.
+              className="absolute bottom-0 left-0 top-0 w-[2px]"
+              style={{ background: tint }}
+            />
+            <div className="px-3 py-2 pl-[11px]">
+              <div className="mb-1 text-[9px] font-medium" style={{ color: tint }}>
+                Test Runner
+              </div>
+              <div className="text-[11px] leading-snug text-ink-muted">
+                Two things changed on Tuesday: the dependency install stopped hitting the
+                cache, and a new integration suite added 4m12s on its own.
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="mt-2 flex items-baseline gap-2 text-[10px]">
-          <span className="w-11 shrink-0 text-emerald-500">done</span>
-          <span className="min-w-0 flex-1 truncate text-ink-muted">
-            Time the last 14 nightly builds
-          </span>
-          <span className="shrink-0 rounded border border-card-strong px-1 text-ink-faint">
-            report.md
-          </span>
+          <div className="mt-2 flex items-baseline gap-2 text-[10px]">
+            <span className="w-11 shrink-0 text-emerald-500">done</span>
+            <span className="min-w-0 flex-1 truncate text-ink-muted">
+              Time the last 14 nightly builds
+            </span>
+            <span className="shrink-0 rounded border border-card-strong px-1 text-ink-faint">
+              report.md
+            </span>
+          </div>
         </div>
-      </div>
-
-      <p className="mt-3 text-[11px] leading-relaxed text-ink-faint">
-        You asked the one whose job it already was. It planned the answer
-        through the same job description and journal, ran the work, and filed
-        what it made — where you can still find it next month.
-      </p>
+      </Specimen>
     </div>
   );
 }
 
-interface RotaEntry {
-  at: string;
-  who: string;
-  what: string;
-  tint: string;
-  kind?: "errand";
-}
-
-/// Colours are the identity palette, so the three names read as three people
-/// here for the same reason they do on the calendar.
-const ROTA: RotaEntry[] = [
-  {
-    at: "06:45",
-    who: "Chief of Staff",
-    what: "Filed your morning brief",
-    tint: "#a78bfa",
-  },
-  {
-    at: "08:00",
-    who: "Fielder",
-    what: "Started its hourly pass",
-    tint: "#38bdf8",
-  },
-  {
-    at: "11:04",
-    who: "Test Runner",
-    what: "why did the nightly build get slower this week?",
-    tint: "#34d399",
-    kind: "errand",
-  },
-  {
-    at: "17:00",
-    who: "Fielder",
-    what: "Last pass — 2 proposals waiting",
-    tint: "#38bdf8",
-  },
-  {
-    at: "19:00",
-    who: "Test Runner",
-    what: "Suite green, 1,821 passed",
-    tint: "#34d399",
-  },
-];
-
-const SERIF = 'ui-serif, Georgia, Cambria, "Times New Roman", serif';
+const SERIF = LANDING_SERIF;
 
 /// The terms of employment. Each one is a field of the contract, not a
 /// feature: this is what you are agreeing to when you hire.
@@ -771,54 +732,16 @@ const TERMS: Array<{ label: string; value: React.ReactNode }> = [
     ),
   },
   {
+    label: "The budget",
+    value:
+      "A monthly pool you set, with a ceiling per worker. Out of budget is a worker that does not work — no runaway crew, no surprise bill.",
+  },
+  {
     label: "The memory",
     value:
       "Shifts, approvals and rejections go in its journal. Work you turned down never comes back, and what it produced is filed where you can find it months later.",
   },
 ];
-
-/// Three empty chairs, which are also the trust ladder: the rings a worker
-/// wears once hired, drawn without a face. Dashed → solid → doubled is the
-/// same progression `WorkerAvatar` renders, so the mark teaches the vocabulary
-/// before there is anyone to read it on.
-function TrustLadderMark() {
-  const rungs = [
-    { tint: "#f59e0b", label: "probation", style: "dashed" as const },
-    { tint: "#38bdf8", label: "trusted", style: "solid" as const },
-    { tint: "#34d399", label: "autonomous", style: "double" as const },
-  ];
-  return (
-    <div className="flex items-start gap-4" aria-hidden>
-      {rungs.map((rung, i) => (
-        <div key={rung.label} className="flex items-start gap-4">
-          <div className="flex flex-col items-center gap-2">
-            <span
-              className="h-9 w-9 rounded-full"
-              style={{
-                border: `1.5px ${rung.style === "double" ? "solid" : rung.style} color-mix(in srgb, ${rung.tint} 55%, transparent)`,
-                boxShadow:
-                  rung.style === "double"
-                    ? `0 0 0 2px color-mix(in srgb, ${rung.tint} 18%, transparent)`
-                    : undefined,
-              }}
-            />
-            <span className="text-[9px] uppercase tracking-[0.1em] text-ink-faint">
-              {rung.label}
-            </span>
-          </div>
-          {i < rungs.length - 1 && (
-            <span
-              className="mt-[18px] h-px w-8"
-              style={{
-                background: "color-mix(in srgb, var(--c-ink) 14%, transparent)",
-              }}
-            />
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // ---- Roster row ----------------------------------------------------------
 
@@ -1502,10 +1425,7 @@ function WorkerSettings({
               metadata field. */}
           <blockquote
             className="mt-2 whitespace-pre-wrap border-l-2 border-card-strong pl-4 text-sm italic leading-relaxed text-ink-muted"
-            style={{
-              fontFamily:
-                'ui-serif, Georgia, Cambria, "Times New Roman", serif',
-            }}
+            style={{ fontFamily: SERIF }}
           >
             {worker.jobDescription}
           </blockquote>

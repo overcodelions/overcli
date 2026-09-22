@@ -463,6 +463,15 @@ function BackendsPane({
           >
             ↻ Re-check health
           </button>
+          {/* A badge says a CLI is missing or signed out; it does not say
+              what to run about it. The setup guide does, and this is the
+              screen someone is already on when they find out. */}
+          <button
+            onClick={() => useStore.getState().openSheet({ type: 'setup' })}
+            className="text-[10px] text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-card-strong"
+          >
+            Install or sign in…
+          </button>
         </div>
       </Group>
     </div>
@@ -549,7 +558,7 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
 }
 
 function placeholderFor(b: Backend): string {
-  if (b === 'claude') return 'e.g. claude-opus-5';
+  if (b === 'claude') return 'e.g. claude-opus-5-5';
   if (b === 'codex') return 'e.g. gpt-5.6-sol';
   if (b === 'ollama') return 'e.g. qwen2.5-coder:7b';
   if (b === 'copilot') return 'e.g. claude-haiku-4.5';
@@ -967,7 +976,7 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
         />
         <Toggle
           label="Claude in Chrome"
-          help="Default for new and untouched conversations: launch Claude with `--chrome` so it can drive a real browser tab through the Claude in Chrome extension — clicking, filling forms, reading pages. Needs the extension installed and enabled in the Chrome profile you actually browse in. This is the fallback only — each conversation has its own Chrome picker in the header that overrides it, so leaving this off still lets you switch it on per chat. Leave it off unless you want unattended shifts and worker errands driving your signed-in browser too — those follow the run's own permission policy, so a run set to approve automatically will not ask before a browser action. Hidden one-shot turns never get the browser either way."
+          help="Default for new and untouched conversations: launch Claude with `--chrome` so it can drive a real browser tab through the Claude in Chrome extension — clicking, filling forms, reading pages. Needs the extension installed and enabled in the Chrome profile you actually browse in. This is the fallback only — each conversation has its own Chrome picker in the header that overrides it, so leaving this off still lets you switch it on per chat. This default applies to conversations only. Flow runs use their per-run switch; producers, scheduled shifts, and worker errands start without Chrome."
           value={local.claudeChrome ?? false}
           onChange={(v) => patch({ claudeChrome: v })}
         />

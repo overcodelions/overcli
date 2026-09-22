@@ -199,6 +199,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     keys: [
       { key: '?', shift: true },
       { key: '/', shift: true },
+      // Also the Help menu's accelerator. The menu item deliberately does
+      // NOT register it (see buildMenu) so the keystroke arrives here and
+      // `skipInInput` can let CodeMirror keep Mod-/ for toggling comments.
+      { key: '/', mod: true },
     ],
     label: 'Show keyboard shortcuts',
     group: 'App',

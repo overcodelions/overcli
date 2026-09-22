@@ -163,11 +163,26 @@ describe('the ordinary failures', () => {
 });
 
 describe('portInUse', () => {
+  // The line that produced "Port 551 is already taken": a logback pattern
+  // with the logger's SOURCE LINE after a colon, and timestamps made of
+  // colons and digits. None of it is a port, and the JVM's BindException
+  // does not name one.
+  it('does not mistake a logger line number or a timestamp for the port', () => {
+    const line =
+      '2026-09-22T21:13:46.938Z [WARN ] 2026-09-22T21:13:46,928 [main] [] ' +
+      '[o.s.c.a.AnnotationConfigApplicationContext:551] - Exception encountered during context initialization ' +
+      "- cancelling refresh attempt: Error creating bean with name 'healthCheckServer'; nested exception is " +
+      'java.net.BindException: Address already in use';
+    expect(portInUse([line])).toEqual({ line, port: undefined });
+  });
+
   it('reads the port out of the common phrasings', () => {
     expect(portInUse(['[vite] Error: Port 5273 is already in use'])?.port).toBe(5273);
     expect(portInUse(['Error: listen EADDRINUSE: address already in use :::3000'])?.port).toBe(3000);
     expect(portInUse(['Web server failed to start. Port 8080 was already in use.'])?.port).toBe(8080);
     expect(portInUse(['bind 127.0.0.1:9090: address already in use'])?.port).toBe(9090);
+    expect(portInUse(['listen tcp [::]:7070: bind: address already in use'])?.port).toBe(7070);
+    expect(portInUse(['dial localhost:6060: address already in use'])?.port).toBe(6060);
   });
 
   it('finds the line even when it names no port', () => {

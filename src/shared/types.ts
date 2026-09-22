@@ -1224,6 +1224,10 @@ export interface AppSettings {
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
+  /// Flow model upgrades the user declined in the library's "Upgrade
+  /// models" review, keyed by `modelUpgradeSkipKey` (flow + from + to).
+  /// Keyed on the target too, so a newer release is offered afresh.
+  skippedModelUpgrades?: string[];
   /// Where a flow launched from the start page or the Flows library runs
   /// by default: 'cwd' works directly in the project/workspace tree,
   /// 'worktree' mints a fresh worktree off the base branch. The launcher's
@@ -2359,7 +2363,16 @@ export interface IPCInvokeMap {
     registryId: string;
     id: string;
     version: string;
-  }) => { ok: true; filePath: string; risks: FlowRiskFinding[] } | { ok: false; error: string };
+  }) =>
+    | {
+        ok: true;
+        filePath: string;
+        risks: FlowRiskFinding[];
+        /// Model references rebound because this machine could not run them
+        /// as published. Empty when the flow ran here as written.
+        adapted: Array<{ where: string; from: string; to: string }>;
+      }
+    | { ok: false; error: string };
   'flows:previewRegistryFlow': (args: {
     registryId: string;
     id: string;
@@ -2767,7 +2780,7 @@ export interface IPCInvokeMap {
   /// on disk just by being looked at.
   'services:view': (workspaceId: string) => StackView;
   /// Buffered output for one service. Pulled on selection; new lines arrive
-  /// on the `serviceLine` event.
+  /// on the `serviceLines` event.
   /// Every workspace that has services. The pane shows them all at once: a
   /// stack left running in another workspace is still holding ports, and
   /// having to go looking for it is how you end up with two copies of one
@@ -2959,6 +2972,7 @@ export interface IPCInvokeMap {
   /// Secrets come back without their values — see `MachineEntry`.
   'services:machineValues': () => MachineValuesView;
   'services:saveMachineValues': (entries: MachineEntry[]) => void;
+  'services:deleteMachineBackup': () => void;
   /// `${NAME}`s these stacks use that are not defined, and who uses each.
   'services:machineValueNeeds': (workspaceIds: string[]) => MachineValueNeed[];
   /// What a service will actually start with, shared and own options merged.
@@ -3469,6 +3483,18 @@ export interface ProjectStats {
 /// Main → renderer push events. The runner emits stream events here as they
 /// come off the CLI's stdout. Events are tagged with the conversationId so
 /// the renderer can route them to the right pane.
+/// Menu items that the renderer has to carry out. Kept as a named union so
+/// adding an item to the Help menu without teaching App what it means is a
+/// type error rather than a menu entry that silently does nothing.
+export type MenuCommand =
+  | 'newConversation'
+  | 'setup'
+  | 'basics'
+  | 'shortcuts'
+  | 'whatsNew'
+  | 'about'
+  | 'settings';
+
 export type MainToRendererEvent =
   | {
       /// Live text from an in-flight document rewrite. The rewrite runs on
@@ -3592,6 +3618,15 @@ export type MainToRendererEvent =
       total: number;
     }
   | {
+      /// The user picked something from the native application menu. The
+      /// menu can't open a sheet or start a conversation by itself — those
+      /// live in the renderer — so every item that isn't a plain `role`
+      /// arrives here and App routes it. Immediate, never batched: a menu
+      /// click is a one-off, not part of a stream burst.
+      type: 'menuCommand';
+      command: MenuCommand;
+    }
+  | {
       /// Something changed under a watched explorer root (see
       /// `fs:watchTree`). Debounced in main and already filtered against the
       /// tree's skip list, so a tree seeing this should just relist itself.
@@ -3699,12 +3734,12 @@ export type MainToRendererEvent =
       runtime: ServiceRuntime;
     }
   | {
-      /// One line of a service's output, stdout and stderr interleaved as
+      /// A batch of service output lines, stdout and stderr interleaved as
       /// they actually arrived.
-      type: 'serviceLine';
+      type: 'serviceLines';
       workspaceId: string;
       serviceId: string;
-      line: string;
+      lines: string[];
     }
   | {
       /// A service was pointed at a different checkout. Carried separately

@@ -54,11 +54,11 @@ export interface ServeDeps {
 export function acquireLock(dataDir: string): { ok: true; release: () => void } | { ok: false; heldBy: number } {
   const file = path.join(dataDir, LOCK_FILE);
   fs.mkdirSync(dataDir, { recursive: true });
+  const temp = path.join(dataDir, `.${LOCK_FILE}.${process.pid}.${Math.random().toString(36).slice(2)}`);
+  fs.writeFileSync(temp, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
   const claim = (): boolean => {
     try {
-      const fd = fs.openSync(file, 'wx');
-      fs.writeSync(fd, `${process.pid}\n`);
-      fs.closeSync(fd);
+      fs.linkSync(temp, file);
       return true;
     } catch {
       return false;
@@ -71,36 +71,64 @@ export function acquireLock(dataDir: string): { ok: true; release: () => void } 
       return 0;
     }
   };
-  if (!claim()) {
-    const held = holder();
-    if (Number.isInteger(held) && held > 0 && held !== process.pid) {
-      try {
-        process.kill(held, 0);
-        return { ok: false, heldBy: held };
-      } catch {
-        // ESRCH — stale.
+  try {
+    if (!claim()) {
+      const held = holder();
+      if (Number.isInteger(held) && held > 0 && held !== process.pid) {
+        try {
+          process.kill(held, 0);
+          return { ok: false, heldBy: held };
+        } catch {
+          // ESRCH — stale.
+        }
       }
+      // Serialize stale takeover itself: otherwise two contenders can both
+      // observe the old holder and one can unlink the other's fresh claim.
+      const takeover = `${file}.takeover`;
+      let ownsTakeover = false;
+      try {
+        fs.linkSync(temp, takeover);
+        ownsTakeover = true;
+      } catch {
+        const takeoverHolder = (() => {
+          try { return Number(fs.readFileSync(takeover, 'utf8').trim()); } catch { return 0; }
+        })();
+        try {
+          if (takeoverHolder > 0) process.kill(takeoverHolder, 0);
+        } catch {
+          try { fs.unlinkSync(takeover); } catch { /* raced */ }
+        }
+        try {
+          fs.linkSync(temp, takeover);
+          ownsTakeover = true;
+        } catch { /* live contender owns it */ }
+      }
+      if (!ownsTakeover) return { ok: false, heldBy: holder() || held };
+      try {
+        // Only remove the stale name we inspected; a new claimant wins instead.
+        if ((!Number.isInteger(held) || held <= 0 || holder() === held)) fs.unlinkSync(file);
+      } catch { /* raced */ }
+      finally {
+        try { fs.unlinkSync(takeover); } catch { /* gone */ }
+      }
+      // Losing this second race means another daemon claimed it in the gap.
+      if (!claim()) return { ok: false, heldBy: holder() || held };
     }
-    try {
-      fs.unlinkSync(file);
-    } catch {
-      // Someone else cleared it first.
-    }
-    // Losing this second race means another daemon claimed it in the gap.
-    if (!claim()) return { ok: false, heldBy: holder() || held };
+    return {
+      ok: true,
+      release: () => {
+        try {
+          // Only drop it if it is still ours — never delete a lock another
+          // process took over after we went stale.
+          if (Number(fs.readFileSync(file, 'utf-8').trim()) === process.pid) fs.unlinkSync(file);
+        } catch {
+          // Nothing to release.
+        }
+      },
+    };
+  } finally {
+    try { fs.unlinkSync(temp); } catch { /* linked or already gone */ }
   }
-  return {
-    ok: true,
-    release: () => {
-      try {
-        // Only drop it if it is still ours — never delete a lock another
-        // process took over after we went stale.
-        if (Number(fs.readFileSync(file, 'utf-8').trim()) === process.pid) fs.unlinkSync(file);
-      } catch {
-        // Nothing to release.
-      }
-    },
-  };
 }
 
 /// Build, start, and hold. Returns without waiting, so the caller decides how

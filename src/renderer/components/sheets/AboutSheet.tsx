@@ -1,5 +1,11 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useStore } from '../../store';
+import {
+  RotaSpecimen,
+  ServiceAskDemo,
+  StackSpecimen,
+  TrustLadderMark,
+} from '../onboarding/specimens';
 
 const PILLARS = [
   {
@@ -52,6 +58,12 @@ const FEATURES = [
     color: '#b587ff',
     title: 'Rebound',
     body: 'A second model reviews each turn, or collaborates across rounds.',
+  },
+  {
+    icon: 'fan',
+    color: '#b587ff',
+    title: 'Orchestrator',
+    body: 'One ask becomes a batch of flow runs — investigate, propose, launch, review.',
   },
   {
     icon: 'chart.bar.fill',
@@ -164,6 +176,8 @@ export function AboutSheet() {
         </div>
 
         <FlowsSection />
+        <WorkersSection />
+        <ServicesSection />
 
         <SectionLabel className="mt-8">What's in the box</SectionLabel>
         <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
@@ -278,6 +292,202 @@ function FlowsSection() {
         </div>
       </div>
     </>
+  );
+}
+
+/// Workers, given the room the tile grid could not.
+///
+/// A worker is the app's largest idea and its strangest — you hire it against
+/// a written contract, it works shifts, it keeps a journal, it spends a budget
+/// you set, and it earns the right to act while you are asleep. A one-line
+/// tile beside "Stats dashboard" made it read like a cron job with a nickname.
+///
+/// So this section is the longest one here, and it is built out of the three
+/// things no sentence conveys on its own: the ladder a worker climbs, a day
+/// of work nobody asked for, and the five surfaces that come with the crew.
+function WorkersSection() {
+  return (
+    <>
+      <SectionLabel className="mt-8">Workers</SectionLabel>
+      <div className="relative mt-3 overflow-hidden rounded-2xl border border-card-strong bg-gradient-to-br from-[#f59e0b]/10 via-[#a78bfa]/6 to-transparent p-5">
+        <div
+          className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full blur-3xl"
+          style={{ backgroundColor: '#f59e0b1f' }}
+        />
+        <div className="relative grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]">
+          <div className="min-w-0">
+            <span
+              className="inline-flex h-5 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.14em]"
+              style={{ backgroundColor: '#f59e0b26', color: '#fbbf24' }}
+            >
+              Standing hires
+            </span>
+            <div className="mt-2 text-[17px] font-semibold leading-tight text-ink">
+              A worker is a job description with a clock.
+            </div>
+            <div className="mt-1.5 text-[13px] leading-[1.55] text-ink-muted">
+              Triage the new tickets every weekday morning and hand over ready-to-run
+              fixes. Sweep the repo for bugs nobody filed. Read last week's runs and write
+              a Monday brief. You describe the job once, in a paragraph; it turns up on
+              its own schedule, re-reads the project and its own journal, decides what
+              today's most valuable version of that job is, does the work and files it for
+              you to approve — a standing persona that plans each shift itself, not a
+              saved prompt on a timer. Thirteen written contracts ship with it, and the
+              hire screen loads any of them for you to edit.
+            </div>
+
+            {/* The ladder is the part people have to see. Standing is colour
+                everywhere in this feature, and this is where the vocabulary
+                is taught. */}
+            <div className="mt-4 rounded-xl border border-card bg-card/40 px-4 py-3.5">
+              <div className="text-[11px] font-medium text-ink">Trust is earned, not set</div>
+              <div className="mt-3">
+                <TrustLadderMark scale={0.85} />
+              </div>
+              <div className="mt-3 text-[12px] leading-[1.55] text-ink-muted">
+                Every hire starts on probation, where the cap on unattended work is
+                literally zero — it proposes, you approve. Promote it when it has earned
+                it and it starts launching its own; promote it again and it works while
+                you are asleep. Demotion is one click, and the ring colour says where
+                anyone stands from across the room.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-4">
+            <RotaSpecimen footnote={false} />
+            <div className="text-[12px] leading-[1.55] text-ink-muted">
+              Three hires, one Tuesday, none of it prompted. Ask one of them something
+              directly and it plans that errand through the same contract and journal,
+              then files what it made where you can find it months later.
+            </div>
+          </div>
+        </div>
+
+        {/* What actually ships with the crew. Named for the tabs they are, so
+            the panel doubles as a map of the Workers tab. */}
+        <div className="relative mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+          {WORKER_SURFACES.map((f) => (
+            <div
+              key={f.title}
+              className="rounded-xl border border-card bg-card/40 p-3"
+              style={{ boxShadow: `inset 0 1px 0 ${f.tint}2e` }}
+            >
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: f.tint }}
+                  aria-hidden
+                />
+                <span className="text-[12px] font-semibold text-ink">{f.title}</span>
+              </div>
+              <div className="mt-1 text-[11.5px] leading-[1.5] text-ink-muted">{f.body}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/// The five tabs of the Workers pane, described as what they are for. Kept in
+/// this order because it is the order they sit in, and someone reading this
+/// panel is being handed a map.
+const WORKER_SURFACES: { title: string; body: string; tint: string }[] = [
+  {
+    title: 'Today',
+    body: 'A desk per worker: the day it has had, and a composer to talk to it.',
+    tint: '#a78bfa',
+  },
+  {
+    title: 'Queue',
+    body: 'Every job the crew has run — filter it, find it, approve or reject it.',
+    tint: '#38bdf8',
+  },
+  {
+    title: 'Shifts',
+    body: 'When everyone’s shifts fall this week, on one calendar.',
+    tint: '#34d399',
+  },
+  {
+    title: 'Funds',
+    body: 'A monthly pool with a ceiling per worker. Out of budget means no shifts.',
+    tint: '#f59e0b',
+  },
+  {
+    title: 'Report',
+    body: 'Shifts, outcomes, tokens and time across the whole roster.',
+    tint: '#5b9cff',
+  },
+];
+
+/// Services, likewise. The feature is only interesting at the moment one dies,
+/// so the specimen shows one dead.
+function ServicesSection() {
+  return (
+    <>
+      <SectionLabel className="mt-8">Services</SectionLabel>
+      <div className="relative mt-3 overflow-hidden rounded-2xl border border-card-strong bg-gradient-to-br from-[#34d399]/10 via-[#5b9cff]/6 to-transparent p-5">
+        <div
+          className="pointer-events-none absolute -left-16 -bottom-20 h-44 w-44 rounded-full blur-3xl"
+          style={{ backgroundColor: '#34d39922' }}
+        />
+        <div className="relative grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]">
+          <div className="min-w-0">
+            <span
+              className="inline-flex h-5 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.14em]"
+              style={{ backgroundColor: '#34d39926', color: '#6ee7b7' }}
+            >
+              The stack
+            </span>
+            <div className="mt-2 text-[17px] font-semibold leading-tight text-ink">
+              The commands your project needs running, kept here.
+            </div>
+            <div className="mt-1.5 text-[13px] leading-[1.55] text-ink-muted">
+              Overcli reads your run configurations and build files, offers you what it
+              found, and then looks after those processes — started, watched and logged
+              beside the code instead of in five terminal tabs you have to remember the
+              order of.
+            </div>
+            <div className="mt-3 space-y-1.5 text-[12px] leading-[1.5] text-ink-muted">
+              <Bullet tint="#34d399">
+                Real child processes, each with its own working directory and branch — and
+                movable to another branch without leaving the pane.
+              </Bullet>
+              <Bullet tint="#5b9cff">
+                Logs kept while it runs and after it exits, so "it worked an hour ago" is
+                something you can read.
+              </Bullet>
+              <Bullet tint="#f59e0b">
+                Nothing starts itself. Overcli runs what you asked for and says plainly
+                when one dies — then checks the usual causes itself, and asks a CLI what
+                it thinks only when those come up empty.
+              </Bullet>
+            </div>
+          </div>
+          <div className="flex flex-col gap-4">
+            <StackSpecimen footnote={false} />
+            <ServiceAskDemo />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/// A tinted tick for the showcase bullets. Not a list marker — the colour is
+/// the feature's own, so the three lines carry the same palette as the panel
+/// beside them.
+function Bullet({ tint, children }: { tint: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-2">
+      <span
+        className="mt-[6px] h-1.5 w-1.5 shrink-0 rounded-full"
+        style={{ background: tint }}
+        aria-hidden
+      />
+      <span className="min-w-0">{children}</span>
+    </div>
   );
 }
 
@@ -653,6 +863,23 @@ function FeatureIcon({ icon, color }: { icon: string; color: string }) {
           <rect x="4" y="10" width="2.5" height="6" rx="1" fill={color} />
           <rect x="8.75" y="7" width="2.5" height="9" rx="1" fill={color} />
           <rect x="13.5" y="4" width="2.5" height="12" rx="1" fill={color} />
+        </svg>
+      );
+    // One ask on the left, the batch it becomes on the right.
+    case 'fan':
+      return (
+        <svg {...common}>
+          <circle cx="4.5" cy="10" r="2" fill={color} />
+          {[4.5, 8, 11.5, 15].map((y) => (
+            <path
+              key={y}
+              d={`M7 10C 11 10, 12 ${y}, 15.5 ${y}`}
+              stroke={color}
+              strokeWidth="1.3"
+              strokeLinecap="round"
+              opacity="0.8"
+            />
+          ))}
         </svg>
       );
     case 'cpu':

@@ -16,6 +16,28 @@
   }
 }
 
+/* Bricolage Grotesque — the display face overcli.app actually renders.
+ *
+ * The site loads three Google fonts (Bricolage Grotesque, Geist, Geist Mono)
+ * and its theme sets `--f-display` to this one. The overcli page's own
+ * stylesheet asks for Fraunces instead, but it is linked BEFORE the theme, so
+ * at equal specificity the theme wins and Fraunces never applies — it is dead
+ * code on the site, and copying it here would have matched an intention
+ * nobody can see rather than the brand.
+ *
+ * Bundled rather than fetched: a desktop app has to look the same on a plane.
+ * Latin subset of the variable font (weights 200–800, optical size 12–96,
+ * width 75–100), SIL Open Font License 1.1 — see OFL-BricolageGrotesque.txt
+ * beside it.
+ */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('./fonts/BricolageGrotesque-latin.woff2') format('woff2');
+}
+
 /* Theme palettes. Every semantic color (surface, ink, accent, backend
  * tints) is driven by a CSS custom property so the whole app switches
  * theme by toggling `html.dark`. Tailwind's colors map to these vars in
@@ -184,23 +206,28 @@
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  height: 22px;
-  padding: 0 0.5rem;
+  height: 24px;
+  padding: 0 0.5625rem;
   border-radius: 0.3125rem;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
   border: 1px solid transparent;
   transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
+/* Muted ink on a faint border made an enabled button and a disabled one look
+ * the same at a glance — the disabled state was carrying the whole difference
+ * on 0.4 opacity. An available button now reads as ink on a visible edge, so
+ * the dimmed one is plainly not that. */
 .svc-btn {
   background: var(--c-card-bg-strong);
-  border-color: var(--c-card-border);
-  color: var(--c-ink-muted);
+  border-color: var(--c-card-border-strong);
+  color: var(--c-ink);
 }
 .svc-btn:hover:not(:disabled) {
-  border-color: var(--c-card-border-strong);
+  background: var(--c-card-bg-strong);
+  border-color: color-mix(in srgb, var(--c-accent) 45%, var(--c-card-border-strong));
   color: var(--c-ink);
 }
 .svc-btn-primary {
@@ -211,11 +238,17 @@
 .svc-btn-primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--c-accent) 28%, var(--c-surface-elevated));
 }
+/* Flat, edgeless and grey rather than a faded copy of itself: whatever colour
+ * the button carried when it was available is exactly what should not survive
+ * being unavailable. */
 .svc-btn:disabled,
 .svc-btn-primary:disabled,
 .svc-btn-go:disabled,
 .svc-btn-stop:disabled {
-  opacity: 0.4;
+  background: transparent;
+  border-color: transparent;
+  color: var(--c-ink-faint);
+  opacity: 0.75;
   cursor: not-allowed;
 }
 

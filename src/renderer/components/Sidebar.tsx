@@ -353,14 +353,13 @@ export function Sidebar() {
   // that flipping the switch is instant rather than a visible rebuild — it is
   // the same walk over the same arrays the tree already does.
   const streamEntries = useMemo(
-    () =>
-      collectStreamItems(
+    () => sidebarLayout !== 'stream' ? [] : collectStreamItems(
         projects,
         workspaces,
         flowRuns,
         runners,
         { openedConversationId: selectedId, lastSelectedAt, openedRunId, lastOpenedAtByRun },
-        now,
+        Date.now(),
         workers,
       ),
     [
@@ -373,7 +372,7 @@ export function Sidebar() {
       openedRunId,
       lastOpenedAtByRun,
       workers,
-      now,
+      sidebarLayout,
     ],
   );
   // Which lane gets the accent rail. Reads off whatever is actually on

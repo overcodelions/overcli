@@ -124,18 +124,26 @@ export function outboundSummary(toolName: string, toolInput?: string): OutboundS
       unpin: 'Unpins an artifact from your claude.ai sidebar.',
       quickstart: 'Reads the artifact types available on your claude.ai account.',
     };
+    const files = [...new Set([
+      ...(input?.file_path ? [String(input.file_path)] : []),
+      ...Object.values(input?.files ?? {}).map(String),
+      ...(Array.isArray(input?.file_paths) ? input.file_paths.map(String) : []),
+      ...(input?.root ? [String(input.root)] : []),
+    ])];
     return {
       // Own properties only, and stringified: `action` is model-controlled,
       // and a bare `headlines[action]` resolves `toString` to a function and
       // `__proto__` to an object — which React throws on, taking the card's
       // Allow and Deny buttons down with it.
-      headline: Object.hasOwn(headlines, action)
-        ? String(headlines[action])
-        : `Runs the Artifact tool's "${action}" action against claude.ai.`,
+      headline: action === 'publish'
+        ? `Publishes ${files.length} local file${files.length === 1 ? '' : 's'} to claude.ai as a shareable artifact.`
+        : Object.hasOwn(headlines, action)
+          ? String(headlines[action])
+          : `Runs the Artifact tool's "${action}" action against claude.ai.`,
       rows: [
         ...(input?.url ? [{ label: 'Artifact', value: String(input.url) }] : []),
         ...(input?.title ? [{ label: 'Title', value: String(input.title) }] : []),
-        ...(input?.file_path ? [{ label: 'File', value: String(input.file_path) }] : []),
+        ...files.map((value, index) => ({ label: files.length === 1 ? 'File' : `File ${index + 1}`, value })),
         ...(caps.length ? [{ label: 'Grants', value: caps.join(', ') }] : []),
       ],
     };

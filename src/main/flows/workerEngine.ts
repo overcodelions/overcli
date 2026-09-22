@@ -421,6 +421,13 @@ export class WorkerEngine {
     return [...this.workers.keys()];
   }
 
+  /// Names only, for the same reason `workerIds` exists: the hire drafter
+  /// needs to see the crew it is naming alongside, and a scorecard per worker
+  /// is two whole-file log reads it has no use for.
+  workerNames(): string[] {
+    return [...this.workers.values()].map((w) => w.name);
+  }
+
   get(id: UUID): Worker | null {
     return this.workers.get(id) ?? null;
   }

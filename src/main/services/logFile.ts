@@ -16,7 +16,7 @@ export const LOG_FILE_LIMIT = 20 * 1024 * 1024;
 
 export interface LogSink {
   write(serviceId: string, line: string): void;
-  close(serviceId: string): void;
+  close(serviceId: string): Promise<void>;
 }
 
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -26,48 +26,34 @@ export function stripAnsi(line: string): string {
 }
 
 export function createLogSink(fileFor: (serviceId: string) => string, limit = LOG_FILE_LIMIT): LogSink {
-  const open = new Map<string, { fd: number; size: number; file: string }>();
-
-  const handle = (serviceId: string) => {
-    const existing = open.get(serviceId);
-    if (existing) return existing;
-    const file = fileFor(serviceId);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const fd = fs.openSync(file, 'a');
-    const entry = { fd, size: fs.fstatSync(fd).size, file };
-    open.set(serviceId, entry);
-    return entry;
-  };
-
-  const close = (serviceId: string) => {
-    const entry = open.get(serviceId);
-    if (!entry) return;
-    open.delete(serviceId);
-    try {
-      fs.closeSync(entry.fd);
-    } catch {
-      // Already gone.
-    }
+  const queues = new Map<string, string[]>();
+  const pending = new Map<string, Promise<void>>();
+  const flush = (serviceId: string) => {
+    const previous = pending.get(serviceId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      const lines = queues.get(serviceId) ?? [];
+      queues.delete(serviceId);
+      if (!lines.length) return;
+      const file = fileFor(serviceId);
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      let size = 0;
+      try { size = (await fs.promises.stat(file)).size; } catch { /* new file */ }
+      if (size >= limit) {
+        try { await fs.promises.rename(file, file.replace(/\.log$/, '.1.log')); } catch { /* best effort */ }
+      }
+      await fs.promises.appendFile(file, lines.join(''), 'utf8');
+    }).catch(() => undefined).finally(() => { if (!queues.has(serviceId)) pending.delete(serviceId); });
+    pending.set(serviceId, next);
+    return next;
   };
 
   return {
     write(serviceId, line) {
-      try {
-        let entry = handle(serviceId);
-        if (entry.size >= limit) {
-          close(serviceId);
-          fs.renameSync(entry.file, entry.file.replace(/\.log$/, '.1.log'));
-          entry = handle(serviceId);
-        }
-        const text = `${new Date().toISOString()} ${stripAnsi(line)}\n`;
-        fs.writeSync(entry.fd, text);
-        entry.size += Buffer.byteLength(text);
-      } catch {
-        // A full disk or a deleted folder must not take the service down with
-        // it; the pane still has the lines.
-        close(serviceId);
-      }
+      const queue = queues.get(serviceId) ?? [];
+      queue.push(`${new Date().toISOString()} ${stripAnsi(line)}\n`);
+      queues.set(serviceId, queue);
+      void flush(serviceId);
     },
-    close,
+    async close(serviceId) { await flush(serviceId); await pending.get(serviceId); },
   };
 }

@@ -27,6 +27,7 @@ import {
   stripHandoffs,
   WORKER_ROSTER_LINE_MAX,
   WORKER_TAGLINE_MAX,
+  workerErrandStarters,
   workerTagline,
   type Worker,
   type WorkerJournalEntry,
@@ -794,5 +795,37 @@ describe('parseDirectRun', () => {
   it('needs work to run', () => {
     expect(parseDirectRun('/run')).toBeNull();
     expect(parseDirectRun('/run   ')).toBeNull();
+  });
+});
+
+describe('workerErrandStarters', () => {
+  it('offers the worker its own starters when it has them', () => {
+    const w = makeWorker({ errandStarters: ['what is stuck?', 'recheck this morning'] });
+    expect(workerErrandStarters(w)).toEqual(['what is stuck?', 'recheck this morning']);
+  });
+
+  it('falls back rather than leaving a desk with no examples on it', () => {
+    // Every worker hired before the field existed has none, and a bare box is
+    // exactly the thing the starters exist to prevent.
+    expect(workerErrandStarters(makeWorker()).length).toBeGreaterThan(0);
+  });
+
+  it('treats an empty or blank list as no starters at all', () => {
+    expect(workerErrandStarters(makeWorker({ errandStarters: [] }))).toEqual(
+      workerErrandStarters(makeWorker()),
+    );
+    expect(workerErrandStarters(makeWorker({ errandStarters: ['   ', ''] }))).toEqual(
+      workerErrandStarters(makeWorker()),
+    );
+  });
+
+  it('caps the list, because past three they stop being examples', () => {
+    const w = makeWorker({ errandStarters: ['one', 'two', 'three', 'four', 'five'] });
+    expect(workerErrandStarters(w)).toEqual(['one', 'two', 'three']);
+  });
+
+  it('collapses whitespace so a wrapped starter still fits on one chip', () => {
+    const w = makeWorker({ errandStarters: ['  what   is\n  stuck? '] });
+    expect(workerErrandStarters(w)).toEqual(['what is stuck?']);
   });
 });

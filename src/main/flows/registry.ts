@@ -9,6 +9,8 @@ import { SLUG_RE } from '../../shared/flows/validation';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import { validateFlow } from '../../shared/flows/validation';
 import { scanFlowRisks } from '../../shared/flows/riskScan';
+import { adaptFlowYamlToMachine, type InstallAdaptation } from '../../shared/flows/installAdapt';
+import type { TemplateResolveContext } from '../../shared/flows/templateResolver';
 import { getAuthHeader } from './registryAuth';
 import { readLocalEntry, scanLocalRegistry, sha256Of } from './localRegistry';
 
@@ -147,7 +149,12 @@ export async function previewRegistryFlow(args: { registryId: string; id: string
   return { ok: true as const, flow, risks: scanFlowRisks(flow) };
 }
 
-export async function installFromRegistry(args: { registryId: string; id: string; version: string }) {
+export async function installFromRegistry(
+  args: { registryId: string; id: string; version: string },
+  /// What this machine can run, so the installed copy is bound to it — see
+  /// `installAdapt`. Omitted, the flow is written exactly as published.
+  machine?: () => Promise<TemplateResolveContext>,
+) {
   const resolved = await resolveEntry(args);
   if (!resolved.ok) return { ok: false as const, error: resolved.error };
   const { registry, entry } = resolved;
@@ -166,9 +173,28 @@ export async function installFromRegistry(args: { registryId: string; id: string
   // the warning it replaces. The findings ride along on the result so the caller
   // can tell the user what it saw; the file is written either way.
   const risks = scanFlowRisks(flow);
+  // The SHA above is checked against what was published, and updates are
+  // tracked by version rather than by re-hashing the installed file, so
+  // binding the installed copy to this machine costs integrity nothing.
+  let written = body;
+  let adapted: InstallAdaptation[] = [];
+  if (machine) {
+    const result = adaptFlowYamlToMachine(body, await machine());
+    // Belt and braces: an adaptation that no longer parses or validates is
+    // discarded for the flow as published. Preflight will then name the
+    // missing backend, which is a worse experience but never a broken file.
+    const reparsed =
+      result.changes.length > 0
+        ? parseFlowYaml({ yaml: result.yaml, id: filename.slice(0, -5), source: 'user', filePath })
+        : null;
+    if (reparsed && validateFlow(reparsed).ok) {
+      written = result.yaml;
+      adapted = result.changes;
+    }
+  }
   fs.mkdirSync(userFlowsDir(), { recursive: true });
   const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, body, 'utf-8');
+  fs.writeFileSync(tmp, written, 'utf-8');
   fs.renameSync(tmp, filePath);
   const installed: InstalledRegistryFlow = { registryId: registry.id, id: entry.id, version: entry.version, filename };
   const list = (settings.installedRegistryFlows ?? []).filter(
@@ -176,7 +202,7 @@ export async function installFromRegistry(args: { registryId: string; id: string
   );
   list.push(installed);
   Store.saveSettings({ ...settings, installedRegistryFlows: list });
-  return { ok: true as const, filePath, risks };
+  return { ok: true as const, filePath, risks, adapted };
 }
 
 export function upsertRegistry(args: { registry: FlowRegistry; authHeader?: string | null }) {

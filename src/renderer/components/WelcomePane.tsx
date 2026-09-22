@@ -13,8 +13,11 @@ import { BranchCombobox } from './sheets/BranchCombobox';
 import { useProjectBranches } from './sheets/useProjectBranches';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
 import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
+import { FlowsAboutModal } from './flows/FlowsAbout';
 import { CopyButton } from './ManualCommand';
 import { ProjectFilesBubble } from './ProjectFilesBubble';
+import { EmptyWelcome } from './onboarding/EmptyWelcome';
+import { suggestRegistryFlows } from './flows/registrySuggest';
 import { ResumeRow } from './ResumeRow';
 import { isEverydayProject } from '@shared/everydayProjects';
 import {
@@ -47,6 +50,7 @@ import {
   enabledBackends,
   isBackendEnabled,
   modeLabel,
+  permissionNote,
   permissionTone,
   pickDefaultBackend,
 } from './conversationHeaderHelpers';
@@ -63,6 +67,7 @@ type RunMode = 'local' | 'agent' | 'review' | 'docs';
 /// inside the composer and project/env/branch below it. Sending from here
 /// creates a new conversation and hands the draft + attachments off.
 export function WelcomePane() {
+  const storeLoaded = useStore((s) => s.storeLoaded);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const settings = useStore((s) => s.settings);
@@ -490,6 +495,13 @@ export function WelcomePane() {
     await send(conv.id, prompt);
   };
 
+  // Nothing at all until the store is in. `projects` starts `[]` because the
+  // renderer boots before `store:load` answers, not because the machine has
+  // no projects — rendering the onboarding screen off that initial value
+  // flashed the whole landing up and tore it away again on every launch. An
+  // empty pane for one frame is the honest answer to "we do not know yet".
+  if (!storeLoaded) return <div className="flex-1" />;
+
   if (projects.length === 0) {
     return <EmptyWelcome onPick={pickProject} backendHealth={backendHealth} />;
   }
@@ -552,6 +564,7 @@ export function WelcomePane() {
               .map((m) => ({
                 value: m,
                 label: modeLabel(m),
+                note: permissionNote(m),
               }))}
             onPick={(v) => setLocalPermissionMode(v as PermissionMode)}
           />
@@ -807,6 +820,23 @@ export function WelcomePane() {
             }}
           />
         )}
+        {/* First visit to a code project: the harder screen of the two, and
+            until now the only one that offered nothing to start from. Gone
+            for good once the project has a conversation — these are for the
+            person who has never done this, not a permanent fixture. */}
+        {!isNonGitProject &&
+          !focusedWorkspace &&
+          selectedProject &&
+          (selectedProject.conversations?.length ?? 0) === 0 && (
+            <StarterPrompts
+              project={selectedProject}
+              kind="code"
+              onPick={(text) => {
+                setDraft(WELCOME_KEY, text);
+                setComposerFocusNudge((n) => n + 1);
+              }}
+            />
+          )}
         {selectedProject &&
           !focusedWorkspace &&
           !isEverydayFolder &&
@@ -952,6 +982,9 @@ function WelcomeFlowsRow({
   const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
   const installedFlows = useStore((s) => s.settings.installedRegistryFlows);
   const registryEntries = useFlowsStore((s) => s.registryEntries);
+  // Which MCP servers are actually connected, so a flow that needs one is
+  // demoted only on a machine that cannot run it. Scanned at startup.
+  const capabilities = useStore((s) => s.capabilities);
   const registryLoaded = useFlowsStore((s) => s.registryLoaded);
   const browseRegistries = useFlowsStore((s) => s.browseRegistries);
   const installFromRegistry = useFlowsStore((s) => s.installFromRegistry);
@@ -961,6 +994,9 @@ function WelcomeFlowsRow({
   // results below cover the common case of "I know what I want, is it
   // published?" without leaving the screen.
   const [browseQuery, setBrowseQuery] = useState<string | null>(null);
+  // Only ever opened from the empty state — someone with flows already
+  // knows what they are.
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [installingKey, setInstallingKey] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
   const [drafting, setDrafting] = useState(false);
@@ -1072,6 +1108,15 @@ function WelcomeFlowsRow({
   // of firing under their hands on the first keystroke.
   const grouped = searching || showAll || searchFocused;
 
+  // With no flows at all there is nothing to search, and someone who has
+  // never seen a flow has no reason to type into the box. Fetch the index
+  // once in that one case, so the empty state can offer real installable
+  // flows instead of an empty search field — this is the screen where the
+  // round-trip pays for itself.
+  useEffect(() => {
+    if (loaded && flows.length === 0 && !registryLoaded) void browseRegistries(false);
+  }, [loaded, flows.length, registryLoaded, browseRegistries]);
+
   // Registry index is fetched (and cached in the store) the first time the
   // user searches, not on mount — a network round-trip on every welcome
   // screen to populate results nobody asked for isn't worth it.
@@ -1135,7 +1180,77 @@ function WelcomeFlowsRow({
   }
 
   if (!loaded) return null;
-  if (flows.length === 0) return null;
+
+  // Nothing installed. Returning null here (which it used to) meant the
+  // feature the welcome screen advertises as a headline was invisible to
+  // every new user: an empty search box they had no reason to type into.
+  if (flows.length === 0) {
+    // Ranked, not the registry's alphabetical head — see `registrySuggest`.
+    const suggestions = suggestRegistryFlows(registryEntries, capabilities);
+    return (
+      <div className="mt-8 border-t border-card pt-5">
+        <div className="text-center">
+          <div className="text-[13px] font-medium text-ink">
+            Or run a flow instead of a chat
+          </div>
+          <div className="mt-1 text-[11.5px] leading-relaxed text-ink-muted max-w-[520px] mx-auto">
+            A flow is a saved pipeline: plan on one model, build on another, review on a
+            third, with each step handing its work to the next. You have none yet.
+          </div>
+        </div>
+        {suggestions.length > 0 && (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            {suggestions.map((entry) => (
+              <RegistryFlowCard
+                key={`${entry.registryId}:${entry.id}`}
+                entry={entry}
+                installing={installingKey === `${entry.registryId}:${entry.id}`}
+                onInstall={() => void handleInstall(entry)}
+                onPreview={() => setBrowseQuery('')}
+              />
+            ))}
+          </div>
+        )}
+        {installError && (
+          <div className="mt-1.5 text-center text-[11px] text-red-400">{installError}</div>
+        )}
+        <div className="mt-3 flex items-center justify-center gap-3 text-[11px] text-ink-faint">
+          <button
+            onClick={() => setAboutOpen(true)}
+            className="hover:text-ink underline-offset-2 hover:underline"
+          >
+            What are flows?
+          </button>
+          <button
+            onClick={() => setBrowseQuery('')}
+            className="hover:text-ink underline-offset-2 hover:underline"
+          >
+            Browse the library
+          </button>
+        </div>
+        {aboutOpen && (
+          <FlowsAboutModal
+            onClose={() => setAboutOpen(false)}
+            onBrowse={() => {
+              setAboutOpen(false);
+              setBrowseQuery('');
+            }}
+          />
+        )}
+        {browseQuery !== null && (
+          <BrowseLibraryModal
+            initialQuery={browseQuery}
+            onClose={() => {
+              setBrowseQuery(null);
+              // An install lands a new YAML in the user flows dir; without
+              // this the row keeps showing the pre-install (empty) list.
+              void reload(projects.map((p) => p.path));
+            }}
+          />
+        )}
+      </div>
+    );
+  }
 
   const visibleFlows = orderedFlows.slice(0, MAX_VISIBLE_FLOWS);
   const hiddenCount = orderedFlows.length - visibleFlows.length;
@@ -1531,18 +1646,43 @@ function RegistryFlowCard({
   );
 }
 
-/// Quick-start chips shown above the composer for non-git "work folder"
-/// projects. They prefill the draft so the user can edit before sending,
-/// and frame the project as a place to investigate / report rather than
-/// a codebase to build in.
+/// Quick-start chips shown above the composer. They prefill the draft so
+/// the user can edit before sending.
+///
+/// Two sets, because the two kinds of project want different first moves. A
+/// "work folder" is a place to investigate and report on, and its chips say
+/// so permanently — that user is the one most likely to face the composer
+/// with nothing to type. A code project gets chips only until it has a
+/// conversation in it (see the call site): the first visit is the one where
+/// "what do I even ask it?" is a real question, and after that they are in
+/// the way of someone who knows exactly what they want.
 function StarterPrompts({
   project,
+  kind = 'documents',
   onPick,
 }: {
   project: Project;
+  kind?: 'documents' | 'code';
   onPick: (text: string) => void;
 }) {
-  const prompts: { label: string; text: string }[] = [
+  const prompts: { label: string; text: string }[] = kind === 'code' ? [
+    {
+      label: 'Explain this codebase',
+      text: `Give me a tour of ${project.path}: what this project is, how it's laid out, and where the code that matters lives. Don't change anything.`,
+    },
+    {
+      label: 'What changed lately?',
+      text: `Look at the recent commits in ${project.path} and tell me what's been happening — what changed, and anything that looks risky or half-finished.`,
+    },
+    {
+      label: 'Find something to fix',
+      text: `Look around ${project.path} for something genuinely worth fixing — a bug, a rough edge, missing error handling. Tell me what you found and why before you touch anything.`,
+    },
+    {
+      label: 'Write a test',
+      text: `Find a piece of ${project.path} that matters and isn't well covered, and write a test for it. Follow whatever testing conventions the project already uses.`,
+    },
+  ] : [
     {
       label: 'Review what’s here',
       text: `Take a look around ${project.path} and give me a quick tour: what files are here, how they’re organized, and what looks worth digging into.`,
@@ -1572,496 +1712,6 @@ function StarterPrompts({
         </button>
       ))}
     </div>
-  );
-}
-
-function EmptyWelcome({
-  onPick,
-  backendHealth,
-}: {
-  onPick: () => void;
-  backendHealth: Record<string, BackendHealth>;
-}) {
-  // Three states, not two. Until the first probe lands we know *nothing*,
-  // and rendering the happy path in the meantime meant a fresh install
-  // painted an enabled "Add your first project" button and then yanked it
-  // away a moment later when the setup card shoved everything down the
-  // page. "Checking" is its own state so the first frame is never a lie.
-  const probed = backendHealthLoaded(backendHealth);
-  const blocked = noBackendReady(backendHealth);
-  const readyNames = ALL_SETUP_BACKENDS.filter(
-    (b) => backendHealth[b]?.kind === 'ready',
-  ).map((b) => backendName(b));
-
-  return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="min-h-full flex items-center justify-center px-8 py-10">
-        <div className="w-full max-w-[760px] text-center">
-        <div className="flex items-center justify-center gap-2.5">
-          <HeroArt />
-          <span className="text-xl font-semibold tracking-tight">
-            <span className="text-ink-muted">over</span>
-            <span className="text-accent">cli</span>
-          </span>
-        </div>
-        <div className="mt-3 text-[13px] leading-relaxed text-ink-muted max-w-[460px] mx-auto">
-          A desktop home for the Claude, Codex, Gemini, Copilot, and Ollama
-          CLIs — chat with any model, run background agents on isolated git
-          worktrees, and coordinate across repos. No API keys; just the CLIs
-          you've signed into.
-        </div>
-
-        {!probed ? (
-          <div className="mt-6 flex items-center justify-center gap-2 text-[11px] text-ink-faint">
-            <Spinner />
-            Looking for installed CLIs…
-          </div>
-        ) : blocked ? (
-          <CliSetupGuide backendHealth={backendHealth} />
-        ) : (
-          <div className="mt-6 text-[11px] text-emerald-500 dark:text-emerald-400">
-            {joinNames(readyNames)} ready to go.
-          </div>
-        )}
-
-        <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
-          <FeatureCard
-            accent="var(--c-backend-claude)"
-            title="Projects"
-            body="A project is a git repository on your machine. Chat with it, run tools, and keep one thread per task."
-            icon={<ProjectGlyph />}
-          />
-          <FeatureCard
-            accent="var(--c-backend-codex)"
-            title="Agents"
-            body="Build, review, or doc agents run in their own git worktrees so your main checkout stays clean."
-            icon={<BranchGlyph />}
-          />
-          <FeatureCard
-            accent="var(--c-accent)"
-            title="Flows"
-            body="Chain steps into a pipeline — each its own model, role, and tools — handing artifacts (plan → diff → review) step to step."
-            icon={<FlowGlyph />}
-          />
-          <FeatureCard
-            accent="var(--c-backend-gemini)"
-            title="Workspaces"
-            body="Group several projects into one workspace and fire agents that span every repo at once."
-            icon={<WorkspaceGlyph />}
-          />
-        </div>
-
-        <div className="mt-8 flex flex-col items-center gap-2">
-          <button
-            onClick={onPick}
-            disabled={blocked || !probed}
-            title={blocked ? 'Set up a CLI first to add a project' : undefined}
-            className="px-5 py-2.5 rounded-md bg-accent/30 text-accent hover:bg-accent/40 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-accent/30"
-          >
-            Add your first project
-          </button>
-          <div className="text-[11px] text-ink-faint">
-            {!probed
-              ? 'One moment — checking what you already have installed.'
-              : blocked
-              ? 'Set up a CLI above first — this unlocks as soon as one is ready.'
-              : 'Pick a folder on disk. Git repos unlock agents; any folder works for chat.'}
-          </div>
-        </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface CliSetupEntry {
-  backend: Backend;
-  name: string;
-  /// One line on what you get, so the choice isn't five identical npm
-  /// commands with different package names.
-  blurb: string;
-  install: string;
-  auth: string | null;
-  docs: string;
-  /// Shown above the fold as a suggested starting point. The rest sit
-  /// under "Also supported" — every CLI works, but a first-run screen
-  /// that refuses to have an opinion is a worse first run.
-  featured?: boolean;
-}
-
-const CLI_SETUP: CliSetupEntry[] = [
-  {
-    backend: 'claude',
-    name: 'Claude',
-    blurb: 'Anthropic’s Claude Code. Broadest tool + agent support in overcli.',
-    install: 'npm install -g @anthropic-ai/claude-code',
-    auth: 'claude auth login',
-    docs: 'https://docs.claude.com/en/docs/claude-code/setup',
-    featured: true,
-  },
-  {
-    backend: 'codex',
-    name: 'Codex',
-    blurb: 'OpenAI’s Codex CLI. Signs in with your ChatGPT account.',
-    install: 'npm install -g @openai/codex',
-    auth: 'codex login',
-    docs: 'https://github.com/openai/codex',
-    featured: true,
-  },
-  {
-    backend: 'gemini',
-    name: 'Gemini',
-    blurb: 'Google’s Gemini CLI.',
-    install: 'npm install -g @google/gemini-cli',
-    auth: 'gemini auth login',
-    docs: 'https://github.com/google-gemini/gemini-cli',
-  },
-  {
-    backend: 'copilot',
-    name: 'Copilot',
-    blurb: 'GitHub Copilot CLI, on your GitHub account.',
-    install: 'npm install -g @github/copilot',
-    auth: 'copilot login',
-    docs: 'https://www.npmjs.com/package/@github/copilot',
-  },
-  {
-    backend: 'ollama',
-    name: 'Ollama',
-    blurb: 'Open models running locally. No account, no network.',
-    install: 'Download from ollama.com',
-    auth: null,
-    docs: 'https://ollama.com/download',
-  },
-];
-
-const ALL_SETUP_BACKENDS = CLI_SETUP.map((c) => c.backend);
-
-/// "Claude", "Claude and Codex", "Claude, Codex and Ollama".
-function joinNames(names: string[]): string {
-  if (names.length === 0) return 'No CLI';
-  if (names.length === 1) return names[0];
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-}
-
-function CliSetupGuide({ backendHealth }: { backendHealth: Record<string, BackendHealth> }) {
-  const refreshBackendHealth = useStore((s) => s.refreshBackendHealth);
-  const openSheet = useStore((s) => s.openSheet);
-  const [recheckedAt, setRecheckedAt] = useState(0);
-
-  // Someone staring at this screen is, right now, in a terminal running one
-  // of the commands below. Poll while we're blocked so the app notices on
-  // its own — the alternative is a user who installs a CLI, comes back to a
-  // screen that still says "install a CLI", and concludes the app is broken.
-  // `force` drops main's 15s probe cache; only when the window has focus, so
-  // a backgrounded app isn't respawning CLIs forever.
-  useEffect(() => {
-    const tick = () => {
-      if (!document.hasFocus()) return;
-      void refreshBackendHealth(true);
-    };
-    const id = setInterval(tick, 4000);
-    // Coming back from the terminal is the exact moment the answer changes.
-    window.addEventListener('focus', tick);
-    return () => {
-      clearInterval(id);
-      window.removeEventListener('focus', tick);
-    };
-  }, [refreshBackendHealth]);
-
-  const rows = CLI_SETUP.map((cli) => ({
-    ...cli,
-    health: backendHealth[cli.backend],
-    // Absent means we haven't heard about it; treat as missing rather than
-    // rendering an empty row.
-    kind: backendHealth[cli.backend]?.kind ?? 'missing',
-  }))
-    // `unknown` is only ever produced by the store for a backend the user
-    // turned off in Settings. Telling someone to npm-install something they
-    // deliberately disabled is noise.
-    .filter((r) => r.kind !== 'ready' && r.kind !== 'unknown');
-
-  if (rows.length === 0) {
-    return (
-      <div className="mt-6 rounded-lg border border-amber-500/40 bg-surface-elevated p-5 text-left">
-        <div className="text-sm font-medium text-ink">Every CLI is switched off</div>
-        <div className="mt-1 text-[12px] text-ink-muted">
-          All five backends are disabled in settings, so there's nothing for overcli to
-          drive. Re-enable one to get started.
-        </div>
-        <button
-          onClick={() => openSheet({ type: 'settings' })}
-          className="mt-3 px-3 py-1.5 rounded-md bg-accent/25 text-accent hover:bg-accent/35 text-xs font-medium"
-        >
-          Open settings
-        </button>
-      </div>
-    );
-  }
-
-  // An installed-but-signed-out CLI is one click from done, so it leads —
-  // it's a far shorter path than any install below it.
-  const signIn = rows.filter((r) => r.kind === 'unauthenticated');
-  const rest = rows.filter((r) => r.kind !== 'unauthenticated');
-  const featured = rest.filter((r) => r.featured);
-  const others = rest.filter((r) => !r.featured);
-
-  const headline =
-    signIn.length > 0
-      ? `Sign in to ${joinNames(signIn.map((r) => r.name))} to get started`
-      : 'Install a coding CLI to get started';
-  const subline =
-    signIn.length > 0
-      ? `${signIn.length === 1 ? 'It’s' : 'They’re'} already installed — one sign-in and you're in. overcli picks it up automatically.`
-      : 'overcli drives the coding CLIs you sign into — there are no API keys to paste here. Set up any one of these and this screen unlocks on its own.';
-
-  return (
-    <div className="mt-6 rounded-lg border border-amber-500/40 bg-surface-elevated p-5 text-left">
-      <div className="text-sm font-medium text-ink">{headline}</div>
-      <div className="mt-1 mb-4 text-[12px] leading-relaxed text-ink-muted">{subline}</div>
-
-      <div className="flex flex-col gap-1.5">
-        {signIn.map((row) => (
-          <CliSetupRow key={row.backend} row={row} />
-        ))}
-        {featured.map((row) => (
-          <CliSetupRow key={row.backend} row={row} />
-        ))}
-      </div>
-
-      {others.length > 0 && (
-        <>
-          <div className="mt-4 mb-1.5 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
-            Also supported
-          </div>
-          <div className="flex flex-col gap-1.5">
-            {others.map((row) => (
-              <CliSetupRow key={row.backend} row={row} compact />
-            ))}
-          </div>
-        </>
-      )}
-
-      <div className="mt-4 pt-3 border-t border-card flex items-center gap-2 text-[10.5px] text-ink-faint">
-        <Spinner />
-        <span className="flex-1">Watching for a CLI — no need to restart overcli.</span>
-        <button
-          onClick={() => {
-            setRecheckedAt(Date.now());
-            void refreshBackendHealth(true);
-          }}
-          className="rounded px-1.5 py-0.5 font-medium text-ink-muted hover:text-ink hover:bg-card-strong"
-        >
-          {recheckedAt ? 'Check again' : 'Check now'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-type CliSetupRowData = CliSetupEntry & { health?: BackendHealth; kind: BackendHealth['kind'] };
-
-function CliSetupRow({ row, compact }: { row: CliSetupRowData; compact?: boolean }) {
-  const { backend, name, blurb, install, auth, docs, kind, health } = row;
-  const isAuth = kind === 'unauthenticated';
-  const command = isAuth && auth ? auth : install;
-  // "Download from ollama.com" is prose, not something to paste in a shell.
-  const canCopy = command.startsWith('npm') || isAuth;
-  return (
-    <div className="rounded-md px-3 py-2 bg-card/60">
-      <div className="flex items-center gap-2.5">
-        <span
-          className="w-1.5 h-1.5 rounded-full shrink-0"
-          style={{
-            backgroundColor: isAuth ? '#f59e0b' : backendColor(backend),
-            opacity: isAuth ? 1 : 0.45,
-          }}
-        />
-        <span className="text-xs font-semibold shrink-0" style={{ color: backendColor(backend) }}>
-          {name}
-        </span>
-        {isAuth ? (
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 shrink-0">
-            installed · signed out
-          </span>
-        ) : (
-          <code className="flex-1 min-w-0 text-[11px] font-mono text-ink truncate">{command}</code>
-        )}
-        {isAuth && <span className="flex-1" />}
-        {isAuth && <SignInButton backend={backend} name={name} />}
-        {canCopy && <CopyButton value={command} />}
-        <a
-          href={docs}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-ink-muted hover:text-accent hover:bg-card-strong"
-          title={`${name} install & sign-in docs`}
-        >
-          Docs ↗
-        </a>
-      </div>
-      {isAuth && (
-        <code className="mt-1 block text-[11px] font-mono text-ink-muted truncate">{command}</code>
-      )}
-      {!compact && !isAuth && (
-        <div className="mt-0.5 text-[10.5px] text-ink-faint">{blurb}</div>
-      )}
-      {/* An `error` kind means the binary is there but wouldn't run — a
-          version mismatch, a broken shim, a quarantined binary. The install
-          command won't fix that, so show what actually went wrong. */}
-      {kind === 'error' && health?.message && (
-        <div className="mt-1 text-[10.5px] text-red-500 dark:text-red-400 break-words">
-          Found it, but it wouldn't run: {health.message}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/// Opens Terminal on the backend's login command (same path the in-chat
-/// auth banner uses). Beats "copy this, find a terminal, paste it".
-function SignInButton({ backend, name }: { backend: Backend; name: string }) {
-  const [launching, setLaunching] = useState(false);
-  const [launched, setLaunched] = useState(false);
-  const [error, setError] = useState<{ text: string; command?: string } | null>(null);
-  return (
-    <>
-      {error && <span className="text-[10px] text-red-400 shrink-0">{error.text}</span>}
-      {error?.command && <CopyButton value={error.command} />}
-      <button
-        onClick={async () => {
-          setLaunching(true);
-          setError(null);
-          try {
-            const res = await window.overcli.invoke('auth:openCliLogin', backend);
-            if (res.ok) setLaunched(true);
-            else setError({ text: res.error, command: res.command });
-          } finally {
-            setLaunching(false);
-          }
-        }}
-        disabled={launching}
-        title={`Open Terminal and sign into ${name}`}
-        className="shrink-0 rounded px-2 py-0.5 text-[10px] font-medium bg-amber-500/20 text-amber-700 dark:text-amber-200 hover:bg-amber-500/30 disabled:opacity-50"
-      >
-        {launching ? 'Opening…' : launched ? 'Reopen Terminal' : 'Sign in'}
-      </button>
-    </>
-  );
-}
-
-function Spinner() {
-  return (
-    <svg className="w-3 h-3 animate-spin shrink-0" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-      <path d="M14 8a6 6 0 00-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function FeatureCard({
-  accent,
-  title,
-  body,
-  icon,
-}: {
-  accent: string;
-  title: string;
-  body: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <div
-      className="rounded-lg border border-card bg-surface-elevated p-4 flex flex-col gap-2"
-      style={{ boxShadow: '0 1px 0 var(--c-card-border) inset' }}
-    >
-      <div
-        className="w-9 h-9 rounded-md flex items-center justify-center"
-        style={{ background: `color-mix(in srgb, ${accent} 18%, transparent)`, color: accent }}
-      >
-        {icon}
-      </div>
-      <div className="text-sm font-medium text-ink">{title}</div>
-      <div className="text-xs text-ink-muted leading-relaxed">{body}</div>
-    </div>
-  );
-}
-
-/// Decorative hero. Matches the app icon: a shell-prompt mark — a bar
-/// above a right-pointing chevron — sized up and rendered in the
-/// current-ink color so it inherits the light/dark theme.
-/// The actual app icon (mirrors build/icon.svg) so onboarding matches the
-/// dock/installer brand. Inlined rather than imported as an asset so it's
-/// pixel-exact at any size and renders identically in light and dark.
-function HeroArt() {
-  return (
-    <svg
-      width="38"
-      height="38"
-      viewBox="0 0 1024 1024"
-      className="shadow-sm rounded-[22%]"
-      aria-label="overcli"
-    >
-      <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="#ffffff" />
-      <g fill="none" stroke="#000000" strokeWidth="45" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="395" y1="372" x2="630" y2="372" />
-        <polyline points="395,475 612,575 395,675" />
-      </g>
-    </svg>
-  );
-}
-
-function ProjectGlyph() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M1.5 4.5A1 1 0 012.5 3.5h3.2l1.1 1.3h5.7A1 1 0 0113.5 5.8v5.9A1 1 0 0112.5 12.7h-10A1 1 0 011.5 11.7V4.5z"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function FlowGlyph() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <rect x="1.5" y="5.5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3" />
-      <rect x="10.5" y="5.5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3" />
-      <path d="M5.5 7.5h3.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <path d="M7.8 6.2L9.2 7.5L7.8 8.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function BranchGlyph() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <circle cx="4" cy="3.5" r="1.4" stroke="currentColor" strokeWidth="1.3" />
-      <circle cx="4" cy="12.5" r="1.4" stroke="currentColor" strokeWidth="1.3" />
-      <circle cx="12" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.3" />
-      <path d="M4 5v6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <path d="M4 9c0-2 2-3 4-3h2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function WorkspaceGlyph() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M3.5 2.5H5.7L6.7 3.6H12.5V5.5H3.5V2.5Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M1.5 5.5H4L5 6.5H14.5V13.3A1 1 0 0113.5 14.3H2.5A1 1 0 011.5 13.3V5.5Z"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { anyBackendReady, useStore } from './store';
 import { useConversation } from './hooks';
 import { findConversation } from './conversationLookup';
@@ -16,6 +16,7 @@ import { WelcomePane } from './components/WelcomePane';
 import { ExplorerPane } from './components/ExplorerPane';
 import { DocumentsPane } from './components/DocumentsPane';
 import { isEverydayProject } from '@shared/everydayProjects';
+import type { MenuCommand } from '@shared/types';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
@@ -361,6 +362,44 @@ export function App() {
   // the page doesn't flash the wrong theme on load.
   useThemeEffect();
 
+  // The native menu can't open a sheet or start a conversation — both live
+  // in renderer state — so every Help/File item that isn't a plain Electron
+  // `role` arrives as a `menuCommand` event and is carried out here.
+  const runMenuCommand = useCallback(
+    (command: MenuCommand) => {
+      const { openSheet } = useStore.getState();
+      switch (command) {
+        case 'newConversation': {
+          // Open the composer-first welcome screen for the first project if
+          // we have one; with none, the welcome screen is already the
+          // add-a-project screen, so there is nothing to do.
+          const first = projects[0];
+          if (first) startNewConversation(first.id);
+          return;
+        }
+        case 'setup':
+          openSheet({ type: 'setup' });
+          return;
+        case 'basics':
+          openSheet({ type: 'basics' });
+          return;
+        case 'shortcuts':
+          openSheet({ type: 'shortcutsHelp' });
+          return;
+        case 'whatsNew':
+          openSheet({ type: 'whatsNew' });
+          return;
+        case 'about':
+          openSheet({ type: 'about' });
+          return;
+        case 'settings':
+          openSheet({ type: 'settings' });
+          return;
+      }
+    },
+    [projects, startNewConversation],
+  );
+
   // Coalesce incoming main events over a one-frame window. Each streamed
   // delta arrives as its own IPC message in a separate task, so React can't
   // batch them: a single background watch tick that streams many deltas would
@@ -398,12 +437,11 @@ export function App() {
       for (const e of coalesced) ingest(e);
     };
     const unsub = window.overcli.onMainEvent((e) => {
-      if (e.type === 'running' && e.conversationId === '__menu_new_conversation__') {
-        // Menu shortcut: open the composer-first welcome screen for the
-        // first project if we have one, otherwise prompt to pick. Routed
-        // immediately — it's a one-off, never part of a stream burst.
-        const first = projects[0];
-        if (first) startNewConversation(first.id);
+      if (e.type === 'menuCommand') {
+        // Routed immediately — a menu click is a one-off, never part of a
+        // stream burst, and waiting 16ms behind a flush makes the app feel
+        // like it missed the click.
+        runMenuCommand(e.command);
         return;
       }
       buffer.push(e);
@@ -414,7 +452,7 @@ export function App() {
       if (buffer.length) flush();
       unsub();
     };
-  }, [ingest, projects, startNewConversation]);
+  }, [ingest, runMenuCommand]);
 
   useShortcuts();
 
@@ -438,8 +476,16 @@ export function App() {
   // between there — so it reads its own preference and opens without the
   // conversations sidebar. Computed here rather than written into state, so no
   // path out of the tab can leave the sidebar hidden behind it.
+  //
+  // With no projects there is no service list either, so that reasoning stops
+  // holding: the tab was dropping the window's only rail and the page slid
+  // left, which read as a rendering fault rather than a choice. Until there
+  // is something to navigate, Services keeps the sidebar like every other tab.
+  const servicesHasNavigation = projects.length > 0;
   const showSidebar =
-    (detailMode === 'services' ? servicesSidebarVisible : sidebarVisible) && !onboarding;
+    (detailMode === 'services'
+      ? servicesSidebarVisible || !servicesHasNavigation
+      : sidebarVisible) && !onboarding;
 
   // What's left for the preview once everything it shares the row with has
   // taken its share. Recomputed on window resize so a maximised window can

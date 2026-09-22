@@ -1,5 +1,27 @@
-import { describe, expect, it } from 'vitest';
-import { findBrowser } from './openInBrowser';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const spawned = vi.hoisted(() => ({ fail: false, calls: [] as unknown[][], unref: vi.fn() }));
+vi.mock('node:child_process', () => ({
+  spawn: (...args: unknown[]) => {
+    spawned.calls.push(args);
+    const handlers: Record<string, (value?: Error) => void> = {};
+    const child = {
+      once: (name: string, cb: (value?: Error) => void) => { handlers[name] = cb; return child; },
+      on: (name: string, cb: (value?: Error) => void) => { handlers[name] = cb; return child; },
+      unref: spawned.unref,
+    };
+    queueMicrotask(() => spawned.fail ? handlers.error?.(new Error('spawn failed')) : handlers.spawn?.());
+    return child;
+  },
+}));
+
+import { findBrowser, openInBrowser } from './openInBrowser';
+
+beforeEach(() => {
+  spawned.fail = false;
+  spawned.calls = [];
+  spawned.unref.mockReset();
+});
 
 const only = (...paths: string[]) => {
   const set = new Set(paths);
@@ -77,5 +99,25 @@ describe('findBrowser', () => {
   it('is null when no browser is installed, so the row is hidden', () => {
     expect(findBrowser('darwin', () => false)).toBeNull();
     expect(findBrowser('win32', () => false, {})).toBeNull();
+  });
+});
+
+describe('openInBrowser', () => {
+  const browser = { name: 'Firefox', exec: '/usr/bin/firefox', args: ['--new-window'] };
+
+  it('resolves on spawn and detaches the browser process', async () => {
+    await expect(openInBrowser('/tmp/page.html', browser)).resolves.toEqual({ ok: true, browser: 'Firefox' });
+    expect(spawned.calls[0]).toEqual([
+      '/usr/bin/firefox',
+      ['--new-window', '/tmp/page.html'],
+      { detached: true, stdio: 'ignore', windowsHide: true },
+    ]);
+    expect(spawned.unref).toHaveBeenCalledOnce();
+  });
+
+  it('returns a spawn error without claiming success', async () => {
+    spawned.fail = true;
+    await expect(openInBrowser('/tmp/page.html', browser)).resolves.toEqual({ ok: false, error: 'spawn failed' });
+    expect(spawned.unref).not.toHaveBeenCalled();
   });
 });

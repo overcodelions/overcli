@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { parseArgs } from './args';
@@ -24,6 +25,48 @@ function tmpStateDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-serve-'));
   tmpdirs.push(dir);
   return dir;
+}
+
+function lockRaceChild(dir: string): {
+  ready: Promise<void>;
+  start: () => void;
+  result: Promise<string>;
+} {
+  const script = [
+    `const fs = require('node:fs');`,
+    `const path = require('node:path');`,
+    `const __vite_ssr_import_0__ = { default: fs };`,
+    `const __vite_ssr_import_1__ = { default: path };`,
+    `const LOCK_FILE = ${JSON.stringify(LOCK_FILE)};`,
+    `const acquireLock = ${acquireLock.toString()};`,
+    `console.log('ready');`,
+    `process.stdin.once('data', () => {`,
+    `  const lock = acquireLock(${JSON.stringify(dir)});`,
+    `  console.log(lock.ok ? 'won' : 'lost');`,
+    `  setTimeout(() => { if (lock.ok) lock.release(); }, 2_000);`,
+    `});`,
+  ].join('\n');
+  const child = spawn(process.execPath, ['--eval', script], {
+    cwd: process.cwd(),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let markReady!: () => void;
+  const ready = new Promise<void>((resolve) => { markReady = resolve; });
+  const result = new Promise<string>((resolve, reject) => {
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+      if (stdout.includes('ready\n')) markReady();
+    });
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(stdout.trim().split('\n').at(-1) ?? '');
+      else reject(new Error(`lock contender exited ${code}: ${stderr}`));
+    });
+  });
+  return { ready, start: () => child.stdin.end('start'), result };
 }
 
 afterEach(() => {
@@ -175,6 +218,33 @@ describe('acquireLock', () => {
     fs.writeFileSync(path.join(dir, LOCK_FILE), 'not-a-pid\n');
     expect(acquireLock(dir).ok).toBe(true);
   });
+
+  it('recovers a stale takeover marker left by a crashed contender', () => {
+    const dir = tmpStateDir();
+    fs.writeFileSync(path.join(dir, LOCK_FILE), '4294967295\n');
+    fs.writeFileSync(path.join(dir, `${LOCK_FILE}.takeover`), '4294967294\n');
+
+    const lock = acquireLock(dir);
+
+    expect(lock.ok).toBe(true);
+    expect(fs.readFileSync(path.join(dir, LOCK_FILE), 'utf-8').trim()).toBe(String(process.pid));
+    expect(fs.existsSync(path.join(dir, `${LOCK_FILE}.takeover`))).toBe(false);
+    if (lock.ok) lock.release();
+  });
+
+  it('allows exactly one process to win a stale-lock takeover race', async () => {
+    const dir = tmpStateDir();
+    fs.writeFileSync(path.join(dir, LOCK_FILE), '4294967295\n');
+
+    const first = lockRaceChild(dir);
+    const second = lockRaceChild(dir);
+    await Promise.all([first.ready, second.ready]);
+    first.start();
+    second.start();
+    const results = await Promise.all([first.result, second.result]);
+
+    expect(results.sort()).toEqual(['lost', 'won']);
+  }, 10_000);
 });
 
 describe('the daemon', () => {

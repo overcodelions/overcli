@@ -62,9 +62,9 @@ describe('pickDrafterBackend', () => {
 
 describe('drafterModelFor', () => {
   it('returns the strongest premium model per backend', () => {
-    // claude defaults to opus-5 (first entry, the newest thinking model);
+    // claude defaults to opus-5.5 (first entry, the newest thinking model);
     // fable-5.1 is the frontier opt-in, not the drafter default.
-    expect(drafterModelFor('claude')).toBe('claude-opus-5');
+    expect(drafterModelFor('claude')).toBe('claude-opus-5-5');
     expect(drafterModelFor('codex')).toBe('gpt-5.6-sol');
     expect(drafterModelFor('gemini')).toBe('gemini-3.1-pro');
   });
@@ -73,11 +73,11 @@ describe('drafterModelFor', () => {
 describe('drafterModelHints', () => {
   it('maps a model to each speed tier for a backend', () => {
     // fable-5.1 is 'frontier' (not 'thinking'), so the thinking hint is the
-    // first thinking model — opus-5. sonnet is classified 'fast', so claude
+    // first thinking model — opus-5.5. sonnet is classified 'fast', so claude
     // has no 'standard' model — standard degrades DOWN to the fast pick
     // (sonnet-5), keeping "cheaper steps" actually cheaper.
     expect(drafterModelHints('claude')).toEqual({
-      thinking: 'claude-opus-5',
+      thinking: 'claude-opus-5-5',
       standard: 'claude-sonnet-5',
       fast: 'claude-sonnet-5',
     });
@@ -127,7 +127,7 @@ describe('drafterModelHints — user pins', () => {
 
   it('degrades a pinned-but-retired model back to auto', () => {
     expect(drafterModelHints('claude', { claude: { thinking: 'claude-opus-4-1' } }).thinking).toBe(
-      'claude-opus-5',
+      'claude-opus-5-5',
     );
   });
 
@@ -148,7 +148,7 @@ describe('resolveProducerModel', () => {
 
   it("falls back to the backend's strongest model when nothing is pinned", () => {
     expect(resolveProducerModel('codex', undefined)).toBe('gpt-5.6-sol');
-    expect(resolveProducerModel('claude', '   ')).toBe('claude-opus-5');
+    expect(resolveProducerModel('claude', '   ')).toBe('claude-opus-5-5');
   });
 
   it('translates a cross-backend pin to the same tier', () => {
@@ -157,7 +157,7 @@ describe('resolveProducerModel', () => {
     // "Model claude-sonnet-5 is not supported for backend codex".
     expect(resolveProducerModel('codex', 'claude-sonnet-5')).toBe('gpt-5.6-luna');
     // ...and the reverse direction, at the tier the pin actually named.
-    expect(resolveProducerModel('claude', 'gpt-5.6-sol')).toBe('claude-opus-5');
+    expect(resolveProducerModel('claude', 'gpt-5.6-sol')).toBe('claude-opus-5-5');
   });
 
   it('does not silently upgrade a cheap pin into an expensive model', () => {

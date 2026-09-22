@@ -805,10 +805,35 @@ function NavButton({
     <button
       onClick={onClick}
       className={
+        // Weight stays `font-medium` on both states on purpose: bolding the
+        // active label re-measures it and shunts every tab to its right.
         'px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 ' +
         (active
-          ? 'bg-white/10 text-ink'
+          ? // Elevated surface plus a hairline, so the selected tab reads as
+            // lifted off the bar in BOTH themes. The old `bg-white/10` was a
+            // white wash: fine on the dark bar, nearly invisible on the light
+            // one, where 10% white over #f6f6f8 is no contrast at all.
+            //
+            // Deliberately monochrome. An accent underline was tried here and
+            // removed: every colour in this bar is a state you do not already
+            // know (violet blocked-on-you, sky running, amber degraded), and
+            // spending one on the tab you just clicked both dilutes that
+            // vocabulary and makes the bar read as browser chrome.
+            'text-ink shadow-[inset_0_0_0_1px_var(--c-card-border-strong)]'
           : 'text-ink-muted hover:text-ink hover:bg-card-strong')
+      }
+      style={
+        active
+          ? {
+              // Lifted OFF the elevated surface, not set to it. The bar is
+              // `--c-surface` (#1c1c21 dark), so the old `bg-white/10` landed
+              // near #35353a — lighter than `--c-surface-elevated` (#2a2a33),
+              // which made a straight swap read as a darker pill. Mixing ink
+              // in keeps the old lightness in dark mode and still goes the
+              // right way in light, where it sits just under the bar.
+              background: 'color-mix(in srgb, var(--c-ink) 6%, var(--c-surface-elevated))',
+            }
+          : undefined
       }
     >
       {label}

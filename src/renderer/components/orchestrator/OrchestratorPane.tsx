@@ -30,6 +30,17 @@ import { useOrchestratorStore, type ProducerTurn } from '../../orchestratorStore
 import { backendColor } from '../../theme';
 import { Markdown } from '../Markdown';
 import { ResizableDivider } from '../ResizableDivider';
+import {
+  LandingColumns,
+  LANDING_MARK_W,
+  LandingHero,
+  LandingPage,
+  Specimen,
+  SpecimenRow,
+  StarterCard,
+  StarterGrid,
+  Terms,
+} from '../onboarding/landing';
 import { SegmentButton } from '../flows/FlowLaunch';
 import type { Flow } from '@shared/flows/schema';
 import { isOrchestrationAwaitingApproval, ledgerBatches } from '@shared/flows/orchestration';
@@ -120,16 +131,22 @@ export function OrchestratorPane() {
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-surface text-ink">
+      {/* With nothing in the ledger the landing below owns both the lead
+          line and the ask, so the header keeps only its title and the top bar
+          stands down entirely. Two explanations and a composer above an empty
+          screen was three things competing to be read first. */}
       <PageHeader targets={targets} onAbout={() => setAboutOpen(true)} />
-      <ProducerPane
-        targets={targets}
-        targetName={targetName}
-        composing={composing}
-        hasBatches={batches.length > 0}
-        draft={draft}
-        setDraft={setDraft}
-        onAbout={() => setAboutOpen(true)}
-      />
+      {(composing || batches.length > 0) && (
+        <ProducerPane
+          targets={targets}
+          targetName={targetName}
+          composing={composing}
+          hasBatches={batches.length > 0}
+          draft={draft}
+          setDraft={setDraft}
+          onAbout={() => setAboutOpen(true)}
+        />
+      )}
       {/* Same element in both modes, so the measured width below is the same
           either way — only what sits inside it changes. */}
       <div
@@ -154,7 +171,7 @@ export function OrchestratorPane() {
             <QueuePane flowById={flowById} batches={batches} width={queueWidth} />
           </>
         ) : (
-          <QueuePane flowById={flowById} batches={batches} setDraft={setDraft} />
+          <QueuePane flowById={flowById} batches={batches} draft={draft} setDraft={setDraft} />
         )}
       </div>
       {aboutOpen && (
@@ -314,15 +331,15 @@ function PageHeader({
   const workspaceTargets = targets.filter((t) => t.kind === 'workspace');
   const projectTargets = targets.filter((t) => t.kind === 'project');
   return (
-    <header className={'flex-none flex items-center gap-3 pt-5 pb-4 ' + IDLE_PAD}>
+    <header className={'flex-none flex items-center gap-3 pt-6 pb-6 ' + IDLE_PAD}>
       <div>
         <h1 className="text-2xl font-semibold text-ink m-0">Orchestrator</h1>
         {/* The rung between Flows and Workers on the ladder this app climbs:
             chat → flows → orchestrator → workers. One line, under the title —
             mt-2 to match the 8px the Flows and Workers headers leave here. */}
         <div className="text-xs text-ink-muted mt-2">
-          One ask fanned out into many flow runs — investigate, propose, launch in parallel,
-          review.
+          One ask fanned out into many flow runs — investigate, propose, launch in
+          parallel, review.
         </div>
       </div>
       <div className="flex-1" />
@@ -519,9 +536,7 @@ function ProducerPane({
   if (!composing) {
     return (
       <section className={'flex-none pt-3 pb-7 ' + IDLE_PAD}>
-        <div className="flex items-center gap-2 rounded-lg bg-card-strong px-3 py-2 focus-within:bg-surface-elevated transition-colors">
-          {composerInput}
-        </div>
+        <AskBar draft={draft} setDraft={setDraft} />
         {hasBatches && <QuickPicks setDraft={setDraft} onAbout={onAbout} />}
       </section>
     );
@@ -575,80 +590,251 @@ function ProducerPane({
   );
 }
 
-/// The tab's empty state: what the Orchestrator is for, the canned starters,
-/// and the prompts you've run before. It lives on the idle stage rather than
-/// under the Ask bar, because it is only ever the right thing to show when
-/// there is nothing running to show instead.
-function ProducerEmptyState({ setDraft }: { setDraft: (v: string) => void }) {
+/// One ask on the left, the batch it becomes on the right — the whole tab in
+/// eleven strokes.
+function OrchestratorMark() {
+  const ys = [10, 26, 42, 58];
+  return (
+    <svg width={LANDING_MARK_W} height={90} viewBox="0 0 226 68" fill="none" aria-hidden>
+      <circle
+        cx="16"
+        cy="34"
+        r="11"
+        fill="color-mix(in srgb, var(--c-accent) 45%, transparent)"
+        stroke="color-mix(in srgb, var(--c-accent) 70%, transparent)"
+        strokeWidth="1.5"
+      />
+      {ys.map((y) => (
+        <path
+          key={y}
+          d={`M30 34C 100 34, 110 ${y}, 178 ${y}`}
+          stroke="color-mix(in srgb, var(--c-ink) 14%, transparent)"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+      ))}
+      {ys.map((y, i) => (
+        <rect
+          key={y}
+          x="184"
+          y={y - 5}
+          width="28"
+          height="10"
+          rx="5"
+          fill={
+            i < 2
+              ? 'color-mix(in srgb, #34d399 45%, transparent)'
+              : 'color-mix(in srgb, #38bdf8 40%, transparent)'
+          }
+        />
+      ))}
+    </svg>
+  );
+}
+
+/// The ask, as a control rather than a section.
+///
+/// On a tab with batches in it this sits at the top, where a launcher belongs.
+/// On an empty tab it sits INSIDE the landing, under the sentence that says
+/// what an ask is — because "Ask for a list of small asks…" above an empty
+/// screen asks you to type before anything has told you what to type.
+function AskBar({ draft, setDraft }: { draft: string; setDraft: (v: string) => void }) {
+  const proposing = useOrchestratorStore((s) => s.proposing);
+  const propose = useOrchestratorStore((s) => s.propose);
+  const send = () => {
+    const text = draft.trim();
+    if (!text || proposing) return;
+    setDraft('');
+    void propose(text);
+  };
+  return (
+    <div className="flex items-center gap-2 rounded-lg bg-card-strong px-3 py-2 transition-colors focus-within:bg-surface-elevated">
+      <span className="text-ink-faint">▸</span>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        }}
+        placeholder="Ask for a list of small asks…"
+        className="flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint"
+      />
+      <button
+        onClick={send}
+        disabled={proposing || !draft.trim()}
+        className="rounded-md bg-accent-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
+      >
+        Send
+      </button>
+    </div>
+  );
+}
+
+/// The tab's empty state: what a batch IS, the terms of running one, a real
+/// batch as a specimen, then the canned starters and the prompts you've run
+/// before. It lives on the idle stage rather than under the Ask bar, because
+/// it is only ever the right thing to show when there is nothing running to
+/// show instead. Built from the shared landing vocabulary — see
+/// components/onboarding/landing.
+function ProducerEmptyState({
+  draft,
+  setDraft,
+}: {
+  draft: string;
+  setDraft: (v: string) => void;
+}) {
   const recentPrompts = useOrchestratorStore((s) => s.recentPrompts);
   const removeRecentPrompt = useOrchestratorStore((s) => s.removeRecentPrompt);
   return (
-      <div className="max-w-3xl mx-auto mt-6 mb-3 text-center">
-        <h3 className="text-lg font-semibold text-ink">Turn a backlog into a batch of flows</h3>
-        <p className="text-sm text-ink-faint leading-relaxed mt-1.5 max-w-xl mx-auto">
-          The producer investigates with your connected tools and MCP servers, then
-          returns a list of small, self-contained asks. Map each to a flow and launch
-          them together — one git worktree per ask, or one at a time in your own
-          working tree.
-        </p>
-        <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold mt-5 mb-2">
-          Start from an example
-        </div>
-        <div className="grid grid-cols-2 gap-2 text-left">
-          {PRODUCER_EXAMPLES.map((ex) => (
-            <button
-              key={ex.label}
-              onClick={() => setDraft(ex.prompt)}
-              className="group p-3 rounded-lg bg-card hover:bg-card-strong transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-[13px] text-ink">{ex.label}</span>
-                <span className="ml-auto text-[11px] text-accent opacity-0 group-hover:opacity-100 transition-opacity">
-                  use →
-                </span>
-              </div>
-              <div className="text-xs text-ink-faint mt-0.5 leading-snug">{ex.blurb}</div>
-            </button>
-          ))}
-        </div>
-        {recentPrompts.length > 0 && (
+    <LandingPage gutter={false}>
+      <LandingHero
+        mark={<OrchestratorMark />}
+        eyebrow="No batch running"
+        title={
           <>
-            <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold mt-5 mb-2">
-              Recent
-            </div>
-            {/* Compact wrapping pills (not stacked rows) so the list stays a
-                couple of rows tall no matter how many are stored — only the
-                most-recent handful surface as quick-picks. */}
-            <div className="flex flex-wrap justify-center gap-1.5">
-              {recentPrompts.slice(0, RECENT_VISIBLE).map((rp) => (
-                <span
-                  key={rp.text}
-                  className="group inline-flex items-center max-w-[340px] rounded-full bg-card hover:bg-card-strong transition-colors"
-                >
-                  <button
-                    onClick={() => setDraft(rp.text)}
-                    className="min-w-0 truncate pl-3 pr-1.5 py-1 text-xs text-ink"
-                    title={rp.text}
-                  >
-                    {rp.text}
-                  </button>
-                  <button
-                    onClick={() => void removeRecentPrompt(rp.text)}
-                    className="flex-none pl-0.5 pr-2.5 py-1 text-ink-faint hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Remove from recent"
-                    aria-label="Remove from recent"
-                  >
-                    ✕
-                  </button>
-                </span>
-              ))}
-            </div>
+            One ask, fanned out
+            <br />
+            into a morning of work.
           </>
-        )}
-        <p className="text-xs text-ink-faint mt-3">…or type your own in the bar above.</p>
-      </div>
+        }
+        lead={
+          <>
+            Ask for something broad — &ldquo;the papercuts in this cycle&rdquo;, &ldquo;the
+            errors that spiked this week&rdquo; — and the producer goes and looks, using the
+            trackers, issues and MCP servers you have connected. It comes back with a list
+            of small, self-contained asks with the evidence behind each one. Strike out
+            what you disagree with, map the rest to a flow, and launch them together: a git
+            worktree per ask, running in parallel, so an afternoon&apos;s worth of small
+            work arrives as a stack of diffs instead of a stack of chats.
+          </>
+        }
+        note="Nothing launches until you say so. The producer proposes; you strike out what you do not want."
+        actions={
+          <div className="w-full max-w-[640px]">
+            <AskBar draft={draft} setDraft={setDraft} />
+          </div>
+        }
+      />
+
+      {/* Above the terms, like the boards on Workers and Flows: what you
+          would ask for comes before how the asking works. Each one fills the
+          box in the hero rather than sending, so the ask is still yours to
+          edit. */}
+      <StarterGrid
+        title="Ask for something like"
+        aside="fills the box above — edit it before you send"
+      >
+        {PRODUCER_EXAMPLES.map((ex) => (
+          <StarterCard
+            key={ex.label}
+            title={ex.label}
+            body={ex.blurb}
+            onClick={() => setDraft(ex.prompt)}
+          />
+        ))}
+      </StarterGrid>
+
+      {recentPrompts.length > 0 && (
+        <div className="mt-5">
+          <div className="px-1 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+            Asked before
+          </div>
+          {/* Compact wrapping pills (not stacked rows) so the list stays a
+              couple of rows tall no matter how many are stored — only the
+              most-recent handful surface as quick-picks. */}
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {recentPrompts.slice(0, RECENT_VISIBLE).map((rp) => (
+              <span
+                key={rp.text}
+                className="group inline-flex max-w-[340px] items-center rounded-full border border-card bg-card/50 transition-colors hover:border-card-strong"
+              >
+                <button
+                  onClick={() => setDraft(rp.text)}
+                  className="min-w-0 truncate py-1 pl-3 pr-1.5 text-xs text-ink"
+                  title={rp.text}
+                >
+                  {rp.text}
+                </button>
+                <button
+                  onClick={() => void removeRecentPrompt(rp.text)}
+                  className="flex-none py-1 pl-0.5 pr-2.5 text-ink-faint opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
+                  title="Remove from recent"
+                  aria-label="Remove from recent"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <LandingColumns wide>
+        <Terms title="How a batch works" items={PRODUCER_TERMS} />
+        <Specimen
+          label="Tuesday's batch"
+          aside="one ask, six proposals, four launched"
+          tint="var(--c-accent)"
+          footnote="Each launched item is an ordinary flow run with its own worktree and diff, so a batch you leave running is six branches waiting for review rather than six chats to re-read."
+        >
+          <div className="px-4 py-2.5 text-[11.5px] text-ink-muted">
+            <span className="text-ink-faint">you asked · </span>
+            “Pull this cycle's papercut tickets and find the ones that are a single fix.”
+          </div>
+          {PRODUCER_SPECIMEN.map((item) => (
+            <SpecimenRow
+              key={item.ask}
+              tint={item.tint}
+              title={item.ask}
+              titleClass="w-44"
+              detail={item.state}
+            />
+          ))}
+        </Specimen>
+      </LandingColumns>
+
+    </LandingPage>
   );
 }
+
+/// The terms of a batch. Deliberately led by the two that answer "what stops
+/// this running away from me" — a fan-out is the feature people are most
+/// wary of handing a model.
+const PRODUCER_TERMS = [
+  {
+    label: 'The ask',
+    value:
+      'One sentence in your words. The producer reads your connected tools to answer it — it is an investigation, not a search.',
+  },
+  {
+    label: 'The proposals',
+    value:
+      'A list of small, self-contained asks, each with the evidence behind it. Edit them, drop the ones you disagree with, keep the rest.',
+  },
+  {
+    label: 'The launch',
+    value:
+      'Every kept ask becomes a flow run. One git worktree each so they cannot tread on one another, or one at a time in your working tree.',
+  },
+  {
+    label: 'The review',
+    value:
+      'They come back as diffs on branches. Read them in your own time; nothing merges itself.',
+  },
+];
+
+/// One real batch, in the states you meet it in — including the one that was
+/// thrown away, because a proposal you reject is the feature working.
+const PRODUCER_SPECIMEN: { ask: string; state: string; tint: string }[] = [
+  { ask: 'Empty state on Reports', state: 'launched · diff ready', tint: '#34d399' },
+  { ask: 'Timeout copy is wrong', state: 'launched · diff ready', tint: '#34d399' },
+  { ask: 'Retry the failed upload', state: 'running · 4m in', tint: '#38bdf8' },
+  { ask: 'Sort order on the grid', state: 'running · 2m in', tint: '#38bdf8' },
+  { ask: 'Rewrite the auth module', state: 'you struck this one out', tint: '' },
+];
 
 /// One row of one-click starters under the idle Ask bar: prompts you have
 /// actually run, falling back to the canned examples on a fresh install. It
@@ -1174,6 +1360,7 @@ function QueuePane({
   flowById,
   batches,
   width,
+  draft,
   setDraft,
 }: {
   flowById: Map<string, Flow>;
@@ -1182,14 +1369,19 @@ function QueuePane({
   /// ledger is the whole screen.
   width?: number;
   /// Only passed on the idle stage, where the empty state doubles as the
-  /// tab's front door.
+  /// tab's front door — and, with nothing in the ledger, owns the ask itself.
   setDraft?: (v: string) => void;
+  draft?: string;
 }) {
   const full = width === undefined;
   const [filter, setFilter] = useState<RunFilter>(null);
   // The Workers sidebar sets this before switching tabs; without a scroll the
   // user lands on a page of batches and has to hunt for the one they clicked.
   const activeId = useOrchestratorStore((s) => s.activeOrchestrationId);
+  // `batches` is empty both before the ledger loads and when there genuinely
+  // are none, and the landing below is the answer to only the second. Without
+  // this the whole front door paints and is torn away again a frame later.
+  const loaded = useOrchestratorStore((s) => s.loaded);
   const activeRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -1238,12 +1430,15 @@ function QueuePane({
         )}
         <div
           className={
-            'flex-1 overflow-y-auto pb-3 min-h-0 ' + (full ? `pt-3 ${IDLE_PAD}` : 'px-4')
+            'flex-1 overflow-y-auto pb-3 min-h-0 ' +
+            // No top padding when the landing is what's below: the header
+            // above it already left the 24px every tab leaves.
+            (full ? `${batches.length === 0 ? '' : 'pt-3 '}${IDLE_PAD}` : 'px-4')
           }
         >
-          {batches.length === 0 ? (
+          {batches.length === 0 && !loaded ? null : batches.length === 0 ? (
             full && setDraft ? (
-              <ProducerEmptyState setDraft={setDraft} />
+              <ProducerEmptyState draft={draft ?? ''} setDraft={setDraft} />
             ) : (
               <div className="text-sm text-ink-faint mt-3">
                 Nothing launched yet. Map asks on the left and hit Launch — they'll

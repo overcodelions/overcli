@@ -15,6 +15,26 @@ export function modeLabel(mode: PermissionMode): string {
   }
 }
 
+/// One line on what a permission mode actually DOES. Shown under the mode
+/// in every mode menu and again in the Basics sheet — one sentence, one
+/// source, so a user who reads it in the composer recognises it in Help.
+/// "Ask" here means overcli's own approval prompt, which is the only reason
+/// any of these modes is visible in a GUI at all.
+export function permissionNote(mode: PermissionMode): string {
+  switch (mode) {
+    case 'plan':
+      return 'Reads and plans only — no edits, no commands.';
+    case 'auto':
+      return 'Claude judges each call and only asks on the risky ones.';
+    case 'acceptEdits':
+      return 'File edits apply without asking. Commands still ask.';
+    case 'bypassPermissions':
+      return 'Nothing asks. Keep it to a worktree you can throw away.';
+    default:
+      return 'Asks before every edit and every command.';
+  }
+}
+
 export function permissionTone(mode: PermissionMode): string | undefined {
   if (mode === 'bypassPermissions') return '#f97a5a';
   if (mode === 'acceptEdits') return '#f7b267';

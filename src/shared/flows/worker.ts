@@ -87,6 +87,20 @@ export interface Worker {
   /// leaving those rows blank. Not used for planning: this is a label for the
   /// human, and nothing in a shift prompt reads it.
   tagline?: string;
+  /// Two or three example errands, in the user's own voice, offered as
+  /// one-click starters at the worker's desk.
+  ///
+  /// An empty composer is the reason people never learn a worker takes
+  /// errands at all: the box asks you to invent the genre before you know
+  /// there is one. A pair of concrete examples under the name teaches the
+  /// whole feature at a glance, and the ones that read as YOURS ("it needs
+  /// to be darker", "what is stuck?") teach it better than a generic prompt.
+  ///
+  /// Optional, like `tagline`, and for the same reason: every worker hired
+  /// before this field existed has none, and `workerErrandStarters` falls
+  /// back rather than leaving the desk bare. Never read by a shift prompt —
+  /// this is copy for the human.
+  errandStarters?: string[];
   jobDescription: string;
   projectPath: string;
   /// When the clock wakes this worker — or `null` for a worker with no
@@ -626,6 +640,31 @@ function deriveTagline(job: string): string {
   return first.replace(TAGLINE_PREAMBLE, '').replace(/[.,;:]+$/, '');
 }
 
+/// How many starters a desk will draw. Three is the most that fits on one
+/// line beside a Send button; past that they stop being examples and start
+/// being a menu, which is the thing the errand box is NOT.
+export const ERRAND_STARTERS_MAX = 3;
+
+/// The generic pair, for a worker that carries none of its own.
+///
+/// Deliberately the two questions that are true of every standing worker
+/// whatever its job — what did you just do, and what is in your way. They are
+/// weaker than a worker-specific starter and they are not meant to compete
+/// with one: they exist so that a roster hired before starters existed still
+/// says "you can talk to this" on every row.
+const FALLBACK_STARTERS = ['What did you do today?', 'What is blocking you?'];
+
+/// The starters this worker's desk should offer.
+export function workerErrandStarters(
+  worker: Pick<Worker, 'errandStarters'>,
+): string[] {
+  const own = (worker.errandStarters ?? [])
+    .map((s) => s.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (own.length > 0) return own.slice(0, ERRAND_STARTERS_MAX);
+  return FALLBACK_STARTERS;
+}
+
 function clampTagline(text: string): string {
   const one = text.replace(/\s+/g, ' ').trim();
   if (one.length <= WORKER_TAGLINE_MAX) return one;
@@ -645,6 +684,13 @@ export interface WorkerContract {
   name: string;
   /// The one-line "what this is" shown under the name on the roster.
   tagline?: string;
+  /// Two or three example errands for the worker's desk — see
+  /// `Worker.errandStarters`. The drafter is the right place to write these:
+  /// it has just read the job description closely enough to rewrite it, so
+  /// naming two things you would plausibly ask this worker costs nothing
+  /// extra, and a starter written from the real job beats anything the
+  /// roster could derive later.
+  errandStarters?: string[];
   jobDescription: string;
   /// `null` when the job is one you drive yourself — see `Worker.cadence`.
   cadence: ScheduleTrigger | null;

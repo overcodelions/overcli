@@ -666,7 +666,7 @@ describe('drafted models snap to their tier default', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-5' });
+    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-5-5' });
     expect(result.flow.steps[0].rebound?.critic).toEqual({
       backend: 'claude',
       model: 'claude-sonnet-5',

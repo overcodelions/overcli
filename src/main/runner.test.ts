@@ -74,6 +74,19 @@ describe('prepareClaudeBroker', () => {
 });
 
 describe('oneShot unattended tool allowlists', () => {
+  it.each([
+    [undefined, false],
+    [true, true],
+  ] as const)('passes chrome=%s to the hidden send as %s', async (chrome, expected) => {
+    const manager = new RunnerManager(() => {}, () => ({ backends: {}, claudeChrome: true }) as never);
+    const send = vi.fn(() => ({ ok: false as const, error: 'stop after capture' }));
+    (manager as unknown as { send: typeof send }).send = send;
+
+    await manager.oneShot({ backend: 'claude', model: '', prompt: 'test', cwd: '/repo', chrome });
+
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ chrome: expected }));
+  });
+
   it.each(['codex', 'gemini', 'copilot'] as const)(
     'rejects %s rather than silently launching with an unenforceable deny or allow list',
     async (backend) => {

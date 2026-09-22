@@ -228,6 +228,41 @@ describe('draftWorkerFromPrompt', () => {
     expect(block).toBeTruthy();
     expect(() => JSON.parse(block!)).not.toThrow();
   });
+
+  it('shows the drafter the crew it is naming alongside', async () => {
+    // A name is an ADDRESS, not a label: the user says it out loud, and a
+    // colleague delegating work retypes it exactly (`resolveHandoffTarget`),
+    // so a collision reaches nobody. The drafter can only avoid one it has
+    // been shown.
+    mockQuery.mockReturnValueOnce(claudeStream(hireReply('existing-flow')));
+    await draftWorkerFromPrompt(
+      { jobDescription: JOB, flows: [], projects: [], crew: ['Prometheus', 'Cassandra'] },
+      claudeDeps(),
+    );
+    const prompt = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(prompt).toContain('THE CREW ALREADY HIRED');
+    expect(prompt).toContain('- Prometheus');
+    expect(prompt).toContain('- Cassandra');
+    expect(prompt).toContain('never reuse one');
+  });
+
+  it('says so rather than showing an empty list on the first hire', async () => {
+    mockQuery.mockReturnValueOnce(claudeStream(hireReply('existing-flow')));
+    await draftWorkerFromPrompt({ jobDescription: JOB, flows: [], projects: [] }, claudeDeps());
+    const prompt = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(prompt).toContain('(nobody hired yet)');
+  });
+
+  it('asks for a name a person would answer to, not a job or a tool', async () => {
+    mockQuery.mockReturnValueOnce(claudeStream(hireReply('existing-flow')));
+    await draftWorkerFromPrompt({ jobDescription: JOB, flows: [], projects: [] }, claudeDeps());
+    const prompt = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(prompt).toContain('a given name');
+    // The two registers the roster actually drifted into, named so the
+    // drafter refuses them by example rather than by category alone.
+    expect(prompt).toContain('Test Coverage Warden');
+    expect(prompt).toContain('Sweeper');
+  });
 });
 
 describe('reviseWorkerFromPrompt', () => {

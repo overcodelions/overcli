@@ -1259,6 +1259,8 @@ export class RunnerManager {
     /// supported these; oneShot simply never offered them, which is why a
     /// worker errand could not take a screenshot.
     attachments?: Attachment[];
+    /// One-shot work must opt into browser access explicitly.
+    chrome?: boolean;
     timeoutMs?: number;
     /// Idle watchdog, in ms. When set, the turn also fails if it produces no
     /// streamed output for this long — and, crucially, that budget RESETS on
@@ -1390,16 +1392,14 @@ export class RunnerManager {
         // conversation can't stall on an unanswerable approval. Callers that
         // need unattended tool use (the producer) override this.
         permissionMode: args.permissionMode ?? 'default',
-        // For the same reason, never the browser. A one-shot has no window to
-        // put an approval card in, so a turn that reads an issue body someone
-        // else wrote must not also hold the keys to a signed-in Chrome
-        // profile. The global setting is for conversations you can see.
-        chrome: false,
         reviewBackend: null,
         reviewMode: null,
         reviewModel: null,
         reviewPersona: null,
         enabledTools: args.enabledTools ?? (args.backend === 'ollama' ? [] : undefined),
+        // Hidden work never inherits the global browser setting. Flow runs
+        // may opt in explicitly with their per-run Chrome switch.
+        chrome: args.chrome ?? false,
       });
       if (!sent.ok) finish({ ok: false, error: sent.error });
     });

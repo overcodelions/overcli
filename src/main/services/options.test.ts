@@ -217,10 +217,16 @@ describe('isSecretName', () => {
   });
 
   it('skips locators and still catches run-together names', () => {
-    for (const n of ['KEYCLOAK_URL', 'AUTH_URL', 'PASSENGER_ROOT', 'SSH_KEY_PATH', 'AWS_ACCESS_KEY_ID']) {
+    for (const n of [
+      'KEYCLOAK_URL', 'AUTH_URL', 'PASSENGER_ROOT', 'SSH_KEY_PATH', 'AWS_ACCESS_KEY_ID',
+      'SORT_KEY', 'ROUTING_KEY', 'PARTITION_KEY', 'CACHE_KEY', 'PASS_THRESHOLD',
+    ]) {
       expect(isSecretName(n)).toBe(false);
     }
-    for (const n of ['DB_PASSWORD', 'GITHUB_TOKEN', 'AWS_SECRETKEY', 'apiKey', 'dbPassword', 'MYSQL_PWD']) {
+    for (const n of [
+      'DB_PASSWORD', 'GITHUB_TOKEN', 'AWS_SECRETKEY', 'apiKey', 'dbPassword', 'MYSQL_PWD',
+      'AUTHORIZATION', 'HTTP_AUTHORIZATION', 'BEARER_TOKEN',
+    ]) {
       expect(isSecretName(n)).toBe(true);
     }
   });

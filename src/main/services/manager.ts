@@ -41,7 +41,16 @@ import type { PortClaim } from './ports';
 import { parseWorktreeList, type WorktreeChoice } from '../../shared/worktrees';
 import { parseBranchRefs, type BranchChoice } from '../../shared/refChoices';
 import { applyMirror, findLocalConfig, planMirror } from './mirror';
-import { describeOwners, freePort, holderKind, portOwners, type OwnerContext } from './portOwners';
+import {
+  describeOwners,
+  freePort,
+  holderKind,
+  matchingProcesses,
+  portOwners,
+  portOwnersFor,
+  stopPids,
+  type OwnerContext,
+} from './portOwners';
 import { portInUse, triage } from './triage';
 import { buildCommandPrompt, buildExplainPrompt, buildFixPrompt } from './askModel';
 import { ensureExcluded } from './projection';
@@ -78,6 +87,7 @@ import type {
   ServiceSpec,
   StackConfig,
   StackView,
+  TaskRun,
 } from './types';
 import type { PortHolderKind, ReadinessProbe, RemovedServices, TaskPreset } from '../../shared/services';
 
@@ -101,9 +111,12 @@ export class ServicesManager {
   /// Ignored files per main checkout, with when they were read.
   private readonly ignoredScans = new Map<string, { at: number; files: Promise<string[] | null> }>();
   private readonly supervisors = new Map<string, Supervisor>();
+  /// Workspaces already looked at for services that outlived the app.
+  private readonly adopted = new Set<string>();
   private readonly stacks = new Map<string, StackConfig>();
-  /// The branch each bound checkout was last seen on, with when it was read.
-  private readonly refs = new Map<string, { ref: string; at: number }>();
+  /// The branch and commit each bound checkout was last seen on, with when
+  /// they were read.
+  private readonly refs = new Map<string, { ref: string; commit: string; at: number }>();
 
   constructor(
     private readonly dataDir: string,
@@ -132,25 +145,47 @@ export class ServicesManager {
   /// at a workspace with no services must not write anything.
   view(workspaceId: string): StackView {
     const stack = this.refreshRefs(this.stack(workspaceId));
+    this.beginAdoption(workspaceId, stack);
     const supervisor = this.supervisors.get(workspaceId);
     return {
       workspaceId,
       services: stack.services,
-      bindings: stack.bindings,
+      // The commit rides along on the view and never into the file — see
+      // `ServiceBinding.head`.
+      bindings: stack.bindings.map((b) => {
+        const head = this.headFor(b.path);
+        return head ? { ...b, head } : b;
+      }),
       runtimes: stack.services.map((s) => supervisor?.runtime(s.id) ?? { serviceId: s.id, status: 'stopped' }),
     };
+  }
+
+  /// Look once per workspace for services still listening from before the app
+  /// was reopened — the case `servicesStopOnQuit: false` deliberately creates.
+  ///
+  /// Fire and forget, and never awaited by `view`: the lookup shells out to
+  /// `lsof` and `ps` per service, while `view` runs on every look at the pane.
+  /// Each adoption arrives as an ordinary status event, so the pane fills in
+  /// as the answers come back.
+  private beginAdoption(workspaceId: string, stack: StackConfig): void {
+    if (this.adopted.has(workspaceId)) return;
+    // Nothing with a port is nothing to find, and creating a supervisor for a
+    // workspace that has never run anything would be all cost.
+    if (!stack.services.some((s) => !s.task && s.port !== undefined)) return;
+    this.adopted.add(workspaceId);
+    void this.supervisor(workspaceId).adopt();
   }
 
   /// Read a checkout's branch now, and remember it. Used where the answer
   /// must be current — straight after overcli checked something out — so the
   /// cached copy agrees with what we just did rather than expiring into it.
   private readRef(path: string): string {
-    const ref = currentRef(path);
-    this.refs.set(path, { ref, at: Date.now() });
-    return ref;
+    const state = currentCheckout(path);
+    this.refs.set(path, { ...state, at: Date.now() });
+    return state.ref;
   }
 
-  /// A checkout's branch, from the cache while it is fresh.
+  /// A checkout's branch and commit, from the cache while it is fresh.
   ///
   /// The TTL is what keeps `view` cheap. Every look at the pane, every
   /// service event it refreshes on, and every `@` typed in the composer runs
@@ -158,16 +193,27 @@ export class ServicesManager {
   /// process — ten services is ten process spawns with the whole app blocked
   /// behind them, which is exactly the pause before the mention menu draws.
   /// A branch someone changes in a terminal is still picked up; it is just
-  /// not re-read more often than a human could change it.
-  private refFor(path: string): string {
+  /// not re-read more often than a human could change it. The commit comes
+  /// out of the same spawn, so knowing it costs nothing on top.
+  private checkoutState(path: string): { ref: string; commit: string } {
     const now = Date.now();
     const hit = this.refs.get(path);
-    if (hit && now - hit.at < REF_TTL_MS) return hit.ref;
+    if (hit && now - hit.at < REF_TTL_MS) return hit;
     // A folder a flow deleted mid-session keeps its last known ref: that
     // is still the best description of where the service was.
-    const ref = fs.existsSync(path) ? currentRef(path) : '';
-    this.refs.set(path, { ref, at: now });
-    return ref;
+    const state = fs.existsSync(path) ? currentCheckout(path) : { ref: '', commit: '' };
+    this.refs.set(path, { ...state, at: now });
+    return state;
+  }
+
+  private refFor(path: string): string {
+    return this.checkoutState(path).ref;
+  }
+
+  /// The commit a checkout is on, for comparing against what a task published
+  /// from. Absent outside a repository, where there is nothing to compare.
+  private headFor(path: string): string | undefined {
+    return this.checkoutState(path).commit || undefined;
   }
 
   /// Branches move under us: `git checkout master` in a terminal changes what
@@ -238,7 +284,7 @@ export class ServicesManager {
         // Name it. "Another program" is true and useless; `node (pid 96355)`
         // is something a person can decide about — and it is very often a
         // service overcli itself started before the app was killed.
-        const owners = portOwners(port, this.ownerContext(workspaceId, serviceId));
+        const owners = await portOwners(port, this.ownerContext(workspaceId, serviceId));
         return {
           started: false,
           lease: {
@@ -318,7 +364,7 @@ export class ServicesManager {
     spec = withDebugDefaults(spec, stack.services.filter((s) => s.id !== spec.id));
     const services = [...stack.services.filter((s) => s.id !== spec.id), spec];
     const bindings = binding
-      ? [...stack.bindings.filter((b) => b.serviceId !== spec.id), { ...binding, serviceId: spec.id }]
+      ? [...stack.bindings.filter((b) => b.serviceId !== spec.id), saved({ ...binding, serviceId: spec.id })]
       : stack.bindings;
     this.write({ ...stack, services, bindings });
   }
@@ -341,6 +387,9 @@ export class ServicesManager {
       ...stack,
       services: stack.services.filter((s) => !gone.has(s.id)),
       bindings: stack.bindings.filter((b) => !gone.has(b.serviceId)),
+      // Left off entirely when there is nothing to keep, so a stack that has
+      // never run a task is written the way it always was.
+      ...remaining(stack.lastRuns, gone),
     });
     return removed;
   }
@@ -615,21 +664,16 @@ export class ServicesManager {
         ? (await planMirror(local.primary, binding.path, local.files)).map((l) => l.relative)
         : []
       : undefined;
+    const owners = takenPort === undefined ? [] : await portOwners(takenPort, this.ownerContext(workspaceId, serviceId));
     return triage({
       lines,
       spec,
       env,
       optionCount: options.length,
       binding: binding ? { ref: binding.ref, path: binding.path } : undefined,
-      portOwner:
-        takenPort === undefined
-          ? undefined
-          : (() => {
-              const owners = portOwners(takenPort, this.ownerContext(workspaceId, serviceId));
-              return owners.length > 0
-                ? { port: takenPort, holder: describeOwners(owners), kind: holderKind(owners) }
-                : undefined;
-            })(),
+      portOwner: takenPort === undefined || owners.length === 0
+        ? undefined
+        : { port: takenPort, holder: describeOwners(owners), kind: holderKind(owners) },
       missingLocalConfig,
       findDefinitions: binding ? (key) => findPropertyDefinitions(binding.path, key, local) : undefined,
       importOptions: this.importOptionsFor(spec),
@@ -936,7 +980,7 @@ export class ServicesManager {
     asking?: { workspaceId: string; serviceId: string },
   ): Promise<{ open: boolean; holder?: string; holderKind?: PortHolderKind }> {
     if (!(await nodeProbes.tcpOpen(port, '127.0.0.1'))) return { open: false };
-    const owners = portOwners(port, this.ownerContext(asking?.workspaceId, asking?.serviceId));
+    const owners = await portOwners(port, this.ownerContext(asking?.workspaceId, asking?.serviceId));
     return {
       open: true,
       holder: owners.length > 0 ? describeOwners(owners) : undefined,
@@ -956,7 +1000,7 @@ export class ServicesManager {
       ...Object.keys(secret).map((name) => ({ name, secret: true, stored: true })),
     ];
     entries.sort((a, b) => a.name.localeCompare(b.name));
-    return { entries, secureStorage: this.cipher?.available() ?? false };
+    return { entries, secureStorage: this.cipher?.available() ?? false, migrationError: this.migrationError, backupPath: this.backupPath };
   }
 
   /// Replace the machine values. A secret arriving without a value keeps the
@@ -994,6 +1038,17 @@ export class ServicesManager {
     saveMachineValues(this.dataDir, plain);
     // A supervisor caches the decrypted list; a changed secret must reach the
     // masker on the next line, not the next app start.
+    this.secretsChanged();
+  }
+
+  deleteMachineBackup(): void {
+    const backup = `${machineValuesFile(this.dataDir)}.pre-secrets.bak`;
+    // Already gone (removed by hand, or a second click) is the outcome asked for.
+    fs.rmSync(backup, { force: true });
+    this.backupPath = undefined;
+  }
+
+  private secretsChanged(): void {
     for (const supervisor of this.supervisors.values()) supervisor.clearSecretCache();
   }
 
@@ -1031,6 +1086,8 @@ export class ServicesManager {
   }
 
   private migrated = false;
+  private migrationError: string | undefined;
+  private backupPath: string | undefined;
 
   /// Move credential-named values out of the plain-text file, once. Values
   /// saved before secrets were encrypted are sitting in `machine.json`; the
@@ -1060,11 +1117,18 @@ export class ServicesManager {
     // this login keychain, so a restored backup or a rollback would have no
     // copy of these values at all. 0600, beside the file it came from.
     try {
-      fs.copyFileSync(machineValuesFile(this.dataDir), `${machineValuesFile(this.dataDir)}.pre-secrets.bak`);
-      fs.chmodSync(`${machineValuesFile(this.dataDir)}.pre-secrets.bak`, 0o600);
-    } catch {
-      // No backup, no migration — never delete the only copy.
-      return;
+      const backup = `${machineValuesFile(this.dataDir)}.pre-secrets.bak`;
+      fs.writeFileSync(backup, fs.readFileSync(machineValuesFile(this.dataDir)), { mode: 0o600, flag: 'wx' });
+      this.backupPath = backup;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        this.backupPath = `${machineValuesFile(this.dataDir)}.pre-secrets.bak`;
+      } else {
+        this.migrationError = error instanceof Error ? error.message : String(error);
+        // No backup, no migration — never delete the only copy.
+        this.migrated = true;
+        return;
+      }
     }
     for (const [name, value] of moving) {
       secret[name] = this.cipher.encrypt(value);
@@ -1072,10 +1136,7 @@ export class ServicesManager {
     }
     saveSecretCiphertext(this.dataDir, secret);
     saveMachineValues(this.dataDir, plain);
-    // The other writer of the secret store, and the same reason: a supervisor
-    // that masked a line before this ran holds a list without these values,
-    // and would go on writing them to the log in the clear all session.
-    for (const supervisor of this.supervisors.values()) supervisor.clearSecretCache();
+    this.secretsChanged();
     this.migrated = true;
   }
 
@@ -1423,13 +1484,14 @@ export class ServicesManager {
     // started, so everything running would read as stopped while still holding
     // its port, and every other service's output would be gone.
     this.supervisors.get(stack.workspaceId)?.update(stack.services, stack.bindings);
+    this.supervisors.get(stack.workspaceId)?.clearSecretCache();
   }
 
   private persistBinding(workspaceId: string, binding: ServiceBinding): void {
     const stack = this.stack(workspaceId);
     const next = {
       ...stack,
-      bindings: [...stack.bindings.filter((b) => b.serviceId !== binding.serviceId), binding],
+      bindings: [...stack.bindings.filter((b) => b.serviceId !== binding.serviceId), saved(binding)],
     };
     // Deliberately not `write`: replacing the supervisor here would drop the
     // process we just rebound and the log history attached to it.
@@ -1450,14 +1512,74 @@ export class ServicesManager {
       // Read per launch, so editing a machine value takes effect on the next
       // start rather than on the next restart of the app.
       machineValues: () => this.allMachineValues(),
-      secretValues: () => Object.values(loadSecretValues(this.dataDir, this.cipher)),
+      secretValues: () => [
+        ...Object.values(loadSecretValues(this.dataDir, this.cipher)),
+        ...Object.entries(loadMachineValues(this.dataDir)).filter(([name]) => isSecretName(name)).map(([, value]) => value),
+        ...this.stack(workspaceId).services.flatMap((spec) => Object.entries(spec.config.inject ?? {})
+          .filter(([name, value]) => isSecretName(name) && !value.includes('${'))
+          .map(([, value]) => value)),
+      ],
       mirrorLocalConfig: (serviceId, checkout) => this.mirrorLocalConfig(workspaceId, serviceId, checkout),
+      headOf: (checkout) => this.headFor(checkout),
+      portOwners: (wanted) => {
+        const byPort = new Map(wanted.map((w) => [w.port, w.serviceId]));
+        return portOwnersFor(wanted.map((w) => w.port), (port) =>
+          this.ownerContext(workspaceId, byPort.get(port)));
+      },
+      matchProcesses: (targets) => {
+        const bindings = this.stack(workspaceId).bindings;
+        return matchingProcesses(targets.flatMap((t) => {
+          const checkout = bindings.find((b) => b.serviceId === t.serviceId)?.path;
+          return checkout ? [{ key: t.serviceId, tokens: t.tokens, checkout }] : [];
+        }));
+      },
+      // The tree, not the pid: an adopted Gradle service is wrapper, daemon
+      // and app, and the app is the one holding its ports.
+      stopProcess: async (pid) => {
+        await stopPids([pid], 2_000, { tree: true });
+      },
+      stopHolder: async (port, serviceId) => {
+        await freePort(port, { context: this.ownerContext(workspaceId, serviceId) });
+      },
       logSink: createLogSink((serviceId) => serviceLogFile(this.dataDir, workspaceId, serviceId)),
       watchFiles: watchServiceFiles,
+    }, stack.lastRuns);
+    supervisor.on((event) => {
+      this.rememberRun(workspaceId, event);
+      this.emit({ ...event, workspaceId });
     });
-    supervisor.on((event) => this.emit({ ...event, workspaceId }));
     this.supervisors.set(workspaceId, supervisor);
     return supervisor;
+  }
+
+  /// Keep what a task installed, past the session that installed it.
+  ///
+  /// Statuses are in memory, so without this every restart forgets which
+  /// commit the jar in the local repository came from — and a task that reads
+  /// `stopped` because the app was reopened is indistinguishable from one
+  /// that never ran, while what it installed is still there and still what
+  /// everything resolves.
+  private rememberRun(workspaceId: string, event: SupervisorEvent): void {
+    if (event.kind !== 'status') return;
+    const { runtime } = event;
+    if (runtime.status !== 'done' || !runtime.ranRef) return;
+    const stack = this.stack(workspaceId);
+    if (!stack.services.find((s) => s.id === event.serviceId)?.task) return;
+
+    const run: TaskRun = {
+      ref: runtime.ranRef,
+      commit: runtime.ranCommit,
+      at: runtime.finishedAt ?? Date.now(),
+    };
+    const previous = stack.lastRuns?.[event.serviceId];
+    if (previous && previous.ref === run.ref && previous.commit === run.commit && previous.at === run.at) return;
+
+    // Deliberately not `write`: this arrives while the supervisor is emitting,
+    // and handing it a rebuilt spec list mid-event is how a running process
+    // loses the log attached to it.
+    const next = { ...stack, lastRuns: { ...stack.lastRuns, [event.serviceId]: run } };
+    this.stacks.set(workspaceId, next);
+    saveStack(this.dataDir, next);
   }
 
   /// Bring the main checkout's local config into the bound worktree.
@@ -1693,26 +1815,54 @@ export function defaultBranch(checkout: string): string | undefined {
   return undefined;
 }
 
-/// The branch a checkout is on, or `HEAD` when it is detached or not a repo.
-/// Synchronous on purpose: it runs once per binding when a stack is first read
-/// and the answer is needed before anything renders.
-export function currentRef(checkout: string): string {
+/// The branch a checkout is on and the commit it points at, or `HEAD` and no
+/// commit when it is detached or not a repo.
+///
+/// Both in one spawn — `rev-parse` takes several arguments and answers them in
+/// order — because this runs per bound checkout on every look at the pane, and
+/// on the MAIN process. Synchronous on purpose: the answer is needed before
+/// anything renders.
+export function currentCheckout(checkout: string): { ref: string; commit: string } {
   try {
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: checkout,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    if (branch && branch !== 'HEAD') return branch;
+    // The commit first: `--abbrev-ref` is a mode that applies to every
+    // revision AFTER it, so asking the other way round answers the branch
+    // twice and never mentions a sha.
+    const [commit = '', branch = ''] = execFileSync(
+      'git',
+      ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'],
+      { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim().split('\n').map((line) => line.trim());
     // Detached: the short sha is more use in a list than the word HEAD.
-    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
-      cwd: checkout,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim() || 'HEAD';
+    const ref = branch && branch !== 'HEAD' ? branch : commit.slice(0, 7) || 'HEAD';
+    return { ref, commit };
   } catch {
-    return 'HEAD';
+    return { ref: 'HEAD', commit: '' };
   }
+}
+
+/// The branch alone, for the callers that only ever wanted that.
+export function currentRef(checkout: string): string {
+  return currentCheckout(checkout).ref;
+}
+
+/// The task records worth keeping after a removal, and nothing at all when
+/// that leaves none.
+function remaining(
+  lastRuns: Record<string, TaskRun> | undefined,
+  gone: ReadonlySet<string>,
+): Pick<StackConfig, 'lastRuns'> {
+  const kept = Object.entries(lastRuns ?? {}).filter(([id]) => !gone.has(id));
+  return kept.length > 0 ? { lastRuns: Object.fromEntries(kept) } : {};
+}
+
+/// A binding as it goes to disk. `head` is a fact about this minute, filled
+/// in on the view — saving it would rewrite the stack file on every commit and
+/// then be stale until the next look.
+function saved(binding: ServiceBinding): ServiceBinding {
+  if (binding.head === undefined) return binding;
+  const copy = { ...binding };
+  delete copy.head;
+  return copy;
 }
 
 /// The configuration files a project already has. Order matters: the ones

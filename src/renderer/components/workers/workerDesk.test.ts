@@ -34,6 +34,7 @@ import {
   summarizeDesk,
   workerDeskOrchestrations,
   workerDeskRuns,
+  indexWorkerHistory,
   type WorkerActivity,
   sidebarActivity,
   sidebarShifts,
@@ -117,6 +118,26 @@ function batch(
 }
 
 describe('worker desk selectors', () => {
+  it('indexes every worker history in one pass and keeps each bucket newest first', () => {
+    const runs = {
+      a: run('a', { workerId: 'worker-1', createdAt: 1 }),
+      b: run('b', { workerId: 'worker-2', createdAt: 3 }),
+      c: run('c', { workerId: 'worker-1', createdAt: 2 }),
+    };
+    const batches = {
+      a: batch('1', 'worker-1'),
+      b: batch('3', 'worker-2'),
+      c: batch('2', 'worker-1'),
+    };
+
+    const index = indexWorkerHistory(runs, batches);
+
+    expect(index.runs['worker-1'].map((item) => item.id)).toEqual(['c', 'a']);
+    expect(index.runs['worker-2'].map((item) => item.id)).toEqual(['b']);
+    expect(index.orchestrations['worker-1'].map((item) => item.id)).toEqual(['2', '1']);
+    expect(index.orchestrations['worker-2'].map((item) => item.id)).toEqual(['3']);
+  });
+
   it('claims worker runs by identity and sorts them newest first', () => {
     const runs = {
       old: run('old', { workerId: 'worker-1', createdAt: 1 }),

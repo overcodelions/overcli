@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { LOG_LIMIT, maskSecrets, Supervisor, type SpawnRequest, type SpawnedProcess, type SupervisorDeps } from './supervisor';
 import type { ProjectionFs } from './projection';
 import type { ServiceBinding, ServiceSpec } from './types';
+import type { PortHolderKind } from '../../shared/services';
+import type { PortOwner } from './portOwners';
 
 /// A checkout that exists and resolves to itself; enough for projection.
 const fs: ProjectionFs = {
@@ -138,6 +140,47 @@ describe('maskSecrets', () => {
 
   it('leaves values too short to be anything but ordinary words', () => {
     expect(maskSecrets('connecting as root', ['root'])).toBe('connecting as root');
+  });
+
+  it('masks start, output, status, and rebound writes before they reach the sink', async () => {
+    const written: string[] = [];
+    const secret = 'hunter2hunter2';
+    const { deps, onSpawn } = harness({
+      secretValues: () => [secret],
+      logSink: { write: (_id, line) => written.push(line), close: async () => {} },
+    });
+    onSpawn((proc) => proc.emitLine(`output ${secret}`));
+    const sup = new Supervisor(
+      'mine',
+      [spec({ id: 'api', command: ['run', secret] })],
+      [binding('api')],
+      deps,
+    );
+
+    await sup.start('api');
+    (sup as unknown as { setStatus: (id: string, patch: object) => void }).setStatus('api', {
+      status: 'failed',
+      lastError: `failed ${secret}`,
+    });
+    (sup as unknown as { append: (id: string, line: string) => void }).append(
+      'api',
+      `── rebound to ${secret} ──`,
+    );
+
+    expect(written.some((line) => line.includes(secret))).toBe(false);
+    expect(written.filter((line) => line.includes('••••••')).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('returns exactly the newest 20,000 lines after a 25,000-line burst', () => {
+    const { deps } = harness();
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+    const append = (sup as unknown as { append: (id: string, line: string) => void }).append.bind(sup);
+
+    for (let i = 0; i < 25_000; i++) append('api', `line ${i}`);
+
+    expect(sup.log('api')).toHaveLength(20_000);
+    expect(sup.log('api')[0]).toBe('line 5000');
+    expect(sup.log('api').at(-1)).toBe('line 24999');
   });
 });
 
@@ -735,6 +778,231 @@ describe('a task', () => {
     await started;
 
     expect(sup.log('api')).toContain('── common-publish last ran from master; this starts from feat/x ──');
+  });
+
+  it('says so when the branch has moved on since the task published', async () => {
+    // The invisible case: same branch, same green `done`, and a jar older than
+    // the source next to it. Nothing but the commit tells them apart.
+    let head = 'a'.repeat(40);
+    const { deps, procs } = harness({ headOf: () => head });
+    const specs = [
+      spec({ id: 'api', projectId: 'common', deps: ['publish'] }),
+      spec({ id: 'publish', name: 'common-publish', projectId: 'common', task: true }),
+    ];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    const published = sup.start('publish');
+    await settle();
+    procs[0].emitExit(0);
+    await published;
+    expect(sup.runtime('publish').ranCommit).toBe('a'.repeat(40));
+
+    head = 'b'.repeat(40);
+    await sup.start('api');
+    await settle();
+
+    expect(sup.log('api')).toContain('── common-publish last ran from aaaaaaa; bbbbbbb is checked out now ──');
+  });
+});
+
+describe('Supervisor.adopt', () => {
+  /// The whole-stack answer the supervisor asks for: one map, all ports.
+  const holding = (kind: PortHolderKind, port = 8080, pid = 4242) =>
+    async () => new Map<number, PortOwner[]>([[port, [{ pid, command: 'java', kind }]]]);
+
+  it('takes back a service whose leftover copy still holds its port', async () => {
+    const { deps, spawns } = harness({ portOwners: holding('stale') });
+    const specs = [spec({ id: 'api', port: 8080 })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.adopt();
+
+    expect(sup.runtime('api').status).toBe('ready');
+    expect(sup.runtime('api').adopted).toBe(true);
+    expect(sup.runtime('api').pid).toBe(4242);
+    // Nothing was launched: it is already running, which is the whole point.
+    expect(spawns).toHaveLength(0);
+    expect(sup.log('api').join('\n')).toMatch(/adopted · pid 4242/);
+    // The port it holds is ours to defend now, or another stack takes it.
+    expect(sup.claims().map((c) => c.port)).toEqual([8080]);
+  });
+
+  it('leaves someone else\'s process alone', async () => {
+    // A terminal running the same service, or a database on that port. Both
+    // classify as `other`, and neither is ours to claim or to kill.
+    const { deps } = harness({ portOwners: holding('other') });
+    const specs = [spec({ id: 'api', port: 8080 })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.adopt();
+
+    expect(sup.runtime('api').status).toBe('stopped');
+    expect(sup.runtime('api').adopted).toBeUndefined();
+  });
+
+  it('stops an adopted process through the port, having no child to signal', async () => {
+    const freed: number[] = [];
+    const { deps } = harness({
+      portOwners: holding('stale'),
+      stopHolder: async (port) => {
+        freed.push(port);
+      },
+    });
+    const specs = [spec({ id: 'api', port: 8080 })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.adopt();
+
+    await sup.stop('api');
+
+    expect(freed).toEqual([8080]);
+    expect(sup.runtime('api').status).toBe('stopped');
+    expect(sup.runtime('api').adopted).toBeUndefined();
+  });
+
+  it('restarts it into a process of our own, which is how the output comes back', async () => {
+    // The leftover is gone once stopped, as it is in life — a fake that kept
+    // reporting it would have the start adopt it straight back.
+    let leftover = true;
+    const { deps, spawns } = harness({
+      portOwners: async (wanted) =>
+        leftover ? holding('stale')() : new Map(wanted.map((w) => [w.port, [] as PortOwner[]])),
+      stopProcess: async () => {
+        leftover = false;
+      },
+    });
+    const specs = [spec({ id: 'api', port: 8080 })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.adopt();
+
+    await sup.restart('api');
+
+    expect(spawns).toHaveLength(1);
+    expect(sup.runtime('api').adopted).toBeUndefined();
+  });
+
+  it('asks once for the whole stack, not once per service', async () => {
+    // The defect this replaced: a lookup per service is two `lsof`s and a `ps`
+    // each, and a stack's worth started together time each other out against a
+    // three-second budget. A timed-out lookup reports nothing listening, which
+    // reads exactly like an idle port — so twenty-five running services were
+    // adopted as none of them.
+    const asked: number[][] = [];
+    const { deps } = harness({
+      portOwners: async (wanted) => {
+        asked.push(wanted.map((w) => w.port));
+        return new Map(wanted.map((w) => [
+          w.port,
+          [{ pid: 1000 + w.port, command: 'java', kind: 'stale' as PortHolderKind }],
+        ]));
+      },
+    });
+    const specs = [
+      spec({ id: 'api', port: 8080 }),
+      spec({ id: 'web', port: 4200 }),
+      spec({ id: 'jobs', port: 9000 }),
+    ];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.adopt();
+
+    expect(asked).toEqual([[8080, 4200, 9000]]);
+    expect(['api', 'web', 'jobs'].map((id) => sup.runtime(id).adopted)).toEqual([true, true, true]);
+  });
+
+  it('adopts a portless service instead of starting a second copy', async () => {
+    // With no port there is no lease to refuse the start, and nothing
+    // listening to find the first copy afterwards: two consumers would just
+    // quietly share the work.
+    const { deps, spawns } = harness({
+      matchProcesses: async (targets) =>
+        new Map(targets.map((t) => [t.serviceId, { pid: 777, command: 'run jobs', kind: 'stale' as PortHolderKind }])),
+    });
+    const specs = [spec({ id: 'jobs', port: undefined })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.start('jobs');
+
+    expect(spawns).toHaveLength(0);
+    expect(sup.runtime('jobs').adopted).toBe(true);
+    expect(sup.runtime('jobs').pid).toBe(777);
+    expect(sup.log('jobs').join('\n')).toMatch(/adopted rather than started a second time/);
+  });
+
+  it('starts beside a portless copy that is somebody else\'s, and says so', async () => {
+    // Their own run in their own terminal. Refusing to start would be us
+    // deciding; saying nothing would be us hiding it.
+    const { deps, spawns } = harness({
+      matchProcesses: async (targets) =>
+        new Map(targets.map((t) => [t.serviceId, { pid: 778, command: 'run jobs', kind: 'other' as PortHolderKind }])),
+    });
+    const specs = [spec({ id: 'jobs', port: undefined })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.start('jobs');
+
+    expect(spawns).toHaveLength(1);
+    expect(sup.log('jobs').join('\n')).toMatch(/pid 778 is already running this from outside overcli/);
+  });
+
+  it('stops a portless adopted process by pid', async () => {
+    const killed: number[] = [];
+    const { deps } = harness({
+      matchProcesses: async (targets) =>
+        new Map(targets.map((t) => [t.serviceId, { pid: 779, command: 'run jobs', kind: 'stale' as PortHolderKind }])),
+      stopProcess: async (pid) => {
+        killed.push(pid);
+      },
+    });
+    const specs = [spec({ id: 'jobs', port: undefined })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.start('jobs');
+
+    await sup.stop('jobs');
+
+    expect(killed).toEqual([779]);
+    expect(sup.runtime('jobs').status).toBe('stopped');
+  });
+
+  it('adopts a leftover still booting, found by its command line before its port', async () => {
+    // Started a minute before the app was reopened and not yet listening when
+    // adoption scanned, so the port said nothing. The start must still find it
+    // rather than launch into the port it is about to bind.
+    const { deps, spawns } = harness({
+      portOwners: async (wanted) => new Map(wanted.map((w) => [w.port, [] as PortOwner[]])),
+      matchProcesses: async (targets) => new Map(targets.map((t) => [
+        t.serviceId,
+        { pid: 34128, root: 34056, command: 'java GradleWrapperMain :api:bootRun', kind: 'stale' as PortHolderKind },
+      ])),
+    });
+    const specs = [spec({ id: 'api', port: 8080 })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.start('api');
+
+    expect(spawns).toHaveLength(0);
+    expect(sup.runtime('api').adopted).toBe(true);
+    // The root: stopping it has to take the whole tree down.
+    expect(sup.runtime('api').pid).toBe(34056);
+  });
+
+  it('does not adopt over something it is already running', async () => {
+    // Nothing there when it starts; by the time adoption looks, the port is
+    // held — by the copy we just launched, which must not be mistaken for a
+    // leftover and taken over.
+    let started = false;
+    const { deps, spawns } = harness({
+      portOwners: async (wanted) =>
+        started ? holding('stale')() : new Map(wanted.map((w) => [w.port, [] as PortOwner[]])),
+    });
+    const specs = [spec({ id: 'api', port: 8080 })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.start('api');
+    started = true;
+
+    await sup.adopt();
+
+    expect(spawns).toHaveLength(1);
+    expect(sup.runtime('api').adopted).toBeUndefined();
   });
 });
 
