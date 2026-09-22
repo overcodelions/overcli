@@ -215,6 +215,28 @@ describe('isSecretName', () => {
     expect(isSecretName('API_TOKEN')).toBe(true);
     expect(isSecretName('SQS_PREFIX')).toBe(false);
   });
+
+  it('skips locators and still catches run-together names', () => {
+    for (const n of ['KEYCLOAK_URL', 'AUTH_URL', 'PASSENGER_ROOT', 'SSH_KEY_PATH', 'AWS_ACCESS_KEY_ID']) {
+      expect(isSecretName(n)).toBe(false);
+    }
+    for (const n of ['DB_PASSWORD', 'GITHUB_TOKEN', 'AWS_SECRETKEY', 'apiKey', 'dbPassword', 'MYSQL_PWD']) {
+      expect(isSecretName(n)).toBe(true);
+    }
+  });
+
+  // A name that only a masker sees is a name that reaches the log file
+  // verbatim, so the words that unambiguously mean "credential" have to beat
+  // the locator rule rather than defer to it.
+  it('keeps a passphrase and a Vault secret id secret, locator suffix or not', () => {
+    for (const n of ['GPG_PASSPHRASE', 'SSH_PASSPHRASE', 'PASSPHRASE', 'encryptionPassphrase', 'KEY_PASSPHRASE']) {
+      expect(isSecretName(n)).toBe(true);
+    }
+    // `secret` and `password` win outright; `token` and `auth` still defer.
+    expect(isSecretName('SECRET_ID')).toBe(true);
+    expect(isSecretName('PASSWORD_FILE')).toBe(true);
+    expect(isSecretName('TOKEN_NAME')).toBe(false);
+  });
 });
 
 describe('copiesOf', () => {

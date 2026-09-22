@@ -34,7 +34,7 @@ Say "based on Overcli" instead — that's accurate and it's welcome.
 ## The official source
 
 The only official builds come from
-[github.com/overcodelions/overcli/releases](https://overcli.app) and are linked from
+[github.com/overcodelions/overcli/releases](https://github.com/overcodelions/overcli/releases) and are linked from
 [https://overcli.app](https://overcli.app). Anything else is someone else's build, however
 it is labelled.
 

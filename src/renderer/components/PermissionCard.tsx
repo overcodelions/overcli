@@ -101,7 +101,7 @@ interface OutboundSummary {
 /// Plain-language summary for the tools that leave the machine. Returns null
 /// for everything else, which is most tools — the generic card is fine when
 /// the effect is local and reversible.
-function outboundSummary(toolName: string, toolInput?: string): OutboundSummary | null {
+export function outboundSummary(toolName: string, toolInput?: string): OutboundSummary | null {
   if (toolName !== 'Artifact' && toolName !== 'DesignSync') return null;
   let input: any;
   try {
@@ -113,9 +113,27 @@ function outboundSummary(toolName: string, toolInput?: string): OutboundSummary 
   }
   if (toolName === 'Artifact') {
     const caps = input?.capabilities ? Object.keys(input.capabilities) : [];
+    const action = String(input?.action ?? 'publish');
+    const headlines: Record<string, string> = {
+      publish: 'Publishes this file to claude.ai as a shareable artifact.',
+      delete: 'PERMANENTLY deletes a published artifact from claude.ai. The link stops working for everyone.',
+      read: 'Reads a published artifact back from claude.ai.',
+      list: 'Lists your claude.ai artifacts.',
+      open: 'Opens a published artifact.',
+      pin: 'Pins an artifact in your claude.ai sidebar.',
+      unpin: 'Unpins an artifact from your claude.ai sidebar.',
+      quickstart: 'Reads the artifact types available on your claude.ai account.',
+    };
     return {
-      headline: 'Publishes this file to claude.ai as a shareable artifact.',
+      // Own properties only, and stringified: `action` is model-controlled,
+      // and a bare `headlines[action]` resolves `toString` to a function and
+      // `__proto__` to an object — which React throws on, taking the card's
+      // Allow and Deny buttons down with it.
+      headline: Object.hasOwn(headlines, action)
+        ? String(headlines[action])
+        : `Runs the Artifact tool's "${action}" action against claude.ai.`,
       rows: [
+        ...(input?.url ? [{ label: 'Artifact', value: String(input.url) }] : []),
         ...(input?.title ? [{ label: 'Title', value: String(input.title) }] : []),
         ...(input?.file_path ? [{ label: 'File', value: String(input.file_path) }] : []),
         ...(caps.length ? [{ label: 'Grants', value: caps.join(', ') }] : []),

@@ -53,21 +53,42 @@ export interface ServeDeps {
 /// a pid that is gone.
 export function acquireLock(dataDir: string): { ok: true; release: () => void } | { ok: false; heldBy: number } {
   const file = path.join(dataDir, LOCK_FILE);
-  try {
-    const held = Number(fs.readFileSync(file, 'utf-8').trim());
+  fs.mkdirSync(dataDir, { recursive: true });
+  const claim = (): boolean => {
+    try {
+      const fd = fs.openSync(file, 'wx');
+      fs.writeSync(fd, `${process.pid}\n`);
+      fs.closeSync(fd);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const holder = (): number => {
+    try {
+      return Number(fs.readFileSync(file, 'utf-8').trim());
+    } catch {
+      return 0;
+    }
+  };
+  if (!claim()) {
+    const held = holder();
     if (Number.isInteger(held) && held > 0 && held !== process.pid) {
       try {
         process.kill(held, 0);
         return { ok: false, heldBy: held };
       } catch {
-        // ESRCH — the holder is gone, the lock is stale, take it.
+        // ESRCH — stale.
       }
     }
-  } catch {
-    // No lock file, or an unreadable one. Either way it is ours to write.
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // Someone else cleared it first.
+    }
+    // Losing this second race means another daemon claimed it in the gap.
+    if (!claim()) return { ok: false, heldBy: holder() || held };
   }
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(file, `${process.pid}\n`, 'utf-8');
   return {
     ok: true,
     release: () => {

@@ -22,9 +22,7 @@ export const MAX_PROJECT_FILE_BYTES = 50 * 1024 * 1024;
 /// One phrasing of "too big", so the number in the message can never drift
 /// from the number in the check.
 export function tooLargeReason(name: string, size: number, limit: number): string {
-  return `${name || 'file'} is ${megabytes(size)} MB; max is ${megabytes(limit)} MB.`;
-}
-
-function megabytes(bytes: number): number {
-  return Math.round(bytes / 1024 / 1024);
+  // Round the size UP and the cap DOWN, or a 25.4 MB file reads as within the
+  // 25 MB limit it was just rejected for.
+  return `${name || 'file'} is ${Math.ceil(size / 1024 / 1024)} MB; max is ${Math.floor(limit / 1024 / 1024)} MB.`;
 }

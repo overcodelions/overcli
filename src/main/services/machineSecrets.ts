@@ -71,6 +71,6 @@ export function saveSecretCiphertext(dataDir: string, entries: Record<string, st
   const tmp = `${file}.tmp`;
   // 0600 on top of the encryption: nobody else on the machine needs to see
   // even the ciphertext or the names.
-  fs.writeFileSync(tmp, `${JSON.stringify({ entries }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.writeFileSync(tmp, `${JSON.stringify({ schemaVersion: 1, entries }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(tmp, file);
 }

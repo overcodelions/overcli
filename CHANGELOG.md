@@ -4,6 +4,19 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- **Services pane.** A workspace's services run from a pane of their own — detection, start order, port leases and debug ports, per-service log files with secrets masked, exception capture, code-change restarts, `@service` mentions, and machine values whose credentials are encrypted with the OS keychain.
+- **`overcli serve`.** Run schedules and standing workers headless, under a single-daemon lock.
+- **Per-run cost ceiling for flows.** A flow run that spends past its ceiling aborts and notifies.
+- **Claude in Chrome for flow runs**, off unless switched on for that run.
+- **Outbound webhook notifications**, with secrets scrubbed from the payload.
+- **Intel macOS builds**, and a download table on each release.
+- **Trademark policy and contribution terms** (`TRADEMARKS.md`).
+
+### Fixed
+- Transcript stats scan in a utility process, so a large history does not stall the window.
+- Services start correctly from any checkout location, and the pane says what a start will do.
+
 ## [0.18.0] - 2026-09-05
 
 ### Added

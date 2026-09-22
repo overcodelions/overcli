@@ -145,7 +145,7 @@ describe('producer permissions', () => {
   const args = { projectPath: '/proj', prompt: 'plan', flowId: 'f', runIn: 'cwd' as const, maxConcurrent: 1 };
 
   it('uses the launch policy for producer calls', async () => {
-    const interactive = makeHarness();
+    const interactive = makeHarness({ launchPolicy: { unattended: false } });
     await interactive.engine.parkProposal(args);
     expect(interactive.oneShotCalls[0]).toMatchObject({ permissionMode: 'bypassPermissions', enabledTools: undefined });
 

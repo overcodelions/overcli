@@ -274,6 +274,7 @@ export async function sendWebhookNotification(
   try {
     const res = await fetch(url, {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         'Content-Type': 'application/json',
         ...(auth ? { [auth.header]: auth.token } : {}),
@@ -285,6 +286,10 @@ export async function sendWebhookNotification(
       }),
       signal: controller.signal,
     });
+    // A 3xx would carry a custom auth header to whatever origin it names.
+    if (res.status >= 300 && res.status < 400) {
+      return { ok: false, error: 'Webhook redirected; refusing to resend to another origin.' };
+    }
     if (!res.ok) return { ok: false, error: `Webhook returned ${res.status}.` };
     return { ok: true };
   } catch (err) {

@@ -36,7 +36,7 @@ import {
   sanitizeSpawnArgs,
   RunnerManager,
 } from './runner';
-import type { StreamEvent } from '../shared/types';
+import type { Backend, StreamEvent } from '../shared/types';
 
 describe('prepareClaudeBroker', () => {
   it('passes the selected allowlist through the broker and preserves its permission server on collision', async () => {
@@ -85,6 +85,39 @@ describe('oneShot unattended tool allowlists', () => {
       }
     },
   );
+});
+
+describe('oneShot and Claude in Chrome', () => {
+  // A one-shot is a hidden conversation with no window to put an approval
+  // card in, and the producer runs it with bypassPermissions. Letting the
+  // global setting reach it would hand ~22 browser tools, against the
+  // profile the user actually browses in, to a turn whose whole job is
+  // reading issue bodies someone else wrote.
+  it('pins the browser off for a hidden turn while a visible conversation still inherits the setting', async () => {
+    const manager = new RunnerManager(() => {}, () => ({ backends: {}, claudeChrome: true }) as never);
+    const priv = manager as unknown as {
+      send: (args: { chrome?: boolean }) => { ok: boolean; error?: string };
+      chromeFor: (a: { backend: Backend; chrome?: boolean }) => boolean;
+    };
+    const realChromeFor = priv.chromeFor.bind(manager);
+    let sent: { chrome?: boolean } | undefined;
+    priv.send = (args) => {
+      sent = args;
+      return { ok: false, error: 'stubbed' };
+    };
+
+    await manager.oneShot({
+      backend: 'claude',
+      model: 'claude-opus-5',
+      prompt: 'investigate',
+      cwd: '/repo',
+      permissionMode: 'bypassPermissions',
+    });
+
+    expect(sent?.chrome).toBe(false);
+    // The global setting is untouched for a conversation you can see.
+    expect(realChromeFor({ backend: 'claude' })).toBe(true);
+  });
 });
 
 describe('resumeSessionAfterParamChange', () => {

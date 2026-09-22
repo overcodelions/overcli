@@ -1390,6 +1390,11 @@ export class RunnerManager {
         // conversation can't stall on an unanswerable approval. Callers that
         // need unattended tool use (the producer) override this.
         permissionMode: args.permissionMode ?? 'default',
+        // For the same reason, never the browser. A one-shot has no window to
+        // put an approval card in, so a turn that reads an issue body someone
+        // else wrote must not also hold the keys to a signed-in Chrome
+        // profile. The global setting is for conversations you can see.
+        chrome: false,
         reviewBackend: null,
         reviewMode: null,
         reviewModel: null,
