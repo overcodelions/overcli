@@ -4,6 +4,7 @@ import { useRunnerCompletedAt, useRunnerEvents } from '../runnersStore';
 import { ConversationHeader } from './ConversationHeader';
 import { ChatView } from './ChatView';
 import { InputBar } from './InputBar';
+import { SiblingRepoCard } from './SiblingRepoCard';
 import { StatsFooter } from './StatsFooter';
 import { FileEditorPane } from './FileEditorPane';
 import { ExplorerPane } from './ExplorerPane';
@@ -161,6 +162,7 @@ export function ConversationPane() {
               ) : undefined
             }
           />
+          <SiblingRepoCard conversationId={convId} />
           <InputBar conversationId={convId} />
           <StatsFooter conversationId={convId} />
         </div>

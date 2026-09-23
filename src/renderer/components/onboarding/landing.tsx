@@ -362,6 +362,31 @@ export function PrimaryAction({
   );
 }
 
+/// A second, equal door beside the primary one — for a page that has two
+/// real starting points rather than one start and some asides.
+export function SecondaryAction({
+  label,
+  onClick,
+  disabled,
+  title,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className="rounded-lg border border-card-strong px-4 py-2 text-[13px] font-medium text-ink hover:bg-card-strong disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {label}
+    </button>
+  );
+}
+
 /// The other ways in, written as continuations of the primary button — "or
 /// write the contract yourself" — so the row reads as one sentence.
 export function QuietAction({

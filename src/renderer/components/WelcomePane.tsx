@@ -77,6 +77,7 @@ export function WelcomePane() {
   const focusedWorkspaceId = useStore((s) => s.focusedWorkspaceId);
   const welcomeFocusToken = useStore((s) => s.welcomeFocusToken);
   const pickProject = useStore((s) => s.pickProject);
+  const openWorkspaceWith = useStore((s) => s.openWorkspaceWith);
   const newConversation = useStore((s) => s.newConversation);
   const newConversationInWorkspace = useStore((s) => s.newConversationInWorkspace);
   const startNewConversation = useStore((s) => s.startNewConversation);
@@ -860,8 +861,12 @@ export function WelcomePane() {
             label={focusedWorkspace?.name ?? selectedProject?.name ?? 'Pick project'}
             projects={projects}
             workspaces={workspaces}
+            currentProjectId={focusedWorkspace ? null : (selectedProject?.id ?? null)}
             onPickProject={(id) => startNewConversation(id)}
             onPickWorkspace={(id) => startNewConversationInWorkspace(id)}
+            onAddRepo={(id) => {
+              if (selectedProject) void openWorkspaceWith([selectedProject.id, id]);
+            }}
             onAdd={pickProject}
           />
           <Pill
@@ -1719,18 +1724,28 @@ function ContextPill({
   label,
   projects,
   workspaces,
+  currentProjectId,
   onPickProject,
   onPickWorkspace,
+  onAddRepo,
   onAdd,
 }: {
   label: string;
   projects: Project[];
   workspaces: Workspace[];
+  /// The single project this chat is in, when it is in one. Offers the other
+  /// repos as "work on this and that": the composer's way into a workspace,
+  /// without having to learn the word first.
+  currentProjectId: UUID | null;
   onPickProject: (id: UUID) => void;
   onPickWorkspace: (id: UUID) => void;
+  onAddRepo: (id: UUID) => void;
   onAdd: () => void;
 }) {
   const items: PillItem[] = [];
+  const current = projects.find((p) => p.id === currentProjectId);
+  const others = current ? projects.filter((p) => p.id !== current.id && !isEverydayProject(p)) : [];
+
   if (workspaces.length > 0) {
     items.push({ value: '__h_workspaces__', label: 'Workspaces', kind: 'header' });
     for (const w of workspaces) {
@@ -1743,6 +1758,13 @@ function ContextPill({
       items.push({ value: `p:${p.id}`, label: p.name, note: shortPath(p.path) });
     }
   }
+  // Last, after the list of places: it's an action on the current one.
+  if (current && !isEverydayProject(current) && others.length > 0) {
+    items.push({ value: '__h_across__', label: `Work on ${current.name} and…`, kind: 'header' });
+    for (const p of others) {
+      items.push({ value: `x:${p.id}`, label: `+ ${p.name}`, note: 'Both in one conversation' });
+    }
+  }
   items.push({ value: '__add__', label: '+ Add project…' });
   return (
     <Pill
@@ -1750,6 +1772,7 @@ function ContextPill({
       items={items}
       onPick={(v) => {
         if (v === '__add__') onAdd();
+        else if (v.startsWith('x:')) onAddRepo(v.slice(2) as UUID);
         else if (v.startsWith('w:')) onPickWorkspace(v.slice(2) as UUID);
         else if (v.startsWith('p:')) onPickProject(v.slice(2) as UUID);
       }}

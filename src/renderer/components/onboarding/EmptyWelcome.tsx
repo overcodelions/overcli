@@ -21,6 +21,7 @@ import {
   LandingPage,
   PrimaryAction,
   QuietAction,
+  SecondaryAction,
   Specimen,
   SpecimenRow,
   Terms,
@@ -45,10 +46,13 @@ const TERMS = [
     value:
       'Runs in that folder, through a CLI you have already signed into. Edits come back as diffs, commands as real terminal blocks.',
   },
+  // Workspaces, not worktrees: a worktree is how a run stays out of your way,
+  // and is best explained the first time an agent makes one. A workspace is
+  // a choice you make when adding a folder, so it belongs here.
   {
-    label: 'The worktree',
+    label: 'The workspace',
     value:
-      'An agent gets its own checkout on its own branch, so a long run can go wrong without touching what you have open.',
+      'Several repos that belong together. Add the folder that holds them and one conversation can read and change all of them.',
   },
   {
     label: 'The keys',
@@ -75,7 +79,7 @@ export function EmptyWelcome({
   return (
     <LandingPage
       title="Chat"
-      subtitle="One conversation per task, against any CLI on this machine — in your checkout or in a worktree of its own."
+      subtitle="One conversation per task, against any CLI on this machine."
     >
       <LandingHero
         mark={<Lockup />}
@@ -91,15 +95,23 @@ export function EmptyWelcome({
           <>
             Overcli is one window over the coding CLIs on this machine — Claude, Codex,
             Gemini, Copilot and Ollama. Point it at a folder and any of them can work
-            there: in the folder itself, or off in a worktree of its own while you carry
-            on in yours.
+            there, whether it holds code or documents.
           </>
         }
         actions={
           <>
+            {/* New or existing — the one question everyone can answer. What
+                kind of folder it is (code, several repos, documents) Overcli
+                works out from the folder itself; see pickProject. */}
             <PrimaryAction
-              label="Add your first project"
+              label="Open a folder"
               onClick={onPick}
+              disabled={blocked || !probed}
+              title={blocked ? 'Set up a CLI first to add a project' : undefined}
+            />
+            <SecondaryAction
+              label="Start something new"
+              onClick={() => openSheet({ type: 'newEverydayProject' })}
               disabled={blocked || !probed}
               title={blocked ? 'Set up a CLI first to add a project' : undefined}
             />
@@ -118,7 +130,7 @@ export function EmptyWelcome({
             ? 'One moment — checking what you already have installed.'
             : blocked
               ? 'Set up a CLI first; this unlocks the moment one is ready.'
-              : 'Pick a folder on disk. Everything here stays on this machine.'
+              : 'Pick one repo, or a folder of repos to work on them together. Everything here stays on this machine.'
         }
       />
 

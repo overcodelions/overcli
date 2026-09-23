@@ -4,6 +4,8 @@
 // registers every IPC handler the renderer invokes. Main-process state
 // lives here — the Store, the RunnerManager, health probes, stats.
 
+// First, before anything can read the userData path. See devProfile.ts.
+import './devProfile';
 import { randomUUID } from 'node:crypto';
 
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, Menu, nativeTheme } from 'electron';
@@ -59,6 +61,8 @@ import {
   originRemote,
 } from './git';
 import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
+import { inspectFolder } from './childRepos';
+import { isDocumentLikePath } from '../shared/everydayProjects';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
 import {
   checkpointProject,
@@ -888,6 +892,9 @@ export function registerIpc(): void {
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths;
   });
+  ipcMain.handle('fs:inspectFolder', (_e, args: { path: string }) =>
+    inspectFolder(args?.path ?? '', isDocumentLikePath),
+  );
   ipcMain.handle('fs:fileInfo', (_e, args: { path: string; rootPath?: string }) =>
     fileInfo(args?.path ?? '', args?.rootPath),
   );

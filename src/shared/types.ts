@@ -1577,6 +1577,12 @@ export interface IPCInvokeMap {
     mode?: 'app' | 'terminal';
   }) => AwsSsoLoginResult;
   'fs:pickDirectory': () => string[] | null;
+  /// What a just-picked folder most likely is — see main/childRepos.ts.
+  'fs:inspectFolder': (args: { path: string }) =>
+    | { kind: 'repo' }
+    | { kind: 'repos'; repoPaths: string[] }
+    | { kind: 'documents' }
+    | { kind: 'other' };
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: {
     path: string;
