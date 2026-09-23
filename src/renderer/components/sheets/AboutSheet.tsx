@@ -39,7 +39,7 @@ const FEATURES = [
     icon: 'rectangle.stack',
     color: '#5b9cff',
     title: 'Multi-project workspaces',
-    body: 'Sidebar-organized projects rooted at a directory. Workspaces span multiple repos.',
+    body: 'Group related repos into one. Open a folder that holds several and overcli offers to join them.',
   },
   {
     icon: 'arrow.triangle.branch',
@@ -51,7 +51,7 @@ const FEATURES = [
     icon: 'trophy',
     color: '#f59e0b',
     title: 'Agent Colosseum',
-    body: 'Race agents on the same task. Compare diffs and pick a winner.',
+    body: 'Race agents on the same task. Compare diffs and pick a winner. In Settings → Labs.',
   },
   {
     icon: 'sparkles.rectangle.stack.fill',
@@ -63,7 +63,7 @@ const FEATURES = [
     icon: 'fan',
     color: '#b587ff',
     title: 'Orchestrator',
-    body: 'One ask becomes a batch of flow runs — investigate, propose, launch, review.',
+    body: 'One ask becomes a batch of flow runs — investigate, propose, launch, review. In Settings → Labs.',
   },
   {
     icon: 'chart.bar.fill',
@@ -335,6 +335,10 @@ function WorkersSection() {
               saved prompt on a timer. Thirteen written contracts ship with it, and the
               hire screen loads any of them for you to edit.
             </div>
+            <div className="mt-2 text-[12px] leading-[1.5] text-ink-faint">
+              Off on a new install, to keep the first screens simple — turn it on in
+              Settings → Labs.
+            </div>
 
             {/* The ladder is the part people have to see. Standing is colour
                 everywhere in this feature, and this is where the vocabulary
@@ -448,6 +452,10 @@ function ServicesSection() {
               found, and then looks after those processes — started, watched and logged
               beside the code instead of in five terminal tabs you have to remember the
               order of.
+            </div>
+            <div className="mt-2 text-[12px] leading-[1.5] text-ink-faint">
+              Off until you want it: overcli suggests it on a project that has something to
+              run, or turn it on in Settings → Labs.
             </div>
             <div className="mt-3 space-y-1.5 text-[12px] leading-[1.5] text-ink-muted">
               <Bullet tint="#34d399">

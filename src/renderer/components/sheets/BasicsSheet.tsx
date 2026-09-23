@@ -56,7 +56,7 @@ const PAIRINGS: { title: string; body: string }[] = [
   },
   {
     title: 'Colosseum',
-    body: 'The same prompt against every backend at once, each in its own worktree. You read the diffs side by side and keep one.',
+    body: 'The same prompt against every backend at once, each in its own worktree. You read the diffs side by side and keep one. Switched on in Settings → Labs as Compare models.',
   },
   {
     title: 'Flows',
