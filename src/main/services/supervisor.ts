@@ -32,7 +32,7 @@ import type { ServiceBinding, ServiceRuntime, ServiceSpec, TaskRun } from './typ
 import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
 import { describeDrift, driftedTasks } from '../../shared/taskDrift';
 import { DEFAULT_READY_TIMEOUT_SEC } from '../../shared/services';
-import { SECRET_MASK } from '../../shared/machineValues';
+import { missingMachineError, SECRET_MASK } from '../../shared/machineValues';
 import {
   emptyExceptionLog,
   feedException,
@@ -81,6 +81,14 @@ export interface SupervisorDeps {
   /// variable. Read at launch rather than held, so editing them takes effect
   /// on the next start without a restart of the app.
   machineValues?(): Record<string, string>;
+  /// Secrets that are stored but the keychain would not open, so absent from
+  /// `machineValues`. Named apart in the launch error: "missing" sends
+  /// someone to a sheet that shows the value as already set.
+  unreadableSecrets?(): readonly string[];
+  /// The environment the user's login shell would give it — JAVA_HOME, AWS
+  /// settings, PATH — which an app opened from the Dock never saw. Under the
+  /// service's own variables, over the app's. `undefined` keeps the app's.
+  shellEnv?(): Promise<Record<string, string> | undefined>;
   /// The values among those that are secrets. A service that logs its own
   /// configuration at boot — Spring does — would otherwise print the password
   /// straight into the pane, and into anything the log is copied to.
@@ -798,6 +806,11 @@ export class Supervisor {
       if (this.runtime(spec.id).status !== 'starting' || this.procs.has(spec.id)) return;
     }
 
+    // Read once per app run and usually done long before anyone presses
+    // start, but a first start straight after launch can wait on it.
+    const shell = this.deps.shellEnv ? await this.deps.shellEnv() : undefined;
+    if (this.deps.shellEnv && (this.runtime(spec.id).status !== 'starting' || this.procs.has(spec.id))) return;
+
     // Options are resolved at launch, not stored resolved: a copy inherits its
     // base's set, and editing the base has to reach every copy without anyone
     // re-saving them.
@@ -809,7 +822,7 @@ export class Supervisor {
       // with a literal `${DB_USER}` in its arguments.
       this.setStatus(spec.id, {
         status: 'failed',
-        lastError: `Missing machine value${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}`,
+        lastError: missingMachineError(missing, this.deps.unreadableSecrets?.() ?? []),
       });
       return;
     }
@@ -837,7 +850,7 @@ export class Supervisor {
     // File only: the pane already shows the status, but a log read later by an
     // agent needs to know where one run ends and the next begins.
     this.writeLog(spec.id, `── start ${binding.ref} · ${cwd} · ${debug.command.join(' ')} ──`);
-    const proc = this.deps.spawn({ command: debug.command, cwd, env: debug.env });
+    const proc = this.deps.spawn({ command: debug.command, cwd, env: { ...shell, ...debug.env } });
     this.procs.set(spec.id, proc);
 
     // Settled on ANY exit, including one a stop caused — which the handlers

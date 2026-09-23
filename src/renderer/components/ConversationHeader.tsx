@@ -313,7 +313,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
             .map((m) => ({
               value: m,
               label: modeLabel(m),
-              note: permissionNote(m),
+              description: permissionNote(m),
             }))}
           onPick={(v) => void setPermission(conversationId, v as PermissionMode)}
         />
@@ -870,6 +870,9 @@ interface PickerItem {
   label: string;
   disabled?: boolean;
   note?: string;
+  /// A sentence on what the choice does, shown as a muted second line.
+  /// `note` stays for short amber status tags like "auth needed".
+  description?: string;
   leading?: React.ReactNode;
 }
 
@@ -916,7 +919,12 @@ function IconPicker({
         {!iconOnly && <span className="text-[9px] opacity-70">▾</span>}
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 min-w-[200px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1">
+        <div
+          className={
+            'absolute right-0 top-full mt-1 bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1 ' +
+            (items.some((it) => it.description) ? 'w-72' : 'min-w-[200px]')
+          }
+        >
           {items.map((it) => (
             <button
               key={it.value}
@@ -926,15 +934,22 @@ function IconPicker({
                 onPick(it.value);
               }}
               className={
-                'w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 ' +
+                'group w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 ' +
                 (it.disabled
                   ? 'text-ink-faint cursor-not-allowed'
                   : 'text-ink-muted hover:bg-card-strong hover:text-ink')
               }
             >
               {it.leading}
-              <span className="flex-1">{it.label}</span>
-              {it.note && <span className="text-[10px] text-amber-400">{it.note}</span>}
+              <span className="flex-1 min-w-0">
+                <span className="block">{it.label}</span>
+                {it.description && (
+                  <span className="block text-[10.5px] leading-snug text-ink-faint group-hover:text-ink-muted">
+                    {it.description}
+                  </span>
+                )}
+              </span>
+              {it.note && <span className="text-[10px] text-amber-400 shrink-0">{it.note}</span>}
             </button>
           ))}
         </div>

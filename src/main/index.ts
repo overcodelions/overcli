@@ -123,6 +123,7 @@ import { ServicesManager, fsRepoReader, importFile as importServicesFile } from 
 import { detectServices } from './services/detect';
 import { clearCache, controlMachineService, listMachineServices } from './services/machineServices';
 import { splitSuggestedCommand, tidySuggestion } from './services/askModel';
+import { shellEnv } from './services/shellEnv';
 import { electronSecretCipher, installElectronHost } from './hostElectron';
 import {
   configuredWebhookAuthHeader,
@@ -341,7 +342,11 @@ function services(): ServicesManager {
     // In development overcli's own vite and tsc run from this checkout, and
     // must never be named as something to stop.
     app.isPackaged ? undefined : app.getAppPath(),
+    shellEnv,
   );
+  // Asked now, in the background, so the first start does not wait on the
+  // user's rc files.
+  void shellEnv();
   return servicesManager;
 }
 

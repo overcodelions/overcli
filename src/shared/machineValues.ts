@@ -72,3 +72,34 @@ export function isSecretName(name: string): boolean {
 /// What a secret's value becomes anywhere it is shown: the Overrides tab, a
 /// log line that echoed it back.
 export const SECRET_MASK = '••••••';
+
+/// The launch error for `${NAME}`s that did not resolve. A secret the keychain
+/// would not open is named apart from one that was never set: both leave the
+/// reference unfilled, but only one of them is fixed by "Set values", and the
+/// sheet shows the other as already stored.
+export function missingMachineError(missing: readonly string[], unreadable: readonly string[]): string {
+  const locked = missing.filter((name) => unreadable.includes(name));
+  const absent = missing.filter((name) => !unreadable.includes(name));
+  const parts: string[] = [];
+  if (locked.length > 0) {
+    parts.push(
+      `Keychain couldn't unlock: ${locked.join(', ')}. Re-enter ${locked.length === 1 ? 'it' : 'them'} in machine values.`,
+    );
+  }
+  if (absent.length > 0) {
+    parts.push(`Missing machine value${absent.length === 1 ? '' : 's'}: ${absent.join(', ')}`);
+  }
+  return parts.join(' ');
+}
+
+/// `missingMachineError`, read back to the names — what the pane's "Set values"
+/// button needs, without a round trip.
+export function missingNamesFrom(lastError: string | undefined): string[] {
+  const text = lastError ?? '';
+  const names: string[] = [];
+  const locked = /^Keychain couldn't unlock: (.+?)\. Re-enter/.exec(text);
+  if (locked) names.push(...locked[1].split(','));
+  const absent = /(?:^|\. )Missing machine values?: (.+)$/.exec(text);
+  if (absent) names.push(...absent[1].split(','));
+  return names.map((n) => n.trim()).filter(Boolean);
+}

@@ -1977,7 +1977,7 @@ function Pill({
                 }
               >
                 <div>{it.label}</div>
-                {it.note && <div className="text-[10px] text-ink-faint truncate">{it.note}</div>}
+                {it.note && <div className="text-[10px] leading-snug text-ink-faint">{it.note}</div>}
               </button>
             ),
           )}
