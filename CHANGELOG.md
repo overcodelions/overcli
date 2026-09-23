@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-22
+
 ### Added
 - **Services pane.** A workspace's services run from a pane of their own — detection, start order, port leases and debug ports, per-service log files with secrets masked, exception capture, code-change restarts, `@service` mentions, and machine values whose credentials are encrypted with the OS keychain.
 - **`overcli serve`.** Run schedules and standing workers headless, under a single-daemon lock.
@@ -535,7 +537,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/overcodelions/overcli/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/overcodelions/overcli/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/overcodelions/overcli/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/overcodelions/overcli/compare/v0.16.0...v0.16.1
