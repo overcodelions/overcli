@@ -768,10 +768,21 @@ export function parseWorkerContract(
     typeof e.heartbeatModel === 'string' && e.heartbeatModel.trim()
       ? e.heartbeatModel.trim()
       : opts.defaultHeartbeatModel;
+  // Same cleanup the desk applies when it reads them back, done here so what
+  // the review screen shows is what gets saved. Non-strings and blanks are
+  // dropped; nothing left means no starters, not an empty list.
+  const errandStarters = Array.isArray(e.errandStarters)
+    ? e.errandStarters
+        .filter((s): s is string => typeof s === 'string')
+        .map((s) => s.replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+        .slice(0, ERRAND_STARTERS_MAX)
+    : [];
 
   return {
     name: name || 'Worker',
     tagline,
+    errandStarters: errandStarters.length > 0 ? errandStarters : undefined,
     jobDescription,
     cadence: coerceCadence(e.cadence),
     maxItemsPerShift,

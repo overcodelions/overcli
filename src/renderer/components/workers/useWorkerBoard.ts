@@ -21,8 +21,8 @@ import { groupBoard, type BoardEntry, type BoardGroups } from './workerBoard';
 import {
   deskMatchesQuery,
   indexedWorkerActivity,
-  indexWorkerHistory,
   orchestrationForRun,
+  sharedWorkerHistory,
   startOfDay,
   summarizeDesk,
   workerHomeName,
@@ -51,7 +51,11 @@ export interface WorkerBoard {
   showHome: boolean;
 }
 
-export function useWorkerBoard(query = ''): WorkerBoard {
+/// `now` comes from the caller's ticking clock rather than being read here: a
+/// board that only re-read the time when a store changed kept its present
+/// line, its day legend and its "today" filter on the moment of the last
+/// store update — on a quiet evening, yesterday, well past midnight.
+export function useWorkerBoard(query: string, now: number): WorkerBoard {
   const workers = useWorkersStore((s) => s.workers);
   const shiftProgress = useWorkersStore((s) => s.shiftProgress);
   const allocation = useWorkersStore((s) => s.allocation);
@@ -69,8 +73,10 @@ export function useWorkerBoard(query = ''): WorkerBoard {
     return out;
   }, [workers, projects, workspaces]);
 
+  // Shared across every mounted board, so the sidebar and the crew grid pay
+  // for one pass over history per store update, not one each.
   const workerHistory = useMemo(
-    () => indexWorkerHistory(runs, orchestrations),
+    () => sharedWorkerHistory(runs, orchestrations),
     [runs, orchestrations],
   );
 
@@ -97,7 +103,6 @@ export function useWorkerBoard(query = ''): WorkerBoard {
   );
 
   return useMemo(() => {
-    const now = Date.now();
     const starved = new Set(
       (allocation?.byWorker ?? [])
         .filter((f) => f.blocked === 'pool')
@@ -142,6 +147,7 @@ export function useWorkerBoard(query = ''): WorkerBoard {
       showHome,
     };
   }, [
+    now,
     roster,
     workerHistory,
     runners,

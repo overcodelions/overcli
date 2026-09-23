@@ -1,16 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const spawned = vi.hoisted(() => ({ fail: false, calls: [] as unknown[][], unref: vi.fn() }));
+const spawned = vi.hoisted(() => ({
+  fail: false,
+  /// When set, the child exits with this code right after spawning.
+  exitCode: undefined as number | null | undefined,
+  calls: [] as unknown[][],
+  unref: vi.fn(),
+}));
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => {
     spawned.calls.push(args);
-    const handlers: Record<string, (value?: Error) => void> = {};
-    const child = {
-      once: (name: string, cb: (value?: Error) => void) => { handlers[name] = cb; return child; },
-      on: (name: string, cb: (value?: Error) => void) => { handlers[name] = cb; return child; },
-      unref: spawned.unref,
+    const handlers: Record<string, Array<(value?: unknown) => void>> = {};
+    const add = (name: string, cb: (value?: unknown) => void) => {
+      (handlers[name] ??= []).push(cb);
+      return child;
     };
-    queueMicrotask(() => spawned.fail ? handlers.error?.(new Error('spawn failed')) : handlers.spawn?.());
+    const fire = (name: string, value?: unknown) => {
+      for (const cb of handlers[name] ?? []) cb(value);
+    };
+    const child = { once: add, on: add, unref: spawned.unref };
+    queueMicrotask(() => {
+      if (spawned.fail) return fire('error', new Error('spawn failed'));
+      fire('spawn');
+      if (spawned.exitCode !== undefined) queueMicrotask(() => fire('exit', spawned.exitCode));
+    });
     return child;
   },
 }));
@@ -19,6 +32,7 @@ import { findBrowser, openInBrowser } from './openInBrowser';
 
 beforeEach(() => {
   spawned.fail = false;
+  spawned.exitCode = undefined;
   spawned.calls = [];
   spawned.unref.mockReset();
 });
@@ -119,5 +133,22 @@ describe('openInBrowser', () => {
     spawned.fail = true;
     await expect(openInBrowser('/tmp/page.html', browser)).resolves.toEqual({ ok: false, error: 'spawn failed' });
     expect(spawned.unref).not.toHaveBeenCalled();
+  });
+
+  describe('through macOS `open`', () => {
+    const safari = { name: 'Safari', exec: 'open', args: ['-a', '/Applications/Safari.app'] };
+
+    it('reports success only once `open` exits cleanly, still detached', async () => {
+      spawned.exitCode = 0;
+      await expect(openInBrowser('/tmp/page.html', safari)).resolves.toEqual({ ok: true, browser: 'Safari' });
+      expect(spawned.unref).toHaveBeenCalledOnce();
+    });
+
+    it('reports a failed `open` as a failure, not as opened', async () => {
+      spawned.exitCode = 1;
+      const res = await openInBrowser('/tmp/page.html', safari);
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toMatch(/Safari.*exited 1/);
+    });
   });
 });

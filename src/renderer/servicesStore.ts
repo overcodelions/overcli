@@ -76,7 +76,7 @@ interface ServicesState {
   /// Whether secrets can be encrypted here at all.
   secureStorage: boolean;
   migrationError?: string;
-  backupPath?: string;
+  backupPaths?: string[];
   /// The Machine values sheet, when open. `needs` are values services refer
   /// to that are not set yet — present when the sheet was opened to fill them
   /// in, after adding services or from a "missing machine values" failure.
@@ -251,7 +251,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   machine: [],
   secureStorage: false,
   migrationError: undefined,
-  backupPath: undefined,
+  backupPaths: undefined,
   machineSheet: undefined,
 
   openMachineSheet(needs = []) {
@@ -488,7 +488,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
 
   async loadMachine() {
     const view = await window.overcli.invoke('services:machineValues');
-    set({ machine: view.entries, secureStorage: view.secureStorage, migrationError: view.migrationError, backupPath: view.backupPath });
+    set({ machine: view.entries, secureStorage: view.secureStorage, migrationError: view.migrationError, backupPaths: view.backupPaths });
   },
 
   async saveMachine(entries) {

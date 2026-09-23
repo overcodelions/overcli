@@ -31,7 +31,8 @@ const TERM_GRACE_MS = 5_000;
 /// Spawn a service. `command` is argv — nothing is handed to a shell, so
 /// there are no quoting rules to get wrong and nothing the user typed can be
 /// interpreted.
-export function spawnService(req: SpawnRequest): SpawnedProcess {
+export function spawnService(req: SpawnRequest, opts: { graceMs?: number } = {}): SpawnedProcess {
+  const graceMs = opts.graceMs ?? TERM_GRACE_MS;
   const [bin, ...args] = req.command;
   const child = spawn(bin, args, {
     cwd: req.cwd,
@@ -61,9 +62,19 @@ export function spawnService(req: SpawnRequest): SpawnedProcess {
     for (const handler of exitHandlers) handler(code);
   });
 
+  // The leader exiting is NOT the tree being gone. `npm` answers SIGTERM at
+  // once while the server under it is still closing, or ignoring the signal
+  // outright; cancelling the SIGKILL on the leader's exit left that child
+  // running, reparented to launchd, where the next start took it for a
+  // leftover and adopted it a moment before it exited. So after a kill the
+  // group still gets its SIGKILL — by group only, once the leader is gone: a
+  // group id is not reused while any member lives, but the leader's pid alone
+  // can already belong to someone else. Windows has no groups to outlive.
   let killTimer: NodeJS.Timeout | undefined;
+  let leaderExited = false;
   child.on('exit', () => {
-    if (killTimer) clearTimeout(killTimer);
+    leaderExited = true;
+    if (killTimer && process.platform === 'win32') clearTimeout(killTimer);
   });
 
   return {
@@ -71,7 +82,11 @@ export function spawnService(req: SpawnRequest): SpawnedProcess {
     kill(signal: NodeJS.Signals = 'SIGTERM') {
       killTree(child.pid, signal);
       // A service that ignores SIGTERM still has to let go of its port.
-      killTimer = setTimeout(() => killTree(child.pid, 'SIGKILL'), TERM_GRACE_MS);
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = setTimeout(() => {
+        if (leaderExited) killGroup(child.pid, 'SIGKILL');
+        else killTree(child.pid, 'SIGKILL');
+      }, graceMs);
       killTimer.unref?.();
     },
     onLine(cb) {
@@ -102,6 +117,17 @@ function killTree(pid: number | undefined, signal: NodeJS.Signals): void {
     } catch {
       // Already gone. Nothing to do, and nothing worth saying.
     }
+  }
+}
+
+/// Signal the process group and nothing else. For after the leader has gone,
+/// when falling back to its bare pid could reach an unrelated process.
+function killGroup(pid: number | undefined, signal: NodeJS.Signals): void {
+  if (pid === undefined || process.platform === 'win32') return;
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // Every member already gone.
   }
 }
 

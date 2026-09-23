@@ -209,6 +209,8 @@ interface FlowsActions {
     risks?: FlowRiskFinding[];
     /// Model references rebound because this machine could not run them.
     adapted?: Array<{ where: string; from: string; to: string }>;
+    /// Local references left as published because Ollama cannot run them now.
+    keptLocal?: Array<{ where: string; model: string }>;
   }>;
   previewRegistryFlow(args: { registryId: string; id: string; version: string }): Promise<{ ok: true; flow: Flow; risks: FlowRiskFinding[] } | { ok: false; error: string }>;
 }
@@ -804,7 +806,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     const res = await window.overcli.invoke('flows:installFromRegistry', args);
     if (!res.ok) return { ok: false, error: res.error };
     await get().reload([]);
-    return { ok: true, risks: res.risks, adapted: res.adapted };
+    return { ok: true, risks: res.risks, adapted: res.adapted, keptLocal: res.keptLocal };
   },
 }));
 

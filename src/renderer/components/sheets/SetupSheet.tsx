@@ -46,7 +46,7 @@ export function SetupSheet() {
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
-        <CliSetupGuide backendHealth={backendHealth} variant="sheet" />
+        <CliSetupGuide backendHealth={backendHealth} />
 
         <HelpSection
           title="Git"

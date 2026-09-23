@@ -64,6 +64,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useFlowsStore } from "../../flowsStore";
 import { useOrchestratorStore } from "../../orchestratorStore";
 import { useRunningMap } from "../../runnersStore";
+import { useTickingNow } from "../../hooks";
 import { useStore } from "../../store";
 import { newWorkerDraft, useWorkersStore } from "../../workersStore";
 import {
@@ -169,7 +170,10 @@ export function WorkersSidebar({
   // from the same stores, so the reduction moved to a hook they share.
   // `roster` is the query already applied — search matches a worker's own
   // runs and its project name too, not just what it is called.
-  const board = useWorkerBoard(query);
+  // The day strips and "today" need a clock that moves on its own — the
+  // stores can sit still across midnight.
+  const now = useTickingNow(30_000);
+  const board = useWorkerBoard(query, now);
   const { roster } = board;
 
   const dropWorker = useWorkersStore((s) => s.dropWorker);
@@ -199,9 +203,9 @@ export function WorkersSidebar({
   // sidebar has room for one bit of it.
   const queueRunning = useMemo(
     () =>
-      buildWorkQueue(orchestrations, runs, workers, shiftProgress, Date.now(), runsLoaded, runners)
+      buildWorkQueue(orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners)
         .running.length,
-    [orchestrations, runs, workers, shiftProgress, runsLoaded, runners],
+    [orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners],
   );
   return (
     <>

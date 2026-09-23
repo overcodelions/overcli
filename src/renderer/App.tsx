@@ -166,7 +166,13 @@ export function App() {
     // last-used screen, not the user navigating to it, and leaving them in
     // the stack would make the first Back press jump somewhere they never
     // visited this session.
-    void init().then(() => useNavHistory.getState().reset(readLocation()));
+    //
+    // A failed init still resets it: whatever part of the restore did land
+    // is where the user now is. The failure is logged rather than left as an
+    // unhandled rejection that says nothing about which step broke.
+    void init()
+      .catch((err: unknown) => console.error('[overcli] startup init failed', err))
+      .then(() => useNavHistory.getState().reset(readLocation()));
   }, [init]);
 
   // Back/forward across views (⌘←/⌘→, and the title-bar arrows).

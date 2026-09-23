@@ -12,10 +12,29 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Outbound webhook notifications**, with secrets scrubbed from the payload.
 - **Intel macOS builds**, and a download table on each release.
 - **Trademark policy and contribution terms** (`TRADEMARKS.md`).
+- **Leftover services are taken back, not killed.** A service still running from a previous session is adopted on Start instead of showing as stopped. Adoption only claims a process that matches exactly one service by command and working folder, records its identity, and re-checks it before any Stop or Restart signals it; an adopted process that exits moves the row to stopped.
+- **Task drift warnings.** A task whose installed output no longer matches its checkout (new commits, a branch switch, or never run here) says so, and last runs survive a restart.
+- **Onboarding rebuilt.** A Help menu, Setup and Basics sheets, landing pages for empty tabs, ranked registry suggestions, and no welcome flash on launch.
+- **Worker crew grid**, errand starters, and given names for hires.
+- **Opus 5.5 is the default premium model**, with cache-read pricing, and a reviewed "Upgrade models" action for saved flows. Registry installs rebind cloud models this machine cannot run; a local Ollama step is never moved to a cloud backend without asking.
+- Bricolage Grotesque (OFL) is bundled as the display face.
+
+### Security
+- Secret-name detection treats any `*_KEY` name as a credential unless it is a known non-credential key (`SORT_KEY`, `PARTITION_KEY`, …), so these are encrypted at rest, masked in `service.log`, and redacted from "Ask AI".
+- "Ask AI why it failed" redacts every service env literal, whatever its name.
+- `machine.json` and each secrets-migration backup are written `0600`; every migration writes its own backup, the pane keeps disclosing a retained cleartext backup across restarts, and it can be deleted from there. A value marked not-secret stays that way.
+- Every service log line is masked, including the start marker.
+- Hidden and unattended runs no longer inherit Claude in Chrome by default.
+- The daemon's stale-lock takeover is atomic and never removes a lock another claimant has just taken.
+- The permission card lists every file an Artifact publish uploads.
 
 ### Fixed
 - Transcript stats scan in a utility process, so a large history does not stall the window.
 - Services start correctly from any checkout location, and the pane says what a start will do.
+- "Port already taken" no longer misreads logger line numbers as ports.
+- Port lookups, log writes and output forwarding run off the main thread; a failing log write is reported instead of silently dropping lines.
+- Leftover detection survives `lsof` exiting non-zero on one unreadable process, and a Restart no longer adopts the dying child of the process it just stopped.
+- The Workers day view and crew grid keep their clock moving, including across midnight.
 
 ## [0.18.0] - 2026-09-05
 

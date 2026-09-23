@@ -31,7 +31,7 @@
 // A pure comparison over state the engine already records, so the log note
 // and the pane agree instead of each deriving their own version of it.
 
-import type { ServiceBinding, ServiceRuntime, ServiceSpec } from './services';
+import type { ServiceBinding, ServiceRuntime, ServiceSpec, TaskRun } from './services';
 
 export type TaskDrift =
   /// Its checkout has since moved to a different branch.
@@ -70,6 +70,20 @@ export function taskDrift(
   return null;
 }
 
+/// What a task last left on disk: the live runtime when it finished, else the
+/// last run that SUCCEEDED, from the stack file. A re-run that fails, or one
+/// still going, installs nothing and clears the runtime's refs — and reading
+/// that as "has not run here" would disown the jar the earlier success left
+/// behind, which is exactly what a dependent is about to build against.
+export function lastSuccessfulRun(
+  runtime: Pick<ServiceRuntime, 'status' | 'ranRef' | 'ranCommit'> | undefined,
+  lastRun: TaskRun | undefined,
+): Pick<ServiceRuntime, 'status' | 'ranRef' | 'ranCommit'> | undefined {
+  if (runtime?.status === 'done' && runtime.ranRef) return runtime;
+  if (lastRun?.ref) return { status: 'done', ranRef: lastRun.ref, ranCommit: lastRun.commit };
+  return runtime;
+}
+
 export interface DriftedTask {
   task: ServiceSpec;
   drift: TaskDrift;
@@ -85,6 +99,10 @@ export function driftedTasks(
   services: readonly ServiceSpec[],
   runtimes: readonly ServiceRuntime[],
   bindings: readonly ServiceBinding[],
+  /// The stack file's record of each task's last SUCCESSFUL run — see
+  /// `lastSuccessfulRun`. Optional so a caller with no record still gets the
+  /// runtime-only answer.
+  lastRuns: Readonly<Record<string, TaskRun>> = {},
 ): DriftedTask[] {
   if (spec.task) return [];
   const ref = bindings.find((b) => b.serviceId === spec.id)?.ref;
@@ -93,7 +111,10 @@ export function driftedTasks(
   for (const depId of spec.deps ?? []) {
     const task = services.find((s) => s.id === depId);
     if (!task?.task) continue;
-    const runtime = runtimes.find((r) => r.serviceId === task.id);
+    const runtime = lastSuccessfulRun(
+      runtimes.find((r) => r.serviceId === task.id),
+      Object.prototype.hasOwnProperty.call(lastRuns, task.id) ? lastRuns[task.id] : undefined,
+    );
     const drift = taskDrift(runtime, bindings.find((b) => b.serviceId === task.id));
     if (drift) {
       out.push({ task, drift });

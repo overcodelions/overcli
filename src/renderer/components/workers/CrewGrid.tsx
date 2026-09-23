@@ -56,8 +56,8 @@ const TICK_TINT: Record<DayTick['kind'], string> = {
   shift: 'bg-ink-muted',
 };
 
-export function CrewGrid() {
-  const board = useWorkerBoard();
+export function CrewGrid({ now }: { now: number }) {
+  const board = useWorkerBoard('', now);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const shiftProgress = useWorkersStore((s) => s.shiftProgress);
   // Which tile is holding a composer. One at a time: two open boxes is two
@@ -101,7 +101,7 @@ export function CrewGrid() {
             onAsk={() => setAsking(entry.worker.id)}
             onClose={() => setAsking(null)}
             onOpen={() => selectWorker(entry.worker.id)}
-            working={!!shiftProgress[entry.worker.id]}
+            working={shiftProgress[entry.worker.id]?.task ?? null}
           />
         ))}
       </div>
@@ -131,13 +131,23 @@ function CrewTile({
   onAsk: () => void;
   onClose: () => void;
   onOpen: () => void;
-  working: boolean;
+  /// What the worker is on right now, if anything — a shift or your errand.
+  working: 'shift' | 'errand' | null;
 }) {
   const worker = entry.worker;
   const ticks = useMemo(() => dayTicks(entry.today, now), [entry.today, now]);
   const tagline = workerTagline(worker);
   const reasons = boardReasons(entry);
-  const status = working ? 'working a shift' : entry.live ? 'running' : null;
+  // Same words as the sidebar row, so one worker is not doing two different
+  // things depending on where you look.
+  const status =
+    working === 'errand'
+      ? 'on your errand'
+      : working === 'shift'
+        ? 'working a shift'
+        : entry.live
+          ? 'running'
+          : null;
   const line = boardLine(entry, status, tagline);
   const wants = entry.review > 0 || entry.pausedRuns > 0 || entry.starved;
 

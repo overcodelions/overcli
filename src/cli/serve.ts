@@ -52,6 +52,9 @@ export interface ServeDeps {
 /// over; `process.kill(pid, 0)` is the liveness probe, and it throws ESRCH for
 /// a pid that is gone.
 export function acquireLock(dataDir: string): { ok: true; release: () => void } | { ok: false; heldBy: number } {
+  // Self-contained on purpose: the takeover race test runs this function's
+  // source in child processes, so it may reach nothing at module scope but
+  // `fs`, `path` and `LOCK_FILE`.
   const file = path.join(dataDir, LOCK_FILE);
   fs.mkdirSync(dataDir, { recursive: true });
   const temp = path.join(dataDir, `.${LOCK_FILE}.${process.pid}.${Math.random().toString(36).slice(2)}`);
@@ -64,17 +67,37 @@ export function acquireLock(dataDir: string): { ok: true; release: () => void } 
       return false;
     }
   };
-  const holder = (): number => {
+  /// The pid in the lock; `null` when there is no lock file at all. A file
+  /// that is there but holds no pid (0 or NaN) is corrupt, never a claim in
+  /// progress: a claim is a hard link to a fully written temp file, so it
+  /// appears complete or not at all.
+  const holder = (): number | null => {
     try {
       return Number(fs.readFileSync(file, 'utf-8').trim());
-    } catch {
-      return 0;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? null : NaN;
     }
   };
+  const pidOf = (n: number | null): number => (n !== null && Number.isInteger(n) && n > 0 ? n : 0);
+  const acquired = { ok: true as const, release: () => {
+    try {
+      // Only drop it if it is still ours — never delete a lock another
+      // process took over after we went stale.
+      if (Number(fs.readFileSync(file, 'utf-8').trim()) === process.pid) fs.unlinkSync(file);
+    } catch {
+      // Nothing to release.
+    }
+  } };
   try {
-    if (!claim()) {
+    // A few rounds, because the lock can vanish between our failed claim and
+    // our read of it — its holder released it. That is not a stale lock to
+    // take over, it is a free one to CLAIM, and another contender may already
+    // have: unlinking at that point is how two daemons end up running.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (claim()) return acquired;
       const held = holder();
-      if (Number.isInteger(held) && held > 0 && held !== process.pid) {
+      if (held === null) continue;
+      if (pidOf(held) > 0 && held !== process.pid) {
         try {
           process.kill(held, 0);
           return { ok: false, heldBy: held };
@@ -103,29 +126,22 @@ export function acquireLock(dataDir: string): { ok: true; release: () => void } 
           ownsTakeover = true;
         } catch { /* live contender owns it */ }
       }
-      if (!ownsTakeover) return { ok: false, heldBy: holder() || held };
+      if (!ownsTakeover) return { ok: false, heldBy: pidOf(holder()) || pidOf(held) };
       try {
-        // Only remove the stale name we inspected; a new claimant wins instead.
-        if ((!Number.isInteger(held) || held <= 0 || holder() === held)) fs.unlinkSync(file);
+        // Only remove the exact stale (or corrupt) lock we inspected. If the
+        // file changed or vanished since, a new claimant owns it and wins.
+        if (Object.is(holder(), held)) fs.unlinkSync(file);
       } catch { /* raced */ }
       finally {
         try { fs.unlinkSync(takeover); } catch { /* gone */ }
       }
       // Losing this second race means another daemon claimed it in the gap.
-      if (!claim()) return { ok: false, heldBy: holder() || held };
+      if (claim()) return acquired;
+      return { ok: false, heldBy: pidOf(holder()) || pidOf(held) };
     }
-    return {
-      ok: true,
-      release: () => {
-        try {
-          // Only drop it if it is still ours — never delete a lock another
-          // process took over after we went stale.
-          if (Number(fs.readFileSync(file, 'utf-8').trim()) === process.pid) fs.unlinkSync(file);
-        } catch {
-          // Nothing to release.
-        }
-      },
-    };
+    // The lock kept appearing and vanishing under us — someone else is
+    // cycling on it. Refuse rather than guess.
+    return { ok: false, heldBy: pidOf(holder()) };
   } finally {
     try { fs.unlinkSync(temp); } catch { /* linked or already gone */ }
   }

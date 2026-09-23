@@ -11,6 +11,7 @@
 import { create } from 'zustand';
 
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from '@shared/flows/orchestration';
+import type { IPCInvokeMap } from '@shared/types';
 
 /// Client-side overlay on a Candidate: the mapping decisions that aren't part
 /// of the producer's output. Keyed by candidate id in `itemConfig`.
@@ -110,7 +111,10 @@ interface OrchestratorActions {
   /// doesn't have to re-pick everything.
   resetDraft(): void;
 
-  propose(message: string): Promise<void>;
+  /// True once the producer has answered. False when the ask was refused
+  /// (nothing to send, no project) or failed — the caller keeps its draft
+  /// then, so a rejected ask is not also a lost one.
+  propose(message: string): Promise<boolean>;
 
   /// Forget a recent seed prompt from the quick-pick list.
   removeRecentPrompt(text: string): Promise<void>;
@@ -254,11 +258,11 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
 
   async propose(message) {
     const trimmed = message.trim();
-    if (!trimmed || get().proposing) return;
+    if (!trimmed || get().proposing) return false;
     const projectPath = get().projectPath;
     if (!projectPath) {
       set({ producerError: 'Pick a project for the batch first.' });
-      return;
+      return false;
     }
     // Replay the prior exchange so a refinement builds on context.
     const priorTurns = get().turns;
@@ -276,16 +280,22 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       liveTools: [],
     }));
 
-    const res = await window.overcli.invoke('orchestrator:propose', {
-      message: trimmed,
-      projectPath,
-      priorPrompt,
-      priorReply,
-    });
+    let res: ReturnType<IPCInvokeMap['orchestrator:propose']>;
+    try {
+      res = await window.overcli.invoke('orchestrator:propose', {
+        message: trimmed,
+        projectPath,
+        priorPrompt,
+        priorReply,
+      });
+    } catch (err) {
+      // A rejected IPC would otherwise leave `proposing` stuck on for good.
+      res = { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
 
     if (!res.ok) {
       set({ proposing: false, producerError: res.error, liveText: '', liveTools: [] });
-      return;
+      return false;
     }
 
     // Remember a successful fresh ask so it's a one-click starter next time.
@@ -315,6 +325,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
         itemConfig: nextConfig,
       };
     });
+    return true;
   },
 
   async removeRecentPrompt(text) {

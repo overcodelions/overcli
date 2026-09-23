@@ -92,6 +92,27 @@ describe('orchestratorStore — recent prompts', () => {
   });
 });
 
+// The Ask bar clears what was typed only when this says the producer took it.
+describe('orchestratorStore — propose reports whether the ask was taken', () => {
+  it('is true once the producer answers', async () => {
+    expect(await useOrchestratorStore.getState().propose('find the small docs fixes')).toBe(true);
+  });
+
+  it('is false when there is no project to ask about', async () => {
+    useOrchestratorStore.setState({ projectPath: null });
+    expect(await useOrchestratorStore.getState().propose('find the small docs fixes')).toBe(false);
+    expect(useOrchestratorStore.getState().producerError).toMatch(/Pick a project/);
+  });
+
+  it('is false, and not stuck proposing, when the IPC itself rejects', async () => {
+    mockInvoke.mockImplementation(() => Promise.reject(new Error('channel closed')));
+    expect(await useOrchestratorStore.getState().propose('an ask that throws')).toBe(false);
+    const s = useOrchestratorStore.getState();
+    expect(s.proposing).toBe(false);
+    expect(s.producerError).toBe('channel closed');
+  });
+});
+
 describe('orchestratorStore — launch clears a spent draft', () => {
   const seed = (ids: string[]) =>
     useOrchestratorStore.setState({

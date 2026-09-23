@@ -12,104 +12,24 @@ import { useStore } from '../../store';
 import { CopyButton } from '../ManualCommand';
 import { backendColor } from '../../theme';
 import type { Backend, BackendHealth } from '@shared/types';
+import { CLI_SETUP, cliSetupPlan, type CliSetupRowData } from './cliSetupPlan';
 
-export interface CliSetupEntry {
-  backend: Backend;
-  name: string;
-  /// One line on what you get, so the choice isn't five identical npm
-  /// commands with different package names.
-  blurb: string;
-  install: string;
-  auth: string | null;
-  docs: string;
-  /// Shown above the fold as a suggested starting point. The rest sit
-  /// under "Also supported" — every CLI works, but a first-run screen
-  /// that refuses to have an opinion is a worse first run.
-  featured?: boolean;
-}
+export { ALL_SETUP_BACKENDS, CLI_SETUP, joinNames, type CliSetupEntry } from './cliSetupPlan';
 
-export const CLI_SETUP: CliSetupEntry[] = [
-  {
-    backend: 'claude',
-    name: 'Claude',
-    blurb: 'Anthropic’s Claude Code. Broadest tool + agent support in overcli.',
-    install: 'npm install -g @anthropic-ai/claude-code',
-    auth: 'claude auth login',
-    docs: 'https://docs.claude.com/en/docs/claude-code/setup',
-    featured: true,
-  },
-  {
-    backend: 'codex',
-    name: 'Codex',
-    blurb: 'OpenAI’s Codex CLI. Signs in with your ChatGPT account.',
-    install: 'npm install -g @openai/codex',
-    auth: 'codex login',
-    docs: 'https://github.com/openai/codex',
-    featured: true,
-  },
-  {
-    backend: 'gemini',
-    name: 'Gemini',
-    blurb: 'Google’s Gemini CLI.',
-    install: 'npm install -g @google/gemini-cli',
-    auth: 'gemini auth login',
-    docs: 'https://github.com/google-gemini/gemini-cli',
-  },
-  {
-    backend: 'copilot',
-    name: 'Copilot',
-    blurb: 'GitHub Copilot CLI, on your GitHub account.',
-    install: 'npm install -g @github/copilot',
-    auth: 'copilot login',
-    docs: 'https://www.npmjs.com/package/@github/copilot',
-  },
-  {
-    backend: 'ollama',
-    name: 'Ollama',
-    blurb: 'Open models running locally. No account, no network.',
-    install: 'Download from ollama.com',
-    auth: null,
-    docs: 'https://ollama.com/download',
-  },
-];
-
-export const ALL_SETUP_BACKENDS = CLI_SETUP.map((c) => c.backend);
-
-/// "Claude", "Claude and Codex", "Claude, Codex and Ollama".
-export function joinNames(names: string[]): string {
-  if (names.length === 0) return 'No CLI';
-  if (names.length === 1) return names[0];
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-}
-
+/// Says what already works as well as what still needs doing — otherwise a
+/// healthy machine opens Setup and is told nothing at all. Both the welcome
+/// screen and the Setup sheet render it the same way.
 export function CliSetupGuide({
   backendHealth,
-  variant = 'welcome',
 }: {
   backendHealth: Record<string, BackendHealth>;
-  /// `welcome` is the first-run card: only what still needs doing, framed
-  /// as the thing standing between you and the app. `sheet` is the one you
-  /// open on purpose later, so it also says what already works — otherwise
-  /// a healthy machine opens Setup and is told nothing at all.
-  variant?: 'welcome' | 'sheet';
 }) {
   const refreshBackendHealth = useStore((s) => s.refreshBackendHealth);
   const openSheet = useStore((s) => s.openSheet);
   const [recheckedAt, setRecheckedAt] = useState(0);
 
-  const all = CLI_SETUP.map((cli) => ({
-    ...cli,
-    health: backendHealth[cli.backend],
-    // Absent means we haven't heard about it; treat as missing rather than
-    // rendering an empty row.
-    kind: backendHealth[cli.backend]?.kind ?? 'missing',
-  }))
-    // `unknown` is only ever produced by the store for a backend the user
-    // turned off in Settings. Telling someone to npm-install something they
-    // deliberately disabled is noise.
-    .filter((r) => r.kind !== 'unknown');
-  const ready = all.filter((r) => r.kind === 'ready');
-  const rows = all.filter((r) => r.kind !== 'ready');
+  const { ready, rows, signIn, featured, others, done, headline, subline } =
+    cliSetupPlan(backendHealth);
 
   // Someone staring at this screen is, right now, in a terminal running one
   // of the commands below. Poll while something is still unset so the app
@@ -136,7 +56,7 @@ export function CliSetupGuide({
 
   if (rows.length === 0 && ready.length === 0) {
     return (
-      <div className={frame('amber', variant)}>
+      <div className={frame('amber')}>
         <div className="text-sm font-medium text-ink">Every CLI is switched off</div>
         <div className="mt-1 text-[12px] text-ink-muted">
           All five backends are disabled in settings, so there's nothing for overcli to
@@ -152,36 +72,14 @@ export function CliSetupGuide({
     );
   }
 
-  // An installed-but-signed-out CLI is one click from done, so it leads —
-  // it's a far shorter path than any install below it.
-  const signIn = rows.filter((r) => r.kind === 'unauthenticated');
-  const rest = rows.filter((r) => r.kind !== 'unauthenticated');
-  const featured = rest.filter((r) => r.featured);
-  const others = rest.filter((r) => !r.featured);
-  // The sheet on a machine that is already working. There is nothing to ask
-  // for, so it says the one thing the user opened it to find out.
-  const done = rows.length === 0;
-
-  const headline = done
-    ? "You're set up"
-    : signIn.length > 0
-      ? `Sign in to ${joinNames(signIn.map((r) => r.name))} to get started`
-      : 'Install a coding CLI to get started';
-  const subline = done
-    ? `${joinNames(ready.map((r) => r.name))} ${ready.length === 1 ? 'is' : 'are'} signed in and ready to run. Nothing else to install.`
-    : signIn.length > 0
-      ? `${signIn.length === 1 ? 'It’s' : 'They’re'} already installed — one sign-in and you're in. overcli picks it up automatically.`
-      : 'overcli drives the coding CLIs you sign into — there are no API keys to paste here. Set up any one of these and this screen unlocks on its own.';
-
   return (
-    <div className={frame(done ? 'ok' : 'amber', variant)}>
+    <div className={frame(done ? 'ok' : 'amber')}>
       <div className="text-sm font-medium text-ink">{headline}</div>
       <div className="mt-1 mb-4 text-[12px] leading-relaxed text-ink-muted">{subline}</div>
 
-      {/* Welcome keeps its eyes on what's missing; the sheet leads with what
-          already works, because "is my machine fine?" is the question that
-          brought the user here. */}
-      {variant === 'sheet' && ready.length > 0 && (
+      {/* Leads with what already works, because "is my machine fine?" is
+          the question that brought the user here. */}
+      {ready.length > 0 && (
         <>
           <div className="mb-1.5 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
             Ready
@@ -196,7 +94,7 @@ export function CliSetupGuide({
 
       {rows.length > 0 && (
         <>
-          {variant === 'sheet' && ready.length > 0 && (
+          {ready.length > 0 && (
             <div className="mb-1.5 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
               Not set up yet
             </div>
@@ -247,13 +145,11 @@ export function CliSetupGuide({
 }
 
 /// The card around the guide. Amber while something is unfinished, plain
-/// once it isn't — and no top margin inside a sheet, which brings its own.
-function frame(tone: 'amber' | 'ok', variant: 'welcome' | 'sheet'): string {
+/// once it isn't — and no top margin, since both hosts bring their own.
+function frame(tone: 'amber' | 'ok'): string {
   const border = tone === 'amber' ? 'border-amber-500/40' : 'border-card';
-  return `${variant === 'welcome' ? 'mt-6 ' : ''}rounded-lg border ${border} bg-surface-elevated p-5 text-left`;
+  return `rounded-lg border ${border} bg-surface-elevated p-5 text-left`;
 }
-
-type CliSetupRowData = CliSetupEntry & { health?: BackendHealth; kind: BackendHealth['kind'] };
 
 function CliSetupRow({ row, compact }: { row: CliSetupRowData; compact?: boolean }) {
   const { backend, name, blurb, install, auth, docs, kind, health } = row;
@@ -338,6 +234,14 @@ function SignInButton({ backend, name }: { backend: Backend; name: string }) {
             const res = await window.overcli.invoke('auth:openCliLogin', backend);
             if (res.ok) setLaunched(true);
             else setError({ text: res.error, command: res.command });
+          } catch (err) {
+            // The IPC itself failed — say so where the click happened, with
+            // the command to run by hand, rather than a button that just
+            // stops spinning.
+            setError({
+              text: `Couldn't open Terminal: ${err instanceof Error ? err.message : String(err)}`,
+              command: CLI_SETUP.find((c) => c.backend === backend)?.auth ?? undefined,
+            });
           } finally {
             setLaunching(false);
           }

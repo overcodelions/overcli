@@ -102,15 +102,24 @@ export interface SupervisorDeps {
   /// `lsof`s and a `ps` each, and a stack's worth of them started together
   /// time each other out. Without it nothing is adopted, which is the right
   /// default for a host that cannot tell a leftover from a database.
+  /// `tokens` is what the service would launch, so a leftover's root is a
+  /// process running that and not whatever else was started in the checkout.
   portOwners?(
-    wanted: readonly { port: number; serviceId: string }[],
+    wanted: readonly { port: number; serviceId: string; tokens?: readonly string[] }[],
   ): Promise<ReadonlyMap<number, readonly PortOwner[]>>;
   /// Which process, if any, is already running each of these services — for
   /// the ones with no port, where the command line and the checkout are the
-  /// only evidence there is. See `matchingProcesses`.
+  /// only evidence there is. See `matchingProcesses`. Always asked about the
+  /// whole stack, even to find one service: a process that fits two of them
+  /// is refused, and that check cannot fire on a list of one.
   matchProcesses?(
-    targets: readonly { serviceId: string; tokens: readonly string[] }[],
+    targets: readonly { serviceId: string; tokens: readonly string[]; subpath?: string }[],
   ): Promise<ReadonlyMap<string, ProcessMatch>>;
+  /// When a process started — see `processStarted`. A string while it runs,
+  /// `null` once it has gone, `undefined` where this host cannot tell. What
+  /// keeps a Stop from tree-killing whatever the OS gave an adopted pid to
+  /// after the leftover exited. Without it adopted pids go unchecked.
+  processStarted?(pid: number): Promise<string | null | undefined>;
   /// Stop a process by pid, SIGTERM then SIGKILL. The portless counterpart of
   /// `stopHolder`.
   stopProcess?(pid: number): Promise<void>;
@@ -149,10 +158,17 @@ const LOG_TRIM_BLOCK = 1_000;
 /// port probe then called the NEW process ready on the old one's socket.
 const STOP_WAIT_MS = 7_000;
 const CHANGE_DEBOUNCE_MS = 500;
+/// How often an adopted process is checked for still being there. There is no
+/// exit event for a process we did not start, so this is the only way its row
+/// stops saying `ready` after it has gone.
+export const ADOPTED_POLL_MS = 5_000;
 
 export class Supervisor {
   private readonly procs = new Map<string, SpawnedProcess>();
   private readonly runtimes = new Map<string, ServiceRuntime>();
+  /// Each task's last successful run. The runtime above is overwritten by a
+  /// failed re-run, and drift has to be measured against what is installed.
+  private readonly lastRuns: Record<string, TaskRun> = {};
   private readonly logs = new Map<string, string[]>();
   /// Exceptions seen in each log, kept past the line cap that drops their lines.
   private readonly caught = new Map<string, ExceptionLog>();
@@ -165,6 +181,9 @@ export class Supervisor {
   private readonly changeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly restartingFromChange = new Set<string>();
   private readonly queuedChanges = new Map<string, string>();
+  /// What each adopted pid was when it was adopted — see `processStarted`.
+  private readonly adoptedAs = new Map<string, { pid: number; started: string }>();
+  private readonly adoptedPolls = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     readonly stackId: string,
@@ -179,6 +198,7 @@ export class Supervisor {
   ) {
     for (const [serviceId, run] of Object.entries(lastRuns)) {
       if (!this.spec(serviceId)?.task) continue;
+      this.lastRuns[serviceId] = run;
       this.runtimes.set(serviceId, {
         serviceId,
         status: 'done',
@@ -259,6 +279,9 @@ export class Supervisor {
     }
 
     for (const depId of startOrder(this.specs, serviceId)) {
+      // An adopted dependency reads `ready` from when it was adopted. Asked
+      // again now, or this starts against a leftover that has since exited.
+      if (this.runtime(depId).adopted) await this.verifyAdopted(depId);
       if (this.satisfied(depId)) continue;
       const dep = this.spec(depId);
       // Starting, from the moment Start is pressed: a backend can take a minute
@@ -314,7 +337,7 @@ export class Supervisor {
 
     const wanted = this.specs.flatMap((spec) =>
       !spec.task && spec.port !== undefined && this.adoptable(spec.id)
-        ? [{ port: spec.port, serviceId: spec.id }]
+        ? [{ port: spec.port, serviceId: spec.id, tokens: this.launchTokens(spec) }]
         : [],
     );
     if (wanted.length === 0) return;
@@ -335,6 +358,8 @@ export class Supervisor {
       const ready = await waitUntilReady(spec.ready, probe, { isAlive: () => true, timeoutMs: 2_000 });
 
       const pid = owners[0].root ?? owners[0].pid;
+      const started = await this.identify(pid);
+      if (started === null || !this.adoptable(spec.id)) continue;
       const at = this.deps.probe.now();
       this.append(spec.id, `── adopted · pid ${pid} was already listening on :${spec.port} ──`);
       this.append(spec.id, '── its output went to the process that started it; restart to get it back ──');
@@ -348,6 +373,7 @@ export class Supervisor {
         exitCode: undefined,
         lastError: undefined,
       });
+      this.trackAdopted(spec.id, pid, started);
     }
 
     await this.adoptPortless();
@@ -364,16 +390,18 @@ export class Supervisor {
     const match = this.deps.matchProcesses;
     if (!match) return;
 
-    const targets = this.specs.flatMap((spec) =>
-      !spec.task && spec.port === undefined && this.adoptable(spec.id)
-        ? [{ serviceId: spec.id, tokens: this.launchTokens(spec) }]
-        : [],
-    );
-    if (targets.length === 0) return;
+    const portless = this.specs.filter((spec) => !spec.task && spec.port === undefined && this.adoptable(spec.id));
+    if (portless.length === 0) return;
 
-    for (const [serviceId, found] of await match(targets)) {
+    // Asked about the whole stack, adopted only for the portless: a process
+    // that also fits a service with a port is ambiguous, and has to be seen
+    // to be refused.
+    for (const [serviceId, found] of await match(this.matchTargets())) {
+      if (!portless.some((spec) => spec.id === serviceId)) continue;
       if (found.kind !== 'stale' || !this.adoptable(serviceId)) continue;
       const pid = found.root ?? found.pid;
+      const started = await this.identify(pid);
+      if (started === null || !this.adoptable(serviceId)) continue;
       this.append(serviceId, `── adopted · pid ${pid} was already running this ──`);
       this.append(serviceId, '── its output went to the process that started it; restart to get it back ──');
       this.setStatus(serviceId, {
@@ -385,6 +413,7 @@ export class Supervisor {
         exitCode: undefined,
         lastError: undefined,
       });
+      this.trackAdopted(serviceId, pid, started);
     }
   }
 
@@ -405,6 +434,9 @@ export class Supervisor {
     }
 
     const pid = found.root ?? found.pid;
+    // Gone between the scan and now: nothing to take over, so start one.
+    const started = await this.identify(pid);
+    if (started === null) return false;
     const at = this.deps.probe.now();
     this.append(spec.id, `── already running as pid ${pid}; adopted rather than started a second time ──`);
     this.append(spec.id, '── its output went to the process that started it; restart to get it back ──');
@@ -418,19 +450,27 @@ export class Supervisor {
       exitCode: undefined,
       lastError: undefined,
     });
+    this.trackAdopted(spec.id, pid, started);
     return true;
   }
 
   /// A running copy of this service, by its command line first — that finds a
   /// leftover still booting, before it has bound anything — and then by its
   /// port.
+  ///
+  /// Every service in the stack is asked about, and this one's answer read
+  /// out. Asking about this one alone let `web` adopt `admin`'s leftover when
+  /// both run `npm run dev`: with one service in the question, a process that
+  /// fits two of them can never be seen to.
   private async findRunning(spec: ServiceSpec): Promise<ProcessMatch | undefined> {
-    const byCommand = await this.deps.matchProcesses?.([{ serviceId: spec.id, tokens: this.launchTokens(spec) }]);
+    const byCommand = await this.deps.matchProcesses?.(this.matchTargets());
     const match = byCommand?.get(spec.id);
     if (match) return match;
 
     if (spec.port === undefined || !this.deps.portOwners) return undefined;
-    const owners = (await this.deps.portOwners([{ port: spec.port, serviceId: spec.id }])).get(spec.port) ?? [];
+    const owners = (await this.deps.portOwners([
+      { port: spec.port, serviceId: spec.id, tokens: this.launchTokens(spec) },
+    ])).get(spec.port) ?? [];
     if (owners.length === 0) return undefined;
     const first = owners[0];
     return owners.every((o) => o.kind === 'stale')
@@ -451,6 +491,74 @@ export class Supervisor {
     }
   }
 
+  /// Every service in the stack, as `matchProcesses` wants them.
+  private matchTargets(): { serviceId: string; tokens: string[]; subpath?: string }[] {
+    return this.specs.map((spec) => ({
+      serviceId: spec.id,
+      tokens: this.launchTokens(spec),
+      ...(spec.subpath ? { subpath: spec.subpath } : {}),
+    }));
+  }
+
+  /// When `pid` started, if this host can tell — `null` when it has gone.
+  private async identify(pid: number): Promise<string | null | undefined> {
+    return this.deps.processStarted ? this.deps.processStarted(pid) : undefined;
+  }
+
+  /// Remember what an adopted pid was, and keep checking that it still is.
+  private trackAdopted(serviceId: string, pid: number, started: string | undefined): void {
+    this.forgetAdopted(serviceId);
+    if (started === undefined) return;
+    this.adoptedAs.set(serviceId, { pid, started });
+    this.pollAdopted(serviceId);
+  }
+
+  private forgetAdopted(serviceId: string): void {
+    this.adoptedAs.delete(serviceId);
+    const timer = this.adoptedPolls.get(serviceId);
+    if (timer) clearTimeout(timer);
+    this.adoptedPolls.delete(serviceId);
+  }
+
+  private pollAdopted(serviceId: string): void {
+    const timer = setTimeout(() => {
+      this.adoptedPolls.delete(serviceId);
+      void this.verifyAdopted(serviceId).then((same) => {
+        if (same && this.adoptedAs.has(serviceId) && !this.adoptedPolls.has(serviceId)) this.pollAdopted(serviceId);
+      });
+    }, ADOPTED_POLL_MS);
+    timer.unref?.();
+    this.adoptedPolls.set(serviceId, timer);
+  }
+
+  /// Whether an adopted service's pid is still the process that was adopted.
+  /// When it is not — exited, or exited and its pid handed on — the row goes
+  /// to `stopped` and nothing is signalled: the leftover is not there to stop,
+  /// and whatever holds its pid now is not ours. True when there is nothing to
+  /// check, or no way to.
+  async verifyAdopted(serviceId: string): Promise<boolean> {
+    const known = this.adoptedAs.get(serviceId);
+    const runtime = this.runtime(serviceId);
+    if (!known || !runtime.adopted || runtime.pid !== known.pid || !this.deps.processStarted) return true;
+    const now = await this.deps.processStarted(known.pid);
+    if (now === undefined) return true;
+    // Stopped, restarted or adopted afresh while `ps` ran: that owns it now.
+    if (this.adoptedAs.get(serviceId) !== known) return true;
+    if (now === known.started) return true;
+
+    this.append(
+      serviceId,
+      now === null
+        ? `── the adopted process, pid ${known.pid}, has exited ──`
+        : `── pid ${known.pid} is no longer the adopted process (it started ${now}, not ${known.started}); left alone ──`,
+    );
+    this.setStatus(serviceId, {
+      status: 'stopped', adopted: undefined, pid: undefined, port: undefined, readyAt: undefined,
+      debugKind: undefined, debugPort: undefined,
+    });
+    return false;
+  }
+
   /// Nothing of ours already running or on its way up.
   private adoptable(serviceId: string): boolean {
     return !this.procs.has(serviceId) && this.runtime(serviceId).status === 'stopped';
@@ -467,7 +575,10 @@ export class Supervisor {
       if (!kept.has(id)) void this.stop(id);
     }
     for (const id of [...this.runtimes.keys()]) {
-      if (!kept.has(id)) this.runtimes.delete(id);
+      if (!kept.has(id)) {
+        this.forgetAdopted(id);
+        this.runtimes.delete(id);
+      }
     }
     for (const id of [...this.logs.keys()]) {
       if (!kept.has(id)) {
@@ -494,6 +605,9 @@ export class Supervisor {
       // and stopping the tree is what frees everything it holds. Through the
       // port only as a fallback, which reaches the listener and nothing above.
       if (runtime.adopted && runtime.pid && this.deps.stopProcess) {
+        // The pid was a leftover's when it was adopted. Signalling it — and
+        // everything under it — is only right while it still is.
+        if (!(await this.verifyAdopted(serviceId))) return;
         this.append(serviceId, `── stopping the adopted process, pid ${runtime.pid}, and everything under it ──`);
         await this.deps.stopProcess(runtime.pid);
         this.setStatus(serviceId, {
@@ -532,7 +646,11 @@ export class Supervisor {
       : 0;
     await this.stop(serviceId);
     const spec = this.spec(serviceId);
-    if (spec) await this.launch(spec, offset);
+    // Launched fresh, never adopted: what the stop just signalled can still be
+    // on its way out — a child reparented to launchd while it shuts down — and
+    // looks exactly like a leftover. Taking it over marked the service ready a
+    // moment before it exited.
+    if (spec) await this.launch(spec, offset, { fresh: true });
 
     // Only where an edge was explicitly marked. The default is that nothing
     // else moves.
@@ -562,7 +680,9 @@ export class Supervisor {
 
     // A service that was not running stays not running: rebinding is not a
     // request to start something you had deliberately stopped.
-    if (wasRunning) await this.launch(spec, binding.portOffset ?? 0);
+    // Fresh for the same reason as a restart: the copy just stopped is still
+    // going away.
+    if (wasRunning) await this.launch(spec, binding.portOffset ?? 0, { fresh: true });
     // Not relaunched, but the checkout should still have its local config for
     // the next start, or for running it from an IDE.
     else await this.mirrorInto(serviceId, binding.path);
@@ -591,7 +711,7 @@ export class Supervisor {
 
   // ── internals ────────────────────────────────────────────────────────────
 
-  private async launch(spec: ServiceSpec, offset: number): Promise<void> {
+  private async launch(spec: ServiceSpec, offset: number, opts: { fresh?: boolean } = {}): Promise<void> {
     const binding = this.binding(spec.id);
     if (!binding) {
       this.setStatus(spec.id, { status: 'failed', lastError: 'No worktree bound' });
@@ -616,8 +736,9 @@ export class Supervisor {
     // once, when the pane first opens, and a leftover still booting then — a
     // JVM a minute from binding its port — is invisible to it. `leaseFor`
     // cannot catch it either; it only knows about ports overcli handed out.
-    // So the check that matters is this one, at the moment of starting.
-    if (!spec.task && (await this.claimRunning(spec))) return;
+    // So the check that matters is this one, at the moment of starting — but
+    // not straight after stopping this service, see `restart`.
+    if (!spec.task && !opts.fresh && (await this.claimRunning(spec))) return;
 
     const port = spec.port === undefined ? undefined : portForOffset(spec.port, offset);
     // Read now, not on exit: a commit made while a ten-minute publish runs is
@@ -750,13 +871,15 @@ export class Supervisor {
       this.stopWatcher(spec.id);
       this.procs.delete(spec.id);
       if (spec.task && code === 0) {
+        const finishedAt = this.deps.probe.now();
+        this.lastRuns[spec.id] = { ref: binding.ref, commit: ranCommit, at: finishedAt };
         this.setStatus(spec.id, {
           status: 'done',
           exitCode: code,
           pid: undefined,
           ranRef: binding.ref,
           ranCommit,
-          finishedAt: this.deps.probe.now(),
+          finishedAt,
           debugKind: undefined,
           debugPort: undefined,
         });
@@ -834,10 +957,17 @@ export class Supervisor {
   /// several commits ago. Legitimate when a task is pinned to master, and
   /// baffling when nobody meant it, which is why it is said rather than acted
   /// on. The same comparison the pane shows, from the same rule.
+  ///
+  /// Only the checkouts the comparison reads: this service's and its tasks'.
+  /// `headOf` can be a synchronous git call, and asking it for every binding
+  /// in the stack put one per service on each start.
   private noteTaskRefs(spec: ServiceSpec): void {
-    const bindings = this.bindings.map((b) => ({ ...b, head: this.deps.headOf?.(b.path) }));
+    const involved = new Set([spec.id, ...(spec.deps ?? [])]);
+    const bindings = this.bindings
+      .filter((b) => involved.has(b.serviceId))
+      .map((b) => ({ ...b, head: this.deps.headOf?.(b.path) }));
     const runtimes = this.specs.map((s) => this.runtime(s.id));
-    for (const { task, drift } of driftedTasks(spec, this.specs, runtimes, bindings)) {
+    for (const { task, drift } of driftedTasks(spec, this.specs, runtimes, bindings, this.lastRuns)) {
       this.append(spec.id, `── ${describeDrift(task.name, drift)} ──`);
     }
   }
@@ -922,6 +1052,8 @@ export class Supervisor {
     const next = { ...this.runtime(serviceId), ...patch, serviceId };
     // Waiting is a kind of starting; any other status ends it.
     if (next.status !== 'starting') next.waitingOn = undefined;
+    // No longer adopted, however that came about: nothing left to watch.
+    if (!next.adopted) this.forgetAdopted(serviceId);
     this.runtimes.set(serviceId, next);
     if (patch.status === 'failed' || patch.status === 'stopped' || patch.status === 'done') {
       const detail = [

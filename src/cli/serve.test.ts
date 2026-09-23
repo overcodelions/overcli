@@ -219,6 +219,59 @@ describe('acquireLock', () => {
     expect(acquireLock(dir).ok).toBe(true);
   });
 
+  // The lock vanishes between our failed claim and our read (its holder
+  // released it) and a fresh daemon claims it straight after. Reading "no
+  // holder" must mean retry the claim, never unlink what is there now.
+  it('never unlinks a fresh claim that lands after the lock was released', () => {
+    const alive = process.ppid > 1 ? process.ppid : 0;
+    if (!alive) return;
+    const dir = tmpStateDir();
+    const file = path.join(dir, LOCK_FILE);
+    fs.writeFileSync(file, '4294967295\n');
+    const realRead = fs.readFileSync;
+    let raced = false;
+    const read = vi.spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      if (!raced && p === file) {
+        raced = true;
+        fs.unlinkSync(file);
+        fs.writeFileSync(file, `${alive}\n`);
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+      return (realRead as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.readFileSync);
+    try {
+      const lock = acquireLock(dir);
+      expect(lock).toEqual({ ok: false, heldBy: alive });
+      expect(realRead(file, 'utf-8').trim()).toBe(String(alive));
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('claims a lock that was released between its failed claim and its read', () => {
+    const dir = tmpStateDir();
+    const file = path.join(dir, LOCK_FILE);
+    fs.writeFileSync(file, '4294967295\n');
+    const realRead = fs.readFileSync;
+    let raced = false;
+    const read = vi.spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+      if (!raced && p === file) {
+        raced = true;
+        fs.unlinkSync(file);
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+      return (realRead as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.readFileSync);
+    try {
+      const lock = acquireLock(dir);
+      expect(lock.ok).toBe(true);
+      expect(realRead(file, 'utf-8').trim()).toBe(String(process.pid));
+      if (lock.ok) lock.release();
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it('recovers a stale takeover marker left by a crashed contender', () => {
     const dir = tmpStateDir();
     fs.writeFileSync(path.join(dir, LOCK_FILE), '4294967295\n');

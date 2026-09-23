@@ -90,8 +90,9 @@ export function connectedMcpTags(capabilities: CapabilitiesReport | null): Set<s
 }
 
 // Which CLIs a flow was published with deliberately plays no part. Install
-// rebinds every model the machine cannot run (see `shared/flows/installAdapt`),
-// so a Claude-built flow runs on a Codex-only machine as well as any other —
+// rebinds every cloud model the machine cannot run (see
+// `shared/flows/installAdapt`; local Ollama steps are left for the user), so
+// a Claude-built flow runs on a Codex-only machine as well as any other —
 // and the registry's backend tags say what a flow USES, not what it needs, so
 // they were never a fair signal anyway.
 
@@ -102,7 +103,10 @@ export function scoreRegistryEntry(
   const tags = entry.tags ?? [];
   let score = 0;
   for (const tag of tags) {
-    score += TAG_WEIGHT[tag] ?? 0;
+    // Own keys only: tags are registry-authored text, and a tag spelled
+    // `constructor` would otherwise read Object's prototype and turn the
+    // score into a string.
+    score += Object.prototype.hasOwnProperty.call(TAG_WEIGHT, tag) ? TAG_WEIGHT[tag] : 0;
     if (tag.startsWith('mcp-') && !connectedMcp.has(tag)) score -= MCP_PENALTY;
   }
   if (tags.some((t) => REPO_TAGS.includes(t))) score += REPO_BONUS;

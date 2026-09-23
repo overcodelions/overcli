@@ -260,6 +260,27 @@ describe('parseWorkerContract', () => {
     });
   });
 
+  it('keeps the errand starters the drafter wrote, cleaned and capped', () => {
+    const reply = `<worker>${JSON.stringify({
+      name: 'Scout',
+      jobDescription: 'Watch the acme build for failures.',
+      errandStarters: ['  what is\n  stuck? ', '', 42, 'recheck this morning', 'three', 'four'],
+    })}</worker>`;
+    expect(parseWorkerContract(reply, opts)!.errandStarters).toEqual([
+      'what is stuck?',
+      'recheck this morning',
+      'three',
+    ]);
+  });
+
+  it('leaves errand starters unset when none are usable', () => {
+    const block = (errandStarters: unknown) =>
+      `<worker>${JSON.stringify({ name: 'Scout', jobDescription: 'Job.', errandStarters })}</worker>`;
+    expect(parseWorkerContract(block(['  ', '']), opts)!.errandStarters).toBeUndefined();
+    expect(parseWorkerContract(block('what is stuck?'), opts)!.errandStarters).toBeUndefined();
+    expect(parseWorkerContract(block(undefined), opts)!.errandStarters).toBeUndefined();
+  });
+
   it('returns null when nothing parseable exists', () => {
     expect(parseWorkerContract('no block here at all', opts)).toBeNull();
     expect(parseWorkerContract('<worker>{not json}</worker>', opts)).toBeNull();

@@ -1784,7 +1784,7 @@ function StaleTasks({ workspaceId, spec }: { workspaceId: string; spec: ServiceS
   const stack = useServicesStore((s) => s.stacks[workspaceId]);
   const start = useServicesStore((s) => s.start);
   const drifted = useMemo(
-    () => (stack ? driftedTasks(spec, stack.services, stack.runtimes, stack.bindings) : []),
+    () => (stack ? driftedTasks(spec, stack.services, stack.runtimes, stack.bindings, stack.lastRuns) : []),
     [spec, stack],
   );
   if (drifted.length === 0) return null;
@@ -2035,7 +2035,7 @@ function TaskActions({ workspaceId, spec }: { workspaceId: string; spec: Service
   // Which of them is out of date, so the button can say so — the same rule the
   // banner below uses, keyed by task.
   const drift = new Map(
-    (stack ? driftedTasks(spec, stack.services, stack.runtimes, stack.bindings) : []).map(
+    (stack ? driftedTasks(spec, stack.services, stack.runtimes, stack.bindings, stack.lastRuns) : []).map(
       (d) => [d.task.id, d.drift] as const,
     ),
   );
@@ -3530,7 +3530,7 @@ interface MachineRow extends MachineEntry {
 
 let nextMachineRowId = 1;
 
-function MachineValuesSheet({
+export function MachineValuesSheet({
   onClose,
   needs = [],
 }: {
@@ -3541,7 +3541,7 @@ function MachineValuesSheet({
   const secureStorage = useServicesStore((s) => s.secureStorage);
   const saveMachine = useServicesStore((s) => s.saveMachine);
   const migrationError = useServicesStore((s) => s.migrationError);
-  const backupPath = useServicesStore((s) => s.backupPath);
+  const backupPaths = useServicesStore((s) => s.backupPaths);
   const deleteMachineBackup = useServicesStore((s) => s.deleteMachineBackup);
   const [rows, setRows] = useState<MachineRow[]>(() => {
     // What is needed goes first, empty and waiting, marked secret by name.
@@ -3609,9 +3609,12 @@ function MachineValuesSheet({
           </div>
         )}
         {migrationError && <div className="mt-3 text-[12.5px] text-red-600 dark:text-red-300">{migrationError}</div>}
-        {backupPath && <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12.5px] text-amber-800 dark:text-amber-200">
-          Cleartext backup retained: <span className="font-mono">{backupPath}</span>
-          <button className="svc-btn ml-2" onClick={() => void deleteMachineBackup()}>Delete backup</button>
+        {backupPaths && backupPaths.length > 0 && <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12.5px] text-amber-800 dark:text-amber-200">
+          {backupPaths.length === 1 ? 'Cleartext backup retained:' : `${backupPaths.length} cleartext backups retained:`}
+          {backupPaths.map((p) => <div key={p} className="truncate font-mono" title={p}>{p}</div>)}
+          <button className="svc-btn mt-1" onClick={() => void deleteMachineBackup()}>
+            {backupPaths.length === 1 ? 'Delete backup' : 'Delete backups'}
+          </button>
         </div>}
       </div>
 
@@ -3676,6 +3679,9 @@ function MachineValuesSheet({
               .map<MachineEntry>((r) => ({
                 name: name(r),
                 secret: r.secret,
+                // Remembered only while it is still plain: marking it secret
+                // again forgets the choice.
+                ...(!r.secret && r.keepPlain ? { keepPlain: true } : {}),
                 // An untouched stored secret goes back without a value, which
                 // tells the engine to keep the one in the keychain. A stored
                 // secret made plain without retyping stays a secret there too.
@@ -3801,7 +3807,9 @@ function MachineValueRow({
                     : 'Secret — click to store as plain text'
                   : 'Plain text — click to encrypt with the Keychain'
             }
-            onClick={() => onChange({ secret: !row.secret, pinned: true })}
+            // Turning a secret plain is a choice the next launch's migration
+            // has to respect, so it travels with the row to the engine.
+            onClick={() => onChange({ secret: !row.secret, pinned: true, keepPlain: row.secret })}
           >
             {row.secret ? '🔒' : '🔓'}
           </button>

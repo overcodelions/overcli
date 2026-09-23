@@ -7,7 +7,7 @@
 // every participant — which is exactly the problem `templateResolver` already
 // solves for the built-in templates. Registry installs never went through it.
 //
-// Two differences from how the picker uses the resolver, both deliberate:
+// Three differences from how the picker uses the resolver, all deliberate:
 //
 //   - Only what cannot run here is touched. The picker rebinds every
 //     participant to the user's tier defaults, which is right for a template
@@ -16,6 +16,12 @@
 //   - Names stay. The resolver renames a participant to its model's label;
 //     registry flows name participants by role ("Scout", "Lead"), and those
 //     names mean something in the run view.
+//   - Local stays local. A step the author bound to Ollama was bound there
+//     on purpose — often so the prompt, and whatever it reads, never leaves
+//     the machine. Ollama merely being down at install time is no consent to
+//     rewrite it onto a cloud backend, permanently, in a file the user did
+//     not write. Such a reference is left as published and reported, so the
+//     user can start Ollama or pull the model, or rebind it themselves.
 //
 // The edit is a splice into the original text, not a re-serialisation. The
 // parser only locates each value; the new model is written over exactly those
@@ -38,11 +44,21 @@ export interface InstallAdaptation {
   to: string;
 }
 
+/// A local (Ollama) reference this machine cannot run right now, left as
+/// published rather than moved to a cloud backend — see "Local stays local".
+export interface InstallKeptLocal {
+  where: string;
+  model: string;
+}
+
 export interface AdaptResult {
   /// Byte-identical to the input when nothing needed changing — no
   /// re-serialisation, so no formatting churn in a flow that was fine.
   yaml: string;
   changes: InstallAdaptation[];
+  /// Said on the install result so the first run is not where the user finds
+  /// out; empty when every local step runs here as written.
+  keptLocal: InstallKeptLocal[];
 }
 
 type Ref = { backend: Backend; model: string };
@@ -134,7 +150,8 @@ function spliceRef(node: unknown, next: Ref, source: string, out: Splice[]): boo
 
 export function adaptFlowYamlToMachine(yaml: string, ctx: TemplateResolveContext): AdaptResult {
   const doc = parseDocument(yaml);
-  const unchanged: AdaptResult = { yaml, changes: [] };
+  const keptLocal: InstallKeptLocal[] = [];
+  const unchanged: AdaptResult = { yaml, changes: [], keptLocal };
   if (doc.errors.length > 0) return unchanged;
   const changes: InstallAdaptation[] = [];
   const splices: Splice[] = [];
@@ -145,6 +162,11 @@ export function adaptFlowYamlToMachine(yaml: string, ctx: TemplateResolveContext
     if (!ref) return true;
     const next = replacementFor(ref, ctx);
     if (!next) return true;
+    // Another local model is still local; anything else needs the user.
+    if (ref.backend === 'ollama' && next.backend !== 'ollama') {
+      keptLocal.push({ where, model: show(ref) });
+      return true;
+    }
     if (!spliceRef(node, next, yaml, splices)) return false;
     changes.push({ where, from: show(ref), to: show(next) });
     return true;
@@ -181,5 +203,5 @@ export function adaptFlowYamlToMachine(yaml: string, ctx: TemplateResolveContext
   for (const sp of [...splices].sort((a, b) => b.start - a.start)) {
     out = out.slice(0, sp.start) + sp.text + out.slice(sp.end);
   }
-  return { yaml: out, changes };
+  return { yaml: out, changes, keptLocal };
 }

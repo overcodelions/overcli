@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LOG_LIMIT, maskSecrets, Supervisor, type SpawnRequest, type SpawnedProcess, type SupervisorDeps } from './supervisor';
+import {
+  ADOPTED_POLL_MS,
+  LOG_LIMIT,
+  maskSecrets,
+  Supervisor,
+  type SpawnRequest,
+  type SpawnedProcess,
+  type SupervisorDeps,
+} from './supervisor';
 import type { ProjectionFs } from './projection';
 import type { ServiceBinding, ServiceSpec } from './types';
 import type { PortHolderKind } from '../../shared/services';
-import type { PortOwner } from './portOwners';
+import { matchingProcesses, type PortOwner, type ProcessMatch } from './portOwners';
 
 /// A checkout that exists and resolves to itself; enough for projection.
 const fs: ProjectionFs = {
@@ -1003,6 +1011,307 @@ describe('Supervisor.adopt', () => {
 
     expect(spawns).toHaveLength(1);
     expect(sup.runtime('api').adopted).toBeUndefined();
+  });
+});
+
+describe('adopting the right process', () => {
+  // One checkout, two apps, both `npm run dev`. Admin's copy was left running
+  // and orphaned; web has never been started.
+  const mono = '/src/acme-mono';
+  const table = async (command: string) => {
+    if (command === 'ps') return ['  800   1 npm run dev', '  801 800 node vite'].join('\n');
+    if (command === 'lsof') return ['p800', `n${mono}/apps/admin`, 'p801', `n${mono}/apps/admin`].join('\n');
+    return null;
+  };
+  const stack = () => {
+    const specs = [
+      spec({ id: 'web', command: ['npm', 'run', 'dev'], subpath: 'apps/web' }),
+      spec({ id: 'admin', command: ['npm', 'run', 'dev'], subpath: 'apps/admin' }),
+    ];
+    return { specs, bindings: specs.map((s) => binding(s.id, 'master', mono)) };
+  };
+  /// The real matcher over a fake process table, wired as the manager wires it.
+  const realMatch: SupervisorDeps['matchProcesses'] = (targets) =>
+    matchingProcesses(
+      targets.map((t) => ({ key: t.serviceId, tokens: t.tokens, checkout: mono, subpath: t.subpath })),
+      table,
+      'darwin',
+    );
+
+  it("does not adopt another service's leftover", async () => {
+    const stopped: number[] = [];
+    const { deps, spawns } = harness({
+      matchProcesses: realMatch,
+      stopProcess: async (pid) => {
+        stopped.push(pid);
+      },
+    });
+    const { specs, bindings } = stack();
+    const sup = new Supervisor('mine', specs, bindings, deps);
+
+    await sup.start('web');
+
+    expect(sup.runtime('web').adopted).toBeUndefined();
+    expect(spawns.map((s) => s.cwd)).toEqual([`${mono}/apps/web`]);
+    await sup.stop('web');
+    // Stopping web is web's own child, never admin's tree.
+    expect(stopped).toEqual([]);
+  });
+
+  it('still adopts that leftover for the service it belongs to', async () => {
+    const { deps, spawns } = harness({ matchProcesses: realMatch });
+    const { specs, bindings } = stack();
+    const sup = new Supervisor('mine', specs, bindings, deps);
+
+    await sup.start('admin');
+
+    expect(spawns).toHaveLength(0);
+    expect(sup.runtime('admin')).toMatchObject({ adopted: true, pid: 800 });
+  });
+
+  it('asks about every service in the stack, with its folder', async () => {
+    const asked: { serviceId: string; subpath?: string }[][] = [];
+    const { deps } = harness({
+      matchProcesses: async (targets) => {
+        asked.push(targets.map((t) => ({ serviceId: t.serviceId, subpath: t.subpath })));
+        return new Map();
+      },
+    });
+    const { specs, bindings } = stack();
+    const sup = new Supervisor('mine', specs, bindings, deps);
+
+    await sup.start('web');
+
+    expect(asked).toEqual([[
+      { serviceId: 'web', subpath: 'apps/web' },
+      { serviceId: 'admin', subpath: 'apps/admin' },
+    ]]);
+  });
+
+  it('passes the launch command with the port lookup', async () => {
+    const asked: (readonly string[] | undefined)[] = [];
+    const { deps } = harness({
+      portOwners: async (wanted) => {
+        asked.push(...wanted.map((w) => w.tokens));
+        return new Map(wanted.map((w) => [w.port, [] as PortOwner[]]));
+      },
+    });
+    const specs = [spec({ id: 'api', port: 8080, command: ['npm', 'start'] })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.adopt();
+
+    expect(asked).toEqual([['npm', 'start']]);
+  });
+});
+
+describe('an adopted pid', () => {
+  const leftover = (pid = 779): SupervisorDeps['matchProcesses'] => async (targets) =>
+    new Map(targets.map((t): [string, ProcessMatch] => [t.serviceId, { pid, command: 'run jobs', kind: 'stale' }]));
+
+  it('is not signalled once the OS has handed it to something else', async () => {
+    const killed: number[] = [];
+    let started = 'Tue Sep 22 10:00:00 2026';
+    const { deps } = harness({
+      matchProcesses: leftover(),
+      processStarted: async () => started,
+      stopProcess: async (pid) => {
+        killed.push(pid);
+      },
+    });
+    const specs = [spec({ id: 'jobs' })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.start('jobs');
+    expect(sup.runtime('jobs').adopted).toBe(true);
+
+    // The leftover exited and pid 779 now belongs to something started later.
+    started = 'Tue Sep 22 11:30:00 2026';
+    await sup.stop('jobs');
+
+    expect(killed).toEqual([]);
+    expect(sup.runtime('jobs')).toMatchObject({ status: 'stopped', adopted: undefined, pid: undefined });
+    expect(sup.log('jobs').join('\n')).toMatch(/pid 779 is no longer the adopted process.*left alone/);
+  });
+
+  it('is not signalled on restart either, and the restart launches a copy of our own', async () => {
+    const killed: number[] = [];
+    let started = 'Tue Sep 22 10:00:00 2026';
+    const { deps, spawns } = harness({
+      matchProcesses: leftover(),
+      processStarted: async () => started,
+      stopProcess: async (pid) => {
+        killed.push(pid);
+      },
+    });
+    const specs = [spec({ id: 'jobs' })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.start('jobs');
+
+    started = 'Tue Sep 22 11:30:00 2026';
+    await sup.restart('jobs');
+
+    expect(killed).toEqual([]);
+    expect(spawns).toHaveLength(1);
+    expect(sup.runtime('jobs').adopted).toBeUndefined();
+  });
+
+  it('is still stopped, tree and all, while it is the same process', async () => {
+    const killed: number[] = [];
+    const { deps } = harness({
+      matchProcesses: leftover(),
+      processStarted: async () => 'Tue Sep 22 10:00:00 2026',
+      stopProcess: async (pid) => {
+        killed.push(pid);
+      },
+    });
+    const specs = [spec({ id: 'jobs' })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.start('jobs');
+
+    await sup.stop('jobs');
+
+    expect(killed).toEqual([779]);
+  });
+
+  it('goes to stopped when the process exits, found by polling', async () => {
+    vi.useFakeTimers();
+    try {
+      let alive = true;
+      const { deps } = harness({
+        matchProcesses: leftover(),
+        processStarted: async () => (alive ? 'Tue Sep 22 10:00:00 2026' : null),
+      });
+      const specs = [spec({ id: 'jobs' })];
+      const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+      await sup.start('jobs');
+
+      await vi.advanceTimersByTimeAsync(ADOPTED_POLL_MS);
+      expect(sup.runtime('jobs').status).toBe('ready');
+
+      alive = false;
+      await vi.advanceTimersByTimeAsync(ADOPTED_POLL_MS);
+
+      expect(sup.runtime('jobs')).toMatchObject({ status: 'stopped', adopted: undefined, pid: undefined });
+      expect(sup.log('jobs').join('\n')).toMatch(/adopted process, pid 779, has exited/);
+      // Nothing left to poll: the timer is not re-armed for a row that is gone.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is not trusted as ready by a dependent once it has gone', async () => {
+    let alive = true;
+    const { deps, spawns } = harness({
+      matchProcesses: async (targets) => new Map(
+        alive
+          ? targets.filter((t) => t.serviceId === 'api')
+            .map((t): [string, ProcessMatch] => [t.serviceId, { pid: 700, command: 'run api', kind: 'stale' }])
+          : [],
+      ),
+      processStarted: async () => (alive ? 'Tue Sep 22 10:00:00 2026' : null),
+    });
+    const specs = [spec({ id: 'api' }), spec({ id: 'web', deps: ['api'] })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.start('api');
+    expect(sup.runtime('api').adopted).toBe(true);
+
+    alive = false;
+    await sup.start('web');
+
+    // The dependency was brought up for real rather than waved through.
+    expect(spawns.map((s) => s.command[1])).toEqual(['api', 'web']);
+    expect(sup.runtime('api').adopted).toBeUndefined();
+  });
+
+  it('is not adopted when it is gone by the time it is looked at', async () => {
+    const { deps, spawns } = harness({
+      matchProcesses: leftover(),
+      processStarted: async () => null,
+    });
+    const specs = [spec({ id: 'jobs' })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+
+    await sup.start('jobs');
+
+    expect(sup.runtime('jobs').adopted).toBeUndefined();
+    expect(spawns).toHaveLength(1);
+  });
+});
+
+describe('a restart does not adopt what it just stopped', () => {
+  it('launches fresh even when a dying child looks like a leftover', async () => {
+    // Stopping our own copy leaves a child still shutting down, reparented to
+    // launchd — which classifies stale. Adopting it marked the row ready a
+    // moment before it exited.
+    let running = false;
+    let asked = 0;
+    const { deps, spawns } = harness({
+      matchProcesses: async (targets) => {
+        asked++;
+        return new Map(running
+          ? targets.map((t): [string, ProcessMatch] => [t.serviceId, { pid: 991, command: 'run jobs', kind: 'stale' }])
+          : []);
+      },
+    });
+    const specs = [spec({ id: 'jobs' })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.start('jobs');
+    running = true;
+    asked = 0;
+
+    await sup.restart('jobs');
+
+    expect(spawns).toHaveLength(2);
+    expect(sup.runtime('jobs').adopted).toBeUndefined();
+    expect(asked).toBe(0);
+  });
+
+  it('nor does a rebind of something that was running', async () => {
+    let running = false;
+    const { deps, spawns } = harness({
+      matchProcesses: async (targets) => new Map(running
+        ? targets.map((t): [string, ProcessMatch] => [t.serviceId, { pid: 992, command: 'run jobs', kind: 'stale' }])
+        : []),
+    });
+    const specs = [spec({ id: 'jobs' })];
+    const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+    await sup.start('jobs');
+    running = true;
+
+    await sup.rebind('jobs', { ref: 'feature/x', path: '/repos/feature-x' });
+
+    expect(spawns).toHaveLength(2);
+    expect(sup.runtime('jobs').adopted).toBeUndefined();
+  });
+});
+
+describe('task drift notes', () => {
+  it('reads the head of only the checkouts the comparison uses', async () => {
+    const heads: string[] = [];
+    const { deps } = harness({
+      headOf: (checkout) => {
+        heads.push(checkout);
+        return 'abc123';
+      },
+    });
+    const specs = [
+      spec({ id: 'publish', task: true }),
+      spec({ id: 'api', deps: ['publish'] }),
+      spec({ id: 'web' }),
+      spec({ id: 'docs' }),
+    ];
+    const bindings = [
+      binding('publish', 'master', '/repos/lib'),
+      binding('api', 'master', '/repos/api'),
+      binding('web', 'master', '/repos/web'),
+      binding('docs', 'master', '/repos/docs'),
+    ];
+    const sup = new Supervisor('mine', specs, bindings, deps, { publish: { ref: 'master', at: 1 } });
+
+    await sup.start('api');
+
+    expect(new Set(heads)).toEqual(new Set(['/repos/lib', '/repos/api']));
   });
 });
 

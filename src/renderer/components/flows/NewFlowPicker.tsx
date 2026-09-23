@@ -48,29 +48,32 @@ export function NewFlowPicker({
     : null;
 
   useEffect(() => {
-    void window.overcli
-      .invoke('flows:listTemplates')
-      .then((list) => {
-        setTemplates(list);
-        if (!autoTemplateId) return;
-        const picked = list.find((t) => t.id === autoTemplateId);
-        if (picked) startFromTemplate(picked);
-        else onClose();
-      })
-      .catch(() => setTemplates([]));
     // Pull installed ollama models so the resolver can prefer them for
     // fast-tier steps. Detection is cheap (cached after the first call)
     // and we don't block render on it — until it arrives the resolver
     // just falls back to premium fast models.
-    void window.overcli
+    const detected = window.overcli
       .invoke('ollama:detect')
-      .then((r) => {
-        setOllamaModels(r.running ? r.models.map((m) => m.name) : []);
+      .then((r) => (r.running ? r.models.map((m) => m.name) : []))
+      .catch(() => [] as string[]);
+    void detected.then(setOllamaModels);
+    void window.overcli
+      .invoke('flows:listTemplates')
+      .then(async (list) => {
+        setTemplates(list);
+        if (!autoTemplateId) return;
+        const picked = list.find((t) => t.id === autoTemplateId);
+        if (!picked) return onClose();
+        // The auto-start never paints the menu, so it has no later render to
+        // pick the models up from: it waits for detection and hands the list
+        // over directly. Reading `ollamaModels` here would read this first
+        // render's empty array, and bind every local step to a cloud model.
+        startFromTemplate(picked, await detected);
       })
-      .catch(() => setOllamaModels([]));
+      .catch(() => setTemplates([]));
   }, []);
 
-  function startFromTemplate(t: FlowTemplate) {
+  function startFromTemplate(t: FlowTemplate, models: string[] = ollamaModels) {
     const parsed = parseFlowYaml({
       yaml: t.yaml,
       id: t.id,
@@ -78,12 +81,15 @@ export function NewFlowPicker({
       filePath: '',
     });
     if (!parsed) return;
+    // Read at call time rather than from the render that defined this: the
+    // auto-start calls it from a mount-time effect, long after that render.
+    const { backendHealth, settings } = useStore.getState();
     const healthyBackends = (Object.keys(backendHealth) as Backend[]).filter(
       (b) => backendHealth[b]?.kind === 'ready',
     );
     const rebound = resolveTemplateForUser(parsed, {
       healthyBackends,
-      ollamaModels,
+      ollamaModels: models,
       modelDefaults: settings.flowModelDefaults,
     });
     openEditor({ kind: 'new' }, freshFlow(rebound, t.id));

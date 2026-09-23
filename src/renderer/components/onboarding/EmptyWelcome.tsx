@@ -28,9 +28,12 @@ import {
 import { useGitAvailability } from '../GitInstallNotice';
 import type { BackendHealth } from '@shared/types';
 
-/// What you are getting, as terms rather than as feature cards. The same four
-/// nouns the Basics sheet explains at length — this is the version you read
-/// while deciding whether to point it at a repo.
+/// What you are getting, as terms rather than as feature cards. Not the Basics
+/// sheet's four nouns (projects, agents, flows, workspaces) — those explain
+/// what to build with overcli. These answer what happens to your folder when
+/// you point it here, which is the question you have before adding one. The
+/// one term both share, the project, is worded to agree: a folder, git
+/// optional.
 const TERMS = [
   {
     label: 'The project',
@@ -206,7 +209,7 @@ function MachineSpecimen({
           list that shows why. */}
       {probed && blocked && (
         <div className="mt-4">
-          <CliSetupGuide backendHealth={backendHealth} variant="sheet" />
+          <CliSetupGuide backendHealth={backendHealth} />
         </div>
       )}
     </div>

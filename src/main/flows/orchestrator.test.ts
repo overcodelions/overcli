@@ -158,6 +158,14 @@ describe('producer permissions', () => {
     expect(listed.oneShotCalls[0]).toMatchObject({ permissionMode: 'acceptEdits', enabledTools: ['Read'] });
   });
 
+  // Neither shipped caller omits the policy, so nothing but this test holds
+  // the default at fail-closed.
+  it('treats a caller that names no launch policy as unattended, with no tools', async () => {
+    const unnamed = makeHarness();
+    await unnamed.engine.parkProposal(args);
+    expect(unnamed.oneShotCalls[0]).toMatchObject({ permissionMode: 'acceptEdits', enabledTools: [] });
+  });
+
   it('forwards the worker heartbeat backend without silently changing providers', async () => {
     const h = makeHarness({ preferredBackend: 'codex' });
     const result = await h.engine.parkProposal({ ...args, backend: 'codex', model: 'gpt-5.6-luna' });
@@ -181,6 +189,16 @@ describe('OrchestratorImpl dispatch', () => {
     const listed = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: ['Read'] } });
     await listed.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
     expect(listed.started[0]).toMatchObject({ unattended: true, unattendedAllowedTools: ['Read'] });
+  });
+  it('launches child runs unattended, with no tools, when no policy was named', async () => {
+    const unnamed = makeHarness();
+    await unnamed.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    expect(unnamed.started[0]).toMatchObject({ unattended: true, unattendedAllowedTools: [] });
+    // An explicitly interactive caller still launches attended children.
+    const interactive = makeHarness({ launchPolicy: { unattended: false } });
+    await interactive.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    expect(interactive.started[0]).toMatchObject({ unattended: false });
+    expect(interactive.started[0].unattendedAllowedTools).toBeUndefined();
   });
   it('never launches more than maxConcurrent at once, and pumps as runs finish', async () => {
     const h = makeHarness();
