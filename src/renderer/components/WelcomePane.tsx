@@ -544,6 +544,7 @@ export function WelcomePane() {
             setDraft(WELCOME_KEY, text);
             setComposerFocusNudge((n) => n + 1);
           }}
+          trailing={<EverydayFlowPill projectPath={selectedProject.path} />}
         />
       )}
     <Composer
@@ -852,9 +853,9 @@ export function WelcomePane() {
                   openSheet({ type: 'everydayConversion', projectId: selectedProject.id })
                 }
               >
-                Make this an everyday project
+                Show it as documents
               </button>{' '}
-              and Overcli will show your documents, save as you type, and keep an undo history.
+              and Overcli will list your documents, save as you type, and keep an undo history.
             </div>
           )}
         {selectedProject && !focusedWorkspace && !isEverydayFolder && (
@@ -1671,10 +1672,13 @@ function StarterPrompts({
   project,
   kind = 'documents',
   onPick,
+  trailing,
 }: {
   project: Project;
   kind?: 'documents' | 'code';
   onPick: (text: string) => void;
+  /// Rendered at the end of the row, after the prompts.
+  trailing?: React.ReactNode;
 }) {
   const prompts: { label: string; text: string }[] = kind === 'code' ? [
     {
@@ -1722,7 +1726,68 @@ function StarterPrompts({
           {p.label}
         </button>
       ))}
+      {trailing}
     </div>
+  );
+}
+
+/// The everyday screen's one door into flows. The full "Or run a flow"
+/// section stays on the code project's page — see `startHere` — but a
+/// folder with flows of its own shouldn't need ⌘K to find them. Picking one
+/// opens the same launcher the palette does, already pointed at this folder.
+///
+/// Only this folder's own flows, plus library flows tagged for documents:
+/// the library is mostly code flows (PR review, fix a bug), and offering
+/// those to someone writing a brief is exactly the noise this screen avoids.
+/// Tags a library flow can carry to be offered on a documents folder.
+const EVERYDAY_FLOW_TAGS = new Set(['documents', 'everyday']);
+
+function EverydayFlowPill({ projectPath }: { projectPath: string }) {
+  const flows = useFlowsStore((s) => s.flows);
+  const loaded = useFlowsStore((s) => s.loaded);
+  const reload = useFlowsStore((s) => s.reload);
+  const projects = useStore((s) => s.projects);
+  const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
+  const openSheet = useStore((s) => s.openSheet);
+
+  // The welcome layout's flows row is what normally loads the library, and
+  // it never renders on this screen.
+  useEffect(() => {
+    if (!loaded) void reload(projects.map((p) => p.path));
+  }, [loaded, projects.length]);
+
+  const items = useMemo(() => {
+    const isStarred = (f: Flow) => starredFlows.includes(flowStarKey(f));
+    const folder = projectPath.endsWith('/') ? projectPath : `${projectPath}/`;
+    return flows
+      .filter((f) => !f.archived && f.source !== 'generated')
+      .filter(
+        (f) =>
+          (f.source === 'project' && f.filePath.startsWith(folder)) ||
+          (f.tags ?? []).some((t) => EVERYDAY_FLOW_TAGS.has(t.toLowerCase())),
+      )
+      .sort((a, b) => {
+        const sa = isStarred(a) ? 0 : 1;
+        const sb = isStarred(b) ? 0 : 1;
+        if (sa !== sb) return sa - sb;
+        return a.name.localeCompare(b.name);
+      })
+      .map((f): PillItem => ({
+        value: f.id,
+        label: isStarred(f) ? `★ ${f.name}` : f.name,
+        note: f.description,
+      }));
+  }, [flows, starredFlows, projectPath]);
+
+  if (items.length === 0) return null;
+  return (
+    <Pill
+      label="Run a flow"
+      items={items}
+      onPick={(flowId) =>
+        openSheet({ type: 'flowLaunch', flowId, target: `project:${projectPath}` })
+      }
+    />
   );
 }
 
@@ -1886,7 +1951,7 @@ function Pill({
         <span className="text-[9px] opacity-70">▾</span>
       </button>
       {open && (
-        <div className="absolute bottom-full mb-1 left-0 min-w-[200px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1">
+        <div className="absolute bottom-full mb-1 left-0 min-w-[200px] max-w-[320px] max-h-[60vh] overflow-y-auto bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1">
           {items.map((it) =>
             it.kind === 'header' ? (
               <div

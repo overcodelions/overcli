@@ -1257,11 +1257,11 @@ function ProjectGroup({
                 className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
                 title={
                   everyday
-                    ? 'Everyday project — documents, plain words, undo. Click to turn off.'
-                    : 'Make this an everyday project: documents, plain words, undo'
+                    ? 'Shown as documents — plain words, undo. Click to show it as files.'
+                    : 'Show as documents: plain words, save as you type, undo'
                 }
               >
-                {everyday ? 'everyday' : '+ everyday'}
+                {everyday ? 'documents' : '+ documents'}
               </button>
             )}
             {archivableCount + deletableFlowCount > 0 && (

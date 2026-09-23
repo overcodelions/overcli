@@ -90,7 +90,7 @@ export function ExplorerLanding() {
                   Somewhere to keep the work
                 </div>
                 <div className="text-[13px] text-ink-muted leading-relaxed max-w-[480px]">
-                  An everyday project is a normal folder of documents — briefs, spreadsheets,
+                  A documents project is a normal folder of documents — briefs, spreadsheets,
                   PDFs — that Overcli keeps a history of. Ask for a change and you get a new
                   version, never a lost file.
                 </div>
@@ -101,7 +101,7 @@ export function ExplorerLanding() {
                 onClick={() => openSheet({ type: 'newEverydayProject' })}
                 className="accent-soft rounded-md border px-3.5 py-2 text-[13px] text-accent transition-colors"
               >
-                Start an everyday project
+                Start something new
               </button>
               <button
                 onClick={pickProject}
@@ -117,13 +117,13 @@ export function ExplorerLanding() {
               onClick={() => openSheet({ type: 'newEverydayProject' })}
               className="accent-soft rounded-md border px-3 py-1.5 text-xs text-accent transition-colors"
             >
-              + New everyday project
+              + New
             </button>
             <button
               onClick={pickProject}
               className="rounded-md border border-card bg-surface-elevated px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong hover:border-card-strong transition-colors"
             >
-              Add a folder
+              Open a folder
             </button>
           </div>
         )}
@@ -153,7 +153,7 @@ export function ExplorerLanding() {
                   <span className="min-w-0">
                     <span className="block text-xs font-medium text-ink truncate">{p.name}</span>
                     <span className="block text-[11px] text-ink-faint truncate">
-                      {isEverydayProject(p) ? 'Everyday project' : 'Code project'}
+                      {isEverydayProject(p) ? 'Documents' : 'Code'}
                     </span>
                   </span>
                 </button>
