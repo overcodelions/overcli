@@ -40,6 +40,11 @@ async function until<T>(read: () => T | undefined, ms: number): Promise<T> {
   }
 }
 
+async function processTableSize(): Promise<number> {
+  const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,args='], { maxBuffer: 64 * 1024 * 1024 });
+  return stdout.length;
+}
+
 const readNumber = (file: string) => {
   try {
     const n = Number(fs.readFileSync(file, 'utf8').trim());
@@ -95,13 +100,19 @@ describe.skipIf(process.platform === 'win32')('portOwners against real processes
     fs.writeFileSync(path.join(daemonDir, 'daemon.js'), DAEMON);
     fs.writeFileSync(path.join(daemonDir, 'listener.js'), LISTENER);
 
-    // Enough command line to push the process table past a megabyte, in
-    // arguments small enough for Linux's per-argument limit.
-    const chunk = 'x'.repeat(60_000);
-    for (let i = 0; i < 4; i++) {
-      padding.push(spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)', ...Array(5).fill(chunk)], {
-        stdio: 'ignore',
-      }));
+    // Enough command line to push the process table past a megabyte, added
+    // until `ps` itself says so: Linux's procps prints at most ~128 KB of any
+    // one command line where macOS prints all of it, so a fixed amount of
+    // padding is a megabyte on one and half that on the other. Each pad is a
+    // shell whose unused arguments are the bulk — cheap, and gone within a
+    // second of being killed.
+    const chunk = 'x'.repeat(18_000);
+    for (let i = 0; i < 40 && (await processTableSize()) <= 1024 * 1024; i++) {
+      for (let j = 0; j < 4; j++) {
+        padding.push(spawn('sh', ['-c', 'while :; do sleep 1; done', 'acme-pad', ...Array(5).fill(chunk)], {
+          stdio: 'ignore',
+        }));
+      }
     }
 
     // Started through a shell that exits at once, so the wrapper is orphaned
@@ -131,8 +142,7 @@ describe.skipIf(process.platform === 'win32')('portOwners against real processes
   const tokens = ['./acme-run', 'serve', '-Dacme.profile=local'];
 
   it('is scanning a process table bigger than execFile buffers by default', async () => {
-    const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,args='], { maxBuffer: 64 * 1024 * 1024 });
-    expect(stdout.length).toBeGreaterThan(1024 * 1024);
+    expect(await processTableSize()).toBeGreaterThan(1024 * 1024);
   });
 
   it('calls the listener a leftover, rooted at the orphaned wrapper', async (ctx) => {
