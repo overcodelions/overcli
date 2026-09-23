@@ -50,7 +50,7 @@ export function NewEverydayProjectSheet() {
     <div className="flex flex-col min-h-0 flex-1" onKeyDown={sheetSubmitKeys(() => void submit())}>
       <div className="flex-1 min-h-0 overflow-y-auto p-5 flex flex-col gap-3">
         <div>
-          <div className="text-lg font-semibold">New everyday project</div>
+          <div className="text-lg font-semibold">Start something new</div>
           <div className="text-xs text-ink-faint">
             A prepared folder for your documents, with every version saved so you can undo anything.
           </div>

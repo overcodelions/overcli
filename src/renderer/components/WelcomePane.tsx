@@ -20,6 +20,8 @@ import { EmptyWelcome } from './onboarding/EmptyWelcome';
 import { suggestRegistryFlows } from './flows/registrySuggest';
 import { ResumeRow } from './ResumeRow';
 import { isEverydayProject } from '@shared/everydayProjects';
+import { LabsHint } from './LabsHint';
+import { ServicesHint } from './ServicesHint';
 import {
   flowTagCounts,
   groupFlows,
@@ -77,6 +79,7 @@ export function WelcomePane() {
   const focusedWorkspaceId = useStore((s) => s.focusedWorkspaceId);
   const welcomeFocusToken = useStore((s) => s.welcomeFocusToken);
   const pickProject = useStore((s) => s.pickProject);
+  const openWorkspaceWith = useStore((s) => s.openWorkspaceWith);
   const newConversation = useStore((s) => s.newConversation);
   const newConversationInWorkspace = useStore((s) => s.newConversationInWorkspace);
   const startNewConversation = useStore((s) => s.startNewConversation);
@@ -541,6 +544,7 @@ export function WelcomePane() {
             setDraft(WELCOME_KEY, text);
             setComposerFocusNudge((n) => n + 1);
           }}
+          trailing={<EverydayFlowPill projectPath={selectedProject.path} />}
         />
       )}
     <Composer
@@ -849,19 +853,27 @@ export function WelcomePane() {
                   openSheet({ type: 'everydayConversion', projectId: selectedProject.id })
                 }
               >
-                Make this an everyday project
+                Show it as documents
               </button>{' '}
-              and Overcli will show your documents, save as you type, and keep an undo history.
+              and Overcli will list your documents, save as you type, and keep an undo history.
             </div>
           )}
+        {selectedProject && !focusedWorkspace && !isEverydayFolder && (
+          <ServicesHint project={selectedProject} />
+        )}
+        {!isEverydayFolder && <LabsHint />}
         {startHere}
         <div className="mt-3 flex items-center gap-2 text-xs text-ink-muted justify-center flex-wrap">
           <ContextPill
             label={focusedWorkspace?.name ?? selectedProject?.name ?? 'Pick project'}
             projects={projects}
             workspaces={workspaces}
+            currentProjectId={focusedWorkspace ? null : (selectedProject?.id ?? null)}
             onPickProject={(id) => startNewConversation(id)}
             onPickWorkspace={(id) => startNewConversationInWorkspace(id)}
+            onAddRepo={(id) => {
+              if (selectedProject) void openWorkspaceWith([selectedProject.id, id]);
+            }}
             onAdd={pickProject}
           />
           <Pill
@@ -1660,10 +1672,13 @@ function StarterPrompts({
   project,
   kind = 'documents',
   onPick,
+  trailing,
 }: {
   project: Project;
   kind?: 'documents' | 'code';
   onPick: (text: string) => void;
+  /// Rendered at the end of the row, after the prompts.
+  trailing?: React.ReactNode;
 }) {
   const prompts: { label: string; text: string }[] = kind === 'code' ? [
     {
@@ -1711,7 +1726,68 @@ function StarterPrompts({
           {p.label}
         </button>
       ))}
+      {trailing}
     </div>
+  );
+}
+
+/// The everyday screen's one door into flows. The full "Or run a flow"
+/// section stays on the code project's page — see `startHere` — but a
+/// folder with flows of its own shouldn't need ⌘K to find them. Picking one
+/// opens the same launcher the palette does, already pointed at this folder.
+///
+/// Only this folder's own flows, plus library flows tagged for documents:
+/// the library is mostly code flows (PR review, fix a bug), and offering
+/// those to someone writing a brief is exactly the noise this screen avoids.
+/// Tags a library flow can carry to be offered on a documents folder.
+const EVERYDAY_FLOW_TAGS = new Set(['documents', 'everyday']);
+
+function EverydayFlowPill({ projectPath }: { projectPath: string }) {
+  const flows = useFlowsStore((s) => s.flows);
+  const loaded = useFlowsStore((s) => s.loaded);
+  const reload = useFlowsStore((s) => s.reload);
+  const projects = useStore((s) => s.projects);
+  const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
+  const openSheet = useStore((s) => s.openSheet);
+
+  // The welcome layout's flows row is what normally loads the library, and
+  // it never renders on this screen.
+  useEffect(() => {
+    if (!loaded) void reload(projects.map((p) => p.path));
+  }, [loaded, projects.length]);
+
+  const items = useMemo(() => {
+    const isStarred = (f: Flow) => starredFlows.includes(flowStarKey(f));
+    const folder = projectPath.endsWith('/') ? projectPath : `${projectPath}/`;
+    return flows
+      .filter((f) => !f.archived && f.source !== 'generated')
+      .filter(
+        (f) =>
+          (f.source === 'project' && f.filePath.startsWith(folder)) ||
+          (f.tags ?? []).some((t) => EVERYDAY_FLOW_TAGS.has(t.toLowerCase())),
+      )
+      .sort((a, b) => {
+        const sa = isStarred(a) ? 0 : 1;
+        const sb = isStarred(b) ? 0 : 1;
+        if (sa !== sb) return sa - sb;
+        return a.name.localeCompare(b.name);
+      })
+      .map((f): PillItem => ({
+        value: f.id,
+        label: isStarred(f) ? `★ ${f.name}` : f.name,
+        note: f.description,
+      }));
+  }, [flows, starredFlows, projectPath]);
+
+  if (items.length === 0) return null;
+  return (
+    <Pill
+      label="Run a flow"
+      items={items}
+      onPick={(flowId) =>
+        openSheet({ type: 'flowLaunch', flowId, target: `project:${projectPath}` })
+      }
+    />
   );
 }
 
@@ -1719,18 +1795,28 @@ function ContextPill({
   label,
   projects,
   workspaces,
+  currentProjectId,
   onPickProject,
   onPickWorkspace,
+  onAddRepo,
   onAdd,
 }: {
   label: string;
   projects: Project[];
   workspaces: Workspace[];
+  /// The single project this chat is in, when it is in one. Offers the other
+  /// repos as "work on this and that": the composer's way into a workspace,
+  /// without having to learn the word first.
+  currentProjectId: UUID | null;
   onPickProject: (id: UUID) => void;
   onPickWorkspace: (id: UUID) => void;
+  onAddRepo: (id: UUID) => void;
   onAdd: () => void;
 }) {
   const items: PillItem[] = [];
+  const current = projects.find((p) => p.id === currentProjectId);
+  const others = current ? projects.filter((p) => p.id !== current.id && !isEverydayProject(p)) : [];
+
   if (workspaces.length > 0) {
     items.push({ value: '__h_workspaces__', label: 'Workspaces', kind: 'header' });
     for (const w of workspaces) {
@@ -1743,6 +1829,13 @@ function ContextPill({
       items.push({ value: `p:${p.id}`, label: p.name, note: shortPath(p.path) });
     }
   }
+  // Last, after the list of places: it's an action on the current one.
+  if (current && !isEverydayProject(current) && others.length > 0) {
+    items.push({ value: '__h_across__', label: `Work on ${current.name} and…`, kind: 'header' });
+    for (const p of others) {
+      items.push({ value: `x:${p.id}`, label: `+ ${p.name}`, note: 'Both in one conversation' });
+    }
+  }
   items.push({ value: '__add__', label: '+ Add project…' });
   return (
     <Pill
@@ -1750,6 +1843,7 @@ function ContextPill({
       items={items}
       onPick={(v) => {
         if (v === '__add__') onAdd();
+        else if (v.startsWith('x:')) onAddRepo(v.slice(2) as UUID);
         else if (v.startsWith('w:')) onPickWorkspace(v.slice(2) as UUID);
         else if (v.startsWith('p:')) onPickProject(v.slice(2) as UUID);
       }}
@@ -1857,7 +1951,7 @@ function Pill({
         <span className="text-[9px] opacity-70">▾</span>
       </button>
       {open && (
-        <div className="absolute bottom-full mb-1 left-0 min-w-[200px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1">
+        <div className="absolute bottom-full mb-1 left-0 min-w-[200px] max-w-[320px] max-h-[60vh] overflow-y-auto bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1">
           {items.map((it) =>
             it.kind === 'header' ? (
               <div
@@ -1883,7 +1977,7 @@ function Pill({
                 }
               >
                 <div>{it.label}</div>
-                {it.note && <div className="text-[10px] text-ink-faint truncate">{it.note}</div>}
+                {it.note && <div className="text-[10px] leading-snug text-ink-faint">{it.note}</div>}
               </button>
             ),
           )}

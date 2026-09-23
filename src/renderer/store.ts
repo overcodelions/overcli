@@ -51,6 +51,7 @@ import { isEverydayProject, pickDocumentToShow } from '@shared/everydayProjects'
 import { documentToReveal } from './turnDocuments';
 import { isPathUnder, isSamePath } from '@shared/pathScope';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
+import { suggestWorkspaceName } from '@shared/suggestWorkspaceName';
 import { appendContextNotice } from '@shared/contextNotices';
 import {
   findConversation as findConversationFromIndex,
@@ -97,15 +98,21 @@ function logToMain(level: LogLevel, scope: string, message: string): void {
 }
 
 export type ActiveSheet =
-  | { type: 'settings' }
+  /// `section` opens a specific page (e.g. 'labs' from the start page hint).
+  | { type: 'settings'; section?: string }
   | { type: 'debug' }
   | { type: 'about' }
   | { type: 'capabilities' }
   | { type: 'newAgent'; projectId: UUID }
   | { type: 'newWorkspace' }
+  /// A picked folder turned out to hold several repos rather than be one.
+  /// Offers them as a workspace before anything is added.
+  | { type: 'folderOfRepos'; parentPath: string; repoPaths: string[] }
   | { type: 'newEverydayProject' }
   /// Turn an existing folder into an everyday project, or turn one back.
-  | { type: 'everydayConversion'; projectId: UUID }
+  /// `suggested`: opened by Overcli itself right after a folder of documents
+  /// was added, rather than asked for from the project's menu.
+  | { type: 'everydayConversion'; projectId: UUID; suggested?: boolean }
   | { type: 'newDocument'; dirPath: string }
   | { type: 'versions'; projectPath: string }
   | { type: 'editWorkspace'; workspaceId: UUID }
@@ -349,6 +356,17 @@ interface StoreState {
   removeProject(id: UUID): Promise<void>;
   removeWorkspace(id: UUID): Promise<void>;
   pickProject(): Promise<void>;
+  /// Resolve the folder-of-repos prompt: add the repos as one workspace, as
+  /// separate projects, or add the parent folder as a single project after all.
+  addFolderOfRepos(
+    parentPath: string,
+    repoPaths: string[],
+    as: 'workspace' | 'projects' | 'folder',
+  ): Promise<void>;
+  /// Start a conversation across exactly these projects: the workspace that
+  /// already holds that set if there is one, else a new one named after them.
+  /// How "add another repo" in the composer and the in-chat offer both land.
+  openWorkspaceWith(projectIds: UUID[], draft?: string): Promise<Workspace | null>;
   newConversation(projectId: UUID): Promise<Conversation>;
   /// Fill in a conversation's `baseBranch` — the branch its project was on
   /// when it opened, which the header uses to warn about later drift. Runs
@@ -1799,6 +1817,20 @@ export const useStore = create<StoreState>((set, get) => ({
     const existing = new Set(get().projects.map((p) => p.path));
     const fresh = paths.filter((p) => !existing.has(p));
     if (fresh.length === 0) return;
+    // "Open a folder" never asks what kind of folder it is; it looks. One
+    // folder that holds several repos is the moment a workspace explains
+    // itself, so ask before adding it as a single project nobody can commit
+    // in. A folder of documents is added, then offered the documents view.
+    const kind =
+      fresh.length === 1
+        ? await window.overcli
+            .invoke('fs:inspectFolder', { path: fresh[0] })
+            .catch(() => ({ kind: 'other' as const }))
+        : { kind: 'other' as const };
+    if (kind.kind === 'repos') {
+      get().openSheet({ type: 'folderOfRepos', parentPath: fresh[0], repoPaths: kind.repoPaths });
+      return;
+    }
     const added: Project[] = fresh.map((p) => ({
       id: uuid(),
       name: pathBasename(p) || 'Project',
@@ -1810,6 +1842,57 @@ export const useStore = create<StoreState>((set, get) => ({
       await get().addProject(project);
     }
     get().startNewConversation(added[added.length - 1].id);
+    if (kind.kind === 'documents') {
+      get().openSheet({ type: 'everydayConversion', projectId: added[0].id, suggested: true });
+    }
+  },
+
+  async addFolderOfRepos(parentPath, repoPaths, as) {
+    const toAdd = as === 'folder' ? [parentPath] : repoPaths;
+    const ids: UUID[] = [];
+    for (const p of toAdd) {
+      const existing = get().projects.find((proj) => proj.path === p);
+      if (existing) {
+        ids.push(existing.id);
+        continue;
+      }
+      const project: Project = {
+        id: uuid(),
+        name: pathBasename(p) || 'Project',
+        path: p,
+        conversations: [],
+        lastOpenedAt: Date.now(),
+      };
+      await get().addProject(project);
+      ids.push(project.id);
+    }
+    if (ids.length === 0) return;
+    if (as === 'workspace' && ids.length >= 2) {
+      const ws = await get().newWorkspace(pathBasename(parentPath) || 'Workspace', ids);
+      if (ws) {
+        get().startNewConversationInWorkspace(ws.id);
+        return;
+      }
+    }
+    get().startNewConversation(ids[ids.length - 1]);
+  },
+
+  async openWorkspaceWith(projectIds, draft) {
+    const ids = Array.from(new Set(projectIds));
+    if (ids.length < 2) return null;
+    const same = (w: Workspace) =>
+      w.projectIds.length === ids.length && ids.every((id) => w.projectIds.includes(id));
+    let ws = get().workspaces.find(same) ?? null;
+    if (!ws) {
+      const names = ids
+        .map((id) => get().projects.find((p) => p.id === id)?.name)
+        .filter((n): n is string => !!n);
+      ws = await get().newWorkspace(suggestWorkspaceName(names) || 'Workspace', ids);
+    }
+    if (!ws) return null;
+    get().startNewConversationInWorkspace(ws.id);
+    if (draft) get().setDraft('__welcome__', draft);
+    return ws;
   },
 
   async protectProject(projectId) {

@@ -4,6 +4,8 @@
 // registers every IPC handler the renderer invokes. Main-process state
 // lives here — the Store, the RunnerManager, health probes, stats.
 
+// First, before anything can read the userData path. See devProfile.ts.
+import './devProfile';
 import { randomUUID } from 'node:crypto';
 
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, Menu, nativeTheme } from 'electron';
@@ -59,6 +61,8 @@ import {
   originRemote,
 } from './git';
 import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
+import { inspectFolder } from './childRepos';
+import { isDocumentLikePath } from '../shared/everydayProjects';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
 import {
   checkpointProject,
@@ -115,9 +119,11 @@ import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { host } from './host';
-import { ServicesManager, importFile as importServicesFile } from './services/manager';
+import { ServicesManager, fsRepoReader, importFile as importServicesFile } from './services/manager';
+import { detectServices } from './services/detect';
 import { clearCache, controlMachineService, listMachineServices } from './services/machineServices';
 import { splitSuggestedCommand, tidySuggestion } from './services/askModel';
+import { shellEnv } from './services/shellEnv';
 import { electronSecretCipher, installElectronHost } from './hostElectron';
 import {
   configuredWebhookAuthHeader,
@@ -336,7 +342,11 @@ function services(): ServicesManager {
     // In development overcli's own vite and tsc run from this checkout, and
     // must never be named as something to stop.
     app.isPackaged ? undefined : app.getAppPath(),
+    shellEnv,
   );
+  // Asked now, in the background, so the first start does not wait on the
+  // user's rc files.
+  void shellEnv();
   return servicesManager;
 }
 
@@ -888,6 +898,9 @@ export function registerIpc(): void {
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths;
   });
+  ipcMain.handle('fs:inspectFolder', (_e, args: { path: string }) =>
+    inspectFolder(args?.path ?? '', isDocumentLikePath),
+  );
   ipcMain.handle('fs:fileInfo', (_e, args: { path: string; rootPath?: string }) =>
     fileInfo(args?.path ?? '', args?.rootPath),
   );
@@ -1553,6 +1566,18 @@ export function registerIpc(): void {
     services().setPinned(workspaceId, serviceId, pinnedRef),
   );
   ipcMain.handle('services:scan', (_e, { projects }) => services().scan(projects));
+  // Detection alone, for the start page's "this can run things" card. Goes
+  // round the manager on purpose: it may be off, and building it just to ask
+  // would touch the keychain for a question that only reads files.
+  ipcMain.handle('services:peek', (_e, args: { path: string; name: string }) => {
+    try {
+      return detectServices(fsRepoReader(args.path), args.name)
+        .filter((p) => p.confidence !== 'low')
+        .map((p) => ({ name: p.spec.name, runner: p.spec.runner }));
+    } catch {
+      return [];
+    }
+  });
   ipcMain.handle('services:findImports', (_e, { projects }) => services().findImports(projects));
   ipcMain.handle('machine:list', () => listMachineServices());
   ipcMain.handle('machine:control', (_e, { name, manager, action }) =>

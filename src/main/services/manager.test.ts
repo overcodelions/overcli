@@ -204,6 +204,18 @@ describe('ServicesManager machine values', () => {
     expect(fs.existsSync(path.join(dataDir, 'services', 'machine-plain.json'))).toBe(false);
   });
 
+  it('flags a stored secret this keychain cannot open, rather than calling it stored', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    mgr.saveMachineValues([{ name: 'DB_PASSWORD', secret: true, value: 'hunter2hunter2' }]);
+    const refusing = { ...fakeCipher, decrypt: () => { throw new Error('different keychain'); } };
+    const other = new ServicesManager(dataDir, () => {}, [], refusing);
+    expect(other.machineValues().entries).toEqual([
+      { name: 'DB_PASSWORD', secret: true, stored: true, unreadable: true },
+    ]);
+    vi.restoreAllMocks();
+  });
+
   it('refuses to store a secret without a keychain rather than writing it in plain text', () => {
     const mgr = new ServicesManager(dataDir, () => {});
     expect(() =>

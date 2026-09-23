@@ -11,6 +11,7 @@ import { compactStepModel, flowSpineSummary, ROLE_VERB, stepWrites } from './flo
 import { useStore } from '../../store';
 import { useFlowsStore } from '../../flowsStore';
 import { flowStarKey } from '@shared/flows/schema';
+import { isEverydayProject } from '@shared/everydayProjects';
 import { Composer } from '../Composer';
 import { BaseBranchSelect } from '../sheets/BaseBranchSelect';
 import { FlowMonogram } from './FlowMonogram';
@@ -263,7 +264,13 @@ export function FlowRunLauncher({
 
   const targetPath = stripTargetPrefix(target);
   const targetIsWorkspace = target.startsWith('workspace:');
-  const canUseWorktree = !!targetPath;
+  // An everyday project runs in its own folder. A worktree run would land
+  // the flow's documents on a review branch the documents page never shows,
+  // behind a merge step that project's user has no vocabulary for.
+  const targetIsEveryday =
+    !targetIsWorkspace &&
+    projects.some((p) => p.path === targetPath && isEverydayProject(p));
+  const canUseWorktree = !!targetPath && !targetIsEveryday;
   const draftKey = `__flow-launch:${flow.id}__`;
 
   // Repos the worktree(s) are minted from. Workspace → each member's

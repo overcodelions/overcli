@@ -22,6 +22,7 @@ import {
   PersistedView,
   UUID,
 } from '../shared/types';
+import { NEWCOMER_LABS } from '../shared/labs';
 import { isSupportedPremiumModel, liftMissingModel } from '../shared/modelCatalog';
 import { trimContextNotices } from '../shared/contextNotices';
 
@@ -61,7 +62,9 @@ function emptyState(): StoreState {
     projects: [],
     workspaces: [],
     colosseums: [],
-    settings: { ...DEFAULT_SETTINGS },
+    // Only a brand-new install lands here with no file to read, so this is
+    // the one place a newcomer's Labs start off. See shared/labs.ts.
+    settings: { ...DEFAULT_SETTINGS, labs: { ...NEWCOMER_LABS } },
   };
 }
 

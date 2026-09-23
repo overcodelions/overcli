@@ -50,7 +50,7 @@ export function SetupSheet() {
 
         <HelpSection
           title="Git"
-          lead="Agents, worktrees, diffs and an everyday project's version history are all git underneath."
+          lead="Agents, worktrees, diffs and the version history of a documents project are all git underneath."
         >
           {git == null ? (
             <div className="text-[12px] text-ink-faint">Checking…</div>

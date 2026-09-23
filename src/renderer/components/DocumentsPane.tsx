@@ -304,7 +304,7 @@ export function DocumentsPane({
         <div className="flex-1 min-w-0 flex flex-col gap-0.5">
           <div className="text-xl font-semibold text-ink truncate tracking-[-0.01em]">{projectName}</div>
           <div className="text-xs text-ink-faint truncate">
-            Everyday project
+            Documents
             {documents.length > 0 && ` · ${documents.length} document${documents.length === 1 ? '' : 's'}`}
             {lastChangeMs > 0 && ` · last change ${versionTimestamp(new Date(lastChangeMs).toISOString(), new Date(now))}`}
           </div>

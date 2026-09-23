@@ -1189,6 +1189,18 @@ export interface AppSettings {
   /// Auto-tidy: which finished worktrees retire on their own, and when a
   /// producer holding too many should say so. See `shared/cleanupRules.ts`.
   cleanup?: CleanupRules;
+  /// Which Labs surfaces are shown. Absent means all on — see shared/labs.ts.
+  /// Deliberately not in DEFAULT_SETTINGS, so a file from before Labs keeps
+  /// everything its owner already had.
+  labs?: import('./labs').Labs;
+  /// Set once the one-time "there's more in Labs" line on the start page has
+  /// been acted on or dismissed, so it never comes back.
+  seenLabsHint?: boolean;
+  /// "Not now" on that card hides it until this time (ms), once. A second
+  /// "Not now" retires it for good — see LabsHint.
+  labsHintSnoozedUntil?: number;
+  /// Projects (by path) whose "this can run things" card was dismissed.
+  servicesHintDismissed?: string[];
   /// When true, the sidebar footer shows a "Debug" button that opens the
   /// DebugSheet. Off by default to keep the footer lean; developers can
   /// flip it on in Settings → Advanced.
@@ -1577,6 +1589,12 @@ export interface IPCInvokeMap {
     mode?: 'app' | 'terminal';
   }) => AwsSsoLoginResult;
   'fs:pickDirectory': () => string[] | null;
+  /// What a just-picked folder most likely is — see main/childRepos.ts.
+  'fs:inspectFolder': (args: { path: string }) =>
+    | { kind: 'repo' }
+    | { kind: 'repos'; repoPaths: string[] }
+    | { kind: 'documents' }
+    | { kind: 'other' };
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: {
     path: string;
@@ -3038,6 +3056,8 @@ export interface IPCInvokeMap {
   /// Propose services for a set of checkouts, with the evidence each
   /// conclusion came from. Adds nothing: a proposal the user has not seen is
   /// not a decision they have made.
+  /// What a project could run, by name, without adding anything. See index.ts.
+  'services:peek': (args: { path: string; name: string }) => { name: string; runner: string }[];
   'services:scan': (args: {
     projects: { id: string; name: string; path: string }[];
   }) => { projectId: string; serviceId: string; proposal: ServiceProposal }[];

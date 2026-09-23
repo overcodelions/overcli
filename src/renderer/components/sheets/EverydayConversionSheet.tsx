@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { UUID } from '@shared/types';
 import { isEverydayProject, looksLikeEverydayProjectPath } from '@shared/everydayProjects';
@@ -10,7 +10,17 @@ import { GitInstallNotice, useGitAvailability } from '../GitInstallNotice';
 /// two because the decision is the same one seen from either side, and
 /// someone who just converted by mistake should find the way back where they
 /// found the way in.
-export function EverydayConversionSheet({ projectId }: { projectId: UUID }) {
+///
+/// `suggested` is the same offer made unprompted, right after "Open a folder"
+/// found mostly documents in it — so it is worded as a question about the
+/// folder rather than a setting, and never says "everyday".
+export function EverydayConversionSheet({
+  projectId,
+  suggested = false,
+}: {
+  projectId: UUID;
+  suggested?: boolean;
+}) {
   const project = useStore((s) => s.projects.find((p) => p.id === projectId));
   const isGitRepo = useStore((s) => s.projectIsGitRepo[projectId]);
   const convert = useStore((s) => s.convertToEverydayProject);
@@ -19,8 +29,15 @@ export function EverydayConversionSheet({ projectId }: { projectId: UUID }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const alreadyEveryday = !!project && isEverydayProject(project);
+  // A folder that already carries the marker became a documents project the
+  // moment it was added; there is nothing left to suggest.
+  useEffect(() => {
+    if (suggested && alreadyEveryday) openSheet(null);
+  }, [suggested, alreadyEveryday, openSheet]);
+
   if (!project) return null;
-  const everyday = isEverydayProject(project);
+  const everyday = alreadyEveryday;
   // `isEverydayProject` also answers yes for anything sitting in the managed
   // folder, so turning the flag off there would change nothing the user can
   // see. Say so instead of offering a button that appears to do nothing.
@@ -31,6 +48,8 @@ export function EverydayConversionSheet({ projectId }: { projectId: UUID }) {
   /// front rather than after a click that could never have worked.
   const availability = useGitAvailability(needsHistory);
   const gitMissing = needsHistory && availability !== null && availability.state !== 'ok';
+  // After every hook: the marker sync can flip this while the sheet is open.
+  if (suggested && everyday) return null;
 
   const run = async () => {
     setWorking(true);
@@ -45,7 +64,11 @@ export function EverydayConversionSheet({ projectId }: { projectId: UUID }) {
     <div className="flex flex-col p-5 gap-3">
       <div>
         <div className="text-lg font-semibold">
-          {everyday ? 'Treat this as an ordinary project' : 'Make this an everyday project'}
+          {everyday
+            ? 'Show this as files'
+            : suggested
+              ? 'This looks like a folder of documents'
+              : 'Show this as documents'}
         </div>
         <div className="text-xs text-ink-faint">{project.path}</div>
       </div>
@@ -59,14 +82,15 @@ export function EverydayConversionSheet({ projectId }: { projectId: UUID }) {
           <div>Your files are not touched, and the history stays, so Undo keeps working.</div>
           {pinnedByPath && (
             <div className="text-amber-400/90">
-              This folder lives in your Overcli Projects folder, so it will keep being treated as an
-              everyday project until you move it somewhere else.
+              This folder lives in your Overcli Projects folder, so it will keep being shown as
+              documents until you move it somewhere else.
             </div>
           )}
         </div>
       ) : (
         <div className="text-xs text-ink-muted leading-relaxed flex flex-col gap-2">
           <div>
+            {suggested ? 'Show it as documents? ' : ''}
             <span className="text-ink">{project.name}</span> will show its documents instead of a
             file tree, save as you type, and describe changes in plain words.
           </div>
@@ -89,18 +113,21 @@ export function EverydayConversionSheet({ projectId }: { projectId: UUID }) {
       {error && <div className="text-xs text-red-500">{error}</div>}
 
       <div className="flex justify-end gap-2">
-        <SheetActionButton label="Cancel" onClick={() => openSheet(null)} />
+        <SheetActionButton
+          label={suggested ? 'Keep it as files' : 'Cancel'}
+          onClick={() => openSheet(null)}
+        />
         <SheetActionButton
           primary
           disabled={working || (everyday && pinnedByPath) || gitMissing}
           label={
             working
               ? everyday
-                ? 'Turning off…'
+                ? 'Switching…'
                 : 'Setting up…'
               : everyday
-                ? 'Turn off'
-                : 'Make it everyday'
+                ? 'Show as files'
+                : 'Show as documents'
           }
           onClick={run}
         />

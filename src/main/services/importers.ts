@@ -1157,6 +1157,11 @@ export function suggestMachineValues(
   for (const option of options) {
     if (!option.value) continue;
     if (!looksSecret(option.key)) continue;
+    // Already a reference — `-Ddatabase.password=${DB_PASSWORD}` from a script
+    // that reads its environment. Lifting it would store the text
+    // `${DB_PASSWORD}` as a "password" under a new name, and the value the
+    // user actually sets would never reach the service.
+    if (isReference(option.value)) continue;
     // One name per distinct credential. The same key holding a DIFFERENT
     // value in two configurations is two credentials, and collapsing them
     // would start one service with the other's password.
@@ -1172,6 +1177,12 @@ export function suggestMachineValues(
 
 function optionIdentity(key: string, value: string): string {
   return `${key}\u0000${value}`;
+}
+
+/// `${NAME}` or `$NAME` and nothing else. Only the whole value: a real
+/// password can contain a `$`.
+function isReference(value: string): boolean {
+  return /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$/.test(value.trim());
 }
 
 function looksSecret(key: string): boolean {

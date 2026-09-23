@@ -50,19 +50,56 @@ export function loadSecretCiphertext(dataDir: string): Record<string, string> {
 }
 
 /// Every secret, decrypted. One that cannot be decrypted is left out rather
-/// than thrown: the service that needs it then fails with "Missing machine
-/// value: NAME", which names the fix, instead of the whole pane going down.
+/// than thrown, so the whole pane does not go down over one value —
+/// `unreadableSecretNames` is how the pane and the launch error say which.
 export function loadSecretValues(dataDir: string, cipher: SecretCipher | undefined): Record<string, string> {
-  if (!cipher?.available()) return {};
-  const out: Record<string, string> = {};
-  for (const [name, enc] of Object.entries(loadSecretCiphertext(dataDir))) {
+  return decryptAll(dataDir, cipher).values;
+}
+
+/// Secrets that are stored but this keychain cannot open — written by another
+/// build or signature of the app, from another machine, or after the keychain
+/// prompt was denied. They exist, so "missing" is the wrong word for them, and
+/// the only fix is retyping the value so it is encrypted with the key this
+/// app can read.
+export function unreadableSecretNames(dataDir: string, cipher: SecretCipher | undefined): string[] {
+  return decryptAll(dataDir, cipher).unreadable;
+}
+
+/// Names already reported, so a keychain that will not open does not repeat
+/// itself on every launch and every pane refresh.
+const warned = new Set<string>();
+
+function decryptAll(
+  dataDir: string,
+  cipher: SecretCipher | undefined,
+): { values: Record<string, string>; unreadable: string[] } {
+  const stored = loadSecretCiphertext(dataDir);
+  if (!cipher?.available()) {
+    const unreadable = Object.keys(stored);
+    warnOnce(unreadable, 'no keychain is available');
+    return { values: {}, unreadable };
+  }
+  const values: Record<string, string> = {};
+  const unreadable: string[] = [];
+  let reason = '';
+  for (const [name, enc] of Object.entries(stored)) {
     try {
-      out[name] = cipher.decrypt(enc);
-    } catch {
-      // See above.
+      values[name] = cipher.decrypt(enc);
+    } catch (error: unknown) {
+      unreadable.push(name);
+      reason ||= error instanceof Error ? error.message : String(error);
     }
   }
-  return out;
+  warnOnce(unreadable, reason);
+  return { values, unreadable };
+}
+
+/// The names and why, never a value or its ciphertext.
+function warnOnce(names: readonly string[], reason: string): void {
+  const fresh = names.filter((name) => !warned.has(name));
+  if (fresh.length === 0) return;
+  for (const name of fresh) warned.add(name);
+  console.warn(`[services] keychain could not unlock machine value(s) ${fresh.join(', ')}: ${reason}`);
 }
 
 export function saveSecretCiphertext(dataDir: string, entries: Record<string, string>): void {
