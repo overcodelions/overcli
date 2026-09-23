@@ -4,6 +4,23 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- **Open a folder, and overcli works out what it is.** A repo opens as code; a folder holding several repos offers to join them as a workspace; a folder of documents offers the documents view. The first screen offers "Open a folder" and "Start something new" instead of asking you to pick a project type.
+- **More ways into a workspace:** from a folder of repos, from "Work on … and…" in the composer's project menu, and from a card in the chat once a conversation edits another repo (it names the file). The new-workspace form asks for repos first and suggests the name.
+- **Labs.** Workers, the Orchestrator, Compare models (Colosseum), Local models and Services are switched in Settings → Labs. Existing installs keep everything on; a new install starts with them off, and a one-time card, "Labs…" in ⌘K and notices in Settings say where they are.
+- **Services suggests itself** on a project whose files show something it can run.
+- **Documents projects** get a "Run a flow" pill with that folder's own flows.
+- `OVERCLI_PROFILE=<name> npm run dev` runs a dev build against its own data folder, to test a first run safely.
+
+### Changed
+- "Everyday project" is called **documents** on screen.
+
+### Fixed
+- Services started from an app opened in the Dock get the login shell's environment (JAVA_HOME, AWS settings, PATH) and their own folder as `PWD`.
+- A secret the keychain can't open is flagged "Can't unlock — re-enter" instead of showing as stored and launching as missing.
+- Importing `-Ddb.password=${DB_PASSWORD}` no longer stores the reference text as a password; values that refer to other values resolve.
+- Documents folders no longer offer worktree flow runs.
+
 ## [0.19.0] - 2026-09-22
 
 ### Added

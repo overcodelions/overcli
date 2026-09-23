@@ -1,12 +1,17 @@
 # Everyday projects
 
+On screen these are **documents projects**; "everyday" is the name in code (`isEverydayProject`, `.overcli-project.json`), and never shown to users.
+
 ## What this is
 
 Everyday projects make Overcli useful for people who do not have a repo and should not need one.
 
-## The three doors
+## The doors
 
-The path has three doors: create an everyday project, offer history for an existing folder, and use plain language in the changes bar.
+- **Start something new** creates one in the managed folder, from a title and a goal.
+- **Open a folder** looks at what was picked (`inspectFolder` in `src/main/childRepos.ts`). A folder that is mostly documents is added, then offered the documents view; saying yes starts its history. A git repo, or a folder of repos, goes the code route instead.
+- Any existing project can be switched from the sidebar's "+ documents" badge, and back to files the same way.
+- Inside one, the changes bar speaks plain language.
 
 ## Where files live
 
