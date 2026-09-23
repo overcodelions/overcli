@@ -25,9 +25,19 @@ export function stripAnsi(line: string): string {
   return line.replace(ANSI, '');
 }
 
-export function createLogSink(fileFor: (serviceId: string) => string, limit = LOG_FILE_LIMIT): LogSink {
+/// Told once per service when its file stops taking lines — a full disk, a
+/// folder that lost its permissions — and again only after a write has worked
+/// in between, so a stuck disk is one report rather than one per line.
+export type LogSinkErrorHandler = (serviceId: string, error: unknown) => void;
+
+export function createLogSink(
+  fileFor: (serviceId: string) => string,
+  limit = LOG_FILE_LIMIT,
+  onError?: LogSinkErrorHandler,
+): LogSink {
   const queues = new Map<string, string[]>();
   const pending = new Map<string, Promise<void>>();
+  const failing = new Set<string>();
   const flush = (serviceId: string) => {
     const previous = pending.get(serviceId) ?? Promise.resolve();
     const next = previous.then(async () => {
@@ -42,7 +52,15 @@ export function createLogSink(fileFor: (serviceId: string) => string, limit = LO
         try { await fs.promises.rename(file, file.replace(/\.log$/, '.1.log')); } catch { /* best effort */ }
       }
       await fs.promises.appendFile(file, lines.join(''), 'utf8');
-    }).catch(() => undefined).finally(() => { if (!queues.has(serviceId)) pending.delete(serviceId); });
+      failing.delete(serviceId);
+    }).catch((error: unknown) => {
+      // Never thrown: a service must not die because its log could not be
+      // kept. But never silent either — the file is what gets handed over
+      // when something went wrong, and a gap in it has to be explained.
+      if (failing.has(serviceId)) return;
+      failing.add(serviceId);
+      try { onError?.(serviceId, error); } catch { /* the report is best effort too */ }
+    }).finally(() => { if (!queues.has(serviceId)) pending.delete(serviceId); });
     pending.set(serviceId, next);
     return next;
   };

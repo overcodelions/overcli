@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { describeDrift, driftedTasks, taskDrift } from './taskDrift';
+import { describeDrift, driftedTasks, lastSuccessfulRun, taskDrift } from './taskDrift';
 import type { ServiceBinding, ServiceRuntime, ServiceSpec } from './services';
 
 const spec = (over: Partial<ServiceSpec> & { id: string }): ServiceSpec => ({
@@ -116,6 +116,44 @@ describe('driftedTasks', () => {
         [bound('api'), bound('publish')],
       ),
     ).toEqual([{ task: publish, drift: { kind: 'unknown' } }]);
+  });
+
+  // A failed re-run installs nothing, so what is on disk is still what the
+  // earlier success left — and that is what gets compared.
+  it('measures a failed re-run against the last run that succeeded', () => {
+    const failed: ServiceRuntime = { serviceId: 'publish', status: 'failed', exitCode: 1 };
+    const lastRuns = { publish: { ref: 'master', commit: 'a'.repeat(40), at: 1 } };
+    expect(
+      driftedTasks(api, [api, publish], [failed], [bound('api'), bound('publish')], lastRuns),
+    ).toEqual([]);
+    expect(
+      driftedTasks(
+        api,
+        [api, publish],
+        [failed],
+        [bound('api'), bound('publish', { head: 'b'.repeat(40) })],
+        lastRuns,
+      ),
+    ).toEqual([
+      { task: publish, drift: { kind: 'commit', ran: 'a'.repeat(40), now: 'b'.repeat(40) } },
+    ]);
+    // With no success on record, a failure still means nothing is known.
+    expect(driftedTasks(api, [api, publish], [failed], [bound('api'), bound('publish')])).toEqual([
+      { task: publish, drift: { kind: 'unknown' } },
+    ]);
+  });
+});
+
+describe('lastSuccessfulRun', () => {
+  it('prefers a finished runtime over the record', () => {
+    const runtime = done('publish', { ranRef: 'feat/x' });
+    expect(lastSuccessfulRun(runtime, { ref: 'master', at: 1 })).toBe(runtime);
+  });
+
+  it('falls back to the record while a re-run is failing or still going', () => {
+    expect(
+      lastSuccessfulRun({ status: 'starting' }, { ref: 'master', commit: 'c', at: 1 }),
+    ).toEqual({ status: 'done', ranRef: 'master', ranCommit: 'c' });
   });
 });
 

@@ -243,6 +243,30 @@ describe('isSecretName', () => {
     expect(isSecretName('PASSWORD_FILE')).toBe(true);
     expect(isSecretName('TOKEN_NAME')).toBe(false);
   });
+
+  // Every one of these reached plain text, the log file and the Ask AI prompt
+  // when a bare `key` needed a second credential word to count.
+  it('treats a trailing key as a credential unless it names a data key', () => {
+    for (const n of [
+      'STRIPE_KEY', 'ENCRYPTION_KEY', 'JWT_KEY', 'JWT_SIGNING_KEY', 'SIGNING_KEY', 'MASTER_KEY',
+      'SESSION_KEY', 'HMAC_KEY', 'OPENAI_KEY', 'ACME_KEY', 'KEY', 'signingKey', 'acme-license-key',
+    ]) {
+      expect(isSecretName(n), n).toBe(true);
+    }
+    for (const n of [
+      'SORT_KEY', 'ROUTING_KEY', 'PARTITION_KEY', 'CACHE_KEY', 'PRIMARY_KEY', 'FOREIGN_KEY',
+      'IDEMPOTENCY_KEY', 'SHARD_KEY', 'cacheKey', 'STRIPE_PUBLIC_KEY', 'KEY_PREFIX', 'CACHE_KEY_PREFIX',
+      'SIGNING_KEY_PATH', 'AWS_ACCESS_KEY_ID',
+    ]) {
+      expect(isSecretName(n), n).toBe(false);
+    }
+  });
+
+  it('keeps AUTHORIZATION and BEARER secret whatever follows them', () => {
+    for (const n of ['AUTHORIZATION', 'AUTHORIZATION_HEADER', 'BEARER', 'BEARER_URL', 'X_AUTHORIZATION_KEY']) {
+      expect(isSecretName(n), n).toBe(true);
+    }
+  });
 });
 
 describe('copiesOf', () => {

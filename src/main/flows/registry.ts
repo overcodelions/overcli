@@ -9,7 +9,11 @@ import { SLUG_RE } from '../../shared/flows/validation';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import { validateFlow } from '../../shared/flows/validation';
 import { scanFlowRisks } from '../../shared/flows/riskScan';
-import { adaptFlowYamlToMachine, type InstallAdaptation } from '../../shared/flows/installAdapt';
+import {
+  adaptFlowYamlToMachine,
+  type InstallAdaptation,
+  type InstallKeptLocal,
+} from '../../shared/flows/installAdapt';
 import type { TemplateResolveContext } from '../../shared/flows/templateResolver';
 import { getAuthHeader } from './registryAuth';
 import { readLocalEntry, scanLocalRegistry, sha256Of } from './localRegistry';
@@ -168,18 +172,18 @@ export async function installFromRegistry(
   if (!flow) return { ok: false as const, error: 'YAML failed to parse.' };
   const v = validateFlow(flow);
   if (!v.ok) return { ok: false as const, error: `Validation failed: ${v.errors.map((x) => x.message).join('; ')}` };
-  // Deliberately NOT a gate. `scanFlowRisks` is a heuristic (see riskScan.ts),
-  // and a false positive that refuses a legitimate install would be worse than
-  // the warning it replaces. The findings ride along on the result so the caller
-  // can tell the user what it saw; the file is written either way.
-  const risks = scanFlowRisks(flow);
   // The SHA above is checked against what was published, and updates are
   // tracked by version rather than by re-hashing the installed file, so
   // binding the installed copy to this machine costs integrity nothing.
   let written = body;
+  let writtenFlow = flow;
   let adapted: InstallAdaptation[] = [];
+  let keptLocal: InstallKeptLocal[] = [];
   if (machine) {
     const result = adaptFlowYamlToMachine(body, await machine());
+    // Reported whether or not anything else was rebound: these are the steps
+    // that will not run until Ollama is up, and the user decides what to do.
+    keptLocal = result.keptLocal;
     // Belt and braces: an adaptation that no longer parses or validates is
     // discarded for the flow as published. Preflight will then name the
     // missing backend, which is a worse experience but never a broken file.
@@ -189,9 +193,16 @@ export async function installFromRegistry(
         : null;
     if (reparsed && validateFlow(reparsed).ok) {
       written = result.yaml;
+      writtenFlow = reparsed;
       adapted = result.changes;
     }
   }
+  // Deliberately NOT a gate. `scanFlowRisks` is a heuristic (see riskScan.ts),
+  // and a false positive that refuses a legitimate install would be worse than
+  // the warning it replaces. The findings ride along on the result so the caller
+  // can tell the user what it saw; the file is written either way. Scanned on
+  // what is actually written, not on what was published.
+  const risks = scanFlowRisks(writtenFlow);
   fs.mkdirSync(userFlowsDir(), { recursive: true });
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, written, 'utf-8');
@@ -202,7 +213,7 @@ export async function installFromRegistry(
   );
   list.push(installed);
   Store.saveSettings({ ...settings, installedRegistryFlows: list });
-  return { ok: true as const, filePath, risks, adapted };
+  return { ok: true as const, filePath, risks, adapted, keptLocal };
 }
 
 export function upsertRegistry(args: { registry: FlowRegistry; authHeader?: string | null }) {

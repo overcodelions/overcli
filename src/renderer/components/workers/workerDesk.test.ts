@@ -35,6 +35,7 @@ import {
   workerDeskOrchestrations,
   workerDeskRuns,
   indexWorkerHistory,
+  sharedWorkerHistory,
   type WorkerActivity,
   sidebarActivity,
   sidebarShifts,
@@ -136,6 +137,22 @@ describe('worker desk selectors', () => {
     expect(index.runs['worker-2'].map((item) => item.id)).toEqual(['b']);
     expect(index.orchestrations['worker-1'].map((item) => item.id)).toEqual(['2', '1']);
     expect(index.orchestrations['worker-2'].map((item) => item.id)).toEqual(['3']);
+  });
+
+  it('builds the shared index once per store update, whoever asks for it', () => {
+    const runs = { a: run('a', { workerId: 'worker-1', createdAt: 1 }) };
+    const batches = { a: batch('1', 'worker-1') };
+
+    const first = sharedWorkerHistory(runs, batches);
+    // A second surface reading the same stores gets the same pass back.
+    expect(sharedWorkerHistory(runs, batches)).toBe(first);
+
+    // Either store moving rebuilds it.
+    const moved = { ...runs, b: run('b', { workerId: 'worker-1', createdAt: 2 }) };
+    const next = sharedWorkerHistory(moved, batches);
+    expect(next).not.toBe(first);
+    expect(next.runs['worker-1'].map((item) => item.id)).toEqual(['b', 'a']);
+    expect(sharedWorkerHistory(moved, { ...batches })).not.toBe(next);
   });
 
   it('claims worker runs by identity and sorts them newest first', () => {

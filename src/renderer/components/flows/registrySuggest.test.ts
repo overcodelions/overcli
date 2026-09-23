@@ -38,6 +38,12 @@ const REGISTRY: FlowRegistryEntry[] = [
 ];
 
 describe('suggestRegistryFlows', () => {
+  it('scores a tag that names an Object prototype key as nothing', () => {
+    const score = scoreRegistryEntry(entry('a', ['constructor', 'toString', '__proto__']));
+    expect(score).toBe(0);
+    expect(typeof score).toBe('number');
+  });
+
   it('opens on code work, not on the alphabetical head', () => {
     const picked = suggestRegistryFlows(REGISTRY).map((e) => e.id);
     expect(picked).toEqual(['security-review', 'code-review', 'coverage-gap-report']);

@@ -38,6 +38,9 @@ export interface OwnerContext {
   appRoot?: string;
   /// The checkout the service runs from.
   servicePath?: string;
+  /// What overcli would launch for it. When known, the top of a leftover's
+  /// tree must be a process running THIS — see `serviceRoot`.
+  tokens?: readonly string[];
 }
 
 /// Enough of the process table to tell who started whom, and where.
@@ -45,6 +48,9 @@ export interface ProcessFacts {
   selfPid: number;
   parents: ReadonlyMap<number, number>;
   cwds: ReadonlyMap<number, string>;
+  /// Each process's command line, where the scan read one. Absent means the
+  /// root of a tree is decided by working folder alone.
+  args?: ReadonlyMap<number, string>;
 }
 
 function within(dir: string, root: string): boolean {
@@ -83,7 +89,7 @@ export function classifyOwner(pid: number, ctx: OwnerContext, facts: ProcessFact
   if (ctx.appRoot && within(cwd, ctx.appRoot) && !inService) return 'self';
   if (!inService) return 'other';
 
-  const top = serviceRoot(pid, ctx.servicePath!, facts);
+  const top = serviceRoot(pid, ctx.servicePath!, facts, ctx.tokens);
   return facts.parents.get(top) === 1 ? 'stale' : 'other';
 }
 
@@ -96,27 +102,60 @@ export function classifyOwner(pid: number, ctx: OwnerContext, facts: ProcessFact
 /// first parent outside the checkout stopped at the daemon and called every
 /// Gradle service somebody else's. A parent whose cwd cannot be read ends the
 /// walk: nothing can be concluded about a process we cannot see.
-function serviceRoot(pid: number, servicePath: string, facts: ProcessFacts): number {
+///
+/// Working in the checkout is not the same as being the service. A tmux
+/// server or a shell started there is in the checkout too, and orphaned to
+/// launchd besides, so the folder alone made it the "leftover" — and Stop took
+/// down every pane it held. With the launch `tokens` known, the root is the
+/// highest ancestor whose command line is what overcli would have run; with
+/// none of them matching, it is the process itself, which is stale only when
+/// it has been orphaned directly. That still covers what a `concurrently`
+/// killed mid-run leaves behind: a vite whose own parent is launchd.
+function serviceRoot(
+  pid: number,
+  servicePath: string,
+  facts: ProcessFacts,
+  tokens?: readonly string[],
+): number {
+  const byCommand = tokens !== undefined && tokens.length > 0 && facts.args !== undefined;
+  const launched = (at: number) => byCommand && launchedAs(facts.args!.get(at) ?? '', tokens!);
   let top = pid;
+  let matched = launched(pid) ? pid : undefined;
   let at = pid;
   for (let guard = 0; guard < 64; guard++) {
     const parent = facts.parents.get(at);
     if (parent === undefined || parent <= 1) break;
     const parentCwd = facts.cwds.get(parent);
     if (!parentCwd) break;
-    if (within(parentCwd, servicePath)) top = parent;
+    if (within(parentCwd, servicePath)) {
+      top = parent;
+      if (launched(parent)) matched = parent;
+    }
     at = parent;
   }
-  return top;
+  if (!byCommand) return top;
+  return matched ?? pid;
+}
+
+/// Whether a process is the one overcli would have launched: its arguments,
+/// or failing those its program. The program alone has to be enough, because
+/// a launcher's own command line rarely carries every token — `./gradlew
+/// bootRun -Dspring.profiles.active=local` hands its options to the app JVM,
+/// and the wrapper's argv shows `GradleWrapperMain bootRun` and
+/// `-Dorg.gradle.appname=gradlew`. Requiring every token made the wrapper
+/// no-one's, and every Gradle leftover somebody else's. A tmux server or a
+/// shell names neither, which is all this has to rule out.
+function launchedAs(args: string, tokens: readonly string[]): boolean {
+  return commandMatches(args, tokens) || programMatches(args, tokens);
 }
 
 /// A leftover's whole tree hangs off its root, and that is what stopping it
 /// has to take down. The listener alone is the app JVM; its daemon and wrapper
 /// outlive it, and a portless one found by its wrapper leaves the app JVM
 /// behind, still holding whatever it binds — which the next start then hits.
-function withRoot(owner: PortOwner, servicePath: string | undefined, facts: ProcessFacts): PortOwner {
-  if (owner.kind !== 'stale' || !servicePath) return owner;
-  return { ...owner, root: serviceRoot(owner.pid, servicePath, facts) };
+function withRoot(owner: PortOwner, ctx: OwnerContext, facts: ProcessFacts): PortOwner {
+  if (owner.kind !== 'stale' || !ctx.servicePath) return owner;
+  return { ...owner, root: serviceRoot(owner.pid, ctx.servicePath, facts, ctx.tokens) };
 }
 
 /// One kind for a set of holders. Any `self` wins, because offering to stop
@@ -158,7 +197,11 @@ export function parseLsofCwds(text: string): Map<number, string> {
 export type LookupRunner = (command: string, args: string[]) => Promise<string | null>;
 
 async function processFacts(pids: readonly number[], runner: LookupRunner): Promise<ProcessFacts> {
-  const parents = parsePsParents((await runner('ps', ['-axo', 'pid=,ppid='])) ?? '');
+  // The command lines come along in the same scan: deciding which ancestor is
+  // the service's root needs them, and a second `ps` would cost as much again.
+  const rows = parsePsArgs((await runner('ps', ['-axo', 'pid=,ppid=,args='])) ?? '');
+  const parents = new Map(rows.map((row) => [row.pid, row.ppid]));
+  const args = new Map(rows.map((row) => [row.pid, row.args]));
   const wanted = new Set<number>();
   for (const pid of pids) {
     let at: number | undefined = pid;
@@ -171,7 +214,7 @@ async function processFacts(pids: readonly number[], runner: LookupRunner): Prom
     wanted.size === 0
       ? new Map<number, string>()
       : parseLsofCwds((await runner('lsof', ['-a', '-d', 'cwd', '-p', [...wanted].join(','), '-Fpn'])) ?? '');
-  return { selfPid: process.pid, parents, cwds };
+  return { selfPid: process.pid, parents, cwds, args };
 }
 
 /// Parse `lsof -Fpc` field output.
@@ -236,18 +279,40 @@ export function parseTasklistName(text: string): string | null {
 
 /// Run a lookup tool, or null when it is missing or refused. lsof also exits
 /// non-zero when nothing matches, which is the common case and reads the same.
+///
+/// But a non-zero exit WITH output is kept. lsof asked about forty pids exits 1
+/// when one of them has exited or cannot be read, and still prints the other
+/// thirty-nine; discarding them blanked every working folder at once, and a
+/// blank folder classifies as `other` — so one vanished pid switched leftover
+/// detection off for the whole stack.
+///
+/// The buffer is raised well past Node's 1 MB default. `ps -axo args=` on a
+/// machine running a dozen JVMs is over a megabyte of classpaths, and at the
+/// default the scan failed outright — every leftover then read as nobody's
+/// tree, and nothing was ever adopted.
 const execFileAsync = promisify(execFile);
+const LOOKUP_MAX_BUFFER = 64 * 1024 * 1024;
 async function run(command: string, args: string[]): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(command, args, {
       encoding: 'utf8',
       timeout: 3_000,
+      maxBuffer: LOOKUP_MAX_BUFFER,
       windowsHide: true,
     });
     return stdout;
-  } catch {
-    return null;
+  } catch (err) {
+    return partialOutput(err);
   }
+}
+
+/// What a failed lookup still printed: only for a tool that ran and exited
+/// with a status. A missing binary (`code` is `ENOENT`) or a timeout (killed,
+/// `code` null) says nothing, and half a timed-out listing is not an answer.
+export function partialOutput(err: unknown): string | null {
+  const failure = err as { code?: unknown; killed?: boolean; stdout?: unknown };
+  if (typeof failure.code !== 'number' || failure.killed) return null;
+  return typeof failure.stdout === 'string' && failure.stdout.trim() ? failure.stdout : null;
 }
 
 async function windowsOwners(port: number, runner: LookupRunner): Promise<PortOwner[]> {
@@ -381,7 +446,7 @@ export async function portOwnersFor(
   for (const [port, owners] of byPort) {
     const ctx = contextFor(port);
     byPort.set(port, owners.map((o) =>
-      withRoot({ ...o, kind: classifyOwner(o.pid, ctx, facts) }, ctx.servicePath, facts)));
+      withRoot({ ...o, kind: classifyOwner(o.pid, ctx, facts) }, ctx, facts)));
   }
   return byPort;
 }
@@ -448,12 +513,27 @@ export function commandMatches(args: string, tokens: readonly string[]): boolean
   return words.every((word) => present.has(word));
 }
 
+/// Whether the program a spec starts with still shows in a command line —
+/// `npm` in `node /usr/lib/npm-cli.js`, `gradlew` in the wrapper's
+/// `-Dorg.gradle.appname=gradlew`. Not required, for the reason above, but
+/// evidence: it settles which of two services a process answers to when their
+/// arguments cannot, as with `npm run dev` beside `yarn run dev`.
+export function programMatches(args: string, tokens: readonly string[]): boolean {
+  const program = tokens[0]?.trim();
+  if (!program) return false;
+  const name = path.basename(program.replace(/\\/g, '/')).replace(/\.(cmd|bat|exe|sh|ps1)$/i, '');
+  if (name.length < 2) return false;
+  return args.split(/\s+/).some((word) => path.basename(word.replace(/\\/g, '/')).includes(name));
+}
+
 /// `ps -axo pid=,ppid=,args=` as pid, parent and command line.
+/// A row with no command line — a zombie, or a `ps` that printed none — is
+/// kept with an empty one: its parent still matters to the tree.
 export function parsePsArgs(text: string): { pid: number; ppid: number; args: string }[] {
   const out: { pid: number; ppid: number; args: string }[] = [];
   for (const line of text.split('\n')) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
-    if (match) out.push({ pid: Number(match[1]), ppid: Number(match[2]), args: match[3] });
+    const match = /^\s*(\d+)\s+(\d+)(?:\s+(.*?))?\s*$/.exec(line);
+    if (match) out.push({ pid: Number(match[1]), ppid: Number(match[2]), args: match[3] ?? '' });
   }
   return out;
 }
@@ -463,15 +543,19 @@ export function parsePsArgs(text: string): { pid: number; ppid: number; args: st
 /// A port is the honest handle: something is listening on it or it is not.
 /// Without one the only evidence left is the command line and where it runs,
 /// so both must agree — every token of what we would launch appears in the
-/// process's arguments, and it is working inside that service's checkout.
-/// Startup options are part of that command line, which is what tells four
-/// copies of one processor apart.
+/// process's arguments, and it is working inside that service's own folder:
+/// the checkout, and the subfolder within it the service runs from. Startup
+/// options are part of that command line, which is what tells four copies of
+/// one processor apart; the folder is what tells `npm run dev` in `apps/web`
+/// from `npm run dev` in `apps/admin`.
 ///
 /// Ambiguity is refused, in both directions: a process that answers to two
 /// services, or a service that two processes answer to, is attributed to
-/// neither. Claiming the wrong one would stop the wrong work.
+/// neither. Claiming the wrong one would stop the wrong work. That only works
+/// when every service that could answer is asked about — a caller looking for
+/// one service still passes the whole stack, and reads its own entry.
 export async function matchingProcesses(
-  targets: readonly { key: string; tokens: readonly string[]; checkout: string }[],
+  targets: readonly { key: string; tokens: readonly string[]; checkout: string; subpath?: string }[],
   runner: LookupRunner = run,
   platform: NodeJS.Platform = process.platform,
 ): Promise<Map<string, ProcessMatch>> {
@@ -483,29 +567,18 @@ export async function matchingProcesses(
   const rows = parsePsArgs((await runner('ps', ['-axo', 'pid=,ppid=,args='])) ?? '');
   if (rows.length === 0) return found;
 
-  // Which services each process could be, and which processes each service
-  // could be. Both are needed to refuse the ambiguous cases.
-  const keysByPid = new Map<number, string[]>();
-  const pidsByKey = new Map<string, number[]>();
-  for (const row of rows) {
-    for (const target of targets) {
-      if (!commandMatches(row.args, target.tokens)) continue;
-      keysByPid.set(row.pid, [...(keysByPid.get(row.pid) ?? []), target.key]);
-      pidsByKey.set(target.key, [...(pidsByKey.get(target.key) ?? []), row.pid]);
-    }
-  }
-
-  const candidates = [...pidsByKey.entries()].filter(
-    ([key, pids]) => pids.length === 1 && (keysByPid.get(pids[0]) ?? []).length === 1 && key !== undefined,
-  );
-  if (candidates.length === 0) return found;
+  const byCommand = rows.flatMap((row) =>
+    targets.filter((t) => commandMatches(row.args, t.tokens)).map((target) => ({ row, target })));
+  if (byCommand.length === 0) return found;
 
   // The parent map comes out of the scan already made: `processFacts` would
-  // run a second `ps` for what this one already said.
+  // run a second `ps` for what this one already said. Working folders for
+  // every process whose command line matched anything, not only the ones
+  // that look unambiguous yet: the folder is what settles most ambiguity.
   const parents = new Map(rows.map((row) => [row.pid, row.ppid]));
   const wanted = new Set<number>();
-  for (const [, pids] of candidates) {
-    let at: number | undefined = pids[0];
+  for (const { row } of byCommand) {
+    let at: number | undefined = row.pid;
     for (let guard = 0; at !== undefined && at > 1 && guard < 64; guard++) {
       wanted.add(at);
       at = parents.get(at);
@@ -514,24 +587,74 @@ export async function matchingProcesses(
   const cwds = parseLsofCwds(
     (await runner('lsof', ['-a', '-d', 'cwd', '-p', [...wanted].join(','), '-Fpn'])) ?? '',
   );
-  const facts: ProcessFacts = { selfPid: process.pid, parents, cwds };
-  for (const [key, pids] of candidates) {
+  const facts: ProcessFacts = {
+    selfPid: process.pid,
+    parents,
+    cwds,
+    args: new Map(rows.map((row) => [row.pid, row.args])),
+  };
+  const folderOf = (target: (typeof targets)[number]) =>
+    target.subpath ? path.join(target.checkout, target.subpath) : target.checkout;
+
+  // Which services each process could be, and which processes each service
+  // could be. Both are needed to refuse the ambiguous cases.
+  const keysByPid = new Map<number, string[]>();
+  const pidsByKey = new Map<string, number[]>();
+  for (const { row, target } of byCommand) {
+    const cwd = cwds.get(row.pid);
+    if (!cwd || !within(cwd, folderOf(target))) continue;
+    keysByPid.set(row.pid, [...(keysByPid.get(row.pid) ?? []), target.key]);
+    pidsByKey.set(target.key, [...(pidsByKey.get(target.key) ?? []), row.pid]);
+  }
+
+  // A process two services' arguments both fit may still name only one of
+  // their programs. That settles it; anything less stays refused.
+  for (const [pid, keys] of keysByPid) {
+    if (keys.length < 2) continue;
+    const args = facts.args?.get(pid) ?? '';
+    const named = keys.filter((key) => programMatches(args, targets.find((t) => t.key === key)?.tokens ?? []));
+    if (named.length !== 1) continue;
+    keysByPid.set(pid, named);
+    for (const key of keys) {
+      if (key !== named[0]) pidsByKey.set(key, (pidsByKey.get(key) ?? []).filter((p) => p !== pid));
+    }
+  }
+
+  for (const [key, pids] of pidsByKey) {
+    if (pids.length !== 1 || (keysByPid.get(pids[0]) ?? []).length !== 1) continue;
     const pid = pids[0];
     const target = targets.find((t) => t.key === key);
     if (!target) continue;
-    const ctx: OwnerContext = { servicePath: target.checkout };
-    const cwd = facts.cwds.get(pid);
-    if (!cwd || !within(cwd, target.checkout)) continue;
-    const row = rows.find((r) => r.pid === pid);
+    // The process itself had to be in the service's own folder; its tree is
+    // walked across the whole checkout, because the wrapper that started it —
+    // `./gradlew :orders-service:bootRun` — runs from the checkout's root.
+    const ctx: OwnerContext = { servicePath: target.checkout, tokens: target.tokens };
     const kind = classifyOwner(pid, ctx, facts);
     found.set(key, {
       pid,
-      command: row?.args ?? '',
+      command: facts.args?.get(pid) ?? '',
       kind,
-      ...(kind === 'stale' ? { root: serviceRoot(pid, target.checkout, facts) } : {}),
+      ...(kind === 'stale' ? { root: serviceRoot(pid, ctx.servicePath!, facts, ctx.tokens) } : {}),
     });
   }
   return found;
+}
+
+/// When a process started, as `ps` prints it — the half of its identity a
+/// reused pid cannot copy. Recorded when a leftover is adopted and compared
+/// before it is signalled: a pid is only a number, and after the leftover
+/// exits the OS hands it to whatever starts next.
+///
+/// `null` when no such process is running; `undefined` where this cannot be
+/// told at all (Windows), which a caller must not read as "gone".
+export async function processStarted(
+  pid: number,
+  runner: LookupRunner = run,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | null | undefined> {
+  if (platform === 'win32' || !Number.isInteger(pid) || pid <= 1) return undefined;
+  const out = (await runner('ps', ['-o', 'lstart=', '-p', String(pid)]))?.trim();
+  return out ? out : null;
 }
 
 /// Ask these processes to stop, then insist. SIGTERM first so a server can

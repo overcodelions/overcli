@@ -128,6 +128,54 @@ steps:
   });
 });
 
+describe('adaptFlowYamlToMachine — a step bound to Ollama', () => {
+  const LOCAL = `name: Local triage
+input: user_prompt
+participants:
+  - id: triage
+    name: Triage
+    backend: ollama
+    model: qwen2.5-coder:7b
+  - id: lead
+    name: Lead
+    backend: claude
+    model: claude-opus-5
+steps:
+  - id: sort
+    participant: triage
+    role: planner
+    inputs: [user_prompt]
+    output: plan.md
+`;
+
+  // Ollama being down at install time is no consent to send that step's
+  // prompt to a cloud model, permanently.
+  it('never moves it to a cloud backend, and says so', () => {
+    const out = adaptFlowYamlToMachine(LOCAL, machine({ healthyBackends: ['claude', 'codex'] }));
+    expect(out.yaml).toBe(LOCAL);
+    expect(out.changes).toEqual([]);
+    expect(out.keptLocal).toEqual([{ where: 'participant Triage', model: 'ollama:qwen2.5-coder:7b' }]);
+  });
+
+  it('still rebinds the cloud references around it', () => {
+    const out = adaptFlowYamlToMachine(LOCAL, machine({ healthyBackends: ['codex'] }));
+    expect(out.changes.map((c) => c.where)).toEqual(['participant Lead']);
+    expect(out.yaml).toContain('model: qwen2.5-coder:7b');
+    expect(out.keptLocal.map((k) => k.where)).toEqual(['participant Triage']);
+  });
+
+  it('may move it to another local model that is pulled', () => {
+    const out = adaptFlowYamlToMachine(
+      LOCAL,
+      machine({ healthyBackends: ['ollama', 'claude'], ollamaModels: ['llama3.3:8b'] }),
+    );
+    expect(out.changes).toEqual([
+      { where: 'participant Triage', from: 'ollama:qwen2.5-coder:7b', to: 'ollama:llama3.3:8b' },
+    ]);
+    expect(out.keptLocal).toEqual([]);
+  });
+});
+
 describe('adaptFlowYamlToMachine — a reference with no backend line', () => {
   // The parser reads a missing `backend:` as Claude, so on a machine without
   // Claude the line has to be added, not just the model swapped.

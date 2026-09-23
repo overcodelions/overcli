@@ -48,6 +48,7 @@ import {
   matchingProcesses,
   portOwners,
   portOwnersFor,
+  processStarted,
   stopPids,
   type OwnerContext,
 } from './portOwners';
@@ -58,6 +59,7 @@ import {
   ensureServiceConfigDir,
   machineValuesFile,
   serviceLogFile,
+  servicesRoot,
   loadMachineValues,
   loadStack,
   saveMachineValues,
@@ -71,6 +73,7 @@ import {
 } from './machineSecrets';
 import { isSecretName, SECRET_MASK } from '../../shared/machineValues';
 import { createLogSink } from './logFile';
+import { log } from '../diagnostics';
 import { watchServiceFiles } from './fileWatch';
 import type { CaughtException } from '../../shared/exceptions';
 import { Supervisor, type SupervisorEvent } from './supervisor';
@@ -104,6 +107,10 @@ const REF_TTL_MS = 5_000;
 
 /// A machine value's name has to be something `${NAME}` can refer to.
 const MACHINE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/// A `${NAME}` inside a value, captured so a split keeps it: the pieces then
+/// alternate typed text, reference, typed text.
+const ENV_REFERENCE = /(\$\{[A-Za-z_][A-Za-z0-9_]*\})/;
 
 export class ServicesManager {
   /// Main checkout per checkout — see `localConfigScan`.
@@ -157,6 +164,7 @@ export class ServicesManager {
         return head ? { ...b, head } : b;
       }),
       runtimes: stack.services.map((s) => supervisor?.runtime(s.id) ?? { serviceId: s.id, status: 'stopped' }),
+      lastRuns: stack.lastRuns,
     };
   }
 
@@ -695,10 +703,22 @@ export class ServicesManager {
     const binding = stack.bindings.find((b) => b.serviceId === serviceId);
     const machine = this.allMachineValues();
 
-    const env = { ...(spec.config.inject ?? {}) };
+    // Every typed-in part of the injected env is masked, whatever its name:
+    // a name is a guess, and a guess that misses sends a credential to a model
+    // provider. What stays is which `${NAME}`s a variable is built from, which
+    // is what the model needs to spot a missing or misnamed one.
+    const env: Record<string, string> = {};
+    const literals: string[] = [];
     const configDir = ensureServiceConfigDir(this.dataDir, workspaceId, serviceId);
-    for (const key of Object.keys(env)) {
-      env[key] = env[key].replace(/\$\{SERVICE_CONFIG_DIR\}/g, configDir);
+    for (const [key, value] of Object.entries(spec.config.inject ?? {})) {
+      env[key] = value
+        .split(ENV_REFERENCE)
+        .map((part, i) => {
+          if (i % 2 === 1) return part === '${SERVICE_CONFIG_DIR}' ? configDir : part;
+          if (part !== '') literals.push(part);
+          return part === '' ? '' : SECRET_MASK;
+        })
+        .join('');
     }
 
     return {
@@ -712,8 +732,9 @@ export class ServicesManager {
         secrets: [
           ...Object.values(machine),
           // A credential typed straight into a service's injected env is in no
-          // machine value, so nothing else would catch it by value.
-          ...Object.entries(env).filter(([k]) => isSecretName(k)).map(([, v]) => v),
+          // machine value, so nothing else would catch it when the service
+          // echoes it into its output.
+          ...literals,
         ],
       }),
       cwd: binding?.path ?? this.dataDir,
@@ -993,14 +1014,23 @@ export class ServicesManager {
   machineValues(): MachineValuesView {
     this.migratePlainSecrets();
     const secret = loadSecretCiphertext(this.dataDir);
+    const keptPlain = loadKeptPlain(this.dataDir);
     const entries: MachineEntry[] = [
       ...Object.entries(loadMachineValues(this.dataDir))
         .filter(([name]) => !(name in secret))
-        .map(([name, value]) => ({ name, secret: false, value })),
+        .map(([name, value]) => ({ name, secret: false, value, ...(keptPlain.has(name) ? { keepPlain: true } : {}) })),
       ...Object.keys(secret).map((name) => ({ name, secret: true, stored: true })),
     ];
     entries.sort((a, b) => a.name.localeCompare(b.name));
-    return { entries, secureStorage: this.cipher?.available() ?? false, migrationError: this.migrationError, backupPath: this.backupPath };
+    // From disk, not from this session: a backup made by an earlier launch is
+    // just as much cleartext, and the banner is the only place that says so.
+    const backups = machineBackups(this.dataDir);
+    return {
+      entries,
+      secureStorage: this.cipher?.available() ?? false,
+      migrationError: this.migrationError,
+      ...(backups.length > 0 ? { backupPaths: backups } : {}),
+    };
   }
 
   /// Replace the machine values. A secret arriving without a value keeps the
@@ -1010,6 +1040,7 @@ export class ServicesManager {
     const previous = loadSecretCiphertext(this.dataDir);
     const plain: MachineValues = {};
     const secret: Record<string, string> = {};
+    const keptPlain = new Set<string>();
 
     for (const entry of entries) {
       const name = String(entry?.name ?? '').trim();
@@ -1022,6 +1053,8 @@ export class ServicesManager {
       }
       if (!entry.secret) {
         plain[name] = String(entry.value);
+        // Only a name the migration would take needs remembering.
+        if (entry.keepPlain && isSecretName(name)) keptPlain.add(name);
         continue;
       }
       if (!this.cipher?.available()) {
@@ -1036,16 +1069,18 @@ export class ServicesManager {
     // both files, never a password that was in neither.
     saveSecretCiphertext(this.dataDir, secret);
     saveMachineValues(this.dataDir, plain);
+    saveKeptPlain(this.dataDir, keptPlain);
     // A supervisor caches the decrypted list; a changed secret must reach the
     // masker on the next line, not the next app start.
     this.secretsChanged();
   }
 
+  /// Remove every cleartext backup a migration left, this launch's or not.
   deleteMachineBackup(): void {
-    const backup = `${machineValuesFile(this.dataDir)}.pre-secrets.bak`;
-    // Already gone (removed by hand, or a second click) is the outcome asked for.
-    fs.rmSync(backup, { force: true });
-    this.backupPath = undefined;
+    for (const backup of machineBackups(this.dataDir)) {
+      // Already gone (removed by hand, or a second click) is the outcome asked for.
+      fs.rmSync(backup, { force: true });
+    }
   }
 
   private secretsChanged(): void {
@@ -1087,7 +1122,6 @@ export class ServicesManager {
 
   private migrated = false;
   private migrationError: string | undefined;
-  private backupPath: string | undefined;
 
   /// Move credential-named values out of the plain-text file, once. Values
   /// saved before secrets were encrypted are sitting in `machine.json`; the
@@ -1099,13 +1133,16 @@ export class ServicesManager {
   private migratePlainSecrets(): void {
     if (this.migrated || !this.cipher?.available()) return;
     const plain = loadMachineValues(this.dataDir);
+    // Made plain on purpose in the pane — encrypting it again is overruling
+    // the user, and they would have to notice to undo it every launch.
+    const keptPlain = loadKeptPlain(this.dataDir);
     const isExistingPath = (value: string) => {
       if (!/^(~\/|\/|\.\.?\/)/.test(value)) return false;
       const expanded = value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value;
       return fs.existsSync(expanded);
     };
     const moving = Object.entries(plain).filter(
-      ([name, value]) => value !== '' && isSecretName(name) && !isExistingPath(value),
+      ([name, value]) => value !== '' && isSecretName(name) && !keptPlain.has(name) && !isExistingPath(value),
     );
     // Nothing to move is a settled answer, not a retry.
     if (moving.length === 0) {
@@ -1115,20 +1152,16 @@ export class ServicesManager {
     const secret = loadSecretCiphertext(this.dataDir);
     // One-way and irreversible otherwise: safeStorage ciphertext is bound to
     // this login keychain, so a restored backup or a rollback would have no
-    // copy of these values at all. 0600, beside the file it came from.
+    // copy of these values at all. A new one per migration: an older backup
+    // predates the values being moved now, so reusing it would leave them
+    // with no cleartext copy anywhere.
     try {
-      const backup = `${machineValuesFile(this.dataDir)}.pre-secrets.bak`;
-      fs.writeFileSync(backup, fs.readFileSync(machineValuesFile(this.dataDir)), { mode: 0o600, flag: 'wx' });
-      this.backupPath = backup;
+      writeMachineBackup(this.dataDir);
     } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        this.backupPath = `${machineValuesFile(this.dataDir)}.pre-secrets.bak`;
-      } else {
-        this.migrationError = error instanceof Error ? error.message : String(error);
-        // No backup, no migration — never delete the only copy.
-        this.migrated = true;
-        return;
-      }
+      this.migrationError = error instanceof Error ? error.message : String(error);
+      // No backup, no migration — never delete the only copy.
+      this.migrated = true;
+      return;
     }
     for (const [name, value] of moving) {
       secret[name] = this.cipher.encrypt(value);
@@ -1522,17 +1555,20 @@ export class ServicesManager {
       mirrorLocalConfig: (serviceId, checkout) => this.mirrorLocalConfig(workspaceId, serviceId, checkout),
       headOf: (checkout) => this.headFor(checkout),
       portOwners: (wanted) => {
-        const byPort = new Map(wanted.map((w) => [w.port, w.serviceId]));
-        return portOwnersFor(wanted.map((w) => w.port), (port) =>
-          this.ownerContext(workspaceId, byPort.get(port)));
+        const byPort = new Map(wanted.map((w) => [w.port, w]));
+        return portOwnersFor(wanted.map((w) => w.port), (port) => ({
+          ...this.ownerContext(workspaceId, byPort.get(port)?.serviceId),
+          tokens: byPort.get(port)?.tokens,
+        }));
       },
       matchProcesses: (targets) => {
         const bindings = this.stack(workspaceId).bindings;
         return matchingProcesses(targets.flatMap((t) => {
           const checkout = bindings.find((b) => b.serviceId === t.serviceId)?.path;
-          return checkout ? [{ key: t.serviceId, tokens: t.tokens, checkout }] : [];
+          return checkout ? [{ key: t.serviceId, tokens: t.tokens, checkout, subpath: t.subpath }] : [];
         }));
       },
+      processStarted: (pid) => processStarted(pid),
       // The tree, not the pid: an adopted Gradle service is wrapper, daemon
       // and app, and the app is the one holding its ports.
       stopProcess: async (pid) => {
@@ -1541,7 +1577,18 @@ export class ServicesManager {
       stopHolder: async (port, serviceId) => {
         await freePort(port, { context: this.ownerContext(workspaceId, serviceId) });
       },
-      logSink: createLogSink((serviceId) => serviceLogFile(this.dataDir, workspaceId, serviceId)),
+      logSink: createLogSink(
+        (serviceId) => serviceLogFile(this.dataDir, workspaceId, serviceId),
+        undefined,
+        // Said in the output the user is already watching, and in the app's
+        // own log: a service.log that quietly stopped is one nobody can trust.
+        (serviceId, error) => {
+          const file = serviceLogFile(this.dataDir, workspaceId, serviceId);
+          log('warn', 'services', `Could not write ${file}; its lines are being dropped`, error);
+          const reason = error instanceof Error ? error.message : String(error);
+          this.emit({ kind: 'line', serviceId, line: `[overcli] Could not write this service's log file (${reason}). Output is still shown here.`, workspaceId });
+        },
+      ),
       watchFiles: watchServiceFiles,
     }, stack.lastRuns);
     supervisor.on((event) => {
@@ -1632,6 +1679,68 @@ export class ServicesManager {
 }
 
 /// A slug fit for an id segment and a directory name.
+/// Cleartext copies of `machine.json` left by migrations, by name — which for
+/// the timestamped ones is oldest first. The untimestamped name is what
+/// earlier versions wrote; it is still cleartext.
+function machineBackups(dataDir: string): string[] {
+  const base = `${path.basename(machineValuesFile(dataDir))}.pre-secrets`;
+  let names: string[];
+  try {
+    names = fs.readdirSync(servicesRoot(dataDir));
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => name.startsWith(base) && name.endsWith('.bak'))
+    .sort()
+    .map((name) => path.join(servicesRoot(dataDir), name));
+}
+
+/// Copy `machine.json` to a new timestamped backup, 0600, beside it. `wx`
+/// so an existing backup is never overwritten; two in the same millisecond
+/// get a counter rather than sharing a file.
+function writeMachineBackup(dataDir: string): string {
+  const source = fs.readFileSync(machineValuesFile(dataDir));
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  for (let n = 0; ; n++) {
+    const backup = `${machineValuesFile(dataDir)}.pre-secrets-${stamp}${n > 0 ? `-${n}` : ''}.bak`;
+    try {
+      fs.writeFileSync(backup, source, { mode: 0o600, flag: 'wx' });
+      return backup;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || n >= 99) throw error;
+    }
+  }
+}
+
+/// Names the user made plain although they read like credentials. Their own
+/// file, so `machine.json` stays a flat NAME → value map anyone can read.
+function keptPlainFile(dataDir: string): string {
+  return path.join(servicesRoot(dataDir), 'machine-plain.json');
+}
+
+function loadKeptPlain(dataDir: string): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(keptPlainFile(dataDir), 'utf8'));
+    const names = (parsed as { names?: unknown })?.names;
+    return new Set(Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveKeptPlain(dataDir: string, names: ReadonlySet<string>): void {
+  const file = keptPlainFile(dataDir);
+  if (names.size === 0) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  fs.mkdirSync(servicesRoot(dataDir), { recursive: true });
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify({ schemaVersion: 1, names: [...names].sort() }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
 function slug(text: string): string {
   return text
     .replace(/[^A-Za-z0-9_-]+/g, '-')

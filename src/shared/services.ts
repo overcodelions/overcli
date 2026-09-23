@@ -349,6 +349,9 @@ export interface MachineEntry {
   value?: string;
   /// A secret that already has a value in the keychain.
   stored?: boolean;
+  /// The user made this plain although its name reads like a credential.
+  /// Remembered so the next launch's migration does not encrypt it again.
+  keepPlain?: boolean;
 }
 
 /// A `${NAME}` some service refers to that has no value on this machine.
@@ -364,7 +367,9 @@ export interface MachineValuesView {
   /// pane then refuses to mark anything secret rather than pretending.
   secureStorage: boolean;
   migrationError?: string;
-  backupPath?: string;
+  /// Cleartext copies of `machine.json` a migration left behind, one per
+  /// migration, read from disk so they stay disclosed until deleted.
+  backupPaths?: string[];
 }
 
 /// What the pane renders: the stack plus everything live about it.
@@ -373,6 +378,9 @@ export interface StackView {
   services: ServiceSpec[];
   bindings: ServiceBinding[];
   runtimes: ServiceRuntime[];
+  /// Each task's last successful run, from the stack file — what drift is
+  /// measured against when the live runtime has nothing (a failed re-run).
+  lastRuns?: Record<string, TaskRun>;
 }
 
 /// What a removal took out of a stack, held so it can be put back. The index

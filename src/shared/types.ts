@@ -2371,6 +2371,9 @@ export interface IPCInvokeMap {
         /// Model references rebound because this machine could not run them
         /// as published. Empty when the flow ran here as written.
         adapted: Array<{ where: string; from: string; to: string }>;
+        /// Local (Ollama) references this machine cannot run right now, left
+        /// as published rather than moved to a cloud backend without asking.
+        keptLocal: Array<{ where: string; model: string }>;
       }
     | { ok: false; error: string };
   'flows:previewRegistryFlow': (args: {

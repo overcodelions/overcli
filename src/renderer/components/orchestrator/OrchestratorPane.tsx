@@ -489,11 +489,15 @@ function ProducerPane({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [turns.length, proposing, liveText, liveTools.length, expanded]);
 
+  // The draft is cleared only once the producer has taken the ask. Cleared
+  // up front, a refusal (no project picked) or a failed turn threw away what
+  // was typed, leaving only the error to say it had ever been there.
   const send = () => {
     const text = draft.trim();
     if (!text || proposing) return;
-    setDraft('');
-    void propose(text);
+    void propose(text).then((ok) => {
+      if (ok) setDraft('');
+    });
   };
 
   const composerInput = (
@@ -641,11 +645,15 @@ function OrchestratorMark() {
 function AskBar({ draft, setDraft }: { draft: string; setDraft: (v: string) => void }) {
   const proposing = useOrchestratorStore((s) => s.proposing);
   const propose = useOrchestratorStore((s) => s.propose);
+  // The draft is cleared only once the producer has taken the ask. Cleared
+  // up front, a refusal (no project picked) or a failed turn threw away what
+  // was typed, leaving only the error to say it had ever been there.
   const send = () => {
     const text = draft.trim();
     if (!text || proposing) return;
-    setDraft('');
-    void propose(text);
+    void propose(text).then((ok) => {
+      if (ok) setDraft('');
+    });
   };
   return (
     <div className="flex items-center gap-2 rounded-lg bg-card-strong px-3 py-2 transition-colors focus-within:bg-surface-elevated">

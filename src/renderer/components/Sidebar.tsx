@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { noBackendReady, useStore } from '../store';
+import { useTickingNow } from '../hooks';
 import { useRunningMap, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, SidebarLayout, Workspace, UUID } from '@shared/types';
 import { flowRunIsOwnedBy, type FlowRun } from '@shared/flows/schema';
@@ -113,8 +114,11 @@ export function Sidebar() {
   // One clock for every time-sensitive memo in this render, rather than each
   // calling Date.now() itself. Two memos disagreeing about "now" by a few
   // milliseconds is harmless; two memos each taking their own reading is how
-  // a row ends up warm in one list and asleep in the next.
-  const now = Date.now();
+  // a row ends up warm in one list and asleep in the next. Held in state and
+  // ticked coarsely rather than read per render: a fresh reading every render
+  // is a new dependency every render, which made every memo below rebuild on
+  // each keystroke. A minute is well under any warm/asleep window.
+  const now = useTickingNow(60_000);
   // What the compose button says it will do. Resolved from the same helper ⌘N
   // runs, so the tooltip cannot promise one project while the click makes a
   // chat in another.
@@ -148,9 +152,9 @@ export function Sidebar() {
           Object.entries(runners).map(([id, r]) => [id, !!r?.isRunning]),
         ),
         rules: cleanupRules,
-        now: Date.now(),
+        now,
       }),
-    [projects, workspaces, flowRuns, runners, cleanupRules],
+    [projects, workspaces, flowRuns, runners, cleanupRules, now],
   );
   const workers = useWorkersStore((s) => s.workers);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
@@ -333,11 +337,12 @@ export function Sidebar() {
             openedRunId,
             lastOpenedAtByRun,
           },
-          Date.now(),
+          now,
           workers,
         ),
       ),
     [
+      now,
       flowRuns,
       projects,
       runners,
@@ -359,10 +364,11 @@ export function Sidebar() {
         flowRuns,
         runners,
         { openedConversationId: selectedId, lastSelectedAt, openedRunId, lastOpenedAtByRun },
-        Date.now(),
+        now,
         workers,
       ),
     [
+      now,
       projects,
       workspaces,
       flowRuns,

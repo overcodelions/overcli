@@ -59,6 +59,7 @@ import {
   type Worker,
   type WorkerJournalEntry,
   type WorkerScorecard,
+  type WorkerCaps,
   type WorkerPace,
   type WorkerTrustLevel,
 } from "@shared/flows/worker";
@@ -5228,6 +5229,44 @@ function WorkerEditor() {
                 ? `Trust: ${existing.trust} — change it from the roster with Promote/Demote.`
                 : "Hired on probation: every proposal parks for your approval, and rejected ones are never re-proposed. Promote from the roster once it has earned it."}
             </div>
+
+            {/* A repo only: an everyday folder has no worktrees to choose
+                between, and always runs in place. The working copy is an
+                autonomous privilege — the engine repairs it back to a
+                worktree on demotion, so the control only offers it then. */}
+            {!everydayProject && (
+              <Field
+                label="Runs in"
+                hint={
+                  existing?.trust === "autonomous"
+                    ? "the working copy sees uncommitted changes"
+                    : "working copy unlocks once autonomous"
+                }
+              >
+                <select
+                  value={draft.caps.runIn}
+                  disabled={existing?.trust !== "autonomous"}
+                  onChange={(e) =>
+                    patch({
+                      caps: {
+                        ...draft.caps,
+                        runIn: e.target.value as WorkerCaps["runIn"],
+                      },
+                    })
+                  }
+                  className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink disabled:opacity-50"
+                >
+                  <option value="worktree">
+                    A fresh worktree — branches off your current branch&apos;s
+                    last commit
+                  </option>
+                  <option value="cwd">
+                    The working copy — edits your checkout in place, one item
+                    at a time
+                  </option>
+                </select>
+              </Field>
+            )}
 
             <label className="flex items-start gap-2 rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2.5">
               <input

@@ -103,10 +103,105 @@ describe('ServicesManager machine values', () => {
     expect(plain).not.toContain('DB_PASSWORD');
     expect(plain).toContain('SQS_PREFIX');
 
-    expect(fs.existsSync(`${plainFile()}.pre-secrets.bak`)).toBe(true);
-    expect(fs.readFileSync(`${plainFile()}.pre-secrets.bak`, 'utf8')).toContain('hunter2');
+    expect(view.backupPaths).toHaveLength(1);
+    const [backup] = view.backupPaths!;
+    expect(path.dirname(backup)).toBe(path.dirname(plainFile()));
+    expect(fs.readFileSync(backup, 'utf8')).toContain('hunter2');
+    expect(fs.statSync(backup).mode & 0o777).toBe(0o600);
 
     expect(view.entries).toContainEqual({ name: 'DB_PASSWORD', secret: true, stored: true });
+  });
+
+  // The banner is the only disclosure that a cleartext copy exists. Held in
+  // memory it lasted one launch; the file lasted until someone found it.
+  it('still discloses the backup after a restart', () => {
+    fs.mkdirSync(path.join(dataDir, 'services'), { recursive: true });
+    fs.writeFileSync(plainFile(), JSON.stringify({ DB_PASSWORD: 'hunter2' }));
+    const first = new ServicesManager(dataDir, () => {}, [], fakeCipher).machineValues().backupPaths;
+    expect(first).toHaveLength(1);
+
+    const again = new ServicesManager(dataDir, () => {}, [], fakeCipher).machineValues();
+    expect(again.backupPaths).toEqual(first);
+  });
+
+  it('writes a new backup per migration rather than reusing an existing one', () => {
+    fs.mkdirSync(path.join(dataDir, 'services'), { recursive: true });
+    // What an earlier version left: the untimestamped name, from before the
+    // value being moved now existed. Reusing it left that value in no backup.
+    const legacy = `${plainFile()}.pre-secrets.bak`;
+    fs.writeFileSync(legacy, JSON.stringify({ DB_PASSWORD: 'old-password' }), { mode: 0o600 });
+    fs.writeFileSync(plainFile(), JSON.stringify({ STRIPE_KEY: 'sk_test_acme_12345' }));
+
+    const first = new ServicesManager(dataDir, () => {}, [], fakeCipher).machineValues();
+    expect(first.migrationError).toBeUndefined();
+    expect(fs.readFileSync(legacy, 'utf8')).toContain('old-password');
+    expect(first.backupPaths).toHaveLength(2);
+    expect(first.backupPaths).toContain(legacy);
+    const fresh = first.backupPaths!.find((p) => p !== legacy)!;
+    expect(fs.readFileSync(fresh, 'utf8')).toContain('sk_test_acme_12345');
+
+    // A second migration on a later launch gets its own copy too.
+    fs.writeFileSync(plainFile(), JSON.stringify({ JWT_SIGNING_KEY: 'acme-signing-67890' }));
+    const second = new ServicesManager(dataDir, () => {}, [], fakeCipher).machineValues();
+    expect(second.backupPaths).toHaveLength(3);
+    expect(second.backupPaths!.some((p) => fs.readFileSync(p, 'utf8').includes('acme-signing-67890'))).toBe(true);
+    expect(fs.readFileSync(fresh, 'utf8')).toContain('sk_test_acme_12345');
+  });
+
+  it('leaves the plain file alone when no backup can be written', () => {
+    const services = path.join(dataDir, 'services');
+    fs.mkdirSync(services, { recursive: true });
+    fs.writeFileSync(plainFile(), JSON.stringify({ DB_PASSWORD: 'hunter2' }));
+    fs.chmodSync(services, 0o500);
+    try {
+      const view = new ServicesManager(dataDir, () => {}, [], fakeCipher).machineValues();
+      expect(view.migrationError).toBeTruthy();
+      expect(view.backupPaths).toBeUndefined();
+      expect(fs.readFileSync(plainFile(), 'utf8')).toContain('hunter2');
+    } finally {
+      fs.chmodSync(services, 0o700);
+    }
+  });
+
+  it('deletes every backup, and the banner goes with them', () => {
+    fs.mkdirSync(path.join(dataDir, 'services'), { recursive: true });
+    fs.writeFileSync(`${plainFile()}.pre-secrets.bak`, '{}');
+    fs.writeFileSync(plainFile(), JSON.stringify({ DB_PASSWORD: 'hunter2' }));
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    const backups = mgr.machineValues().backupPaths!;
+    expect(backups).toHaveLength(2);
+
+    mgr.deleteMachineBackup();
+    for (const b of backups) expect(fs.existsSync(b)).toBe(false);
+    expect(mgr.machineValues().backupPaths).toBeUndefined();
+    // Nothing left to delete is not an error.
+    expect(() => mgr.deleteMachineBackup()).not.toThrow();
+    // The values themselves are untouched.
+    expect(mgr.machineValues().entries).toEqual([{ name: 'DB_PASSWORD', secret: true, stored: true }]);
+  });
+
+  it('keeps a value the user made plain out of the next launch\'s migration', () => {
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    mgr.saveMachineValues([
+      { name: 'CACHE_SECRET', secret: false, value: 'not-really-a-secret', keepPlain: true },
+      { name: 'STRIPE_KEY', secret: false, value: 'sk_test_acme_12345' },
+    ]);
+
+    const next = new ServicesManager(dataDir, () => {}, [], fakeCipher).machineValues();
+    expect(next.entries).toEqual([
+      { name: 'CACHE_SECRET', secret: false, value: 'not-really-a-secret', keepPlain: true },
+      // No choice recorded: a secret-named plain value is still moved.
+      { name: 'STRIPE_KEY', secret: true, stored: true },
+    ]);
+    expect(fs.readFileSync(plainFile(), 'utf8')).toContain('not-really-a-secret');
+
+    // Marking it secret again forgets the choice.
+    const again = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    again.saveMachineValues([
+      { name: 'CACHE_SECRET', secret: true, value: 'not-really-a-secret' },
+      { name: 'STRIPE_KEY', secret: true },
+    ]);
+    expect(fs.existsSync(path.join(dataDir, 'services', 'machine-plain.json'))).toBe(false);
   });
 
   it('refuses to store a secret without a keychain rather than writing it in plain text', () => {
@@ -147,6 +242,39 @@ describe('ServicesManager machine values', () => {
       { ref: 'master', path: repo },
     );
     expect(mgr.resolvedOptions('ws1', 'api')[0].value).toBe('••••••');
+  });
+});
+
+describe('ServicesManager.fixPrompt', () => {
+  // The prompt goes to a model provider. A name-based guess at which env
+  // values are credentials is one missed name away from sending one.
+  it('masks every typed-in env value whatever it is called, and keeps the references', async () => {
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    mgr.addService(
+      'ws1',
+      {
+        ...spec,
+        config: {
+          inject: {
+            ACME_BILLING_CONN: 'postgres://acme:hunter2hunter2@${DB_HOST}/billing',
+            STRIPE_KEY: 'sk_live_acme_0123456789',
+            NODE_ENV: 'development',
+            CONFIG: '${SERVICE_CONFIG_DIR}/app.yml',
+            TOKEN: '${API_TOKEN}',
+          },
+        },
+      },
+      { ref: 'master', path: repo },
+    );
+
+    const { prompt } = (await mgr.fixPrompt('ws1', 'api'))!;
+    for (const leaked of ['hunter2hunter2', 'sk_live_acme_0123456789', 'development', '/app.yml', 'postgres://']) {
+      expect(prompt).not.toContain(leaked);
+    }
+    expect(prompt).toContain('ACME_BILLING_CONN=••••••${DB_HOST}••••••');
+    expect(prompt).toContain('TOKEN=${API_TOKEN}');
+    expect(prompt).toContain('NODE_ENV=••••••');
+    expect(prompt).toMatch(/CONFIG=\S*services\S*••••••/);
   });
 });
 

@@ -30,6 +30,28 @@ export function indexWorkerHistory(runs: Record<string, FlowRun>, orchestrations
   return index;
 }
 
+/// The index for the CURRENT stores, shared by every caller. The sidebar
+/// roster and the crew grid each mount the board, and a `useMemo` per mount is
+/// one O(history) pass per surface per store update. Both stores replace
+/// their record on every change, so identity of the two inputs is the whole
+/// cache key: one slot, rebuilt the first time either record moves.
+let sharedIndex: {
+  runs: Record<string, FlowRun>;
+  orchestrations: Record<string, Orchestration>;
+  index: WorkerHistoryIndex;
+} | null = null;
+
+export function sharedWorkerHistory(
+  runs: Record<string, FlowRun>,
+  orchestrations: Record<string, Orchestration>,
+): WorkerHistoryIndex {
+  if (sharedIndex && sharedIndex.runs === runs && sharedIndex.orchestrations === orchestrations) {
+    return sharedIndex.index;
+  }
+  sharedIndex = { runs, orchestrations, index: indexWorkerHistory(runs, orchestrations) };
+  return sharedIndex.index;
+}
+
 /// Runs are claimed by worker identity, not by owner path: a workspace worker
 /// can launch a run whose logical owner is a member repository.
 export function workerDeskRuns(runs: Record<string, FlowRun>, workerId: string): FlowRun[] {

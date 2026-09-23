@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from './store';
 import { Backend, Conversation, SystemInitInfo, UUID } from '@shared/types';
 import { SlashCommandEntry } from './components/Composer';
@@ -98,3 +98,16 @@ export function useConversationRoot(id: UUID | null | undefined): string | null 
   return useStore((s) => (id ? findContainerPath(s, id) : null));
 }
 
+
+/// A wall clock that advances on its own every `periodMs`. For views that
+/// draw ages, countdowns or a "today" boundary: reading `Date.now()` inside a
+/// memo freezes it at the last store change, and reading it per render
+/// defeats the memo. A coarse tick held in state is both honest and cheap.
+export function useTickingNow(periodMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), periodMs);
+    return () => clearInterval(t);
+  }, [periodMs]);
+  return now;
+}

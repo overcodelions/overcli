@@ -22,6 +22,16 @@ const UNAMBIGUOUS = [
 /// SSH_KEY_PATH name where something lives, not what it is.
 const AMBIGUOUS = ['token', 'apikey', 'privatekey', 'auth', 'pass', 'private'];
 
+/// What comes right before a trailing `key` when the key is a database, cache
+/// or queue key rather than a credential. Kept short on purpose: every word
+/// here is a name whose value lands in plain text and unmasked logs, so a word
+/// earns its place only when it cannot plausibly front a secret. `public` is
+/// here because a public key is published by design.
+const NOT_A_CREDENTIAL_KEY = new Set([
+  'sort', 'routing', 'partition', 'cache', 'primary', 'foreign', 'idempotency', 'shard', 'dedup',
+  'dedupe', 'lookup', 'index', 'range', 'composite', 'unique', 'public',
+]);
+
 /// Names ending in one of these describe where something is, not what it is.
 const LOCATOR_TOKENS = new Set(['url', 'uri', 'host', 'hostname', 'endpoint', 'port', 'path', 'dir', 'file', 'name', 'id']);
 
@@ -48,8 +58,13 @@ export function isSecretName(name: string): boolean {
   if (parts.at(-1) === 'threshold') return false;
   if (LOCATOR_TOKENS.has(parts[parts.length - 1])) return false;
   if (parts.some((p) => carries(p, AMBIGUOUS))) return true;
-  // A bare key is usually a sorting/routing/configuration key. Treat it as
-  // secret only when another token identifies credential material.
+  // A name that ends in `key` is a credential until proven otherwise:
+  // STRIPE_KEY, ENCRYPTION_KEY and JWT_SIGNING_KEY are the everyday cases,
+  // and a vendor or purpose word in front says nothing either way. Only a
+  // word that names a data-structure key lets it go.
+  if (parts.at(-1) === 'key') return !(parts.length > 1 && NOT_A_CREDENTIAL_KEY.has(parts[parts.length - 2]));
+  // Anywhere else a bare key needs company: KEY_PREFIX is configuration,
+  // AWS_KEY_V2 is not.
   return parts.some((p, i) => p === 'key' && parts.some((q, j) => j !== i &&
     ['api', 'aws', 'secret', 'private', 'auth', 'credential', 'bearer'].includes(q)));
 }

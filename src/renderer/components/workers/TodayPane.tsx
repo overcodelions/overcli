@@ -149,7 +149,9 @@ export function TodayPane() {
           pixels of nothing, while the sidebar had folded most of the crew
           away for being quiet — so the one place with room to show you who
           you employ was the one place showing you nothing. */}
-      <CrewGrid />
+      {/* The page's clock, not one of its own: the crew's present line and
+          "today" have to agree with the now-line above them. */}
+      <CrewGrid now={now} />
     </div>
   );
 }

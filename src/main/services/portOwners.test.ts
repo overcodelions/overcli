@@ -16,6 +16,9 @@ import {
   parsePsParents,
   parseSsListeners,
   parseTasklistName,
+  partialOutput,
+  processStarted,
+  programMatches,
   type ProcessFacts,
 } from './portOwners';
 
@@ -80,6 +83,24 @@ describe('classifyOwner', () => {
 
   it('sees past a Gradle daemon to the wrapper overcli left behind', () => {
     expect(classifyOwner(58676, { servicePath: '/src/acme-orders' }, gradleTree(1))).toBe('stale');
+  });
+
+  it('sees past the daemon when the options never reach the wrapper argv', () => {
+    // The launch tokens carry `-D` options that go to the app JVM, not to the
+    // wrapper, so the wrapper has to be recognised by its program.
+    const facts: ProcessFacts = {
+      ...gradleTree(1),
+      args: new Map([
+        [58676, 'java -Dspring.profiles.active=local -cp app.jar acme.OrdersApp'],
+        [58602, 'java -Xmx4g -cp gradle-launcher.jar org.gradle.launcher.daemon.bootstrap.GradleDaemon 4.10.3'],
+        [58588, 'java -Dorg.gradle.appname=gradlew -classpath gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :orders-service:bootRun -Dorg.gradle.daemon=false'],
+      ]),
+    };
+    const ctx = {
+      servicePath: '/src/acme-orders',
+      tokens: ['./gradlew', ':orders-service:bootRun', '-Dorg.gradle.daemon=false', '-Dspring.profiles.active=local', '-Xmx2048m'],
+    };
+    expect(classifyOwner(58676, ctx, facts)).toBe('stale');
   });
 
   it('still leaves a Gradle service started from a terminal alone', () => {
@@ -385,11 +406,192 @@ describe('matchingProcesses', () => {
   });
 });
 
+describe('matchingProcesses across a stack', () => {
+  // One checkout, two apps, the same script name in each. Admin's copy was
+  // left behind (its parent is launchd); web is not running at all.
+  const mono = '/src/acme-mono';
+  const psText = [
+    '  800   1 npm run dev',
+    '  801 800 node /src/acme-mono/node_modules/.bin/vite',
+  ].join('\n');
+  const lsof = ['p800', `n${mono}/apps/admin`, 'p801', `n${mono}/apps/admin`].join('\n');
+  const runner = async (command: string) => (command === 'ps' ? psText : command === 'lsof' ? lsof : null);
+  const web = { key: 'web', tokens: ['npm', 'run', 'dev'], checkout: mono, subpath: 'apps/web' };
+  const admin = { key: 'admin', tokens: ['npm', 'run', 'dev'], checkout: mono, subpath: 'apps/admin' };
+
+  it("does not hand one app's leftover to the other", async () => {
+    const found = await matchingProcesses([web, admin], runner, 'darwin');
+
+    expect(found.has('web')).toBe(false);
+    expect(found.get('admin')).toMatchObject({ pid: 800, kind: 'stale', root: 800 });
+  });
+
+  it('checks the service folder, not merely the checkout it sits in', async () => {
+    // Asked about web alone — the defect's shape — the checkout matched and
+    // web took admin's process. The subfolder is what says it is not web's.
+    expect((await matchingProcesses([web], runner, 'darwin')).size).toBe(0);
+  });
+
+  it('still refuses when the folder cannot tell two services apart', async () => {
+    const found = await matchingProcesses([
+      { ...web, subpath: 'apps/admin' },
+      admin,
+    ], runner, 'darwin');
+    expect(found.size).toBe(0);
+  });
+
+  it('lets the program settle a process whose arguments fit two services', async () => {
+    const npmRunner = async (command: string) => {
+      if (command === 'ps') return '  900   1 node /usr/lib/node_modules/npm/bin/npm-cli.js run dev';
+      if (command === 'lsof') return ['p900', `n${mono}`].join('\n');
+      return null;
+    };
+    const found = await matchingProcesses([
+      { key: 'npm', tokens: ['npm', 'run', 'dev'], checkout: mono },
+      { key: 'yarn', tokens: ['yarn', 'run', 'dev'], checkout: mono },
+    ], npmRunner, 'darwin');
+
+    expect(found.get('npm')?.pid).toBe(900);
+    expect(found.has('yarn')).toBe(false);
+  });
+
+  it('does not take a tmux server started in the checkout for the leftover', async () => {
+    // tmux → shell → `npm run dev`, every one of them working in the checkout
+    // and the tmux server orphaned to launchd, as it always is. By folder
+    // alone the tmux server was the root, the tree was "stale", and Stop
+    // killed every pane.
+    const tmuxRunner = async (command: string) => {
+      if (command === 'ps') {
+        return ['  700   1 tmux new -s work', '  701 700 -zsh', '  702 701 npm run dev'].join('\n');
+      }
+      if (command === 'lsof') return ['p700', `n${mono}`, 'p701', `n${mono}`, 'p702', `n${mono}`].join('\n');
+      return null;
+    };
+    const found = await matchingProcesses(
+      [{ key: 'app', tokens: ['npm', 'run', 'dev'], checkout: mono }],
+      tmuxRunner,
+      'darwin',
+    );
+
+    expect(found.get('app')).toMatchObject({ pid: 702, kind: 'other' });
+    expect(found.get('app')?.root).toBeUndefined();
+  });
+});
+
+describe('classifyOwner with the launch command', () => {
+  const tree = (topParent: number): ProcessFacts => ({
+    selfPid: 44090,
+    parents: new Map([[703, 702], [702, 701], [701, 700], [700, topParent]]),
+    cwds: new Map([[700, '/src/acme-web'], [701, '/src/acme-web'], [702, '/src/acme-web'], [703, '/src/acme-web']]),
+    args: new Map([
+      [700, 'tmux new -s work'],
+      [701, '-zsh'],
+      [702, 'npm run dev'],
+      [703, 'node /src/acme-web/node_modules/.bin/vite'],
+    ]),
+  });
+  const ctx = { servicePath: '/src/acme-web', tokens: ['npm', 'run', 'dev'] };
+
+  it('leaves a service running in a tmux pane alone', () => {
+    expect(classifyOwner(703, ctx, tree(1))).toBe('other');
+    // Without the command the folder decides, which is what went wrong.
+    expect(classifyOwner(703, { servicePath: '/src/acme-web' }, tree(1))).toBe('stale');
+  });
+
+  it('still finds the launcher of a real leftover', () => {
+    const facts: ProcessFacts = {
+      ...tree(1),
+      parents: new Map([[703, 702], [702, 1]]),
+    };
+    expect(classifyOwner(703, ctx, facts)).toBe('stale');
+  });
+
+  it('still calls a listener orphaned by its dead launcher stale', () => {
+    // What a `concurrently` killed mid-run leaves: vite, straight under launchd.
+    const facts: ProcessFacts = { ...tree(1), parents: new Map([[703, 1]]) };
+    expect(classifyOwner(703, ctx, facts)).toBe('stale');
+  });
+
+  it('matches a bare program by its name', () => {
+    const facts: ProcessFacts = {
+      selfPid: 44090,
+      parents: new Map([[811, 810], [810, 1]]),
+      cwds: new Map([[810, '/src/acme-api'], [811, '/src/acme-api']]),
+      args: new Map([[810, '/bin/bash ./start.sh'], [811, 'java -jar app.jar']]),
+    };
+    expect(classifyOwner(811, { servicePath: '/src/acme-api', tokens: ['./start.sh'] }, facts)).toBe('stale');
+  });
+});
+
+describe('programMatches', () => {
+  it('finds a launcher in what it exec\'d into', () => {
+    expect(programMatches('node /usr/lib/node_modules/npm/bin/npm-cli.js run dev', ['npm', 'run', 'dev'])).toBe(true);
+    expect(programMatches('java -Dorg.gradle.appname=gradlew GradleWrapperMain bootRun', ['./gradlew', 'bootRun']))
+      .toBe(true);
+  });
+
+  it('does not find a program that is not there', () => {
+    expect(programMatches('node /usr/lib/node_modules/npm/bin/npm-cli.js run dev', ['yarn', 'run', 'dev'])).toBe(false);
+  });
+});
+
+describe('a lookup that fails part-way', () => {
+  it('keeps what lsof printed before exiting non-zero', () => {
+    // One unreadable pid among forty: exit 1, and the other thirty-nine.
+    expect(partialOutput({ code: 1, stdout: 'p77\nn/work/service\n' })).toBe('p77\nn/work/service\n');
+  });
+
+  it('reads nothing into a missing tool, a timeout or an empty failure', () => {
+    expect(partialOutput({ code: 'ENOENT', stdout: '' })).toBeNull();
+    expect(partialOutput({ code: null, killed: true, stdout: 'p77\n' })).toBeNull();
+    expect(partialOutput({ code: 1, stdout: '' })).toBeNull();
+    expect(partialOutput(new Error('boom'))).toBeNull();
+  });
+
+  it('still classifies the pids lsof could read', async () => {
+    // What reaches `processFacts` once `run` keeps partial output.
+    const runner = async (command: string, args: string[]) => {
+      if (command === 'ss') return 'LISTEN 0 511 *:3000 *:* users:(("node",pid=77,fd=20))\n';
+      if (command === 'ps') return '77 1 node server.js\n78 1 node other.js\n';
+      if (command === 'lsof' && args.includes('cwd')) return 'p77\nfcwd\nn/work/service\n';
+      return null;
+    };
+    await expect(portOwners(3000, { servicePath: '/work/service' }, runner, 'linux')).resolves.toEqual([
+      { pid: 77, command: 'node', kind: 'stale' },
+    ]);
+  });
+});
+
+describe('processStarted', () => {
+  it('reads the start time of a running process', async () => {
+    const calls: string[][] = [];
+    const runner = async (command: string, args: string[]) => {
+      calls.push([command, ...args]);
+      return 'Tue Sep 22 10:04:31 2026\n';
+    };
+    await expect(processStarted(4242, runner, 'darwin')).resolves.toBe('Tue Sep 22 10:04:31 2026');
+    expect(calls).toEqual([['ps', '-o', 'lstart=', '-p', '4242']]);
+  });
+
+  it('says gone when there is no such process', async () => {
+    await expect(processStarted(4242, async () => null, 'darwin')).resolves.toBeNull();
+    await expect(processStarted(4242, async () => '\n', 'linux')).resolves.toBeNull();
+  });
+
+  it('says it cannot tell on Windows rather than gone', async () => {
+    await expect(processStarted(4242, async () => null, 'win32')).resolves.toBeUndefined();
+  });
+});
+
 describe('parsePsArgs', () => {
   it('keeps the whole command line, spaces and all', () => {
     expect(parsePsArgs('  501   1 node a.js --flag "x y"')).toEqual([
       { pid: 501, ppid: 1, args: 'node a.js --flag "x y"' },
     ]);
+  });
+
+  it('keeps a row with no command line, for its parent', () => {
+    expect(parsePsArgs('  77 1\n')).toEqual([{ pid: 77, ppid: 1, args: '' }]);
   });
 });
 

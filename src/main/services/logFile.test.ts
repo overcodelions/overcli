@@ -60,6 +60,43 @@ describe('createLogSink', () => {
     const sink = createLogSink(() => path.join(dir, 'blocker', 'api.log'));
     expect(() => sink.write('api', 'line')).not.toThrow();
   });
+
+  it('reports the first failure per service, not one per line, and again after a recovery', async () => {
+    const dir = tmp();
+    const blocker = path.join(dir, 'blocker');
+    fs.writeFileSync(blocker, '');
+    const failures: [string, unknown][] = [];
+    const sink = createLogSink((id) => path.join(blocker, `${id}.log`), undefined, (id, error) => failures.push([id, error]));
+
+    sink.write('api', 'one');
+    await sink.close('api');
+    sink.write('api', 'two');
+    sink.write('web', 'three');
+    await Promise.all([sink.close('api'), sink.close('web')]);
+    expect(failures.map(([id]) => id)).toEqual(['api', 'web']);
+    expect((failures[0][1] as NodeJS.ErrnoException).code).toMatch(/ENOTDIR|EEXIST/);
+
+    // The folder comes back: writes work again, and a later failure is news.
+    fs.rmSync(blocker);
+    sink.write('api', 'four');
+    await sink.close('api');
+    expect(fs.readFileSync(path.join(blocker, 'api.log'), 'utf8')).toMatch(/ four\n$/);
+    fs.rmSync(blocker, { recursive: true });
+    fs.writeFileSync(blocker, '');
+    sink.write('api', 'five');
+    await sink.close('api');
+    expect(failures.map(([id]) => id)).toEqual(['api', 'web', 'api']);
+  });
+
+  it('keeps writing when the failure report itself throws', async () => {
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, 'blocker'), '');
+    const sink = createLogSink(() => path.join(dir, 'blocker', 'api.log'), undefined, () => {
+      throw new Error('listener broke');
+    });
+    sink.write('api', 'line');
+    await expect(sink.close('api')).resolves.toBeUndefined();
+  });
 });
 
 describe('stripAnsi', () => {

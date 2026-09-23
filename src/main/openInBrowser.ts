@@ -92,9 +92,44 @@ export async function openInBrowser(
   file: string,
   browser: Browser,
 ): Promise<{ ok: true; browser: string } | { ok: false; error: string }> {
+  // macOS `open` hands the page to the app and exits: 0 when it did,
+  // non-zero when it could not (the app was moved or deleted, the file is
+  // unreadable). Spawning `open` says nothing about any of that, so there the
+  // exit is the answer. A browser run directly never exits while it is open,
+  // so everywhere else spawning is the only signal there is.
+  const viaOpen = browser.exec === 'open';
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (r: { ok: true; browser: string } | { ok: false; error: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
     const child = spawn(browser.exec, [...browser.args, file], { detached: true, stdio: 'ignore', windowsHide: true });
-    child.once('spawn', () => { child.unref(); resolve({ ok: true, browser: browser.name }); });
-    child.on('error', (err) => resolve({ ok: false, error: err.message }));
+    child.on('error', (err) => done({ ok: false, error: err.message }));
+    child.once('exit', (code) => {
+      if (!viaOpen) return;
+      done(
+        code === 0
+          ? { ok: true, browser: browser.name }
+          : { ok: false, error: `Couldn't open ${browser.name} (open exited ${code ?? 'on a signal'})` },
+      );
+    });
+    child.once('spawn', () => {
+      // Still detached and unref'd: waiting for `open` to report must not
+      // tie the browser, or this process, to the other's lifetime.
+      child.unref();
+      if (!viaOpen) {
+        done({ ok: true, browser: browser.name });
+        return;
+      }
+      // `open` returns in milliseconds; one that has not in this long is not
+      // going to report, and the caller should not hang on it.
+      const timer = setTimeout(() => done({ ok: true, browser: browser.name }), OPEN_EXIT_WAIT_MS);
+      timer.unref?.();
+      child.once('exit', () => clearTimeout(timer));
+    });
   });
 }
+
+const OPEN_EXIT_WAIT_MS = 10_000;

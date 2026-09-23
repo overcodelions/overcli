@@ -768,7 +768,14 @@ export class OrchestratorImpl {
                 allowExternalActions: o.origin.allowExternalActions,
               }
             : {}),
-          ...this.launchPolicy,
+          // The RESOLVED policy, not the raw one: spreading an omitted policy
+          // handed every child `unattended: undefined`, which the runtime
+          // reads as attended — a batch's children getting more authority
+          // than its producer turn, from the same unnamed caller.
+          unattended: this.unattended,
+          unattendedAllowedTools: this.unattended
+            ? (this.launchPolicy.unattendedAllowedTools ?? [])
+            : this.launchPolicy.unattendedAllowedTools,
         });
       } catch (err) {
         // startRun should return {ok:false}, but guard against an unexpected

@@ -20,6 +20,10 @@ export function BrowseLibraryModal({ onClose, initialQuery = '' }: { onClose: ()
   const [adaptedByKey, setAdaptedByKey] = useState<
     Record<string, Array<{ where: string; from: string; to: string }>>
   >({});
+  // Local steps the install left alone although Ollama cannot run them now.
+  const [keptLocalByKey, setKeptLocalByKey] = useState<
+    Record<string, Array<{ where: string; model: string }>>
+  >({});
   const [query, setQuery] = useState(initialQuery);
   // Installs from PREVIOUS sessions, recovered from settings. Without this
   // the modal forgets everything on close and re-offers "Install" for flows
@@ -89,6 +93,8 @@ export function BrowseLibraryModal({ onClose, initialQuery = '' }: { onClose: ()
       setJustInstalled((prev) => new Set([...prev, key]));
       const adapted = result.adapted ?? [];
       if (adapted.length > 0) setAdaptedByKey((prev) => ({ ...prev, [key]: adapted }));
+      const keptLocal = result.keptLocal ?? [];
+      if (keptLocal.length > 0) setKeptLocalByKey((prev) => ({ ...prev, [key]: keptLocal }));
       setInstallErrors((prev) => {
         const { [key]: _, ...rest } = prev;
         return rest;
@@ -266,6 +272,7 @@ export function BrowseLibraryModal({ onClose, initialQuery = '' }: { onClose: ()
               installed={installed.has(`${selectedEntry.registryId}:${selectedEntry.id}`)}
               error={installErrors[`${selectedEntry.registryId}:${selectedEntry.id}`]}
               adapted={adaptedByKey[`${selectedEntry.registryId}:${selectedEntry.id}`]}
+              keptLocal={keptLocalByKey[`${selectedEntry.registryId}:${selectedEntry.id}`]}
               onInstall={() => handleInstall(selectedEntry)}
               fetchFlow={previewRegistryFlow}
               onTagClick={(tag) => setSelectedTags((prev) => {
@@ -291,6 +298,7 @@ function PreviewPane({
   installed,
   error,
   adapted,
+  keptLocal,
   onInstall,
   onTagClick,
   fetchFlow,
@@ -300,6 +308,7 @@ function PreviewPane({
   installed: boolean;
   error?: string;
   adapted?: Array<{ where: string; from: string; to: string }>;
+  keptLocal?: Array<{ where: string; model: string }>;
   onInstall: () => void;
   onTagClick: (tag: string) => void;
   fetchFlow: (args: { registryId: string; id: string; version: string }) => Promise<{ ok: true; flow: Flow; risks: FlowRiskFinding[] } | { ok: false; error: string }>;
@@ -436,6 +445,21 @@ function PreviewPane({
             {adapted.map((a) => (
               <div key={a.where} className="font-mono text-[11px]">
                 {a.where}: <span className="text-ink-faint">{a.from}</span> → {a.to}
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Never rebound to a cloud model on the user's behalf: a step bound
+            to Ollama may be local so its prompt never leaves the machine. */}
+        {installed && keptLocal && keptLocal.length > 0 && (
+          <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 rounded px-2 py-1.5 space-y-1">
+            <div>
+              Left on local models Ollama cannot run right now. Start Ollama or pull the model
+              before running, or pick another model yourself:
+            </div>
+            {keptLocal.map((k) => (
+              <div key={k.where} className="font-mono text-[11px]">
+                {k.where}: {k.model}
               </div>
             ))}
           </div>

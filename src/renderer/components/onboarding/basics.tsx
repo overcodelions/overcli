@@ -20,7 +20,7 @@ export const BASICS: {
   {
     accent: 'var(--c-backend-claude)',
     title: 'Projects',
-    body: 'A project is a git repository on your machine. Chat with it, run tools, and keep one thread per task.',
+    body: 'A project is a folder on your machine — a git repo unlocks agents and diffs. Chat with it, run tools, and keep one thread per task.',
     icon: <ProjectGlyph />,
   },
   {
