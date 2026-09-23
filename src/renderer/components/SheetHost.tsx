@@ -132,7 +132,7 @@ export function SheetHost() {
         }
         onClick={(e) => e.stopPropagation()}
       >
-        {sheet.type === 'settings' && <SettingsSheet />}
+        {sheet.type === 'settings' && <SettingsSheet initialSection={sheet.section} />}
         {sheet.type === 'debug' && <DebugSheet />}
         {sheet.type === 'about' && <AboutSheet />}
         {sheet.type === 'capabilities' && <CapabilitiesSheet />}

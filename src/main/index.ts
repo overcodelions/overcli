@@ -119,7 +119,8 @@ import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { host } from './host';
-import { ServicesManager, importFile as importServicesFile } from './services/manager';
+import { ServicesManager, fsRepoReader, importFile as importServicesFile } from './services/manager';
+import { detectServices } from './services/detect';
 import { clearCache, controlMachineService, listMachineServices } from './services/machineServices';
 import { splitSuggestedCommand, tidySuggestion } from './services/askModel';
 import { electronSecretCipher, installElectronHost } from './hostElectron';
@@ -1560,6 +1561,18 @@ export function registerIpc(): void {
     services().setPinned(workspaceId, serviceId, pinnedRef),
   );
   ipcMain.handle('services:scan', (_e, { projects }) => services().scan(projects));
+  // Detection alone, for the start page's "this can run things" card. Goes
+  // round the manager on purpose: it may be off, and building it just to ask
+  // would touch the keychain for a question that only reads files.
+  ipcMain.handle('services:peek', (_e, args: { path: string; name: string }) => {
+    try {
+      return detectServices(fsRepoReader(args.path), args.name)
+        .filter((p) => p.confidence !== 'low')
+        .map((p) => ({ name: p.spec.name, runner: p.spec.runner }));
+    } catch {
+      return [];
+    }
+  });
   ipcMain.handle('services:findImports', (_e, { projects }) => services().findImports(projects));
   ipcMain.handle('machine:list', () => listMachineServices());
   ipcMain.handle('machine:control', (_e, { name, manager, action }) =>

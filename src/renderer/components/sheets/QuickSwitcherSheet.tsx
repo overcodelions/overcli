@@ -795,6 +795,13 @@ function usePaletteCommands({ showDebug }: { showDebug: boolean }): PaletteComma
         },
       },
       {
+        id: 'settings.labs',
+        title: 'Labs…',
+        subtitle: 'Turn on Workers, the Orchestrator, model comparison and local models',
+        keywords: ['labs', 'experimental', 'turn on', 'enable', 'workers', 'orchestrator', 'compare', 'colosseum', 'ollama', 'local models'],
+        run: () => state().openSheet({ type: 'settings', section: 'labs' }),
+      },
+      {
         id: 'view.orchestrator',
         title: 'Orchestrator',
         keywords: ['tasks', 'board', 'plan'],

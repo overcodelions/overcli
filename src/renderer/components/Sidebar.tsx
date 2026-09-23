@@ -6,6 +6,7 @@ import { Colosseum, Conversation, Project, SidebarLayout, Workspace, UUID } from
 import { flowRunIsOwnedBy, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
 import { isEverydayProject } from '@shared/everydayProjects';
+import { labOn } from '@shared/labs';
 import { backendColor } from '../theme';
 import { selectActiveEntries } from '../activeSection';
 import { conversationActivityAt } from '../conversationLookup';
@@ -1028,6 +1029,7 @@ function ProjectGroup({
   // depend on git worktrees, so we hide the "+ agent" affordance only
   // when we've confirmed the project isn't a git repo.
   const isGitRepo = useStore((s) => s.projectIsGitRepo[project.id]);
+  const compareOn = useStore((s) => labOn(s.settings.labs, 'compare'));
   // Everyday projects ARE git repos, so this is a separate question from
   // `isGitRepo` — see `isEverydayProject`. A plain folder with no history is
   // the one state where offering the conversion is purely additive, which is
@@ -1240,7 +1242,7 @@ function ProjectGroup({
                 + agent
               </button>
             )}
-            {isGitRepo !== false && (
+            {isGitRepo !== false && compareOn && (
               <button
                 onClick={onNewColosseum}
                 className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"

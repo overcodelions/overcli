@@ -20,6 +20,8 @@ import { EmptyWelcome } from './onboarding/EmptyWelcome';
 import { suggestRegistryFlows } from './flows/registrySuggest';
 import { ResumeRow } from './ResumeRow';
 import { isEverydayProject } from '@shared/everydayProjects';
+import { LabsHint } from './LabsHint';
+import { ServicesHint } from './ServicesHint';
 import {
   flowTagCounts,
   groupFlows,
@@ -855,6 +857,10 @@ export function WelcomePane() {
               and Overcli will show your documents, save as you type, and keep an undo history.
             </div>
           )}
+        {selectedProject && !focusedWorkspace && !isEverydayFolder && (
+          <ServicesHint project={selectedProject} />
+        )}
+        {!isEverydayFolder && <LabsHint />}
         {startHere}
         <div className="mt-3 flex items-center gap-2 text-xs text-ink-muted justify-center flex-wrap">
           <ContextPill

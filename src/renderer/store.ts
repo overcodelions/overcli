@@ -98,7 +98,8 @@ function logToMain(level: LogLevel, scope: string, message: string): void {
 }
 
 export type ActiveSheet =
-  | { type: 'settings' }
+  /// `section` opens a specific page (e.g. 'labs' from the start page hint).
+  | { type: 'settings'; section?: string }
   | { type: 'debug' }
   | { type: 'about' }
   | { type: 'capabilities' }
