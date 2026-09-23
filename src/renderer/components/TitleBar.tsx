@@ -52,6 +52,7 @@ export function TitleBar() {
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
   const setLibrarySegment = useFlowsStore((s) => s.setLibrarySegment);
   const flowRuns = useFlowsStore((s) => s.runs);
+  const unreviewedRunIds = useFlowsStore((s) => s.unreviewedRunIds);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const showWorkersToday = useWorkersStore((s) => s.showToday);
   const closeWorkerEditor = useWorkersStore((s) => s.closeEditor);
@@ -104,9 +105,10 @@ export function TitleBar() {
         workers,
         funding: allocation?.byWorker ?? null,
         pendingHire,
+        unreviewedRunIds,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [flowRuns, orchestrations, workers, allocation, pendingHire, tick],
+    [flowRuns, unreviewedRunIds, orchestrations, workers, allocation, pendingHire, tick],
   );
   const inboxLevel = attentionLevel(inbox);
 
@@ -139,7 +141,9 @@ export function TitleBar() {
   function openAttention(item: AttentionItem): void {
     switch (item.kind) {
       case 'run':
-        // The run pane, not the worker's desk: Continue lives there.
+      case 'unreviewed':
+        // The run pane, not the worker's desk: Continue lives there, and so
+        // does the diff you came to review.
         navigateToTab(() => {
           closeFlowEditor();
           setActiveRun(item.runId);
@@ -654,6 +658,9 @@ function AttentionGlyph({ kind }: { kind: AttentionItem['kind'] }) {
           <path d="M3 4h4v8H3zM9 4h4v8H9z" />
         ) : kind === 'approval' ? (
           <path d="M3 8.5 6.5 12 13 4.5" />
+        ) : kind === 'unreviewed' ? (
+          // A branch that forked and never came back.
+          <path d="M5 3v10M5 6c0 2 6 1 6 4v3M11 13h0" />
         ) : (
           <path d="M8 3v10M3 8h10" />
         )}
