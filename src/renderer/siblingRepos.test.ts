@@ -37,7 +37,7 @@ const tool = (input: Record<string, unknown>, filePath?: string, name = 'Edit'):
 describe('siblingProjectsTouched', () => {
   it('finds a sibling the agent edited a file in', () => {
     const events = [tool({ file_path: '/code/acme/acme-api/src/login.ts' })];
-    expect(siblingProjectsTouched(web, all, events)).toEqual([api]);
+    expect(siblingProjectsTouched(web, all, events)).toEqual([{ project: api, file: 'src/login.ts' }]);
   });
 
   it('counts a patch applied in a sibling', () => {
@@ -55,7 +55,7 @@ describe('siblingProjectsTouched', () => {
         },
       } as unknown as StreamEvent,
     ];
-    expect(siblingProjectsTouched(web, all, events)).toEqual([infra]);
+    expect(siblingProjectsTouched(web, all, events)).toEqual([{ project: infra, file: 'main.tf' }]);
   });
 
   it('ignores reading a sibling and commands that only name one', () => {
@@ -68,10 +68,8 @@ describe('siblingProjectsTouched', () => {
     expect(siblingProjectsTouched(web, all, events)).toEqual([]);
   });
 
-  it('finds an @mention the user typed, but not a longer name', () => {
-    expect(siblingProjectsTouched(web, all, [typed('also update @acme-api please')])).toEqual([api]);
-    expect(siblingProjectsTouched(web, all, [typed('see @acme-api-v2')])).toEqual([]);
-    expect(siblingProjectsTouched(web, all, [typed('email me@acme-api')])).toEqual([]);
+  it('ignores an @mention: @ means a file to the composer and the CLIs', () => {
+    expect(siblingProjectsTouched(web, all, [typed('also update @acme-api please')])).toEqual([]);
   });
 
   it('ignores the conversation’s own folder and nested projects', () => {

@@ -10,8 +10,8 @@ import type { UUID } from '@shared/types';
 const dismissed = new Set<UUID>();
 
 /// "This changes acme-api too." Shown above the composer once a conversation
-/// in one project changes files in a sibling repo, or the user writes
-/// `@acme-api`. Sits in the same stack as the changes bar and the composer,
+/// in one project changes files in a sibling repo, with the file it changed
+/// so the card never appears for no visible reason. Sits in the same stack as the changes bar and the composer,
 /// so it takes their width and shape rather than its own margins. It is the most honest
 /// place to meet workspaces: the user has just hit the limit they remove.
 ///
@@ -28,19 +28,22 @@ export function SiblingRepoCard({ conversationId }: { conversationId: UUID }) {
   const owner = location?.kind === 'project' ? location.project : null;
   const conversation = location?.conversation;
 
-  const siblings = useMemo(
+  const edits = useMemo(
     () =>
       // Skipped once dismissed: this reruns as the transcript streams.
       !hidden && owner && !isEverydayProject(owner) && events
-        ? siblingProjectsTouched(owner, projects, events).filter((p) => !isEverydayProject(p))
+        ? siblingProjectsTouched(owner, projects, events).filter((e) => !isEverydayProject(e.project))
         : [],
     [hidden, owner, projects, events],
   );
 
-  if (hidden || !owner || siblings.length === 0) return null;
+  if (hidden || !owner || edits.length === 0) return null;
 
-  const names = siblings.map((p) => p.name);
+  const names = edits.map((e) => e.project.name);
   const named = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  // The evidence, so the card is never a mystery: the first file changed in
+  // each sibling, which is what the chat above will show too.
+  const why = edits.map((e) => `${e.project.name}/${e.file}`);
   const dismiss = () => {
     dismissed.add(conversationId);
     setHidden(true);
@@ -48,7 +51,7 @@ export function SiblingRepoCard({ conversationId }: { conversationId: UUID }) {
   const cont = () => {
     dismiss();
     void openWorkspaceWith(
-      [owner.id, ...siblings.map((p) => p.id)],
+      [owner.id, ...edits.map((e) => e.project.id)],
       `Carrying on from "${conversation?.name ?? 'an earlier chat'}" in ${owner.name}: `,
     );
   };
@@ -60,6 +63,10 @@ export function SiblingRepoCard({ conversationId }: { conversationId: UUID }) {
         <div className="text-[11px] text-ink-muted">
           Continue in a workspace with {owner.name} and {named}, so one conversation can change
           all of them and you review the changes together.
+        </div>
+        <div className="text-[11px] text-ink-faint truncate mt-0.5" title={why.join('\n')}>
+          Edited <span className="font-mono">{why[0]}</span>
+          {why.length > 1 ? ` and ${why.length - 1} more` : ''}
         </div>
       </div>
       <button

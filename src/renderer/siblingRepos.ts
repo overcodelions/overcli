@@ -4,9 +4,21 @@ import type { Project, StreamEvent } from '@shared/types';
 /// MultiEdit / NotebookEdit, Gemini's write_file / replace, apply_patch.
 const WRITE_TOOL = /edit|write|replace|patch|create/i;
 
-/// Other projects a conversation has CHANGED files in, or that the user
-/// named with `@acme-api`. That is the moment a workspace explains itself —
-/// the work genuinely spans repos — so the chat offers one right there.
+/// A sibling project a conversation has changed, and the first file it
+/// changed there — the card says which, so it never appears for no reason.
+export interface SiblingEdit {
+  project: Project;
+  /// Relative to the sibling's folder.
+  file: string;
+}
+
+/// Other projects a conversation has CHANGED files in. That is the moment a
+/// workspace explains itself — the work genuinely spans repos — so the chat
+/// offers one right there.
+///
+/// Typing `@acme-api` deliberately doesn't count: `@` already means "this
+/// file" to the composer and the CLIs, and a project name there is text the
+/// agent can do nothing with. The composer's project menu is the way to ask.
 ///
 /// Reading doesn't count. Looking at a dependency's source, or a tool whose
 /// whole job is operating on other repos (a git client running `git -C` over
@@ -19,16 +31,14 @@ export function siblingProjectsTouched(
   owner: Project,
   projects: readonly Project[],
   events: readonly StreamEvent[],
-): Project[] {
+): SiblingEdit[] {
   const candidates = projects.filter(
     (p) => p.id !== owner.id && !isWithin(p.path, owner.path) && !isWithin(owner.path, p.path),
   );
   if (candidates.length === 0) return [];
 
   const written: string[] = [];
-  const typed: string[] = [];
   for (const e of events) {
-    if (e.kind.type === 'localUser') typed.push(e.kind.text);
     if (e.kind.type === 'patchApply') {
       for (const f of e.kind.info.files) written.push(f.path);
     }
@@ -44,22 +54,23 @@ export function siblingProjectsTouched(
     }
   }
 
-  return candidates.filter(
-    (p) =>
-      written.some((path) => isWithin(path, p.path)) ||
-      typed.some((t) => mentions(t, p.name)),
-  );
+  const out: SiblingEdit[] = [];
+  for (const project of candidates) {
+    const hit = written.find((path) => isWithin(path, project.path));
+    if (hit) out.push({ project, file: relativeTo(hit, project.path) });
+  }
+  return out;
+}
+
+function relativeTo(file: string, folder: string): string {
+  const base = folder.endsWith('/') ? folder.slice(0, -1) : folder;
+  return file === base ? '.' : file.slice(base.length + 1);
 }
 
 function isWithin(child: string, parent: string): boolean {
   if (!child || !parent) return false;
   const base = parent.endsWith('/') ? parent.slice(0, -1) : parent;
   return child === base || child.startsWith(`${base}/`);
-}
-
-function mentions(text: string, name: string): boolean {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(^|\\s)@${escaped}(?![\\w-])`, 'i').test(text);
 }
 
 function parseInput(json: string): Record<string, unknown> {
