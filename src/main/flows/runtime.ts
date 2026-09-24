@@ -1863,6 +1863,7 @@ export class FlowRuntimeImpl {
       displayText: flowNote(`Finalizing ${prior.output} before continuing…`),
       backend: participant.backend,
       cwd: run.projectPath,
+      sandboxFsWrites: this.sandboxFlowWrites(),
       allowedDirs: this.runAllowedDirs(run),
       model: effectiveParticipantModel(run, prior.participantId),
       permissionMode: 'default',
@@ -2623,6 +2624,7 @@ export class FlowRuntimeImpl {
       displayText: args.displayText,
       backend: args.backend,
       cwd: args.cwd,
+      sandboxFsWrites: this.sandboxFlowWrites(),
       allowedDirs: args.allowedDirs,
       model: args.model,
       permissionMode: 'bypassPermissions',
@@ -3046,6 +3048,7 @@ export class FlowRuntimeImpl {
       attachments,
       backend: stepModel.backend,
       cwd: run.projectPath,
+      sandboxFsWrites: this.sandboxFlowWrites(),
       allowedDirs: this.runAllowedDirs(run),
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
@@ -3168,6 +3171,7 @@ export class FlowRuntimeImpl {
       prompt: '',
       backend: stepModel.backend,
       cwd: run.projectPath,
+      sandboxFsWrites: this.sandboxFlowWrites(),
       allowedDirs: this.runAllowedDirs(run),
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, next),
@@ -3636,6 +3640,7 @@ export class FlowRuntimeImpl {
       ),
       backend: stepModel.backend,
       cwd: run.projectPath,
+      sandboxFsWrites: this.sandboxFlowWrites(),
       allowedDirs: this.runAllowedDirs(run),
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
@@ -4107,6 +4112,14 @@ export class FlowRuntimeImpl {
     parts.push('<!--flow:inputs-->');
     parts.push(inputParts.join('\n\n'));
     return parts.join('\n\n');
+  }
+
+  /// Whether flow-owned backend processes run inside the OS write jail
+  /// (`AppSettings.sandboxFlowWrites`, on unless explicitly false). Applied
+  /// to every send and prewarm the runtime makes; a prewarm that disagreed
+  /// with its step's send would be reused unjailed. See runner.shouldSandboxSpawn.
+  private sandboxFlowWrites(): boolean {
+    return this.getSettings().sandboxFlowWrites !== false;
   }
 
   private resolvePermissionMode(run: FlowRun, step: FlowStep): PermissionMode {

@@ -107,10 +107,19 @@ export class CodexAppServerClient extends EventEmitter {
   /// of failing.
   private inFlightTurnId: string | null = null;
 
-  constructor(args: { binary: string; cwd: string; env: NodeJS.ProcessEnv; resumeId?: string }) {
+  constructor(args: {
+    binary: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    resumeId?: string;
+    /// Rewrites the command line, e.g. to run it inside the Seatbelt write
+    /// jail (only when codex's own sandbox is off — they cannot nest).
+    launch?: (command: string, args: string[]) => { command: string; args: string[] };
+  }) {
     super();
     this.resumeId = args.resumeId;
-    this.proc = spawn(args.binary, ['app-server'], {
+    const launch = args.launch?.(args.binary, ['app-server']) ?? { command: args.binary, args: ['app-server'] };
+    this.proc = spawn(launch.command, launch.args, {
       cwd: args.cwd,
       env: args.env,
       shell: backendNeedsShell(args.binary),

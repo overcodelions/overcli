@@ -51,9 +51,13 @@ export class GeminiAcpClient {
     onRequest: (id: JsonRpcId, method: string, params: any) => any | Promise<any>;
     onStderr?: (chunk: string) => void;
     onClose?: (code: number | null) => void;
+    /// Rewrites the command line, e.g. to run it inside the Seatbelt write
+    /// jail. The flag probe above still runs the bare binary.
+    launch?: (command: string, args: string[]) => { command: string; args: string[] };
   }) {
     const acpFlag = resolveGeminiAcpFlag(args.binary, args.env);
-    this.proc = spawn(args.binary, [acpFlag], {
+    const launch = args.launch?.(args.binary, [acpFlag]) ?? { command: args.binary, args: [acpFlag] };
+    this.proc = spawn(launch.command, launch.args, {
       cwd: args.cwd,
       env: args.env,
       shell: backendNeedsShell(args.binary),

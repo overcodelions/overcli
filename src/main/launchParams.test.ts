@@ -29,6 +29,7 @@ const BASE: LaunchParams = {
   launchTurbo: false,
   launchArtifacts: false,
   launchChrome: false,
+  launchSandbox: false,
   launchEffort: 'medium',
   cwd: '/repo',
 };
@@ -43,6 +44,7 @@ const CHANGED: { [K in keyof LaunchParams]-?: LaunchParams[K] } = {
   launchTurbo: true,
   launchArtifacts: true,
   launchChrome: true,
+  launchSandbox: true,
   launchEffort: 'high',
   cwd: '/other-repo',
 };
