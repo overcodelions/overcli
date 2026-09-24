@@ -2034,7 +2034,7 @@ describe('FlowRuntimeImpl — per-run cost ceiling', () => {
 /// flag runs its step with full write access while every runner test passes.
 describe('FlowRuntimeImpl — sandboxed flow sends', () => {
   async function firstStepSend(settings: Record<string, unknown>) {
-    const send = vi.fn(() => ({ ok: true as const }));
+    const send = vi.fn((_req: { sandboxFsWrites?: boolean }) => ({ ok: true as const }));
     const runtime = new FlowRuntimeImpl(
       { send, prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
       () => {},
@@ -2051,7 +2051,7 @@ describe('FlowRuntimeImpl — sandboxed flow sends', () => {
     });
     expect(result.ok).toBe(true);
     await vi.waitFor(() => expect(send).toHaveBeenCalled());
-    return send.mock.calls[0][0] as { sandboxFsWrites?: boolean };
+    return send.mock.calls[0][0];
   }
 
   it('jails a step by default', async () => {
