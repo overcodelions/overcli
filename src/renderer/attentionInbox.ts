@@ -49,6 +49,19 @@ export type AttentionItem =
       at: number;
     }
   | {
+      /// A run that finished but left work nobody has looked at: uncommitted
+      /// changes in its worktree, or commits its base branch has never seen.
+      /// Nothing is stuck — the flow is over — so it is never urgent; it only
+      /// gets louder the longer it sits, like everything else.
+      kind: 'unreviewed';
+      key: string;
+      runId: string;
+      workerId: string | null;
+      title: string;
+      reason: string;
+      at: number;
+    }
+  | {
       kind: 'hire';
       key: string;
       workerId: null;
@@ -91,15 +104,21 @@ export interface AttentionSources {
   /// Null until the treasury has been computed.
   funding: Pick<WorkerFunding, 'workerId' | 'blocked'>[] | null;
   pendingHire: { draft: { name: string }; at: number } | null;
+  /// Finished runs whose worktree still holds unreviewed work — the main
+  /// process's `unreviewedDoneRunIds`, kept by the flows store as a map
+  /// parallel to `runs`.
+  unreviewedRunIds: Record<string, true>;
 }
 
 /// Rank inside the tray: a stopped run first — it holds a worktree and the
-/// rest of its flow hostage — then things to approve, then the rest.
+/// rest of its flow hostage — then things to approve, then finished work to
+/// review (it holds nothing up, it only risks being forgotten), then the rest.
 const KIND_RANK: Record<AttentionItem['kind'], number> = {
   run: 0,
   approval: 1,
-  hire: 2,
-  unfunded: 3,
+  unreviewed: 2,
+  hire: 3,
+  unfunded: 4,
 };
 
 export function attentionInbox(src: AttentionSources, now: number = Date.now()): AttentionItem[] {
@@ -125,6 +144,25 @@ export function attentionInbox(src: AttentionSources, now: number = Date.now()):
         .join(' · '),
       at,
       urgent: run.state.reason !== 'preStep' && run.state.reason !== 'interrupted',
+    });
+  }
+
+  for (const run of Object.values(src.runs)) {
+    if (run.state.kind !== 'done' || !src.unreviewedRunIds[run.id]) continue;
+    const at = flowRunActivityAt(run);
+    // The paused runs' cut, for the same reason: an install keeps finished
+    // runs with unmerged work around for months, and a chip that is amber
+    // forever over work you have long since decided about is one you learn
+    // to ignore. The row's own dot still marks it after this.
+    if (now - at > STALL_AFTER_MS) continue;
+    items.push({
+      kind: 'unreviewed',
+      key: `unreviewed:${run.id}`,
+      runId: run.id,
+      workerId: run.workerId ?? null,
+      title: flowRunTitle(run),
+      reason: unreviewedReason(run),
+      at,
     });
   }
 
@@ -182,9 +220,16 @@ export function attentionInbox(src: AttentionSources, now: number = Date.now()):
   );
 }
 
+function unreviewedReason(run: FlowRun): string {
+  if (run.branchName && run.baseBranch) return `${run.branchName} → ${run.baseBranch} · not merged`;
+  if (run.branchName) return `${run.branchName} · not reviewed`;
+  return 'Finished with unreviewed changes';
+}
+
 const GROUP_TITLES: Record<AttentionItem['kind'], string> = {
   run: 'Paused runs',
   approval: 'To approve',
+  unreviewed: 'To review',
   hire: 'Hires',
   unfunded: 'Out of funds',
 };
@@ -221,6 +266,10 @@ export function attentionLabel(items: AttentionItem[]): string {
   const total = items.length;
   if (runs > 0 && runs === total) return runs === 1 ? 'Run paused' : `${runs} runs paused`;
   if (runs > 0) return `Run paused · ${total} need you`;
+  const unreviewed = items.filter((it) => it.kind === 'unreviewed').length;
+  if (unreviewed > 0 && unreviewed === total) {
+    return unreviewed === 1 ? 'Run to review' : `${unreviewed} runs to review`;
+  }
   return total === 1 ? '1 needs you' : `${total} need you`;
 }
 
@@ -265,6 +314,10 @@ export function recentWork(
   now: number = Date.now(),
 ): RecentItem[] {
   const waitingKeys = new Set(waiting.map((it) => it.key));
+  // A finished run waiting to be reviewed is keyed as `unreviewed:`, not
+  // `run:`, so it would otherwise turn up twice: once to review, once as
+  // "Just finished".
+  for (const it of waiting) if (it.kind === 'unreviewed') waitingKeys.add(`run:${it.runId}`);
   const rows: RecentItem[] = [];
 
   // An errand is a worker run you asked for by hand, so it belongs here; its
