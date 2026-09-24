@@ -107,3 +107,104 @@ describe('spawnFor', () => {
     },
   );
 });
+
+// The two long-lived transports don't go through `spawnFor`'s own spawn:
+// each client spawns in its constructor via the `launch` hook the runner
+// hands it. These pin that the hook is wired, so a flow step on codex
+// app-server or gemini ACP is jailed the same as any other backend.
+describe('long-lived transports', () => {
+  beforeEach(() => {
+    spawnCalls.length = 0;
+  });
+
+  function manager() {
+    return new RunnerManager(
+      () => {},
+      () => ({ backends: {}, backendPaths: {} }) as never,
+    );
+  }
+
+  function codexAppServer(sandboxFsWrites: boolean, permissionMode: string) {
+    const priv = manager() as unknown as {
+      spawnCodexAppServer(
+        args: object,
+        binary: string,
+        env: NodeJS.ProcessEnv,
+        perms: { sandbox: string; approval: string },
+      ): { codexAppServer?: { kill(): void }; launchSandbox: boolean };
+    };
+    const active = priv.spawnCodexAppServer(
+      {
+        conversationId: `codex-${sandboxFsWrites}-${permissionMode}`,
+        prompt: '',
+        backend: 'codex',
+        cwd,
+        model: 'm',
+        permissionMode,
+        sandboxFsWrites,
+      },
+      '/usr/bin/true',
+      {},
+      { sandbox: 'danger-full-access', approval: 'never' },
+    );
+    active.codexAppServer?.kill();
+    return { active, call: spawnCalls[spawnCalls.length - 1] };
+  }
+
+  function geminiAcp(sandboxFsWrites: boolean) {
+    const priv = manager() as unknown as {
+      ensureGeminiAcpSession(args: object): Promise<unknown>;
+      killGeminiAcp(convId: string): void;
+    };
+    const convId = `gemini-${sandboxFsWrites}`;
+    // The client spawns synchronously in its constructor; the handshake that
+    // follows can never finish against /bin/cat, so kill it and drop it.
+    priv
+      .ensureGeminiAcpSession({
+        conversationId: convId,
+        prompt: '',
+        backend: 'gemini',
+        cwd,
+        model: 'm',
+        permissionMode: 'bypassPermissions',
+        sandboxFsWrites,
+      })
+      .catch(() => {});
+    priv.killGeminiAcp(convId);
+    return spawnCalls[spawnCalls.length - 1];
+  }
+
+  it('launches codex app-server and gemini ACP directly when the flag is off', () => {
+    const codex = codexAppServer(false, 'bypassPermissions');
+    expect(codex.call).toMatchObject({ command: '/usr/bin/true', args: ['app-server'] });
+    expect(codex.active.launchSandbox).toBe(false);
+    expect(geminiAcp(false).command).not.toBe('/usr/bin/sandbox-exec');
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'wraps codex app-server in sandbox-exec when its own sandbox is off',
+    () => {
+      const { active, call } = codexAppServer(true, 'bypassPermissions');
+      expect(call.command).toBe('/usr/bin/sandbox-exec');
+      expect(call.args[0]).toBe('-f');
+      expect(call.args.slice(2)).toEqual(['/usr/bin/true', 'app-server']);
+      expect(active.launchSandbox).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')(
+    "leaves codex app-server unwrapped when codex's own sandbox is on",
+    () => {
+      const { call } = codexAppServer(true, 'acceptEdits');
+      expect(call).toMatchObject({ command: '/usr/bin/true', args: ['app-server'] });
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')('wraps gemini ACP in sandbox-exec', () => {
+    const off = geminiAcp(false);
+    const on = geminiAcp(true);
+    expect(on.command).toBe('/usr/bin/sandbox-exec');
+    expect(on.args[0]).toBe('-f');
+    expect(on.args.slice(2)).toEqual([off.command, ...off.args]);
+  });
+});

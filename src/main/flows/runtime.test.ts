@@ -2,7 +2,7 @@
 // RunnerManager (which would need an Electron app context). The full
 // orchestration is exercised manually by running a flow end-to-end.
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -2025,5 +2025,64 @@ describe('FlowRuntimeImpl — per-run cost ceiling', () => {
 
     expect(rt.getRun(runId)!.state.kind).toBe('aborted');
     expect(notify).toHaveBeenCalledTimes(1);
+  });
+});
+
+/// The Seatbelt jail is opt-in per send: the runner only wraps a spawn when
+/// the send carries `sandboxFsWrites`. So the runtime is the one place that
+/// decides whether flow steps are jailed, and a send site that forgets the
+/// flag runs its step with full write access while every runner test passes.
+describe('FlowRuntimeImpl — sandboxed flow sends', () => {
+  async function firstStepSend(settings: Record<string, unknown>) {
+    const send = vi.fn(() => ({ ok: true as const }));
+    const runtime = new FlowRuntimeImpl(
+      { send, prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {}, ...settings }) as never,
+    );
+    const result = await runtime.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Refactor the module.',
+      workerId: 'worker-1',
+      workerName: 'Scout',
+      allowExternalActions: true,
+    });
+    expect(result.ok).toBe(true);
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    return send.mock.calls[0][0] as { sandboxFsWrites?: boolean };
+  }
+
+  it('jails a step by default', async () => {
+    expect((await firstStepSend({})).sandboxFsWrites).toBe(true);
+  });
+
+  it('runs the step unjailed when Settings → Flows turns it off', async () => {
+    expect((await firstStepSend({ sandboxFlowWrites: false })).sandboxFsWrites).toBe(false);
+  });
+
+  // The behavioural tests above reach one send site. The others (watch
+  // turns, the missing-output re-ask, finalize, the next-step prewarm) sit
+  // behind states that are costly to stage, so pin them structurally: every
+  // call the runtime makes into the runner must carry the flag.
+  it('every runner send and prewarm in the runtime carries the flag', () => {
+    const source = readFileSync(join(__dirname, 'runtime.ts'), 'utf8');
+    const calls = [...source.matchAll(/this\.runner\.(send|prewarm)\(\{/g)];
+    expect(calls.length).toBeGreaterThanOrEqual(5);
+    for (const call of calls) {
+      // The argument object runs to its matching close brace.
+      let depth = 0;
+      let end = call.index! + call[0].length - 1;
+      for (; end < source.length; end++) {
+        if (source[end] === '{') depth++;
+        else if (source[end] === '}' && --depth === 0) break;
+      }
+      const argsText = source.slice(call.index!, end);
+      const line = source.slice(0, call.index!).split('\n').length;
+      expect(argsText, `runtime.ts:${line} runner.${call[1]}`).toContain(
+        'sandboxFsWrites: this.sandboxFlowWrites()',
+      );
+    }
   });
 });
