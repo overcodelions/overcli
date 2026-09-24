@@ -160,3 +160,21 @@ export function findOwningProjectPath(
   }
   return null;
 }
+
+/// The repo's default branch, as a ref `git merge-base` accepts. Asks
+/// origin first, then falls back to a local main/master. Not
+/// `git:detectBaseBranch`, which answers with the CURRENT branch first and
+/// so would compare a feature branch with itself.
+export async function resolveDefaultBranch(
+  git: (args: string[]) => Promise<{ stdout: string; exitCode: number }>,
+): Promise<string | null> {
+  const originHead = await git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+  const remoteRef = originHead.exitCode === 0 ? originHead.stdout.trim() : '';
+  const fromOrigin = remoteRef.replace(/^origin\//, '');
+  for (const name of [fromOrigin, 'main', 'master']) {
+    if (!name) continue;
+    const local = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]);
+    if (local.exitCode === 0) return name;
+  }
+  return remoteRef || null;
+}

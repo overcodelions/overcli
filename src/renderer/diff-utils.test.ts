@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findDiffMatches } from './diff-utils';
+import { findDiffMatches, resolveDefaultBranch } from './diff-utils';
 
 describe('findDiffMatches', () => {
   const lines = [
@@ -37,5 +37,38 @@ describe('findDiffMatches', () => {
       { line: 0, start: 0, end: 2 },
       { line: 0, start: 2, end: 4 },
     ]);
+  });
+});
+
+describe('resolveDefaultBranch', () => {
+  // A fake repo: `origin` is origin/HEAD's short ref ('' = unset), `local`
+  // the branches under refs/heads.
+  function repo(origin: string, local: string[]) {
+    return async (args: string[]) => {
+      if (args[0] === 'symbolic-ref') {
+        return origin ? { stdout: `${origin}\n`, exitCode: 0 } : { stdout: '', exitCode: 128 };
+      }
+      const ref = args[args.length - 1].replace('refs/heads/', '');
+      return { stdout: '', exitCode: local.includes(ref) ? 0 : 1 };
+    };
+  }
+
+  it("uses origin's default when it exists locally, never the current branch", async () => {
+    expect(await resolveDefaultBranch(repo('origin/master', ['master', 'feature/x']))).toBe(
+      'master',
+    );
+  });
+
+  it('falls back to a local main or master when origin/HEAD is unset', async () => {
+    expect(await resolveDefaultBranch(repo('', ['main']))).toBe('main');
+    expect(await resolveDefaultBranch(repo('', ['master']))).toBe('master');
+  });
+
+  it("uses the remote ref when the default isn't checked out locally", async () => {
+    expect(await resolveDefaultBranch(repo('origin/trunk', ['feature/x']))).toBe('origin/trunk');
+  });
+
+  it('gives up with no origin and no main/master', async () => {
+    expect(await resolveDefaultBranch(repo('', ['feature/x']))).toBeNull();
   });
 });
