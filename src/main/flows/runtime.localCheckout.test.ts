@@ -133,6 +133,37 @@ describe('flow local checkout rebinding', () => {
     expect(mocks.saveRun).toHaveBeenCalledWith(restored);
   });
 
+  it('repairs a persisted run whose worktree is gone while the project is on another branch', () => {
+    // A step that committed into the main checkout and removed its own tree:
+    // the run's branch was never checked out, but chat still needs a cwd.
+    mocks.currentBranch.mockReturnValue({ isRepo: true, branch: 'feature/something-else' });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-flow-local-'));
+    const source = path.join(root, 'repo');
+    fs.mkdirSync(source);
+    const run = flowRun(path.join(root, 'gone-worktree'), source);
+    mocks.restoredRuns.push(run);
+
+    const restored = runtime().getRun(run.id)!;
+
+    expect(restored.projectPath).toBe(source);
+    expect(restored.worktreePath).toBeUndefined();
+    expect(restored.checkedOutLocally).toBeUndefined();
+    expect(mocks.migrateSession).toHaveBeenCalledOnce();
+    expect(mocks.saveRun).toHaveBeenCalledWith(restored);
+  });
+
+  it('leaves a run alone when its worktree is still on disk', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-flow-local-'));
+    const source = path.join(root, 'repo');
+    const worktree = path.join(root, 'worktree');
+    fs.mkdirSync(source);
+    fs.mkdirSync(worktree);
+    mocks.restoredRuns.push(flowRun(worktree, source));
+
+    expect(runtime().getRun('run-1')?.worktreePath).toBe(worktree);
+    expect(mocks.migrateSession).not.toHaveBeenCalled();
+  });
+
   it('checks out, migrates Claude sessions, persists, and emits the rebound run', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-flow-local-'));
     const source = path.join(root, 'repo');

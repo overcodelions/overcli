@@ -212,8 +212,14 @@ export type FlowWorkerQuestionResult =
 /// branch has been checked out in the source project. Kept as a small pure
 /// mutation so both the explicit checkout path and startup recovery use the
 /// exact same state transition.
+///
+/// `checkedOut: false` is for a tree that vanished without its branch being
+/// checked out (a step that committed elsewhere and removed its own tree):
+/// the run still moves to the project so chat can continue, but it must not
+/// claim the branch is local.
 export function rebindRunToLocalProject(
   run: FlowRun,
+  opts: { checkedOut?: boolean } = {},
 ): { oldProjectPath: string; projectPath: string } | null {
   if (
     !run.worktreePath ||
@@ -225,8 +231,38 @@ export function rebindRunToLocalProject(
   const oldProjectPath = run.projectPath;
   run.projectPath = run.sourceProjectPath;
   delete run.worktreePath;
-  run.checkedOutLocally = true;
+  if (opts.checkedOut ?? true) run.checkedOutLocally = true;
   return { oldProjectPath, projectPath: run.projectPath };
+}
+
+/// Move a single-project run whose worktree is gone onto its source project.
+///
+/// Two ways the tree disappears under a run: `Check out locally` in older
+/// builds removed it without updating the record, and a step can commit into
+/// the main checkout and delete its own tree. Either way the next participant
+/// message would spawn in a missing cwd and fail. The project checkout is the
+/// only place left to talk to the run, whatever branch it is on; the run is
+/// marked `checkedOutLocally` only when that branch really is the run's.
+export function recoverMissingWorktree(run: FlowRun): boolean {
+  if (
+    !run.worktreePath ||
+    !run.sourceProjectPath ||
+    existsSync(run.worktreePath) ||
+    !existsSync(run.sourceProjectPath)
+  ) {
+    return false;
+  }
+  const oldCwd = run.worktreePath;
+  const checkedOut =
+    !!run.branchName && currentBranch(run.sourceProjectPath).branch === run.branchName;
+  if (!rebindRunToLocalProject(run, { checkedOut })) return false;
+  migrateRunClaudeSessions(run, oldCwd, run.projectPath);
+  log(
+    'info',
+    'flows.recoverMissingWorktree',
+    `rebound run ${run.id} from missing ${oldCwd} to ${run.projectPath}`,
+  );
+  return true;
 }
 
 function migrateRunClaudeSessions(run: FlowRun, fromCwd: string, toCwd: string): void {
@@ -547,30 +583,7 @@ export class FlowRuntimeImpl {
     // paused. A paused run is resumable via `resumeRun`, which starts the
     // next step fresh — no live subprocess required.
     for (const run of loadAllRuns()) {
-      // `Check out locally` historically removed a flow worktree without
-      // updating the run record. On the next participant message the runner
-      // tried to spawn in that deleted cwd and surfaced macOS ENOENT as the
-      // opaque status -2. Recover those already-affected runs when the main
-      // project is now on the flow branch — the exact post-checkout shape.
-      if (
-        run.worktreePath &&
-        run.sourceProjectPath &&
-        run.branchName &&
-        !existsSync(run.worktreePath) &&
-        existsSync(run.sourceProjectPath) &&
-        currentBranch(run.sourceProjectPath).branch === run.branchName
-      ) {
-        const oldCwd = run.worktreePath;
-        migrateRunClaudeSessions(run, oldCwd, run.sourceProjectPath);
-        if (rebindRunToLocalProject(run)) {
-          saveRun(run);
-          log(
-            'info',
-            'flows.recoverLocalCheckout',
-            `rebound run ${run.id} from missing ${oldCwd} to ${run.projectPath}`,
-          );
-        }
-      }
+      if (recoverMissingWorktree(run)) saveRun(run);
       // Re-running an external step after a crash is still an external
       // effect and may duplicate a partially-completed send/push/update.
       // Restore it at the approval boundary, not under the generic one-click
@@ -3449,6 +3462,10 @@ export class FlowRuntimeImpl {
     const run = this.runs.get(runId);
     if (!run) return;
     if (run.state.kind !== 'running' || run.state.currentStepId !== finishedStepId) return;
+    // A step can delete the run's own worktree (it committed into the main
+    // checkout instead). Rebind now, before the next step or a participant
+    // chat tries to spawn there.
+    recoverMissingWorktree(run);
     const idx = run.flowSnapshot.steps.findIndex(s => s.id === finishedStepId);
     const next = run.flowSnapshot.steps[idx + 1];
     if (!next) {
