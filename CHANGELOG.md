@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-09-23
+
 ### Added
 - **Open a folder, and overcli works out what it is.** A repo opens as code; a folder holding several repos offers to join them as a workspace; a folder of documents offers the documents view. The first screen offers "Open a folder" and "Start something new" instead of asking you to pick a project type.
 - **More ways into a workspace:** from a folder of repos, from "Work on … and…" in the composer's project menu, and from a card in the chat once a conversation edits another repo (it names the file). The new-workspace form asks for repos first and suggests the name.
@@ -554,7 +556,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/overcodelions/overcli/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/overcodelions/overcli/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/overcodelions/overcli/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/overcodelions/overcli/compare/v0.16.1...v0.17.0
