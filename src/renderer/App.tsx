@@ -22,6 +22,7 @@ import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
 import { focusedFlowConversationId } from './flowFocus';
 import { useFlowsStore } from './flowsStore';
+import { anyRunJustFinished, createUnreviewedRefresher } from './unreviewedRefresh';
 import { useOrchestratorStore } from './orchestratorStore';
 import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
@@ -178,41 +179,27 @@ export function App() {
   // Back/forward across views (⌘←/⌘→, and the title-bar arrows).
   useEffect(() => installNavHistory(), []);
 
-  // Re-check which finished runs still have unreviewed work whenever the
-  // window regains focus. Reviewing a worktree means leaving this app —
-  // committing in a terminal, opening an editor — so focus returning is
-  // exactly the moment the answer is most likely to have changed, and
-  // without this the dot outlives the work it points at. Throttled, because
-  // focus fires on every alt-tab and each check costs one `git status` per
-  // finished run.
+  // Re-check which finished runs still have unreviewed work when the window
+  // regains focus — reviewing means leaving this app, so coming back is when
+  // the answer most likely changed — and when a run finishes, so a shift that
+  // ends while you watch nags straight away. Throttling and the trailing
+  // retry live in `createUnreviewedRefresher`.
   useEffect(() => {
-    let last = 0;
-    // A scan already running is the stronger guard of the two. The time
-    // throttle assumes a scan is over long before the next focus; on an
-    // install with hundreds of worktrees one takes many seconds, so
-    // alt-tabbing during it used to stack a second full round of `git`
-    // subprocesses on top of the first — each one making the other slower.
-    let inFlight = false;
-    const MIN_GAP_MS = 5_000;
-    const refresh = () => {
-      const now = Date.now();
-      if (inFlight || now - last < MIN_GAP_MS) return;
-      last = now;
-      inFlight = true;
-      void window.overcli
-        .invoke('flows:listUnreviewedRuns')
-        .then((ids) => useFlowsStore.getState().applyUnreviewedRuns(ids))
-        .catch(() => {})
-        .finally(() => {
-          inFlight = false;
-          // Stamp the END, not the start: the gap is meant to keep scans
-          // apart, and measuring from the start lets a slow one be followed
-          // immediately by the next.
-          last = Date.now();
-        });
+    const refresher = createUnreviewedRefresher({
+      scan: () => window.overcli.invoke('flows:listUnreviewedRuns'),
+      apply: (ids) => useFlowsStore.getState().applyUnreviewedRuns(ids),
+      gapMs: 5_000,
+    });
+    const onFocus = () => void refresher.refresh();
+    window.addEventListener('focus', onFocus);
+    const unsubscribe = useFlowsStore.subscribe((s, prev) => {
+      if (anyRunJustFinished(s.runs, prev.runs)) refresher.refreshSoon();
+    });
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      unsubscribe();
+      refresher.dispose();
     };
-    window.addEventListener('focus', refresh);
-    return () => window.removeEventListener('focus', refresh);
   }, []);
 
   // Hydrate flow runs on app startup so the sidebar's per-project

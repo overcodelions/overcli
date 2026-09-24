@@ -60,6 +60,7 @@ function sources(over: Partial<AttentionSources> = {}): AttentionSources {
     workers: {},
     funding: null,
     pendingHire: null,
+    unreviewedRunIds: {},
     ...over,
   };
 }
@@ -340,5 +341,128 @@ describe('recentWork', () => {
     expect(recentWork(src({}, { o: going }), [], NOW).map((r) => r.status)).toEqual([
       { continuing: true, label: 'Running · 1 left' },
     ]);
+  });
+});
+
+describe('unreviewed finished runs', () => {
+  /// A run that finished `ago` ms before NOW, on a branch its base never saw.
+  const finished = (id: string, ago = MIN, overrides: Partial<FlowRun> = {}) =>
+    run(id, {
+      state: { kind: 'done', success: true },
+      createdAt: NOW - ago - MIN,
+      attempts: [{ stepId: 'plan', startedAt: NOW - ago - MIN, endedAt: NOW - ago }],
+      branchName: 'prometheus/2026-09-23-sweep',
+      baseBranch: 'master',
+      ...overrides,
+    } as unknown as Partial<FlowRun>);
+  const flagged = (...ids: string[]) =>
+    Object.fromEntries(ids.map((id) => [id, true as const]));
+
+  it('nags about a finished run that left work nobody reviewed, naming the branch', () => {
+    const items = attentionInbox(
+      sources({ runs: { d: finished('d', MIN, { workerId: 'w1' } as Partial<FlowRun>) }, unreviewedRunIds: flagged('d') }),
+      NOW,
+    );
+    expect(items).toEqual([
+      {
+        kind: 'unreviewed',
+        key: 'unreviewed:d',
+        runId: 'd',
+        workerId: 'w1',
+        title: 'Acme lead forwarding broken',
+        reason: 'prometheus/2026-09-23-sweep → master · not merged',
+        at: NOW - MIN,
+      },
+    ]);
+    expect(attentionLevel(items, NOW)).toBe('calm');
+    expect(attentionLabel(items)).toBe('Run to review');
+    expect(groupAttention(items).map((g) => g.title)).toEqual(['To review']);
+  });
+
+  it('is never urgent, but escalates on age like everything else', () => {
+    const at = (ago: number) =>
+      attentionInbox(sources({ runs: { d: finished('d', ago) }, unreviewedRunIds: flagged('d') }), NOW);
+    expect(attentionLevel(at(0), NOW)).toBe('calm');
+    expect(attentionLevel(at(NUDGE_AFTER_MS), NOW)).toBe('waiting');
+    expect(attentionLevel(at(BLOCKING_AFTER_MS), NOW)).toBe('blocking');
+  });
+
+  it('counts several as runs to review', () => {
+    const items = attentionInbox(
+      sources({ runs: { a: finished('a'), b: finished('b') }, unreviewedRunIds: flagged('a', 'b') }),
+      NOW,
+    );
+    expect(attentionLabel(items)).toBe('2 runs to review');
+  });
+
+  it('says less when it knows less about the branch', () => {
+    const noBase = finished('a', MIN, { baseBranch: undefined });
+    const noBranch = finished('b', MIN, { branchName: undefined, baseBranch: undefined });
+    const items = attentionInbox(
+      sources({ runs: { a: noBase, b: noBranch }, unreviewedRunIds: flagged('a', 'b') }),
+      NOW,
+    );
+    expect(items.map((it) => it.reason).sort()).toEqual([
+      'Finished with unreviewed changes',
+      'prometheus/2026-09-23-sweep · not reviewed',
+    ]);
+  });
+
+  it('ignores a finished run the scan did not flag', () => {
+    expect(attentionInbox(sources({ runs: { d: finished('d') } }), NOW)).toEqual([]);
+    expect(attentionInbox(sources({ runs: { d: finished('d') }, unreviewedRunIds: flagged('other') }), NOW)).toEqual([]);
+  });
+
+  it('ignores a flag on a run that is not done', () => {
+    const live = run('r', { state: { kind: 'running' } } as Partial<FlowRun>);
+    const stopped = run('s', { state: { kind: 'aborted' } } as unknown as Partial<FlowRun>);
+    expect(
+      attentionInbox(sources({ runs: { r: live, s: stopped }, unreviewedRunIds: flagged('r', 's') }), NOW),
+    ).toEqual([]);
+  });
+
+  it('lets go of one left long enough to count as stalled, like a paused run', () => {
+    const items = attentionInbox(
+      sources({ runs: { d: finished('d', STALL_AFTER_MS + 1) }, unreviewedRunIds: flagged('d') }),
+      NOW,
+    );
+    expect(items).toEqual([]);
+  });
+
+  it('ranks below a paused run and an approval, and the paused run still leads the label', () => {
+    const items = attentionInbox(
+      sources({
+        // The unreviewed run is the oldest wait, and it still sorts last.
+        runs: { d: finished('d', 2 * BLOCKING_AFTER_MS), p: run('p', { createdAt: NOW }) },
+        orchestrations: { o: batch('o', { createdAt: NOW }) },
+        unreviewedRunIds: flagged('d'),
+      }),
+      NOW,
+    );
+    expect(items.map((it) => it.key)).toEqual(['run:p', 'approval:o', 'unreviewed:d']);
+    expect(attentionLabel(items)).toBe('Run paused · 3 need you');
+    expect(attentionLevel(items, NOW)).toBe('blocking');
+    expect(groupAttention(items).map((g) => g.title)).toEqual(['Paused runs', 'To approve', 'To review']);
+  });
+
+  it('keeps the plain count when review work sits beside other waits', () => {
+    const items = attentionInbox(
+      sources({
+        runs: { d: finished('d') },
+        orchestrations: { o: batch('o') },
+        unreviewedRunIds: flagged('d'),
+      }),
+      NOW,
+    );
+    expect(attentionLabel(items)).toBe('2 need you');
+  });
+
+  it('is not repeated under recent work while it waits to be reviewed', () => {
+    const runs = { d: finished('d') };
+    const waiting = attentionInbox(sources({ runs, unreviewedRunIds: flagged('d') }), NOW);
+    expect(waiting).toHaveLength(1);
+    expect(recentWork({ runs, orchestrations: {} }, waiting, NOW)).toEqual([]);
+    // Without the flag it is ordinary finished work again.
+    expect(recentWork({ runs, orchestrations: {} }, [], NOW).map((r) => r.status.label)).toEqual(['Finished']);
   });
 });
