@@ -36,7 +36,7 @@ import type {
 } from '@shared/services';
 import { DEFAULT_READY_TIMEOUT_SEC, type TaskPreset } from '@shared/services';
 import { describeDrift, driftedTasks, shortCommit, taskDrift } from '@shared/taskDrift';
-import { isSecretName } from '@shared/machineValues';
+import { isSecretName, missingNamesFrom } from '@shared/machineValues';
 import { hardcodedCheckouts, useCheckoutPlaceholder } from '@shared/checkoutPaths';
 import { useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
@@ -3512,13 +3512,6 @@ function MachineValuesHost() {
   return <MachineValuesSheet needs={sheet.needs} onClose={close} />;
 }
 
-/// "Missing machine values: DB_USER, DB_PASSWORD" -> the names. The supervisor
-/// writes that line; reading it back saves a round trip for a button.
-export function missingNamesFrom(lastError: string | undefined): string[] {
-  const match = /^Missing machine values?: (.+)$/.exec(lastError ?? '');
-  return match ? match[1].split(',').map((n) => n.trim()).filter(Boolean) : [];
-}
-
 /// One editable row. `pinned` means the user chose secret/plain themselves, so
 /// renaming the value stops second-guessing them.
 interface MachineRow extends MachineEntry {
@@ -3554,7 +3547,17 @@ export function MachineValuesSheet({
         secret: secureStorage && isSecretName(n.name),
         neededBy: n.services,
       }));
-    const existing = machine.map((e) => ({ ...e, id: nextMachineRowId++, pinned: true }));
+    // A stored secret the keychain will not open is needed too — first, and
+    // flagged, or the sheet looks finished while the launch still fails.
+    const neededBy = new Map(needs.map((n) => [n.name, n.services]));
+    const existing = machine
+      .map<MachineRow>((e) => ({
+        ...e,
+        id: nextMachineRowId++,
+        pinned: true,
+        ...(e.unreadable && neededBy.has(e.name) ? { neededBy: neededBy.get(e.name) } : {}),
+      }))
+      .sort((a, b) => Number(!!b.unreadable) - Number(!!a.unreadable));
     const all = [...wanted, ...existing];
     return all.length > 0 ? all : [{ id: nextMachineRowId++, name: '', secret: false, value: '' }];
   });
@@ -3602,6 +3605,12 @@ export function MachineValuesSheet({
                 that {needs.length === 1 ? 'isn’t' : 'aren’t'} set on this machine yet. The run
                 configuration only says a value is needed — fill {needs.length === 1 ? 'it' : 'them'}{' '}
                 in here and they’ll be used by every service that asks.
+                {rows.some((r) => r.unreadable && r.neededBy) && (
+                  <>
+                    {' '}Rows marked <b>Can’t unlock</b> are stored, but the Keychain won’t open them for
+                    this copy of overcli — Replace and retype the value.
+                  </>
+                )}
               </>
             ) : (
               'All filled in. Save and the services can start.'
@@ -3757,7 +3766,16 @@ function MachineValueRow({
         {showChip ? (
           <div className="field flex items-center gap-2 py-2 pl-2.5 pr-9 text-[12px]">
             <span className="font-mono tracking-widest text-ink-muted">••••••••</span>
-            <span className="truncate text-[11px] text-ink-faint">Stored in Keychain</span>
+            {row.unreadable ? (
+              <span
+                className="truncate text-[11px] text-amber-700 dark:text-amber-300"
+                title="Stored, but the Keychain won't unlock it for this copy of overcli — another build or another machine saved it. Re-enter the value to store it again."
+              >
+                Can’t unlock — re-enter
+              </span>
+            ) : (
+              <span className="truncate text-[11px] text-ink-faint">Stored in Keychain</span>
+            )}
             <button
               className="ml-auto shrink-0 text-[11px] text-accent hover:underline"
               onClick={() => setReplacing(true)}

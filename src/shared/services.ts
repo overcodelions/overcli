@@ -349,6 +349,9 @@ export interface MachineEntry {
   value?: string;
   /// A secret that already has a value in the keychain.
   stored?: boolean;
+  /// Stored, but this keychain cannot open it — another build of the app or
+  /// another machine encrypted it. Launches treat it as absent until retyped.
+  unreadable?: boolean;
   /// The user made this plain although its name reads like a credential.
   /// Remembered so the next launch's migration does not encrypt it again.
   keepPlain?: boolean;

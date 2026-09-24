@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawnService } from './adapter';
 
 function alive(pid: number): boolean {
@@ -52,6 +55,26 @@ describe.skipIf(process.platform === 'win32')('spawnService stopping', () => {
     } finally {
       // A failing run must not leave its child behind under launchd.
       if (child > 0 && alive(child)) process.kill(child, 'SIGKILL');
+    }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('spawnService environment', () => {
+  it('gives the service its own directory as PWD, not the one overcli was launched from', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-pwd-')));
+    try {
+      const lines: string[] = [];
+      const proc = spawnService({
+        command: ['/usr/bin/env'],
+        cwd: dir,
+        env: { OLDPWD: '/somewhere/else' },
+      });
+      proc.onLine((line) => lines.push(line));
+      await new Promise<void>((resolve) => proc.onExit(() => resolve()));
+      expect(lines).toContain(`PWD=${dir}`);
+      expect(lines.some((line) => line.startsWith('OLDPWD='))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

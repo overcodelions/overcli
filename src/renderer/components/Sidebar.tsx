@@ -6,6 +6,7 @@ import { Colosseum, Conversation, Project, SidebarLayout, Workspace, UUID } from
 import { flowRunIsOwnedBy, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
 import { isEverydayProject } from '@shared/everydayProjects';
+import { labOn } from '@shared/labs';
 import { backendColor } from '../theme';
 import { selectActiveEntries } from '../activeSection';
 import { conversationActivityAt } from '../conversationLookup';
@@ -585,7 +586,9 @@ export function Sidebar() {
       {/* The switch is the setting: it writes the same stored value the
           Settings sheet mirrors, so the two can never disagree. Hidden on
           Workers, whose sidebar is the roster and has no second layout. */}
-      {detailMode !== 'workers' && (
+      {/* Nothing to lay out until there is a project: a choice between two
+          views of nothing is the first thing a newcomer would have read. */}
+      {detailMode !== 'workers' && (projects.length > 0 || workspaces.length > 0) && (
         <div className="mx-2 mt-1 flex gap-0.5 rounded-md border border-card-strong bg-card p-0.5">
           <LayoutTab
             label="Recent"
@@ -751,28 +754,32 @@ export function Sidebar() {
 
       <div className="border-t border-card px-2 py-2 flex flex-col gap-1">
         <button
-          onClick={() => openSheet({ type: 'newEverydayProject' })}
-          disabled={cliBlocked}
-          className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
-        >
-          + New everyday project
-        </button>
-        <button
           onClick={pickProject}
           disabled={cliBlocked}
           title={cliBlocked ? 'Install a CLI first to add a project' : undefined}
           className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
         >
-          + Add project
+          + Open folder
         </button>
         <button
-          onClick={() => openSheet({ type: 'newWorkspace' })}
+          onClick={() => openSheet({ type: 'newEverydayProject' })}
+          disabled={cliBlocked}
           className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
-          disabled={cliBlocked || projects.length === 0}
-          title={cliBlocked ? 'Install a CLI first to add a workspace' : undefined}
         >
-          + New workspace
+          + New
         </button>
+        {/* A workspace joins repos, so it means nothing before there are two.
+            Until then the way in is adding a folder of repos, which asks. */}
+        {projects.length >= 2 && (
+          <button
+            onClick={() => openSheet({ type: 'newWorkspace' })}
+            className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
+            disabled={cliBlocked}
+            title={cliBlocked ? 'Install a CLI first to add a workspace' : undefined}
+          >
+            + New workspace
+          </button>
+        )}
         <div className="flex items-center gap-1 mt-1">
           <SidebarIconButton label="Extensions" onClick={() => openSheet({ type: 'capabilities' })} />
           <SidebarIconButton
@@ -1022,6 +1029,7 @@ function ProjectGroup({
   // depend on git worktrees, so we hide the "+ agent" affordance only
   // when we've confirmed the project isn't a git repo.
   const isGitRepo = useStore((s) => s.projectIsGitRepo[project.id]);
+  const compareOn = useStore((s) => labOn(s.settings.labs, 'compare'));
   // Everyday projects ARE git repos, so this is a separate question from
   // `isGitRepo` — see `isEverydayProject`. A plain folder with no history is
   // the one state where offering the conversion is purely additive, which is
@@ -1234,7 +1242,7 @@ function ProjectGroup({
                 + agent
               </button>
             )}
-            {isGitRepo !== false && (
+            {isGitRepo !== false && compareOn && (
               <button
                 onClick={onNewColosseum}
                 className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
@@ -1249,11 +1257,11 @@ function ProjectGroup({
                 className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
                 title={
                   everyday
-                    ? 'Everyday project — documents, plain words, undo. Click to turn off.'
-                    : 'Make this an everyday project: documents, plain words, undo'
+                    ? 'Shown as documents — plain words, undo. Click to show it as files.'
+                    : 'Show as documents: plain words, save as you type, undo'
                 }
               >
-                {everyday ? 'everyday' : '+ everyday'}
+                {everyday ? 'documents' : '+ documents'}
               </button>
             )}
             {archivableCount + deletableFlowCount > 0 && (

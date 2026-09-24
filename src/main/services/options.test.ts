@@ -126,6 +126,18 @@ describe('substitute', () => {
   it('fills several in one value', () => {
     expect(substitute('${A}-${B}', { A: '1', B: '2' })).toBe('1-2');
   });
+
+  it('fills a machine value that refers to another', () => {
+    // What an import of `-Ddatabase.password=${DB_PASSWORD}` left behind.
+    const machine = { DATABASE_PASSWORD: '${DB_PASSWORD}', DB_PASSWORD: 'hunter2hunter2' };
+    expect(substitute('${DATABASE_PASSWORD}', machine)).toBe('hunter2hunter2');
+    expect(substitute('${DATABASE_PASSWORD}', { DATABASE_PASSWORD: '${DB_PASSWORD}' })).toBe('${DB_PASSWORD}');
+  });
+
+  it('ends a cycle as an unresolved name instead of hanging', () => {
+    expect(substitute('${A}', { A: '${B}', B: '${A}' })).toBe('${A}');
+    expect(substitute('${A}', { A: 'x${A}' })).toBe('x${A}');
+  });
 });
 
 describe('missingMachineValues', () => {

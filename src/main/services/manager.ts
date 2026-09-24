@@ -69,6 +69,7 @@ import {
   loadSecretCiphertext,
   loadSecretValues,
   saveSecretCiphertext,
+  unreadableSecretNames,
   type SecretCipher,
 } from './machineSecrets';
 import { isSecretName, SECRET_MASK } from '../../shared/machineValues';
@@ -136,6 +137,9 @@ export class ServicesManager {
     /// overcli's own checkout when running from source, so its dev server is
     /// never named as something to stop. Absent in a packaged build.
     private readonly appRoot?: string,
+    /// The login shell's environment for services — see `shellEnv.ts`.
+    /// Absent, services get the app's own, which is what a test wants.
+    private readonly shellEnv?: () => Promise<Record<string, string> | undefined>,
   ) {}
 
   /// What the port-owner lookup needs to tell overcli, a leftover copy of
@@ -1015,11 +1019,19 @@ export class ServicesManager {
     this.migratePlainSecrets();
     const secret = loadSecretCiphertext(this.dataDir);
     const keptPlain = loadKeptPlain(this.dataDir);
+    // Decrypting, not just listing: "Stored in Keychain" next to a value the
+    // launch then calls missing is a sheet with nothing to fix on it.
+    const unreadable = new Set(unreadableSecretNames(this.dataDir, this.cipher));
     const entries: MachineEntry[] = [
       ...Object.entries(loadMachineValues(this.dataDir))
         .filter(([name]) => !(name in secret))
         .map(([name, value]) => ({ name, secret: false, value, ...(keptPlain.has(name) ? { keepPlain: true } : {}) })),
-      ...Object.keys(secret).map((name) => ({ name, secret: true, stored: true })),
+      ...Object.keys(secret).map((name) => ({
+        name,
+        secret: true,
+        stored: true,
+        ...(unreadable.has(name) ? { unreadable: true } : {}),
+      })),
     ];
     entries.sort((a, b) => a.name.localeCompare(b.name));
     // From disk, not from this session: a backup made by an earlier launch is
@@ -1545,6 +1557,8 @@ export class ServicesManager {
       // Read per launch, so editing a machine value takes effect on the next
       // start rather than on the next restart of the app.
       machineValues: () => this.allMachineValues(),
+      unreadableSecrets: () => unreadableSecretNames(this.dataDir, this.cipher),
+      shellEnv: this.shellEnv,
       secretValues: () => [
         ...Object.values(loadSecretValues(this.dataDir, this.cipher)),
         ...Object.entries(loadMachineValues(this.dataDir)).filter(([name]) => isSecretName(name)).map(([, value]) => value),

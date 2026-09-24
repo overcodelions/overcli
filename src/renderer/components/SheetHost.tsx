@@ -5,6 +5,7 @@ import { AboutSheet } from './sheets/AboutSheet';
 import { CapabilitiesSheet } from './sheets/CapabilitiesSheet';
 import { NewAgentSheet } from './sheets/NewAgentSheet';
 import { NewWorkspaceSheet } from './sheets/NewWorkspaceSheet';
+import { FolderOfReposSheet } from './sheets/FolderOfReposSheet';
 import { NewEverydayProjectSheet } from './sheets/NewEverydayProjectSheet';
 import { EverydayConversionSheet } from './sheets/EverydayConversionSheet';
 import { NewDocumentSheet } from './sheets/NewDocumentSheet';
@@ -131,15 +132,18 @@ export function SheetHost() {
         }
         onClick={(e) => e.stopPropagation()}
       >
-        {sheet.type === 'settings' && <SettingsSheet />}
+        {sheet.type === 'settings' && <SettingsSheet initialSection={sheet.section} />}
         {sheet.type === 'debug' && <DebugSheet />}
         {sheet.type === 'about' && <AboutSheet />}
         {sheet.type === 'capabilities' && <CapabilitiesSheet />}
         {sheet.type === 'newAgent' && <NewAgentSheet projectId={sheet.projectId} />}
         {sheet.type === 'newWorkspace' && <NewWorkspaceSheet />}
+        {sheet.type === 'folderOfRepos' && (
+          <FolderOfReposSheet parentPath={sheet.parentPath} repoPaths={sheet.repoPaths} />
+        )}
         {sheet.type === 'newEverydayProject' && <NewEverydayProjectSheet />}
         {sheet.type === 'everydayConversion' && (
-          <EverydayConversionSheet projectId={sheet.projectId} />
+          <EverydayConversionSheet projectId={sheet.projectId} suggested={sheet.suggested} />
         )}
         {sheet.type === 'newDocument' && <NewDocumentSheet dirPath={sheet.dirPath} />}
         {sheet.type === 'versions' && <VersionsSheet projectPath={sheet.projectPath} />}

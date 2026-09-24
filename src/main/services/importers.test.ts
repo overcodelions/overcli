@@ -657,6 +657,18 @@ describe('suggestMachineValues', () => {
     );
   });
 
+  it('leaves a value that is already a reference where it is', () => {
+    // A script that passes `${DB_PASSWORD}` has already named the value; a
+    // second name holding that text would never reach the real one.
+    expect(
+      suggestMachineValues([
+        { key: '-Ddatabase.password', value: '${DB_PASSWORD}' },
+        { key: '-Dredshift.database.password', value: '$REDSHIFT_PASSWORD' },
+        { key: '-Dro.database.password', value: 'pa$$word' },
+      ]),
+    ).toEqual([{ name: 'RO_DATABASE_PASSWORD', value: 'pa$$word', key: '-Dro.database.password' }]);
+  });
+
   it('gives one name to a credential written twice', () => {
     expect(
       suggestMachineValues([

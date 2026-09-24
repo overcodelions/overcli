@@ -192,6 +192,47 @@ describe('maskSecrets', () => {
   });
 });
 
+describe('Supervisor unresolved machine values', () => {
+  it('says the keychain would not open a stored secret instead of calling it missing', async () => {
+    const { deps } = harness({
+      machineValues: () => ({}),
+      unreadableSecrets: () => ['DB_PASSWORD'],
+    });
+    const api = spec({
+      id: 'api',
+      options: [{ key: '-Ddb.password', value: '${DB_PASSWORD}' }, { key: '-Ddb.user', value: '${DB_USER}' }],
+    });
+    const sup = new Supervisor('mine', [api], [binding('api')], deps);
+    await sup.start('api');
+
+    expect(sup.runtime('api').status).toBe('failed');
+    expect(sup.runtime('api').lastError).toBe(
+      "Keychain couldn't unlock: DB_PASSWORD. Re-enter it in machine values. Missing machine value: DB_USER",
+    );
+  });
+});
+
+describe('Supervisor login shell environment', () => {
+  it('starts a service with the shell environment, under its own variables', async () => {
+    const { deps, spawns } = harness({
+      shellEnv: async () => ({ JAVA_HOME: '/sdk/jdk', OVERCLI_PORT: 'from-shell' }),
+    });
+    const sup = new Supervisor('mine', [spec({ id: 'api', port: 8080 })], [binding('api')], deps);
+    await sup.start('api');
+
+    expect(spawns[0].env.JAVA_HOME).toBe('/sdk/jdk');
+    // What overcli sets for the service wins over anything the shell exported.
+    expect(spawns[0].env.OVERCLI_PORT).toBe('8080');
+  });
+
+  it('starts all the same when the shell could not be read', async () => {
+    const { deps, spawns } = harness({ shellEnv: async () => undefined });
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+    await sup.start('api');
+    expect(spawns).toHaveLength(1);
+  });
+});
+
 describe('Supervisor log cost per line', () => {
   // Every one of these guards a change that is invisible until a service gets
   // chatty: the pane keeps working, it just takes the main process with it.

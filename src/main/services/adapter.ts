@@ -34,9 +34,13 @@ const TERM_GRACE_MS = 5_000;
 export function spawnService(req: SpawnRequest, opts: { graceMs?: number } = {}): SpawnedProcess {
   const graceMs = opts.graceMs ?? TERM_GRACE_MS;
   const [bin, ...args] = req.command;
+  // `PWD` is whatever a shell last set it to, and nothing here is a shell:
+  // inherited, it names the folder overcli was launched from, and a script
+  // that reads `$PWD` rather than calling `pwd` looks in the wrong checkout.
+  const { OLDPWD: _oldpwd, ...inherited } = { ...process.env, ...req.env };
   const child = spawn(bin, args, {
     cwd: req.cwd,
-    env: { ...process.env, ...req.env },
+    env: { ...inherited, PWD: req.cwd },
     // Its own process group, so a kill reaches the whole tree.
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],

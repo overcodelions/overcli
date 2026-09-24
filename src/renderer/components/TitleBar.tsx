@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../store';
+import { labOn, type LabKey } from '@shared/labs';
 import {
   attentionInbox,
   attentionLabel,
@@ -44,6 +45,12 @@ import {
 export function TitleBar() {
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const detailMode = useStore((s) => s.detailMode);
+  const labs = useStore((s) => s.settings.labs);
+  /// A Labs tab shows when its switch is on (Settings → Labs); a new install
+  /// starts with them off. Whatever is open, or has something waiting,
+  /// always shows, so nothing live is ever unreachable.
+  const showLab = (key: LabKey, mode: string, busy = false) =>
+    labOn(labs, key) || detailMode === mode || busy;
   const setDetailMode = useStore((s) => s.setDetailMode);
   const openSheet = useStore((s) => s.openSheet);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
@@ -317,17 +324,21 @@ export function TitleBar() {
           onClick={() => navigateToTab(flowsRoot)}
           badge={flowsBadge}
         />
-        <NavButton
-          label="Orchestrator"
-          active={detailMode === 'orchestrator'}
-          onClick={() => navigateToTab(orchestratorRoot)}
-        />
-        <NavButton
-          label="Workers"
-          active={detailMode === 'workers'}
-          onClick={() => navigateToTab(workersRoot, { rememberForChat: true })}
-          badge={workersBadge}
-        />
+        {showLab('orchestrator', 'orchestrator') && (
+          <NavButton
+            label="Orchestrator"
+            active={detailMode === 'orchestrator'}
+            onClick={() => navigateToTab(orchestratorRoot)}
+          />
+        )}
+        {showLab('workers', 'workers', !!workersBadge) && (
+          <NavButton
+            label="Workers"
+            active={detailMode === 'workers'}
+            onClick={() => navigateToTab(workersRoot, { rememberForChat: true })}
+            badge={workersBadge}
+          />
+        )}
         {/* Hidden unless asked for. Most projects have nothing to run, and a
             permanently empty tab is clutter for everyone it does not apply
             to — but never hide it while something is actually running, or a
@@ -369,7 +380,9 @@ export function TitleBar() {
             }
           />
         )}
-        <NavButton label="Local" active={detailMode === 'local'} onClick={() => setDetailMode('local')} />
+        {showLab('localModels', 'local') && (
+          <NavButton label="Local" active={detailMode === 'local'} onClick={() => setDetailMode('local')} />
+        )}
         <NavButton label="Usage" active={detailMode === 'stats'} onClick={() => setDetailMode('stats')} />
       </div>
       <div className="w-px h-4 bg-card-border mx-2" />

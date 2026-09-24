@@ -18,6 +18,7 @@ import {
 import { EFFORT_BACKENDS } from '@shared/effort';
 import type { UserProfile } from '@shared/flows/personalize';
 import { Group, SheetActionButton } from './settingsChrome';
+import { LABS, labOn, type LabKey } from '@shared/labs';
 import { ConversationsPane } from './ConversationsPane';
 import { AutoTidyPane } from './AutoTidyPane';
 
@@ -25,17 +26,11 @@ import { AutoTidyPane } from './AutoTidyPane';
 // working now that the definition lives in ./settingsChrome.
 export { SheetActionButton };
 
-type Section =
-  | 'general'
-  | 'backends'
-  | 'models'
-  | 'local'
-  | 'agents'
-  | 'flows'
-  | 'services'
-  | 'conversations'
-  | 'autoTidy'
-  | 'advanced';
+const SECTIONS = [
+  'general', 'backends', 'models', 'local', 'agents', 'flows',
+  'services', 'conversations', 'autoTidy', 'labs', 'advanced',
+] as const;
+type Section = (typeof SECTIONS)[number];
 
 // Hoisted out of the panes so they aren't reallocated on every keystroke
 // re-render (each render would otherwise create fresh arrays).
@@ -56,13 +51,15 @@ const FLOW_MODEL_TIERS: { tier: ModelSpeed; label: string; help: string }[] = [
 /// on the left, a scrollable content pane on the right, and a single
 /// bottom bar that commits everything. Matches macOS System Settings
 /// in feel so it reads as a familiar shape rather than an ad-hoc form.
-export function SettingsSheet() {
+export function SettingsSheet({ initialSection }: { initialSection?: string } = {}) {
   const settings = useStore((s) => s.settings);
   const save = useStore((s) => s.saveSettings);
   const refreshHealth = useStore((s) => s.refreshBackendHealth);
   const backendHealth = useStore((s) => s.backendHealth);
   const [local, setLocal] = useState<AppSettings>(settings);
-  const [section, setSection] = useState<Section>('general');
+  const [section, setSection] = useState<Section>(
+    SECTIONS.includes(initialSection as Section) ? (initialSection as Section) : 'general',
+  );
   useEffect(() => setLocal(settings), [settings]);
 
   const patch = (delta: Partial<AppSettings>) => setLocal((p) => ({ ...p, ...delta }));
@@ -89,6 +86,7 @@ export function SettingsSheet() {
           <NavItem label="Services" active={section === 'services'} onClick={() => setSection('services')} />
           <NavItem label="Conversations" active={section === 'conversations'} onClick={() => setSection('conversations')} />
           <NavItem label="Auto-tidy" active={section === 'autoTidy'} onClick={() => setSection('autoTidy')} />
+          <NavItem label="Labs" active={section === 'labs'} onClick={() => setSection('labs')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
         </nav>
         <div className="flex-1 min-w-0 overflow-y-auto px-6 py-5">
@@ -108,6 +106,7 @@ export function SettingsSheet() {
           {section === 'services' && <ServicesSettingsPane local={local} patch={patch} />}
           {section === 'conversations' && <ConversationsPane />}
           {section === 'autoTidy' && <AutoTidyPane />}
+          {section === 'labs' && <LabsPane local={local} patch={patch} />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}
         </div>
       </div>
@@ -578,6 +577,7 @@ function OllamaPane({
   patch: (p: Partial<AppSettings>) => void;
 }) {
   const [ollamaPulledModels, setOllamaPulledModels] = useState<string[]>([]);
+  const tabOn = labOn(local.labs, 'localModels');
   useEffect(() => {
     let cancelled = false;
     void window.overcli.invoke('ollama:detect').then((det) => {
@@ -591,6 +591,13 @@ function OllamaPane({
 
   return (
     <div>
+      {!tabOn && (
+        <LabOffNotice
+          text="The Local models tab is switched off in Labs. These settings still apply to any chat that uses Ollama."
+          action="Show the tab"
+          onTurnOn={() => patch({ labs: allLabs(local.labs, { localModels: true }) })}
+        />
+      )}
       <Group
         title="Default model"
         description="Used when a conversation picks Ollama without an explicit model override."
@@ -1003,9 +1010,9 @@ function HealthBadge({ kind, message }: { kind: string; message?: string }) {
   );
 }
 
-/// Services settings. The first control is whether the feature exists at all:
-/// most projects have nothing to run, and a tab that is permanently empty is
-/// clutter for everyone it does not apply to.
+/// Services settings. Whether the feature exists at all is switched in Labs
+/// with the other "off until you want it" surfaces; most projects have
+/// nothing to run, and a tab that is permanently empty is clutter.
 function ServicesSettingsPane({
   local,
   patch,
@@ -1015,18 +1022,82 @@ function ServicesSettingsPane({
 }) {
   return (
     <div className="space-y-5">
-      <Group title="Services">
-        <Toggle
-          label="Show the Services tab"
-          help="Lets overcli start and stop the things your projects run — a server, a web app, a database — and point them at whichever branch you are working on. Off unless you want it."
-          value={local.servicesEnabled ?? false}
-          onChange={(v) => patch({ servicesEnabled: v })}
+      {!local.servicesEnabled && (
+        <LabOffNotice
+          text="The Services tab is switched off in Labs. Overcli suggests it on any project that has something to run."
+          action="Show the tab"
+          onTurnOn={() => patch({ servicesEnabled: true })}
         />
+      )}
+      <Group title="Services">
         <Toggle
           label="Stop everything when overcli quits"
           help="On by default: a service left running holds its port, and there is no easy way to find the process afterwards. Turn it off if you deliberately keep something like a database up between sessions."
           value={local.servicesStopOnQuit !== false}
           onChange={(v) => patch({ servicesStopOnQuit: v })}
+        />
+      </Group>
+    </div>
+  );
+}
+
+/// Every lab spelled out, with `change` applied. Writing the full set keeps
+/// an install from before Labs (where absent means on) from quietly turning
+/// the rest off when one switch is flipped.
+function allLabs(labs: AppSettings['labs'], change: Partial<Record<LabKey, boolean>>) {
+  return { ...Object.fromEntries(LABS.map(({ key }) => [key, labOn(labs, key)])), ...change };
+}
+
+/// Top of a settings page whose feature is switched off in Labs: say so, and
+/// offer the switch here rather than sending someone to find it.
+function LabOffNotice({
+  text,
+  action,
+  onTurnOn,
+}: {
+  text: string;
+  action: string;
+  onTurnOn: () => void;
+}) {
+  return (
+    <div className="mb-5 flex items-center gap-3 rounded-lg border border-card-strong bg-card px-3 py-2.5">
+      <div className="flex-1 text-xs text-ink-muted leading-relaxed">{text}</div>
+      <SheetActionButton primary label={action} onClick={onTurnOn} />
+    </div>
+  );
+}
+
+/// Labs: whole surfaces a newcomer is better off not meeting on day one.
+function LabsPane({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  return (
+    <div className="space-y-5">
+      <Group
+        title="Labs"
+        description="The parts of overcli for once you know what you want from it. Turning one off only hides it; nothing it made is removed, and anything running keeps running."
+      >
+        {LABS.map((lab) => (
+          <Toggle
+            key={lab.key}
+            label={lab.label}
+            help={lab.help}
+            value={labOn(local.labs, lab.key)}
+            onChange={(v) => patch({ labs: allLabs(local.labs, { [lab.key]: v }) })}
+          />
+        ))}
+        {/* Services keeps its own long-standing setting — off for everyone
+            until asked for, unlike the labs above — but is switched here so
+            every "off until you want it" surface lives in one place. */}
+        <Toggle
+          label="Services"
+          help="Lets overcli start and stop the things your projects run — a server, a web app, a database — and point them at whichever branch you are working on. Overcli also suggests it on a project that has something to run."
+          value={local.servicesEnabled ?? false}
+          onChange={(v) => patch({ servicesEnabled: v })}
         />
       </Group>
     </div>

@@ -75,13 +75,25 @@ function enabled(option: ServiceOption): boolean {
 /// rather than blanked: a service that starts with a literal `${DB_USER}` in
 /// its arguments fails with a message naming the thing that is missing, which
 /// is a far better morning than one that silently connects as no user.
+///
+/// A machine value can itself refer to another — `DATABASE_PASSWORD` holding
+/// `${DB_PASSWORD}` is what an import of a script that passes references
+/// used to leave behind — so a filled value is filled in turn. A name already
+/// being expanded is left alone, which ends a cycle as an unresolved name
+/// rather than a hang.
 export function substitute(
   value: string | undefined,
   machine: Readonly<Record<string, string>>,
 ): string | undefined {
   if (value === undefined) return undefined;
+  return expand(value, machine, new Set());
+}
+
+function expand(value: string, machine: Readonly<Record<string, string>>, expanding: ReadonlySet<string>): string {
   return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (whole, name: string) =>
-    name in machine ? machine[name] : whole,
+    name in machine && !expanding.has(name)
+      ? expand(machine[name], machine, new Set(expanding).add(name))
+      : whole,
   );
 }
 
