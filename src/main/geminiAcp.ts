@@ -66,7 +66,9 @@ export class GeminiAcpClient {
 
     this.proc.stdout.setEncoding('utf-8');
     this.proc.stdout.on('data', (chunk: string) => {
-      void this.handleStdout(chunk, args.onNotification, args.onRequest);
+      // Nothing awaits this: a rejection here would be an unhandled one,
+      // which in the main process is its own crash path.
+      this.handleStdout(chunk, args.onNotification, args.onRequest).catch(() => {});
     });
 
     this.proc.stderr.setEncoding('utf-8');
@@ -165,19 +167,21 @@ export class GeminiAcpClient {
       }
 
       if ('method' in msg && 'id' in msg) {
+        let reply: Record<string, any>;
         try {
           const result = await onRequest(msg.id, msg.method, msg.params);
-          await this.write({ jsonrpc: '2.0', id: msg.id, result: result ?? null });
+          reply = { jsonrpc: '2.0', id: msg.id, result: result ?? null };
         } catch (err: any) {
-          await this.write({
+          reply = {
             jsonrpc: '2.0',
             id: msg.id,
             error: {
               code: -32603,
               message: err?.message ?? String(err),
             },
-          });
+          };
         }
+        await this.respond(reply);
         continue;
       }
 
@@ -191,6 +195,19 @@ export class GeminiAcpClient {
       this.pending.delete(msg.id);
       if ('error' in msg) pending.reject(new Error(msg.error?.message ?? 'ACP request failed'));
       else pending.resolve(msg.result);
+    }
+  }
+
+  /// Answer a request the agent made. Its output can still be arriving after
+  /// we closed its stdin — a request read before the close, answered after
+  /// it — and then there is nobody left to answer: the write would fail with
+  /// "write after end". Drop the reply rather than fail the stdout handler.
+  private async respond(message: Record<string, any>): Promise<void> {
+    if (this.closed || this.proc.stdin.writableEnded || this.proc.stdin.destroyed) return;
+    try {
+      await this.write(message);
+    } catch {
+      // The pipe closed between the check and the write; same case.
     }
   }
 

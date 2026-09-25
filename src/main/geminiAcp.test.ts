@@ -14,6 +14,9 @@
 // ['--help'])` in the constructor, which returns an error object rather than
 // throwing for a missing binary, so constructing against a bogus path is safe.
 
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { GeminiAcpClient } from './geminiAcp';
 
@@ -106,5 +109,54 @@ describe('GeminiAcpClient spawn failure', () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(onClose).toHaveBeenCalledTimes(1);
     await expect(client.request('session/new', {})).rejects.not.toThrow(/status -2/);
+  });
+});
+
+describe('GeminiAcpClient after close', () => {
+  // A stand-in agent that, like a real one mid-turn, asks US something after
+  // we have already hung up: it shrugs off the SIGTERM that close() sends,
+  // waits, then writes a permission request to a stdin we have ended.
+  it.skipIf(process.platform === 'win32')('drops a reply to a request that arrives after close', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'overcli-acp-'));
+    const agent = path.join(dir, 'late-agent');
+    writeFileSync(
+      agent,
+      [
+        '#!/bin/sh',
+        "trap '' TERM",
+        'sleep 0.2',
+        `echo '{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{}}'`,
+        'sleep 0.2',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(agent, 0o755);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (err: unknown) => unhandled.push(err);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const onRequest = vi.fn(() => ({}));
+      const onClose = vi.fn();
+      const client = new GeminiAcpClient({
+        binary: agent,
+        cwd: process.cwd(),
+        env: process.env,
+        onNotification: vi.fn(),
+        onRequest,
+        onStderr: vi.fn(),
+        onClose,
+      });
+      // Let the script reach its trap before the SIGTERM.
+      await new Promise((r) => setTimeout(r, 100));
+      client.close();
+      await whenClosed(onClose);
+      await new Promise((r) => setTimeout(r, 50));
+      // The late request did arrive, so the reply path really ran.
+      expect(onRequest).toHaveBeenCalled();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
