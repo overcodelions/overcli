@@ -366,6 +366,16 @@ export type FlowRunState =
   /// still show "answered N comments" after the watch is closed.
   | { kind: 'archived'; watch?: WatchState };
 
+/// What a worker's run says it achieved, in its own words: the `<headline>`
+/// (and optional `<summary>` / `<points>`) its final step writes for the
+/// Today digest. Optional on the run — runs from before it existed, and runs
+/// whose step wrote none, are summarised from their deliverable instead.
+export interface FlowRunDigest {
+  headline: string;
+  summary?: string;
+  points?: string[];
+}
+
 export interface FlowRun {
   id: UUID;
   flowId: string;
@@ -400,6 +410,8 @@ export interface FlowRun {
   /// and hijack chat — and persists with the run.
   chrome?: boolean;
   artifacts: Record<string, FlowArtifact>;
+  /// The worker's own account of the run, when its final step gave one.
+  digest?: FlowRunDigest;
   /// Launched with no human present, by a launcher enforcing its own
   /// permission policy (the `overcli` CLI). Clamps `resolvePermissionMode` so
   /// tool calls route through the approval broker instead of being

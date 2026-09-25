@@ -97,6 +97,7 @@ import {
   type DayTick,
 } from "./workerBoard";
 import { buildWorkQueue } from "./workQueue";
+import { searchWork } from "./workSearch";
 import {
   pauseReasonLabel,
   railRuns,
@@ -140,13 +141,7 @@ export function WorkersSidebar({
   const view = useWorkersStore((s) => s.view);
   const showToday = useWorkersStore((s) => s.showToday);
   const showQueue = useWorkersStore((s) => s.showQueue);
-  const showCalendar = useWorkersStore((s) => s.showCalendar);
   const showFunds = useWorkersStore((s) => s.showFunds);
-  const showReport = useWorkersStore((s) => s.showReport);
-  const allocation = useWorkersStore((s) => s.allocation);
-  const openEditor = useWorkersStore((s) => s.openEditor);
-  const openHire = useWorkersStore((s) => s.openHire);
-  const importFromFile = useWorkersStore((s) => s.importFromFile);
   const runs = useFlowsStore((s) => s.runs);
   // Same reason as the pane: a run answering a post-completion turn is live
   // work, and only the participant's runner knows it.
@@ -154,7 +149,6 @@ export function WorkersSidebar({
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
 
   // The worker you are reading is never folded: selecting one records it as
   // open, and the record persists, so the roster reopens the way you left it.
@@ -188,9 +182,6 @@ export function WorkersSidebar({
     },
     [workers, dropWorker],
   );
-  const hirePath = workspaces[0]?.rootPath ?? projects[0]?.path ?? "";
-  const [hireMenuOpen, setHireMenuOpen] = useState(false);
-  const hireEveryday = projects.find((project) => project.path === hirePath)?.everyday;
 
   // The quiet workers and the bench each fold to a single row. Local rather
   // than in the Sidebar's persisted set, which holds worker ids: these are two
@@ -209,7 +200,12 @@ export function WorkersSidebar({
   );
   return (
     <>
-      {/* Five destinations, one strip. Each keeps its label — the labels cost
+      {/* Two destinations, one strip — the day-to-day views. Shifts, Funds
+          and Report are occasional, and live at the foot of the sidebar
+          instead (WorkersSidebarFooter), in the slot the project actions leave
+          free on this tab, beside the one create action: hiring.
+
+          Previously: five destinations, one strip. Each keeps its label — the labels cost
           about 14px of height against the ~110px the strip gives back, and an
           unlabelled glyph strip would trade the roster's problem for a
           discovery one.
@@ -223,9 +219,7 @@ export function WorkersSidebar({
         // a pool exists, and a fixed five-column grid left the four remaining
         // tabs bunched against a dead column.
         className="mx-1.5 mb-1 mt-1 grid gap-0.5 rounded-md border border-card bg-card p-0.5"
-        style={{
-          gridTemplateColumns: `repeat(${allocation ? 5 : 4}, minmax(0, 1fr))`,
-        }}
+        style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}
       >
         <HeaderTab
           label="Today"
@@ -246,41 +240,6 @@ export function WorkersSidebar({
           onClick={showQueue}
         >
           <QueueIcon />
-        </HeaderTab>
-        <HeaderTab
-          label="Shifts"
-          title="When every worker's shifts fall, this week"
-          active={view === "calendar"}
-          onClick={showCalendar}
-        >
-          <CalendarIcon />
-        </HeaderTab>
-        {allocation && (
-          <HeaderTab
-            label="Funds"
-            title={`$${allocation.spentUSD.toFixed(2)} of $${allocation.poolUSD.toFixed(0)} spent this month`}
-            active={view === "funds"}
-            onClick={showFunds}
-            badge={starvedCount(allocation) > 0 ? "amber" : null}
-            badgeTitle={`${starvedCount(allocation)} worker(s) unfunded`}
-            // The bar is the sidebar's whole report on the pot; the numbers
-            // live on the pane it opens.
-            meter={
-              allocation.poolUSD > 0
-                ? Math.min(100, (allocation.spentUSD / allocation.poolUSD) * 100)
-                : 0
-            }
-          >
-            <PotIcon />
-          </HeaderTab>
-        )}
-        <HeaderTab
-          label="Report"
-          title="Shifts, outcomes, tokens and time across the roster"
-          active={view === "report"}
-          onClick={showReport}
-        >
-          <ReportIcon />
         </HeaderTab>
       </div>
 
@@ -308,16 +267,14 @@ export function WorkersSidebar({
         </div>
       )}
 
-      {roster.length === 0 ? (
-        <div className="px-2 py-1 text-[10px] text-ink-faint">
-          {query ? "No matching workers" : "Nobody works here yet"}
-        </div>
-      ) : query ? (
+      {query ? (
         // A search is a request to SEE things. Sorting the results into five
         // attention groups would answer a question you did not ask and scatter
-        // three matches across three captions, so a query flattens the board.
+        // three matches across three captions, so a query flattens the board —
+        // and it searches the WORK as well as the workers, since "where is the
+        // thing it found" is the question people actually bring to this box.
         <>
-          <SidebarCaption label="Search results" />
+          {roster.length > 0 && <SidebarCaption label="Workers" />}
           {board.entries.map((entry, index) => (
             <RosterRow
               key={entry.worker.id}
@@ -341,7 +298,10 @@ export function WorkersSidebar({
               onToggleExpanded={() => onToggleExpanded(entry.worker.id)}
             />
           ))}
+          <WorkResults query={query} />
         </>
+      ) : roster.length === 0 ? (
+        <div className="px-2 py-1 text-[10px] text-ink-faint">Nobody works here yet</div>
       ) : (
         <>
           <BoardGroup
@@ -467,25 +427,102 @@ export function WorkersSidebar({
           {/* What the ticks mean, once, at the bottom — where a legend belongs
               when the thing it explains is already legible as "something
               happened here" without it. */}
-          {board.groups.today.length + board.groups.running.length > 0 && (
+          {/* Only the open worker draws a day strip now, so the legend is
+              only worth its line while one is open. */}
+          {view === "worker" && selectedWorkerId && board.groups.today.length + board.groups.running.length > 0 && (
             <TickLegend />
           )}
         </>
       )}
 
-      {/* Hiring belongs on the roster, not only in the pane header — this is
-          the list you look at when you notice nobody covers something. It sits
-          at the BOTTOM now: the top of this column is spoken for by the
-          workers that need you, and "add another" is the least urgent thing
-          the tab can offer. */}
+    </>
+  );
+}
+
+/// The work a search matched, newest first — each row the job's result (the
+/// worker's headline when it gave one), who did it and when. Opens the run.
+function WorkResults({ query }: { query: string }) {
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  const runs = useFlowsStore((s) => s.runs);
+  const selectWorker = useWorkersStore((s) => s.selectWorker);
+  const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const matches = useMemo(() => searchWork(orchestrations, runs, query), [orchestrations, runs, query]);
+  const today = new Date().toDateString();
+  const when = (at: number) =>
+    new Date(at).toDateString() === today
+      ? new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+      : new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return (
+    <>
+      <SidebarCaption label="Work" count={matches.length} />
+      {matches.length === 0 ? (
+        <div className="px-2 py-1 text-[10px] text-ink-faint">No work matches “{query}”.</div>
+      ) : (
+        matches.map((m) => (
+          <button
+            key={m.key}
+            onClick={() => {
+              selectWorker(m.workerId);
+              if (m.runId && runs[m.runId]) setActiveRun(m.runId);
+              else openWorkerActivity(m.workerId, m.orchestrationId, m.at);
+            }}
+            className="mt-0.5 flex w-full flex-col gap-0.5 rounded px-2 py-1.5 text-left hover:bg-card-strong focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+          >
+            <span className="line-clamp-2 text-[12px] leading-snug text-ink">{m.headline ?? m.title}</span>
+            <span className="truncate text-[10.5px] text-ink-faint">
+              {m.workerName} · {when(m.at)}
+              {m.status === 'failed' ? ' · failed' : m.status === 'cancelled' ? ' · not run' : ''}
+            </span>
+          </button>
+        ))
+      )}
+    </>
+  );
+}
+
+/// One destination in the header strip.
+///
+/// Icon over an 8px label, because the label is what makes a five-glyph strip
+/// navigable to someone who has not memorised the glyphs — and it costs about
+/// ten pixels against the hundred-odd the strip reclaims from five full rows.
+/// The badge is the strip's only live channel: a dot in the corner, the same
+/// accent for "the crew is working" and the same amber for "the pot ran dry"
+/// that the rows below use.
+/// The foot of the sidebar on the Workers tab. Open folder / New / New
+/// workspace are about projects and mean nothing here; the two occasional
+/// whole-crew views take their place, which leaves the tab strip at the top
+/// to the three you use every day.
+export function WorkersSidebarFooter() {
+  const view = useWorkersStore((s) => s.view);
+  const showCalendar = useWorkersStore((s) => s.showCalendar);
+  const showFunds = useWorkersStore((s) => s.showFunds);
+  const openHire = useWorkersStore((s) => s.openHire);
+  const openEditor = useWorkersStore((s) => s.openEditor);
+  const importFromFile = useWorkersStore((s) => s.importFromFile);
+  const projects = useStore((s) => s.projects);
+  const workspaces = useStore((s) => s.workspaces);
+  const hirePath = workspaces[0]?.rootPath ?? projects[0]?.path ?? "";
+  const [hireMenuOpen, setHireMenuOpen] = useState(false);
+  const hireEveryday = projects.find((project) => project.path === hirePath)?.everyday;
+  const showReport = useWorkersStore((s) => s.showReport);
+  const allocation = useWorkersStore((s) => s.allocation);
+  const starved = allocation ? starvedCount(allocation) : 0;
+  const row = (active: boolean) =>
+    "flex items-center gap-2 text-xs py-1 px-2 rounded text-left " +
+    (active ? "sidebar-row-selected text-ink" : "text-ink-muted hover:text-ink hover:bg-card-strong");
+  return (
+    <>
+      {/* The tab's one create action, where every other tab keeps its own
+          (Open folder, New): at the foot of the sidebar. */}
       {hirePath !== "" && (
-        <div className="relative mt-2 px-2">
+        <div className="relative">
           <button
             onClick={() => setHireMenuOpen((open) => !open)}
             title="Add a worker"
             aria-haspopup="menu"
             aria-expanded={hireMenuOpen}
-            className="rounded px-1 py-0.5 text-[10px] leading-none text-ink-faint hover:bg-card-strong hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+            className="w-full rounded py-1 px-2 text-left text-xs text-ink-muted hover:bg-card-strong hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
           >
             + Hire a worker
           </button>
@@ -531,18 +568,57 @@ export function WorkersSidebar({
           )}
         </div>
       )}
+      <button
+        onClick={showCalendar}
+        aria-current={view === "calendar" ? "page" : undefined}
+        title="When every worker's shifts fall, this week"
+        className={row(view === "calendar")}
+      >
+        <CalendarIcon />
+        <span>Shifts</span>
+      </button>
+      {/* Funds only once a pool exists — same rule the tab strip had. */}
+      {allocation && (
+        <button
+          onClick={showFunds}
+          aria-current={view === "funds" ? "page" : undefined}
+          title={`$${allocation.spentUSD.toFixed(2)} of $${allocation.poolUSD.toFixed(0)} spent this month`}
+          className={row(view === "funds")}
+        >
+          <PotIcon />
+          <span>Funds</span>
+          {starved > 0 && (
+            <span
+              className="h-1.5 w-1.5 rounded-full bg-amber-400"
+              title={`${starved} worker(s) unfunded`}
+            />
+          )}
+          <span className="ml-auto flex items-center gap-1.5 text-[10px] text-ink-faint tabular-nums">
+            ${allocation.spentUSD.toFixed(0)} / ${allocation.poolUSD.toFixed(0)}
+            <span aria-hidden className="relative block h-1 w-10 overflow-hidden rounded-full bg-card-strong">
+              <span
+                className="absolute inset-y-0 left-0 rounded-full bg-accent/70"
+                style={{
+                  width: `${allocation.poolUSD > 0 ? Math.min(100, (allocation.spentUSD / allocation.poolUSD) * 100) : 0}%`,
+                }}
+              />
+            </span>
+          </span>
+        </button>
+      )}
+      <button
+        onClick={showReport}
+        aria-current={view === "report" ? "page" : undefined}
+        title="Shifts, outcomes, tokens and time across the roster"
+        className={row(view === "report")}
+      >
+        <ReportIcon />
+        <span>Report</span>
+      </button>
     </>
   );
 }
 
-/// One destination in the header strip.
-///
-/// Icon over an 8px label, because the label is what makes a five-glyph strip
-/// navigable to someone who has not memorised the glyphs — and it costs about
-/// ten pixels against the hundred-odd the strip reclaims from five full rows.
-/// The badge is the strip's only live channel: a dot in the corner, the same
-/// accent for "the crew is working" and the same amber for "the pot ran dry"
-/// that the rows below use.
 function HeaderTab({
   label,
   title,
@@ -1031,6 +1107,12 @@ function RosterRow({
   const { worker } = entry;
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
+  // The roster is WHO, and a name with its state beside it says who. Every row
+  // but the open worker draws as one line: its runs and turns are the Today
+  // page's to show (a paused run is a card there, with its buttons), and
+  // drawing them here as well put every fact on screen twice. The worker you
+  // have open keeps its full detail — that is where its history is read.
+  const oneLine = !selected && !compact;
 
   const recent = useMemo(
     () =>
@@ -1108,8 +1190,8 @@ function RosterRow({
             TRUST_LABEL[worker.trust].text
           }${entry.home ? ` · ${entry.home}` : ""}${reasons ? ` · ${reasons}` : ""}`}
         >
-          {compact ? (
-            // Spacer, so a bench face lines up with the faces above it.
+          {compact || oneLine ? (
+            // Spacer, so a face lines up with the faces above it.
             <span aria-hidden className="w-[8px] shrink-0" />
           ) : (
           <span
@@ -1165,7 +1247,7 @@ function RosterRow({
                 and spends nothing. The label also carries its own width cap:
                 sharing one `truncate` with the status let a long project name
                 eat the thing the row is actually reporting. */}
-            {!compact && (entry.home || line) && (
+            {!compact && !oneLine && (entry.home || line) && (
               <span className="flex items-baseline gap-1 text-[10px] font-normal leading-4">
                 {entry.home && (
                   <span className="max-w-[45%] shrink-0 truncate text-ink-muted">
@@ -1187,6 +1269,10 @@ function RosterRow({
               instead; you cannot read a day and re-order the crew in the same
               gesture, so showing one at a time costs nothing. */}
           <span className="flex shrink-0 items-center gap-1.5">
+            {/* One line's worth of state, where the second line used to be. */}
+            {oneLine && line && (
+              <span className="max-w-[96px] truncate text-[10.5px] text-ink-faint">{line}</span>
+            )}
             {entry.review > 0 && (
               <span
                 className="shrink-0 rounded-full bg-violet-500 px-1.5 text-[10px] font-medium leading-4 text-white"
@@ -1207,7 +1293,7 @@ function RosterRow({
             {/* A bench row has no day to draw — that is what being benched
                 means — and a query flattens the board, where a per-row day
                 would be answering a question nobody asked. */}
-            {!compact && !query && (
+            {!compact && !oneLine && !query && (
               <span className="shrink-0 transition-opacity duration-150 group-hover/row:opacity-0">
                 <DayStrip ticks={ticks} name={worker.name} now={now} />
               </span>
@@ -1242,7 +1328,7 @@ function RosterRow({
           than floating between two of them. Runs first and turns under them:
           a stopped run is the only thing here that is waiting on YOU, and a
           list you read top-down should put the decision above the history. */}
-      {!compact && (rail.length > 0 || (expanded && (sending?.length || turns.length > 0))) && (
+      {!compact && !oneLine && (rail.length > 0 || (expanded && (sending?.length || turns.length > 0))) && (
         <div className="ml-[13px] border-l border-card pl-2">
           {/* Drawn folded as well as open. The disclosure hides what a worker
               HAS DONE — and a run holding a Continue button is not history,

@@ -791,6 +791,23 @@ describe('worker effect boundary', () => {
     ).toBe('externalAction');
   });
 
+  it('keeps a step local when the MCP tools it lists only read', () => {
+    const reads = {
+      ...step('Find upcoming trips in the calendar and the booking confirmations in the mailbox.'),
+      tools: ['Read', 'mcp__claude_ai_Google_Calendar__list_events', 'mcp__claude_ai_Gmail__search_threads'],
+    };
+    expect(resolveStepEffect(reads)).toBe('local');
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1' }, reads)).toBeNull();
+    // One tool that sends is enough to make the step external.
+    expect(
+      resolveStepEffect({ ...reads, tools: [...reads.tools, 'mcp__claude_ai_Gmail__send_message'] }),
+    ).toBe('external');
+    // A name that says neither read nor write counts as a write.
+    expect(
+      resolveStepEffect({ ...reads, tools: ['mcp__claude_ai_Google_Calendar__suggest_time'] }),
+    ).toBe('external');
+  });
+
   it('honors explicit metadata and leaves ordinary flows unchanged', () => {
     const external = step('Write a local file.', { effect: 'external' as const });
     expect(resolveStepEffect(external)).toBe('external');

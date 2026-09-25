@@ -47,6 +47,9 @@ export function FilePreview({
   // the page rendered unstyled. Main reads the local refs for us and we
   // fold them into the document below.
   const [assets, setAssets] = useState<Record<string, HtmlPreviewAsset>>({});
+  // Which refs `assets` was read for. Until it matches, the page would render
+  // without its stylesheet and then again with it — a flash of bare HTML.
+  const [assetsFor, setAssetsFor] = useState('');
   const refsKey = useMemo(
     () => (kind === 'html' ? collectHtmlAssetRefs(content).join('\n') : ''),
     [content, kind],
@@ -61,10 +64,14 @@ export function FilePreview({
     window.overcli
       .invoke('preview:htmlAssets', { path, rootPath, refs: refsKey.split('\n') })
       .then((res) => {
-        if (!cancelled) setAssets(res.ok ? res.assets : {});
+        if (cancelled) return;
+        setAssets(res.ok ? res.assets : {});
+        setAssetsFor(refsKey);
       })
       .catch(() => {
-        if (!cancelled) setAssets({});
+        if (cancelled) return;
+        setAssets({});
+        setAssetsFor(refsKey);
       });
     return () => {
       cancelled = true;
@@ -199,7 +206,12 @@ export function FilePreview({
   if (kind === 'csv') return <CsvPreview content={content} tsv={path.toLowerCase().endsWith('.tsv')} />;
   if (kind === 'json') return <JsonPreview content={content} />;
   if (kind === 'react') return <ReactPreview path={path} content={content} rootPath={rootPath} />;
-  if (kind === 'html') return <HtmlPreview path={path} document={srcDoc} />;
+  if (kind === 'html') {
+    if (refsKey && assetsFor !== refsKey) return <div className="p-4 text-xs text-ink-faint">Loading preview…</div>;
+    // Keyed on the file: a different page starts fresh instead of waiting out
+    // the edit debounce with the last one still showing.
+    return <HtmlPreview key={path} path={path} document={srcDoc} />;
+  }
 
   return (
     <iframe
@@ -232,6 +244,9 @@ export function FilePreview({
 /// has no reason to keep open.
 function HtmlPreview({ path, document: html }: { path: string; document: string }) {
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
+  // Hidden until the page has loaded — its stylesheets and fonts included —
+  // so you see the page, not its text settling into it.
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Republishing reloads the frame, which for a CDN page means re-fetching
   // React and Tailwind — so editing a file with the preview open waits for a
@@ -265,6 +280,10 @@ function HtmlPreview({ path, document: html }: { path: string; document: string 
       title={`${path} preview`}
       sandbox="allow-scripts"
       src={frameUrl}
+      onLoad={() => setLoadedUrl(frameUrl)}
+      // A republish after an edit keeps the page on screen; only a first
+      // load is hidden.
+      style={{ visibility: loadedUrl ? 'visible' : 'hidden' }}
       className="block w-full h-full border-0 bg-transparent"
     />
   );

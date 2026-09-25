@@ -56,6 +56,9 @@ import {
   WORKER_TAGLINE_MAX,
   describeCadence,
   workerTagline,
+  hireMessageText,
+  WORKER_CONTRACT_MAX_FLOWS,
+  type HireMessage,
   type Worker,
   type WorkerJournalEntry,
   type WorkerScorecard,
@@ -65,7 +68,7 @@ import {
 } from "@shared/flows/worker";
 import { cronError } from "@shared/flows/cron";
 import { describeFundingBlock, fundingFor } from "@shared/flows/treasury";
-import { isSelectableFlow, type FlowRun } from "@shared/flows/schema";
+import { isSelectableFlow, type Flow, type FlowRun } from "@shared/flows/schema";
 import {
   describeTrigger,
   untilLabel,
@@ -82,6 +85,7 @@ import { AttachmentChip } from "../AttachmentChip";
 import { Markdown } from "../Markdown";
 import { CopyActions } from "../CopyActions";
 import { UserBubble } from "../UserBubble";
+import { WorkerReply, useWorkerTint } from "./WorkerReply";
 import { WorkerFilesProvider, useOpenWorkerPath } from "./workerFilesContext";
 import { ActivityStrip } from "../ActivityStrip";
 import { FlowMonogram } from "../flows/FlowMonogram";
@@ -225,7 +229,11 @@ export function WorkersPane() {
     (p) => p.path === defaultProjectPath,
   )?.everyday;
   const canHire = defaultProjectPath !== "";
-  const showRosterHeader = view !== "worker" || !selected;
+  // Today brings its own headline ("3 things need you"), and hiring lives at
+  // the foot of the sidebar — a page title and three buttons above it would
+  // only push what needs you further down.
+  const showRosterHeader =
+    (view !== "worker" || !selected) && !(view === "today" && rows.length > 0);
   const revisionNotices = Object.entries(revisions)
     .filter(([, revision]) => revision.startedAt !== null || revision.pending)
     .map(([id, revision]) => ({
@@ -442,7 +450,9 @@ export function WorkersPane() {
             }
             onPickPosting={(job) => {
               openHire(defaultProjectPath);
-              patchHire({ jobDescription: job, error: null });
+              // A new posting is a new job: the old conversation was about
+              // a different one.
+              patchHire({ jobDescription: job, messages: [], reply: "", error: null });
             }}
           />
         </div>
@@ -2790,8 +2800,9 @@ function ShiftOutcomeBadges({ item }: { item: WorkerActivity }) {
 /// exactly — same rounded panel, same tint-derived fill and border, same 2px
 /// left rail and small coloured label. A worker talking to you should not
 /// invent a second visual language for the same act; the only thing that
-/// differs is the rail colour, which is the worker's trust tint, so a reply
-/// carries its author's standing the way a model reply carries its model.
+/// differs is the rail colour, which is the worker's own colour (the one its
+/// avatar wears), so a reply carries its author the way a model reply carries
+/// its model.
 function WorkerTimeline({
   worker,
   items,
@@ -2825,7 +2836,7 @@ function WorkerTimeline({
   // to require work to be still-running, which meant a finished shift hid its
   // own results behind a click on a desk that now only holds one day.
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
-  const tint = TRUST_TINT[worker.trust];
+  const tint = useWorkerTint(worker.id);
   const focused = useRef<HTMLDivElement>(null);
   const today = startOfDay(Date.now());
   const isToday = day === today;
@@ -3474,74 +3485,6 @@ function DeskDayBar({
         <div className="ml-1 flex min-w-0 flex-1 flex-wrap items-center gap-1.5 border-l border-card-strong pl-3">
           {context}
         </div>
-      )}
-    </div>
-  );
-}
-
-/// Trust as a hex tint, for the places that need a real colour rather than a
-/// utility class — the reply rail mixes it the way AssistantBubble mixes a
-/// model's colour.
-const TRUST_TINT: Record<WorkerTrustLevel, string> = {
-  probation: "#f59e0b",
-  trusted: "#38bdf8",
-  autonomous: "#34d399",
-};
-
-/// The assistant side of a turn, shaped like AssistantBubble.
-function WorkerReply({
-  worker,
-  tint,
-  at,
-  reply,
-  footer,
-}: {
-  worker: Worker;
-  tint: string;
-  at: number;
-  reply: string;
-  footer?: React.ReactNode;
-}) {
-  const openWorkerPath = useOpenWorkerPath();
-  // What a worker says is the same kind of thing an assistant bubble says —
-  // an itinerary you want to paste into a mail, a summary you want to keep —
-  // so it carries the same copy pair, over the same rendered prose.
-  const renderedRef = useRef<HTMLDivElement>(null);
-  return (
-    <div
-      className="group relative overflow-hidden rounded-xl"
-      style={{
-        background: `color-mix(in srgb, ${tint} 5%, transparent)`,
-        border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
-      }}
-    >
-      <div
-        className="absolute bottom-0 left-0 top-0 w-[2px]"
-        style={{ background: tint + "cc" }}
-      />
-      <div className="px-4 py-2.5 pl-[14px]">
-        <div
-          className="mb-1 flex items-center gap-2 text-[10px] font-medium"
-          style={{ color: tint }}
-        >
-          <span>{worker.name}</span>
-          <span className="text-ink-faint">{relativeTime(at)}</span>
-        </div>
-        <div ref={renderedRef}>
-          {reply ? (
-            <Markdown source={reply} onOpenPath={openWorkerPath} />
-          ) : (
-            <div className="text-xs text-ink-faint">No reply recorded.</div>
-          )}
-        </div>
-        {footer}
-      </div>
-      {reply && (
-        <CopyActions
-          className="absolute right-1.5 top-1.5"
-          getPlain={() => renderedRef.current?.innerText ?? reply}
-          raw={reply}
-        />
       )}
     </div>
   );
@@ -4591,6 +4534,7 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
   const hire = useWorkersStore((s) => s.hire);
   const patchHire = useWorkersStore((s) => s.patchHire);
   const startHire = useWorkersStore((s) => s.startHire);
+  const restartHire = useWorkersStore((s) => s.restartHire);
   const closeHire = useWorkersStore((s) => s.closeHire);
   const pendingHire = useWorkersStore((s) => s.pendingHire);
   const resumeHire = useWorkersStore((s) => s.resumeHire);
@@ -4598,6 +4542,9 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
   const projectPath = hire.projectPath || defaultProjectPath;
   const loading = hire.startedAt !== null;
   const error = hire.error;
+  // Once the drafter has asked something, the job description is the first
+  // message of a conversation rather than a form field.
+  const talking = hire.messages.length > 0;
 
   const targets = [
     ...workspaces.map((w) => ({
@@ -4625,7 +4572,8 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
         <div className="text-2xl font-semibold">Hire a worker</div>
       </div>
       <div className="text-xs text-ink-muted mb-5 ml-1">
-        One drafting turn turns a job description into the whole standing
+        Describe the job, then onboard your new hire: the drafter asks about
+        anything that would change the worker and writes the whole standing
         configuration — persona, cadence, caps, budget, and the flow it runs.
         You review everything before anything is saved.
       </div>
@@ -4649,10 +4597,11 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
       )}
 
       <div className="space-y-5">
-        {/* What am I actually hiring? The lifecycle, before any form. */}
-        <WorkerLifecycle />
+        {/* What am I actually hiring? The lifecycle, before any form. The
+            catalog goes once a conversation starts: the job is picked. */}
+        {!talking && <WorkerLifecycle />}
 
-        {CATALOG_GROUPS.map((group) => (
+        {!talking && CATALOG_GROUPS.map((group) => (
           <div key={group.key}>
             <div className="flex items-baseline gap-2 mb-2">
               <span className="text-[11px] uppercase tracking-wider text-ink-faint">
@@ -4727,26 +4676,44 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
               </select>
             </Field>
 
-            <div>
-              <div className="flex items-baseline gap-2 mb-2">
-                <span className="text-[11px] uppercase tracking-wider text-ink-faint">
-                  The job description
-                </span>
-                <span className="text-[11px] text-ink-faint normal-case">
-                  pick from the catalog, or write your own — the worker plans
-                  every shift from exactly this text
-                </span>
-              </div>
-              <textarea
-                rows={9}
-                value={jobDescription}
-                onChange={(e) =>
-                  patchHire({ jobDescription: e.target.value, error: null })
-                }
-                placeholder={`You're the …\n\nSay what it should look at, how often, what a good proposal looks like, and what it must never do.`}
-                className="w-full bg-card border border-card-strong rounded p-3 text-sm text-ink leading-relaxed"
+            {talking ? (
+              <HireConversation
+                jobDescription={jobDescription}
+                messages={hire.messages}
+                answers={hire.answers}
+                reply={hire.reply}
+                loading={loading}
+                onAnswer={(i, value) => {
+                  const answers = [...hire.answers];
+                  answers[i] = value;
+                  patchHire({ answers, error: null });
+                }}
+                onReply={(reply) => patchHire({ reply, error: null })}
+                onSend={() => void startHire()}
               />
-            </div>
+            ) : (
+              <div>
+                <div className="flex items-baseline gap-2 mb-2">
+                  <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+                    The job description
+                  </span>
+                  <span className="text-[11px] text-ink-faint normal-case">
+                    pick from the catalog, or write your own — the worker plans
+                    every shift from exactly this text
+                  </span>
+                </div>
+                <textarea
+                  rows={9}
+                  value={jobDescription}
+                  disabled={loading}
+                  onChange={(e) =>
+                    patchHire({ jobDescription: e.target.value, error: null })
+                  }
+                  placeholder={`You're the …\n\nSay what it should look at, how often, what a good proposal looks like, and what it must never do.`}
+                  className="w-full bg-card border border-card-strong rounded p-3 text-sm text-ink leading-relaxed"
+                />
+              </div>
+            )}
 
             <AttachmentField
               attachments={hire.attachments}
@@ -4762,22 +4729,46 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
             )}
 
             <div className="flex items-center gap-3 border-t border-card-strong pt-4">
-              <span className="text-[11px] text-ink-faint">
-                You&apos;ll land in the editor with the drafted contract —
-                nothing is saved until you click Hire there.
-              </span>
+              {talking ? (
+                <button
+                  disabled={loading}
+                  onClick={restartHire}
+                  className="shrink-0 text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5 disabled:opacity-40"
+                >
+                  Start over
+                </button>
+              ) : (
+                <span className="text-[11px] text-ink-faint">
+                  You&apos;ll land in the editor with the drafted contract —
+                  nothing is saved until you click Hire there.
+                </span>
+              )}
               <button
                 disabled={loading || !jobDescription.trim()}
-                onClick={() => void startHire()}
-                className="ml-auto shrink-0 text-xs px-4 py-2 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+                onClick={() => void startHire({ draftNow: true })}
+                title="Skip the questions and draft from what the drafter has now"
+                className="ml-auto shrink-0 text-xs px-3 py-2 rounded-md border border-card-strong text-ink-muted hover:bg-white/5 disabled:opacity-40"
               >
-                {loading ? "Drafting the contract…" : "✨ Draft the contract"}
+                Draft it now
+              </button>
+              <button
+                disabled={
+                  loading ||
+                  !jobDescription.trim() ||
+                  (talking &&
+                    !hire.reply.trim() &&
+                    !hire.answers.some((a) => a?.trim()))
+                }
+                onClick={() => void startHire()}
+                className="shrink-0 text-xs px-4 py-2 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+              >
+                {loading ? "Thinking…" : talking ? "Send answer" : "✨ Start onboarding"}
               </button>
             </div>
             {loading && (
               <WorkingStrip
                 startedAt={hire.startedAt}
-                message="Drafting — one turn writes the contract (persona, cadence, caps, budget); if no existing flow fits, a second turn drafts the flow too. Two full turns, so give it a few minutes. Leave this page if you like: it keeps running and lands in the editor when it's done."
+                message="Reading the job — the drafter either asks about what's missing or writes the contract. A contract is then checked against your answers and its new flows drafted side by side, so give it a few minutes. Leave this page if you like: it keeps running, and a finished contract lands in the editor."
               />
             )}
           </div>
@@ -4788,8 +4779,9 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
                 What drafting produces
               </div>
               <div className="text-[11px] text-ink-faint leading-relaxed">
-                One turn of your preferred CLI returns the full contract for
-                review:
+                Your preferred CLI asks what it needs to know — where the work
+                goes, what done looks like, what&apos;s off limits — then
+                returns the full contract for review:
               </div>
               <ul className="mt-1.5 space-y-1 text-[11px] text-ink-muted list-disc pl-4">
                 <li>
@@ -4801,10 +4793,15 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
                 <li>items-per-shift cap and a monthly budget</li>
                 <li>a cheap heartbeat model for the planning turns</li>
                 <li>
-                  the flow launched items run — an existing one, or drafted
-                  fresh
+                  the flows its work runs through — usually one, more when the
+                  job has different kinds of work; existing or drafted fresh
                 </li>
+                <li>which of your MCP servers it loads</li>
               </ul>
+              <div className="mt-1.5 text-[11px] text-ink-faint leading-relaxed">
+                Before any flow is drafted, a second pass checks the contract
+                against your answers and fixes anything that got dropped.
+              </div>
             </div>
             <div className="rounded-lg border border-card-strong p-4">
               <div className="text-[11px] uppercase tracking-wider text-ink-faint mb-1.5">
@@ -4825,11 +4822,288 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
   );
 }
 
+/// The flow that runs once a shift's items have all finished, with their
+/// results as its input. Offered from the flows the worker does NOT route
+/// to — the planner must never send one item straight to the combining step.
+function WrapUpField({
+  wrapUpFlowId,
+  flowIds,
+  flows,
+  extraFlows,
+  onChange,
+}: {
+  wrapUpFlowId?: string;
+  flowIds: string[];
+  flows: Flow[];
+  extraFlows: Flow[];
+  onChange: (wrapUpFlowId: string | undefined) => void;
+}) {
+  const drafted = extraFlows.filter((f) => !flowIds.includes(f.id));
+  const options = [
+    ...drafted,
+    ...flows
+      .filter(isSelectableFlow)
+      .filter((f) => !flowIds.includes(f.id) && !drafted.some((d) => d.id === f.id)),
+  ];
+  const current = options.find((f) => f.id === wrapUpFlowId);
+  const isNew = drafted.some((f) => f.id === wrapUpFlowId);
+  return (
+    <Field
+      label="Wrap-up"
+      hint="optional — runs once after a shift's items finish, combining their results into one deliverable"
+    >
+      <select
+        value={wrapUpFlowId ?? ""}
+        onChange={(e) => onChange(e.target.value || undefined)}
+        className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
+      >
+        <option value="">No wrap-up — each item delivers on its own</option>
+        {options.map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.name}
+            {drafted.some((d) => d.id === f.id) ? " (new)" : ""}
+          </option>
+        ))}
+      </select>
+      {current?.description && (
+        <div className="mt-1.5 text-[11px] text-ink-muted">{current.description}</div>
+      )}
+      {isNew && (
+        <div className="mt-1 text-[11px] text-emerald-600 dark:text-emerald-400">
+          New — drafted for this worker, saved with the hire.
+        </div>
+      )}
+    </Field>
+  );
+}
+
+/// The flows behind the primary: the other kinds of work this worker routes
+/// to. The planner picks one per item from each flow's description, so that
+/// is what each row shows. A hire-drafted flow is marked new — it saves with
+/// the worker, and removing it here means it is never written at all.
+function OtherFlowsField({
+  flowIds,
+  flows,
+  extraFlows,
+  wrapUpFlowId,
+  onChange,
+}: {
+  flowIds: string[];
+  flows: Flow[];
+  extraFlows: Flow[];
+  /// Not offered as a route: it combines the items, it does not run one.
+  wrapUpFlowId?: string;
+  onChange: (flowIds: string[]) => void;
+}) {
+  // Nothing to route between until a primary exists.
+  if (flowIds.length === 0) return null;
+  const others = flowIds.slice(1);
+  const lookup = (id: string) =>
+    extraFlows.find((f) => f.id === id) ?? flows.find((f) => f.id === id);
+  const addable = flows
+    .filter(isSelectableFlow)
+    .filter((f) => !flowIds.includes(f.id) && f.id !== wrapUpFlowId);
+  return (
+    <Field
+      label="Also routes to"
+      hint="other kinds of work, each with its own flow — the planner picks per item"
+    >
+      {others.length > 0 && (
+        <div className="space-y-1.5 mb-2">
+          {others.map((id) => {
+            const flow = lookup(id);
+            const isNew = extraFlows.some((f) => f.id === id);
+            return (
+              <div
+                key={id}
+                className="flex items-start gap-2 rounded border border-card-strong px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-ink">
+                    {flow?.name ?? id}
+                    {isNew && (
+                      <span className="ml-2 text-[11px] text-emerald-600 dark:text-emerald-400">
+                        new — saved with the hire
+                      </span>
+                    )}
+                  </div>
+                  {flow?.description && (
+                    <div className="text-[11px] text-ink-muted">
+                      {flow.description}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => onChange(flowIds.filter((f) => f !== id))}
+                  title="Stop routing work to this flow"
+                  className="shrink-0 text-xs text-ink-faint hover:text-ink px-1.5 rounded hover:bg-white/5"
+                >
+                  ✕
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {others.length < WORKER_CONTRACT_MAX_FLOWS - 1 && addable.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => e.target.value && onChange([...flowIds, e.target.value])}
+          className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink-muted"
+        >
+          <option value="">
+            {others.length === 0 ? "Only one kind of work — add a flow…" : "Add another flow…"}
+          </option>
+          {addable.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.name}
+            </option>
+          ))}
+        </select>
+      )}
+    </Field>
+  );
+}
+
+/// The hire once the drafter has asked something: the job description as the
+/// opening message, the exchange so far, and the latest round to answer —
+/// one card per question when the drafter asked in the structured shape,
+/// one box when it asked in prose.
+function HireConversation({
+  jobDescription,
+  messages,
+  answers,
+  reply,
+  loading,
+  onAnswer,
+  onReply,
+  onSend,
+}: {
+  jobDescription: string;
+  messages: HireMessage[];
+  answers: string[];
+  reply: string;
+  loading: boolean;
+  onAnswer: (index: number, value: string) => void;
+  onReply: (reply: string) => void;
+  onSend: () => void;
+}) {
+  const last = messages[messages.length - 1];
+  // The round waiting on the user renders as cards below, not as history.
+  const open = !loading && last?.role === "assistant" && last.questions?.length ? last : null;
+  const history: HireMessage[] = [
+    { role: "user", text: jobDescription },
+    ...(open ? messages.slice(0, -1) : messages),
+  ];
+  const sendOnModEnter = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      onSend();
+    }
+  };
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wider text-ink-faint mb-2">
+        Onboarding
+      </div>
+      <div className="space-y-2 mb-3">
+        {history.map((m, i) =>
+          m.role === "user" ? (
+            <div
+              key={i}
+              className="ml-8 whitespace-pre-wrap rounded-lg bg-accent/10 px-3 py-2 text-sm leading-relaxed text-ink"
+            >
+              {m.text}
+            </div>
+          ) : (
+            <div
+              key={i}
+              className="mr-8 rounded-lg border border-card-strong px-3 py-2 text-sm text-ink-muted"
+            >
+              <Markdown source={hireMessageText(m)} />
+            </div>
+          ),
+        )}
+      </div>
+
+      {open ? (
+        <div className="space-y-3">
+          {open.text && (
+            <div className="text-sm text-ink-muted">
+              <Markdown source={open.text} />
+            </div>
+          )}
+          {open.questions!.map((q, i) => {
+            const answer = answers[i] ?? "";
+            return (
+              <div key={i} className="rounded-lg border border-card-strong p-3">
+                <div className="flex gap-2 text-sm text-ink mb-2">
+                  <span className="text-ink-faint tabular-nums">{i + 1}.</span>
+                  <span>{q.question}</span>
+                </div>
+                {q.options && q.options.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-2 ml-5">
+                    {q.options.map((o) => {
+                      const picked = answer.trim() === o;
+                      return (
+                        <button
+                          key={o}
+                          onClick={() => onAnswer(i, picked ? "" : o)}
+                          className={
+                            "text-xs px-2.5 py-1 rounded-full border transition-colors " +
+                            (picked
+                              ? "border-accent bg-accent/15 text-ink"
+                              : "border-card-strong text-ink-muted hover:bg-white/5")
+                          }
+                        >
+                          {o}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <input
+                  value={answer}
+                  onChange={(e) => onAnswer(i, e.target.value)}
+                  onKeyDown={sendOnModEnter}
+                  placeholder={
+                    q.options?.length ? "Pick one, or say it your way" : "Your answer"
+                  }
+                  className="ml-5 w-[calc(100%-1.25rem)] bg-card border border-card-strong rounded px-2.5 py-1.5 text-sm text-ink"
+                />
+              </div>
+            );
+          })}
+          <textarea
+            rows={2}
+            value={reply}
+            onChange={(e) => onReply(e.target.value)}
+            onKeyDown={sendOnModEnter}
+            placeholder="Anything else it should know? (optional) — skipped questions get a sensible default you can change on review. ⌘↩ to send."
+            className="w-full bg-card border border-card-strong rounded p-3 text-sm text-ink leading-relaxed"
+          />
+        </div>
+      ) : (
+        <textarea
+          rows={4}
+          value={reply}
+          disabled={loading}
+          onChange={(e) => onReply(e.target.value)}
+          onKeyDown={(e) => reply.trim() && sendOnModEnter(e)}
+          placeholder="Answer what you can — anything you skip gets a sensible default you can change on review. ⌘↩ to send."
+          className="w-full bg-card border border-card-strong rounded p-3 text-sm text-ink leading-relaxed disabled:opacity-60"
+        />
+      )}
+    </div>
+  );
+}
+
 // ---- Editor --------------------------------------------------------------
 
 function WorkerEditor() {
   const draft = useWorkersStore((s) => s.draft)!;
   const draftedFlow = useWorkersStore((s) => s.draftedFlow);
+  const extraFlows = useWorkersStore((s) => s.extraFlows);
   const hireSummary = useWorkersStore((s) => s.hireSummary);
   const hireFlowError = useWorkersStore((s) => s.hireFlowError);
   const busy = useWorkersStore((s) => s.busy);
@@ -4874,9 +5148,14 @@ function WorkerEditor() {
   // here: if the scan hasn't happened the picker simply doesn't appear, and
   // the worker keeps the inherit-everything default.
   const mcpServerNames = useMemo(() => {
-    const names = (capabilities?.entries ?? [])
-      .filter((e) => e.kind === "mcp" && e.clis.includes("claude"))
-      .map((e) => e.name);
+    const names = [
+      ...(capabilities?.entries ?? [])
+        .filter((e) => e.kind === "mcp" && e.clis.includes("claude"))
+        .map((e) => e.name),
+      // Account connectors (a Gmail on the Claude account) are servers a
+      // worker can be scoped to too — they just aren't in a config file.
+      ...(capabilities?.accountConnectors ?? []),
+    ];
     return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
   }, [capabilities]);
 
@@ -4916,11 +5195,17 @@ function WorkerEditor() {
   // Trust never overrides the flow's own checkpoints: a `pause_before` step
   // parks the run for review even under an autonomous worker. Say so here,
   // where trust and flow are both on screen — not at 8am via a stuck run.
-  const selectedFlow =
-    draftedFlow &&
-    (draft.flowIds.length === 0 || draft.flowIds[0] === draftedFlow.id)
-      ? draftedFlow
-      : flows.find((f) => f.id === draft.flowIds[0]);
+  // The primary flow is the ride-along when nothing is picked yet, or when
+  // it heads the list — a multi-flow hire puts its drafted primary's id
+  // first so the flows behind it keep their order.
+  const primaryIsDrafted =
+    !!draftedFlow &&
+    (draft.flowIds.length === 0 || draft.flowIds[0] === draftedFlow.id);
+  const draftedIsNew =
+    !!draftedFlow && !flows.some((f) => f.id === draftedFlow.id);
+  const selectedFlow = primaryIsDrafted
+    ? draftedFlow
+    : flows.find((f) => f.id === draft.flowIds[0]);
   const pauseSteps =
     selectedFlow?.steps.filter((s) => s.pauseBefore).length ?? 0;
 
@@ -4982,11 +5267,7 @@ function WorkerEditor() {
             trust={existing?.trust ?? "probation"}
             caps={draft.caps}
             budgetUSDPerMonth={draft.budgetUSDPerMonth}
-            flowName={
-              draftedFlow && draft.flowIds.length === 0
-                ? draftedFlow.name
-                : flows.find((f) => f.id === draft.flowIds[0])?.name
-            }
+            flowName={selectedFlow?.name}
           />
           {hireSummary && (
             <div className="rounded-lg border border-card-strong bg-card px-4 py-3 text-xs text-ink-muted">
@@ -5064,7 +5345,7 @@ function WorkerEditor() {
               label="Flow for launched items"
               hint="each approved proposal becomes one run of this flow"
             >
-              {draftedFlow && draft.flowIds.length === 0 ? (
+              {primaryIsDrafted && draftedIsNew ? (
                 <div className="text-sm text-ink rounded border border-emerald-400/40 bg-emerald-500/10 px-3 py-2">
                   New flow{" "}
                   <span className="font-medium">{draftedFlow.name}</span> —
@@ -5074,9 +5355,16 @@ function WorkerEditor() {
                 <>
                   <select
                     value={draft.flowIds[0] ?? ""}
-                    onChange={(e) =>
-                      patch({ flowIds: e.target.value ? [e.target.value] : [] })
-                    }
+                    onChange={(e) => {
+                      // Swap the primary only — the flows behind it are
+                      // the worker's other routes, not part of this pick.
+                      const rest = draft.flowIds
+                        .slice(1)
+                        .filter((id) => id !== e.target.value);
+                      patch({
+                        flowIds: e.target.value ? [e.target.value, ...rest] : rest,
+                      });
+                    }}
                     className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
                   >
                     <option value="">Pick a flow…</option>
@@ -5112,6 +5400,22 @@ function WorkerEditor() {
                 </div>
               )}
             </Field>
+
+            <OtherFlowsField
+              flowIds={draft.flowIds}
+              flows={flows}
+              extraFlows={extraFlows}
+              wrapUpFlowId={draft.wrapUpFlowId}
+              onChange={(flowIds) => patch({ flowIds })}
+            />
+
+            <WrapUpField
+              wrapUpFlowId={draft.wrapUpFlowId}
+              flowIds={draft.flowIds}
+              flows={flows}
+              extraFlows={extraFlows}
+              onChange={(wrapUpFlowId) => patch({ wrapUpFlowId })}
+            />
 
             <div className="grid grid-cols-3 gap-4">
               <Field

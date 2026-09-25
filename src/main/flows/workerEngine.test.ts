@@ -52,7 +52,7 @@ vi.mock('./workerFiles', async (importOriginal) => ({
 }));
 
 import { WorkerEngine, parseFlowRequest, type WorkerEngineDeps, type WorkerParker } from './workerEngine';
-import type { Orchestration } from '../../shared/flows/orchestration';
+import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
 import type { Worker, WorkerJournalEntry } from '../../shared/flows/worker';
 import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
@@ -79,6 +79,7 @@ function makeHarness(
     supervisorTurn?: WorkerEngineDeps['supervisorTurn'];
     deliverablesFor?: WorkerEngineDeps['deliverablesFor'];
     runIdForConversation?: WorkerEngineDeps['runIdForConversation'];
+    flowsFor?: WorkerEngineDeps['flowsFor'];
   } = {},
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
@@ -206,6 +207,7 @@ function makeHarness(
       },
     },
     generatedFlow: opts.generatedFlow,
+    flowsFor: opts.flowsFor,
     clearActivity: opts.clearActivity,
     deleteActivity: opts.deleteActivity,
     supervisorTurn: opts.supervisorTurn,
@@ -2824,5 +2826,125 @@ describe('WorkerEngine re-running and deleting one shift', () => {
 
     expect(res).toMatchObject({ ok: true });
     expect((res as { files: number }).files).toBeGreaterThan(0);
+  });
+});
+
+describe('multi-flow routing', () => {
+  const flowsFor: WorkerEngineDeps['flowsFor'] = (ids) =>
+    ids.map((id) => ({ id, name: `Flow ${id}`, description: `use for ${id} work` }));
+
+  it('lists the flows for a worker with more than one, in both shifts and errands', async () => {
+    const h = makeHarness({ seed: [seedWorker({ flowIds: ['triage', 'digest'] })], flowsFor });
+    h.engine.start();
+    await h.engine.workShiftNow('worker-1');
+    await h.engine.runErrand('worker-1', 'Send me the digest.');
+    for (const call of h.parked) {
+      expect(call.prompt).toContain('YOUR FLOWS');
+      expect(call.prompt).toContain('id: "digest" — Flow digest: use for digest work');
+      expect(call.allowedFlowIds).toEqual(['triage', 'digest']);
+    }
+  });
+
+  it('leaves a one-flow worker prompt untouched', async () => {
+    const h = makeHarness({ seed: [seedWorker({ flowIds: ['triage'] })], flowsFor });
+    h.engine.start();
+    await h.engine.workShiftNow('worker-1');
+    expect(h.parked[0].prompt).not.toContain('YOUR FLOWS');
+  });
+});
+
+describe('shift wrap-up', () => {
+  const item = (id: string, status: OrchestrationItem['status'], extra: Partial<OrchestrationItem> = {}) => ({
+    candidate: { id, title: `Item ${id}`, prompt: 'p' },
+    flowId: 'fix-it',
+    status,
+    runId: `run-${id}`,
+    ...extra,
+  });
+  const settle = async (h: ReturnType<typeof makeHarness>, batch: Orchestration) => {
+    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: batch });
+    await new Promise((r) => setTimeout(r, 0));
+  };
+  const deliverablesFor: WorkerEngineDeps['deliverablesFor'] = (runId) => [
+    { name: 'result.md', body: `result of ${runId}` },
+  ];
+
+  it('runs the wrap-up flow once a shift settles, with every result and how each ended', async () => {
+    const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })], deliverablesFor });
+    h.engine.start();
+    await settle(h, workerBatch({
+      items: [item('a', 'done'), item('b', 'failed', { note: 'API down' }), item('c', 'cancelled')],
+    }));
+
+    expect(h.direct).toHaveLength(1);
+    const call = h.direct[0];
+    expect(call.flowId).toBe('digest');
+    expect(call.autoLaunch).toBe(true);
+    expect(call.origin).toMatchObject({ kind: 'worker', task: 'shift', wrapUpOf: 'orch-1' });
+    expect(call.prompt).toContain('result of run-a');
+    expect(call.prompt).toContain('Item b — FAILED: API down');
+    expect(call.prompt).toContain('Item c — not run');
+    expect(call.prompt).toContain('1 finished, 1 failed, 1 not run');
+  });
+
+  it('launches it exactly once, however many updates arrive', async () => {
+    const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })], deliverablesFor });
+    h.engine.start();
+    const batch = workerBatch({ items: [item('a', 'done')] });
+    // Two updates in the same tick: the park is still in flight for the second.
+    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: batch });
+    await settle(h, batch);
+    // And after a restart, when the wrap-up batch is on record.
+    h.orchestrations.set('orch-wrap', workerBatch({
+      id: 'orch-wrap',
+      origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Scout', task: 'shift', wrapUpOf: 'orch-1' },
+    }));
+    await settle(h, batch);
+    expect(h.direct).toHaveLength(1);
+  });
+
+  it('waits for every item, and skips a shift where nothing finished', async () => {
+    const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })], deliverablesFor });
+    h.engine.start();
+    await settle(h, workerBatch({ items: [item('a', 'done'), item('b', 'running')] }));
+    await settle(h, workerBatch({ id: 'orch-2', items: [item('a', 'failed'), item('b', 'cancelled')] }));
+    expect(h.direct).toHaveLength(0);
+  });
+
+  it('never wraps up an errand, a wrap-up, or a worker without one', async () => {
+    const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })], deliverablesFor });
+    h.engine.start();
+    await settle(h, workerBatch({
+      origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Scout', task: 'errand' },
+      items: [item('a', 'done')],
+    }));
+    await settle(h, workerBatch({
+      id: 'orch-wrap',
+      origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Scout', task: 'shift', wrapUpOf: 'orch-0' },
+      items: [item('a', 'done')],
+    }));
+    expect(h.direct).toHaveLength(0);
+
+    const plain = makeHarness({ seed: [seedWorker()], deliverablesFor });
+    plain.engine.start();
+    await settle(plain, workerBatch({ items: [item('a', 'done')] }));
+    expect(plain.direct).toHaveLength(0);
+  });
+
+  it('tells the planner not to make any one item produce the combined report', async () => {
+    const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })] });
+    h.engine.start();
+    await h.engine.workShiftNow('worker-1');
+    expect(h.parked[0].prompt).toContain('a WRAP-UP combines their results');
+    // The wrap-up flow is not one the planner may route an item to.
+    expect(h.parked[0].allowedFlowIds).not.toContain('digest');
+  });
+
+  it('keeps a removed wrap-up removed when the worker is saved', () => {
+    const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })] });
+    h.engine.start();
+    const { wrapUpFlowId: _drop, ...rest } = h.engine.get('worker-1')!;
+    const res = h.engine.save(rest);
+    expect(res.ok && res.worker.wrapUpFlowId).toBeFalsy();
   });
 });

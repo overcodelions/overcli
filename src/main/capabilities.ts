@@ -35,6 +35,9 @@ import {
   CapabilitySource,
 } from '../shared/types';
 
+import { seenMcpServers } from './flows/mcpToolCache';
+import { isAccountConnector } from '../shared/flows/mcpTools';
+
 const HOME = os.homedir();
 
 export function scanCapabilities(): CapabilitiesReport {
@@ -48,10 +51,16 @@ export function scanCapabilities(): CapabilitiesReport {
   const mcp = scanMcpAcrossClis(warnings);
   entries.push(...mcp);
 
+  let accountConnectors: string[] = [];
+  runScanner('account-connectors', () => {
+    accountConnectors = seenMcpServers().filter(isAccountConnector);
+  }, warnings);
+
   return {
     generatedAt: Date.now(),
     entries,
     warnings,
+    accountConnectors,
   };
 }
 

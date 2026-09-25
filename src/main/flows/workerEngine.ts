@@ -26,6 +26,7 @@
 // fold safe to run on every event, restart, or replay.
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import { log } from '../diagnostics';
 
 import { isSafeIdSegment } from '../../shared/flows/safeId';
@@ -129,6 +130,10 @@ const ERRAND_THREAD_REPLY_CHARS = 2000;
 /// carried in as a deliberately small brief, rather than replaying that
 /// conversation as though it were still today's live thread.
 const ERRAND_HANDOFF_TURNS = 3;
+/// Characters of item results a wrap-up prompt carries, shared between the
+/// finished items. Generous — combining is the whole job — but bounded, so a
+/// shift of ten long reports cannot blow past the model's context.
+const WRAP_UP_PROMPT_BUDGET = 60_000;
 const ERRAND_HANDOFF_ASK_CHARS = 240;
 const ERRAND_HANDOFF_REPLY_CHARS = 600;
 /// A filename, or one of the two keywords. Long enough for any name the
@@ -252,6 +257,11 @@ export interface WorkerEngineDeps {
     request: string;
     runIn: 'cwd' | 'worktree';
   }) => Promise<{ ok: true; orchestrationId: UUID; flowId: string } | { ok: false; error: string }>;
+  /// Name and description of each flow on a worker's contract, in the order
+  /// given, skipping ids that no longer resolve. Only needed to tell a
+  /// multi-flow worker's planner what it can route to; without it every item
+  /// runs through the first flow, which is what a one-flow worker does anyway.
+  flowsFor?: (ids: string[]) => Array<{ id: string; name: string; description?: string }>;
   /// A finished run's final artifact, so the engine can file it under the
   /// worker. The engine has no handle on the runtime, and it needs one here
   /// because run artifacts are pruned with the run — copying the deliverable
@@ -295,6 +305,8 @@ export interface WorkerEngineDeps {
 
 export class WorkerEngine {
   private workers = new Map<UUID, Worker>();
+  /// Shift batches whose wrap-up is being parked right now — see maybeWrapUp.
+  private wrappingUp = new Set<UUID>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private ticking = false;
@@ -426,6 +438,12 @@ export class WorkerEngine {
   /// is two whole-file log reads it has no use for.
   workerNames(): string[] {
     return [...this.workers.values()].map((w) => w.name);
+  }
+
+  /// Every worker as held — no scorecards. For a caller that needs the crew's
+  /// names and jobs (routing an errand) and not their stats.
+  roster(): Worker[] {
+    return [...this.workers.values()];
   }
 
   get(id: UUID): Worker | null {
@@ -692,6 +710,10 @@ export class WorkerEngine {
           ? undefined
           : existing?.distribution,
     };
+    // Spread over `existing`, a wrap-up removed in the editor would come back
+    // from the stored record. What the caller sent is the answer.
+    candidate.wrapUpFlowId = input.wrapUpFlowId || undefined;
+    if (candidate.wrapUpFlowId === undefined) delete candidate.wrapUpFlowId;
     if (candidate.distribution === undefined) delete candidate.distribution;
     if (candidate.deskSession === undefined) delete candidate.deskSession;
     if (input.caps.fileIntoProject && !existing?.caps.fileIntoProject) {
@@ -1879,6 +1901,7 @@ export class WorkerEngine {
       ...this.filesBlock(w),
       ...this.contextBlock(),
       ...this.delegationBlock(w),
+      ...this.flowsBlock(w),
     ];
     if (rejected.length > 0) {
       parts.push(
@@ -1894,8 +1917,34 @@ export class WorkerEngine {
       'Skip anything your journal shows was already done or is still in flight. If nothing worth',
       'doing has appeared since your last shift, say so and emit an empty candidates list —',
       'an honest empty shift beats makework.',
+      ...(w.wrapUpFlowId
+        ? [
+            '',
+            'After this shift\'s items finish, a WRAP-UP combines their results into one deliverable.',
+            'So propose separable pieces of work, each delivering its own part — do not ask any',
+            'single item to produce the combined report; the wrap-up does that.',
+          ]
+        : []),
     );
     return parts.join('\n');
+  }
+
+  /// The flows a multi-flow worker can route its items to. The engine has
+  /// always honored a candidate's `suggestedFlowId` (within `allowedFlowIds`),
+  /// but nothing told the planner the flows existed, so every item fell back
+  /// to the first. Empty for a one-flow worker: there is no choice to make,
+  /// and its prompt stays exactly as it was.
+  private flowsBlock(w: Worker): string[] {
+    if (w.flowIds.length < 2 || !this.deps.flowsFor) return [];
+    const flows = this.deps.flowsFor(w.flowIds);
+    if (flows.length < 2) return [];
+    return [
+      '',
+      'YOUR FLOWS — every candidate runs through exactly one of these. Add',
+      '"suggestedFlowId": "<id>" to a candidate to send it to the flow that fits; a',
+      'candidate without one runs through the first.',
+      ...flows.map((f) => `  - id: "${f.id}" — ${f.name}${f.description ? `: ${f.description}` : ''}`),
+    ];
   }
 
   private buildFlowQuestionPrompt(worker: Worker, request: FlowWorkerQuestionRequest): string {
@@ -2085,10 +2134,6 @@ export class WorkerEngine {
       );
     }
     return parts;
-  }
-
-  private roster(): Worker[] {
-    return [...this.workers.values()];
   }
 
   /// Act on the `<handoff>` blocks a planning turn emitted, and describe what
@@ -2298,6 +2343,7 @@ export class WorkerEngine {
         ? ['', 'PREVIOUS CONVERSATION HANDOFF (background only — today is a new conversation)', priorDayHandoff]
         : []),
       ...(from ? [] : this.delegationBlock(w)),
+      ...this.flowsBlock(w),
     ];
     if (rejected.length > 0) {
       parts.push(
@@ -2563,6 +2609,7 @@ export class WorkerEngine {
     }
 
     if (newestRejectedId) this.maybeDemote(w, newestRejectedId);
+    this.maybeWrapUp(w, o);
     if (changed) {
       this.emitWorker(w);
       // Gated on `changed` rather than fired per update: a finished run is
@@ -2570,6 +2617,113 @@ export class WorkerEngine {
       // streaming batch update would be a disk read per event.
       this.emitTreasury();
     }
+  }
+
+  /// Launch the worker's wrap-up flow once a shift has fully settled.
+  ///
+  /// Runs on every fold, so it has to be exactly-once on its own: the batch
+  /// list is the durable record (a wrap-up batch names the shift it combines
+  /// in `origin.wrapUpOf`, and batches survive restarts), and `wrappingUp`
+  /// covers the gap while the park is in flight and not yet listed.
+  private maybeWrapUp(w: Worker, o: Orchestration): void {
+    if (!w.wrapUpFlowId || o.origin?.kind !== 'worker') return;
+    // Shifts only: an errand is one ask you are already watching, and a
+    // wrap-up must never wrap itself up.
+    if (o.origin.task === 'errand' || o.origin.wrapUpOf) return;
+    const settled = o.items.length > 0 && o.items.every(
+      (i) => i.status === 'done' || i.status === 'failed' || i.status === 'cancelled',
+    );
+    // Nothing finished means nothing to combine — no empty digests.
+    if (!settled || !o.items.some((i) => i.status === 'done')) return;
+    if (this.wrappingUp.has(o.id)) return;
+    if (this.deps.parker.list().some((b) => b.origin?.kind === 'worker' && b.origin.wrapUpOf === o.id)) return;
+    this.wrappingUp.add(o.id);
+
+    const origin = { ...workerOrigin(w, 'shift'), wrapUpOf: o.id };
+    void this.deps.parker
+      .parkDirect({
+        origin,
+        projectPath: w.projectPath,
+        prompt: this.buildWrapUpPrompt(w, o),
+        title: `${o.title ?? w.name} — wrap-up`,
+        flowId: w.wrapUpFlowId,
+        runIn: this.effectiveRunIn(w),
+        maxConcurrent: 1,
+        // The shift's items were already approved (by you, or by the trust
+        // cap); combining their results is part of that same shift. Anything
+        // the wrap-up flow does outside the run still pauses at its own
+        // external-action boundary, exactly as every worker step does.
+        autoLaunch: true,
+        note: `Combines the results of ${o.title ?? 'the shift'}.`,
+      })
+      .then((res) => {
+        if (!res.ok) log('warn', 'workers.wrapUp', `${w.name}: wrap-up for ${o.id} did not launch: ${res.error}`);
+      })
+      .catch((err) => log('warn', 'workers.wrapUp', `${w.name}: wrap-up for ${o.id} threw`, err))
+      .finally(() => this.wrappingUp.delete(o.id));
+  }
+
+  /// What the wrap-up flow is handed: the job, then every item and how it
+  /// ended, with the text of what each one delivered. Failed and turned-down
+  /// items are listed rather than hidden — a digest that silently drops the
+  /// piece that broke reads as complete when it is not.
+  private buildWrapUpPrompt(w: Worker, o: Orchestration): string {
+    const done = o.items.filter((i) => i.status === 'done');
+    const perItem = Math.floor(WRAP_UP_PROMPT_BUDGET / Math.max(1, done.length));
+    const sections = o.items.map((item, n) => {
+      const head = `### ${n + 1}. ${item.candidate.title}`;
+      if (item.status === 'failed') return `${head} — FAILED${item.note ? `: ${item.note}` : ''}`;
+      if (item.status === 'cancelled') return `${head} — not run (turned down or cancelled)`;
+      return [head, this.deliverableText(item.runId, perItem)].join('\n');
+    });
+    const counts = [
+      `${done.length} finished`,
+      ...(o.items.some((i) => i.status === 'failed')
+        ? [`${o.items.filter((i) => i.status === 'failed').length} failed`]
+        : []),
+      ...(o.items.some((i) => i.status === 'cancelled')
+        ? [`${o.items.filter((i) => i.status === 'cancelled').length} not run`]
+        : []),
+    ].join(', ');
+    return [
+      `You are wrapping up a shift for "${w.name}". The shift's work items have all finished;`,
+      'your job is to COMBINE their results into the one deliverable the job asks for.',
+      '',
+      'THE JOB DESCRIPTION',
+      w.jobDescription,
+      '',
+      `THE SHIFT: ${o.title ?? 'untitled'} (${counts})`,
+      '',
+      ...sections.flatMap((section) => [section, '']),
+      'Work only from the results above. Say plainly what is missing because an item failed or',
+      'did not run — do not fill the gap with a guess.',
+    ].join('\n');
+  }
+
+  /// One finished item's deliverables as text, within a budget. Text files a
+  /// run wrote are read; anything else is named by path so the flow can open
+  /// it itself.
+  private deliverableText(runId: UUID | undefined, budget: number): string {
+    const artifacts = runId ? this.deps.deliverablesFor?.(runId) ?? [] : [];
+    if (artifacts.length === 0) return '(finished, but left no deliverable)';
+    const each = Math.floor(budget / artifacts.length);
+    return artifacts
+      .map((a) => {
+        let body = a.body;
+        if (body === undefined && a.sourcePath) {
+          try {
+            const buf = fs.readFileSync(a.sourcePath);
+            // A NUL in the first few KB is a binary file, not a report.
+            body = buf.subarray(0, 8192).includes(0) ? undefined : buf.toString('utf-8');
+          } catch {
+            body = undefined;
+          }
+        }
+        if (body === undefined) return `--- ${a.name} (file: ${a.sourcePath ?? 'unavailable'})`;
+        const clipped = body.length > each ? `${body.slice(0, each)}\n[… cut to fit; ${body.length - each} more characters]` : body;
+        return `--- ${a.name}\n${clipped}`;
+      })
+      .join('\n\n');
   }
 
   /// Auto-demotion: three consecutive rejections cost one trust level. Keyed

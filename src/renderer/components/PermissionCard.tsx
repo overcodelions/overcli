@@ -26,10 +26,17 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
         <span>{label} wants to use {info.toolName}</span>
         {decided && (
           <span className={'ml-auto text-[10px] ' + (decided === 'allow' ? 'text-green-400' : 'text-red-400')}>
-            {decided === 'allow' ? '✓ allowed' : '✗ denied'}
+            {info.decidedBy === 'policy'
+              ? decided === 'allow' ? '✓ auto-allowed' : '✗ auto-denied'
+              : decided === 'allow' ? '✓ allowed' : '✗ denied'}
           </span>
         )}
       </div>
+      {info.decisionNote && (
+        <div className={'mt-1 text-[11px] ' + (decided === 'deny' ? 'text-red-400' : 'text-ink-muted')}>
+          {info.decisionNote}
+        </div>
+      )}
       {info.description && <div className="mt-1 text-ink-muted">{info.description}</div>}
       {outbound && (
         <div className="mt-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">

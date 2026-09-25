@@ -198,6 +198,10 @@ export interface Orchestration {
         /// stops the receiver delegating onward — referrals are one hop, so
         /// a batch carrying `from` never gets a roster block of its own.
         from?: { workerId: UUID; workerName: string };
+        /// Set on the batch that runs a worker's wrap-up flow: the id of the
+        /// shift batch whose results it combines. Its presence is also what
+        /// stops a wrap-up from ever triggering a wrap-up of its own.
+        wrapUpOf?: UUID;
       };
   createdAt: number;
   /// Set once every item has reached a terminal status (done/failed/cancelled).

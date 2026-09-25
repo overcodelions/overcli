@@ -21,6 +21,8 @@
 // the sidebar but are otherwise normal Conversations that the existing
 // runner pipeline drives.
 
+import { parseRunDigest, RUN_DIGEST_INSTRUCTION } from '../../shared/flows/runDigest';
+import { isReadOnlyMcpTool } from '../../shared/flows/mcpTools';
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -704,6 +706,15 @@ export class FlowRuntimeImpl {
               `auto-${allow ? 'approved' : 'denied'} "${ev.kind.info.toolName}" for worker run ${runId} (no grant for external actions)`,
             );
             this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, allow);
+            // Say so on the event itself before it reaches the renderer (this
+            // tap runs first, on the same object). Otherwise the card offered
+            // Allow for a call that was already refused, and clicking it
+            // marked the card allowed while the model was told no.
+            ev.kind.info.decided = allow ? 'allow' : 'deny';
+            ev.kind.info.decidedBy = 'policy';
+            ev.kind.info.decisionNote = allow
+              ? 'Allowed: you approved this step.'
+              : `Denied automatically: this worker has no grant for external actions, and the step does not list ${ev.kind.info.toolName} in its tools.`;
             if (allow) this.checkpoint(run);
           }
         }
@@ -3358,6 +3369,11 @@ export class FlowRuntimeImpl {
       artifact: displayArtifact,
       ...usageTotals,
     });
+    // The worker's own headline for the digest, when its last step wrote one.
+    if (run.workerId && run.flowSnapshot.steps[run.flowSnapshot.steps.length - 1]?.id === step.id) {
+      const digest = parseRunDigest(text);
+      if (digest) run.digest = digest;
+    }
     // Step boundary: artifact extracted, ready to advance. Persist NOW so
     // an unexpected exit between here and the next step start can be
     // resumed: on restart the run will be in `paused` (set by
@@ -3895,6 +3911,11 @@ export class FlowRuntimeImpl {
       : '';
     const workerBoundary = buildWorkerRunBoundary(run);
     const workerSupervision = buildWorkerSupervisionBoundary(run);
+    // A worker's last step also writes a headline for the Today digest — the
+    // result in its own words. Outside <output>, so the deliverable is
+    // untouched; a run that ignores it is summarised from the deliverable.
+    const isLastStep = run.flowSnapshot.steps[run.flowSnapshot.steps.length - 1]?.id === step.id;
+    const digestBlock = run.workerId && isLastStep ? `\n\n${RUN_DIGEST_INSTRUCTION}` : '';
     const workerAnswer = this.workerAnswerFeedback.get(run.id);
     const workerAnswerBlock =
       workerAnswer?.stepId === step.id
@@ -4020,7 +4041,8 @@ export class FlowRuntimeImpl {
       `${buildStepPromptTitle(run, step)}` +
       `${steerBlock}${retryBlock}${workerAnswerBlock}${workerBoundary}${workerSupervision}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
       `Proceed with your task now. Remember to wrap your final deliverable in ` +
-      `<output name="${step.output}">…</output>.`
+      `<output name="${step.output}">…</output>.` +
+      digestBlock
     );
   }
 
@@ -4453,8 +4475,13 @@ export function resolveStepEffect(
   // Scoped read-only git is local: `Bash(git diff:*)` cannot mutate anything,
   // and forcing a pause on it made two shipped templates stall at step 1.
   const READONLY_BASH = /^bash\(\s*git\s+(?:diff|log|show|status|ls-files|rev-parse)(?::\*)?\s*\)$/;
+  // An MCP tool that only reads — searching a mailbox, listing a calendar —
+  // is not acting on the world, so granting it keeps the step local. One
+  // whose name says it sends, creates or updates, or says nothing we can
+  // place, stays external (see isReadOnlyMcpTool).
   const isLocalTool = (t: string): boolean => {
     const name = t.toLowerCase().trim();
+    if (name.startsWith('mcp__')) return isReadOnlyMcpTool(t.trim());
     return LOCAL_TOOLS.has(name.split('__')[0]) || READONLY_BASH.test(name);
   };
   const declared = step.tools ?? [];

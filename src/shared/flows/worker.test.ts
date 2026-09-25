@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  hireAnswerText,
+  parseHireQuestions,
   computeWorkerScorecard,
   demotedTrust,
   coerceCadence,
@@ -225,8 +227,7 @@ describe('parseWorkerContract', () => {
       maxItemsPerShift: 2,
       budgetUSDPerMonth: 15,
       heartbeatModel: 'tiny-model',
-      flowId: 'fix-it',
-      flowRequest: undefined,
+      flows: [{ flowId: 'fix-it' }],
     });
   });
 
@@ -243,7 +244,7 @@ describe('parseWorkerContract', () => {
     expect(contract.maxItemsPerShift).toBe(5);
     expect(contract.budgetUSDPerMonth).toBe(10);
     expect(contract.heartbeatModel).toBe('cheap-model');
-    expect(contract.flowId).toBeUndefined();
+    expect(contract.flows).toEqual([]);
     expect(contract.cadence).toEqual({ kind: 'interval', everyMinutes: 15, days: undefined, window: undefined });
   });
 
@@ -848,5 +849,151 @@ describe('workerErrandStarters', () => {
   it('collapses whitespace so a wrapped starter still fits on one chip', () => {
     const w = makeWorker({ errandStarters: ['  what   is\n  stuck? '] });
     expect(workerErrandStarters(w)).toEqual(['what is stuck?']);
+  });
+});
+
+describe('parseHireQuestions', () => {
+  it('reads the block and keeps the prose before it as the lead-in', () => {
+    const parsed = parseHireQuestions(
+      'Quick check.\n<questions>{"questions":[{"question":"Which repo?","options":["api","web"]}]}</questions>',
+    );
+    expect(parsed).toEqual({
+      intro: 'Quick check.',
+      questions: [{ question: 'Which repo?', options: ['api', 'web'] }],
+    });
+  });
+
+  it('accepts a bare array of strings', () => {
+    expect(parseHireQuestions('<questions>["Which repo?"]</questions>')?.questions).toEqual([
+      { question: 'Which repo?' },
+    ]);
+  });
+
+  it('caps questions and options, and drops empty ones', () => {
+    const block = JSON.stringify({
+      questions: [
+        { question: '' },
+        { question: 'A?', options: ['1', '2', '3', '4', '5', ''] },
+        'B?',
+        'C?',
+        'D?',
+      ],
+    });
+    const parsed = parseHireQuestions(`<questions>${block}</questions>`);
+    expect(parsed?.questions.map((q) => q.question)).toEqual(['A?', 'B?', 'C?']);
+    expect(parsed?.questions[0].options).toEqual(['1', '2', '3', '4']);
+  });
+
+  it('returns null for no block, bad JSON or no questions', () => {
+    expect(parseHireQuestions('1. Which repo?')).toBeNull();
+    expect(parseHireQuestions('<questions>{ nope }</questions>')).toBeNull();
+    expect(parseHireQuestions('<questions>{"questions":[]}</questions>')).toBeNull();
+  });
+});
+
+describe('hireAnswerText', () => {
+  const qs = [{ question: 'Which repo?' }, { question: 'How often?' }];
+
+  it('is empty when nothing was answered', () => {
+    expect(hireAnswerText(qs, ['', '  '], '')).toBe('');
+  });
+
+  it('pairs answers with questions, marks skips and adds the extra note', () => {
+    expect(hireAnswerText(qs, ['api'], 'keep it cheap')).toBe(
+      'Which repo?\n→ api\n\nHow often?\n→ (skipped — pick a sensible default)\n\nAlso: keep it cheap',
+    );
+  });
+});
+
+describe('parseWorkerContract flows and servers', () => {
+  const opts = {
+    knownFlowIds: ['triage', 'digest'],
+    defaultHeartbeatModel: 'cheap-model',
+    knownMcpServers: ['Linear', 'slack'],
+  };
+  const parse = (body: Record<string, unknown>) =>
+    parseWorkerContract(`<worker>${JSON.stringify({ name: 'Ada', jobDescription: 'Do it.', ...body })}</worker>`, opts)!;
+
+  it('reads a flows list, dropping unknown ids, duplicates and empties, capped at three', () => {
+    const c = parse({
+      flows: [
+        { flowId: 'triage', when: 'new tickets' },
+        { flowId: 'triage' },
+        { flowId: 'ghost' },
+        {},
+        { flowRequest: 'A weekly digest.', when: 'Fridays' },
+        { flowId: 'digest' },
+        { flowRequest: 'One too many.' },
+      ],
+    });
+    expect(c.flows).toEqual([
+      { flowId: 'triage', when: 'new tickets' },
+      { flowRequest: 'A weekly digest.', when: 'Fridays' },
+      { flowId: 'digest' },
+    ]);
+  });
+
+  it('still reads the single flowId / flowRequest shape', () => {
+    expect(parse({ flowRequest: 'Fix things.' }).flows).toEqual([{ flowRequest: 'Fix things.' }]);
+    expect(parse({ flowId: 'digest' }).flows).toEqual([{ flowId: 'digest' }]);
+  });
+
+  it('keeps only known MCP servers, matched back to their configured spelling', () => {
+    expect(parse({ mcpServers: ['linear', 'Gmail', 'SLACK', 'linear'] }).mcpServers).toEqual([
+      'Linear',
+      'slack',
+    ]);
+    expect(parse({ mcpServers: [] }).mcpServers).toEqual([]);
+    expect(parse({}).mcpServers).toBeUndefined();
+  });
+
+  it('ignores mcpServers when the drafter was never shown a list', () => {
+    const c = parseWorkerContract(
+      `<worker>${JSON.stringify({ name: 'Ada', jobDescription: 'Do it.', mcpServers: ['Linear'] })}</worker>`,
+      { knownFlowIds: [], defaultHeartbeatModel: 'cheap-model' },
+    )!;
+    expect(c.mcpServers).toBeUndefined();
+  });
+});
+
+describe('parseWorkerContract wrap-up', () => {
+  const opts = { knownFlowIds: ['triage', 'digest'], defaultHeartbeatModel: 'cheap-model' };
+  const parse = (body: Record<string, unknown>) =>
+    parseWorkerContract(`<worker>${JSON.stringify({ name: 'Ada', jobDescription: 'Do it.', ...body })}</worker>`, opts)!;
+
+  it('reads a wrap-up as a request or an existing flow', () => {
+    expect(parse({ flowId: 'triage', wrapUp: { flowRequest: 'Combine into one digest.' } }).wrapUp).toEqual({
+      flowRequest: 'Combine into one digest.',
+    });
+    expect(parse({ flowId: 'triage', wrapUp: { flowId: 'digest' } }).wrapUp).toEqual({ flowId: 'digest' });
+  });
+
+  it('raises a one-item shift to two when there is a wrap-up to combine them', () => {
+    expect(parse({ flowId: 'triage', maxItemsPerShift: 1, wrapUp: { flowId: 'digest' } }).maxItemsPerShift).toBe(2);
+    expect(parse({ flowId: 'triage', maxItemsPerShift: 1 }).maxItemsPerShift).toBe(1);
+  });
+
+  it('drops a wrap-up that is also a route, or that names nothing usable', () => {
+    expect(parse({ flowId: 'triage', wrapUp: { flowId: 'triage' } }).wrapUp).toBeUndefined();
+    expect(parse({ flowId: 'triage', wrapUp: { flowId: 'ghost' } }).wrapUp).toBeUndefined();
+    expect(parse({ flowId: 'triage' }).wrapUp).toBeUndefined();
+  });
+});
+
+describe('validateWorker wrap-up', () => {
+  it('refuses a wrap-up that is also a routing flow', () => {
+    const base = {
+      name: 'Ada',
+      jobDescription: 'A job description long enough to pass.',
+      projectPath: '/repo',
+      heartbeatModel: 'cheap',
+      budgetUSDPerMonth: 5,
+      cadence: null,
+      caps: { maxItemsPerShift: 2, runIn: 'worktree' as const },
+      trust: 'probation' as const,
+    };
+    expect(validateWorker({ ...base, flowIds: ['a'], wrapUpFlowId: 'a' })).toMatch(/wrap-up/);
+    expect(validateWorker({ ...base, flowIds: ['a'], wrapUpFlowId: 'b' })).toBeNull();
+    expect(validateWorker({ ...base, flowIds: ['a'] })).toBeNull();
   });
 });

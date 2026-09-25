@@ -78,6 +78,9 @@ import { scanOrphanTranscripts, removeOrphanTranscripts } from './transcriptSwee
 import { computeStatsOffThread, stopStatsWorker } from './statsService';
 import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
+import { recordMcpSeenFromEvent, seenMcpTools } from './flows/mcpToolCache';
+import { ensureMcpSeen } from './flows/mcpProbe';
+import { routeErrand } from './flows/workerRouter';
 import { findBrowser, openInBrowser } from './openInBrowser';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
 import { listMcpCatalog, installMcpCatalogEntry, uninstallMcpCatalogEntry } from './mcpCatalog';
@@ -405,6 +408,7 @@ function drafterDeps(): DraftDeps {
   return {
     settings: store.settings,
     runner: runner!,
+    mcpTools: seenMcpTools(),
     provenFlows: renderProvenFlowsSection(
       loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }),
       loadRunSummaries(),
@@ -420,6 +424,9 @@ export function registerIpc(): void {
   // extraction. Wrap the renderer emit callback to tee events into the
   // runtime first; nothing changes for renderer-facing behavior.
   const flowAwareEmit = (event: MainToRendererEvent) => {
+    // What MCP servers and tools Claude actually has — account connectors
+    // included, which no config file lists. See mcpToolCache.
+    recordMcpSeenFromEvent(event);
     if (flowRuntime) flowRuntime.observeEvent(event);
     // The worker engine folds worker-batch orchestration updates into each
     // worker's journal. Tapped here (not via setRunObserver) because the
@@ -608,6 +615,15 @@ export function registerIpc(): void {
           }
         })
         .catch((err) => log('warn', 'versions.checkpoint', `checkpoint threw for ${projectPath}`, err));
+    },
+    flowsFor: (ids) => {
+      const byId = new Map(
+        loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).map((f) => [f.id, f]),
+      );
+      return ids.flatMap((id) => {
+        const f = byId.get(id);
+        return f ? [{ id: f.id, name: f.name, description: f.description }] : [];
+      });
     },
     generatedFlow: async ({ worker, errand, request, runIn }) => {
       const drafted = await draftFlowFromPrompt(
@@ -2512,6 +2528,9 @@ export function registerIpc(): void {
       note: res.note,
     } as const;
   });
+  ipcMain.handle('workers:routeErrand', (_e, { ask }) =>
+    routeErrand(ask, workerEngine ? workerEngine.roster() : [], drafterDeps()),
+  );
   ipcMain.handle('workers:rememberProfile', (_e, { questions }) => ({
     ok: true,
     profile: saveUserProfile(rememberAnswers(loadUserProfile(), questions ?? [], Date.now())),
@@ -2521,12 +2540,36 @@ export function registerIpc(): void {
     ok: true,
     profile: forgetProfileFact(key),
   }));
-  ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription, attachments }) => {
+  ipcMain.handle(
+    'workers:draftFromPrompt',
+    async (_e, { jobDescription, attachments, conversation, interview }) => {
     const store = Store.load();
+    // The drafter's own turns run strict and report no servers, so a user who
+    // comes straight here may have none recorded. Ask Claude once — it costs
+    // no model call (see mcpProbe) and only happens while the record is empty.
+    await ensureMcpSeen(resolveBackendPath('claude', store.settings.backendPaths.claude));
+    // The same servers the editor's picker offers. A failed scan means the
+    // drafter is not asked to choose, and the worker loads everything.
+    let mcpServers: string[] | undefined;
+    try {
+      const report = scanCapabilities();
+      mcpServers = Array.from(
+        new Set([
+          ...report.entries.filter((e) => e.kind === 'mcp' && e.clis.includes('claude')).map((e) => e.name),
+          ...(report.accountConnectors ?? []),
+        ]),
+      ).sort((a, b) => a.localeCompare(b));
+    } catch (err) {
+      log('warn', 'workers.hire', 'MCP scan for the hire drafter failed', err);
+    }
     return draftWorkerFromPrompt(
       {
         jobDescription,
         attachments,
+        conversation,
+        interview,
+        mcpServers,
+        polish: true,
         // Names only — `list()` would build a scorecard per worker, which is
         // two whole-file log reads each for a prompt line.
         crew: workerEngine ? workerEngine.workerNames() : [],
@@ -2554,7 +2597,8 @@ export function registerIpc(): void {
       },
       drafterDeps(),
     );
-  });
+    },
+  );
   ipcMain.handle(
     'workers:reviseFromPrompt',
     (_e, { jobDescription, flowId, flow: unsavedFlow, instruction, attachments }) => {
@@ -3472,6 +3516,10 @@ app.whenReady().then(() => {
     });
   });
   registerIpc();
+  // Learn the user's MCP servers and account connectors in the background,
+  // so the first hire or flow draft already knows them. A no-op once any
+  // real Claude session has reported them.
+  void ensureMcpSeen(resolveBackendPath('claude', Store.load().settings.backendPaths.claude)).catch(() => {});
   buildMenu();
   // Before the window exists, so the renderer's first `app:whatsNew` call
   // already sees a baseline and a fresh install isn't handed four changelogs.
