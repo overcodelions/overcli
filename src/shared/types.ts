@@ -26,6 +26,7 @@ import type {
   StackView,
 } from './services';
 import type {
+  HeldHandoff,
   HireMessage,
   HireQuestion,
   Worker,
@@ -1197,8 +1198,15 @@ export interface AppSettings {
   /// rather than a feature and its absence, which is why this is a choice
   /// and not a boolean.
   sidebarLayout?: SidebarLayout;
+  /// Set once Places has been made the layout for an install that was on
+  /// Recent from before Places became the default — so that move happens
+  /// once, and choosing Recent again afterwards sticks.
+  placesDefaultApplied?: boolean;
   /// Sidebar shortcut strip for running/recent conversations.
   showActiveSidebarSection?: boolean;
+  /// Places pinned to the top of the Places sidebar — project and workspace
+  /// ids, in the order they show.
+  pinnedPlaces?: string[];
   /// Set once the user has opened Flows → Schedules. Until then the segment
   /// carries a discovery glow. Persisted rather than per-session so the hint
   /// doesn't come back every launch — a highlight that never retires is one
@@ -1993,6 +2001,15 @@ export interface IPCInvokeMap {
   /// worker. Separate from `fs:listDocuments` because it reads every worker's
   /// publish ledger, and the grid must paint before that lands.
   'everyday:filedBy': (args: { projectPath: string }) => FiledByMap;
+  /// Documents workers filed into this project lately, newest first,
+  /// wherever in the folder they landed.
+  'everyday:recentlyFiled': (args: { projectPath: string; since: number; limit: number }) => Array<{
+    path: string;
+    name: string;
+    workerId: UUID;
+    workerName: string;
+    at: number;
+  }>;
   'versions:checkpoint': (args: { projectPath: string; message: string }) => {
     ok: boolean;
     skipped?: 'nothing-to-save' | 'too-large';
@@ -2482,8 +2499,10 @@ export interface IPCInvokeMap {
       flowId?: string;
       baseBranch?: string;
     }>;
+    /// Leave proposals not named in `approve` proposed instead of cancelling them.
+    keepUnpicked?: boolean;
   }) => { ok: true; queued: number } | { ok: false; error: string };
-  /// Reject ONE paused item — the per-item form of the decline that
+  /// Reject ONE paused or proposed item — the per-item form of the decline that
   /// approveBatch applies to unpicked proposals. Settles the item to
   /// `cancelled`, which is what journals the rejection on a worker-origin
   /// batch and feeds the demotion streak. The child run is the CALLER's to
@@ -2644,6 +2663,9 @@ export interface IPCInvokeMap {
   /// The worker's journal, newest first — its episodic memory, rendered as
   /// the shift history in the Workers pane.
   'workers:journal': (args: { id: UUID }) => WorkerJournalEntry[];
+  'workers:handoffs': () => HeldHandoff[];
+  'workers:cancelHandoff': (args: { id: string }) => { ok: true } | { ok: false; error: string };
+  'workers:sendHandoffNow': (args: { id: string }) => { ok: true } | { ok: false; error: string };
   /// Return this worker to a just-hired clean slate: remove its journal, files,
   /// shift/errand ledgers and child flow runs, then restart numbering at shift
   /// #1. Trust, budget, job description and historical usage spend remain.
@@ -3762,6 +3784,12 @@ export type MainToRendererEvent =
       workerId?: UUID;
     }
   | {
+      /// The dated handoffs still waiting to go out, whole list, soonest
+      /// first. Sent whenever one is held, sent, cancelled or dropped.
+      type: 'workerHandoffs';
+      handoffs: HeldHandoff[];
+    }
+  | {
       /// A worker's shift lifecycle: `active: true` when the planning turn
       /// starts (the row shows "working a shift"), `false` when the shift
       /// settles either way. The streaming text/tools ride on
@@ -3832,7 +3860,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   editorPaneWidth: 540,
   explorerTreeWidth: 280,
   servicesListWidth: 480,
-  sidebarLayout: 'stream',
+  sidebarLayout: 'projects',
   showActiveSidebarSection: true,
   showDebug: false,
   cleanup: { ...DEFAULT_CLEANUP_RULES },

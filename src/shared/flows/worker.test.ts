@@ -23,6 +23,7 @@ import {
   canDelegate,
   delegationTargets,
   parseDirectRun,
+  handoffNotBefore,
   parseHandoffs,
   resolveHandoffTarget,
   rosterLine,
@@ -588,6 +589,22 @@ describe('delegation', () => {
     ]);
   });
 
+  /// A team is who you put on it. Picking by id is what makes reaching across
+  /// projects safe: only the chosen colleagues are nameable.
+  it('reaches a picked colleague on another project, and only picked ones', () => {
+    const roster = [
+      makeWorker({ id: 'elsewhere', name: 'Chief of Staff', projectPath: '/other' }),
+      makeWorker({ id: 'stranger', name: 'Stranger', projectPath: '/other' }),
+      makeWorker({ id: 'triage', name: 'Triage' }),
+    ];
+    expect(
+      delegationTargets(delegator({ delegatesTo: ['elsewhere', 'triage'] }), roster)
+        .map((t) => t.id)
+        .sort(),
+    ).toEqual(['elsewhere', 'triage']);
+    expect(delegationTargets(delegator(), roster).map((t) => t.id)).toEqual(['triage']);
+  });
+
   it('offers nothing to a worker that may not delegate', () => {
     expect(delegationTargets(makeWorker(), [makeWorker({ id: 'triage', name: 'Triage' })])).toEqual(
       [],
@@ -621,6 +638,30 @@ describe('delegation', () => {
       { to: 'Warden', instruction: 'Check the release.' },
     ]);
     expect(stripHandoffs(reply)).toBe('I found two things that are not mine.');
+  });
+
+  it('reads the day a handoff should arrive, quoted or not', () => {
+    expect(parseHandoffs('<handoff to="Chief of Staff" on="2026-10-13">Remind the team.</handoff>')).toEqual([
+      { to: 'Chief of Staff', instruction: 'Remind the team.', on: '2026-10-13' },
+    ]);
+    expect(parseHandoffs('<handoff to=Ticket Triage on=2026-10-13>Split it.</handoff>')).toEqual([
+      { to: 'Ticket Triage', instruction: 'Split it.', on: '2026-10-13' },
+    ]);
+    expect(parseHandoffs('<handoff to=Ticket Triage>Split it.</handoff>')).toEqual([
+      { to: 'Ticket Triage', instruction: 'Split it.' },
+    ]);
+  });
+
+  it('holds a dated handoff until 09:00 that day, and refuses what is not a day', () => {
+    const now = new Date(2026, 8, 25, 14, 0).getTime();
+    expect(handoffNotBefore(undefined, now)).toBeNull();
+    expect(handoffNotBefore('2026-10-13', now)).toBe(new Date(2026, 9, 13, 9, 0).getTime());
+    expect(handoffNotBefore('2026-10-13 16:30', now)).toBe(new Date(2026, 9, 13, 16, 30).getTime());
+    // Already past: send it now rather than never.
+    expect(handoffNotBefore('2026-09-01', now)).toBeNull();
+    expect(handoffNotBefore('2026-02-31', now)).toBe('invalid');
+    expect(handoffNotBefore('next week', now)).toBe('invalid');
+    expect(handoffNotBefore('2031-01-01', now)).toBe('invalid');
   });
 
   it('ignores a handoff with no target or no instruction', () => {

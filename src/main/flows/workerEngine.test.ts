@@ -53,7 +53,7 @@ vi.mock('./workerFiles', async (importOriginal) => ({
 
 import { WorkerEngine, parseFlowRequest, type WorkerEngineDeps, type WorkerParker } from './workerEngine';
 import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
-import type { Worker, WorkerJournalEntry } from '../../shared/flows/worker';
+import type { HeldHandoff, Worker, WorkerJournalEntry } from '../../shared/flows/worker';
 import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
 import { compactionCutoff } from '../../shared/flows/workerCompaction';
@@ -94,6 +94,7 @@ function makeHarness(
   const checkpoints: Array<{ projectPath: string; message: string }> = [];
   let spend = opts.spend ?? 0;
   let treasury: Treasury | null = opts.pool != null ? { monthlyUSD: opts.pool } : null;
+  let held: HeldHandoff[] = [];
   let parkResult: Awaited<ReturnType<WorkerParker['parkProposal']>> = {
     ok: true,
     orchestrationId: 'orch-1',
@@ -206,6 +207,12 @@ function makeHarness(
         treasury = t;
       },
     },
+    handoffStore: {
+      load: () => held,
+      save: (list) => {
+        held = structuredClone(list);
+      },
+    },
     generatedFlow: opts.generatedFlow,
     flowsFor: opts.flowsFor,
     clearActivity: opts.clearActivity,
@@ -252,6 +259,7 @@ function makeHarness(
       spend = s;
     },
     treasury: () => treasury,
+    held: () => held,
     setParkResult: (r: typeof parkResult) => {
       parkResult = r;
     },
@@ -1533,6 +1541,8 @@ describe('WorkerEngine delivery to the project folder', () => {
       projectPath: '/documents/Course',
       runId: 'run-1',
       artifacts: [{ name: 'Summary.md', body: 'hello' }],
+      // Filed into the worker's own folder, one dated folder per job.
+      folder: ['Scout', expect.stringMatching(/^\d{4}-\d{2}-\d{2} /)],
     });
     expect(h.checkpoints).toEqual([{ projectPath: '/documents/Course', message: 'Scout added Summary.md' }]);
   });
@@ -2388,46 +2398,125 @@ describe('WorkerEngine delegation', () => {
     expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain('Handed on to Triage.');
   });
 
-  /// The whole of the depth limit: a worker that cannot see its colleagues
-  /// cannot pass the parcel on to them.
-  it('does not let an answered question refer work to a colleague', async () => {
-    // A referral spends a COLLEAGUE's budget, so it is the one desk outcome
-    // you cannot wave away by dismissing a card. Tied to a turn that actually
-    // proposed something rather than to one that answered in prose and
-    // mentioned a name on the way past.
-    const h = delegationHarness({
+  function seedErrandReply(h: ReturnType<typeof makeHarness>, ask: string, reply: string): void {
+    h.orchestrations.set(
+      'orch-1',
+      workerBatch({
+        origin: { kind: 'worker', workerId: CHIEF, workerName: 'Chief of Staff', task: 'errand', errand: ask },
+        producer: { prompt: 'p', reply },
+        items: [],
+      }),
+    );
+  }
+
+  /// On-demand workers, so the clock only brings round the handoffs.
+  function datedHarness() {
+    return delegationHarness({
+      chief: { cadence: null },
       roster: [
         seedWorker({
           id: 'triage',
           name: 'Triage',
-          trust: 'autonomous',
-          caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+          trust: 'trusted',
+          cadence: null,
         }),
       ],
     });
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
-    h.orchestrations.set(
-      'orch-1',
-      workerBatch({
-        origin: {
-          kind: 'worker',
-          workerId: CHIEF,
-          workerName: 'Chief of Staff',
-          task: 'errand',
-          errand: 'What changed?',
-        },
-        producer: {
-          prompt: 'p',
-          reply: 'Nothing material. <handoff to="Triage">Look at XYZ-6814.</handoff>',
-        },
-        items: [],
-      }),
-    );
+  }
+
+  // "Let Triage know" launches nothing by nature, and is the plainest thing a
+  // manager says to one member of a team. It used to be dropped because the
+  // turn proposed no work.
+  it('lets a desk reply hand work on when you asked, though it launched nothing', async () => {
+    const h = delegationHarness();
+    seedErrandReply(h, 'Tell Triage about XYZ-6814', 'Passing it on. <handoff to="Triage">Look at XYZ-6814.</handoff>');
     h.engine.start();
-    await h.engine.runErrand(CHIEF, 'What changed?');
+    await h.engine.runErrand(CHIEF, 'Tell Triage about XYZ-6814');
     await h.flush();
 
-    expect(h.parked.filter((p) => p.origin?.kind === 'worker' && p.origin.from)).toHaveLength(0);
+    const sent = h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.from);
+    expect(sent?.origin).toMatchObject({ workerId: 'triage', errand: 'Look at XYZ-6814.' });
+  });
+
+  it('holds a dated handoff until its day, then sends it', async () => {
+    const h = datedHarness();
+    seedErrandReply(
+      h,
+      'Remind Triage a week before',
+      'Will do. <handoff to="Triage" on="2026-04-10">Remind the team about the offsite.</handoff>',
+    );
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'Remind Triage a week before');
+    await h.flush();
+
+    // Nothing reaches Triage early — it would only have to remember it.
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.from)).toBe(false);
+    expect(h.held()).toHaveLength(1);
+    expect(h.held()[0]).toMatchObject({ toId: 'triage', notBefore: local(2026, 4, 10, 9, 0) });
+    expect(h.journal.find((e) => e.kind === 'delegated')?.note).toMatch(/^Will hand to Triage on /);
+    expect(h.emitted.some((e) => e.type === 'workerHandoffs' && e.handoffs.length === 1)).toBe(true);
+
+    h.setNow(local(2026, 4, 10, 9, 1));
+    h.engine.onHostResume();
+    await h.flush();
+
+    const sent = h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.from);
+    expect(sent?.origin).toMatchObject({ workerId: 'triage', errand: 'Remind the team about the offsite.' });
+    expect(h.held()).toHaveLength(0);
+    expect(h.journal.some((e) => e.note?.startsWith('Handed to Triage, as planned'))).toBe(true);
+  });
+
+  it('calls off a dated handoff before its day', async () => {
+    const h = datedHarness();
+    seedErrandReply(h, 'Remind Triage', '<handoff to="Triage" on="2026-04-10">Remind them.</handoff>');
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'Remind Triage');
+    await h.flush();
+
+    const id = h.held()[0].id;
+    expect(h.engine.cancelHandoff(id)).toEqual({ ok: true });
+    expect(h.held()).toHaveLength(0);
+
+    h.setNow(local(2026, 4, 10, 9, 1));
+    h.engine.onHostResume();
+    await h.flush();
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.from)).toBe(false);
+  });
+
+  it('sends a dated handoff early when asked to', async () => {
+    const h = datedHarness();
+    seedErrandReply(h, 'Remind Triage', '<handoff to="Triage" on="2026-04-10">Remind them.</handoff>');
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'Remind Triage');
+    await h.flush();
+
+    expect(h.engine.sendHandoffNow(h.held()[0].id)).toEqual({ ok: true });
+    await h.flush();
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.workerId === 'triage')).toBe(true);
+  });
+
+  it('tells the sender when a dated handoff can no longer reach anyone', async () => {
+    const h = datedHarness();
+    seedErrandReply(h, 'Remind Triage', '<handoff to="Triage" on="2026-04-10">Remind them.</handoff>');
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'Remind Triage');
+    await h.flush();
+
+    h.engine.remove('triage');
+    expect(h.held()).toHaveLength(0);
+    expect(h.journal.some((e) => e.workerId === CHIEF && e.note?.includes('let go'))).toBe(true);
+  });
+
+  it('refuses a handoff date it cannot hold, and says so', async () => {
+    const h = datedHarness();
+    seedErrandReply(h, 'Remind Triage', '<handoff to="Triage" on="next week">Remind them.</handoff>');
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'Remind Triage');
+    await h.flush();
+
+    expect(h.held()).toHaveLength(0);
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.from)).toBe(false);
+    expect(h.journal.find((e) => e.kind === 'delegated')?.note).toContain('not a date');
   });
 
   it('shows a delegated errand no roster, so referrals cannot chain', async () => {

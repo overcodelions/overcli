@@ -230,7 +230,8 @@ export interface Worker {
   order?: number;
   /// Narrow who this worker may hand work to, when `caps.canDelegate` is on.
   /// Absent or empty means the whole eligible roster — every enabled worker
-  /// on the same project.
+  /// on the same project. Picked colleagues may be on any project: choosing
+  /// them by hand is what makes that safe (see `delegationTargets`).
   ///
   /// Deliberately opt-in narrowing rather than a required org chart: an
   /// explicit hierarchy is config that has to be drawn up front, before
@@ -1136,27 +1137,35 @@ function splitSentences(text: string): string[] {
 
 /// Who this worker is allowed to hand work to.
 ///
-/// Scoped to the sender's own project, and that bound is enforced HERE rather
-/// than asked for in the prompt. A roster is a list of names, and two installs
-/// of the same job on two workspaces produce two workers called "Triage" that
-/// a name cannot tell apart — so an off-project colleague must never reach the
-/// roster block in the first place, because once it is nameable it is
-/// reachable. Same reason disabled workers are excluded: a paused worker is
-/// one the user switched off, and a colleague must not be able to switch it
-/// back on by sending it work.
+/// By default, the enabled colleagues on the sender's own project. A roster
+/// is a list of names, and two installs of the same job on two workspaces
+/// produce two workers called "Triage" that a name cannot tell apart — so an
+/// off-project colleague never reaches the roster block on its own, because
+/// once it is nameable it is reachable.
+///
+/// Picking colleagues by hand (`delegatesTo`) is the exception, and it reaches
+/// across projects. A team is who you put on it, not which folder each member
+/// happens to sit in — the assistant filing your trips and the one keeping
+/// your calendar are one team whatever their folders say. The pick is by id,
+/// so the name clash that makes the default project-scoped cannot arise:
+/// only the colleagues you chose are nameable, and a name two of THEM share
+/// still resolves to nobody (see `resolveHandoffTarget`).
+///
+/// Disabled workers are excluded either way: a paused worker is one the user
+/// switched off, and a colleague must not be able to switch it back on by
+/// sending it work.
 export function delegationTargets<
   T extends Pick<Worker, 'id' | 'order' | 'createdAt' | 'enabled' | 'projectPath' | 'caps'>,
 >(sender: Worker, roster: T[]): T[] {
   if (!canDelegate(sender)) return [];
-  const narrowed =
+  const picked =
     sender.delegatesTo && sender.delegatesTo.length > 0 ? new Set(sender.delegatesTo) : null;
   return sortRoster(
     roster.filter(
       (t) =>
         t.id !== sender.id &&
         t.enabled &&
-        t.projectPath === sender.projectPath &&
-        (!narrowed || narrowed.has(t.id)) &&
+        (picked ? picked.has(t.id) : t.projectPath === sender.projectPath) &&
         (sender.caps.allowExternalActions || !t.caps.allowExternalActions),
     ),
   );
@@ -1164,22 +1173,76 @@ export function delegationTargets<
 
 /// One referral a planning turn asked for: who it wants, and the errand to
 /// hand them. `to` is whatever the worker wrote — resolving it to an actual
-/// colleague is the engine's job, and may fail.
+/// colleague is the engine's job, and may fail. `on` is the day it should
+/// arrive, as written (`2026-10-13`, optionally with a time); absent means now.
 export interface WorkerHandoff {
   to: string;
   instruction: string;
+  on?: string;
 }
 
-const HANDOFF_RE = /<handoff\s+to\s*=\s*["']?([^"'>\n]+?)["']?\s*>([\s\S]*?)<\/handoff\s*>/gi;
+const HANDOFF_RE = /<handoff\b([^>]*)>([\s\S]*?)<\/handoff\s*>/gi;
+/// One attribute. An unquoted value may hold spaces (`to=Ticket Triage`, which
+/// workers do write) and runs until the next `name=` or the end of the tag.
+const HANDOFF_ATTR_RE = /(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^"'\s][^"'\n]*?)(?=\s+\w+\s*=|\s*$))/g;
 
 export function parseHandoffs(reply: string): WorkerHandoff[] {
   const out: WorkerHandoff[] = [];
   for (const m of reply.matchAll(HANDOFF_RE)) {
-    const to = m[1]?.trim();
+    const attrs: Record<string, string> = {};
+    for (const a of (m[1] ?? '').matchAll(HANDOFF_ATTR_RE)) {
+      attrs[a[1].toLowerCase()] = (a[2] ?? a[3] ?? a[4] ?? '').trim();
+    }
+    const to = attrs.to;
     const instruction = m[2]?.trim();
-    if (to && instruction) out.push({ to, instruction });
+    if (!to || !instruction) continue;
+    out.push({ to, instruction, ...(attrs.on ? { on: attrs.on } : {}) });
   }
   return out;
+}
+
+/// A handoff waiting for its day. Held by the engine rather than sent early,
+/// because "remind them a week before" sent today is a note the receiver has
+/// to carry for a fortnight — which is exactly the failure it was asked to
+/// avoid.
+export interface HeldHandoff {
+  id: string;
+  fromId: UUID;
+  fromName: string;
+  toId: UUID;
+  toName: string;
+  instruction: string;
+  title: string;
+  /// When it goes out, epoch ms.
+  notBefore: number;
+  createdAt: number;
+  /// The sender's batch that asked for it, for the journal.
+  orchestrationId?: string;
+}
+
+/// Furthest ahead a handoff may be held. A date past this is almost always a
+/// mis-typed year, and holding it silently would lose it for good.
+export const WORKER_HANDOFF_MAX_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
+
+/// When a handoff's `on` should arrive: `null` for "now" (absent, or a moment
+/// already past), a timestamp to hold it until, or `'invalid'`. A bare date
+/// lands at 09:00 local — the start of the day it names, not midnight, when
+/// nobody is there to read it.
+export function handoffNotBefore(on: string | undefined, now: number): number | null | 'invalid' {
+  if (!on) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2}))?$/.exec(on.trim());
+  if (!m) return 'invalid';
+  const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const hour = m[4] !== undefined ? Number(m[4]) : 9;
+  const minute = m[5] !== undefined ? Number(m[5]) : 0;
+  const at = new Date(year, month - 1, day, hour, minute);
+  // Date rolls 2026-02-31 over into March; a date that did not survive the
+  // round trip was never a real day.
+  if (at.getFullYear() !== year || at.getMonth() !== month - 1 || at.getDate() !== day || hour > 23) return 'invalid';
+  const t = at.getTime();
+  if (t <= now) return null;
+  if (t - now > WORKER_HANDOFF_MAX_AHEAD_MS) return 'invalid';
+  return t;
 }
 
 export function stripHandoffs(reply: string): string {

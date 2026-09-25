@@ -148,6 +148,26 @@ export function DocumentsPane({
     void refresh();
   }, [refresh]);
 
+  const [filedRecently, setFiledRecently] = useState<
+    Array<{ path: string; name: string; workerName: string; at: number }>
+  >([]);
+  useEffect(() => {
+    let live = true;
+    void window.overcli
+      .invoke('everyday:recentlyFiled', {
+        projectPath: rootPath,
+        since: Date.now() - RECENTLY_FILED_MS,
+        limit: RECENTLY_FILED_LIMIT,
+      })
+      .then((list) => {
+        if (live) setFiledRecently(list);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [rootPath, entries]);
+
   // Keyed on the PROJECT, not the folder being browsed: workers file into the
   // project root, and the ledger records basenames. Re-read whenever the
   // listing does, so a document filed while this pane is open gets its
@@ -181,11 +201,10 @@ export function DocumentsPane({
   // Only at the root, and only for documents a worker actually filed. In a
   // subfolder the shelf would be answering a question nobody asked — you
   // navigated there deliberately.
+  // Read from the workers' ledgers rather than this listing: documents are
+  // filed into job folders now, so the root holds folders, not the files.
   const recentlyFiled = atRoot
-    ? documents
-        .filter((e) => filedBy[e.name] && now - e.mtimeMs < RECENTLY_FILED_MS)
-        .sort((a, b) => b.mtimeMs - a.mtimeMs)
-        .slice(0, RECENTLY_FILED_LIMIT)
+    ? filedRecently.map((f) => ({ path: f.path, name: f.name, mtimeMs: f.at, workerName: f.workerName }))
     : [];
 
   const addFiles = async (fileList: FileList) => {
@@ -385,12 +404,12 @@ export function DocumentsPane({
                       color: 'var(--c-accent)',
                     }}
                   >
-                    {initialsOf(filedBy[e.name]?.workerName ?? '')}
+                    {initialsOf(e.workerName)}
                   </div>
                   <div className="flex-1 min-w-0 flex flex-col gap-0.5">
                     <div className="text-[13px] text-ink truncate">{e.name}</div>
                     <div className="text-[11px] text-ink-faint truncate">
-                      {filedBy[e.name]?.workerName} filed it · {relativeTime(e.mtimeMs, now)}
+                      {e.workerName} filed it · {relativeTime(e.mtimeMs, now)}
                     </div>
                   </div>
                   <div className="shrink-0 flex items-center gap-2">
