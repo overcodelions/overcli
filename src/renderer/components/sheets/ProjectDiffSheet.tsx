@@ -70,12 +70,18 @@ export function ProjectDiffSheet({ convId }: { convId: UUID }) {
     // popover via `git status --porcelain`, which is the right place to
     // grab them since "new files" don't have a meaningful unified-diff body
     // anyway.
-    let against = 'HEAD';
-    if (effective === 'branch' && defaultBranch) {
-      const mb = await git(['merge-base', defaultBranch, 'HEAD'], cwd);
-      if (mb.exitCode === 0 && mb.stdout.trim()) against = mb.stdout.trim();
+    //
+    // `--merge-base` diffs the working tree against the fork point with the
+    // default branch in one allowlisted subcommand (`git:run` refuses
+    // `merge-base` itself). Git older than 2.30 lacks the flag; fall back to
+    // the committed range so the view still shows the branch's commits.
+    let diff =
+      effective === 'branch' && defaultBranch
+        ? await git(['diff', '--merge-base', defaultBranch], cwd)
+        : await git(['diff', 'HEAD'], cwd);
+    if (diff.exitCode !== 0 && effective === 'branch' && defaultBranch) {
+      diff = await git(['diff', `${defaultBranch}...HEAD`], cwd);
     }
-    const diff = await git(['diff', against], cwd);
     let text = diff.stdout;
     if (diff.exitCode !== 0 && !text) text = diff.stderr;
     const parsed = parseUnifiedDiffByFile(text);

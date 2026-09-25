@@ -45,7 +45,10 @@ describe('resolveDefaultBranch', () => {
   // the branches under refs/heads.
   function repo(origin: string, local: string[]) {
     return async (args: string[]) => {
-      if (args[0] === 'symbolic-ref') {
+      // `git:run` refuses anything outside its renderer allowlist; a lookup
+      // that needs another subcommand silently gets exit 1 in the app.
+      if (args[0] !== 'rev-parse') throw new Error(`git ${args[0]} is not allowlisted`);
+      if (args.includes('origin/HEAD')) {
         return origin ? { stdout: `${origin}\n`, exitCode: 0 } : { stdout: '', exitCode: 128 };
       }
       const ref = args[args.length - 1].replace('refs/heads/', '');
