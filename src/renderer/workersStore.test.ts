@@ -124,6 +124,7 @@ afterEach(() => {
     draftFromHire: false,
     pendingHire: null,
     draftedFlow: null,
+    extraFlows: [],
     hireSummary: null,
     treasury: null,
     allocation: null,
@@ -136,6 +137,9 @@ afterEach(() => {
       projectPath: '',
       projectTouched: false,
       attachments: [],
+      messages: [],
+      answers: [],
+      reply: '',
       startedAt: null,
       error: null,
     },
@@ -494,6 +498,103 @@ describe('workersStore errands', () => {
   });
 });
 
+describe('a hire with several flows', () => {
+  const CONTRACT = {
+    name: 'Scout',
+    jobDescription: 'Triage mail and send a Friday digest.',
+    cadence: { kind: 'daily' as const, time: '09:00' },
+    maxItemsPerShift: 3,
+    budgetUSDPerMonth: 20,
+    heartbeatModel: 'cheap-model',
+    flows: [],
+    mcpServers: ['Linear'],
+  };
+
+  async function landHire() {
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      contract: CONTRACT,
+      summary: '',
+      flowPlan: [
+        { flowId: 'triage', flow: makeFlow({ id: 'triage', name: 'Triage' }) },
+        { flowId: 'existing' },
+        { flowId: 'digest', flow: makeFlow({ id: 'digest', name: 'Digest' }) },
+      ],
+    });
+    useWorkersStore.getState().openHire('/repo');
+    useWorkersStore.getState().patchHire({ jobDescription: 'Mail.' });
+    await useWorkersStore.getState().startHire({ draftNow: true });
+  }
+
+  it('lands primary first, with the drafted primary riding along and the rest beside it', async () => {
+    await landHire();
+    const st = useWorkersStore.getState();
+    expect(st.draft?.flowIds).toEqual(['triage', 'existing', 'digest']);
+    expect(st.draft?.mcpServers).toEqual(['Linear']);
+    expect(st.draftedFlow?.id).toBe('triage');
+    expect(st.extraFlows.map((f) => f.id)).toEqual(['digest']);
+    // Parked with it, so a reload does not lose the second draft.
+    expect(st.pendingHire?.extraFlows?.map((f) => f.id)).toEqual(['digest']);
+  });
+
+  it('saves every drafted flow still on the worker, and skips one removed in the editor', async () => {
+    await landHire();
+    mockInvoke.mockReset();
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:list' ? [] : channel === 'workers:save' ? { ok: true, worker: makeWorker() } : { ok: true },
+    );
+    await useWorkersStore.getState().save(['/repo']);
+    const saved = mockInvoke.mock.calls.filter((c) => c[0] === 'flows:save').map((c) => c[1].flow.id);
+    expect(saved).toEqual(['triage', 'digest']);
+    const worker = mockInvoke.mock.calls.find((c) => c[0] === 'workers:save')![1].worker;
+    expect(worker.flowIds).toEqual(['triage', 'existing', 'digest']);
+
+    await landHire();
+    useWorkersStore.getState().patchDraft({ flowIds: ['triage', 'existing'] });
+    mockInvoke.mockClear();
+    await useWorkersStore.getState().save(['/repo']);
+    expect(mockInvoke.mock.calls.filter((c) => c[0] === 'flows:save').map((c) => c[1].flow.id)).toEqual([
+      'triage',
+    ]);
+  });
+});
+
+describe('a hire with a wrap-up', () => {
+  it('lands the wrap-up on the draft, keeps it out of the routes, and saves its flow', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      contract: {
+        name: 'Scout',
+        jobDescription: 'Triage mail and send a Friday digest.',
+        cadence: { kind: 'daily' as const, time: '09:00' },
+        maxItemsPerShift: 3,
+        budgetUSDPerMonth: 20,
+        heartbeatModel: 'cheap-model',
+        flows: [],
+      },
+      summary: '',
+      flowPlan: [{ flowId: 'existing' }],
+      wrapUp: { flowId: 'digest', flow: makeFlow({ id: 'digest', name: 'Digest' }) },
+    });
+    useWorkersStore.getState().openHire('/repo');
+    useWorkersStore.getState().patchHire({ jobDescription: 'Mail.' });
+    await useWorkersStore.getState().startHire({ draftNow: true });
+    const st = useWorkersStore.getState();
+    expect(st.draft?.flowIds).toEqual(['existing']);
+    expect(st.draft?.wrapUpFlowId).toBe('digest');
+
+    mockInvoke.mockReset();
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:list' ? [] : channel === 'workers:save' ? { ok: true, worker: makeWorker() } : { ok: true },
+    );
+    await useWorkersStore.getState().save(['/repo']);
+    expect(mockInvoke.mock.calls.filter((c) => c[0] === 'flows:save').map((c) => c[1].flow.id)).toEqual(['digest']);
+    const worker = mockInvoke.mock.calls.find((c) => c[0] === 'workers:save')![1].worker;
+    expect(worker.wrapUpFlowId).toBe('digest');
+    expect(worker.flowIds).toEqual(['existing']);
+  });
+});
+
 describe('workersStore save', () => {
   it('persists a riding-along flow first and wires it into an empty flowIds', async () => {
     useWorkersStore.setState({
@@ -646,9 +747,10 @@ describe('draft factories', () => {
         maxItemsPerShift: 2,
         budgetUSDPerMonth: 12,
         heartbeatModel: 'cheap',
+        flows: [{ flowId: 'fix-it' }],
       },
       '/repo',
-      'fix-it',
+      ['fix-it'],
     );
     expect(d).toMatchObject({
       projectPath: '/repo',
@@ -950,6 +1052,7 @@ describe('hiring in the background', () => {
           label: 'spec.pdf',
         },
       ],
+      interview: true,
     });
   });
 
@@ -960,6 +1063,115 @@ describe('hiring in the background', () => {
     void useWorkersStore.getState().startHire();
     await useWorkersStore.getState().startHire();
     expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+/// The hire as a conversation: the drafter may ask before it drafts, and the
+/// answers are what make the contract right.
+describe('hiring as a conversation', () => {
+  const CONTRACT = {
+    name: 'Scout',
+    jobDescription: 'Watch the tickets and post a digest to #support.',
+    cadence: { kind: 'daily' as const, time: '09:00' },
+    maxItemsPerShift: 3,
+    budgetUSDPerMonth: 20,
+    heartbeatModel: 'cheap-model',
+  };
+
+  function askedOnce() {
+    mockInvoke.mockResolvedValueOnce({ ok: true, question: '1. Where should the digest go?' });
+    useWorkersStore.getState().openHire('/repo');
+    useWorkersStore.getState().patchHire({ jobDescription: 'Watch the tickets.' });
+    return useWorkersStore.getState().startHire();
+  }
+
+  it('adds the drafter questions to the conversation instead of opening the editor', async () => {
+    await askedOnce();
+    const { hire, draft } = useWorkersStore.getState();
+    expect(draft).toBeNull();
+    expect(hire.startedAt).toBeNull();
+    expect(hire.messages).toEqual([
+      { role: 'assistant', text: '1. Where should the digest go?', questions: undefined },
+    ]);
+  });
+
+  it('sends the answer with the whole conversation, and lands the contract', async () => {
+    await askedOnce();
+    mockInvoke.mockResolvedValueOnce({ ok: true, contract: CONTRACT, summary: 'Digest to #support.' });
+    useWorkersStore.getState().patchHire({ reply: '#support, weekdays' });
+    await useWorkersStore.getState().startHire();
+
+    expect(mockInvoke).toHaveBeenLastCalledWith('workers:draftFromPrompt', {
+      jobDescription: 'Watch the tickets.',
+      attachments: undefined,
+      conversation: [
+        { role: 'assistant', text: '1. Where should the digest go?', questions: undefined },
+        { role: 'user', text: '#support, weekdays' },
+      ],
+      interview: true,
+    });
+    expect(useWorkersStore.getState().draft?.name).toBe('Scout');
+    expect(useWorkersStore.getState().hire.messages).toEqual([]);
+  });
+
+  it('asks for an answer before talking on, but drafts on demand without one', async () => {
+    await askedOnce();
+    await useWorkersStore.getState().startHire();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(useWorkersStore.getState().hire.error).toMatch(/Answer the questions/);
+
+    mockInvoke.mockResolvedValueOnce({ ok: true, contract: CONTRACT, summary: '' });
+    await useWorkersStore.getState().startHire({ draftNow: true });
+    expect(mockInvoke).toHaveBeenLastCalledWith(
+      'workers:draftFromPrompt',
+      expect.objectContaining({ interview: false }),
+    );
+    expect(useWorkersStore.getState().draft?.name).toBe('Scout');
+  });
+
+  it('puts the answer back in the box when the turn fails', async () => {
+    await askedOnce();
+    mockInvoke.mockResolvedValueOnce({ ok: false, error: 'CLI went away.' });
+    useWorkersStore.getState().patchHire({ reply: '#support' });
+    await useWorkersStore.getState().startHire();
+    const { hire } = useWorkersStore.getState();
+    expect(hire.reply).toBe('#support');
+    expect(hire.messages).toHaveLength(1);
+    expect(hire.error).toBe('CLI went away.');
+  });
+
+  it('sends one answer per structured question, and says which were skipped', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      question: 'Two things.',
+      questions: [
+        { question: 'Where should the digest go?', options: ['#support', 'A file'] },
+        { question: 'How often?' },
+      ],
+    });
+    useWorkersStore.getState().openHire('/repo');
+    useWorkersStore.getState().patchHire({ jobDescription: 'Watch the tickets.' });
+    await useWorkersStore.getState().startHire();
+
+    mockInvoke.mockResolvedValueOnce({ ok: true, contract: CONTRACT, summary: '' });
+    useWorkersStore.getState().patchHire({ answers: ['#support'] });
+    await useWorkersStore.getState().startHire();
+
+    const sent = mockInvoke.mock.lastCall?.[1] as { conversation: { text: string }[] };
+    expect(sent.conversation[1].text).toBe(
+      'Where should the digest go?\n→ #support\n\nHow often?\n→ (skipped — pick a sensible default)',
+    );
+  });
+
+  it('keeps the conversation when the screen is closed, and drops it on restart', async () => {
+    await askedOnce();
+    useWorkersStore.getState().closeHire();
+    expect(useWorkersStore.getState().hire.messages).toHaveLength(1);
+    expect(useWorkersStore.getState().hire.jobDescription).toBe('Watch the tickets.');
+
+    useWorkersStore.getState().restartHire();
+    expect(useWorkersStore.getState().hire.messages).toEqual([]);
+    expect(useWorkersStore.getState().hire.jobDescription).toBe('Watch the tickets.');
   });
 });
 

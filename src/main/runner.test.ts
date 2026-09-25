@@ -966,6 +966,17 @@ describe('safeAttachmentBase', () => {
 
 describe('resolveMcpScope', () => {
 
+  it('does not go strict when the list names an account connector', () => {
+    // --strict-mcp-config drops every claude.ai connector, so enforcing a
+    // list that asks for "claude.ai Gmail" would remove Gmail itself.
+    expect(
+      resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['claude.ai Gmail', 'jira'] }),
+    ).toEqual({ skipGlobalMcp: undefined });
+    expect(
+      claudeMcpLaunchFingerprint({ backend: 'claude', mcpAllowlist: ['claude.ai Gmail'] }, ''),
+    ).toBe(claudeMcpLaunchFingerprint({ backend: 'claude' }, ''));
+  });
+
   it('inherits the whole config when nothing asked for scoping', () => {
     expect(resolveMcpScope({ backend: 'claude', cwd: '/repo' })).toEqual({
       skipGlobalMcp: undefined,

@@ -1114,6 +1114,12 @@ function FlowsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<Ap
           value={(local.defaultFlowRunIn ?? 'cwd') === 'worktree'}
           onChange={(v) => patch({ defaultFlowRunIn: v ? 'worktree' : 'cwd' })}
         />
+        <Toggle
+          label="Sandbox flow writes"
+          help="macOS only. Each flow step's agent runs in an OS sandbox that lets it write only its run's folder, the repo's git data (not hooks or config), temp folders and its own CLI state. A write anywhere else — your home folder, another project — fails with “Operation not permitted”, whatever the step's permission mode. Chat is never sandboxed."
+          value={local.sandboxFlowWrites !== false}
+          onChange={(v) => patch({ sandboxFlowWrites: v })}
+        />
         <Row
           label="Cost ceiling per run"
           help="Stop a single run once it has spent this much, and notify. Leave empty for no ceiling. This is a stop-loss rather than a hard cap — cost is only known once a turn reports, so one very expensive turn can overshoot. Separate from the workers' monthly treasury, which only decides whether a new shift may start."

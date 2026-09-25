@@ -11,10 +11,11 @@ import { useFlowsStore } from './flowsStore';
 
 import type { Attachment, Backend, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
-import { moveInRoster, placeInRoster } from '@shared/flows/worker';
+import { hireAnswerText, moveInRoster, placeInRoster } from '@shared/flows/worker';
 import { isEverydayProject } from '@shared/everydayProjects';
 import { allocateTreasury, fundingFor, type Treasury, type TreasuryAllocation } from '@shared/flows/treasury';
 import type {
+  HireMessage,
   Worker,
   WorkerCaps,
   WorkerContract,
@@ -50,6 +51,8 @@ export interface WorkerDraft {
   /// How fast errands are answered. Absent means swift — see `workerPace`.
   pace?: WorkerPace;
   flowIds: string[];
+  /// The flow that combines a shift's results — see `Worker.wrapUpFlowId`.
+  wrapUpFlowId?: string;
   enabled: boolean;
   /// Narrowed handoff targets. Absent/empty means every colleague on the
   /// same project, which is the default the editor writes.
@@ -71,6 +74,9 @@ export interface PendingHire {
   draft: WorkerDraft;
   /// The flow drafted alongside the contract, which is the expensive half.
   flow: Flow | null;
+  /// Further drafted flows for a worker with more than one kind of work.
+  /// Optional: a hire parked before multi-flow hires existed has none.
+  extraFlows?: Flow[];
   /// The drafter's prose read on the job, so the review screen comes back
   /// whole rather than as a bare form.
   summary: string | null;
@@ -150,6 +156,10 @@ interface WorkersState {
   /// (an existing flow with unsaved changes). Persisted only when the worker
   /// itself saves — cancelling the editor discards both together.
   draftedFlow: Flow | null;
+  /// Further hire-drafted flows beyond the primary, for a worker with more
+  /// than one kind of work. Their ids are already in `draft.flowIds`; like
+  /// `draftedFlow`, they persist only when the worker saves.
+  extraFlows: Flow[];
   /// The hire drafter's prose read on the job, shown above the editor.
   hireSummary: string | null;
   /// Why the hire came back without a flow, when it asked for one and the
@@ -198,6 +208,9 @@ interface WorkersState {
   /// can be LOOKED at — the one screen you cannot reach once the feature is
   /// working, and therefore the one that rots. Gated behind the debug setting.
   previewEmpty: boolean;
+  /// Debug only: draw Today as if the crew had done nothing this week, to
+  /// look at its empty state without waiting for a quiet week.
+  previewNoWork: boolean;
   /// A short, modal act the editor is in the middle of: saving a contract, or
   /// reading an import off disk. Deliberately NOT "a worker is doing
   /// something" — `workers:workShiftNow` does not resolve until the whole
@@ -273,6 +286,14 @@ export interface HireState {
   /// Files attached to the job description — a spec, an example of the
   /// deliverable, a screenshot of the board the worker will work from.
   attachments: Attachment[];
+  /// The hire conversation after the job description: the drafter's
+  /// questions and the user's answers. Empty until the drafter first asks.
+  messages: HireMessage[];
+  /// One answer per question in the drafter's latest round, by index.
+  answers: string[];
+  /// Free text alongside the answers — or the whole reply, when the drafter
+  /// asked in prose rather than as separate questions.
+  reply: string;
   /// Epoch ms the in-flight drafting turn started, or null when idle. Stored
   /// rather than derived so the elapsed counter doesn't restart at zero every
   /// time the screen remounts.
@@ -316,6 +337,9 @@ const IDLE_HIRE: HireState = {
   projectPath: '',
   projectTouched: false,
   attachments: [],
+  messages: [],
+  answers: [],
+  reply: '',
   startedAt: null,
   error: null,
 };
@@ -340,6 +364,7 @@ interface WorkersActions {
     draft: WorkerDraft,
     extras?: {
       draftedFlow?: Flow;
+      extraFlows?: Flow[];
       hireSummary?: string;
       hireFlowError?: string;
       /// This draft came from a hire and has never been saved, so closing the
@@ -354,10 +379,14 @@ interface WorkersActions {
   openHire(defaultProjectPath: string): void;
   closeHire(): void;
   patchHire(patch: Partial<HireState>): void;
-  /// Run the hire drafter. Resolves when the turn lands; the result is
+  /// Run one hire turn. By default the drafter may come back with questions,
+  /// which join the conversation; `draftNow` makes it write the contract
+  /// from whatever it has. Resolves when the turn lands; the result is
   /// applied to the store either way, so nothing depends on the caller still
   /// being mounted.
-  startHire(): Promise<void>;
+  startHire(opts?: { draftNow?: boolean }): Promise<void>;
+  /// Throw the conversation away and go back to the job description.
+  restartHire(): void;
   /// Clear a hire draft stuck mid-turn so the user can start a fresh one.
   cancelHire(): void;
   /// Put a parked hire back in the editor, exactly as it was drafted.
@@ -409,6 +438,7 @@ interface WorkersActions {
   setTreasury(monthlyUSD: number): Promise<boolean>;
   distributeFunds(): Promise<boolean>;
   setPreviewEmpty(on: boolean): void;
+  setPreviewNoWork(on: boolean): void;
   openWorkerActivity(workerId: string, orchestrationId: string, at: number): void;
   clearDeskFocus(): void;
   moveWorker(id: string, direction: -1 | 1): Promise<void>;
@@ -536,6 +566,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     heartbeatBackend: w.heartbeatBackend,
     pace: w.pace,
     flowIds: [...w.flowIds],
+    wrapUpFlowId: w.wrapUpFlowId,
     mcpServers: w.mcpServers ? [...w.mcpServers] : undefined,
     enabled: w.enabled,
   };
@@ -546,7 +577,8 @@ export function draftFromWorker(w: Worker): WorkerDraft {
 export function draftFromContract(
   contract: WorkerContract,
   projectPath: string,
-  flowId: string | undefined,
+  /// The worker's flows, primary first — existing ids and drafted ones alike.
+  flowIds: string[],
   everyday?: boolean,
 ): WorkerDraft {
   return {
@@ -566,7 +598,9 @@ export function draftFromContract(
     budgetUSDPerMonth: contract.budgetUSDPerMonth,
     heartbeatModel: contract.heartbeatModel,
     heartbeatBackend: contract.heartbeatBackend,
-    flowIds: flowId ? [flowId] : [],
+    flowIds: [...flowIds],
+    // Only when the drafter chose: absent keeps the load-everything default.
+    ...(contract.mcpServers ? { mcpServers: [...contract.mcpServers] } : {}),
     enabled: true,
   };
 }
@@ -692,6 +726,7 @@ function pendingFromDraft(st: WorkersState): PendingHire | null {
   return {
     draft: st.draft,
     flow: st.draftedFlow,
+    ...(st.extraFlows.length > 0 ? { extraFlows: st.extraFlows } : {}),
     summary: st.hireSummary,
     flowError: st.hireFlowError,
     at: st.pendingHire?.at ?? Date.now(),
@@ -733,6 +768,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   draftFromHire: false,
   pendingHire: readPendingHire(),
   draftedFlow: null,
+  extraFlows: [],
   hireSummary: null,
   hireFlowError: null,
   selectedWorkerId: null,
@@ -742,6 +778,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   selectSeq: 0,
   deskFocus: null,
   previewEmpty: false,
+  previewNoWork: false,
   busy: false,
   shiftStarting: {},
   error: null,
@@ -924,6 +961,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     if (get().deskFocus) set({ deskFocus: null });
   },
 
+  setPreviewNoWork(on) {
+    set({ previewNoWork: on });
+  },
+
   setPreviewEmpty(on) {
     set({ previewEmpty: on });
   },
@@ -961,6 +1002,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         draft: held?.jobDescription ? { ...draft, jobDescription: held.jobDescription } : draft,
         draftFromHire: extras?.fromHire ?? false,
         draftedFlow: held?.flow ?? extras?.draftedFlow ?? null,
+        extraFlows: extras?.extraFlows ?? [],
         hireSummary: extras?.hireSummary ?? null,
         hireFlowError: held?.flow ? null : (extras?.hireFlowError ?? null),
         error: null,
@@ -1006,6 +1048,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       draftFromHire: false,
       ...(parked ? { pendingHire: parked } : {}),
       draftedFlow: null,
+      extraFlows: [],
       hireSummary: null,
       hireFlowError: null,
       error: null,
@@ -1021,6 +1064,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     if (!parked) return;
     get().openEditor(parked.draft, {
       draftedFlow: parked.flow ?? undefined,
+      extraFlows: parked.extraFlows,
       hireSummary: parked.summary ?? undefined,
       hireFlowError: parked.flowError ?? undefined,
       fromHire: true,
@@ -1056,9 +1100,13 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   closeHire() {
     // Closing is "put this screen away", not "cancel the draft". A turn in
     // flight keeps running and still lands in the editor when it returns —
-    // so the form it was launched from is kept exactly as it was.
+    // so the form it was launched from is kept exactly as it was. So is a
+    // conversation: the answers took thought, and "← Workers" is not a no.
     set((st) => ({
-      hire: st.hire.startedAt ? { ...st.hire, open: false } : { ...IDLE_HIRE },
+      hire:
+        st.hire.startedAt || st.hire.messages.length > 0
+          ? { ...st.hire, open: false }
+          : { ...IDLE_HIRE },
     }));
   },
 
@@ -1070,7 +1118,15 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     set((st) => ({ hire: { ...st.hire, startedAt: null, error: null } }));
   },
 
-  async startHire() {
+  restartHire() {
+    set((st) =>
+      st.hire.startedAt
+        ? {}
+        : { hire: { ...st.hire, messages: [], answers: [], reply: '', error: null } },
+    );
+  },
+
+  async startHire(opts) {
     const { hire } = get();
     // Already drafting — one turn at a time, unless the last one has been
     // stuck long enough that it is more likely wedged than actually working.
@@ -1085,17 +1141,66 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       }));
       return;
     }
+    const asked = hire.messages[hire.messages.length - 1]?.questions;
+    const answer = asked?.length
+      ? hireAnswerText(asked, hire.answers, hire.reply)
+      : hire.reply.trim();
+    const inConversation = hire.messages.length > 0;
+    // Mid-conversation, "keep talking" needs something to say back.
+    if (inConversation && !answer && !opts?.draftNow) {
+      set((st) => ({
+        hire: { ...st.hire, error: 'Answer the questions, or draft it now.' },
+      }));
+      return;
+    }
+    const before = hire.messages;
+    const conversation: HireMessage[] = answer
+      ? [...before, { role: 'user', text: answer }]
+      : before;
+    // The answer moves into the transcript as it is sent, so it reads as said
+    // while the turn runs. A failed turn puts it back in the box.
     set((st) => ({
-      hire: { ...st.hire, startedAt: Date.now(), error: null },
+      hire: {
+        ...st.hire,
+        messages: conversation,
+        answers: [],
+        reply: '',
+        startedAt: Date.now(),
+        error: null,
+      },
     }));
+    const restore = (error: string) =>
+      set((st) => ({
+        hire: {
+          ...st.hire,
+          messages: before,
+          answers: hire.answers,
+          reply: hire.reply,
+          startedAt: null,
+          error,
+        },
+      }));
     try {
       const result = await window.overcli.invoke('workers:draftFromPrompt', {
         jobDescription,
         attachments: hire.attachments.length > 0 ? hire.attachments : undefined,
+        conversation: conversation.length > 0 ? conversation : undefined,
+        interview: !opts?.draftNow,
       });
       if (!result.ok) {
+        restore(result.error);
+        return;
+      }
+      if ('question' in result) {
         set((st) => ({
-          hire: { ...st.hire, startedAt: null, error: result.error },
+          hire: {
+            ...st.hire,
+            messages: [
+              ...conversation,
+              { role: 'assistant', text: result.question, questions: result.questions },
+            ],
+            startedAt: null,
+          },
         }));
         return;
       }
@@ -1104,8 +1209,21 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       const chosenPath = current.projectTouched
         ? current.projectPath
         : (result.contract.projectPath ?? current.projectPath);
-      get().openEditor(draftFromContract(result.contract, chosenPath, result.contract.flowId), {
-          draftedFlow: result.draftedFlow,
+      // Primary first. A drafted primary rides as `draftedFlow` exactly as a
+      // single drafted flow always has; any further drafts ride alongside.
+      const plan = result.flowPlan ?? [];
+      const draft = {
+        ...draftFromContract(result.contract, chosenPath, plan.map((p) => p.flowId)),
+        ...(result.wrapUp ? { wrapUpFlowId: result.wrapUp.flowId } : {}),
+      };
+      get().openEditor(draft, {
+          draftedFlow: plan[0]?.flow,
+          // A drafted wrap-up rides with the other drafts; its id is on the
+          // draft as `wrapUpFlowId`, not in `flowIds`.
+          extraFlows: [
+            ...plan.slice(1).flatMap((p) => (p.flow ? [p.flow] : [])),
+            ...(result.wrapUp?.flow ? [result.wrapUp.flow] : []),
+          ],
           hireSummary: result.summary || undefined,
           hireFlowError: result.flowError,
           fromHire: true,
@@ -1114,13 +1232,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       // this hire's business and keep running.
       set({ hire: { ...IDLE_HIRE } });
     } catch (err) {
-      set((st) => ({
-        hire: {
-          ...st.hire,
-          startedAt: null,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      }));
+      restore(err instanceof Error ? err.message : String(err));
     }
   },
 
@@ -1386,7 +1498,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async save(projectPaths) {
-    const { draft, draftedFlow } = get();
+    const { draft, draftedFlow, extraFlows } = get();
     if (!draft) return false;
     set({ busy: true, error: null });
     try {
@@ -1405,6 +1517,19 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           return false;
         }
         if (!flowIds.includes(draftedFlow.id)) flowIds = [...flowIds, draftedFlow.id];
+      }
+      // Further hire-drafted flows save the same way — but only the ones
+      // still on the worker, as a route or as its wrap-up. One removed in the
+      // editor is simply not written.
+      const riding = extraFlows.filter((f) => flowIds.includes(f.id) || f.id === draft.wrapUpFlowId);
+      for (const flow of riding) {
+        const savedFlow = await window.overcli.invoke('flows:save', { flow, target: 'user' });
+        if (!savedFlow.ok) {
+          set({ error: savedFlow.error });
+          return false;
+        }
+      }
+      if (draftedFlow || riding.length > 0) {
         // `flows:save` writes the file; the library every flow-reading pane
         // binds to is a renderer mirror that knows nothing about it. Without
         // this the worker's Settings tab kept rendering the flow's
@@ -1440,6 +1565,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         draftFromHire: false,
         ...(wasHire ? { pendingHire: null } : {}),
         draftedFlow: null,
+        extraFlows: [],
         hireSummary: null,
         hireFlowError: null,
         personalize: null,

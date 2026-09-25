@@ -35,7 +35,7 @@ import {
   workspaceActivityAt,
   type RecentConversationItem,
 } from './sidebarItems';
-import { WorkersSidebar } from './workers/WorkersSidebar';
+import { WorkersSidebar, WorkersSidebarFooter } from './workers/WorkersSidebar';
 import { newConversationLabel, resolveNewConversationTarget } from '../newConversationTarget';
 import { formatShortcutDef, SHORTCUTS, startNewConversationHere } from '../shortcuts';
 import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
@@ -547,7 +547,7 @@ export function Sidebar() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search"
+          placeholder={detailMode === 'workers' ? 'Search workers and their work' : 'Search'}
           className="field flex-1 min-w-0 px-2 py-1 text-xs"
         />
         {/* Starting a chat was reachable only from a project row in Places, or
@@ -753,6 +753,12 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-card px-2 py-2 flex flex-col gap-1">
+        {/* Project actions mean nothing on the Workers tab; its occasional
+            views (Funds, Report) take the slot instead. */}
+        {detailMode === 'workers' ? (
+          <WorkersSidebarFooter />
+        ) : (
+        <>
         <button
           onClick={pickProject}
           disabled={cliBlocked}
@@ -779,6 +785,8 @@ export function Sidebar() {
           >
             + New workspace
           </button>
+        )}
+        </>
         )}
         <div className="flex items-center gap-1 mt-1">
           <SidebarIconButton label="Extensions" onClick={() => openSheet({ type: 'capabilities' })} />

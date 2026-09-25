@@ -1,8 +1,13 @@
 // Working-tree diff viewer for standard project conversations — no
 // branch ops (merge / rebase / push / PR). Mirrors the WorktreeDiffSheet
 // layout (file list + unified diff body) and reuses its UnifiedDiffBody,
-// but runs against `git diff HEAD` in the conversation's owning project
-// path so it works for plain convs that aren't bound to a worktree.
+// but runs in the conversation's owning project path so it works for plain
+// convs that aren't bound to a worktree.
+//
+// Two views. "Uncommitted" is `git diff HEAD`. When the project is on a
+// branch other than the repo's default, "Branch" diffs from the fork point
+// with that default: the branch's commits plus anything uncommitted, which
+// is what a branch checked out from a flow or agent actually contains.
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
@@ -12,9 +17,17 @@ import {
   fileBaseName,
   findOwningProjectPath,
   parseUnifiedDiffByFile,
+  resolveDefaultBranch,
 } from '../../diff-utils';
 import { UnifiedDiffBody } from './WorktreeDiffSheet';
 import { useConversation } from '../../hooks';
+
+type DiffMode = 'branch' | 'working';
+
+async function git(args: string[], cwd: string) {
+  return window.overcli.invoke('git:run', { args, cwd });
+}
+
 
 export function ProjectDiffSheet({ convId }: { convId: UUID }) {
   const projects = useStore((s) => s.projects);
@@ -30,31 +43,52 @@ export function ProjectDiffSheet({ convId }: { convId: UUID }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [branch, setBranch] = useState<string>('');
+  // Null until known, and stays null on the default branch itself (or a
+  // detached HEAD), where only the uncommitted view means anything.
+  const [base, setBase] = useState<string | null>(null);
+  const [mode, setMode] = useState<DiffMode | null>(null);
 
-  const reload = async () => {
+  const reload = async (requested: DiffMode | null = mode) => {
     if (!cwd) {
       setLoading(false);
       setFiles([]);
       return;
     }
     setLoading(true);
-    // `git diff HEAD` rolls staged + unstaged tracked changes into one
-    // view. Untracked files don't show up here — they're listed in the
-    // commit popover via `git status --porcelain`, which is the right
-    // place to grab them since "new files" don't have a meaningful
-    // unified-diff body anyway.
-    const [diff, head] = await Promise.all([
-      window.overcli.invoke('git:run', { args: ['diff', 'HEAD'], cwd }),
-      window.overcli.invoke('git:run', {
-        args: ['rev-parse', '--abbrev-ref', 'HEAD'],
-        cwd,
-      }),
-    ]);
+    const head = await git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    const headName = head.exitCode === 0 ? head.stdout.trim() : '';
+    const defaultBranch = await resolveDefaultBranch((args) => git(args, cwd));
+    const onFeatureBranch =
+      !!headName && headName !== 'HEAD' && !!defaultBranch && headName !== defaultBranch;
+    // First open lands on Branch when there is one: committed work is
+    // usually the point, and the uncommitted view is often empty.
+    const effective: DiffMode = onFeatureBranch ? (requested ?? 'branch') : 'working';
+
+    // Both views are "diff the working tree against a commit", so staged,
+    // unstaged and (in Branch) committed changes all land in one view.
+    // Untracked files don't show up here — they're listed in the commit
+    // popover via `git status --porcelain`, which is the right place to
+    // grab them since "new files" don't have a meaningful unified-diff body
+    // anyway.
+    //
+    // `--merge-base` diffs the working tree against the fork point with the
+    // default branch in one allowlisted subcommand (`git:run` refuses
+    // `merge-base` itself). Git older than 2.30 lacks the flag; fall back to
+    // the committed range so the view still shows the branch's commits.
+    let diff =
+      effective === 'branch' && defaultBranch
+        ? await git(['diff', '--merge-base', defaultBranch], cwd)
+        : await git(['diff', 'HEAD'], cwd);
+    if (diff.exitCode !== 0 && effective === 'branch' && defaultBranch) {
+      diff = await git(['diff', `${defaultBranch}...HEAD`], cwd);
+    }
     let text = diff.stdout;
     if (diff.exitCode !== 0 && !text) text = diff.stderr;
     const parsed = parseUnifiedDiffByFile(text);
     setFiles(parsed);
-    setBranch(head.stdout.trim());
+    setBranch(headName);
+    setBase(onFeatureBranch ? defaultBranch : null);
+    setMode(effective);
     setLoading(false);
     setSelected((current) => {
       if (current && parsed.some((f) => f.path === current)) return current;
@@ -63,7 +97,7 @@ export function ProjectDiffSheet({ convId }: { convId: UUID }) {
   };
 
   useEffect(() => {
-    void reload();
+    void reload(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId, cwd]);
 
@@ -79,13 +113,37 @@ export function ProjectDiffSheet({ convId }: { convId: UUID }) {
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5">
         <div className="flex flex-col min-w-0">
-          <div className="text-sm font-medium truncate">Working-tree diff</div>
+          <div className="text-sm font-medium truncate">
+            {mode === 'branch' && base ? `${branch} vs ${base}` : 'Working-tree diff'}
+          </div>
           <div className="text-[11px] text-ink-faint truncate font-mono">
             {cwd ?? '(no project)'}
             {branch && <span className="ml-2">⎇ {branch}</span>}
           </div>
         </div>
         <div className="flex-1" />
+        {base && (
+          <div className="flex items-center rounded bg-white/5 p-0.5">
+            {(['branch', 'working'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => void reload(m)}
+                disabled={loading}
+                title={
+                  m === 'branch'
+                    ? `Everything on ${branch} since it left ${base}, committed or not`
+                    : 'Only changes not yet committed'
+                }
+                className={
+                  'text-xs px-2 py-0.5 rounded disabled:opacity-50 ' +
+                  (mode === m ? 'bg-white/10 text-ink' : 'text-ink-muted hover:text-ink')
+                }
+              >
+                {m === 'branch' ? 'Branch' : 'Uncommitted'}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="text-[11px] font-mono">
           <span className="diff-add-ink">+{totals.added}</span>
           <span className="diff-remove-ink ml-2">−{totals.removed}</span>
@@ -115,7 +173,10 @@ export function ProjectDiffSheet({ convId }: { convId: UUID }) {
               <div className="px-3 py-2 text-[11px] text-ink-faint">Running git diff…</div>
             ) : files.length === 0 ? (
               <div className="px-3 py-2 text-[11px] text-ink-faint">
-                No tracked changes vs HEAD. (New / untracked files show in the commit popover.)
+                {mode === 'branch' && base
+                  ? `No tracked changes vs ${base}.`
+                  : 'No tracked changes vs HEAD.'}{' '}
+                (New / untracked files show in the commit popover.)
               </div>
             ) : (
               files.map((f) => (

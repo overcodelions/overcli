@@ -152,6 +152,13 @@ export interface Worker {
   /// pinned every existing worker to a model its new backend rejects.
   heartbeatBackend?: Backend;
   flowIds: string[];
+  /// A flow that runs once after a shift's items have all finished, with
+  /// every item's result as its input — for a job whose deliverable is the
+  /// COMBINATION (one digest, one report) rather than each piece on its own.
+  /// Kept out of `flowIds` on purpose: the planner routes individual items,
+  /// and must never send one straight to the step that combines them.
+  /// Absent means no wrap-up, which is every worker hired before this existed.
+  wrapUpFlowId?: string;
   /// Which of the user's MCP servers this worker's turns may load, by name.
   ///
   /// Absent means all of them, which is what every worker hired before this
@@ -538,6 +545,9 @@ export function validateWorker(w: Partial<Worker>, now: number = Date.now()): st
     return 'A job description needs at least 20 characters — the worker plans its own shifts from it.';
   if (!w.projectPath?.trim()) return 'Pick a project for this worker.';
   if (!w.flowIds || w.flowIds.length === 0) return 'A worker needs at least one flow to run.';
+  if (w.wrapUpFlowId && w.flowIds.includes(w.wrapUpFlowId)) {
+    return 'The wrap-up flow combines a shift\'s results, so it cannot also be one the planner routes items to.';
+  }
   if (!w.heartbeatModel?.trim()) return 'Pick a heartbeat model.';
   if (!Number.isFinite(w.budgetUSDPerMonth) || (w.budgetUSDPerMonth ?? 0) <= 0)
     return 'Set a monthly budget above zero.';
@@ -701,15 +711,151 @@ export interface WorkerContract {
   /// the model emits — the caller stamps it, since it knows which CLI it just
   /// ran.
   heartbeatBackend?: Backend;
-  /// One of the flow ids the drafter was shown, when one fit.
-  flowId?: string;
-  /// Set when no existing flow fit: a description for the flow drafter to
-  /// turn into a new flow, reviewed alongside the contract.
-  flowRequest?: string;
+  /// The flows this worker routes its work to, primary first. Each is an
+  /// existing flow or a request for a new one. Empty when the drafter named
+  /// none, and the caller falls back to drafting one from the job itself.
+  flows: WorkerContractFlow[];
+  /// The flow that combines a shift's results, when the job's deliverable is
+  /// the combination — see `Worker.wrapUpFlowId`. Absent: no wrap-up.
+  wrapUp?: WorkerContractFlow;
+  /// Which of the user's MCP servers the job needs — see `Worker.mcpServers`.
+  /// Absent when the drafter did not say, which keeps the load-everything
+  /// default; only names the drafter was shown survive the parse.
+  mcpServers?: string[];
   /// One of the project/workspace paths the drafter was shown — set only
   /// when the job description clearly concerns one of them. The hire screen
   /// uses it as a suggestion, never over an explicit user choice.
   projectPath?: string;
+}
+
+/// One message in a hire conversation. The user's first message is the job
+/// description; after that the drafter asks and the user answers until the
+/// drafter has enough to write the contract.
+export interface HireMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  /// The drafter's questions, when it asked in the structured shape. `text`
+  /// is then only the lead-in; the questions render as their own cards.
+  questions?: HireQuestion[];
+}
+
+/// One thing the hire drafter wants to know, with the answers it expects
+/// most often — so the common case is a click, not a paragraph.
+export interface HireQuestion {
+  question: string;
+  options?: string[];
+}
+
+const HIRE_MAX_QUESTIONS = 3;
+const HIRE_MAX_OPTIONS = 4;
+
+/// Pull the `<questions>…</questions>` block out of an interview reply. The
+/// prose before it is the lead-in. Null when there is no usable block — the
+/// caller then shows the reply as plain text, which still works, just with
+/// one answer box instead of one per question.
+export function parseHireQuestions(
+  text: string,
+): { intro: string; questions: HireQuestion[] } | null {
+  const match = text.match(/<questions>([\s\S]*?)<\/questions>/i);
+  if (!match) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(match[1].trim());
+  } catch {
+    return null;
+  }
+  const list = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === 'object' && Array.isArray((raw as { questions?: unknown }).questions)
+      ? (raw as { questions: unknown[] }).questions
+      : [];
+  const questions: HireQuestion[] = [];
+  for (const item of list) {
+    const q = typeof item === 'string' ? { question: item } : (item as Partial<HireQuestion> | null);
+    const question = typeof q?.question === 'string' ? q.question.trim() : '';
+    if (!question) continue;
+    const options = Array.isArray(q?.options)
+      ? q.options
+          .filter((o): o is string => typeof o === 'string' && o.trim().length > 0)
+          .map((o) => o.trim())
+          .slice(0, HIRE_MAX_OPTIONS)
+      : [];
+    questions.push(options.length > 0 ? { question, options } : { question });
+    if (questions.length === HIRE_MAX_QUESTIONS) break;
+  }
+  if (questions.length === 0) return null;
+  const intro = text.slice(0, match.index).trim();
+  return { intro, questions };
+}
+
+/// A drafter message as the drafter should see it replayed: the lead-in and
+/// the questions it asked, numbered, so the answers line up with them.
+export function hireMessageText(message: HireMessage): string {
+  if (!message.questions?.length) return message.text;
+  return [
+    message.text,
+    ...message.questions.map(
+      (q, i) => `${i + 1}. ${q.question}${q.options?.length ? ` (${q.options.join(' / ')})` : ''}`,
+    ),
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/// The user's answers to one round, as the message that goes back. Skipped
+/// questions are said out loud — silence would read as "forgot", and the
+/// drafter should know to pick a default rather than ask again. Empty when
+/// nothing at all was answered.
+export function hireAnswerText(questions: HireQuestion[], answers: string[], extra: string): string {
+  const given = questions.map((_, i) => (answers[i] ?? '').trim());
+  const more = extra.trim();
+  if (!more && given.every((a) => !a)) return '';
+  return [
+    ...questions.map((q, i) => `${q.question}\n→ ${given[i] || '(skipped — pick a sensible default)'}`),
+    ...(more ? [`Also: ${more}`] : []),
+  ].join('\n\n');
+}
+
+/// How many times the hire drafter may come back with questions before it has
+/// to draft. A conversation that never converges is worse than a contract with
+/// a sensible default the user can fix on the review form.
+export const HIRE_INTERVIEW_MAX_ROUNDS = 3;
+
+/// One flow on a drafted contract: an existing flow by id, or a request for
+/// the flow designer — plus the kind of work the worker should send to it.
+export interface WorkerContractFlow {
+  flowId?: string;
+  flowRequest?: string;
+  /// When to route work here, in a line. Only matters for a worker with more
+  /// than one flow; it becomes the new flow's description, which is what the
+  /// planner reads when it picks.
+  when?: string;
+}
+
+/// A worker with more flows than this is several workers.
+export const WORKER_CONTRACT_MAX_FLOWS = 3;
+
+/// The contract's flows, from either shape: the `flows` list, or the single
+/// `flowId`/`flowRequest` pair every drafter reply used before there could be
+/// more than one. Unknown ids and duplicates are dropped, not guessed at.
+function coerceContractFlows(e: Record<string, unknown>, knownFlowIds: string[]): WorkerContractFlow[] {
+  const raw: unknown[] = Array.isArray(e.flows) ? e.flows : [{ flowId: e.flowId, flowRequest: e.flowRequest }];
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const out: WorkerContractFlow[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const f = item as Record<string, unknown>;
+    const id = str(f.flowId);
+    const flowId = id && knownFlowIds.includes(id) && !seen.has(id) ? id : undefined;
+    const flowRequest = flowId ? undefined : str(f.flowRequest);
+    if (!flowId && !flowRequest) continue;
+    if (flowId) seen.add(flowId);
+    const when = str(f.when);
+    out.push({ ...(flowId ? { flowId } : { flowRequest }), ...(when ? { when } : {}) });
+    if (out.length === WORKER_CONTRACT_MAX_FLOWS) break;
+  }
+  return out;
 }
 
 /// Pull the `<worker>…</worker>` JSON block out of a hire-drafter reply and
@@ -726,6 +872,9 @@ export function parseWorkerContract(
     /// the pair travels together from the moment of hire.
     defaultHeartbeatBackend?: Backend;
     knownProjectPaths?: string[];
+    /// The MCP servers the drafter was shown. Without it, any `mcpServers`
+    /// in the reply is ignored rather than trusted.
+    knownMcpServers?: string[];
   },
 ): WorkerContract | null {
   const block =
@@ -747,12 +896,29 @@ export function parseWorkerContract(
   const jobDescription = typeof e.jobDescription === 'string' ? e.jobDescription.trim() : '';
   if (!name && !jobDescription) return null;
 
-  const flowId =
-    typeof e.flowId === 'string' && opts.knownFlowIds.includes(e.flowId.trim())
-      ? e.flowId.trim()
+  const flows = coerceContractFlows(e, opts.knownFlowIds);
+  // Same shape as one flows entry. An existing flow already routing items
+  // cannot also be the wrap-up (validateWorker says why), so it is dropped.
+  const wrapUp =
+    e.wrapUp && typeof e.wrapUp === 'object'
+      ? coerceContractFlows({ flows: [e.wrapUp] }, opts.knownFlowIds).find(
+          (f) => !f.flowId || !flows.some((r) => r.flowId === f.flowId),
+        )
       : undefined;
-  const flowRequest =
-    typeof e.flowRequest === 'string' && e.flowRequest.trim() ? e.flowRequest.trim() : undefined;
+  // Matched case-insensitively back to the name as configured: the server
+  // list is keyed by exact name, and a near-miss would silently load nothing.
+  const mcpServers =
+    Array.isArray(e.mcpServers) && opts.knownMcpServers
+      ? Array.from(
+          new Set(
+            e.mcpServers.flatMap((n) => {
+              if (typeof n !== 'string') return [];
+              const hit = opts.knownMcpServers!.find((k) => k.toLowerCase() === n.trim().toLowerCase());
+              return hit ? [hit] : [];
+            }),
+          ),
+        )
+      : undefined;
   const projectPath =
     typeof e.projectPath === 'string' && opts.knownProjectPaths?.includes(e.projectPath.trim())
       ? e.projectPath.trim()
@@ -771,6 +937,10 @@ export function parseWorkerContract(
   // Same cleanup the desk applies when it reads them back, done here so what
   // the review screen shows is what gets saved. Non-strings and blanks are
   // dropped; nothing left means no starters, not an empty list.
+  // A wrap-up combines a shift's items; over a one-item shift it is an extra
+  // run that changes nothing. Raise the cap rather than drop the wrap-up —
+  // the user asked for a combined result, and the review form shows both.
+  const cappedItems = wrapUp ? Math.max(2, maxItemsPerShift) : maxItemsPerShift;
   const errandStarters = Array.isArray(e.errandStarters)
     ? e.errandStarters
         .filter((s): s is string => typeof s === 'string')
@@ -785,12 +955,13 @@ export function parseWorkerContract(
     errandStarters: errandStarters.length > 0 ? errandStarters : undefined,
     jobDescription,
     cadence: coerceCadence(e.cadence),
-    maxItemsPerShift,
+    maxItemsPerShift: cappedItems,
     budgetUSDPerMonth,
     heartbeatModel,
     heartbeatBackend: opts.defaultHeartbeatBackend,
-    flowId,
-    flowRequest,
+    flows,
+    ...(wrapUp ? { wrapUp } : {}),
+    ...(mcpServers ? { mcpServers } : {}),
     projectPath,
   };
 }

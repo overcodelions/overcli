@@ -255,3 +255,67 @@ describe('FlowRuntimeImpl.startRun', () => {
     expect(run.state).toEqual({ kind: 'running', currentStepId: 'review' });
   });
 });
+
+describe('the Today digest headline', () => {
+  async function workerRun(workerId?: string) {
+    const sends: Array<{ prompt: string }> = [];
+    const runtime = new FlowRuntimeImpl(
+      {
+        send: (args: { prompt: string }) => {
+          sends.push(args);
+          return { ok: true };
+        },
+        prewarm: () => {},
+        dropIfPrewarmed: () => {},
+      } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+    const result = await runtime.startRun({
+      flowId: 'flow-1',
+      projectPath: '/tmp/project',
+      userPrompt: 'Review the latest changes.',
+      ...(workerId ? { workerId, workerName: 'Scout' } : {}),
+    });
+    if (!result.ok) throw new Error(result.error);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { runtime, sends, run: runtime.getRun(result.runId)! };
+  }
+
+  it('asks a worker run’s last step for a headline, and not an ordinary run', async () => {
+    const worker = await workerRun('worker-1');
+    expect(worker.sends[0].prompt).toContain('<headline>');
+    const plain = await workerRun();
+    expect(plain.sends[0].prompt).not.toContain('<headline>');
+  });
+
+  it('records the headline the step wrote on the run', async () => {
+    const { runtime, run } = await workerRun('worker-1');
+    const conversationId = run.conversationIds.primary;
+    runtime.observeEvent({
+      type: 'stream',
+      conversationId,
+      events: [
+        {
+          id: 'final',
+          timestamp: Date.now(),
+          raw: '',
+          revision: 0,
+          kind: {
+            type: 'assistant',
+            info: {
+              model: 'claude-sonnet-4-6',
+              text: '<output name="review.md">Looks fine.</output>\n<headline>No regressions in the last 3 merges</headline>\n<points>\n- 2 flaky tests\n</points>',
+              toolUses: [],
+              thinking: [],
+            },
+          },
+        },
+      ],
+    });
+    runtime.observeEvent({ type: 'running', conversationId, isRunning: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(run.digest).toEqual({ headline: 'No regressions in the last 3 merges', points: ['2 flaky tests'] });
+  });
+});

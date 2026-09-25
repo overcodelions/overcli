@@ -20,7 +20,18 @@ import type { QueueRow } from './workQueue';
 /// them as quiet outlines in a dense table; the spine's pinned card has
 /// already gone amber around them, so there the primary action is solid and
 /// carries the card's weight.
-export function PausedActions({ row, tone = 'outline' }: { row: QueueRow; tone?: 'outline' | 'solid' }) {
+export function PausedActions({
+  row,
+  tone = 'outline',
+  rejectOnly = false,
+}: {
+  row: QueueRow;
+  tone?: 'outline' | 'solid';
+  /// Reject alone — for a card that brings its own way forward (the answer
+  /// box on a question), where a bare "resume" beside it would offer to go
+  /// on without the answer.
+  rejectOnly?: boolean;
+}) {
   const runId = row.runId!;
   const reason = row.pausedReason ?? 'preStep';
   const pendingContinue = useFlowsStore((s) => !!s.runs[runId]?.pendingContinue);
@@ -96,6 +107,7 @@ export function PausedActions({ row, tone = 'outline' }: { row: QueueRow; tone?:
   const solid = tone === 'solid';
   return (
     <span className={'flex shrink-0 items-center gap-1.5' + pad}>
+      {!rejectOnly && (
       <button
         onClick={resume}
         disabled={inFlight}
@@ -109,6 +121,7 @@ export function PausedActions({ row, tone = 'outline' }: { row: QueueRow; tone?:
       >
         {inFlight ? 'resuming…' : PAUSE_ACTION[reason]}
       </button>
+      )}
       <button
         onClick={() => setConfirming(true)}
         disabled={inFlight}

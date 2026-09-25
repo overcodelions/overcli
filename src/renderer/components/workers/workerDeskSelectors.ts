@@ -227,7 +227,7 @@ function errandAsk(orchestration: Orchestration): string {
   return typed || orchestration.title.replace(/^\[Errand\]\s*/i, '').trim();
 }
 
-function producerProse(orchestration: Orchestration): string {
+export function producerProse(orchestration: Orchestration): string {
   // The subject block is a label, and it is already rendered as one — leaving
   // it in the prose shows the reader the same words twice, once as XML.
   return stripHandoffs(
