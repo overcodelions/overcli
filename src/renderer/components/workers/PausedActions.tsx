@@ -47,6 +47,15 @@ export function PausedActions({
   useEffect(() => {
     setResuming(false);
   }, [pendingContinue, reason]);
+  // The reader reuses this component when a decision clears and it moves on
+  // to the next one. Everything local here was about the LAST run — without
+  // this, the next item opened already saying "resuming…" for a run nobody
+  // had touched.
+  useEffect(() => {
+    setResuming(false);
+    setConfirming(false);
+    setRejecting(false);
+  }, [runId]);
 
   const inFlight = resuming || pendingContinue;
 

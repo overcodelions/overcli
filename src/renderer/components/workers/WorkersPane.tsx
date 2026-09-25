@@ -146,6 +146,7 @@ import {
 } from "../onboarding/landing";
 import { LANDING_SERIF } from "../onboarding/landing";
 import { RotaSpecimen, TrustLadderMark } from "../onboarding/specimens";
+import { PlacePicker } from "../PlacePicker";
 
 // Zustand selectors are consumed through React's useSyncExternalStore. Returning
 // a new [] while this worker's journal is still loading makes the snapshot look
@@ -255,7 +256,10 @@ export function WorkersPane() {
   // lost the roster, the tab moved under you, and the run you arrived at is
   // deliberately absent from that sidebar's list, so nothing on screen still
   // said where you were. A worker's run is part of the worker.
-  if (activeRun?.workerId && activeRun.workerId === selected?.id) {
+  // Only on the desk: `selected` outlives it (it is still set on Today), and
+  // Today shows runs inside its own reader, so matching there swapped the
+  // whole page out from under the list.
+  if (view === "worker" && activeRun?.workerId && activeRun.workerId === selected?.id) {
     return <FlowRunPane key={activeRun.id} runId={activeRun.id} />;
   }
 
@@ -4526,8 +4530,6 @@ function LifecycleArrow() {
 }
 
 function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
-  const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
   // The whole form lives in the store: drafting takes minutes and this screen
   // unmounts the moment you switch tabs, so nothing typed here — and nothing
   // still in flight — can be allowed to belong to the component.
@@ -4546,13 +4548,6 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
   // message of a conversation rather than a form field.
   const talking = hire.messages.length > 0;
 
-  const targets = [
-    ...workspaces.map((w) => ({
-      name: `${w.name} (workspace)`,
-      path: w.rootPath,
-    })),
-    ...projects.map((p) => ({ name: p.name, path: p.path })),
-  ];
 
   // Highlight the card whose job description is (still) in the textarea, so
   // editing the text visibly turns a preset into "your own".
@@ -4658,22 +4653,16 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
               label="Works against"
               hint="the drafter can override this when the job clearly names another project"
             >
-              <select
+              <PlacePicker
                 value={projectPath}
-                onChange={(e) =>
+                label="Works against"
+                onChange={(path) =>
                   patchHire({
-                    projectPath: e.target.value,
+                    projectPath: path,
                     projectTouched: true,
                   })
                 }
-                className="w-full max-w-[360px] bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
-              >
-                {targets.map((t) => (
-                  <option key={t.path} value={t.path}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+              />
             </Field>
 
             {talking ? (
@@ -5113,7 +5102,6 @@ function WorkerEditor() {
   const close = useWorkersStore((s) => s.closeEditor);
 
   const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
   const flows = useFlowsStore((s) => s.flows);
   const workers = useWorkersStore((s) => s.workers);
   const existing = draft.id ? workers[draft.id] : undefined;
@@ -5159,15 +5147,17 @@ function WorkerEditor() {
     return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
   }, [capabilities]);
 
-  const colleagues = useMemo(
-    () =>
-      sortRoster(
-        Object.values(workers).filter(
-          (w) => w.id !== draft.id && w.projectPath === draft.projectPath,
-        ),
-      ),
-    [workers, draft.id, draft.projectPath],
-  );
+  // Same-project colleagues first — the default roster — then everyone else,
+  // who can only be reached by picking them here.
+  const colleagues = useMemo(() => {
+    const others = sortRoster(
+      Object.values(workers).filter((w) => w.id !== draft.id),
+    );
+    return [
+      ...others.filter((w) => w.projectPath === draft.projectPath),
+      ...others.filter((w) => w.projectPath !== draft.projectPath),
+    ];
+  }, [workers, draft.id, draft.projectPath]);
 
   // Trust isn't editable here (hires start on probation; promotion is a
   // roster action), but validation needs it to judge the cwd rule.
@@ -5184,13 +5174,6 @@ function WorkerEditor() {
     id: draft.id ?? "draft",
   }), [draft.name, draft.jobDescription, draft.projectPath, draft.flowIds, draft.heartbeatModel, draft.budgetUSDPerMonth, draft.caps, draft.mcpServers, draft.cadence, existing?.trust, draftedFlow?.id]);
 
-  const targets = [
-    ...workspaces.map((w) => ({
-      name: `${w.name} (workspace)`,
-      path: w.rootPath,
-    })),
-    ...projects.map((p) => ({ name: p.name, path: p.path })),
-  ];
 
   // Trust never overrides the flow's own checkpoints: a `pause_before` step
   // parks the run for review even under an autonomous worker. Say so here,
@@ -5327,18 +5310,11 @@ function WorkerEditor() {
 
           <div className="rounded-xl bg-card p-5 shadow-sm space-y-5">
             <Field label="Project">
-              <select
+              <PlacePicker
                 value={draft.projectPath}
-                onChange={(e) => patch({ projectPath: e.target.value })}
-                className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
-              >
-                <option value="">Pick a project…</option>
-                {targets.map((t) => (
-                  <option key={t.path} value={t.path}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+                label="Project"
+                onChange={(path) => patch({ projectPath: path })}
+              />
             </Field>
 
             <Field
@@ -5650,9 +5626,10 @@ function WorkerEditor() {
                   Let this worker hand work to colleagues
                 </span>
                 <span className="block text-[11px] leading-relaxed text-ink-faint">
-                  Shows it the other workers on this project, and lets it pass
-                  anything outside its own remit to one of them as an errand —
-                  spending their budget, not yours. Off for workers on
+                  Shows it the other workers on this project, plus any you pick
+                  below from elsewhere, and lets it pass anything outside its
+                  own remit to one of them as an errand — now, or on a day it
+                  names — spending their budget, not yours. Off for workers on
                   probation, whatever this says.
                 </span>
               </span>
@@ -5667,8 +5644,8 @@ function WorkerEditor() {
                 <div className="text-sm text-ink">Who it may hand work to</div>
                 <div className="mb-2 text-[11px] leading-relaxed text-ink-faint">
                   {(draft.delegatesTo ?? []).length === 0
-                    ? "Any colleague on this project — it picks by reading their job descriptions. Tick names to restrict it."
-                    : "Restricted to the ticked colleagues. Untick them all to go back to the whole roster."}
+                    ? "Any colleague on this project — it picks by reading their job descriptions. Tick names to choose exactly who, including workers on other projects."
+                    : "Exactly the ticked colleagues, whichever project they work on. Untick them all to go back to everyone on this project."}
                 </div>
                 <div className="flex flex-col gap-1">
                   {colleagues.map((c) => {
@@ -5693,6 +5670,11 @@ function WorkerEditor() {
                           className="mt-0.5"
                         />
                         <span className="truncate">{c.name}</span>
+                        {c.projectPath !== draft.projectPath && (
+                          <span className="shrink-0 truncate text-[11px] text-ink-faint">
+                            · {c.projectPath.split("/").filter(Boolean).pop()}
+                          </span>
+                        )}
                       </label>
                     );
                   })}

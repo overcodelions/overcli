@@ -124,6 +124,11 @@ export interface QueueRow {
   /// The failure, or the tool a planning turn is on — one short line, never
   /// a substitute for opening the thing.
   note?: string;
+  /// Set on a wrap-up job: the shift batch it wraps up. Today nests that
+  /// shift's items under it, since the wrap-up is their summary.
+  wrapUpOf?: string;
+  /// The colleague who handed this over, when one did rather than you.
+  from?: string;
 }
 
 export interface WorkQueue {
@@ -318,6 +323,8 @@ export function buildWorkQueue(
         // how a click ended up doing nothing at all.
         ...(run ? { runId: run.id } : {}),
         ...(item.note ? { note: item.note } : {}),
+        ...(origin.wrapUpOf ? { wrapUpOf: origin.wrapUpOf } : {}),
+        ...(origin.from ? { from: origin.from.workerName } : {}),
       };
       (band === 'running' ? running : band === 'needsYou' ? needsYou : finished).push(row);
     }

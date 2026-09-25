@@ -6,7 +6,7 @@
 // did and what it changed. Either way the whole run is one switch away, drawn
 // in this same pane, so going deeper never loses your place in the day.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useRunnersStore } from '../../runnersStore';
@@ -42,6 +42,11 @@ import type { ArtifactPreviewResult } from '@shared/types';
 import type { FlowRun, FlowWorkerExchange } from '@shared/flows/schema';
 import type { WorkerFile } from './workerDeskSelectors';
 
+/// Which tab you last picked for each item, for this session. Module-level
+/// rather than component state because leaving the Workers tab unmounts the
+/// reader, and the point is to come back to the same place.
+const tabMemory = new Map<string, 'result' | 'run'>();
+
 export function TodayReader({
   row,
   kind,
@@ -55,7 +60,13 @@ export function TodayReader({
   digest: DigestSummary | undefined;
   now: number;
 }) {
-  const [tab, setTab] = useState<'result' | 'run'>('result');
+  const [tab, setTab] = useState<'result' | 'run'>(() => tabMemory.get(row.key) ?? 'result');
+  // A tab you picked is remembered for the item, so going to Chat and back —
+  // which draws this page from scratch — lands you where you were.
+  const chooseTab = (t: 'result' | 'run') => {
+    tabMemory.set(row.key, t);
+    setTab(t);
+  };
   // The step the Run tab opens on, when you just spoke to one.
   const [runStep, setRunStep] = useState<string | undefined>(undefined);
   const run = useFlowsStore((s) => (row.runId ? s.runs[row.runId] : undefined));
@@ -74,6 +85,12 @@ export function TodayReader({
   );
   // A different item starts on its result — or, mid-conversation, on it.
   useEffect(() => {
+    const remembered = tabMemory.get(row.key);
+    if (remembered) {
+      setTab(remembered);
+      setRunStep(undefined);
+      return;
+    }
     if (talked && talkedStep) {
       setTab('run');
       setRunStep(talkedStep);
@@ -88,6 +105,23 @@ export function TodayReader({
     // Only when the item changes: after that, the tabs are yours.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [row.key]);
+
+  // The Run tab is the run pane, so the app has to know which run is open:
+  // the side editor roots itself at the active run's worktree, and without
+  // it a changed file opened from here resolved — and diffed — against the
+  // wrong checkout. It also folds the sidebar away (see App) while you work
+  // in the run, and hands both back when you leave the tab.
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const runOnScreen = tab === 'run' && row.runId ? row.runId : null;
+  // A layout effect, so the store knows before the first paint: arriving on
+  // a Run tab used to draw one frame WITH the sidebar and then slide it away.
+  useLayoutEffect(() => {
+    if (!runOnScreen) return;
+    setActiveRun(runOnScreen);
+    return () => {
+      if (useFlowsStore.getState().activeRunId === runOnScreen) setActiveRun(null);
+    };
+  }, [runOnScreen, setActiveRun]);
 
   const live = row.status === 'running' || row.status === 'planning';
   return (
@@ -115,7 +149,7 @@ export function TodayReader({
                 key={t}
                 role="tab"
                 aria-selected={tab === t}
-                onClick={() => setTab(t)}
+                onClick={() => chooseTab(t)}
                 className={
                   'rounded px-2.5 py-0.5 text-[11.5px] ' +
                   (tab === t ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
@@ -152,7 +186,7 @@ export function TodayReader({
               talkedStep={talked ? talkedStep : undefined}
               onTalked={(stepId) => {
                 setRunStep(stepId);
-                setTab('run');
+                chooseTab('run');
               }}
             />
           </div>
@@ -185,6 +219,7 @@ function Decision({
   // The flow asks its worker first; when the worker could not settle it,
   // its reply — why it escalated — is the context you need to answer.
   const exchange = run ? latestExchange(run) : undefined;
+  if (row.status === 'proposed') return <ProposalReview row={row} />;
   return (
     <>
       <h2 className="text-[21px] font-semibold leading-snug tracking-[-0.01em] text-ink">{row.title}</h2>
@@ -240,6 +275,92 @@ function Decision({
           )}
         </>
       )}
+    </>
+  );
+}
+
+/// Work the worker suggested but did not start — held back for your say, so
+/// there is no run to show yet. What you need to decide is why it wants to
+/// and what it would do, then launch it or turn it down.
+function ProposalReview({ row }: { row: QueueRow }) {
+  const item = useOrchestratorStore((s) =>
+    row.orchestrationId ? s.orchestrations[row.orchestrationId]?.items.find((i) => i.candidate.id === row.candidateId) : undefined,
+  );
+  const [busy, setBusy] = useState<'launch' | 'reject' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showPrompt, setShowPrompt] = useState(false);
+
+  const act = async (kind: 'launch' | 'reject') => {
+    if (busy || !row.orchestrationId || !row.candidateId) return;
+    setBusy(kind);
+    setError(null);
+    const id = row.orchestrationId;
+    const candidateId = row.candidateId;
+    try {
+      const res =
+        kind === 'launch'
+          ? await window.overcli.invoke('orchestrator:approveBatch', { id, approve: [{ candidateId }], keepUnpicked: true })
+          : await window.overcli.invoke('orchestrator:rejectItem', { id, candidateId });
+      if (!res.ok) setError(res.error);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const why = item?.candidate.note;
+  const prompt = item?.candidate.prompt;
+  return (
+    <>
+      <h2 className="text-[21px] font-semibold leading-snug tracking-[-0.01em] text-ink">{row.title}</h2>
+      <p className="text-[14px] leading-relaxed text-ink-muted">
+        {row.workerName} proposed this and is waiting for you to launch it — nothing has run yet.
+        {item?.note ? ` ${item.note}` : ''}
+      </p>
+      {why && (
+        <section className="flex flex-col gap-1.5">
+          <SectionLabel>Why</SectionLabel>
+          <p className="text-[13.5px] leading-relaxed text-ink">{why}</p>
+        </section>
+      )}
+      {prompt && (
+        <section className="flex flex-col gap-1.5">
+          <SectionLabel>What it will do{item?.flowId ? ` · ${item.flowId}` : ''}</SectionLabel>
+          <div className="rounded-lg border border-card bg-card px-4 py-3">
+            <p
+              className={
+                'whitespace-pre-wrap text-[13px] leading-relaxed text-ink ' + (showPrompt ? '' : 'line-clamp-6')
+              }
+            >
+              {prompt}
+            </p>
+            <button
+              onClick={() => setShowPrompt((v) => !v)}
+              className="mt-1.5 text-[12px] text-accent hover:underline"
+            >
+              {showPrompt ? 'Show less' : 'Show all'}
+            </button>
+          </div>
+        </section>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          disabled={!!busy}
+          onClick={() => void act('launch')}
+          className="rounded-md bg-accent px-3.5 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {busy === 'launch' ? 'Launching…' : 'Launch'}
+        </button>
+        <button
+          disabled={!!busy}
+          onClick={() => void act('reject')}
+          className="rounded-md border border-card-strong px-3 py-1.5 text-[12.5px] text-ink-muted hover:border-red-400/60 hover:text-red-400 disabled:opacity-50"
+        >
+          {busy === 'reject' ? 'Rejecting…' : 'Reject'}
+        </button>
+        {error && <span className="text-[12px] text-red-400">{error}</span>}
+      </div>
     </>
   );
 }
@@ -461,7 +582,7 @@ function Result({
       const o = a.orchestrationId ? orchestrations[a.orchestrationId] : undefined;
       if (!o) return [];
       const asked = o.origin?.kind === 'worker' && o.origin.errand ? o.origin.errand : a.title;
-      return [{ key: a.key, asked, answer: producerProse(o), at: a.at }];
+      return [{ key: a.key, asked, answer: producerProse(o), at: a.at, orchestrationId: o.id }];
     });
   }, [file, run, row.answers, row.orchestrationId, row.key, row.title, row.at, orchestrations]);
   const finalText = file ? '' : finalArtifactText(run);
@@ -526,9 +647,14 @@ function AnswerThread({
   answers,
 }: {
   row: QueueRow;
-  answers: Array<{ key: string; asked: string; answer: string; at: number }>;
+  answers: Array<{ key: string; asked: string; answer: string; at: number; orchestrationId: string }>;
 }) {
   const worker = useWorkersStore((s) => s.workers[row.workerId]);
+  // What each turn handed on, read back from the journal — the outcome, not
+  // what the reply asked for, so a handoff that failed says so.
+  const journal = useWorkersStore((s) => s.journals[row.workerId]);
+  const loadJournal = useWorkersStore((s) => s.loadJournal);
+  const heldCount = useWorkersStore((s) => s.heldHandoffs.length);
   // What you just sent from the box below, until its answer lands — which
   // is when it joins the thread as a real turn.
   const sending = useWorkersStore((s) => s.errandSending[row.workerId]);
@@ -537,6 +663,9 @@ function AnswerThread({
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'end' });
   }, [turns, row.key]);
+  useEffect(() => {
+    void loadJournal(row.workerId);
+  }, [loadJournal, row.workerId, answers.length, heldCount]);
   if (!worker) return null;
   return (
     <div className="h-full overflow-y-auto px-8 py-6">
@@ -544,7 +673,12 @@ function AnswerThread({
         {answers.map((a) => (
           <div key={a.key} className="flex flex-col gap-2">
             <UserBubble text={a.asked} />
-            <WorkerReply worker={worker} at={a.at} reply={a.answer} />
+            <WorkerReply
+              worker={worker}
+              at={a.at}
+              reply={a.answer}
+              footer={<HandoffNotes entries={(journal ?? []).filter((e) => e.kind === 'delegated' && e.orchestrationId === a.orchestrationId)} />}
+            />
           </div>
         ))}
         {sending?.map((p, i) => (
@@ -558,6 +692,27 @@ function AnswerThread({
         ))}
         <div ref={end} />
       </div>
+    </div>
+  );
+}
+
+/// What a turn passed to colleagues, under the reply that did it: "Handed to
+/// Chief of Staff", "Will hand to Chief of Staff on Tue, Oct 13", or why it
+/// could not.
+function HandoffNotes({ entries }: { entries: Array<{ id?: string; note?: string }> }) {
+  if (entries.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-col gap-1 border-t border-card pt-2">
+      {entries.map((e, i) => {
+        const note = e.note ?? '';
+        const ok = /^(Handed to|Will hand to)/.test(note);
+        return (
+          <div key={e.id ?? i} className={'flex items-start gap-1.5 text-[11.5px] ' + (ok ? 'text-ink-muted' : 'text-red-400')}>
+            <span aria-hidden>→</span>
+            <span>{ok ? note.split(': ')[0] : note}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

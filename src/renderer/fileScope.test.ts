@@ -58,17 +58,20 @@ describe('fileScopeKeyFor', () => {
   it('gives each worker its own desk scope', () => {
     // Switching workers must not carry the last one's report across: each
     // desk resolves its files against its own directory.
-    const desk = { ...base, detailMode: 'workers', selectedConversationId: 'c1' };
+    const desk = { ...base, detailMode: 'workers', selectedConversationId: 'c1', workersPage: 'worker' };
     expect(fileScopeKeyFor({ ...desk, selectedWorkerId: 'w1' })).toBe('worker:w1');
     expect(fileScopeKeyFor({ ...desk, selectedWorkerId: 'w2' })).toBe('worker:w2');
   });
 
-  it('falls back to the conversation with no worker picked', () => {
-    // Matches the editor's root, which falls back the same way when there
-    // is no worker directory to resolve against.
-    expect(
-      fileScopeKeyFor({ ...base, detailMode: 'workers', selectedConversationId: 'c1' }),
-    ).toBe('conv:c1');
+  it('gives every other Workers page its own scope, never the chat underneath', () => {
+    // A report opened from Today used to stay up over the hire screen and
+    // the queue, because all of them fell through to the selected chat.
+    const workers = { ...base, detailMode: 'workers', selectedConversationId: 'c1' };
+    expect(fileScopeKeyFor(workers)).toBe('workers:today');
+    expect(fileScopeKeyFor({ ...workers, workersPage: 'hire' })).toBe('workers:hire');
+    expect(fileScopeKeyFor({ ...workers, workersPage: 'queue' })).toBe('workers:queue');
+    // A worker still selected from an earlier visit is not its desk.
+    expect(fileScopeKeyFor({ ...workers, workersPage: 'today', selectedWorkerId: 'w1' })).toBe('workers:today');
   });
 
   it('gives the explorer its own scope, even inside a conversation', () => {
@@ -101,6 +104,7 @@ describe('picking a worker, through the real stores', () => {
       explorerRootPath: ui.explorerRootPath,
       activeRunId: useFlowsStore.getState().activeRunId ?? null,
       selectedWorkerId: useWorkersStore.getState().selectedWorkerId,
+      workersPage: useWorkersStore.getState().hire.open ? 'hire' : useWorkersStore.getState().view,
     });
   }
 
@@ -119,6 +123,12 @@ describe('picking a worker, through the real stores', () => {
     expect(currentKey()).toBe('worker:w1');
     useWorkersStore.getState().selectWorker('w2');
     expect(currentKey()).toBe('worker:w2');
+  });
+
+  it('leaves the desk scope for Today', () => {
+    useWorkersStore.getState().selectWorker('w1');
+    useWorkersStore.getState().showToday();
+    expect(currentKey()).toBe('workers:today');
   });
 
   it('leaves the run pane on the run key while it is open', () => {
