@@ -1,12 +1,7 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <!-- Family shell shared with overgit (a branch graph) and overdb (a
-       platter stack): a white rounded square with a top-to-bottom
-       shade, a rim lit from above and soft drop shadow, and near-black
-       round-capped strokes.
-       overcli's mark is a `>` prompt under an overline: "over" + "cli".
-       The overline is flush with the chevron, and the mark sits a little
-       right of centre because the chevron's weight is on its left.
-       16-32px sizes come from icon-small.svg instead. -->
+  <!-- icon.svg redrawn for 16-32px: heavier strokes, a bigger mark, and a
+       wider gap so the overline never fuses into the chevron once
+       downscaled. -->
   <defs>
     <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
@@ -24,8 +19,8 @@
   <rect x="100" y="122" width="824" height="824" rx="185" ry="185" fill="#000000" fill-opacity="0.32" filter="url(#shadow)"/>
   <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#plate)"/>
   <rect x="102" y="102" width="820" height="820" rx="183" ry="183" fill="none" stroke="url(#rim)" stroke-width="4"/>
-  <g fill="none" stroke="#111113" stroke-width="58" stroke-linecap="round" stroke-linejoin="round">
-    <line x1="364" y1="318" x2="664" y2="318"/>
-    <polyline points="364,420 664,565 364,710"/>
+  <g fill="none" stroke="#111113" stroke-width="96" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="318" y1="282" x2="706" y2="282"/>
+    <polyline points="318,452 690,610 318,768"/>
   </g>
 </svg>

@@ -84,22 +84,35 @@ export function FeatureCard({
   );
 }
 
-/// The app mark, reused by the landing hero and both help sheets so the
-/// three surfaces open the same way.
+/// The app mark, reused by the landing hero, both help sheets and About so
+/// every surface opens the same way. Same drawing as build/icon.svg, minus
+/// the dock finish (shade, rim, drop shadow): in the UI a CSS shadow does
+/// that job. The viewBox is cropped to the tile so the shadow hugs it.
+/// Below 64px the dock drawing's strokes fall to about two device pixels
+/// on a 1x screen and break up, so small marks use a heavier cut of the
+/// same shape.
 export function HeroArt({ size = 38 }: { size?: number }) {
+  const small = size < 64;
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 1024 1024"
-      className="shadow-sm rounded-[22%]"
+      viewBox="100 100 824 824"
+      className="shrink-0 shadow-sm rounded-[22%]"
       aria-label="overcli"
     >
       <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="#ffffff" />
-      <g fill="none" stroke="#000000" strokeWidth="45" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="395" y1="372" x2="630" y2="372" />
-        <polyline points="395,475 612,575 395,675" />
-      </g>
+      {small ? (
+        <g fill="none" stroke="#111113" strokeWidth="74" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="356" y1="312" x2="668" y2="312" />
+          <polyline points="356,428 668,574 356,720" />
+        </g>
+      ) : (
+        <g fill="none" stroke="#111113" strokeWidth="58" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="364" y1="318" x2="664" y2="318" />
+          <polyline points="364,420 664,565 364,710" />
+        </g>
+      )}
     </svg>
   );
 }
