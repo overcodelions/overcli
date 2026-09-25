@@ -15,6 +15,7 @@ import { isEverydayProject } from '@shared/everydayProjects';
 import { Composer } from '../Composer';
 import { BaseBranchSelect } from '../sheets/BaseBranchSelect';
 import { FlowMonogram } from './FlowMonogram';
+import { PlacePicker } from '../PlacePicker';
 
 /// Expanded run panel — replaces the card grid in the same vertical slot
 /// so picking a flow doesn't push other content down.
@@ -333,31 +334,15 @@ export function FlowRunLauncher({
   const targetControl = (
     <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
       <span className="text-ink-faint">in</span>
-      <select
-        value={target}
-        onChange={(e) => {
-          setTarget(e.target.value);
-          // A workspace can't run a worktree until we know its members;
-          // safe to leave runIn — canUseWorktree gates the controls.
-        }}
-        className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-[11px] text-ink max-w-[160px]"
-      >
-        <option value="">Pick a target…</option>
-        {projects.length > 0 && (
-          <optgroup label="Projects">
-            {projects.map((p) => (
-              <option key={`p:${p.id}`} value={`project:${p.path}`}>{p.name}</option>
-            ))}
-          </optgroup>
-        )}
-        {workspaces.length > 0 && (
-          <optgroup label="Workspaces">
-            {workspaces.map((w) => (
-              <option key={`w:${w.id}`} value={`workspace:${w.rootPath}`}>{w.name}</option>
-            ))}
-          </optgroup>
-        )}
-      </select>
+      <PlacePicker
+        value={stripTargetPrefix(target)}
+        placeholder="Pick a target…"
+        label="Run in"
+        size="sm"
+        // A workspace can't run a worktree until we know its members;
+        // safe to leave runIn — canUseWorktree gates the controls.
+        onChange={(path, ref) => setTarget(`${ref.kind}:${path}`)}
+      />
     </div>
   );
 

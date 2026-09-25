@@ -33,6 +33,7 @@ import { useOrchestratorStore } from '../../orchestratorStore';
 import { isSelectableFlow } from '@shared/flows/schema';
 import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { Orchestration } from '@shared/flows/orchestration';
+import { PlacePicker } from '../PlacePicker';
 
 export function SchedulesPane() {
   const projects = useStore((s) => s.projects);
@@ -608,11 +609,13 @@ function ScheduleEditor() {
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="Workspace / Project">
-            <select
+            <PlacePicker
               value={draft.projectPath}
-              onChange={(e) =>
+              placeholder="Pick a target…"
+              label="Workspace or project"
+              onChange={(path) =>
                 patch({
-                  projectPath: e.target.value,
+                  projectPath: path,
                   // A base branch is only meaningful against the repos it was
                   // picked from. Carrying it across a target change is how a
                   // schedule ends up forking a workspace off a branch that
@@ -622,32 +625,7 @@ function ScheduleEditor() {
                   target: { ...draft.target, baseBranch: undefined },
                 })
               }
-              className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
-            >
-              <option value="">Pick a target…</option>
-              {/* Workspaces first, as in the Orchestrator's picker: scheduled
-                  work more often spans a whole workspace than one repo, and a
-                  list that opens on the less likely answer makes you scroll to
-                  the usual one every time. */}
-              {workspaces.length > 0 && (
-                <optgroup label="Workspaces">
-                  {workspaces.map((w) => (
-                    <option key={w.id} value={w.rootPath}>
-                      {w.name}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {projects.length > 0 && (
-                <optgroup label="Projects">
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.path}>
-                      {p.name}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
+            />
           </Field>
 
           <Field

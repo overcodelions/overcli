@@ -21,7 +21,7 @@ describe('DEFAULT_SETTINGS', () => {
       editorPaneWidth: 540,
       explorerTreeWidth: 280,
       servicesListWidth: 480,
-      sidebarLayout: 'stream',
+      sidebarLayout: 'projects',
       showActiveSidebarSection: true,
       showDebug: false,
       cleanup: { retireAfterDays: 7, keepPerProducer: 3, warnAtCount: 25 },

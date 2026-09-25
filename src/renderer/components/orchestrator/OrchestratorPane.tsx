@@ -45,6 +45,7 @@ import { SegmentButton } from '../flows/FlowLaunch';
 import type { Flow } from '@shared/flows/schema';
 import { isOrchestrationAwaitingApproval, ledgerBatches } from '@shared/flows/orchestration';
 import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestration';
+import { PlacePicker } from '../PlacePicker';
 
 /// A launch target the batch can run against: a single project or a whole
 /// workspace. The runtime resolves a workspace `rootPath` to a worktree per
@@ -328,8 +329,6 @@ function PageHeader({
 }) {
   const projectPath = useOrchestratorStore((s) => s.projectPath);
   const setProjectPath = useOrchestratorStore((s) => s.setProjectPath);
-  const workspaceTargets = targets.filter((t) => t.kind === 'workspace');
-  const projectTargets = targets.filter((t) => t.kind === 'project');
   return (
     <header className={'flex-none flex items-center gap-3 pt-6 pb-6 ' + IDLE_PAD}>
       <div>
@@ -353,32 +352,16 @@ function PageHeader({
       >
         About
       </button>
-      <select
-        value={projectPath ?? ''}
-        onChange={(e) => setProjectPath(e.target.value || null)}
-        className="text-xs bg-card-strong rounded-md px-2 py-1 text-ink border-0 outline-none"
-        title="Project or workspace everything on this page runs against"
-      >
-        {targets.length === 0 && <option value="">No workspaces or projects</option>}
-        {workspaceTargets.length > 0 && (
-          <optgroup label="Workspaces">
-            {workspaceTargets.map((t) => (
-              <option key={t.path} value={t.path}>
-                {t.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {projectTargets.length > 0 && (
-          <optgroup label="Projects">
-            {projectTargets.map((t) => (
-              <option key={t.path} value={t.path}>
-                {t.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
-      </select>
+      {targets.length === 0 ? (
+        <span className="text-xs text-ink-faint">No workspaces or projects</span>
+      ) : (
+        <PlacePicker
+          value={projectPath ?? ''}
+          onChange={(path) => setProjectPath(path || null)}
+          label="Project or workspace everything on this page runs against"
+          size="sm"
+        />
+      )}
     </header>
   );
 }

@@ -1,32 +1,22 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { noBackendReady, useStore } from '../store';
 import { useTickingNow } from '../hooks';
 import { useRunningMap, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
-import { Colosseum, Conversation, Project, SidebarLayout, Workspace, UUID } from '@shared/types';
+import { Colosseum, Conversation, Project, SidebarLayout, UUID } from '@shared/types';
 import { flowRunIsOwnedBy, type FlowRun } from '@shared/flows/schema';
-import { pathBasename } from '@shared/workspaceNames';
-import { isEverydayProject } from '@shared/everydayProjects';
-import { labOn } from '@shared/labs';
 import { backendColor } from '../theme';
 import { selectActiveEntries } from '../activeSection';
 import { conversationActivityAt } from '../conversationLookup';
-import { partitionSleeping } from '../sidebarSleep';
 import { useFlowsStore } from '../flowsStore';
 import { DEFAULT_CLEANUP_RULES } from '@shared/cleanupRules';
 import { estimateTidyCandidates } from './sheets/cleanupNudge';
-import { useOrchestratorStore } from '../orchestratorStore';
 import { useWorkersStore } from '../workersStore';
-import {
-  ActiveFlowRow,
-  FlowRunsSection,
-  flowRunMatchesQuery,
-} from './flows/FlowRunSidebarRow';
-import { ConversationRow } from './ConversationRow';
-import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
+import { ActiveFlowRow, FlowRunRow, flowRunMatchesQuery, runIsLive } from './flows/FlowRunSidebarRow';
+import { SidebarMarker } from './SidebarMarker';
 import { MomentumMeter, SleepRollup } from './SidebarAtoms';
 import { SidebarStream } from './SidebarStream';
+import { SLEEP_AFTER_MS } from '../sidebarSleep';
 import {
-  byNewestFirst,
   collectActiveCandidates,
   collectStreamItems,
   isAgentConversation,
@@ -38,7 +28,19 @@ import {
 import { WorkersSidebar, WorkersSidebarFooter } from './workers/WorkersSidebar';
 import { newConversationLabel, resolveNewConversationTarget } from '../newConversationTarget';
 import { formatShortcutDef, SHORTCUTS, startNewConversationHere } from '../shortcuts';
-import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
+import {
+  arrangePlaces,
+  filterPlaces,
+  placeId,
+  placeKind,
+  movePinned,
+  togglePinned,
+  type PlaceFilter,
+  type PlaceRef,
+  type PlaceSort,
+  type PlaceStatus,
+} from '../places';
+import { PlusIcon, PopMenu, ProjectPlace, WorkspacePlace, statusOfPlace } from './SidebarPlaces';
 
 // Collecting what the sidebar shows moved to ./sidebarItems so both layouts
 // feed from one place. Re-exported here because the sheets and the
@@ -47,19 +49,15 @@ import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
 export { collectActiveCandidates, isAgentConversation };
 
 const WORKERS_EXPANDED_KEY = 'sidebar.workersExpanded';
+/// Which places you have opened. Persisted for the same reason the roster's
+/// openings are: places fold by default now, and losing what you opened on
+/// every reload would make opening one feel pointless.
+const PLACES_OPEN_KEY = 'sidebar.placesOpen';
+const NO_PINS: string[] = [];
 
-/// How many worker runs the Active section will show at once. Three of seven
-/// slots: enough to see a roster waking up, few enough that your own work
-/// keeps the rest.
-const ACTIVE_WORKER_RUN_LIMIT = 3;
-
-/// Which workers the user has opened in the roster. Persisted, unlike the
-/// project tree's in-memory collapse set, because the roster folds by
-/// DEFAULT — losing this on reload would re-fold everything the user
-/// deliberately opened, which makes opening things feel pointless.
-function loadWorkersExpanded(): Set<UUID> {
+function loadIdSet(key: string): Set<UUID> {
   try {
-    const raw = localStorage.getItem(WORKERS_EXPANDED_KEY);
+    const raw = localStorage.getItem(key);
     if (raw) return new Set(JSON.parse(raw) as UUID[]);
   } catch {
     // A corrupt entry just means starting folded.
@@ -67,9 +65,9 @@ function loadWorkersExpanded(): Set<UUID> {
   return new Set();
 }
 
-function saveWorkersExpanded(ids: Set<UUID>): void {
+function saveIdSet(key: string, ids: Set<UUID>): void {
   try {
-    localStorage.setItem(WORKERS_EXPANDED_KEY, JSON.stringify([...ids]));
+    localStorage.setItem(key, JSON.stringify([...ids]));
   } catch {
     // Best effort: the fold state is a nicety, not data.
   }
@@ -94,23 +92,23 @@ export function Sidebar() {
   const selectConversation = useStore((s) => s.selectConversation);
   const pickProject = useStore((s) => s.pickProject);
   const openSheet = useStore((s) => s.openSheet);
-  const removeProject = useStore((s) => s.removeProject);
-  const removeWorkspace = useStore((s) => s.removeWorkspace);
-  const startNewConversation = useStore((s) => s.startNewConversation);
-  const startNewConversationInWorkspace = useStore((s) => s.startNewConversationInWorkspace);
   const setDetailMode = useStore((s) => s.setDetailMode);
-  const openExplorer = useStore((s) => s.openExplorer);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const showActiveSection = useStore((s) => s.settings.showActiveSidebarSection ?? true);
-  const sidebarLayout = useStore((s) => s.settings.sidebarLayout ?? 'stream');
+  const sidebarLayout = useStore((s) => s.settings.sidebarLayout ?? 'projects');
+  const pinnedPlaces = useStore((s) => s.settings.pinnedPlaces) ?? NO_PINS;
   // Read through getState rather than subscribing to the whole settings
   // object: the switch writes once a click, and a sidebar that re-rendered on
   // every unrelated settings change would be paying for it constantly.
   const showTree = sidebarLayout === 'projects';
   const setSidebarLayout = (layout: SidebarLayout) => {
     const st = useStore.getState();
-    if ((st.settings.sidebarLayout ?? 'stream') === layout) return;
+    if ((st.settings.sidebarLayout ?? 'projects') === layout) return;
     void st.saveSettings({ ...st.settings, sidebarLayout: layout });
+  };
+  const togglePin = (id: string) => {
+    const st = useStore.getState();
+    void st.saveSettings({ ...st.settings, pinnedPlaces: togglePinned(st.settings.pinnedPlaces ?? [], id) });
   };
   // One clock for every time-sensitive memo in this render, rather than each
   // calling Date.now() itself. Two memos disagreeing about "now" by a few
@@ -163,45 +161,37 @@ export function Sidebar() {
   const lastSelectedAt = useStore((s) => s.lastSelectedAt);
   const lastOpenedAtByRun = useFlowsStore((s) => s.lastOpenedAtByRun);
   const activeRunId = useFlowsStore((s) => s.activeRunId);
+  const isGitRepoById = useStore((s) => s.projectIsGitRepo);
   const openedRunId = detailMode === 'flows' ? activeRunId : null;
   const [search, setSearch] = useState('');
-  const [sleepingProjectsOpen, setSleepingProjectsOpen] = useState(false);
-  const [sleepingWorkspacesOpen, setSleepingWorkspacesOpen] = useState(false);
-  /// Which woken groups the user has since opened. Separate from `collapsed`
-  /// because the two lists run opposite defaults — the warm tree is open
-  /// until you close it, a woken group is closed until you open it.
-  const [expandedSleeping, setExpandedSleeping] = useState<Set<UUID>>(new Set());
-  const toggleSleeping = (id: UUID) =>
-    setExpandedSleeping((cur) => {
+  const [placeSort, setPlaceSort] = useState<PlaceSort>('recent');
+  const [placeFilter, setPlaceFilter] = useState<PlaceFilter>('all');
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const addAnchor = useRef<HTMLButtonElement>(null);
+  // Places run the roster's model: folded by default, tracking what you
+  // OPENED. With one line per place, thirty repos arriving pre-expanded is
+  // exactly the wall of rows this layout exists to get rid of.
+  const [placesOpen, setPlacesOpen] = useState<Set<UUID>>(() => loadIdSet(PLACES_OPEN_KEY));
+  const updatePlacesOpen = (updater: (cur: Set<UUID>) => Set<UUID>) =>
+    setPlacesOpen((cur) => {
+      const next = updater(cur);
+      if (next !== cur) saveIdSet(PLACES_OPEN_KEY, next);
+      return next;
+    });
+  const togglePlace = (id: UUID) =>
+    updatePlacesOpen((cur) => {
       const next = new Set(cur);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  // Flip the expand model: "expanded by default unless collapsed by the
-  // user." We track only the IDs the user has explicitly collapsed;
-  // everything else is open. New projects that arrive later (after the
-  // app boots and `init()` loads the store) inherit the default-open
-  // behavior automatically — no useEffect sync needed.
-  const [collapsed, setCollapsed] = useState<Set<UUID>>(new Set());
-  const isCollapsed = (id: UUID) => collapsed.has(id);
-  const toggle = (id: UUID) =>
-    setCollapsed((cur) => {
-      const next = new Set(cur);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  // The Workers roster runs the OPPOSITE model: folded by default, tracking
-  // what the user OPENED. A project group is a container you file into, so
-  // default-open earns its rows; a roster is a list of names you pick from,
-  // and ten workers arriving pre-expanded buried the picking. Openings
-  // persist across launches — see loadWorkersExpanded.
-  const [workersExpanded, setWorkersExpanded] = useState<Set<UUID>>(loadWorkersExpanded);
+  // The Workers roster runs the same model — see PLACES_OPEN_KEY.
+  const [workersExpanded, setWorkersExpanded] = useState<Set<UUID>>(() => loadIdSet(WORKERS_EXPANDED_KEY));
   const updateWorkersExpanded = (updater: (cur: Set<UUID>) => Set<UUID>) =>
     setWorkersExpanded((cur) => {
       const next = updater(cur);
-      if (next !== cur) saveWorkersExpanded(next);
+      if (next !== cur) saveIdSet(WORKERS_EXPANDED_KEY, next);
       return next;
     });
   const toggleWorkerExpanded = (id: UUID) =>
@@ -221,109 +211,178 @@ export function Sidebar() {
       return next;
     });
   const query = search.trim().toLowerCase();
-  const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
-  // The flow runs matching the search, so a project/workspace can surface in
-  // results purely because one of its runs matches, even when its own name
-  // and conversations don't.
-  //
-  // A list scanned with `flowRunIsOwnedBy`, not a Set of owner paths: a Set
-  // lookup is a strict string compare by definition, and a run's stored owner
-  // path can be spelled differently from the one the store holds now. Keyed
-  // by path, those runs matched the query but hung off a key no group asked
-  // for, so their workspace stayed hidden while the search was open.
-  const flowMatches = useMemo(
+  // Opening a conversation opens the place it lives in — and its workspace,
+  // when it is a member — so the sidebar always shows where you are.
+  useEffect(() => {
+    if (!rawSelectedId) return;
+    const owners: UUID[] = [];
+    const project = projects.find((p) => p.conversations.some((c) => c.id === rawSelectedId));
+    if (project) {
+      owners.push(project.id);
+      for (const w of workspaces) if (w.projectIds.includes(project.id)) owners.push(w.id);
+    }
+    const ws = workspaces.find((w) => (w.conversations ?? []).some((c) => c.id === rawSelectedId));
+    if (ws) owners.push(ws.id);
+    if (owners.length === 0) return;
+    updatePlacesOpen((cur) => {
+      if (owners.every((id) => cur.has(id))) return cur;
+      const next = new Set(cur);
+      for (const id of owners) next.add(id);
+      return next;
+    });
+    // Only on a new selection: closing the place afterwards is yours to do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawSelectedId]);
+
+  // ---- places -------------------------------------------------------------
+
+  const runList = useMemo(() => Object.values(flowRuns), [flowRuns]);
+  const placeStatus = useMemo(() => {
+    const cache = new Map<string, PlaceStatus>();
+    return (ref: PlaceRef) => {
+      const id = placeId(ref);
+      let s = cache.get(id);
+      if (!s) {
+        s = statusOfPlace(ref, runList, runners, now);
+        cache.set(id, s);
+      }
+      return s;
+    };
+  }, [runList, runners, now]);
+  const placeActivity = useMemo(() => {
+    const cache = new Map<string, number>();
+    const of = (ref: PlaceRef): number => {
+      const id = placeId(ref);
+      const hit = cache.get(id);
+      if (hit !== undefined) return hit;
+      const at =
+        ref.kind === 'project'
+          ? projectActivityAt(ref.project, colosseums, runners, flowRuns, now)
+          : Math.max(
+              workspaceActivityAt(ref.workspace, runners, flowRuns, now),
+              ...ref.members.map((m) => projectActivityAt(m, colosseums, runners, flowRuns, now)),
+            );
+      cache.set(id, at);
+      return at;
+    };
+    return of;
+  }, [colosseums, runners, flowRuns, now]);
+  const arranged = useMemo(
     () =>
-      query ? Object.values(flowRuns).filter((run) => flowRunMatchesQuery(run, query)) : [],
-    [flowRuns, query],
+      arrangePlaces({
+        projects,
+        workspaces,
+        pinned: pinnedPlaces,
+        activityAt: placeActivity,
+        status: placeStatus,
+        keepOut: (ref) =>
+          ref.kind === 'project'
+            ? ref.project.id === focusedProjectId ||
+              ref.project.conversations.some((c) => c.id === selectedId) ||
+              !hasProjectActivity(ref.project, colosseums, flowRuns)
+            : ref.workspace.id === focusedWorkspaceId ||
+              (ref.workspace.conversations ?? []).some((c) => c.id === selectedId) ||
+              ref.members.some((m) => m.conversations.some((c) => c.id === selectedId)),
+        now,
+      }),
+    [
+      projects,
+      workspaces,
+      pinnedPlaces,
+      placeActivity,
+      placeStatus,
+      focusedProjectId,
+      focusedWorkspaceId,
+      selectedId,
+      colosseums,
+      flowRuns,
+      now,
+    ],
   );
-  const hasFlowMatch = useCallback(
-    (path: string) => flowMatches.some((run) => flowRunIsOwnedBy(run, path)),
-    [flowMatches],
+  const filtered = useMemo(
+    () =>
+      showTree && query
+        ? filterPlaces(projects, workspaces, {
+            query,
+            sort: placeSort,
+            filter: placeFilter,
+            kind: (ref) => placeKind(ref, ref.kind === 'project' ? isGitRepoById[ref.project.id] : undefined),
+            activityAt: placeActivity,
+            status: placeStatus,
+            weight: (ref) => {
+              const convs =
+                ref.kind === 'project'
+                  ? ref.project.conversations
+                  : [...(ref.workspace.conversations ?? []), ...ref.members.flatMap((m) => m.conversations)];
+              const path = ref.kind === 'project' ? ref.project.path : ref.workspace.rootPath;
+              return convs.filter((c) => !c.hidden).length + runList.filter((r) => flowRunIsOwnedBy(r, path)).length;
+            },
+          })
+        : [],
+    [showTree, query, projects, workspaces, placeSort, placeFilter, isGitRepoById, placeActivity, placeStatus, runList],
   );
+  // Conversations and runs whose titles match, under the places — a search
+  // for a thing you said should find the chat you said it in.
+  const conversationMatches = useMemo(() => {
+    if (!showTree || !query) return [];
+    const out: RecentConversationItem[] = [];
+    for (const p of projects) {
+      for (const c of p.conversations) {
+        if (!c.hidden && matchesConversation(c, query)) {
+          out.push({ kind: 'conversation', conv: c, ownerName: projectLabel(p), ownerKind: 'project' });
+        }
+      }
+    }
+    for (const w of workspaces) {
+      for (const c of w.conversations ?? []) {
+        if (!c.hidden && matchesConversation(c, query)) {
+          out.push({ kind: 'conversation', conv: c, ownerName: w.name, ownerKind: 'workspace' });
+        }
+      }
+    }
+    return out.sort((a, b) => conversationActivityAt(b.conv) - conversationActivityAt(a.conv)).slice(0, 30);
+  }, [showTree, query, projects, workspaces]);
+  const runMatches = useMemo(
+    () =>
+      showTree && query
+        ? runList
+            // Worker runs too: a ticket a worker picked up is still a thing
+            // you search for, and the row opens it on the worker's desk.
+            .filter((run) => run.state.kind !== 'archived' && flowRunMatchesQuery(run, query))
+            .sort((a, b) => b.createdAt - a.createdAt)
+            .slice(0, 20)
+        : [],
+    [showTree, query, runList],
+  );
+
   // Collapse-all acts on whatever the sidebar is currently SHOWING. On the
-  // Workers tab that is the roster, not the project tree — the button used to
-  // fold groups nobody could see, so it read as broken.
-  const allGroupIds = useMemo(
-    () =>
-      detailMode === 'workers'
-        ? Object.keys(workers)
-        : [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
-    [detailMode, workers, projects, workspaces],
+  // Workers tab that is the roster, not the place list.
+  const visiblePlaceIds = useMemo(
+    () => [...arranged.pinned, ...arranged.active].map(placeId),
+    [arranged],
   );
-  // "Everything folded" reads off a different set per tab, because the roster
-  // tracks openings where the project tree tracks closings.
+  const allGroupIds = useMemo(
+    () => (detailMode === 'workers' ? Object.keys(workers) : visiblePlaceIds),
+    [detailMode, workers, visiblePlaceIds],
+  );
   const allCollapsed =
     allGroupIds.length > 0 &&
     (detailMode === 'workers'
       ? allGroupIds.every((id) => !workersExpanded.has(id))
-      : allGroupIds.every((id) => collapsed.has(id)));
-  // Only the ids on screen move, so folding the roster does not silently
-  // reopen every project group you had closed on the Chat tab.
+      : !allGroupIds.some((id) => placesOpen.has(id)));
   const toggleAll = () => {
-    if (detailMode === 'workers') {
-      updateWorkersExpanded((cur) => {
-        const next = new Set(cur);
-        for (const id of allGroupIds) {
-          if (allCollapsed) next.add(id);
-          else next.delete(id);
-        }
-        return next;
-      });
-      return;
-    }
-    setCollapsed((cur) => {
+    const update = detailMode === 'workers' ? updateWorkersExpanded : updatePlacesOpen;
+    update((cur) => {
       const next = new Set(cur);
       for (const id of allGroupIds) {
-        if (allCollapsed) next.delete(id);
-        else next.add(id);
+        if (allCollapsed) next.add(id);
+        else next.delete(id);
       }
       return next;
     });
   };
 
-  const visibleProjects = useMemo(() => {
-    if (!query) return projects;
-    return projects
-      .map((p) => ({
-        ...p,
-        conversations: p.conversations.filter(
-          (c) =>
-            c.name.toLowerCase().includes(query) ||
-            (c.sessionId ?? '').toLowerCase().includes(query),
-        ),
-      }))
-      .filter(
-        (p) =>
-          p.name.toLowerCase().includes(query) ||
-          p.conversations.length > 0 ||
-          hasFlowMatch(p.path),
-      );
-  }, [projects, query, hasFlowMatch]);
-
-  const visibleWorkspaces = useMemo(() => {
-    if (!query) return workspaces;
-    return workspaces
-      .map((w) => ({
-        ...w,
-        conversations: (w.conversations ?? []).filter(
-          (c) =>
-            c.name.toLowerCase().includes(query) ||
-            (c.sessionId ?? '').toLowerCase().includes(query),
-        ),
-      }))
-      .filter((w) => {
-        const memberMatch = w.projectIds.some((pid) =>
-          projectsById.get(pid)?.name.toLowerCase().includes(query),
-        );
-        return (
-          w.name.toLowerCase().includes(query) ||
-          memberMatch ||
-          w.conversations.length > 0 ||
-          hasFlowMatch(w.rootPath)
-        );
-      });
-  }, [projectsById, query, workspaces, hasFlowMatch]);
   const activeEntries = useMemo(
     () =>
       selectActiveEntries(
@@ -407,73 +466,6 @@ export function Sidebar() {
     );
   }, [streamEntries, query]);
 
-  // Projects and workspaces now obey ONE rule instead of two.
-  //
-  // Projects used to sort by activity, show the first five and overflow the
-  // rest into "More projects"; workspaces sorted not at all, showed all of
-  // them, and never rolled up. Two lists of the same kind of thing behaving
-  // differently is most of why this sidebar read as busy — and the flat five
-  // was arbitrary, so a sixth repo you were actively in got buried while a
-  // dead one above it did not.
-  //
-  // Both are now: sort by activity, then roll up whatever has gone cold.
-  // Warmth decides, not a headcount.
-  const sortedProjects = useMemo(
-    () =>
-      [...projects].sort(
-        (a, b) =>
-          projectActivityAt(b, colosseums, runners, flowRuns, now) -
-          projectActivityAt(a, colosseums, runners, flowRuns, now),
-      ),
-    [colosseums, projects, runners, flowRuns, now],
-  );
-  const projectSleep = useMemo(
-    () =>
-      partitionSleeping(
-        sortedProjects,
-        (p) => ({
-          touchedAt: projectActivityAt(p, colosseums, runners, flowRuns, now),
-          // A project you are inside, or one that has never had a chance to
-          // look busy, stays put. Without the second half a repo you just
-          // added would roll up before you had typed in it.
-          pinned:
-            p.id === focusedProjectId ||
-            p.conversations.some((c) => c.id === selectedId) ||
-            !hasProjectActivity(p, colosseums, flowRuns),
-        }),
-        { now },
-      ),
-    [sortedProjects, colosseums, runners, flowRuns, focusedProjectId, selectedId, now],
-  );
-  const sortedWorkspaces = useMemo(
-    () =>
-      [...workspaces].sort(
-        (a, b) =>
-          workspaceActivityAt(b, runners, flowRuns, now) -
-          workspaceActivityAt(a, runners, flowRuns, now),
-      ),
-    [workspaces, runners, flowRuns, now],
-  );
-  const workspaceSleep = useMemo(
-    () =>
-      partitionSleeping(
-        sortedWorkspaces,
-        (w) => ({
-          touchedAt: workspaceActivityAt(w, runners, flowRuns, now),
-          pinned: (w.conversations ?? []).some((c) => c.id === selectedId),
-        }),
-        { now },
-      ),
-    [sortedWorkspaces, runners, flowRuns, selectedId, now],
-  );
-  const selectedProjectId = useMemo(
-    () =>
-      selectedId
-        ? projects.find((p) => p.conversations.some((c) => c.id === selectedId))?.id ?? null
-        : focusedProjectId,
-    [focusedProjectId, projects, selectedId],
-  );
-
   /// Opening a run from the sidebar, wherever the row lives.
   ///
   /// A worker's run keeps its one home: the row is a route to the desk it
@@ -490,66 +482,108 @@ export function Sidebar() {
     setDetailMode('flows');
   };
 
-  const renderProjectShortcut = (project: Project) => (
-    <ProjectShortcutRow
-      key={project.id}
-      project={project}
-      selected={project.id === selectedProjectId}
-      onOpen={() => startNewConversation(project.id)}
-      onExplore={() => openExplorer(project.path)}
-    />
+  const openConversation = useCallback(
+    (id: UUID) => {
+      setDetailMode('conversation');
+      selectConversation(id);
+    },
+    [setDetailMode, selectConversation],
   );
-  const renderProjectGroup = (project: Project) => (
-    <ProjectGroup
-      key={project.id}
-      project={project}
-      colosseums={colosseums.filter((c) => c.projectId === project.id)}
-      expanded={!isCollapsed(project.id)}
-      toggle={() => toggle(project.id)}
-      selectedId={selectedId}
-      onSelect={(id) => {
-        setDetailMode('conversation');
-        selectConversation(id);
-      }}
-      onNewConversation={() => startNewConversation(project.id)}
-      onRemove={() => void removeProject(project.id)}
-      onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
-      onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
-      onExplore={() => openExplorer(project.path)}
-      searchQuery={query}
-    />
-  );
-  // A woken group starts folded: you opened the roll-up to see WHICH cold
-  // projects are there, not to have ten trees unfurl at once.
-  const renderSleepingProjectGroup = (project: Project) => (
-    <ProjectGroup
-      key={project.id}
-      project={project}
-      colosseums={colosseums.filter((c) => c.projectId === project.id)}
-      expanded={collapsed.has(project.id) ? false : expandedSleeping.has(project.id)}
-      toggle={() => toggleSleeping(project.id)}
-      selectedId={selectedId}
-      onSelect={(id) => {
-        setDetailMode('conversation');
-        selectConversation(id);
-      }}
-      onNewConversation={() => startNewConversation(project.id)}
-      onRemove={() => void removeProject(project.id)}
-      onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
-      onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
-      onExplore={() => openExplorer(project.path)}
-    />
-  );
+
+  const renderPlace = (ref: PlaceRef, nested = false): React.ReactNode => {
+    const id = placeId(ref);
+    const common = {
+      expanded: placesOpen.has(id),
+      onToggle: () => togglePlace(id),
+      status: placeStatus(ref),
+      activityAt: placeActivity(ref),
+      now,
+      pinned: pinnedPlaces.includes(id),
+      onTogglePin: () => togglePin(id),
+      onMovePin: (direction: -1 | 1) => {
+        const st = useStore.getState();
+        void st.saveSettings({
+          ...st.settings,
+          pinnedPlaces: movePinned(st.settings.pinnedPlaces ?? [], id, direction),
+        });
+      },
+      selectedId,
+      onSelect: openConversation,
+      nested,
+    };
+    return ref.kind === 'project' ? (
+      <ProjectPlace
+        key={id}
+        project={ref.project}
+        colosseums={colosseums.filter((c) => c.projectId === ref.project.id)}
+        {...common}
+      />
+    ) : (
+      <WorkspacePlace
+        key={id}
+        workspace={ref.workspace}
+        members={ref.members}
+        renderMember={(p: Project) => renderPlace({ kind: 'project', project: p }, true)}
+        memberIsActive={(p: Project) => {
+          const member: PlaceRef = { kind: 'project', project: p };
+          const s = placeStatus(member);
+          return (
+            placesOpen.has(p.id) ||
+            s.running + s.needsYou > 0 ||
+            placeActivity(member) >= now - SLEEP_AFTER_MS ||
+            (!!selectedId && p.conversations.some((c) => c.id === selectedId))
+          );
+        }}
+        {...common}
+      />
+    );
+  };
+
+  const FILTERS: Array<[PlaceFilter, string]> = [
+    ['all', 'All'],
+    ['repos', 'Repos'],
+    ['documents', 'Documents'],
+    ['workspaces', 'Workspaces'],
+    ['running', 'Busy'],
+  ];
+  const SORTS: Array<[PlaceSort, string]> = [
+    ['recent', 'Recent'],
+    ['az', 'A–Z'],
+    ['busiest', 'Busiest'],
+  ];
 
   return (
     <aside className="h-full flex-shrink-0 flex flex-col bg-surface-muted border-r border-card min-w-0" style={{ width: '100%' }}>
       <div className="px-2 pt-2 pb-1 flex items-center gap-1">
+        <span className="relative flex flex-1 min-w-0 items-center">
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={detailMode === 'workers' ? 'Search workers and their work' : 'Search'}
-          className="field flex-1 min-w-0 px-2 py-1 text-xs"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && search) {
+              e.stopPropagation();
+              setSearch('');
+            }
+          }}
+          placeholder={
+            detailMode === 'workers' ? 'Search workers and their work' : showTree ? 'Filter places' : 'Search'
+          }
+          aria-label={showTree ? 'Filter places' : 'Search'}
+          className="field flex-1 min-w-0 px-2 py-1 pr-6 text-xs"
         />
+        {search && (
+          <button
+            onClick={() => setSearch('')}
+            title="Clear search (Esc)"
+            aria-label="Clear search"
+            className="absolute right-1 flex h-4 w-4 items-center justify-center rounded-full text-ink-faint hover:bg-card-strong hover:text-ink"
+          >
+            <svg width="8" height="8" viewBox="0 0 10 10" aria-hidden>
+              <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
+        </span>
         {/* Starting a chat was reachable only from a project row in Places, or
             from ⌘N / ⌘K if you happened to know them — so Recent, the default
             tab, offered no visible way to begin one. This button is that way,
@@ -571,7 +605,7 @@ export function Sidebar() {
         </button>
         {/* Nothing to fold in Stream — it has no groups to collapse — so the
             control goes rather than sitting there permanently disabled. */}
-        {showTree && (
+        {(showTree || detailMode === 'workers') && (
           <button
             onClick={toggleAll}
             disabled={allGroupIds.length === 0}
@@ -590,18 +624,63 @@ export function Sidebar() {
           views of nothing is the first thing a newcomer would have read. */}
       {detailMode !== 'workers' && (projects.length > 0 || workspaces.length > 0) && (
         <div className="mx-2 mt-1 flex gap-0.5 rounded-md border border-card-strong bg-card p-0.5">
+          {/* Places first: with what's running and what needs you on every
+              row, it answers "what was I doing" as well as "where does this
+              live". Recent is the flat, newest-first view of the same work. */}
+          <LayoutTab
+            label="Places"
+            title="Your projects and workspaces, one line each"
+            on={sidebarLayout === 'projects'}
+            onClick={() => setSidebarLayout('projects')}
+          />
           <LayoutTab
             label="Recent"
             title="Everything you have worked on, newest first"
             on={sidebarLayout === 'stream'}
             onClick={() => setSidebarLayout('stream')}
           />
-          <LayoutTab
-            label="Places"
-            title="Your projects and workspaces as folders"
-            on={sidebarLayout === 'projects'}
-            onClick={() => setSidebarLayout('projects')}
-          />
+        </div>
+      )}
+      {detailMode !== 'workers' && showTree && query && (
+        <div className="mx-2 mt-1.5 flex flex-col gap-1.5">
+          <div className="flex flex-wrap gap-1">
+            {FILTERS.map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setPlaceFilter(value)}
+                aria-pressed={placeFilter === value}
+                className={
+                  'rounded-full px-2 py-px text-[10.5px] ' +
+                  (placeFilter === value
+                    ? 'bg-card-strong text-ink'
+                    : 'border border-card-strong text-ink-faint hover:text-ink-muted')
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1 text-[10.5px] text-ink-faint">
+            <span className="flex-1">
+              {filtered.length} place{filtered.length === 1 ? '' : 's'}
+            </span>
+            <span>Sort</span>
+            <div className="flex gap-px rounded bg-card p-px">
+              {SORTS.map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setPlaceSort(value)}
+                  aria-pressed={placeSort === value}
+                  className={
+                    'rounded px-1.5 py-px ' +
+                    (placeSort === value ? 'bg-card-strong text-ink' : 'hover:text-ink-muted')
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -637,10 +716,7 @@ export function Sidebar() {
                   key={entry.conv.id}
                   item={entry}
                   momentum={momentum ?? 0}
-                  onClick={() => {
-                    setDetailMode('conversation');
-                    selectConversation(entry.conv.id);
-                  }}
+                  onClick={() => openConversation(entry.conv.id)}
                 />
               ),
             )}
@@ -660,88 +736,64 @@ export function Sidebar() {
             selectedKey={
               openedRunId ? `f:${openedRunId}` : selectedId ? `c:${selectedId}` : null
             }
-            onOpenConversation={(id) => {
-              setDetailMode('conversation');
-              selectConversation(id);
-            }}
+            onOpenConversation={openConversation}
             onNewConversation={cliBlocked ? undefined : () => startNewConversationHere()}
             now={now}
           />
         )}
-        {showTree && query && <SidebarSectionTitle label="Search results" />}
-        {showTree && query && visibleProjects.length === 0 && visibleWorkspaces.length === 0 && (
-          <div className="px-2 py-2 text-xs text-ink-faint">No matches</div>
-        )}
-        {showTree && query && visibleProjects.map(renderProjectGroup)}
-        {showTree && (query ? visibleWorkspaces : workspaceSleep.awake).length > 0 && (
-          <SidebarSectionTitle label="Workspaces" />
-        )}
-        {showTree && (query ? visibleWorkspaces : workspaceSleep.awake).map((ws) => (
-          <WorkspaceGroup
-            key={ws.id}
-            workspace={ws}
-            expanded={!isCollapsed(ws.id)}
-            toggle={() => toggle(ws.id)}
-            selectedId={selectedId}
-            onSelect={(id) => {
-              setDetailMode('conversation');
-              selectConversation(id);
-            }}
-            onNewConversation={() => startNewConversationInWorkspace(ws.id)}
-            onNewAgent={() =>
-              openSheet({ type: 'newWorkspaceAgent', workspaceId: ws.id })
-            }
-            onEdit={() => openSheet({ type: 'editWorkspace', workspaceId: ws.id })}
-            onRemove={() => void removeWorkspace(ws.id)}
-            onExplore={ws.rootPath ? () => openExplorer(ws.rootPath!) : undefined}
-            searchQuery={query}
-          />
-        ))}
-        {showTree && !query && workspaceSleep.sleeping.length > 0 && (
-          <SleepRollup
-            count={workspaceSleep.sleeping.length}
-            open={sleepingWorkspacesOpen}
-            onToggle={() => setSleepingWorkspacesOpen((v) => !v)}
-            label="Sleeping workspaces"
-            openLabel="Sleeping workspaces"
-          />
-        )}
-        {showTree &&
-          !query &&
-          sleepingWorkspacesOpen &&
-          workspaceSleep.sleeping.map((ws) => (
-            <WorkspaceGroup
-              key={ws.id}
-              workspace={ws}
-              expanded={expandedSleeping.has(ws.id)}
-              toggle={() => toggleSleeping(ws.id)}
-              selectedId={selectedId}
-              onSelect={(id) => {
-                setDetailMode('conversation');
-                selectConversation(id);
-              }}
-              onNewConversation={() => startNewConversationInWorkspace(ws.id)}
-              onNewAgent={() => openSheet({ type: 'newWorkspaceAgent', workspaceId: ws.id })}
-              onEdit={() => openSheet({ type: 'editWorkspace', workspaceId: ws.id })}
-              onRemove={() => void removeWorkspace(ws.id)}
-              onExplore={ws.rootPath ? () => openExplorer(ws.rootPath!) : undefined}
-            />
-          ))}
-        {showTree && !query && projects.length > 0 && (
+        {showTree && query && (
           <>
-            <SidebarSectionTitle label="Projects" />
-            {projectSleep.awake.map(renderProjectGroup)}
-            {projectSleep.sleeping.length > 0 && (
+            {filtered.length === 0 && conversationMatches.length === 0 && runMatches.length === 0 && (
+              <div className="px-2 py-2 text-xs text-ink-faint">Nothing matches “{search.trim()}”</div>
+            )}
+            <div className="mt-1">{filtered.map((ref) => renderPlace(ref))}</div>
+            {conversationMatches.length > 0 && (
+              <>
+                <SidebarSectionTitle label="Conversations" />
+                {conversationMatches.map((item) => (
+                  <RecentConversationRow
+                    key={item.conv.id}
+                    item={item}
+                    momentum={0}
+                    onClick={() => openConversation(item.conv.id)}
+                  />
+                ))}
+              </>
+            )}
+            {runMatches.length > 0 && (
+              <>
+                <SidebarSectionTitle label="Flow runs" />
+                {runMatches.map((run) => (
+                  <FlowRunRow key={run.id} run={run} selected={run.id === activeRunId} isLive={runIsLive(run, runners)} />
+                ))}
+              </>
+            )}
+          </>
+        )}
+        {showTree && !query && (
+          <>
+            {arranged.pinned.length > 0 && (
+              <>
+                <SidebarSectionTitle label="Pinned" />
+                {arranged.pinned.map((ref) => renderPlace(ref))}
+              </>
+            )}
+            {arranged.active.length > 0 && (
+              <>
+                <SidebarSectionTitle label={arranged.pinned.length > 0 ? 'Active' : 'Places'} />
+                {arranged.active.map((ref) => renderPlace(ref))}
+              </>
+            )}
+            {arranged.more.length > 0 && (
               <>
                 <SleepRollup
-                  count={projectSleep.sleeping.length}
-                  open={sleepingProjectsOpen}
-                  onToggle={() => setSleepingProjectsOpen((v) => !v)}
-                  label="Sleeping projects"
-                  openLabel="Sleeping projects"
+                  count={arranged.more.length}
+                  open={moreOpen}
+                  onToggle={() => setMoreOpen((v) => !v)}
+                  label="More places · quiet 2 days+"
+                  openLabel="More places"
                 />
-                {sleepingProjectsOpen &&
-                  projectSleep.sleeping.map(renderSleepingProjectGroup)}
+                {moreOpen && arranged.more.map((ref) => renderPlace(ref))}
               </>
             )}
           </>
@@ -758,35 +810,39 @@ export function Sidebar() {
         {detailMode === 'workers' ? (
           <WorkersSidebarFooter />
         ) : (
-        <>
-        <button
-          onClick={pickProject}
-          disabled={cliBlocked}
-          title={cliBlocked ? 'Install a CLI first to add a project' : undefined}
-          className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
-        >
-          + Open folder
-        </button>
-        <button
-          onClick={() => openSheet({ type: 'newEverydayProject' })}
-          disabled={cliBlocked}
-          className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
-        >
-          + New
-        </button>
-        {/* A workspace joins repos, so it means nothing before there are two.
-            Until then the way in is adding a folder of repos, which asks. */}
-        {projects.length >= 2 && (
-          <button
-            onClick={() => openSheet({ type: 'newWorkspace' })}
-            className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
-            disabled={cliBlocked}
-            title={cliBlocked ? 'Install a CLI first to add a workspace' : undefined}
-          >
-            + New workspace
-          </button>
-        )}
-        </>
+          <>
+            {/* Three ways to add a place, behind one button: they are one
+                decision ("I want another place here"), and three permanent
+                rows of it were the heaviest thing in the footer. */}
+            <button
+              ref={addAnchor}
+              onClick={() => setAddOpen((v) => !v)}
+              disabled={cliBlocked}
+              title={cliBlocked ? 'Install a CLI first to add a project' : 'Open a folder, start something new, or join repos into a workspace'}
+              aria-haspopup="menu"
+              aria-expanded={addOpen}
+              className="flex items-center gap-1.5 rounded border border-dashed border-card-strong px-2 py-1 text-left text-xs text-ink-muted hover:border-ink-faint hover:bg-card-strong hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <PlusIcon />
+              <span className="flex-1">Add a place</span>
+            </button>
+            {addOpen && (
+              <PopMenu
+                anchor={addAnchor}
+                onClose={() => setAddOpen(false)}
+                width={240}
+                items={[
+                  { label: 'Open a folder…', hint: 'repo or documents', onSelect: () => void pickProject() },
+                  { label: 'Start something new…', hint: 'empty folder', onSelect: () => openSheet({ type: 'newEverydayProject' }) },
+                  // A workspace joins repos, so it means nothing before there
+                  // are two. Until then the way in is opening a folder of repos.
+                  ...(projects.length >= 2
+                    ? [{ label: 'New workspace…', hint: 'join repos', onSelect: () => openSheet({ type: 'newWorkspace' }) }]
+                    : []),
+                ]}
+              />
+            )}
+          </>
         )}
         <div className="flex items-center gap-1 mt-1">
           <SidebarIconButton label="Extensions" onClick={() => openSheet({ type: 'capabilities' })} />
@@ -910,52 +966,14 @@ function hasProjectActivity(
   return (project.lastOpenedAt ?? 0) > Date.now() - 24 * 60 * 60 * 1000;
 }
 
+function matchesConversation(c: Conversation, query: string): boolean {
+  return c.name.toLowerCase().includes(query) || (c.sessionId ?? '').toLowerCase().includes(query);
+}
+
 function SidebarSectionTitle({ label }: { label: string }) {
   return (
     <div className="mt-3 px-2 text-[10px] uppercase tracking-wide text-ink-faint">
       {label}
-    </div>
-  );
-}
-
-function ProjectShortcutRow({
-  project,
-  selected,
-  onOpen,
-  onExplore,
-}: {
-  project: Project;
-  selected: boolean;
-  onOpen: () => void;
-  onExplore: () => void;
-}) {
-  return (
-    <div
-      className={
-        'sidebar-row group mt-1 flex items-center gap-1 rounded pr-1 ' +
-        (selected
-          ? 'sidebar-row-selected text-ink'
-          : 'text-ink-muted hover:bg-card-strong hover:text-ink hover:border-card')
-      }
-      title={project.path}
-    >
-      <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left">
-        <ProjectIcon />
-        <span className="min-w-0 flex-1">
-          <span className={'block truncate text-xs ' + (selected ? 'font-medium' : '')}>
-            {projectLabel(project)}
-          </span>
-          <span className="block truncate text-[10px] text-ink-faint">{pathBasename(project.path)}</span>
-        </span>
-      </button>
-      <button
-        onClick={onExplore}
-        className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
-        title="Explore files"
-        aria-label={`Explore files in ${project.name}`}
-      >
-        <SearchIcon />
-      </button>
     </div>
   );
 }
@@ -997,750 +1015,6 @@ function RecentConversationRow({
       </span>
       {!isRunning && <MomentumMeter score={momentum} />}
     </button>
-  );
-}
-
-function ProjectGroup({
-  project,
-  colosseums,
-  expanded,
-  toggle,
-  selectedId,
-  onSelect,
-  onNewConversation,
-  onRemove,
-  onNewAgent,
-  onNewColosseum,
-  onExplore,
-  searchQuery = '',
-}: {
-  project: Project;
-  colosseums: Colosseum[];
-  expanded: boolean;
-  toggle: () => void;
-  selectedId: UUID | null;
-  onSelect: (id: UUID) => void;
-  onNewConversation: () => void;
-  onRemove: () => void;
-  onNewAgent: () => void;
-  onNewColosseum: () => void;
-  onExplore: () => void;
-  searchQuery?: string;
-}) {
-  const openSheet = useStore((s) => s.openSheet);
-  const workspaces = useStore((s) => s.workspaces);
-  const runners = useRunningMap();
-  const workers = useWorkersStore((s) => s.workers);
-  const shiftProgress = useWorkersStore((s) => s.shiftProgress);
-  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
-  // `true`/`false` once probed, `undefined` while still unknown. Agents
-  // depend on git worktrees, so we hide the "+ agent" affordance only
-  // when we've confirmed the project isn't a git repo.
-  const isGitRepo = useStore((s) => s.projectIsGitRepo[project.id]);
-  const compareOn = useStore((s) => labOn(s.settings.labs, 'compare'));
-  // Everyday projects ARE git repos, so this is a separate question from
-  // `isGitRepo` — see `isEverydayProject`. A plain folder with no history is
-  // the one state where offering the conversion is purely additive, which is
-  // why the offer is gated on `false` and not on `!== true`.
-  const everyday = isEverydayProject(project);
-  // Memoized because this group is re-rendered by every unrelated store
-  // change, and a mature project list carries hundreds of conversations —
-  // walking them four times per render was showing up in profiles.
-  const { visible, agents } = useMemo(() => {
-    const vis: Conversation[] = [];
-    const ags: Conversation[] = [];
-    for (const c of project.conversations) {
-      if (c.hidden) continue;
-      if (!isAgentConversation(c)) vis.push(c);
-      else if (!c.colosseumId && !c.workspaceAgentCoordinatorId) ags.push(c);
-    }
-    // Newest first, like the flow runs directly below them. These used to
-    // render in raw store order — which is append order — so the newest chat
-    // sat at the BOTTOM of a group whose newest run sat at the top. One list,
-    // two directions.
-    return { visible: byNewestFirst(vis), agents: byNewestFirst(ags) };
-  }, [project.conversations]);
-  const convSleep = useMemo(
-    () =>
-      partitionSleeping(visible, (c) => ({
-        touchedAt: conversationActivityAt(c),
-        pinned: c.id === selectedId || (runners[c.id]?.isRunning ?? false),
-      })),
-    [visible, selectedId, runners],
-  );
-  const [sleepOpen, setSleepOpen] = useState(false);
-  const archivableCount = useMemo(
-    () =>
-      project.conversations.filter(
-        (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
-      ).length,
-    [project.conversations, selectedId, runners],
-  );
-  const flowRuns = useFlowsStore((s) => s.runs);
-  const deskLive = useMemo(
-    () =>
-      anyDeskLive(
-        workersForPath(workers, project.path),
-        flowRuns,
-        orchestrations,
-        runners,
-        shiftProgress,
-      ),
-    [flowRuns, orchestrations, project.path, runners, shiftProgress, workers],
-  );
-  const deletableFlowCount = useMemo(
-    () =>
-      Object.values(flowRuns).filter(
-        (r) =>
-          flowRunIsOwnedBy(r, project.path) &&
-          r.state.kind !== 'running' &&
-          r.state.kind !== 'paused' &&
-          !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
-      ).length,
-    [flowRuns, project.path, runners],
-  );
-  const workspaceRefs = useMemo(
-    () => workspaces.filter((w) => w.projectIds.includes(project.id)),
-    [workspaces, project.id],
-  );
-  const [confirmRemove, setConfirmRemove] = useState(false);
-
-  const removeDetails = useMemo(() => {
-    const colosseumCount = colosseums.length;
-    const workspaceCount = workspaceRefs.length;
-    const deletedWorkspaceCount = workspaceRefs.filter(
-      (w) => w.projectIds.filter((pid) => pid !== project.id).length === 0,
-    ).length;
-    return [
-      project.conversations.length
-        ? `${project.conversations.length} conversation${project.conversations.length === 1 ? '' : 's'} and agent${project.conversations.length === 1 ? '' : 's'} will be removed.`
-        : '',
-      colosseumCount
-        ? `${colosseumCount} colosseum${colosseumCount === 1 ? '' : 's'} will be removed.`
-        : '',
-      workspaceCount
-        ? `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'} will be updated.`
-        : '',
-      deletedWorkspaceCount
-        ? `${deletedWorkspaceCount} workspace${deletedWorkspaceCount === 1 ? '' : 's'} with no projects left will also be removed.`
-        : '',
-    ].filter(Boolean);
-  }, [colosseums.length, project.conversations.length, project.id, workspaceRefs]);
-
-  return (
-    <div className="mt-1">
-      <div className="group flex items-center px-2 py-1 rounded hover:bg-card-strong">
-        <button
-          onClick={toggle}
-          className="w-5 h-5 flex items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card-strong"
-          title={expanded ? 'Collapse project' : 'Expand project'}
-          aria-label={expanded ? 'Collapse project' : 'Expand project'}
-        >
-          <span className={'text-[9px] ' + (expanded ? 'rotate-90' : '') + ' transition-transform flex-shrink-0'}>▸</span>
-        </button>
-        <button
-          onClick={onNewConversation}
-          className="flex items-center gap-1.5 flex-1 text-left min-w-0"
-          title={`Open ${projectLabel(project)}`}
-          aria-label={`Open ${projectLabel(project)}`}
-        >
-          <ProjectIcon />
-          <span className="text-xs font-medium truncate">{projectLabel(project)}</span>
-          {deskLive && <RunningIndicator activityLabel="A worker is working" />}
-        </button>
-        <button
-          onClick={onNewConversation}
-          className="w-6 h-6 flex items-center justify-center rounded text-accent hover:text-accent hover:bg-card-strong [filter:drop-shadow(0_0_3px_rgba(125,200,255,0.7))] hover:[filter:drop-shadow(0_0_5px_rgba(125,200,255,0.9))]"
-          title="New conversation"
-          aria-label={`New conversation in ${projectLabel(project)}`}
-        >
-          <PlusIcon />
-        </button>
-        <button
-          onClick={onExplore}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
-          title="Explore files"
-          aria-label={`Explore files in ${projectLabel(project)}`}
-        >
-          <SearchIcon />
-        </button>
-        <button
-          onClick={() => setConfirmRemove(true)}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-700 dark:text-red-300 hover:bg-card-strong"
-          title="Remove project from Overcli"
-          aria-label={`Remove project ${projectLabel(project)}`}
-        >
-          <TrashIcon />
-        </button>
-      </div>
-      {confirmRemove && (
-        <InlineRemoveConfirm
-          title={`Remove ${projectLabel(project)} from Overcli?`}
-          body="This keeps the repo on disk, but removes it from the app."
-          details={removeDetails}
-          confirmLabel="Remove"
-          onCancel={() => setConfirmRemove(false)}
-          onConfirm={() => {
-            setConfirmRemove(false);
-            onRemove();
-          }}
-        />
-      )}
-      {expanded && (
-        <div className="ml-4 border-l border-card pl-1">
-          {convSleep.awake.map((conv) => (
-            <ConversationRow
-              key={conv.id}
-              conv={conv}
-              selected={conv.id === selectedId}
-              onClick={() => onSelect(conv.id)}
-            />
-          ))}
-          {convSleep.sleeping.length > 0 && (
-            <SleepRollup
-              count={convSleep.sleeping.length}
-              open={sleepOpen}
-              onToggle={() => setSleepOpen((v) => !v)}
-            />
-          )}
-          {sleepOpen &&
-            convSleep.sleeping.map((conv) => (
-              <ConversationRow
-                key={conv.id}
-                conv={conv}
-                selected={conv.id === selectedId}
-                onClick={() => onSelect(conv.id)}
-              />
-            ))}
-          {agents.length > 0 && (
-            <div className="mt-1 text-[10px] uppercase tracking-wider text-ink-faint px-2">
-              Agents
-            </div>
-          )}
-          {agents.map((conv) => (
-            <ConversationRow
-              key={conv.id}
-              conv={conv}
-              selected={conv.id === selectedId}
-              onClick={() => onSelect(conv.id)}
-            />
-          ))}
-          {colosseums.length > 0 && (
-            <div className="mt-1 text-[10px] uppercase tracking-wider text-ink-faint px-2">
-              Colosseums
-            </div>
-          )}
-          {colosseums.map((colosseum) => (
-            <ColosseumSidebarGroup
-              key={colosseum.id}
-              colosseum={colosseum}
-              project={project}
-              selectedId={selectedId}
-              onSelect={onSelect}
-            />
-          ))}
-          <FlowRunsSection path={project.path} query={searchQuery} />
-          <div className="flex gap-1 my-1 pl-1">
-            {isGitRepo !== false && (
-              <button
-                onClick={onNewAgent}
-                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-                title="New agent (build, review, docs, …)"
-              >
-                + agent
-              </button>
-            )}
-            {isGitRepo !== false && compareOn && (
-              <button
-                onClick={onNewColosseum}
-                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-                title="New colosseum"
-              >
-                + colosseum
-              </button>
-            )}
-            {(everyday || isGitRepo === false) && (
-              <button
-                onClick={() => openSheet({ type: 'everydayConversion', projectId: project.id })}
-                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-                title={
-                  everyday
-                    ? 'Shown as documents — plain words, undo. Click to show it as files.'
-                    : 'Show as documents: plain words, save as you type, undo'
-                }
-              >
-                {everyday ? 'documents' : '+ documents'}
-              </button>
-            )}
-            {archivableCount + deletableFlowCount > 0 && (
-              <button
-                onClick={() => openSheet({ type: 'archiveAllInProject', projectId: project.id })}
-                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong ml-auto"
-                title="Archive inactive conversations and delete finished flow runs in this project"
-              >
-                archive all
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ColosseumSidebarGroup({
-  colosseum,
-  project,
-  selectedId,
-  onSelect,
-}: {
-  colosseum: Colosseum;
-  project: Project;
-  selectedId: UUID | null;
-  onSelect: (id: UUID) => void;
-}) {
-  const openSheet = useStore((s) => s.openSheet);
-  const cancelColosseum = useStore((s) => s.cancelColosseum);
-  const removeColosseum = useStore((s) => s.removeColosseum);
-  const runners = useRunningMap();
-  const [expanded, setExpanded] = useState(true);
-  const [confirmRemove, setConfirmRemove] = useState(false);
-
-  const contenders = colosseum.contenderIds
-    .map((cid) => project.conversations.find((c) => c.id === cid) ?? null)
-    .filter((c): c is Conversation => c != null);
-  const containsSelected = selectedId != null && contenders.some((c) => c.id === selectedId);
-  const status = effectiveColosseumStatus(colosseum, runners);
-  const runningContender = contenders.find((conv) => runners[conv.id]?.isRunning);
-
-  return (
-    <div className="mt-1">
-      <div
-        className={
-          'group flex items-center gap-1 rounded pr-1 ' +
-          (containsSelected ? 'bg-accent/10' : 'hover:bg-card-strong')
-        }
-      >
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="px-2 py-1 text-[9px] text-ink-faint"
-          aria-label={expanded ? 'Collapse colosseum' : 'Expand colosseum'}
-        >
-          <span className={expanded ? 'rotate-90 inline-block transition-transform' : 'inline-block transition-transform'}>
-            ▸
-          </span>
-        </button>
-        <button
-          onClick={() => openSheet({ type: 'colosseumCompare', colosseumId: colosseum.id })}
-          className="flex flex-1 min-w-0 items-center gap-1.5 py-1 text-left"
-          title={`Open ${colosseum.name}`}
-        >
-          <TrophyIcon />
-          <span className="truncate text-xs font-medium">{colosseum.name}</span>
-        </button>
-        <ColosseumStatusBadge
-          status={status}
-          activityLabel={runningContender ? runners[runningContender.id]?.activityLabel : undefined}
-        />
-      </div>
-      {expanded && (
-        <div className="ml-5 border-l border-card pl-2">
-          {contenders.map((conv) => {
-            const isWinner = colosseum.winnerId === conv.id;
-            const runner = runners[conv.id];
-            const isRunning = runner?.isRunning ?? false;
-            const completed = !isRunning && !!runner?.completedAt;
-            return (
-              <button
-                key={conv.id}
-                onClick={() => onSelect(conv.id)}
-                className={
-                  'sidebar-row flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs ' +
-                  (selectedId === conv.id
-                    ? 'sidebar-row-selected text-ink'
-                    : 'text-ink-muted hover:bg-card-strong hover:text-ink hover:border-card')
-                }
-                title={conv.name}
-              >
-                <SidebarMarker
-                  color={backendColor(conv.primaryBackend)}
-                  active={isRunning}
-                  completed={completed}
-                />
-                <span className="truncate flex-1">
-                  {conv.primaryBackend}
-                  {conv.currentModel ? ` · ${conv.currentModel}` : ''}
-                </span>
-                {isWinner ? (
-                  <span className="text-amber-700 dark:text-amber-300/80">
-                    <CrownIcon />
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
-          <div className="flex items-center gap-1 px-2 py-1">
-            <button
-              onClick={() => openSheet({ type: 'colosseumCompare', colosseumId: colosseum.id })}
-              className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-            >
-              Compare
-            </button>
-            {status === 'running' && (
-              <button
-                onClick={() => void cancelColosseum(colosseum.id)}
-                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-              >
-                Cancel
-              </button>
-            )}
-            <button
-              onClick={() => setConfirmRemove(true)}
-              className="text-[10px] text-ink-faint hover:text-red-400 py-0.5 px-1.5 rounded hover:bg-card-strong"
-            >
-              Remove
-            </button>
-          </div>
-          {confirmRemove && (
-            <InlineRemoveConfirm
-              title={`Remove ${colosseum.name}?`}
-              body="This removes the colosseum and its contender worktrees."
-              details={[
-                `${contenders.length} contender${contenders.length === 1 ? '' : 's'} will be removed.`,
-              ]}
-              confirmLabel="Remove"
-              onCancel={() => setConfirmRemove(false)}
-              onConfirm={() => {
-                setConfirmRemove(false);
-                void removeColosseum(colosseum.id);
-              }}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function effectiveColosseumStatus(
-  colosseum: Colosseum,
-  runners: Record<UUID, { isRunning: boolean } | undefined>,
-): Colosseum['status'] {
-  if (colosseum.status === 'cancelled' || colosseum.status === 'merged') return colosseum.status;
-  return colosseum.contenderIds.some((cid) => runners[cid]?.isRunning) ? 'running' : 'comparing';
-}
-
-// SidebarMarker + synchronizedAnimationStyle moved to ./SidebarMarker.tsx
-// so flow rows can reuse them without an import cycle.
-
-function RunningIndicator({
-  active = true,
-  activityLabel,
-}: {
-  active?: boolean;
-  activityLabel?: string;
-}) {
-  const title = activityLabel?.trim() || 'Running';
-
-  return (
-    <span
-      className="flex w-4 h-4 flex-shrink-0 items-center justify-center"
-      title={active ? title : undefined}
-      aria-label={active ? title : undefined}
-    >
-      {active ? (
-        <span className="relative flex h-3 w-3 items-center justify-center pointer-events-none">
-          <span
-            className="absolute inline-flex h-full w-full rounded-full animate-ping"
-            style={{ background: RUNNING_MARKER_COLOR, opacity: 0.35 }}
-          />
-          <span className="relative inline-flex h-2 w-2 rounded-full" style={{ background: RUNNING_MARKER_COLOR }} />
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
-function ColosseumStatusBadge({
-  status,
-  activityLabel,
-}: {
-  status: Colosseum['status'];
-  activityLabel?: string;
-}) {
-  if (status === 'running') {
-    return <RunningIndicator activityLabel={activityLabel ?? 'Colosseum running'} />;
-  }
-  if (status === 'merged') {
-    return <span className="text-[10px] text-green-400" title="Colosseum merged">✓</span>;
-  }
-  if (status === 'cancelled') {
-    return <span className="text-[10px] text-ink-faint" title="Colosseum cancelled">×</span>;
-  }
-  return <span className="text-[10px] text-sky-300" title="Colosseum comparing">⇄</span>;
-}
-
-function WorkspaceGroup({
-  workspace,
-  expanded,
-  toggle,
-  selectedId,
-  onSelect,
-  onNewConversation,
-  onNewAgent,
-  onEdit,
-  onRemove,
-  onExplore,
-  searchQuery = '',
-}: {
-  workspace: Workspace;
-  expanded: boolean;
-  toggle: () => void;
-  selectedId: UUID | null;
-  onSelect: (id: UUID) => void;
-  onNewConversation: () => void;
-  onNewAgent: () => void;
-  onEdit: () => void;
-  onRemove: () => void;
-  onExplore?: () => void;
-  searchQuery?: string;
-}) {
-  const openSheet = useStore((s) => s.openSheet);
-  const runners = useRunningMap();
-  const workers = useWorkersStore((s) => s.workers);
-  const shiftProgress = useWorkersStore((s) => s.shiftProgress);
-  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
-  // See the matching note in ProjectGroup — memoized so an unrelated store
-  // change doesn't re-walk the whole conversation list.
-  const { convs, plain, agents } = useMemo(() => {
-    const all = (workspace.conversations ?? []).filter((c) => !c.hidden);
-    // Same direction as a project group and as the flow runs below — see the
-    // note on byNewestFirst.
-    return {
-      convs: all,
-      plain: byNewestFirst(all.filter((c) => !isAgentConversation(c))),
-      agents: byNewestFirst(all.filter(isAgentConversation)),
-    };
-  }, [workspace.conversations]);
-  const convSleep = useMemo(
-    () =>
-      partitionSleeping(plain, (c) => ({
-        touchedAt: conversationActivityAt(c),
-        pinned: c.id === selectedId || (runners[c.id]?.isRunning ?? false),
-      })),
-    [plain, selectedId, runners],
-  );
-  const [sleepOpen, setSleepOpen] = useState(false);
-  const archivableCount = useMemo(
-    () =>
-      (workspace.conversations ?? []).filter(
-        (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
-      ).length,
-    [workspace.conversations, selectedId, runners],
-  );
-  const flowRuns = useFlowsStore((s) => s.runs);
-  const deskLive = useMemo(
-    () =>
-      anyDeskLive(
-        workersForPath(workers, workspace.rootPath),
-        flowRuns,
-        orchestrations,
-        runners,
-        shiftProgress,
-      ),
-    [flowRuns, orchestrations, runners, shiftProgress, workers, workspace.rootPath],
-  );
-  const deletableFlowCount = useMemo(
-    () =>
-      Object.values(flowRuns).filter(
-        (r) =>
-          flowRunIsOwnedBy(r, workspace.rootPath) &&
-          r.state.kind !== 'running' &&
-          r.state.kind !== 'paused' &&
-          !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
-      ).length,
-    [flowRuns, workspace.rootPath, runners],
-  );
-  const [confirmRemove, setConfirmRemove] = useState(false);
-
-  const removeDetails = useMemo(
-    () =>
-      [
-      convs.length
-        ? `${convs.length} workspace conversation${convs.length === 1 ? '' : 's'} will be removed.`
-        : 'This workspace has no conversations yet.',
-      workspace.projectIds.length
-        ? `${workspace.projectIds.length} member project${workspace.projectIds.length === 1 ? '' : 's'} will stay available individually.`
-        : '',
-      ].filter(Boolean),
-    [convs.length, workspace.projectIds.length],
-  );
-
-  return (
-    <div className="mt-1">
-      <div className="group flex items-center px-2 py-1 rounded hover:bg-card-strong">
-        <button onClick={toggle} className="flex items-center gap-1.5 flex-1 text-left min-w-0">
-          <span className={'text-[9px] text-ink-faint ' + (expanded ? 'rotate-90' : '') + ' transition-transform flex-shrink-0'}>▸</span>
-          <WorkspaceIcon />
-          <span className="text-xs font-medium truncate">{workspace.name}</span>
-          {deskLive && <RunningIndicator activityLabel="A worker is working" />}
-        </button>
-        <button
-          onClick={onNewConversation}
-          className="w-6 h-6 flex items-center justify-center rounded text-accent hover:text-accent hover:bg-card-strong [filter:drop-shadow(0_0_3px_rgba(125,200,255,0.7))] hover:[filter:drop-shadow(0_0_5px_rgba(125,200,255,0.9))]"
-          title="New conversation"
-          aria-label={`New conversation in ${workspace.name}`}
-        >
-          <PlusIcon />
-        </button>
-        {onExplore && (
-          <button
-            onClick={onExplore}
-            className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
-            title="Explore files"
-            aria-label={`Explore files in ${workspace.name}`}
-          >
-            <SearchIcon />
-          </button>
-        )}
-        <button
-          onClick={onEdit}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-muted opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
-          title="Edit workspace member projects"
-          aria-label={`Edit workspace ${workspace.name}`}
-        >
-          <PencilIcon />
-        </button>
-        <button
-          onClick={() => setConfirmRemove(true)}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-700 dark:text-red-300 hover:bg-card-strong"
-          title="Remove workspace from Overcli"
-          aria-label={`Remove workspace ${workspace.name}`}
-        >
-          <TrashIcon />
-        </button>
-      </div>
-      {confirmRemove && (
-        <InlineRemoveConfirm
-          title={`Remove ${workspace.name} from Overcli?`}
-          body="This removes the synthetic workspace and its conversations, but keeps member repos on disk and in the app."
-          details={removeDetails}
-          confirmLabel="Remove"
-          onCancel={() => setConfirmRemove(false)}
-          onConfirm={() => {
-            setConfirmRemove(false);
-            onRemove();
-          }}
-        />
-      )}
-      {expanded && (
-        <div className="ml-4 border-l border-card pl-1">
-          {plain.length === 0 && agents.length === 0 && (
-            <div className="px-2 py-1 text-[10px] text-ink-faint">No conversations yet</div>
-          )}
-          {convSleep.awake.map((conv) => (
-            <ConversationRow
-              key={conv.id}
-              conv={conv}
-              selected={conv.id === selectedId}
-              onClick={() => onSelect(conv.id)}
-            />
-          ))}
-          {convSleep.sleeping.length > 0 && (
-            <SleepRollup
-              count={convSleep.sleeping.length}
-              open={sleepOpen}
-              onToggle={() => setSleepOpen((v) => !v)}
-            />
-          )}
-          {sleepOpen &&
-            convSleep.sleeping.map((conv) => (
-              <ConversationRow
-                key={conv.id}
-                conv={conv}
-                selected={conv.id === selectedId}
-                onClick={() => onSelect(conv.id)}
-              />
-            ))}
-          {agents.length > 0 && (
-            <div className="mt-1 text-[10px] uppercase tracking-wider text-ink-faint px-2">
-              Agents
-            </div>
-          )}
-          {agents.map((conv) => (
-            <ConversationRow
-              key={conv.id}
-              conv={conv}
-              selected={conv.id === selectedId}
-              onClick={() => onSelect(conv.id)}
-            />
-          ))}
-          <FlowRunsSection path={workspace.rootPath} query={searchQuery} />
-          <div className="flex gap-1 my-1 pl-1">
-            <button
-              onClick={onNewAgent}
-              className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-              title="New workspace agent (spans all member projects)"
-            >
-              + agent
-            </button>
-            {archivableCount + deletableFlowCount > 0 && (
-              <button
-                onClick={() => openSheet({ type: 'archiveAllInWorkspace', workspaceId: workspace.id })}
-                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong ml-auto"
-                title="Archive inactive conversations and delete finished flow runs in this workspace"
-              >
-                archive all
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function InlineRemoveConfirm({
-  title,
-  body,
-  details,
-  confirmLabel,
-  onCancel,
-  onConfirm,
-}: {
-  title: string;
-  body: string;
-  details: string[];
-  confirmLabel: string;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div className="mx-2 mt-1 rounded-lg border border-red-400/30 bg-red-950/20 p-2">
-      <div className="text-xs font-semibold text-ink">{title}</div>
-      <div className="mt-1 text-[11px] leading-relaxed text-ink-muted">{body}</div>
-      {details.length > 0 && (
-        <ul className="mt-1.5 space-y-0.5 text-[10px] leading-relaxed text-ink-faint">
-          {details.map((detail) => (
-            <li key={detail}>{detail}</li>
-          ))}
-        </ul>
-      )}
-      <div className="mt-2 flex items-center gap-2">
-        <button
-          onClick={onCancel}
-          className="flex-1 rounded border border-card-strong px-2 py-1 text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={onConfirm}
-          className="flex-1 rounded bg-red-400 px-2 py-1 text-xs font-medium text-surface hover:bg-red-300"
-        >
-          {confirmLabel}
-        </button>
-      </div>
-    </div>
   );
 }
 
@@ -1836,179 +1110,5 @@ function ArchivedGroup() {
         </div>
       )}
     </div>
-  );
-}
-
-/// Small folder glyph used at the head of each project group. Sized to
-/// match the text row and tinted with `text-ink-muted` so it blends with
-/// the label.
-function ProjectIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      className="text-ink-muted flex-shrink-0"
-    >
-      <path
-        d="M1.5 4.5A1 1 0 012.5 3.5h3.2l1.1 1.3h5.7A1 1 0 0113.5 5.8v5.9A1 1 0 0112.5 12.7h-10A1 1 0 011.5 11.7V4.5z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-/// Stacked-folders glyph to distinguish workspaces (which reference
-/// multiple projects) from a single project folder.
-function WorkspaceIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 16 16"
-      fill="none"
-      className="text-ink-muted flex-shrink-0"
-    >
-      <path
-        d="M3.5 2.5H5.7L6.7 3.6H12.5V5.5H3.5V2.5Z"
-        stroke="currentColor"
-        strokeWidth="1.1"
-        strokeLinejoin="round"
-        fill="currentColor"
-        fillOpacity="0.2"
-      />
-      <path
-        d="M1.5 5.5H4L5 6.5H14.5V13.3A1 1 0 0113.5 14.3H2.5A1 1 0 011.5 13.3V5.5Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function PencilIcon() {
-  return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      className="flex-shrink-0"
-      aria-hidden="true"
-    >
-      <path
-        d="M12.793 2.793a1 1 0 0 1 1.414 0l2 2a1 1 0 0 1 0 1.414l-8.2 8.2a2.5 2.5 0 0 1-1.14.63l-2.26.566a.75.75 0 0 1-.91-.91l.566-2.26a2.5 2.5 0 0 1 .63-1.14l8.2-8.2Z"
-      />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="currentColor"
-      className="flex-shrink-0"
-      aria-hidden="true"
-    >
-      <path d="M8 3a.75.75 0 0 1 .75.75v3.5h3.5a.75.75 0 0 1 0 1.5h-3.5v3.5a.75.75 0 0 1-1.5 0v-3.5h-3.5a.75.75 0 0 1 0-1.5h3.5v-3.5A.75.75 0 0 1 8 3Z" />
-    </svg>
-  );
-}
-
-/// Folder with a magnifier — used to launch the standalone file
-/// explorer from a project or workspace header. Kept small so it sits
-/// next to the other 14px glyphs in the row.
-function SearchIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      className="flex-shrink-0"
-      aria-hidden="true"
-    >
-      <circle cx="7" cy="7" r="4" stroke="currentColor" strokeWidth="1.4" />
-      <path d="M10.2 10.2L13 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="currentColor"
-      className="flex-shrink-0"
-      aria-hidden="true"
-    >
-      <path
-        d="M6 2.5A1.5 1.5 0 0 1 7.5 1h1A1.5 1.5 0 0 1 10 2.5V3h2.25a.75.75 0 0 1 0 1.5h-.386l-.558 7.253A1.75 1.75 0 0 1 9.56 13.5H6.44a1.75 1.75 0 0 1-1.746-1.747L4.136 4.5H3.75a.75.75 0 0 1 0-1.5H6v-.5Zm1.5 0V3h1v-.5a.5.5 0 0 0-.5-.5h-.5a.5.5 0 0 0-.5.5Zm-.25 3.25a.75.75 0 0 0-1.5 0v4a.75.75 0 0 0 1.5 0v-4Zm3 0a.75.75 0 0 0-1.5 0v4a.75.75 0 0 0 1.5 0v-4Z"
-      />
-    </svg>
-  );
-}
-
-function TrophyIcon() {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 16 16"
-      fill="none"
-      className="text-ink-muted flex-shrink-0"
-      aria-hidden="true"
-    >
-      <path
-        d="M4 2.5h8v3.5a4 4 0 0 1-8 0V2.5Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M4 3.5H2.5v1.5a2 2 0 0 0 2 2M12 3.5h1.5v1.5a2 2 0 0 1-2 2"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M8 10v2.5M5.5 13.5h5"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function CrownIcon() {
-  return (
-    <svg
-      width="11"
-      height="11"
-      viewBox="0 0 16 16"
-      fill="none"
-      className="flex-shrink-0"
-      aria-hidden="true"
-    >
-      <path
-        d="M2 5.5l2 5h8l2-5-3 2-3-4-3 4-3-2Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinejoin="round"
-        fill="currentColor"
-        fillOpacity="0.2"
-      />
-      <path d="M4 12.5h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-    </svg>
   );
 }
