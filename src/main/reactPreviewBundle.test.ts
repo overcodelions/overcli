@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildReactPreviewBundle } from './reactPreviewBundle';
+import { buildReactPreviewBundle, withEsbuildBinaryPath } from './reactPreviewBundle';
 
 let root: string;
 const deps = {
@@ -136,4 +136,21 @@ describe('buildReactPreviewBundle', () => {
     expect(res.ok && res.tailwind.status).toBe('unavailable');
     expect(res.ok && res.tailwind.message).toMatch(/install tailwindcss/i);
   }, 30_000);
+});
+
+describe('withEsbuildBinaryPath', () => {
+  it('points esbuild at its binary for the load, then takes the variable back', () => {
+    const env: NodeJS.ProcessEnv = {};
+    const seen = withEsbuildBinaryPath(() => env.ESBUILD_BINARY_PATH, env);
+    expect(seen).toMatch(/esbuild$/);
+    // Left set, every process overcli spawns would inherit it and a project's
+    // own esbuild postinstall would find the wrong version.
+    expect(env.ESBUILD_BINARY_PATH).toBeUndefined();
+  });
+
+  it('leaves a path someone else set alone', () => {
+    const env: NodeJS.ProcessEnv = { ESBUILD_BINARY_PATH: '/opt/esbuild' };
+    withEsbuildBinaryPath(() => undefined, env);
+    expect(env.ESBUILD_BINARY_PATH).toBe('/opt/esbuild');
+  });
 });

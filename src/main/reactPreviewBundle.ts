@@ -276,8 +276,7 @@ function resolveReact(fileDir: string): { source: 'project' | 'overcli'; nodePat
 function loadEsbuildOrNull(loader?: () => any): any {
   try {
     if (loader) return loader();
-    pointEsbuildAtItsUnpackedBinary();
-    return nodeRequire('esbuild');
+    return withEsbuildBinaryPath(() => nodeRequire('esbuild'));
   } catch {
     return null;
   }
@@ -287,17 +286,34 @@ function loadEsbuildOrNull(loader?: () => any): any {
 /// build that path lands inside app.asar, which nothing outside Electron
 /// can execute — electron-builder unpacks it, and this env var is how
 /// esbuild is told where the real file went.
-function pointEsbuildAtItsUnpackedBinary(): void {
-  if (process.env.ESBUILD_BINARY_PATH) return;
+///
+/// Set only for the require, which is when esbuild reads it. Left in
+/// `process.env`, every service, terminal and agent overcli spawns inherits
+/// it — and a project's own `npm ci` then fails esbuild's postinstall, which
+/// finds overcli's binary where it expected its own version.
+export function withEsbuildBinaryPath<T>(load: () => T, env: NodeJS.ProcessEnv = process.env): T {
+  if (env.ESBUILD_BINARY_PATH) return load();
+  const binary = unpackedEsbuildBinary();
+  if (!binary) return load();
+  env.ESBUILD_BINARY_PATH = binary;
+  try {
+    return load();
+  } finally {
+    delete env.ESBUILD_BINARY_PATH;
+  }
+}
+
+function unpackedEsbuildBinary(): string | null {
   const platformPackage = `@esbuild/${process.platform}-${process.arch}`;
   const binaryName = process.platform === 'win32' ? 'esbuild.exe' : path.join('bin', 'esbuild');
   try {
     const packageRoot = path.dirname(nodeRequire.resolve(`${platformPackage}/package.json`));
     const binary = outsideAsar(path.join(packageRoot, binaryName));
-    if (fs.existsSync(binary)) process.env.ESBUILD_BINARY_PATH = binary;
+    return fs.existsSync(binary) ? binary : null;
   } catch {
     // Not installed per-platform (or resolution is blocked) — let esbuild
     // find its own binary the usual way.
+    return null;
   }
 }
 
