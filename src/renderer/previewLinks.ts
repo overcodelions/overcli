@@ -17,10 +17,17 @@
 /// `isSafeExternalUrl` allowlist every other link in the app goes through.
 /// The frame gains nothing it can act on itself — every popup is denied.
 
+/// Frames that are denied popups — a .html document, see `HtmlPreview` —
+/// hand the URL to the app instead, as a message it opens only while the
+/// click that sent it is still a live user activation (see
+/// `acceptLinkMessage`). Anything the page's own script posts outside a
+/// click is ignored, so this is no wider than the popup route it replaces.
+export const OPEN_LINK_MESSAGE = 'overcli:open-link';
+
 /// Only absolute http(s) links are intercepted, resolved against the
 /// document's base. In-page anchors, `file:` refs and anything with an
 /// exotic scheme keep whatever behaviour they had.
-const LINK_SCRIPT = `
+const linkScript = (open: string) => `
 (function () {
   function handle(event) {
     if (event.defaultPrevented) return;
@@ -31,7 +38,7 @@ const LINK_SCRIPT = `
     try { url = new URL(anchor.getAttribute('href') || '', document.baseURI); } catch (e) { return; }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
     event.preventDefault();
-    window.open(url.href, '_blank', 'noopener');
+    ${open}
   }
   document.addEventListener('click', handle);
   // Middle-click fires auxclick, not click, and would otherwise be swallowed
@@ -42,8 +49,32 @@ const LINK_SCRIPT = `
 })();
 `;
 
-export function previewLinkScriptTag(): string {
-  return `<script>${LINK_SCRIPT}</script>`;
+export function previewLinkScriptTag(route: 'popup' | 'parent' = 'popup'): string {
+  const open =
+    route === 'popup'
+      ? "window.open(url.href, '_blank', 'noopener');"
+      : `window.parent.postMessage({ type: '${OPEN_LINK_MESSAGE}', href: url.href }, '*');`;
+  return `<script>${linkScript(open)}</script>`;
+}
+
+/// The URL a preview frame asked to open, if the app should open it: the
+/// message came from that frame, is the link message, and arrived while a
+/// user activation is live. A click inside a frame activates its ancestors
+/// too, and a script cannot mint one, so this is exactly "someone clicked".
+export function acceptLinkMessage(
+  event: Pick<MessageEvent, 'source' | 'data'>,
+  frame: Window | null | undefined,
+  activated: boolean,
+): string | null {
+  if (!frame || event.source !== frame || !activated) return null;
+  const data = event.data as { type?: unknown; href?: unknown } | null;
+  if (!data || data.type !== OPEN_LINK_MESSAGE || typeof data.href !== 'string') return null;
+  try {
+    const url = new URL(data.href);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 /// The markdown preview renders with scripts off, so its anchors are tagged
