@@ -26,6 +26,8 @@ import type {
   StackView,
 } from './services';
 import type {
+  HireMessage,
+  HireQuestion,
   Worker,
   WorkerContract,
   WorkerErrandResult,
@@ -147,6 +149,11 @@ export interface PermissionRequestInfo {
   description: string;
   toolInput: string;
   decided?: 'allow' | 'deny';
+  /// Set when the app answered on its own — an unattended worker's policy —
+  /// rather than a person clicking. The card shows the decision and why,
+  /// and offers no buttons: the answer has already been given.
+  decidedBy?: 'policy';
+  decisionNote?: string;
   /// Filesystem path the request references (when the main process can
   /// pick one out of toolInput). Used by the card to offer an "Allow +
   /// add this directory for the session" action.
@@ -809,6 +816,11 @@ export interface CapabilitiesReport {
   /// Non-fatal scan errors, per source, so the UI can surface them
   /// without failing the whole scan.
   warnings: string[];
+  /// Account-level connectors ("claude.ai Gmail") Claude has reported
+  /// recently. Not entries: they live on the Claude account, not in a config
+  /// file, so nothing the sheet does to a server (copy it to another CLI)
+  /// applies — but a worker can still be scoped to one.
+  accountConnectors?: string[];
 }
 
 /// Curated skill that can be installed into a CLI's skills/ directory.
@@ -2769,19 +2781,34 @@ export interface IPCInvokeMap {
   /// `flowError` is set when a flow was asked for and the flow drafter
   /// failed: the contract is still reviewable, but the flow picker is empty
   /// on purpose and the review screen says why.
+  /// "Ask the crew": pick the worker whose job a request is, or nobody. Only
+  /// picks — the renderer shows the pick and the user sends it.
+  'workers:routeErrand': (args: { ask: string }) =>
+    | { ok: true; workerId: string | null; why: string; confident: boolean }
+    | { ok: false; error: string };
   'workers:draftFromPrompt': (args: {
     jobDescription: string;
     /// Files the user attached to the hire (a spec, an example deliverable,
     /// a screenshot). Sent to the drafting CLI alongside the description.
     attachments?: Attachment[];
+    /// The rest of a hire conversation after the job description.
+    conversation?: HireMessage[];
+    /// Let the drafter answer with questions instead of a contract.
+    interview?: boolean;
   }) =>
     | {
         ok: true;
         contract: WorkerContract;
         summary: string;
-        draftedFlow?: Flow;
+        /// The flows the worker lands with, primary first. An entry with a
+        /// `flow` is newly drafted and saves together with the worker.
+        flowPlan: Array<{ flowId: string; flow?: Flow }>;
+        /// The wrap-up flow, kept out of `flowPlan` because nothing routes
+        /// to it. A `flow` means newly drafted, saved with the worker.
+        wrapUp?: { flowId: string; flow?: Flow };
         flowError?: string;
       }
+    | { ok: true; question: string; questions?: HireQuestion[] }
     | { ok: false; error: string };
   /// One revision turn across a worker's two halves: the instruction is
   /// routed to the job description (planning), the flow (execution), or

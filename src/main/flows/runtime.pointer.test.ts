@@ -532,6 +532,29 @@ describe('resuming an externalAction pause', () => {
     expect(denied).toBe(true);
   });
 
+  it('marks an auto-denied request on the event, so the card cannot offer Allow', () => {
+    const h = harness();
+    const r: FlowRun = {
+      id: RUN_ID, flowId: 'report-flow', flowSnapshot: flow(), projectPath: '/tmp/does-not-matter', userPrompt: 'x',
+      conversationIds: { primary: 'conv-1' as UUID }, artifacts: {},
+      state: { kind: 'running', currentStepId: 'render-report' }, createdAt: Date.now(),
+      attempts: [{ stepId: 'render-report', startedAt: Date.now(), conversationId: 'conv-1' as UUID }],
+      workerId: 'worker-1' as UUID,
+    };
+    (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+    (h.rt as never as { convIdToRun: Map<UUID, UUID> }).convIdToRun.set('conv-1' as UUID, RUN_ID);
+    const info: Record<string, unknown> = {
+      requestId: 'req-1', toolName: 'mcp__claude_ai_Gmail__search_threads', description: '', toolInput: '',
+    };
+    (h.rt as never as { observeEvent: (e: MainToRendererEvent) => void }).observeEvent({
+      type: 'stream', conversationId: 'conv-1' as UUID,
+      events: [{ timestamp: Date.now(), kind: { type: 'permissionRequest', info } } as never],
+    });
+    expect(info.decided).toBe('deny');
+    expect(info.decidedBy).toBe('policy');
+    expect(info.decisionNote).toContain('mcp__claude_ai_Gmail__search_threads');
+  });
+
   it('denies a paused worker without an explicit approval', () => {
     const h = harness();
     const r: FlowRun = {

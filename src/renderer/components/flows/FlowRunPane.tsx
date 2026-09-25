@@ -64,14 +64,26 @@ import { useWorkersStore } from '../../workersStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { orchestrationForRun } from '../workers/workerDeskSelectors';
 import { serviceWorkspaceIdsForFlowRun } from '../../conversationLookup';
-import { attachMentionedServiceLogs } from '../../serviceLogContext';
+import { sendParticipantTurn } from './participantTurn';
 import { RunOnBranchButton } from '../RunOnBranchButton';
 
 // Bounds for the worktree file-browser tree (same feel as ExplorerPane).
 const TREE_MIN = 200;
 const TREE_MAX = 520;
 
-export function FlowRunPane({ runId }: { runId: string }) {
+export function FlowRunPane({
+  runId,
+  initialStepId,
+  producedOpen = false,
+}: {
+  runId: string;
+  /// Open on this step's conversation rather than the one the run would
+  /// pick — for a caller that just sent that step a message.
+  initialStepId?: string;
+  /// Start with "what this participant produced" open — for a caller that
+  /// brought you here to review that output alongside the conversation.
+  producedOpen?: boolean;
+}) {
   const run = useFlowsStore((s) => s.runs[runId]);
   const unreviewed = useFlowsStore((s) => s.unreviewedRunIds[runId] === true);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
@@ -144,7 +156,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
   // by default: it's reference material, wanted when orienting or auditing
   // and never while following a run.
   const [infoOpen, setInfoOpen] = useState(false);
-  const [focusStepId, setFocusStepId] = useState<string | null>(null);
+  const [focusStepId, setFocusStepId] = useState<string | null>(initialStepId ?? null);
   const [autoFollowedId, setAutoFollowedId] = useState<string | null>(null);
   useEffect(() => {
     if (!defaultStepId) return;
@@ -458,6 +470,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
           run={run}
           participant={activeParticipant}
           convId={activeConvId}
+          producedOpen={producedOpen}
           focusStepId={activeStepId}
         />
       )}
@@ -1210,11 +1223,13 @@ function ParticipantBody({
   participant,
   convId,
   focusStepId,
+  producedOpen = false,
 }: {
   run: FlowRun;
   participant: FlowParticipant;
   convId: string | undefined;
   focusStepId: string | null;
+  producedOpen?: boolean;
 }) {
   // Steps this participant owns, in order. Still used for the "not called
   // yet" hint below; the in-thread chips moved to the header.
@@ -1348,7 +1363,7 @@ function ParticipantBody({
           thread" strip that used to sit here now lives next to the
           produces/reads line in the header. */}
       {producedArtifacts.length > 0 && (
-        <ArtifactsPanel items={producedArtifacts} forceCollapsed={isTyping} />
+        <ArtifactsPanel items={producedArtifacts} forceCollapsed={isTyping} startOpen={producedOpen} />
       )}
 
       {/* Faint separator between the top block (watch banner + outputs) and
@@ -1469,8 +1484,11 @@ function WorkerExchangeBubble({
 function ArtifactsPanel({
   items,
   forceCollapsed = false,
+  startOpen = false,
 }: {
   items: Array<{ step: FlowStep; artifact: import('@shared/flows/schema').FlowArtifact }>;
+  /// Open the panel on first render instead of as a slim header bar.
+  startOpen?: boolean;
   /// When true, every artifact renders collapsed regardless of the
   /// user's per-row toggle state. Used to shrink the panel out of the
   /// way when the user is typing a hijack message so the chat keeps
@@ -1487,7 +1505,7 @@ function ArtifactsPanel({
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   // Whole-panel collapse. Default collapsed so the produced summary stays a
   // slim header bar instead of a bulky stack — expand to see the files.
-  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(startOpen);
   function toggle(key: string) {
     setOpenSet((prev) => {
       const next = new Set(prev);
@@ -2076,49 +2094,15 @@ function HijackComposer({
   /// button-driven turns (compact) — those must not wipe a draft the user
   /// is in the middle of writing.
   const sendTurn = (prompt: string, attachments: Attachment[], clearComposer: boolean) => {
-    // Mint a conv id if this participant hasn't been used yet so the
-    // first hijack message actually starts a session.
-    const id = convId ?? cryptoRandomUuid();
-    if (!convId) {
-      // We can't write to run.conversationIds directly from the renderer;
-      // it'll get synced once a real flow event arrives. For now the
-      // local runner store handles per-conv state by id.
-    }
-    // Resume the participant's EXISTING step session (via the CLI's
-    // --resume) so the hijack chat continues the same thread the flow
-    // step ran on — with its full context (the plan, the diff it
-    // reviewed, its own output). Without this the send starts a brand-new
-    // session and the model answers as if it just woke up ("this looks
-    // like the start of our conversation"), and the visible transcript is
-    // a disconnected fresh thread rather than the step's. Undefined when
-    // this participant hasn't run yet — then it correctly starts fresh.
-    const resumeSessionId = run.sessionIdsByParticipant?.[participant.id];
-    void attachMentionedServiceLogs(prompt, serviceWorkspaceIds, {
-      views: (ids) => window.overcli.invoke('services:viewAll', ids),
-      log: (workspaceId, serviceId) => window.overcli.invoke('services:log', { workspaceId, serviceId }),
-    })
-      .catch(() => prompt)
-      .then((outgoingPrompt) => window.overcli.invoke('runner:send', {
-        conversationId: id,
-        prompt: outgoingPrompt,
-        displayText: prompt,
-        backend: participant.backend,
-        cwd: run.projectPath,
-        model: effectiveModel,
-        sessionId: resumeSessionId,
-        // Hijack turns inherit the run's default permission — bypass for
-        // worker/primary participants that need write access, default
-        // otherwise. The user can be more conservative by adjusting
-        // settings; runtime's preflight already gated the run.
-        permissionMode: 'bypassPermissions',
-        chrome: run.chrome,
-        attachments,
-      }));
-    // Tell the run the user just drove it. Both kinds of turn count — a
-    // button-driven compact turn is still the user's click — and neither
-    // reaches the run any other way, since `runner:send` is
-    // conversation-shaped and knows nothing about flows.
-    noteUserTurn(run.id);
+    // Resumes the participant's own step session, so the chat continues the
+    // thread the step ran on — see sendParticipantTurn.
+    void sendParticipantTurn({
+      run,
+      participantId: participant.id,
+      prompt,
+      attachments,
+      serviceWorkspaceIds,
+    });
     if (!clearComposer) return;
     setDraft(draftKey, '');
     clearAttachments(draftKey);
@@ -2426,14 +2410,6 @@ function FlowStatsFooter({
       {sessionId && <span className="truncate">· {sessionId.slice(0, 8)}</span>}
     </div>
   );
-}
-
-function cryptoRandomUuid(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  // Cheap fallback so tests don't depend on the crypto API.
-  return 'tmp-' + Math.random().toString(36).slice(2);
 }
 
 // The original prompt rendered as a slim, collapsible card. Visual

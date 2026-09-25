@@ -17,13 +17,30 @@ import { Composer } from '../Composer';
 /// @-mention file lookup (rooted at the worker's project), the same ArrowUp
 /// prompt history, the same drag-and-drop and paste handling. A worker is a
 /// person you talk to; talking to it should not feel like filling in a form.
-export function WorkerErrandComposer({ worker }: { worker: Worker }) {
+export function WorkerErrandComposer({
+  worker,
+  draftKey: draftKeyProp,
+  placeholder,
+  frame,
+  hints = true,
+}: {
+  worker: Worker;
+  /// Where the half-typed message lives. Defaults to the worker's desk draft;
+  /// a composer somewhere else keeps its own so the two never share a draft.
+  draftKey?: string;
+  placeholder?: string;
+  /// Wrap what you typed before it goes — e.g. naming the result you are
+  /// reading, so the worker knows what "this" is.
+  frame?: (prompt: string) => string;
+  /// The `/run` hint under the box. The desk teaches it; elsewhere it's noise.
+  hints?: boolean;
+}) {
   const error = useWorkersStore((s) => s.errandError[worker.id]);
   const runErrand = useWorkersStore((s) => s.runErrand);
   const clearErrand = useWorkersStore((s) => s.clearErrand);
   const setDraft = useStore((s) => s.setDraft);
   const removeAttachment = useStore((s) => s.removeAttachment);
-  const draftKey = `worker-errand:${worker.id}`;
+  const draftKey = draftKeyProp ?? `worker-errand:${worker.id}`;
   // What the box is about to do, echoed back while you type. The triage
   // between answering and dispatching is normally the worker's call and
   // invisible until the reply lands; `/run` is you taking that call, so the
@@ -54,7 +71,7 @@ export function WorkerErrandComposer({ worker }: { worker: Worker }) {
         variant="compact"
         strongBorder
         rootPath={worker.projectPath}
-        placeholder={`Message ${worker.name}…`}
+        placeholder={placeholder ?? `Message ${worker.name}…`}
         onSend={(prompt, attachments) => {
           // Composer's `commit` hands the text off but does not empty itself —
           // in chat, `store.send` clears the draft and attachments for the key.
@@ -62,10 +79,10 @@ export function WorkerErrandComposer({ worker }: { worker: Worker }) {
           // sits in the box looking unsent.
           setDraft(draftKey, '');
           for (const attachment of attachments) removeAttachment(draftKey, attachment.id);
-          void runErrand(worker.id, prompt, attachments);
+          void runErrand(worker.id, frame ? frame(prompt) : prompt, attachments);
         }}
       />
-      {directWork ? (
+      {!hints ? null : directWork ? (
         <div className="mt-1.5 rounded border border-accent/40 bg-accent/10 px-2 py-1 text-[11px] text-ink-muted">
           Straight to <span className="text-ink">{flow ?? 'this worker\u2019s flow'}</span> — no
           planning turn. It parks for one click.

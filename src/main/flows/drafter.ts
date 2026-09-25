@@ -20,6 +20,7 @@
 // experimental "Use Claude Agent SDK" transport is enabled (Settings →
 // Advanced). Auth uses whatever credentials that CLI relies on.
 
+import { renderMcpToolsSection } from '../../shared/flows/mcpTools';
 import os from 'node:os';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -61,6 +62,9 @@ export interface DraftDeps {
   /// Rendered "PROVEN FLOWS" block from `renderProvenFlowsSection`. Empty
   /// string or absent when the user has no flow with a track record yet.
   provenFlows?: string;
+  /// Every `mcp__<server>__<tool>` Claude has reported, so a step that must
+  /// read a mailbox can be granted the exact tool. See mcpToolCache.
+  mcpTools?: string[];
 }
 
 /// Which job the CLI is being asked to do. Both share the schema prompt and
@@ -100,6 +104,7 @@ function systemPrompt(
   mode: DraftMode = 'draft',
   modelDefaults?: FlowModelDefaults,
   provenFlows?: string,
+  mcpTools?: string[],
 ): string {
   const hints = drafterModelHints(backend, modelDefaults);
   const label = backendLabel(backend);
@@ -142,7 +147,11 @@ function systemPrompt(
     '                  prompt for the step, written by you.',
     '  inputs        — list of refs. May include "user_prompt" and outputs of EARLIER steps',
     '  tools         — list of tool ids. For claude/codex/gemini/copilot: Read, Write, Edit, Grep,',
-    '                  Glob, Bash, WebFetch, Task. For ollama: read_file, list_dir, grep.',
+    '                  Glob, Bash, WebFetch, Task, and MCP tools named mcp__<server>__<tool>',
+    '                  (see MCP TOOLS below). For ollama: read_file, list_dir, grep. A step',
+    '                  may ONLY call the tools listed here: in an unattended run anything else',
+    '                  is refused. A step that reads a mailbox, calendar, tracker or chat',
+    '                  MUST list the exact MCP tools it calls — only the ones it calls.',
     '  output        — artifact name this step produces. A SINGLE token of letters, digits, dot,',
     '                  dash, or underscore only — NO spaces or slashes. Use snake_case or a file',
     '                  extension (e.g. plan.md, diff, review.md, pr_url, audit_report).',
@@ -415,6 +424,11 @@ function systemPrompt(
     `use ${backend} models (as listed under CONVENTIONS) for the steps you generate, not claude.`,
     '',
     ...(mode !== 'revise' && provenFlows ? [provenFlows, ''] : []),
+    // Revisions too: "have it check my calendar first" needs the tool name.
+    ...(() => {
+      const lines = renderMcpToolsSection(mcpTools ?? []);
+      return lines.length > 0 ? [...lines, ''] : [];
+    })(),
     ...(mode === 'revise'
       ? [
           'REVISION RULES',
@@ -510,7 +524,7 @@ async function runDrafter(
 ): Promise<{ ok: true; text: string; label: string } | { ok: false; error: string }> {
   return oneShotDraftText(deps, {
     buildSystemPrompt: (backend) =>
-      systemPrompt(backend, mode, deps.settings.flowModelDefaults, deps.provenFlows),
+      systemPrompt(backend, mode, deps.settings.flowModelDefaults, deps.provenFlows, deps.mcpTools),
     userMessage,
     attachments,
     verb: mode === 'revise' ? 'edit' : 'draft',

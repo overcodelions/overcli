@@ -1,57 +1,40 @@
-// The Workers tab's front page. See `todaySpine.ts` for why it is a spine
-// and not a set of bands; this file is the drawing of it.
+// The Workers tab's front page, in three columns that each do one job: the
+// sidebar is WHO (the roster), the centre is WHAT NEEDS YOU and what is
+// working, and the rail on the right is THE DAY — how it went and what is
+// next.
 //
-// Three rules govern every choice below:
-//
-//   - AN ABSENCE COSTS NOTHING. Nothing running draws no rows, no header and
-//     no bordered box saying so. The old page spent its top half framing two
-//     zeros, which is the most expensive way to say "no".
-//   - THE GUTTER IS A COLUMN. Every stamp — future, now, past — sits at the
-//     same x, in tabular figures, so the times read straight down the page
-//     and the eye can find 10am without reading a word.
-//   - WHAT IT PRODUCED TRAVELS WITH THE ROW. The queue parked the filed
-//     deliverable in a fixed column 500px from the title it belonged to. Here
-//     it sits immediately after the title, because the file IS the outcome.
+// It was one long column: a day headline, a tick strip, pinned decisions, a
+// spine of every finished job, and the whole crew as a grid of cards. Every
+// fact was on the page three or four times — "Triage has two paused" was in
+// the sidebar, a card, the crew grid and the spine — and what needed you sat
+// halfway down it. Now each fact is drawn once, in the column whose job it is,
+// and the centre leads with the only number that decides whether you have
+// anything to do.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { useRunningMap } from '../../runnersStore';
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
-import { CrewGrid } from './CrewGrid';
-import { PAUSE_TEXT } from './pauseCopy';
-import { PausedActions } from './PausedActions';
-import { WorkerAvatar, useWorkerColors } from './WorkerAvatar';
-import { workerColorFor } from './workerPalette';
-import {
-  barHours,
-  buildTodaySpine,
-  clockStamp,
-  dayTicks,
-  type SpineItem,
-} from './todaySpine';
-import { baseName, buildWorkQueue, flowOf, upcomingShifts, type QueueRow } from './workQueue';
+import { InboxList, defaultItem, findRow, type DigestModel, type OpenItem } from './TodayDigest';
+import { TodayEmpty } from './TodayEmpty';
+import { TodayReader } from './TodayReader';
+import { buildTodaySpine } from './todaySpine';
+import { earlierDays, finishedJobs } from './todayLayout';
+import { useDigest } from './useDigest';
+import { buildWorkQueue, upcomingShifts, type QueueRow } from './workQueue';
 import { useDeliverables } from './useDeliverables';
-
-import type { WorkerFile } from './workerDeskSelectors';
-
-import { untilLabel } from '@shared/flows/schedule';
 
 export function TodayPane() {
   const workers = useWorkersStore((s) => s.workers);
   const nextShiftAt = useWorkersStore((s) => s.nextShiftAt);
   const shiftProgress = useWorkersStore((s) => s.shiftProgress);
-  const selectWorker = useWorkersStore((s) => s.selectWorker);
-  const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const runs = useFlowsStore((s) => s.runs);
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
-  const library = useFlowsStore((s) => s.flows);
-  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const runners = useRunningMap();
-  const openFile = useStore((s) => s.openFile);
 
   // Every stamp here is an age or a countdown, and the now-line is the page's
   // whole spine — a minute is as coarse as this may ever get.
@@ -61,512 +44,207 @@ export function TodayPane() {
     return () => clearInterval(t);
   }, []);
 
-  const spine = useMemo(() => {
-    const queue = buildWorkQueue(orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners);
-    // No horizon here: the spine trims the list itself, and it needs to see
-    // the shift beyond the horizon to be able to keep the soonest one.
-    const soon = upcomingShifts(workers, nextShiftAt, shiftProgress, now, Infinity);
-    return buildTodaySpine(queue, soon, now);
-  }, [orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners, nextShiftAt]);
-
-  const open = (row: QueueRow) => {
-    selectWorker(row.workerId);
-    if (row.runId && runs[row.runId]) setActiveRun(row.runId);
-    else if (row.orchestrationId) openWorkerActivity(row.workerId, row.orchestrationId, row.at);
-  };
-
-  // Only the day's own rows: the pinned decision and the live work have
-  // filed nothing yet, by definition.
-  const finishedToday = useMemo(
+  const previewNoWork = useWorkersStore((s) => s.previewNoWork);
+  const setPreviewNoWork = useWorkersStore((s) => s.setPreviewNoWork);
+  const previewEmpty = useWorkersStore((s) => s.previewEmpty);
+  const setPreviewEmpty = useWorkersStore((s) => s.setPreviewEmpty);
+  const showDebug = useStore((s) => s.settings.showDebug ?? false);
+  const queue = useMemo(
     () =>
-      spine.below
-        .filter((item): item is Extract<SpineItem, { kind: 'job' }> => item.kind === 'job')
-        .map((item) => item.row),
-    [spine.below],
+      buildWorkQueue(previewNoWork ? {} : orchestrations, runs, workers, previewNoWork ? {} : shiftProgress, now, runsLoaded, runners),
+    [orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners, previewNoWork],
   );
-  const filed = useDeliverables(finishedToday, now);
-  const flowNames = useMemo(
-    () => Object.fromEntries(library.map((f) => [f.id, f.name])),
-    [library],
+  // Every pending shift, soonest first. No horizon: the spine trims it
+  // itself, and the empty reader lists them all.
+  const soon = useMemo(
+    () => upcomingShifts(workers, nextShiftAt, shiftProgress, now, Infinity),
+    [workers, nextShiftAt, shiftProgress, now],
   );
-  const withFiles = Object.values(filed).filter(Boolean).length;
+  const spine = useMemo(() => buildTodaySpine(queue, soon, now), [queue, soon, now]);
+
+  const finishedToday = useMemo(() => finishedJobs(spine), [spine]);
+  // The week before today, so what landed overnight is still here.
+  const earlier = useMemo(() => earlierDays(queue.finished, now), [queue.finished, now]);
+  const summarised = useMemo(
+    () => [...finishedToday, ...earlier.flatMap((g) => g.rows)],
+    [finishedToday, earlier],
+  );
+  const filed = useDeliverables(summarised, now);
+  const digest = useDigest(summarised, filed);
+  const model: DigestModel = useMemo(
+    () => ({
+      spine,
+      now,
+      // A queue you work through: the one that has waited longest first.
+      needs: [...spine.pinned].reverse(),
+      working: spine.live,
+      // A quiet SHIFT looked and found nothing. A quiet ERRAND is a question
+      // the worker answered in chat — an outcome, and it belongs with the rest.
+      done: finishedToday.filter((row) => !(row.status === 'quiet' && row.task === 'shift')),
+      quiet: finishedToday.filter((row) => row.status === 'quiet' && row.task === 'shift'),
+      earlier,
+      filed,
+      digest,
+    }),
+    [spine, now, finishedToday, earlier, filed, digest],
+  );
+
+  // What the reader shows. Something is always open — the oldest thing
+  // waiting on you, else the newest result — so the page never lands on an
+  // empty half. An item that leaves the list (answered, rejected) falls back
+  // to the default rather than leaving a stale reader behind.
+  const [picked, setPicked] = useState<OpenItem>(null);
+  const pickedRow = picked ? findRow(model, picked) : undefined;
+  // Keep the open item's key on the row it resolved to, so the list still
+  // highlights it after an answer folds into a group.
+  useEffect(() => {
+    if (picked && pickedRow && pickedRow.key !== picked.key) setPicked({ kind: picked.kind, key: pickedRow.key });
+  }, [picked, pickedRow]);
+
+  // Clearing a decision. When the thing you had open leaves "Needs you" —
+  // you answered it, continued it, rejected it — the reader says so for a
+  // moment before moving on, instead of silently swapping to the next item
+  // (which read as your answer vanishing). Then it opens what is next, like
+  // clearing an inbox; the run you handed back is under Working if you want
+  // to watch it.
+  const lastNeeds = useRef<QueueRow | null>(null);
+  const [handoff, setHandoff] = useState<QueueRow | null>(null);
+  useEffect(() => {
+    // Reading something else: whatever decision was open is no longer the
+    // one you are clearing.
+    if (picked && picked.kind !== 'needs') {
+      lastNeeds.current = null;
+      return;
+    }
+    if (picked?.kind === 'needs' && pickedRow) {
+      lastNeeds.current = pickedRow;
+      return;
+    }
+    if (picked?.kind === 'needs' && !pickedRow && lastNeeds.current?.key === picked.key) {
+      setHandoff(lastNeeds.current);
+      lastNeeds.current = null;
+      setPicked(null);
+    }
+  }, [picked, pickedRow]);
+  useEffect(() => {
+    if (!handoff) return;
+    const t = window.setTimeout(() => setHandoff(null), HANDOFF_MS);
+    return () => window.clearTimeout(t);
+  }, [handoff]);
+  // The default item stands in for "whatever you had" — which, when you
+  // opened nothing, is the oldest decision. Track it too, so answering the
+  // item the inbox opened on gets the same handoff.
+  const open = pickedRow ? picked : defaultItem(model);
+  const openRow = open ? findRow(model, open) : undefined;
+  useEffect(() => {
+    if (!picked && open?.kind === 'needs' && openRow) lastNeeds.current = openRow;
+  }, [picked, open?.kind, openRow]);
+  useEffect(() => {
+    const was = lastNeeds.current;
+    if (!picked && was && !model.needs.some((r) => r.key === was.key)) {
+      setHandoff(was);
+      lastNeeds.current = null;
+    }
+  }, [picked, model.needs]);
+  const handedBack = handoff
+    ? [...model.working, ...model.done].find((r) => r.key === handoff.key)
+    : undefined;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 pt-4">
-      <div>
-        <h2 className="text-[13px] font-semibold text-ink">Today</h2>
-        <p className="mt-[3px] text-[12px] text-ink-faint">
-          Where the crew is, in the order it happened. Anything waiting on you is pinned to the top.
-        </p>
-      </div>
-
-      <DayBar spine={spine} now={now} withFiles={withFiles} />
-
-      <div className="mt-4">
-        {spine.upcoming.map((row) => (
-          <UpcomingLine key={row.workerId} row={row} now={now} onOpen={selectWorker} />
-        ))}
-        {spine.pinned.map((row) => (
-          <PinnedDecision key={row.key} row={row} now={now} onOpen={open} />
-        ))}
-
-        <NowLine now={now} live={spine.live.length > 0} />
-
-        {spine.live.map((row) => (
-          <JobRow
-            key={row.key}
-            row={row}
-            onOpen={open}
-            live
-            now={now}
-            filed={filed[row.key]}
-            onOpenFile={openFile}
-            flowNames={flowNames}
-          />
-        ))}
-
-        {spine.below.map((item) => (
-          <SpineNode
-            key={item.key}
-            item={item}
-            onOpen={open}
-            filed={item.kind === 'job' ? filed[item.key] : null}
-            onOpenFile={openFile}
-            flowNames={flowNames}
-            now={now}
-          />
-        ))}
-
-        {spine.below.length === 0 && spine.live.length === 0 && (
-          <p className="py-4 pl-[75px] text-[12px] text-ink-faint">
-            Nothing yet today. The spine fills in as the crew works.
-          </p>
+    <div className="flex min-h-0 flex-1">
+      <div className="min-h-0 w-[420px] shrink-0 overflow-y-auto border-r border-card px-5 pb-10 pt-6">
+        <InboxList model={model} open={open} onOpen={setPicked} />
+        {/* Debug only: the empty states are screens you can never reach
+            again once the crew has worked, so they need a way in. */}
+        {showDebug && (
+          <div className="mt-8 flex flex-wrap gap-1.5 border-t border-card pt-3 text-[10.5px] text-ink-faint">
+            <span>Preview:</span>
+            <button onClick={() => setPreviewNoWork(!previewNoWork)} className={previewNoWork ? 'text-amber-500' : 'hover:text-ink'}>
+              {previewNoWork ? 'no work yet (on)' : 'no work yet'}
+            </button>
+            <span>·</span>
+            <button onClick={() => setPreviewEmpty(!previewEmpty)} className={previewEmpty ? 'text-amber-500' : 'hover:text-ink'}>
+              nobody hired
+            </button>
+          </div>
         )}
       </div>
-
-      {/* The spine is a DAY; the crew is a ROSTER. On a quiet morning the
-          spine is four rows and the rest of this pane was nine hundred
-          pixels of nothing, while the sidebar had folded most of the crew
-          away for being quiet — so the one place with room to show you who
-          you employ was the one place showing you nothing. */}
-      {/* The page's clock, not one of its own: the crew's present line and
-          "today" have to agree with the now-line above them. */}
-      <CrewGrid now={now} />
-    </div>
-  );
-}
-
-/// The day, as a shape.
-///
-/// This replaced BOTH the crew-status sentence and the three metric tiles
-/// that sat beside it repeating the same numbers. One readout, and it carries
-/// something neither of those could: where in the day the work actually fell.
-/// Four jobs inside twelve minutes is a fact about the crew; eleven rows with
-/// timestamps is arithmetic you have to do yourself.
-function DayBar({ spine, now, withFiles }: { spine: ReturnType<typeof buildTodaySpine>; now: number; withFiles: number }) {
-  const colors = useWorkerColors();
-  const { ticks, from } = dayTicks(spine, now);
-  const hours = ticks.length > 0 ? barHours(from, now) : [];
-
-  const headline =
-    spine.done === 0
-      ? spine.live.length > 0
-        ? `${spine.live.length} job${spine.live.length === 1 ? '' : 's'} running`
-        : 'Nothing yet today'
-      : `${spine.done} job${spine.done === 1 ? '' : 's'} done`;
-
-  const under: string[] = [];
-  if (withFiles > 0) under.push(`${withFiles} left you a file`);
-  if (spine.failed > 0) under.push(`${spine.failed} failed`);
-  under.push(spine.pinned.length > 0 ? `${spine.pinned.length} waiting on you` : 'nothing waiting');
-
-  return (
-    <section className="mt-[18px] flex items-end gap-5 border-b border-card pb-3.5">
-      <div className="shrink-0">
-        <div className="text-[19px] font-semibold tracking-[-0.012em] text-ink">{headline}</div>
-        <div className="mt-0.5 text-[12px] text-ink-faint">{under.join(' · ')}</div>
-      </div>
-
-      {ticks.length > 0 && (
-        <div className="min-w-0 flex-1">
-          <div className="relative h-3">
-            {hours.map((h) => (
-              <span
-                key={h.at}
-                className="absolute top-0 -translate-x-1/2 text-[9px] text-ink-faint/75 tabular-nums"
-                style={{ left: `${h.pct}%` }}
-              >
-                {h.label}
-              </span>
-            ))}
-          </div>
-          <div className="relative mt-0.5 h-3.5">
-            {ticks.map((tick) => (
-              <span
-                key={tick.key}
-                aria-hidden
-                className="absolute bottom-0 w-0.5 rounded-[1px]"
-                style={{
-                  left: `${tick.pct}%`,
-                  height: tick.failed ? '13px' : '11px',
-                  background: tick.failed
-                    ? 'var(--c-diff-remove-ink)'
-                    : workerColorFor(colors, tick.workerId),
-                  opacity: 0.85,
-                }}
-              />
-            ))}
-            <span aria-hidden className="absolute inset-x-0 bottom-0 h-px bg-card-strong" />
-            <span
-              aria-hidden
-              className="absolute -bottom-0.5 -right-px h-[5px] w-[5px] rounded-full"
-              style={{ background: 'var(--c-running-pulse)' }}
-            />
-          </div>
-        </div>
+      {handoff ? (
+        <HandoffNote
+          row={handoff}
+          stillWorking={!!handedBack && model.working.some((r) => r.key === handoff.key)}
+          onWatch={
+            handedBack
+              ? () => {
+                  setHandoff(null);
+                  setPicked({ kind: 'done', key: handoff.key });
+                }
+              : undefined
+          }
+          onNext={() => setHandoff(null)}
+        />
+      ) : open && openRow ? (
+        <TodayReader
+          row={openRow}
+          kind={open.kind}
+          file={model.filed[openRow.key] ?? null}
+          digest={model.digest[openRow.key]}
+          now={now}
+        />
+      ) : (
+        <TodayEmpty upcoming={soon} now={now} />
       )}
-    </section>
-  );
-}
-
-/// The gutter. Every stamp on the page goes through here so the column holds.
-function Gutter({ children, tone = 'faint' }: { children?: React.ReactNode; tone?: 'faint' | 'muted' | 'live' }) {
-  const color = tone === 'live' ? 'text-[color:var(--c-running-pulse)]' : tone === 'muted' ? 'text-ink-muted' : 'text-ink-faint/90';
-  return (
-    <span className={`w-[52px] shrink-0 pt-0.5 text-right text-[10px] tabular-nums ${color}`}>
-      {children}
-    </span>
-  );
-}
-
-/// The spine's own vertical rule, and the dot that hangs a row off it.
-function Stem({
-  tint,
-  hollow = false,
-  dashed = false,
-  live = false,
-  bare = false,
-}: {
-  tint?: string;
-  hollow?: boolean;
-  dashed?: boolean;
-  live?: boolean;
-  bare?: boolean;
-}) {
-  return (
-    <span className="relative flex w-[9px] shrink-0 justify-center pt-[5px]">
-      <span
-        aria-hidden
-        className="absolute inset-x-0 top-0 -bottom-2.5 mx-auto w-px"
-        style={{
-          background: dashed
-            ? 'repeating-linear-gradient(to bottom, var(--c-card-border) 0 2px, transparent 2px 5px)'
-            : 'var(--c-card-border)',
-        }}
-      />
-      {!bare && (
-        <span
-          className="relative h-[7px] w-[7px] rounded-full"
-          style={{
-            background: hollow ? 'var(--c-surface)' : tint,
-            border: hollow ? `1px solid ${tint}` : undefined,
-            boxShadow: live
-              ? `0 0 0 3px var(--c-surface), 0 0 0 6px color-mix(in srgb, ${tint} 22%, transparent)`
-              : '0 0 0 3px var(--c-surface)',
-          }}
-        />
-      )}
-    </span>
-  );
-}
-
-/// A shift that hasn't started. Above the now-line, and the only rows on the
-/// page drawn against a dashed stem — nothing about them has happened yet.
-function UpcomingLine({
-  row,
-  now,
-  onOpen,
-}: {
-  row: ReturnType<typeof upcomingShifts>[number];
-  now: number;
-  onOpen: (id: string) => void;
-}) {
-  const colors = useWorkerColors();
-  const tint = workerColorFor(colors, row.workerId);
-  const near = row.imminent || row.overdue;
-  return (
-    <button
-      onClick={() => onOpen(row.workerId)}
-      className={
-        'flex w-full items-start gap-3.5 rounded-lg py-[3px] pr-2 text-left transition-colors hover:bg-card/70 ' +
-        'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
-        (near ? 'opacity-100' : 'opacity-60')
-      }
-    >
-      <Gutter>{clockStamp(row.at)}</Gutter>
-      <Stem tint={tint} hollow dashed />
-      <span className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate text-[12px] text-ink-muted">{row.workerName}</span>
-        <span className="text-[11px] text-ink-faint/50">·</span>
-        <span className="truncate text-[11px] text-ink-faint">{row.cadence}</span>
-        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-ink-muted">
-          {untilLabel(row.at, now)}
-        </span>
-      </span>
-    </button>
-  );
-}
-
-/// A decision, lifted out of the day.
-///
-/// It keeps its own stamp — "asked at 11:52" — because the row is drawn
-/// somewhere the clock did not put it, and a page that reorders rows without
-/// saying so is a page you stop trusting about time.
-function PinnedDecision({ row, now, onOpen }: { row: QueueRow; now: number; onOpen: (row: QueueRow) => void }) {
-  const worker = useWorkersStore((s) => s.workers[row.workerId]);
-  const waited = Math.max(0, Math.round((now - row.at) / 60_000));
-  return (
-    <div
-      className="mb-1 flex items-center gap-3 rounded-xl border px-3.5 py-2.5"
-      style={{
-        borderColor: 'color-mix(in srgb, #fbbf24 30%, var(--c-card-border))',
-        background: 'color-mix(in srgb, #fbbf24 6%, transparent)',
-      }}
-    >
-      <button
-        onClick={() => onOpen(row)}
-        className="flex min-w-0 flex-1 items-center gap-3 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
-      >
-        {worker && <WorkerAvatar worker={worker} size="xs" />}
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] text-ink">{row.title}</span>
-          <span className="mt-[3px] block text-[11px] text-amber-500">
-            {row.workerName} · {PAUSE_TEXT[row.pausedReason ?? 'preStep']} · asked at {clockStamp(row.at)}
-            {waited >= 1 && ` · waiting ${waited < 60 ? `${waited}m` : `${Math.round(waited / 60)}h`}`}
-          </span>
-        </span>
-      </button>
-      {row.runId && <PausedActions row={row} tone="solid" />}
     </div>
   );
 }
 
-/// The now-line. The page's one horizon: future above, past below.
-function NowLine({ now, live }: { now: number; live: boolean }) {
-  return (
-    <div className="flex items-center gap-3.5 py-2">
-      <span className="w-[52px] shrink-0 text-right text-[10px] font-semibold tabular-nums text-[color:var(--c-running-pulse)]">
-        {clockStamp(now)}
-      </span>
-      <span className="flex w-[9px] shrink-0 justify-center">
-        <span
-          aria-hidden
-          className={'h-[7px] w-[7px] rounded-full ' + (live ? 'animate-pulse' : '')}
-          style={{
-            background: 'var(--c-running-pulse)',
-            boxShadow: '0 0 0 3px color-mix(in srgb, var(--c-running-pulse) 22%, transparent)',
-          }}
-        />
-      </span>
-      <span
-        aria-hidden
-        className="h-px flex-1"
-        style={{
-          background:
-            'linear-gradient(to right, color-mix(in srgb, var(--c-running-pulse) 55%, transparent), transparent)',
-        }}
-      />
-      <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[color:color-mix(in_srgb,var(--c-running-pulse)_80%,var(--c-ink-faint))]">
-        Now
-      </span>
-    </div>
-  );
-}
+/// How long the handoff note stays before the next item opens.
+const HANDOFF_MS = 2600;
 
-function SpineNode({
-  item,
-  onOpen,
-  filed,
-  onOpenFile,
-  flowNames,
-  now,
-}: {
-  item: SpineItem;
-  onOpen: (row: QueueRow) => void;
-  filed: WorkerFile | null | undefined;
-  onOpenFile: (path: string, a?: undefined, mode?: 'preview') => void;
-  flowNames: Record<string, string>;
-  now: number;
-}) {
-  if (item.kind === 'hour') {
-    return (
-      <div className="flex items-center gap-3.5 pb-1 pt-2.5">
-        <span className="w-[52px] shrink-0 text-right text-[10px] font-semibold tracking-[0.04em] text-ink-muted tabular-nums">
-          {item.label}
-        </span>
-        <span className="flex w-[9px] shrink-0 justify-center">
-          <span aria-hidden className="h-3.5 w-px bg-card-border" style={{ background: 'var(--c-card-border)' }} />
-        </span>
-        <span
-          aria-hidden
-          className="h-px flex-1"
-          style={{ background: 'linear-gradient(to right, var(--c-card-border), transparent)' }}
-        />
-      </div>
-    );
-  }
-  if (item.kind === 'quiet') {
-    return (
-      <div className="flex items-center gap-3.5 py-0.5">
-        <span className="w-[52px] shrink-0" />
-        <span className="flex w-[9px] shrink-0 justify-center">
-          <span
-            aria-hidden
-            className="h-[22px] w-px"
-            style={{
-              background:
-                'repeating-linear-gradient(to bottom, var(--c-card-border) 0 2px, transparent 2px 5px)',
-            }}
-          />
-        </span>
-        <span className="text-[10px] text-ink-faint/70">{item.label}</span>
-      </div>
-    );
-  }
-  return (
-    <JobRow
-      row={item.row}
-      onOpen={onOpen}
-      filed={filed}
-      onOpenFile={onOpenFile}
-      flowNames={flowNames}
-      now={now}
-    />
-  );
-}
-
-/// One job on the spine.
-///
-/// The deliverable rides beside the title rather than in a far column, and a
-/// row that produced nothing is drawn quieter than one that did — "looked,
-/// found nothing to do" is a real outcome but it is not the same weight as a
-/// report you have not read.
-function JobRow({
+/// "Handed back" — the beat between clearing one decision and the next.
+function HandoffNote({
   row,
-  onOpen,
-  filed,
-  onOpenFile,
-  flowNames,
-  live = false,
-  now,
+  stillWorking,
+  onWatch,
+  onNext,
 }: {
   row: QueueRow;
-  onOpen: (row: QueueRow) => void;
-  filed?: WorkerFile | null;
-  onOpenFile: (path: string, a?: undefined, mode?: 'preview') => void;
-  flowNames: Record<string, string>;
-  live?: boolean;
-  now: number;
+  stillWorking: boolean;
+  onWatch?: () => void;
+  onNext: () => void;
 }) {
-  const colors = useWorkerColors();
-  const tint = workerColorFor(colors, row.workerId);
-  const quiet = row.status === 'quiet' || row.status === 'orphaned';
-  const failed = row.status === 'failed';
-
   return (
-    <div className="group flex items-start gap-3.5 rounded-lg py-[5px] pr-2 transition-colors hover:bg-card/70">
-      <Gutter tone={live ? 'muted' : 'faint'}>{clockStamp(row.at)}</Gutter>
-      <Stem tint={failed ? 'var(--c-diff-remove-ink)' : tint} live={live} />
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
-          <button
-            onClick={() => onOpen(row)}
-            className={
-              'min-w-0 truncate text-left text-[13px] focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
-              (quiet ? 'text-ink-muted' : 'text-ink')
-            }
-          >
-            {row.title}
-          </button>
-          {filed && (
+    <div className="flex flex-1 items-center justify-center px-10">
+      <div className="flex max-w-[520px] flex-col items-center gap-3 text-center">
+        <span
+          aria-hidden
+          className="flex h-10 w-10 items-center justify-center rounded-full text-[18px] text-emerald-400"
+          style={{ background: 'color-mix(in srgb, #34d399 14%, transparent)' }}
+        >
+          ✓
+        </span>
+        <p className="text-[16px] font-semibold text-ink" role="status">
+          {stillWorking ? `Back to ${row.workerName}` : 'Done'}
+        </p>
+        <p className="text-[13px] leading-relaxed text-ink-muted">
+          {stillWorking
+            ? `${row.workerName} is working on “${row.title}” again. It’s under Working if you want to watch.`
+            : `“${row.title}” is off your list.`}
+        </p>
+        <div className="mt-1 flex gap-2">
+          {onWatch && (
             <button
-              onClick={() => onOpenFile(filed.path, undefined, 'preview')}
-              title={`Open ${baseName(filed.name)}`}
-              className="flex shrink-0 items-center gap-1 rounded-[5px] border border-card-strong bg-card px-1.5 py-px text-[10px] text-ink-muted hover:bg-card-strong hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+              onClick={onWatch}
+              className="rounded-md border border-card-strong px-3 py-1.5 text-[12px] text-ink hover:bg-card-strong"
             >
-              <span className="max-w-[11rem] truncate">{baseName(filed.name)}</span>
-              <span aria-hidden className="text-ink-faint">↗</span>
+              {stillWorking ? 'Watch it' : 'Open it'}
             </button>
           )}
-          {live && (
-            <span className="ml-auto shrink-0 text-[11px] tabular-nums text-ink-muted">
-              {elapsed(row.at, now)}
-            </span>
-          )}
-        </span>
-        <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-ink-faint">
-          <span style={{ color: tint, opacity: 0.9 }}>{row.workerName}</span>
-          <span className="text-ink-faint/50">·</span>
-          {live && row.steps.length > 0 ? (
-            <StepTrack row={row} tint={tint} />
-          ) : (
-            <span className={failed ? 'text-red-700 dark:text-red-300/80' : undefined}>
-              {describeOutcome(row, flowNames)}
-            </span>
-          )}
-        </span>
-        {row.note && failed && (
-          <span className="mt-1 block truncate text-[11px] text-red-700 dark:text-red-300/80">{row.note}</span>
-        )}
-      </span>
+          <button onClick={onNext} className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:opacity-90">
+            Next
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
-
-function StepTrack({ row, tint }: { row: QueueRow; tint: string }) {
-  return (
-    <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-      {row.steps.map((step, i) => (
-        <span key={step.id} className="flex shrink-0 items-center gap-1.5">
-          {i > 0 && <span className="text-ink-faint/50">›</span>}
-          {step.state === 'current' && (
-            <span aria-hidden className="h-[5px] w-[5px] animate-pulse rounded-full" style={{ background: tint }} />
-          )}
-          <span
-            className={
-              step.state === 'current'
-                ? 'font-medium text-ink'
-                : step.state === 'failed'
-                  ? 'text-red-700 dark:text-red-300/80'
-                  : step.state === 'done'
-                    ? 'text-ink-muted'
-                    : 'text-ink-faint/60'
-            }
-          >
-            {step.id}
-          </span>
-        </span>
-      ))}
-    </span>
-  );
-}
-
-function describeOutcome(row: QueueRow, flowNames: Record<string, string>): string {
-  if (row.status === 'quiet') {
-    return row.task === 'errand' ? 'Answered without launching work' : 'Looked, found nothing to do';
-  }
-  if (row.status === 'orphaned') return 'Ended — its run is gone';
-  if (row.status === 'failed') return 'Failed';
-  if (row.status === 'responding') return 'Answering you';
-  return flowOf(row, flowNames) ?? 'Done';
-}
-
-function elapsed(from: number, now: number): string {
-  const mins = Math.max(0, Math.round((now - from) / 60_000));
-  if (mins < 1) return 'just started';
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return mins % 60 === 0 ? `${hours}h` : `${hours}h ${mins % 60}m`;
-  return `${Math.round(hours / 24)}d`;
-}
-

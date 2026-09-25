@@ -4,6 +4,7 @@
 // supplied at construction, and buffers a writer handle on stdin so we can
 // feed new user turns without respawning.
 
+import { isAccountConnector } from '../shared/flows/mcpTools';
 import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -504,8 +505,9 @@ export { spawnFailureMessage };
 export function resolveMcpScope(
   args: { backend: Backend; cwd: string; mcpAllowlist?: string[]; skipGlobalMcp?: boolean },
 ): { skipGlobalMcp?: boolean } {
-  if (!args.mcpAllowlist) return { skipGlobalMcp: args.skipGlobalMcp };
-  if (args.mcpAllowlist.length === 0) return { skipGlobalMcp: true };
+  const allowlist = effectiveMcpAllowlist(args.mcpAllowlist);
+  if (!allowlist) return { skipGlobalMcp: args.skipGlobalMcp };
+  if (allowlist.length === 0) return { skipGlobalMcp: true };
   return args.backend === 'claude' ? { skipGlobalMcp: true } : { skipGlobalMcp: args.skipGlobalMcp };
 }
 
@@ -539,9 +541,21 @@ export function shouldSandboxSpawn(
   return true;
 }
 
+/// The allowlist as the launch should honour it. An account connector
+/// ("claude.ai Gmail") lives on the user's Claude account, not in any config
+/// file, and `--strict-mcp-config` drops every one of them — so a list that
+/// names one cannot be enforced by strict mode without removing the very
+/// server it asks for. Such a list widens to no restriction: loading servers
+/// the job does not touch costs time, losing its mailbox breaks the job.
+export function effectiveMcpAllowlist(list: string[] | undefined): string[] | undefined {
+  if (!list) return undefined;
+  return list.some(isAccountConnector) ? undefined : list;
+}
+
 function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string {
-  return args.backend === 'claude' && args.mcpAllowlist
-    ? buildClaudeMcpConfigArg(args.mcpAllowlist, args.cwd) ?? ''
+  const allowlist = effectiveMcpAllowlist(args.mcpAllowlist);
+  return args.backend === 'claude' && allowlist
+    ? buildClaudeMcpConfigArg(allowlist, args.cwd) ?? ''
     : '';
 }
 
@@ -557,7 +571,7 @@ export function claudeMcpLaunchFingerprint(
   // later fail-closed turn. skipGlobalMcp is included for callers that request
   // strict mode directly; turbo is already compared separately but belongs to
   // the effective MCP scope too.
-  const strict = !!(args.turbo || args.skipGlobalMcp || args.mcpAllowlist !== undefined);
+  const strict = !!(args.turbo || args.skipGlobalMcp || effectiveMcpAllowlist(args.mcpAllowlist) !== undefined);
   return JSON.stringify({ strict, selectedConfig });
 }
 

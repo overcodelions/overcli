@@ -68,6 +68,30 @@ function validYaml(name = 'Solve a Ticket!'): string {
   ].join('\n');
 }
 
+describe('the MCP tools the designer can grant', () => {
+  beforeEach(() => mockQuery.mockReset());
+
+  it('lists them by server, marking the ones that change something', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+    await draftFlowFromPrompt(
+      { description: 'Plan my trips' },
+      {
+        ...claudeDeps(),
+        mcpTools: ['mcp__claude_ai_Gmail__search_threads', 'mcp__claude_ai_Gmail__send_message'],
+      },
+    );
+    const prompt = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(prompt).toContain('MCP TOOLS THE USER HAS');
+    expect(prompt).toContain('claude_ai_Gmail: search_threads, send_message*');
+  });
+
+  it('leaves the section out when none are known', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+    await draftFlowFromPrompt({ description: 'Plan my trips' }, claudeDeps());
+    expect(mockQuery.mock.calls[0][0].options.systemPrompt).not.toContain('MCP TOOLS THE USER HAS');
+  });
+});
+
 describe('draftFlowFromPrompt', () => {
   beforeEach(() => {
     mockQuery.mockClear();
