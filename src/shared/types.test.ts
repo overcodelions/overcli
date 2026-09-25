@@ -13,6 +13,7 @@ describe('DEFAULT_SETTINGS', () => {
       backendDefaultEfforts: {},
       agentBranchPrefix: 'agent/',
       showCost: false,
+      sandboxFlowWrites: true,
       defaultShowToolActivity: false,
       autoDowngrade: true,
       theme: 'system',

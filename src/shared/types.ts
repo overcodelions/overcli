@@ -1098,6 +1098,12 @@ export interface AppSettings {
   backendDefaultEfforts?: Partial<Record<Backend, EffortLevel>>;
   agentBranchPrefix: string;
   showCost: boolean;
+  /// Run every flow-owned backend CLI inside an OS-enforced write jail
+  /// (macOS Seatbelt): it may write its run's worktree, the repo's git dir
+  /// (hooks and config excepted), temp dirs and its own state dirs, and
+  /// nothing else. On by default; no effect off macOS. Interactive chat is
+  /// never jailed. See src/main/sandbox/seatbeltProfile.ts.
+  sandboxFlowWrites: boolean;
   /// Whether the Services tab is available at all. Off by default: most
   /// projects have nothing to run, and a tab that is always empty is clutter
   /// for everyone it does not apply to. Turning it on is the one decision
@@ -3789,6 +3795,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   backendDefaultEfforts: {},
   agentBranchPrefix: 'agent/',
   showCost: false,
+  sandboxFlowWrites: true,
   servicesEnabled: false,
   servicesStopOnQuit: true,
   defaultShowToolActivity: false,

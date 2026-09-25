@@ -16,8 +16,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(dataDir, { recursive: true, force: true });
-  fs.rmSync(repo, { recursive: true, force: true });
+  // A service's state can still be landing on disk as the test ends; Node
+  // retries a removal that meets ENOTEMPTY/EBUSY instead of failing the run.
+  const gone = { recursive: true, force: true, maxRetries: 5, retryDelay: 50 } as const;
+  fs.rmSync(dataDir, gone);
+  fs.rmSync(repo, gone);
 });
 
 function manager() {

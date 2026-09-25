@@ -23,6 +23,7 @@ export interface LaunchParams {
   launchTurbo: boolean;
   launchArtifacts: boolean;
   launchChrome: boolean;
+  launchSandbox: boolean;
   launchEffort?: EffortLevel;
   cwd: string;
 }
@@ -37,6 +38,7 @@ export const LAUNCH_PARAM_KEYS = [
   'launchTurbo',
   'launchArtifacts',
   'launchChrome',
+  'launchSandbox',
   'launchEffort',
   'cwd',
 ] as const satisfies readonly (keyof LaunchParams)[];

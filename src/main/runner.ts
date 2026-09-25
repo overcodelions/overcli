@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { log } from './diagnostics';
-import { runningUnderElectron } from './host';
+import { host, runningUnderElectron } from './host';
 import {
   Backend,
   PermissionMode,
@@ -103,6 +103,12 @@ import {
 } from './launchParams';
 import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
+import {
+  sandboxedCommand,
+  sandboxRootsFor,
+  sandboxSupported,
+  writeSeatbeltProfile,
+} from './sandbox/seatbeltProfile';
 import { buildClaudeMcpConfigArg } from './mcpConfig';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
@@ -503,6 +509,36 @@ export function resolveMcpScope(
   return args.backend === 'claude' ? { skipGlobalMcp: true } : { skipGlobalMcp: args.skipGlobalMcp };
 }
 
+let sandboxUnsupportedLogged = false;
+
+/// Whether this send's backend process goes inside the Seatbelt write jail.
+/// Exported for tests; `platform` is injectable for the same reason.
+///
+/// Codex is jailed only when its OWN sandbox is off (`danger-full-access`,
+/// i.e. bypassPermissions). Seatbelt profiles cannot nest: verified on
+/// macOS 26, `codex exec -s workspace-write` under an outer sandbox-exec
+/// fails every shell call with "Operation not permitted", while
+/// `-s danger-full-access` works. Under the other modes codex's own
+/// workspace-write sandbox already confines writes to the cwd.
+export function shouldSandboxSpawn(
+  args: Pick<SendArgs, 'sandboxFsWrites' | 'backend' | 'permissionMode'>,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (args.sandboxFsWrites !== true) return false;
+  if (args.backend === 'ollama') return false;
+  if (!sandboxSupported(platform)) {
+    if (!sandboxUnsupportedLogged) {
+      sandboxUnsupportedLogged = true;
+      log('info', 'runner.sandbox', `write-sandboxing for flow steps is not available on ${platform} yet; spawning unwrapped`);
+    }
+    return false;
+  }
+  if (args.backend === 'codex') {
+    return codexTransportPermissions(args.permissionMode).sandbox === 'danger-full-access';
+  }
+  return true;
+}
+
 function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string {
   return args.backend === 'claude' && args.mcpAllowlist
     ? buildClaudeMcpConfigArg(args.mcpAllowlist, args.cwd) ?? ''
@@ -598,6 +634,12 @@ interface SendArgs {
   /// own turn from a user hijack typed into the run pane's composer, so the
   /// hijack can be refused rather than aborting the step.
   flowStep?: boolean;
+  /// Run the backend CLI inside an OS write jail (macOS Seatbelt) that only
+  /// lets it write its cwd, the repo's git dir, temp dirs, the extra
+  /// `allowedDirs` and the CLI's own state dirs. Set by the flow runtime on
+  /// every flow-owned send when `AppSettings.sandboxFlowWrites` is on; chat
+  /// never sets it. See src/main/sandbox/seatbeltProfile.ts.
+  sandboxFsWrites?: boolean;
   /// Per-send turbo override. Undefined defers to the global setting;
   /// flow steps set it explicitly from `step.turbo`.
   turbo?: boolean;
@@ -670,6 +712,10 @@ interface ActiveProcess {
   /// header picker flips, the next turn reuses the resident process, and
   /// the browser tools never appear even though the UI says they should.
   launchChrome: boolean;
+  /// Whether this process was spawned inside the Seatbelt write jail. A jail
+  /// is fixed at exec time, so toggling `sandboxFlowWrites`, or a chat
+  /// process being reused by a flow step, must respawn.
+  launchSandbox: boolean;
   launchPermissionMode: PermissionMode;
   launchAllowedTools: string;
   launchMcpFingerprint?: string;
@@ -842,6 +888,8 @@ interface GeminiAcpSession {
   collabBurst: number;
   collabRoundsInBurst: number;
   cwd: string;
+  /// Spawned inside the Seatbelt write jail. See `shouldSandboxSpawn`.
+  sandboxed: boolean;
   turnStartedAt: number;
   pendingPermissions: Map<
     string,
@@ -1922,6 +1970,13 @@ export class RunnerManager {
     }
 
     if (args.backend === 'claude' && args.claudeTransport === 'sdk') {
+      // The SDK transport spawns claude inside the agent SDK, not through
+      // `spawnFor`, so the write jail does not reach it. Flow steps only land
+      // here via the broker-not-found fallback above; say so rather than
+      // pretend the step is contained.
+      if (shouldSandboxSpawn(args)) {
+        log('warn', 'runner.sandbox', `claude conv=${convId} runs on the SDK transport, which is NOT write-jailed`);
+      }
       // SDK transport: drives Claude in-process via @anthropic-ai/claude-agent-sdk
       // instead of spawning `claude -p`. Permission prompts route through
       // canUseTool → pendingPermissions, mirroring the broker's flow but
@@ -2288,10 +2343,13 @@ export class RunnerManager {
       // should NOT kill the thread — that would lose conversation history.
       // The runtime stamp on the active record is updated below so subsequent
       // change-detection compares against the latest values.
+      // …except across a jail boundary: the outer Seatbelt profile is fixed
+      // at exec, and codex's own sandbox cannot nest inside it.
       const canHotSwap =
         !!existing &&
         existing.backend === 'codex' &&
-        existing.codexMode === 'app-server';
+        existing.codexMode === 'app-server' &&
+        !launchParamsChanged(existing, this.launchParamsFor(args, configuredEffort), ['launchSandbox']);
       if (paramsChanged && !canHotSwap) {
         // killProc drops the live process *and* its in-memory sessionId,
         // so the respawn below must be told to --resume or it starts a
@@ -3087,7 +3145,8 @@ export class RunnerManager {
   private async ensureGeminiAcpSession(args: SendArgs): Promise<GeminiAcpSession> {
     const convId = args.conversationId;
     let session = this.geminiAcpSessions.get(convId);
-    if (session && session.cwd !== args.cwd) {
+    const sandboxed = shouldSandboxSpawn(args);
+    if (session && (session.cwd !== args.cwd || session.sandboxed !== sandboxed)) {
       this.killGeminiAcp(convId);
       session = undefined;
     }
@@ -3123,12 +3182,14 @@ export class RunnerManager {
       next.collabBurst = 0;
       next.collabRoundsInBurst = 0;
       next.cwd = args.cwd;
+      next.sandboxed = sandboxed;
       next.turnStartedAt = 0;
       next.pendingPermissions = new Map();
       next.client = new GeminiAcpClient({
         binary,
         cwd: args.cwd,
         env,
+        launch: (command, argv) => this.launchCommand(args, command, argv),
         onNotification: async (method, params) => this.handleGeminiAcpNotification(convId, method, params),
         onRequest: async (id, method, params) => this.handleGeminiAcpRequest(convId, id, method, params),
         onStderr: (chunk) => this.handleGeminiAcpStderr(convId, chunk),
@@ -3555,6 +3616,31 @@ export class RunnerManager {
     }
   }
 
+  /// `binary argv`, wrapped in the Seatbelt write jail when this send asks
+  /// for it (see `shouldSandboxSpawn`), otherwise unchanged. The profile is
+  /// written under the app's data dir, which no jailed step can write — a
+  /// profile in $TMPDIR could be rewritten by one step to free the next.
+  private launchCommand(
+    args: SendArgs,
+    binary: string,
+    argv: string[],
+  ): { command: string; args: string[] } {
+    if (!shouldSandboxSpawn(args)) return { command: binary, args: argv };
+    const roots = sandboxRootsFor({
+      backend: args.backend,
+      cwd: args.cwd,
+      extraWritable: args.allowedDirs ?? [],
+      extraRepos: resolveSymlinkWritableRoots(args.cwd),
+    });
+    const profile = writeSeatbeltProfile(roots, path.join(host().dataDir(), 'seatbelt'));
+    log(
+      'info',
+      'runner.sandbox',
+      `${args.backend} conv=${args.conversationId} write-jailed to ${roots.writable.length} roots (${roots.denied.length} re-denied) :: ${profile}`,
+    );
+    return sandboxedCommand(binary, argv, profile);
+  }
+
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
     const env = this.buildEnv(binary, args.backend);
@@ -3582,7 +3668,8 @@ export class RunnerManager {
       `${args.backend} conv=${args.conversationId} model=${args.model || '(unset — CLI will pick its own default)'} :: ${binary} ${safeArgs.join(' ')}`,
     );
     const shell = backendNeedsShell(binary);
-    const proc = spawn(binary, spawnArgs, {
+    const launch = this.launchCommand(args, binary, spawnArgs);
+    const proc = spawn(launch.command, launch.args, {
       cwd: args.cwd,
       env,
       shell,
@@ -4179,6 +4266,7 @@ export class RunnerManager {
       binary,
       cwd: args.cwd,
       env,
+      launch: (command, argv) => this.launchCommand(args, command, argv),
       // Re-attach to the persisted codex thread if we have one. The
       // client tries thread/resume first and falls back to thread/start
       // on any failure (deleted thread, older codex, sandbox change).
@@ -4581,6 +4669,7 @@ export class RunnerManager {
       launchArtifacts: this.artifactsFor(args.backend),
       launchChrome: this.chromeFor(args),
       launchEffort: effortLevel,
+      launchSandbox: shouldSandboxSpawn(args),
       cwd: args.cwd,
     };
   }
