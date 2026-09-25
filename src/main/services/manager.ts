@@ -19,6 +19,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { nodeProbes, spawnService } from './adapter';
+import { defaultLaunchLimit, LaunchGate } from './launchGate';
 import { defaultDebugPort, debugKindFor, ensureGradleDebugInit } from './debug';
 import { detectServices, type RepoReader } from './detect';
 import {
@@ -119,6 +120,8 @@ export class ServicesManager {
   /// Ignored files per main checkout, with when they were read.
   private readonly ignoredScans = new Map<string, { at: number; files: Promise<string[] | null> }>();
   private readonly supervisors = new Map<string, Supervisor>();
+  /// One queue for every workspace's JVM builds: the cores are shared.
+  private readonly launchGate = new LaunchGate(defaultLaunchLimit(os.cpus().length));
   /// Workspaces already looked at for services that outlived the app.
   private readonly adopted = new Set<string>();
   private readonly stacks = new Map<string, StackConfig>();
@@ -1551,6 +1554,7 @@ export class ServicesManager {
     const supervisor = new Supervisor(workspaceId, stack.services, stack.bindings, {
       spawn: spawnService,
       probe: nodeProbes,
+      launchGate: this.launchGate,
       symlinkRoots: this.symlinkRoots,
       configDir: (serviceId) => ensureServiceConfigDir(this.dataDir, workspaceId, serviceId),
       gradleDebugInit: ensureGradleDebugInit(this.dataDir),
@@ -1897,12 +1901,25 @@ export function gradleRunsFromRoot(spec: ServiceSpec): ServiceSpec {
   return rooted;
 }
 
+///
+/// Unless the command asks for the daemon itself. Someone who typed
+/// `-Dorg.gradle.daemon=true` chose the faster start over that risk, and
+/// appending `false` after it — last one wins — overrode them without a word.
+/// Earlier versions did exactly that, so a command holding both is repaired to
+/// the one they typed.
 export function daemonOff(spec: ServiceSpec): ServiceSpec {
   if (spec.runner !== 'gradle') return spec;
   if (!spec.command.some((c) => /(^|:)bootRun$/.test(c))) return spec;
-  if (spec.command.includes('-Dorg.gradle.daemon=false')) return spec;
-  return { ...spec, command: [...spec.command, '-Dorg.gradle.daemon=false'] };
+  if (spec.command.includes(DAEMON_ON) || spec.command.includes('--daemon')) {
+    const command = spec.command.filter((c) => c !== DAEMON_OFF);
+    return command.length === spec.command.length ? spec : { ...spec, command };
+  }
+  if (spec.command.includes(DAEMON_OFF)) return spec;
+  return { ...spec, command: [...spec.command, DAEMON_OFF] };
 }
+
+const DAEMON_ON = '-Dorg.gradle.daemon=true';
+const DAEMON_OFF = '-Dorg.gradle.daemon=false';
 
 /// Whether a ref resolves in this checkout. Distinguishes "check that branch
 /// out" from "make a local branch tracking that remote one".

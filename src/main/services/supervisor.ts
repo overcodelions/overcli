@@ -28,10 +28,11 @@ import type { PortOwner, ProcessMatch } from './portOwners';
 import { applyProjection, planProjection, type ProjectionFs } from './projection';
 import type { LogSink } from './logFile';
 import { waitUntilReady, type ProbeDeps } from './readiness';
+import type { LaunchGate, ReleaseSlot } from './launchGate';
 import type { ServiceBinding, ServiceRuntime, ServiceSpec, TaskRun } from './types';
 import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
 import { describeDrift, driftedTasks } from '../../shared/taskDrift';
-import { DEFAULT_READY_TIMEOUT_SEC } from '../../shared/services';
+import { buildsOnJvm, defaultReadyTimeoutSec } from '../../shared/services';
 import { missingMachineError, SECRET_MASK } from '../../shared/machineValues';
 import {
   emptyExceptionLog,
@@ -146,6 +147,10 @@ export interface SupervisorDeps {
     patterns: readonly string[],
     onChange: (relativePath: string) => void,
   ): ServiceFileWatcher;
+  /// Shared by every stack, so a JVM build waits its turn behind the ones
+  /// already compiling rather than starting beside all of them. See
+  /// `LaunchGate`. Without it everything starts at once.
+  launchGate?: LaunchGate;
 }
 
 export type SupervisorEvent =
@@ -173,6 +178,9 @@ export const ADOPTED_POLL_MS = 5_000;
 
 export class Supervisor {
   private readonly procs = new Map<string, SpawnedProcess>();
+  /// Which launch of each service is the current one, while it waits for a
+  /// turn at the gate.
+  private readonly currentLaunch = new Map<string, object>();
   private readonly runtimes = new Map<string, ServiceRuntime>();
   /// Each task's last successful run. The runtime above is overwritten by a
   /// failed re-run, and drift has to be measured against what is installed.
@@ -633,9 +641,9 @@ export class Supervisor {
         });
         return;
       }
-      // Waiting on something it depends on: nothing to kill yet, but the
-      // start has to be called off.
-      if (runtime.waitingOn) this.setStatus(serviceId, { status: 'stopped' });
+      // Waiting on something it depends on, or for a turn to build: nothing to
+      // kill yet, but the start has to be called off.
+      if (runtime.waitingOn || runtime.queued) this.setStatus(serviceId, { status: 'stopped' });
       return;
     }
     this.procs.delete(serviceId);
@@ -847,6 +855,29 @@ export class Supervisor {
     // the repo root of acme-admin-console finds no package.json. Projection has
     // always used the subpath; the spawn has to agree with it.
     const cwd = spec.subpath ? path.join(plan.cwd, spec.subpath) : plan.cwd;
+
+    // Held from the spawn until it is ready, gives up, or exits: the build and
+    // the boot are the expensive part, not the running afterwards.
+    let release: ReleaseSlot = () => {};
+    const gate = this.deps.launchGate;
+    if (gate && buildsOnJvm(spec)) {
+      // A token rather than the status: a restart while this waited sets the
+      // status back to starting, and both launches would then spawn.
+      const token = {};
+      this.currentLaunch.set(spec.id, token);
+      if (gate.full) this.setStatus(spec.id, { queued: true });
+      release = await gate.acquire();
+      if (this.runtime(spec.id).queued) this.setStatus(spec.id, { queued: undefined });
+      if (
+        this.currentLaunch.get(spec.id) !== token ||
+        this.runtime(spec.id).status !== 'starting' ||
+        this.procs.has(spec.id)
+      ) {
+        release();
+        return;
+      }
+    }
+
     // File only: the pane already shows the status, but a log read later by an
     // agent needs to know where one run ends and the next begins.
     this.writeLog(spec.id, `── start ${binding.ref} · ${cwd} · ${debug.command.join(' ')} ──`);
@@ -870,6 +901,7 @@ export class Supervisor {
     // dropped it from `procs`, or brought a removed service back as a status.
     proc.onError((err) => {
       finish();
+      release();
       if (this.procs.get(spec.id) !== proc) return;
       this.stopWatcher(spec.id);
       this.procs.delete(spec.id);
@@ -880,6 +912,7 @@ export class Supervisor {
     });
     proc.onExit((code) => {
       finish();
+      release();
       if (this.procs.get(spec.id) !== proc) return;
       this.stopWatcher(spec.id);
       this.procs.delete(spec.id);
@@ -921,8 +954,11 @@ export class Supervisor {
     const isAlive = () => this.procs.get(spec.id) === proc;
     const result = await waitUntilReady(spec.ready, probe, {
       isAlive,
-      timeoutMs: (spec.readyTimeoutSec ?? DEFAULT_READY_TIMEOUT_SEC) * 1000,
+      timeoutMs: (spec.readyTimeoutSec ?? defaultReadyTimeoutSec(spec)) * 1000,
     });
+    // Ready or slow, it has had its turn; one that never answers must not
+    // hold the queue behind it.
+    release();
 
     // A process that died on its way up has already set `failed` from
     // `onExit`; don't overwrite that with the vaguer `unready`.
@@ -1064,7 +1100,10 @@ export class Supervisor {
   private setStatus(serviceId: string, patch: Partial<ServiceRuntime>): void {
     const next = { ...this.runtime(serviceId), ...patch, serviceId };
     // Waiting is a kind of starting; any other status ends it.
-    if (next.status !== 'starting') next.waitingOn = undefined;
+    if (next.status !== 'starting') {
+      next.waitingOn = undefined;
+      next.queued = undefined;
+    }
     // No longer adopted, however that came about: nothing left to watch.
     if (!next.adopted) this.forgetAdopted(serviceId);
     this.runtimes.set(serviceId, next);

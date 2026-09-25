@@ -12,6 +12,7 @@ import type { ProjectionFs } from './projection';
 import type { ServiceBinding, ServiceSpec } from './types';
 import type { PortHolderKind } from '../../shared/services';
 import { matchingProcesses, type PortOwner, type ProcessMatch } from './portOwners';
+import { LaunchGate } from './launchGate';
 
 /// A checkout that exists and resolves to itself; enough for projection.
 const fs: ProjectionFs = {
@@ -1480,5 +1481,82 @@ describe('Supervisor stopping and switching', () => {
     expect(calls).toEqual(['/wt/x']);
     expect(spawns).toHaveLength(0);
     expect(sup.log('api').some((l) => l.includes('brought 2 local config files in'))).toBe(true);
+  });
+});
+
+describe('Supervisor launch gate', () => {
+  const jvm = (id: string, port: number) =>
+    spec({ id, runner: 'gradle', command: ['./gradlew', `:${id}:bootRun`], port, ready: { kind: 'tcp', port } });
+
+  function gated(limit = 1) {
+    const open = new Set<number>();
+    const h = harness({
+      launchGate: new LaunchGate(limit),
+      probe: {
+        httpStatus: async () => 200,
+        tcpOpen: async (port) => open.has(port),
+        exitCode: async () => 0,
+        now: () => Date.now(),
+        // A real turn of the event loop, so the test gets to act between polls.
+        sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
+      },
+    });
+    return { ...h, open };
+  }
+
+  it('queues a JVM build behind one still starting, then starts it once that one is up', async () => {
+    const { deps, spawns, open } = gated();
+    const sup = new Supervisor('mine', [jvm('a', 5001), jvm('b', 5002)], [binding('a'), binding('b')], deps);
+
+    void sup.start('a');
+    void sup.start('b');
+    await vi.waitFor(() => expect(sup.runtime('b').queued).toBe(true));
+    expect(spawns).toHaveLength(1);
+
+    open.add(5001);
+    await vi.waitFor(() => expect(spawns).toHaveLength(2));
+    expect(sup.runtime('b').queued).toBeUndefined();
+    expect(sup.runtime('b').status).toBe('starting');
+  });
+
+  it('gives the turn up when the build exits', async () => {
+    const { deps, spawns, procs } = gated();
+    const sup = new Supervisor('mine', [jvm('a', 5001), jvm('b', 5002)], [binding('a'), binding('b')], deps);
+
+    void sup.start('a');
+    void sup.start('b');
+    await vi.waitFor(() => expect(sup.runtime('b').queued).toBe(true));
+    procs[0].emitExit(1);
+    await vi.waitFor(() => expect(spawns).toHaveLength(2));
+  });
+
+  it('calls off a queued start when it is stopped', async () => {
+    const { deps, spawns, open } = gated();
+    const sup = new Supervisor('mine', [jvm('a', 5001), jvm('b', 5002)], [binding('a'), binding('b')], deps);
+
+    void sup.start('a');
+    void sup.start('b');
+    await vi.waitFor(() => expect(sup.runtime('b').queued).toBe(true));
+    await sup.stop('b');
+    expect(sup.runtime('b').status).toBe('stopped');
+
+    open.add(5001);
+    await vi.waitFor(() => expect(sup.runtime('a').status).toBe('ready'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(spawns).toHaveLength(1);
+  });
+
+  it('lets anything that is not a JVM build straight past', async () => {
+    const { deps, spawns } = gated();
+    const sup = new Supervisor(
+      'mine',
+      [jvm('a', 5001), spec({ id: 'web', runner: 'vite', command: ['npm', 'run', 'dev'] })],
+      [binding('a'), binding('web')],
+      deps,
+    );
+
+    void sup.start('a');
+    await sup.start('web');
+    expect(spawns).toHaveLength(2);
   });
 });

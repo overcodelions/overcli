@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ServicesManager, fsRepoReader } from './manager';
+import { ServicesManager, daemonOff, fsRepoReader } from './manager';
 import { loadStack, saveStack } from './store';
 import type { ServiceSpec } from './types';
 
@@ -979,5 +979,34 @@ describe('local config on a worktree swap', () => {
     } finally {
       fs.rmSync(worktree, { recursive: true, force: true });
     }
+  });
+});
+
+describe('daemonOff', () => {
+  const bootRun = (...command: string[]): ServiceSpec => ({
+    id: 'api',
+    name: 'api',
+    runner: 'gradle',
+    command: ['./gradlew', ':api:bootRun', ...command],
+    ready: { kind: 'none' },
+    selfReloads: false,
+    config: {},
+  });
+
+  it('turns the daemon off for a bootRun that says nothing about it', () => {
+    expect(daemonOff(bootRun()).command.at(-1)).toBe('-Dorg.gradle.daemon=false');
+  });
+
+  it('leaves a command that asked for the daemon alone', () => {
+    const spec = bootRun('-Dorg.gradle.daemon=true');
+    expect(daemonOff(spec)).toBe(spec);
+  });
+
+  it('repairs a command where an earlier version overrode the choice', () => {
+    expect(daemonOff(bootRun('-Dorg.gradle.daemon=true', '-Dorg.gradle.daemon=false')).command).toEqual([
+      './gradlew',
+      ':api:bootRun',
+      '-Dorg.gradle.daemon=true',
+    ]);
   });
 });
