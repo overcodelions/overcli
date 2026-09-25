@@ -6,6 +6,7 @@ import {
   StackSpecimen,
   TrustLadderMark,
 } from '../onboarding/specimens';
+import { HeroArt } from '../onboarding/basics';
 
 const PILLARS = [
   {
@@ -125,7 +126,7 @@ export function AboutSheet() {
         <div className="pointer-events-none absolute -left-20 -bottom-24 h-56 w-56 rounded-full bg-accent/6 blur-3xl" />
 
         <div className="relative flex items-start gap-6">
-          <AppMark />
+          <HeroArt size={92} />
           <div className="min-w-0 flex-1 pt-1">
             <div className="flex items-baseline gap-3">
               <div className="text-[36px] font-bold leading-none tracking-tight text-ink">overcli</div>
@@ -221,25 +222,6 @@ export function AboutSheet() {
           Done
         </button>
       </div>
-    </div>
-  );
-}
-
-function AppMark() {
-  return (
-    <div className="relative flex h-[92px] w-[92px] items-center justify-center rounded-[24px] border border-card-strong bg-gradient-to-br from-accent/55 via-accent/20 to-accent/5 shadow-[0_14px_30px_rgba(0,0,0,0.28)]">
-      <div className="absolute inset-[6px] rounded-[18px] border border-ink/5 bg-surface/30" />
-      <svg width="50" height="50" viewBox="0 0 42 42" fill="none" className="relative">
-        <rect x="11" y="9" width="20" height="5" rx="2.5" fill="currentColor" className="text-ink" />
-        <path
-          d="M14 20 L28 27 L14 34"
-          stroke="currentColor"
-          strokeWidth="5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="text-ink"
-        />
-      </svg>
     </div>
   );
 }
