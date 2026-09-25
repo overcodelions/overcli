@@ -57,13 +57,20 @@ export function htmlToSkimText(html: string): string {
     .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, '\n- $1\n')
     .replace(/<(p|div|br|tr|section|article)[^>]*>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&quot;/g, '"');
+    // One pass, so a decoded `&` never starts a second entity: `&amp;lt;` is
+    // the text "&lt;", not "<".
+    .replace(/&(nbsp|amp|lt|gt|#39|apos|quot);/g, (_m, name: string) => ENTITIES[name]);
 }
+
+const ENTITIES: Record<string, string> = {
+  nbsp: ' ',
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  '#39': "'",
+  apos: "'",
+  quot: '"',
+};
 
 /// The worker's own account, when its final step gave one.
 export function taggedDigest(text: string): DigestSummary | null {

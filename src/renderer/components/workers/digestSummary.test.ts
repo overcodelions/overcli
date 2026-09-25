@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { digestFor, kindOf, skimDigest, taggedDigest } from './digestSummary';
+import { digestFor, htmlToSkimText, kindOf, skimDigest, taggedDigest } from './digestSummary';
 
 describe('taggedDigest', () => {
   it('prefers what the worker said about its own work', () => {
@@ -69,5 +69,13 @@ describe('digestFor', () => {
     expect(kindOf('trips.md')).toBe('markdown');
     expect(kindOf('briefing.HTML')).toBe('html');
     expect(kindOf('data.json')).toBe('text');
+  });
+});
+
+describe('htmlToSkimText entities', () => {
+  it('decodes each entity once', () => {
+    expect(htmlToSkimText('<p>Q&amp;A &lt;draft&gt; &quot;v2&quot; it&#39;s</p>')).toContain('Q&A <draft> "v2" it\'s');
+    // An escaped entity stays the text of that entity.
+    expect(htmlToSkimText('<p>write &amp;lt;br&amp;gt;</p>')).toContain('write &lt;br&gt;');
   });
 });
