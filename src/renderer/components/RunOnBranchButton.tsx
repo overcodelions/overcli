@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { StackView } from '@shared/services';
+import { runnableServices } from '../servicesGrouping';
 import { planChangedFilesRebind, type ChangedCheckout, type RebindTarget } from '../servicesRebindPlan';
 import { worktreeChoices, type WorktreeChoice } from '../worktreeChoices';
 import { isServiceLive, logKey, useServicesStore } from '../servicesStore';
@@ -85,7 +86,9 @@ export function RunOnBranchButton({
     const out: Row[] = [];
     for (const view of views) {
       const paths = Object.fromEntries(view.bindings.map((b) => [b.serviceId, b.path]));
-      const plan = planChangedFilesRebind(view.services, paths, choices, checkouts, files);
+      // Same rows the Services pane shows — never a base whose copies are
+      // what actually runs.
+      const plan = planChangedFilesRebind(runnableServices(view.services), paths, choices, checkouts, files);
       const base = (id: string) => {
         const spec = view.services.find((s) => s.id === id);
         return {
