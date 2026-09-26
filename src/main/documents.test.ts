@@ -179,14 +179,14 @@ describe('createBlankDocument', () => {
 });
 
 describe('gatherProjectContext', () => {
-  it('reads the project\'s other documents, nearest first, and never the one being edited', () => {
+  it('reads the project\'s other documents, nearest first, and never the one being edited', async () => {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, 'BRIEF.md'), 'the brief');
     fs.writeFileSync(path.join(dir, 'notes.md'), 'sibling notes');
     fs.mkdirSync(path.join(dir, 'course'));
     fs.writeFileSync(path.join(dir, 'course', 'SYLLABUS.md'), 'syllabus body');
 
-    const { blocks } = gatherProjectContext({
+    const { blocks } = await gatherProjectContext({
       rootPath: dir,
       excludePath: path.join(dir, 'BRIEF.md'),
     });
@@ -195,13 +195,13 @@ describe('gatherProjectContext', () => {
     expect(blocks.find((b) => b.rel === 'notes.md')?.text).toBe('sibling notes');
   });
 
-  it('skips binaries and anything the model cannot read as prose', () => {
+  it('skips binaries and anything the model cannot read as prose', async () => {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, 'BRIEF.md'), 'x');
     fs.writeFileSync(path.join(dir, 'logo.png'), 'binary');
     fs.writeFileSync(path.join(dir, 'data.csv'), 'a,b');
 
-    const { blocks } = gatherProjectContext({
+    const { blocks } = await gatherProjectContext({
       rootPath: dir,
       excludePath: path.join(dir, 'BRIEF.md'),
     });
@@ -209,13 +209,13 @@ describe('gatherProjectContext', () => {
     expect(blocks.map((b) => b.rel)).toEqual(['data.csv']);
   });
 
-  it('reports what it had to leave out instead of silently truncating', () => {
+  it('reports what it had to leave out instead of silently truncating', async () => {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, 'BRIEF.md'), 'x');
     fs.writeFileSync(path.join(dir, 'huge.md'), 'y'.repeat(50_000));
     fs.writeFileSync(path.join(dir, 'small.md'), 'small');
 
-    const { blocks, omitted } = gatherProjectContext({
+    const { blocks, omitted } = await gatherProjectContext({
       rootPath: dir,
       excludePath: path.join(dir, 'BRIEF.md'),
     });
