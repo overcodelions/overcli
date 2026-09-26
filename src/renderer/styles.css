@@ -971,3 +971,56 @@ body.dragging-divider iframe {
     animation: none;
   }
 }
+
+/* The Today list's "Cleared · Undo" notice slides up into place rather than
+   appearing, so the eye goes to it right after the row leaves. */
+@keyframes today-toast-in {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.today-toast {
+  animation: today-toast-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .today-toast { animation: none; }
+}
+
+/* The tab on the left edge that brings a hidden sidebar back. Slim and quiet
+   at rest; on hover it widens and glows in the accent, so it reads as a
+   handle the moment the pointer is near it. */
+.sidebar-edge-tab {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 84px;
+  transform: translateY(-50%);
+  border-radius: 0 10px 10px 0;
+  border: 1px solid color-mix(in srgb, var(--c-accent) 55%, transparent);
+  border-left: none;
+  background: color-mix(in srgb, var(--c-accent) 30%, var(--c-surface));
+  color: color-mix(in srgb, var(--c-accent) 70%, white);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--c-accent) 45%, transparent);
+  animation: sidebar-edge-glow 2.8s ease-in-out infinite;
+  transition: width 160ms ease, color 160ms ease, box-shadow 200ms ease, background 160ms ease;
+}
+@keyframes sidebar-edge-glow {
+  0%, 100% { box-shadow: 0 0 10px color-mix(in srgb, var(--c-accent) 35%, transparent); }
+  50% { box-shadow: 0 0 22px color-mix(in srgb, var(--c-accent) 70%, transparent); }
+}
+.sidebar-edge-tab:hover,
+.sidebar-edge-tab:focus-visible {
+  width: 22px;
+  color: white;
+  background: color-mix(in srgb, var(--c-accent) 55%, var(--c-surface));
+  box-shadow: 0 0 26px color-mix(in srgb, var(--c-accent) 80%, transparent);
+  animation: none;
+  outline: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-edge-tab { animation: none; }
+}

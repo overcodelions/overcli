@@ -653,10 +653,13 @@ export class OrchestratorImpl {
   /// Release a parked batch. Items named in `approve` are queued (with an
   /// optional flow remap); every other `proposed` item is cancelled, because
   /// the user reviewed the list and left them out on purpose. Omit `approve`
-  /// to take the whole batch as proposed.
+  /// to take the whole batch as proposed. `keepUnpicked` launches just the
+  /// named items and leaves the rest proposed — the per-item Launch on the
+  /// Today reader, where the user has looked at one proposal, not the list.
   async approveBatch(args: {
     id: UUID;
     approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
+    keepUnpicked?: boolean;
   }): Promise<{ ok: true; queued: number } | { ok: false; error: string }> {
     const o = this.batches.get(args.id);
     if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
@@ -673,6 +676,7 @@ export class OrchestratorImpl {
       // an empty override rather than being read as unpicked.
       const pick: Pick | undefined = picks ? picks.get(item.candidate.id) : {};
       if (!pick) {
+        if (args.keepUnpicked) continue;
         item.status = 'cancelled';
         item.note = 'Not approved.';
         item.finishedAt = Date.now();
@@ -685,6 +689,7 @@ export class OrchestratorImpl {
     }
     this.persistAndEmit(o);
     if (queued === 0) {
+      if (args.keepUnpicked) return { ok: false, error: 'That proposal is no longer waiting.' };
       // Everything was declined — the batch is settled, not launched.
       this.maybeComplete(o);
       return { ok: true, queued: 0 };
@@ -693,8 +698,8 @@ export class OrchestratorImpl {
     return { ok: true, queued };
   }
 
-  /// Reject one PAUSED item — the per-item form of the decline approveBatch
-  /// applies to unpicked proposals. A paused run is a proposal that got
+  /// Reject one PAUSED or PROPOSED item — the per-item form of the decline
+  /// approveBatch applies to unpicked proposals. A paused run is a proposal that got
   /// further before the user saw it, and turning it down should count the
   /// same way: settling the item to `cancelled` is what journals the
   /// rejection on a worker-origin batch and feeds the demotion streak.
@@ -707,8 +712,8 @@ export class OrchestratorImpl {
     if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
     const item = o.items.find((i) => i.candidate.id === args.candidateId);
     if (!item) return { ok: false, error: `Item ${args.candidateId} not found in batch.` };
-    if (item.status !== 'paused') {
-      return { ok: false, error: 'Only paused work can be rejected here.' };
+    if (item.status !== 'paused' && item.status !== 'proposed') {
+      return { ok: false, error: 'Only paused or proposed work can be rejected here.' };
     }
     // The run is already deleted (or was never told about this batch's
     // interest) — drop the link so a stale terminal event can't resurrect

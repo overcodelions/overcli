@@ -150,7 +150,7 @@ import {
   deleteWorkerFile,
   deliverableFiles,
 } from './flows/workerFiles';
-import { filedByWorker } from './flows/workerPublish';
+import { filedByWorker, recentlyFiled } from './flows/workerPublish';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
@@ -1359,6 +1359,17 @@ export function registerIpc(): void {
       .filter((w): w is NonNullable<typeof w> => w !== null && w !== undefined);
     return filedByWorker(workers, args.projectPath);
   });
+  ipcMain.handle('everyday:recentlyFiled', (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) return [];
+    if (!workerEngine) return [];
+    const workers = workerEngine
+      .workerIds()
+      .map((id) => workerEngine?.get(id))
+      .filter((w): w is NonNullable<typeof w> => w !== null && w !== undefined);
+    const since = typeof args.since === 'number' ? args.since : 0;
+    const limit = Math.max(1, Math.min(20, Number(args.limit) || 3));
+    return recentlyFiled(workers, args.projectPath, { since, limit });
+  });
   ipcMain.handle('versions:checkpoint', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
       return {
@@ -2498,6 +2509,13 @@ export function registerIpc(): void {
     return receiveWorkerYaml(body);
   });
   ipcMain.handle('workers:journal', (_e, { id }) => (workerEngine ? workerEngine.journalFor(id) : []));
+  ipcMain.handle('workers:handoffs', () => (workerEngine ? workerEngine.heldHandoffs() : []));
+  ipcMain.handle('workers:cancelHandoff', (_e, { id }) =>
+    workerEngine ? workerEngine.cancelHandoff(id) : { ok: false, error: 'Workers are not running.' },
+  );
+  ipcMain.handle('workers:sendHandoffNow', (_e, { id }) =>
+    workerEngine ? workerEngine.sendHandoffNow(id) : { ok: false, error: 'Workers are not running.' },
+  );
   ipcMain.handle('workers:deleteActivity', (_e, { id, orchestrationId }) =>
     workerEngine
       ? workerEngine.forgetActivity(id, orchestrationId)

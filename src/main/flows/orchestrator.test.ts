@@ -828,6 +828,32 @@ describe('OrchestratorImpl parked proposals', () => {
     expect(after.items.find((i) => i.candidate.id === 'b')!.status).toBe('cancelled');
   });
 
+  it('launches one proposal and leaves the rest proposed with keepUnpicked', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await park(h);
+    const o = h.engine.list()[0];
+
+    const res = await h.engine.approveBatch({ id: o.id, approve: [{ candidateId: 'b' }], keepUnpicked: true });
+
+    expect(res).toMatchObject({ ok: true, queued: 1 });
+    expect(h.started).toHaveLength(1);
+    const after = h.engine.list()[0];
+    expect(after.items.filter((i) => i.status === 'proposed').map((i) => i.candidate.id)).toEqual(['a', 'c']);
+    expect(after.completedAt).toBeUndefined();
+  });
+
+  it('rejects one proposal on its own', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await park(h);
+    const o = h.engine.list()[0];
+
+    expect(h.engine.rejectItem({ id: o.id, candidateId: 'a' })).toMatchObject({ ok: true });
+
+    const after = h.engine.list()[0];
+    expect(after.items.map((i) => i.status)).toEqual(['cancelled', 'proposed', 'proposed']);
+    expect(h.started).toHaveLength(0);
+  });
+
   it('approves the whole batch when no picks are given', async () => {
     const h = makeHarness({ producerReply: REPLY });
     await park(h);

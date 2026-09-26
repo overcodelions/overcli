@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { groupNames, groupServices, UNGROUPED } from './servicesGrouping';
+import { groupNames, groupServices, runnableServices, UNGROUPED } from './servicesGrouping';
 import type { ServiceSpec } from '@shared/services';
 
 function spec(over: Partial<ServiceSpec> & { id: string }): ServiceSpec {
@@ -86,5 +86,21 @@ describe('groupNames', () => {
 
   it('ignores blanks', () => {
     expect(groupNames([spec({ id: 'a' }), spec({ id: 'b', group: '   ' })])).toEqual([]);
+  });
+});
+
+describe('runnableServices', () => {
+  it('drops a base that has copies, keeping the copies and ordinary services', () => {
+    const ids = runnableServices([
+      spec({ id: 'acme-proc' }),
+      spec({ id: 'proc-infra', copyOf: 'acme-proc' }),
+      spec({ id: 'proc-jobs', copyOf: 'acme-proc' }),
+      spec({ id: 'acme-rest' }),
+    ]).map((s) => s.id);
+    expect(ids).toEqual(['proc-infra', 'proc-jobs', 'acme-rest']);
+  });
+
+  it('keeps a copy whose base is gone', () => {
+    expect(runnableServices([spec({ id: 'proc-infra', copyOf: 'removed' })]).map((s) => s.id)).toEqual(['proc-infra']);
   });
 });

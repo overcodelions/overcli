@@ -15,6 +15,7 @@ import { hireAnswerText, moveInRoster, placeInRoster } from '@shared/flows/worke
 import { isEverydayProject } from '@shared/everydayProjects';
 import { allocateTreasury, fundingFor, type Treasury, type TreasuryAllocation } from '@shared/flows/treasury';
 import type {
+  HeldHandoff,
   HireMessage,
   Worker,
   WorkerCaps,
@@ -179,6 +180,10 @@ interface WorkersState {
   /// so a reorder shows the money move before the round trip lands.
   treasury: Treasury | null;
   allocation: TreasuryAllocation | null;
+  /// Handoffs one worker has dated for a later day, soonest first. Pushed
+  /// by main; shown in Today so work moving between workers is never out
+  /// of sight.
+  heldHandoffs: HeldHandoff[];
   /// The Workers pane shows the selected worker's desk, or one of the four
   /// roster-wide screens. Those four are peers of the selection rather than
   /// part of it — each is about every worker at once, so none has a worker to
@@ -435,6 +440,9 @@ interface WorkersActions {
   showFunds(): void;
   showReport(): void;
   applyTreasury(treasury: Treasury, allocation: TreasuryAllocation): void;
+  applyHandoffs(handoffs: HeldHandoff[]): void;
+  cancelHandoff(id: string): Promise<void>;
+  sendHandoffNow(id: string): Promise<void>;
   setTreasury(monthlyUSD: number): Promise<boolean>;
   distributeFunds(): Promise<boolean>;
   setPreviewEmpty(on: boolean): void;
@@ -773,6 +781,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   hireFlowError: null,
   selectedWorkerId: null,
   treasury: null,
+  heldHandoffs: [],
   allocation: null,
   view: 'today',
   selectSeq: 0,
@@ -808,10 +817,32 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       allocation: funds.allocation,
       loaded: true,
     });
+    // Separate from the roster so an older main without the channel still
+    // loads the crew.
+    try {
+      const held = await window.overcli.invoke('workers:handoffs');
+      set({ heldHandoffs: Array.isArray(held) ? held : [] });
+    } catch {
+      // Nothing held is the honest reading of a main that cannot say.
+    }
   },
 
   applyTreasury(treasury, allocation) {
     set({ treasury, allocation });
+  },
+
+  applyHandoffs(handoffs) {
+    set({ heldHandoffs: handoffs });
+  },
+
+  async cancelHandoff(id) {
+    const res = await window.overcli.invoke('workers:cancelHandoff', { id });
+    if (!res.ok) set({ error: res.error });
+  },
+
+  async sendHandoffNow(id) {
+    const res = await window.overcli.invoke('workers:sendHandoffNow', { id });
+    if (!res.ok) set({ error: res.error });
   },
 
   async setTreasury(monthlyUSD) {

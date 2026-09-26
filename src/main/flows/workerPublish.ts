@@ -91,10 +91,21 @@ export function publishDeliverableToProject(args: {
   /// Idempotency key: the run whose deliverable this is.
   runId: string;
   artifacts: ReadonlyArray<PublishArtifact>;
+  /// Where under the project this run's documents go, as folder names —
+  /// `['Soraya', '2026-09-25 Norwalk trip']`. Filing everything into the
+  /// root made a folder of `trip_section 5.md`s nobody could tell apart; one
+  /// folder per job keeps what belongs together together. Empty or absent
+  /// files into the root, as before.
+  folder?: ReadonlyArray<string>;
   /// Injected so the retry window is testable without waiting a day.
   now?: number;
 }): PublishResult {
   const now = args.now ?? Date.now();
+  const sub = (args.folder ?? []).map(safeSegment).filter(Boolean);
+  const destDir = path.join(args.projectPath, ...sub);
+  // Relative to the project, forward slashes, so the ledger reads the same on
+  // every platform and `landed` can be joined back onto the project path.
+  const rel = (file: string) => [...sub, path.basename(file)].join('/');
   // The marker, not the app's store, is what says "everyday" — it is the one
   // signal that survives the folder being moved, copied to a second machine,
   // or handed to a colleague. A folder without it is a code project as far as
@@ -157,6 +168,13 @@ export function publishDeliverableToProject(args: {
 
   const written: string[] = [];
   const skippedNames: string[] = [];
+  if (sub.length > 0 && remaining.length > 0) {
+    try {
+      fs.mkdirSync(destDir, { recursive: true });
+    } catch (err) {
+      log('error', 'worker-publish', `could not make ${sub.join('/')}`, err);
+    }
+  }
   for (const artifact of remaining) {
     const base = safeBase(artifact.name);
     if (!base) continue;
@@ -168,10 +186,10 @@ export function publishDeliverableToProject(args: {
           log('warn', 'worker-publish', `${base} is too large to file into the folder; it stays in the cabinet`);
           continue;
         }
-        const dest = uniqueFilePath(args.projectPath, base);
+        const dest = uniqueFilePath(destDir, base);
         fs.copyFileSync(artifact.sourcePath, dest);
-        written.push(path.basename(dest));
-        landed[base] = path.basename(dest);
+        written.push(rel(dest));
+        landed[base] = rel(dest);
         doneNames.add(base);
         continue;
       }
@@ -182,10 +200,10 @@ export function publishDeliverableToProject(args: {
         log('warn', 'worker-publish', `${base} is too large to file into the folder; it stays in the cabinet`);
         continue;
       }
-      const dest = uniqueFilePath(args.projectPath, base);
+      const dest = uniqueFilePath(destDir, base);
       fs.writeFileSync(dest, body, 'utf-8');
-      written.push(path.basename(dest));
-      landed[base] = path.basename(dest);
+      written.push(rel(dest));
+      landed[base] = rel(dest);
       doneNames.add(base);
     } catch (err) {
       // One unreadable artifact must not cost the user the rest of the
@@ -256,7 +274,8 @@ function republishRevisions(args: {
     const base = safeBase(artifact.name);
     const name = base ? args.landed[base] : undefined;
     if (!name) continue;
-    const dest = path.join(args.projectPath, name);
+    const dest = insideProject(args.projectPath, name);
+    if (!dest) continue;
     try {
       const current = fs.statSync(dest);
       if (!current.isFile()) continue;
@@ -282,6 +301,26 @@ function republishRevisions(args: {
     }
   }
   return revised;
+}
+
+/// A ledger path joined back onto the project, or null if it would land
+/// outside it. The ledger is ours, but it is a file on disk.
+function insideProject(projectPath: string, relPath: string): string | null {
+  const root = path.resolve(projectPath);
+  const dest = path.resolve(root, ...relPath.split('/'));
+  return dest === root || !dest.startsWith(root + path.sep) ? null : dest;
+}
+
+/// One folder name out of a job title: no separators, no characters Finder or
+/// Windows refuse, no leading dots, and short enough to read in a grid.
+export function safeSegment(name: string): string {
+  return String(name ?? '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+/, '')
+    .trim()
+    .slice(0, 80)
+    .trim();
 }
 
 /// Same shape as `copyIntoProject`: a basename, never a path, and never a
@@ -381,9 +420,13 @@ export function filedByWorker(
       // names as they exist on disk, which is the half we want.
       const names = [...Object.values(entry.landed ?? {}), ...(entry.written ?? [])];
       for (const name of names) {
-        const base = safeBase(name);
-        if (!base || out[base]) continue;
-        out[base] = { workerId: worker.id, workerName: worker.name };
+        // A file filed into a job folder captions the file and every folder
+        // on the way to it, so the worker's folder at the root says whose it is.
+        for (const part of name.split('/')) {
+          const base = safeBase(part);
+          if (!base || out[base]) continue;
+          out[base] = { workerId: worker.id, workerName: worker.name };
+        }
       }
     }
   }
@@ -396,4 +439,37 @@ export function filedByWorker(
 function normalizeDir(p: string): string {
   const resolved = path.resolve(p);
   return process.platform === 'linux' ? resolved : resolved.toLowerCase();
+}
+
+/// What workers filed into this project lately, newest first, wherever in the
+/// folder it landed — the documents pane's "Recently filed" shelf. It used to
+/// read only the root listing, which stops working the moment documents are
+/// filed into job folders.
+export function recentlyFiled(
+  workers: ReadonlyArray<{ id: string; name: string; projectPath: string }>,
+  projectPath: string,
+  { since, limit }: { since: number; limit: number },
+): Array<{ path: string; name: string; workerId: string; workerName: string; at: number }> {
+  const out: Array<{ path: string; name: string; workerId: string; workerName: string; at: number }> = [];
+  if (!projectPath) return out;
+  const target = normalizeDir(projectPath);
+  const seen = new Set<string>();
+  for (const worker of workers) {
+    if (!worker.projectPath || normalizeDir(worker.projectPath) !== target) continue;
+    for (const entry of Object.values(readLedger(worker.id))) {
+      for (const rel of [...Object.values(entry.landed ?? {}), ...(entry.written ?? [])]) {
+        const abs = insideProject(projectPath, rel);
+        if (!abs || seen.has(abs)) continue;
+        seen.add(abs);
+        try {
+          const st = fs.statSync(abs);
+          if (!st.isFile() || st.mtimeMs < since) continue;
+          out.push({ path: abs, name: path.basename(abs), workerId: worker.id, workerName: worker.name, at: st.mtimeMs });
+        } catch {
+          // Moved or deleted since — the person's call, not a missing delivery.
+        }
+      }
+    }
+  }
+  return out.sort((a, b) => b.at - a.at).slice(0, limit);
 }

@@ -24,7 +24,7 @@
 import { parseRunDigest, RUN_DIGEST_INSTRUCTION } from '../../shared/flows/runDigest';
 import { isReadOnlyMcpTool } from '../../shared/flows/mcpTools';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { log } from '../diagnostics';
@@ -78,7 +78,7 @@ import {
   worktreeNameTaken,
 } from '../git';
 import { branchSlugFromPrompt } from './branchName';
-import { ensureCoordinatorSymlinkRoot, removeCoordinatorSymlinkRoot } from '../workspace';
+import { coordinatorRootPath, ensureCoordinatorSymlinkRoot, removeCoordinatorSymlinkRoot } from '../workspace';
 import {
   pendingWorkspaceMembers,
   type WorkspaceMemberRef,
@@ -91,6 +91,7 @@ import { notifyWatch } from './watch/notify';
 import './watch/generic';
 import type { WatchState, WatchTickLogEntry } from '../../shared/flows/schema';
 import { scanStepRisks } from '../../shared/flows/riskScan';
+import { hasEverydayMarker } from '../everydayProject';
 
 export interface FlowRuntimeStartArgs {
   flowId: string;
@@ -939,11 +940,35 @@ export class FlowRuntimeImpl {
     //     steps see a workspace-shaped tree that's fully isolated from
     //     the user's main checkouts.
     let cwd = args.projectPath;
+    let scratchRoot = false;
     let worktreeMeta: { worktreePath: string; branchName: string } | undefined;
     let workspaceWorktrees:
       | Array<{ name: string; projectPath: string; worktreePath: string; branchName: string }>
       | undefined;
-    if (args.runIn === 'worktree') {
+    // A worker on an everyday project still gets a disposable run root — the
+    // folder itself stays read-only to the run — but not a git worktree. The
+    // project is a repo only so Undo works; nothing a run makes is ever
+    // merged back (Overcli files the finished documents into the folder), so
+    // a worktree there only left a `feature/…` branch behind per run and a
+    // checkout's worth of waiting at launch.
+    const everydayScratch =
+      args.runIn === 'worktree' &&
+      !!args.workerId &&
+      hasEverydayMarker(args.projectPath) &&
+      !this.getWorkspaces().some((w) => w.rootPath === args.projectPath);
+    if (everydayScratch) {
+      // A bare folder: the coordinator helper would also write a workspace's
+      // context files in here, and anything in this folder is a candidate
+      // deliverable.
+      const root = coordinatorRootPath(runId);
+      try {
+        mkdirSync(root, { recursive: true });
+      } catch (err) {
+        return { ok: false, error: `Failed to make the run folder: ${(err as Error).message}` };
+      }
+      cwd = root;
+      scratchRoot = true;
+    } else if (args.runIn === 'worktree') {
       // Base branch is optional. When the user picked a single shared name we
       // fork every repo off it; when absent, each repo forks off its OWN
       // default branch (detectBaseBranch) — so a workspace whose members
@@ -1163,7 +1188,8 @@ export class FlowRuntimeImpl {
       baseBranch:
         worktreeMeta || workspaceWorktrees ? args.baseBranch?.trim() || undefined : undefined,
       sourceProjectPath:
-        worktreeMeta || workspaceWorktrees ? args.projectPath : undefined,
+        worktreeMeta || workspaceWorktrees || scratchRoot ? args.projectPath : undefined,
+      ...(scratchRoot ? { scratchRoot: true } : {}),
       baselineCommit,
       baselineCommitsByMember,
       workspaceWorktrees,
@@ -1331,7 +1357,15 @@ export class FlowRuntimeImpl {
   /// so a computed field would be clobbered by the next update and would
   /// reload stale from disk. The renderer keeps this as a parallel map.
   async unreviewedDoneRunIds(): Promise<UUID[]> {
-    const done = Array.from(this.runs.values()).filter((r) => r.state.kind === 'done');
+    // A worker's run on an everyday project is never "to review". Its
+    // worktree is the disposable run root the file boundary points it at —
+    // the folder itself stays read-only to the run, and what it made is filed
+    // into the folder by Overcli when it finishes. The scratch files left in
+    // the worktree are not work anyone merges, so counting them put every
+    // finished run of a documents worker in the tray with nothing to review.
+    const done = Array.from(this.runs.values()).filter(
+      (r) => r.state.kind === 'done' && !isEverydayWorkerRun(r),
+    );
     // Bounded fan-out, NOT `Promise.all` over the whole list. The comment
     // above used to say this was "bounded by MAX_RETAINED_RUNS (50) git
     // invocations", and that was true when a run meant one worktree. A
@@ -2017,6 +2051,12 @@ export class FlowRuntimeImpl {
   /// async (and is fired without awaiting from `deleteRun`) so the git
   /// worktree teardown never blocks the delete round-trip or freezes the UI.
   private async removeRunWorktrees(run: FlowRun): Promise<void> {
+    // A throwaway run folder: nothing in git to unwind, just the folder.
+    if (run.scratchRoot) {
+      const removed = removeCoordinatorSymlinkRoot(run.id);
+      if (!removed.ok) log('warn', 'flows.deleteRun', `run folder remove failed: ${removed.error}`);
+      return;
+    }
     // Workspace worktree run: one worktree per member project.
     if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
       for (const m of run.workspaceWorktrees) {
@@ -4613,6 +4653,12 @@ function summarizeForTitle(text: string | undefined, max: number): string {
 /// Flow-authored prompts can be highly specific (and can themselves be custom
 /// roles), so the boundary lives above them rather than relying on every flow
 /// author to remember it.
+/// A worker-launched run whose persistent source is an everyday (documents)
+/// project. Exported for tests.
+export function isEverydayWorkerRun(run: Pick<FlowRun, 'workerId' | 'sourceProjectPath'>): boolean {
+  return !!run.workerId && !!run.sourceProjectPath && hasEverydayMarker(run.sourceProjectPath);
+}
+
 export function buildWorkerRunBoundary(
   run: Pick<FlowRun, 'workerId' | 'projectPath' | 'sourceProjectPath'>,
 ): string {

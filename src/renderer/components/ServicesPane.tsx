@@ -34,7 +34,7 @@ import type {
   ServiceSpec,
   StackView,
 } from '@shared/services';
-import { DEFAULT_READY_TIMEOUT_SEC, type TaskPreset } from '@shared/services';
+import { defaultReadyTimeoutSec, type TaskPreset } from '@shared/services';
 import { describeDrift, driftedTasks, shortCommit, taskDrift } from '@shared/taskDrift';
 import { isSecretName, missingNamesFrom } from '@shared/machineValues';
 import { hardcodedCheckouts, useCheckoutPlaceholder } from '@shared/checkoutPaths';
@@ -1328,8 +1328,21 @@ function Trouble({
   }
   if (runtime.status === 'starting') {
     return (
-      <span className="flex-shrink-0 truncate text-[10px] text-ink-faint" title={runtime.waitingOn ? `Starts once ${runtime.waitingOn} is ready` : undefined}>
-        {runtime.waitingOn ? `waiting for ${runtime.waitingOn}…` : spec.task ? 'running…' : 'starting…'}
+      <span
+        className="flex-shrink-0 truncate text-[10px] text-ink-faint"
+        title={
+          runtime.waitingOn
+            ? `Starts once ${runtime.waitingOn} is ready`
+            : runtime.queued
+              ? 'Other builds are running; this starts when one of them is up'
+              : undefined
+        }
+      >
+        {runtime.waitingOn
+          ? `waiting for ${runtime.waitingOn}…`
+          : runtime.queued
+            ? 'queued…'
+            : spec.task ? 'running…' : 'starting…'}
       </span>
     );
   }
@@ -2895,7 +2908,7 @@ function readyDraft(spec: ServiceSpec): ReadyDraft {
     path: ready.kind === 'http' ? ready.path : '/actuator/health',
     pattern: ready.kind === 'log' ? ready.pattern : 'Started .* in',
     command: ready.kind === 'command' ? ready.command.join(' ') : '',
-    timeout: String(spec.readyTimeoutSec ?? DEFAULT_READY_TIMEOUT_SEC),
+    timeout: String(spec.readyTimeoutSec ?? defaultReadyTimeoutSec(spec)),
   };
 }
 
@@ -3171,7 +3184,7 @@ function TaskToggle({ workspaceId, spec }: { workspaceId: string; spec: ServiceS
 /// button rather than on blur: a half-typed pattern is not a probe anyone meant.
 function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
   const setReady = useServicesStore((s) => s.setReady);
-  const saved = JSON.stringify([spec.ready, spec.readyTimeoutSec ?? DEFAULT_READY_TIMEOUT_SEC]);
+  const saved = JSON.stringify([spec.ready, spec.readyTimeoutSec ?? defaultReadyTimeoutSec(spec)]);
   const [draft, setDraft] = useState(() => readyDraft(spec));
   // Reset when what is saved changes — not every time a reload hands over a
   // new spec object, which would wipe an edit in progress.
@@ -3189,7 +3202,7 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
         ? { ...parsed, okStatuses: spec.ready.okStatuses }
         : parsed;
   const timeout =
-    draft.kind === 'none' ? (spec.readyTimeoutSec ?? DEFAULT_READY_TIMEOUT_SEC) : Number(draft.timeout);
+    draft.kind === 'none' ? (spec.readyTimeoutSec ?? defaultReadyTimeoutSec(spec)) : Number(draft.timeout);
   const timeoutOk = Number.isInteger(timeout) && timeout >= 5 && timeout <= 3600;
   const problem = typeof parsed === 'string' ? parsed : timeoutOk ? null : 'Allow between 5 and 3600 seconds.';
   const dirty = !!probe && JSON.stringify([probe, timeout]) !== saved;
@@ -3278,7 +3291,7 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
               workspaceId,
               spec.id,
               probe,
-              timeout === DEFAULT_READY_TIMEOUT_SEC ? undefined : timeout,
+              timeout === defaultReadyTimeoutSec(spec) ? undefined : timeout,
             );
           }}
         >

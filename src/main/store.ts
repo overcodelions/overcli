@@ -157,7 +157,21 @@ function sanitizeWorkspaces(workspaces: Workspace[]): Workspace[] {
   }));
 }
 
-function sanitizeSettings(settings: AppSettings): AppSettings {
+/// Places became the default sidebar once it was one line per place. Every
+/// install before that has 'stream' saved — the old default was written to
+/// disk with everything else — so a new default alone would never reach them.
+/// Move them once, and remember it, so picking Recent afterwards stays picked.
+export function applyPlacesDefault(settings: AppSettings): AppSettings {
+  if (settings.placesDefaultApplied) return settings;
+  return {
+    ...settings,
+    sidebarLayout: settings.sidebarLayout === 'stream' ? 'projects' : settings.sidebarLayout,
+    placesDefaultApplied: true,
+  };
+}
+
+function sanitizeSettings(raw: AppSettings): AppSettings {
+  const settings = applyPlacesDefault(raw);
   // Same lift-or-drop the conversations get: a pin on a superseded model
   // moves to its successor, keeping the user's explicit choice, and is only
   // dropped when the family has nothing left to move to.

@@ -464,6 +464,11 @@ export interface FlowRun {
   /// Original project the worktree was forked from. Same as `projectPath`
   /// for non-worktree runs (omitted when redundant).
   sourceProjectPath?: string;
+  /// Set when a worker run on an everyday project ran in a plain throwaway
+  /// folder instead of a git worktree: there is no branch to merge, since
+  /// Overcli files the finished documents into the project itself. The
+  /// folder is removed with the run.
+  scratchRoot?: boolean;
   /// `git rev-parse HEAD` captured at the moment the run started, in the
   /// run's cwd. Used to compute real `git diff <baselineCommit>` output
   /// for `diff`-kind artifacts so they reflect what actually changed on

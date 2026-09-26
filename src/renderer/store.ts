@@ -4484,6 +4484,10 @@ export const useStore = create<StoreState>((set, get) => ({
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().applyTreasury(event.treasury, event.allocation);
       });
+    } else if (event.type === 'workerHandoffs') {
+      void import('./workersStore').then(({ useWorkersStore }) => {
+        useWorkersStore.getState().applyHandoffs(event.handoffs);
+      });
     } else if (event.type === 'workerDeleted') {
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().removeLocal(event.id);

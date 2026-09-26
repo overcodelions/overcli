@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { anyBackendReady, useStore } from './store';
 import { useConversation } from './hooks';
 import { findConversation } from './conversationLookup';
@@ -22,6 +22,7 @@ import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
 import { focusedFlowConversationId } from './flowFocus';
 import { useFlowsStore } from './flowsStore';
+import { SHORTCUTS, formatShortcutDef } from './shortcuts';
 import { anyRunJustFinished, createUnreviewedRefresher } from './unreviewedRefresh';
 import { useOrchestratorStore } from './orchestratorStore';
 import { SheetHost } from './components/SheetHost';
@@ -475,10 +476,54 @@ export function App() {
   // left, which read as a rendering fault rather than a choice. Until there
   // is something to navigate, Services keeps the sidebar like every other tab.
   const servicesHasNavigation = projects.length > 0;
-  const showSidebar =
+  // Working inside a run on the Workers tab — Today's Run tab, or a run on a
+  // worker's desk — folds the sidebar away: the run pane, its conversation
+  // and the file beside it need the width, and the roster is not what you are
+  // looking at. Computed, never stored, so leaving the run or the tab brings
+  // the sidebar back exactly as it was.
+  const sidebarShortcut = useMemo(() => {
+    const def = SHORTCUTS.find((d) => d.id === 'sidebar.toggle');
+    return def ? formatShortcutDef(def) : '';
+  }, []);
+  const workerRunOnScreen = useFlowsStore((s) => detailMode === 'workers' && !!s.activeRunId);
+  // "Show it anyway" for the run view, from the edge tab. Lasts until you
+  // leave the run, so the next run folds the sidebar away again.
+  const [peekSidebar, setPeekSidebar] = useState(false);
+  useEffect(() => {
+    if (!workerRunOnScreen) setPeekSidebar(false);
+  }, [workerRunOnScreen]);
+  const sidebarWanted =
     (detailMode === 'services'
       ? servicesSidebarVisible || !servicesHasNavigation
       : sidebarVisible) && !onboarding;
+  const showSidebar = sidebarWanted && !(workerRunOnScreen && !peekSidebar);
+  // Slide rather than snap when the sidebar comes or goes on its own. Only
+  // for that moment: a transition left on would make dragging its edge lag.
+  // Not when the tab itself changed: switching tabs already swaps the whole
+  // page, and a sidebar animating on top of that swap is what made going from
+  // Chat to Workers feel choppy. Within a tab — opening a run's Run tab and
+  // leaving it — the slide is the one thing moving, and reads as intended.
+  const [sidebarSliding, setSidebarSliding] = useState(false);
+  const shownSidebar = useRef(showSidebar);
+  const shownMode = useRef(detailMode);
+  const modeChangedAt = useRef(0);
+  useLayoutEffect(() => {
+    if (shownMode.current !== detailMode) {
+      shownMode.current = detailMode;
+      modeChangedAt.current = performance.now();
+    }
+    if (shownSidebar.current === showSidebar) return;
+    shownSidebar.current = showSidebar;
+    // "Just switched tabs" is a short window, not the same render: arriving
+    // on Workers switches the tab first and opens the run a render later.
+    if (performance.now() - modeChangedAt.current < 400) {
+      setSidebarSliding(false);
+      return;
+    }
+    setSidebarSliding(true);
+    const t = window.setTimeout(() => setSidebarSliding(false), 240);
+    return () => window.clearTimeout(t);
+  }, [showSidebar]);
 
   // What's left for the preview once everything it shares the row with has
   // taken its share. Recomputed on window resize so a maximised window can
@@ -514,15 +559,40 @@ export function App() {
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
       <TitleBar />
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {showSidebar && (
+      <div className="relative flex flex-1 min-h-0 overflow-hidden">
+        {/* The way back to a hidden sidebar, where it went: a slim tab on the
+            left edge that glows on hover. Without it a folded sidebar only
+            came back through a shortcut you had to already know. */}
+        {!showSidebar && !sidebarSliding && !onboarding && (
+          <button
+            onClick={() => {
+              if (sidebarWanted && workerRunOnScreen) setPeekSidebar(true);
+              else useStore.getState().toggleSidebar();
+            }}
+            // The shortcut toggles the saved setting, which a run view
+            // overrides — so it is only offered where it would work.
+            title={`Show the sidebar${sidebarShortcut && !workerRunOnScreen ? ` (${sidebarShortcut})` : ''}`}
+            aria-label="Show the sidebar"
+            className="sidebar-edge-tab"
+          >
+            <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden>
+              <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
+        {(showSidebar || sidebarSliding) && (
           <>
             <div
               ref={sidebarPanel}
-              style={{ width: sidebarWidth }}
+              style={{
+                width: showSidebar ? sidebarWidth : 0,
+                transition: sidebarSliding ? 'width 220ms cubic-bezier(0.2, 0.8, 0.2, 1)' : undefined,
+              }}
               className="flex-shrink-0 h-full overflow-hidden"
             >
-              <Sidebar />
+              <div style={{ width: sidebarWidth }} className="h-full">
+                <Sidebar />
+              </div>
             </div>
             <ResizableDivider
               panel={sidebarPanel}

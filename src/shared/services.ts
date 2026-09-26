@@ -52,6 +52,27 @@ export type ReadinessProbe =
 /// Slow, not failed: it keeps being asked until it answers or exits.
 export const DEFAULT_READY_TIMEOUT_SEC = 60;
 
+/// The same, for a service that compiles before it boots. A Gradle `bootRun`
+/// spends half a minute in the build with nothing to do, then boots a Spring
+/// context — a minute was never going to be enough, and every one of them
+/// read "slow" on a start that was going perfectly well.
+export const JVM_BUILD_READY_TIMEOUT_SEC = 180;
+
+/// Whether starting this means running a JVM build tool first. These are the
+/// expensive starts — a build JVM, often a second one forked to honour its
+/// settings, then the app — and the ones worth not running ten of at once.
+export function buildsOnJvm(spec: { runner: RunnerKind; command: readonly string[] }): boolean {
+  if (spec.runner === 'gradle' || spec.runner === 'spring-boot') return true;
+  // A task or a plain command that shells out to the wrapper: a publish to
+  // Maven local is every bit as heavy as a bootRun.
+  return spec.command.some((arg) => /(^|[\s/])(gradlew|gradle|mvnw|mvn)(\s|$)/.test(arg));
+}
+
+/// The readiness allowance a service gets when none was set for it.
+export function defaultReadyTimeoutSec(spec: { runner: RunnerKind; command: readonly string[] }): number {
+  return buildsOnJvm(spec) ? JVM_BUILD_READY_TIMEOUT_SEC : DEFAULT_READY_TIMEOUT_SEC;
+}
+
 /// How this service's local configuration reaches the process, in preference
 /// order. A service may use more than one.
 export interface ConfigProjection {
@@ -251,6 +272,9 @@ export interface ServiceRuntime {
   lastError?: string;
   /// While `starting`: the name of what it is waiting on before it launches.
   waitingOn?: string;
+  /// While `starting`: waiting for a turn behind other builds already running.
+  /// See `LaunchGate`.
+  queued?: boolean;
   /// For a task: the ref it last finished on, and when. Where a task installs
   /// to — the local Maven repository, an image tag, a linked package, a
   /// GOPATH — is shared by every checkout on the machine, so which branch it

@@ -12,7 +12,7 @@ const { mockGetPath } = vi.hoisted(() => ({
 
 useTestHost(mockGetPath);
 
-import { filedByWorker, publishDeliverableToProject, PUBLISH_RETRY_WINDOW_MS } from './workerPublish';
+import { filedByWorker, publishDeliverableToProject, PUBLISH_RETRY_WINDOW_MS, recentlyFiled, safeSegment } from './workerPublish';
 import { workerFilesDir } from './workerFiles';
 import { writeEverydayMarker } from '../everydayProject';
 
@@ -329,5 +329,55 @@ describe('filedByWorker', () => {
   it('is empty when no worker has filed anything', () => {
     writeEverydayMarker(projectDir);
     expect(filedByWorker([worker()], projectDir)).toEqual({});
+  });
+});
+
+describe('filing into job folders', () => {
+  const folder = ['Scout', '2026-09-25 Norwalk: trip / bookings'];
+
+  it('files a job into its own folder and records where it landed', () => {
+    writeEverydayMarker(projectDir);
+    const res = publishDeliverableToProject({
+      workerId: WORKER,
+      projectPath: projectDir,
+      runId: 'run-1',
+      artifacts: [{ name: 'trip_section.md', body: 'one' }],
+      folder,
+    });
+    expect(res.written).toEqual(['Scout/2026-09-25 Norwalk trip bookings/trip_section.md']);
+    expect(fs.readFileSync(path.join(projectDir, 'Scout', '2026-09-25 Norwalk trip bookings', 'trip_section.md'), 'utf-8')).toBe('one');
+    expect(fs.existsSync(path.join(projectDir, 'trip_section.md'))).toBe(false);
+  });
+
+  it('keeps two jobs with the same file names apart', () => {
+    writeEverydayMarker(projectDir);
+    publishDeliverableToProject({ workerId: WORKER, projectPath: projectDir, runId: 'a', artifacts: [{ name: 'x.md', body: 'a' }], folder: ['Scout', 'job a'] });
+    const res = publishDeliverableToProject({ workerId: WORKER, projectPath: projectDir, runId: 'b', artifacts: [{ name: 'x.md', body: 'b' }], folder: ['Scout', 'job b'] });
+    expect(res.written).toEqual(['Scout/job b/x.md']);
+  });
+
+  it('delivers a revision to the file inside the job folder', () => {
+    writeEverydayMarker(projectDir);
+    const args = { workerId: WORKER, projectPath: projectDir, runId: 'run-1', folder };
+    publishDeliverableToProject({ ...args, artifacts: [{ name: 'brief.md', body: 'v1' }] });
+    const res = publishDeliverableToProject({ ...args, artifacts: [{ name: 'brief.md', body: 'v2' }] });
+    expect(res.revised).toEqual(['Scout/2026-09-25 Norwalk trip bookings/brief.md']);
+    expect(fs.readFileSync(path.join(projectDir, 'Scout', '2026-09-25 Norwalk trip bookings', 'brief.md'), 'utf-8')).toBe('v2');
+  });
+
+  it('captions the worker folder and lists recent filings wherever they are', () => {
+    writeEverydayMarker(projectDir);
+    publishDeliverableToProject({ workerId: WORKER, projectPath: projectDir, runId: 'run-1', artifacts: [{ name: 'brief.md', body: 'v1' }], folder });
+    const workers = [{ id: WORKER, name: 'Scout', projectPath: projectDir }];
+    expect(filedByWorker(workers, projectDir)['Scout']?.workerName).toBe('Scout');
+    const recent = recentlyFiled(workers, projectDir, { since: 0, limit: 3 });
+    expect(recent.map((r) => r.name)).toEqual(['brief.md']);
+    expect(recent[0].path).toBe(path.join(projectDir, 'Scout', '2026-09-25 Norwalk trip bookings', 'brief.md'));
+  });
+
+  it('makes a safe folder name out of any title', () => {
+    expect(safeSegment('..hidden')).toBe('hidden');
+    expect(safeSegment('a/b\\c:d')).toBe('a b c d');
+    expect(safeSegment('x'.repeat(200))).toHaveLength(80);
   });
 });

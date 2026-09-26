@@ -581,6 +581,12 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
       requested.set(workspaceId, [...(requested.get(workspaceId) ?? []), serviceId]);
     }
 
+    // Fresh views first. Started from a chat, a stack may never have been
+    // loaded here (the Services pane is what loads it) and would be skipped
+    // outright; one that was loaded can still hold runtimes from before a
+    // rebind, and a stale "live" skips the start just the same.
+    await get().loadAll([...requested.keys()]);
+
     // Keep workspaces serial: their supervisors coordinate port claims, and
     // starting two stacks at the exact same instant could race that check.
     for (const [workspaceId, serviceIds] of requested) {

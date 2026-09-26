@@ -19,6 +19,9 @@ export interface FileScopeInput {
   explorerRootPath: string | null;
   activeRunId: string | null;
   selectedWorkerId: string | null;
+  /// Which Workers page is up — 'worker' for a desk, 'hire' for the hire
+  /// screen, else the page's own name (today, queue, …).
+  workersPage?: string;
 }
 
 /// Order matters. The explorer wins because ExplorerPane replaces the
@@ -40,8 +43,14 @@ export function fileScopeKeyFor(input: FileScopeInput): string | null {
   // files resolve against that worker's directory and it opens its own
   // report on arrival, so carrying the last worker's tabs across leaves you
   // reading the wrong worker's page under the new worker's name.
-  if (input.detailMode === 'workers' && input.selectedWorkerId) {
-    return `worker:${input.selectedWorkerId}`;
+  if (input.detailMode === 'workers') {
+    // `selectedWorkerId` outlives the desk — it is still set on Today — so
+    // only the desk itself is that worker's place.
+    if (input.workersPage === 'worker' && input.selectedWorkerId) return `worker:${input.selectedWorkerId}`;
+    // Every other Workers page is a place of its own. Falling through to the
+    // conversation selected underneath is how a report opened from Today
+    // stayed up over the hire screen, the queue, and everything else.
+    return `workers:${input.workersPage ?? 'today'}`;
   }
   if (input.detailMode === 'flows') return null;
   if (input.selectedConversationId) return `conv:${input.selectedConversationId}`;
@@ -57,6 +66,7 @@ export function useFileScope(): void {
   const explorerRootPath = useStore((s) => s.explorerRootPath);
   const activeRunId = useFlowsStore((s) => s.activeRunId);
   const selectedWorkerId = useWorkersStore((s) => s.selectedWorkerId);
+  const workersPage = useWorkersStore((s) => (s.hire.open ? 'hire' : s.view));
   const switchFileScope = useStore((s) => s.switchFileScope);
   const key = fileScopeKeyFor({
     detailMode,
@@ -64,6 +74,7 @@ export function useFileScope(): void {
     explorerRootPath,
     activeRunId: activeRunId ?? null,
     selectedWorkerId,
+    workersPage,
   });
   useEffect(() => {
     switchFileScope(key);

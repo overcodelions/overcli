@@ -50,6 +50,7 @@ import {
   WORKER_MAX_HANDOFFS_PER_TURN,
   canDelegate,
   computeWorkerScorecard,
+  handoffNotBefore,
   delegationTargets,
   demotedTrust,
   rejectionStreak,
@@ -65,6 +66,7 @@ import {
   workerOrigin,
   workerPace,
   WORKER_NOTE_MAX,
+  type HeldHandoff,
   type Worker,
   type WorkerErrandResult,
   type WorkerHandoff,
@@ -83,7 +85,15 @@ import {
   type Treasury,
   type TreasuryAllocation,
 } from '../../shared/flows/treasury';
-import { deleteWorker, loadAllWorkers, loadTreasury, saveTreasury, saveWorker } from './workersStore';
+import {
+  deleteWorker,
+  loadAllWorkers,
+  loadHeldHandoffs,
+  loadTreasury,
+  saveHeldHandoffs,
+  saveTreasury,
+  saveWorker,
+} from './workersStore';
 import {
   appendWorkerJournalEntry,
   clearWorkerJournal,
@@ -119,6 +129,14 @@ const PROMPT_REJECTED_LIMIT = 30;
 /// from any number of senders. Without a cap a busy roster can pile an
 /// unbounded queue of handoffs onto whichever worker keeps getting named.
 const MAX_PENDING_REFERRALS = 3;
+
+/// How many dated handoffs one worker may have waiting at once. A worker
+/// holding more than this has stopped referring and started scheduling.
+const MAX_HELD_PER_SENDER = 10;
+
+/// When a dated handoff comes due while its receiver already has
+/// `MAX_PENDING_REFERRALS` in flight, how long it waits before trying again.
+const HELD_RETRY_MS = 10 * 60 * 1000;
 
 /// How many past errand exchanges ride along as conversation context, and how
 /// much of each reply. Enough that a follow-up three turns later still lands;
@@ -242,6 +260,12 @@ export interface WorkerEngineDeps {
     load: () => Treasury | null;
     save: (t: Treasury) => void;
   };
+  /// Dated handoffs waiting for their day. Injected for the same reason as
+  /// the treasury: tests run without the data directory.
+  handoffStore?: {
+    load: () => HeldHandoff[];
+    save: (list: HeldHandoff[]) => void;
+  };
   /// Draft a read-only flow for one errand, file it in the generated bucket,
   /// and launch it — the third triage path, for asks that need real
   /// investigation and fit none of the worker's flows.
@@ -326,6 +350,8 @@ export class WorkerEngine {
   /// Referrals currently in flight per receiver id, so one colleague can't be
   /// buried under an unbounded queue of handoffs. See `MAX_PENDING_REFERRALS`.
   private pendingReferrals = new Map<string, number>();
+  /// Handoffs dated for later — see `holdHandoff`.
+  private held: HeldHandoff[] = [];
   /// One promise chain per worker, so errands sent while the worker is mid-turn
   /// WAIT rather than bounce. A worker can only hold one planning turn at a
   /// time — they share a journal, a budget gate and cadence bookkeeping — but
@@ -342,6 +368,7 @@ export class WorkerEngine {
   private readonly spend: NonNullable<WorkerEngineDeps['spend']>;
   private readonly spendAll: NonNullable<WorkerEngineDeps['spendAll']>;
   private readonly treasuryStore: NonNullable<WorkerEngineDeps['treasuryStore']>;
+  private readonly handoffStore: NonNullable<WorkerEngineDeps['handoffStore']>;
   /// Replaced in `start()` by the persisted pool, or by a seed seeded from the
   /// existing caps. The literal here only covers the window before that.
   private pool: Treasury = { monthlyUSD: DEFAULT_TREASURY_USD };
@@ -375,6 +402,10 @@ export class WorkerEngine {
       load: loadTreasury,
       save: saveTreasury,
     };
+    this.handoffStore = deps.handoffStore ?? {
+      load: loadHeldHandoffs,
+      save: saveHeldHandoffs,
+    };
   }
 
   /// Load persisted workers, reconcile batches that settled while the app was
@@ -389,6 +420,7 @@ export class WorkerEngine {
     const stored = this.treasuryStore.load();
     this.pool = stored ?? seedTreasury([...this.workers.values()]);
     if (!stored) this.treasuryStore.save(this.pool);
+    this.held = this.handoffStore.load();
     // Batches settle on load (running → failed, queued → cancelled) without
     // emitting, so fold every worker batch's current state in now — appends
     // are idempotent, so this re-fold costs nothing when nothing changed.
@@ -857,6 +889,29 @@ export class WorkerEngine {
     this.workers.delete(id);
     this.store.remove(id);
     this.deps.emit({ type: 'workerDeleted', id });
+    // Its dated handoffs go with it — both the ones it was sending, which
+    // nobody is left to have sent, and the ones meant for it, which would
+    // only fail on the day. The senders of the latter hear about it now.
+    const orphaned = this.held.filter((h) => h.fromId === id || h.toId === id);
+    if (orphaned.length > 0) {
+      this.held = this.held.filter((h) => !orphaned.includes(h));
+      this.handoffStore.save(this.held);
+      for (const h of orphaned) {
+        const sender = h.fromId === id ? undefined : this.workers.get(h.fromId);
+        if (!sender) continue;
+        this.journal.append({
+          workerId: sender.id,
+          id: `${h.id}:failed`,
+          kind: 'delegated',
+          at: this.now(),
+          title: h.title,
+          note: `Will not reach ${h.toName} — they were let go before the day came.`,
+          orchestrationId: h.orchestrationId,
+        });
+        this.emitWorker(sender);
+      }
+      this.emitHandoffs();
+    }
     // Firing someone releases whatever it was still holding to everyone below.
     this.emitTreasury();
     this.arm();
@@ -1222,6 +1277,7 @@ export class WorkerEngine {
       if (decision.action === 'wait') soonest = Math.min(soonest, decision.at);
       else soonest = Math.min(soonest, decision.nextAt);
     }
+    for (const h of this.held) soonest = Math.min(soonest, h.notBefore);
     if (!Number.isFinite(soonest)) return; // nobody hired/enabled — no timer
     const delay = Math.max(0, Math.min(soonest - now, MAX_TIMER_MS));
     this.timer = this.timers.set(() => void this.tick(), delay);
@@ -1241,6 +1297,7 @@ export class WorkerEngine {
       // bottom of a busy roster never runs: skipped, re-anchored to now, and
       // skipped again the next time the worker in front runs long.
       const awakeSince = this.now();
+      this.deliverDueHandoffs();
       // Iterate ids and RE-FETCH each worker: an earlier iteration's planning
       // turn can hold this loop for minutes, long enough for the user to edit
       // (or fire) a later worker. Evaluating a pre-edit snapshot would fire
@@ -1732,15 +1789,16 @@ export class WorkerEngine {
     // A delegated errand never gets a roster block, so it should never emit a
     // handoff; guarding on `from` as well means a turn that invented one
     // anyway cannot bounce the parcel onward.
-    // Gated on the turn having produced something. A referral spends a
-    // COLLEAGUE's budget, which is the one desk outcome you cannot wave away
-    // by dismissing a card, so it stays tied to a turn that actually decided
-    // there was work here — not to a turn that answered a question in prose
-    // and mentioned a colleague's name on the way past.
-    const handoffs =
-      from || res.count === 0
-        ? ''
-        : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId);
+    //
+    // A turn that launched nothing may still hand work on. It used to be
+    // barred — a referral spends a colleague's budget, and a prose answer
+    // that mentioned a name on the way past should not — but that also
+    // barred the plainest thing a manager says to one member of a team:
+    // "let the Chief of Staff know". That ask launches nothing by nature. The
+    // tag is explicit, it is answered on the desk you are watching, and the
+    // reply says who it went to, so the name-in-passing risk the gate was for
+    // does not arise.
+    const handoffs = from ? '' : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId);
     // Path 3: the worker judged the errand too big for a prose answer and
     // found nothing on its contract that fits, so it asked for machinery. Only
     // honored when it proposed nothing — a turn that did both is confused, and
@@ -2100,7 +2158,7 @@ export class WorkerEngine {
     const parts = [
       '',
       'YOUR COLLEAGUES',
-      'Other standing workers on this project. They have their own job descriptions,',
+      'Other standing workers on your team. They have their own job descriptions,',
       'their own flows and their own budgets; you cannot see their work and they',
       'cannot see yours.',
       ...targets.slice(0, PROMPT_REJECTED_LIMIT).map((t) => `  - ${rosterLine(t)}`),
@@ -2115,6 +2173,14 @@ export class WorkerEngine {
       '     your journal — only this text — so a handoff that says "the ticket above" is',
       '     a handoff they cannot action.',
       '     </handoff>',
+      '',
+      `When it should reach them on a particular day rather than now — "remind them a`,
+      `week before" — add the day and it is held until then: <handoff to="Name" on="YYYY-MM-DD">.`,
+      `Today is ${localDateStamp(this.now())}. Never hand something over early and ask them to`,
+      'remember the date; that is what the date is for.',
+      '',
+      'When your manager asks you to tell, remind or pass something to a colleague, that',
+      'IS a handoff: send it, rather than answering that they should do it themselves.',
       '',
       `At most ${WORKER_MAX_HANDOFFS_PER_TURN} per turn, and they count against your item budget for this turn.`,
       'Use the name exactly as written above; a name that matches nobody is dropped and',
@@ -2207,11 +2273,28 @@ export class WorkerEngine {
         kind: 'delegated',
         at,
         title,
-        note: `Tried to hand this to "${h.to}", who is not a colleague on this project.`,
+        note: `Tried to hand this to "${h.to}", who is not a colleague it can hand work to.`,
         orchestrationId,
       });
       return { ok: false, summary: `"${h.to}" matched no colleague` };
     }
+
+    // A dated handoff waits for its day rather than arriving early and asking
+    // the receiver to remember it.
+    const when = handoffNotBefore(h.on, at);
+    if (when === 'invalid') {
+      this.journal.append({
+        workerId: sender.id,
+        id: entryId,
+        kind: 'delegated',
+        at,
+        title,
+        note: `Tried to hand this to ${target.name} on "${h.on}", which is not a date within the next year.`,
+        orchestrationId,
+      });
+      return { ok: false, summary: `"${h.on}" is not a date it could wait for` };
+    }
+    if (when !== null) return this.holdHandoff(sender, target, h.instruction, title, when, entryId, at, orchestrationId);
 
     // Checked BEFORE the "Handed to" note lands: journaling the handoff and
     // then refusing to send it would tell the sender's own history a referral
@@ -2224,7 +2307,6 @@ export class WorkerEngine {
         summary: `"${h.to}" already has ${pending} referrals waiting`,
       };
     }
-    this.pendingReferrals.set(target.id, pending + 1);
 
     this.journal.append({
       workerId: sender.id,
@@ -2235,13 +2317,27 @@ export class WorkerEngine {
       note: `Handed to ${target.name}: ${h.instruction}`,
       orchestrationId,
     });
+    this.sendReferral(sender, target, h.instruction, title, entryId, orchestrationId);
+    return { ok: true, summary: target.name };
+  }
 
+  /// Start a referral on the receiver's desk. The caller has already checked
+  /// the receiver has room and journaled that it was sent.
+  private sendReferral(
+    sender: Worker,
+    target: Worker,
+    instruction: string,
+    title: string,
+    entryId: string,
+    orchestrationId: string | undefined,
+  ): void {
+    this.pendingReferrals.set(target.id, (this.pendingReferrals.get(target.id) ?? 0) + 1);
     // `manual` so the receiver's funding gate reports back as an error rather
     // than swallowing the errand and stamping cadence — a referral that died
     // on someone else's spent budget has to be visible from the sender's desk.
     void this.fire(target, {
       manual: true,
-      errand: h.instruction,
+      errand: instruction,
       from: { workerId: sender.id, workerName: sender.name },
     })
       // A referral that threw is a referral that did not happen, so it is
@@ -2269,8 +2365,159 @@ export class WorkerEngine {
           kind: 'failure',
         });
       });
+  }
 
-    return { ok: true, summary: target.name };
+  /// Keep a dated handoff until its day. Journaled on the sender now, so the
+  /// title reads as handed over (see `handedOffTitles`) and tomorrow's shift
+  /// does not send it a second time while the first is still waiting.
+  private holdHandoff(
+    sender: Worker,
+    target: Worker,
+    instruction: string,
+    title: string,
+    notBefore: number,
+    entryId: string,
+    at: number,
+    orchestrationId: string | undefined,
+  ): { ok: boolean; summary: string } {
+    const waiting = this.held.filter((x) => x.fromId === sender.id).length;
+    if (waiting >= MAX_HELD_PER_SENDER) {
+      return { ok: false, summary: `${waiting} dated handoffs are already waiting to go out` };
+    }
+    const held: HeldHandoff = {
+      id: entryId,
+      fromId: sender.id,
+      fromName: sender.name,
+      toId: target.id,
+      toName: target.name,
+      instruction,
+      title,
+      notBefore,
+      createdAt: at,
+      ...(orchestrationId ? { orchestrationId } : {}),
+    };
+    this.held = [...this.held.filter((x) => x.id !== entryId), held];
+    this.handoffStore.save(this.held);
+    this.journal.append({
+      workerId: sender.id,
+      id: entryId,
+      kind: 'delegated',
+      at,
+      title,
+      note: `Will hand to ${target.name} on ${dayLabel(notBefore)}: ${instruction}`,
+      orchestrationId,
+    });
+    this.emitHandoffs();
+    this.arm();
+    return { ok: true, summary: `${target.name} on ${dayLabel(notBefore)}` };
+  }
+
+  /// Send every held handoff whose day has come. The receiver is re-checked
+  /// against the sender's colleagues as they stand NOW: weeks can pass, and a
+  /// colleague paused or unpicked since must not get work because it was
+  /// reachable the day the handoff was written.
+  private deliverDueHandoffs(): void {
+    const now = this.now();
+    if (!this.held.some((h) => h.notBefore <= now)) return;
+    const keep: HeldHandoff[] = [];
+    for (const h of this.held) {
+      if (h.notBefore > now) {
+        keep.push(h);
+        continue;
+      }
+      const sender = this.workers.get(h.fromId);
+      const target = sender
+        ? delegationTargets(sender, this.roster()).find((t) => t.id === h.toId)
+        : undefined;
+      if (!sender) continue;
+      if (!target) {
+        this.journal.append({
+          workerId: sender.id,
+          id: `${h.id}:failed`,
+          kind: 'delegated',
+          at: now,
+          title: h.title,
+          note: `Could not hand this to ${h.toName} on the day — they are no longer someone ${sender.name} can hand work to.`,
+          orchestrationId: h.orchestrationId,
+        });
+        this.emitWorker(sender);
+        this.deps.notify({
+          title: `${sender.name}'s handoff to ${h.toName} did not go out`,
+          body: h.title,
+          kind: 'failure',
+        });
+        continue;
+      }
+      if ((this.pendingReferrals.get(target.id) ?? 0) >= MAX_PENDING_REFERRALS) {
+        keep.push({ ...h, notBefore: now + HELD_RETRY_MS });
+        continue;
+      }
+      this.journal.append({
+        workerId: sender.id,
+        id: `${h.id}:sent`,
+        kind: 'delegated',
+        at: now,
+        title: h.title,
+        note: `Handed to ${target.name}, as planned: ${h.instruction}`,
+        orchestrationId: h.orchestrationId,
+      });
+      this.emitWorker(sender);
+      this.sendReferral(sender, target, h.instruction, h.title, h.id, h.orchestrationId);
+    }
+    this.held = keep;
+    this.handoffStore.save(this.held);
+    this.emitHandoffs();
+  }
+
+  /// Dated handoffs still waiting, soonest first.
+  heldHandoffs(): HeldHandoff[] {
+    return [...this.held].sort((a, b) => a.notBefore - b.notBefore);
+  }
+
+  /// Call off a dated handoff before its day.
+  cancelHandoff(id: string): { ok: true } | { ok: false; error: string } {
+    const h = this.held.find((x) => x.id === id);
+    if (!h) return { ok: false, error: 'That handoff has already gone out or been cancelled.' };
+    this.held = this.held.filter((x) => x.id !== id);
+    this.handoffStore.save(this.held);
+    const sender = this.workers.get(h.fromId);
+    if (sender) {
+      this.journal.append({
+        workerId: sender.id,
+        id: `${h.id}:cancelled`,
+        kind: 'delegated',
+        at: this.now(),
+        title: h.title,
+        note: `You called off handing this to ${h.toName}.`,
+        orchestrationId: h.orchestrationId,
+      });
+      this.emitWorker(sender);
+    }
+    this.emitHandoffs();
+    this.arm();
+    return { ok: true };
+  }
+
+  /// Send a dated handoff now instead of on its day.
+  sendHandoffNow(id: string): { ok: true } | { ok: false; error: string } {
+    const h = this.held.find((x) => x.id === id);
+    if (!h) return { ok: false, error: 'That handoff has already gone out or been cancelled.' };
+    const now = this.now();
+    this.held = this.held.map((x) => (x.id === id ? { ...x, notBefore: now } : x));
+    this.deliverDueHandoffs();
+    const still = this.held.find((x) => x.id === id);
+    if (still) {
+      return {
+        ok: false,
+        error: `${h.toName} already has ${MAX_PENDING_REFERRALS} handoffs in hand — this one goes out as soon as one lands.`,
+      };
+    }
+    this.arm();
+    return { ok: true };
+  }
+
+  private emitHandoffs(): void {
+    this.deps.emit({ type: 'workerHandoffs', handoffs: this.heldHandoffs() });
   }
 
   /// What this worker has already referred on. The delegation counterpart to
@@ -2308,6 +2555,20 @@ export class WorkerEngine {
   /// `excludeTitles` is the hard filter and it rides on every turn regardless,
   /// so re-listing thirty titles into a warm session buys nothing.
   private buildWarmPrompt(w: Worker, errand: string): string {
+    // The one thing a warm turn re-states beyond the contract: who it can hand
+    // work to. The roster changes under a long-lived desk session, and a
+    // worker hired this morning onto someone's team is nameable from now on.
+    const colleagues = delegationTargets(w, this.roster());
+    const handoff =
+      colleagues.length > 0
+        ? [
+            '',
+            `Colleagues you can hand work to: ${colleagues.map((c) => c.name).join(', ')}. To pass`,
+            'something on — including when I ask you to tell or remind one of them — end with',
+            '<handoff to="Exact Name">the errand, written to them</handoff>. Add',
+            `on="YYYY-MM-DD" to have it reach them that day instead of now (today is ${localDateStamp(this.now())}).`,
+          ]
+        : [];
     return [
       errand,
       '',
@@ -2317,6 +2578,7 @@ export class WorkerEngine {
       'flows; or, if it needs real investigation and none of your flows fit, emit an',
       'empty candidates list and a <flow_request> block for a read-only flow. Start',
       'your reply with <subject>What this errand is, as a title</subject>.',
+      ...handoff,
     ].join('\n');
   }
 
@@ -2460,6 +2722,10 @@ export class WorkerEngine {
       projectPath: w.projectPath,
       runId: item.runId,
       artifacts,
+      // One folder per worker, one per job inside it, dated so they sort:
+      // `Soraya/2026-09-25 Norwalk trip bookings/`. The root stays the
+      // person's own.
+      folder: [w.name, `${localDateStamp(at)} ${title}`],
     });
     // Documents arriving is one of the boundaries everyday projects
     // checkpoint on, and a worker's drop is no different from a
@@ -3016,4 +3282,17 @@ function errandReply(reply: string): string {
       .replace(/<flow_request>[\s\S]*?<\/flow_request>/gi, ''),
   ).trim();
   return prose.length > 600 ? `${prose.slice(0, 599)}…` : prose;
+}
+
+/// "Tue, Oct 13" — when a dated handoff goes out, in the words a journal note
+/// uses.
+function dayLabel(at: number): string {
+  return new Date(at).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+/// 2026-09-25, in local time — the day the person saw the work finish.
+function localDateStamp(at: number): string {
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }

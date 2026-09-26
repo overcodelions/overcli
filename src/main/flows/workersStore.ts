@@ -7,7 +7,7 @@ import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 import { canonicalizeUnderRoot } from '../../shared/pathScope';
 
-import type { Worker } from '../../shared/flows/worker';
+import type { HeldHandoff, Worker } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
 
 function dir(): string {
@@ -61,12 +61,12 @@ export function loadAllWorkers(): Worker[] {
   ensureDir();
   let names: string[] = [];
   try {
-    // treasury.json shares the directory but is not a worker — excluded by
-    // name rather than left to the shape guard below, so a malformed pool
-    // file can never be mistaken for a corrupt worker.
+    // treasury.json and handoffs.json share the directory but are not
+    // workers — excluded by name rather than left to the shape guard below,
+    // so a malformed one can never be mistaken for a corrupt worker.
     names = fs
       .readdirSync(dir())
-      .filter((n) => n.endsWith('.json') && n !== 'treasury.json');
+      .filter((n) => n.endsWith('.json') && n !== 'treasury.json' && n !== 'handoffs.json');
   } catch {
     return [];
   }
@@ -113,6 +113,34 @@ export function loadTreasury(): Treasury | null {
 
 export function saveTreasury(t: Treasury): void {
   writeAtomic(treasuryPath(), JSON.stringify(t), 'treasury');
+}
+
+/// Handoffs waiting for their day. Beside the roster for the same reason the
+/// treasury is: they name workers by id and mean nothing without them.
+function handoffsPath(): string {
+  return path.join(dir(), 'handoffs.json');
+}
+
+export function loadHeldHandoffs(): HeldHandoff[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(handoffsPath(), 'utf8')) as HeldHandoff[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (h) =>
+        h &&
+        typeof h.id === 'string' &&
+        typeof h.fromId === 'string' &&
+        typeof h.toId === 'string' &&
+        typeof h.instruction === 'string' &&
+        Number.isFinite(h.notBefore),
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function saveHeldHandoffs(list: HeldHandoff[]): void {
+  writeAtomic(handoffsPath(), JSON.stringify(list), 'handoffs');
 }
 
 export function deleteWorker(id: string): void {

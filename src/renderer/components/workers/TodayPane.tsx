@@ -21,11 +21,15 @@ import { useWorkersStore } from '../../workersStore';
 import { InboxList, defaultItem, findRow, type DigestModel, type OpenItem } from './TodayDigest';
 import { TodayEmpty } from './TodayEmpty';
 import { TodayReader } from './TodayReader';
+import { clearStateOf, useTodayCleared } from './todayCleared';
 import { buildTodaySpine } from './todaySpine';
 import { earlierDays, finishedJobs } from './todayLayout';
 import { useDigest } from './useDigest';
 import { buildWorkQueue, upcomingShifts, type QueueRow } from './workQueue';
 import { useDeliverables } from './useDeliverables';
+
+/// The item Today had open when you last left it, for this session.
+let lastPicked: OpenItem = null;
 
 export function TodayPane() {
   const workers = useWorkersStore((s) => s.workers);
@@ -93,7 +97,12 @@ export function TodayPane() {
   // waiting on you, else the newest result — so the page never lands on an
   // empty half. An item that leaves the list (answered, rejected) falls back
   // to the default rather than leaving a stale reader behind.
-  const [picked, setPicked] = useState<OpenItem>(null);
+  // Survives leaving the tab: Chat and back should land on the item you had
+  // open, not on whatever the inbox would pick fresh.
+  const [picked, setPicked] = useState<OpenItem>(() => lastPicked);
+  useEffect(() => {
+    lastPicked = picked;
+  }, [picked]);
   const pickedRow = picked ? findRow(model, picked) : undefined;
   // Keep the open item's key on the row it resolved to, so the list still
   // highlights it after an answer folds into a group.
@@ -134,8 +143,22 @@ export function TodayPane() {
   // The default item stands in for "whatever you had" — which, when you
   // opened nothing, is the oldest decision. Track it too, so answering the
   // item the inbox opened on gets the same handoff.
-  const open = pickedRow ? picked : defaultItem(model);
+  const cleared = useTodayCleared((s) => s.cleared);
+  const open = pickedRow
+    ? picked
+    : defaultItem(model, (row) => clearStateOf(cleared, row.key, row.at) === 'cleared');
   const openRow = open ? findRow(model, open) : undefined;
+  // A file opened from the reader belongs to the item it came from: reading
+  // the next item under the last one's report is the same mistake as
+  // carrying it onto another page.
+  const closeFile = useStore((s) => s.closeFile);
+  const readerKey = open?.key;
+  const shownKey = useRef(readerKey);
+  useEffect(() => {
+    if (shownKey.current === readerKey) return;
+    shownKey.current = readerKey;
+    closeFile();
+  }, [readerKey, closeFile]);
   useEffect(() => {
     if (!picked && open?.kind === 'needs' && openRow) lastNeeds.current = openRow;
   }, [picked, open?.kind, openRow]);

@@ -73,6 +73,15 @@ export function groupServices(services: readonly ServiceSpec[]): ServiceGroup[] 
   return groups;
 }
 
+/// The services that actually run: a base with copies is the module they
+/// share, not something to start on its own, so the list never shows it and
+/// nothing that offers to start services should either.
+export function runnableServices<T extends Pick<ServiceSpec, 'id' | 'copyOf'>>(services: readonly T[]): T[] {
+  const ids = new Set(services.map((s) => s.id));
+  const bases = new Set(services.flatMap((s) => (s.copyOf && ids.has(s.copyOf) ? [s.copyOf] : [])));
+  return services.filter((s) => !bases.has(s.id));
+}
+
 /// Every group name in use, for the picker when someone is filing a service.
 export function groupNames(services: readonly ServiceSpec[]): string[] {
   const names = new Set<string>();

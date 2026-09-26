@@ -7,7 +7,7 @@ import type {
 } from '@shared/types';
 import { detectFilePreviewKind } from '../filePreview';
 import { collectHtmlAssetRefs, inlineHtmlAssets } from '../htmlPreview';
-import { previewLinkScriptTag, targetExternalLinks } from '../previewLinks';
+import { acceptLinkMessage, previewLinkScriptTag, targetExternalLinks } from '../previewLinks';
 import { buildReactPreviewDocument, type PreviewBackground } from '../reactPreview';
 import {
   applyMermaidDiagrams,
@@ -239,10 +239,19 @@ export function FilePreview({
 /// so the page can run but cannot reach the app around it.
 ///
 /// Popups are withheld from this document-policy frame: `window.open` reaches
-/// `shell.openExternal`, and untrusted document content plus a live click
-/// path to launching an external URL is an exfiltration channel this preview
-/// has no reason to keep open.
+/// `shell.openExternal`, and a page's script could call it with no click at
+/// all. Links still work — a clicked one is posted up and opened here, but
+/// only while that click's user activation is live, which script cannot fake.
 function HtmlPreview({ path, document: html }: { path: string; document: string }) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const href = acceptLinkMessage(event, frame.current?.contentWindow, navigator.userActivation?.isActive ?? false);
+      if (href) void window.overcli.invoke('app:openExternal', href);
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   // Hidden until the page has loaded — its stylesheets and fonts included —
   // so you see the page, not its text settling into it.
@@ -277,6 +286,7 @@ function HtmlPreview({ path, document: html }: { path: string; document: string 
   if (!frameUrl) return <div className="p-4 text-xs text-ink-faint">Loading preview…</div>;
   return (
     <iframe
+      ref={frame}
       title={`${path} preview`}
       sandbox="allow-scripts"
       src={frameUrl}
@@ -900,7 +910,9 @@ function buildHtmlDocument(filePath: string, content: string): string {
   const baseTag = /<base[\s>]/i.test(content)
     ? ''
     : `<base href="${escapeAttr(toFileDirectoryHref(filePath))}">`;
-  const head = `${baseTag}${previewLinkScriptTag()}`;
+  // Rendered in a frame without popups (see `HtmlPreview`), so links go out
+  // through the app rather than window.open.
+  const head = `${baseTag}${previewLinkScriptTag('parent')}`;
   if (/<head[\s>]/i.test(content)) return content.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${head}`);
   if (/<html[\s>]/i.test(content)) {
     return content.replace(/<html(\s[^>]*)?>/i, (m) => `${m}<head>${head}</head>`);
