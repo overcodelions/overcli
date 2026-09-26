@@ -1003,7 +1003,7 @@ export function registerIpc(): void {
   });
   ipcMain.handle('fs:listFiles', (_e, root: string) => {
     if (!isPathUnderRegisteredRoot(root)) return [];
-    return listFilesRecursive(root);
+    return listFilesRecursiveAsync(root);
   });
   ipcMain.handle('fs:listFileEntries', (_e, root: string) => {
     if (!isPathUnderRegisteredRoot(root)) return Promise.resolve([]);
@@ -3355,6 +3355,22 @@ function listFilesRecursive(root: string): string[] {
   const now = Date.now();
   if (hit && now - hit.at < FILE_LIST_TTL_MS) return hit.files;
   const files = listFileEntriesSync(root).map((entry) => entry.path);
+  fileListCache.set(key, { at: now, files });
+  return files;
+}
+
+// Same cache as `listFilesRecursive`, off the main thread. `fs:listFiles` is
+// the `@`-mention and file-finder path — both hot enough, and frequent
+// enough on a cache miss, that the sync walk stalled the whole app's IPC.
+// `resolveFilePath` still needs the sync version (see its own comment), but
+// it shares this cache, so an async listing here still serves its hits.
+async function listFilesRecursiveAsync(root: string): Promise<string[]> {
+  const key = path.resolve(root);
+  const hit = fileListCache.get(key);
+  const now = Date.now();
+  if (hit && now - hit.at < FILE_LIST_TTL_MS) return hit.files;
+  const entries = await listFileEntriesAsync(root);
+  const files = entries.map((entry) => entry.path);
   fileListCache.set(key, { at: now, files });
   return files;
 }
