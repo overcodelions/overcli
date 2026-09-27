@@ -830,7 +830,6 @@ export function Sidebar() {
               <PopMenu
                 anchor={addAnchor}
                 onClose={() => setAddOpen(false)}
-                width={240}
                 items={[
                   { label: 'Open a folder…', hint: 'repo or documents', onSelect: () => void pickProject() },
                   { label: 'Start something new…', hint: 'empty folder', onSelect: () => openSheet({ type: 'newEverydayProject' }) },

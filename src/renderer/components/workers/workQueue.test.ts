@@ -179,6 +179,27 @@ describe('buildWorkQueue', () => {
     expect(q.finished.reduce((n, r) => n + (r.answers?.length ?? 1), 0)).toBe(4);
   });
 
+  it('keeps a colleague\'s handoff on its own row, saying who sent it', () => {
+    const answer = (id: string, at: number) => batch(id, [], { task: 'errand', completedAt: at });
+    const handed = answer('h1', NOON - 2 * HOUR);
+    (handed.origin as { from?: unknown }).from = { workerId: 'w2', workerName: 'Docs Gardener' };
+    const q = buildWorkQueue(
+      { a1: answer('a1', NOON - HOUR), a2: answer('a2', NOON - 3 * HOUR), h1: handed },
+      {},
+      WORKERS,
+      {},
+      NOON,
+    );
+
+    // Folded into "2 answers" it would read as something you asked.
+    expect(q.finished.find((r) => r.answers)!.answers).toHaveLength(2);
+    expect(q.finished.find((r) => r.orchestrationId === 'h1')).toMatchObject({
+      status: 'quiet',
+      from: 'Docs Gardener',
+      fromId: 'w2',
+    });
+  });
+
   it('counts an errand that launched nothing as an answer, whatever you meant by it', () => {
     // The old rule read the Ask/Create-work toggle, so a question you happened
     // to send as work sat on the page as its own row forever while the

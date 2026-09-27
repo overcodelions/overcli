@@ -1372,7 +1372,7 @@ export class WorkerEngine {
       /// A `/run` line: the work itself, already stripped of its prefix.
       direct?: string;
       attachments?: Attachment[];
-      from?: { workerId: UUID; workerName: string };
+      from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
     },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     return this.enqueue(w.id, async () => {
@@ -1396,7 +1396,7 @@ export class WorkerEngine {
       /// A `/run` line: the work itself, already stripped of its prefix.
       direct?: string;
       attachments?: Attachment[];
-      from?: { workerId: UUID; workerName: string };
+      from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
     },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     const now = this.now();
@@ -1668,7 +1668,7 @@ export class WorkerEngine {
     w: Worker,
     errand: string,
     attachments?: Attachment[],
-    from?: { workerId: UUID; workerName: string },
+    from?: { workerId: UUID; workerName: string; orchestrationId?: UUID },
   ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
     const at = this.now();
     const rejected = this.journal.rejectedTitles(w.id);
@@ -2338,7 +2338,11 @@ export class WorkerEngine {
     void this.fire(target, {
       manual: true,
       errand: instruction,
-      from: { workerId: sender.id, workerName: sender.name },
+      from: {
+        workerId: sender.id,
+        workerName: sender.name,
+        ...(orchestrationId ? { orchestrationId } : {}),
+      },
     })
       // A referral that threw is a referral that did not happen, so it is
       // reported exactly like one that was refused. Swallowing the throw

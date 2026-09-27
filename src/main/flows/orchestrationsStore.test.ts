@@ -57,6 +57,12 @@ describe('settleItemOnLoad', () => {
     expect(it_.status).toBe('cancelled');
   });
 
+  it('keeps a paused batch\'s queue — nothing launches until Resume', () => {
+    const it_ = item({ status: 'queued' });
+    expect(settleItemOnLoad(it_, ALIVE, NOW, true)).toBe(false);
+    expect(it_.status).toBe('queued');
+  });
+
   it('marks the restart-cancelled item so the journal cannot read it as a rejection', () => {
     const it_ = item({ status: 'queued' });
     settleItemOnLoad(it_, ALIVE, NOW);

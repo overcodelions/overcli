@@ -255,10 +255,14 @@ function createWindow(): void {
       backgroundThrottling: false,
     },
   });
+  // Open maximized (fills the screen, stays on the desktop).
+  mainWindow.maximize();
 
   if (isDev && DEV_URL) {
     mainWindow.loadURL(DEV_URL);
-    mainWindow.webContents.openDevTools({ mode: 'undocked' });
+    // DevTools stay closed by default (View > Toggle Developer Tools, Cmd+Opt+I);
+    // set OPEN_DEVTOOLS=1 to have them open on launch.
+    if (process.env.OPEN_DEVTOOLS === '1') mainWindow.webContents.openDevTools({ mode: 'undocked' });
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   }
@@ -2084,6 +2088,12 @@ export function registerIpc(): void {
   ipcMain.handle('orchestrator:get', (_e, { id }) => (orchestrator ? orchestrator.get(id) : null));
   ipcMain.handle('orchestrator:abort', (_e, args) =>
     orchestrator ? orchestrator.abort(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
+  ipcMain.handle('orchestrator:pause', (_e, args) =>
+    orchestrator ? orchestrator.pause(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
+  ipcMain.handle('orchestrator:resume', (_e, args) =>
+    orchestrator ? orchestrator.resume(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   ipcMain.handle('orchestrator:retry', (_e, args) =>
     orchestrator ? orchestrator.retry(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),

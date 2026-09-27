@@ -76,6 +76,9 @@ export interface SlashCommandEntry {
   name: string;
   description?: string;
   source?: string;
+  /// Shown in amber in place of the description — for a command that's
+  /// listed but won't work as things are set up.
+  warning?: string;
 }
 
 const KONAMI_HINT_TOKENS = ['↑', '↑', '↓', '↓', '←', '→', '←', '→', 'B', 'A', 'Enter'];
@@ -876,7 +879,11 @@ function SlashPopover({
             }
           >
             <span className="font-mono">/{entry.name}</span>
-            {entry.description && (
+            {entry.warning ? (
+              <span className="text-[10px] text-amber-700 dark:text-amber-300 truncate">
+                {entry.warning}
+              </span>
+            ) : entry.description && (
               <span className="text-[10px] text-ink-faint truncate">{entry.description}</span>
             )}
             {entry.source && (

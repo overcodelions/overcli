@@ -43,7 +43,7 @@ import {
 } from '../onboarding/landing';
 import { SegmentButton } from '../flows/FlowLaunch';
 import type { Flow } from '@shared/flows/schema';
-import { isOrchestrationAwaitingApproval, ledgerBatches } from '@shared/flows/orchestration';
+import { isOrchestrationAwaitingApproval, isOrchestrationPausable, ledgerBatches } from '@shared/flows/orchestration';
 import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestration';
 import { PlacePicker } from '../PlacePicker';
 
@@ -101,7 +101,26 @@ export function OrchestratorPane() {
   // are there for the same reason: with a roster of workers on it, this page is
   // a feed, and a feed has to be in one order and free of empty rows to be
   // readable at all. Parked batches are found through the runs bar's filter.
-  const batches = useMemo(() => ledgerBatches(s.orchestrations), [s.orchestrations]);
+  const ledger = useMemo(() => ledgerBatches(s.orchestrations), [s.orchestrations]);
+
+  // Worker shifts run on this engine but belong to the worker's desk and the
+  // Today inbox, so they stay out of this list unless asked for. The one
+  // exception is the batch someone linked here on purpose (a worker's
+  // "Review & pick"): hiding that would leave them staring at nothing.
+  const [showWorkerShifts, setShowWorkerShifts] = useState(false);
+  const workerBatches = useMemo(() => ledger.filter(isWorkerBatch), [ledger]);
+  const batches = useMemo(
+    () =>
+      showWorkerShifts
+        ? ledger
+        : ledger.filter((b) => !isWorkerBatch(b) || b.id === s.activeOrchestrationId),
+    [ledger, showWorkerShifts, s.activeOrchestrationId],
+  );
+  const workerShifts = {
+    batches: workerBatches,
+    shown: showWorkerShifts,
+    setShown: setShowWorkerShifts,
+  };
 
   // The composer draft lives here rather than in the Ask pane: the idle
   // stage's empty state offers one-click starters too, and both need to write
@@ -169,10 +188,21 @@ export function OrchestratorPane() {
               maxWidth={900}
               side="right"
             />
-            <QueuePane flowById={flowById} batches={batches} width={queueWidth} />
+            <QueuePane
+              flowById={flowById}
+              batches={batches}
+              workerShifts={workerShifts}
+              width={queueWidth}
+            />
           </>
         ) : (
-          <QueuePane flowById={flowById} batches={batches} draft={draft} setDraft={setDraft} />
+          <QueuePane
+            flowById={flowById}
+            batches={batches}
+            workerShifts={workerShifts}
+            draft={draft}
+            setDraft={setDraft}
+          />
         )}
       </div>
       {aboutOpen && (
@@ -673,9 +703,13 @@ function AskBar({ draft, setDraft }: { draft: string; setDraft: (v: string) => v
 function ProducerEmptyState({
   draft,
   setDraft,
+  workerShifts,
 }: {
   draft: string;
   setDraft: (v: string) => void;
+  /// Hidden worker shifts are the usual reason this page is empty at all, so
+  /// the landing says so under its own ask rather than above the whole card.
+  workerShifts: WorkerShifts;
 }) {
   const recentPrompts = useOrchestratorStore((s) => s.recentPrompts);
   const removeRecentPrompt = useOrchestratorStore((s) => s.removeRecentPrompt);
@@ -702,7 +736,13 @@ function ProducerEmptyState({
             work arrives as a stack of diffs instead of a stack of chats.
           </>
         }
-        note="Nothing launches until you say so. The producer proposes; you strike out what you do not want."
+        note={
+          <>
+            Nothing launches until you say so. The producer proposes; you strike out what
+            you do not want.
+            <WorkerShiftsLine {...workerShifts} padClass="pt-2" />
+          </>
+        }
         actions={
           <div className="w-full max-w-[640px]">
             <AskBar draft={draft} setDraft={setDraft} />
@@ -1350,12 +1390,14 @@ function FlowSelect({
 function QueuePane({
   flowById,
   batches,
+  workerShifts,
   width,
   draft,
   setDraft,
 }: {
   flowById: Map<string, Flow>;
   batches: Orchestration[];
+  workerShifts: WorkerShifts;
   /// Fixed column width while composing. Omitted on the idle stage, where the
   /// ledger is the whole screen.
   width?: number;
@@ -1379,6 +1421,8 @@ function QueuePane({
   }, [activeId]);
   const tally = tallyOf(batches);
   const finished = batches.filter((b) => b.completedAt);
+  // The empty ledger's landing carries the worker-shifts line itself.
+  const landing = full && !!setDraft && loaded && batches.length === 0;
 
   // A batch awaiting approval is an obligation, not a list entry — it renders
   // whole, filter or no filter, or a "10 done" view would quietly bury a
@@ -1419,6 +1463,12 @@ function QueuePane({
             <Tally {...tally} />
           </PaneHead>
         )}
+        {!landing && (
+          <WorkerShiftsLine
+            {...workerShifts}
+            padClass={(full ? IDLE_PAD : 'px-4') + ' py-2'}
+          />
+        )}
         <div
           className={
             'flex-1 overflow-y-auto pb-3 min-h-0 ' +
@@ -1429,7 +1479,11 @@ function QueuePane({
         >
           {batches.length === 0 && !loaded ? null : batches.length === 0 ? (
             full && setDraft ? (
-              <ProducerEmptyState draft={draft ?? ''} setDraft={setDraft} />
+              <ProducerEmptyState
+                draft={draft ?? ''}
+                setDraft={setDraft}
+                workerShifts={workerShifts}
+              />
             ) : (
               <div className="text-sm text-ink-faint mt-3">
                 Nothing launched yet. Map asks on the left and hit Launch — they'll
@@ -1597,8 +1651,26 @@ function BatchLedger({
           {batch.title} · {done}/{batch.items.length} done
           {running > 0 && ` · ${running} running`}
           {paused > 0 && ` · ${paused} paused`}
+          {batch.pausedAt && ' · batch paused'}
         </div>
         <div className="flex-1" />
+        {(batch.pausedAt || isOrchestrationPausable(batch)) && (
+          <button
+            className="text-[11px] text-ink-faint hover:text-accent"
+            onClick={() =>
+              void window.overcli.invoke(batch.pausedAt ? 'orchestrator:resume' : 'orchestrator:pause', {
+                id: batch.id,
+              })
+            }
+            title={
+              batch.pausedAt
+                ? 'Launch the queued items again and continue the runs this pause stopped'
+                : 'Hold the queue, and stop each running flow after the step it is on'
+            }
+          >
+            {batch.pausedAt ? 'Resume batch' : 'Pause batch'}
+          </button>
+        )}
         {retryable > 0 && (
           <button
             className="text-[11px] text-ink-faint hover:text-accent"
@@ -1862,6 +1934,81 @@ function RunsBar({
       </div>
     </div>
   );
+}
+
+function isWorkerBatch(b: Orchestration): boolean {
+  return b.origin?.kind === 'worker';
+}
+
+interface WorkerShifts {
+  batches: Orchestration[];
+  shown: boolean;
+  setShown: (v: boolean) => void;
+}
+
+/// Stands in for the worker shifts the list leaves out: enough to know the
+/// engine is busy on someone's behalf, and a way to go where that work is
+/// actually read. Absent when no worker has anything on the ledger.
+function WorkerShiftsLine({
+  batches,
+  shown,
+  setShown,
+  padClass,
+}: WorkerShifts & { padClass: string }) {
+  const setDetailMode = useStore((s) => s.setDetailMode);
+  if (batches.length === 0) return null;
+
+  const running = batches.filter((b) => !b.completedAt);
+  const waiting = batches.filter(isOrchestrationAwaitingApproval).length;
+  const workerNames = [
+    ...new Set((running.length > 0 ? running : batches).map((b) => workerNameOf(b))),
+  ];
+  const who = workerNames.length === 1 ? workerNames[0] : `${workerNames.length} workers`;
+  const shifts = (n: number) => `${n} ${n === 1 ? 'shift' : 'shifts'}`;
+  const summary =
+    running.length > 0
+      ? `${who} ${workerNames.length === 1 ? 'has' : 'have'} ${shifts(running.length)} running`
+      : `${shifts(batches.length)} from ${who}, all finished`;
+
+  return (
+    <div
+      className={'flex-none flex items-center gap-2 text-[12px] text-ink-faint ' + padClass}
+    >
+      {running.length > 0 && (
+        <span
+          className="w-1.5 h-1.5 rounded-full flex-none animate-pulse"
+          style={{ background: 'var(--c-running-pulse)' }}
+        />
+      )}
+      <span className="truncate">
+        {summary}
+        {waiting > 0 && (
+          <span className="text-amber-600 dark:text-amber-400">
+            {' '}
+            · {waiting} waiting for review
+          </span>
+        )}
+      </span>
+      <span>·</span>
+      <button
+        onClick={() => setDetailMode('workers')}
+        className="text-ink-muted hover:text-ink whitespace-nowrap"
+      >
+        Open Workers
+      </button>
+      <span>·</span>
+      <button
+        onClick={() => setShown(!shown)}
+        className="text-ink-muted hover:text-ink whitespace-nowrap"
+      >
+        {shown ? 'Hide them here' : 'Show them here'}
+      </button>
+    </div>
+  );
+}
+
+function workerNameOf(b: Orchestration): string {
+  return b.origin?.kind === 'worker' ? b.origin.workerName : '';
 }
 
 /// One-line state of everything on the ledger, for the narrow composing

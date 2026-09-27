@@ -6,15 +6,17 @@
 // did and what it changed. Either way the whole run is one switch away, drawn
 // in this same pane, so going deeper never loses your place in the day.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useRunnersStore } from '../../runnersStore';
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
+import { FileActionItems, useMenuDismiss } from '../FileActionsMenu';
 import { FilePreview } from '../FilePreview';
 import { UserBubble } from '../UserBubble';
-import { WorkerReply } from './WorkerReply';
+import { WorkerReply, useWorkerTint } from './WorkerReply';
+import { receiverBatch, senderBatch } from './handoffLinks';
 import { WorkerErrandComposer } from './WorkerDesk';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { producerProse } from './workerDeskSelectors';
@@ -53,12 +55,14 @@ export function TodayReader({
   file,
   digest,
   now,
+  openBatch,
 }: {
   row: QueueRow;
   kind: 'needs' | 'done';
   file: WorkerFile | null;
   digest: DigestSummary | undefined;
   now: number;
+  openBatch?: OpenBatch;
 }) {
   const [tab, setTab] = useState<'result' | 'run'>(() => tabMemory.get(row.key) ?? 'result');
   // A tab you picked is remembered for the item, so going to Chat and back —
@@ -192,7 +196,7 @@ export function TodayReader({
           </div>
         </div>
       ) : (
-        <Result row={row} file={file} digest={digest} live={live} />
+        <Result row={row} file={file} digest={digest} live={live} openBatch={openBatch} />
       )}
     </article>
   );
@@ -528,20 +532,31 @@ function TalkToStep({
 
 // ---- A finished (or working) job ------------------------------------------
 
+/// Opens the Today item a batch landed in, or null when the inbox no longer
+/// holds it — so a link is only drawn where it goes somewhere.
+export type OpenBatch = (orchestrationId: string) => (() => void) | null;
+
 function Result({
   row,
   file,
   digest,
   live,
+  openBatch,
 }: {
   row: QueueRow;
   file: WorkerFile | null;
   digest: DigestSummary | undefined;
   live: boolean;
+  openBatch?: OpenBatch;
 }) {
   const openFile = useStore((s) => s.openFile);
   const run = useFlowsStore((s) => (row.runId ? s.runs[row.runId] : undefined));
-  const [doc, setDoc] = useState<{ content: string; artifact: ArtifactPreviewResult | null } | null>(null);
+  const [doc, setDoc] = useState<{
+    content: string;
+    artifact: ArtifactPreviewResult | null;
+    /// The read failed — typically the worktree it lived in was cleaned up.
+    missing: boolean;
+  } | null>(null);
 
   // The whole file, not a skim: this is the deliverable as it is meant to
   // be seen. Images and PDFs come as a preview artifact instead of text.
@@ -556,7 +571,11 @@ function Result({
         binary ? window.overcli.invoke('fs:readArtifactPreview', { path: file.path }) : Promise.resolve(null),
       ]);
       if (cancelled) return;
-      setDoc({ content: text && text.ok ? text.content : '', artifact });
+      setDoc({
+        content: text && text.ok ? text.content : '',
+        artifact,
+        missing: !binary && !text?.ok,
+      });
     })();
     return () => {
       cancelled = true;
@@ -582,7 +601,17 @@ function Result({
       const o = a.orchestrationId ? orchestrations[a.orchestrationId] : undefined;
       if (!o) return [];
       const asked = o.origin?.kind === 'worker' && o.origin.errand ? o.origin.errand : a.title;
-      return [{ key: a.key, asked, answer: producerProse(o), at: a.at, orchestrationId: o.id }];
+      const from = o.origin?.kind === 'worker' ? o.origin.from : undefined;
+      return [
+        {
+          key: a.key,
+          asked,
+          answer: producerProse(o),
+          at: a.at,
+          orchestrationId: o.id,
+          ...(from ? { from: { workerId: from.workerId, workerName: from.workerName, batchId: senderBatch(o, orchestrations)?.id } } : {}),
+        },
+      ];
     });
   }, [file, run, row.answers, row.orchestrationId, row.key, row.title, row.at, orchestrations]);
   const finalText = file ? '' : finalArtifactText(run);
@@ -609,18 +638,17 @@ function Result({
         {live && <p className="text-[13.5px] text-ink-muted">Still working — its result lands here when it finishes.</p>}
         {run && <WorkerDecisions run={run} workerName={row.workerName} />}
         {file && (
-          <button
-            onClick={() => openFile(file.path, undefined, 'preview')}
-            className="self-start rounded-md border border-card-strong px-3 py-1.5 text-[12px] text-ink hover:bg-card-strong"
-            title={file.path}
-          >
-            Open {baseName(file.name)}
-          </button>
+          <OpenFileButton
+            path={file.path}
+            name={baseName(file.name)}
+            missing={!!doc?.missing}
+            onOpen={() => openFile(file.path, undefined, 'preview')}
+          />
         )}
       </div>
       <div className="min-h-0 flex-1">
         {answers.length > 0 ? (
-          <AnswerThread row={row} answers={answers} />
+          <AnswerThread row={row} answers={answers} openBatch={openBatch} />
         ) : previewContent === null ? (
           <p className="px-8 py-6 text-[12px] text-ink-faint">Reading {file ? baseName(file.name) : 'the result'}…</p>
         ) : previewContent || doc?.artifact ? (
@@ -638,6 +666,73 @@ function Result({
   );
 }
 
+/// Opens the deliverable in the editor, with the editor's file menu on a
+/// caret beside it — the reader is where you first meet the file, and it often
+/// sits in a worktree you'd never find on disk yourself.
+function OpenFileButton({
+  path,
+  name,
+  missing,
+  onOpen,
+}: {
+  path: string;
+  name: string;
+  missing: boolean;
+  onOpen: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  useMenuDismiss(menuOpen, closeMenu, menuRef);
+  useEffect(() => setMenuOpen(false), [path]);
+
+  return (
+    <div ref={menuRef} className="relative self-start">
+      <div className="flex items-stretch rounded-md border border-card-strong text-[12px] text-ink">
+        <button
+          onClick={onOpen}
+          disabled={missing}
+          className="rounded-l-md px-3 py-1.5 hover:bg-card-strong disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent"
+          title={missing ? `${path} is no longer on disk` : path}
+        >
+          Open {name}
+        </button>
+        <button
+          onClick={() => setMenuOpen((o) => !o)}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-label={`More actions for ${name}`}
+          className={
+            'flex items-center rounded-r-md border-l border-card-strong px-1.5 hover:bg-card-strong ' +
+            (menuOpen ? 'bg-card-strong' : '')
+          }
+        >
+          <svg
+            viewBox="0 0 16 16"
+            aria-hidden="true"
+            className={'h-3.5 w-3.5 text-ink-muted transition-transform ' + (menuOpen ? 'rotate-180' : '')}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M4.5 6.5 8 10l3.5-3.5" />
+          </svg>
+        </button>
+      </div>
+      {menuOpen && (
+        <div
+          role="menu"
+          className="absolute left-0 top-full z-50 mt-1 min-w-[190px] rounded-lg border border-card-strong bg-surface-elevated py-1 text-xs shadow-xl"
+        >
+          <FileActionItems path={path} missing={missing} close={closeMenu} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /// Questions a worker answered in chat, drawn as the conversation they were —
 /// with the same bubbles as the worker's desk and the Chat window, so a reply
 /// reads the same wherever you meet it: your words on your side, the
@@ -645,9 +740,19 @@ function Result({
 function AnswerThread({
   row,
   answers,
+  openBatch,
 }: {
   row: QueueRow;
-  answers: Array<{ key: string; asked: string; answer: string; at: number; orchestrationId: string }>;
+  answers: Array<{
+    key: string;
+    asked: string;
+    answer: string;
+    at: number;
+    orchestrationId: string;
+    /// The colleague who handed this over, and the turn it came out of.
+    from?: { workerId: string; workerName: string; batchId?: string };
+  }>;
+  openBatch?: OpenBatch;
 }) {
   const worker = useWorkersStore((s) => s.workers[row.workerId]);
   // What each turn handed on, read back from the journal — the outcome, not
@@ -672,12 +777,28 @@ function AnswerThread({
       <div className="flex flex-col gap-6">
         {answers.map((a) => (
           <div key={a.key} className="flex flex-col gap-2">
-            <UserBubble text={a.asked} />
+            {a.from ? (
+              <HandedOver
+                from={a.from}
+                to={worker.name}
+                text={a.asked}
+                onOpen={a.from.batchId ? openBatch?.(a.from.batchId) ?? null : null}
+              />
+            ) : (
+              <UserBubble text={a.asked} />
+            )}
             <WorkerReply
               worker={worker}
               at={a.at}
               reply={a.answer}
-              footer={<HandoffNotes entries={(journal ?? []).filter((e) => e.kind === 'delegated' && e.orchestrationId === a.orchestrationId)} />}
+              footer={
+                <HandoffNotes
+                  senderId={row.workerId}
+                  sentFrom={a.orchestrationId}
+                  openBatch={openBatch}
+                  entries={(journal ?? []).filter((e) => e.kind === 'delegated' && e.orchestrationId === a.orchestrationId)}
+                />
+              }
             />
           </div>
         ))}
@@ -696,20 +817,101 @@ function AnswerThread({
   );
 }
 
+/// Work a colleague handed over, in place of your own bubble: said in the
+/// sender's colour and under the sender's face, because you did not ask it —
+/// and a user bubble here read exactly as though you had.
+function HandedOver({
+  from,
+  to,
+  text,
+  onOpen,
+}: {
+  from: { workerId: string; workerName: string };
+  to: string;
+  text: string;
+  onOpen: (() => void) | null;
+}) {
+  const sender = useWorkersStore((s) => s.workers[from.workerId]);
+  const tint = useWorkerTint(from.workerId);
+  return (
+    <div
+      className="flex flex-col gap-1.5 rounded-xl px-4 py-2.5"
+      style={{
+        background: `color-mix(in srgb, ${tint} 5%, transparent)`,
+        border: `1px dashed color-mix(in srgb, ${tint} 35%, transparent)`,
+      }}
+    >
+      <div className="flex items-center gap-2 text-[11.5px] text-ink-muted">
+        {sender && <WorkerAvatar worker={sender} size="xs" />}
+        <span>
+          <span className="font-medium" style={{ color: tint }}>
+            {from.workerName}
+          </span>{' '}
+          handed this to {to}
+        </span>
+        {onOpen && (
+          <button onClick={onOpen} className="ml-auto shrink-0 text-accent hover:underline">
+            See {from.workerName}&apos;s side →
+          </button>
+        )}
+      </div>
+      <div className="select-text whitespace-pre-wrap text-sm text-ink">{text}</div>
+    </div>
+  );
+}
+
 /// What a turn passed to colleagues, under the reply that did it: "Handed to
 /// Chief of Staff", "Will hand to Chief of Staff on Tue, Oct 13", or why it
-/// could not.
-function HandoffNotes({ entries }: { entries: Array<{ id?: string; note?: string }> }) {
+/// could not. A handoff that went out links to what the colleague made of it.
+function HandoffNotes({
+  entries,
+  senderId,
+  sentFrom,
+  openBatch,
+}: {
+  entries: Array<{ id?: string; note?: string }>;
+  senderId: string;
+  sentFrom: string;
+  openBatch?: OpenBatch;
+}) {
+  const workers = useWorkersStore((s) => s.workers);
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   if (entries.length === 0) return null;
+  const sent = orchestrations[sentFrom];
   return (
     <div className="mt-2 flex flex-col gap-1 border-t border-card pt-2">
       {entries.map((e, i) => {
         const note = e.note ?? '';
         const ok = /^(Handed to|Will hand to)/.test(note);
+        if (!ok) {
+          return (
+            <div key={e.id ?? i} className="flex items-start gap-1.5 text-[11.5px] text-red-400">
+              <span aria-hidden>→</span>
+              <span>{note}</span>
+            </div>
+          );
+        }
+        // The note names the colleague; the longest name that fits wins, so
+        // "Ann" does not claim a handoff to "Anna".
+        const to = Object.values(workers)
+          .filter((w) => w.id !== senderId && (note.startsWith(`Handed to ${w.name}`) || note.startsWith(`Will hand to ${w.name}`)))
+          .sort((a, b) => b.name.length - a.name.length)[0];
+        const landed = to && sent && note.startsWith('Handed to') ? receiverBatch(sent, to.id, orchestrations) : undefined;
+        const open = landed ? openBatch?.(landed.id) ?? null : null;
         return (
-          <div key={e.id ?? i} className={'flex items-start gap-1.5 text-[11.5px] ' + (ok ? 'text-ink-muted' : 'text-red-400')}>
+          <div key={e.id ?? i} className="flex items-center gap-1.5 text-[11.5px] text-ink-muted">
             <span aria-hidden>→</span>
-            <span>{ok ? note.split(': ')[0] : note}</span>
+            {to && <WorkerAvatar worker={to} size="xs" />}
+            <span>{note.split(': ')[0]}</span>
+            {landed && (
+              open ? (
+                <button onClick={open} className="ml-1 text-accent hover:underline">
+                  {landed.completedAt ? `See ${to!.name}'s answer →` : `${to!.name} is on it →`}
+                </button>
+              ) : (
+                <span className="ml-1 text-ink-faint">{landed.completedAt ? 'answered' : 'working on it'}</span>
+              )
+            )}
           </div>
         );
       })}

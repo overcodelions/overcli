@@ -28,7 +28,7 @@ import {
 } from '../filePreview';
 import { dropBuffer, readBuffer, stashBuffer } from '../fileBuffers';
 import { dirName, fileName, tabLabels } from '../tabLabels';
-import { revealLabel } from '../platform';
+import { FileActionItems, FileMenuItem, useMenuDismiss } from './FileActionsMenu';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
@@ -56,18 +56,6 @@ const AUTO_SAVE_IDLE_MS = 5000;
 /// marks "you stopped working on this", and one per keystroke-burst would be
 /// a history nobody can read.
 const CHECKPOINT_IDLE_MS = 120_000;
-
-/// Which browser "Open in browser" will use, probed once per app session —
-/// the answer is an `existsSync` in main and cannot change while the app runs.
-/// Cached as the promise, so several panes opening at once share one call.
-let browserNamePromise: Promise<string | null> | null = null;
-function browserName(): Promise<string | null> {
-  browserNamePromise ??= window.overcli
-    .invoke('fs:browserName')
-    .then((r) => r?.name ?? null)
-    .catch(() => null);
-  return browserNamePromise;
-}
 
 type FileInfoState = FileInfoResult & { requestedPath: string };
 /// Cmd-click go-to-definition state. `loading` shows a inline chip (a
@@ -205,14 +193,11 @@ export const FileEditorPane = memo(function FileEditorPane({
   const markFileDirty = useStore((s) => s.markFileDirty);
   const clearFileDirty = useStore((s) => s.clearFileDirty);
   const dirty = useStore((s) => (path ? !!s.dirtyFiles[path] : false));
-  const [copiedPath, setCopiedPath] = useState(false);
-  const [downloadState, setDownloadState] = useState<'idle' | 'saved' | 'failed'>('idle');
   const [reverting, setReverting] = useState(false);
   // The header's file menu — Copy/Open/Download/Revert live in here rather
   // than as four chips in the bar. See the header's own comment for why.
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const fileMenuRef = useRef<HTMLDivElement>(null);
-  const [browser, setBrowser] = useState<string | null>(null);
   // True when the diff is a brand-new untracked file — it has no HEAD
   // version to revert to, so we hide the Revert action for it.
   const [diffUntracked, setDiffUntracked] = useState(false);
@@ -862,39 +847,13 @@ export const FileEditorPane = memo(function FileEditorPane({
 
   // Dismiss the file menu on an outside click or Escape, matching the tab
   // strip's overflow menu below.
-  useEffect(() => {
-    if (!fileMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (!fileMenuRef.current?.contains(e.target as Node)) setFileMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setFileMenuOpen(false);
-    };
-    window.addEventListener('mousedown', onDown);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('mousedown', onDown);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [fileMenuOpen]);
+  const closeFileMenu = useCallback(() => setFileMenuOpen(false), []);
+  useMenuDismiss(fileMenuOpen, closeFileMenu, fileMenuRef);
 
   // A new file closes the menu: it names the file it was opened on.
   useEffect(() => {
     setFileMenuOpen(false);
   }, [path]);
-
-  // Probed the first time the menu opens on a page, not on mount: most files
-  // are not HTML and never need the answer.
-  useEffect(() => {
-    if (!fileMenuOpen || previewKind !== 'html' || browser) return;
-    let live = true;
-    void browserName().then((name) => {
-      if (live) setBrowser(name);
-    });
-    return () => {
-      live = false;
-    };
-  }, [fileMenuOpen, previewKind, browser]);
 
   // The folder icon (conversation header) and the project/workspace
   // Explore buttons now route through ExplorerPane, which owns its
@@ -995,91 +954,15 @@ export const FileEditorPane = memo(function FileEditorPane({
                   role="menu"
                   className="absolute left-0 top-full mt-1 min-w-[190px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1 text-xs"
                 >
-                  <FileMenuItem
-                    label={copiedPath ? 'Copied' : 'Copy path'}
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(path);
-                        setCopiedPath(true);
-                        // Held open so the confirmation is actually seen —
-                        // closing on click would flash it for one frame.
-                        window.setTimeout(() => {
-                          setCopiedPath(false);
-                          setFileMenuOpen(false);
-                        }, 900);
-                      } catch {
-                        setCopiedPath(false);
-                        setFileMenuOpen(false);
-                      }
+                  <FileActionItems
+                    path={path}
+                    missing={missingFile}
+                    close={closeFileMenu}
+                    beforeDownload={async () => {
+                      if (dirty) await save();
                     }}
+                    onError={setError}
                   />
-                  {!missingFile && previewKind === 'html' && browser && (
-                    // A page's own reason for existing is being rendered, and
-                    // "default app" is a coin flip that lands on an editor
-                    // whenever one has registered for .html. Named after the
-                    // browser we actually found, so the row can't mislead.
-                    <FileMenuItem
-                      label={`Open in ${browser}`}
-                      onClick={async () => {
-                        setFileMenuOpen(false);
-                        const res = await window.overcli.invoke('fs:openInBrowser', path);
-                        if (!res.ok) setError(res.error);
-                      }}
-                    />
-                  )}
-                  {!missingFile && (
-                    // No "e.g. VS Code" hint: which app this opens is the
-                    // system's business and we would only be guessing.
-                    <FileMenuItem
-                      label="Open in default app"
-                      onClick={async () => {
-                        setFileMenuOpen(false);
-                        const res = await window.overcli.invoke('fs:openPath', path);
-                        if (!res.ok) setError(res.error);
-                      }}
-                    />
-                  )}
-                  {!missingFile && (
-                    // Where every real share starts — drag into Slack, AirDrop,
-                    // attach to mail. `revealLabel()` because the OS supplies
-                    // the noun (Finder, Explorer, folder); the IPC behind it is
-                    // already cross-platform.
-                    <FileMenuItem
-                      label={revealLabel()}
-                      onClick={() => {
-                        setFileMenuOpen(false);
-                        void window.overcli.invoke('fs:openInFinder', path);
-                      }}
-                    />
-                  )}
-                  {!missingFile && (
-                    <FileMenuItem
-                      label={
-                        downloadState === 'saved'
-                          ? 'Saved to Downloads'
-                          : downloadState === 'failed'
-                            ? "Couldn't save it"
-                            : 'Download a copy'
-                      }
-                      onClick={async () => {
-                        if (dirty) await save();
-                        const res = await window.overcli.invoke('fs:saveToDownloads', path);
-                        if (!res.ok) {
-                          setDownloadState('failed');
-                          window.setTimeout(() => {
-                            setDownloadState('idle');
-                            setFileMenuOpen(false);
-                          }, 2400);
-                          return;
-                        }
-                        setDownloadState('saved');
-                        window.setTimeout(() => {
-                          setDownloadState('idle');
-                          setFileMenuOpen(false);
-                        }, 1600);
-                      }}
-                    />
-                  )}
                   {canRevert && (
                     <>
                       <div className="h-px bg-card my-1 mx-1.5" />
@@ -1709,40 +1592,6 @@ function AskToEditBar({
 /// is unreachable by mouse (the scrollbar is hidden). Two things keep every
 /// file in reach: the active tab is scrolled back into view whenever it
 /// changes, and the count button on the right opens the full list.
-/// One row of the header's file menu. Rows rather than buttons because the
-/// hint sits under the label — "Revert to HEAD" has room to say what it does
-/// here in a way a 62px button in the bar never did.
-function FileMenuItem({
-  label,
-  hint,
-  onClick,
-  danger,
-  disabled,
-}: {
-  label: string;
-  hint?: string;
-  onClick: () => void;
-  danger?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      role="menuitem"
-      disabled={disabled}
-      onClick={onClick}
-      className={
-        'w-full text-left px-2.5 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed ' +
-        (danger
-          ? 'text-red-600 dark:text-red-300 hover:bg-red-500/10'
-          : 'text-ink hover:bg-card-strong')
-      }
-    >
-      <span className="block truncate">{label}</span>
-      {hint && <span className="block truncate text-[10px] text-ink-faint">{hint}</span>}
-    </button>
-  );
-}
-
 function FileTabStrip({
   tabs,
   activePath,

@@ -307,9 +307,9 @@ function DesignGatedNotice({ text }: { text: string }) {
   return (
     <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px]">
       <div className="text-amber-700 dark:text-amber-200">
-        <span className="font-medium">/design is switched off for this session.</span> The canvas
-        skill only registers when Claude is launched with artifacts enabled, which overcli leaves
-        off by default.
+        <span className="font-medium">Claude Design is off, so /design can&apos;t reach it.</span>{' '}
+        The CLI only loads the design skill when overcli launches it with artifacts enabled, which
+        is off by default.
       </div>
       <button
         disabled={busy}
@@ -319,7 +319,7 @@ function DesignGatedNotice({ text }: { text: string }) {
         }}
         className="mt-1.5 px-2 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-200 hover:bg-amber-500/30 border border-amber-500/40 disabled:opacity-50"
       >
-        Enable artifacts
+        Turn on Claude Design
       </button>
       <span className="ml-2 text-ink-faint">Takes effect on the next turn.</span>
     </div>

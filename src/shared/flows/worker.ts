@@ -1287,7 +1287,7 @@ export function workerOrigin(
   w: Pick<Worker, 'id' | 'name' | 'caps'>,
   task: 'shift' | 'errand',
   errand?: string,
-  from?: { workerId: UUID; workerName: string },
+  from?: { workerId: UUID; workerName: string; orchestrationId?: UUID },
 ): {
   kind: 'worker';
   workerId: UUID;
@@ -1295,7 +1295,7 @@ export function workerOrigin(
   task: 'shift' | 'errand';
   errand?: string;
   allowExternalActions?: boolean;
-  from?: { workerId: UUID; workerName: string };
+  from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
 } {
   return {
     kind: 'worker',

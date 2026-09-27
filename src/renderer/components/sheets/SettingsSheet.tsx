@@ -976,7 +976,7 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           onChange={(v) => patch({ claudeMcpDebug: v })}
         />
         <Toggle
-          label="Claude artifacts and /design (experimental)"
+          label="Claude Design and artifacts (experimental)"
           help="Sets CLAUDE_CODE_ARTIFACT on Claude launches, which unlocks the Artifact tool and the /design canvas skill — both are otherwise switched off in the headless sessions overcli drives, and /design just answers with its usage line. Needs a claude.ai login (not an API key); some accounts are gated regardless. The Artifact tool publishes to claude.ai, so leave permission prompts on for it."
           value={local.claudeArtifacts ?? false}
           onChange={(v) => patch({ claudeArtifacts: v })}
@@ -1111,7 +1111,7 @@ function FlowsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<Ap
         <Toggle
           label="Run flows in a worktree by default"
           help="Starts the launcher's run-in toggle on “worktree”, so a flow forks a fresh worktree off the base branch instead of working in the project's main tree. You can still flip it per run."
-          value={(local.defaultFlowRunIn ?? 'cwd') === 'worktree'}
+          value={(local.defaultFlowRunIn ?? 'worktree') === 'worktree'}
           onChange={(v) => patch({ defaultFlowRunIn: v ? 'worktree' : 'cwd' })}
         />
         <Toggle

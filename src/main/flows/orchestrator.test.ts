@@ -21,7 +21,7 @@ vi.mock('../health', () => ({
 }));
 
 import { runGitAsync } from '../git';
-import { OrchestratorImpl, type FlowLauncher } from './orchestrator';
+import { OrchestratorImpl, type BatchLauncher } from './orchestrator';
 import type { FlowRun } from '../../shared/flows/schema';
 
 /// A fake launcher that records start calls and lets the test drive each
@@ -57,7 +57,10 @@ function makeHarness(opts: {
   const oneShotCalls: any[] = [];
   let observer: ((run: FlowRun) => void) | null = null;
 
-  const launcher: FlowLauncher = {
+  /// Run ids the engine asked to hold / release, in order.
+  const holds: string[] = [];
+  const releases: string[] = [];
+  const launcher: BatchLauncher = {
     async startRun(args) {
       const runId = `run-${++counter}`;
       const run = {
@@ -94,6 +97,25 @@ function makeHarness(opts: {
     },
     getRun(runId) {
       return runs.get(runId) ?? null;
+    },
+    holdRun({ runId }) {
+      holds.push(runId);
+      const run = runs.get(runId);
+      if (run?.state.kind === 'running') (run as any).holdRequested = true;
+      return { ok: true };
+    },
+    // Mirrors the runtime: withdraw a pending hold, and continue a run the
+    // hold already stopped — but nothing paused for another reason.
+    releaseHold({ runId }) {
+      releases.push(runId);
+      const run = runs.get(runId);
+      if (!run) return { ok: false, error: 'no run' };
+      delete (run as any).holdRequested;
+      if (run.state.kind === 'paused' && run.state.reason === 'held') {
+        (run as any).state = { kind: 'running', currentStepId: run.state.nextStepId };
+        observer?.(run);
+      }
+      return { ok: true };
     },
   };
 
@@ -138,7 +160,7 @@ function makeHarness(opts: {
     await flush();
   };
 
-  return { engine, launcher, started, runs, finish, transition, emitted, oneShotCalls, flush };
+  return { engine, launcher, started, runs, finish, transition, emitted, oneShotCalls, flush, holds, releases };
 }
 
 describe('producer permissions', () => {
@@ -454,6 +476,77 @@ describe('OrchestratorImpl dispatch', () => {
     o = h.engine.get(id)!;
     expect(o.items.every((i) => i.status === 'done')).toBe(true);
     expect(o.completedAt).toBeGreaterThan(0);
+  });
+
+  it('pause holds the queue and running runs; resume releases them and pumps', async () => {
+    const h = makeHarness();
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 2,
+      items: items(4),
+    });
+    const id = (res as { orchestrationId: string }).orchestrationId;
+    expect(h.started).toHaveLength(2);
+
+    expect(h.engine.pause({ id })).toEqual({ ok: true });
+    let o = h.engine.get(id)!;
+    expect(o.pausedAt).toBeGreaterThan(0);
+    expect(h.holds).toEqual(['run-1', 'run-2']);
+
+    // run-1 finishes its step and stops at the boundary; run-2 finishes the
+    // flow outright. Neither frees a slot for the queue while paused.
+    await h.transition('run-1', { kind: 'paused', nextStepId: 's2', reason: 'held' });
+    await h.finish('run-2');
+    o = h.engine.get(id)!;
+    expect(o.items.map((i) => i.status)).toEqual(['paused', 'done', 'queued', 'queued']);
+    expect(h.started).toHaveLength(2);
+    expect(o.completedAt).toBeUndefined();
+
+    expect(h.engine.resume({ id })).toEqual({ ok: true });
+    await h.flush();
+    o = h.engine.get(id)!;
+    expect(o.pausedAt).toBeUndefined();
+    expect(h.releases).toEqual(['run-1']);
+    expect(o.items[0].status).toBe('running');
+    // One slot was free (run-2 finished), so exactly one queued item launched.
+    expect(h.started).toHaveLength(3);
+  });
+
+  it('resume leaves a run paused for its own reason alone', async () => {
+    const h = makeHarness();
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(2),
+    });
+    const id = (res as { orchestrationId: string }).orchestrationId;
+    h.engine.pause({ id });
+    await h.transition('run-1', { kind: 'paused', nextStepId: 's2', reason: 'externalAction' });
+    h.engine.resume({ id });
+    await h.flush();
+    const o = h.engine.get(id)!;
+    expect(o.items[0].status).toBe('paused');
+    // Its slot is free again, so the queue moves.
+    expect(h.started).toHaveLength(2);
+  });
+
+  it('refuses to pause a batch with nothing running or queued, and abort clears a pause', async () => {
+    const h = makeHarness();
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(2),
+    });
+    const id = (res as { orchestrationId: string }).orchestrationId;
+    h.engine.pause({ id });
+    h.engine.abort({ id });
+    const o = h.engine.get(id)!;
+    expect(o.pausedAt).toBeUndefined();
+    expect(o.completedAt).toBeGreaterThan(0);
+    expect(h.engine.pause({ id }).ok).toBe(false);
   });
 
   it('retries a failed item — re-queues, relaunches, and reactivates the batch', async () => {
