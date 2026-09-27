@@ -3,6 +3,7 @@ import { useRunnerIsRunning } from '../runnersStore';
 import { UUID } from '@shared/types';
 import { Composer } from './Composer';
 import { useChromeCommandGuard } from './ChromeCommandGuard';
+import { useDesignCommandGuard } from './DesignCommandGuard';
 import { useConversation, useConversationRoot, useSlashCommands } from '../hooks';
 import { serviceWorkspaceIdsForConversation } from '../conversationLookup';
 import { useMemo } from 'react';
@@ -31,19 +32,26 @@ export function InputBar({ conversationId }: { conversationId: UUID }) {
     enableChrome: () => setChrome(conversationId, true),
     send: (prompt) => void send(conversationId, prompt),
   });
+  // `/design` with artifacts off only reaches the consent stub; offer the
+  // setting before sending instead of after a confusing reply.
+  const design = useDesignCommandGuard({
+    backend: conv?.primaryBackend,
+    send: chrome.send,
+  });
 
   return (
     <>
       {chrome.banner}
+      {design.banner}
       <Composer
         draftKey={conversationId}
         variant="compact"
         isRunning={isRunning}
         rootPath={rootPath ?? undefined}
         serviceWorkspaceIds={serviceWorkspaceIds}
-        slashCommands={slashCommands}
+        slashCommands={design.annotate(slashCommands)}
         autoFocus
-        onSend={chrome.send}
+        onSend={design.send}
         onStop={() => void stop(conversationId)}
         placeholder={hasSlash ? 'Message… (type / for commands)' : 'Message…'}
       />

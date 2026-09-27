@@ -97,6 +97,8 @@ export function waitingLine(reason: string | undefined, step: string | undefined
       return `Interrupted at ${at} when the app closed — continue to pick it up.`;
     case 'needsInput':
       return `${at} asked you a question.`;
+    case 'held':
+      return `Paused before ${at} — resume the shift to carry on.`;
     default:
       return `Paused before ${at} — check the work so far, then continue.`;
   }

@@ -93,6 +93,7 @@ export function settleItemOnLoad(
   item: Orchestration['items'][number],
   exists: (runId: string) => boolean,
   settledAt: number = Date.now(),
+  batchPaused = false,
 ): boolean {
   const ended = () => item.finishedAt ?? item.startedAt ?? settledAt;
   if (item.status === 'running') {
@@ -119,7 +120,9 @@ export function settleItemOnLoad(
     item.finishedAt = ended();
     return true;
   }
-  if (item.status === 'queued') {
+  // A paused batch's queue is kept: nothing launches until a person presses
+  // Resume, which is the approval the rule below exists to wait for.
+  if (item.status === 'queued' && !batchPaused) {
     // Orchestrations do NOT auto-resume on restart: relaunching a child flow
     // run forks a worktree and spawns an AI subprocess (burning tokens) with
     // no user present to approve it. Settle anything that never launched so
@@ -159,7 +162,7 @@ export function loadAllOrchestrations(): Orchestration[] {
       if (!o || typeof o.id !== 'string' || !Array.isArray(o.items)) continue;
       let mutated = false;
       for (const item of o.items) {
-        if (settleItemOnLoad(item, runExists, o.createdAt)) mutated = true;
+        if (settleItemOnLoad(item, runExists, o.createdAt, !!o.pausedAt)) mutated = true;
       }
       if (
         mutated &&

@@ -30,7 +30,7 @@ describe('DEFAULT_SETTINGS', () => {
       claudeArtifacts: false,
       claudeChrome: false,
       starredFlows: [],
-      defaultFlowRunIn: 'cwd',
+      defaultFlowRunIn: 'worktree',
       flowRegistries: [
         {
           id: 'official',

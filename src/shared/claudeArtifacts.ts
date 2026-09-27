@@ -43,3 +43,21 @@ const DESIGN_UNAVAILABLE_RE = /^\s*Usage:\s*\/design\s+consent\s*\|\s*\/design\s
 export function isDesignUnavailableNotice(text: string): boolean {
   return DESIGN_UNAVAILABLE_RE.test(text);
 }
+
+/// `/design` as the first word, with or without an argument. `consent` and
+/// `revoke` are excluded: they're the stub's own subcommands and work with
+/// the gate closed, so there's nothing to warn about.
+const DESIGN_COMMAND_RE = /^\s*\/design(?:\s+(?!(?:consent|revoke)\s*$)[\s\S]*)?$/i;
+
+/// Whether a composer submission is a `/design` request that will only hit
+/// the gated stub. With artifacts off the CLI never runs the canvas skill, so
+/// the user gets the usage line or a reply telling them to run
+/// `/design consent` — which grants account access but still leaves the
+/// skill unregistered, and the loop repeats every time they try.
+export function isGatedDesignCommand(
+  text: string,
+  opts: { backend?: string; artifactsOn: boolean },
+): boolean {
+  if (opts.backend !== 'claude' || opts.artifactsOn) return false;
+  return DESIGN_COMMAND_RE.test(text);
+}

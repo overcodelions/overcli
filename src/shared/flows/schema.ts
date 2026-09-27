@@ -352,10 +352,15 @@ export type FlowRunState =
   ///   with `nextStepId` pointing at the interrupted step, so Continue
   ///   re-runs that step from scratch instead of the run being abandoned as
   ///   `aborted`. Earlier steps' artifacts are intact and kept as inputs.
+  /// - `held`: a person paused the batch this run belongs to (a worker's
+  ///   shift, usually). The step that was running finished; the run stopped
+  ///   before `nextStepId` instead of starting it. Resuming the batch
+  ///   continues it — through the same pre-step gates a plain advance
+  ///   would have met, so a hold never skips an approval.
   | {
       kind: 'paused';
       nextStepId: string;
-      reason: 'preStep' | 'externalAction' | 'riskyStep' | 'needsInput' | 'failure' | 'interrupted';
+      reason: 'preStep' | 'externalAction' | 'riskyStep' | 'needsInput' | 'failure' | 'interrupted' | 'held';
     }
   | { kind: 'done'; success: boolean }
   | { kind: 'aborted' }
@@ -524,6 +529,13 @@ export interface FlowRun {
     priorOutput: string;
     startedAt: number;
   };
+  /// Set when the run's batch was paused while a step was running. The step
+  /// is left to finish — killing it mid-edit would leave a half-written
+  /// worktree — and the run stops at the next boundary with reason `held`
+  /// instead of starting the step after it. Cleared by that stop, by the
+  /// batch resuming first, or by an abort. Persisted, so a pause asked for
+  /// just before a quit is still honoured by a run continued after it.
+  holdRequested?: boolean;
   /// A course correction the user typed while a step was running. Held
   /// until the NEXT step starts, then injected at the top of that step's
   /// prompt and cleared. Persisted (unlike `pendingContinue`): a

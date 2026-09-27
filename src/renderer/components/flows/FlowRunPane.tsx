@@ -37,6 +37,7 @@ import { CopyActions } from '../CopyActions';
 import { openPathWithHighlight, useOpenFile } from '../../openFile';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
 import { useChromeCommandGuard } from '../ChromeCommandGuard';
+import { useDesignCommandGuard } from '../DesignCommandGuard';
 import { CompactButton } from '../CompactButton';
 import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
@@ -2123,6 +2124,12 @@ function HijackComposer({
     enableChrome: () => setRunChrome(run.id, true),
     send: handleSend,
   });
+  // `/design` with artifacts off only reaches the consent stub. The setting
+  // is global, so this is the same offer the chat composer makes.
+  const designGuard = useDesignCommandGuard({
+    backend: participant.backend,
+    send: chromeGuard.send,
+  });
 
   // Padding + chrome mirror ConversationPane's composer wrapper
   // (`px-4 pb-3 pt-1 flex flex-col gap-1.5`, no top border) so the
@@ -2168,12 +2175,13 @@ function HijackComposer({
       )}
       {steerError && <div className="text-[11px] text-amber-500 px-0.5">{steerError}</div>}
       {chromeGuard.banner}
+      {designGuard.banner}
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
         rootPath={run.projectPath}
         serviceWorkspaceIds={serviceWorkspaceIds}
-        onSend={chromeGuard.send}
+        onSend={designGuard.send}
         onStop={() => {
           if (convId) void stop(convId);
         }}
@@ -2808,7 +2816,9 @@ function PauseBanner({ run }: { run: FlowRun }) {
                     ? 'Worker needs your input'
                     : reason === 'interrupted'
                       ? 'Interrupted — resume to re-run this step'
-                      : 'Paused — step needs attention'}
+                      : reason === 'held'
+                        ? 'Paused with its batch'
+                        : 'Paused — step needs attention'}
           </div>
           <div className="text-xs text-amber-700 dark:text-amber-100/80">
             {inFlight && priorOutput ? (
@@ -2819,6 +2829,12 @@ function PauseBanner({ run }: { run: FlowRun }) {
               </>
             ) : inFlight ? (
               <>Your approval or resume was received. The step is starting now.</>
+            ) : reason === 'held' ? (
+              <>
+                You paused the batch this run belongs to, so it stopped before{' '}
+                <span className="font-semibold">{nextStep?.id ?? 'the next step'}</span>. Resuming the
+                batch continues it; continuing here resumes just this run.
+              </>
             ) : reason === 'interrupted' ? (
               <>
                 This run was still working on a step when the app last closed, so it

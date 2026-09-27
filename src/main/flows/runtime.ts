@@ -1451,6 +1451,20 @@ export class FlowRuntimeImpl {
     const pausedReason = run.state.reason;
     const nextStepId = run.state.nextStepId;
 
+    // A hold stopped the run before its next step's gates were consulted
+    // (see advanceAfterStep). Consult them now: pausing a batch and resuming
+    // it must not walk a worker's run straight past an approval.
+    if (pausedReason === 'held') {
+      const next = run.flowSnapshot.steps.find((s) => s.id === nextStepId);
+      const gate = next ? pauseReasonBeforeStep(run, next) : null;
+      if (gate) {
+        run.state = { kind: 'paused', nextStepId, reason: gate };
+        this.emitRunUpdate(run);
+        this.checkpoint(run);
+        return { ok: true };
+      }
+    }
+
     // Clicking Continue on an externalAction pause is an explicit, one-shot
     // approval for exactly the step that was paused — not a standing grant
     // for the rest of the run. Recorded before any resume path below
@@ -2275,9 +2289,45 @@ export class FlowRuntimeImpl {
     });
   }
 
+  /// Stop a run at its next step boundary — the run half of pausing a batch.
+  /// A running step is left to finish (see `holdRequested`); a run already
+  /// paused for any reason is stopped as it is, and this is a no-op for it.
+  holdRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if (run.state.kind === 'paused') return { ok: true };
+    if (run.state.kind !== 'running') {
+      return { ok: false, error: `Run is not running (state: ${run.state.kind}).` };
+    }
+    if (run.holdRequested) return { ok: true };
+    run.holdRequested = true;
+    this.emitRunUpdate(run);
+    this.checkpoint(run);
+    return { ok: true };
+  }
+
+  /// Undo `holdRun`: withdraw a hold not yet reached, or continue a run the
+  /// hold already stopped. A run paused for any OTHER reason stays paused —
+  /// a checkpoint or a question is still waiting on a person, and resuming
+  /// the batch is not an answer to it.
+  releaseHold(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if (run.holdRequested) {
+      delete run.holdRequested;
+      this.emitRunUpdate(run);
+      this.checkpoint(run);
+    }
+    if (run.state.kind === 'paused' && run.state.reason === 'held') {
+      return this.resumeRun({ runId: args.runId });
+    }
+    return { ok: true };
+  }
+
   abortRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {
     const run = this.runs.get(args.runId);
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    delete run.holdRequested;
     if (run.state.kind === 'running') {
       const step = run.flowSnapshot.steps.find(s => s.id === (run.state as any).currentStepId);
       const convId = step ? run.conversationIds[stepParticipantKey(step)] : undefined;
@@ -3527,8 +3577,19 @@ export class FlowRuntimeImpl {
     if (!next) {
       run.state = { kind: 'done', success: true };
       delete run.pendingSteer; // no step left to carry it
+      delete run.holdRequested; // nothing left to stop before
       this.emitRunUpdate(run);
       this.checkpoint(run); // terminal — save final state
+      return;
+    }
+    // Its batch was paused while this step ran. Stop here, at the boundary,
+    // rather than starting the next step. Checked BEFORE the gates below:
+    // the resume re-runs them (see resumeRunInner), so nothing is skipped.
+    if (run.holdRequested) {
+      delete run.holdRequested;
+      run.state = { kind: 'paused', nextStepId: next.id, reason: 'held' };
+      this.emitRunUpdate(run);
+      this.checkpoint(run);
       return;
     }
     // Worker-owned runs always stop before effects outside the run cwd.

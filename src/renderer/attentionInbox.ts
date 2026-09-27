@@ -126,6 +126,9 @@ export function attentionInbox(src: AttentionSources, now: number = Date.now()):
 
   for (const run of Object.values(src.runs)) {
     if (run.state.kind !== 'paused') continue;
+    // Held by a pause you pressed: it is waiting on your Resume, which you
+    // already know about. Listing it would nag you about your own decision.
+    if (run.state.reason === 'held') continue;
     const at = flowRunActivityAt(run);
     // Same cut as the Flows badge: a run this quiet has been left behind, and
     // a count you can't clear stops being a signal.

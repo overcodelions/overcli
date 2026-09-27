@@ -77,6 +77,7 @@ import {
 } from "@shared/flows/schedule";
 import {
   isOrchestrationAwaitingApproval,
+  isOrchestrationPausable,
   type Orchestration,
   type OrchestrationItem,
 } from "@shared/flows/orchestration";
@@ -3605,13 +3606,32 @@ function ShiftActions({
   const redoShift = useWorkersStore((s) => s.redoShift);
   const [confirming, setConfirming] = useState(false);
   const [confirmingRedo, setConfirmingRedo] = useState(false);
-  const [busy, setBusy] = useState<"redo" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"redo" | "delete" | "pause" | null>(null);
+  const [pauseError, setPauseError] = useState<string | null>(null);
 
   // `[Shift 7]` against the worker's running count — the same test main makes.
   // Kept in sync by construction: both read the number off the ledger title.
   const number = /^Shift\s+(\d+)$/.exec(item.title)?.[1];
   const isLatest = !!number && Number(number) === (worker.shiftCount ?? 0);
   const live = item.running > 0;
+  const paused = !!item.orchestration.pausedAt;
+  const pausable = isOrchestrationPausable(item.orchestration);
+
+  // Pause stops the shift at the next step boundary rather than killing
+  // anything, so unlike Re-run and Delete it needs no confirm: Resume undoes it.
+  const togglePause = async () => {
+    setBusy("pause");
+    setPauseError(null);
+    try {
+      const res = await window.overcli.invoke(
+        paused ? "orchestrator:resume" : "orchestrator:pause",
+        { id: item.orchestration.id },
+      );
+      if (!res.ok) setPauseError(res.error);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const run = async (which: "redo" | "delete") => {
     setBusy(which);
@@ -3623,6 +3643,32 @@ function ShiftActions({
 
   return (
     <div className="mt-2 flex items-center gap-3 border-t border-card-strong pt-2">
+      {(paused || pausable) && (
+        <button
+          onClick={() => void togglePause()}
+          disabled={!!busy}
+          title={
+            paused
+              ? "Launch the queued work again and continue the runs this pause stopped"
+              : "Hold the queue, and stop each running flow after the step it is on"
+          }
+          className="text-[11px] text-ink-faint hover:text-accent disabled:opacity-50 focus:outline-none"
+        >
+          {busy === "pause"
+            ? paused
+              ? "Resuming\u2026"
+              : "Pausing\u2026"
+            : paused
+              ? "Resume this shift"
+              : "Pause this shift"}
+        </button>
+      )}
+      {paused && busy !== "pause" && (
+        <span className="text-[11px] text-amber-600 dark:text-amber-400">
+          Paused — running flows stop after their current step
+        </span>
+      )}
+      {pauseError && <span className="text-[11px] text-red-400">{pauseError}</span>}
       {isLatest && (
         <button
           onClick={() => setConfirmingRedo(true)}
@@ -4407,28 +4453,19 @@ const PERSONA_PRESETS: Array<{
   },
 ];
 
-const CATALOG_GROUPS: Array<{
-  key: "code" | "beyond";
-  label: string;
-  hint: string;
-}> = [
-  {
-    key: "code",
-    label: "For the codebase",
-    hint: "click one to load its job description — then edit it to fit your project",
-  },
-  {
-    key: "beyond",
-    label: "Beyond code — assistants, students, success, ops",
-    hint: "these lean on your connected tools, and any folder is a fine project — a notes vault, a course, a runbook directory",
-  },
+const CATALOG_GROUPS: Array<{ key: "code" | "beyond"; label: string }> = [
+  { key: "code", label: "For the codebase" },
+  // These lean on connected tools, and any folder is a fine project — a
+  // notes vault, a course, a runbook directory.
+  { key: "beyond", label: "Beyond code" },
 ];
 
 /// The lifecycle, as five numbered stages in equal-width cards: wake → plan
-/// → propose → launch → learn. Derived from real values where the caller has
-/// them (the editor), generic where it doesn't (the hire page). Five cards in
-/// a grid instead of eight wrapping pills: the sequence reads left-to-right
-/// in one pass, and each stage has room for its one sentence of detail.
+/// → propose → launch → learn, derived from the draft's real values. Five
+/// cards in a grid instead of eight wrapping pills: the sequence reads
+/// left-to-right in one pass, and each stage has room for its one sentence of
+/// detail. The hire page carries only a one-line version — there is no
+/// worker yet to derive the details from.
 function WorkerLifecycle(props: {
   /// `null` is a real answer here (on demand) and `undefined` is "the caller
   /// has no worker yet" — the hire page. They read differently.
@@ -4555,22 +4592,33 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
     (p) => p.job === jobDescription.trim(),
   )?.name;
 
+  // Which catalog tab is showing. Opens on the group of the loaded preset, so
+  // coming back to a half-written hire shows the card you started from.
+  const [catalogGroup, setCatalogGroup] = useState<"code" | "beyond">(
+    () =>
+      PERSONA_PRESETS.find((p) => p.job === jobDescription.trim())?.group ??
+      "code",
+  );
+  const canSend =
+    !loading &&
+    !!jobDescription.trim() &&
+    (!talking || !!hire.reply.trim() || hire.answers.some((a) => a?.trim()));
+
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <div className="flex items-center gap-3 mb-1">
-        <button
-          onClick={closeHire}
-          className="text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5"
-        >
-          ← Workers
-        </button>
-        <div className="text-2xl font-semibold">Hire a worker</div>
+    <div className="flex-1 overflow-y-auto px-8 py-7">
+      <button
+        onClick={closeHire}
+        className="-ml-2 mb-2 text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5"
+      >
+        ← Workers
+      </button>
+      <div className="text-3xl font-semibold tracking-tight mb-2">
+        Hire a worker
       </div>
-      <div className="text-xs text-ink-muted mb-5 ml-1">
-        Describe the job, then onboard your new hire: the drafter asks about
-        anything that would change the worker and writes the whole standing
-        configuration — persona, cadence, caps, budget, and the flow it runs.
-        You review everything before anything is saved.
+      <div className="text-sm text-ink-muted leading-relaxed max-w-[720px] mb-6">
+        Describe the job in plain words. The drafter asks a couple of
+        questions, then writes the contract — you review everything before
+        it&apos;s saved.
       </div>
 
       {/* The most expensive place to not know a hire is already waiting: this
@@ -4591,38 +4639,190 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
         </button>
       )}
 
-      <div className="space-y-5">
-        {/* What am I actually hiring? The lifecycle, before any form. The
-            catalog goes once a conversation starts: the job is picked. */}
-        {!talking && <WorkerLifecycle />}
+      <div className="space-y-7">
+        {/* The one thing this page asks for, first and biggest: the job
+            description, with everything that qualifies it — where it works,
+            what it reads, how to send it — in the box's own footer, the way
+            the chat composer carries its controls. */}
+        <div>
+          <div className="rounded-xl border border-card-strong bg-card shadow-sm">
+            {talking ? (
+              <div className="p-5">
+                <HireConversation
+                  jobDescription={jobDescription}
+                  messages={hire.messages}
+                  answers={hire.answers}
+                  reply={hire.reply}
+                  loading={loading}
+                  onAnswer={(i, value) => {
+                    const answers = [...hire.answers];
+                    answers[i] = value;
+                    patchHire({ answers, error: null });
+                  }}
+                  onReply={(reply) => patchHire({ reply, error: null })}
+                  onSend={() => void startHire()}
+                />
+              </div>
+            ) : (
+              <textarea
+                rows={7}
+                value={jobDescription}
+                disabled={loading}
+                aria-label="Job description"
+                onChange={(e) =>
+                  patchHire({ jobDescription: e.target.value, error: null })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canSend) {
+                    e.preventDefault();
+                    void startHire();
+                  }
+                }}
+                placeholder="You're the … — what it looks at, how often, what a good proposal looks like, and what it must never do."
+                className="block w-full resize-none rounded-t-xl bg-transparent px-5 pt-4 pb-2 text-[15px] leading-relaxed text-ink placeholder:text-ink-faint focus:outline-none disabled:opacity-60"
+              />
+            )}
 
-        {!talking && CATALOG_GROUPS.map((group) => (
-          <div key={group.key}>
-            <div className="flex items-baseline gap-2 mb-2">
-              <span className="text-[11px] uppercase tracking-wider text-ink-faint">
-                {group.label}
-              </span>
-              <span className="text-[11px] text-ink-faint normal-case">
-                {group.hint}
-              </span>
-            </div>
-            <div className="grid grid-cols-2 xl:grid-cols-4 gap-2">
-              {PERSONA_PRESETS.filter((p) => p.group === group.key).map((p) => {
-                const selected = selectedPreset === p.name;
-                return (
-                  <button
-                    key={p.name}
-                    onClick={() =>
-                      patchHire({ jobDescription: p.job, error: null })
+            {hire.attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 px-5 pb-2">
+                {hire.attachments.map((a) => (
+                  <AttachmentChip
+                    key={a.id}
+                    attachment={a}
+                    onRemove={() =>
+                      patchHire({
+                        attachments: hire.attachments.filter(
+                          (x) => x.id !== a.id,
+                        ),
+                      })
                     }
+                  />
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 border-t border-card-strong px-3 py-2.5">
+              <AttachmentField
+                compact
+                attachments={hire.attachments}
+                disabled={loading}
+                onChange={(next) =>
+                  patchHire({ attachments: next, error: null })
+                }
+              />
+              <span
+                className="shrink-0 text-[11px] text-ink-faint"
+                title="The drafter can override this when the job clearly names another project"
+              >
+                Works against
+              </span>
+              <div className="min-w-0 w-[340px]">
+                <PlacePicker
+                  value={projectPath}
+                  label="Works against"
+                  onChange={(path) =>
+                    patchHire({ projectPath: path, projectTouched: true })
+                  }
+                />
+              </div>
+              <div className="flex-1" />
+              {talking && (
+                <button
+                  disabled={loading}
+                  onClick={restartHire}
+                  className="shrink-0 text-xs text-ink-faint hover:text-ink px-2 py-2 rounded hover:bg-white/5 disabled:opacity-40"
+                >
+                  Start over
+                </button>
+              )}
+              <button
+                disabled={loading || !jobDescription.trim()}
+                onClick={() => void startHire({ draftNow: true })}
+                title="Skip the questions and draft from what the drafter has now"
+                className="shrink-0 text-xs px-3 py-2 rounded-md text-ink-muted hover:bg-white/5 hover:text-ink disabled:opacity-40"
+              >
+                Draft it now
+              </button>
+              <button
+                disabled={!canSend}
+                onClick={() => void startHire()}
+                title="⌘↵"
+                className="shrink-0 text-xs font-medium px-4 py-2 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+              >
+                {loading
+                  ? "Thinking…"
+                  : talking
+                    ? "Send answer"
+                    : "✨ Start onboarding"}
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div className="mt-3 text-sm text-red-700 dark:text-red-300 bg-red-500/15 border border-red-400/40 rounded px-3 py-2">
+              {error}
+            </div>
+          )}
+          {loading && (
+            <div className="mt-3">
+              <WorkingStrip
+                startedAt={hire.startedAt}
+                message="Reading the job — the drafter either asks about what's missing or writes the contract. A contract is then checked against your answers and its new flows drafted side by side, so give it a few minutes. Leave this page if you like: it keeps running, and a finished contract lands in the editor."
+              />
+            </div>
+          )}
+        </div>
+
+        {/* The catalog is a way in, not the page: one group at a time, one
+            line of pitch each. It goes once a conversation starts — the job
+            is picked. */}
+        {!talking && (
+          <div>
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-sm text-ink-muted">
+                Or start from a template
+              </span>
+              <div className="flex-1" />
+              <div
+                role="tablist"
+                className="flex gap-0.5 rounded-lg bg-white/5 p-0.5"
+              >
+                {CATALOG_GROUPS.map((g) => (
+                  <button
+                    key={g.key}
+                    role="tab"
+                    aria-selected={catalogGroup === g.key}
+                    onClick={() => setCatalogGroup(g.key)}
                     className={
-                      "text-left rounded-lg border p-3 transition-colors " +
-                      (selected
-                        ? "border-accent bg-accent/10"
-                        : "border-card-strong hover:bg-white/5")
+                      "rounded-md px-3 py-1.5 text-xs transition-colors " +
+                      (catalogGroup === g.key
+                        ? "bg-card-strong text-ink"
+                        : "text-ink-faint hover:text-ink")
                     }
                   >
-                    <div className="flex items-center gap-2 mb-1">
+                    {g.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-1.5">
+              {PERSONA_PRESETS.filter((p) => p.group === catalogGroup).map(
+                (p) => {
+                  const selected = selectedPreset === p.name;
+                  return (
+                    <button
+                      key={p.name}
+                      disabled={loading}
+                      onClick={() =>
+                        patchHire({ jobDescription: p.job, error: null })
+                      }
+                      className={
+                        "flex items-start gap-3 text-left rounded-lg border p-3 transition-colors disabled:opacity-60 " +
+                        (selected
+                          ? "border-accent bg-accent/10"
+                          : "border-card-strong hover:bg-white/5")
+                      }
+                    >
                       {/* Same monogram idiom as flows everywhere else — the
                           app's icon language is a letter in a tinted square,
                           not emoji. */}
@@ -4630,182 +4830,49 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
                         name={p.name.replace(/^The /, "")}
                         size="md"
                       />
-                      <span className="text-sm font-medium text-ink">
-                        {p.name}
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-medium text-ink">
+                          {p.name}
+                        </span>
+                        <span className="block text-xs text-ink-muted leading-snug mt-0.5">
+                          {p.tagline}
+                        </span>
                       </span>
-                    </div>
-                    <div className="text-[11px] text-ink-muted leading-relaxed">
-                      {p.tagline}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-
-        {/* Same 1fr + rail grid as the editors: the form keeps a readable
-            measure and the rail absorbs the slack, so nothing hangs against
-            the full-width catalog above. */}
-        <div className="grid grid-cols-[1fr_minmax(280px,360px)] gap-6 items-start">
-          <div className="min-w-0 rounded-xl bg-card p-5 shadow-sm space-y-5">
-            <Field
-              label="Works against"
-              hint="the drafter can override this when the job clearly names another project"
-            >
-              <PlacePicker
-                value={projectPath}
-                label="Works against"
-                onChange={(path) =>
-                  patchHire({
-                    projectPath: path,
-                    projectTouched: true,
-                  })
-                }
-              />
-            </Field>
-
-            {talking ? (
-              <HireConversation
-                jobDescription={jobDescription}
-                messages={hire.messages}
-                answers={hire.answers}
-                reply={hire.reply}
-                loading={loading}
-                onAnswer={(i, value) => {
-                  const answers = [...hire.answers];
-                  answers[i] = value;
-                  patchHire({ answers, error: null });
-                }}
-                onReply={(reply) => patchHire({ reply, error: null })}
-                onSend={() => void startHire()}
-              />
-            ) : (
-              <div>
-                <div className="flex items-baseline gap-2 mb-2">
-                  <span className="text-[11px] uppercase tracking-wider text-ink-faint">
-                    The job description
-                  </span>
-                  <span className="text-[11px] text-ink-faint normal-case">
-                    pick from the catalog, or write your own — the worker plans
-                    every shift from exactly this text
-                  </span>
-                </div>
-                <textarea
-                  rows={9}
-                  value={jobDescription}
-                  disabled={loading}
-                  onChange={(e) =>
-                    patchHire({ jobDescription: e.target.value, error: null })
-                  }
-                  placeholder={`You're the …\n\nSay what it should look at, how often, what a good proposal looks like, and what it must never do.`}
-                  className="w-full bg-card border border-card-strong rounded p-3 text-sm text-ink leading-relaxed"
-                />
-              </div>
-            )}
-
-            <AttachmentField
-              attachments={hire.attachments}
-              disabled={loading}
-              onChange={(next) => patchHire({ attachments: next, error: null })}
-              hint="a spec, an example of the deliverable, a screenshot of the board it works from — the drafter reads them"
-            />
-
-            {error && (
-              <div className="text-sm text-red-700 dark:text-red-300 bg-red-500/15 border border-red-400/40 rounded px-3 py-2">
-                {error}
-              </div>
-            )}
-
-            <div className="flex items-center gap-3 border-t border-card-strong pt-4">
-              {talking ? (
-                <button
-                  disabled={loading}
-                  onClick={restartHire}
-                  className="shrink-0 text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5 disabled:opacity-40"
-                >
-                  Start over
-                </button>
-              ) : (
-                <span className="text-[11px] text-ink-faint">
-                  You&apos;ll land in the editor with the drafted contract —
-                  nothing is saved until you click Hire there.
-                </span>
+                    </button>
+                  );
+                },
               )}
-              <button
-                disabled={loading || !jobDescription.trim()}
-                onClick={() => void startHire({ draftNow: true })}
-                title="Skip the questions and draft from what the drafter has now"
-                className="ml-auto shrink-0 text-xs px-3 py-2 rounded-md border border-card-strong text-ink-muted hover:bg-white/5 disabled:opacity-40"
-              >
-                Draft it now
-              </button>
-              <button
-                disabled={
-                  loading ||
-                  !jobDescription.trim() ||
-                  (talking &&
-                    !hire.reply.trim() &&
-                    !hire.answers.some((a) => a?.trim()))
-                }
-                onClick={() => void startHire()}
-                className="shrink-0 text-xs px-4 py-2 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
-              >
-                {loading ? "Thinking…" : talking ? "Send answer" : "✨ Start onboarding"}
-              </button>
             </div>
-            {loading && (
-              <WorkingStrip
-                startedAt={hire.startedAt}
-                message="Reading the job — the drafter either asks about what's missing or writes the contract. A contract is then checked against your answers and its new flows drafted side by side, so give it a few minutes. Leave this page if you like: it keeps running, and a finished contract lands in the editor."
-              />
-            )}
           </div>
+        )}
 
-          <div className="space-y-3">
-            <div className="rounded-lg border border-card-strong p-4">
-              <div className="text-[11px] uppercase tracking-wider text-ink-faint mb-1.5">
-                What drafting produces
-              </div>
-              <div className="text-[11px] text-ink-faint leading-relaxed">
-                Your preferred CLI asks what it needs to know — where the work
-                goes, what done looks like, what&apos;s off limits — then
-                returns the full contract for review:
-              </div>
-              <ul className="mt-1.5 space-y-1 text-[11px] text-ink-muted list-disc pl-4">
-                <li>
-                  the persona, with the job description refined to stand alone
-                </li>
-                <li>
-                  a cadence that fits the job (no 3am shifts for morning work)
-                </li>
-                <li>items-per-shift cap and a monthly budget</li>
-                <li>a cheap heartbeat model for the planning turns</li>
-                <li>
-                  the flows its work runs through — usually one, more when the
-                  job has different kinds of work; existing or drafted fresh
-                </li>
-                <li>which of your MCP servers it loads</li>
-              </ul>
-              <div className="mt-1.5 text-[11px] text-ink-faint leading-relaxed">
-                Before any flow is drafted, a second pass checks the contract
-                against your answers and fixes anything that got dropped.
-              </div>
+        {/* What you're hiring, in one line. The full lifecycle and the
+            contract's parts are the editor's to show, against real values. */}
+        {!talking && (
+          <div className="space-y-2 border-t border-card-strong pt-4 text-xs text-ink-faint">
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <span className="text-ink-muted">How a shift works</span>
+              {[
+                "Wakes on its cadence",
+                "plans on a cheap model",
+                "proposes a few items",
+                "you approve",
+                "learns from your verdicts",
+              ].map((step, i) => (
+                <span key={step} className="flex items-center gap-2.5">
+                  {i > 0 && <span className="opacity-60">→</span>}
+                  {step}
+                </span>
+              ))}
             </div>
-            <div className="rounded-lg border border-card-strong p-4">
-              <div className="text-[11px] uppercase tracking-wider text-ink-faint mb-1.5">
-                Probation first
-              </div>
-              <div className="text-[11px] text-ink-faint leading-relaxed">
-                Every hire starts on{" "}
-                <span className="text-amber-500">probation</span> — nothing runs
-                unattended until you promote it, and rejected proposals never
-                come back. Promote from the roster once its scorecard has earned
-                it.
-              </div>
+            <div className="flex items-center gap-2">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+              Every hire starts on{" "}
+              <span className="-ml-1 text-amber-500">probation</span> — nothing
+              runs unattended until you promote it.
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

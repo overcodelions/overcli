@@ -255,7 +255,7 @@ export function FlowRunLauncher({
   // Which side the run-in toggle starts on comes from Settings → Flows, so
   // a worktree-first user doesn't re-flip it on every launch. The toggle
   // still wins for this run; flipping the setting re-seeds the launcher.
-  const defaultRunIn = useStore((s) => s.settings.defaultFlowRunIn ?? 'cwd');
+  const defaultRunIn = useStore((s) => s.settings.defaultFlowRunIn ?? 'worktree');
   const [runIn, setRunIn] = useState<'cwd' | 'worktree'>(defaultRunIn);
   useEffect(() => setRunIn(defaultRunIn), [defaultRunIn]);
   // Empty → BaseBranchSelect auto-detects the repo's default branch.

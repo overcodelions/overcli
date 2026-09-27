@@ -646,6 +646,7 @@ function ListEntry({
   onClear?: (title: string) => void;
 }) {
   const worker = useWorkersStore((s) => s.workers[row.workerId]);
+  const sender = useWorkersStore((s) => (row.fromId ? s.workers[row.fromId] : undefined));
   const live = row.status === 'running' || row.status === 'planning' || row.status === 'responding';
   // Swipe left to clear: the row follows your fingers and uncovers "Clear"
   // on the right, the way Mail does. A trackpad swipe arrives as horizontal
@@ -767,14 +768,26 @@ function ListEntry({
         transition: dragging ? 'none' : 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1)',
       }}
     >
-      <span className="pt-0.5">{worker && <WorkerAvatar worker={worker} size="xs" live={live} />}</span>
+      {/* A handoff wears both faces, sender first, the way the dated
+          handoffs above do — one avatar read as though you had asked. */}
+      <span className="flex shrink-0 items-start gap-0.5 pt-0.5">
+        {sender && (
+          <>
+            <WorkerAvatar worker={sender} size="xs" />
+            <span aria-hidden className="pt-px text-[10px] text-ink-faint">
+              →
+            </span>
+          </>
+        )}
+        {worker && <WorkerAvatar worker={worker} size="xs" live={live} />}
+      </span>
       <span className="min-w-0 flex-1">
         <span className={'line-clamp-2 text-[13px] font-medium leading-snug ' + (failed ? 'text-red-400' : 'text-ink')}>
           {failed ? `Failed: ${row.title}` : headline}
         </span>
         {detail && <span className="mt-0.5 line-clamp-1 text-[12px] text-ink-muted">{detail}</span>}
         <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
-          {[row.workerName, row.from ? `from ${row.from}` : null, when, file ? baseName(file.name) : null]
+          {[row.from ? `${row.from} → ${row.workerName}` : row.workerName, when, file ? baseName(file.name) : null]
             .filter(Boolean)
             .join(' · ')}
         </span>

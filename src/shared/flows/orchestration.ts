@@ -143,6 +143,12 @@ export interface Orchestration {
   /// Max items running at once. The `pump` never exceeds this. Always 1 for a
   /// `cwd` batch.
   maxConcurrent: number;
+  /// Set while a person has the batch paused (see `pause` in
+  /// main/flows/orchestrator). Nothing queued launches, and each running
+  /// child stops at its next step boundary with reason `held`. Persisted: a
+  /// paused batch keeps its queue across a restart instead of having it
+  /// settled, because nothing will launch until someone presses Resume.
+  pausedAt?: number;
   items: OrchestrationItem[];
   /// Provenance: the producer turn that generated the candidates. We keep
   /// the user's ask + the assistant's prose reply so "why did I launch these"
@@ -197,7 +203,10 @@ export interface Orchestration {
         /// "from Chief of Staff" instead of implying you asked, and what
         /// stops the receiver delegating onward — referrals are one hop, so
         /// a batch carrying `from` never gets a roster block of its own.
-        from?: { workerId: UUID; workerName: string };
+        /// `orchestrationId` is the SENDER's batch — the turn that did the
+        /// handing — so each side of a handoff can link to the other. Absent
+        /// on handoffs sent before it was recorded.
+        from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
         /// Set on the batch that runs a worker's wrap-up flow: the id of the
         /// shift batch whose results it combines. Its presence is also what
         /// stops a wrap-up from ever triggering a wrap-up of its own.
@@ -312,6 +321,13 @@ export function isOrchestrationComplete(o: Orchestration): boolean {
 /// True while a batch is waiting on a human. Parked batches are the whole
 /// point of a scheduled orchestration, so the UI needs a cheap predicate to
 /// surface them ahead of finished ledgers.
+/// True when pausing the batch would stop something: work waiting to launch,
+/// or a child run in flight. A parked proposal has nothing to pause — it is
+/// already waiting on a person.
+export function isOrchestrationPausable(o: Orchestration): boolean {
+  return !o.pausedAt && o.items.some((it) => it.status === 'queued' || it.status === 'running');
+}
+
 export function isOrchestrationAwaitingApproval(o: Orchestration): boolean {
   return o.items.some((it) => it.status === 'proposed');
 }
