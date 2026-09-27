@@ -37,6 +37,7 @@ import { CopyActions } from '../CopyActions';
 import { openPathWithHighlight, useOpenFile } from '../../openFile';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
 import { useChromeCommandGuard } from '../ChromeCommandGuard';
+import { useDesignCommandGuard } from '../DesignCommandGuard';
 import { CompactButton } from '../CompactButton';
 import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
@@ -2123,6 +2124,12 @@ function HijackComposer({
     enableChrome: () => setRunChrome(run.id, true),
     send: handleSend,
   });
+  // `/design` with artifacts off only reaches the consent stub. The setting
+  // is global, so this is the same offer the chat composer makes.
+  const designGuard = useDesignCommandGuard({
+    backend: participant.backend,
+    send: chromeGuard.send,
+  });
 
   // Padding + chrome mirror ConversationPane's composer wrapper
   // (`px-4 pb-3 pt-1 flex flex-col gap-1.5`, no top border) so the
@@ -2168,12 +2175,13 @@ function HijackComposer({
       )}
       {steerError && <div className="text-[11px] text-amber-500 px-0.5">{steerError}</div>}
       {chromeGuard.banner}
+      {designGuard.banner}
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
         rootPath={run.projectPath}
         serviceWorkspaceIds={serviceWorkspaceIds}
-        onSend={chromeGuard.send}
+        onSend={designGuard.send}
         onStop={() => {
           if (convId) void stop(convId);
         }}

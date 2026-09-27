@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { CLAUDE_ARTIFACT_ENV, claudeArtifactEnv, isDesignUnavailableNotice } from './claudeArtifacts';
+import {
+  CLAUDE_ARTIFACT_ENV,
+  claudeArtifactEnv,
+  isDesignUnavailableNotice,
+  isGatedDesignCommand,
+} from './claudeArtifacts';
 
 describe('claudeArtifactEnv', () => {
   it('sets the gate var when enabled', () => {
@@ -29,5 +34,30 @@ describe('isDesignUnavailableNotice', () => {
     expect(isDesignUnavailableNotice('Run /design consent to grant access.')).toBe(false);
     expect(isDesignUnavailableNotice('Usage: /design consent | /design revoke — and then some')).toBe(false);
     expect(isDesignUnavailableNotice('')).toBe(false);
+  });
+});
+
+describe('isGatedDesignCommand', () => {
+  const off = { backend: 'claude', artifactsOn: false };
+
+  it('catches /design with or without a request when artifacts are off', () => {
+    expect(isGatedDesignCommand('/design', off)).toBe(true);
+    expect(isGatedDesignCommand('/design what do you think about the dropdown', off)).toBe(true);
+    expect(isGatedDesignCommand('  /DESIGN a landing page\nwith two columns', off)).toBe(true);
+  });
+
+  it('leaves the stub subcommands alone', () => {
+    expect(isGatedDesignCommand('/design consent', off)).toBe(false);
+    expect(isGatedDesignCommand('/design revoke ', off)).toBe(false);
+  });
+
+  it('passes when artifacts are on or the backend is not claude', () => {
+    expect(isGatedDesignCommand('/design a page', { backend: 'claude', artifactsOn: true })).toBe(false);
+    expect(isGatedDesignCommand('/design a page', { backend: 'codex', artifactsOn: false })).toBe(false);
+  });
+
+  it('ignores other commands and prose', () => {
+    expect(isGatedDesignCommand('/designer', off)).toBe(false);
+    expect(isGatedDesignCommand('please /design this', off)).toBe(false);
   });
 });

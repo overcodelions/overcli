@@ -3869,7 +3869,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeArtifacts: false,
   claudeChrome: false,
   starredFlows: [],
-  defaultFlowRunIn: 'cwd',
+  defaultFlowRunIn: 'worktree',
   flowRegistries: [
     {
       id: 'official',

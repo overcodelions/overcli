@@ -27,6 +27,7 @@ import { labOn } from '@shared/labs';
 import { backendColor } from '../theme';
 import { conversationActivityAt } from '../conversationLookup';
 import { partitionSleeping } from '../sidebarSleep';
+import { starredFlowsForPlace } from '../placeFlows';
 import { ConversationRow } from './ConversationRow';
 import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
 import { byNewestFirst, isAgentConversation } from './sidebarItems';
@@ -114,18 +115,33 @@ interface PlaceRowProps {
 export function PlaceRow(props: PlaceRowProps) {
   const { ref_, kind, expanded, status, activityAt, now, pinned, actions, current, nested } = props;
   const name = placeName(ref_);
-  const [menu, setMenu] = useState<'add' | 'more' | null>(null);
+  const [menu, setMenu] = useState<'add' | 'more' | 'context' | null>(null);
+  const [contextAt, setContextAt] = useState<{ x: number; y: number } | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const addAnchor = useRef<HTMLButtonElement>(null);
   const moreAnchor = useRef<HTMLButtonElement>(null);
   const path = ref_.kind === 'project' ? ref_.project.path : ref_.workspace.rootPath;
+  const flowItems = usePlaceFlowItems(ref_, menu === 'add' || menu === 'context');
 
+  // Hints say what you get, not what kind of thing it is. The one instant
+  // action leads; a divider sets it off from the two that open a sheet.
   const addItems: MenuItemDef[] = [
-    { label: 'Conversation', hint: 'new chat here', onSelect: actions.onNewConversation },
+    { label: 'Conversation', hint: 'Chat with Claude in this folder', icon: <ChatIcon />, onSelect: actions.onNewConversation },
+    ...(actions.onNewAgent || actions.onNewColosseum ? [{ divider: true, label: '', onSelect: () => {} }] : []),
     ...(actions.onNewAgent
-      ? [{ label: 'Agent on a branch…', hint: ref_.kind === 'workspace' ? 'spans every repo' : 'build · review · docs', onSelect: actions.onNewAgent }]
+      ? [{
+          label: 'Agent on a branch…',
+          hint: ref_.kind === 'workspace'
+            ? 'A worktree in every repo; you review the diff'
+            : 'Works in its own worktree; you review the diff',
+          icon: <BranchIcon />,
+          onSelect: actions.onNewAgent,
+        }]
       : []),
-    ...(actions.onNewColosseum ? [{ label: 'Colosseum…', hint: 'models side by side', onSelect: actions.onNewColosseum }] : []),
+    ...(actions.onNewColosseum
+      ? [{ label: 'Colosseum…', hint: 'One prompt, several models, compare answers', icon: <ColumnsIcon />, onSelect: actions.onNewColosseum }]
+      : []),
+    ...flowItems,
   ];
   const moreItems: MenuItemDef[] = [
     { label: pinned ? 'Unpin' : 'Pin to top', onSelect: props.onTogglePin },
@@ -153,6 +169,13 @@ export function PlaceRow(props: PlaceRowProps) {
           (menu ? 'bg-card-strong ' : '')
         }
         title={path}
+        // Right-click is where a macOS sidebar keeps its actions; this is
+        // both hover menus in one, opened at the pointer.
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setContextAt({ x: e.clientX, y: e.clientY });
+          setMenu('context');
+        }}
       >
         {/* Two targets, the way a file browser has them: the arrow folds the
             place open or shut, the name takes you to it. A documents project
@@ -187,7 +210,7 @@ export function PlaceRow(props: PlaceRowProps) {
           <button
             ref={addAnchor}
             onClick={() => setMenu((m) => (m === 'add' ? null : 'add'))}
-            className="flex h-5 w-5 items-center justify-center rounded text-ink-muted hover:bg-surface-elevated hover:text-ink"
+            className="flex h-6 w-6 items-center justify-center rounded text-ink-muted hover:bg-surface-elevated hover:text-ink"
             title={`New in ${name}`}
             aria-label={`New in ${name}`}
             aria-haspopup="menu"
@@ -198,7 +221,7 @@ export function PlaceRow(props: PlaceRowProps) {
           <button
             ref={moreAnchor}
             onClick={() => setMenu((m) => (m === 'more' ? null : 'more'))}
-            className="flex h-5 w-5 items-center justify-center rounded text-ink-muted hover:bg-surface-elevated hover:text-ink"
+            className="flex h-6 w-6 items-center justify-center rounded text-ink-muted hover:bg-surface-elevated hover:text-ink"
             title={`More for ${name}`}
             aria-label={`More for ${name}`}
             aria-haspopup="menu"
@@ -208,8 +231,29 @@ export function PlaceRow(props: PlaceRowProps) {
           </button>
         </span>
       </div>
-      {menu === 'add' && <PopMenu anchor={addAnchor} heading={`New in ${name}`} items={addItems} onClose={() => setMenu(null)} />}
+      {menu === 'add' && (
+        <PopMenu
+          anchor={addAnchor}
+          heading={`New in ${name}`}
+          headingDetail={pathTail(path)}
+          items={addItems}
+          beside
+          width={300}
+          onClose={() => setMenu(null)}
+        />
+      )}
       {menu === 'more' && <PopMenu anchor={moreAnchor} items={moreItems} onClose={() => setMenu(null)} />}
+      {menu === 'context' && contextAt && (
+        <PopMenu
+          anchor={moreAnchor}
+          at={contextAt}
+          heading={name}
+          headingDetail={pathTail(path)}
+          items={[...addItems, { divider: true, label: '', onSelect: () => {} }, ...moreItems]}
+          width={300}
+          onClose={() => setMenu(null)}
+        />
+      )}
       {confirmRemove && (
         <InlineRemoveConfirm
           title={props.removeTitle}
@@ -622,42 +666,181 @@ function useWorkerLive(path: string): boolean {
 // ---- menus ----------------------------------------------------------------
 
 export interface MenuItemDef {
+  /// On a divider, a non-empty label turns the rule into a group caption.
   label: string;
   hint?: string;
   danger?: boolean;
   divider?: boolean;
   disabled?: boolean;
+  icon?: ReactNode;
   onSelect: () => void;
+}
+
+/// The "Starred flows" group of a place's New menu: up to three starred flows
+/// that can run here, each opening the launcher aimed at this place, then a
+/// way into the whole library. With nothing starred it's one line, so the
+/// menu still says flows exist and how to put one here.
+function usePlaceFlowItems(ref_: PlaceRef, open: boolean): MenuItemDef[] {
+  const flows = useFlowsStore((s) => s.flows);
+  const loaded = useFlowsStore((s) => s.loaded);
+  const reload = useFlowsStore((s) => s.reload);
+  const projects = useStore((s) => s.projects);
+  const starred = useStore((s) => s.settings.starredFlows);
+  const openSheet = useStore((s) => s.openSheet);
+  const setDetailMode = useStore((s) => s.setDetailMode);
+
+  // The library loads when something shows it; a sidebar menu may be first.
+  useEffect(() => {
+    if (open && !loaded) void reload(projects.map((p) => p.path));
+  }, [open, loaded]);
+
+  const target = ref_.kind === 'project' ? `project:${ref_.project.path}` : `workspace:${ref_.workspace.rootPath}`;
+  const shown = useMemo(
+    () =>
+      starredFlowsForPlace(flows, starred ?? [], {
+        folders:
+          ref_.kind === 'project'
+            ? [ref_.project.path]
+            : [ref_.workspace.rootPath, ...ref_.members.map((m) => m.path)],
+        everyday: ref_.kind === 'project' && isEverydayProject(ref_.project),
+      }),
+    [flows, starred, ref_],
+  );
+
+  const openLibrary = () => setDetailMode('flows');
+  if (shown.length === 0) {
+    return [
+      { divider: true, label: '', onSelect: () => {} },
+      { label: 'Run a flow…', hint: 'Star one in the library to keep it here', icon: <FlowIcon />, onSelect: openLibrary },
+    ];
+  }
+  return [
+    { divider: true, label: 'Starred flows', onSelect: () => {} },
+    ...shown.map((f) => ({
+      label: `${f.name}…`,
+      hint: f.description || undefined,
+      icon: <FlowIcon />,
+      onSelect: () => openSheet({ type: 'flowLaunch', flowId: f.id, target }),
+    })),
+    { label: 'All flows…', hint: 'Open the library', onSelect: openLibrary },
+  ];
+}
+
+/// The last two segments of a path, for telling apart two places with the
+/// same name ("codelions/overcli" vs "forks/overcli").
+function pathTail(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 1 ? parts.slice(-2).join('/') : undefined;
 }
 
 /// A small menu anchored to a button. Portalled and fixed-positioned, so the
 /// sidebar's scroll box can't clip it; flips above the anchor when there is no
 /// room below. Escape, a click elsewhere or a scroll closes it.
+///
+/// `beside` opens it past the sidebar's right edge, level with the anchor's
+/// row, instead of dropping it over the rows underneath — for a row menu,
+/// where the tree you're acting on is the context you want to keep seeing.
+/// Falls back to dropping down when the window is too narrow for it.
+///
+/// `at` opens it at a point instead (a right-click); `anchor` then only
+/// matters as where focus goes back to.
+///
+/// Keyboard: the first item takes focus on open, ↑/↓/Home/End move, a letter
+/// jumps to the next item starting with it, Enter picks, Tab or Escape closes
+/// (Escape hands focus back to the anchor). Hovering moves focus too, so the
+/// pointer and the keyboard never highlight two different items.
 export function PopMenu({
   anchor,
   items,
   heading,
+  headingDetail,
   onClose,
-  width = 220,
+  beside,
+  at,
+  width = 260,
 }: {
   anchor: React.RefObject<HTMLElement | null>;
   items: MenuItemDef[];
   heading?: string;
+  headingDetail?: string;
   onClose: () => void;
+  beside?: boolean;
+  at?: { x: number; y: number };
   width?: number;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [shown, setShown] = useState(false);
 
   useLayoutEffect(() => {
-    const a = anchor.current?.getBoundingClientRect();
     const h = box.current?.offsetHeight ?? 0;
-    if (!a) return;
+    if (at) {
+      setPos({
+        left: Math.max(8, Math.min(at.x, window.innerWidth - width - 8)),
+        top: at.y + h > window.innerHeight - 8 ? Math.max(8, at.y - h) : at.y,
+      });
+      return;
+    }
+    const el = anchor.current;
+    const a = el?.getBoundingClientRect();
+    if (!el || !a) return;
+    const edge = beside ? el.closest('aside')?.getBoundingClientRect().right : undefined;
+    if (edge !== undefined && edge + 6 + width <= window.innerWidth - 8) {
+      // Line the first item up with the row: the heading sits above it.
+      const top = Math.max(8, Math.min(a.top - 32, window.innerHeight - h - 8));
+      setPos({ top, left: edge + 6 });
+      return;
+    }
     const left = Math.max(8, Math.min(a.right - width, window.innerWidth - width - 8));
     const below = a.bottom + 4;
     const top = below + h > window.innerHeight - 8 ? Math.max(8, a.top - h - 4) : below;
     setPos({ top, left });
-  }, [anchor, width]);
+  }, [anchor, at, beside, width]);
+
+  // Position lands before first paint, so the fade needs a frame of its own
+  // to have something to fade from.
+  useEffect(() => {
+    if (!pos) return;
+    const f = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(f);
+  }, [pos]);
+
+  // Once any item has an icon, the rest keep its gutter so labels line up.
+  const hasIcons = items.some((i) => i.icon);
+
+  const menuItems = () =>
+    Array.from(box.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
+
+  useEffect(() => {
+    if (pos) menuItems()[0]?.focus({ preventScroll: true });
+  }, [pos]);
+
+  const onMenuKey = (e: React.KeyboardEvent) => {
+    const all = menuItems();
+    if (all.length === 0) return;
+    const at = all.indexOf(document.activeElement as HTMLButtonElement);
+    const go = (i: number) => {
+      e.preventDefault();
+      all[(i + all.length) % all.length].focus();
+    };
+    if (e.key === 'ArrowDown') go(at + 1);
+    else if (e.key === 'ArrowUp') go(at < 0 ? all.length - 1 : at - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(all.length - 1);
+    else if (e.key.length === 1 && /\S/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const k = e.key.toLowerCase();
+      for (let step = 1; step <= all.length; step++) {
+        const i = (at + step + all.length) % all.length;
+        if (all[i].dataset.label?.toLowerCase().startsWith(k)) return go(i);
+      }
+    }
+    else if (e.key === 'Tab') {
+      e.preventDefault();
+      onClose();
+      anchor.current?.focus();
+    }
+  };
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -669,6 +852,7 @@ export function PopMenu({
       if (e.key === 'Escape') {
         e.stopPropagation();
         onClose();
+        anchor.current?.focus();
       }
     };
     const onScroll = (e: Event) => {
@@ -689,29 +873,54 @@ export function PopMenu({
     <div
       ref={box}
       role="menu"
+      aria-label={heading}
+      onKeyDown={onMenuKey}
       style={{ position: 'fixed', top: pos?.top ?? -9999, left: pos?.left ?? -9999, width }}
-      className="z-50 rounded-lg border border-card-strong bg-surface-elevated p-1 text-xs shadow-2xl"
+      className={
+        'z-50 rounded-lg border border-card-strong bg-surface-elevated p-1 text-[13px] shadow-2xl transition-[opacity,transform] duration-100 ease-out ' +
+        (shown ? 'opacity-100 scale-100' : 'opacity-0 scale-[0.98]') +
+        (beside ? ' origin-top-left' : ' origin-top-right')
+      }
     >
-      {heading && <div className="px-2 pb-1 pt-0.5 text-[10px] text-ink-faint">{heading}</div>}
+      {heading && (
+        <div className="flex min-w-0 items-baseline gap-1.5 px-2.5 pb-1.5 pt-1.5 text-[11px]">
+          <span className="flex-shrink-0 font-medium text-ink-muted">{heading}</span>
+          {headingDetail && <span className="truncate text-ink-faint">{headingDetail}</span>}
+        </div>
+      )}
       {items.map((item, i) =>
         item.divider ? (
-          <div key={`d${i}`} className="mx-1.5 my-1 h-px bg-card-strong" />
+          item.label ? (
+            <div key={`d${i}`} className="mx-1.5 mt-1 border-t border-card-strong px-1 pb-0.5 pt-2 text-[11px] font-medium text-ink-faint">
+              {item.label}
+            </div>
+          ) : (
+            <div key={`d${i}`} className="mx-1.5 my-1 h-px bg-card-strong" />
+          )
         ) : (
           <button
-            key={item.label}
+            key={`${i}:${item.label}`}
             role="menuitem"
+            data-label={item.label}
             disabled={item.disabled}
+            onMouseEnter={(e) => e.currentTarget.focus({ preventScroll: true })}
             onClick={() => {
               onClose();
               item.onSelect();
             }}
             className={
-              'flex w-full items-baseline gap-2 rounded px-2 py-1.5 text-left hover:bg-card-strong focus:bg-card-strong focus:outline-none disabled:opacity-40 ' +
+              'flex w-full items-start gap-2.5 rounded-md px-2.5 text-left hover:bg-card-strong focus:bg-card-strong focus:outline-none disabled:opacity-40 ' +
+              (item.hint ? 'py-2 ' : 'py-1.5 ') +
               (item.danger ? 'text-red-600 dark:text-red-300' : 'text-ink')
             }
           >
-            <span className="flex-1 truncate">{item.label}</span>
-            {item.hint && <span className="flex-shrink-0 text-[10px] text-ink-faint">{item.hint}</span>}
+            {(item.icon || hasIcons) && (
+              <span className="mt-px flex h-4 w-4 flex-shrink-0 items-center justify-center text-accent">{item.icon}</span>
+            )}
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate">{item.label}</span>
+              {item.hint && <span className="mt-0.5 truncate text-[11px] text-ink-faint">{item.hint}</span>}
+            </span>
           </button>
         ),
       )}
@@ -987,6 +1196,44 @@ export function PlusIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="flex-shrink-0" aria-hidden="true">
       <path d="M8 3a.75.75 0 0 1 .75.75v3.5h3.5a.75.75 0 0 1 0 1.5h-3.5v3.5a.75.75 0 0 1-1.5 0v-3.5h-3.5a.75.75 0 0 1 0-1.5h3.5v-3.5A.75.75 0 0 1 8 3Z" />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 3.5h11v7.5h-6.5l-3 2.5V11h-1.5z" />
+    </svg>
+  );
+}
+
+function BranchIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true">
+      <circle cx="4.5" cy="3.5" r="1.5" />
+      <circle cx="4.5" cy="12.5" r="1.5" />
+      <circle cx="11.5" cy="5.5" r="1.5" />
+      <path d="M4.5 5v6M11.5 7c0 2.5-3 2.8-6.5 4" />
+    </svg>
+  );
+}
+
+function FlowIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="3.5" cy="4" r="1.5" />
+      <circle cx="12.5" cy="12" r="1.5" />
+      <path d="M5 4h4.5a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-3a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2H11" />
+    </svg>
+  );
+}
+
+function ColumnsIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
+      <rect x="2" y="3" width="5" height="10" rx="1" />
+      <rect x="9" y="3" width="5" height="10" rx="1" />
     </svg>
   );
 }
