@@ -83,6 +83,15 @@ export interface FlowLauncher {
   getRun(runId: UUID): FlowRun | null;
 }
 
+/// What a batch needs from the runtime beyond launching and aborting:
+/// stopping a child at its next step boundary, and letting it go again. The
+/// scheduler launches runs but never pauses a batch, so it keeps the
+/// narrower `FlowLauncher`.
+export interface BatchLauncher extends FlowLauncher {
+  holdRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
+  releaseHold(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
+}
+
 /// System prompt for the producer turn. Steers the model to triage rather
 /// than solve, and — critically — to end with a machine-readable
 /// `<candidates>` block the renderer parses. Mirrors the drafter's
@@ -179,7 +188,7 @@ export class OrchestratorImpl {
 
   constructor(
     private runner: RunnerManager,
-    private launcher: FlowLauncher,
+    private launcher: BatchLauncher,
     private emit: (event: MainToRendererEvent) => void,
     private getProjects: () => Project[],
     private getSettings: () => AppSettings,
@@ -736,6 +745,9 @@ export class OrchestratorImpl {
   private async pump(orchestrationId: UUID): Promise<void> {
     const o = this.batches.get(orchestrationId);
     if (!o) return;
+    // Paused: the queue waits for `resume`. Not a completion check either —
+    // queued items keep the batch open, which is the point.
+    if (o.pausedAt) return;
     let launchedAny = false;
     // Loop because a slot may free up (a synchronous startRun failure)
     // while we're still filling — re-evaluate until no queued item can go.
@@ -879,6 +891,7 @@ export class OrchestratorImpl {
     // onRunUpdate → pump — and pump would happily launch a still-queued item
     // mid-abort. Draining the queue up front means there's nothing left for
     // that pump to start.
+    o.pausedAt = undefined;
     for (const item of o.items) {
       // `queued` never launched, and neither did `proposed` (aborting a
       // parked batch is how the user says "not this morning's list"); a
@@ -920,6 +933,51 @@ export class OrchestratorImpl {
     }
     this.persistAndEmit(o);
     this.maybeComplete(o);
+    return { ok: true };
+  }
+
+  /// Pause a batch a person wants to stop for now without throwing it away:
+  /// nothing queued launches, and each running child finishes the step it is
+  /// on and stops before the next one (reason `held`). Children already
+  /// paused for their own reasons stay as they are. Stopping at a boundary
+  /// rather than killing the step means Resume picks up with nothing lost.
+  pause(args: { id: UUID }): { ok: true } | { ok: false; error: string } {
+    const o = this.batches.get(args.id);
+    if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
+    if (o.pausedAt) return { ok: true };
+    if (!o.items.some((i) => i.status === 'queued' || i.status === 'running')) {
+      return { ok: false, error: 'Nothing in this batch is running or waiting to run.' };
+    }
+    o.pausedAt = Date.now();
+    for (const item of o.items) {
+      if (item.status !== 'running' || !item.runId) continue;
+      try {
+        this.launcher.holdRun({ runId: item.runId });
+      } catch {
+        // best-effort — the queue is held regardless
+      }
+    }
+    this.persistAndEmit(o);
+    return { ok: true };
+  }
+
+  /// Undo `pause`: withdraw holds not yet reached, continue the children a
+  /// hold stopped, and fill open slots from the queue again.
+  resume(args: { id: UUID }): { ok: true } | { ok: false; error: string } {
+    const o = this.batches.get(args.id);
+    if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
+    if (!o.pausedAt) return { ok: true };
+    o.pausedAt = undefined;
+    this.persistAndEmit(o);
+    for (const item of o.items) {
+      if ((item.status !== 'running' && item.status !== 'paused') || !item.runId) continue;
+      try {
+        this.launcher.releaseHold({ runId: item.runId });
+      } catch {
+        // best-effort — a run that can't be released can still be continued by hand
+      }
+    }
+    void this.pump(args.id);
     return { ok: true };
   }
 
@@ -991,6 +1049,9 @@ export class OrchestratorImpl {
   private maybeComplete(o: Orchestration): void {
     if (!o.completedAt && isOrchestrationComplete(o)) {
       o.completedAt = Date.now();
+      // Everything settled while it was paused; a finished batch has no
+      // Resume to offer.
+      o.pausedAt = undefined;
       this.persistAndEmit(o);
     }
   }

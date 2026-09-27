@@ -2482,6 +2482,12 @@ export interface IPCInvokeMap {
   /// Abort a whole batch: queued items become `cancelled`, running child
   /// runs are aborted. Idempotent.
   'orchestrator:abort': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Pause a batch: nothing queued launches, and running child runs stop at
+  /// their next step boundary. Idempotent.
+  'orchestrator:pause': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Undo `orchestrator:pause`: held child runs continue and the queue
+  /// launches again. Idempotent.
+  'orchestrator:resume': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
   /// Re-queue failed/cancelled items. With `candidateId`, retry just that
   /// item; without, retry all failed/cancelled items in the batch. Each
   /// retry launches a fresh child run in a new worktree.

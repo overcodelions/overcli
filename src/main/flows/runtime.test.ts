@@ -2103,3 +2103,86 @@ describe('FlowRuntimeImpl — sandboxed flow sends', () => {
     }
   });
 });
+
+describe('FlowRuntimeImpl — holding a run at its next step', () => {
+  function seedRun(nextTools: string[]): FlowRun {
+    return {
+      id: 'run-hold',
+      flowId: 'f',
+      flowSnapshot: {
+        id: 'f',
+        name: 'F',
+        participants: [],
+        steps: [
+          { id: 's1', role: 'custom', systemPromptOverride: 'Edit the code.', tools: ['Read'], output: 'a.md' },
+          { id: 's2', role: 'custom', systemPromptOverride: 'Carry on.', tools: nextTools, output: 'b.md' },
+        ],
+      },
+      projectPath: '/tmp/project',
+      userPrompt: 'do the thing',
+      conversationIds: {},
+      artifacts: {},
+      state: { kind: 'running', currentStepId: 's1' },
+      createdAt: 1,
+      attempts: [],
+      workerId: 'worker-1',
+    } as unknown as FlowRun;
+  }
+
+  function runtimeWith(run: FlowRun): { runtime: FlowRuntimeImpl; executed: string[] } {
+    seeded.runs = [run];
+    const runtime = new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+    const executed: string[] = [];
+    (runtime as any).executeStep = async (_runId: string, stepId: string) => {
+      executed.push(stepId);
+    };
+    return { runtime, executed };
+  }
+
+  afterEach(() => {
+    seeded.runs = [];
+  });
+
+  it('lets the running step finish, then stops before the next one', () => {
+    const { runtime, executed } = runtimeWith(seedRun(['Read']));
+    expect(runtime.holdRun({ runId: 'run-hold' })).toEqual({ ok: true });
+    expect(runtime.getRun('run-hold')!.state.kind).toBe('running');
+
+    (runtime as any).advanceAfterStep('run-hold', 's1');
+    const run = runtime.getRun('run-hold')!;
+    expect(run.state).toEqual({ kind: 'paused', nextStepId: 's2', reason: 'held' });
+    expect(run.holdRequested).toBeUndefined();
+    expect(executed).toEqual([]);
+
+    expect(runtime.releaseHold({ runId: 'run-hold' })).toEqual({ ok: true });
+    expect(runtime.getRun('run-hold')!.state).toEqual({ kind: 'running', currentStepId: 's2' });
+    expect(executed).toEqual(['s2']);
+  });
+
+  it('withdraws a hold released before the boundary', () => {
+    const { runtime, executed } = runtimeWith(seedRun(['Read']));
+    runtime.holdRun({ runId: 'run-hold' });
+    runtime.releaseHold({ runId: 'run-hold' });
+    (runtime as any).advanceAfterStep('run-hold', 's1');
+    expect(runtime.getRun('run-hold')!.state).toEqual({ kind: 'running', currentStepId: 's2' });
+    expect(executed).toEqual(['s2']);
+  });
+
+  it('meets the external-action gate on resume instead of skipping it', () => {
+    const { runtime, executed } = runtimeWith(seedRun(['Bash']));
+    runtime.holdRun({ runId: 'run-hold' });
+    (runtime as any).advanceAfterStep('run-hold', 's1');
+    runtime.releaseHold({ runId: 'run-hold' });
+    expect(runtime.getRun('run-hold')!.state).toEqual({
+      kind: 'paused',
+      nextStepId: 's2',
+      reason: 'externalAction',
+    });
+    expect(executed).toEqual([]);
+  });
+});

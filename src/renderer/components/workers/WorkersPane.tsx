@@ -77,6 +77,7 @@ import {
 } from "@shared/flows/schedule";
 import {
   isOrchestrationAwaitingApproval,
+  isOrchestrationPausable,
   type Orchestration,
   type OrchestrationItem,
 } from "@shared/flows/orchestration";
@@ -3605,13 +3606,32 @@ function ShiftActions({
   const redoShift = useWorkersStore((s) => s.redoShift);
   const [confirming, setConfirming] = useState(false);
   const [confirmingRedo, setConfirmingRedo] = useState(false);
-  const [busy, setBusy] = useState<"redo" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"redo" | "delete" | "pause" | null>(null);
+  const [pauseError, setPauseError] = useState<string | null>(null);
 
   // `[Shift 7]` against the worker's running count — the same test main makes.
   // Kept in sync by construction: both read the number off the ledger title.
   const number = /^Shift\s+(\d+)$/.exec(item.title)?.[1];
   const isLatest = !!number && Number(number) === (worker.shiftCount ?? 0);
   const live = item.running > 0;
+  const paused = !!item.orchestration.pausedAt;
+  const pausable = isOrchestrationPausable(item.orchestration);
+
+  // Pause stops the shift at the next step boundary rather than killing
+  // anything, so unlike Re-run and Delete it needs no confirm: Resume undoes it.
+  const togglePause = async () => {
+    setBusy("pause");
+    setPauseError(null);
+    try {
+      const res = await window.overcli.invoke(
+        paused ? "orchestrator:resume" : "orchestrator:pause",
+        { id: item.orchestration.id },
+      );
+      if (!res.ok) setPauseError(res.error);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const run = async (which: "redo" | "delete") => {
     setBusy(which);
@@ -3623,6 +3643,32 @@ function ShiftActions({
 
   return (
     <div className="mt-2 flex items-center gap-3 border-t border-card-strong pt-2">
+      {(paused || pausable) && (
+        <button
+          onClick={() => void togglePause()}
+          disabled={!!busy}
+          title={
+            paused
+              ? "Launch the queued work again and continue the runs this pause stopped"
+              : "Hold the queue, and stop each running flow after the step it is on"
+          }
+          className="text-[11px] text-ink-faint hover:text-accent disabled:opacity-50 focus:outline-none"
+        >
+          {busy === "pause"
+            ? paused
+              ? "Resuming\u2026"
+              : "Pausing\u2026"
+            : paused
+              ? "Resume this shift"
+              : "Pause this shift"}
+        </button>
+      )}
+      {paused && busy !== "pause" && (
+        <span className="text-[11px] text-amber-600 dark:text-amber-400">
+          Paused — running flows stop after their current step
+        </span>
+      )}
+      {pauseError && <span className="text-[11px] text-red-400">{pauseError}</span>}
       {isLatest && (
         <button
           onClick={() => setConfirmingRedo(true)}

@@ -117,7 +117,7 @@ export interface QueueRow {
   /// Why a `paused` job stopped. "Paused" on its own is the least useful word
   /// on this screen — the whole reason the row is in the Needs you band is
   /// that something specific is being asked of you.
-  pausedReason?: 'preStep' | 'externalAction' | 'riskyStep' | 'needsInput' | 'failure' | 'interrupted';
+  pausedReason?: 'preStep' | 'externalAction' | 'riskyStep' | 'needsInput' | 'failure' | 'interrupted' | 'held';
   /// What the row is sorted and stamped by: when it started for live work,
   /// when it stopped for finished work.
   at: number;
@@ -129,6 +129,7 @@ export interface QueueRow {
   wrapUpOf?: string;
   /// The colleague who handed this over, when one did rather than you.
   from?: string;
+  fromId?: string;
 }
 
 export interface WorkQueue {
@@ -286,6 +287,7 @@ export function buildWorkQueue(
         title: toWorkerActivity(batch).title,
         steps: [],
         at: batch.completedAt ?? batch.createdAt,
+        ...(origin.from ? { from: origin.from.workerName, fromId: origin.from.workerId } : {}),
       });
       continue;
     }
@@ -324,7 +326,7 @@ export function buildWorkQueue(
         ...(run ? { runId: run.id } : {}),
         ...(item.note ? { note: item.note } : {}),
         ...(origin.wrapUpOf ? { wrapUpOf: origin.wrapUpOf } : {}),
-        ...(origin.from ? { from: origin.from.workerName } : {}),
+        ...(origin.from ? { from: origin.from.workerName, fromId: origin.from.workerId } : {}),
       };
       (band === 'running' ? running : band === 'needsYou' ? needsYou : finished).push(row);
     }
@@ -409,9 +411,11 @@ export function consolidateAnswers(rows: QueueRow[]): QueueRow[] {
 /// toggle that used to label the message before it was sent: that toggle said
 /// what you MEANT, and a question you sent as work still came back as an
 /// answer. Rows that are already a consolidated group carry `answers` and are
-/// never folded a second time.
+/// never folded a second time. A handoff from a colleague keeps its own row:
+/// it is not something you asked, and folded into "3 answers" it would read
+/// as if you had.
 function isChatAnswer(row: QueueRow): boolean {
-  return row.status === 'quiet' && row.task === 'errand' && !row.answers;
+  return row.status === 'quiet' && row.task === 'errand' && !row.answers && !row.from;
 }
 
 /// THE RUN IS THE TRUTH. An item's status is a mirror the orchestrator keeps

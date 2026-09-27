@@ -13,7 +13,8 @@ export type PauseReason =
   | 'riskyStep'
   | 'needsInput'
   | 'failure'
-  | 'interrupted';
+  | 'interrupted'
+  | 'held';
 
 /// The row's status line: why it stopped, not what you would do about it.
 export const PAUSE_TEXT: Record<PauseReason, string> = {
@@ -23,6 +24,7 @@ export const PAUSE_TEXT: Record<PauseReason, string> = {
   needsInput: 'Asked you a question',
   failure: 'Stopped after a failure',
   interrupted: 'Interrupted when the app closed',
+  held: 'Paused by you',
 };
 
 /// What a plain resume DOES depends on why the run stopped, so the button says
@@ -36,6 +38,7 @@ export const PAUSE_ACTION: Record<PauseReason, string> = {
   needsInput: 'answer & resume',
   failure: 're-run step',
   interrupted: 'resume',
+  held: 'resume',
 };
 
 export const PAUSE_HINT: Record<PauseReason, string> = {
@@ -45,6 +48,7 @@ export const PAUSE_HINT: Record<PauseReason, string> = {
   needsInput: 'Open the run, read the Worker exchange, answer, and resume the step',
   failure: 'Run the failed step again. To accept its result instead, open the run and Override.',
   interrupted: 'The app closed mid-step — run that step again and roll forward',
+  held: 'You paused this shift — resume just this run, or resume the shift to continue everything',
 };
 
 /// Turning work down deletes a real run and a real worktree, so the warning

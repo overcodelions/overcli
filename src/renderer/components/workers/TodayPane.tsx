@@ -169,6 +169,16 @@ export function TodayPane() {
       lastNeeds.current = null;
     }
   }, [picked, model.needs]);
+  // Where a batch landed in the inbox, so each side of a handoff can open
+  // the other. Null when it has aged out of what Today holds.
+  const openBatch = (orchestrationId: string) => {
+    const has = (r: QueueRow) =>
+      r.orchestrationId === orchestrationId || !!r.answers?.some((a) => a.orchestrationId === orchestrationId);
+    const needs = model.needs.find(has);
+    if (needs) return () => setPicked({ kind: 'needs', key: needs.key });
+    const row = [...model.working, ...model.done, ...model.quiet, ...model.earlier.flatMap((g) => g.rows)].find(has);
+    return row ? () => setPicked({ kind: 'done', key: row.key }) : null;
+  };
   const handedBack = handoff
     ? [...model.working, ...model.done].find((r) => r.key === handoff.key)
     : undefined;
@@ -213,6 +223,7 @@ export function TodayPane() {
           file={model.filed[openRow.key] ?? null}
           digest={model.digest[openRow.key]}
           now={now}
+          openBatch={openBatch}
         />
       ) : (
         <TodayEmpty upcoming={soon} now={now} />

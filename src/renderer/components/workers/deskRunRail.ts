@@ -117,6 +117,8 @@ export function pauseReasonLabel(run: FlowRun): string | null {
       return 'interrupted — continue re-runs the step';
     case 'preStep':
       return 'paused before this step';
+    case 'held':
+      return 'paused by you';
   }
 }
 

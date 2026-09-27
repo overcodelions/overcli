@@ -2816,7 +2816,9 @@ function PauseBanner({ run }: { run: FlowRun }) {
                     ? 'Worker needs your input'
                     : reason === 'interrupted'
                       ? 'Interrupted — resume to re-run this step'
-                      : 'Paused — step needs attention'}
+                      : reason === 'held'
+                        ? 'Paused with its batch'
+                        : 'Paused — step needs attention'}
           </div>
           <div className="text-xs text-amber-700 dark:text-amber-100/80">
             {inFlight && priorOutput ? (
@@ -2827,6 +2829,12 @@ function PauseBanner({ run }: { run: FlowRun }) {
               </>
             ) : inFlight ? (
               <>Your approval or resume was received. The step is starting now.</>
+            ) : reason === 'held' ? (
+              <>
+                You paused the batch this run belongs to, so it stopped before{' '}
+                <span className="font-semibold">{nextStep?.id ?? 'the next step'}</span>. Resuming the
+                batch continues it; continuing here resumes just this run.
+              </>
             ) : reason === 'interrupted' ? (
               <>
                 This run was still working on a step when the app last closed, so it
