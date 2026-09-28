@@ -5,7 +5,7 @@ import { DOCUMENT_TYPES } from '../shared/everydayProjects';
 import { tierDefault } from '../shared/modelCatalog';
 import { pickDrafterBackend } from '../shared/flows/drafterBackend';
 import { healthyBackends } from './health';
-import { listFileEntriesSync } from './fileWalk';
+import { listFileEntriesAsync } from './fileWalk';
 import { oneShotDraftText, type DraftDeps } from './flows/drafter';
 
 /// The file surface behind the documents view — a Drive-style listing of one
@@ -193,7 +193,7 @@ const MAX_CONTEXT_CHARS = 40_000;
 const CONTEXT_EXTS = new Set(['md', 'txt', 'csv', 'json', 'html', 'tsv']);
 
 const CONTEXT_WALK_TTL_MS = 3_000;
-const contextWalkCache = new Map<string, { at: number; entries: ReturnType<typeof listFileEntriesSync> }>();
+const contextWalkCache = new Map<string, { at: number; entries: Awaited<ReturnType<typeof listFileEntriesAsync>> }>();
 
 /// Anything that adds a file to a project must drop its walk, or the next
 /// "summarise the course material" is answered from a listing taken before
@@ -205,16 +205,16 @@ export function invalidateProjectContext(rootPath: string): void {
 /// The project's other documents, nearest first, up to the budget. Nearest
 /// because a file beside the one being edited is likelier to be what "the
 /// course material" refers to than something four folders down.
-export function gatherProjectContext(
+export async function gatherProjectContext(
   args: { rootPath: string; excludePath: string },
-): { blocks: Array<{ rel: string; text: string }>; omitted: string[] } {
+): Promise<{ blocks: Array<{ rel: string; text: string }>; omitted: string[] }> {
   const here = path.dirname(args.excludePath);
   const cached = contextWalkCache.get(args.rootPath);
-  let walked: ReturnType<typeof listFileEntriesSync>;
+  let walked: Awaited<ReturnType<typeof listFileEntriesAsync>>;
   if (cached && Date.now() - cached.at < CONTEXT_WALK_TTL_MS) {
     walked = cached.entries;
   } else {
-    walked = listFileEntriesSync(args.rootPath);
+    walked = await listFileEntriesAsync(args.rootPath);
     contextWalkCache.set(args.rootPath, { at: Date.now(), entries: walked });
   }
   const candidates = walked
@@ -309,7 +309,7 @@ export async function reviseDocument(
       'only — never edit them, and only draw on them when the instruction asks',
       'you to (e.g. "summarise the course material into this brief").',
     ].join('\n'),
-    userMessage: buildReviseMessage(args, instruction),
+    userMessage: await buildReviseMessage(args, instruction),
     verb: 'edit a document',
   });
   if (!out.ok) return out;
@@ -339,10 +339,10 @@ export async function reviseDocument(
   return { ok: true, content: text };
 }
 
-function buildReviseMessage(
+async function buildReviseMessage(
   args: { path: string; content: string; rootPath?: string; fullDocument?: string },
   instruction: string,
-): string {
+): Promise<string> {
   const parts = [`INSTRUCTION:\n${instruction}`];
   if (args.fullDocument) {
     parts.push(
@@ -350,7 +350,7 @@ function buildReviseMessage(
     );
   }
   if (args.rootPath) {
-    const { blocks, omitted } = gatherProjectContext({
+    const { blocks, omitted } = await gatherProjectContext({
       rootPath: args.rootPath,
       excludePath: args.path,
     });
