@@ -268,8 +268,8 @@ function Decision({
           {row.runId && <AnswerBox runId={row.runId} />}
           {run && <TalkToStep run={run} asking onTalked={onTalked} />}
           {row.runId && (
-            <div className="flex justify-end">
-              <PausedActions row={row} tone="solid" rejectOnly />
+            <div className="border-t border-card pt-3">
+              <PausedActions row={row} tone="page" rejectOnly />
             </div>
           )}
         </>
@@ -283,8 +283,8 @@ function Decision({
           )}
           {run && <TalkToStep run={run} onTalked={onTalked} />}
           {row.runId && (
-            <div className="flex">
-              <PausedActions row={row} tone="solid" />
+            <div className="border-t border-card pt-3">
+              <PausedActions row={row} tone="page" />
             </div>
           )}
         </>
