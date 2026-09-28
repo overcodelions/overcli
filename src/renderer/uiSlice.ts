@@ -333,6 +333,14 @@ function newTab(
   };
 }
 
+/// Whether the sidebar toggle folds the service list rather than showing or
+/// hiding the sidebar. Only on Services, and only when there is a list: with
+/// no projects Services keeps the sidebar like every other tab, so the toggle
+/// has to drive that instead of a list nobody can see.
+export function toggleFoldsServiceList(s: { detailMode: DetailMode; projects?: readonly unknown[] }): boolean {
+  return s.detailMode === 'services' && (s.projects?.length ?? 0) > 0;
+}
+
 export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): UiSliceActions {
   return {
     setDetailMode(mode) {
@@ -496,7 +504,7 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
     },
     toggleSidebar() {
       set(((s) =>
-        s.detailMode === 'services'
+        toggleFoldsServiceList(s as T & { projects?: readonly unknown[] })
           ? { servicesListHidden: !s.servicesListHidden }
           : { sidebarVisible: !s.sidebarVisible }) as (s: T) => Partial<T>);
     },

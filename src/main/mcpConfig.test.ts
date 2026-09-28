@@ -422,6 +422,23 @@ describe('per-turn MCP allowlists', () => {
     expect(blockedMcpServerTools(['linear'], undefined, paths)).toEqual(['mcp__jira']);
   });
 
+  it('also blocks local-scope servers, plugin servers and other account connectors', () => {
+    fs.mkdirSync(path.dirname(paths.claude), { recursive: true });
+    fs.writeFileSync(
+      paths.claude,
+      JSON.stringify({
+        mcpServers: { linear: { command: 'l' } },
+        projects: { '/work/acme-orders': { mcpServers: { 'acme-db': { command: 'db' } } } },
+      }),
+    );
+    const seen = ['claude.ai Gmail', 'claude.ai Slack', 'plugin:acme:search', 'linear'];
+    expect(blockedMcpServerTools(['claude.ai Gmail', 'linear'], '/work/acme-orders', paths, seen)).toEqual([
+      'mcp__acme-db',
+      'mcp__claude_ai_Slack',
+      'mcp__plugin_acme_search',
+    ]);
+  });
+
   it('reads the user config and builds an inline --mcp-config value', () => {
     addMcpServerToTargets(
       { name: 'linear', config: { command: 'npx', args: ['-y', '@linear/mcp'] }, targets: ['claude'] },

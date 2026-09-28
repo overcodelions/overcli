@@ -9,13 +9,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { OutputMatch } from '@shared/services';
+import { lineAtLevel, outputLineLevel, type OutputLevel, type OutputMatch } from '@shared/services';
 import { isServiceLive, logKey, useServicesStore } from '../servicesStore';
 
-type Level = 'all' | 'warn' | 'error';
-
-const ERROR_RE = /\b(ERROR|FATAL|SEVERE)\b|Exception\b/;
-const WARN_RE = /\bWARN(ING)?\b/;
+type Level = OutputLevel;
 
 /// While the query stands, recent output keeps arriving; re-asking this often
 /// keeps the results live without a search per line.
@@ -28,11 +25,7 @@ let lastQuery = '';
 let lastLevel: Level = 'all';
 let lastFiles = false;
 
-export function levelOf(text: string): 'error' | 'warn' | null {
-  if (ERROR_RE.test(text)) return 'error';
-  if (WARN_RE.test(text)) return 'warn';
-  return null;
-}
+export const levelOf = outputLineLevel;
 
 /// The line cut to show its match: long lines keep a little lead-in rather
 /// than the start, which for a JVM line is a timestamp and a thread name.
@@ -81,6 +74,7 @@ export function ServiceOutputSearch({ owners }: { owners: { id: string; name: st
         workspaceIds,
         query: q,
         includeFiles: files,
+        level,
       });
       if (id === asked.current) setResults(found);
     };
@@ -90,14 +84,12 @@ export function ServiceOutputSearch({ owners }: { owners: { id: string; name: st
       window.clearTimeout(first);
       if (again) window.clearInterval(again);
     };
-  }, [query, files, workspaceIds]);
+  }, [query, files, level, workspaceIds]);
 
   const groups = useMemo(() => {
-    const shown = (results ?? []).filter((m) => {
-      if (level === 'all') return true;
-      const l = levelOf(m.text);
-      return level === 'error' ? l === 'error' : l !== null;
-    });
+    // Main already filtered by level; this only covers the moment between
+    // switching the level and its answer arriving.
+    const shown = (results ?? []).filter((m) => lineAtLevel(m.text, level));
     const out: { key: string; workspaceId: string; serviceId: string; matches: OutputMatch[] }[] = [];
     const byKey = new Map<string, (typeof out)[number]>();
     for (const m of shown) {

@@ -25,6 +25,7 @@ import type {
   ServiceSpec,
   StackView,
   OutputMatch,
+  OutputLevel,
 } from './services';
 import type {
   HeldHandoff,
@@ -2878,6 +2879,9 @@ export interface IPCInvokeMap {
     workspaceIds: string[];
     query: string;
     includeFiles: boolean;
+    /// Applied before the per-service and total caps, so an old error is
+    /// not crowded out by newer ordinary lines. Default all.
+    level?: OutputLevel;
   }) => OutputMatch[];
   /// Every line a service has printed, timestamped, on disk — past the pane's
   /// cap and across restarts of the app. Handed to agents by path.

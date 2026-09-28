@@ -2912,7 +2912,15 @@ export class WorkerEngine {
     // Nothing finished means nothing to combine — no empty digests.
     if (!settled || !o.items.some((i) => i.status === 'done')) return;
     const finishedAt = Math.max(0, ...o.items.map((i) => i.finishedAt ?? 0));
-    if (w.wrapUpSince !== undefined && finishedAt < w.wrapUpSince) return;
+    // A worker whose wrap-up was set before `wrapUpSince` existed has no date
+    // to go by, so this app launch stands in for it: shifts that finished
+    // before overcli opened were never going to get one, and a later update
+    // to one of them (a note, a refresh) must not start one now.
+    if (w.wrapUpSince !== undefined) {
+      if (finishedAt < w.wrapUpSince) return;
+    } else if (finishedAt > 0 && finishedAt < this.openSince) {
+      return;
+    }
     if (this.wrappingUp.has(o.id)) return;
     if (this.deps.parker.list().some((b) => b.origin?.kind === 'worker' && b.origin.wrapUpOf === o.id)) return;
     this.wrappingUp.add(o.id);

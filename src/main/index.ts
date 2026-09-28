@@ -1566,8 +1566,8 @@ export function registerIpc(): void {
   ipcMain.handle('services:log', (_e, { workspaceId, serviceId }) => [
     ...services().log(workspaceId, serviceId),
   ]);
-  ipcMain.handle('services:searchOutput', (_e, { workspaceIds, query, includeFiles }) =>
-    services().searchOutput(workspaceIds, query, includeFiles),
+  ipcMain.handle('services:searchOutput', (_e, { workspaceIds, query, includeFiles, level }) =>
+    services().searchOutput(workspaceIds, query, includeFiles, level),
   );
   ipcMain.handle('services:exceptions', (_e, { workspaceId, serviceId }) =>
     services().exceptions(workspaceId, serviceId),

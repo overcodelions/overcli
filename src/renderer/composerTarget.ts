@@ -5,6 +5,7 @@
 // Asking about a line in the file pane means "the one I'm talking to", which
 // is the one most recently focused — or, failing that, most recently shown.
 
+import { fence } from '@shared/handoff';
 import { useStore } from './store';
 
 interface Entry {
@@ -57,6 +58,5 @@ export function quoteForQuestion(args: {
       ? ` line ${args.lines.from}`
       : ` lines ${args.lines.from}–${args.lines.to}`
     : '';
-  const fence = args.text.includes('```') ? '````' : '```';
-  return `In \`${args.path}\`${where}:\n\n${fence}${args.language}\n${args.text.replace(/\n+$/, '')}\n${fence}\n\n`;
+  return `In \`${args.path}\`${where}:\n\n${fence(args.language, args.text.replace(/\n+$/, ''))}\n\n`;
 }

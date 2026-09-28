@@ -23,7 +23,7 @@ import { isEverydayProject } from '@shared/everydayProjects';
 import { LabsHint } from './LabsHint';
 import { ServicesHint } from './ServicesHint';
 import { HandoffCard } from './HandoffCard';
-import { useHandoffsStore } from '../handoffsStore';
+import { handoffSettledBy, useHandoffsStore } from '../handoffsStore';
 import {
   flowTagCounts,
   groupFlows,
@@ -461,7 +461,7 @@ export function WelcomePane() {
   // Captured before the send, because sending clears the draft and that
   // puts the card (and `activeId`) away — see `initHandoffs`.
   const sendAndSettleHandoff = async (prompt: string, attachments: Attachment[]) => {
-    const handoffId = useHandoffsStore.getState().activeId;
+    const handoffId = handoffSettledBy(prompt);
     await handleSend(prompt, attachments);
     if (handoffId && useStore.getState().selectedConversationId) {
       void useHandoffsStore.getState().resolve(handoffId);

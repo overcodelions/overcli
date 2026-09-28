@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../store';
+import { toggleFoldsServiceList } from '../uiSlice';
 import { labOn, type LabKey } from '@shared/labs';
 import {
   attentionInbox,
@@ -56,6 +57,7 @@ export function TitleBar() {
   const openSheet = useStore((s) => s.openSheet);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const servicesListHidden = useStore((s) => s.servicesListHidden);
+  const foldsServiceList = useStore(toggleFoldsServiceList);
   const whatsNewUnseen = useStore((s) => s.whatsNewUnseen);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
@@ -308,7 +310,7 @@ export function TitleBar() {
         onClick={toggleSidebar}
         className="no-drag p-1 mr-2 text-ink-muted hover:text-ink rounded hover:bg-card-strong"
         title={
-          detailMode === 'services'
+          foldsServiceList
             ? servicesListHidden
               ? 'Show the service list'
               : 'Hide the service list'

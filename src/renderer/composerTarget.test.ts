@@ -16,6 +16,11 @@ describe('quoteForQuestion', () => {
   it('uses a longer fence around text that has one', () => {
     expect(quoteForQuestion({ path: 'a.md', text: '```js\n1\n```', language: 'md' })).toContain('````md\n```js');
   });
+
+  it('outruns a four-backtick block inside the selection', () => {
+    const q = quoteForQuestion({ path: 'a.md', text: '````\nx\n````', language: 'md' });
+    expect(q).toContain('`````md\n````\nx\n````\n`````');
+  });
 });
 
 describe('seedActiveComposer', () => {

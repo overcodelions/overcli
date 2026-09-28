@@ -3,6 +3,7 @@ import {
   ADOPTED_POLL_MS,
   LOG_LIMIT,
   maskSecrets,
+  shellSecretValues,
   Supervisor,
   type SpawnRequest,
   type SpawnedProcess,
@@ -210,6 +211,24 @@ describe('Supervisor unresolved machine values', () => {
     expect(sup.runtime('api').lastError).toBe(
       "Keychain couldn't unlock: DB_PASSWORD. Re-enter it in machine values. Missing machine value: DB_USER",
     );
+  });
+});
+
+describe('shellSecretValues', () => {
+  it('keeps credential-looking values under secret names', () => {
+    expect(shellSecretValues({ ACME_API_TOKEN: 'shellsecret123', EDITOR: 'vim-editor' })).toEqual(['shellsecret123']);
+  });
+
+  it('leaves flags, modes, numbers and short values alone', () => {
+    expect(
+      shellSecretValues({
+        DISABLE_AUTH: 'true',
+        AUTH_MODE: 'none',
+        AUTH_ENABLED: 'disabled',
+        TOKEN_TTL: '86400000',
+        API_TOKEN: 'short',
+      }),
+    ).toEqual([]);
   });
 });
 

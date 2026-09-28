@@ -12,6 +12,7 @@ import { create } from 'zustand';
 
 import {
   handoffDraft,
+  handoffQuote,
   handoffTargetId,
   resolveHandoffTarget,
   type HandoffTarget,
@@ -51,6 +52,17 @@ export const useHandoffsStore = create<HandoffsState>((set, get) => ({
     const h = get().handoffs.find((x) => x.id === id);
     if (!h) return;
     const st = useStore.getState();
+    // The start page has one draft. Something typed there and not sent is
+    // the person's, so it is only replaced when they say so — a handoff's own
+    // earlier seed is fair game.
+    const existing = (st.conversationDrafts[WELCOME_KEY] ?? '').trim();
+    if (
+      existing &&
+      !get().handoffs.some((x) => existing.includes(handoffQuote(x))) &&
+      !window.confirm('Replace the unsent message on the start page with this handoff?')
+    ) {
+      return;
+    }
     const target = handoffTarget(h, st.projects, st.workspaces);
     if (target.kind === 'workspace') st.startNewConversationInWorkspace(target.workspaceId);
     else if (target.kind === 'project') st.startNewConversation(target.projectId);
@@ -87,18 +99,32 @@ export function initHandoffs(): () => void {
   const offEvents = window.overcli.onMainEvent((e) => {
     if (e.type === 'handoffsChanged') useHandoffsStore.getState().setHandoffs(e.handoffs);
   });
-  // The card belongs to the draft it seeded. Once that draft is gone —
-  // sent, or cleared by hand to write something else — the card goes too,
-  // so a later, unrelated send from the start page cannot settle it.
+  // The card belongs to the draft it seeded. Once that draft no longer holds
+  // the report — sent, cleared, or replaced by something else that seeds the
+  // start page — the card goes too, so a later, unrelated send from the
+  // start page cannot settle it.
   const offDraft = useStore.subscribe((s, prev) => {
     const draft = s.conversationDrafts[WELCOME_KEY];
-    if (draft === prev.conversationDrafts[WELCOME_KEY] || draft) return;
-    if (useHandoffsStore.getState().activeId) useHandoffsStore.getState().close();
+    if (draft === prev.conversationDrafts[WELCOME_KEY]) return;
+    const active = activeHandoff();
+    if (active && !(draft ?? '').includes(handoffQuote(active))) useHandoffsStore.getState().close();
   });
   return () => {
     offEvents();
     offDraft();
   };
+}
+
+function activeHandoff(): InboundHandoff | undefined {
+  const { handoffs, activeId } = useHandoffsStore.getState();
+  return activeId ? handoffs.find((h) => h.id === activeId) : undefined;
+}
+
+/// The handoff a message being sent from the start page settles: the active
+/// one, and only if its report is in what is being sent.
+export function handoffSettledBy(prompt: string): string | null {
+  const active = activeHandoff();
+  return active && prompt.includes(handoffQuote(active)) ? active.id : null;
 }
 
 export function handoffTarget(

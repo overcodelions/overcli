@@ -11,6 +11,12 @@ afterEach(() => {
 });
 
 describe('matchLines', () => {
+  it('filters by level before the limit, so an old error is not crowded out', () => {
+    const lines = ['ERROR order 1 failed', ...Array.from({ length: 300 }, (_, i) => `INFO order ${i} ok`)];
+    expect(matchLines(lines, 'order', 100, 'error')).toEqual([{ index: 0, text: 'ERROR order 1 failed' }]);
+    expect(matchLines(lines, 'order', 100)).toHaveLength(100);
+  });
+
   it('matches case-insensitively and keeps line positions', () => {
     const lines = ['Starting', 'Connection REFUSED on :5432', 'ok', 'connection refused again'];
     expect(matchLines(lines, 'refused')).toEqual([

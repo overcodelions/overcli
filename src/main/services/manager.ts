@@ -96,6 +96,7 @@ import type {
   TaskRun,
 } from './types';
 import type {
+  OutputLevel,
   OutputMatch,
   PortHolderKind,
   ReadinessProbe,
@@ -310,19 +311,25 @@ export class ServicesManager {
     workspaceIds: readonly string[],
     query: string,
     includeFiles: boolean,
+    level: OutputLevel = 'all',
   ): Promise<OutputMatch[]> {
     if (!query.trim()) return [];
+    const targets = workspaceIds.flatMap((workspaceId) =>
+      (this.stacks.get(workspaceId)?.services ?? []).map((spec) => ({ workspaceId, serviceId: spec.id })),
+    );
+    // Files are read side by side rather than one after another; the order
+    // of the answer is still the order of the services.
+    const perService = await Promise.all(
+      targets.map(async ({ workspaceId, serviceId }) =>
+        includeFiles
+          ? toMatches(workspaceId, serviceId, 'file', await readTail(this.logFile(workspaceId, serviceId)), query, undefined, level)
+          : toMatches(workspaceId, serviceId, 'recent', this.log(workspaceId, serviceId), query, undefined, level),
+      ),
+    );
     const out: OutputMatch[] = [];
-    for (const workspaceId of workspaceIds) {
-      const services = this.stacks.get(workspaceId)?.services ?? [];
-      for (const spec of services) {
-        if (out.length >= MATCHES_TOTAL) return out;
-        const recent = this.log(workspaceId, spec.id);
-        const matches = includeFiles
-          ? toMatches(workspaceId, spec.id, 'file', await readTail(this.logFile(workspaceId, spec.id)), query)
-          : toMatches(workspaceId, spec.id, 'recent', recent, query);
-        out.push(...matches.slice(0, MATCHES_TOTAL - out.length));
-      }
+    for (const matches of perService) {
+      if (out.length >= MATCHES_TOTAL) break;
+      out.push(...matches.slice(0, MATCHES_TOTAL - out.length));
     }
     return out;
   }

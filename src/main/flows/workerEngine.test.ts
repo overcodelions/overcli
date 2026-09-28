@@ -255,6 +255,7 @@ function makeHarness(
     setNow: (t: number) => {
       now = t;
     },
+    now: () => now,
     setSpend: (s: number) => {
       spend = s;
     },
@@ -3046,6 +3047,16 @@ describe('shift wrap-up', () => {
     await settle(h, workerBatch({ items: [item('a', 'done', { finishedAt: 1000 })] }));
     expect(h.direct).toHaveLength(0);
     await settle(h, workerBatch({ id: 'orch-2', items: [item('a', 'done', { finishedAt: 6000 })] }));
+    expect(h.direct).toHaveLength(1);
+  });
+
+  it('does not wrap up an old shift of a worker set up before wrap-up dates, when it is updated later', async () => {
+    const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })], deliverablesFor });
+    h.engine.start();
+    // Finished an hour before this launch; its batch is touched afterwards.
+    await settle(h, workerBatch({ items: [item('a', 'done', { finishedAt: h.now() - 3_600_000 })] }));
+    expect(h.direct).toHaveLength(0);
+    await settle(h, workerBatch({ id: 'orch-2', items: [item('a', 'done', { finishedAt: h.now() + 1 })] }));
     expect(h.direct).toHaveLength(1);
   });
 

@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 
-import type { OutputMatch } from '../../shared/services';
+import { lineAtLevel, type OutputLevel, type OutputMatch } from '../../shared/services';
 import { stripAnsi } from './logFile';
 
 /// Per service: a query that matches every line of a chatty service is not
@@ -27,11 +27,13 @@ const STAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) /;
 
 /// Lines containing `query`, case-insensitively, newest last. Colour codes
 /// are stripped before matching, so a search never misses a word because a
-/// dev server tinted half of it.
+/// dev server tinted half of it. `level` filters before the limit, so an
+/// old error is found under a pile of newer ordinary matches.
 export function matchLines(
   lines: readonly string[],
   query: string,
   limit = MATCHES_PER_SERVICE,
+  level: OutputLevel = 'all',
 ): { index: number; text: string }[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
@@ -40,7 +42,7 @@ export function matchLines(
   // matches are the ones worth keeping.
   for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
     const text = stripAnsi(lines[i]).replace(/\r?\n$/, '');
-    if (text.toLowerCase().includes(needle)) out.push({ index: i, text });
+    if (text.toLowerCase().includes(needle) && lineAtLevel(text, level)) out.push({ index: i, text });
   }
   return out.reverse();
 }
@@ -80,9 +82,10 @@ export function toMatches(
   lines: readonly string[],
   query: string,
   limit = MATCHES_PER_SERVICE,
+  level: OutputLevel = 'all',
 ): OutputMatch[] {
   if (source === 'recent') {
-    return matchLines(lines, query, limit).map((m) => ({ workspaceId, serviceId, source, ...m }));
+    return matchLines(lines, query, limit, level).map((m) => ({ workspaceId, serviceId, source, ...m }));
   }
   // Match on what the service printed, not on the stamp: "06:40" should find
   // a line that says 06:40, not every line written in that minute.
@@ -91,5 +94,6 @@ export function toMatches(
     stripped.map((l) => l.text),
     query,
     limit,
+    level,
   ).map((m) => ({ workspaceId, serviceId, source, ...m, at: stripped[m.index].at }));
 }

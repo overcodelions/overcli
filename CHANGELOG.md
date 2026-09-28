@@ -37,9 +37,10 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ### Security
 - The flow-step sandbox no longer allows writes to Claude's plugin cache or the shared npm/uv caches.
-- An MCP allowlist that names an account connector still blocks unlisted config-file servers.
+- An MCP allowlist that names an account connector still blocks every server not on it: config-file, project-local and plugin servers, and other account connectors.
+- A handoff's sender and title are quoted along with its report, so nothing another tool writes reads to the model as your own words.
 - Flow steps that fall back to the SDK transport are stopped instead of running unsandboxed.
-- `*_PRIMARY_KEY` values are treated as secrets. Login-shell secrets are masked in service logs.
+- `*_PRIMARY_KEY` values are treated as secrets. Login-shell secrets are masked in service logs; flag and mode values such as `true` or `none` are left readable.
 
 ## [0.19.1] - 2026-09-23
 

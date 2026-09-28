@@ -18,10 +18,12 @@ function harness(initial: {
   detailMode: DetailMode;
   sidebarVisible?: boolean;
   servicesListHidden?: boolean;
+  projects?: unknown[];
 }) {
   let state = {
     sidebarVisible: true,
     servicesListHidden: false,
+    projects: [{}] as unknown[],
     ...initial,
   };
   const set = (patch: unknown) => {
@@ -71,5 +73,13 @@ describe('the navigator a tab shows', () => {
     actions.setDetailMode('conversation');
     actions.setDetailMode('services');
     expect(onScreen(read()).serviceList).toBe(false);
+  });
+});
+
+describe('the sidebar toggle on Services with no projects', () => {
+  it('shows and hides the sidebar, since there is no service list to fold', () => {
+    const { actions, read } = harness({ detailMode: 'services', sidebarVisible: false, projects: [] });
+    actions.toggleSidebar();
+    expect(read()).toMatchObject({ sidebarVisible: true, servicesListHidden: false });
   });
 });

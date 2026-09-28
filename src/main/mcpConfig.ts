@@ -535,11 +535,41 @@ export function buildClaudeMcpConfigArg(
   return JSON.stringify({ mcpServers: picked });
 }
 
-/// Config-file servers NOT on the list, as `mcp__<name>` tool prefixes for `--disallowedTools`.
+/// Every server NOT on the list, as `mcp__<name>` tool prefixes for `--disallowedTools`.
 /// Used when a list names an account connector and strict mode can't be used.
-export function blockedMcpServerTools(names: string[], projectPath?: string, paths: Paths = defaultPaths()): string[] {
+///
+/// Config files alone miss most of what a session can load, so the list is
+/// built from everywhere a server can come from: the user config, the
+/// project's `.mcp.json`, the project's local-scope entry in `~/.claude.json`,
+/// and `seen` — every server Claude has reported, which is the only place
+/// plugin servers and the other account connectors show up.
+export function blockedMcpServerTools(
+  names: string[],
+  projectPath?: string,
+  paths: Paths = defaultPaths(),
+  seen: readonly string[] = [],
+): string[] {
   const keep = new Set(names.map((n) => n.trim()));
-  return Object.keys(readClaudeMcpServers(projectPath, paths))
-    .filter((n) => !keep.has(n))
-    .map((n) => `mcp__${n.replace(/[^A-Za-z0-9_-]/g, '_')}`);
+  const all = new Set([
+    ...Object.keys(readClaudeMcpServers(projectPath, paths)),
+    ...localScopeMcpServerNames(projectPath, paths),
+    ...seen,
+  ]);
+  const out = new Set<string>();
+  for (const n of all) if (!keep.has(n)) out.add(`mcp__${n.replace(/[^A-Za-z0-9_-]/g, '_')}`);
+  return [...out].sort();
+}
+
+/// Servers added with `claude mcp add --scope local`: kept in `~/.claude.json`
+/// under the project's path, not at the top level or in `.mcp.json`.
+function localScopeMcpServerNames(projectPath: string | undefined, paths: Paths): string[] {
+  if (!projectPath) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(paths.claude, 'utf-8')) as {
+      projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
+    };
+    return Object.keys(parsed?.projects?.[path.resolve(projectPath)]?.mcpServers ?? {});
+  } catch {
+    return [];
+  }
 }

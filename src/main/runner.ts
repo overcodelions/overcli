@@ -111,6 +111,7 @@ import {
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
 import { blockedMcpServerTools, buildClaudeMcpConfigArg } from './mcpConfig';
+import { seenMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
 import { isSafeIdSegment } from '../shared/flows/safeId';
@@ -560,7 +561,13 @@ export function effectiveMcpAllowlist(list: string[] | undefined): string[] | un
 /// `--strict-mcp-config` and still has something left to keep off-limits.
 export function mcpBlockedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string[] | undefined {
   if (args.backend !== 'claude' || !args.mcpAllowlist?.some(isAccountConnector)) return undefined;
-  return blockedMcpServerTools(args.mcpAllowlist, args.cwd);
+  let seen: string[] = [];
+  try {
+    seen = seenMcpServers();
+  } catch {
+    // No record yet (or no host in a test): config files still count.
+  }
+  return blockedMcpServerTools(args.mcpAllowlist, args.cwd, undefined, seen);
 }
 
 function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string {

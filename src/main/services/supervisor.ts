@@ -827,8 +827,8 @@ export class Supervisor {
     // start, but a first start straight after launch can wait on it.
     const shell = this.deps.shellEnv ? await this.deps.shellEnv() : undefined;
     if (shell) {
-      const found = Object.entries(shell).filter(([n, v]) => isSecretName(n) && v.length >= 4).map(([, v]) => v);
-      if (found.length !== this.shellSecrets.length) { this.shellSecrets = found; this.maskCache = undefined; }
+      const found = shellSecretValues(shell);
+      if (found.join('\0') !== this.shellSecrets.join('\0')) { this.shellSecrets = found; this.maskCache = undefined; }
     }
     if (this.deps.shellEnv && (this.runtime(spec.id).status !== 'starting' || this.procs.has(spec.id))) return;
 
@@ -1186,6 +1186,21 @@ const MIN_MASKED_LEN = 6;
 /// a value that contains another is not split into a masked half and a
 /// readable one. `split`/`join` rather than a regex: a password can contain
 /// any regex metacharacter.
+/// Values a service could have inherited from the login shell that are worth
+/// masking. A secret-looking NAME is not enough on its own: DISABLE_AUTH=true
+/// or AUTH_MODE=none would otherwise blank every `true` and `none` in every
+/// log. Flags, modes and numbers are left alone; what's left is long enough
+/// to be a credential.
+export function shellSecretValues(env: Readonly<Record<string, string>>): string[] {
+  const found = new Set<string>();
+  for (const [name, value] of Object.entries(env)) {
+    if (!isSecretName(name) || value.length < 8) continue;
+    if (/^(true|false|yes|no|on|off|none|null|enabled|disabled)$/i.test(value) || /^\d+$/.test(value)) continue;
+    found.add(value);
+  }
+  return [...found].sort();
+}
+
 export function maskSecrets(line: string, secrets: readonly string[]): string {
   return maskSecretsSorted(line, [...secrets].sort((a, b) => b.length - a.length));
 }
