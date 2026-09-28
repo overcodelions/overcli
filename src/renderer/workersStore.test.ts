@@ -203,6 +203,25 @@ describe('workersStore mirror', () => {
     expect(useFlowsStore.getState().activeRunId).toBeNull();
   });
 
+  it('openWorkerSettings lands on the desk once, and a plain visit after it does not', () => {
+    useWorkersStore.setState({
+      workers: { 'worker-1': makeWorker() },
+      view: 'today',
+      deskFocus: { workerId: 'worker-1', orchestrationId: 'orch-1', at: 5 },
+    });
+
+    useWorkersStore.getState().openWorkerSettings('worker-1');
+    let s = useWorkersStore.getState();
+    expect(s.selectedWorkerId).toBe('worker-1');
+    expect(s.view).toBe('worker');
+    expect(s.deskSettings).toBe('worker-1');
+    expect(s.deskFocus).toBeNull();
+
+    useWorkersStore.getState().selectWorker('worker-1');
+    s = useWorkersStore.getState();
+    expect(s.deskSettings).toBeNull();
+  });
+
   it('moveWorker re-prices the roster locally so the money moves with the row', async () => {
     const first = makeWorker({
       id: 'a',

@@ -80,6 +80,35 @@ export function boardGroup(entry: BoardEntry): BoardGroupId {
   return 'quiet';
 }
 
+/// How a worker's face in the rail is marked.
+///
+/// The rail keeps every worker in the slot you gave it — status must never
+/// move a row, or the row you were reaching for is somewhere else by the time
+/// you click. So the group a worker would be drawn under becomes a mark on its
+/// face instead. "Needs you" splits in two because the rail has no caption to
+/// say why: violet is waiting on a decision, amber is stopped.
+export type RailMark = 'waiting' | 'stopped' | 'running' | 'today' | 'quiet' | 'bench';
+
+export function railMark(entry: BoardEntry): RailMark {
+  const group = boardGroup(entry);
+  if (group === 'needsYou') return entry.review > 0 ? 'waiting' : 'stopped';
+  return group;
+}
+
+/// Where a face dropped on `targetId` lands, as the `insertBefore` index
+/// `dropWorker` takes — an index into the FULL roster order, moved worker
+/// included, so a drop while the rail is filtered can't reshuffle the workers
+/// the filter hid. Null when the target is not on the roster.
+export function railDropIndex(
+  ordered: readonly Pick<Worker, 'id'>[],
+  targetId: string,
+  after: boolean,
+): number | null {
+  const index = ordered.findIndex((w) => w.id === targetId);
+  if (index === -1) return null;
+  return after ? index + 1 : index;
+}
+
 export type BoardGroups = Record<BoardGroupId, BoardEntry[]>;
 
 /// The whole roster, split. Input order is preserved inside every group, so

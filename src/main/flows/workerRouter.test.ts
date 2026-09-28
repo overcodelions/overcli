@@ -72,7 +72,7 @@ describe('routeErrand', () => {
 
   it('skips the model when only one worker is on duty', async () => {
     const res = await routeErrand('anything', [crew[0], crew[2]], deps);
-    expect(res).toMatchObject({ ok: true, workerId: 'w1', confident: true });
+    expect(res).toMatchObject({ ok: true, workerId: 'w1', confident: false });
     expect(mockQuery).not.toHaveBeenCalled();
   });
 

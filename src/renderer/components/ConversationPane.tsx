@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from '../store';
+import { collectCoordinatorMembers, useStore } from '../store';
 import { useRunnerCompletedAt, useRunnerEvents } from '../runnersStore';
 import { ConversationHeader } from './ConversationHeader';
 import { ChatView } from './ChatView';
@@ -58,6 +58,20 @@ export function ConversationPane() {
     () => (gitStatus?.changes ?? []).map((c) => c.path),
     [gitStatus?.changes],
   );
+  // Where this conversation's changes live. A workspace agent's coordinator
+  // has no worktree of its own — each member does — and its change list names
+  // files `<member>/<path>` (see `refreshGitStatus`), so each member worktree
+  // is a checkout with that prefix.
+  const memberIds = conv?.workspaceAgentMemberIds;
+  const changedCheckouts = useMemo(() => {
+    if (memberIds?.length) {
+      return collectCoordinatorMembers(projects, memberIds).map((m) => ({
+        path: m.worktreePath,
+        prefix: m.name,
+      }));
+    }
+    return conv?.worktreePath ? [{ path: conv.worktreePath }] : [];
+  }, [projects, memberIds, conv?.worktreePath]);
   // Count of file-modifying tool uses in this conversation. When it
   // changes we re-probe git — that keeps the ChangesBar and the
   // header +/- badge in lockstep with the working tree.
@@ -147,16 +161,16 @@ export function ConversationPane() {
           <ChangesBar
             files={gitStatus?.changes ?? []}
             branch={gitStatus?.currentBranch}
-            // `isAgentConversation` keys off the same field: a conversation
-            // with a worktree path is running in its own tree, borrowed or
-            // minted, not in the project's checkout.
-            worktree={!!conv?.worktreePath}
+            // Same test as `isAgentConversation`: a worktree of its own
+            // (borrowed or minted), or a workspace agent's member worktrees —
+            // either way not the project's checkout.
+            worktree={changedCheckouts.length > 0}
             plain={plainLanguage}
             action={
-              conv?.worktreePath && !plainLanguage ? (
+              changedCheckouts.length > 0 && !plainLanguage ? (
                 <RunOnBranchButton
                   workspaceIds={serviceWorkspaceIds}
-                  checkouts={[{ path: conv.worktreePath }]}
+                  checkouts={changedCheckouts}
                   files={changedPaths}
                 />
               ) : undefined

@@ -25,7 +25,6 @@ import {
   workspaceActivityAt,
   type RecentConversationItem,
 } from './sidebarItems';
-import { WorkersSidebar, WorkersSidebarFooter } from './workers/WorkersSidebar';
 import { newConversationLabel, resolveNewConversationTarget } from '../newConversationTarget';
 import { formatShortcutDef, SHORTCUTS, startNewConversationHere } from '../shortcuts';
 import {
@@ -41,6 +40,7 @@ import {
   type PlaceStatus,
 } from '../places';
 import { PlusIcon, PopMenu, ProjectPlace, WorkspacePlace, statusOfPlace } from './SidebarPlaces';
+import { useHandoffCountsByPlace } from '../handoffsStore';
 
 // Collecting what the sidebar shows moved to ./sidebarItems so both layouts
 // feed from one place. Re-exported here because the sheets and the
@@ -48,7 +48,6 @@ import { PlusIcon, PopMenu, ProjectPlace, WorkspacePlace, statusOfPlace } from '
 // and a rename would be churn with no reader-facing benefit.
 export { collectActiveCandidates, isAgentConversation };
 
-const WORKERS_EXPANDED_KEY = 'sidebar.workersExpanded';
 /// Which places you have opened. Persisted for the same reason the roster's
 /// openings are: places fold by default now, and losing what you opened on
 /// every reload would make opening one feel pointless.
@@ -186,30 +185,6 @@ export function Sidebar() {
       else next.add(id);
       return next;
     });
-  // The Workers roster runs the same model — see PLACES_OPEN_KEY.
-  const [workersExpanded, setWorkersExpanded] = useState<Set<UUID>>(() => loadIdSet(WORKERS_EXPANDED_KEY));
-  const updateWorkersExpanded = (updater: (cur: Set<UUID>) => Set<UUID>) =>
-    setWorkersExpanded((cur) => {
-      const next = updater(cur);
-      if (next !== cur) saveIdSet(WORKERS_EXPANDED_KEY, next);
-      return next;
-    });
-  const toggleWorkerExpanded = (id: UUID) =>
-    updateWorkersExpanded((cur) => {
-      const next = new Set(cur);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  // Idempotent — returns the same set untouched when nothing changes —
-  // because the roster calls it from an effect on every selection render.
-  const expandWorker = (id: UUID) =>
-    updateWorkersExpanded((cur) => {
-      if (cur.has(id)) return cur;
-      const next = new Set(cur);
-      next.add(id);
-      return next;
-    });
   const query = search.trim().toLowerCase();
 
   // Opening a conversation opens the place it lives in — and its workspace,
@@ -238,6 +213,9 @@ export function Sidebar() {
   // ---- places -------------------------------------------------------------
 
   const runList = useMemo(() => Object.values(flowRuns), [flowRuns]);
+  // Handoffs from other tools count as needing you in the place they will
+  // open in — see handoffsStore.
+  const handoffCounts = useHandoffCountsByPlace();
   const placeStatus = useMemo(() => {
     const cache = new Map<string, PlaceStatus>();
     return (ref: PlaceRef) => {
@@ -245,11 +223,13 @@ export function Sidebar() {
       let s = cache.get(id);
       if (!s) {
         s = statusOfPlace(ref, runList, runners, now);
+        const handed = handoffCounts.get(id) ?? 0;
+        if (handed) s = { ...s, needsYou: s.needsYou + handed };
         cache.set(id, s);
       }
       return s;
     };
-  }, [runList, runners, now]);
+  }, [runList, runners, now, handoffCounts]);
   const placeActivity = useMemo(() => {
     const cache = new Map<string, number>();
     const of = (ref: PlaceRef): number => {
@@ -356,24 +336,14 @@ export function Sidebar() {
     [showTree, query, runList],
   );
 
-  // Collapse-all acts on whatever the sidebar is currently SHOWING. On the
-  // Workers tab that is the roster, not the place list.
-  const visiblePlaceIds = useMemo(
+  // Collapse-all acts on the places the sidebar is currently showing.
+  const allGroupIds = useMemo(
     () => [...arranged.pinned, ...arranged.active].map(placeId),
     [arranged],
   );
-  const allGroupIds = useMemo(
-    () => (detailMode === 'workers' ? Object.keys(workers) : visiblePlaceIds),
-    [detailMode, workers, visiblePlaceIds],
-  );
-  const allCollapsed =
-    allGroupIds.length > 0 &&
-    (detailMode === 'workers'
-      ? allGroupIds.every((id) => !workersExpanded.has(id))
-      : !allGroupIds.some((id) => placesOpen.has(id)));
+  const allCollapsed = allGroupIds.length > 0 && !allGroupIds.some((id) => placesOpen.has(id));
   const toggleAll = () => {
-    const update = detailMode === 'workers' ? updateWorkersExpanded : updatePlacesOpen;
-    update((cur) => {
+    updatePlacesOpen((cur) => {
       const next = new Set(cur);
       for (const id of allGroupIds) {
         if (allCollapsed) next.add(id);
@@ -566,7 +536,7 @@ export function Sidebar() {
             }
           }}
           placeholder={
-            detailMode === 'workers' ? 'Search workers and their work' : showTree ? 'Filter places' : 'Search'
+            showTree ? 'Filter places' : 'Search'
           }
           aria-label={showTree ? 'Filter places' : 'Search'}
           className="field flex-1 min-w-0 px-2 py-1 pr-6 text-xs"
@@ -605,7 +575,7 @@ export function Sidebar() {
         </button>
         {/* Nothing to fold in Stream — it has no groups to collapse — so the
             control goes rather than sitting there permanently disabled. */}
-        {(showTree || detailMode === 'workers') && (
+        {showTree && (
           <button
             onClick={toggleAll}
             disabled={allGroupIds.length === 0}
@@ -618,11 +588,11 @@ export function Sidebar() {
         )}
       </div>
       {/* The switch is the setting: it writes the same stored value the
-          Settings sheet mirrors, so the two can never disagree. Hidden on
-          Workers, whose sidebar is the roster and has no second layout. */}
+          Settings sheet mirrors, so the two can never disagree. The Workers
+          tab never gets here — it draws its own rail (WorkersRail). */}
       {/* Nothing to lay out until there is a project: a choice between two
           views of nothing is the first thing a newcomer would have read. */}
-      {detailMode !== 'workers' && (projects.length > 0 || workspaces.length > 0) && (
+      {(projects.length > 0 || workspaces.length > 0) && (
         <div className="mx-2 mt-1 flex gap-0.5 rounded-md border border-card-strong bg-card p-0.5">
           {/* Places first: with what's running and what needs you on every
               row, it answers "what was I doing" as well as "where does this
@@ -641,7 +611,7 @@ export function Sidebar() {
           />
         </div>
       )}
-      {detailMode !== 'workers' && showTree && query && (
+      {showTree && query && (
         <div className="mx-2 mt-1.5 flex flex-col gap-1.5">
           <div className="flex flex-wrap gap-1">
             {FILTERS.map(([value, label]) => (
@@ -685,19 +655,6 @@ export function Sidebar() {
       )}
 
       <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
-        {/* The Workers tab gets its own navigator. Workers are a fleet, not a
-            branch of one project — a worker hired against a workspace root
-            launches runs that land in member repos — so nesting each one under
-            a project group made the tree lie about where its work lives. */}
-        {detailMode === 'workers' ? (
-          <WorkersSidebar
-            query={query}
-            expanded={workersExpanded}
-            onToggleExpanded={toggleWorkerExpanded}
-            onExpand={expandWorker}
-          />
-        ) : (
-        <>
         {!query && showActiveSection && activeEntries.length > 0 && (
           <>
             <SidebarSectionTitle label="Working on" />
@@ -800,17 +757,9 @@ export function Sidebar() {
         )}
 
         <ArchivedGroup />
-        </>
-        )}
       </nav>
 
       <div className="border-t border-card px-2 py-2 flex flex-col gap-1">
-        {/* Project actions mean nothing on the Workers tab; its occasional
-            views (Funds, Report) take the slot instead. */}
-        {detailMode === 'workers' ? (
-          <WorkersSidebarFooter />
-        ) : (
-          <>
             {/* Three ways to add a place, behind one button: they are one
                 decision ("I want another place here"), and three permanent
                 rows of it were the heaviest thing in the footer. */}
@@ -841,8 +790,6 @@ export function Sidebar() {
                 ]}
               />
             )}
-          </>
-        )}
         <div className="flex items-center gap-1 mt-1">
           <SidebarIconButton label="Extensions" onClick={() => openSheet({ type: 'capabilities' })} />
           <SidebarIconButton

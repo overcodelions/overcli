@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { raiseComposer, registerComposer } from '../composerTarget';
 import { useRunnerEvents, useRunnersStore } from '../runnersStore';
 import { Attachment, StreamEvent } from '@shared/types';
 import { ATTACHMENT_ACCEPT, intakeAttachments } from '../attachmentIntake';
@@ -207,6 +208,21 @@ export function Composer({
     const end = el.value.length;
     el.setSelectionRange(end, end);
   }, [autoFocus, draftKey, focusSignal]);
+
+  // Lets the file pane's "Ask" drop a quote into whichever composer is on
+  // screen. See composerTarget.
+  useEffect(
+    () =>
+      registerComposer(draftKey, () => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        const end = el.value.length;
+        el.setSelectionRange(end, end);
+        el.scrollTop = el.scrollHeight;
+      }),
+    [draftKey],
+  );
 
   // @-mention state. `mention` is the active trigger (position of the `@`
   // in the draft + the live query typed after it); null when no popover
@@ -587,7 +603,10 @@ export function Composer({
       <textarea
         ref={textareaRef}
         value={draft}
-        onFocus={maybeFlashEasterPlaceholder}
+        onFocus={() => {
+          raiseComposer(draftKey);
+          maybeFlashEasterPlaceholder();
+        }}
         onChange={(e) => {
           if (easterPlaceholder) clearEasterPlaceholder();
           historyIndexRef.current = -1;

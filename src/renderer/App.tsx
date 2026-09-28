@@ -20,8 +20,14 @@ import type { MenuCommand } from '@shared/types';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
+import {
+  RAIL_COLLAPSED_WIDTH,
+  RAIL_EXPANDED_WIDTH,
+  WorkersRail,
+} from './components/workers/WorkersRail';
 import { focusedFlowConversationId } from './flowFocus';
 import { useFlowsStore } from './flowsStore';
+import { initHandoffs } from './handoffsStore';
 import { SHORTCUTS, formatShortcutDef } from './shortcuts';
 import { anyRunJustFinished, createUnreviewedRefresher } from './unreviewedRefresh';
 import { useOrchestratorStore } from './orchestratorStore';
@@ -39,6 +45,7 @@ import { fileEditorRootFor } from './fileEditorRoot';
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 520;
+const RAIL_EXPANDED_KEY = 'workers.railExpanded';
 const SUBAGENT_DRAWER_MIN = 320;
 const SUBAGENT_DRAWER_MAX = 820;
 const SUBAGENT_DRAWER_DEFAULT = 480;
@@ -61,7 +68,7 @@ export function App() {
   const init = useStore((s) => s.init);
   const ingest = useStore((s) => s.ingestMainEvent);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
-  const servicesSidebarVisible = useStore((s) => s.servicesSidebarVisible);
+  const servicesListHidden = useStore((s) => s.servicesListHidden);
   const backendHealth = useStore((s) => s.backendHealth);
   const detailMode = useStore((s) => s.detailMode);
   const explorerRootPath = useStore((s) => s.explorerRootPath);
@@ -179,6 +186,9 @@ export function App() {
 
   // Back/forward across views (⌘←/⌘→, and the title-bar arrows).
   useEffect(() => installNavHistory(), []);
+
+  // Work other tools handed over — see handoffsStore.
+  useEffect(() => initHandoffs(), []);
 
   // Re-check which finished runs still have unreviewed work when the window
   // regains focus — reviewing means leaving this app, so coming back is when
@@ -467,36 +477,51 @@ export function App() {
   // the sidebar to miss) and keeps the first frame stable.
   const onboarding = projects.length === 0 && !anyBackendReady(backendHealth);
   // Services brings its own navigation — the service list IS what you move
-  // between there — so it reads its own preference and opens without the
-  // conversations sidebar. Computed here rather than written into state, so no
-  // path out of the tab can leave the sidebar hidden behind it.
+  // between there — so it never shows the conversations sidebar; the sidebar
+  // toggle folds the list instead (`servicesListHidden`). Computed here rather
+  // than written into state, so no path out of the tab can leave the sidebar
+  // hidden behind it.
   //
   // With no projects there is no service list either, so that reasoning stops
   // holding: the tab was dropping the window's only rail and the page slid
   // left, which read as a rendering fault rather than a choice. Until there
   // is something to navigate, Services keeps the sidebar like every other tab.
   const servicesHasNavigation = projects.length > 0;
-  // Working inside a run on the Workers tab — Today's Run tab, or a run on a
-  // worker's desk — folds the sidebar away: the run pane, its conversation
-  // and the file beside it need the width, and the roster is not what you are
-  // looking at. Computed, never stored, so leaving the run or the tab brings
-  // the sidebar back exactly as it was.
   const sidebarShortcut = useMemo(() => {
     const def = SHORTCUTS.find((d) => d.id === 'sidebar.toggle');
     return def ? formatShortcutDef(def) : '';
   }, []);
-  const workerRunOnScreen = useFlowsStore((s) => detailMode === 'workers' && !!s.activeRunId);
-  // "Show it anyway" for the run view, from the edge tab. Lasts until you
-  // leave the run, so the next run folds the sidebar away again.
-  const [peekSidebar, setPeekSidebar] = useState(false);
-  useEffect(() => {
-    if (!workerRunOnScreen) setPeekSidebar(false);
-  }, [workerRunOnScreen]);
   const sidebarWanted =
-    (detailMode === 'services'
-      ? servicesSidebarVisible || !servicesHasNavigation
-      : sidebarVisible) && !onboarding;
-  const showSidebar = sidebarWanted && !(workerRunOnScreen && !peekSidebar);
+    (detailMode === 'services' ? !servicesHasNavigation && sidebarVisible : sidebarVisible) &&
+    !onboarding;
+  // On Services the edge tab brings back the folded service list, not the
+  // conversations sidebar.
+  const servicesListFolded = detailMode === 'services' && servicesHasNavigation && servicesListHidden;
+  // The Workers tab swaps the sidebar for its rail of faces. It used to fold
+  // the sidebar away whenever a run was on screen, to give the run its width;
+  // the rail is thin enough to stay put, and a navigator that vanished every
+  // time you opened a run was part of what made clicking around the tab jumpy.
+  const workersRail = detailMode === 'workers' && sidebarWanted;
+  const [railExpanded, setRailExpanded] = useState(() => {
+    try {
+      return localStorage.getItem(RAIL_EXPANDED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const toggleRail = useCallback(() => {
+    setRailExpanded((open) => {
+      try {
+        localStorage.setItem(RAIL_EXPANDED_KEY, String(!open));
+      } catch {
+        // A rail that forgets its width on the next launch is fine.
+      }
+      return !open;
+    });
+  }, []);
+  const railWidth = railExpanded ? RAIL_EXPANDED_WIDTH : RAIL_COLLAPSED_WIDTH;
+  const showSidebar = !workersRail && sidebarWanted;
+  const leftWidth = workersRail ? railWidth : showSidebar ? sidebarWidth : 0;
   // Slide rather than snap when the sidebar comes or goes on its own. Only
   // for that moment: a transition left on would make dragging its edge lag.
   // Not when the tab itself changed: switching tabs already swaps the whole
@@ -531,7 +556,7 @@ export function App() {
   const sideFileMax = Math.max(
     SIDE_FILE_MIN,
     windowWidth -
-      (showSidebar ? sidebarWidth : 0) -
+      leftWidth -
       (subagentDrawerParentId && drawerConvId ? subagentDrawerWidth : 0) -
       (logDrawerOpen ? logDrawerWidth : 0) -
       MAIN_MIN,
@@ -550,11 +575,11 @@ export function App() {
   // Only until the user drags it: their width then holds for the session.
   useEffect(() => {
     if (!sideFileVisible || detailMode !== 'workers' || sideFileDragged.current) return;
-    const content = windowWidth - (showSidebar ? sidebarWidth : 0);
+    const content = windowWidth - leftWidth;
     setSideFileWidth(
       Math.max(SIDE_FILE_MIN, Math.min(Math.round(content / 2), sideFileMax)),
     );
-  }, [sideFileVisible, detailMode, windowWidth, showSidebar, sidebarWidth, sideFileMax]);
+  }, [sideFileVisible, detailMode, windowWidth, leftWidth, sideFileMax]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
@@ -563,16 +588,15 @@ export function App() {
         {/* The way back to a hidden sidebar, where it went: a slim tab on the
             left edge that glows on hover. Without it a folded sidebar only
             came back through a shortcut you had to already know. */}
-        {!showSidebar && !sidebarSliding && !onboarding && (
+        {!showSidebar &&
+          !workersRail &&
+          !sidebarSliding &&
+          !onboarding &&
+          (detailMode !== 'services' || !servicesHasNavigation || servicesListFolded) && (
           <button
-            onClick={() => {
-              if (sidebarWanted && workerRunOnScreen) setPeekSidebar(true);
-              else useStore.getState().toggleSidebar();
-            }}
-            // The shortcut toggles the saved setting, which a run view
-            // overrides — so it is only offered where it would work.
-            title={`Show the sidebar${sidebarShortcut && !workerRunOnScreen ? ` (${sidebarShortcut})` : ''}`}
-            aria-label="Show the sidebar"
+            onClick={() => useStore.getState().toggleSidebar()}
+            title={`Show the ${servicesListFolded ? 'service list' : 'sidebar'}${sidebarShortcut ? ` (${sidebarShortcut})` : ''}`}
+            aria-label={servicesListFolded ? 'Show the service list' : 'Show the sidebar'}
             className="sidebar-edge-tab"
           >
             <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden>
@@ -580,7 +604,12 @@ export function App() {
             </svg>
           </button>
         )}
-        {(showSidebar || sidebarSliding) && (
+        {workersRail && (
+          <div style={{ width: railWidth }} className="relative z-30 h-full flex-shrink-0">
+            <WorkersRail expanded={railExpanded} onToggleExpanded={toggleRail} />
+          </div>
+        )}
+        {(showSidebar || sidebarSliding) && !workersRail && (
           <>
             <div
               ref={sidebarPanel}

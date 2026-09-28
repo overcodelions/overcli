@@ -28,10 +28,15 @@ import { useDigest } from './useDigest';
 import { buildWorkQueue, upcomingShifts, type QueueRow } from './workQueue';
 import { useDeliverables } from './useDeliverables';
 
-/// The item Today had open when you last left it, for this session.
-let lastPicked: OpenItem = null;
+/// The item Today had open when you last left it, for this session — per
+/// inbox, so opening a worker's inbox and coming back to everyone lands where
+/// each one was. Keyed by worker id, '' for the whole crew.
+const lastPicked: Record<string, OpenItem> = {};
 
-export function TodayPane() {
+/// `workerId` narrows the page to one worker's inbox. The caller keys the
+/// pane on it, so switching inboxes starts clean rather than reading one
+/// worker's open item as "answered" because the other's list lacks it.
+export function TodayPane({ workerId = null }: { workerId?: string | null }) {
   const workers = useWorkersStore((s) => s.workers);
   const nextShiftAt = useWorkersStore((s) => s.nextShiftAt);
   const shiftProgress = useWorkersStore((s) => s.shiftProgress);
@@ -53,16 +58,20 @@ export function TodayPane() {
   const previewEmpty = useWorkersStore((s) => s.previewEmpty);
   const setPreviewEmpty = useWorkersStore((s) => s.setPreviewEmpty);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
-  const queue = useMemo(
-    () =>
-      buildWorkQueue(previewNoWork ? {} : orchestrations, runs, workers, previewNoWork ? {} : shiftProgress, now, runsLoaded, runners),
-    [orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners, previewNoWork],
-  );
+  const queue = useMemo(() => {
+    const all = buildWorkQueue(previewNoWork ? {} : orchestrations, runs, workers, previewNoWork ? {} : shiftProgress, now, runsLoaded, runners);
+    if (!workerId) return all;
+    const mine = (row: QueueRow) => row.workerId === workerId;
+    return { running: all.running.filter(mine), needsYou: all.needsYou.filter(mine), finished: all.finished.filter(mine) };
+  }, [orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners, previewNoWork, workerId]);
   // Every pending shift, soonest first. No horizon: the spine trims it
   // itself, and the empty reader lists them all.
   const soon = useMemo(
-    () => upcomingShifts(workers, nextShiftAt, shiftProgress, now, Infinity),
-    [workers, nextShiftAt, shiftProgress, now],
+    () =>
+      upcomingShifts(workers, nextShiftAt, shiftProgress, now, Infinity).filter(
+        (row) => !workerId || row.workerId === workerId,
+      ),
+    [workers, nextShiftAt, shiftProgress, now, workerId],
   );
   const spine = useMemo(() => buildTodaySpine(queue, soon, now), [queue, soon, now]);
 
@@ -99,10 +108,11 @@ export function TodayPane() {
   // to the default rather than leaving a stale reader behind.
   // Survives leaving the tab: Chat and back should land on the item you had
   // open, not on whatever the inbox would pick fresh.
-  const [picked, setPicked] = useState<OpenItem>(() => lastPicked);
+  const inboxKey = workerId ?? '';
+  const [picked, setPicked] = useState<OpenItem>(() => lastPicked[inboxKey] ?? null);
   useEffect(() => {
-    lastPicked = picked;
-  }, [picked]);
+    lastPicked[inboxKey] = picked;
+  }, [inboxKey, picked]);
   const pickedRow = picked ? findRow(model, picked) : undefined;
   // Keep the open item's key on the row it resolved to, so the list still
   // highlights it after an answer folds into a group.
@@ -186,7 +196,7 @@ export function TodayPane() {
   return (
     <div className="flex min-h-0 flex-1">
       <div className="min-h-0 w-[420px] shrink-0 overflow-y-auto border-r border-card px-5 pb-10 pt-6">
-        <InboxList model={model} open={open} onOpen={setPicked} />
+        <InboxList model={model} open={open} onOpen={setPicked} workerId={workerId} />
         {/* Debug only: the empty states are screens you can never reach
             again once the crew has worked, so they need a way in. */}
         {showDebug && (

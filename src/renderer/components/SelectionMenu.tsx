@@ -1,5 +1,5 @@
-// What you can do with text you just selected in a service's output: copy it,
-// ask about it, or hand it to a flow.
+// What you can do with text you just selected in a service's output or an
+// open file: copy it, ask about it, or (for output) hand it to a flow.
 //
 // It appears on mouse-up rather than on every selection change, so dragging
 // across a stack trace is not chased by a bar, and it goes away on anything
@@ -23,6 +23,8 @@ export function SelectionMenu({
   onAsk,
   flows,
   onRunFlow,
+  request,
+  askLabel,
 }: {
   container: RefObject<HTMLElement>;
   /// The text a range stands for. The pane decides: a log laid out in columns
@@ -30,8 +32,14 @@ export function SelectionMenu({
   readText: (range: Range, fallback: string) => string;
   onOpen?: () => void;
   onAsk: (text: string) => void;
-  flows: readonly { id: string; name: string }[];
-  onRunFlow: (flowId: string, text: string) => void;
+  /// Both absent hides "Run flow…".
+  flows?: readonly { id: string; name: string }[];
+  onRunFlow?: (flowId: string, text: string) => void;
+  /// Opens the menu without a text selection — the file pane's change
+  /// gutter, where a click stands for the lines. A new object each time.
+  request?: { text: string; rect: DOMRect } | null;
+  /// Label for the ask button.
+  askLabel?: string;
 }) {
   const [picked, setPicked] = useState<Picked | null>(null);
   const [choosing, setChoosing] = useState(false);
@@ -46,6 +54,22 @@ export function SelectionMenu({
     setCopied(false);
   };
 
+  const open = (text: string, rect: DOMRect) => {
+    const below = rect.top < 60;
+    setPicked({
+      text,
+      top: below ? rect.bottom + 6 : rect.top - 6,
+      left: Math.min(Math.max(rect.left, 8), window.innerWidth - 280),
+      below,
+    });
+    setChoosing(false);
+    setCopied(false);
+  };
+
+  useEffect(() => {
+    if (request?.text.trim()) open(request.text, request.rect);
+  }, [request]);
+
   useEffect(() => {
     const root = container.current;
     if (!root) return;
@@ -59,16 +83,7 @@ export function SelectionMenu({
         if (!root.contains(range.commonAncestorContainer)) return;
         const text = latest.current.readText(range, selection.toString());
         if (!text.trim()) return;
-        const rect = range.getBoundingClientRect();
-        const below = rect.top < 60;
-        setPicked({
-          text,
-          top: below ? rect.bottom + 6 : rect.top - 6,
-          left: Math.min(Math.max(rect.left, 8), window.innerWidth - 280),
-          below,
-        });
-        setChoosing(false);
-        setCopied(false);
+        open(text, range.getBoundingClientRect());
         latest.current.onOpen?.();
       }, 0);
     };
@@ -81,12 +96,14 @@ export function SelectionMenu({
     document.addEventListener('mouseup', onUp);
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
-    root.addEventListener('scroll', close);
+    // Captured: in the file pane the scroller is the editor inside the root,
+    // and scroll events don't bubble.
+    root.addEventListener('scroll', close, true);
     return () => {
       document.removeEventListener('mouseup', onUp);
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
-      root.removeEventListener('scroll', close);
+      root.removeEventListener('scroll', close, true);
     };
   }, [container]);
 
@@ -97,7 +114,7 @@ export function SelectionMenu({
     window.getSelection()?.removeAllRanges();
   };
 
-  const list = choosing && (
+  const list = choosing && flows && onRunFlow && (
     <div className="max-h-[240px] w-[260px] overflow-y-auto border-card py-1">
       {flows.length === 0 ? (
         <div className="px-3 py-1.5 text-ink-faint">No flows yet</div>
@@ -151,11 +168,13 @@ export function SelectionMenu({
             done();
           }}
         >
-          Ask AI
+          {askLabel ?? 'Ask AI'}
         </MenuButton>
-        <MenuButton active={choosing} onClick={() => setChoosing((c) => !c)}>
-          Run flow…
-        </MenuButton>
+        {flows && onRunFlow && (
+          <MenuButton active={choosing} onClick={() => setChoosing((c) => !c)}>
+            Run flow…
+          </MenuButton>
+        )}
       </div>
       {picked.below && list}
     </div>,

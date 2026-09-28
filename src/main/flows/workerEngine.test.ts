@@ -3029,6 +3029,26 @@ describe('shift wrap-up', () => {
     expect(h.parked[0].allowedFlowIds).not.toContain('digest');
   });
 
+  it('does not wrap up past shifts on restart', async () => {
+    const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })], deliverablesFor });
+    h.orchestrations.set('orch-1', workerBatch({ items: [item('a', 'done')] }));
+    h.engine.start();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.direct).toHaveLength(0);
+  });
+
+  it('skips shifts that finished before the wrap-up was set', async () => {
+    const h = makeHarness({
+      seed: [seedWorker({ wrapUpFlowId: 'digest', wrapUpSince: 5000 })],
+      deliverablesFor,
+    });
+    h.engine.start();
+    await settle(h, workerBatch({ items: [item('a', 'done', { finishedAt: 1000 })] }));
+    expect(h.direct).toHaveLength(0);
+    await settle(h, workerBatch({ id: 'orch-2', items: [item('a', 'done', { finishedAt: 6000 })] }));
+    expect(h.direct).toHaveLength(1);
+  });
+
   it('keeps a removed wrap-up removed when the worker is saved', () => {
     const h = makeHarness({ seed: [seedWorker({ wrapUpFlowId: 'digest' })] });
     h.engine.start();

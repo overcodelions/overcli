@@ -196,6 +196,10 @@ interface WorkersState {
   /// whichever worker happened to be hired first — an accident of sort order
   /// standing in for a front page.
   view: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
+  /// Today narrowed to one worker — what a face in the rail opens. Null is
+  /// the whole crew. Only read while `view` is 'today'; the Today button
+  /// clears it.
+  inboxWorkerId: string | null;
   /// Bumped every time a worker is picked from the roster, including a pick
   /// of the one already on screen. The pane keys the worker's screen on it, so
   /// clicking a name lands on that worker's desk rather than on whichever tab
@@ -208,6 +212,11 @@ interface WorkersState {
   /// day too; `at` is what puts the desk on the right date instead of on
   /// today, where the turn isn't.
   deskFocus: { workerId: string; orchestrationId: string; at: number } | null;
+  /// Open the desk on Settings instead of its front page, set by arriving
+  /// from a shortcut that is only ever asking for the settings — the rail's
+  /// right-click menu, the gear beside "Desk →". The desk reads it once when
+  /// it mounts and clears it, so the next plain visit lands on the front.
+  deskSettings: string | null;
   /// Render the Workers tab as if nobody had been hired, without firing
   /// anyone. Session-only and never persisted: it exists so the empty state
   /// can be LOOKED at — the one screen you cannot reach once the feature is
@@ -435,6 +444,8 @@ interface WorkersActions {
   /// earlier would swallow the worker just asked for.
   openWorkerDesk(id: string): void;
   showToday(): void;
+  /// Today, filtered to one worker's work — its inbox.
+  showWorkerInbox(id: string): void;
   showQueue(): void;
   showCalendar(): void;
   showFunds(): void;
@@ -449,6 +460,8 @@ interface WorkersActions {
   setPreviewNoWork(on: boolean): void;
   openWorkerActivity(workerId: string, orchestrationId: string, at: number): void;
   clearDeskFocus(): void;
+  openWorkerSettings(id: string): void;
+  clearDeskSettings(): void;
   moveWorker(id: string, direction: -1 | 1): Promise<void>;
   /// Drop a worker at an arbitrary slot. `insertBefore` is a gap index into
   /// the current order — what a drop indicator drawn between two rows means.
@@ -784,8 +797,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   heldHandoffs: [],
   allocation: null,
   view: 'today',
+  inboxWorkerId: null,
   selectSeq: 0,
   deskFocus: null,
+  deskSettings: null,
   previewEmpty: false,
   previewNoWork: false,
   busy: false,
@@ -955,8 +970,14 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       selectedWorkerId: id,
       view: 'worker',
       deskFocus: null,
+      deskSettings: null,
       selectSeq: st.selectSeq + 1,
     }));
+  },
+
+  openWorkerSettings(id) {
+    get().openWorkerDesk(id);
+    set({ deskSettings: id });
   },
 
   openWorkerDesk(id) {
@@ -965,7 +986,12 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   showToday() {
     leavePane(get);
-    set({ view: 'today' });
+    set({ view: 'today', inboxWorkerId: null });
+  },
+
+  showWorkerInbox(id) {
+    leavePane(get);
+    set({ view: 'today', inboxWorkerId: id });
   },
 
   showQueue() {
@@ -992,6 +1018,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     if (get().deskFocus) set({ deskFocus: null });
   },
 
+  clearDeskSettings() {
+    if (get().deskSettings) set({ deskSettings: null });
+  },
+
   setPreviewNoWork(on) {
     set({ previewNoWork: on });
   },
@@ -1014,6 +1044,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       selectedWorkerId: workerId,
       view: 'worker',
       deskFocus: { workerId, orchestrationId, at },
+      deskSettings: null,
       selectSeq: st.selectSeq + 1,
     }));
   },

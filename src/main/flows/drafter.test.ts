@@ -693,11 +693,11 @@ describe('drafted models snap to their tier default', () => {
     expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-5-5' });
     expect(result.flow.steps[0].rebound?.critic).toEqual({
       backend: 'claude',
-      model: 'claude-sonnet-5',
+      model: 'claude-sonnet-5-5',
     });
     // The implementer was on the fast tier and stays there — snapping fixes
     // which model a tier names, not the drafter's cost judgement.
-    expect(result.flow.steps[1].model).toEqual({ backend: 'claude', model: 'claude-sonnet-5' });
+    expect(result.flow.steps[1].model).toEqual({ backend: 'claude', model: 'claude-sonnet-5-5' });
   });
 
   it('snaps participants too, so the editor and the run agree', async () => {
@@ -832,7 +832,7 @@ describe('models from the wrong family are retargeted, not rejected', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-sonnet-5' });
+    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-sonnet-5-5' });
     expect(result.flow.steps[1].model).toEqual({ backend: 'codex', model: 'gpt-5.6-sol' });
   });
 

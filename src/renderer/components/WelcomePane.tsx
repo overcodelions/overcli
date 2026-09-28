@@ -22,6 +22,8 @@ import { ResumeRow } from './ResumeRow';
 import { isEverydayProject } from '@shared/everydayProjects';
 import { LabsHint } from './LabsHint';
 import { ServicesHint } from './ServicesHint';
+import { HandoffCard } from './HandoffCard';
+import { useHandoffsStore } from '../handoffsStore';
 import {
   flowTagCounts,
   groupFlows,
@@ -455,6 +457,17 @@ export function WelcomePane() {
     }
   };
 
+  // A handoff whose seeded draft is sent is handled: it leaves the tray.
+  // Captured before the send, because sending clears the draft and that
+  // puts the card (and `activeId`) away — see `initHandoffs`.
+  const sendAndSettleHandoff = async (prompt: string, attachments: Attachment[]) => {
+    const handoffId = useHandoffsStore.getState().activeId;
+    await handleSend(prompt, attachments);
+    if (handoffId && useStore.getState().selectedConversationId) {
+      void useHandoffsStore.getState().resolve(handoffId);
+    }
+  };
+
   const handleSend = async (prompt: string, attachments: Attachment[]) => {
     if (detachedKind && canRunDetached) {
       await handleSendAsDetachedAgent(detachedKind, prompt, attachments);
@@ -525,6 +538,7 @@ export function WelcomePane() {
   // path used to read as the engineer's screen with softer wording.
   const startHere = (
     <>
+      <HandoffCard />
       {/* Above the composer here, below it on the welcome layout — the one
           place the two screens deliberately differ. This footer is pinned to
           the bottom of the documents, so the page reads down as what is here,
@@ -557,7 +571,7 @@ export function WelcomePane() {
       serviceWorkspaceIds={serviceWorkspaceIds}
       slashCommands={slashCommands}
       placeholder={placeholder}
-      onSend={handleSend}
+      onSend={sendAndSettleHandoff}
       footer={
         <>
           <Pill

@@ -26,6 +26,8 @@ export interface BackendSendArgs {
   /// Per-step tool allowlist, passed straight to the CLI. Honored by the
   /// claude backend as `--allowedTools`. Undefined/empty = no restriction.
   allowedTools?: string[];
+  /// claude: `--disallowedTools`. Undefined/empty = none.
+  disallowedTools?: string[];
   /// When true, launch the CLI with MCP debug logging (claude: `--debug mcp`).
   /// Surfaces MCP server startup/registration diagnostics on stderr, which the
   /// runner forwards to the Debug viewer. Honored by the claude backend.

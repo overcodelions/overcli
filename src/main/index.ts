@@ -32,7 +32,7 @@ import {
   promoteReviewWorktree,
   switchProjectToBranch,
   switchBranch,
-  removeWorktree,
+  removeWorktreeAsync,
   checkoutAgentLocally,
   detectBaseBranch,
   listBaseBranches,
@@ -91,6 +91,7 @@ import { backendNeedsShell, buildBackendEnv } from './backendPaths';
 import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './resolveFilePath';
 import { listFileEntriesAsync, listFileEntriesSync } from './fileWalk';
 import { closeAllTreeWatchers, noteRelistCost, unwatchTree, watchTree } from './fileTreeWatch';
+import { HandoffInbox, defaultInboxDir } from './handoffInbox';
 import { readHtmlPreviewAssets } from './htmlPreviewAssets';
 import { convertOfficeToPreview, officeFamilyForExtension } from './officePreview';
 import { buildReactPreviewBundle } from './reactPreviewBundle';
@@ -231,6 +232,7 @@ let orchestrator: OrchestratorImpl | null = null;
 let scheduler: SchedulerEngine | null = null;
 let workerEngine: WorkerEngine | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
+let handoffInbox: HandoffInbox | null = null;
 /// Long-lived service processes, one supervisor per workspace. Built lazily
 /// because most sessions never open the Services pane, and because it needs
 /// the host's data directory, which is installed at boot.
@@ -1029,6 +1031,12 @@ export function registerIpc(): void {
   ipcMain.handle('fs:unwatchTree', (_e, root: string) => {
     unwatchTree(root);
   });
+  // Work handed over by other tools (overdb first). The inbox itself is
+  // started in `whenReady`, not here — see `startHandoffInbox`.
+  ipcMain.handle('handoffs:list', () => handoffInbox?.list() ?? []);
+  ipcMain.handle('handoffs:resolve', (_e, id: string) =>
+    typeof id === 'string' ? (handoffInbox?.resolve(id) ?? false) : false,
+  );
   ipcMain.handle('fs:openInFinder', (_e, p: string) => {
     if (!isReadablePath(p)) return;
     shell.showItemInFolder(p);
@@ -1207,7 +1215,9 @@ export function registerIpc(): void {
   ipcMain.handle('git:promoteReviewWorktree', (_e, args) => promoteReviewWorktree(args));
   ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
   ipcMain.handle('git:switchBranch', (_e, args) => switchBranch(args));
-  ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
+  // Async: `git worktree remove --force` deletes the whole tree, seconds on
+  // one with node_modules, and cleanup sends these one after another.
+  ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktreeAsync(args));
   // The renderer supplies conversation claims (it owns that state); the flow
   // runtime is asked here so a run's tree is never reported as an orphan just
   // because the renderer doesn't track runs — and because the run is the only
@@ -1230,8 +1240,8 @@ export function registerIpc(): void {
   // the same move `git:checkoutAgentLocally` makes and for the same reason —
   // the conversation's cwd becomes the project root, and a Claude session
   // file left under the worktree's slug would be unreachable from there.
-  ipcMain.handle('git:releaseWorktree', (_e, args) => {
-    const res = removeWorktree({
+  ipcMain.handle('git:releaseWorktree', async (_e, args) => {
+    const res = await removeWorktreeAsync({
       projectPath: args.projectPath,
       worktreePath: args.worktreePath,
       branchName: args.keepBranch === false ? (args.branchName ?? '') : '',
@@ -1556,6 +1566,9 @@ export function registerIpc(): void {
   ipcMain.handle('services:log', (_e, { workspaceId, serviceId }) => [
     ...services().log(workspaceId, serviceId),
   ]);
+  ipcMain.handle('services:searchOutput', (_e, { workspaceIds, query, includeFiles }) =>
+    services().searchOutput(workspaceIds, query, includeFiles),
+  );
   ipcMain.handle('services:exceptions', (_e, { workspaceId, serviceId }) =>
     services().exceptions(workspaceId, serviceId),
   );
@@ -3520,6 +3533,22 @@ if (process.platform === 'darwin' && process.arch !== 'arm64') {
 /// HTTP cache (and the V8 code cache keyed off it) grows without bound —
 /// months of dev had accumulated ~32k entries and 1.6GB of userData. Prod
 /// loads from `file://` and never enters this cache, so this is dev-only.
+/// Open `~/.overcli/inbox` and follow it. At launch rather than lazily, so a
+/// handoff that arrived while the app was closed is on the tray from the
+/// first frame. Deliberately NOT in `registerIpc`: the IPC test calls that,
+/// and it must not create a folder in the real home directory — the folder
+/// existing is how other tools decide overcli is installed.
+function startHandoffInbox(): void {
+  handoffInbox = new HandoffInbox(defaultInboxDir(), (handoffs) =>
+    emitToRenderer({ type: 'handoffsChanged', handoffs }),
+  );
+  try {
+    handoffInbox.start();
+  } catch (e) {
+    log('warn', 'handoffInbox.start', 'Could not open the handoff inbox', e);
+  }
+}
+
 async function clearDevHttpCache(): Promise<void> {
   if (!isDev) return;
   try {
@@ -3560,6 +3589,7 @@ app.whenReady().then(() => {
     });
   });
   registerIpc();
+  startHandoffInbox();
   // Learn the user's MCP servers and account connectors in the background,
   // so the first hire or flow draft already knows them. A no-op once any
   // real Claude session has reported them.
@@ -3599,6 +3629,7 @@ app.on('before-quit', (event) => {
   if (Store.load().settings?.servicesStopOnQuit !== false) void servicesManager?.stopAll();
   symbolLookup?.dispose();
   closeAllTreeWatchers();
+  handoffInbox?.dispose();
   // Drop the pending timers so a quit can't fire a schedule or a worker
   // shift into a runtime that's already tearing its subprocesses down.
   scheduler?.dispose();

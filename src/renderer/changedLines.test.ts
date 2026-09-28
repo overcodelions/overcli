@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { changedLinesKey, markPoints, parseChangedLines } from './changedLines';
+import { changedLinesKey, diffExcerptForLines, markPoints, parseChangedLines } from './changedLines';
 
 const diff = (...lines: string[]) => lines.join('\n');
 
@@ -161,5 +161,52 @@ describe('markPoints', () => {
     expect(markPoints(null, 10)).toEqual([]);
     expect(markPoints({ changed: [], deletedAt: [] }, 10)).toEqual([]);
     expect(markPoints({ changed: [{ line: 1, kind: 'added' }], deletedAt: [] }, 0)).toEqual([]);
+  });
+});
+
+describe('diffExcerptForLines', () => {
+  const text = diff(
+    'diff --git a/x b/x',
+    '--- a/x',
+    '+++ b/x',
+    '@@ -1,8 +1,9 @@',
+    ' one',
+    ' two',
+    ' three',
+    '-four',
+    '+FOUR',
+    '+four-and-a-half',
+    ' five',
+    ' six',
+    '-seven',
+    ' eight',
+    '@@ -20,3 +21,4 @@',
+    ' twenty',
+    '+new',
+    ' twenty-one',
+  );
+
+  it('quotes the run touching the lines, with what it replaced and context', () => {
+    expect(diffExcerptForLines(text, 5, 5)).toBe(
+      diff(' two', ' three', '-four', '+FOUR', '+four-and-a-half', ' five', ' six'),
+    );
+  });
+
+  it('finds a pure deletion by its seam line', () => {
+    expect(diffExcerptForLines(text, 8, 8, 1)).toBe(diff(' six', '-seven', ' eight'));
+  });
+
+  it('keeps context inside the hunk', () => {
+    expect(diffExcerptForLines(text, 22, 22, 5)).toBe(diff(' twenty', '+new', ' twenty-one'));
+  });
+
+  it('spans every run in a wider range', () => {
+    expect(diffExcerptForLines(text, 4, 8, 0)).toBe(
+      diff('-four', '+FOUR', '+four-and-a-half', ' five', ' six', '-seven'),
+    );
+  });
+
+  it('is empty for unchanged lines', () => {
+    expect(diffExcerptForLines(text, 1, 2)).toBe('');
   });
 });

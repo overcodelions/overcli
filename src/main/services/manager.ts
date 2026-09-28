@@ -75,6 +75,7 @@ import {
 } from './machineSecrets';
 import { isSecretName, SECRET_MASK } from '../../shared/machineValues';
 import { createLogSink } from './logFile';
+import { MATCHES_TOTAL, readTail, toMatches } from './logSearch';
 import { log } from '../diagnostics';
 import { watchServiceFiles } from './fileWatch';
 import type { CaughtException } from '../../shared/exceptions';
@@ -94,7 +95,13 @@ import type {
   StackView,
   TaskRun,
 } from './types';
-import type { PortHolderKind, ReadinessProbe, RemovedServices, TaskPreset } from '../../shared/services';
+import type {
+  OutputMatch,
+  PortHolderKind,
+  ReadinessProbe,
+  RemovedServices,
+  TaskPreset,
+} from '../../shared/services';
 
 export type { StackView };
 
@@ -128,6 +135,8 @@ export class ServicesManager {
   /// The branch and commit each bound checkout was last seen on, with when
   /// they were read.
   private readonly refs = new Map<string, { ref: string; commit: string; at: number }>();
+  /// Checkouts being re-read in the background — see `checkoutState`.
+  private readonly refsInFlight = new Set<string>();
 
   constructor(
     private readonly dataDir: string,
@@ -210,15 +219,45 @@ export class ServicesManager {
   /// A branch someone changes in a terminal is still picked up; it is just
   /// not re-read more often than a human could change it. The commit comes
   /// out of the same spawn, so knowing it costs nothing on top.
+  ///
+  /// Past the TTL the cached answer is still what this returns; git is asked
+  /// again in the background. A TTL alone only spaced the stalls out: a look
+  /// after a quiet spell re-read every folder of every stack in a row, on a
+  /// machine busy running those stacks, and the window hung on the spawns.
+  /// Only a folder never seen before is read on the spot — once per session.
   private checkoutState(path: string): { ref: string; commit: string } {
-    const now = Date.now();
     const hit = this.refs.get(path);
-    if (hit && now - hit.at < REF_TTL_MS) return hit;
+    if (hit) {
+      if (Date.now() - hit.at >= REF_TTL_MS) this.revalidateCheckout(path, hit.ref);
+      return hit;
+    }
     // A folder a flow deleted mid-session keeps its last known ref: that
     // is still the best description of where the service was.
     const state = fs.existsSync(path) ? currentCheckout(path) : { ref: '', commit: '' };
-    this.refs.set(path, { ...state, at: now });
+    this.refs.set(path, { ...state, at: Date.now() });
     return state;
+  }
+
+  /// Re-read a checkout off the main thread. A branch that moved is announced
+  /// as a rebind of every service bound there, so the chips move now rather
+  /// than on whatever look happens next; the binding itself is saved by that
+  /// next look (`refreshRefs`).
+  private revalidateCheckout(path: string, was: string): void {
+    if (this.refsInFlight.has(path)) return;
+    this.refsInFlight.add(path);
+    void currentCheckoutAsync(path)
+      .then((state) => {
+        this.refs.set(path, { ...state, at: Date.now() });
+        if (!state.ref || state.ref === 'HEAD' || state.ref === was) return;
+        for (const [workspaceId, stack] of this.stacks) {
+          for (const b of stack.bindings) {
+            if (b.path === path && b.ref !== state.ref) {
+              this.emit({ kind: 'rebound', serviceId: b.serviceId, from: b.ref, to: state.ref, workspaceId });
+            }
+          }
+        }
+      })
+      .finally(() => this.refsInFlight.delete(path));
   }
 
   private refFor(path: string): string {
@@ -261,6 +300,31 @@ export class ServicesManager {
 
   log(workspaceId: string, serviceId: string): readonly string[] {
     return this.supervisors.get(workspaceId)?.log(serviceId) ?? [];
+  }
+
+  /// Lines matching `query` in the output of every service in these
+  /// workspaces — what is in memory, or with `includeFiles` each service's log
+  /// file tail instead (which also covers services that are not running, and
+  /// output from before the app last opened). Services in list order.
+  async searchOutput(
+    workspaceIds: readonly string[],
+    query: string,
+    includeFiles: boolean,
+  ): Promise<OutputMatch[]> {
+    if (!query.trim()) return [];
+    const out: OutputMatch[] = [];
+    for (const workspaceId of workspaceIds) {
+      const services = this.stacks.get(workspaceId)?.services ?? [];
+      for (const spec of services) {
+        if (out.length >= MATCHES_TOTAL) return out;
+        const recent = this.log(workspaceId, spec.id);
+        const matches = includeFiles
+          ? toMatches(workspaceId, spec.id, 'file', await readTail(this.logFile(workspaceId, spec.id)), query)
+          : toMatches(workspaceId, spec.id, 'recent', recent, query);
+        out.push(...matches.slice(0, MATCHES_TOTAL - out.length));
+      }
+    }
+    return out;
   }
 
   exceptions(workspaceId: string, serviceId: string): CaughtException[] {
@@ -1973,6 +2037,23 @@ export function currentCheckout(checkout: string): { ref: string; commit: string
       { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     ).trim().split('\n').map((line) => line.trim());
     // Detached: the short sha is more use in a list than the word HEAD.
+    const ref = branch && branch !== 'HEAD' ? branch : commit.slice(0, 7) || 'HEAD';
+    return { ref, commit };
+  } catch {
+    return { ref: 'HEAD', commit: '' };
+  }
+}
+
+/// `currentCheckout` without holding the main process while git runs. A
+/// missing folder reads as nothing, like `checkoutState`'s own guard.
+export async function currentCheckoutAsync(checkout: string): Promise<{ ref: string; commit: string }> {
+  if (!fs.existsSync(checkout)) return { ref: '', commit: '' };
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'], {
+      cwd: checkout,
+      encoding: 'utf8',
+    });
+    const [commit = '', branch = ''] = stdout.trim().split('\n').map((line) => line.trim());
     const ref = branch && branch !== 'HEAD' ? branch : commit.slice(0, 7) || 'HEAD';
     return { ref, commit };
   } catch {

@@ -200,6 +200,18 @@ describe('claudeBackend.buildArgs', () => {
     const a = claudeBackend.buildArgs({ ...baseArgs, allowedTools: [] }, noMcpCtx);
     expect(a.slice(a.indexOf('--allowedTools'), a.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', '']);
   });
+
+  it('emits --disallowedTools with a space-joined list when disallowedTools is set', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, disallowedTools: ['mcp__jira'] }, noMcpCtx);
+    const i = a.indexOf('--disallowedTools');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(a[i + 1]).toBe('mcp__jira');
+  });
+
+  it('omits --disallowedTools when unset or empty', () => {
+    expect(claudeBackend.buildArgs(baseArgs, noMcpCtx)).not.toContain('--disallowedTools');
+    expect(claudeBackend.buildArgs({ ...baseArgs, disallowedTools: [] }, noMcpCtx)).not.toContain('--disallowedTools');
+  });
 });
 
 describe('claudeBackend.buildEnvelope', () => {

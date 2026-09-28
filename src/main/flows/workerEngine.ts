@@ -424,8 +424,9 @@ export class WorkerEngine {
     // Batches settle on load (running → failed, queued → cancelled) without
     // emitting, so fold every worker batch's current state in now — appends
     // are idempotent, so this re-fold costs nothing when nothing changed.
+    // Never wrap up from the restart re-fold: that would launch one run per past shift.
     for (const o of this.deps.parker.list()) {
-      if (o.origin?.kind === 'worker') this.syncOrchestration(o);
+      if (o.origin?.kind === 'worker') this.syncOrchestration(o, { wrapUp: false });
     }
     this.arm();
   }
@@ -746,6 +747,10 @@ export class WorkerEngine {
     // from the stored record. What the caller sent is the answer.
     candidate.wrapUpFlowId = input.wrapUpFlowId || undefined;
     if (candidate.wrapUpFlowId === undefined) delete candidate.wrapUpFlowId;
+    candidate.wrapUpSince = candidate.wrapUpFlowId
+      ? (candidate.wrapUpFlowId === existing?.wrapUpFlowId ? existing?.wrapUpSince : now)
+      : undefined;
+    if (candidate.wrapUpSince === undefined) delete candidate.wrapUpSince;
     if (candidate.distribution === undefined) delete candidate.distribution;
     if (candidate.deskSession === undefined) delete candidate.deskSession;
     if (input.caps.fileIntoProject && !existing?.caps.fileIntoProject) {
@@ -2786,7 +2791,7 @@ export class WorkerEngine {
 
   /// Fold one worker batch's state into the journal. Deterministic entry ids
   /// + idempotent append = safe to call on every update and at startup.
-  private syncOrchestration(o: Orchestration): void {
+  private syncOrchestration(o: Orchestration, opts: { wrapUp?: boolean } = {}): void {
     if (o.origin?.kind !== 'worker') return;
     const w = this.workers.get(o.origin.workerId);
     if (!w) return;
@@ -2879,7 +2884,7 @@ export class WorkerEngine {
     }
 
     if (newestRejectedId) this.maybeDemote(w, newestRejectedId);
-    this.maybeWrapUp(w, o);
+    if (opts.wrapUp !== false) this.maybeWrapUp(w, o);
     if (changed) {
       this.emitWorker(w);
       // Gated on `changed` rather than fired per update: a finished run is
@@ -2896,7 +2901,8 @@ export class WorkerEngine {
   /// in `origin.wrapUpOf`, and batches survive restarts), and `wrappingUp`
   /// covers the gap while the park is in flight and not yet listed.
   private maybeWrapUp(w: Worker, o: Orchestration): void {
-    if (!w.wrapUpFlowId || o.origin?.kind !== 'worker') return;
+    const flowId = w.wrapUpFlowId;
+    if (!flowId || o.origin?.kind !== 'worker') return;
     // Shifts only: an errand is one ask you are already watching, and a
     // wrap-up must never wrap itself up.
     if (o.origin.task === 'errand' || o.origin.wrapUpOf) return;
@@ -2905,27 +2911,31 @@ export class WorkerEngine {
     );
     // Nothing finished means nothing to combine — no empty digests.
     if (!settled || !o.items.some((i) => i.status === 'done')) return;
+    const finishedAt = Math.max(0, ...o.items.map((i) => i.finishedAt ?? 0));
+    if (w.wrapUpSince !== undefined && finishedAt < w.wrapUpSince) return;
     if (this.wrappingUp.has(o.id)) return;
     if (this.deps.parker.list().some((b) => b.origin?.kind === 'worker' && b.origin.wrapUpOf === o.id)) return;
     this.wrappingUp.add(o.id);
 
     const origin = { ...workerOrigin(w, 'shift'), wrapUpOf: o.id };
-    void this.deps.parker
-      .parkDirect({
-        origin,
-        projectPath: w.projectPath,
-        prompt: this.buildWrapUpPrompt(w, o),
-        title: `${o.title ?? w.name} — wrap-up`,
-        flowId: w.wrapUpFlowId,
-        runIn: this.effectiveRunIn(w),
-        maxConcurrent: 1,
-        // The shift's items were already approved (by you, or by the trust
-        // cap); combining their results is part of that same shift. Anything
-        // the wrap-up flow does outside the run still pauses at its own
-        // external-action boundary, exactly as every worker step does.
-        autoLaunch: true,
-        note: `Combines the results of ${o.title ?? 'the shift'}.`,
-      })
+    void this.buildWrapUpPrompt(w, o)
+      .then((prompt) =>
+        this.deps.parker.parkDirect({
+          origin,
+          projectPath: w.projectPath,
+          prompt,
+          title: `${o.title ?? w.name} — wrap-up`,
+          flowId,
+          runIn: this.effectiveRunIn(w),
+          maxConcurrent: 1,
+          // The shift's items were already approved (by you, or by the trust
+          // cap); combining their results is part of that same shift. Anything
+          // the wrap-up flow does outside the run still pauses at its own
+          // external-action boundary, exactly as every worker step does.
+          autoLaunch: true,
+          note: `Combines the results of ${o.title ?? 'the shift'}.`,
+        }),
+      )
       .then((res) => {
         if (!res.ok) log('warn', 'workers.wrapUp', `${w.name}: wrap-up for ${o.id} did not launch: ${res.error}`);
       })
@@ -2937,15 +2947,15 @@ export class WorkerEngine {
   /// ended, with the text of what each one delivered. Failed and turned-down
   /// items are listed rather than hidden — a digest that silently drops the
   /// piece that broke reads as complete when it is not.
-  private buildWrapUpPrompt(w: Worker, o: Orchestration): string {
+  private async buildWrapUpPrompt(w: Worker, o: Orchestration): Promise<string> {
     const done = o.items.filter((i) => i.status === 'done');
     const perItem = Math.floor(WRAP_UP_PROMPT_BUDGET / Math.max(1, done.length));
-    const sections = o.items.map((item, n) => {
+    const sections = await Promise.all(o.items.map(async (item, n) => {
       const head = `### ${n + 1}. ${item.candidate.title}`;
       if (item.status === 'failed') return `${head} — FAILED${item.note ? `: ${item.note}` : ''}`;
       if (item.status === 'cancelled') return `${head} — not run (turned down or cancelled)`;
-      return [head, this.deliverableText(item.runId, perItem)].join('\n');
-    });
+      return [head, await this.deliverableText(item.runId, perItem)].join('\n');
+    }));
     const counts = [
       `${done.length} finished`,
       ...(o.items.some((i) => i.status === 'failed')
@@ -2973,18 +2983,23 @@ export class WorkerEngine {
   /// One finished item's deliverables as text, within a budget. Text files a
   /// run wrote are read; anything else is named by path so the flow can open
   /// it itself.
-  private deliverableText(runId: UUID | undefined, budget: number): string {
+  private async deliverableText(runId: UUID | undefined, budget: number): Promise<string> {
     const artifacts = runId ? this.deps.deliverablesFor?.(runId) ?? [] : [];
     if (artifacts.length === 0) return '(finished, but left no deliverable)';
     const each = Math.floor(budget / artifacts.length);
-    return artifacts
-      .map((a) => {
+    return (await Promise.all(artifacts.map(async (a) => {
         let body = a.body;
         if (body === undefined && a.sourcePath) {
           try {
-            const buf = fs.readFileSync(a.sourcePath);
-            // A NUL in the first few KB is a binary file, not a report.
-            body = buf.subarray(0, 8192).includes(0) ? undefined : buf.toString('utf-8');
+            const fh = await fs.promises.open(a.sourcePath, 'r');
+            try {
+              const buf = Buffer.alloc(Math.min(each * 4 + 4, 1_048_576));
+              const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+              const head = buf.subarray(0, bytesRead);
+              body = head.subarray(0, 8192).includes(0) ? undefined : head.toString('utf-8');
+            } finally {
+              await fh.close();
+            }
           } catch {
             body = undefined;
           }
@@ -2992,7 +3007,7 @@ export class WorkerEngine {
         if (body === undefined) return `--- ${a.name} (file: ${a.sourcePath ?? 'unavailable'})`;
         const clipped = body.length > each ? `${body.slice(0, each)}\n[… cut to fit; ${body.length - each} more characters]` : body;
         return `--- ${a.name}\n${clipped}`;
-      })
+      })))
       .join('\n\n');
   }
 

@@ -66,8 +66,20 @@ export function findRow(model: DigestModel, item: NonNullable<OpenItem>): QueueR
   return rows.find((r) => r.key === item.key) ?? rows.find((r) => r.answers?.some((a) => a.key === item.key));
 }
 
-function TodayHeader({ model, unread }: { model: DigestModel; unread: number }) {
+function TodayHeader({
+  model,
+  unread,
+  workerId,
+}: {
+  model: DigestModel;
+  unread: number;
+  workerId: string | null;
+}) {
   const { spine, now, needs } = model;
+  const worker = useWorkersStore((s) => (workerId ? s.workers[workerId] : undefined));
+  const selectWorker = useWorkersStore((s) => s.selectWorker);
+  const openWorkerSettings = useWorkersStore((s) => s.openWorkerSettings);
+  const showToday = useWorkersStore((s) => s.showToday);
   const soonest = spine.upcoming[spine.upcoming.length - 1];
   const title = [
     spine.done > 0 ? `${spine.done} done` : 'Nothing done yet',
@@ -78,6 +90,69 @@ function TodayHeader({ model, unread }: { model: DigestModel; unread: number }) 
   ]
     .filter(Boolean)
     .join(' · ');
+  // One worker's inbox: the same page, headed by who it belongs to. The
+  // counts drop to the second line, and the desk — the worker itself, its
+  // settings and its conversation — is one click from its name.
+  if (worker) {
+    return (
+      <header className="flex flex-col gap-2">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => selectWorker(worker.id)}
+            title={`Open ${worker.name}'s desk`}
+            className="group flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+          >
+            <WorkerAvatar worker={worker} size="md" untitled />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[19px] font-semibold tracking-[-0.015em] text-ink group-hover:underline">
+                {worker.name}
+              </span>
+              <span className="block truncate text-[11.5px] text-ink-muted">{title}</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => selectWorker(worker.id)}
+            className="shrink-0 rounded-md border border-card-strong px-2 py-1 text-[11.5px] text-ink-muted hover:bg-card-strong hover:text-ink"
+          >
+            Desk →
+          </button>
+          {/* Settings sits two steps behind the desk (open it, then the last
+              tab), which is the right place for firing someone and the wrong
+              place for "pause Vantage". This goes straight there. */}
+          <button
+            type="button"
+            onClick={() => openWorkerSettings(worker.id)}
+            title={`${worker.name}'s settings`}
+            aria-label={`${worker.name}'s settings`}
+            className="shrink-0 rounded-md p-1 text-ink-faint hover:bg-card-strong hover:text-ink"
+          >
+            <svg width="13" height="13" viewBox="0 0 20 20" fill="none" strokeLinejoin="round" strokeLinecap="round" aria-hidden>
+              <path
+                d="M10 2.5 11 4.3a6 6 0 0 1 1.4.6L14.3 4l1.7 1.7-.9 1.9a6 6 0 0 1 .6 1.4L17.5 10l-1.8 1a6 6 0 0 1-.6 1.4l.9 1.9L14.3 16l-1.9-.9a6 6 0 0 1-1.4.6L10 17.5l-1-1.8a6 6 0 0 1-1.4-.6L5.7 16 4 14.3l.9-1.9a6 6 0 0 1-.6-1.4L2.5 10l1.8-1a6 6 0 0 1 .6-1.4L4 5.7 5.7 4l1.9.9A6 6 0 0 1 9 4.3L10 2.5Z"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              />
+              <circle cx="10" cy="10" r="2.2" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            onClick={showToday}
+            title="Back to the whole crew"
+            aria-label="Back to the whole crew"
+            className="shrink-0 rounded-md p-1 text-ink-faint hover:bg-card-strong hover:text-ink"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+              <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <DayChart spine={spine} now={now} />
+      </header>
+    );
+  }
   return (
     <header className="flex flex-col gap-2">
       <div className="flex items-baseline gap-3">
@@ -140,10 +215,13 @@ export function InboxList({
   model,
   open,
   onOpen,
+  workerId = null,
 }: {
   model: DigestModel;
   open: OpenItem;
   onOpen: (item: OpenItem) => void;
+  /// Set when the list is one worker's inbox rather than the whole crew's.
+  workerId?: string | null;
 }) {
   const isOpen = (kind: 'needs' | 'done', key: string) => open?.kind === kind && open.key === key;
   const cleared = useTodayCleared((s) => s.cleared);
@@ -172,7 +250,11 @@ export function InboxList({
     model.needs.length + model.working.length + model.done.length + model.quiet.length + model.earlier.length === 0;
   return (
     <div className="flex flex-col gap-5">
-      <TodayHeader model={model} unread={model.done.filter((r) => clearStateOf(cleared, r.key, r.at) !== 'cleared').length} />
+      <TodayHeader
+        model={model}
+        unread={model.done.filter((r) => clearStateOf(cleared, r.key, r.at) !== 'cleared').length}
+        workerId={workerId}
+      />
       <AskCrew
         onOpenBatch={(orchestrationId) => {
           // The errand's own entry — needing you, working, or done.
@@ -182,7 +264,11 @@ export function InboxList({
           if (row) onOpen({ kind: 'done', key: row.key });
         }}
       />
-      {nothing && <p className="text-[12.5px] text-ink-faint">Nothing yet — the crew's work lands here as it happens.</p>}
+      {nothing && (
+        <p className="text-[12.5px] text-ink-faint">
+          {workerId ? 'Nothing from this worker yet — its work lands here as it happens.' : "Nothing yet — the crew's work lands here as it happens."}
+        </p>
+      )}
       {model.needs.length > 0 && (
         <section className="flex flex-col gap-1.5">
           <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">

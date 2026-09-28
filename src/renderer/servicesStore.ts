@@ -66,6 +66,14 @@ interface ServicesState {
   /// own pick, deliberately not `selected`: the drawer is read from a chat,
   /// and opening it must not move what the Services pane is showing.
   logDrawer?: { workspaceId: string; serviceId: string };
+  /// A search result waiting to be shown: the Output tab of this service
+  /// opens already searching for `query`. `seq` re-opens it for a second
+  /// click on the same service.
+  outputSeek?: { key: string; query: string; seq: number };
+  /// The one service menu, open over these rows at this point on screen —
+  /// from a right-click, a row's ···, its pin, or a group header. One menu
+  /// wherever it is opened from, so there is one set of things to learn.
+  menu?: { keys: string[]; x: number; y: number; title?: string };
   /// A clash waiting on the user: another stack holds the port. Parked here
   /// rather than resolved, because taking a port from a flow nobody was
   /// watching is not a decision the app gets to make.
@@ -126,6 +134,11 @@ interface ServicesState {
   /// the user go and find it is how two copies of one service happen.
   loadAll(workspaceIds: string[]): Promise<void>;
   select(workspaceId: string, serviceId: string): Promise<void>;
+  openMenu(keys: string[], x: number, y: number, title?: string): void;
+  closeMenu(): void;
+  /// Open a service with its output already searched for `query` — where a
+  /// match from the cross-service search lands.
+  seekOutput(workspaceId: string, serviceId: string, query: string): Promise<void>;
   /// Show a service's output in the side drawer, from wherever the user is.
   /// Lines stream into the store for every service regardless of selection
   /// (see `ingestLine`), so this only has to fetch the snapshot behind them.
@@ -247,6 +260,8 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   exceptions: {},
   selected: {},
   logDrawer: undefined,
+  outputSeek: undefined,
+  menu: undefined,
   pendingLease: {},
   machine: [],
   secureStorage: false,
@@ -313,6 +328,21 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
       exceptions: { ...s.exceptions, [logKey(workspaceId, serviceId)]: { items: caught, recent: [] } },
       resolved: { ...s.resolved, [logKey(workspaceId, serviceId)]: resolved },
     }));
+  },
+
+  openMenu(keys, x, y, title) {
+    set({ menu: keys.length > 0 ? { keys, x, y, title } : undefined });
+  },
+
+  closeMenu() {
+    set({ menu: undefined });
+  },
+
+  async seekOutput(workspaceId, serviceId, query) {
+    set((s) => ({
+      outputSeek: { key: logKey(workspaceId, serviceId), query, seq: (s.outputSeek?.seq ?? 0) + 1 },
+    }));
+    await get().select(workspaceId, serviceId);
   },
 
   async openLogDrawer(workspaceId, serviceId) {

@@ -22,38 +22,38 @@ describe('findChildRepos', () => {
     return dir;
   };
 
-  it('lists the repos directly inside a folder, sorted', () => {
+  it('lists the repos directly inside a folder, sorted', async () => {
     repo('acme-web');
     repo('acme-api');
     fs.mkdirSync(path.join(root, 'notes'));
-    expect(findChildRepos(root)).toEqual([
+    expect(await findChildRepos(root)).toEqual([
       path.join(root, 'acme-api'),
       path.join(root, 'acme-web'),
     ]);
   });
 
-  it('counts a worktree-style .git file as a repo', () => {
+  it('counts a worktree-style .git file as a repo', async () => {
     repo('acme-web', true);
-    expect(findChildRepos(root)).toEqual([path.join(root, 'acme-web')]);
+    expect(await findChildRepos(root)).toEqual([path.join(root, 'acme-web')]);
   });
 
-  it('returns nothing when the folder is itself a repo', () => {
+  it('returns nothing when the folder is itself a repo', async () => {
     fs.mkdirSync(path.join(root, '.git'));
     repo('packages/acme-ui');
     repo('acme-web');
-    expect(findChildRepos(root)).toEqual([]);
+    expect(await findChildRepos(root)).toEqual([]);
   });
 
-  it('does not look more than one level down', () => {
+  it('does not look more than one level down', async () => {
     repo('group/acme-web');
     repo('group/acme-api');
-    expect(findChildRepos(root)).toEqual([]);
+    expect(await findChildRepos(root)).toEqual([]);
   });
 
-  it('skips hidden folders and survives a missing directory', () => {
+  it('skips hidden folders and survives a missing directory', async () => {
     repo('.cache');
-    expect(findChildRepos(root)).toEqual([]);
-    expect(findChildRepos(path.join(root, 'gone'))).toEqual([]);
+    expect(await findChildRepos(root)).toEqual([]);
+    expect(await findChildRepos(path.join(root, 'gone'))).toEqual([]);
   });
 });
 
@@ -74,41 +74,47 @@ describe('inspectFolder', () => {
     fs.writeFileSync(p, '');
   };
 
-  it('calls a repo a repo', () => {
+  it('calls a repo a repo', async () => {
     fs.mkdirSync(path.join(root, '.git'));
     file('notes.md');
-    expect(inspectFolder(root, isDoc)).toEqual({ kind: 'repo' });
+    expect(await inspectFolder(root, isDoc)).toEqual({ kind: 'repo' });
   });
 
-  it('offers a folder of repos', () => {
+  it('offers a folder of repos', async () => {
     fs.mkdirSync(path.join(root, 'acme-web', '.git'), { recursive: true });
     fs.mkdirSync(path.join(root, 'acme-api', '.git'), { recursive: true });
-    expect(inspectFolder(root, isDoc)).toEqual({
+    expect(await inspectFolder(root, isDoc)).toEqual({
       kind: 'repos',
       repoPaths: [path.join(root, 'acme-api'), path.join(root, 'acme-web')],
     });
   });
 
-  it('recognises a folder that is mostly documents, one level down too', () => {
+  it('recognises a folder that is mostly documents, one level down too', async () => {
     file('Q3 brief.docx');
     file('research/interviews.pdf');
     file('research/summary.md');
     file('logo.png');
-    expect(inspectFolder(root, isDoc)).toEqual({ kind: 'documents' });
+    expect(await inspectFolder(root, isDoc)).toEqual({ kind: 'documents' });
   });
 
-  it('treats unversioned code as other, even beside documents', () => {
+  it('treats unversioned code as other, even beside documents', async () => {
     file('package.json');
     file('README.md');
     file('CHANGELOG.md');
-    expect(inspectFolder(root, isDoc)).toEqual({ kind: 'other' });
+    expect(await inspectFolder(root, isDoc)).toEqual({ kind: 'other' });
   });
 
-  it('treats an empty or mixed folder as other', () => {
-    expect(inspectFolder(root, isDoc)).toEqual({ kind: 'other' });
+  it('treats an empty or mixed folder as other', async () => {
+    expect(await inspectFolder(root, isDoc)).toEqual({ kind: 'other' });
     file('a.md');
     file('b.png');
     file('c.jpg');
-    expect(inspectFolder(root, isDoc)).toEqual({ kind: 'other' });
+    expect(await inspectFolder(root, isDoc)).toEqual({ kind: 'other' });
+  });
+
+  it('detects a root code marker even when a subfolder holds hundreds of docs', async () => {
+    file('package.json');
+    for (let i = 0; i < 450; i++) file(`aaa-docs/doc-${i}.md`);
+    expect(await inspectFolder(root, isDoc)).toEqual({ kind: 'other' });
   });
 });

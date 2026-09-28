@@ -11,13 +11,14 @@
 // date, thread, logger, message — so the lines are split into those parts and
 // laid out in columns. `Raw` puts them back exactly as written.
 
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { collapseCarriageReturns, parseAnsi } from '../ansi';
 import { countLevels, describeFilter, filterLog, highlightRuns, parsedLine, type LogLevel } from '../logFilter';
 import { exceptionMessage, groupLog, isTraceHeader } from '../stackFrames';
 import { listExceptions, type CaughtException, type ExceptionLog } from '@shared/exceptions';
 import { summarizeLong, type Level, type ParsedLogLine } from '../logLine';
+import { firstLine, LOG_WINDOW_STEP, windowStart } from '../logWindow';
 import { SelectionMenu } from './SelectionMenu';
 import { useDividerDragging } from './ResizableDivider';
 
@@ -49,8 +50,12 @@ export function LogView({
   selection,
   file,
   exceptions,
+  initialQuery = '',
 }: {
   lines: readonly string[];
+  /// What the search box starts with — set when the view is opened from a
+  /// match in the cross-service output search.
+  initialQuery?: string;
   /// The full output on disk, past what the pane holds. Absent, no Log file menu.
   file?: LogFileActions;
   /// Exceptions pulled out of the output, kept past the line cap.
@@ -64,7 +69,7 @@ export function LogView({
     onRunFlow: (flowId: string, text: string) => void;
   };
 }) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery);
   const [level, setLevel] = useState<LogLevel>('all');
   const [pinned, setPinned] = useState(true);
   const [formatted, setFormatted] = useState(true);
@@ -93,6 +98,35 @@ export function LogView({
   // match may well be inside a frame.
   const items = useMemo(() => groupLog(shown, { collapse: query.trim() === '' }), [shown, query]);
   const byIndex = useMemo(() => new Map(shown.map((l) => [l.index, l])), [shown]);
+  // Only a stretch of the rows is drawn (see `logWindow`). `from` anchors it
+  // to a line while the reader is scrolled up; null follows the newest.
+  const [from, setFrom] = useState<number | null>(null);
+  const start = windowStart(items, from);
+  const drawn = useMemo(() => items.slice(start), [items, start]);
+  // The scroll height before earlier rows went in above the viewport, so the
+  // rows being read stay put instead of jumping down by what was added.
+  const heightBeforeLoad = useRef<number | null>(null);
+  const loadEarlier = () => {
+    if (start === 0 || heightBeforeLoad.current !== null) return;
+    heightBeforeLoad.current = scroller.current?.scrollHeight ?? null;
+    setFrom(firstLine(items[Math.max(0, start - LOG_WINDOW_STEP)]));
+  };
+  useLayoutEffect(() => {
+    const before = heightBeforeLoad.current;
+    const el = scroller.current;
+    heightBeforeLoad.current = null;
+    if (before !== null && el) el.scrollTop += el.scrollHeight - before;
+  }, [start]);
+  // Following, the window is the tail again, so it doesn't stay grown after a
+  // trip up the log. Leaving the bottom — a scroll, or a selection opening its
+  // menu — pins it where it is, or new lines would slide it out from under
+  // the reader.
+  useLayoutEffect(() => {
+    if (pinned) setFrom(null);
+    else if (from === null && items[start]) setFrom(firstLine(items[start]));
+    // Only on the change of mode; `items` moving underneath is the point.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinned]);
   const summary = describeFilter(lines.length, shown.length);
   const problems = useMemo(() => filterLog(lines, { level: 'problems' }).length, [lines]);
 
@@ -102,10 +136,10 @@ export function LogView({
   // count.
   const rows = useMemo(
     () =>
-      items.map((item, i) =>
+      drawn.map((item) =>
         item.kind === 'frames' ? (
           <div
-            key={`frames-${item.indices[0]}-${i}`}
+            key={`frames-${item.indices[0]}`}
             data-line={item.indices[0]}
             data-line-end={item.indices[item.indices.length - 1]}
             style={wrap ? OFFSCREEN_ROW : undefined}
@@ -123,7 +157,7 @@ export function LogView({
           </div>
         ),
       ),
-    [items, byIndex, lines, wrap, formatted],
+    [drawn, byIndex, lines, wrap, formatted],
   );
 
   // Follow the output, but stop the moment someone scrolls up: nothing is
@@ -132,7 +166,7 @@ export function LogView({
     if (!pinned) return;
     const el = scroller.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [shown, pinned]);
+  }, [rows, pinned]);
 
   return (
     <>
@@ -245,6 +279,8 @@ export function LogView({
           // A few pixels of slack: "at the bottom" should survive a fractional
           // scroll height, which is how a zoomed display reports one.
           setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
+          // Near the top of what is drawn: draw the stretch before it.
+          if (el.scrollTop < 400) loadEarlier();
         }}
         className={`min-h-0 flex-1 px-4 py-2.5 font-mono text-[11px] leading-[17px] text-ink-muted ${
           wrap ? 'overflow-y-auto' : 'overflow-auto'
@@ -261,7 +297,18 @@ export function LogView({
               No line matches. {lines.length.toLocaleString()} are hidden.
             </span>
           ) : (
-            rows
+            <>
+              {start > 0 && (
+                <button
+                  className="mb-1 block text-[10.5px] text-ink-faint hover:text-ink"
+                  onClick={loadEarlier}
+                  title="Scrolling up loads these too — search already covers them"
+                >
+                  ▴ {start.toLocaleString()} earlier {start === 1 ? 'row' : 'rows'}
+                </button>
+              )}
+              {rows}
+            </>
           )}
         </div>
       </div>

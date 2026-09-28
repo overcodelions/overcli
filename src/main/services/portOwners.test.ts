@@ -574,12 +574,16 @@ describe('processStarted', () => {
   });
 
   it('says gone when there is no such process', async () => {
-    await expect(processStarted(4242, async () => null, 'darwin')).resolves.toBeNull();
-    await expect(processStarted(4242, async () => '\n', 'linux')).resolves.toBeNull();
+    await expect(processStarted(4242, async () => null, 'darwin', () => false)).resolves.toBeNull();
+    await expect(processStarted(4242, async () => '\n', 'linux', () => false)).resolves.toBeNull();
   });
 
   it('says it cannot tell on Windows rather than gone', async () => {
     await expect(processStarted(4242, async () => null, 'win32')).resolves.toBeUndefined();
+  });
+
+  it('does not mark a live process gone when ps failed to report it', async () => {
+    await expect(processStarted(4242, async () => null, 'darwin', () => true)).resolves.toBeUndefined();
   });
 });
 

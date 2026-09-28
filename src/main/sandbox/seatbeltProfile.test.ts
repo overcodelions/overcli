@@ -120,6 +120,11 @@ describe('backendStateDirs', () => {
     expect(backendStateDirs('copilot', home, '/wt')).toContain('/Users/u/.copilot');
     expect(backendStateDirs('ollama', home, '/wt')).toEqual([]);
   });
+  it('never grants the plugin cache or the shared npm/uv caches', () => {
+    const dirs = backendStateDirs('claude', '/Users/a', '/Users/a/code/acme');
+    expect(dirs).not.toContain('/Users/a/.claude/plugins/cache');
+    expect(dirs).not.toContain('/Users/a/.npm/_npx');
+  });
 });
 
 describe('sandboxRootsFor', () => {

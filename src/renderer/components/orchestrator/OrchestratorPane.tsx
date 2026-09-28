@@ -22,6 +22,7 @@
 // with a concurrency cap. Launched candidates leave pane ② and appear in the
 // ledger with live status.
 
+import type React from 'react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../../store';
@@ -467,7 +468,7 @@ function ProducerPane({
   /// its own quick-pick row rather than showing them twice.
   hasBatches: boolean;
   draft: string;
-  setDraft: (v: string) => void;
+  setDraft: React.Dispatch<React.SetStateAction<string>>;
   onAbout: () => void;
 }) {
   const projectPath = useOrchestratorStore((s) => s.projectPath);
@@ -509,7 +510,7 @@ function ProducerPane({
     const text = draft.trim();
     if (!text || proposing) return;
     void propose(text).then((ok) => {
-      if (ok) setDraft('');
+      if (ok) setDraft((cur) => (cur.trim() === text ? '' : cur));
     });
   };
 
@@ -655,7 +656,13 @@ function OrchestratorMark() {
 /// On an empty tab it sits INSIDE the landing, under the sentence that says
 /// what an ask is — because "Ask for a list of small asks…" above an empty
 /// screen asks you to type before anything has told you what to type.
-function AskBar({ draft, setDraft }: { draft: string; setDraft: (v: string) => void }) {
+function AskBar({
+  draft,
+  setDraft,
+}: {
+  draft: string;
+  setDraft: React.Dispatch<React.SetStateAction<string>>;
+}) {
   const proposing = useOrchestratorStore((s) => s.proposing);
   const propose = useOrchestratorStore((s) => s.propose);
   // The draft is cleared only once the producer has taken the ask. Cleared
@@ -665,7 +672,7 @@ function AskBar({ draft, setDraft }: { draft: string; setDraft: (v: string) => v
     const text = draft.trim();
     if (!text || proposing) return;
     void propose(text).then((ok) => {
-      if (ok) setDraft('');
+      if (ok) setDraft((cur) => (cur.trim() === text ? '' : cur));
     });
   };
   return (
@@ -706,7 +713,7 @@ function ProducerEmptyState({
   workerShifts,
 }: {
   draft: string;
-  setDraft: (v: string) => void;
+  setDraft: React.Dispatch<React.SetStateAction<string>>;
   /// Hidden worker shifts are the usual reason this page is empty at all, so
   /// the landing says so under its own ask rather than above the whole card.
   workerShifts: WorkerShifts;
@@ -1403,7 +1410,7 @@ function QueuePane({
   width?: number;
   /// Only passed on the idle stage, where the empty state doubles as the
   /// tab's front door — and, with nothing in the ledger, owns the ask itself.
-  setDraft?: (v: string) => void;
+  setDraft?: React.Dispatch<React.SetStateAction<string>>;
   draft?: string;
 }) {
   const full = width === undefined;

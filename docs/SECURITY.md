@@ -61,6 +61,12 @@ between the UI (renderer) and the privileged process (main) is a defined IPC
 contract — the renderer can't bypass the approval gates. Keeping those gates
 honest is explicitly in-scope for security reports.
 
+## Flow-step sandbox (macOS)
+
+On macOS, flow steps that run an agent with permission prompts turned off are started inside a Seatbelt write jail. The step can write only its working folder, the repository's git directory (except `hooks` and `config`), temporary folders, and the few state folders its CLI needs to run. Claude's settings, hooks, plugin cache and MCP config stay read-only, and npm/uv caches are redirected to a per-run temp folder. A step that cannot be jailed on its transport is stopped rather than run unjailed.
+
+Limits: the jail restricts writes, not reads or network access. Codex, Gemini and Copilot keep config and state in one folder, so that whole folder is writable. Sandboxing is macOS-only.
+
 ## macOS hardening
 
 Release builds run with Apple's **hardened runtime** and are **notarized**. The

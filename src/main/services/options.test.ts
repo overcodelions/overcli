@@ -266,12 +266,15 @@ describe('isSecretName', () => {
       expect(isSecretName(n), n).toBe(true);
     }
     for (const n of [
-      'SORT_KEY', 'ROUTING_KEY', 'PARTITION_KEY', 'CACHE_KEY', 'PRIMARY_KEY', 'FOREIGN_KEY',
+      'SORT_KEY', 'ROUTING_KEY', 'PARTITION_KEY', 'CACHE_KEY', 'FOREIGN_KEY',
       'IDEMPOTENCY_KEY', 'SHARD_KEY', 'cacheKey', 'STRIPE_PUBLIC_KEY', 'KEY_PREFIX', 'CACHE_KEY_PREFIX',
       'SIGNING_KEY_PATH', 'AWS_ACCESS_KEY_ID',
     ]) {
       expect(isSecretName(n), n).toBe(false);
     }
+    // A trailing PRIMARY_KEY is a credential (e.g. AZURE_STORAGE_PRIMARY_KEY),
+    // not a data-structure key like the ones above.
+    expect(isSecretName('PRIMARY_KEY')).toBe(true);
   });
 
   it('keeps AUTHORIZATION and BEARER secret whatever follows them', () => {

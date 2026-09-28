@@ -52,7 +52,7 @@ describe('planFlowModelUpgrade', () => {
   it('finds every stale pin, participants and critics alike', () => {
     expect(planFlowModelUpgrade(flow())).toEqual([
       { backend: 'claude', from: 'claude-opus-5', to: 'claude-opus-5-5', where: ['Claude Opus 5'] },
-      { backend: 'claude', from: 'claude-sonnet-4-6', to: 'claude-sonnet-5', where: ['build critic'] },
+      { backend: 'claude', from: 'claude-sonnet-4-6', to: 'claude-sonnet-5-5', where: ['build critic'] },
     ]);
   });
 
@@ -118,7 +118,7 @@ describe('applyFlowModelUpgrade', () => {
     expect(out.participants[0].model).toBe('claude-opus-5-5');
     expect(out.participants[1]).toBe(f.participants[1]);
     expect(out.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-5-5' });
-    expect(out.steps[1].rebound?.critic.model).toBe('claude-sonnet-5');
+    expect(out.steps[1].rebound?.critic.model).toBe('claude-sonnet-5-5');
     expect(out.steps[1].rebound?.maxIters).toBe(2);
   });
 
@@ -139,7 +139,7 @@ describe('applyFlowModelUpgrade', () => {
     const [, sonnet] = planFlowModelUpgrade(f);
     const out = applyFlowModelUpgrade(f, [sonnet]);
     expect(out.participants[0].model).toBe('claude-opus-5');
-    expect(out.steps[1].rebound?.critic.model).toBe('claude-sonnet-5');
+    expect(out.steps[1].rebound?.critic.model).toBe('claude-sonnet-5-5');
   });
 });
 

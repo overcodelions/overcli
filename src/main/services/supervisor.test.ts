@@ -226,6 +226,22 @@ describe('Supervisor login shell environment', () => {
     expect(spawns[0].env.OVERCLI_PORT).toBe('8080');
   });
 
+  it('masks a secret the shell exported, which the service inherits unasked', async () => {
+    const written: string[] = [];
+    const token = 'shellsecret123';
+    const { deps, onSpawn } = harness({
+      shellEnv: async () => ({ ACME_API_TOKEN: token, EDITOR: 'vim-editor' }),
+      logSink: { write: (_id, line) => written.push(line), close: async () => {} },
+    });
+    onSpawn((proc) => proc.emitLine(`auth ${token} via vim-editor`));
+    const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
+    await sup.start('api');
+
+    expect(written.some((line) => line.includes(token))).toBe(false);
+    // Only secret-named variables: an ordinary value stays readable.
+    expect(written.some((line) => line.includes('•••••• via vim-editor'))).toBe(true);
+  });
+
   it('starts all the same when the shell could not be read', async () => {
     const { deps, spawns } = harness({ shellEnv: async () => undefined });
     const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
@@ -1237,6 +1253,36 @@ describe('an adopted pid', () => {
       expect(sup.log('jobs').join('\n')).toMatch(/adopted process, pid 779, has exited/);
       // Nothing left to poll: the timer is not re-armed for a row that is gone.
       expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('checks less often once a process has stayed the same for a minute', async () => {
+    vi.useFakeTimers();
+    try {
+      let checks = 0;
+      const { deps } = harness({
+        matchProcesses: leftover(),
+        processStarted: async () => {
+          checks++;
+          return 'Tue Sep 22 10:00:00 2026';
+        },
+      });
+      const specs = [spec({ id: 'jobs' })];
+      const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+      await sup.start('jobs');
+      const before = checks;
+
+      await vi.advanceTimersByTimeAsync(ADOPTED_POLL_MS * 12);
+      expect(checks - before).toBe(12);
+
+      // Twelve unchanged polls in, the next one waits six intervals.
+      await vi.advanceTimersByTimeAsync(ADOPTED_POLL_MS * 5);
+      expect(checks - before).toBe(12);
+      await vi.advanceTimersByTimeAsync(ADOPTED_POLL_MS);
+      expect(checks - before).toBe(13);
+      expect(sup.runtime('jobs').status).toBe('ready');
     } finally {
       vi.useRealTimers();
     }

@@ -13,6 +13,7 @@ import {
   removeTomlSection,
   writeMcpServer,
   buildClaudeMcpConfigArg,
+  blockedMcpServerTools,
   filterMcpServers,
   readClaudeMcpServers,
 } from './mcpConfig';
@@ -407,6 +408,18 @@ describe('per-turn MCP allowlists', () => {
     expect(filterMcpServers({ jira: { command: 'b' } }, ['jira', 'zendesk'])).toEqual({
       jira: { command: 'b' },
     });
+  });
+
+  it('names every config-file server not on the allowlist, as mcp__ tool prefixes', () => {
+    addMcpServerToTargets(
+      { name: 'linear', config: { command: 'npx', args: ['-y', '@linear/mcp'] }, targets: ['claude'] },
+      paths,
+    );
+    addMcpServerToTargets(
+      { name: 'jira', config: { command: 'npx', args: ['-y', '@jira/mcp'] }, targets: ['claude'] },
+      paths,
+    );
+    expect(blockedMcpServerTools(['linear'], undefined, paths)).toEqual(['mcp__jira']);
   });
 
   it('reads the user config and builds an inline --mcp-config value', () => {

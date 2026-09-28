@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Project, StreamEvent } from '@shared/types';
-import { siblingProjectsTouched } from './siblingRepos';
+import { siblingProjectsTouched, writtenPaths } from './siblingRepos';
 
 const project = (id: string, path: string): Project => ({
   id,
@@ -89,5 +89,17 @@ describe('siblingProjectsTouched', () => {
     const bad = tool({});
     (bad.kind as { info: { toolUses: { inputJSON: string }[] } }).info.toolUses[0].inputJSON = '{nope';
     expect(siblingProjectsTouched(web, all, [bad])).toEqual([]);
+  });
+});
+
+describe('writtenPaths', () => {
+  it('reads only the events from the given index on', () => {
+    const events = [
+      tool({ file_path: '/code/acme/acme-api/old.ts' }),
+      tool({ file_path: '/code/acme/acme-api/new.ts' }),
+    ];
+    expect(writtenPaths(events)).toEqual(['/code/acme/acme-api/old.ts', '/code/acme/acme-api/new.ts']);
+    expect(writtenPaths(events, 1)).toEqual(['/code/acme/acme-api/new.ts']);
+    expect(writtenPaths(events, 2)).toEqual([]);
   });
 });

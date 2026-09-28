@@ -4,6 +4,43 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- Claude Sonnet 5.5 (`claude-sonnet-5-5`) in every model picker. It is now the default fast Claude model for flow templates, critics and Rebound's cheap preset, and flows pinned to Sonnet 5 are offered the upgrade. Sonnet 5 stays listed for CLIs that predate 5.5.
+- Search the output of every service at once: the service list's Output switch searches what they have all printed (or their log files), grouped by service, and opening a match shows that service's output already searched for it.
+- Hire workers through a conversation, and read their work from a Today inbox (#488). The Places sidebar and a clearable Today inbox come with dated worker handoffs (#505).
+- Pausable shifts, linked handoffs, and a calmer hire page (#516).
+- A nag in the title bar about finished runs that left work unreviewed (#474).
+- Flow-step writes are sandboxed with macOS Seatbelt (#478).
+- Ask about code from the file pane: select lines in a file or its diff, or click a bar in the change gutter, and "Ask" quotes them (with the path, the line numbers and, for a change, what the lines replaced) into whichever composer you last used. Nothing is sent until you send it.
+- A handoff inbox for other tools on this machine: a JSON file dropped in `~/.overcli/inbox/` appears in the title-bar tray and as "needs you" on the workspace or project it belongs to (the smallest workspace holding the repos it names, else the project). Opening it lands on that place's start page with the report seeded in the composer; nothing is sent until you send it. Handled files move to `done/`, unreadable ones to `rejected/` with the reason.
+
+### Changed
+- A redrawn app icon, and the same mark used across the app (#490).
+- File listing and document-revision context walk the folder asynchronously (#506).
+- The Workers tab's sidebar is now a thin rail of worker faces in the order you set (drag or Alt+↑/↓ to reorder). Status shows as a ring or dot on the face instead of moving the worker between groups, so the list no longer jumps as work finishes. The rail expands to show names and search, and stays visible while a run is open. Clicking a face opens that worker's inbox (Today, filtered to its work); its name in the inbox or reader header opens its desk.
+- On Services, the sidebar toggle (⌘\, the title-bar button and the left-edge tab) now folds the service list instead of opening the chat sidebar beside it.
+- A quieter service list: a row at rest shows its state, name and port, and its actions appear over it on hover or selection. Services already running when overcli opened get a dashed dot and one notice above the list with Restart all, instead of "adopted" on every row. The toolbar's branch strip, "Switch everything to…" and the single-workspace Switch are one control that says where the stack sits and how many services are off-branch. Pins to the default branch show only on hover, the adopted notice is one line and counts restarts back in, and "Restart with debugger" moved into the detail header's ··· menu.
+- One menu for services, opened by right-clicking a row (or several ticked rows, or a group header), the row's ···, or its pin: run, restart or stop; run from another branch, with or without pinning; pin or unpin; output, URL, log file and config folder. A pin that disagrees with where the service runs is shown in amber, leads the menu with "Move back" or "Unpin", and moving a single service by hand now clears a pin to anywhere else.
+
+### Fixed
+- Leaving a busy service's output could hang the window: the output view now draws its newest 1,500 rows and loads earlier ones as you scroll up. Search and level filters still cover every line.
+- Opening "Run services here", or any look at services after a quiet spell, could hang the window while git re-read the branch of every service folder. A branch is now re-read in the background, and a branch changed in a terminal still shows up moments later.
+- Cleaning up worktrees that belong to agent conversations, or releasing one, no longer holds the whole app while git deletes each tree.
+- Adding a wrap-up flow no longer launches wrap-ups for past shifts on restart.
+- "Ask the crew" asks before sending to a lone worker.
+- Reopening a folder of repos reuses its workspace. Folders with a root code marker are detected as code.
+- Text typed into the Orchestrator's ask bar while an ask is being proposed is kept.
+- A workspace agent's changes bar maps each changed file back to the member worktree it lives in.
+- The sibling-repo card reads only new transcript events as a conversation streams, not the whole transcript each time.
+- A `ps` failure no longer marks a live adopted service stopped.
+- A service adopted from before overcli opened is checked every five seconds for its first minute, then every thirty, instead of every five seconds forever.
+
+### Security
+- The flow-step sandbox no longer allows writes to Claude's plugin cache or the shared npm/uv caches.
+- An MCP allowlist that names an account connector still blocks unlisted config-file servers.
+- Flow steps that fall back to the SDK transport are stopped instead of running unsandboxed.
+- `*_PRIMARY_KEY` values are treated as secrets. Login-shell secrets are masked in service logs.
+
 ## [0.19.1] - 2026-09-23
 
 ### Added

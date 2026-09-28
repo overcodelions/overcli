@@ -534,3 +534,12 @@ export function buildClaudeMcpConfigArg(
   if (Object.keys(picked).length === 0) return null;
   return JSON.stringify({ mcpServers: picked });
 }
+
+/// Config-file servers NOT on the list, as `mcp__<name>` tool prefixes for `--disallowedTools`.
+/// Used when a list names an account connector and strict mode can't be used.
+export function blockedMcpServerTools(names: string[], projectPath?: string, paths: Paths = defaultPaths()): string[] {
+  const keep = new Set(names.map((n) => n.trim()));
+  return Object.keys(readClaudeMcpServers(projectPath, paths))
+    .filter((n) => !keep.has(n))
+    .map((n) => `mcp__${n.replace(/[^A-Za-z0-9_-]/g, '_')}`);
+}

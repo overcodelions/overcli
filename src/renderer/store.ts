@@ -236,10 +236,9 @@ interface StoreState {
   explorerRootPath: string | null;
   showHiddenConversations: boolean;
   sidebarVisible: boolean;
-  /// Whether the conversations sidebar is wanted in Services — the one tab
-  /// that brings its own navigation and so opens without it. Kept apart from
-  /// `sidebarVisible` so no transition can leave the other one hidden.
-  servicesSidebarVisible: boolean;
+  /// Whether the service list is folded away on Services — see uiSlice. Kept
+  /// apart from `sidebarVisible` so no transition can leave the other hidden.
+  servicesListHidden: boolean;
   /// Global toggle: show tool-use / tool-result cards in chat. Off
   /// collapses the chat to just the model's assistant text for a cleaner
   /// reading view. Seeded from `settings.defaultShowToolActivity` at
@@ -953,17 +952,22 @@ function buildWorkspaceAgentUpdateNotice(
 /// For a coordinator's memberIds, return the list of
 /// `{name, worktreePath}` records the main-process helper wants. The
 /// name is the project's human name (with numeric dedup on collision)
-/// so it matches what the on-disk symlink gets called.
-function collectCoordinatorMembers(
+/// so it matches what the on-disk symlink gets called — and what
+/// `git:workspaceCommitStatus` prefixes each changed path with, so the
+/// chat's changes bar can map a file back to its member worktree.
+export function collectCoordinatorMembers(
   projects: Array<{ name: string; conversations: Array<{ id: string; worktreePath?: string }> }>,
   memberIds: UUID[],
 ): Array<{ name: string; worktreePath: string }> {
   const out: Array<{ name: string; worktreePath: string }> = [];
   const used = new Set<string>();
+  const seen = new Set<string>();
   for (const memberId of memberIds) {
     for (const proj of projects) {
       const member = proj.conversations.find((x) => x.id === memberId);
       if (!member?.worktreePath) continue;
+      if (seen.has(member.worktreePath)) break;
+      seen.add(member.worktreePath);
       let name = proj.name;
       let i = 2;
       while (used.has(name)) {
@@ -1868,7 +1872,10 @@ export const useStore = create<StoreState>((set, get) => ({
     }
     if (ids.length === 0) return;
     if (as === 'workspace' && ids.length >= 2) {
-      const ws = await get().newWorkspace(pathBasename(parentPath) || 'Workspace', ids);
+      const same = get().workspaces.find(
+        (w) => w.projectIds.length === ids.length && ids.every((id) => w.projectIds.includes(id)),
+      );
+      const ws = same ?? (await get().newWorkspace(pathBasename(parentPath) || 'Workspace', ids));
       if (ws) {
         get().startNewConversationInWorkspace(ws.id);
         return;
@@ -4093,25 +4100,9 @@ export const useStore = create<StoreState>((set, get) => ({
         if (c.worktreePath) {
           cwd = c.worktreePath;
         } else if (c.workspaceAgentMemberIds?.length) {
-          const seen = new Set<string>();
-          const usedNames = new Set<string>();
-          const out: Array<{ name: string; path: string }> = [];
-          for (const memberId of c.workspaceAgentMemberIds) {
-            for (const proj of s.projects) {
-              const member = proj.conversations.find((x) => x.id === memberId);
-              if (!member?.worktreePath || seen.has(member.worktreePath)) continue;
-              seen.add(member.worktreePath);
-              let name = proj.name;
-              let i = 2;
-              while (usedNames.has(name)) {
-                name = `${proj.name}-${i}`;
-                i += 1;
-              }
-              usedNames.add(name);
-              out.push({ name, path: member.worktreePath });
-            }
-          }
-          workspaceProjects = out;
+          workspaceProjects = collectCoordinatorMembers(s.projects, c.workspaceAgentMemberIds).map(
+            (m) => ({ name: m.name, path: m.worktreePath }),
+          );
         } else {
           const projs = w.projectIds
             .map((pid) => s.projects.find((p) => p.id === pid))

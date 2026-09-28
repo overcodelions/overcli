@@ -171,6 +171,7 @@ export function WorkersPane() {
   const importFromFile = useWorkersStore((s) => s.importFromFile);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const view = useWorkersStore((s) => s.view);
+  const inboxWorkerId = useWorkersStore((s) => s.inboxWorkerId);
   const selectSeq = useWorkersStore((s) => s.selectSeq);
   const activeRun = useFlowsStore((s) =>
     s.activeRunId ? s.runs[s.activeRunId] : undefined,
@@ -426,7 +427,12 @@ export function WorkersPane() {
              working, which is true and useless; the vacancy below is the
              screen that says what to do about it. */
       view === "today" && rows.length > 0 ? (
-        <TodayPane />
+        // Keyed on the inbox so switching workers starts the page clean —
+        // see TodayPane.
+        <TodayPane
+          key={inboxWorkerId ?? ""}
+          workerId={inboxWorkerId && workers[inboxWorkerId] ? inboxWorkerId : null}
+        />
       ) : view === "queue" && rows.length > 0 ? (
         <WorkQueuePane />
       ) : view === "calendar" ? (
@@ -469,7 +475,7 @@ export function WorkersPane() {
         />
       ) : (
         <div className="px-6 text-sm text-ink-muted">
-          Pick a worker from the sidebar.
+          Pick a worker from the rail.
         </div>
       )}
     </div>
@@ -830,6 +836,16 @@ function WorkerRow({
   const [tab, setTab] = useState<
     "chat" | "shifts" | "tasks" | "files" | "journal" | "stats" | "settings"
   >("chat");
+  // A shortcut that asked for Settings (the rail's menu, the gear beside
+  // "Desk →") opens on that tab. Consumed like `deskFocus`, so it doesn't
+  // stick to the next visit.
+  const settingsFor = useWorkersStore((s) => s.deskSettings);
+  const clearDeskSettings = useWorkersStore((s) => s.clearDeskSettings);
+  useEffect(() => {
+    if (settingsFor !== worker.id) return;
+    setTab("settings");
+    clearDeskSettings();
+  }, [settingsFor, worker.id, clearDeskSettings]);
   // The desk is cleared nightly: it shows one day, and the rest is one step
   // back. Opening on today rather than on "the last day something happened"
   // is deliberate — a desk whose date changes depending on when the worker

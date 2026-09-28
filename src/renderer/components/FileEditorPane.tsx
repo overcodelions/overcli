@@ -31,9 +31,11 @@ import { dirName, fileName, tabLabels } from '../tabLabels';
 import { FileActionItems, FileMenuItem, useMenuDismiss } from './FileActionsMenu';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
-import { CodeMirrorEditor } from './CodeMirrorEditor';
-import { parseChangedLines } from '../changedLines';
+import { CodeMirrorEditor, type ChangeClick } from './CodeMirrorEditor';
+import { diffExcerptForLines, parseChangedLines } from '../changedLines';
 import { Diff } from './DiffView';
+import { SelectionMenu } from './SelectionMenu';
+import { quoteForQuestion, seedActiveComposer } from '../composerTarget';
 import { isEverydayProject, isProseDocumentPath } from '@shared/everydayProjects';
 import { isPathAtOrUnder, isPathUnder } from '@shared/pathScope';
 import { flowRunPaneIsOnScreen } from '../fileEditorRoot';
@@ -679,6 +681,60 @@ export const FileEditorPane = memo(function FileEditorPane({
     editedRef.current = false;
   }, [path]);
 
+  // "Ask" on a selection in the diff or the editor: quote it into whichever
+  // composer is on screen, with the path and lines, and let the user type the
+  // question. `readSelection` runs first and leaves where the text came from
+  // here for `askAboutSelection` to use.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const askSourceRef = useRef<{ lines?: { from: number; to: number }; diff: boolean }>({ diff: false });
+  const readSelection = (range: Range, fallback: string): string => {
+    const elementOf = (n: Node) => (n instanceof Element ? n : n.parentElement);
+    const diffLine = (n: Node) => elementOf(n)?.closest<HTMLElement>('[data-diff-line]') ?? null;
+    const first = diffLine(range.startContainer);
+    const last = diffLine(range.endContainer);
+    if (first && last) {
+      // Whole diff lines, markers and all: a +/- is half of what was asked.
+      const from = Number(first.dataset.diffLine);
+      const to = Number(last.dataset.diffLine);
+      askSourceRef.current = { diff: true };
+      return diffText.split('\n').slice(from, to + 1).join('\n');
+    }
+    // The editor draws only what's on screen, so the DOM holds part of a long
+    // selection. CodeMirror's own report has all of it.
+    if (selection && elementOf(range.commonAncestorContainer)?.closest('.cm-editor')) {
+      const fromLine = content.slice(0, selection.from).split('\n').length;
+      askSourceRef.current = {
+        diff: false,
+        lines: { from: fromLine, to: fromLine + selection.text.split('\n').length - 1 },
+      };
+      return selection.text;
+    }
+    askSourceRef.current = { diff: false };
+    return fallback;
+  };
+  const askAboutSelection = (text: string) => {
+    if (!path) return;
+    const shown =
+      rootPath && path.startsWith(`${rootPath.replace(/\/+$/, '')}/`)
+        ? path.slice(rootPath.replace(/\/+$/, '').length + 1)
+        : path;
+    const { diff, lines } = askSourceRef.current;
+    const name = fileName(path);
+    const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : '';
+    seedActiveComposer(
+      quoteForQuestion({ path: shown, text, lines, language: diff ? 'diff' : ext }),
+    );
+  };
+  // A click on a change bar in the editor gutter: the same menu, holding
+  // the diff for that change — what the lines were as well as what they are.
+  const [changeRequest, setChangeRequest] = useState<{ text: string; rect: DOMRect } | null>(null);
+  const onChangeClick = ({ fromLine, toLine, rect }: ChangeClick) => {
+    const excerpt = diffExcerptForLines(diffText, fromLine, toLine);
+    if (!excerpt) return;
+    askSourceRef.current = { diff: true, lines: { from: fromLine, to: toLine } };
+    setChangeRequest({ text: excerpt, rect });
+  };
+
   // A restore rewrote the file on disk. Throw away the in-memory buffer and
   // force a re-read, exactly as the Revert button does. Gated on an actual
   // BUMP of the token, not merely its presence — `versionRestoreToken` never
@@ -1099,7 +1155,14 @@ export const FileEditorPane = memo(function FileEditorPane({
             </button>
           </div>
         </div>
-        <div className="relative flex-1 min-h-0 overflow-auto">
+        <div ref={bodyRef} className="relative flex-1 min-h-0 overflow-auto">
+          <SelectionMenu
+            container={bodyRef}
+            readText={readSelection}
+            onAsk={askAboutSelection}
+            request={changeRequest}
+            askLabel="Ask about this"
+          />
           {symbolNav && (
             <SymbolNavOverlay
               state={symbolNav}
@@ -1149,6 +1212,7 @@ export const FileEditorPane = memo(function FileEditorPane({
                   revealKey={path}
                   onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
                   onSelectionChange={setSelection}
+                  onChangeClick={onChangeClick}
                 />
               </div>
               <div className="flex-1 min-w-0 h-full overflow-auto">
@@ -1188,6 +1252,7 @@ export const FileEditorPane = memo(function FileEditorPane({
               revealKey={path}
               onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
               onSelectionChange={setSelection}
+              onChangeClick={onChangeClick}
             />
           ) : (
             <Editor

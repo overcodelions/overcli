@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { useRunnerEvents } from '../runnersStore';
 import { findConvLocation } from '../conversationLookup';
 import { isEverydayProject } from '@shared/everydayProjects';
-import { siblingProjectsTouched } from '../siblingRepos';
-import type { UUID } from '@shared/types';
+import { siblingsFromWritten, writtenPaths } from '../siblingRepos';
+import type { StreamEvent, UUID } from '@shared/types';
 
 /// Offers once per conversation per app session; "Stay here" means stay.
 const dismissed = new Set<UUID>();
@@ -23,19 +23,30 @@ export function SiblingRepoCard({ conversationId }: { conversationId: UUID }) {
   const openWorkspaceWith = useStore((s) => s.openWorkspaceWith);
   const events = useRunnerEvents(conversationId);
   const [hidden, setHidden] = useState(() => dismissed.has(conversationId));
+  const scan = useRef<{ events: readonly StreamEvent[] | null; count: number; written: string[] }>({
+    events: null,
+    count: 0,
+    written: [],
+  });
 
   const location = findConvLocation({ projects, workspaces }, conversationId);
   const owner = location?.kind === 'project' ? location.project : null;
   const conversation = location?.conversation;
 
-  const edits = useMemo(
-    () =>
-      // Skipped once dismissed: this reruns as the transcript streams.
-      !hidden && owner && !isEverydayProject(owner) && events
-        ? siblingProjectsTouched(owner, projects, events).filter((e) => !isEverydayProject(e.project))
-        : [],
-    [hidden, owner, projects, events],
-  );
+  const edits = useMemo(() => {
+    if (events && (events.length < scan.current.count || events[0] !== scan.current.events?.[0])) {
+      scan.current = { events, count: 0, written: [] };
+    }
+    if (events) {
+      scan.current.written.push(...writtenPaths(events, scan.current.count));
+      scan.current.count = events.length;
+      scan.current.events = events;
+    }
+    // Skipped once dismissed: this reruns as the transcript streams.
+    return !hidden && owner && !isEverydayProject(owner) && events
+      ? siblingsFromWritten(owner, projects, scan.current.written).filter((e) => !isEverydayProject(e.project))
+      : [];
+  }, [hidden, owner, projects, events]);
 
   if (hidden || !owner || edits.length === 0) return null;
 

@@ -510,9 +510,32 @@ describe('choosing where a service runs', () => {
 
     // A branch someone moves in a terminal is still picked up — just not more
     // often than a human could move it.
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(Date.now() + 10_000);
+      await vi.waitFor(() => expect(mgr.view('ws1').bindings[0].ref).toBe('feature/x'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-reads a stale branch in the background instead of blocking the look', async () => {
+    // Past the TTL a look still answers from the cache — re-reading every
+    // folder of every stack in a row on the main process is what hung the
+    // window — and the move arrives as a rebind once git has answered.
+    gitRepo();
+    const { mgr, events } = manager();
+    mgr.addService('ws1', spec, { ref: 'master', path: repo });
+    expect(mgr.view('ws1').bindings[0].ref).toBe('master');
+    execFileSync('git', ['checkout', '-q', 'feature/x'], { cwd: repo, stdio: 'ignore' });
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 10_000);
+      expect(mgr.view('ws1').bindings[0].ref).toBe('master');
+      await vi.waitFor(() =>
+        expect(events).toContainEqual({ kind: 'rebound', serviceId: 'api', from: 'master', to: 'feature/x', workspaceId: 'ws1' }),
+      );
       expect(mgr.view('ws1').bindings[0].ref).toBe('feature/x');
     } finally {
       vi.useRealTimers();
