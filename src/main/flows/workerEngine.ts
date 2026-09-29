@@ -751,6 +751,10 @@ export class WorkerEngine {
       ? (candidate.wrapUpFlowId === existing?.wrapUpFlowId ? existing?.wrapUpSince : now)
       : undefined;
     if (candidate.wrapUpSince === undefined) delete candidate.wrapUpSince;
+    // Same rule as the wrap-up: an editor that unticked the browser must not
+    // get it back from the stored record.
+    candidate.browser = input.browser || undefined;
+    if (candidate.browser === undefined) delete candidate.browser;
     if (candidate.distribution === undefined) delete candidate.distribution;
     if (candidate.deskSession === undefined) delete candidate.deskSession;
     if (input.caps.fileIntoProject && !existing?.caps.fileIntoProject) {

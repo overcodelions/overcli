@@ -77,6 +77,9 @@ export interface PortableWorker {
   /// receiver hasn't configured are simply not loaded (see
   /// `buildClaudeMcpConfigArg`), so an import never fails on this.
   mcpServers?: string[];
+  /// The job needs the web — see `Worker.browser`. Portable for the same
+  /// reason as `mcpServers`: it describes the work.
+  browser?: boolean;
 }
 
 /// A worker plus the flows it needs. `flows` may be empty when the sender's
@@ -148,7 +151,7 @@ export function serializeWorker(args: {
     | 'heartbeatModel'
     | 'heartbeatBackend'
     | 'flowIds'
-  > & { autoRender?: string; mcpServers?: string[] };
+  > & { autoRender?: string; mcpServers?: string[]; browser?: boolean };
   flows: Flow[];
   description?: string;
 }): string {
@@ -178,6 +181,7 @@ export function serializeWorker(args: {
   // An empty list is meaningful — "this job needs no MCP servers" — so it is
   // written out, and only an ABSENT allowlist (inherit everything) is omitted.
   if (worker.mcpServers) doc.mcp_servers = [...worker.mcpServers];
+  if (worker.browser) doc.browser = true;
   doc.flows = [...worker.flowIds];
 
   const byId = new Map(args.flows.map((f) => [f.id, f]));
@@ -333,6 +337,7 @@ export function parseWorkerYaml(yaml: string): WorkerYamlResult {
     flowIds: flowIds.length > 0 ? flowIds : flows.map((f) => f.id),
     autoRender: asString(y.auto_render ?? y.autoRender).trim() || undefined,
     mcpServers: coerceMcpServers(y.mcp_servers ?? y.mcpServers),
+    ...(y.browser === true ? { browser: true } : {}),
   };
 
   const supplied = new Set(flows.map((f) => f.id));

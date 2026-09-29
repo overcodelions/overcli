@@ -61,6 +61,8 @@ export interface WorkerDraft {
   /// MCP servers this worker's turns may load. Absent means all of them —
   /// see `Worker.mcpServers`.
   mcpServers?: string[];
+  /// See `Worker.browser`.
+  browser?: boolean;
 }
 
 /// A hire that finished drafting and was never saved.
@@ -589,6 +591,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     flowIds: [...w.flowIds],
     wrapUpFlowId: w.wrapUpFlowId,
     mcpServers: w.mcpServers ? [...w.mcpServers] : undefined,
+    browser: w.browser,
     enabled: w.enabled,
   };
 }
@@ -622,6 +625,7 @@ export function draftFromContract(
     flowIds: [...flowIds],
     // Only when the drafter chose: absent keeps the load-everything default.
     ...(contract.mcpServers ? { mcpServers: [...contract.mcpServers] } : {}),
+    ...(contract.browser ? { browser: true } : {}),
     enabled: true,
   };
 }
@@ -669,6 +673,7 @@ export function draftFromPortable(
     // Carried as sent: it describes the job, and a name this install hasn't
     // configured is simply not loaded rather than an import failure.
     mcpServers: worker.mcpServers ? [...worker.mcpServers] : undefined,
+    browser: worker.browser,
     enabled: true,
   };
 }

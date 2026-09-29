@@ -174,6 +174,14 @@ export interface Worker {
   /// a worker pinned to a server the user has since removed keeps working,
   /// just without it. See `buildClaudeMcpConfigArg`.
   mcpServers?: string[];
+  /// The job needs to read or operate web pages. Its planning turns (desk
+  /// errands and shift planning) and every run it launches start with the
+  /// browser switch on — Claude in Chrome on
+  /// claude, network access inside the sandbox on codex (see the runner's
+  /// `chromeFor`/`networkFor`). Absent means off, like a flow run launched by
+  /// hand: a worker that only reads its repo should not carry ~22 browser
+  /// tools into every run.
+  browser?: boolean;
   enabled: boolean;
   createdAt: number;
   /// The desk conversation this worker is currently holding.
@@ -725,6 +733,8 @@ export interface WorkerContract {
   /// Absent when the drafter did not say, which keeps the load-everything
   /// default; only names the drafter was shown survive the parse.
   mcpServers?: string[];
+  /// The job has to visit web pages — see `Worker.browser`.
+  browser?: boolean;
   /// One of the project/workspace paths the drafter was shown — set only
   /// when the job description clearly concerns one of them. The hire screen
   /// uses it as a suggestion, never over an explicit user choice.
@@ -965,6 +975,7 @@ export function parseWorkerContract(
     flows,
     ...(wrapUp ? { wrapUp } : {}),
     ...(mcpServers ? { mcpServers } : {}),
+    ...(e.browser === true ? { browser: true } : {}),
     projectPath,
   };
 }
@@ -1286,7 +1297,7 @@ export function resolveHandoffTarget<T extends Pick<Worker, 'id' | 'name'>>(
 /// where it came from, and so the engine can tell a delegated errand apart
 /// from a typed one when deciding whether it may delegate onward (it may not).
 export function workerOrigin(
-  w: Pick<Worker, 'id' | 'name' | 'caps'>,
+  w: Pick<Worker, 'id' | 'name' | 'caps' | 'browser'>,
   task: 'shift' | 'errand',
   errand?: string,
   from?: { workerId: UUID; workerName: string; orchestrationId?: UUID },
@@ -1297,6 +1308,7 @@ export function workerOrigin(
   task: 'shift' | 'errand';
   errand?: string;
   allowExternalActions?: boolean;
+  browser?: boolean;
   from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
 } {
   return {
@@ -1306,6 +1318,7 @@ export function workerOrigin(
     task,
     ...(errand !== undefined ? { errand } : {}),
     ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
+    ...(w.browser ? { browser: true } : {}),
     ...(from ? { from } : {}),
   };
 }
