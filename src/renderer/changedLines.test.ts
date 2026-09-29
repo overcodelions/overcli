@@ -117,6 +117,22 @@ describe('parseChangedLines', () => {
     expect(marks.changed).toEqual([]);
     expect(marks.deletedAt).toEqual([1]);
   });
+
+  it('does not treat an added line starting with ++ as a file header', () => {
+    const marks = parseChangedLines(
+      diff('@@ -1,3 +1,5 @@', ' one', '+++counter;', ' two', ' three', '+tail'),
+    );
+    expect(marks.changed).toEqual([
+      { line: 2, kind: 'added' },
+      { line: 5, kind: 'added' },
+    ]);
+  });
+
+  it('does not treat a removed line starting with -- as a file header', () => {
+    const marks = parseChangedLines(diff('@@ -1,3 +1,3 @@', ' a', '---foo', '+SELECT 1;', ' c'));
+    expect(marks.changed).toEqual([{ line: 2, kind: 'modified' }]);
+    expect(marks.deletedAt).toEqual([]);
+  });
 });
 
 describe('changedLinesKey', () => {
@@ -208,5 +224,15 @@ describe('diffExcerptForLines', () => {
 
   it('is empty for unchanged lines', () => {
     expect(diffExcerptForLines(text, 1, 2)).toBe('');
+  });
+
+  it('keeps an added line that starts with ++ instead of treating it as a header', () => {
+    const withPlusPlus = diff('@@ -1,3 +1,5 @@', ' one', '+++counter;', ' two', ' three', '+tail');
+    expect(diffExcerptForLines(withPlusPlus, 2, 2, 0)).toBe('+++counter;');
+  });
+
+  it('keeps a removed line that starts with -- instead of treating it as a header', () => {
+    const withMinusMinus = diff('@@ -1,3 +1,3 @@', ' a', '---foo', '+SELECT 1;', ' c');
+    expect(diffExcerptForLines(withMinusMinus, 2, 2, 0)).toBe(diff('---foo', '+SELECT 1;'));
   });
 });

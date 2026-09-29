@@ -16,9 +16,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // A service's state can still be landing on disk as the test ends; Node
-  // retries a removal that meets ENOTEMPTY/EBUSY instead of failing the run.
-  const gone = { recursive: true, force: true, maxRetries: 5, retryDelay: 50 } as const;
+  // A service's state can still be landing on disk as the test ends — the
+  // log sink's write() is fire-and-forget, so a rebind's "rebound x -> y"
+  // line can still be mkdir'ing/appending under dataDir/services/<id> after
+  // the awaited call that queued it has already returned. Node retries a
+  // removal that meets ENOTEMPTY/EBUSY instead of failing the run; a loaded
+  // CI runner needs a longer budget than a local machine does.
+  const gone = { recursive: true, force: true, maxRetries: 20, retryDelay: 100 } as const;
   fs.rmSync(dataDir, gone);
   fs.rmSync(repo, gone);
 });
