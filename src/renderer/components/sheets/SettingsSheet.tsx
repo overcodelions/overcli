@@ -983,7 +983,7 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
         />
         <Toggle
           label="Claude in Chrome"
-          help="Default for new and untouched conversations: launch Claude with `--chrome` so it can drive a real browser tab through the Claude in Chrome extension — clicking, filling forms, reading pages. Needs the extension installed and enabled in the Chrome profile you actually browse in. This is the fallback only — each conversation has its own Chrome picker in the header that overrides it, so leaving this off still lets you switch it on per chat. This default applies to conversations only. Flow runs use their per-run switch; producers, scheduled shifts, and worker errands start without Chrome."
+          help="Default for new and untouched conversations: launch Claude with `--chrome` so it can drive a real browser tab through the Claude in Chrome extension — clicking, filling forms, reading pages. Needs the Claude in Chrome extension installed and enabled in the Chrome profile you actually browse in, signed in to the same Claude account. This is the fallback only — each conversation has its own Chrome picker in the header that overrides it, so leaving this off still lets you switch it on per chat. This default applies to Claude conversations only. Codex can't use the extension; give it a browser MCP such as Puppeteer from Extensions. Flow runs use their per-run switch, and a worker's errands and runs start with it on when the worker has Browse the web ticked."
           value={local.claudeChrome ?? false}
           onChange={(v) => patch({ claudeChrome: v })}
         />

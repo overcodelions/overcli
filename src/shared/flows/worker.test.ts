@@ -521,6 +521,11 @@ describe('workerOrigin', () => {
   it('omits errand entirely when none was typed', () => {
     expect('errand' in workerOrigin(makeWorker(), 'errand')).toBe(false);
   });
+
+  it('carries the browser switch only for a worker that browses', () => {
+    expect(workerOrigin(makeWorker({ browser: true }), 'shift').browser).toBe(true);
+    expect('browser' in workerOrigin(makeWorker(), 'shift')).toBe(false);
+  });
 });
 
 describe('delegation', () => {

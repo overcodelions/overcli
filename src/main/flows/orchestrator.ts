@@ -75,6 +75,8 @@ export interface FlowLauncher {
     workerId?: UUID;
     workerName?: string;
     allowExternalActions?: boolean;
+    /// Start with the browser switch on — see FlowRuntimeStartArgs.chrome.
+    chrome?: boolean;
     unattended?: boolean;
     unattendedAllowedTools?: string[];
     title?: string;
@@ -252,6 +254,11 @@ export class OrchestratorImpl {
     /// Load only these MCP servers for the producer turn (see
     /// `RunnerManager.oneShot`). Undefined inherits the user's whole config.
     mcpAllowlist?: string[];
+    /// Attach the browser to the producer turn (see `RunnerManager.oneShot`).
+    /// A worker that browses answers errands from this turn, so it needs the
+    /// same access its runs get — otherwise "what does the site say?" at the
+    /// desk has to be launched as a whole run just to open a page.
+    chrome?: boolean;
     /// Run the turn as part of a caller-owned conversation rather than a
     /// throwaway one, resuming `resumeSessionId` when it is set. The worker
     /// desk uses this to hold one thread per day instead of re-establishing
@@ -311,6 +318,7 @@ export class OrchestratorImpl {
       attachments: args.attachments,
       cwd,
       mcpAllowlist: args.mcpAllowlist,
+      ...(args.chrome ? { chrome: true } : {}),
       conversationId: args.conversationId,
       resumeSessionId: args.resumeSessionId,
       // A producer that searches two issue trackers and diffs three repos is
@@ -499,6 +507,9 @@ export class OrchestratorImpl {
       conversationId: args.conversationId,
       resumeSessionId: args.resumeSessionId,
       progressWorkerId: args.origin?.kind === 'worker' ? args.origin.workerId : undefined,
+      // Read off the origin rather than passed separately, so the planning
+      // turn and the runs it launches can't disagree about the browser.
+      chrome: args.origin?.kind === 'worker' && args.origin.browser === true,
     });
     if (!produced.ok) return { ok: false, error: produced.error };
 
@@ -783,6 +794,7 @@ export class OrchestratorImpl {
                 workerId: o.origin.workerId,
                 workerName: o.origin.workerName,
                 allowExternalActions: o.origin.allowExternalActions,
+                ...(o.origin.browser ? { chrome: true } : {}),
               }
             : {}),
           // The RESOLVED policy, not the raw one: spreading an omitted policy

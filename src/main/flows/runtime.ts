@@ -154,6 +154,10 @@ export interface FlowRuntimeStartArgs {
   ///
   /// The desktop app never sets it: there IS a human there, and the existing
   /// modes are what they chose.
+  /// Start the run with the browser switch on (`FlowRun.chrome`), rather
+  /// than waiting for someone to flip it in the run pane. A worker whose
+  /// job needs the web sets this — nobody is watching its runs to flip it.
+  chrome?: boolean;
   unattended?: boolean;
   /// Tools an unattended run may use, intersected with each step's own
   /// `tools:` list. Only meaningful with `unattended`.
@@ -1202,6 +1206,7 @@ export class FlowRuntimeImpl {
       workerId: args.workerId,
       workerName: args.workerName,
       ...(args.allowExternalActions ? { allowExternalActions: true } : {}),
+      ...(args.chrome ? { chrome: true } : {}),
       ...(args.unattended ? { unattended: true } : {}),
       ...(args.unattendedAllowedTools ? { unattendedAllowedTools: args.unattendedAllowedTools } : {}),
       title: args.title,

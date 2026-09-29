@@ -35,6 +35,11 @@ export interface BackendSendArgs {
   /// When true, launch the CLI with `--chrome` so the session attaches to
   /// the Claude in Chrome extension. Honored by the claude backend.
   chrome?: boolean;
+  /// Let the turn reach the network from inside the CLI's own sandbox.
+  /// Honored by codex, whose workspace-write sandbox is offline by default —
+  /// so a worker told to read a website failed every fetch. This is codex's
+  /// half of the per-conversation browser switch; claude gets `chrome`.
+  networkAccess?: boolean;
   /// Speed-over-capability launch mode. Honored by the claude backend:
   /// forces `--effort low` and `--strict-mcp-config`.
   turbo?: boolean;

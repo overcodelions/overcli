@@ -176,6 +176,9 @@ export interface Orchestration {
         /// Snapshot of the worker's explicit external-effects capability.
         /// Absent on older batches means false.
         allowExternalActions?: boolean;
+        /// Snapshot of `Worker.browser`: the batch's runs launch with the
+        /// browser switch on. Absent means off.
+        browser?: boolean;
         /// Which of a worker's two entry points produced this batch: its
         /// standing cadence (`shift`) or a one-off instruction the user typed
         /// (`errand`). Recorded rather than parsed back out of the batch title,

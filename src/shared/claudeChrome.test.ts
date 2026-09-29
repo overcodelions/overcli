@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { chromeCommandVerdict, isChromeUnavailableNotice } from './claudeChrome';
+import { chromeCommandVerdict, isChromeUnavailableNotice, lastChromeToolFailure } from './claudeChrome';
 
 describe('isChromeUnavailableNotice', () => {
   // Verbatim from `claude -p --chrome "/chrome"` on 2.1.258. Note this same
@@ -73,5 +73,37 @@ describe('chromeCommandVerdict', () => {
       .toEqual({ kind: 'pass' });
     expect(chromeCommandVerdict('/chrome navigate to cnn', { chromeOn: true }))
       .toEqual({ kind: 'pass' });
+  });
+});
+
+describe('lastChromeToolFailure', () => {
+  const user = { kind: { type: 'localUser' } };
+  const use = (id: string, name: string) => ({
+    kind: { type: 'assistant', info: { toolUses: [{ id, name }] } },
+  });
+  const result = (id: string, isError: boolean, content = 'x') => ({
+    kind: { type: 'toolResult', results: [{ id, content, isError }] },
+  });
+  const nav = 'mcp__claude-in-chrome__navigate';
+
+  it('reports a failed browser call in the latest turn', () => {
+    expect(lastChromeToolFailure([user, use('a', nav), result('a', true, 'not connected')])).toEqual({
+      id: 'a',
+      content: 'not connected',
+    });
+  });
+
+  it('clears once a later browser call in the turn succeeds', () => {
+    expect(
+      lastChromeToolFailure([user, use('a', nav), result('a', true), use('b', nav), result('b', false)]),
+    ).toBeNull();
+  });
+
+  it('ignores failures from other tools', () => {
+    expect(lastChromeToolFailure([user, use('a', 'Bash'), result('a', true)])).toBeNull();
+  });
+
+  it('forgets a failure from an earlier turn', () => {
+    expect(lastChromeToolFailure([user, use('a', nav), result('a', true), user])).toBeNull();
   });
 });

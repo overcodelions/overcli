@@ -744,6 +744,10 @@ interface ActiveProcess {
   /// header picker flips, the next turn reuses the resident process, and
   /// the browser tools never appear even though the UI says they should.
   launchChrome: boolean;
+  /// Whether codex was given network access (`networkFor`). The exec
+  /// transport bakes it into argv, so a toggle must respawn; app-server
+  /// takes it per turn and hot-swaps like the permission mode does.
+  launchNetwork: boolean;
   /// Whether this process was spawned inside the Seatbelt write jail. A jail
   /// is fixed at exec time, so toggling `sandboxFlowWrites`, or a chat
   /// process being reused by a flow step, must respawn.
@@ -1562,6 +1566,7 @@ export class RunnerManager {
       disallowedTools: mcpBlockedTools(args),
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
       chrome: this.chromeFor(args),
+      networkAccess: this.networkFor(args),
       turbo: args.turbo ?? false,
       ...resolveMcpScope(args),
     };
@@ -2414,6 +2419,7 @@ export class RunnerManager {
         active.launchModel = args.model;
         active.launchEffort = configuredEffort;
         active.launchTurbo = args.turbo ?? false;
+        active.launchNetwork = this.networkFor(args);
         active.cwd = args.cwd;
         const perms = codexTransportPermissions(args.permissionMode);
         this.emit({
@@ -4391,6 +4397,7 @@ export class RunnerManager {
         // member worktree) workspace-write would otherwise sandbox out
         // edits whose path resolved through a symlink.
         writableRoots: resolveSymlinkWritableRoots(args.cwd),
+        networkAccess: this.networkFor(args),
       });
       // Update on any threadId we don't already have. The fresh-conv
       // case (no prior sessionId) is the original trigger; the
@@ -4709,6 +4716,7 @@ export class RunnerManager {
       launchTurbo: args.turbo ?? false,
       launchArtifacts: this.artifactsFor(args.backend),
       launchChrome: this.chromeFor(args),
+      launchNetwork: this.networkFor(args),
       launchEffort: effortLevel,
       launchSandbox: shouldSandboxSpawn(args),
       cwd: args.cwd,
@@ -4728,6 +4736,17 @@ export class RunnerManager {
     return (
       args.backend === 'claude' && (args.chrome ?? this.settingsProvider().claudeChrome ?? false)
     );
+  }
+
+  /// Codex's side of the same switch, set by a browsing worker's runs and
+  /// planning turns. Codex cannot attach Claude in Chrome; this asks its
+  /// workspace-write sandbox for network access instead. Codex 0.158 already
+  /// reaches the network there, so this is belt-and-braces for builds that
+  /// don't — which is also why there is no chat-header switch for it: on a
+  /// current build it would change nothing. Explicit only: the global
+  /// default is named for Claude in Chrome.
+  private networkFor(args: { backend: Backend; chrome?: boolean }): boolean {
+    return args.backend === 'codex' && args.chrome === true;
   }
 
   /// Environment for a spawned backend. `backend` is optional because the

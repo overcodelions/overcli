@@ -290,6 +290,14 @@ describe('an on-demand cadence in a share file', () => {
   });
 });
 
+describe('browser access across a share', () => {
+  it('round-trips a worker that browses, and omits the key otherwise', () => {
+    expect(parse(shareOf()).browser).toBeUndefined();
+    const parsed = parseWorkerYaml(shareOf(worker({ browser: true })));
+    expect(parsed.ok && parsed.bundle.worker.browser).toBe(true);
+  });
+});
+
 describe('MCP allowlists across a share', () => {
   it('omits the key when the worker inherits everything', () => {
     // Absent is the pre-field default, and writing it out as an empty list

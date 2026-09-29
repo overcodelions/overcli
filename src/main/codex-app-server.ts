@@ -54,6 +54,8 @@ export interface CodexAppServerTurnOptions {
   effortLevel?: EffortLevel;
   attachments?: Attachment[];
   writableRoots?: string[];
+  /// Network access inside workspace-write. See BackendSendArgs.networkAccess.
+  networkAccess?: boolean;
 }
 
 interface CodexAppServerNotificationEvent {
@@ -207,7 +209,7 @@ export class CodexAppServerClient extends EventEmitter {
       input,
       cwd: opts.cwd,
       approvalPolicy: opts.approval,
-      sandboxPolicy: sandboxPolicyForMode(opts.sandbox, opts.cwd, opts.writableRoots),
+      sandboxPolicy: sandboxPolicyForMode(opts.sandbox, opts.cwd, opts.writableRoots, opts.networkAccess),
       model: opts.model || null,
       effort: codexAppServerEffort(opts.effortLevel),
     });
@@ -418,6 +420,7 @@ function sandboxPolicyForMode(
   mode: CodexAppServerSandboxMode,
   cwd: string,
   extraWritableRoots?: string[],
+  networkAccess = false,
 ): any {
   switch (mode) {
     case 'read-only':
@@ -436,7 +439,7 @@ function sandboxPolicyForMode(
         type: 'workspaceWrite',
         writableRoots: [...roots],
         readOnlyAccess: { type: 'fullAccess' },
-        networkAccess: false,
+        networkAccess,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       };

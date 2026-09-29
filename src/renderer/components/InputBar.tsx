@@ -4,6 +4,7 @@ import { UUID } from '@shared/types';
 import { Composer } from './Composer';
 import { useChromeCommandGuard } from './ChromeCommandGuard';
 import { useDesignCommandGuard } from './DesignCommandGuard';
+import { ChromeToolFailureNotice } from './BrowserSetupHint';
 import { useConversation, useConversationRoot, useSlashCommands } from '../hooks';
 import { serviceWorkspaceIdsForConversation } from '../conversationLookup';
 import { useMemo } from 'react';
@@ -43,6 +44,7 @@ export function InputBar({ conversationId }: { conversationId: UUID }) {
     <>
       {chrome.banner}
       {design.banner}
+      {conv?.primaryBackend === 'claude' && <ChromeToolFailureNotice conversationId={conversationId} />}
       <Composer
         draftKey={conversationId}
         variant="compact"

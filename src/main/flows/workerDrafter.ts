@@ -92,6 +92,7 @@ function hireSystemPrompt(
     '  "cadence": { "kind": "daily", "time": "09:00", "days": [1, 2, 3, 4, 5] },',
     `  "maxItemsPerShift": ${Math.min(3, WORKER_MAX_ITEMS_PER_SHIFT)},`,
     '  "budgetUSDPerMonth": 10,',
+    '  "browser": false,',
     `  "heartbeatModel": "${hints.fast}",`,
     '  "wrapUp": { "flowRequest": "Only when the job wants ONE combined deliverable per shift — describe how to combine the items\' results." },',
     '  "flows": [',
@@ -189,6 +190,9 @@ function hireSystemPrompt(
           '    or an account connector — before the first shift.',
         ]
       : []),
+    '  - browser: true only when the job has to visit web pages (read a site, fill a form,',
+    '    check a dashboard). It gives every run a browser, which costs tokens, so leave it',
+    '    false for work that stays in the project or its connected servers.',
     '  - Do not invent fields. Do not write anything after </worker>.',
     ...(interview ? interviewRules() : []),
   ].join('\n');
@@ -545,6 +549,7 @@ function contractJson(c: WorkerContract): string {
       flows: c.flows,
       ...(c.wrapUp ? { wrapUp: c.wrapUp } : {}),
       ...(c.mcpServers ? { mcpServers: c.mcpServers } : {}),
+      ...(c.browser ? { browser: true } : {}),
       ...(c.projectPath ? { projectPath: c.projectPath } : {}),
     },
     null,
