@@ -20,6 +20,7 @@ import type { MenuCommand } from '@shared/types';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
+import { WorkPane } from './components/work/WorkPane';
 import { labOn } from '@shared/labs';
 import {
   RAIL_COLLAPSED_WIDTH,
@@ -664,6 +665,8 @@ export function App() {
             <OrchestratorPane />
           ) : detailMode === 'workers' ? (
             <WorkersPane />
+          ) : detailMode === 'work' ? (
+            <WorkPane />
           ) : detailMode === 'services' ? (
             <ServicesPane />
           ) : selectedConversationId ? (

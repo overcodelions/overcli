@@ -403,6 +403,8 @@ export function describeLocation(loc: NavLocation): string {
       return 'the flows library';
     case 'orchestrator':
       return 'the orchestrator';
+    case 'work':
+      return 'work';
     case 'explorer':
       return 'the file explorer';
     case 'stats':

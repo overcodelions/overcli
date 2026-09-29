@@ -445,6 +445,30 @@ html, body {
   display: none;
 }
 
+/* The sidebar's list. Its right edge has to line up with the search box and
+   the Places/Recent/Work switch above it (8px in), so the gutter is reserved
+   — rows don't shift when the list starts to scroll — and narrow: 6px of
+   gutter plus 2px of padding is that 8px. The thumb only shows while the
+   pointer is over the list, so a list at rest has no bar hanging off it. */
+.sidebar-scroll {
+  scrollbar-gutter: stable;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+}
+.sidebar-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--c-chrome-track);
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--c-chrome-hover);
+  border: 0;
+}
+
 /* Custom scrollbar — thin, theme-aware via CSS vars. */
 ::-webkit-scrollbar {
   width: 10px;

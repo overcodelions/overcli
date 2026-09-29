@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { UUID } from '@shared/types';
 import { useStore } from '../../store';
 import { useFlowsStore } from '../../flowsStore';
+import { useWorkStore } from '../../workStore';
 import { draftFromWorker, useWorkersStore } from '../../workersStore';
 import { useRunningMap } from '../../runnersStore';
 import { findContainerPath } from '../../conversationLookup';
@@ -281,6 +282,12 @@ export function QuickSwitcherSheet({ initialScope }: { initialScope?: PaletteSco
     } else if (e.key === 'Tab') {
       e.preventDefault();
       cycleScope(e.shiftKey ? -1 : 1);
+    } else if (e.key === 'Enter' && e.shiftKey && !mod) {
+      // ⇧↵ takes the query to Work, which also searches what you typed
+      // inside chats and runs — the palette only matches names.
+      e.preventDefault();
+      close();
+      useWorkStore.getState().open(query.trim());
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (pick) commit(pick, mod);
@@ -392,7 +399,7 @@ export function QuickSwitcherSheet({ initialScope }: { initialScope?: PaletteSco
         )}
       </div>
 
-      <Footer item={flat[selected]?.item} projects={projects} workspaces={workspaces} />
+      <Footer item={flat[selected]?.item} projects={projects} workspaces={workspaces} hasQuery={!!query.trim()} />
     </div>
   );
 }
@@ -635,7 +642,10 @@ function EmptyState({
             Look in {archivedCount} archived item{archivedCount === 1 ? '' : 's'}
           </button>
         ) : (
-          'Try a project name, a branch, or an action like “settings”.'
+          <>
+            Try a project name, a branch, or an action like “settings” — or{' '}
+            <kbd className="font-mono text-ink-muted">⇧↵</kbd> to search inside all your work.
+          </>
         )}
       </div>
     </div>
@@ -648,10 +658,12 @@ function Footer({
   item,
   projects,
   workspaces,
+  hasQuery,
 }: {
   item: PaletteItem | undefined;
   projects: { id: string; path: string }[];
   workspaces: { id: string; rootPath: string }[];
+  hasQuery: boolean;
 }) {
   const hints: Array<[string, string]> = [];
   const target = item?.target;
@@ -677,6 +689,7 @@ function Footer({
       hints.push(['↵', 'run']);
     }
   }
+  if (hasQuery) hints.push(['⇧↵', 'search all work']);
   hints.push(['←→', 'filter']);
   hints.push(['⌥↑↓', 'section']);
   hints.push(['esc', 'close']);
@@ -802,9 +815,17 @@ function usePaletteCommands({ showDebug }: { showDebug: boolean }): PaletteComma
         run: () => state().openSheet({ type: 'settings', section: 'labs' }),
       },
       {
+        id: 'view.work',
+        title: 'Work',
+        subtitle: 'Everything shipped or started — chats, runs, batches and PRs',
+        keywords: ['history', 'shipped', 'done', 'finished', 'find work', 'past work', 'pr', 'ticket'],
+        run: () => useWorkStore.getState().open(),
+      },
+      {
         id: 'view.orchestrator',
         title: 'Orchestrator',
-        keywords: ['tasks', 'board', 'plan'],
+        subtitle: 'The general worker — hand it a batch',
+        keywords: ['tasks', 'board', 'plan', 'batch', 'orch'],
         run: () => state().setDetailMode('orchestrator'),
       },
       {

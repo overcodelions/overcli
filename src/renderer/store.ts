@@ -170,7 +170,8 @@ export type DetailMode =
   | 'explorer'
   | 'flows'
   | 'orchestrator'
-  | 'workers';
+  | 'workers'
+  | 'work';
 
 export interface OpenFileHighlight {
   startLine: number;

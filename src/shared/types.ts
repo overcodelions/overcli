@@ -45,6 +45,7 @@ import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 import type { InboundHandoff } from './handoff';
+import type { BranchStatus, PromptHit, RepoBranch, RunTranscript, WorkLogEntry, WorkPr } from './workRecords';
 // Type-only, so the types ⇄ modelCatalog cycle is erased at compile time.
 import type { FlowModelDefaults } from './modelCatalog';
 import type { CiDeployBlock, CiDeployFile, CiTarget, WorkerCiPermissionPolicy } from './flows/ciDeploy';
@@ -1742,6 +1743,11 @@ export interface IPCInvokeMap {
     baseBranch: string;
     branchPrefix: string;
   }) => { ok: true; worktreePath: string; branchName: string } | { ok: false; error: string };
+  /// A worktree with `branch` checked out: reused if one already has it,
+  /// else added fresh. `mainCheckout` means the project itself is on it.
+  'git:worktreeForBranch': (args: { projectPath: string; branch: string }) =>
+    | { ok: true; worktreePath: string; reused: boolean; mainCheckout: boolean }
+    | { ok: false; error: string };
   'git:createReviewWorktree': (args: {
     projectPath: string;
     agentName: string;
@@ -3147,6 +3153,23 @@ export interface IPCInvokeMap {
   'handoffs:list': () => InboundHandoff[];
   /// Started or dismissed: the file moves to `done/`.
   'handoffs:resolve': (id: string) => boolean;
+  /// Finished runs as the work log keeps them — outlives run eviction. See
+  /// main/work/workLog.ts.
+  'work:log': () => WorkLogEntry[];
+  /// PRs per repo from `gh pr list`, for matching work to where it landed.
+  /// A repo gh can't answer for comes back as an empty list.
+  'work:prs': (args: { repoPaths: string[] }) => Record<string, WorkPr[]>;
+  /// Transcripts whose typed prompts contain every word of the query.
+  'work:searchPrompts': (args: { query: string }) => PromptHit[];
+  /// Where each branch stands in git, keyed `${repo}::${branch}`.
+  /// Branches whose names carry a ticket key, across `repos`, by key.
+  'work:ticketBranches': (args: { repos: string[]; keys: string[] }) => Record<string, RepoBranch[]>;
+  'work:branchStatus': (args: {
+    items: Array<{ repo: string; branch: string; worktreePath?: string }>;
+  }) => Record<string, BranchStatus>;
+  /// A run's steps read back from its transcripts — works after the run
+  /// itself was evicted. See main/work/runTranscript.ts.
+  'work:runTranscript': (args: { runId: string; cwd?: string }) => RunTranscript;
 }
 
 /// One local subresource of an HTML preview. Stylesheets come back as

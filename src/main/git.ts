@@ -47,7 +47,7 @@ function resolveGitBinary(): string {
   return 'git';
 }
 
-function gitEnv(): NodeJS.ProcessEnv {
+export function gitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   const home = os.homedir();
   const extras =
@@ -1051,6 +1051,57 @@ export function worktreeNameTaken(
 /// will show as detached in `git status`. Resolves local refs first,
 /// then `origin/<branch>`. Fetches from origin before resolving so newly
 /// pushed branches show up without the user having to `git fetch` first.
+/// A working tree for picking a branch back up — from the Work view, when a
+/// run or agent chat worked on a branch whose worktree has since been cleaned
+/// up. Reuses a worktree that already has the branch checked out (so it never
+/// collides with one), reports when that is the main checkout itself, and
+/// otherwise adds a fresh one under ~/.overcli/worktrees — from the local
+/// branch, or tracking origin's when only the remote kept it.
+export function worktreeForBranch(args: {
+  projectPath: string;
+  branch: string;
+}):
+  | { ok: true; worktreePath: string; reused: boolean; mainCheckout: boolean }
+  | { ok: false; error: string } {
+  if (runGit(['rev-parse', '--is-inside-work-tree'], args.projectPath).exitCode !== 0) {
+    return { ok: false, error: `${args.projectPath} isn't a git repo.` };
+  }
+  if (runGit(['check-ref-format', '--branch', args.branch], args.projectPath).exitCode !== 0) {
+    return { ok: false, error: `"${args.branch}" isn't a valid branch name.` };
+  }
+  const listing = runGit(['worktree', 'list', '--porcelain'], args.projectPath);
+  if (listing.exitCode === 0) {
+    let current: string | null = null;
+    for (const line of listing.stdout.split('\n')) {
+      if (line.startsWith('worktree ')) current = line.slice('worktree '.length).trim();
+      else if (line.trim() === `branch refs/heads/${args.branch}` && current) {
+        const mainCheckout = path.resolve(current) === path.resolve(args.projectPath);
+        return { ok: true, worktreePath: current, reused: true, mainCheckout };
+      }
+    }
+  }
+  const local = runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${args.branch}`], args.projectPath).exitCode === 0;
+  if (!local) {
+    const hasOrigin = runGit(['remote', 'get-url', 'origin'], args.projectPath).exitCode === 0;
+    if (hasOrigin) runGitNoPrompt(['fetch', 'origin', args.branch], args.projectPath);
+    const remote =
+      runGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${args.branch}`], args.projectPath).exitCode === 0;
+    if (!remote) return { ok: false, error: `Branch "${args.branch}" no longer exists here or on origin.` };
+  }
+  const root = path.join(os.homedir(), '.overcli', 'worktrees', path.basename(args.projectPath));
+  fs.mkdirSync(root, { recursive: true });
+  const base = args.branch.replace(/[^A-Za-z0-9._-]+/g, '-');
+  let worktreePath = path.join(root, base);
+  for (let n = 2; fs.existsSync(worktreePath); n++) worktreePath = path.join(root, `${base}-${n}`);
+  const res = local
+    ? runGit(['worktree', 'add', worktreePath, args.branch], args.projectPath)
+    : runGit(['worktree', 'add', '-b', args.branch, worktreePath, `origin/${args.branch}`], args.projectPath);
+  if (res.exitCode !== 0) {
+    return { ok: false, error: `git worktree add failed:\n${res.stderr || res.stdout}` };
+  }
+  return { ok: true, worktreePath, reused: false, mainCheckout: false };
+}
+
 export function createReviewWorktree(args: {
   projectPath: string;
   agentName: string;
