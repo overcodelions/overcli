@@ -47,6 +47,7 @@ function makeHarness(opts: {
     workerId?: string;
     workerName?: string;
     allowExternalActions?: boolean;
+    chrome?: boolean;
     unattended?: boolean;
     unattendedAllowedTools?: string[];
   }> = [];
@@ -82,6 +83,7 @@ function makeHarness(opts: {
         workerId: args.workerId,
         workerName: args.workerName,
         allowExternalActions: args.allowExternalActions,
+        chrome: args.chrome,
         unattended: args.unattended,
         unattendedAllowedTools: args.unattendedAllowedTools,
       });
@@ -1105,6 +1107,27 @@ describe('OrchestratorImpl worker batches', () => {
       workerName: 'Scout',
       allowExternalActions: true,
     });
+  });
+
+  it('launches a browsing worker\'s runs with the browser switch on', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, {
+      autoApprove: { maxItems: 1 },
+      origin: { kind: 'worker', workerId: 'w1', workerName: 'Scout', browser: true },
+    });
+    expect(h.started[0].chrome).toBe(true);
+    // The planning turn answers errands, so it browses too.
+    expect(h.oneShotCalls[0].chrome).toBe(true);
+  });
+
+  it('leaves the browser off for a worker that does not browse', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, {
+      autoApprove: { maxItems: 1 },
+      origin: { kind: 'worker', workerId: 'w1', workerName: 'Scout' },
+    });
+    expect(h.started[0].chrome).toBeUndefined();
+    expect(h.oneShotCalls[0].chrome).toBeUndefined();
   });
 
   it('runs the planning turn on the heartbeat model override', async () => {

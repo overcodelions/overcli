@@ -65,6 +65,11 @@ export const codexBackend: BackendSpec = {
     // git repo) or a worktree codex declines to treat as trusted.
     // Without it codex exits with "Not inside a trusted directory and
     // --skip-git-repo-check was not specified" (mirrors the reviewer).
+    // Offline is codex's workspace-write default. Read-only (plan) stays
+    // offline, and danger-full-access already has the network.
+    if (args.networkAccess && sandbox === 'workspace-write') {
+      a.push('-c', 'sandbox_workspace_write.network_access=true');
+    }
     a.push('-s', sandbox, '-a', approval, 'exec', '--skip-git-repo-check');
     // Coordinator-style cwds (folders of symlinks pointing into each
     // member worktree) need their symlink targets explicitly granted as

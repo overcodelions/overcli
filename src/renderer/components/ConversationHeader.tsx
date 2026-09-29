@@ -386,7 +386,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
                 value: 'inherit',
                 label: `Default — follow Settings (${settings.claudeChrome ? 'on' : 'off'})`,
               },
-              { value: 'on', label: 'On — let this chat drive Chrome' },
+              { value: 'on', label: 'On — drive Chrome (needs the Claude in Chrome extension)' },
               { value: 'off', label: 'Off — no browser tools here' },
             ]}
             onPick={(v) =>

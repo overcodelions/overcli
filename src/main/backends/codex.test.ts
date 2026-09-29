@@ -17,6 +17,24 @@ const noTranscriptCtx: BackendCtx = {
 };
 
 describe('codexBackend.buildArgs', () => {
+  it('opens the workspace-write sandbox to the network only when asked', () => {
+    const flag = 'sandbox_workspace_write.network_access=true';
+    expect(codexBackend.buildArgs(baseArgs, noTranscriptCtx)).not.toContain(flag);
+    const a = codexBackend.buildArgs({ ...baseArgs, networkAccess: true }, noTranscriptCtx);
+    // A global `-c`, so it has to land before the exec subcommand.
+    expect(a.indexOf(flag)).toBeGreaterThan(-1);
+    expect(a[a.indexOf(flag) - 1]).toBe('-c');
+    expect(a.indexOf(flag)).toBeLessThan(a.indexOf('exec'));
+  });
+
+  it('leaves plan mode offline and full access untouched', () => {
+    const flag = 'sandbox_workspace_write.network_access=true';
+    for (const permissionMode of ['plan', 'bypassPermissions'] as const) {
+      const a = codexBackend.buildArgs({ ...baseArgs, permissionMode, networkAccess: true }, noTranscriptCtx);
+      expect(a).not.toContain(flag);
+    }
+  });
+
   it('emits the exec subcommand with - as the final stdin marker', () => {
     const a = codexBackend.buildArgs(baseArgs, noTranscriptCtx);
     expect(a).toContain('exec');

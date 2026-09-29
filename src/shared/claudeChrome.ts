@@ -83,3 +83,56 @@ export function chromeCommandVerdict(
   if (!prose) return { kind: 'pass' };
   return opts.chromeOn ? { kind: 'rewrite', prose } : { kind: 'blocked', prose };
 }
+
+/// The Chrome Web Store listing for the Claude in Chrome extension. The
+/// `--chrome` flag only asks the CLI to attach; without this installed and
+/// enabled, the browser tools fail at call time and nothing in overcli said
+/// why — the user had to guess the extension existed.
+export const CLAUDE_IN_CHROME_URL =
+  'https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn';
+
+/// MCP servers that give a non-Claude backend a real browser to drive. Used
+/// to tell a codex user whether they already have one or need to add one.
+const BROWSER_MCP_RE = /puppeteer|playwright|chrome-devtools|browser/i;
+
+export function isBrowserMcpName(name: string): boolean {
+  return BROWSER_MCP_RE.test(name);
+}
+
+const CHROME_TOOL_PREFIX = 'mcp__claude-in-chrome__';
+
+type ChromeScanEvent = {
+  kind:
+    | { type: 'localUser' }
+    | { type: 'assistant'; info: { toolUses: Array<{ id: string; name: string }> } }
+    | { type: 'toolResult'; results: Array<{ id: string; content: string; isError: boolean }> }
+    | { type: string };
+};
+
+/// The latest turn's failed Claude in Chrome call, if its last browser call
+/// failed. Keyed on the tool name, not the error text: the extension's
+/// messages vary by version (not installed, disabled, Chrome closed, signed
+/// into another account) and all of them come down to the same setup check.
+/// A later successful call in the same turn clears it — the model recovered.
+export function lastChromeToolFailure(
+  events: readonly ChromeScanEvent[],
+): { id: string; content: string } | null {
+  let start = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].kind.type === 'localUser') {
+      start = i + 1;
+      break;
+    }
+  }
+  const chromeIds = new Set<string>();
+  let last: { id: string; content: string; isError: boolean } | null = null;
+  for (let i = start; i < events.length; i++) {
+    const k = events[i].kind;
+    if (k.type === 'assistant' && 'info' in k) {
+      for (const t of k.info.toolUses) if (t.name.startsWith(CHROME_TOOL_PREFIX)) chromeIds.add(t.id);
+    } else if (k.type === 'toolResult' && 'results' in k) {
+      for (const r of k.results) if (chromeIds.has(r.id)) last = r;
+    }
+  }
+  return last?.isError ? { id: last.id, content: last.content } : null;
+}

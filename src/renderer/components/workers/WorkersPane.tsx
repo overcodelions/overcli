@@ -35,6 +35,7 @@ function heartbeatBackendOf(
 import { useStore } from "../../store";
 import { isEverydayProject } from "@shared/everydayProjects";
 import { useFlowsStore } from "../../flowsStore";
+import { BrowserSetupHint } from "../BrowserSetupHint";
 import { useOrchestratorStore } from "../../orchestratorStore";
 import {
   selectRevise,
@@ -5230,6 +5231,22 @@ function WorkerEditor() {
     return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
   }, [capabilities]);
 
+  // The backends this worker's runs will actually use — its flows'
+  // participants, not the heartbeat backend, which only plans. Browser setup
+  // differs per backend, so the hint has to know which ones are in play.
+  const runBackends = useMemo(() => {
+    // A hire's drafted flows aren't in the library yet, and belong to it.
+    const drafted = [...(draftedFlow ? [draftedFlow] : []), ...extraFlows];
+    const ids = new Set([...draft.flowIds, ...drafted.map((f) => f.id)]);
+    const set = new Set<Backend>();
+    for (const f of [...flows, ...drafted]) {
+      if (!ids.has(f.id)) continue;
+      for (const p of f.participants ?? []) set.add(p.backend);
+    }
+    if (set.size === 0) set.add(heartbeatBackend);
+    return [...set];
+  }, [flows, draft.flowIds, draftedFlow, extraFlows, heartbeatBackend]);
+
   // Same-project colleagues first — the default roster — then everyone else,
   // who can only be reached by picking them here.
   const colleagues = useMemo(() => {
@@ -5764,6 +5781,32 @@ function WorkerEditor() {
                 </div>
               </div>
             )}
+
+            {/* The web. Off by default because it hands every run a browser
+                (and, on Claude, your signed-in Chrome). The setup lives outside
+                overcli, so the hint says what it is before the first run fails. */}
+            <div className="rounded-lg border border-line px-3 py-2.5">
+              <label className="flex items-start gap-2 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={draft.browser ?? false}
+                  onChange={(e) => patch({ browser: e.target.checked })}
+                  className="mt-1"
+                />
+                <span>
+                  Browse the web
+                  <span className="block text-[11px] leading-relaxed text-ink-faint">
+                    Turn on when the job has to visit websites: read a page, fill a form, check a
+                    dashboard. Errands at its desk, shift planning and every run it starts get browser access.
+                  </span>
+                </span>
+              </label>
+              {draft.browser && (
+                <div className="mt-2 border-t border-line pt-2">
+                  <BrowserSetupHint backends={runBackends} />
+                </div>
+              )}
+            </div>
 
             {/* Tool access, priced. Every server this worker may use is booted
                 on every shift and every desk message, and its whole tool list
