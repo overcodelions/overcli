@@ -80,7 +80,6 @@ export function parseChangedLines(diffText: string): ChangedLines {
       inHunk = false;
       continue;
     }
-    if (raw.startsWith('+++') || raw.startsWith('---')) continue;
     if (raw.startsWith('+')) {
       runAdded.push(newLine);
       newLine += 1;
@@ -168,7 +167,7 @@ export function diffExcerptForLines(diffText: string, from: number, to: number, 
       newLine = Math.max(1, Number(header[1]));
       continue;
     }
-    if (hunk < 0 || raw.startsWith('+++') || raw.startsWith('---') || raw.startsWith('\\')) continue;
+    if (hunk < 0 || raw.startsWith('\\')) continue;
     if (raw.startsWith('diff --git ')) {
       flush();
       hunk = -1;
