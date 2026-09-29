@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import type { MachineServiceView } from '@shared/types';
+import type { MachineServiceListView, MachineServiceView } from '@shared/types';
 
 const MANAGER_LABEL: Record<MachineServiceView['manager'], string> = {
   brew: 'brew',
@@ -23,14 +23,15 @@ const MANAGER_LABEL: Record<MachineServiceView['manager'], string> = {
 const POLL_MS = 15_000;
 
 export function MachineServicesSection({ filter }: { filter: string }) {
-  const [services, setServices] = useState<MachineServiceView[] | null>(null);
+  const [listed, setListed] = useState<MachineServiceListView | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      setServices(await window.overcli.invoke('machine:list'));
+      setListed(await window.overcli.invoke('machine:list'));
     } catch {
-      setServices([]);
+      setListed({ services: [], problems: [] });
     }
   }, []);
 
@@ -44,9 +45,24 @@ export function MachineServicesSection({ filter }: { filter: string }) {
     };
   }, [refresh]);
 
+  // The poll and the focus listener miss a service started from one of our own
+  // terminals — the window never loses focus — so this is the way to not wait.
+  async function refreshNow() {
+    setRefreshing(true);
+    try {
+      await refresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   const needle = filter.trim().toLowerCase();
-  const shown = (services ?? []).filter((s) => !needle || s.name.toLowerCase().includes(needle));
-  if (shown.length === 0) return null;
+  const shown = (listed?.services ?? []).filter((s) => !needle || s.name.toLowerCase().includes(needle));
+  // A manager that refused to list is worth the header even with no rows —
+  // hiding it is what made a brew stuck on the Xcode licence look like a
+  // machine with nothing installed.
+  const problems = listed?.problems ?? [];
+  if (shown.length === 0 && problems.length === 0) return null;
   const running = shown.filter((s) => s.status === 'running').length;
 
   return (
@@ -60,12 +76,29 @@ export function MachineServicesSection({ filter }: { filter: string }) {
         </span>
         <span className="flex-1" />
         <button
+          className="rounded px-1.5 text-[10.5px] text-ink-faint hover:bg-card-strong hover:text-ink disabled:opacity-50"
+          onClick={() => void refreshNow()}
+          disabled={refreshing}
+          title="Ask the service manager again"
+        >
+          {refreshing ? 'refreshing…' : 'refresh'}
+        </button>
+        <button
           className="rounded px-1.5 text-[10.5px] text-ink-faint hover:bg-card-strong hover:text-ink"
           onClick={() => setCollapsed((c) => !c)}
         >
           {collapsed ? 'show' : 'hide'}
         </button>
       </div>
+      {!collapsed &&
+        problems.map((problem) => (
+          <div
+            key={problem}
+            className="select-text break-words px-3.5 pb-1.5 text-[10.5px] text-amber-700 dark:text-amber-300"
+          >
+            {problem}
+          </div>
+        ))}
       {!collapsed && shown.map((service) => <MachineRow key={service.id} service={service} onChanged={refresh} />)}
     </div>
   );

@@ -695,6 +695,13 @@ export interface MachineServiceView {
   pid?: number;
 }
 
+/// Mirrors `MachineServiceList`: what was listed, and why a manager that is
+/// installed couldn't be asked.
+export interface MachineServiceListView {
+  services: MachineServiceView[];
+  problems: string[];
+}
+
 export interface WorktreeSweepEntry {
   worktreePath: string;
   projectPath: string;
@@ -3095,7 +3102,7 @@ export interface IPCInvokeMap {
   /// Daemons installed on this machine rather than in a checkout — mariadb,
   /// memcached, redis — from brew, systemd or Windows services. Empty where
   /// none of those exist.
-  'machine:list': () => MachineServiceView[];
+  'machine:list': () => MachineServiceListView;
   'machine:control': (args: {
     name: string;
     manager: MachineServiceView['manager'];

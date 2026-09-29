@@ -340,15 +340,42 @@ export interface ListOptions {
   exists?: (p: string) => boolean;
 }
 
-async function listBrew(exec: ExecFn, exists: (p: string) => boolean, requireInstalled: boolean): Promise<MachineService[]> {
+/// One manager's answer: what it listed, or — when it was there but wouldn't
+/// say — why, in its own words. A missing manager is neither.
+interface Listed {
+  services: MachineService[];
+  problem?: string;
+}
+
+/// What a manager printed when it failed, folded to one line: brew's Xcode
+/// licence refusal spans two, and the second is the command that fixes it.
+function problemText(label: string, err: unknown): string {
+  const text = failureText(err)
+    .split(/\r?\n/)
+    .map((l) => l.trim().replace(/^Error:\s*/, ''))
+    .filter(Boolean)
+    .join(' ');
+  return `${label}: ${text.length > 300 ? `${text.slice(0, 299)}…` : text}`;
+}
+
+function missing(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+}
+
+async function listBrew(exec: ExecFn, exists: (p: string) => boolean, requireInstalled: boolean): Promise<Listed> {
   const brew = findBrew(exists);
   // On Linux brew is the exception; don't go hunting PATH for it.
-  if (requireInstalled && brew === 'brew') return [];
+  if (requireInstalled && brew === 'brew') return { services: [] };
+  let stdout: string;
   try {
-    const { stdout } = await exec(brew, ['services', 'list', '--json'], { env: brewEnv(brew) });
-    return parseBrewServices(stdout);
+    ({ stdout } = await exec(brew, ['services', 'list', '--json'], { env: brewEnv(brew) }));
+  } catch (err) {
+    return missing(err) ? { services: [] } : { services: [], problem: problemText('brew services', err) };
+  }
+  try {
+    return { services: parseBrewServices(stdout) };
   } catch {
-    return [];
+    return { services: [], problem: "brew services: the list didn't come back as JSON" };
   }
 }
 
@@ -370,36 +397,50 @@ async function listSystemd(exec: ExecFn, user: boolean): Promise<MachineService[
   }
 }
 
-async function listWindows(exec: ExecFn): Promise<MachineService[]> {
+async function listWindows(exec: ExecFn): Promise<Listed> {
   try {
     const { stdout } = await exec('powershell', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_LIST_SCRIPT]);
-    return parseWindowsServices(stdout);
-  } catch {
-    return [];
+    return { services: parseWindowsServices(stdout) };
+  } catch (err) {
+    return missing(err) ? { services: [] } : { services: [], problem: problemText('Get-Service', err) };
   }
 }
 
+export interface MachineServiceList {
+  services: MachineService[];
+  /// Managers that are installed but refused to list — brew before the Xcode
+  /// licence is accepted, say. Without these an empty list reads as "nothing
+  /// installed" when the truth is "couldn't ask".
+  problems: string[];
+}
+
 /// Everything this machine's service managers know about, as far as they'll
-/// say without elevation. Never throws: a missing manager is an empty list.
-export async function listMachineServices(opts: ListOptions = {}): Promise<MachineService[]> {
+/// say without elevation. Never throws: a missing manager is an empty list,
+/// and one that fails is a sentence in `problems`. systemd stays quiet on
+/// failure — a user session with no bus is ordinary, not a fault.
+export async function listMachineServices(opts: ListOptions = {}): Promise<MachineServiceList> {
   const platform = opts.platform ?? process.platform;
   const exec = opts.exec ?? defaultExec;
   const exists = opts.exists ?? fs.existsSync;
+  const merge = (listed: Listed[]): MachineServiceList => ({
+    services: listed.flatMap((l) => l.services),
+    problems: listed.flatMap((l) => (l.problem ? [l.problem] : [])),
+  });
   switch (platform) {
     case 'darwin':
-      return listBrew(exec, exists, false);
+      return merge([await listBrew(exec, exists, false)]);
     case 'linux': {
       const [brew, system, user] = await Promise.all([
         listBrew(exec, exists, true),
         listSystemd(exec, false),
         listSystemd(exec, true),
       ]);
-      return [...brew, ...system, ...user];
+      return merge([brew, { services: system }, { services: user }]);
     }
     case 'win32':
-      return listWindows(exec);
+      return merge([await listWindows(exec)]);
     default:
-      return [];
+      return { services: [], problems: [] };
   }
 }
 
