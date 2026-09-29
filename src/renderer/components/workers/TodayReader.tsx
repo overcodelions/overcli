@@ -43,6 +43,8 @@ import { baseName } from './workQueue';
 import type { ArtifactPreviewResult } from '@shared/types';
 import type { FlowRun, FlowWorkerExchange } from '@shared/flows/schema';
 import type { WorkerFile } from './workerDeskSelectors';
+import type { Orchestration } from '@shared/flows/orchestration';
+import type { Worker } from '@shared/flows/worker';
 
 /// Which tab you last picked for each item, for this session. Module-level
 /// rather than component state because leaving the Workers tab unmounts the
@@ -647,6 +649,7 @@ function Result({
         {failed && row.note && <p className="text-[13.5px] text-red-400">{row.note}</p>}
         {live && <p className="text-[13.5px] text-ink-muted">Still working — its result lands here when it finishes.</p>}
         {run && <WorkerDecisions run={run} workerName={row.workerName} />}
+        {answers.length === 0 && !live && <HandedOnBubbles row={row} openBatch={openBatch} />}
         {file && (
           <OpenFileButton
             path={file.path}
@@ -901,12 +904,7 @@ function HandoffNotes({
             </div>
           );
         }
-        // The note names the colleague; the longest name that fits wins, so
-        // "Ann" does not claim a handoff to "Anna".
-        const to = Object.values(workers)
-          .filter((w) => w.id !== senderId && (note.startsWith(`Handed to ${w.name}`) || note.startsWith(`Will hand to ${w.name}`)))
-          .sort((a, b) => b.name.length - a.name.length)[0];
-        const landed = to && sent && note.startsWith('Handed to') ? receiverBatch(sent, to.id, orchestrations) : undefined;
+        const { to, landed } = handoffEnds(note, senderId, workers, sent, orchestrations);
         const open = landed ? openBatch?.(landed.id) ?? null : null;
         return (
           <div key={e.id ?? i} className="flex items-center gap-1.5 text-[11.5px] text-ink-muted">
@@ -925,6 +923,111 @@ function HandoffNotes({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/// Who a journaled handoff went to, and the errand it became on their desk.
+/// The note names the colleague; the longest name that fits wins, so "Ann"
+/// does not claim a handoff to "Anna".
+function handoffEnds(
+  note: string,
+  senderId: string,
+  workers: Record<string, Worker>,
+  sent: Orchestration | undefined,
+  orchestrations: Record<string, Orchestration>,
+): { to: Worker | undefined; landed: Orchestration | undefined } {
+  const to = Object.values(workers)
+    .filter((w) => w.id !== senderId && (note.startsWith(`Handed to ${w.name}`) || note.startsWith(`Will hand to ${w.name}`)))
+    .sort((a, b) => b.name.length - a.name.length)[0];
+  const landed = to && sent && note.startsWith('Handed to') ? receiverBatch(sent, to.id, orchestrations) : undefined;
+  return { to, landed };
+}
+
+/// What a finished job handed on, drawn the way the receiver's side draws
+/// it: the sender's face, an arrow, the colleague's face, and the errand as
+/// it was written to them — with the way through to what they made of it.
+/// A handoff that only lived in the result's prose read as though it had
+/// happened; this is drawn from the journal, so it is what actually went out.
+function HandedOnBubbles({ row, openBatch }: { row: QueueRow; openBatch?: OpenBatch }) {
+  const journal = useWorkersStore((s) => s.journals[row.workerId]);
+  const loadJournal = useWorkersStore((s) => s.loadJournal);
+  const workers = useWorkersStore((s) => s.workers);
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  const heldCount = useWorkersStore((s) => s.heldHandoffs.length);
+  useEffect(() => {
+    void loadJournal(row.workerId);
+  }, [loadJournal, row.workerId, row.status, heldCount]);
+  // The shift's own handoffs, and this run's — not a sibling run's.
+  const entries = (journal ?? [])
+    .filter(
+      (e) =>
+        e.kind === 'delegated' &&
+        !!row.orchestrationId &&
+        e.orchestrationId === row.orchestrationId &&
+        (!e.runId || e.runId === row.runId),
+    )
+    .sort((a, b) => a.at - b.at);
+  const sender = workers[row.workerId];
+  const tint = useWorkerTint(row.workerId);
+  if (entries.length === 0 || !sender) return null;
+  const sent = row.orchestrationId ? orchestrations[row.orchestrationId] : undefined;
+  return (
+    <div className="flex max-w-[980px] flex-col gap-2">
+      {entries.map((e) => {
+        const note = e.note ?? '';
+        const ok = /^(Handed to|Will hand to)/.test(note);
+        const { to, landed } = handoffEnds(note, row.workerId, workers, sent, orchestrations);
+        const open = landed ? openBatch?.(landed.id) ?? null : null;
+        const colon = note.indexOf(': ');
+        const head = colon >= 0 ? note.slice(0, colon) : note;
+        const errand = ok && colon >= 0 ? note.slice(colon + 2) : '';
+        return (
+          <div
+            key={e.id}
+            className="flex flex-col gap-1.5 rounded-xl px-4 py-2.5"
+            style={{
+              background: `color-mix(in srgb, ${tint} 5%, transparent)`,
+              border: `1px dashed color-mix(in srgb, ${ok ? tint : '#f87171'} 35%, transparent)`,
+            }}
+          >
+            <div className="flex items-center gap-2 text-[11.5px] text-ink-muted">
+              <WorkerAvatar worker={sender} size="xs" />
+              <span aria-hidden className="text-ink-faint">
+                →
+              </span>
+              {to && <WorkerAvatar worker={to} size="xs" />}
+              <span className={ok ? '' : 'text-red-400'}>{head}</span>
+              {landed &&
+                (open ? (
+                  <button onClick={open} className="ml-auto shrink-0 text-accent hover:underline">
+                    {landed.completedAt ? `See ${to!.name}'s answer →` : `${to!.name} is on it →`}
+                  </button>
+                ) : (
+                  <span className="ml-auto shrink-0 text-ink-faint">{landed.completedAt ? 'answered' : 'working on it'}</span>
+                ))}
+            </div>
+            {errand && <ExpandableText text={errand} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/// An errand clamped to a few lines, since it sits above the report it came
+/// out of; the rest is one click away.
+function ExpandableText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 280 || text.split('\n').length > 4;
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <div className={'select-text whitespace-pre-wrap text-[13px] text-ink ' + (open || !long ? '' : 'line-clamp-3')}>{text}</div>
+      {long && (
+        <button onClick={() => setOpen((o) => !o)} className="text-[11.5px] text-ink-muted hover:text-ink">
+          {open ? 'Show less' : 'Show all'}
+        </button>
+      )}
     </div>
   );
 }

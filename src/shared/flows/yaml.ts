@@ -53,6 +53,7 @@ interface YamlStep {
   on_fail?: unknown;
   pause_before?: unknown;
   turbo?: unknown;
+  hands_off?: unknown;
   output?: unknown;
 }
 
@@ -194,8 +195,15 @@ function parseStep(raw: unknown, idx: number): FlowStep {
     onFail: parseOnFail(r.on_fail),
     pauseBefore: asBoolean(r.pause_before),
     turbo: asBoolean(r.turbo),
+    handsOff: parseHandsOff(r.hands_off),
     output: asString(r.output),
   };
+}
+
+/// A name or a list of names; absent when it names nobody.
+function parseHandsOff(v: unknown): string[] | undefined {
+  const names = (typeof v === 'string' ? [v] : asStringArray(v)).map((n) => n.trim()).filter(Boolean);
+  return names.length > 0 ? names : undefined;
 }
 
 /// Lift a step's legacy `model` and its rebound critic to the newest
@@ -397,6 +405,7 @@ function serializeStep(s: FlowStep): Record<string, unknown> {
   if (s.onFail) out.on_fail = serializeOnFail(s.onFail);
   if (s.pauseBefore) out.pause_before = true;
   if (s.turbo) out.turbo = true;
+  if (s.handsOff?.length) out.hands_off = s.handsOff;
   out.output = s.output;
   return out;
 }

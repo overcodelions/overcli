@@ -25,6 +25,7 @@ import { OrchestratorImpl } from '../main/flows/orchestrator';
 import { WorkerEngine } from '../main/flows/workerEngine';
 import { SchedulerEngine } from '../main/flows/scheduler';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
+import { runHandoffOutputs } from '../shared/flows/worker';
 import type { MainToRendererEvent } from '../shared/types';
 import type { PermissionPolicy } from './args';
 import { permissionTap, type PermissionDecision } from './permissions';
@@ -184,6 +185,10 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
         out.push({ name: art.name, body: art.body });
       }
       return out;
+    },
+    runHandoffOutputs: (runId) => {
+      const run = flowRuntime.getRun(runId);
+      return run ? runHandoffOutputs(run) : [];
     },
   });
 

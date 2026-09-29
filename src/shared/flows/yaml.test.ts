@@ -145,6 +145,35 @@ steps:
     expect((parse(serializeFlow(off)) as any).steps[0]).not.toHaveProperty('turbo');
   });
 
+  it('maps hands_off to the colleagues a step may hand work to', () => {
+    const flow = parseInline(`
+name: Hands off
+steps:
+  - id: listed
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: planner
+    hands_off: [Triage, " Mender "]
+    output: a.md
+  - id: single
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: planner
+    hands_off: Triage
+    output: b.md
+  - id: none
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: planner
+    hands_off: []
+    output: c.md
+`);
+    expect(flow?.steps.map((s) => s.handsOff)).toEqual([['Triage', 'Mender'], ['Triage'], undefined]);
+  });
+
+  it('round-trips hands_off and leaves it out when a step names nobody', () => {
+    const on = minimalFlow({ steps: [{ ...minimalFlow().steps[0], handsOff: ['Triage'] }] });
+    expect((parse(serializeFlow(on)) as any).steps[0].hands_off).toEqual(['Triage']);
+    expect((parse(serializeFlow(minimalFlow())) as any).steps[0]).not.toHaveProperty('hands_off');
+  });
+
   it('maps pause_before to pauseBefore and defaults absent keys to false', () => {
     const flow = parseInline(`
 name: Pause

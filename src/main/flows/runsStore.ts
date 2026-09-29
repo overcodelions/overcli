@@ -14,6 +14,7 @@ import path from 'node:path';
 import { host } from '../host';
 import { log } from '../diagnostics';
 import { appendRunSummary } from './runSummaryLog';
+import { appendWorkLog } from '../work/workLog';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 import { canonicalizeUnderRoot } from '../../shared/pathScope';
 
@@ -161,6 +162,9 @@ export function saveRun(run: FlowRun): void {
     run.state.kind === 'aborted'
   ) {
     appendRunSummary(run);
+    // And into the work log, so the Work view can still find and describe
+    // the run after eviction takes it (and its participant chats) away.
+    appendWorkLog(run);
   }
 }
 

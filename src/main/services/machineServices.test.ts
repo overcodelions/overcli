@@ -178,20 +178,39 @@ describe('parseWindowsServices', () => {
 describe('listMachineServices', () => {
   it('darwin: uses the first brew candidate that exists', async () => {
     const { exec, calls } = fakeExec([{ match: (c) => c.file === '/usr/local/bin/brew', stdout: BREW_JSON }]);
-    const services = await listMachineServices({ platform: 'darwin', exec, exists: (p) => p === '/usr/local/bin/brew' });
+    const { services, problems } = await listMachineServices({ platform: 'darwin', exec, exists: (p) => p === '/usr/local/bin/brew' });
     expect(services).toHaveLength(7);
+    expect(problems).toEqual([]);
     expect(calls).toEqual([{ file: '/usr/local/bin/brew', args: ['services', 'list', '--json'] }]);
   });
 
   it('darwin: falls back to PATH, and no brew anywhere is an empty list', async () => {
     const { exec, calls } = fakeExec([]);
-    expect(await listMachineServices({ platform: 'darwin', exec, exists: () => false })).toEqual([]);
+    expect(await listMachineServices({ platform: 'darwin', exec, exists: () => false })).toEqual({ services: [], problems: [] });
     expect(calls[0].file).toBe('brew');
   });
 
-  it('darwin: garbage output is an empty list, not a throw', async () => {
+  it('darwin: garbage output is a problem, not a throw', async () => {
     const { exec } = fakeExec([{ match: () => true, stdout: 'Error: not json' }]);
-    expect(await listMachineServices({ platform: 'darwin', exec, exists: () => true })).toEqual([]);
+    const { services, problems } = await listMachineServices({ platform: 'darwin', exec, exists: () => true });
+    expect(services).toEqual([]);
+    expect(problems).toHaveLength(1);
+  });
+
+  it('darwin: a brew that runs and refuses says why, on one line', async () => {
+    const { exec } = fakeExec([
+      {
+        match: () => true,
+        error: {
+          code: 1,
+          stderr: 'Error: You have not agreed to the Xcode license. Please resolve this by running:\n  sudo xcodebuild -license accept\n',
+        },
+      },
+    ]);
+    expect(await listMachineServices({ platform: 'darwin', exec, exists: () => true })).toEqual({
+      services: [],
+      problems: ['brew services: You have not agreed to the Xcode license. Please resolve this by running: sudo xcodebuild -license accept'],
+    });
   });
 
   it('linux: merges system and user units, skipping brew when not installed', async () => {
@@ -199,7 +218,8 @@ describe('listMachineServices', () => {
       { match: (c) => c.file === 'systemctl' && !has('--user')(c), stdout: SYSTEMD_JSON },
       { match: (c) => c.file === 'systemctl' && has('--user')(c), stdout: JSON.stringify([{ unit: 'redis.service', load: 'loaded', active: 'active', sub: 'running' }]) },
     ]);
-    const services = await listMachineServices({ platform: 'linux', exec, exists: () => false });
+    const { services, problems } = await listMachineServices({ platform: 'linux', exec, exists: () => false });
+    expect(problems).toEqual([]);
     expect(services.map((s) => s.id)).toEqual([
       'systemd:mariadb',
       'systemd:postgresql@16-main',
@@ -216,7 +236,7 @@ describe('listMachineServices', () => {
       { match: (c) => c.file === '/home/linuxbrew/.linuxbrew/bin/brew', stdout: JSON.stringify([{ name: 'redis', status: 'started' }]) },
       { match: (c) => c.file === 'systemctl', stdout: '[]' },
     ]);
-    const services = await listMachineServices({ platform: 'linux', exec, exists: (p) => p.startsWith('/home/linuxbrew') });
+    const { services } = await listMachineServices({ platform: 'linux', exec, exists: (p) => p.startsWith('/home/linuxbrew') });
     expect(services.map((s) => s.id)).toEqual(['brew:redis']);
   });
 
@@ -226,19 +246,20 @@ describe('listMachineServices', () => {
       { match: (c) => has('--plain')(c) && !has('--user')(c), stdout: SYSTEMD_PLAIN },
       { match: (c) => has('--plain')(c) && has('--user')(c), error: { code: 1, stderr: 'Failed to connect to bus' } },
     ]);
-    const services = await listMachineServices({ platform: 'linux', exec, exists: () => false });
+    const { services, problems } = await listMachineServices({ platform: 'linux', exec, exists: () => false });
     expect(services.map((s) => s.id)).toEqual(['systemd:mariadb', 'systemd:postgresql@14-main', 'systemd:memcached']);
+    expect(problems).toEqual([]);
     expect(calls.filter((c) => has('--plain')(c))).toHaveLength(2);
   });
 
   it('linux: no systemctl at all is an empty list', async () => {
     const { exec } = fakeExec([]);
-    expect(await listMachineServices({ platform: 'linux', exec, exists: () => false })).toEqual([]);
+    expect(await listMachineServices({ platform: 'linux', exec, exists: () => false })).toEqual({ services: [], problems: [] });
   });
 
   it('win32: runs Get-Service through powershell', async () => {
     const { exec, calls } = fakeExec([{ match: (c) => c.file === 'powershell', stdout: JSON.stringify({ Name: 'Redis', Status: 4 }) }]);
-    const services = await listMachineServices({ platform: 'win32', exec });
+    const { services } = await listMachineServices({ platform: 'win32', exec });
     expect(services.map((s) => s.id)).toEqual(['windows:Redis']);
     expect(calls[0].args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
     expect(calls[0].args[3]).toContain('Get-Service');
@@ -246,7 +267,7 @@ describe('listMachineServices', () => {
 
   it('unsupported platforms are an empty list without shelling out', async () => {
     const { exec, calls } = fakeExec([]);
-    expect(await listMachineServices({ platform: 'freebsd', exec })).toEqual([]);
+    expect(await listMachineServices({ platform: 'freebsd', exec })).toEqual({ services: [], problems: [] });
     expect(calls).toEqual([]);
   });
 });

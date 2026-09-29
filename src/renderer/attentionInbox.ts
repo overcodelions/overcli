@@ -21,7 +21,7 @@ import { flowRunActivityAt, flowRunTitle, type FlowRun } from '@shared/flows/sch
 import type { WorkerFunding } from '@shared/flows/treasury';
 import type { Worker } from '@shared/flows/worker';
 import { handoffReason, type InboundHandoff } from '@shared/handoff';
-import { STALL_AFTER_MS } from './components/flows/runTriage';
+import { STALL_AFTER_MS, runStallClock } from './components/flows/runTriage';
 import { flowRunPromptedAt } from './components/sidebarItems';
 import { pauseReasonLabel, runStepPosition } from './components/workers/deskRunRail';
 
@@ -124,6 +124,9 @@ export interface AttentionSources {
   /// Pending inbox handoffs. Optional so callers that predate the inbox
   /// keep compiling; absent means none.
   handoffs?: readonly InboundHandoff[];
+  /// When you last touched each run (see runTouched.ts). Optional; absent
+  /// means only the run's own clock counts.
+  touchedAt?: (run: FlowRun) => number;
 }
 
 /// Rank inside the tray: a stopped run first — it holds a worktree and the
@@ -138,18 +141,27 @@ const KIND_RANK: Record<AttentionItem['kind'], number> = {
   unfunded: 5,
 };
 
+/// Is this paused run waiting on you? Not when you paused it yourself (you
+/// already know), and not once it has sat long enough to count as left behind
+/// — a count you can't clear stops being a signal. The one rule for "needs
+/// you" on a run: the title-bar tray, the Flows badge and the Work list all
+/// ask here, so their counts can't disagree.
+export function runNeedsYou(
+  run: FlowRun,
+  now: number = Date.now(),
+  touchedAt?: (run: FlowRun) => number,
+): boolean {
+  if (run.state.kind !== 'paused') return false;
+  if (run.state.reason === 'held') return false;
+  return now - runStallClock(run, touchedAt) <= STALL_AFTER_MS;
+}
+
 export function attentionInbox(src: AttentionSources, now: number = Date.now()): AttentionItem[] {
   const items: AttentionItem[] = [];
 
   for (const run of Object.values(src.runs)) {
-    if (run.state.kind !== 'paused') continue;
-    // Held by a pause you pressed: it is waiting on your Resume, which you
-    // already know about. Listing it would nag you about your own decision.
-    if (run.state.reason === 'held') continue;
+    if (run.state.kind !== 'paused' || !runNeedsYou(run, now, src.touchedAt)) continue;
     const at = flowRunActivityAt(run);
-    // Same cut as the Flows badge: a run this quiet has been left behind, and
-    // a count you can't clear stops being a signal.
-    if (now - at > STALL_AFTER_MS) continue;
     const step = runStepPosition(run);
     const why = pauseReasonLabel(run);
     items.push({

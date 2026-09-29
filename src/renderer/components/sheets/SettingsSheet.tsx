@@ -5,7 +5,6 @@ import {
   PermissionMode,
   EffortLevel,
   AppSettings,
-  SidebarLayout,
   ThemePreference,
   BackendHealth,
 } from '@shared/types';
@@ -558,7 +557,7 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
 
 function placeholderFor(b: Backend): string {
   if (b === 'claude') return 'e.g. claude-opus-5-5';
-  if (b === 'codex') return 'e.g. gpt-5.6-sol';
+  if (b === 'codex') return 'e.g. gpt-6.1-sol';
   if (b === 'ollama') return 'e.g. qwen2.5-coder:7b';
   if (b === 'copilot') return 'e.g. claude-haiku-4.5';
   return 'e.g. gemini-3.7-flash';
@@ -930,19 +929,6 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
         </Row>
       </Group>
       <Group title="Layout" description="Tuning reserved for when the defaults don't fit.">
-        <Row
-          label="Sidebar"
-          help="Places is your projects and workspaces, one line each, with what's running and what needs you on every row. Recent is one list of everything you've worked on, newest first. The switch at the top of the sidebar sets the same thing."
-        >
-          <select
-            value={local.sidebarLayout ?? 'projects'}
-            onChange={(e) => patch({ sidebarLayout: e.target.value as SidebarLayout })}
-            className="field px-2 py-1 text-xs"
-          >
-            <option value="projects">Places</option>
-            <option value="stream">Recent</option>
-          </select>
-        </Row>
         <Toggle
           label="Show Working on section"
           help="Keeps a short list of what you're in the middle of at the top of the sidebar, ranked by how often you come back to it."

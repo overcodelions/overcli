@@ -41,6 +41,8 @@ import {
 } from '../places';
 import { PlusIcon, PopMenu, ProjectPlace, WorkspacePlace, statusOfPlace } from './SidebarPlaces';
 import { useHandoffCountsByPlace } from '../handoffsStore';
+import { useWorkDoneToday, useWorkStore } from '../workStore';
+import { WorkSidebarList } from './work/WorkSidebarList';
 
 // Collecting what the sidebar shows moved to ./sidebarItems so both layouts
 // feed from one place. Re-exported here because the sheets and the
@@ -99,9 +101,37 @@ export function Sidebar() {
   // Read through getState rather than subscribing to the whole settings
   // object: the switch writes once a click, and a sidebar that re-rendered on
   // every unrelated settings change would be paying for it constantly.
-  const showTree = sidebarLayout === 'projects';
+  // Work is the switch's third tab. It is not a layout — leaving it goes back
+  // to whichever of Places/Recent you had — so it lives in the work store.
+  const workView = useWorkStore((s) => s.sidebarWork);
+  const setSidebarWork = useWorkStore((s) => s.setSidebarWork);
+  const workQuery = useWorkStore((s) => s.query);
+  const setWorkQuery = useWorkStore((s) => s.setQuery);
+  const workToday = useWorkDoneToday();
+  // The Work page and the Work tab are one place: opening the page any way
+  // (⌘K, Back, a restored session) puts the switch on Work too, so the
+  // sidebar never claims Places while Work is on screen.
+  const onWorkPage = useStore((s) => s.detailMode === 'work');
+  useEffect(() => {
+    if (onWorkPage && !useWorkStore.getState().sidebarWork) setSidebarWork(true);
+  }, [onWorkPage, setSidebarWork]);
+  // Recent was folded into Work. Anyone who had it as their layout lands on
+  // Work — the view that does its job now — and the old setting is retired.
+  useEffect(() => {
+    if (sidebarLayout !== 'stream') return;
+    setSidebarWork(true);
+    const st = useStore.getState();
+    void st.saveSettings({ ...st.settings, sidebarLayout: 'projects' });
+  }, [sidebarLayout, setSidebarWork]);
+  const workLogLoaded = useWorkStore((s) => s.logLoaded);
+  useEffect(() => {
+    // The tab's count needs the work log (runs that outlived eviction).
+    if (!workLogLoaded) void useWorkStore.getState().loadLog();
+  }, [workLogLoaded]);
+  const showTree = sidebarLayout === 'projects' && !workView;
   const setSidebarLayout = (layout: SidebarLayout) => {
     const st = useStore.getState();
+    setSidebarWork(false);
     if ((st.settings.sidebarLayout ?? 'projects') === layout) return;
     void st.saveSettings({ ...st.settings, sidebarLayout: layout });
   };
@@ -527,23 +557,25 @@ export function Sidebar() {
       <div className="px-2 pt-2 pb-1 flex items-center gap-1">
         <span className="relative flex flex-1 min-w-0 items-center">
         <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={workView ? workQuery : search}
+          onChange={(e) => (workView ? setWorkQuery(e.target.value) : setSearch(e.target.value))}
           onKeyDown={(e) => {
-            if (e.key === 'Escape' && search) {
+            const current = workView ? workQuery : search;
+            if (e.key === 'Escape' && current) {
               e.stopPropagation();
-              setSearch('');
+              if (workView) setWorkQuery('');
+              else setSearch('');
             }
           }}
           placeholder={
-            showTree ? 'Filter places' : 'Search'
+            workView ? 'Search work' : showTree ? 'Filter places' : 'Search'
           }
-          aria-label={showTree ? 'Filter places' : 'Search'}
+          aria-label={workView ? 'Search work' : showTree ? 'Filter places' : 'Search'}
           className="field flex-1 min-w-0 px-2 py-1 pr-6 text-xs"
         />
-        {search && (
+        {(workView ? workQuery : search) && (
           <button
-            onClick={() => setSearch('')}
+            onClick={() => (workView ? setWorkQuery('') : setSearch(''))}
             title="Clear search (Esc)"
             aria-label="Clear search"
             className="absolute right-1 flex h-4 w-4 items-center justify-center rounded-full text-ink-faint hover:bg-card-strong hover:text-ink"
@@ -593,21 +625,31 @@ export function Sidebar() {
       {/* Nothing to lay out until there is a project: a choice between two
           views of nothing is the first thing a newcomer would have read. */}
       {(projects.length > 0 || workspaces.length > 0) && (
-        <div className="mx-2 mt-1 flex gap-0.5 rounded-md border border-card-strong bg-card p-0.5">
+        <div
+          role="tablist"
+          aria-label="Sidebar view"
+          className="mx-2 mt-1 flex gap-0.5 rounded-lg border border-card-strong bg-surface p-[3px]"
+        >
           {/* Places first: with what's running and what needs you on every
               row, it answers "what was I doing" as well as "where does this
-              live". Recent is the flat, newest-first view of the same work. */}
+              live". Work is the other axis — what is in flight and what got
+              done — and took over from the old Recent list. */}
           <LayoutTab
             label="Places"
             title="Your projects and workspaces, one line each"
-            on={sidebarLayout === 'projects'}
+            on={!workView}
             onClick={() => setSidebarLayout('projects')}
           />
+          {/* What needs you, what is running, and what got done: every chat,
+              run, batch and PR on one branch as one record, searchable by what
+              it was. The count is what finished today. */}
           <LayoutTab
-            label="Recent"
-            title="Everything you have worked on, newest first"
-            on={sidebarLayout === 'stream'}
-            onClick={() => setSidebarLayout('stream')}
+            label="Work"
+            title="Everything shipped or started — find it by what it was"
+            on={workView}
+            onClick={() => setSidebarWork(true)}
+            badge={workToday}
+            badgeTitle={`${workToday} finished today`}
           />
         </div>
       )}
@@ -654,8 +696,9 @@ export function Sidebar() {
         </div>
       )}
 
-      <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
-        {!query && showActiveSection && activeEntries.length > 0 && (
+      <nav className="sidebar-scroll flex-1 min-h-0 overflow-y-auto pl-1 pr-0.5 pb-2 mt-1">
+        {workView && <WorkSidebarList />}
+        {!workView && !query && showActiveSection && activeEntries.length > 0 && (
           <>
             <SidebarSectionTitle label="Working on" />
             {activeEntries.map(({ entry, momentum }) =>
@@ -679,7 +722,7 @@ export function Sidebar() {
             )}
           </>
         )}
-        {!showTree && (
+        {!showTree && !workView && (
           <SidebarStream
             entries={query ? streamMatches : streamEntries}
             currentOwnerId={currentOwnerId}
@@ -756,7 +799,7 @@ export function Sidebar() {
           </>
         )}
 
-        <ArchivedGroup />
+        {!workView && <ArchivedGroup />}
       </nav>
 
       <div className="border-t border-card px-2 py-2 flex flex-col gap-1">
@@ -820,25 +863,45 @@ function LayoutTab({
   title,
   on,
   onClick,
+  badge = 0,
+  badgeTitle,
 }: {
   label: string;
   title: string;
   on: boolean;
   onClick: () => void;
+  badge?: number;
+  badgeTitle?: string;
 }) {
   return (
     <button
+      role="tab"
       onClick={onClick}
       title={title}
-      aria-pressed={on}
+      aria-selected={on}
       className={
-        'flex-1 rounded px-2 py-0.5 text-[11px] transition-colors ' +
+        // Same lifted pill as the title bar's tabs, so "which one am I on"
+        // reads the same everywhere. The old elevated-on-card fill was two
+        // near-identical greys in the dark theme.
+        'flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] font-medium transition-colors ' +
         (on
-          ? 'bg-surface-elevated text-ink shadow-sm'
-          : 'text-ink-faint hover:text-ink-muted')
+          ? 'text-ink shadow-[inset_0_0_0_1px_var(--c-card-border-strong)]'
+          : 'text-ink-muted hover:text-ink hover:bg-card-strong')
       }
+      style={on ? { background: 'color-mix(in srgb, var(--c-ink) 9%, var(--c-surface-elevated))' } : undefined}
     >
       {label}
+      {badge > 0 && (
+        <span
+          title={badgeTitle}
+          className={
+            'rounded-full px-1.5 text-[9.5px] font-semibold leading-[15px] tabular-nums ' +
+            (on ? 'bg-accent text-white' : 'bg-accent/20 text-accent')
+          }
+        >
+          {badge}
+        </span>
+      )}
     </button>
   );
 }

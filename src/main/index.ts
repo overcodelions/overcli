@@ -29,6 +29,7 @@ import {
   runGit,
   createWorktree,
   createReviewWorktree,
+  worktreeForBranch,
   promoteReviewWorktree,
   switchProjectToBranch,
   switchBranch,
@@ -92,6 +93,12 @@ import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './reso
 import { listFileEntriesAsync, listFileEntriesSync } from './fileWalk';
 import { closeAllTreeWatchers, noteRelistCost, unwatchTree, watchTree } from './fileTreeWatch';
 import { HandoffInbox, defaultInboxDir } from './handoffInbox';
+import { loadWorkLog } from './work/workLog';
+import { lookupPrs } from './work/prLookup';
+import { searchPrompts, warmPromptIndex } from './work/promptIndex';
+import { loadRunTranscript } from './work/runTranscript';
+import { branchStatuses } from './work/branchStatus';
+import { ticketBranches } from './work/ticketBranches';
 import { readHtmlPreviewAssets } from './htmlPreviewAssets';
 import { convertOfficeToPreview, officeFamilyForExtension } from './officePreview';
 import { buildReactPreviewBundle } from './reactPreviewBundle';
@@ -157,7 +164,7 @@ import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
-import { workerOrigin } from '../shared/flows/worker';
+import { runHandoffOutputs, workerOrigin } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
 import {
@@ -600,6 +607,11 @@ export function registerIpc(): void {
       }
       return out;
     },
+    // Only steps that declared `hands_off` are read for handoff blocks.
+    runHandoffOutputs: (runId) => {
+      const run = flowRuntime?.getRun(runId);
+      return run ? runHandoffOutputs(run) : [];
+    },
     // The composer in the run pane keeps talking to a run's last participant
     // after the flow is done, and those turns write into the same run root.
     // This is how the engine recognises one of its own runs behind a bare
@@ -794,7 +806,13 @@ export function registerIpc(): void {
     runner!.respondUserInput(conversationId, requestId, answers),
   );
   ipcMain.handle('runner:runningSnapshot', () => runner?.runningSnapshot() ?? []);
-  ipcMain.handle('runner:loadHistory', (_e, args) => loadHistory(args));
+  // The transcript never holds the CLI's init event, so a renderer reload
+  // mid-process would otherwise lose its live slash commands until respawn.
+  ipcMain.handle('runner:loadHistory', (_e, args) => {
+    const events = loadHistory(args);
+    const init = runner?.lastSystemInit(args.conversationId);
+    return init ? [...events, init] : events;
+  });
   ipcMain.handle('runner:probeHealth', (_e, backend: Backend) => {
     const settings = Store.load().settings;
     return probeBackendHealth(backend, settings.backendPaths[backend]);
@@ -1037,6 +1055,37 @@ export function registerIpc(): void {
   ipcMain.handle('handoffs:resolve', (_e, id: string) =>
     typeof id === 'string' ? (handoffInbox?.resolve(id) ?? false) : false,
   );
+  // The Work view: finished runs that outlive eviction, the PR each branch
+  // landed in, and a search over everything you typed. See src/main/work.
+  ipcMain.handle('work:log', () => loadWorkLog());
+  ipcMain.handle('work:prs', (_e, args: { repoPaths?: unknown }) =>
+    lookupPrs(Array.isArray(args?.repoPaths) ? args.repoPaths.filter((p): p is string => typeof p === 'string') : []),
+  );
+  ipcMain.handle('work:searchPrompts', (_e, args: { query?: unknown }) =>
+    typeof args?.query === 'string' ? searchPrompts(args.query) : [],
+  );
+  ipcMain.handle('work:ticketBranches', (_e, args: { repos?: unknown; keys?: unknown }) => {
+    const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+    return ticketBranches(strings(args?.repos), strings(args?.keys));
+  });
+  ipcMain.handle('work:branchStatus', (_e, args: { items?: unknown }) =>
+    branchStatuses(
+      Array.isArray(args?.items)
+        ? args.items.filter(
+            (x): x is { repo: string; branch: string; worktreePath?: string } =>
+              !!x &&
+              typeof (x as { repo?: unknown }).repo === 'string' &&
+              typeof (x as { branch?: unknown }).branch === 'string' &&
+              ['string', 'undefined'].includes(typeof (x as { worktreePath?: unknown }).worktreePath),
+          )
+        : [],
+    ),
+  );
+  ipcMain.handle('work:runTranscript', (_e, args: { runId?: unknown; cwd?: unknown }) =>
+    typeof args?.runId === 'string' && /^[A-Za-z0-9-]{8,}$/.test(args.runId)
+      ? loadRunTranscript({ runId: args.runId, ...(typeof args.cwd === 'string' ? { cwd: args.cwd } : {}) })
+      : { steps: [] },
+  );
   ipcMain.handle('fs:openInFinder', (_e, p: string) => {
     if (!isReadablePath(p)) return;
     shell.showItemInFolder(p);
@@ -1212,6 +1261,7 @@ export function registerIpc(): void {
   });
   ipcMain.handle('git:createWorktree', (_e, args) => createWorktree(args));
   ipcMain.handle('git:createReviewWorktree', (_e, args) => createReviewWorktree(args));
+  ipcMain.handle('git:worktreeForBranch', (_e, args) => worktreeForBranch(args));
   ipcMain.handle('git:promoteReviewWorktree', (_e, args) => promoteReviewWorktree(args));
   ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
   ipcMain.handle('git:switchBranch', (_e, args) => switchBranch(args));
@@ -3590,6 +3640,9 @@ app.whenReady().then(() => {
   });
   registerIpc();
   startHandoffInbox();
+  // Build the Work search's prompt index once the window is up, so the first
+  // search doesn't pay for reading every transcript.
+  setTimeout(() => warmPromptIndex(), 20_000);
   // Learn the user's MCP servers and account connectors in the background,
   // so the first hire or flow draft already knows them. A no-op once any
   // real Claude session has reported them.

@@ -329,7 +329,7 @@ function systemPrompt(
     '  - `claude-*` ids run ONLY on backend `claude` (or `copilot`)',
     '  - `gemini-*` ids run ONLY on backend `gemini`',
     'Never mix families: { backend: codex, model: claude-opus-5 } and { backend: claude, model:',
-    'gpt-5.6-sol } are both INVALID and will fail validation.',
+    'gpt-6.1-sol } are both INVALID and will fail validation.',
     '',
     `Do NOT put every step on ${hints.thinking}. It is the most expensive model available and`,
     'the user pays per step. Reserve it for steps that genuinely need deep reasoning — the',
