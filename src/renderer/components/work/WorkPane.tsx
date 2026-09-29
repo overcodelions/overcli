@@ -612,7 +612,7 @@ export function gitLine(r: WorkRecord): string | undefined {
 /// green once in the trunk.
 export function gitTone(r: WorkRecord): string {
   const all = r.repoGit.length ? r.repoGit.map((g) => g.status) : r.git ? [r.git] : [];
-  if (all.some((s) => (s.uncommitted ?? 0) > 0 || (s.local && !s.remote && s.ahead > 0) || s.unpushed > 0)) {
+  if (all.some((s) => (s.uncommitted ?? 0) > 0 || (s.local && !s.remote && !s.remoteGone && s.ahead > 0) || s.unpushed > 0)) {
     return 'text-amber-700 dark:text-amber-300';
   }
   if (all.length && all.every((s) => s.inTrunk && s.ahead === 0)) return 'text-green-700 dark:text-green-300';

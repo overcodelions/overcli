@@ -97,6 +97,10 @@ export interface BranchStatus {
   behind: number;
   /// Local commits origin doesn't have.
   unpushed: number;
+  /// Pushed once — it still tracks an upstream — but origin no longer has it:
+  /// deleted on the remote, usually when its PR merged. Hosts with no PR
+  /// lookup (Bitbucket) squash-merge and delete, leaving exactly this.
+  remoteGone?: boolean;
   /// Every commit on the branch is already in the trunk.
   inTrunk: boolean;
   /// In the trunk only because nothing was ever committed to it: its tip is a
@@ -316,7 +320,7 @@ export function gitSummary(g: BranchStatus | undefined): string | undefined {
     if (!g.uncommitted) parts.push('no commits yet');
     return parts.join(' · ') || undefined;
   }
-  if (g.local && !g.remote) parts.push('not pushed');
+  if (g.local && !g.remote) parts.push(g.remoteGone ? 'deleted on remote' : 'not pushed');
   else if (g.unpushed > 0) parts.push(`${g.unpushed} unpushed`);
   if (g.inTrunk && g.ahead === 0) parts.push(`in ${trunk}`);
   else if (g.ahead > 0) parts.push(`${g.ahead} ahead of ${trunk}`);
@@ -336,7 +340,7 @@ export function repoSummary(r: Pick<WorkRecord, 'repoGit'>): string | undefined 
   const uncommitted = g.filter((x) => (x.status.uncommitted ?? 0) > 0).length;
   const committed = g.filter((x) => x.status.ahead > 0 || (x.status.inTrunk && !x.status.cutOnly));
   const inTrunk = committed.filter((x) => x.status.inTrunk && x.status.ahead === 0).length;
-  const notPushed = committed.filter((x) => x.status.local && (!x.status.remote || x.status.unpushed > 0)).length;
+  const notPushed = committed.filter((x) => x.status.local && ((!x.status.remote && !x.status.remoteGone) || x.status.unpushed > 0)).length;
   const pushed = committed.length - notPushed - inTrunk;
   return [
     `${g.length} repos`,

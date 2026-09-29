@@ -263,6 +263,12 @@ describe('git status', () => {
     expect(gitSummary({ ...g, remote: true, unpushed: 1 })).toBe('1 unpushed · 3 ahead of main');
     expect(gitSummary({ ...g, remote: true, ahead: 0, inTrunk: true })).toBe('in main');
     expect(gitSummary({ ...g, local: false, remote: false })).toBe('branch deleted');
+    // Pushed, then deleted on the remote after its PR merged — not "not pushed".
+    expect(gitSummary({ ...g, remoteGone: true })).toBe('deleted on remote · 3 ahead of main');
+    expect(repoSummary({ repoGit: [
+      { repo: '/r/a', branch: 'b', status: { ...g, remoteGone: true } },
+      { repo: '/r/b', branch: 'b', status: { ...g, remote: true } },
+    ] })).toBe('2 repos · 2 pushed');
   });
 });
 

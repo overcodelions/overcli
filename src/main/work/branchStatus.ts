@@ -75,6 +75,10 @@ export async function branchStatus(repo: string, branch: string, worktreePath?: 
     verify(repo, `refs/remotes/origin/${branch}`),
   ]);
   let status: BranchStatus = { local, remote, ahead: 0, behind: 0, unpushed: 0, inTrunk: false };
+  if (local && !remote) {
+    const upstream = await runGitAsync(['for-each-ref', '--format=%(upstream)', `refs/heads/${branch}`], repo);
+    if (upstream.exitCode === 0 && upstream.stdout.trim()) status.remoteGone = true;
+  }
   if (trunk) status.trunk = trunk.replace(/^origin\//, '');
   const ref = local ? `refs/heads/${branch}` : remote ? `refs/remotes/origin/${branch}` : null;
   if (ref) {
