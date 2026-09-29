@@ -39,6 +39,14 @@ describe('PREMIUM_MODELS', () => {
     expect(PREMIUM_MODELS.claude[1]).toBe('claude-opus-5');
   });
 
+  it('makes Sonnet 5.5 the fast Claude default with Sonnet 5 right behind it', () => {
+    const list = PREMIUM_MODELS.claude;
+    expect(list.indexOf('claude-sonnet-5')).toBe(list.indexOf('claude-sonnet-5-5') + 1);
+    expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5-5');
+    expect(newestInFamily('claude', 'claude-sonnet-5')).toBe('claude-sonnet-5-5');
+    expect(friendlyModelLabel('claude', 'claude-sonnet-5-5')).toBe('Claude Sonnet 5.5');
+  });
+
   it('has retired claude-opus-4-7', () => {
     expect(PREMIUM_MODELS.claude).not.toContain('claude-opus-4-7');
   });
@@ -316,7 +324,7 @@ describe('modelTierLabel', () => {
 describe('latestAtTier', () => {
   it('resolves each backend to its current model per tier', () => {
     expect(latestAtTier('claude', 'thinking')).toBe('claude-opus-5-5');
-    expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5');
+    expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5-5');
     expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5-1');
     expect(latestAtTier('codex', 'thinking')).toBe('gpt-5.6-sol');
     expect(latestAtTier('codex', 'fast')).toBe('gpt-5.6-luna');
@@ -347,7 +355,7 @@ describe('latestAtTier', () => {
     // Both Flash-Lite ids sit at the fast tier; the default tracks the
     // higher version rather than trusting where it lands in the list.
     expect(latestAtTier('gemini', 'fast')).toBe('gemini-3.5-flash-lite');
-    expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5');
+    expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5-5');
   });
 });
 
@@ -381,7 +389,7 @@ describe('tierDefault', () => {
     expect(tierDefault('claude', 'thinking', { claude: { thinking: 'claude-opus-4-1' } })).toBe(
       'claude-opus-5-5',
     );
-    expect(tierDefault('claude', 'fast', { claude: { fast: '  ' } })).toBe('claude-sonnet-5');
+    expect(tierDefault('claude', 'fast', { claude: { fast: '  ' } })).toBe('claude-sonnet-5-5');
   });
 });
 
@@ -401,7 +409,7 @@ describe('snapToTierDefault', () => {
 
   it('respects the tier the drafter chose rather than upgrading everything', () => {
     // A fast step stays fast — snapping fixes the id, not the intent.
-    expect(snapToTierDefault('claude', 'claude-haiku-4-5')).toBe('claude-sonnet-5');
+    expect(snapToTierDefault('claude', 'claude-haiku-4-5')).toBe('claude-sonnet-5-5');
     expect(modelSpeed(snapToTierDefault('claude', 'claude-haiku-4-5'))).toBe('fast');
   });
 
@@ -423,7 +431,7 @@ describe('newestInFamily', () => {
   it('moves a pin up its own line', () => {
     expect(newestInFamily('claude', 'claude-opus-5')).toBe('claude-opus-5-5');
     expect(newestInFamily('claude', 'claude-opus-4-8')).toBe('claude-opus-5-5');
-    expect(newestInFamily('claude', 'claude-sonnet-4-6')).toBe('claude-sonnet-5');
+    expect(newestInFamily('claude', 'claude-sonnet-4-6')).toBe('claude-sonnet-5-5');
     expect(newestInFamily('gemini', 'gemini-3.6-flash')).toBe('gemini-3.7-flash');
     expect(newestInFamily('gemini', 'gemini-3.1-flash-lite')).toBe('gemini-3.5-flash-lite');
   });

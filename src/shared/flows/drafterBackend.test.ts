@@ -75,11 +75,11 @@ describe('drafterModelHints', () => {
     // fable-5.1 is 'frontier' (not 'thinking'), so the thinking hint is the
     // first thinking model — opus-5.5. sonnet is classified 'fast', so claude
     // has no 'standard' model — standard degrades DOWN to the fast pick
-    // (sonnet-5), keeping "cheaper steps" actually cheaper.
+    // (sonnet-5-5), keeping "cheaper steps" actually cheaper.
     expect(drafterModelHints('claude')).toEqual({
       thinking: 'claude-opus-5-5',
-      standard: 'claude-sonnet-5',
-      fast: 'claude-sonnet-5',
+      standard: 'claude-sonnet-5-5',
+      fast: 'claude-sonnet-5-5',
     });
     // codex: the GPT-5.6 family covers all three tiers on its own — sol
     // reasons, terra is the middle tier, luna is the cheap one — so no
@@ -122,7 +122,7 @@ describe('drafterModelHints — user pins', () => {
 
   it('a pin on one backend does not leak into another', () => {
     const hints = drafterModelHints('claude', { codex: { fast: 'gpt-5.4-mini' } });
-    expect(hints.fast).toBe('claude-sonnet-5');
+    expect(hints.fast).toBe('claude-sonnet-5-5');
   });
 
   it('degrades a pinned-but-retired model back to auto', () => {
@@ -136,7 +136,7 @@ describe('drafterModelHints — user pins', () => {
     // so critic loops stay cheap.
     const hints = drafterModelHints('claude', {});
     expect(hints.standard).toBe(hints.fast);
-    expect(hints.standard).toBe('claude-sonnet-5');
+    expect(hints.standard).toBe('claude-sonnet-5-5');
   });
 });
 
@@ -191,7 +191,7 @@ describe('resolveProducerModel', () => {
     // Claude ships no 'standard' model. Resolving upward put shift planning
     // on Opus — the flagship — for a turn defined as the cheap one.
     const translated = resolveProducerModel('claude', 'some-imported-model');
-    expect(translated).toBe('claude-sonnet-5');
+    expect(translated).toBe('claude-sonnet-5-5');
     expect(modelSpeed(translated)).toBe('fast');
   });
 

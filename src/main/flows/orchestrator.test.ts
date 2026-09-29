@@ -1121,14 +1121,14 @@ describe('OrchestratorImpl worker batches', () => {
     const h = makeHarness({ producerReply: REPLY });
     await parkAsWorker(h, { model: 'gpt-5.6-luna' });
     expect(h.oneShotCalls[0].backend).toBe('claude');
-    expect(h.oneShotCalls[0].model).toBe('claude-sonnet-5');
+    expect(h.oneShotCalls[0].model).toBe('claude-sonnet-5-5');
   });
 
   it('keeps an unrecognised heartbeat model on a cheap tier', () => {
     // Never silently promote shift planning onto the flagship.
     const h = makeHarness({ producerReply: REPLY });
     return parkAsWorker(h, { model: 'tiny-heartbeat' }).then(() => {
-      expect(h.oneShotCalls[0].model).toBe('claude-sonnet-5');
+      expect(h.oneShotCalls[0].model).toBe('claude-sonnet-5-5');
     });
   });
 

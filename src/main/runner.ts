@@ -110,7 +110,8 @@ import {
   sandboxSupported,
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
-import { buildClaudeMcpConfigArg } from './mcpConfig';
+import { blockedMcpServerTools, buildClaudeMcpConfigArg } from './mcpConfig';
+import { seenMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
 import { isSafeIdSegment } from '../shared/flows/safeId';
@@ -547,9 +548,26 @@ export function shouldSandboxSpawn(
 /// names one cannot be enforced by strict mode without removing the very
 /// server it asks for. Such a list widens to no restriction: loading servers
 /// the job does not touch costs time, losing its mailbox breaks the job.
+///
+/// Strict mode is dropped for a connector list, but config-file servers not
+/// on it are still blocked, via `--disallowedTools` — see `mcpBlockedTools`.
 export function effectiveMcpAllowlist(list: string[] | undefined): string[] | undefined {
   if (!list) return undefined;
   return list.some(isAccountConnector) ? undefined : list;
+}
+
+/// The `--disallowedTools` names for a turn whose allowlist names an account
+/// connector — the one case `effectiveMcpAllowlist` cannot narrow via
+/// `--strict-mcp-config` and still has something left to keep off-limits.
+export function mcpBlockedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string[] | undefined {
+  if (args.backend !== 'claude' || !args.mcpAllowlist?.some(isAccountConnector)) return undefined;
+  let seen: string[] = [];
+  try {
+    seen = seenMcpServers();
+  } catch {
+    // No record yet (or no host in a test): config files still count.
+  }
+  return blockedMcpServerTools(args.mcpAllowlist, args.cwd, undefined, seen);
 }
 
 function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string {
@@ -560,7 +578,7 @@ function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist'
 }
 
 export function claudeMcpLaunchFingerprint(
-  args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'skipGlobalMcp' | 'turbo'>,
+  args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'skipGlobalMcp' | 'turbo' | 'cwd'>,
   selectedConfig: string,
 ): string {
   if (args.backend !== 'claude') return '';
@@ -572,7 +590,7 @@ export function claudeMcpLaunchFingerprint(
   // strict mode directly; turbo is already compared separately but belongs to
   // the effective MCP scope too.
   const strict = !!(args.turbo || args.skipGlobalMcp || effectiveMcpAllowlist(args.mcpAllowlist) !== undefined);
-  return JSON.stringify({ strict, selectedConfig });
+  return JSON.stringify({ strict, selectedConfig, blocked: mcpBlockedTools(args) ?? [] });
 }
 
 export function sanitizeSpawnArgs(spawnArgs: string[], prompt?: string): string[] {
@@ -1541,6 +1559,7 @@ export class RunnerManager {
       attachments: args.attachments,
       allowedDirs: args.allowedDirs,
       allowedTools: args.backend === 'ollama' ? undefined : args.enabledTools,
+      disallowedTools: mcpBlockedTools(args),
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
       chrome: this.chromeFor(args),
       turbo: args.turbo ?? false,
@@ -1989,7 +2008,10 @@ export class RunnerManager {
       // here via the broker-not-found fallback above; say so rather than
       // pretend the step is contained.
       if (shouldSandboxSpawn(args)) {
-        log('warn', 'runner.sandbox', `claude conv=${convId} runs on the SDK transport, which is NOT write-jailed`);
+        const message = 'This flow step cannot run sandboxed on the SDK transport, so it was stopped. Start a new conversation to retry on the CLI.';
+        log('warn', 'runner.sandbox', `claude conv=${convId} refused: SDK transport is not write-jailed`);
+        this.emit({ type: 'error', conversationId: convId, message });
+        return { ok: false, error: message };
       }
       // SDK transport: drives Claude in-process via @anthropic-ai/claude-agent-sdk
       // instead of spawning `claude -p`. Permission prompts route through
@@ -3658,6 +3680,11 @@ export class RunnerManager {
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
     const env = this.buildEnv(binary, args.backend);
+    if (shouldSandboxSpawn(args)) {
+      const scratch = path.join(os.tmpdir(), 'overcli-sandbox', args.conversationId);
+      env.npm_config_cache = path.join(scratch, 'npm');
+      env.UV_CACHE_DIR = path.join(scratch, 'uv');
+    }
     const codexPerms = args.backend === 'codex' ? codexTransportPermissions(args.permissionMode) : null;
     const codexMode: 'exec' | 'app-server' | undefined =
       args.backend === 'codex' ? this.pickCodexMode(binary, env) : undefined;

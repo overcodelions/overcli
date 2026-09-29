@@ -33,7 +33,7 @@ import type { ServiceBinding, ServiceRuntime, ServiceSpec, TaskRun } from './typ
 import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
 import { describeDrift, driftedTasks } from '../../shared/taskDrift';
 import { buildsOnJvm, defaultReadyTimeoutSec } from '../../shared/services';
-import { missingMachineError, SECRET_MASK } from '../../shared/machineValues';
+import { isSecretName, missingMachineError, SECRET_MASK } from '../../shared/machineValues';
 import {
   emptyExceptionLog,
   feedException,
@@ -200,6 +200,9 @@ export class Supervisor {
   /// What each adopted pid was when it was adopted — see `processStarted`.
   private readonly adoptedAs = new Map<string, { pid: number; started: string }>();
   private readonly adoptedPolls = new Map<string, ReturnType<typeof setTimeout>>();
+  /// Consecutive unchanged polls for an adopted service, so a stack that
+  /// never restarts stops being checked every five seconds forever.
+  private readonly adoptedChecks = new Map<string, number>();
 
   constructor(
     readonly stackId: string,
@@ -534,15 +537,21 @@ export class Supervisor {
     const timer = this.adoptedPolls.get(serviceId);
     if (timer) clearTimeout(timer);
     this.adoptedPolls.delete(serviceId);
+    this.adoptedChecks.delete(serviceId);
   }
 
   private pollAdopted(serviceId: string): void {
+    const n = this.adoptedChecks.get(serviceId) ?? 0;
+    const delay = n < 12 ? ADOPTED_POLL_MS : ADOPTED_POLL_MS * 6;
     const timer = setTimeout(() => {
       this.adoptedPolls.delete(serviceId);
       void this.verifyAdopted(serviceId).then((same) => {
-        if (same && this.adoptedAs.has(serviceId) && !this.adoptedPolls.has(serviceId)) this.pollAdopted(serviceId);
+        if (same && this.adoptedAs.has(serviceId) && !this.adoptedPolls.has(serviceId)) {
+          this.adoptedChecks.set(serviceId, n + 1);
+          this.pollAdopted(serviceId);
+        }
       });
-    }, ADOPTED_POLL_MS);
+    }, delay);
     timer.unref?.();
     this.adoptedPolls.set(serviceId, timer);
   }
@@ -817,6 +826,10 @@ export class Supervisor {
     // Read once per app run and usually done long before anyone presses
     // start, but a first start straight after launch can wait on it.
     const shell = this.deps.shellEnv ? await this.deps.shellEnv() : undefined;
+    if (shell) {
+      const found = shellSecretValues(shell);
+      if (found.join('\0') !== this.shellSecrets.join('\0')) { this.shellSecrets = found; this.maskCache = undefined; }
+    }
     if (this.deps.shellEnv && (this.runtime(spec.id).status !== 'starting' || this.procs.has(spec.id))) return;
 
     // Options are resolved at launch, not stored resolved: a copy inherits its
@@ -1123,6 +1136,10 @@ export class Supervisor {
   /// secret store is written.
   private secretCache: readonly string[] | undefined;
   private maskCache: readonly string[] | undefined;
+  /// Secret-looking values read out of the user's login shell environment —
+  /// masked in service logs the same as machine values, since a service can
+  /// inherit them without ever being told they are sensitive.
+  private shellSecrets: readonly string[] = [];
 
   private secrets(): readonly string[] {
     if (this.secretCache === undefined) this.secretCache = this.deps.secretValues?.() ?? [];
@@ -1135,7 +1152,7 @@ export class Supervisor {
   }
 
   private mask(raw: string): string {
-    if (this.maskCache === undefined) this.maskCache = [...this.secrets()].sort((a, b) => b.length - a.length);
+    if (this.maskCache === undefined) this.maskCache = [...this.secrets(), ...this.shellSecrets].sort((a, b) => b.length - a.length);
     return maskSecretsSorted(raw, this.maskCache);
   }
 
@@ -1169,6 +1186,21 @@ const MIN_MASKED_LEN = 6;
 /// a value that contains another is not split into a masked half and a
 /// readable one. `split`/`join` rather than a regex: a password can contain
 /// any regex metacharacter.
+/// Values a service could have inherited from the login shell that are worth
+/// masking. A secret-looking NAME is not enough on its own: DISABLE_AUTH=true
+/// or AUTH_MODE=none would otherwise blank every `true` and `none` in every
+/// log. Flags, modes and numbers are left alone; what's left is long enough
+/// to be a credential.
+export function shellSecretValues(env: Readonly<Record<string, string>>): string[] {
+  const found = new Set<string>();
+  for (const [name, value] of Object.entries(env)) {
+    if (!isSecretName(name) || value.length < 8) continue;
+    if (/^(true|false|yes|no|on|off|none|null|enabled|disabled)$/i.test(value) || /^\d+$/.test(value)) continue;
+    found.add(value);
+  }
+  return [...found].sort();
+}
+
 export function maskSecrets(line: string, secrets: readonly string[]): string {
   return maskSecretsSorted(line, [...secrets].sort((a, b) => b.length - a.length));
 }

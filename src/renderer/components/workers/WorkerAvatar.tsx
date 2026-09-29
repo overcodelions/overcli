@@ -22,11 +22,12 @@ import type { Worker, WorkerTrustLevel } from '@shared/flows/worker';
 import { TRUST_LABEL } from './WorkerRowParts';
 import { workerColorFor, workerColorMap } from './workerPalette';
 
-export type AvatarSize = 'xs' | 'sm' | 'lg';
+export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg';
 
 const SIZE: Record<AvatarSize, { box: string; text: string; ring: number }> = {
   xs: { box: 'h-[18px] w-[18px]', text: 'text-[8px]', ring: 1 },
   sm: { box: 'h-6 w-6', text: 'text-[10px]', ring: 1.5 },
+  md: { box: 'h-8 w-8', text: 'text-[11px]', ring: 1.5 },
   lg: { box: 'h-12 w-12', text: 'text-base', ring: 2 },
 };
 
@@ -49,10 +50,14 @@ export function WorkerAvatar({
   worker,
   size = 'xs',
   live = false,
+  untitled = false,
 }: {
   worker: Pick<Worker, 'id' | 'name' | 'trust' | 'enabled'>;
   size?: AvatarSize;
   live?: boolean;
+  /// Leave the tooltip to the caller — the rail's face button carries a
+  /// fuller one, and a nested title would shadow it over the avatar itself.
+  untitled?: boolean;
 }) {
   const colors = useWorkerColors();
   const tint = workerColorFor(colors, worker.id);
@@ -62,7 +67,7 @@ export function WorkerAvatar({
   return (
     <span
       className={`relative flex ${dim.box} shrink-0 items-center justify-center`}
-      title={`${worker.name} · ${TRUST_LABEL[worker.trust].text}${paused ? ' · paused' : ''}`}
+      title={untitled ? undefined : `${worker.name} · ${TRUST_LABEL[worker.trust].text}${paused ? ' · paused' : ''}`}
     >
       {live && (
         <span

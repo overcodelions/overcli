@@ -239,19 +239,29 @@ const overcliTheme = EditorView.theme(
     // Change gutter — a thin colour bar next to the line numbers marking
     // what this run touched, so the FILE view carries the same information
     // as the diff while you read the code with its context around it.
+    // Wider than the 3px bar it draws, so the bar is something you can hit:
+    // clicking one offers to ask about that change.
     '.cm-gutter.cm-overcli-changes': {
-      width: '3px',
+      width: '7px',
       padding: 0,
-      marginRight: '5px',
+      marginRight: '1px',
     },
     '.cm-overcli-changes .cm-gutterElement': {
       padding: 0,
+      backgroundSize: '3px 100%',
+      backgroundRepeat: 'no-repeat',
+    },
+    '.cm-overcli-changes .cm-gutterElement[class*="cm-overcli-change-"]': {
+      cursor: 'pointer',
+    },
+    '.cm-overcli-changes .cm-gutterElement[class*="cm-overcli-change-"]:hover': {
+      backgroundSize: '5px 100%',
     },
     '.cm-overcli-change-added': {
-      backgroundColor: 'var(--c-diff-add-ink)',
+      backgroundImage: 'linear-gradient(var(--c-diff-add-ink), var(--c-diff-add-ink))',
     },
     '.cm-overcli-change-modified': {
-      backgroundColor: 'rgba(245, 158, 11, 0.9)',
+      backgroundImage: 'linear-gradient(rgba(245, 158, 11, 0.9), rgba(245, 158, 11, 0.9))',
     },
     // A deletion has no line of its own to colour, so it marks the seam:
     // a stub at the top edge of the line that took the removed lines' place.
@@ -535,7 +545,47 @@ const changeLinesField = StateField.define<DecorationSet>({
 const changeGutter = gutter({
   class: 'cm-overcli-changes',
   markers: (v) => v.state.field(changeGutterField),
+  domEventHandlers: {
+    // A click on a bar means the whole change it belongs to: the run of
+    // marked lines around it. Raised as a DOM event because this extension
+    // is module-level and the host's callback lives in the component.
+    click(view, block, event) {
+      const marks = view.state.field(changeGutterField);
+      const doc = view.state.doc;
+      const marked = (n: number) => {
+        if (n < 1 || n > doc.lines) return false;
+        const at = doc.line(n).from;
+        let hit = false;
+        marks.between(at, at, () => {
+          hit = true;
+          return false;
+        });
+        return hit;
+      };
+      const line = doc.lineAt(block.from).number;
+      if (!marked(line)) return false;
+      let fromLine = line;
+      let toLine = line;
+      while (marked(fromLine - 1)) fromLine--;
+      while (marked(toLine + 1)) toLine++;
+      const target = event.target instanceof Element ? event.target : null;
+      const rect = (target?.closest('.cm-gutterElement') ?? target ?? view.dom).getBoundingClientRect();
+      view.dom.dispatchEvent(
+        new CustomEvent<ChangeClick>(CHANGE_CLICK_EVENT, { detail: { fromLine, toLine, rect } }),
+      );
+      return true;
+    },
+  },
 });
+
+const CHANGE_CLICK_EVENT = 'overcli-change-click';
+export interface ChangeClick {
+  /// 1-based, inclusive, new-file numbering.
+  fromLine: number;
+  toLine: number;
+  /// The bar that was clicked, to anchor a menu to.
+  rect: DOMRect;
+}
 
 /// Put `line` on screen, centred. `moveCaret` for the deliberate jumps
 /// (ruler click, keyboard) so the next jump continues from where you
@@ -711,6 +761,7 @@ export function CodeMirrorEditor({
   revealKey = null,
   onSymbolNavigate,
   onSelectionChange,
+  onChangeClick,
 }: {
   content: string;
   onChange: (v: string) => void;
@@ -734,6 +785,8 @@ export function CodeMirrorEditor({
   onSelectionChange?: (
     sel: { from: number; to: number; text: string; lineCount: number } | null,
   ) => void;
+  /// A click on a bar in the change gutter, reporting the whole change.
+  onChangeClick?: (click: ChangeClick) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -748,6 +801,8 @@ export function CodeMirrorEditor({
   // extension list and must read the latest callback through a ref.
   const onSelectionChangeRef = useRef(onSelectionChange);
   onSelectionChangeRef.current = onSelectionChange;
+  const onChangeClickRef = useRef(onChangeClick);
+  onChangeClickRef.current = onChangeClick;
   // Same ref trick for the navigate callback — the DOM handler is baked
   // into the mount-once extension list, so it has to read through a ref to
   // see the current closure.
@@ -927,8 +982,11 @@ export function CodeMirrorEditor({
     window.addEventListener('keydown', onModifierKey);
     window.addEventListener('keyup', onModifierKey);
     window.addEventListener('blur', onWindowBlur);
+    const onChangeBarClick = (e: Event) => onChangeClickRef.current?.((e as CustomEvent<ChangeClick>).detail);
+    view.dom.addEventListener(CHANGE_CLICK_EVENT, onChangeBarClick);
 
     return () => {
+      view.dom.removeEventListener(CHANGE_CLICK_EVENT, onChangeBarClick);
       window.removeEventListener('keydown', onModifierKey);
       window.removeEventListener('keyup', onModifierKey);
       window.removeEventListener('blur', onWindowBlur);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../store';
+import { toggleFoldsServiceList } from '../uiSlice';
 import { labOn, type LabKey } from '@shared/labs';
 import {
   attentionInbox,
@@ -20,6 +21,7 @@ import { flowsLandingSegment, runAttentionBadge } from './flows/runTriage';
 import { useSchedulesStore } from '../schedulesStore';
 import { useOrchestratorStore } from '../orchestratorStore';
 import { useWorkersStore } from '../workersStore';
+import { useHandoffsStore } from '../handoffsStore';
 import { isServiceLive, useServicesStore } from '../servicesStore';
 import {
   describeLocation,
@@ -54,6 +56,8 @@ export function TitleBar() {
   const setDetailMode = useStore((s) => s.setDetailMode);
   const openSheet = useStore((s) => s.openSheet);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const servicesListHidden = useStore((s) => s.servicesListHidden);
+  const foldsServiceList = useStore(toggleFoldsServiceList);
   const whatsNewUnseen = useStore((s) => s.whatsNewUnseen);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
@@ -77,6 +81,8 @@ export function TitleBar() {
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const setActiveOrchestration = useOrchestratorStore((s) => s.setActiveOrchestration);
   const requestOrchestrationDetail = useOrchestratorStore((s) => s.requestOrchestrationDetail);
+  const handoffs = useHandoffsStore((s) => s.handoffs);
+  const openHandoff = useHandoffsStore((s) => s.open);
 
   const flowsBadge = useMemo(() => runAttentionBadge(flowRuns), [flowRuns]);
 
@@ -113,9 +119,10 @@ export function TitleBar() {
         funding: allocation?.byWorker ?? null,
         pendingHire,
         unreviewedRunIds,
+        handoffs,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [flowRuns, unreviewedRunIds, orchestrations, workers, allocation, pendingHire, tick],
+    [flowRuns, unreviewedRunIds, orchestrations, workers, allocation, pendingHire, handoffs, tick],
   );
   const inboxLevel = attentionLevel(inbox);
 
@@ -184,6 +191,11 @@ export function TitleBar() {
           },
           { rememberForChat: true },
         );
+        return;
+      case 'handoff':
+        // The start page of wherever it belongs, composer seeded, card
+        // above it. Nothing is sent from here.
+        navigateToTab(() => openHandoff(item.handoffId));
         return;
       case 'unfunded':
         navigateToTab(
@@ -297,7 +309,15 @@ export function TitleBar() {
       <button
         onClick={toggleSidebar}
         className="no-drag p-1 mr-2 text-ink-muted hover:text-ink rounded hover:bg-card-strong"
-        title={sidebarVisible ? 'Hide sidebar' : 'Show sidebar'}
+        title={
+          foldsServiceList
+            ? servicesListHidden
+              ? 'Show the service list'
+              : 'Hide the service list'
+            : sidebarVisible
+              ? 'Hide sidebar'
+              : 'Show sidebar'
+        }
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" />
@@ -674,6 +694,9 @@ function AttentionGlyph({ kind }: { kind: AttentionItem['kind'] }) {
         ) : kind === 'unreviewed' ? (
           // A branch that forked and never came back.
           <path d="M5 3v10M5 6c0 2 6 1 6 4v3M11 13h0" />
+        ) : kind === 'handoff' ? (
+          // Something passed in from outside.
+          <path d="M2 8h8M7 5l3 3-3 3M12 3v10" />
         ) : (
           <path d="M8 3v10M3 8h10" />
         )}

@@ -347,17 +347,22 @@ export function PlaceBody({
     );
     const settled = runs.filter((r) => !liveRuns.includes(r) && !waiting.includes(r));
     const quietPlain = byNewestFirst(plain.filter((c) => !isRunning(c)));
-    const sleep = partitionSleeping(quietPlain, (c) => ({
+    const sleepFacts = (c: Conversation) => ({
       touchedAt: conversationActivityAt(c),
       pinned: c.id === selectedId,
-    }));
+    });
+    const sleep = partitionSleeping(quietPlain, sleepFacts);
+    // Agents sleep the same way, minus the floor: one worked on recently (or
+    // the one on screen) sits with Recent instead of vanishing into the
+    // count line, but a quiet place isn't backfilled with old agents.
+    const agentSleep = partitionSleeping(byNewestFirst(agents.filter((c) => !isRunning(c))), sleepFacts, { floor: 0 });
     return {
       waiting,
       runningConvs: byNewestFirst([...plain, ...agents].filter(isRunning)),
       liveRuns,
-      recent: sleep.awake,
+      recent: byNewestFirst([...sleep.awake, ...agentSleep.awake]),
       older: sleep.sleeping,
-      idleAgents: byNewestFirst(agents.filter((c) => !isRunning(c))),
+      idleAgents: agentSleep.sleeping,
       settled,
     };
   }, [conversations, runners, allRuns, path, selectedId, now]);

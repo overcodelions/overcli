@@ -2,24 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { createUiSlice } from './uiSlice';
 import type { DetailMode } from './store';
 
-/// Which sidebar a tab reads. The rule App applies at render time, restated
-/// here so it can be tested without a window.
-function showSidebar(state: {
+/// What the sidebar toggle shows or hides on a tab, restated from App so it
+/// can be tested without a window. Services never shows the conversations
+/// sidebar; the toggle folds its service list instead.
+function onScreen(state: {
   detailMode: DetailMode;
   sidebarVisible: boolean;
-  servicesSidebarVisible: boolean;
-}): boolean {
-  return state.detailMode === 'services' ? state.servicesSidebarVisible : state.sidebarVisible;
+  servicesListHidden: boolean;
+}): { sidebar: boolean; serviceList: boolean } {
+  if (state.detailMode === 'services') return { sidebar: false, serviceList: !state.servicesListHidden };
+  return { sidebar: state.sidebarVisible, serviceList: false };
 }
 
 function harness(initial: {
   detailMode: DetailMode;
   sidebarVisible?: boolean;
-  servicesSidebarVisible?: boolean;
+  servicesListHidden?: boolean;
+  projects?: unknown[];
 }) {
   let state = {
     sidebarVisible: true,
-    servicesSidebarVisible: false,
+    servicesListHidden: false,
+    projects: [{}] as unknown[],
     ...initial,
   };
   const set = (patch: unknown) => {
@@ -30,13 +34,11 @@ function harness(initial: {
   return { actions, read: () => state };
 }
 
-describe('the sidebar a tab shows', () => {
-  it('opens Services without the conversations sidebar', () => {
-    // The service list IS what you move between there; a second navigation
-    // beside it takes a third of the width from the output.
+describe('the navigator a tab shows', () => {
+  it('opens Services with its list and without the conversations sidebar', () => {
     const { actions, read } = harness({ detailMode: 'conversation' });
     actions.setDetailMode('services');
-    expect(showSidebar(read())).toBe(false);
+    expect(onScreen(read())).toEqual({ sidebar: false, serviceList: true });
   });
 
   it('leaves Chat exactly as it was', () => {
@@ -46,37 +48,38 @@ describe('the sidebar a tab shows', () => {
     const { actions, read } = harness({ detailMode: 'conversation' });
     actions.setDetailMode('services');
     actions.setDetailMode('conversation');
-    expect(showSidebar(read())).toBe(true);
+    expect(onScreen(read()).sidebar).toBe(true);
   });
 
-  it('cannot leak however the tab was left', () => {
-    // Whatever route changes detailMode — a tab, a back arrow, a restored
-    // session — the answer is computed from the tab, never stored.
-    const { read } = harness({ detailMode: 'services' });
-    expect(showSidebar(read())).toBe(false);
-    expect(showSidebar({ ...read(), detailMode: 'flows' })).toBe(true);
-  });
-
-  it('toggling inside Services changes only Services', () => {
+  it('folds the service list, not the sidebar, when toggled in Services', () => {
     const { actions, read } = harness({ detailMode: 'services' });
     actions.toggleSidebar();
-    expect(showSidebar(read())).toBe(true);
+    expect(onScreen(read())).toEqual({ sidebar: false, serviceList: false });
     expect(read().sidebarVisible).toBe(true);
-    expect(showSidebar({ ...read(), detailMode: 'conversation' })).toBe(true);
-  });
-
-  it('toggling elsewhere does not turn it on in Services', () => {
-    const { actions, read } = harness({ detailMode: 'conversation', sidebarVisible: false });
     actions.toggleSidebar();
-    expect(read().sidebarVisible).toBe(true);
-    expect(read().servicesSidebarVisible).toBe(false);
+    expect(onScreen(read()).serviceList).toBe(true);
   });
 
-  it('remembers a sidebar deliberately opened in Services', () => {
+  it('toggling elsewhere does not fold the service list', () => {
+    const { actions, read } = harness({ detailMode: 'conversation' });
+    actions.toggleSidebar();
+    expect(read().sidebarVisible).toBe(false);
+    expect(read().servicesListHidden).toBe(false);
+  });
+
+  it('remembers a folded list across tabs', () => {
     const { actions, read } = harness({ detailMode: 'services' });
     actions.toggleSidebar();
     actions.setDetailMode('conversation');
     actions.setDetailMode('services');
-    expect(showSidebar(read())).toBe(true);
+    expect(onScreen(read()).serviceList).toBe(false);
+  });
+});
+
+describe('the sidebar toggle on Services with no projects', () => {
+  it('shows and hides the sidebar, since there is no service list to fold', () => {
+    const { actions, read } = harness({ detailMode: 'services', sidebarVisible: false, projects: [] });
+    actions.toggleSidebar();
+    expect(read()).toMatchObject({ sidebarVisible: true, servicesListHidden: false });
   });
 });

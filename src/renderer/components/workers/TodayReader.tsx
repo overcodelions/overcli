@@ -75,6 +75,7 @@ export function TodayReader({
   const [runStep, setRunStep] = useState<string | undefined>(undefined);
   const run = useFlowsStore((s) => (row.runId ? s.runs[row.runId] : undefined));
   const worker = useWorkersStore((s) => s.workers[row.workerId]);
+  const selectWorker = useWorkersStore((s) => s.selectWorker);
   // Where you left off in this run, if you have talked to it since it
   // stopped: that conversation is the decision in progress, so the reader
   // opens on it rather than on the output recorded before it.
@@ -135,9 +136,18 @@ export function TodayReader({
       style={{ background: 'color-mix(in srgb, var(--c-ink) 2%, var(--c-surface))' }}
     >
       <div className="flex shrink-0 items-center gap-2.5 border-b border-card px-7 py-3">
-        {worker && <WorkerAvatar worker={worker} size="xs" />}
+        {/* The worker's name is the way to its desk — the worker itself, not
+            this one piece of its work. */}
+        <button
+          type="button"
+          onClick={() => selectWorker(row.workerId)}
+          title={`Open ${row.workerName}'s desk`}
+          className="flex shrink-0 items-center gap-2.5 rounded text-[12.5px] font-medium text-ink hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+        >
+          {worker && <WorkerAvatar worker={worker} size="xs" untitled />}
+          {row.workerName}
+        </button>
         <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-muted">
-          <span className="font-medium text-ink">{row.workerName}</span>
           {' · '}
           {kind === 'needs'
             ? `waiting ${elapsedLabel(now - row.at)}`
@@ -258,8 +268,8 @@ function Decision({
           {row.runId && <AnswerBox runId={row.runId} />}
           {run && <TalkToStep run={run} asking onTalked={onTalked} />}
           {row.runId && (
-            <div className="flex justify-end">
-              <PausedActions row={row} tone="solid" rejectOnly />
+            <div className="border-t border-card pt-3">
+              <PausedActions row={row} tone="page" rejectOnly />
             </div>
           )}
         </>
@@ -273,8 +283,8 @@ function Decision({
           )}
           {run && <TalkToStep run={run} onTalked={onTalked} />}
           {row.runId && (
-            <div className="flex">
-              <PausedActions row={row} tone="solid" />
+            <div className="border-t border-card pt-3">
+              <PausedActions row={row} tone="page" />
             </div>
           )}
         </>

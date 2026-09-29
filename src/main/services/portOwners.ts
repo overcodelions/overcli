@@ -651,10 +651,17 @@ export async function processStarted(
   pid: number,
   runner: LookupRunner = run,
   platform: NodeJS.Platform = process.platform,
+  alive: (pid: number) => boolean = pidAlive,
 ): Promise<string | null | undefined> {
   if (platform === 'win32' || !Number.isInteger(pid) || pid <= 1) return undefined;
   const out = (await runner('ps', ['-o', 'lstart=', '-p', String(pid)]))?.trim();
-  return out ? out : null;
+  if (out) return out;
+  return alive(pid) ? undefined : null;
+}
+
+/// Signal 0 checks existence without signalling. EPERM means it exists but is not ours.
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; }
 }
 
 /// Ask these processes to stop, then insist. SIGTERM first so a server can

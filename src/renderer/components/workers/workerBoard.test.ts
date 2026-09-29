@@ -11,6 +11,8 @@ import {
   dayProgress,
   dayTicks,
   groupBoard,
+  railDropIndex,
+  railMark,
   tickKind,
   type BoardEntry,
 } from './workerBoard';
@@ -226,5 +228,34 @@ describe('dayProgress', () => {
     // disagree the strip draws a turn in a future it has already shaded.
     const [tick] = dayTicks([activity('turn-1', NOON)], NOON);
     expect(tick.pos).toBeCloseTo(dayProgress(NOON), 5);
+  });
+});
+
+describe('railMark', () => {
+  it('splits needs-you into waiting on a decision and stopped', () => {
+    expect(railMark(entry({ review: 2 }))).toBe('waiting');
+    expect(railMark(entry({ review: 1, pausedRuns: 1 }))).toBe('waiting');
+    expect(railMark(entry({ pausedRuns: 1 }))).toBe('stopped');
+    expect(railMark(entry({ starved: true }))).toBe('stopped');
+  });
+
+  it('otherwise follows the board group', () => {
+    expect(railMark(entry({ live: true }))).toBe('running');
+    expect(railMark(entry())).toBe('quiet');
+    expect(railMark(entry({ worker: worker('w', { enabled: false }), review: 3 }))).toBe('bench');
+  });
+});
+
+describe('railDropIndex', () => {
+  const ordered = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+
+  it('lands before or after the target in full roster order', () => {
+    expect(railDropIndex(ordered, 'b', false)).toBe(1);
+    expect(railDropIndex(ordered, 'b', true)).toBe(2);
+    expect(railDropIndex(ordered, 'c', true)).toBe(3);
+  });
+
+  it('is null for a target that is not on the roster', () => {
+    expect(railDropIndex(ordered, 'zz', false)).toBeNull();
   });
 });

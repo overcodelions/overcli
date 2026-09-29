@@ -19,14 +19,16 @@ import type { QueueRow } from './workQueue';
 /// `tone` is the only thing the two callers disagree about. The queue draws
 /// them as quiet outlines in a dense table; the spine's pinned card has
 /// already gone amber around them, so there the primary action is solid and
-/// carries the card's weight.
+/// carries the card's weight. `page` is the reader, where the decision is the
+/// point of the page: full-size buttons, the hint spelled out beside them, and
+/// a confirm that reads as a warning rather than a footnote.
 export function PausedActions({
   row,
   tone = 'outline',
   rejectOnly = false,
 }: {
   row: QueueRow;
-  tone?: 'outline' | 'solid';
+  tone?: 'outline' | 'solid' | 'page';
   /// Reject alone — for a card that brings its own way forward (the answer
   /// box on a question), where a bare "resume" beside it would offer to go
   /// on without the answer.
@@ -90,7 +92,60 @@ export function PausedActions({
     setConfirming(false);
   };
 
-  const pad = tone === 'solid' ? '' : ' pt-2';
+  const pad = tone === 'outline' ? ' pt-2' : '';
+  const label = PAUSE_ACTION[reason].charAt(0).toUpperCase() + PAUSE_ACTION[reason].slice(1);
+
+  if (tone === 'page') {
+    // One row whose height doesn't change between asking and confirming, so
+    // the buttons don't jump under the pointer.
+    if (confirming) {
+      return (
+        <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-red-500/40 bg-red-500/[0.06] px-3 py-2">
+          <span className="min-w-0 flex-1 text-[12.5px] leading-snug text-ink">{REJECT_CONFIRM}</span>
+          <button
+            onClick={() => setConfirming(false)}
+            disabled={rejecting}
+            className="shrink-0 rounded-md border border-card-strong px-3.5 py-1.5 text-[12.5px] text-ink hover:bg-card-strong focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => void reject()}
+            disabled={rejecting}
+            className="shrink-0 rounded-md bg-red-500 px-3.5 py-1.5 text-[12.5px] font-medium text-white hover:bg-red-600 focus:outline-none focus-visible:ring-1 focus-visible:ring-red-300 disabled:opacity-50"
+          >
+            {rejecting ? 'Rejecting…' : 'Reject and delete'}
+          </button>
+        </div>
+      );
+    }
+    return (
+      <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-transparent py-2">
+        {!rejectOnly && (
+          <button
+            onClick={resume}
+            disabled={inFlight}
+            className="shrink-0 rounded-md bg-amber-400 px-4 py-1.5 text-[12.5px] font-medium text-[#1c1c21] hover:bg-amber-300 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber-200 disabled:opacity-50"
+          >
+            {inFlight ? 'Resuming…' : label}
+          </button>
+        )}
+        <button
+          onClick={() => setConfirming(true)}
+          disabled={inFlight}
+          title={REJECT_HINT}
+          className={
+            'shrink-0 rounded-md border border-card-strong px-3.5 py-1.5 text-[12.5px] text-ink-muted hover:border-red-400/60 hover:text-red-400 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 disabled:opacity-50'
+          }
+        >
+          Reject
+        </button>
+        {!rejectOnly && (
+          <span className="min-w-0 flex-1 text-[12px] leading-snug text-ink-faint">{PAUSE_HINT[reason]}</span>
+        )}
+      </div>
+    );
+  }
 
   if (confirming) {
     return (

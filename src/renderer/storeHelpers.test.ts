@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { AppSettings, Conversation, StreamEvent } from '@shared/types';
 import {
   backendSettingsChanged,
+  collectCoordinatorMembers,
   hydrateFileTabs,
   isLiveWorkspaceAgent,
   ownsWorktree,
@@ -76,7 +77,7 @@ describe('ownsWorktree', () => {
 });
 
 describe('withClaudeFastPreset', () => {
-  it('selects Claude Sonnet 5 with low effort and Turbo without changing unrelated fields', () => {
+  it('selects Claude Sonnet 5.5 with low effort and Turbo without changing unrelated fields', () => {
     const conversation = {
       id: 'c1',
       name: 'Keep me',
@@ -90,8 +91,8 @@ describe('withClaudeFastPreset', () => {
     expect(withClaudeFastPreset(conversation)).toMatchObject({
       id: 'c1',
       name: 'Keep me',
-      claudeModel: 'claude-sonnet-5',
-      currentModel: 'claude-sonnet-5',
+      claudeModel: 'claude-sonnet-5-5',
+      currentModel: 'claude-sonnet-5-5',
       effortLevel: 'low',
       responseStyle: 'efficient',
       responseMode: 'warp',
@@ -146,8 +147,8 @@ describe('withResponseMode', () => {
       responseStyle: 'efficient',
       responseMode: 'warp',
       turbo: true,
-      claudeModel: 'claude-sonnet-5',
-      currentModel: 'claude-sonnet-5',
+      claudeModel: 'claude-sonnet-5-5',
+      currentModel: 'claude-sonnet-5-5',
       effortLevel: 'low',
       responseModeRestore: {
         models: { claude: 'claude-opus-5' },
@@ -334,5 +335,30 @@ describe('isLiveWorkspaceAgent', () => {
     expect(
       isLiveWorkspaceAgent({ id: 'm1', name: 'member', worktreePath: '/wt' } as Conversation),
     ).toBe(false);
+  });
+});
+
+// A workspace agent's coordinator has no worktree of its own; its members do.
+// The chat's changes bar and `refreshGitStatus` both read them through this,
+// so the `<member>/` prefix on a changed file maps back to the right tree.
+describe('collectCoordinatorMembers', () => {
+  const projects = [
+    { name: 'api', conversations: [{ id: 'm1', worktreePath: '/wt/api' }] },
+    { name: 'web', conversations: [{ id: 'm2', worktreePath: '/wt/web' }, { id: 'm3' }] },
+    { name: 'api', conversations: [{ id: 'm4', worktreePath: '/wt/api-2' }] },
+  ];
+
+  it('names each member worktree after its project, deduping clashing names', () => {
+    expect(collectCoordinatorMembers(projects, ['m1', 'm2', 'm4'])).toEqual([
+      { name: 'api', worktreePath: '/wt/api' },
+      { name: 'web', worktreePath: '/wt/web' },
+      { name: 'api-2', worktreePath: '/wt/api-2' },
+    ]);
+  });
+
+  it('skips members without a worktree and ones already listed', () => {
+    expect(collectCoordinatorMembers(projects, ['m3', 'm1', 'm1'])).toEqual([
+      { name: 'api', worktreePath: '/wt/api' },
+    ]);
   });
 });

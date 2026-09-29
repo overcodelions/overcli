@@ -53,6 +53,7 @@ import { bulkRefOptions, handoffOffer, planBulkRebind } from '../servicesRebindP
 import type { ServiceGroup } from '../servicesGrouping';
 import {
   buildServiceList,
+  isDefaultBranch,
   rangeBetween,
   type HeaderItem,
   type WorkspaceItem,
@@ -72,6 +73,7 @@ import { LogView } from './ServiceLogView';
 import { reloadModeOf, watchForMode } from '../serviceReloadMode';
 import { ServicesBulkEditSheet } from './ServicesBulkEditSheet';
 import { MachineServicesSection } from './MachineServicesSection';
+import { ServiceOutputSearch } from './ServiceOutputSearch';
 import {
   LandingColumns,
   LANDING_MARK_W,
@@ -99,6 +101,9 @@ export function ServicesPane() {
   const stacks = useServicesStore((s) => s.stacks);
 
   const listPanel = useRef<HTMLDivElement>(null);
+  // The sidebar toggle (⌘\, the title-bar button, the left-edge tab) folds
+  // this list on Services, giving the detail the whole width.
+  const listHidden = useStore((s) => s.servicesListHidden);
   const [listWidth, setListWidth] = useState(settings.servicesListWidth ?? 480);
   useEffect(() => {
     setListWidth(settings.servicesListWidth ?? 480);
@@ -203,10 +208,14 @@ export function ServicesPane() {
       <Toolbar stacks={stacks} choices={choices} />
       <HandoffBanner stacks={stacks} choices={choices} />
       <div className="flex min-h-0 flex-1">
+        {!listHidden && (
+        <>
         <div
           ref={listPanel}
           style={{ width: listWidth }}
-          className="relative flex flex-shrink-0 flex-col"
+          // The sidebar shade, like Chat's sidebar and the Workers rail: the
+          // list is this tab's navigator, and the output beside it is the page.
+          className="relative flex flex-shrink-0 flex-col bg-surface-muted"
         >
           <ServiceList
             owners={withServices}
@@ -215,6 +224,7 @@ export function ServicesPane() {
             compact={listWidth < 440}
           />
           <Toasts />
+          <ServiceMenu />
           <Footer workspaces={workspaces} projects={projects} loose={loose} stacks={stacks} />
         </div>
         {/* The right balance depends on what you are reading — a stack trace
@@ -228,6 +238,8 @@ export function ServicesPane() {
           onChange={setListWidth}
           onCommit={(w) => void saveSettings({ ...settings, servicesListWidth: w })}
         />
+        </>
+        )}
         <Detail />
       </div>
     </div>
@@ -248,13 +260,6 @@ function Toolbar({
   const running = runtimes.filter((r) => isServiceLive(r.status)).length;
   const stopped = Object.values(stacks).flatMap((s) => s.services).length - running;
 
-  const refs = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const binding of Object.values(stacks).flatMap((s) => s.bindings)) {
-      counts.set(binding.ref, (counts.get(binding.ref) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
-  }, [stacks]);
 
   return (
     <div className="flex h-[44px] flex-shrink-0 items-center gap-2.5 border-b border-card px-3.5">
@@ -271,26 +276,6 @@ function Toolbar({
         <span className="text-ink-faint">·</span>
         <span className="text-ink-faint">{stopped} stopped</span>
       </span>
-
-      {refs.length > 0 && (
-        <span className="ml-1 flex items-center gap-1.5 rounded border border-card bg-card px-2 py-[3px] text-[11px] text-ink-muted">
-          {refs.map(([ref, count], i) => (
-            <span key={ref}>
-              {i > 0 && <span className="mx-1 text-ink-faint">·</span>}
-              <span
-                title={ref}
-                className={
-                  'inline-block max-w-[150px] truncate align-bottom font-mono ' +
-                  (i === 0 ? 'text-ink' : 'text-accent')
-                }
-              >
-                {shortRef(ref)}
-              </span>
-              {count > 1 && <span className="text-ink-faint"> ({count})</span>}
-            </span>
-          ))}
-        </span>
-      )}
 
       <div className="flex-1" />
       <MoveEverything stacks={stacks} choices={choices} />
@@ -313,6 +298,11 @@ function Toolbar({
   );
 }
 
+/// The page's one branch control. It used to be three: a strip of the top
+/// three refs with counts, "Switch everything to…" beside it, and a Switch
+/// on the workspace header that did the same thing to the same services when
+/// there was only one workspace. Now the control IS the summary — where the
+/// stack sits and how many services are elsewhere — and opening it switches.
 function MoveEverything({
   stacks,
   choices,
@@ -323,6 +313,19 @@ function MoveEverything({
   const rebindAll = useServicesStore((s) => s.rebindAll);
   const [ref, setRef] = useState('');
   const options = useMemo(() => bulkRefOptions(choices), [choices]);
+
+  // Where most of the stack sits, and how many services are somewhere else.
+  const where = useMemo(() => {
+    const counts = new Map<string, number>();
+    const bindings = Object.values(stacks).flatMap((s) => s.bindings);
+    for (const binding of bindings) counts.set(binding.ref, (counts.get(binding.ref) ?? 0) + 1);
+    const [top] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    if (!top) return null;
+    return { ref: top[0], off: bindings.length - top[1] };
+  }, [stacks]);
+  const summary = where
+    ? `on ${shortRef(where.ref)}${where.off > 0 ? ` · ${where.off} off-branch` : ''}`
+    : 'Switch everything to…';
 
   const plans = useMemo(() => {
     if (!ref) return [];
@@ -338,16 +341,29 @@ function MoveEverything({
   }, [ref, stacks, choices]);
   const moving = plans.reduce((n, p) => n + p.plan.targets.length, 0);
 
-  if (options.length === 0) return null;
+  if (options.length === 0) {
+    // Nothing to switch to, but still worth saying where things are.
+    return where ? (
+      <span className="flex items-center gap-1 font-mono text-[11px] text-ink-muted" title={where.ref}>
+        <BranchIcon />
+        {summary}
+      </span>
+    ) : null;
+  }
   return (
     <div className="flex items-center gap-2">
       <BulkRefPicker
         choices={choices}
         total={Object.values(stacks).reduce((n, s) => n + s.services.length, 0)}
-        label={ref || 'Switch everything to…'}
-        title="Every service in the list, in every workspace. Pinned ones stay."
+        label={ref || summary}
+        title={`${where ? `Most services are on ${where.ref}. ` : ''}Switch every service, in every workspace, to another branch. Pinned ones stay.`}
         onPick={setRef}
       />
+      {ref && (
+        <button className="px-1 text-[11px] text-ink-faint hover:text-ink" onClick={() => setRef('')}>
+          Cancel
+        </button>
+      )}
       {ref && (
         <button
           className="svc-btn-primary"
@@ -437,9 +453,44 @@ function HandoffBanner({
 
 // ── the list ────────────────────────────────────────────────────────────────
 
+/// Which half of the list is showing, for the session: the services, or a
+/// search of what they have all printed.
+let lastListMode: 'services' | 'output' = 'services';
+
 /// Every stack's services as one list: a filter on top, groups that fold, and
-/// rows that tick for a bulk action.
-function ServiceList({
+/// rows that tick for a bulk action. Or, switched to Output, one search across
+/// every service's output (ServiceOutputSearch).
+function ServiceList(props: { owners: { id: string; name: string }[]; compact: boolean }) {
+  const [mode, setModeState] = useState(lastListMode);
+  const setMode = (next: 'services' | 'output') => {
+    lastListMode = next;
+    setModeState(next);
+  };
+  return (
+    <>
+      <div role="tablist" aria-label="Search in" className="mx-2.5 mt-2.5 flex flex-shrink-0 gap-0.5 rounded-md bg-card p-0.5">
+        {(['services', 'output'] as const).map((m) => (
+          <button
+            key={m}
+            role="tab"
+            aria-selected={mode === m}
+            onClick={() => setMode(m)}
+            title={m === 'output' ? 'Search what every service has printed' : undefined}
+            className={
+              'h-[22px] flex-1 rounded text-[11px] ' +
+              (mode === m ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+            }
+          >
+            {m === 'services' ? 'Services' : 'Output'}
+          </button>
+        ))}
+      </div>
+      {mode === 'services' ? <ServiceRows {...props} /> : <ServiceOutputSearch owners={props.owners} />}
+    </>
+  );
+}
+
+function ServiceRows({
   owners,
   compact,
 }: {
@@ -511,7 +562,7 @@ function ServiceList({
 
   return (
     <>
-      <div className="flex flex-shrink-0 flex-col gap-2 border-b border-card px-2.5 pb-2 pt-2.5">
+      <div className="flex flex-shrink-0 flex-col gap-2 border-b border-card px-2.5 pb-2 pt-2">
         <label className="flex h-[26px] items-center gap-1.5 rounded-md border border-card bg-card px-2">
           <svg
             width="12"
@@ -578,10 +629,12 @@ function ServiceList({
         </div>
       </div>
 
+      {status !== 'problems' && <AdoptedNotice owners={owners} />}
+
       <div className="min-h-0 flex-1 select-none overflow-y-auto pb-3">
         {list.items.map((item) =>
           item.kind === 'workspace' ? (
-            <WorkspaceHeader key={item.key} item={item} ticking={ticking} />
+            <WorkspaceHeader key={item.key} item={item} ticking={ticking} canSwitch={nested} />
           ) : item.kind === 'row' ? (
             <Row
               key={item.key}
@@ -608,15 +661,99 @@ function ServiceList({
   );
 }
 
+/// The adopted services, said once. A relaunch adopts the whole stack, so
+/// the word used to sit on a dozen rows in a row; the fact is about the
+/// session, and so is the fix — restart them and their output comes here.
+/// Dismissing it holds until the set of adopted services changes.
+let dismissedAdopted = '';
+
+function AdoptedNotice({ owners }: { owners: { id: string; name: string }[] }) {
+  const stacks = useServicesStore((s) => s.stacks);
+  const restart = useServicesStore((s) => s.restart);
+  const [dismissed, setDismissed] = useState(dismissedAdopted);
+  // How many were asked to restart, so the line can count them back in.
+  const [restarting, setRestarting] = useState(0);
+  const adopted = owners.flatMap((o) =>
+    (stacks[o.id]?.runtimes ?? [])
+      .filter((r) => r.adopted && isServiceLive(r.status))
+      .map((r) => ({ workspaceId: o.id, serviceId: r.serviceId })),
+  );
+  const key = adopted.map((a) => `${a.workspaceId}:${a.serviceId}`).sort().join(',');
+  useEffect(() => {
+    if (adopted.length === 0) setRestarting(0);
+  }, [adopted.length]);
+  if (adopted.length === 0 || key === dismissed) return null;
+  const n = adopted.length;
+  return (
+    <div
+      className="mx-2.5 mb-1 mt-2 flex h-[28px] flex-shrink-0 items-center gap-2 rounded-md border border-dashed border-green-500/40 bg-green-500/5 pl-2.5 pr-1"
+      title="Already running when overcli opened. Their output goes to whatever started them until they are restarted."
+    >
+      <span
+        aria-hidden
+        className="h-2 w-2 flex-shrink-0 rounded-full border border-dashed border-green-500 dark:border-green-400"
+      />
+      <span className="min-w-0 flex-1 truncate text-[11px] text-ink-muted">
+        {restarting > 0
+          ? `Restarting · ${restarting - n} of ${restarting} back`
+          : `${n} started outside overcli`}
+      </span>
+      {restarting === 0 && (
+        <button
+          className="h-[20px] flex-shrink-0 rounded px-1.5 text-[11px] font-medium text-green-700 hover:bg-green-500/15 dark:text-green-300"
+          // All at once: each restart waits for its own service, so doing them
+          // in turn made twelve restarts twelve waits. The supervisor's build
+          // queue already paces the heavy part.
+          onClick={() => {
+            setRestarting(n);
+            for (const a of adopted) void restart(a.workspaceId, a.serviceId);
+          }}
+        >
+          {n === 1 ? 'Restart it' : `Restart all`}
+        </button>
+      )}
+      <button
+        aria-label="Hide until this changes"
+        title="Hide until this changes"
+        className="flex h-[20px] w-[20px] flex-shrink-0 items-center justify-center rounded text-ink-faint hover:bg-card-strong hover:text-ink"
+        onClick={() => {
+          dismissedAdopted = key;
+          setDismissed(key);
+        }}
+      >
+        <svg width="8" height="8" viewBox="0 0 10 10" aria-hidden>
+          <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 /// A group or a module. A click folds it; ⌘-click, or its checkbox once
 /// something is ticked, selects everything under it — folded or not. A group
 /// whose services are all on one feature branch says it once.
 /// A workspace: a click folds everything in it, like a group one level up.
-function WorkspaceHeader({ item, ticking }: { item: WorkspaceItem; ticking: boolean }) {
+function WorkspaceHeader({
+  item,
+  ticking,
+  canSwitch,
+}: {
+  item: WorkspaceItem;
+  ticking: boolean;
+  /// Only with several workspaces. With one, the toolbar's branch control
+  /// already moves exactly these services, and two of the same control a few
+  /// pixels apart asked which one to use.
+  canSwitch: boolean;
+}) {
   const toggleCollapsed = useServicesStore((s) => s.toggleCollapsed);
+  const openMenu = useServicesStore((s) => s.openMenu);
   return (
     <div
       onClick={() => toggleCollapsed(item.key)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openMenu(item.rows, e.clientX, e.clientY, item.name);
+      }}
       className="group mt-2 flex h-[30px] cursor-default items-center gap-2 border-t border-card pl-2 pr-2 first:mt-0 first:border-t-0 hover:bg-card-strong"
     >
       <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">
@@ -634,7 +771,7 @@ function WorkspaceHeader({ item, ticking }: { item: WorkspaceItem; ticking: bool
         {item.running > 0 ? `${item.running}/${item.rows.length}` : item.rows.length}
       </span>
       <span className="flex-1" />
-      {!ticking && (
+      {!ticking && canSwitch && (
         <span onClick={(e) => e.stopPropagation()}>
           <SwitchMenu keys={item.rows} label={`Switch ${item.name}`} />
         </span>
@@ -664,9 +801,14 @@ function ListHeader({ item, ticking, nested }: { item: HeaderItem; ticking: bool
     </span>
   );
 
+  const openMenu = useServicesStore((s) => s.openMenu);
   return (
     <div
       onClick={(e) => (e.metaKey || e.ctrlKey ? tickAll() : toggleCollapsed(item.key))}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openMenu(item.rows, e.clientX, e.clientY, item.name);
+      }}
       className={
         'group mt-1 flex h-[28px] cursor-default items-center gap-2 pr-2 hover:bg-card-strong ' +
         (nested ? 'pl-5' : 'pl-3.5')
@@ -721,6 +863,12 @@ function ListHeader({ item, ticking, nested }: { item: HeaderItem; ticking: bool
 
 /// One service on one line. The dot says how it is; hovering turns it into a
 /// checkbox, and once anything is ticked every row shows one.
+///
+/// At rest a row is its state, its name and — while it runs — its port. Its
+/// actions sit over the port on the row you point at (or have open, or have
+/// tabbed into): thirty-odd rows each drawing four buttons put a hundred
+/// controls on screen to act on one service, and the name, the one thing a
+/// scan is for, got whatever width was left.
 function Row({
   item,
   ticking,
@@ -743,14 +891,22 @@ function Row({
   const { spec, runtime, binding } = item;
   const live = isServiceLive(runtime.status);
   const selected = !ticking && selectedId === spec.id;
+  const onContextMenu = useRowContextMenu(item.key);
+  const openMenu = useServicesStore((s) => s.openMenu);
+  // The row the menu is about stays marked while it is open — the menu
+  // opens at the pointer, which may be a long way from the name.
+  const menuOn = useServicesStore((s) => !!s.menu?.keys.includes(item.key));
   const blocked = blockedReason(pendingLease, spec.id);
 
   return (
     <div
+      onContextMenu={onContextMenu}
       className={
         'group relative flex h-[28px] items-center gap-2 pr-2 ' +
         (nested ? 'pl-[42px]' : 'pl-[34px]') +
-        (checked
+        (menuOn
+          ? ' bg-accent/20 shadow-[inset_0_0_0_1px_var(--c-accent)]'
+          : checked
           ? ' bg-accent/10'
           : selected
             ? ' bg-accent/15 shadow-[inset_2px_0_0_var(--c-accent)]'
@@ -765,7 +921,7 @@ function Row({
       />
       <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">
         <span className={ticking ? 'hidden' : 'flex group-hover:hidden'}>
-          <StatusDot status={blocked ? 'blocked' : runtime.status} />
+          <StatusDot status={blocked ? 'blocked' : runtime.status} adopted={runtime.adopted} />
         </span>
         <Checkbox
           on={checked}
@@ -776,10 +932,21 @@ function Row({
 
       <button
         onClick={onClick}
-        title={binding ? `${spec.name} · ${binding.ref}` : spec.name}
-        className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left"
+        // Uptime left the row for here: how long it has been up is worth a
+        // hover, not a column.
+        title={[
+          spec.name,
+          binding?.ref,
+          live && runtime.startedAt ? `up ${since(runtime.startedAt)}` : null,
+          runtime.adopted ? 'started outside overcli' : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')}
+        className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/50"
       >
-        <span className={'min-w-0 flex-1 truncate text-[12.5px] ' + (selected ? 'font-medium' : '')}>
+        {/* Not flex-1: the chips sit right after the name, so the actions
+            laid over the row's right end never cover a branch or a pin. */}
+        <span className={'min-w-0 truncate text-[12.5px] ' + (selected ? 'font-medium' : '')}>
           {spec.name}
         </span>
         <Trouble runtime={runtime} spec={spec} blocked={blocked} binding={binding} />
@@ -795,19 +962,45 @@ function Row({
             once
           </span>
         )}
-        {/* The ref chip only appears off the default branch, so a service
-            kept on master said nothing about being kept there — and that is
-            the common pin. The pin says it whatever the ref. */}
-        {spec.pinnedRef && (
+        {/* A pin is a setting, not a state: it says so with the glyph alone,
+            and names its branch only when that is not the default — a column
+            of "📌 master" was the same word thirteen times. The title keeps
+            the full story. */}
+        {/* Pinned to the default branch is the normal case on a stack kept
+            on master, so it shows only on the row you point at; a pin to
+            anything else is news and always shows. */}
+        {/* A pin that disagrees with where the service runs is a lie the
+            bulk switch then acts on (it leaves pinned services alone), so it
+            is drawn as a warning with both branches, not as a quiet glyph. */}
+        {spec.pinnedRef && binding && binding.ref !== spec.pinnedRef ? (
           <span
-            className="flex flex-shrink-0 items-center gap-0.5 font-mono text-[10.5px] text-accent"
-            title={`Pinned to ${spec.pinnedRef} — a bulk switch leaves it`}
+            onClick={(e) => {
+              e.stopPropagation();
+              openMenu([item.key], e.clientX, e.clientY);
+            }}
+            className="flex flex-shrink-0 cursor-pointer items-center gap-0.5 rounded bg-amber-500/15 px-1 font-mono text-[10.5px] text-amber-700 hover:bg-amber-500/25 dark:text-amber-300"
+            title={`Pinned to ${spec.pinnedRef}, but running from ${binding.ref}. A bulk switch leaves pinned services where they are. Click to move it back or unpin it.`}
           >
             <PinIcon />
-            {!item.showRef && shortRef(spec.pinnedRef)}
+            {shortRef(spec.pinnedRef)} ≠ {shortRef(binding.ref)}
           </span>
-        )}
-        {item.showRef && binding && (
+        ) : spec.pinnedRef ? (
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              openMenu([item.key], e.clientX, e.clientY);
+            }}
+            className={
+              'flex-shrink-0 cursor-pointer items-center gap-0.5 rounded px-0.5 font-mono text-[10.5px] text-accent/70 hover:bg-card-strong ' +
+              (isDefaultBranch(spec.pinnedRef) && !selected ? 'hidden group-hover:flex' : 'flex')
+            }
+            title={`Pinned to ${spec.pinnedRef} — a bulk switch leaves it. Click to change.`}
+          >
+            <PinIcon />
+            {!item.showRef && !isDefaultBranch(spec.pinnedRef) && shortRef(spec.pinnedRef)}
+          </span>
+        ) : null}
+        {item.showRef && binding && (!spec.pinnedRef || binding.ref === spec.pinnedRef) && (
           <span
             className={
               binding.ref === spec.pinnedRef
@@ -818,6 +1011,7 @@ function Row({
             {shortRef(binding.ref)}
           </span>
         )}
+        <span className="flex-1" />
       </button>
 
       {runtime.debugKind && runtime.debugPort && (
@@ -826,20 +1020,33 @@ function Row({
         </span>
       )}
       {runtime.port !== undefined && (
-        <span className="flex-shrink-0 font-mono text-[10.5px] text-ink-muted">:{runtime.port}</span>
-      )}
-      {!compact && live && runtime.startedAt && (
-        <span className="w-[28px] flex-shrink-0 text-right text-[10.5px] text-ink-faint">
-          {since(runtime.startedAt)}
+        <span className={'flex-shrink-0 font-mono text-ink-faint ' + (compact ? 'text-[10px]' : 'text-[10.5px]')}>
+          :{runtime.port}
         </span>
       )}
       {!ticking && (
-        <Actions
-          workspaceId={item.workspaceId}
-          spec={spec}
-          binding={binding}
-          live={live}
-        />
+        // Laid OVER the row's right end rather than beside it, so pointing at
+        // a row never re-truncates its name. Opacity, not display: the
+        // buttons stay in the tab order, and tabbing to one shows them all.
+        <span
+          className={
+            'absolute inset-y-0 right-0 z-[1] flex items-center pl-1.5 pr-2 transition-opacity ' +
+            // Not on the selected row: its Start/Stop/Restart are already in
+            // the detail header beside it, and drawing them twice covered the
+            // row's port for as long as it was open.
+            (selected
+              ? 'hidden'
+              : 'pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100')
+          }
+          // Opaque — the list's own shade — and tinted the way the row under
+          // it is, so what it covers does not show through.
+          style={{ background: 'var(--c-surface-muted)' }}
+        >
+          <span aria-hidden className="absolute inset-0 bg-card-strong" />
+          <span className="relative flex">
+            <Actions workspaceId={item.workspaceId} spec={spec} binding={binding} live={live} />
+          </span>
+        </span>
       )}
     </div>
   );
@@ -1217,9 +1424,9 @@ const staleBtn =
   'hover:bg-amber-500/25 disabled:border-transparent disabled:bg-transparent disabled:text-ink-faint ' +
   'disabled:cursor-not-allowed dark:text-amber-300';
 
-/// Always on the row: what you can do next is part of how the service is. A
-/// running one offers stop and restart, a stopped one offers play, tinted like
-/// the footer's Start and Stop so the verb reads before the icon does.
+/// A row's actions, shown over it on hover or selection (see Row). A running
+/// one offers stop and restart, a stopped one offers play, tinted like the
+/// footer's Start and Stop so the verb reads before the icon does.
 function Actions({
   workspaceId,
   spec,
@@ -1273,7 +1480,7 @@ function Actions({
           <path d="M6 3.5h4M8 2v3M5 7h6v5.5a3 3 0 0 1-6 0zM3 9h2M11 9h2M3 12h2M11 12h2" />
         </IconButton>
       )}
-      <RowMenu workspaceId={workspaceId} spec={spec} binding={binding} live={live} />
+      <RowMenu workspaceId={workspaceId} spec={spec} />
     </span>
   );
 }
@@ -1362,18 +1569,10 @@ function Trouble({
       </span>
     );
   }
-  // Running from before the app was reopened. Not trouble — but not nothing
-  // either, because its output is not arriving here until a restart.
-  if (runtime.adopted) {
-    return (
-      <span
-        className="flex-shrink-0 rounded bg-card-strong px-1 text-[10px] text-ink-faint"
-        title="Already running when overcli opened. Restart it to get its output back."
-      >
-        adopted
-      </span>
-    );
-  }
+  // Running from before the app was reopened is not trouble, and it used to
+  // say "adopted" here — on every row, since a relaunch adopts the whole
+  // stack. It is a dashed dot now (see StatusDot), and said once above the
+  // list with the restart that ends it (AdoptedNotice).
   if (runtime.status === 'done' && runtime.finishedAt) {
     return <span className="flex-shrink-0 text-[10px] text-ink-faint">done {since(runtime.finishedAt)} ago</span>;
   }
@@ -1389,123 +1588,452 @@ function Trouble({
   return null;
 }
 
-function RowMenu({
-  workspaceId,
-  spec,
-  binding,
-  live,
-}: {
-  workspaceId: string;
-  spec: ServiceSpec;
-  binding?: { ref: string; path: string };
-  live: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const setPinned = useServicesStore((s) => s.setPinned);
-  const setDebug = useServicesStore((s) => s.setDebug);
-  const removeMany = useServicesStore((s) => s.removeMany);
-  const revealConfig = useServicesStore((s) => s.revealConfig);
-  const [duplicating, setDuplicating] = useState(false);
-  const [addingTask, setAddingTask] = useState(false);
-  // Leaving the menu closes it. A short grace covers the gap between the
-  // button and the list, and a slightly wobbly pointer on the way in.
-  const leaveTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(leaveTimer.current), []);
+/// The row's ···: the same menu a right-click opens, anchored under the button.
+function RowMenu({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
+  const openMenu = useServicesStore((s) => s.openMenu);
   const anchor = useRef<HTMLSpanElement>(null);
-  const up = useOpensUp(anchor, open, 260);
-
   return (
-    <span
-      ref={anchor}
-      className="relative"
-      onMouseEnter={() => window.clearTimeout(leaveTimer.current)}
-      onMouseLeave={() => {
-        window.clearTimeout(leaveTimer.current);
-        leaveTimer.current = window.setTimeout(() => setOpen(false), 250);
-      }}
-    >
-      <IconButton title="More" onClick={() => setOpen((o) => !o)} fill>
+    <span ref={anchor} className="flex">
+      <IconButton
+        title="More (or right-click the row)"
+        onClick={() => {
+          const box = anchor.current?.getBoundingClientRect();
+          openMenu([logKey(workspaceId, spec.id)], box ? box.left : 0, box ? box.bottom + 2 : 0);
+        }}
+        fill
+      >
         <circle cx="3" cy="8" r="1.2" />
         <circle cx="8" cy="8" r="1.2" />
         <circle cx="13" cy="8" r="1.2" />
       </IconButton>
-      {open && (
-        <div
-          className={
-            'absolute right-0 z-20 w-[240px] rounded-md border border-card-strong bg-surface-elevated py-1 text-[11px] shadow-lg ' +
-            (up ? 'bottom-full mb-1' : 'top-full mt-1')
-          }
-        >
-          <MenuItem
-            onClick={() => {
-              setDuplicating(true);
-              setOpen(false);
-            }}
-          >
-            Another copy of this…
-          </MenuItem>
-          {binding && (
-            <MenuItem
-              onClick={() => {
-                setAddingTask(true);
-                setOpen(false);
-              }}
-            >
-              Add a task for this checkout…
-            </MenuItem>
-          )}
-          {spec.debugPort !== undefined && (
-            <MenuItem
-              onClick={() => {
-                void setDebug(workspaceId, spec.id, !spec.debugEnabled);
-                setOpen(false);
-              }}
-            >
-              {live
-                ? spec.debugEnabled ? 'Restart normally' : `Restart with debugger on :${spec.debugPort}`
-                : spec.debugEnabled ? 'Use normal launch next time' : `Use debugger on next start (:${spec.debugPort})`}
-            </MenuItem>
-          )}
-          <MenuItem
-            onClick={() => {
-              void setPinned(workspaceId, spec.id, spec.pinnedRef ? undefined : binding?.ref);
-              setOpen(false);
-            }}
-          >
-            {spec.pinnedRef ? `Unpin from ${spec.pinnedRef}` : `Keep on ${binding?.ref ?? 'this branch'}`}
-          </MenuItem>
-          <MenuItem
-            onClick={() => {
-              void revealConfig(workspaceId, spec.id);
-              setOpen(false);
-            }}
-          >
-            Open its config folder
-          </MenuItem>
-          <div className="my-1 h-px bg-card-border" />
-          {/* No "really?" step: the toast that follows can put it back. */}
-          <MenuItem
-            danger
-            onClick={() => {
-              void removeMany([logKey(workspaceId, spec.id)]);
-              setOpen(false);
-            }}
-          >
-            Remove from this list
-          </MenuItem>
-        </div>
-      )}
-      {duplicating && (
-        <DuplicateSheet
-          workspaceId={workspaceId}
-          spec={spec}
-          onClose={() => setDuplicating(false)}
-        />
-      )}
-      {addingTask && (
-        <AddTaskSheet workspaceId={workspaceId} spec={spec} onClose={() => setAddingTask(false)} />
-      )}
     </span>
+  );
+}
+
+/// Opens the menu from a right-click on a row: the ticked rows when this one
+/// is among them, otherwise just this one.
+function useRowContextMenu(key: string) {
+  const openMenu = useServicesStore((s) => s.openMenu);
+  return (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const checked = Object.keys(useServicesStore.getState().checked);
+    openMenu(checked.length > 1 && checked.includes(key) ? checked : [key], e.clientX, e.clientY);
+  };
+}
+
+/// Where a service's pin stands against where it runs.
+export function pinState(pinnedRef: string | undefined, ref: string | undefined): 'none' | 'pinned' | 'mismatch' {
+  if (!pinnedRef) return 'none';
+  return ref && ref !== pinnedRef ? 'mismatch' : 'pinned';
+}
+
+/// The one menu for services. Everything you do to a service without opening
+/// it — run it, move it to another branch, pin or unpin it, get at its output
+/// and files — whether it was opened by a right-click, the row's ···, its pin
+/// chip or a group header. Over several rows it offers what makes sense for
+/// all of them.
+///
+/// A pin that disagrees with where the service runs leads the menu: that is
+/// the state people open it to fix, and the fix is one of two choices.
+function ServiceMenu() {
+  const menu = useServicesStore((s) => s.menu);
+  const closeMenu = useServicesStore((s) => s.closeMenu);
+  const stacks = useServicesStore((s) => s.stacks);
+  const choices = useServicesStore((s) => s.choices);
+  const store = useServicesStore.getState;
+  const [branchesOpen, setBranchesOpen] = useState(false);
+  const [sheet, setSheet] = useState<
+    { kind: 'duplicate' | 'task'; workspaceId: string; spec: ServiceSpec } | null
+  >(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useEffect(() => {
+    setBranchesOpen(false);
+    setPos(null);
+  }, [menu]);
+  // Kept on screen: measured once drawn, then nudged in from the edges.
+  useEffect(() => {
+    if (!menu || !panel.current) return;
+    // Focus the menu, so the arrow keys and Escape reach it at once.
+    panel.current.focus({ preventScroll: true });
+    const { width, height } = panel.current.getBoundingClientRect();
+    setPos({
+      left: Math.max(8, Math.min(menu.x, window.innerWidth - width - 8)),
+      top: Math.max(8, Math.min(menu.y, window.innerHeight - height - 8)),
+    });
+  }, [menu, branchesOpen]);
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && closeMenu();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menu, closeMenu]);
+
+  const rows = (menu?.keys ?? []).flatMap((key) => {
+    const { workspaceId, serviceId } = splitKey(key);
+    const stack = stacks[workspaceId];
+    const spec = stack?.services.find((x) => x.id === serviceId);
+    if (!spec) return [];
+    const runtime = stack.runtimes.find((r) => r.serviceId === serviceId);
+    const binding = stack.bindings.find((b) => b.serviceId === serviceId);
+    return [{ key, workspaceId, spec, runtime, binding, live: runtime ? isServiceLive(runtime.status) : false }];
+  });
+
+  const branchOptions = useMemo(() => {
+    const ids = new Set(rows.map((r) => r.spec.id));
+    return bulkRefOptions(Object.fromEntries(Object.entries(choices).filter(([id]) => ids.has(id))));
+  }, [choices, menu]);
+
+  const sheetEl =
+    sheet?.kind === 'duplicate' ? (
+      <DuplicateSheet workspaceId={sheet.workspaceId} spec={sheet.spec} onClose={() => setSheet(null)} />
+    ) : sheet?.kind === 'task' ? (
+      <AddTaskSheet workspaceId={sheet.workspaceId} spec={sheet.spec} onClose={() => setSheet(null)} />
+    ) : null;
+  if (!menu || rows.length === 0) return sheetEl;
+
+  const one = rows.length === 1 ? rows[0] : null;
+  const keys = rows.map((r) => r.key);
+  const act = (fn: () => unknown) => () => {
+    closeMenu();
+    void fn();
+  };
+  // Moving by hand is an explicit choice of where a service runs, so a pin to
+  // anywhere else goes — see RebindMenu. `switchKeys` leaves pinned rows
+  // alone, so the pins are cleared first.
+  const moveTo = async (ref: string, pin: boolean) => {
+    for (const r of rows) {
+      if (r.spec.pinnedRef && r.spec.pinnedRef !== ref) await store().setPinned(r.workspaceId, r.spec.id, undefined);
+    }
+    // Rows already pinned to this branch go as pinned moves — a plain switch
+    // would skip them for being pinned, which is the one case where the pin
+    // and the move agree.
+    const pinnedHere = rows.filter((r) => r.spec.pinnedRef === ref).map((r) => r.key);
+    const rest = keys.filter((key) => !pinnedHere.includes(key));
+    if (pinnedHere.length > 0) await store().switchKeys(pinnedHere, ref, true);
+    if (rest.length > 0) await store().switchKeys(rest, ref, pin);
+  };
+  const pin = one ? pinState(one.spec.pinnedRef, one.binding?.ref) : 'none';
+  const liveCount = rows.filter((r) => r.live).length;
+  const anyPinned = rows.some((r) => r.spec.pinnedRef);
+  const debug = one && one.spec.debugPort !== undefined && !one.spec.task ? one : null;
+  const sep = <div role="separator" className="mx-1.5 my-1 border-t border-card" />;
+  const mono = (ref: string) => <span className="font-mono text-[11.5px]">{shortRef(ref)}</span>;
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40"
+        onClick={closeMenu}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          closeMenu();
+        }}
+      />
+      <div
+        ref={panel}
+        role="menu"
+        aria-label={one ? one.spec.name : `${rows.length} services`}
+        onKeyDown={(e) => {
+          // Arrow keys walk the items, the way a native menu does.
+          if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+          e.preventDefault();
+          const items = [...(panel.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
+          const at = items.indexOf(document.activeElement as HTMLButtonElement);
+          const next = e.key === 'ArrowDown' ? (at + 1) % items.length : (at - 1 + items.length) % items.length;
+          items[next]?.focus();
+        }}
+        tabIndex={-1}
+        className="fixed z-50 w-[248px] rounded-lg border focus:outline-none border-card-strong bg-surface-elevated p-1 text-[12px] shadow-2xl"
+        style={pos ?? { left: menu.x, top: menu.y, visibility: 'hidden' }}
+      >
+        <div className="px-2 pb-1.5 pt-1">
+          <div className="truncate text-[12px] font-semibold text-ink">
+            {one ? one.spec.name : menu.title ?? `${rows.length} services`}
+          </div>
+          {one ? (
+            <div
+              className={
+                'mt-0.5 truncate font-mono text-[10.5px] ' +
+                (pin === 'mismatch' ? 'text-amber-700 dark:text-amber-300' : 'text-ink-faint')
+              }
+            >
+              {one.binding ? `on ${shortRef(one.binding.ref)}` : 'no checkout'}
+              {pin === 'mismatch'
+                ? ` · pinned to ${shortRef(one.spec.pinnedRef!)}`
+                : pin === 'pinned'
+                  ? ' · pinned'
+                  : ''}
+              {one.live && one.runtime?.port !== undefined ? ` · :${one.runtime.port}` : ''}
+            </div>
+          ) : (
+            <div className="mt-0.5 text-[10.5px] text-ink-faint">
+              {rows.length} services · {liveCount} running
+            </div>
+          )}
+        </div>
+
+        {one && pin === 'mismatch' && one.spec.pinnedRef && (
+          <div className="mx-0.5 mb-1 rounded-md bg-amber-500/10 p-0.5">
+            <MenuRow icon={<PinIcon />} onClick={act(() => moveTo(one.spec.pinnedRef!, true))}>
+              Move back to {mono(one.spec.pinnedRef)}
+            </MenuRow>
+            <MenuRow onClick={act(() => store().setPinned(one.workspaceId, one.spec.id, undefined))}>
+              Unpin, keep on {mono(one.binding?.ref ?? '')}
+            </MenuRow>
+          </div>
+        )}
+        {sep}
+
+        {liveCount < rows.length && (
+          <MenuRow icon={<PlayGlyph />} tone="go" onClick={act(() => store().startMany(keys.filter((_, i) => !rows[i].live)))}>
+            {one?.spec.task ? 'Run' : 'Start'}
+            {rows.length > 1 ? ` ${rows.length - liveCount}` : ''}
+          </MenuRow>
+        )}
+        {debug && !debug.live && (
+          <MenuRow
+            icon={<BugGlyph />}
+            hint={`:${debug.spec.debugPort}`}
+            onClick={act(async () => {
+              await store().setDebug(debug.workspaceId, debug.spec.id, true);
+              await store().start(debug.workspaceId, debug.spec.id);
+            })}
+          >
+            Start with debugger
+          </MenuRow>
+        )}
+        {liveCount > 0 && (
+          <>
+            <MenuRow
+              icon={<RestartGlyph />}
+              onClick={act(() => {
+                for (const r of rows) if (r.live) void store().restart(r.workspaceId, r.spec.id);
+              })}
+            >
+              Restart{rows.length > 1 ? ` ${liveCount}` : ''}
+            </MenuRow>
+            {debug && debug.live && (
+              <MenuRow
+                icon={<BugGlyph />}
+                hint={debug.spec.debugEnabled ? undefined : `:${debug.spec.debugPort}`}
+                onClick={act(() => store().setDebug(debug.workspaceId, debug.spec.id, !debug.spec.debugEnabled))}
+              >
+                {debug.spec.debugEnabled ? 'Restart normally' : 'Restart with debugger'}
+              </MenuRow>
+            )}
+            <MenuRow icon={<StopGlyph />} tone="stop" onClick={act(() => store().stopMany(keys.filter((_, i) => rows[i].live)))}>
+              Stop{rows.length > 1 ? ` ${liveCount}` : ''}
+            </MenuRow>
+          </>
+        )}
+
+        {sep}
+        {branchOptions.length > 0 && (
+          <>
+            <MenuRow
+              icon={<BranchIcon />}
+              hint={branchesOpen ? '▾' : '▸'}
+              onClick={() => setBranchesOpen((o) => !o)}
+              expanded={branchesOpen}
+            >
+              Run from branch
+            </MenuRow>
+            {branchesOpen && (
+              <div className="mb-1 ml-[22px] max-h-[220px] overflow-y-auto border-l border-card-strong pl-1">
+                {branchOptions.map((option) => {
+                  const here = rows.every((r) => r.binding?.ref === option.ref);
+                  return (
+                    <div key={option.ref} className="group/br flex items-center rounded-md hover:bg-card-strong">
+                      <button
+                        role="menuitemradio"
+                        aria-checked={here}
+                        disabled={here}
+                        onClick={act(() => moveTo(option.ref, false))}
+                        className="flex h-[26px] min-w-0 flex-1 items-center gap-1.5 px-2 text-left font-mono text-[11.5px] focus:outline-none focus-visible:bg-card-strong disabled:cursor-default disabled:text-accent"
+                        title={option.ref}
+                      >
+                        <span className="w-3 flex-shrink-0">{here ? '✓' : ''}</span>
+                        <span className="min-w-0 truncate">{option.ref}</span>
+                        {option.reachable < rows.length && (
+                          <span className="ml-auto flex-shrink-0 pl-2 font-sans text-[10px] text-ink-faint">
+                            {option.reachable}/{rows.length}
+                          </span>
+                        )}
+                      </button>
+                      <button
+                        onClick={act(() => moveTo(option.ref, true))}
+                        title={`Move to ${option.ref} and pin ${rows.length === 1 ? 'it' : 'them'} there`}
+                        aria-label={`Move to ${option.ref} and pin`}
+                        className="mr-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-0 hover:text-accent focus:opacity-100 group-hover/br:opacity-100"
+                      >
+                        <PinIcon />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+        {pin !== 'mismatch' &&
+          (one ? (
+            one.spec.pinnedRef ? (
+              <MenuRow icon={<PinIcon />} onClick={act(() => store().setPinned(one.workspaceId, one.spec.id, undefined))}>
+                Unpin from {mono(one.spec.pinnedRef)}
+              </MenuRow>
+            ) : one.binding ? (
+              <MenuRow
+                icon={<PinIcon />}
+                title="Bulk switches leave a pinned service where it is"
+                onClick={act(() => store().setPinned(one.workspaceId, one.spec.id, one.binding!.ref))}
+              >
+                Pin to {mono(one.binding.ref)}
+              </MenuRow>
+            ) : null
+          ) : (
+            <>
+              <MenuRow
+                icon={<PinIcon />}
+                title="Bulk switches leave a pinned service where it is"
+                onClick={act(async () => {
+                  for (const r of rows) if (r.binding) await store().setPinned(r.workspaceId, r.spec.id, r.binding.ref);
+                })}
+              >
+                Pin each where it runs
+              </MenuRow>
+              {anyPinned && (
+                <MenuRow
+                  onClick={act(async () => {
+                    for (const r of rows) if (r.spec.pinnedRef) await store().setPinned(r.workspaceId, r.spec.id, undefined);
+                  })}
+                >
+                  Unpin all
+                </MenuRow>
+              )}
+            </>
+          ))}
+
+        {one && (
+          <>
+            {sep}
+            <MenuRow onClick={act(() => store().openLogDrawer(one.workspaceId, one.spec.id))}>Show output in drawer</MenuRow>
+            {one.live && one.runtime?.port !== undefined && (
+              <MenuRow
+                hint={`:${one.runtime.port}`}
+                onClick={act(() => navigator.clipboard.writeText(`http://localhost:${one.runtime!.port}`))}
+              >
+                Copy URL
+              </MenuRow>
+            )}
+            <MenuRow onClick={act(() => store().revealLogFile(one.workspaceId, one.spec.id))}>Reveal log file</MenuRow>
+            <MenuRow onClick={act(() => store().revealConfig(one.workspaceId, one.spec.id))}>Open config folder</MenuRow>
+            {sep}
+            <MenuRow onClick={act(() => setSheet({ kind: 'duplicate', workspaceId: one.workspaceId, spec: one.spec }))}>
+              Another copy of this…
+            </MenuRow>
+            {one.binding && (
+              <MenuRow onClick={act(() => setSheet({ kind: 'task', workspaceId: one.workspaceId, spec: one.spec }))}>
+                Add a task for this checkout…
+              </MenuRow>
+            )}
+          </>
+        )}
+        {sep}
+        {/* No "really?" step: the toast that follows can put it back. */}
+        <MenuRow tone="danger" onClick={act(() => store().removeMany(keys))}>
+          Remove{rows.length === 1 ? '' : ` ${rows.length}`} from the list
+        </MenuRow>
+      </div>
+      {sheetEl}
+    </>
+  );
+}
+
+/// One item. The label is one line whatever it holds — a branch name in it
+/// used to break "Pin to master" over three — and the icon column is kept
+/// even when empty, so every label starts at the same x.
+function MenuRow({
+  children,
+  onClick,
+  icon,
+  hint,
+  tone,
+  title,
+  expanded,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  icon?: React.ReactNode;
+  hint?: string;
+  tone?: 'go' | 'stop' | 'danger';
+  title?: string;
+  expanded?: boolean;
+}) {
+  return (
+    <button
+      role="menuitem"
+      onClick={onClick}
+      title={title}
+      aria-expanded={expanded}
+      className={
+        'flex h-[28px] w-full items-center gap-2 rounded-md px-2 text-left focus:outline-none ' +
+        (tone === 'danger'
+          ? 'text-red-700 hover:bg-red-500/10 focus-visible:bg-red-500/10 dark:text-red-300'
+          : 'text-ink hover:bg-card-strong focus-visible:bg-card-strong')
+      }
+    >
+      <span
+        aria-hidden
+        className={
+          'flex w-[14px] flex-shrink-0 justify-center ' +
+          (tone === 'go'
+            ? 'text-[color:var(--c-diff-add-ink)]'
+            : tone === 'stop'
+              ? 'text-[color:var(--c-diff-remove-ink)]'
+              : 'text-ink-faint')
+        }
+      >
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1 truncate whitespace-nowrap">{children}</span>
+      {hint && <span className="flex-shrink-0 font-mono text-[10.5px] text-ink-faint">{hint}</span>}
+    </button>
+  );
+}
+
+function PlayGlyph() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M4.5 3.5l8 4.5-8 4.5z" />
+    </svg>
+  );
+}
+
+function StopGlyph() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <rect x="3" y="3" width="10" height="10" rx="1.5" />
+    </svg>
+  );
+}
+
+function RestartGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.9-4.2" />
+      <path d="M13.5 2.5V6H10" />
+    </svg>
+  );
+}
+
+function BugGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
+      <path d="M6 3.5h4M8 2v3M5 7h6v5.5a3 3 0 0 1-6 0zM3 9h2M11 9h2M3 12h2M11 12h2" />
+    </svg>
   );
 }
 
@@ -1609,6 +2137,11 @@ function Detail() {
   useEffect(() => {
     if (failedAt) setTab('output');
   }, [failedAt]);
+  // A search match lands on the output, even for the service already open.
+  const seekSeq = useServicesStore((s) => s.outputSeek?.seq);
+  useEffect(() => {
+    if (seekSeq) setTab('output');
+  }, [seekSeq]);
   // Picking a service is asking to see what it is doing. Settings stay one
   // click away, but they are not what the next service opens on.
   const selectedKey = Object.entries(selected)
@@ -1687,6 +2220,7 @@ function Detail() {
               serviceId={spec.id}
               binding={binding}
               pinnedRef={spec.pinnedRef}
+              projectId={spec.projectId}
             />
           )}
         </div>
@@ -2114,15 +2648,68 @@ function HeaderActions({
       <button className="svc-btn" onClick={() => void restart(workspaceId, spec.id)}>
         Restart
       </button>
-      {spec.debugPort !== undefined && !spec.task && (
-        <button className="svc-btn" onClick={() => void setDebug(workspaceId, spec.id, !spec.debugEnabled)}>
-          {spec.debugEnabled ? 'Restart normally' : 'Restart with debugger'}
+      {/* With the debugger on, getting back out is the state you are in, so
+          it stays a button. Turning it on is occasional, and waits in the
+          menu beside Stop. */}
+      {spec.debugPort !== undefined && !spec.task && spec.debugEnabled && (
+        <button className="svc-btn" onClick={() => void setDebug(workspaceId, spec.id, false)}>
+          Restart normally
         </button>
       )}
       <button className="svc-btn-stop" onClick={() => void stop(workspaceId, spec.id)}>
         Stop
       </button>
+      {spec.debugPort !== undefined && !spec.task && !spec.debugEnabled && (
+        <HeaderMenu
+          items={[
+            {
+              label: `Restart with debugger on :${spec.debugPort}`,
+              onClick: () => void setDebug(workspaceId, spec.id, true),
+            },
+          ]}
+        />
+      )}
     </>
+  );
+}
+
+/// The detail header's ··· — what you reach for occasionally.
+function HeaderMenu({ items }: { items: { label: string; onClick: () => void }[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative">
+      <button
+        className="svc-btn px-1.5"
+        aria-label="More"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="More"
+        onClick={() => setOpen((o) => !o)}
+      >
+        ···
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div
+            role="menu"
+            className="absolute right-0 top-full z-20 mt-1 w-max min-w-[200px] overflow-hidden rounded-md border border-card-strong bg-surface-elevated py-1 text-xs shadow-xl"
+          >
+            {items.map((item) => (
+              <MenuItem
+                key={item.label}
+                onClick={() => {
+                  setOpen(false);
+                  item.onClick();
+                }}
+              >
+                {item.label}
+              </MenuItem>
+            ))}
+          </div>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -2138,6 +2725,10 @@ function Output({
   binding?: { ref: string; path: string };
 }) {
   const lines = useServicesStore((s) => s.logs[logKey(workspaceId, spec.id)]) ?? [];
+  // Arrived from a cross-service search match: open already searching for it.
+  const seek = useServicesStore((s) =>
+    s.outputSeek?.key === logKey(workspaceId, spec.id) ? s.outputSeek : undefined,
+  );
   const caught = useServicesStore((s) => s.exceptions[logKey(workspaceId, spec.id)]);
   const projects = useStore((s) => s.projects);
   const flows = useFlowsStore((s) => s.flows);
@@ -2317,7 +2908,8 @@ function Output({
       {/* Keyed per service: the search and level toggles are about the log
           being read, and must not follow the user to the next one. */}
       <LogView
-        key={logKey(workspaceId, spec.id)}
+        key={logKey(workspaceId, spec.id) + (seek ? `#${seek.seq}` : '')}
+        initialQuery={seek?.query}
         lines={lines}
         onClear={() => void useServicesStore.getState().clearLog(workspaceId, spec.id)}
         selection={{ onAsk: (text) => void askAbout(text), flows, onRunFlow: runFlow }}
@@ -2403,6 +2995,7 @@ function Settings({
                     serviceId={spec.id}
                     binding={binding}
                     pinnedRef={spec.pinnedRef}
+                    projectId={spec.projectId}
                   />
                 </div>
               ) : (
@@ -3888,11 +4481,13 @@ function RebindMenu({
   serviceId,
   binding,
   pinnedRef,
+  projectId,
 }: {
   workspaceId: string;
   serviceId: string;
   binding: { ref: string; path: string };
   pinnedRef?: string;
+  projectId?: string;
 }) {
   const rebind = useServicesStore((s) => s.rebind);
   const setPinned = useServicesStore((s) => s.setPinned);
@@ -3905,21 +4500,42 @@ function RebindMenu({
   } | null>(null);
   const [query, setQuery] = useState('');
   const [refused, setRefused] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // The ref being moved to, from the click until the service is back up. The
+  // move waits on the stop, the checkout AND the relaunch, and the button
+  // naming the old branch all that time read as if the click had done nothing.
+  const [switching, setSwitching] = useState<string | null>(null);
   const field = useRef<HTMLInputElement>(null);
+  const projectPath = useStore((s) => s.projects.find((p) => p.id === projectId)?.path);
+  // True when the bound folder is gone and the choices came from the project's
+  // own checkout instead. A flow deleting its scratch tree is routine, and the
+  // way out of it is exactly this menu — it cannot be the thing that is empty.
+  const [fromProject, setFromProject] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     void (async () => {
-      const loaded = await refChoices(binding.path);
-      if (!cancelled) setRefs(loaded);
+      let loaded = await refChoices(binding.path);
+      let fallback = false;
+      if (
+        loaded.worktrees.length === 0 &&
+        loaded.branches.length === 0 &&
+        projectPath &&
+        projectPath !== binding.path
+      ) {
+        loaded = await refChoices(projectPath);
+        fallback = true;
+      }
+      if (!cancelled) {
+        setRefs(loaded);
+        setFromProject(fallback);
+      }
     })();
     field.current?.focus();
     return () => {
       cancelled = true;
     };
-  }, [open, binding.path]);
+  }, [open, binding.path, projectPath]);
 
   const rows = useMemo(
     () =>
@@ -3939,6 +4555,16 @@ function RebindMenu({
     setRefused(null);
   }
 
+  async function switchTo(target: string, move: () => Promise<void>): Promise<void> {
+    setSwitching(target);
+    close();
+    try {
+      await move();
+    } finally {
+      setSwitching(null);
+    }
+  }
+
   async function clearOlderPin(nextRef: string): Promise<void> {
     if (pinnedRef && pinnedRef !== nextRef) {
       await setPinned(workspaceId, serviceId, undefined);
@@ -3949,8 +4575,12 @@ function RebindMenu({
     if (pinnedRef) await setPinned(workspaceId, serviceId, pinnedRef);
   }
 
+  // Moving one service by hand is an explicit choice of where it runs, so a
+  // pin to anywhere else goes with or without "pin" ticked. Leaving it made
+  // a service pinned to one branch while running from another — which the
+  // bulk switch then trusted and left alone.
   async function chooseCheckout(choice: WorktreeChoice, pin: boolean): Promise<void> {
-    if (pin) await clearOlderPin(choice.ref);
+    await clearOlderPin(choice.ref);
     try {
       if (choice.path !== binding.path || choice.ref !== binding.ref) {
         await rebind(workspaceId, serviceId, choice.ref, choice.path);
@@ -3958,37 +4588,60 @@ function RebindMenu({
       if (pin) await setPinned(workspaceId, serviceId, choice.ref);
       close();
     } catch (error) {
-      if (pin) await restorePinAfterFailure();
+      await restorePinAfterFailure();
       throw error;
     }
+  }
+
+  // What git will call it once checked out: `origin/feature/x` lands as `feature/x`.
+  function branchLabel(choice: BranchChoice): string {
+    return choice.remote ? choice.ref.replace(/^[^/]+\//, '') : choice.ref;
   }
 
   async function chooseBranch(choice: BranchChoice, pin: boolean): Promise<void> {
     // A tracked remote `origin/feature/x` is checked out locally as
     // `feature/x`; the pin must match what git reports after the checkout.
-    const nextRef = choice.remote ? choice.ref.replace(/^[^/]+\//, '') : choice.ref;
-    if (pin) await clearOlderPin(nextRef);
+    const nextRef = branchLabel(choice);
+    await clearOlderPin(nextRef);
+    // Nothing to check a branch out into when the bound folder is gone: move
+    // onto the project's main checkout first, and check out there.
+    const main = fromProject ? refs?.worktrees.find((w) => w.primary) : undefined;
+    if (main) await rebind(workspaceId, serviceId, main.ref, main.path);
     const outcome = await checkoutRef(workspaceId, serviceId, choice.ref);
     if (!outcome.ok) {
-      if (pin) await restorePinAfterFailure();
+      await restorePinAfterFailure();
+      // The menu closed on the click; bring it back to say why nothing moved.
       setRefused(outcome.reason);
+      setOpen(true);
       return;
     }
     if (pin) await setPinned(workspaceId, serviceId, nextRef);
-    close();
   }
   const now = Date.now();
 
   return (
     <div className="relative">
       <button
-        className="svc-btn max-w-[220px]"
+        className="svc-btn max-w-[220px] disabled:opacity-100"
+        disabled={switching !== null}
         onClick={() => (open ? close() : setOpen(true))}
-        title={`${binding.ref} — ${binding.path}`}
+        title={
+          switching !== null
+            ? `Switching ${binding.ref} → ${switching}…`
+            : `${binding.ref} — ${binding.path}`
+        }
       >
-        <BranchIcon />
-        <span className="truncate font-mono">{binding.ref}</span>
-        <span className="text-ink-faint">▾</span>
+        {switching !== null ? (
+          <span aria-hidden className="h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full bg-accent" />
+        ) : (
+          <BranchIcon />
+        )}
+        <span className="truncate font-mono">{switching ?? binding.ref}</span>
+        {switching !== null ? (
+          <span className="text-ink-faint">switching…</span>
+        ) : (
+          <span className="text-ink-faint">▾</span>
+        )}
       </button>
 
       {open && (
@@ -4012,6 +4665,12 @@ function RebindMenu({
             <div className="max-h-[420px] overflow-y-auto px-1 py-2">
               {refs === null && <div className="px-2.5 py-2 text-[11px] text-ink-faint">Looking…</div>}
 
+              {fromProject && (
+                <div className="px-2.5 pb-2 text-[10.5px] text-ink-faint">
+                  This checkout was deleted — pick another one to run from.
+                </div>
+              )}
+
               {rows.checkouts.length > 0 && (
                 <div className="pb-1.5">
                   <SectionHead title="Checkouts" note="on disk, newest first — switching is instant" />
@@ -4022,7 +4681,7 @@ function RebindMenu({
                       <div key={choice.path} className="group/ref flex items-start rounded-[5px] hover:bg-card-strong">
                         <button
                           className="flex min-w-0 flex-1 items-start gap-2 px-2.5 py-1.5 text-left"
-                          onClick={() => void chooseCheckout(choice, false)}
+                          onClick={() => void switchTo(choice.ref, () => chooseCheckout(choice, false))}
                         >
                           <span className="pt-0.5">
                             <FolderIcon current={here} />
@@ -4064,7 +4723,7 @@ function RebindMenu({
                           className="mr-1 mt-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-40 hover:bg-surface hover:text-accent hover:opacity-100 group-hover/ref:opacity-100"
                           title={`Switch and pin this service to ${choice.ref}`}
                           aria-label={`Switch and pin to ${choice.ref}`}
-                          onClick={() => void chooseCheckout(choice, true)}
+                          onClick={() => void switchTo(choice.ref, () => chooseCheckout(choice, true))}
                         >
                           <PinIcon />
                         </button>
@@ -4085,21 +4744,15 @@ function RebindMenu({
                       working tree this service is bound to — the same tree a
                       flow may be running in — which is a different act from
                       pointing at a checkout that already exists. */}
-                  <SectionHead title="Branches" note="checked out into this folder" />
+                  <SectionHead
+                    title="Branches"
+                    note={fromProject ? 'checked out into the main checkout' : 'checked out into this folder'}
+                  />
                   {rows.branches.map((choice) => (
                     <div key={choice.ref} className="group/ref flex items-center rounded-[5px] hover:bg-card-strong">
                       <button
-                        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left disabled:opacity-50"
-                        disabled={busy}
-                        onClick={async () => {
-                          setBusy(true);
-                          setRefused(null);
-                          try {
-                            await chooseBranch(choice, false);
-                          } finally {
-                            setBusy(false);
-                          }
-                        }}
+                        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left"
+                        onClick={() => void switchTo(branchLabel(choice), () => chooseBranch(choice, false))}
                       >
                         <BranchIcon />
                         <span className="flex-1 truncate font-mono text-[11.5px]">{choice.ref}</span>
@@ -4113,19 +4766,10 @@ function RebindMenu({
                         ) : null}
                       </button>
                       <button
-                        className="mr-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-40 hover:bg-surface hover:text-accent hover:opacity-100 disabled:opacity-20 group-hover/ref:opacity-100"
-                        disabled={busy}
+                        className="mr-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-ink-faint opacity-40 hover:bg-surface hover:text-accent hover:opacity-100 group-hover/ref:opacity-100"
                         title={`Check out and pin this service to ${choice.ref}`}
                         aria-label={`Check out and pin to ${choice.ref}`}
-                        onClick={async () => {
-                          setBusy(true);
-                          setRefused(null);
-                          try {
-                            await chooseBranch(choice, true);
-                          } finally {
-                            setBusy(false);
-                          }
-                        }}
+                        onClick={() => void switchTo(branchLabel(choice), () => chooseBranch(choice, true))}
                       >
                         <PinIcon />
                       </button>
@@ -4603,7 +5247,23 @@ function MenuItem({
   );
 }
 
-function StatusDot({ status }: { status: ServiceRuntime['status'] | 'blocked' }) {
+function StatusDot({
+  status,
+  adopted = false,
+}: {
+  status: ServiceRuntime['status'] | 'blocked';
+  /// Running, but started before overcli opened: its output is not arriving
+  /// here. Drawn hollow and dashed — live, but not ours yet.
+  adopted?: boolean;
+}) {
+  if (adopted && status === 'ready') {
+    return (
+      <span
+        aria-hidden
+        className="h-2 w-2 flex-shrink-0 rounded-full border border-dashed border-green-500 dark:border-green-400"
+      />
+    );
+  }
   const tone =
     status === 'blocked'
       ? 'bg-amber-500 dark:bg-amber-400'

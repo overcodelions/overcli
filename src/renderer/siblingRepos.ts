@@ -32,13 +32,14 @@ export function siblingProjectsTouched(
   projects: readonly Project[],
   events: readonly StreamEvent[],
 ): SiblingEdit[] {
-  const candidates = projects.filter(
-    (p) => p.id !== owner.id && !isWithin(p.path, owner.path) && !isWithin(owner.path, p.path),
-  );
-  if (candidates.length === 0) return [];
+  return siblingsFromWritten(owner, projects, writtenPaths(events));
+}
 
+/// Every file path written from `events[from..]`, in the order seen.
+export function writtenPaths(events: readonly StreamEvent[], from = 0): string[] {
   const written: string[] = [];
-  for (const e of events) {
+  for (let i = from; i < events.length; i++) {
+    const e = events[i];
     if (e.kind.type === 'patchApply') {
       for (const f of e.kind.info.files) written.push(f.path);
     }
@@ -53,6 +54,18 @@ export function siblingProjectsTouched(
       }
     }
   }
+  return written;
+}
+
+export function siblingsFromWritten(
+  owner: Project,
+  projects: readonly Project[],
+  written: readonly string[],
+): SiblingEdit[] {
+  const candidates = projects.filter(
+    (p) => p.id !== owner.id && !isWithin(p.path, owner.path) && !isWithin(owner.path, p.path),
+  );
+  if (candidates.length === 0) return [];
 
   const out: SiblingEdit[] = [];
   for (const project of candidates) {

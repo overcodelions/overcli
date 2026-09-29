@@ -89,6 +89,7 @@ export const claudeBackend: BackendSpec = {
     if (args.allowedTools !== undefined) {
       a.push('--allowedTools', args.allowedTools.join(' '));
     }
+    if (args.disallowedTools?.length) a.push('--disallowedTools', args.disallowedTools.join(' '));
     return a;
   },
 

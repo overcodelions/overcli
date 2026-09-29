@@ -294,7 +294,7 @@ function systemPrompt(
     '',
     'EXAMPLE — a step no preset covers:',
     '  - id: triage',
-    '    model: { backend: claude, model: claude-sonnet-5 }',
+    '    model: { backend: claude, model: claude-sonnet-5-5 }',
     '    role: custom',
     '    system_prompt: |',
     '      You are the TRIAGE step of a multi-stage automated flow.',

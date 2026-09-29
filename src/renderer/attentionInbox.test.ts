@@ -129,6 +129,42 @@ describe('attentionInbox', () => {
   });
 });
 
+describe('handoffs', () => {
+  const handoff = {
+    v: 1 as const,
+    id: 'h1',
+    from: 'overdb',
+    kind: 'slow-query' as const,
+    title: 'orders_by_customer scans on prod',
+    summary: '',
+    evidence: { envs: ['staging', 'prod'] },
+    repoHints: [],
+    createdAt: NOW - 2 * MIN,
+  };
+
+  it('lists a waiting handoff after work to review, owned by no worker', () => {
+    const items = attentionInbox(
+      sources({ runs: { r: run('r') }, handoffs: [handoff] }),
+      NOW,
+    );
+    expect(items.map((it) => it.kind)).toEqual(['run', 'handoff']);
+    expect(items[1]).toMatchObject({
+      key: 'handoff:h1',
+      workerId: null,
+      reason: 'Slow query from overdb · staging vs prod',
+    });
+  });
+
+  it('is never urgent: a fresh one only tints the chip', () => {
+    expect(attentionLevel(attentionInbox(sources({ handoffs: [handoff] }), NOW), NOW)).toBe('calm');
+  });
+
+  it('gets its own section in the tray', () => {
+    const groups = groupAttention(attentionInbox(sources({ handoffs: [handoff] }), NOW));
+    expect(groups.map((g) => g.title)).toEqual(['Handed over']);
+  });
+});
+
 describe('attentionLevel', () => {
   const approvalAt = (at: number) =>
     attentionInbox(sources({ orchestrations: { o: batch('o', { createdAt: at }) } }), NOW);

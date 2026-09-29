@@ -20,6 +20,7 @@ import {
 import { flowRunActivityAt, flowRunTitle, type FlowRun } from '@shared/flows/schema';
 import type { WorkerFunding } from '@shared/flows/treasury';
 import type { Worker } from '@shared/flows/worker';
+import { handoffReason, type InboundHandoff } from '@shared/handoff';
 import { STALL_AFTER_MS } from './components/flows/runTriage';
 import { flowRunPromptedAt } from './components/sidebarItems';
 import { pauseReasonLabel, runStepPosition } from './components/workers/deskRunRail';
@@ -78,6 +79,18 @@ export type AttentionItem =
       /// No moment it started waiting is recorded, so it never escalates on
       /// age — only a paused run or a long wait does that.
       at: null;
+     }
+  | {
+      /// Work another tool handed over (see shared/handoff.ts). Nothing is
+      /// held up by it, so it is never urgent; it escalates on age like the
+      /// rest. Never a worker's, so it stays off the Workers badge.
+      kind: 'handoff';
+      key: string;
+      handoffId: string;
+      workerId: null;
+      title: string;
+      reason: string;
+      at: number;
     };
 
 /// How loud the title-bar alert is.
@@ -108,6 +121,9 @@ export interface AttentionSources {
   /// process's `unreviewedDoneRunIds`, kept by the flows store as a map
   /// parallel to `runs`.
   unreviewedRunIds: Record<string, true>;
+  /// Pending inbox handoffs. Optional so callers that predate the inbox
+  /// keep compiling; absent means none.
+  handoffs?: readonly InboundHandoff[];
 }
 
 /// Rank inside the tray: a stopped run first — it holds a worktree and the
@@ -117,8 +133,9 @@ const KIND_RANK: Record<AttentionItem['kind'], number> = {
   run: 0,
   approval: 1,
   unreviewed: 2,
-  hire: 3,
-  unfunded: 4,
+  handoff: 3,
+  hire: 4,
+  unfunded: 5,
 };
 
 export function attentionInbox(src: AttentionSources, now: number = Date.now()): AttentionItem[] {
@@ -189,6 +206,18 @@ export function attentionInbox(src: AttentionSources, now: number = Date.now()):
     });
   }
 
+  for (const h of src.handoffs ?? []) {
+    items.push({
+      kind: 'handoff',
+      key: `handoff:${h.id}`,
+      handoffId: h.id,
+      workerId: null,
+      title: h.title,
+      reason: handoffReason(h),
+      at: h.createdAt,
+    });
+  }
+
   if (src.pendingHire) {
     items.push({
       kind: 'hire',
@@ -233,6 +262,7 @@ const GROUP_TITLES: Record<AttentionItem['kind'], string> = {
   run: 'Paused runs',
   approval: 'To approve',
   unreviewed: 'To review',
+  handoff: 'Handed over',
   hire: 'Hires',
   unfunded: 'Out of funds',
 };

@@ -399,6 +399,43 @@ export interface MachineValuesView {
   backupPaths?: string[];
 }
 
+/// Which lines an output search keeps: all of them, warnings and errors, or
+/// errors only.
+export type OutputLevel = 'all' | 'warn' | 'error';
+
+const ERROR_LINE = /\b(ERROR|FATAL|SEVERE)\b|Exception\b/;
+const WARN_LINE = /\bWARN(ING)?\b/;
+
+/// The severity a line reads as, from the words dev servers and JVM loggers
+/// print. Null for an ordinary line.
+export function outputLineLevel(text: string): 'error' | 'warn' | null {
+  if (ERROR_LINE.test(text)) return 'error';
+  if (WARN_LINE.test(text)) return 'warn';
+  return null;
+}
+
+export function lineAtLevel(text: string, level: OutputLevel): boolean {
+  if (level === 'all') return true;
+  const l = outputLineLevel(text);
+  return level === 'error' ? l === 'error' : l !== null;
+}
+
+/// One line of some service's output that matched a search across every
+/// service at once — see `services:searchOutput`.
+export interface OutputMatch {
+  workspaceId: string;
+  serviceId: string;
+  /// `recent` is the in-memory output the Output tab shows; `file` is the
+  /// on-disk log, which reaches past the pane's cap and across app restarts.
+  source: 'recent' | 'file';
+  /// Position in that source, oldest first.
+  index: number;
+  /// The line, colour codes stripped.
+  text: string;
+  /// When it was written, for a `file` line (the file stamps every line).
+  at?: string;
+}
+
 /// What the pane renders: the stack plus everything live about it.
 export interface StackView {
   workspaceId: string;

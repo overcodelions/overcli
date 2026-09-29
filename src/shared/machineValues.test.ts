@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { missingMachineError, missingNamesFrom } from './machineValues';
+import { isSecretName, missingMachineError, missingNamesFrom } from './machineValues';
+
+describe('isSecretName', () => {
+  it('treats a *_PRIMARY_KEY value as a credential, not a data-structure key', () => {
+    expect(isSecretName('AZURE_STORAGE_PRIMARY_KEY')).toBe(true);
+  });
+});
 
 describe('missingMachineError', () => {
   it('keeps the plain wording when nothing is locked', () => {

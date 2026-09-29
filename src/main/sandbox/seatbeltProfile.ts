@@ -132,15 +132,12 @@ export function claudeTranscriptSlugs(cwd: string): string[] {
 /// tolerates the `~/.claude.json` write being denied (verified: `-p` and
 /// `--resume` both work). The other three CLIs keep config and state in one
 /// directory, so their whole dot-dir is granted — a known residual.
+///
+/// The plugin cache and npx/uv caches are NOT writable: both hold code the user's later unsandboxed sessions execute.
 export function backendStateDirs(backend: Backend, home: string, cwd: string): string[] {
   const claude = path.join(home, '.claude');
-  // MCP servers are commonly launched through npx/uvx, which write caches.
-  const launchers = [
-    path.join(home, '.npm', '_cacache'),
-    path.join(home, '.npm', '_logs'),
-    path.join(home, '.npm', '_npx'),
-    path.join(home, '.cache', 'uv'),
-  ];
+  // npm/uv caches are redirected into $TMPDIR per run (see runner.spawnFor), so none of the user's shared caches are writable.
+  const launchers: string[] = [];
   switch (backend) {
     case 'claude':
       return [
@@ -152,7 +149,6 @@ export function backendStateDirs(backend: Backend, home: string, cwd: string): s
         path.join(claude, 'statsig'),
         path.join(claude, 'debug'),
         path.join(claude, 'file-history'),
-        path.join(claude, 'plugins', 'cache'),
         path.join(home, '.local', 'state', 'claude'),
         path.join(home, 'Library', 'Caches', 'claude-cli-nodejs'),
         ...launchers,

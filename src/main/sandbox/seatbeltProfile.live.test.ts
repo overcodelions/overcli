@@ -27,8 +27,12 @@ describe.skipIf(process.platform !== 'darwin')('seatbelt write jail against real
   beforeAll(() => {
     // NOT under os.tmpdir(): temp is a writable root, so an "outside" path
     // there would be allowed. The profiles dir must be outside too.
+    //
+    // The account's real home, from the user database: the test setup points
+    // $HOME (and so `os.homedir()`) into temp for every other suite. This one
+    // makes and removes its own folder, so it may use the real one.
     base = fs.realpathSync.native(
-      fs.mkdtempSync(path.join(os.homedir(), '.overcli-seatbelt-live-')),
+      fs.mkdtempSync(path.join(os.userInfo().homedir, '.overcli-seatbelt-live-')),
     );
     const repo = path.join(base, 'repo');
     worktree = path.join(base, 'wt');

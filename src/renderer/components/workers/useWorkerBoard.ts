@@ -1,6 +1,6 @@
 // The board, built once and read by everyone who draws it.
 //
-// This used to live inside `WorkersSidebar` as a `useMemo`, which was right
+// This used to live inside the old `WorkersSidebar` as a `useMemo`, which was right
 // while the sidebar was the only thing that drew a roster. It is not any
 // more: the crew grid on the Today page draws the same workers from the same
 // stores, and two reductions over one dataset are two answers — the exact

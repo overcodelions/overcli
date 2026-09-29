@@ -24,6 +24,8 @@ import type {
   RemovedServices,
   ServiceSpec,
   StackView,
+  OutputMatch,
+  OutputLevel,
 } from './services';
 import type {
   HeldHandoff,
@@ -42,6 +44,7 @@ import type { WorkerReport } from './flows/workerReport';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
+import type { InboundHandoff } from './handoff';
 // Type-only, so the types ⇄ modelCatalog cycle is erased at compile time.
 import type { FlowModelDefaults } from './modelCatalog';
 import type { CiDeployBlock, CiDeployFile, CiTarget, WorkerCiPermissionPolicy } from './flows/ciDeploy';
@@ -2870,6 +2873,16 @@ export interface IPCInvokeMap {
   'services:viewAll': (workspaceIds: string[]) => StackView[];
   'services:log': (args: { workspaceId: string; serviceId: string }) => string[];
   'services:clearLog': (args: { workspaceId: string; serviceId: string }) => void;
+  /// Lines matching `query` across every service in these workspaces: the
+  /// in-memory output, or each service's log file tail with `includeFiles`.
+  'services:searchOutput': (args: {
+    workspaceIds: string[];
+    query: string;
+    includeFiles: boolean;
+    /// Applied before the per-service and total caps, so an old error is
+    /// not crowded out by newer ordinary lines. Default all.
+    level?: OutputLevel;
+  }) => OutputMatch[];
   /// Every line a service has printed, timestamped, on disk — past the pane's
   /// cap and across restarts of the app. Handed to agents by path.
   'services:logFile': (args: { workspaceId: string; serviceId: string }) => string;
@@ -3122,6 +3135,11 @@ export interface IPCInvokeMap {
   'services:scan': (args: {
     projects: { id: string; name: string; path: string }[];
   }) => { projectId: string; serviceId: string; proposal: ServiceProposal }[];
+  /// Work other tools dropped in `~/.overcli/inbox` — see shared/handoff.ts.
+  /// The renderer decides where each one opens; main only reads the folder.
+  'handoffs:list': () => InboundHandoff[];
+  /// Started or dismissed: the file moves to `done/`.
+  'handoffs:resolve': (id: string) => boolean;
 }
 
 /// One local subresource of an HTML preview. Stylesheets come back as
@@ -3844,7 +3862,13 @@ export type MainToRendererEvent =
     }
   | { type: 'update:available'; payload: { version: string } }
   | { type: 'update:progress'; payload: { percent: number } }
-  | { type: 'update:downloaded'; payload: { version: string } };
+  | { type: 'update:downloaded'; payload: { version: string } }
+  | {
+      /// The inbox folder changed. The whole pending list, oldest first —
+      /// it is a handful of small records, so replacing beats patching.
+      type: 'handoffsChanged';
+      handoffs: InboundHandoff[];
+    };
 
 export const DEFAULT_SETTINGS: AppSettings = {
   backendPaths: {},

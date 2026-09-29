@@ -28,7 +28,7 @@ const AMBIGUOUS = ['token', 'apikey', 'privatekey', 'auth', 'pass', 'private'];
 /// earns its place only when it cannot plausibly front a secret. `public` is
 /// here because a public key is published by design.
 const NOT_A_CREDENTIAL_KEY = new Set([
-  'sort', 'routing', 'partition', 'cache', 'primary', 'foreign', 'idempotency', 'shard', 'dedup',
+  'sort', 'routing', 'partition', 'cache', 'foreign', 'idempotency', 'shard', 'dedup',
   'dedupe', 'lookup', 'index', 'range', 'composite', 'unique', 'public',
 ]);
 

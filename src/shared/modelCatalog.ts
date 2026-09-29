@@ -18,14 +18,15 @@ import type { Backend } from './types';
 /// cost of Opus), listed after the Opus entries for anyone who
 /// explicitly wants it. Order also picks the per-tier default: the
 /// template resolver substitutes the *first* id at a given speed tier, so
-/// `claude-sonnet-5` precedes `claude-sonnet-4-6` to make Sonnet 5 the
-/// default 'fast' Claude model.
+/// `claude-sonnet-5-5` leads the Sonnets to make Sonnet 5.5 the default
+/// 'fast' Claude model; Sonnet 5 stays right behind it for the same reason
+/// Opus 5 trails Opus 5.5 — a CLI that predates 5.5 needs it one click away.
 ///
 /// When an older model is retired here, flows that still reference it are
 /// auto-lifted to the next-highest version in the same family on load —
 /// see `liftMissingModel`.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   // `gpt-6-astra` is OpenAI's frontier model (Sept 2026) — the GPT-6
   // generation's flagship, priced well above the 5.6 line. It sits second
   // for the same reason `claude-fable-5-1` does: the frontier tier is
@@ -198,6 +199,7 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   'claude-opus-5-5': 'thinking',
   'claude-opus-5': 'thinking',
   'claude-opus-4-8': 'thinking',
+  'claude-sonnet-5-5': 'fast',
   'claude-sonnet-5': 'fast',
   'claude-sonnet-4-6': 'fast',
   'claude-haiku-4-5': 'fast',

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./mcpConfig', () => ({
   buildClaudeMcpConfigArg: (names: string[]) => JSON.stringify({ mcpServers: Object.fromEntries(names.map((name) => [name, { command: name }])) }),
+  blockedMcpServerTools: () => [],
 }));
 import {
   codexPermissionMapping,
@@ -973,8 +974,8 @@ describe('resolveMcpScope', () => {
       resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['claude.ai Gmail', 'jira'] }),
     ).toEqual({ skipGlobalMcp: undefined });
     expect(
-      claudeMcpLaunchFingerprint({ backend: 'claude', mcpAllowlist: ['claude.ai Gmail'] }, ''),
-    ).toBe(claudeMcpLaunchFingerprint({ backend: 'claude' }, ''));
+      claudeMcpLaunchFingerprint({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['claude.ai Gmail'] }, ''),
+    ).toBe(claudeMcpLaunchFingerprint({ backend: 'claude', cwd: '/repo' }, ''));
   });
 
   it('inherits the whole config when nothing asked for scoping', () => {
@@ -1017,9 +1018,9 @@ describe('resolveMcpScope', () => {
 
 describe('claudeMcpLaunchFingerprint', () => {
   it('distinguishes inherited servers from strict empty or unresolved allowlists', () => {
-    const inherited = claudeMcpLaunchFingerprint({ backend: 'claude' }, '');
-    const empty = claudeMcpLaunchFingerprint({ backend: 'claude', mcpAllowlist: [] }, '');
-    const unresolved = claudeMcpLaunchFingerprint({ backend: 'claude', mcpAllowlist: ['gone'] }, '');
+    const inherited = claudeMcpLaunchFingerprint({ backend: 'claude', cwd: '/repo' }, '');
+    const empty = claudeMcpLaunchFingerprint({ backend: 'claude', cwd: '/repo', mcpAllowlist: [] }, '');
+    const unresolved = claudeMcpLaunchFingerprint({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['gone'] }, '');
 
     expect(empty).not.toBe(inherited);
     expect(unresolved).not.toBe(inherited);
@@ -1027,14 +1028,14 @@ describe('claudeMcpLaunchFingerprint', () => {
   });
 
   it('distinguishes direct strict mode and resolved server changes', () => {
-    const inherited = claudeMcpLaunchFingerprint({ backend: 'claude' }, '');
-    const strict = claudeMcpLaunchFingerprint({ backend: 'claude', skipGlobalMcp: true }, '');
+    const inherited = claudeMcpLaunchFingerprint({ backend: 'claude', cwd: '/repo' }, '');
+    const strict = claudeMcpLaunchFingerprint({ backend: 'claude', cwd: '/repo', skipGlobalMcp: true }, '');
     const jira = claudeMcpLaunchFingerprint(
-      { backend: 'claude', mcpAllowlist: ['jira'] },
+      { backend: 'claude', cwd: '/repo', mcpAllowlist: ['jira'] },
       '{"mcpServers":{"jira":{}}}',
     );
     const slack = claudeMcpLaunchFingerprint(
-      { backend: 'claude', mcpAllowlist: ['slack'] },
+      { backend: 'claude', cwd: '/repo', mcpAllowlist: ['slack'] },
       '{"mcpServers":{"slack":{}}}',
     );
 

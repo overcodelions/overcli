@@ -68,7 +68,7 @@ export async function routeErrand(ask: string, workers: Worker[], deps: DraftDep
   if (!text) return { ok: false, error: 'Say what you need first.' };
   const crew = workers.filter((w) => w.enabled);
   if (crew.length === 0) return { ok: true, workerId: null, why: 'Nobody on the crew is working right now.', confident: false };
-  if (crew.length === 1) return { ok: true, workerId: crew[0].id, why: 'the only worker on duty', confident: true };
+  if (crew.length === 1) return { ok: true, workerId: crew[0].id, why: 'the only worker on duty', confident: false };
 
   // A lookup, not a design: the fast tier answers in a second or two, which is
   // what a box you type into has to feel like.

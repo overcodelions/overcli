@@ -138,3 +138,69 @@ export function markPoints(
   // duplicate here can only come from a hand-built or stale mark set.
   return points.filter((p, i) => i === 0 || p.line !== points[i - 1].line);
 }
+
+/// The part of a diff that made new-file lines `from`–`to` what they are:
+/// every -/+ run touching that range, with `context` unchanged lines either
+/// side. What the change gutter's "Ask" quotes — the new lines alone would
+/// leave out what they replaced. Empty when nothing in the range changed.
+export function diffExcerptForLines(diffText: string, from: number, to: number, context = 2): string {
+  interface Row {
+    raw: string;
+    hunk: number;
+    change: boolean;
+  }
+  const rows: Row[] = [];
+  // Index spans of runs in `rows`, each with the new-file lines it covers.
+  // A pure deletion covers the seam line, as `parseChangedLines` marks it.
+  const runs: { start: number; end: number; lo: number; hi: number }[] = [];
+  let hunk = -1;
+  let newLine = 0;
+  let run: { start: number; lo: number; hi: number } | null = null;
+  const flush = () => {
+    if (run) runs.push({ ...run, end: rows.length - 1, hi: Math.max(run.hi, run.lo) });
+    run = null;
+  };
+  for (const raw of diffText.split('\n')) {
+    const header = HUNK_RE.exec(raw);
+    if (header) {
+      flush();
+      hunk += 1;
+      newLine = Math.max(1, Number(header[1]));
+      continue;
+    }
+    if (hunk < 0 || raw.startsWith('+++') || raw.startsWith('---') || raw.startsWith('\\')) continue;
+    if (raw.startsWith('diff --git ')) {
+      flush();
+      hunk = -1;
+      continue;
+    }
+    const added = raw.startsWith('+');
+    if (added || raw.startsWith('-')) {
+      if (!run) run = { start: rows.length, lo: newLine, hi: newLine - 1 };
+      rows.push({ raw, hunk, change: true });
+      if (added) {
+        run.hi = newLine;
+        newLine += 1;
+      }
+      continue;
+    }
+    flush();
+    rows.push({ raw, hunk, change: false });
+    newLine += 1;
+  }
+  flush();
+
+  const hit = runs.filter((r) => r.lo <= to && r.hi >= from);
+  if (hit.length === 0) return '';
+  const first = hit[0];
+  const last = hit[hit.length - 1];
+  let start = first.start;
+  let end = last.end;
+  // Context stays inside the hunk it belongs to.
+  for (let n = 0; n < context && start > 0 && rows[start - 1].hunk === rows[first.start].hunk; n++) start--;
+  for (let n = 0; n < context && end < rows.length - 1 && rows[end + 1].hunk === rows[last.end].hunk; n++) end++;
+  return rows
+    .slice(start, end + 1)
+    .map((r) => r.raw)
+    .join('\n');
+}

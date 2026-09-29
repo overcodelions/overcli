@@ -159,6 +159,8 @@ export interface Worker {
   /// and must never send one straight to the step that combines them.
   /// Absent means no wrap-up, which is every worker hired before this existed.
   wrapUpFlowId?: string;
+  /// When the wrap-up flow was last set. Only shifts that finished after this get wrapped up.
+  wrapUpSince?: number;
   /// Which of the user's MCP servers this worker's turns may load, by name.
   ///
   /// Absent means all of them, which is what every worker hired before this
