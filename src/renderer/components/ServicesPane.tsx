@@ -21,7 +21,8 @@
 // the checkbox a row's dot becomes on hover. Removing does not ask first; it
 // offers an undo.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import type {
   MachineEntry,
@@ -1031,18 +1032,17 @@ function Row({
         <span
           className={
             'absolute inset-y-0 right-0 z-[1] flex items-center pl-1.5 pr-2 transition-opacity ' +
-            // Not on the selected row: its Start/Stop/Restart are already in
-            // the detail header beside it, and drawing them twice covered the
-            // row's port for as long as it was open.
-            (selected
-              ? 'hidden'
-              : 'pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100')
+            // The selected row too: the detail header has the same buttons,
+            // but the row is where the pointer is, and a row that lost its
+            // controls the moment you clicked it read as broken. Hover-only,
+            // so the port is covered only while you point at it.
+            'pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100'
           }
           // Opaque — the list's own shade — and tinted the way the row under
           // it is, so what it covers does not show through.
           style={{ background: 'var(--c-surface-muted)' }}
         >
-          <span aria-hidden className="absolute inset-0 bg-card-strong" />
+          <span aria-hidden className={'absolute inset-0 ' + (selected && !menuOn && !checked ? 'bg-accent/15' : 'bg-card-strong')} />
           <span className="relative flex">
             <Actions workspaceId={item.workspaceId} spec={spec} binding={binding} live={live} />
           </span>
@@ -1159,8 +1159,7 @@ function BulkRefPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const anchor = useRef<HTMLButtonElement>(null);
-  const up = useOpensUp(anchor, open, 420);
-  const right = useAnchorsRight(anchor, open, 360);
+  const place = useAnchoredPanel(anchor, open, 360, 420);
 
   const sections = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -1199,15 +1198,12 @@ function BulkRefPicker({
           <path d="M4 6l4 4 4-4" />
         </svg>
       </button>
-      {open && (
+      {open && place && createPortal(
         <>
-          <div className="fixed inset-0 z-10" onClick={close} />
+          <div className="fixed inset-0 z-40" onClick={close} />
           <div
-            className={
-              'absolute z-20 w-[360px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl ' +
-              (right ? 'right-0 ' : 'left-0 ') +
-              (up ? 'bottom-full mb-1' : 'top-full mt-1')
-            }
+            className="fixed z-50 w-[360px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl"
+            style={place}
           >
             <div className="border-b border-card p-2">
               <input
@@ -1264,44 +1260,49 @@ function BulkRefPicker({
               ))}
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </span>
   );
 }
 
-/// Whether a menu anchored here should open upward: a row near the bottom of
-/// the list opened its menu past the window edge, where nobody could reach it.
-/// Whether a panel of this width can hang from the anchor's RIGHT edge and
-/// still be on screen.
+/// Where a panel hangs from its anchor, in window coordinates.
 ///
-/// These panels are wider than the service list column they open in, so a
-/// button near the left of a narrow column put the whole panel off the left
-/// of the window — the search box and half the branch names with it. When
-/// there is no room that way it hangs from the left edge instead and
-/// overflows to the right, over the detail pane, which is what a popover is
-/// allowed to do.
-function useAnchorsRight(
+/// The panel is portalled out of the service list, because that column
+/// scrolls and clipped anything wider than itself: the branch menu on a group
+/// showed a sliver of its search box and the first letters of each branch.
+/// Fixed to the window, it can overflow the column onto the detail pane.
+///
+/// It hangs from the anchor's right edge when there is room, else from its
+/// left, and never past either side of the window. A row near the bottom
+/// opens upward, where there is more room.
+function useAnchoredPanel(
   anchor: React.RefObject<HTMLElement | null>,
   open: boolean,
   width: number,
-): boolean {
-  const [right, setRight] = useState(true);
-  useEffect(() => {
-    if (!open || !anchor.current) return;
-    setRight(anchor.current.getBoundingClientRect().right - width >= 8);
-  }, [open, anchor, width]);
-  return right;
-}
-
-function useOpensUp(anchor: React.RefObject<HTMLElement | null>, open: boolean, height: number): boolean {
-  const [up, setUp] = useState(false);
-  useEffect(() => {
-    if (!open || !anchor.current) return;
-    const rect = anchor.current.getBoundingClientRect();
-    setUp(window.innerHeight - rect.bottom < height && rect.top > window.innerHeight - rect.bottom);
-  }, [open, anchor, height]);
-  return up;
+  height: number,
+): React.CSSProperties | null {
+  const [place, setPlace] = useState<React.CSSProperties | null>(null);
+  useLayoutEffect(() => {
+    if (!open || !anchor.current) {
+      setPlace(null);
+      return;
+    }
+    const measure = () => {
+      const rect = anchor.current?.getBoundingClientRect();
+      if (!rect) return;
+      const hangRight = rect.right - width >= 8;
+      const left = Math.max(8, Math.min(hangRight ? rect.right - width : rect.left, window.innerWidth - width - 8));
+      const below = window.innerHeight - rect.bottom;
+      const up = below < height && rect.top > below;
+      setPlace(up ? { left, bottom: window.innerHeight - rect.top + 4 } : { left, top: rect.bottom + 4 });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open, anchor, width, height]);
+  return place;
 }
 
 /// Undo for a removal, or the report of a switch. Ten seconds is long enough
