@@ -1051,6 +1051,13 @@ export class RunnerManager {
   /// record of those edges; `reconcileRunning` sweeps it for states that
   /// no incoming event can ever clear.
   private runningConvs = new Map<UUID, RunningRecord>();
+  /// The last `systemInit` each conversation's process emitted. The CLI
+  /// sends one per process, and it's the only carrier of the commands it
+  /// bundles rather than keeps on disk (`/design`, `/slides`, …). The
+  /// transcript on disk never records it, so a renderer reload that rebuilds
+  /// a conversation from history would lose it for as long as the same
+  /// process lives. `runner:loadHistory` folds this back in.
+  private lastInitByConv = new Map<UUID, StreamEvent>();
   private reconcileTimer: NodeJS.Timeout | null = null;
   private idleReapTimer: NodeJS.Timeout | null = null;
 
@@ -1063,6 +1070,7 @@ export class RunnerManager {
     this.emit = (event) => {
       if (this.tapOneShot(event)) return;
       this.trackRunning(event);
+      this.rememberInit(event);
       emit(event);
     };
     this.settingsProvider = settingsProvider;
@@ -1090,6 +1098,19 @@ export class RunnerManager {
   /// conversation id counts as liveness for that conversation — the sweep
   /// uses the gap since the last one to tell a working turn from a wait
   /// that will never end.
+  private rememberInit(event: MainToRendererEvent): void {
+    if (event.type !== 'stream') return;
+    for (const e of event.events) {
+      if (e.kind.type === 'systemInit' && !e.parentToolUseId) {
+        this.lastInitByConv.set(event.conversationId, e);
+      }
+    }
+  }
+
+  lastSystemInit(conversationId: UUID): StreamEvent | undefined {
+    return this.lastInitByConv.get(conversationId);
+  }
+
   private trackRunning(event: MainToRendererEvent): void {
     const convId = 'conversationId' in event ? (event.conversationId as UUID) : null;
     if (!convId) return;

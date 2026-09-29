@@ -799,7 +799,13 @@ export function registerIpc(): void {
     runner!.respondUserInput(conversationId, requestId, answers),
   );
   ipcMain.handle('runner:runningSnapshot', () => runner?.runningSnapshot() ?? []);
-  ipcMain.handle('runner:loadHistory', (_e, args) => loadHistory(args));
+  // The transcript never holds the CLI's init event, so a renderer reload
+  // mid-process would otherwise lose its live slash commands until respawn.
+  ipcMain.handle('runner:loadHistory', (_e, args) => {
+    const events = loadHistory(args);
+    const init = runner?.lastSystemInit(args.conversationId);
+    return init ? [...events, init] : events;
+  });
   ipcMain.handle('runner:probeHealth', (_e, backend: Backend) => {
     const settings = Store.load().settings;
     return probeBackendHealth(backend, settings.backendPaths[backend]);
