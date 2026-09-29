@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
+import { useRunTouchedAt } from '../../runTouched';
 import {
   flowProjectPath,
   flowRunActivityAt,
@@ -30,6 +31,7 @@ import {
   STALL_AFTER_DAYS,
   STALL_AFTER_MS,
   runAttentionBadge,
+  runStallClock,
   triageRunCounts,
 } from './runTriage';
 import { FlowOverviewPanel } from './FlowOverviewPanel';
@@ -104,7 +106,8 @@ export function FlowsLibraryPane() {
   // The Runs tab's badge mirrors the schedule one: blocked-on-you outranks
   // merely-working. Same helper the title bar's Flows tab uses, so the two
   // badges are the same claim rather than two rules that agree by luck.
-  const runsBadge = useMemo(() => runAttentionBadge(allRuns), [allRuns]);
+  const touchedAt = useRunTouchedAt();
+  const runsBadge = useMemo(() => runAttentionBadge(allRuns, Date.now(), touchedAt), [allRuns, touchedAt]);
   // A parked proposal outranks a running run on the tab: one is blocked on the
   // user, the other is just working and will notify when it's done.
   const scheduleBadge = useMemo((): { count: number; tone: 'waiting' | 'running' } | undefined => {
@@ -463,7 +466,8 @@ function ScheduleStrip({ onOpen }: { onOpen: () => void }) {
 /// now, so the library only says how much of it there is and where it went.
 function RunsStrip({ onOpen }: { onOpen: () => void }) {
   const runs = useFlowsStore((s) => s.runs);
-  const t = useMemo(() => triageRunCounts(runs), [runs]);
+  const touchedAt = useRunTouchedAt();
+  const t = useMemo(() => triageRunCounts(runs, Date.now(), touchedAt), [runs, touchedAt]);
   if (t.running + t.needsYou + t.stalled === 0) return null;
   return (
     <button
@@ -500,6 +504,7 @@ function RunsOverview({ standalone }: { standalone?: boolean } = {}) {
   const runs = useFlowsStore((s) => s.runs);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
+  const touchedAt = useRunTouchedAt();
   const sorted = useMemo(
     () => Object.values(runs).sort((a, b) => b.createdAt - a.createdAt),
     [runs],
@@ -518,8 +523,10 @@ function RunsOverview({ standalone }: { standalone?: boolean } = {}) {
       r.state.kind === 'watching',
   );
   const paused = sorted.filter((r) => r.state.kind === 'paused');
-  const needsYou = paused.filter((r) => now - flowRunActivityAt(r) <= STALL_AFTER_MS);
-  const stalled = paused.filter((r) => now - flowRunActivityAt(r) > STALL_AFTER_MS);
+  // "Quiet" counts your side too — a run you were talking to today is not
+  // abandoned however long ago it started (see runTouched.ts).
+  const needsYou = paused.filter((r) => now - runStallClock(r, touchedAt) <= STALL_AFTER_MS);
+  const stalled = paused.filter((r) => now - runStallClock(r, touchedAt) > STALL_AFTER_MS);
   const recent = sorted.filter(
     (r) =>
       r.state.kind === 'done' || r.state.kind === 'aborted' || r.state.kind === 'archived',

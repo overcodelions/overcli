@@ -20,9 +20,16 @@ export interface RunTriage {
   stalled: number;
 }
 
+/// When a run last moved or was last touched by you — the stall clock. See
+/// runTouched.ts for why your side counts.
+export function runStallClock(run: FlowRun, touchedAt?: (run: FlowRun) => number): number {
+  return Math.max(flowRunActivityAt(run), touchedAt?.(run) ?? 0);
+}
+
 export function triageRunCounts(
   runs: Record<string, FlowRun>,
   now: number = Date.now(),
+  touchedAt?: (run: FlowRun) => number,
 ): RunTriage {
   let running = 0;
   let needsYou = 0;
@@ -30,7 +37,7 @@ export function triageRunCounts(
   for (const r of Object.values(runs)) {
     if (r.state.kind === 'running' || r.state.kind === 'watching') running++;
     else if (r.state.kind === 'paused') {
-      if (now - flowRunActivityAt(r) <= STALL_AFTER_MS) needsYou++;
+      if (now - runStallClock(r, touchedAt) <= STALL_AFTER_MS) needsYou++;
       else stalled++;
     }
   }
@@ -45,8 +52,9 @@ export function triageRunCounts(
 export function runAttentionBadge(
   runs: Record<string, FlowRun>,
   now: number = Date.now(),
+  touchedAt?: (run: FlowRun) => number,
 ): { count: number; tone: 'waiting' | 'running' } | undefined {
-  const t = triageRunCounts(runs, now);
+  const t = triageRunCounts(runs, now, touchedAt);
   if (t.needsYou > 0) return { count: t.needsYou, tone: 'waiting' };
   if (t.running > 0) return { count: t.running, tone: 'running' };
   return undefined;

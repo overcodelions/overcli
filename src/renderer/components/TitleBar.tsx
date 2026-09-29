@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../store';
+import { useRunTouchedAt } from '../runTouched';
 import { toggleFoldsServiceList } from '../uiSlice';
 import { labOn, type LabKey } from '@shared/labs';
 import {
@@ -84,7 +85,8 @@ export function TitleBar() {
   const handoffs = useHandoffsStore((s) => s.handoffs);
   const openHandoff = useHandoffsStore((s) => s.open);
 
-  const flowsBadge = useMemo(() => runAttentionBadge(flowRuns), [flowRuns]);
+  const touchedAt = useRunTouchedAt();
+  const flowsBadge = useMemo(() => runAttentionBadge(flowRuns, Date.now(), touchedAt), [flowRuns, touchedAt]);
 
   // Services are the one thing on this bar that keeps running while you are
   // somewhere else and costs a port the whole time. Without the count, a
@@ -120,9 +122,10 @@ export function TitleBar() {
         pendingHire,
         unreviewedRunIds,
         handoffs,
+        touchedAt,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [flowRuns, unreviewedRunIds, orchestrations, workers, allocation, pendingHire, handoffs, tick],
+    [flowRuns, unreviewedRunIds, orchestrations, workers, allocation, pendingHire, handoffs, touchedAt, tick],
   );
   const inboxLevel = attentionLevel(inbox);
 
