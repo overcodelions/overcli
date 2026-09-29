@@ -55,6 +55,53 @@ async function trunkOf(repo: string): Promise<string | null> {
   return trunk;
 }
 
+/// Answers keyed on (branch tip, trunk tip): the same pair always gives the
+/// same answer, and each check writes one dangling commit object, so it's
+/// worth never asking twice.
+const squashCache = new Map<string, boolean>();
+const SQUASH_CACHE_MAX = 500;
+
+// commit-tree needs an identity; the object is never referenced, so any will do.
+const SQUASH_ENV = {
+  GIT_AUTHOR_NAME: 'overcli',
+  GIT_AUTHOR_EMAIL: 'overcli@localhost',
+  GIT_COMMITTER_NAME: 'overcli',
+  GIT_COMMITTER_EMAIL: 'overcli@localhost',
+};
+
+/// Squash- (or rebase-) merged: git records no link from the trunk back to the
+/// branch, so its commits read as "ahead" forever. Squash the whole branch
+/// onto its fork point as one unreferenced commit and ask `git cherry` whether
+/// the trunk already has a commit with the same patch. Misses a squash whose
+/// content was changed while merging (conflicts resolved, edits in the host's
+/// merge UI) — that one keeps reading as ahead.
+async function squashMergedInto(repo: string, ref: string, trunk: string): Promise<boolean> {
+  const tips = await runGitAsync(['rev-parse', ref, trunk], repo);
+  if (tips.exitCode !== 0) return false;
+  const key = `${repo}::${tips.stdout.trim().split('\n').join('::')}`;
+  const hit = squashCache.get(key);
+  if (hit !== undefined) return hit;
+  let merged = false;
+  const base = await runGitAsync(['merge-base', trunk, ref], repo);
+  if (base.exitCode === 0 && base.stdout.trim()) {
+    const squash = await runGitAsync(
+      ['commit-tree', `${ref}^{tree}`, '-p', base.stdout.trim(), '-m', 'squash check'],
+      repo,
+      SQUASH_ENV,
+    );
+    if (squash.exitCode === 0 && squash.stdout.trim()) {
+      const cherry = await runGitAsync(['cherry', trunk, squash.stdout.trim()], repo);
+      merged = cherry.exitCode === 0 && cherry.stdout.trim().startsWith('-');
+    }
+  }
+  squashCache.set(key, merged);
+  if (squashCache.size > SQUASH_CACHE_MAX) {
+    const oldest = squashCache.keys().next().value;
+    if (oldest !== undefined) squashCache.delete(oldest);
+  }
+  return merged;
+}
+
 async function verify(repo: string, ref: string): Promise<boolean> {
   return (await runGitAsync(['rev-parse', '--verify', '--quiet', ref], repo)).exitCode === 0;
 }
@@ -90,6 +137,10 @@ export async function branchStatus(repo: string, branch: string, worktreePath?: 
       runGitAsync(['log', '-1', '--format=%ct%x00%s', ref], repo),
     ]);
     status = { ...status, ahead, behind, unpushed, inTrunk };
+    if (!inTrunk && ahead > 0 && trunk && (await squashMergedInto(repo, ref, trunk))) {
+      // Landed as a squash: read it as merged — in the trunk, nothing ahead.
+      status = { ...status, ahead: 0, inTrunk: true, cutOnly: false, squashMerged: true };
+    }
     if (inTrunk && trunk) {
       const tip = await runGitAsync(['rev-parse', ref], repo);
       if (tip.exitCode === 0) status.cutOnly = (await trunkLine(repo, trunk)).has(tip.stdout.trim());

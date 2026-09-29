@@ -263,6 +263,9 @@ describe('git status', () => {
     expect(gitSummary({ ...g, remote: true, unpushed: 1 })).toBe('1 unpushed · 3 ahead of main');
     expect(gitSummary({ ...g, remote: true, ahead: 0, inTrunk: true })).toBe('in main');
     expect(gitSummary({ ...g, local: false, remote: false })).toBe('branch deleted');
+    // Landed: whether the branch itself was pushed no longer matters.
+    expect(gitSummary({ ...g, ahead: 0, inTrunk: true, cutOnly: false })).toBe('in main');
+    expect(gitSummary({ ...g, ahead: 0, inTrunk: true, cutOnly: false, squashMerged: true })).toBe('squash-merged into main');
     // Pushed, then deleted on the remote after its PR merged — not "not pushed".
     expect(gitSummary({ ...g, remoteGone: true })).toBe('deleted on remote · 3 ahead of main');
     expect(repoSummary({ repoGit: [

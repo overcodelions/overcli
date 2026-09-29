@@ -21,7 +21,7 @@ function state(g: RepoGit): { label: string; tone: string } {
   const trunk = s.trunk ?? 'trunk';
   if (s.uncommitted) return { label: `${s.uncommitted} uncommitted`, tone: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' };
   if (s.inTrunk && s.ahead === 0 && s.cutOnly) return { label: 'No commits yet', tone: 'bg-card-strong text-ink-muted' };
-  if (s.inTrunk && s.ahead === 0) return { label: `In ${trunk}`, tone: 'bg-green-500/15 text-green-700 dark:text-green-300' };
+  if (s.inTrunk && s.ahead === 0) return { label: s.squashMerged ? `Squash-merged into ${trunk}` : `In ${trunk}`, tone: 'bg-green-500/15 text-green-700 dark:text-green-300' };
   if (s.local && !s.remote && s.remoteGone) return { label: 'Deleted on remote', tone: 'bg-card-strong text-ink-muted' };
   if (s.local && !s.remote) return { label: 'Not pushed', tone: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' };
   if (s.unpushed > 0) return { label: `${s.unpushed} unpushed`, tone: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' };
