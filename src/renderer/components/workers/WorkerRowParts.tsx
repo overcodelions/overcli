@@ -33,8 +33,9 @@ export function WorkerPendingProposal({ orchestration }: { orchestration: Orches
     if (busy) return;
     setBusy(true);
     try {
+      // Stay on the worker — the launched runs show up in its rail. "Review &
+      // pick" is the explicit way over to the Orchestrator.
       await window.overcli.invoke('orchestrator:approveBatch', { id: orchestration.id });
-      review();
     } finally {
       setBusy(false);
     }
