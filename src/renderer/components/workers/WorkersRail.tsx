@@ -29,6 +29,7 @@ import { useOrchestratorStore } from "../../orchestratorStore";
 import { useRunningMap } from "../../runnersStore";
 import { useTickingNow } from "../../hooks";
 import { useStore } from "../../store";
+import { labOn } from "@shared/labs";
 import { newWorkerDraft, useWorkersStore } from "../../workersStore";
 import { moveWithinGroup, sortRoster, workerTagline } from "@shared/flows/worker";
 import type { TreasuryAllocation } from "@shared/flows/treasury";
@@ -81,6 +82,13 @@ export function WorkersRail({
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
   const runners = useRunningMap();
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  // The Orchestrator lives here too, pinned above the crew: it is the general
+  // worker — no persona, no schedule, runs whatever batch you hand it. While
+  // it is open the rail stays, and nothing below it reads as selected.
+  const detailMode = useStore((s) => s.detailMode);
+  const onWorkers = detailMode === "workers";
+  const labs = useStore((s) => s.settings.labs);
+  const showOrchestrator = labOn(labs, "orchestrator") || detailMode === "orchestrator";
 
   // Search lives in the expanded rail only: a query needs somewhere to show
   // its results, and 64px is not it. Collapsing drops the query so the faces
@@ -147,7 +155,8 @@ export function WorkersRail({
   // lands on the decision without special-casing: the inbox opens the oldest
   // one first.
   const onScreen = (id: string) =>
-    (view === "today" && inboxWorkerId === id) || (view === "worker" && selectedWorkerId === id);
+    onWorkers &&
+    ((view === "today" && inboxWorkerId === id) || (view === "worker" && selectedWorkerId === id));
 
   const face = (entry: BoardEntry, section: BoardEntry[]) => (
     <RailFace
@@ -188,13 +197,38 @@ export function WorkersRail({
   // (the pane is the hiring page whichever you pick), and search has nothing
   // to search. So the rail is only the empty chair, in the slot the first
   // face will take — and the navigation arrives with the first hire.
+  const orchestratorButton = showOrchestrator && (
+    <RailButton
+      label="Orchestrator"
+      detail={expanded ? "Runs any batch you hand it" : undefined}
+      title="The general worker: hand it a list and a flow, and it runs them side by side"
+      expanded={expanded}
+      active={detailMode === "orchestrator"}
+      onClick={() => useStore.getState().setDetailMode("orchestrator")}
+      icon={<OrchestratorIcon />}
+    />
+  );
+
+  // Every other control on the rail is a Workers view. From the Orchestrator,
+  // a click on one of them has to come back to the Workers tab first — the
+  // capture phase does that once here instead of in every handler.
+  const leaveOrchestrator = (e: React.MouseEvent) => {
+    if (detailMode !== "orchestrator") return;
+    const target = e.target as HTMLElement;
+    if (target.closest("[data-orchestrator-button]")) return;
+    if (!target.closest("button, a")) return;
+    useStore.getState().setDetailMode("workers");
+  };
+
   if (noCrew) {
     return (
       <nav
         aria-label="Workers"
+        onClickCapture={leaveOrchestrator}
         className="flex h-full flex-col border-r border-card bg-surface-muted py-2"
       >
         <div className="flex flex-col gap-0.5 px-2">
+          {orchestratorButton && <div data-orchestrator-button>{orchestratorButton}</div>}
           <HireButton expanded={expanded} first />
         </div>
         <div className="flex-1" />
@@ -206,15 +240,22 @@ export function WorkersRail({
   return (
     <nav
       aria-label="Workers"
+      onClickCapture={leaveOrchestrator}
       className="flex h-full flex-col border-r border-card bg-surface-muted py-2"
     >
       <div className="flex flex-col gap-0.5 px-2">
+        {orchestratorButton && (
+          <>
+            <div data-orchestrator-button>{orchestratorButton}</div>
+            <div className="mx-1 my-1 h-px shrink-0 bg-card" />
+          </>
+        )}
         <RailButton
           label="Today"
           detail={needsYou > 0 ? `${needsYou} need${needsYou === 1 ? "s" : ""} you` : undefined}
           title="Where the crew is right now, and what it has done today"
           expanded={expanded}
-          active={view === "today" && !inboxWorkerId}
+          active={onWorkers && view === "today" && !inboxWorkerId}
           onClick={showToday}
           icon={<TodayIcon />}
           badge={
@@ -234,7 +275,7 @@ export function WorkersRail({
           label="Queue"
           title="Every job the crew has run — filter it, find it, act on it"
           expanded={expanded}
-          active={view === "queue"}
+          active={onWorkers && view === "queue"}
           onClick={showQueue}
           icon={<QueueIcon />}
         />
@@ -684,7 +725,9 @@ function HireButton({ expanded, first = false }: { expanded: boolean; first?: bo
 /// The occasional whole-crew views: a column of icons collapsed, labelled
 /// rows expanded.
 function RailFooter({ expanded }: { expanded: boolean }) {
-  const view = useWorkersStore((s) => s.view);
+  const onWorkers = useStore((s) => s.detailMode === "workers");
+  const storeView = useWorkersStore((s) => s.view);
+  const view = onWorkers ? storeView : null;
   const showCalendar = useWorkersStore((s) => s.showCalendar);
   const showFunds = useWorkersStore((s) => s.showFunds);
   const showReport = useWorkersStore((s) => s.showReport);
@@ -794,6 +837,19 @@ function PotIcon() {
       <path d="M2.4 4.3h9.2l-1 6.4a1.4 1.4 0 0 1-1.4 1.2H4.8a1.4 1.4 0 0 1-1.4-1.2z" />
       <path d="M1.6 4.3h10.8" />
       <path d="M4 8.4h6" opacity="0.55" />
+    </svg>
+  );
+}
+
+/// One node fanning out to three — a batch run side by side.
+function OrchestratorIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
+      <circle cx="7" cy="2.6" r="1.3" />
+      <circle cx="2.4" cy="11.4" r="1.3" />
+      <circle cx="7" cy="11.4" r="1.3" />
+      <circle cx="11.6" cy="11.4" r="1.3" />
+      <path d="M7 3.9v6.2M7 6.6H2.4v3.5M7 6.6h4.6v3.5" />
     </svg>
   );
 }

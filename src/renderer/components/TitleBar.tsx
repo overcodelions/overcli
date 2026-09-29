@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../store';
 import { useRunTouchedAt } from '../runTouched';
+import { PopMenu, type MenuItemDef } from './SidebarPlaces';
 import { toggleFoldsServiceList } from '../uiSlice';
 import { labOn, type LabKey } from '@shared/labs';
 import {
@@ -347,18 +348,18 @@ export function TitleBar() {
           onClick={() => navigateToTab(flowsRoot)}
           badge={flowsBadge}
         />
-        {showLab('orchestrator', 'orchestrator') && (
+        {/* The Orchestrator is the general worker, so it lives in the Workers
+            tab (pinned atop the rail) rather than on a tab of its own. With
+            only the Orchestrator switched on, the tab is named for it. */}
+        {(showLab('workers', 'workers', !!workersBadge) || showLab('orchestrator', 'orchestrator')) && (
           <NavButton
-            label="Orchestrator"
-            active={detailMode === 'orchestrator'}
-            onClick={() => navigateToTab(orchestratorRoot)}
-          />
-        )}
-        {showLab('workers', 'workers', !!workersBadge) && (
-          <NavButton
-            label="Workers"
-            active={detailMode === 'workers'}
-            onClick={() => navigateToTab(workersRoot, { rememberForChat: true })}
+            label={labOn(labs, 'workers') || detailMode === 'workers' || !!workersBadge ? 'Workers' : 'Orchestrator'}
+            active={detailMode === 'workers' || detailMode === 'orchestrator'}
+            onClick={() =>
+              labOn(labs, 'workers') || workersBadge
+                ? navigateToTab(workersRoot, { rememberForChat: true })
+                : navigateToTab(orchestratorRoot)
+            }
             badge={workersBadge}
           />
         )}
@@ -403,10 +404,14 @@ export function TitleBar() {
             }
           />
         )}
-        {showLab('localModels', 'local') && (
-          <NavButton label="Local" active={detailMode === 'local'} onClick={() => setDetailMode('local')} />
-        )}
-        <NavButton label="Usage" active={detailMode === 'stats'} onClick={() => setDetailMode('stats')} />
+        {/* Local and Usage are dashboards you check now and then, not places
+            you work, so they share one menu instead of taking two tabs. */}
+        <MoreMenu
+          active={detailMode === 'stats' || detailMode === 'local'}
+          showLocal={showLab('localModels', 'local')}
+          onUsage={() => setDetailMode('stats')}
+          onLocal={() => setDetailMode('local')}
+        />
       </div>
       <div className="w-px h-4 bg-card-border mx-2" />
       {/* Unread release notes ride the About button rather than earning their
@@ -831,6 +836,46 @@ function HistoryArrow({
         />
       </svg>
     </button>
+  );
+}
+
+function MoreMenu({
+  active,
+  showLocal,
+  onUsage,
+  onLocal,
+}: {
+  active: boolean;
+  showLocal: boolean;
+  onUsage: () => void;
+  onLocal: () => void;
+}) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const items: MenuItemDef[] = [
+    { label: 'Usage', hint: 'Spend, tokens and time', onSelect: onUsage },
+    ...(showLocal ? [{ label: 'Local models', hint: 'Ollama', onSelect: onLocal }] : []),
+  ];
+  return (
+    <>
+      <button
+        ref={anchor}
+        onClick={() => setOpen((o) => !o)}
+        title="Usage and more"
+        aria-label="Usage and more"
+        aria-expanded={open}
+        className={
+          'p-1 rounded ' +
+          (active ? 'text-ink bg-card-strong' : 'text-ink-muted hover:text-ink hover:bg-card-strong')
+        }
+      >
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
+          <path d="M4 16h12" />
+          <path d="M6.5 16V10M10 16V5M13.5 16v-4" />
+        </svg>
+      </button>
+      {open && <PopMenu anchor={anchor} items={items} width={200} onClose={() => setOpen(false)} />}
+    </>
   );
 }
 

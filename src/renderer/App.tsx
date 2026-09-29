@@ -20,6 +20,7 @@ import type { MenuCommand } from '@shared/types';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
+import { labOn } from '@shared/labs';
 import {
   RAIL_COLLAPSED_WIDTH,
   RAIL_EXPANDED_WIDTH,
@@ -501,7 +502,11 @@ export function App() {
   // the sidebar away whenever a run was on screen, to give the run its width;
   // the rail is thin enough to stay put, and a navigator that vanished every
   // time you opened a run was part of what made clicking around the tab jumpy.
-  const workersRail = detailMode === 'workers' && sidebarWanted;
+  // The Orchestrator is the general worker and shares the rail — but only
+  // when Workers is on; alone it keeps the ordinary sidebar.
+  const workersLab = useStore((s) => labOn(s.settings.labs, 'workers'));
+  const workersRail =
+    (detailMode === 'workers' || (detailMode === 'orchestrator' && workersLab)) && sidebarWanted;
   const [railExpanded, setRailExpanded] = useState(() => {
     try {
       return localStorage.getItem(RAIL_EXPANDED_KEY) === 'true';
