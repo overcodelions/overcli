@@ -444,7 +444,7 @@ describe('draftFlowFromPrompt', () => {
     const result = await draftFlowFromPrompt({ description: 'Build via Codex' }, deps);
 
     expect(oneShot).toHaveBeenCalledTimes(1);
-    expect(oneShot.mock.calls[0][0]).toMatchObject({ backend: 'codex', model: 'gpt-5.6-sol' });
+    expect(oneShot.mock.calls[0][0]).toMatchObject({ backend: 'codex', model: 'gpt-6.1-sol' });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.flow.name).toBe('Codex Drafted');
@@ -833,7 +833,7 @@ describe('models from the wrong family are retargeted, not rejected', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-sonnet-5-5' });
-    expect(result.flow.steps[1].model).toEqual({ backend: 'codex', model: 'gpt-5.6-sol' });
+    expect(result.flow.steps[1].model).toEqual({ backend: 'codex', model: 'gpt-6.1-sol' });
   });
 
   it('tells the drafter which ids exist and which family goes with which backend', async () => {

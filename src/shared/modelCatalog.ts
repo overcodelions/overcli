@@ -27,11 +27,14 @@ import type { Backend } from './types';
 /// see `liftMissingModel`.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
   claude: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  // `gpt-6-astra` is OpenAI's frontier model (Sept 2026) — the GPT-6
-  // generation's flagship, priced well above the 5.6 line. It sits second
-  // for the same reason `claude-fable-5-1` does: the frontier tier is
-  // opt-in, so `gpt-5.6-sol` stays the auto-pick default.
-  codex: ['gpt-5.6-sol', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+  // `gpt-6.1-sol` (Sept 29 2026) is the auto-pick default: near-Astra
+  // quality at a fifth of Astra's price, so it's the thinking-tier Sol
+  // successor. `gpt-5.6-sol` stays right behind it for the same reason
+  // Opus 5 trails Opus 5.5 — a CLI or account that predates 6.1 needs it
+  // one click away. `gpt-6-astra` is OpenAI's frontier model — the GPT-6
+  // generation's flagship, priced well above the Sol line — and like
+  // `claude-fable-5-1` the frontier tier is opt-in.
+  codex: ['gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   // Gemini's Flash line iterates far faster than its Pro line — 3.7 Flash
   // shipped while 3.1 Pro is still the newest Pro id. Pro leads the list so
   // it stays the auto-pick + drafter default (first entry = strongest).
@@ -220,6 +223,9 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   // line and priced to match, so like Fable it only lands on steps that
   // ask for 'frontier' outright.
   'gpt-6-astra': 'frontier',
+  // GPT-6.1 Sol nearly matches Astra but is priced like the Sol line, so it
+  // takes over the thinking tier rather than joining Astra at frontier.
+  'gpt-6.1-sol': 'thinking',
   'gpt-5.6-sol': 'thinking',
   'gpt-5.6-terra': 'standard',
   'gpt-5.6-luna': 'fast',

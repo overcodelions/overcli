@@ -17,7 +17,7 @@ import { Backend, EffortLevel, PersonaKey, ReviewPreset } from './types';
 /// gemini). Update here when models rotate; no other file should know.
 export const TIERS: Partial<Record<Backend, { cheap: string; smart: string }>> = {
   claude: { cheap: 'claude-sonnet-5-5', smart: 'claude-opus-5-5' },
-  codex: { cheap: 'gpt-5.6-luna', smart: 'gpt-5.6-sol' },
+  codex: { cheap: 'gpt-5.6-luna', smart: 'gpt-6.1-sol' },
   gemini: { cheap: 'gemini-3.1-flash-lite', smart: 'gemini-3.1-pro' },
 };
 

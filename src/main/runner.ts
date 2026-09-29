@@ -4177,6 +4177,9 @@ export class RunnerManager {
 
   private nextCodexFallbackModel(model: string): string | null {
     const m = (model || '').trim().toLowerCase();
+    // GPT-6.1 Sol shipped Sept 2026 and may not be rolled out everywhere
+    // yet; step back to the previous Sol before leaving the line.
+    if (m === 'gpt-6.1-sol') return 'gpt-5.6-sol';
     // GPT-5.6 (sol/terra/luna) may not be enabled on every account yet;
     // fall back to the equivalent-tier 5.5/5.4 model when it's rejected.
     if (m === 'gpt-5.6-sol') return 'gpt-5.5';
