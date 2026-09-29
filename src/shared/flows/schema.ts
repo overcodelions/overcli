@@ -148,6 +148,12 @@ export interface FlowStep {
   /// any changes made via conversation propagate forward. The first step
   /// ignores this (no prior conversation to converse with).
   pauseBefore?: boolean;
+  /// Colleagues this step may hand work to, by name. On a worker-owned run,
+  /// `<handoff to="Name">` blocks in THIS step's output are sent to them as
+  /// errands when the run finishes. Opt-in and named, because a step's
+  /// output quotes outside content: on any other step, or to anyone not
+  /// listed, a handoff block is just text.
+  handsOff?: string[];
   /// Name of the artifact this step produces (e.g. `'plan.md'`, `'diff'`,
   /// `'review.md'`, `'pr_url'`). Referenced by later steps' `inputs`.
   output: string;

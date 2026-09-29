@@ -157,7 +157,7 @@ import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
-import { workerOrigin } from '../shared/flows/worker';
+import { runHandoffOutputs, workerOrigin } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
 import {
@@ -599,6 +599,11 @@ export function registerIpc(): void {
         out.push({ name: file.name, sourcePath: file.path });
       }
       return out;
+    },
+    // Only steps that declared `hands_off` are read for handoff blocks.
+    runHandoffOutputs: (runId) => {
+      const run = flowRuntime?.getRun(runId);
+      return run ? runHandoffOutputs(run) : [];
     },
     // The composer in the run pane keeps talking to a run's last participant
     // after the flow is done, and those turns write into the same run root.

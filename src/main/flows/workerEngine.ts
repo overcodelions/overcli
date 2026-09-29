@@ -294,6 +294,10 @@ export interface WorkerEngineDeps {
   /// Entries carry either the recorded output (`body`) or a path to a file
   /// the run wrote itself (`sourcePath`), which is copied instead of read.
   deliverablesFor?: (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string }>;
+  /// The recorded output of each step in a finished run that declared
+  /// `hands_off`, with the colleagues it named. The only place a run's
+  /// `<handoff>` blocks are read from.
+  runHandoffOutputs?: (runId: UUID) => Array<{ body: string; handsOff: string[] }>;
   /// Which flow run a conversation belongs to, so a chat turn taken on a
   /// finished run can re-file whatever it wrote. Absent in hosts (the CLI)
   /// where nobody can chat with a run after it ends.
@@ -2257,6 +2261,39 @@ export class WorkerEngine {
     return notes.join(' ');
   }
 
+  /// Referrals a finished run handed on. A flow can find something that is
+  /// plainly a colleague's job halfway through a shift — long after the
+  /// planning turn that normally hands work on — so a step that declares
+  /// `hands_off` may end with the same `<handoff>` blocks. Only that step's
+  /// output, and only to the colleagues it names: step outputs quote mail,
+  /// tickets and pages, and a block pasted into one of those must not reach
+  /// anyone the flow's author did not already choose. Keyed by the item, so
+  /// the fold that re-runs on every update sends each one once.
+  private dispatchRunHandoffs(sender: Worker, o: Orchestration, item: OrchestrationItem): boolean {
+    if (!item.runId || !canDelegate(sender)) return false;
+    const runId = item.runId;
+    const colleagues = delegationTargets(sender, this.roster());
+    const requested = (this.deps.runHandoffOutputs?.(runId) ?? []).flatMap((out) => {
+      const named = new Set(out.handsOff.map((n) => n.trim().toLowerCase()));
+      const targets = colleagues.filter((t) => named.has(t.name.trim().toLowerCase()));
+      return parseHandoffs(out.body).map((h) => ({ h, targets }));
+    });
+    const at = item.finishedAt ?? this.now();
+    let changed = false;
+    requested.slice(0, WORKER_MAX_HANDOFFS_PER_TURN).forEach(({ h, targets }, i) => {
+      const entryId = `${o.id}:${item.candidate.id}:handoff-${i}`;
+      if (this.journal.has(entryId)) return;
+      const outcome = this.dispatchOne(sender, h, targets, entryId, at, o.id, runId);
+      // Every refusal but a full hold list lands in the journal; that one is
+      // retried on the batch's next update.
+      if (!outcome.ok && !this.journal.has(entryId)) {
+        log('warn', 'worker-handoff', `${sender.name}: run handoff not sent: ${outcome.summary}`);
+      }
+      changed = true;
+    });
+    return changed;
+  }
+
   /// One referral: resolve the name, journal it on the sender, start it on the
   /// receiver. Returns a fragment for the sender's shift/errand note.
   private dispatchOne(
@@ -2266,8 +2303,11 @@ export class WorkerEngine {
     entryId: string,
     at: number,
     orchestrationId: string | undefined,
+    /// The run that wrote it, when a flow rather than a planning turn did.
+    runId?: string,
   ): { ok: boolean; summary: string } {
     const title = errandLabel(h.instruction);
+    const fromRun = runId ? { runId } : {};
     const target = resolveHandoffTarget(h.to, targets);
 
     // A failed referral is journaled as `delegated` too, so it lands on the
@@ -2284,6 +2324,7 @@ export class WorkerEngine {
         title,
         note: `Tried to hand this to "${h.to}", who is not a colleague it can hand work to.`,
         orchestrationId,
+        ...fromRun,
       });
       return { ok: false, summary: `"${h.to}" matched no colleague` };
     }
@@ -2300,16 +2341,26 @@ export class WorkerEngine {
         title,
         note: `Tried to hand this to ${target.name} on "${h.on}", which is not a date within the next year.`,
         orchestrationId,
+        ...fromRun,
       });
       return { ok: false, summary: `"${h.on}" is not a date it could wait for` };
     }
-    if (when !== null) return this.holdHandoff(sender, target, h.instruction, title, when, entryId, at, orchestrationId);
+    if (when !== null) {
+      return this.holdHandoff(sender, target, h.instruction, title, when, entryId, at, orchestrationId, runId);
+    }
 
     // Checked BEFORE the "Handed to" note lands: journaling the handoff and
     // then refusing to send it would tell the sender's own history a referral
     // happened that never did, and — because that title now reads as already
     // handed off (see `handedOffTitles`) — bury the errand for good.
     const pending = this.pendingReferrals.get(target.id) ?? 0;
+    // A run has no reply to carry the refusal and will not finish again, so
+    // its referral waits its turn instead of being lost.
+    if (pending >= MAX_PENDING_REFERRALS && runId) {
+      return this.holdHandoff(sender, target, h.instruction, title, at + HELD_RETRY_MS, entryId, at, orchestrationId, runId, {
+        note: `Will hand to ${target.name} once they have room: ${h.instruction}`,
+      });
+    }
     if (pending >= MAX_PENDING_REFERRALS) {
       return {
         ok: false,
@@ -2325,6 +2376,7 @@ export class WorkerEngine {
       title,
       note: `Handed to ${target.name}: ${h.instruction}`,
       orchestrationId,
+      ...fromRun,
     });
     this.sendReferral(sender, target, h.instruction, title, entryId, orchestrationId);
     return { ok: true, summary: target.name };
@@ -2392,6 +2444,8 @@ export class WorkerEngine {
     entryId: string,
     at: number,
     orchestrationId: string | undefined,
+    runId?: string,
+    opts: { note?: string } = {},
   ): { ok: boolean; summary: string } {
     const waiting = this.held.filter((x) => x.fromId === sender.id).length;
     if (waiting >= MAX_HELD_PER_SENDER) {
@@ -2408,6 +2462,7 @@ export class WorkerEngine {
       notBefore,
       createdAt: at,
       ...(orchestrationId ? { orchestrationId } : {}),
+      ...(runId ? { runId } : {}),
     };
     this.held = [...this.held.filter((x) => x.id !== entryId), held];
     this.handoffStore.save(this.held);
@@ -2417,8 +2472,9 @@ export class WorkerEngine {
       kind: 'delegated',
       at,
       title,
-      note: `Will hand to ${target.name} on ${dayLabel(notBefore)}: ${instruction}`,
+      note: opts.note ?? `Will hand to ${target.name} on ${dayLabel(notBefore)}: ${instruction}`,
       orchestrationId,
+      ...(runId ? { runId } : {}),
     });
     this.emitHandoffs();
     this.arm();
@@ -2452,6 +2508,7 @@ export class WorkerEngine {
           title: h.title,
           note: `Could not hand this to ${h.toName} on the day — they are no longer someone ${sender.name} can hand work to.`,
           orchestrationId: h.orchestrationId,
+          ...(h.runId ? { runId: h.runId } : {}),
         });
         this.emitWorker(sender);
         this.deps.notify({
@@ -2473,6 +2530,7 @@ export class WorkerEngine {
         title: h.title,
         note: `Handed to ${target.name}, as planned: ${h.instruction}`,
         orchestrationId: h.orchestrationId,
+        ...(h.runId ? { runId: h.runId } : {}),
       });
       this.emitWorker(sender);
       this.sendReferral(sender, target, h.instruction, h.title, h.id, h.orchestrationId);
@@ -2858,6 +2916,10 @@ export class WorkerEngine {
         // filename, which matters because this fold re-runs on every update
         // and at startup.
         this.fileRunDeliverables(w, o, item, c.title);
+        // Only on a live update: the restart re-fold must not send a run's
+        // referrals a second time, and a run cannot finish while the app is
+        // closed, so a live update is always there to catch it.
+        if (opts.wrapUp !== false) changed = this.dispatchRunHandoffs(w, o, item) || changed;
       }
       if (item.status === 'failed') {
         changed =

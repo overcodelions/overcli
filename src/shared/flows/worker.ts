@@ -7,6 +7,7 @@
 // the shared contract both main and renderer validate against.
 
 import type { Backend, UUID } from '../types';
+import type { FlowRun } from './schema';
 import type { ScheduleTrigger } from './schedule';
 import { SCHEDULE_AUTO_APPROVE_MAX, describeTrigger, parseTimeOfDay } from './schedule';
 import { cronError, cronIntervalMinutes, parseCron } from './cron';
@@ -1214,6 +1215,15 @@ export function parseHandoffs(reply: string): WorkerHandoff[] {
   return out;
 }
 
+/// The recorded output of each step in `run` that declared `hands_off`, with
+/// the colleagues it named — the only text a run's handoffs are read from.
+export function runHandoffOutputs(run: Pick<FlowRun, 'flowSnapshot' | 'artifacts'>): Array<{ body: string; handsOff: string[] }> {
+  return (run.flowSnapshot?.steps ?? []).flatMap((step) => {
+    const body = step.handsOff?.length ? run.artifacts?.[step.output]?.body : undefined;
+    return body ? [{ body, handsOff: step.handsOff! }] : [];
+  });
+}
+
 /// A handoff waiting for its day. Held by the engine rather than sent early,
 /// because "remind them a week before" sent today is a note the receiver has
 /// to carry for a fortnight — which is exactly the failure it was asked to
@@ -1231,6 +1241,8 @@ export interface HeldHandoff {
   createdAt: number;
   /// The sender's batch that asked for it, for the journal.
   orchestrationId?: string;
+  /// The run that wrote it, when a flow step handed it on.
+  runId?: string;
 }
 
 /// Furthest ahead a handoff may be held. A date past this is almost always a
