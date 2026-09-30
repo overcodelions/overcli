@@ -33,6 +33,56 @@ marked.setOptions({
 
 const FILE_PATH_RE = /^[a-zA-Z0-9_.\-/]+\.(?:ts|tsx|js|jsx|py|rs|go|swift|kt|java|rb|md|json|yaml|yml|toml|html|css|scss|sh)(?::\d+(?:[-:]\d+)?)?$/i;
 
+/// Resolve a markdown link href to a local file path, or null when it's a real
+/// web link. Codex links files by absolute path (`[Plan](/Users/me/Library/
+/// Application Support/…/plan.md)`), often percent-encoded or `file://`-
+/// prefixed, and with spaces FILE_PATH_RE won't accept — DOMPurify then
+/// strips the non-http href and the link renders dead. `#L12` / `#L12-L20`
+/// anchors become the `:12-20` suffix openPathWithHighlight understands.
+export function localPathFromHref(href: string): string | null {
+  let target = href.trim();
+  if (/^file:\/\//i.test(target)) target = target.replace(/^file:\/\//i, '');
+  else if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return null;
+  if (target.startsWith('#')) return null;
+  try {
+    target = decodeURI(target);
+  } catch {
+    // Malformed escape — use the href as written.
+  }
+  const anchor = target.match(/#L(\d+)(?:-L?(\d+))?$/);
+  if (anchor) {
+    target = target.slice(0, anchor.index) + `:${anchor[1]}${anchor[2] ? `-${anchor[2]}` : ''}`;
+  }
+  if (FILE_PATH_RE.test(target)) return target;
+  if (/^(?:\/|~\/|\.{1,2}\/)/.test(target)) return target;
+  return null;
+}
+
+/// Codex cites files with a directive the CLI renders itself —
+/// `:codex-file-citation{path="/abs/file.md" line_start=3 line_end=9}` — which
+/// `marked` passes through as literal text. Rewrite each into a markdown link
+/// labelled with the file's basename so it renders as a clickable file chip.
+const CODEX_CITATION_RE = /:codex-file-citation\{([^}]*)\}/g;
+
+export function rewriteCodexFileCitations(source: string): string {
+  if (!source.includes(':codex-file-citation{')) return source;
+  return source.replace(CODEX_CITATION_RE, (whole, attrs: string) => {
+    const attr = (name: string) =>
+      attrs.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"']+))`));
+    const pathMatch = attr('path');
+    const path = pathMatch ? (pathMatch[1] ?? pathMatch[2] ?? pathMatch[3]) : '';
+    if (!path) return whole;
+    const start = attr('line_start');
+    const end = attr('line_end');
+    const startLine = start ? (start[1] ?? start[2] ?? start[3]) : '';
+    const endLine = end ? (end[1] ?? end[2] ?? end[3]) : '';
+    const lines = startLine ? `:${startLine}${endLine && endLine !== startLine ? `-${endLine}` : ''}` : '';
+    const name = path.split('/').filter(Boolean).pop() ?? path;
+    const label = name.replace(/([\\`*_[\]])/g, '\\$1');
+    return `[${label}${lines}](<${path}${lines}>)`;
+  });
+}
+
 interface RenderMarkdownOptions {
   enableFilePathLinks?: boolean;
   escapeRawHtml?: boolean;
@@ -104,8 +154,9 @@ function renderMarkdownHtmlUncached(
     renderer.link = ({ href, text }) => {
       const target = typeof href === 'string' ? href : '';
       const label = escapeHtml(typeof text === 'string' ? text : target);
-      if (target && FILE_PATH_RE.test(target)) {
-        return `<code class="file-path" data-path="${escapeAttr(target)}">${label}</code>`;
+      const localPath = target ? localPathFromHref(target) : null;
+      if (localPath) {
+        return `<code class="file-path" data-path="${escapeAttr(localPath)}">${label}</code>`;
       }
       const safeHref = target ? escapeAttr(target) : '';
       return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${label}</a>`;
@@ -143,7 +194,10 @@ function renderMarkdownHtmlUncached(
       block ? `<pre><code>${escapeHtml(text)}</code></pre>` : escapeHtml(text);
   }
 
-  const raw = marked.parse(fenceStrayDiffs(source ?? ''), { async: false, renderer }) as string;
+  const prepared = enableFilePathLinks
+    ? rewriteCodexFileCitations(fenceStrayDiffs(source ?? ''))
+    : fenceStrayDiffs(source ?? '');
+  const raw = marked.parse(prepared, { async: false, renderer }) as string;
   const clean = DOMPurify.sanitize(raw, SANITIZE_CONFIG) as string;
 
   // A reply made entirely of HTML we don't allow sanitizes down to nothing,

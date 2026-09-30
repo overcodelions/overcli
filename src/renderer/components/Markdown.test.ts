@@ -3,7 +3,7 @@
 // renderMarkdownHtml runs marked + DOMPurify, so it needs a DOM.
 
 import { describe, expect, it } from 'vitest';
-import { renderMarkdownHtml } from './Markdown';
+import { localPathFromHref, renderMarkdownHtml } from './Markdown';
 
 describe('renderMarkdownHtml', () => {
   it('keeps a reply that is only disallowed raw HTML visible', () => {
@@ -38,5 +38,27 @@ describe('renderMarkdownHtml', () => {
   it('still strips genuinely dangerous HTML', () => {
     const html = renderMarkdownHtml('<script>alert(1)</script>');
     expect(html).not.toMatch(/<script/);
+  });
+});
+
+describe('local file links from codex', () => {
+  it('turns an absolute path link with spaces into a file chip', () => {
+    const html = renderMarkdownHtml('[Open the plan](</Users/me/Library/Application Support/x/plan.md>)');
+    expect(html).toContain('class="file-path"');
+    expect(html).toContain('data-path="/Users/me/Library/Application Support/x/plan.md"');
+  });
+
+  it('decodes percent-encoded and file:// hrefs, keeping line anchors', () => {
+    expect(localPathFromHref('file:///Users/me/App%20Support/a.pdf#L3-L9')).toBe('/Users/me/App Support/a.pdf:3-9');
+    expect(localPathFromHref('https://example.com/a.md')).toBeNull();
+  });
+
+  it('rewrites codex-file-citation directives into clickable chips', () => {
+    const html = renderMarkdownHtml(
+      '- :codex-file-citation{path="/Users/me/Application Support/w/guide.pdf" line_start=2 line_end=4}',
+    );
+    expect(html).not.toContain('codex-file-citation');
+    expect(html).toContain('data-path="/Users/me/Application Support/w/guide.pdf:2-4"');
+    expect(html).toContain('guide.pdf:2-4');
   });
 });
