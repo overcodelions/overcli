@@ -49,6 +49,13 @@ describe('liveness', () => {
     expect(liveness(r, {}, new Set(['c']))).toEqual({ state: 'running', target: { type: 'chat', id: 'c' } });
   });
 
+  it('a finished run whose step is answering you is running', () => {
+    const r = record({ runs: [part('a')] });
+    const done = run('a', 'done', {});
+    (done as unknown as { conversationIds: Record<string, string> }).conversationIds = { planner: 'pc' };
+    expect(liveness(r, { a: done }, new Set(['pc']))).toEqual({ state: 'running', target: { type: 'run', id: 'a' } });
+  });
+
   it('finished work is not live', () => {
     const r = record({ runs: [part('a')] });
     expect(liveness(r, { a: run('a', 'done') }, none).state).toBeNull();

@@ -476,7 +476,9 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
       ownerPath: run.sourceProjectPath ?? run.projectPath,
       branch: run.branchName,
       startedAt: run.createdAt,
-      at: last?.endedAt ?? last?.startedAt ?? run.createdAt,
+      // A turn typed at one of the run's steps adds no attempt, so without
+      // `lastUserTurnAt` a run you just talked to keeps its old place.
+      at: Math.max(last?.endedAt ?? last?.startedAt ?? run.createdAt, run.lastUserTurnAt ?? 0),
       live,
       failed: kind === 'aborted',
       retained: true,

@@ -46,6 +46,21 @@ function run(p: Partial<FlowRun> & { id: string }): FlowRun {
 const acme: WorkPlace = { path: '/code/acme', name: 'acme', conversations: [] };
 
 describe('buildWorkRecords', () => {
+  it('moves a run up when you talk to one of its steps', () => {
+    const records = buildWorkRecords({
+      places: [acme],
+      runs: [
+        run({ id: 'old', createdAt: 1 * DAY, attempts: [{ stepId: 's', startedAt: 1 * DAY, endedAt: 1 * DAY }] as never, lastUserTurnAt: 9 * DAY }),
+        run({ id: 'new', createdAt: 5 * DAY, attempts: [{ stepId: 's', startedAt: 5 * DAY, endedAt: 5 * DAY }] as never }),
+      ],
+      log: [],
+      orchestrations: [],
+      prsByRepo: {},
+    });
+    expect(records.map((r) => r.runs[0].id)).toEqual(['old', 'new']);
+    expect(records[0].updatedAt).toBe(9 * DAY);
+  });
+
   it('joins a run, its follow-up chat and the PR on the same branch into one record', () => {
     const records = buildWorkRecords({
       places: [
