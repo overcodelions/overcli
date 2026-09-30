@@ -66,8 +66,10 @@ import {
   workerOrigin,
   workerPace,
   WORKER_NOTE_MAX,
+  validateAwayUntil,
   type HeldHandoff,
   type Worker,
+  type WorkersAway,
   type WorkerErrandResult,
   type WorkerHandoff,
   type WorkerJournalEntry,
@@ -90,9 +92,11 @@ import {
   loadAllWorkers,
   loadHeldHandoffs,
   loadTreasury,
+  loadWorkersAway,
   saveHeldHandoffs,
   saveTreasury,
   saveWorker,
+  saveWorkersAway,
 } from './workersStore';
 import {
   appendWorkerJournalEntry,
@@ -266,6 +270,11 @@ export interface WorkerEngineDeps {
     load: () => HeldHandoff[];
     save: (list: HeldHandoff[]) => void;
   };
+  /// Whether the whole crew is off. Injected for the same reason again.
+  awayStore?: {
+    load: () => WorkersAway | null;
+    save: (away: WorkersAway | null) => void;
+  };
   /// Draft a read-only flow for one errand, file it in the generated bucket,
   /// and launch it — the third triage path, for asks that need real
   /// investigation and fit none of the worker's flows.
@@ -373,6 +382,9 @@ export class WorkerEngine {
   private readonly spendAll: NonNullable<WorkerEngineDeps['spendAll']>;
   private readonly treasuryStore: NonNullable<WorkerEngineDeps['treasuryStore']>;
   private readonly handoffStore: NonNullable<WorkerEngineDeps['handoffStore']>;
+  private readonly awayStore: NonNullable<WorkerEngineDeps['awayStore']>;
+  /// Set while the whole crew is off — see `WorkersAway`.
+  private away: WorkersAway | null = null;
   /// Replaced in `start()` by the persisted pool, or by a seed seeded from the
   /// existing caps. The literal here only covers the window before that.
   private pool: Treasury = { monthlyUSD: DEFAULT_TREASURY_USD };
@@ -410,6 +422,10 @@ export class WorkerEngine {
       load: loadHeldHandoffs,
       save: saveHeldHandoffs,
     };
+    this.awayStore = deps.awayStore ?? {
+      load: loadWorkersAway,
+      save: saveWorkersAway,
+    };
   }
 
   /// Load persisted workers, reconcile batches that settled while the app was
@@ -425,6 +441,9 @@ export class WorkerEngine {
     this.pool = stored ?? seedTreasury([...this.workers.values()]);
     if (!stored) this.treasuryStore.save(this.pool);
     this.held = this.handoffStore.load();
+    // A return date that passed while the app was closed is handled by the
+    // first tick, which comes back properly (re-anchoring every clock).
+    this.away = this.awayStore.load();
     // Batches settle on load (running → failed, queued → cancelled) without
     // emitting, so fold every worker batch's current state in now — appends
     // are idempotent, so this re-fold costs nothing when nothing changed.
@@ -524,6 +543,9 @@ export class WorkerEngine {
   nextShiftAt(id: UUID): number | null {
     const w = this.workers.get(id);
     if (!w || !w.enabled) return null;
+    // Nothing is scheduled while the crew is away, and the shift after the
+    // return is anchored to the return itself — not knowable yet.
+    if (this.away) return null;
     const timing = this.timing(w);
     // On demand: there is no next shift, and saying so is the point. The
     // renderer already reads null as "nothing scheduled" for a paused worker.
@@ -620,6 +642,53 @@ export class WorkerEngine {
     this.poolNoticeDay = null;
     this.emitTreasury();
     return { ok: true };
+  }
+
+  // ---- AWAY -------------------------------------------------------------
+
+  awayState(): WorkersAway | null {
+    return this.away ? { ...this.away } : null;
+  }
+
+  /// Take the whole crew off duty, optionally until a date. Calling it again
+  /// while away just moves the return date.
+  setAway(until?: number): { ok: true; away: WorkersAway } | { ok: false; error: string } {
+    const now = this.now();
+    const invalid = validateAwayUntil(until, now);
+    if (invalid) return { ok: false, error: invalid };
+    this.away = { since: this.away?.since ?? now, ...(until !== undefined ? { until } : {}) };
+    this.awayStore.save(this.away);
+    this.emitAway();
+    // Every worker's next shift just became "none" — say so on each desk.
+    for (const w of this.workers.values()) this.emitWorker(w);
+    this.arm();
+    return { ok: true, away: { ...this.away } };
+  }
+
+  /// Back on duty. Every enabled worker's clock restarts from now, the same
+  /// way re-enabling one worker does: a crew that was off for a fortnight is
+  /// not owed a fortnight of shifts, nor a journal full of "missed" ones.
+  /// Handoffs whose day came while you were away go out on the next tick.
+  comeBack(): { ok: true } {
+    if (!this.away) return { ok: true };
+    const now = this.now();
+    this.away = null;
+    this.awayStore.save(null);
+    for (const w of this.workers.values()) {
+      if (w.enabled && w.cadence !== null) {
+        w.anchorAt = now;
+        w.lastShiftAt = undefined;
+        this.store.save(w);
+      }
+      this.emitWorker(w);
+    }
+    this.emitAway();
+    this.arm();
+    return { ok: true };
+  }
+
+  private emitAway(): void {
+    this.deps.emit({ type: 'workersAway', away: this.awayState() });
   }
 
   /// Divide this month's remaining money by funding priority: the first
@@ -1274,6 +1343,14 @@ export class WorkerEngine {
     this.timer = null;
 
     const now = this.now();
+    // Away: the only thing worth waking for is the return date, if there is
+    // one. No shift, no held handoff — those wait for the tick after it.
+    if (this.away) {
+      if (this.away.until === undefined) return;
+      const delay = Math.max(0, Math.min(this.away.until - now, MAX_TIMER_MS));
+      this.timer = this.timers.set(() => void this.tick(), delay);
+      return;
+    }
     let soonest = Number.POSITIVE_INFINITY;
     for (const w of this.workers.values()) {
       const timing = this.timing(w);
@@ -1310,6 +1387,15 @@ export class WorkerEngine {
       // bottom of a busy roster never runs: skipped, re-anchored to now, and
       // skipped again the next time the worker in front runs long.
       const awakeSince = this.now();
+      if (this.away?.until !== undefined && this.away.until <= awakeSince) {
+        this.comeBack();
+        this.deps.notify({
+          title: 'Your workers are back on duty',
+          body: 'Shifts resume on their usual schedule from now.',
+          kind: 'progress',
+        });
+      }
+      if (this.away) return;
       this.deliverDueHandoffs();
       // Iterate ids and RE-FETCH each worker: an earlier iteration's planning
       // turn can hold this loop for minutes, long enough for the user to edit
@@ -2348,6 +2434,14 @@ export class WorkerEngine {
     if (when !== null) {
       return this.holdHandoff(sender, target, h.instruction, title, when, entryId, at, orchestrationId, runId);
     }
+    // Away: a run that was already going when you left can still hand work
+    // on as it finishes. The colleague would start it with nobody watching,
+    // so it waits for you instead — held, delivered on the first tick back.
+    if (this.away) {
+      return this.holdHandoff(sender, target, h.instruction, title, at, entryId, at, orchestrationId, runId, {
+        note: `Will hand to ${target.name} when you're back: ${h.instruction}`,
+      });
+    }
 
     // Checked BEFORE the "Handed to" note lands: journaling the handoff and
     // then refusing to send it would tell the sender's own history a referral
@@ -2485,12 +2579,15 @@ export class WorkerEngine {
   /// against the sender's colleagues as they stand NOW: weeks can pass, and a
   /// colleague paused or unpicked since must not get work because it was
   /// reachable the day the handoff was written.
-  private deliverDueHandoffs(): void {
+  ///
+  /// `onlyId` narrows it to one — "send this one now" while away must not
+  /// release everything else that is waiting for you to come back.
+  private deliverDueHandoffs(onlyId?: string): void {
     const now = this.now();
     if (!this.held.some((h) => h.notBefore <= now)) return;
     const keep: HeldHandoff[] = [];
     for (const h of this.held) {
-      if (h.notBefore > now) {
+      if (h.notBefore > now || (onlyId !== undefined && h.id !== onlyId)) {
         keep.push(h);
         continue;
       }
@@ -2575,7 +2672,7 @@ export class WorkerEngine {
     if (!h) return { ok: false, error: 'That handoff has already gone out or been cancelled.' };
     const now = this.now();
     this.held = this.held.map((x) => (x.id === id ? { ...x, notBefore: now } : x));
-    this.deliverDueHandoffs();
+    this.deliverDueHandoffs(this.away ? id : undefined);
     const still = this.held.find((x) => x.id === id);
     if (still) {
       return {

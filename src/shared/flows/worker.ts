@@ -1245,6 +1245,32 @@ export interface HeldHandoff {
   runId?: string;
 }
 
+/// The whole crew is off: you are on holiday, or simply offline, and nothing
+/// should start while nobody is watching. Global rather than a pause on each
+/// worker so coming back restores exactly the roster you left — who was on
+/// the bench stays there, and nobody you had paused wakes up with the rest.
+///
+/// While away no scheduled shift starts and no handoff is delivered; they are
+/// held, not dropped. Runs already in flight finish. Anything you start by
+/// hand still works — you are evidently not away if you are typing.
+export interface WorkersAway {
+  /// When you went away, epoch ms.
+  since: number;
+  /// When the crew comes back on its own, epoch ms. Absent means "until I
+  /// say so".
+  until?: number;
+}
+
+/// A return date is a promise to wake the crew, so one in the past (or so
+/// far ahead it is surely a typo) is refused rather than silently kept.
+export function validateAwayUntil(until: number | undefined, now: number): string | null {
+  if (until === undefined) return null;
+  if (!Number.isFinite(until)) return 'That return date is not a date.';
+  if (until <= now) return 'Pick a return date in the future.';
+  if (until - now > WORKER_HANDOFF_MAX_AHEAD_MS) return 'Pick a return date within the next year.';
+  return null;
+}
+
 /// Furthest ahead a handoff may be held. A date past this is almost always a
 /// mis-typed year, and holding it silently would lose it for good.
 export const WORKER_HANDOFF_MAX_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;

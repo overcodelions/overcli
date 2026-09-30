@@ -48,6 +48,7 @@ import { buildWorkQueue } from "./workQueue";
 import { PopMenu, type MenuItemDef } from "../SidebarPlaces";
 import { fundingFor } from "@shared/flows/treasury";
 import { searchWork } from "./workSearch";
+import { awayLine, morningAfter, nextMondayMorning } from "./awayMode";
 
 export const RAIL_COLLAPSED_WIDTH = 64;
 export const RAIL_EXPANDED_WIDTH = 212;
@@ -735,6 +736,7 @@ function RailFooter({ expanded }: { expanded: boolean }) {
   const starved = allocation ? starvedCount(allocation) : 0;
   return (
     <>
+      <AwayButton expanded={expanded} />
       <RailButton
         label="Shifts"
         title="When every worker's shifts fall, this week"
@@ -775,6 +777,72 @@ function RailFooter({ expanded }: { expanded: boolean }) {
         icon={<ReportIcon />}
       />
     </>
+  );
+}
+
+/// Away mode: the whole crew off duty while you are. One switch rather than
+/// pausing each worker, so coming back restores the roster exactly as you
+/// left it. The menu offers the returns people actually mean; any other date
+/// is picked on the banner the Workers pane shows while you are away.
+function AwayButton({ expanded }: { expanded: boolean }) {
+  const away = useWorkersStore((s) => s.away);
+  const goAway = useWorkersStore((s) => s.goAway);
+  const comeBack = useWorkersStore((s) => s.comeBack);
+  const now = useTickingNow(60_000);
+  const anchor = useRef<HTMLDivElement>(null);
+  // Opened beside the rail rather than below it — the rail is too narrow to
+  // hold a menu, and the footer is too near the bottom to open downward.
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const returns: MenuItemDef[] = [
+    { label: "Until I'm back", hint: "Come back by hand", onSelect: () => void goAway() },
+    { label: "Back tomorrow morning", onSelect: () => void goAway(morningAfter(Date.now(), 1)) },
+    { label: "Back Monday morning", onSelect: () => void goAway(nextMondayMorning(Date.now())) },
+    { label: "Back in a week", onSelect: () => void goAway(morningAfter(Date.now(), 7)) },
+  ];
+  const items: MenuItemDef[] = away
+    ? [
+        { label: "I'm back", hint: "Shifts restart from now", onSelect: () => void comeBack() },
+        { label: "Change return", divider: true, onSelect: () => {} },
+        ...returns,
+      ]
+    : returns;
+  return (
+    <div ref={anchor}>
+      <RailButton
+        label={away ? "Away" : "Go away"}
+        detail={expanded && away ? awayLine(away, now).replace(/^Away · /, "") : undefined}
+        title={
+          away
+            ? `${awayLine(away, now)} — no shifts start and handoffs wait`
+            : "Take the whole crew off duty — no shifts start while you're offline"
+        }
+        expanded={expanded}
+        active={false}
+        quiet={!away}
+        onClick={() => {
+          if (at) return setAt(null);
+          const r = anchor.current?.getBoundingClientRect();
+          if (r) setAt({ x: r.right + 6, y: r.top });
+        }}
+        icon={<MoonIcon />}
+        badge={away ? <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-amber-400" /> : null}
+      />
+      {at && (
+        <PopMenu
+          anchor={anchor}
+          at={at}
+          heading={away ? awayLine(away, now) : "Go away"}
+          headingDetail={
+            away
+              ? "No shifts start and handoffs wait until you're back."
+              : "No shifts start and handoffs wait. Running work finishes; anything you start by hand still runs."
+          }
+          items={items}
+          width={260}
+          onClose={() => setAt(null)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -883,6 +951,15 @@ function CalendarIcon() {
       <rect x="1.6" y="2.8" width="10.8" height="9.6" rx="1.6" />
       <path d="M1.6 5.6h10.8M4.6 1.6v2.2M9.4 1.6v2.2" />
       <rect x="4" y="7.6" width="2.4" height="2.2" rx="0.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+/// A crescent — the crew is off for the night, or the fortnight.
+function MoonIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round">
+      <path d="M11.8 8.6A5 5 0 0 1 5.4 2.2a5 5 0 1 0 6.4 6.4Z" />
     </svg>
   );
 }

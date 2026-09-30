@@ -7,7 +7,7 @@ import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 import { canonicalizeUnderRoot } from '../../shared/pathScope';
 
-import type { HeldHandoff, Worker } from '../../shared/flows/worker';
+import type { HeldHandoff, Worker, WorkersAway } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
 
 function dir(): string {
@@ -141,6 +141,34 @@ export function loadHeldHandoffs(): HeldHandoff[] {
 
 export function saveHeldHandoffs(list: HeldHandoff[]): void {
   writeAtomic(handoffsPath(), JSON.stringify(list), 'handoffs');
+}
+
+/// The crew's away state, or null when everyone is on duty. Its own file so
+/// clearing it is a delete, not an edit of something else.
+function awayPath(): string {
+  return path.join(dir(), 'away.json');
+}
+
+export function loadWorkersAway(): WorkersAway | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(awayPath(), 'utf8')) as WorkersAway;
+    if (!parsed || !Number.isFinite(parsed.since)) return null;
+    return Number.isFinite(parsed.until) ? { since: parsed.since, until: parsed.until } : { since: parsed.since };
+  } catch {
+    return null;
+  }
+}
+
+export function saveWorkersAway(away: WorkersAway | null): void {
+  if (away) {
+    writeAtomic(awayPath(), JSON.stringify(away), 'away');
+    return;
+  }
+  try {
+    fs.rmSync(awayPath(), { force: true });
+  } catch {
+    // best-effort
+  }
 }
 
 export function deleteWorker(id: string): void {

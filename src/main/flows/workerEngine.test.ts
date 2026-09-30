@@ -13,6 +13,8 @@ vi.mock('./workersStore', () => ({
   deleteWorker: vi.fn(),
   loadTreasury: vi.fn(() => null),
   saveTreasury: vi.fn(),
+  loadWorkersAway: vi.fn(() => null),
+  saveWorkersAway: vi.fn(),
 }));
 vi.mock('./workerJournal', () => ({
   appendWorkerJournalEntry: vi.fn(() => true),
@@ -53,7 +55,7 @@ vi.mock('./workerFiles', async (importOriginal) => ({
 
 import { WorkerEngine, parseFlowRequest, type WorkerEngineDeps, type WorkerParker } from './workerEngine';
 import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
-import type { HeldHandoff, Worker, WorkerJournalEntry } from '../../shared/flows/worker';
+import type { HeldHandoff, Worker, WorkerJournalEntry, WorkersAway } from '../../shared/flows/worker';
 import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
 import { compactionCutoff } from '../../shared/flows/workerCompaction';
@@ -81,6 +83,7 @@ function makeHarness(
     runHandoffOutputs?: WorkerEngineDeps['runHandoffOutputs'];
     runIdForConversation?: WorkerEngineDeps['runIdForConversation'];
     flowsFor?: WorkerEngineDeps['flowsFor'];
+    away?: WorkersAway;
   } = {},
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
@@ -96,6 +99,7 @@ function makeHarness(
   let spend = opts.spend ?? 0;
   let treasury: Treasury | null = opts.pool != null ? { monthlyUSD: opts.pool } : null;
   let held: HeldHandoff[] = [];
+  let away: WorkersAway | null = opts.away ?? null;
   let parkResult: Awaited<ReturnType<WorkerParker['parkProposal']>> = {
     ok: true,
     orchestrationId: 'orch-1',
@@ -214,6 +218,12 @@ function makeHarness(
         held = structuredClone(list);
       },
     },
+    awayStore: {
+      load: () => away,
+      save: (a) => {
+        away = a;
+      },
+    },
     generatedFlow: opts.generatedFlow,
     flowsFor: opts.flowsFor,
     clearActivity: opts.clearActivity,
@@ -263,6 +273,7 @@ function makeHarness(
     },
     treasury: () => treasury,
     held: () => held,
+    away: () => away,
     setParkResult: (r: typeof parkResult) => {
       parkResult = r;
     },
@@ -2609,6 +2620,29 @@ describe('WorkerEngine delegation', () => {
     expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.workerId === 'triage')).toBe(true);
   });
 
+  it('holds an undated handoff while the crew is away and sends it on return', async () => {
+    const h = datedHarness();
+    seedErrandReply(h, 'Tell Triage', 'Passing it on. <handoff to="Triage">Look at XYZ-6814.</handoff>');
+    h.engine.start();
+    expect(h.engine.setAway().ok).toBe(true);
+    await h.engine.runErrand(CHIEF, 'Tell Triage');
+    await h.flush();
+
+    // The errand itself ran — you typed it — but the colleague waits for you.
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.workerId === 'triage')).toBe(false);
+    expect(h.held()).toHaveLength(1);
+    expect(h.journal.find((e) => e.kind === 'delegated')?.note).toMatch(/when you're back/);
+
+    h.engine.comeBack();
+    h.engine.onHostResume();
+    await h.flush();
+    expect(h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.from)?.origin).toMatchObject({
+      workerId: 'triage',
+      errand: 'Look at XYZ-6814.',
+    });
+    expect(h.held()).toHaveLength(0);
+  });
+
   it('tells the sender when a dated handoff can no longer reach anyone', async () => {
     const h = datedHarness();
     seedErrandReply(h, 'Remind Triage', '<handoff to="Triage" on="2026-04-10">Remind them.</handoff>');
@@ -3179,5 +3213,88 @@ describe('shift wrap-up', () => {
     const { wrapUpFlowId: _drop, ...rest } = h.engine.get('worker-1')!;
     const res = h.engine.save(rest);
     expect(res.ok && res.worker.wrapUpFlowId).toBeFalsy();
+  });
+});
+
+describe('WorkerEngine away mode', () => {
+  it('starts no shift while away and says nothing is scheduled', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    const res = h.engine.setAway();
+    expect(res.ok).toBe(true);
+    expect(h.away()).toMatchObject({ since: local(2026, 3, 2, 8, 0) });
+    expect(h.emitted.some((e) => e.type === 'workersAway' && e.away)).toBe(true);
+    expect(h.engine.nextShiftAt('worker-1')).toBeNull();
+    // No return date, so nothing to wake up for at all.
+    expect(h.hasTimer()).toBe(false);
+
+    h.setNow(local(2026, 3, 5, 12, 0));
+    h.engine.onHostResume();
+    await h.flush();
+    expect(h.parked).toHaveLength(0);
+    // Quiet, not "missed": you asked for this.
+    expect(h.journal.some((e) => e.note?.startsWith('Missed a shift'))).toBe(false);
+  });
+
+  it('comes back by hand with every clock restarted from now', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    h.engine.setAway();
+    h.setNow(local(2026, 3, 9, 14, 0));
+    h.engine.comeBack();
+    await h.flush();
+
+    expect(h.away()).toBeNull();
+    expect(h.emitted.some((e) => e.type === 'workersAway' && e.away === null)).toBe(true);
+    expect(h.engine.get('worker-1')!.anchorAt).toBe(local(2026, 3, 9, 14, 0));
+    // Not a backlog of the week's shifts — the next one on the usual clock.
+    expect(h.engine.nextShiftAt('worker-1')).toBe(local(2026, 3, 10, 9, 0));
+    expect(h.parked).toHaveLength(0);
+    expect(h.journal.some((e) => e.note?.startsWith('Missed a shift'))).toBe(false);
+  });
+
+  it('comes back on its own at the return date', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    const until = local(2026, 3, 6, 9, 0);
+    expect(h.engine.setAway(until).ok).toBe(true);
+    expect(h.hasTimer()).toBe(true);
+
+    // The timer re-arms at most a minute ahead, so skip the days in between.
+    h.setNow(local(2026, 3, 6, 8, 58));
+    h.engine.onHostResume();
+    await h.flush();
+    expect(h.away()).not.toBeNull();
+    await h.advanceTo(local(2026, 3, 6, 9, 30));
+    expect(h.away()).toBeNull();
+    expect(h.notifications.some((n) => /back on duty/.test(n.title))).toBe(true);
+    // Back at 9:00 is not a 9:00 shift that was owed — it is tomorrow's.
+    expect(h.parked).toHaveLength(0);
+    await h.advanceTo(local(2026, 3, 7, 9, 0));
+    expect(h.parked).toHaveLength(1);
+  });
+
+  it('keeps a stored absence across a restart', () => {
+    const h = makeHarness({ seed: [seedWorker()], away: { since: local(2026, 3, 1, 8, 0) } });
+    h.engine.start();
+    expect(h.engine.awayState()).toEqual({ since: local(2026, 3, 1, 8, 0) });
+    expect(h.engine.nextShiftAt('worker-1')).toBeNull();
+  });
+
+  it('refuses a return date in the past', () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    expect(h.engine.setAway(local(2026, 3, 1, 9, 0)).ok).toBe(false);
+    expect(h.away()).toBeNull();
+  });
+
+  it('keeps who was paused paused on return', () => {
+    const h = makeHarness({ seed: [seedWorker(), seedWorker({ id: 'benched', name: 'Bench', enabled: false })] });
+    h.engine.start();
+    h.engine.setAway();
+    h.engine.comeBack();
+    expect(h.engine.get('benched')!.enabled).toBe(false);
+    expect(h.engine.nextShiftAt('benched')).toBeNull();
+    expect(h.engine.nextShiftAt('worker-1')).not.toBeNull();
   });
 });

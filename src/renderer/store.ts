@@ -4476,6 +4476,10 @@ export const useStore = create<StoreState>((set, get) => ({
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().applyTreasury(event.treasury, event.allocation);
       });
+    } else if (event.type === 'workersAway') {
+      void import('./workersStore').then(({ useWorkersStore }) => {
+        useWorkersStore.getState().applyAway(event.away);
+      });
     } else if (event.type === 'workerHandoffs') {
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().applyHandoffs(event.handoffs);

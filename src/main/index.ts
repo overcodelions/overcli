@@ -2583,6 +2583,11 @@ export function registerIpc(): void {
   });
   ipcMain.handle('workers:journal', (_e, { id }) => (workerEngine ? workerEngine.journalFor(id) : []));
   ipcMain.handle('workers:handoffs', () => (workerEngine ? workerEngine.heldHandoffs() : []));
+  ipcMain.handle('workers:away', () => (workerEngine ? workerEngine.awayState() : null));
+  ipcMain.handle('workers:setAway', (_e, { until }) =>
+    workerEngine ? workerEngine.setAway(until) : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
+  ipcMain.handle('workers:comeBack', () => (workerEngine ? workerEngine.comeBack() : ({ ok: true } as const)));
   ipcMain.handle('workers:cancelHandoff', (_e, { id }) =>
     workerEngine ? workerEngine.cancelHandoff(id) : { ok: false, error: 'Workers are not running.' },
   );

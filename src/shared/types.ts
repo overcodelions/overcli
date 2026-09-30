@@ -37,6 +37,7 @@ import type {
   WorkerJournalEntry,
   WorkerScorecard,
   WorkerTrustLevel,
+  WorkersAway,
 } from './flows/worker';
 import type { PortableWorker, WorkerImportNotes } from './flows/workerYaml';
 import type { PersonalizationQuestion, UserProfile } from './flows/personalize';
@@ -2686,6 +2687,13 @@ export interface IPCInvokeMap {
   /// the shift history in the Workers pane.
   'workers:journal': (args: { id: UUID }) => WorkerJournalEntry[];
   'workers:handoffs': () => HeldHandoff[];
+  /// Whether the whole crew is off duty — see `WorkersAway`. Null when on.
+  'workers:away': () => WorkersAway | null;
+  /// Go away (or move the return date). `until` omitted means until you
+  /// come back by hand.
+  'workers:setAway': (args: { until?: number }) => { ok: true; away: WorkersAway } | { ok: false; error: string };
+  /// Back on duty: every worker's clock restarts from now.
+  'workers:comeBack': () => { ok: true };
   'workers:cancelHandoff': (args: { id: string }) => { ok: true } | { ok: false; error: string };
   'workers:sendHandoffNow': (args: { id: string }) => { ok: true } | { ok: false; error: string };
   /// Return this worker to a just-hired clean slate: remove its journal, files,
@@ -3842,6 +3850,11 @@ export type MainToRendererEvent =
       /// first. Sent whenever one is held, sent, cancelled or dropped.
       type: 'workerHandoffs';
       handoffs: HeldHandoff[];
+    }
+  | {
+      /// The crew went away, came back, or moved its return date.
+      type: 'workersAway';
+      away: WorkersAway | null;
     }
   | {
       /// A worker's shift lifecycle: `active: true` when the planning turn
