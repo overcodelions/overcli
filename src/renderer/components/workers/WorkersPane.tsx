@@ -87,6 +87,7 @@ import { AttachmentChip } from "../AttachmentChip";
 import { Markdown } from "../Markdown";
 import { CopyActions } from "../CopyActions";
 import { UserBubble } from "../UserBubble";
+import { AwayBanner } from "./AwayBanner";
 import { WorkerReply, useWorkerTint } from "./WorkerReply";
 import { WorkerFilesProvider, useOpenWorkerPath } from "./workerFilesContext";
 import { ActivityStrip } from "../ActivityStrip";
@@ -273,6 +274,7 @@ export function WorkersPane() {
     // has to scroll under a header and composer that stay put, the way the
     // Chat tab works. Scrolling the whole pane took the composer with it.
     <div className="flex min-h-0 flex-1 flex-col">
+      <AwayBanner />
       {(showRosterHeader || showProgressNotices) && (
         <div className="shrink-0 px-6 pt-6">
           {showRosterHeader && (

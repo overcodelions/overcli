@@ -25,6 +25,7 @@ import type {
   WorkerPace,
   WorkerScorecard,
   WorkerTrustLevel,
+  WorkersAway,
 } from '@shared/flows/worker';
 import type { PortableWorker } from '@shared/flows/workerYaml';
 import {
@@ -186,6 +187,8 @@ interface WorkersState {
   /// by main; shown in Today so work moving between workers is never out
   /// of sight.
   heldHandoffs: HeldHandoff[];
+  /// Set while the whole crew is off duty. Pushed by main.
+  away: WorkersAway | null;
   /// The Workers pane shows the selected worker's desk, or one of the four
   /// roster-wide screens. Those four are peers of the selection rather than
   /// part of it — each is about every worker at once, so none has a worker to
@@ -454,6 +457,10 @@ interface WorkersActions {
   showReport(): void;
   applyTreasury(treasury: Treasury, allocation: TreasuryAllocation): void;
   applyHandoffs(handoffs: HeldHandoff[]): void;
+  applyAway(away: WorkersAway | null): void;
+  /// Take the crew off duty, optionally until `until` (epoch ms).
+  goAway(until?: number): Promise<boolean>;
+  comeBack(): Promise<void>;
   cancelHandoff(id: string): Promise<void>;
   sendHandoffNow(id: string): Promise<void>;
   setTreasury(monthlyUSD: number): Promise<boolean>;
@@ -800,6 +807,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   selectedWorkerId: null,
   treasury: null,
   heldHandoffs: [],
+  away: null,
   allocation: null,
   view: 'today',
   inboxWorkerId: null,
@@ -845,6 +853,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     } catch {
       // Nothing held is the honest reading of a main that cannot say.
     }
+    try {
+      set({ away: (await window.overcli.invoke('workers:away')) ?? null });
+    } catch {
+      // An older main has no away mode, so the crew is on duty.
+    }
   },
 
   applyTreasury(treasury, allocation) {
@@ -853,6 +866,25 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   applyHandoffs(handoffs) {
     set({ heldHandoffs: handoffs });
+  },
+
+  applyAway(away) {
+    set({ away });
+  },
+
+  async goAway(until) {
+    const res = await window.overcli.invoke('workers:setAway', until === undefined ? {} : { until });
+    if (!res.ok) {
+      set({ error: res.error });
+      return false;
+    }
+    set({ away: res.away });
+    return true;
+  },
+
+  async comeBack() {
+    await window.overcli.invoke('workers:comeBack');
+    set({ away: null });
   },
 
   async cancelHandoff(id) {
