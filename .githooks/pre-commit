@@ -1,2 +1,3 @@
 #!/bin/sh
-node scripts/check-no-forbidden-identities.mjs --current
+node scripts/check-no-forbidden-identities.mjs --current || exit 1
+node scripts/check-no-aws-account-ids.mjs
