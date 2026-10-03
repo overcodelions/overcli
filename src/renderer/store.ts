@@ -50,6 +50,7 @@ import { defaultFileViewMode, FileViewMode } from './filePreview';
 import { isEverydayProject, pickDocumentToShow } from '@shared/everydayProjects';
 import { documentToReveal } from './turnDocuments';
 import { isPathUnder, isSamePath } from '@shared/pathScope';
+import { workBranchAfterTurn } from '@shared/workRecords';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { suggestWorkspaceName } from '@shared/suggestWorkspaceName';
 import { appendContextNotice } from '@shared/contextNotices';
@@ -373,6 +374,7 @@ interface StoreState {
   /// off the creation path on purpose (see `newConversation`) and only ever
   /// fills a blank, so it is safe to call late.
   captureBaseBranch(conversationId: UUID, cwd: string): Promise<void>;
+  captureWorkBranch(conversationId: UUID): Promise<void>;
   newConversationInWorkspace(workspaceId: UUID): Promise<Conversation | null>;
   /// Open a fresh conversation inside an EXISTING worktree owned by
   /// something else — today a flow run's, so you can keep working in
@@ -2037,6 +2039,36 @@ export const useStore = create<StoreState>((set, get) => ({
       void get().saveProjects();
     } catch {
       /* best effort: a non-git project just leaves baseBranch undefined */
+    }
+  },
+
+  async captureWorkBranch(conversationId) {
+    const s = get();
+    let cwd: string | undefined;
+    for (const p of s.projects) {
+      const c = p.conversations.find((x) => x.id === conversationId);
+      if (c) {
+        cwd = c.worktreePath ?? p.path;
+        break;
+      }
+    }
+    // A workspace chat spans repos, so it has no one branch — unless it has
+    // a worktree of its own.
+    cwd ??= s.workspaces.flatMap((w) => w.conversations ?? []).find((x) => x.id === conversationId)?.worktreePath;
+    if (!cwd) return;
+    try {
+      const res = await window.overcli.invoke('git:currentBranch', { cwd });
+      if (!res.isRepo || !res.branch) return;
+      const conv = findConversation(get(), conversationId);
+      if (!conv) return;
+      const workBranch = workBranchAfterTurn(conv, res.branch);
+      if (workBranch === conv.workBranch) return;
+      mutateConversation(set, get, conversationId, (c) => ({ ...c, workBranch }));
+      // The full save, not a patch: clearing the field sends `undefined`,
+      // which a patch over IPC would drop. Rare — only on a branch switch.
+      void saveConversationState(get);
+    } catch {
+      /* best effort: the chat keeps whatever branch it had */
     }
   },
 
@@ -4316,6 +4348,9 @@ export const useStore = create<StoreState>((set, get) => ({
         // we already nudged in the last 10s, so this is safe to fire on
         // every completion regardless of view state.
         void window.overcli.invoke('app:notifyCompleted');
+        // The turn may have switched branch; the Work list files the chat
+        // under the branch it ended up on.
+        void get().captureWorkBranch(event.conversationId);
       }
       const state = get();
       const conv = findConversation(state, event.conversationId);

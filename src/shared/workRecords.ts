@@ -217,6 +217,18 @@ export function isWorkBranch(branch: string | undefined | null): branch is strin
   return !!branch && !TRUNK.has(branch.toLowerCase());
 }
 
+/// What `workBranch` should be once a turn ends with the checkout on
+/// `current`: the branch, if the chat moved off the one it started on, or
+/// undefined if it is still there (or back there, or on a trunk).
+export function workBranchAfterTurn(
+  c: Pick<Conversation, 'branchName' | 'baseBranch'>,
+  current: string,
+): string | undefined {
+  const started = c.branchName || c.baseBranch;
+  if (!started || current === started || !isWorkBranch(current)) return undefined;
+  return current;
+}
+
 function norm(p: string): string {
   return p.replace(/[\\/]+$/, '').toLowerCase();
 }
@@ -476,7 +488,9 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
       ownerPath: run.sourceProjectPath ?? run.projectPath,
       branch: run.branchName,
       startedAt: run.createdAt,
-      at: last?.endedAt ?? last?.startedAt ?? run.createdAt,
+      // A turn typed at one of the run's steps adds no attempt, so without
+      // `lastUserTurnAt` a run you just talked to keeps its old place.
+      at: Math.max(last?.endedAt ?? last?.startedAt ?? run.createdAt, run.lastUserTurnAt ?? 0),
       live,
       failed: kind === 'aborted',
       retained: true,
@@ -516,11 +530,11 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
       if (participantConvs.has(c.id)) continue;
       if (!c.turnCount) continue;
       const at = c.lastActiveAt ?? c.lastPromptAt ?? c.createdAt;
-      // A chat in the main checkout has no branch of its own, but the branch
-      // the checkout was on when it opened is the one it worked on — so it
-      // joins that branch's record, and that branch's PR.
-      const branch = c.branchName ?? (!c.worktreePath && isWorkBranch(c.baseBranch) ? c.baseBranch : undefined);
-      const d = draftFor(place.path, branch, `chat:${c.id}`, c.createdAt);
+      // Only a branch the chat made or moved to is its work. A chat in the
+      // main checkout stands alone: the branch the checkout happened to be on
+      // (`baseBranch`) says nothing about what the chat was for, and joining
+      // on it folded every unrelated chat typed there into that branch.
+      const d = draftFor(place.path, c.workBranch ?? c.branchName, `chat:${c.id}`, c.createdAt);
       d.updatedAt = Math.max(d.updatedAt, at);
       d.titles.push({ text: c.name, weight: 1 });
       d.chats.set(c.id, {

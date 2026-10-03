@@ -47,6 +47,11 @@ export function liveness(
       if (runNeedsYou(run, now, touchedAt)) return { state: 'needs-you', target: { type: 'run', id: run.id } };
       paused ??= { type: 'run', id: run.id };
     } else if (!TERMINAL.has(run.state.kind)) running ??= { type: 'run', id: run.id };
+    // A step answering you after the run settled: the run stays done, but
+    // its conversation is streaming.
+    else if (Object.values(run.conversationIds ?? {}).some((id) => runningChatIds.has(id))) {
+      running ??= { type: 'run', id: run.id };
+    }
   }
   for (const chat of r.chats) {
     if (runningChatIds.has(chat.id)) running ??= { type: 'chat', id: chat.id };
