@@ -399,6 +399,10 @@ export interface Conversation {
   worktreePath?: string;
   branchName?: string;
   baseBranch?: string;
+  /// The branch the chat's checkout was on after its last turn, when that is
+  /// not the one it started on — a branch switched to mid-chat. Stamped on
+  /// turn completion only, so opening an old chat never re-files it.
+  workBranch?: string;
   /// The conversation is BORROWING a worktree someone else owns — today
   /// only a flow run's (`FlowRun.worktreePath`), attached via "New chat
   /// here" on the run pane so a fresh context can keep working in the

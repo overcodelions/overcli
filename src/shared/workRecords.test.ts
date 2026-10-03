@@ -11,6 +11,7 @@ import {
   searchWorkRecords,
   titleFromPrompt,
   transcriptHitsByRecord,
+  workBranchAfterTurn,
   type WorkLogEntry,
   type WorkPlace,
 } from './workRecords';
@@ -244,17 +245,64 @@ describe('helpers', () => {
 });
 
 describe('git status', () => {
-  it('a chat in the main checkout joins the branch the checkout was on', () => {
+  it('a chat in the main checkout stands alone, whatever branch the checkout was on', () => {
     const records = buildWorkRecords({
-      places: [{ ...acme, conversations: [conv({ id: 'a', name: 'x', baseBranch: 'feat/a' }), conv({ id: 'b', name: 'y', baseBranch: 'main' })] }],
+      places: [
+        {
+          ...acme,
+          conversations: [
+            conv({ id: 'a', name: 'x', baseBranch: 'feat/a' }),
+            conv({ id: 'b', name: 'y', baseBranch: 'feat/a' }),
+            conv({ id: 'c', name: 'z', baseBranch: 'feat/a', branchName: 'feat/a', worktreePath: '/wt/a' }),
+          ],
+        },
+      ],
       runs: [],
       log: [],
       orchestrations: [],
       prsByRepo: { '/code/acme': [{ number: 9, url: 'u', state: 'MERGED', title: 'A', headRefName: 'feat/a' }] },
     });
-    const a = records.find((r) => r.chats.some((c) => c.id === 'a'));
-    expect(a?.pr?.number).toBe(9);
-    expect(records.find((r) => r.chats.some((c) => c.id === 'b'))?.branch).toBeUndefined();
+    const of = (id: string) => records.find((r) => r.chats.some((c) => c.id === id));
+    expect(records).toHaveLength(3);
+    expect(of('a')?.branch).toBeUndefined();
+    expect(of('a')?.pr).toBeUndefined();
+    expect(of('b')?.key).not.toBe(of('a')?.key);
+    // A chat on a branch of its own still joins that branch and its PR.
+    expect(of('c')?.pr?.number).toBe(9);
+  });
+
+  it('a chat that switched branch mid-conversation joins the branch it moved to', () => {
+    const records = buildWorkRecords({
+      places: [
+        {
+          ...acme,
+          conversations: [
+            conv({ id: 'a', name: 'x', baseBranch: 'master', workBranch: 'feat/b' }),
+            conv({ id: 'w', name: 'y', branchName: 'feat/a', worktreePath: '/wt/a', workBranch: 'feat/b' }),
+          ],
+        },
+      ],
+      runs: [],
+      log: [],
+      orchestrations: [],
+      prsByRepo: { '/code/acme': [{ number: 4, url: 'u', state: 'OPEN', title: 'B', headRefName: 'feat/b' }] },
+    });
+    expect(records).toHaveLength(1);
+    expect(records[0].branch).toBe('feat/b');
+    expect(records[0].pr?.number).toBe(4);
+    expect(records[0].chats.map((c) => c.id).sort()).toEqual(['a', 'w']);
+  });
+
+  it('records a branch switch only when the chat left the branch it started on', () => {
+    expect(workBranchAfterTurn({ baseBranch: 'master' }, 'feat/b')).toBe('feat/b');
+    expect(workBranchAfterTurn({ branchName: 'feat/a', baseBranch: 'main' }, 'feat/b')).toBe('feat/b');
+    // Still on, or back on, the branch it started on.
+    expect(workBranchAfterTurn({ baseBranch: 'feat/a' }, 'feat/a')).toBeUndefined();
+    expect(workBranchAfterTurn({ branchName: 'feat/a', baseBranch: 'main' }, 'feat/a')).toBeUndefined();
+    // Onto a trunk: nothing to join.
+    expect(workBranchAfterTurn({ baseBranch: 'feat/a' }, 'master')).toBeUndefined();
+    // Never knew where it started.
+    expect(workBranchAfterTurn({}, 'feat/b')).toBeUndefined();
   });
 
   it('marks a branch landed when its own commits are in the trunk, not when it was never committed to', () => {
