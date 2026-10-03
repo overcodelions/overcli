@@ -1109,6 +1109,31 @@ describe('OrchestratorImpl worker batches', () => {
     });
   });
 
+  it('launches nothing more from a worker batch queued before the crew went away', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    let awaySince: number | undefined;
+    h.engine.setCrewAwaySince(() => awaySince);
+    await parkAsWorker(h, { autoApprove: { maxItems: 3 }, maxConcurrent: 1 });
+    expect(h.started).toHaveLength(1);
+
+    awaySince = h.engine.list()[0].createdAt + 1;
+    await h.finish('run-1', 'done');
+    expect(h.started).toHaveLength(1);
+    expect(h.engine.list()[0].completedAt).toBeUndefined();
+
+    awaySince = undefined;
+    h.engine.resumeWorkerBatches();
+    await h.flush();
+    expect(h.started).toHaveLength(2);
+  });
+
+  it('launches a worker batch parked while the crew is away', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    h.engine.setCrewAwaySince(() => 0);
+    await parkAsWorker(h, { autoApprove: { maxItems: 1 } });
+    expect(h.started).toHaveLength(1);
+  });
+
   it('launches a browsing worker\'s runs with the browser switch on', async () => {
     const h = makeHarness({ producerReply: REPLY });
     await parkAsWorker(h, {

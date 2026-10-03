@@ -81,6 +81,7 @@ vi.mock('./flows/orchestrator', () => ({
       return null;
     }
     delete() {}
+    setCrewAwaySince() {}
     startBatch() {
       return Promise.resolve({ ok: false, error: 'not implemented' });
     }
