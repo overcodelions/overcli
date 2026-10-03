@@ -52,6 +52,11 @@ Three things, and nothing else originates from Overcli itself:
 3. **MCP servers you explicitly configure** — if you add an MCP server (remote
    or local), Overcli connects to it because you asked it to. Nothing is
    pre-connected without your action.
+4. **Workers you set to browse the web** — a worker with "Browse the web"
+   ticked drives your signed-in Chrome through Claude in Chrome, and on Codex
+   asks the workspace-write sandbox for network access. It runs unattended and
+   has no domain allowlist, so only turn it on for jobs that need it. It is
+   off unless you tick it.
 
 ## Permissions & approvals
 

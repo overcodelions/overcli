@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-03
+
 ### Added
 - Claude Sonnet 5.5 (`claude-sonnet-5-5`) in every model picker. It is now the default fast Claude model for flow templates, critics and Rebound's cheap preset, and flows pinned to Sonnet 5 are offered the upgrade. Sonnet 5 stays listed for CLIs that predate 5.5.
 - Search the output of every service at once: the service list's Output switch searches what they have all printed (or their log files), grouped by service, and opening a match shows that service's output already searched for it.
@@ -12,9 +14,14 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - A nag in the title bar about finished runs that left work unreviewed (#474).
 - Flow-step writes are sandboxed with macOS Seatbelt (#478).
 - Ask about code from the file pane: select lines in a file or its diff, or click a bar in the change gutter, and "Ask" quotes them (with the path, the line numbers and, for a change, what the lines replaced) into whichever composer you last used. Nothing is sent until you send it.
+- **Away mode** takes the whole worker crew offline (#569, #575). "Go away" in the Workers rail footer offers until I'm back, tomorrow morning, Monday morning or in a week (timed returns are at 9am), and a banner shows the return date with a date picker and "I'm back". While away no shift starts, worker batches queued before you left launch nothing more, and handoffs wait for you; manual shifts and errands still run, and runs already going finish. Coming back restarts every worker's clock from now, so there is no backlog of missed shifts, and paused workers stay paused.
+- **Work** replaces Recent in the sidebar (#550): chats, flow runs, batches and PRs stitched into one record per branch and place, with Needs you and Running pinned first. Search covers titles, branches, PRs, ticket keys and everything you typed in a chat or run, also from ⌘K. Finished runs stay findable after they are deleted, and "Keep working" reopens the worktrees, branches and context a piece of work used. Each repo shows whether its work is uncommitted, not pushed, pushed or in trunk, and work that reached the trunk without a PR is marked Landed.
+- **Flow steps can hand work to a colleague** (#550). A step that declares `hands_off: [Name]` sends the `<handoff>` blocks in its own output as errands when the run finishes, only to the colleagues it names, under the same caps and dated holds as shift handoffs. The shift result shows each handoff as a sender → receiver bubble.
+- **Workers can browse the web** (#547). Ticking "Browse the web" gives a worker's errands, shift planning and runs the browser: Claude in Chrome on Claude, sandbox network access on Codex. The worker editor explains the setup each backend needs, and a failed browser call shows the setup steps above the composer.
 - A handoff inbox for other tools on this machine: a JSON file dropped in `~/.overcli/inbox/` appears in the title-bar tray and as "needs you" on the workspace or project it belongs to (the smallest workspace holding the repos it names, else the project). Opening it lands on that place's start page with the report seeded in the composer; nothing is sent until you send it. Handled files move to `done/`, unreadable ones to `rejected/` with the reason.
 
 ### Changed
+- Four tabs in the top bar: Chat, Flows, Workers and Services (#550). The Orchestrator moves to the top of the Workers rail, and Usage and Local models share one menu.
 - A redrawn app icon, and the same mark used across the app (#490).
 - File listing and document-revision context walk the folder asynchronously (#506).
 - The Workers tab's sidebar is now a thin rail of worker faces in the order you set (drag or Alt+↑/↓ to reorder). Status shows as a ring or dot on the face instead of moving the worker between groups, so the list no longer jumps as work finishes. The rail expands to show names and search, and stays visible while a run is open. Clicking a face opens that worker's inbox (Today, filtered to its work); its name in the inbox or reader header opens its desk.
@@ -23,6 +30,10 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - One menu for services, opened by right-clicking a row (or several ticked rows, or a group header), the row's ···, or its pin: run, restart or stop; run from another branch, with or without pinning; pin or unpin; output, URL, log file and config folder. A pin that disagrees with where the service runs is shown in amber, leads the menu with "Move back" or "Unpin", and moving a single service by hand now clears a pin to anywhere else.
 
 ### Fixed
+- The Work list keeps up with chats (#570): talking to a flow step moves its run up, a chat in the main checkout is no longer filed under whatever branch the checkout was on, and a chat that switches branch joins that branch's record after its next turn.
+- Local file links in Codex replies, and its file citations, open in the file viewer instead of being dead links (#566).
+- A branch deleted on the remote after merging, or squash-merged into the trunk, is no longer flagged as not pushed (#566).
+- The change gutter no longer drops changed lines that start with `++` or `--`, which shifted every later mark in the file (#548).
 - Leaving a busy service's output could hang the window: the output view now draws its newest 1,500 rows and loads earlier ones as you scroll up. Search and level filters still cover every line.
 - Opening "Run services here", or any look at services after a quiet spell, could hang the window while git re-read the branch of every service folder. A branch is now re-read in the background, and a branch changed in a terminal still shows up moments later.
 - Cleaning up worktrees that belong to agent conversations, or releasing one, no longer holds the whole app while git deletes each tree.
@@ -594,7 +605,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/overcodelions/overcli/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/overcodelions/overcli/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/overcodelions/overcli/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/overcodelions/overcli/compare/v0.17.0...v0.18.0
