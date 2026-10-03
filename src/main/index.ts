@@ -695,6 +695,8 @@ export function registerIpc(): void {
     },
   });
   flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
+  // Away mode holds worker batches queued before you left (see pump).
+  orchestrator.setCrewAwaySince(() => workerEngine?.awayState()?.since);
   workerEngine.start();
   // A sleeping Mac runs no timers. Both engines arm a `setTimeout` for the
   // next due moment, and a host that sleeps across it wakes with the alarm

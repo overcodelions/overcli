@@ -114,6 +114,8 @@ function makeHarness(
     queued: 0,
   };
   let parkGate: Promise<void> | null = null;
+  /// When set, only this worker's planning turns wait on `parkGate`.
+  let parkGateFor: string | null = null;
 
   let pending: { at: number; fn: () => void } | null = null;
 
@@ -124,7 +126,9 @@ function makeHarness(
     },
     async parkProposal(args) {
       parked.push(args);
-      if (parkGate) await parkGate;
+      if (parkGate && (parkGateFor === null || (args.origin?.kind === 'worker' && args.origin.workerId === parkGateFor))) {
+        await parkGate;
+      }
       return parkResult;
     },
     async parkDirect(args) {
@@ -280,11 +284,13 @@ function makeHarness(
     setDirectResult: (r: typeof directResult) => {
       directResult = r;
     },
-    holdPark: () => {
+    holdPark: (workerId?: string) => {
       let release!: () => void;
+      parkGateFor = workerId ?? null;
       parkGate = new Promise<void>((resolve) => {
         release = () => {
           parkGate = null;
+          parkGateFor = null;
           resolve();
         };
       });
@@ -2640,6 +2646,56 @@ describe('WorkerEngine delegation', () => {
       workerId: 'triage',
       errand: 'Look at XYZ-6814.',
     });
+    expect(h.held()).toHaveLength(0);
+  });
+
+  it('sends only the one held handoff asked for while away', async () => {
+    const h = datedHarness();
+    seedErrandReply(
+      h,
+      'Remind Triage twice',
+      '<handoff to="Triage" on="2026-04-10">One.</handoff><handoff to="Triage" on="2026-04-11">Two.</handoff>',
+    );
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'Remind Triage twice');
+    await h.flush();
+    expect(h.held()).toHaveLength(2);
+
+    h.engine.setAway();
+    const first = h.held().find((x) => x.instruction === 'One.')!;
+    expect(h.engine.sendHandoffNow(first.id)).toEqual({ ok: true });
+    await h.flush();
+
+    const sent = h.parked.filter((p) => p.origin?.kind === 'worker' && p.origin.from);
+    expect(sent.map((p) => (p.origin?.kind === 'worker' ? p.origin.errand : ''))).toEqual(['One.']);
+    expect(h.held().map((x) => x.instruction)).toEqual(['Two.']);
+  });
+
+  it('puts a referral still queued behind its colleague back on hold when the crew goes away', async () => {
+    const h = datedHarness();
+    seedErrandReply(h, 'Tell Triage', 'Passing it on. <handoff to="Triage">Look at XYZ-6814.</handoff>');
+    h.engine.start();
+    // Triage is mid-turn, so the referral queues behind it.
+    const release = h.holdPark('triage');
+    const busy = h.engine.runErrand('triage', 'Something else first');
+    await h.flush();
+    await h.engine.runErrand(CHIEF, 'Tell Triage');
+    await h.flush();
+
+    h.engine.setAway();
+    release();
+    await busy;
+    await h.flush();
+
+    const referred = () => h.parked.filter((p) => p.origin?.kind === 'worker' && p.origin.from);
+    expect(referred()).toHaveLength(0);
+    expect(h.held()).toHaveLength(1);
+    expect(h.journal.some((e) => e.workerId === CHIEF && /when you're back/.test(e.note ?? ''))).toBe(true);
+
+    h.engine.comeBack();
+    h.engine.onHostResume();
+    await h.flush();
+    expect(referred()[0]?.origin).toMatchObject({ workerId: 'triage', errand: 'Look at XYZ-6814.' });
     expect(h.held()).toHaveLength(0);
   });
 

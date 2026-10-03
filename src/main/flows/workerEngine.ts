@@ -224,6 +224,8 @@ export interface WorkerParker {
   >;
   get(id: UUID): Orchestration | null;
   list(): Orchestration[];
+  /// Refill worker batches held while the crew was away.
+  resumeWorkerBatches?(): void;
 }
 
 export interface WorkerEngineDeps {
@@ -684,6 +686,7 @@ export class WorkerEngine {
     }
     this.emitAway();
     this.arm();
+    this.deps.parker.resumeWorkerBatches?.();
     return { ok: true };
   }
 
@@ -1472,9 +1475,13 @@ export class WorkerEngine {
       direct?: string;
       attachments?: Attachment[];
       from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
+      /// Checked when the turn reaches the front of the queue: true means the
+      /// caller has put the work back on hold, so skip it.
+      deferIfAway?: () => boolean;
     },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     return this.enqueue(w.id, async () => {
+      if (opts.deferIfAway?.()) return { ok: true };
       // The wait can be minutes; the worker may have been edited meanwhile.
       const fresh = this.workers.get(w.id) ?? w;
       if (this.firing.has(fresh.id)) return { ok: false, error: 'A shift is already starting.' };
@@ -2487,6 +2494,7 @@ export class WorkerEngine {
     orchestrationId: string | undefined,
   ): void {
     this.pendingReferrals.set(target.id, (this.pendingReferrals.get(target.id) ?? 0) + 1);
+    const awayAtSend = this.away?.since;
     // `manual` so the receiver's funding gate reports back as an error rather
     // than swallowing the errand and stamping cadence — a referral that died
     // on someone else's spent budget has to be visible from the sender's desk.
@@ -2497,6 +2505,15 @@ export class WorkerEngine {
         workerId: sender.id,
         workerName: sender.name,
         ...(orchestrationId ? { orchestrationId } : {}),
+      },
+      // A referral still waiting behind the colleague's current turn when you
+      // went away would start with nobody watching. It goes back on hold,
+      // delivered on the first tick after you return. One sent while already
+      // away ("send now") was meant to go, so it does.
+      deferIfAway: () => {
+        if (!this.away || this.away.since === awayAtSend) return false;
+        this.reholdForAway(sender, target, instruction, title, entryId, orchestrationId);
+        return true;
       },
     })
       // A referral that threw is a referral that did not happen, so it is
@@ -2524,6 +2541,48 @@ export class WorkerEngine {
           kind: 'failure',
         });
       });
+  }
+
+  /// Put a referral that was queued when the crew went away back on hold.
+  /// Not `holdHandoff`: the sender's journal already says it was handed
+  /// over, and the per-sender cap must not drop work that was already sent.
+  private reholdForAway(
+    sender: Worker,
+    target: Worker,
+    instruction: string,
+    title: string,
+    entryId: string,
+    orchestrationId: string | undefined,
+  ): void {
+    const now = this.now();
+    const id = `${entryId}:away`;
+    this.held = [
+      ...this.held.filter((x) => x.id !== id),
+      {
+        id,
+        fromId: sender.id,
+        fromName: sender.name,
+        toId: target.id,
+        toName: target.name,
+        instruction,
+        title,
+        notBefore: now,
+        createdAt: now,
+        ...(orchestrationId ? { orchestrationId } : {}),
+      },
+    ];
+    this.handoffStore.save(this.held);
+    this.journal.append({
+      workerId: sender.id,
+      id,
+      kind: 'delegated',
+      at: now,
+      title,
+      note: `Will hand to ${target.name} when you're back: ${instruction}`,
+      orchestrationId,
+    });
+    this.emitWorker(this.workers.get(sender.id) ?? sender);
+    this.emitHandoffs();
   }
 
   /// Keep a dated handoff until its day. Journaled on the sender now, so the

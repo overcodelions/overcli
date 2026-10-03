@@ -187,6 +187,9 @@ export class OrchestratorImpl {
   /// run back to its batch in O(1).
   private runToBatch = new Map<UUID, UUID>();
   private readonly unattended: boolean;
+  /// When the worker crew went away, if it is away. Set by the worker engine
+  /// once it exists — see `setCrewAwaySince`.
+  private crewAwaySince: () => number | undefined = () => undefined;
 
   constructor(
     private runner: RunnerManager,
@@ -759,6 +762,12 @@ export class OrchestratorImpl {
     // Paused: the queue waits for `resume`. Not a completion check either —
     // queued items keep the batch open, which is the point.
     if (o.pausedAt) return;
+    // Crew away: a worker batch queued before you left must not keep
+    // launching its items with nobody watching. One parked while away (a
+    // direct run you sent) goes ahead. `resumeWorkerBatches` refills the
+    // slots when you come back.
+    const awaySince = this.crewAwaySince();
+    if (o.origin?.kind === 'worker' && awaySince !== undefined && o.createdAt < awaySince) return;
     let launchedAny = false;
     // Loop because a slot may free up (a synchronous startRun failure)
     // while we're still filling — re-evaluate until no queued item can go.
@@ -971,6 +980,19 @@ export class OrchestratorImpl {
     }
     this.persistAndEmit(o);
     return { ok: true };
+  }
+
+  /// Wire the worker crew's away state into `pump`.
+  setCrewAwaySince(fn: () => number | undefined): void {
+    this.crewAwaySince = fn;
+  }
+
+  /// The crew is back: fill open slots in every worker batch that `pump`
+  /// held while it was away.
+  resumeWorkerBatches(): void {
+    for (const o of this.batches.values()) {
+      if (o.origin?.kind === 'worker') void this.pump(o.id);
+    }
   }
 
   /// Undo `pause`: withdraw holds not yet reached, continue the children a
