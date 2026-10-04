@@ -1805,6 +1805,23 @@ export function registerIpc(): void {
   ipcMain.handle('services:machineValueNeeds', (_e, workspaceIds: string[]) =>
     services().machineValueNeeds(Array.isArray(workspaceIds) ? workspaceIds : []),
   );
+  ipcMain.handle('services:sharedValues', (_e, workspaceIds: string[]) =>
+    services().sharedValues(Array.isArray(workspaceIds) ? workspaceIds : []),
+  );
+  ipcMain.handle('services:consolidateSharedValues', (_e, { workspaceIds, ids }) =>
+    services().consolidateSharedValues(
+      Array.isArray(workspaceIds) ? workspaceIds : [],
+      Array.isArray(ids) ? ids : [],
+    ),
+  );
+  ipcMain.handle('services:setMachineValueUsers', (_e, { name, workspaceIds, selected, form }) =>
+    services().setMachineValueUsers(
+      String(name ?? ''),
+      Array.isArray(workspaceIds) ? workspaceIds : [],
+      Array.isArray(selected) ? selected : [],
+      form?.kind === 'option' ? { kind: 'option', key: String(form.key ?? '').trim() } : { kind: 'env' },
+    ),
+  );
   ipcMain.handle('services:resolvedOptions', (_e, { workspaceId, serviceId }) =>
     services().resolvedOptions(workspaceId, serviceId),
   );

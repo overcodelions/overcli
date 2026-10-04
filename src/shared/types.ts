@@ -9,12 +9,14 @@ import type { FlowRiskFinding } from './flows/riskScan';
 import type { ImportSet, ImportedService } from './servicesImport';
 import type { WorktreeChoice } from './worktrees';
 import type { BranchChoice } from './refChoices';
+import type { MachineValueForm } from './machineValues';
 import type {
   LeaseDecision,
   MachineEntry,
   MachineValueNeed,
   PortHolderKind,
   MachineValuesView,
+  SharedValuesView,
   ServiceOption,
   ServiceBinding,
   ServiceProposal,
@@ -3095,6 +3097,21 @@ export interface IPCInvokeMap {
   'services:deleteMachineBackup': () => void;
   /// `${NAME}`s these stacks use that are not defined, and who uses each.
   'services:machineValueNeeds': (workspaceIds: string[]) => MachineValueNeed[];
+  /// Hand a machine value to exactly these services — newly chosen ones as
+  /// `NAME=${NAME}` or as an option like `-Ddatabase.port=${NAME}`.
+  'services:setMachineValueUsers': (args: {
+    name: string;
+    workspaceIds: string[];
+    selected: { workspaceId: string; serviceId: string }[];
+    form?: MachineValueForm;
+  }) => void;
+  /// Values typed identically into several services, offered as machine values.
+  'services:sharedValues': (workspaceIds: string[]) => SharedValuesView;
+  /// Move the chosen ones into the machine values and point the services at them.
+  'services:consolidateSharedValues': (args: { workspaceIds: string[]; ids: string[] }) => {
+    values: number;
+    services: number;
+  };
   /// What a service will actually start with, shared and own options merged.
   'services:resolvedOptions': (args: { workspaceId: string; serviceId: string }) => {
     key: string;

@@ -15,6 +15,7 @@
 
 import { create } from 'zustand';
 import type { WorktreeChoice } from '@shared/worktrees';
+import type { MachineValueForm } from '@shared/machineValues';
 import { emptyExceptionLog, feedException, type ExceptionLog } from '@shared/exceptions';
 import { planBulkRebind, planPinRebind } from './servicesRebindPlan';
 import { runWithConcurrency, startLayers } from './servicesStartPlan';
@@ -24,6 +25,7 @@ import type {
   LeaseDecision,
   MachineEntry,
   MachineValueNeed,
+  SharedValuesView,
   ReadinessProbe,
   RemovedServices,
   ServiceFinding,
@@ -94,6 +96,21 @@ interface ServicesState {
   /// Open the sheet for whatever these stacks still need. False when nothing
   /// is missing, so a caller can carry on.
   promptMachineNeeds(workspaceIds: string[]): Promise<boolean>;
+  /// The sheet that moves values typed into several services into the machine
+  /// values, when open. Opened from the Machine values sheet.
+  sharedSheet?: boolean;
+  openSharedSheet(): void;
+  closeSharedSheet(): void;
+  /// Inject a machine value into exactly these services.
+  setMachineValueUsers(
+    name: string,
+    selected: { workspaceId: string; serviceId: string }[],
+    form?: MachineValueForm,
+  ): Promise<void>;
+  /// Values typed identically into services across every loaded stack.
+  sharedValues(): Promise<SharedValuesView>;
+  /// Move the chosen ones; returns how many values and services changed.
+  consolidateSharedValues(ids: string[]): Promise<{ values: number; services: number }>;
   /// The service the user just pressed start on. A failure that arrives for
   /// THIS one takes them to its output; a background service dying while they
   /// read something else does not steal the pane.
@@ -275,6 +292,33 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
 
   closeMachineSheet() {
     set({ machineSheet: undefined });
+  },
+
+  sharedSheet: undefined,
+
+  openSharedSheet() {
+    set({ machineSheet: undefined, sharedSheet: true });
+  },
+
+  closeSharedSheet() {
+    set({ sharedSheet: undefined });
+  },
+
+  async setMachineValueUsers(name, selected, form) {
+    const workspaceIds = Object.keys(get().stacks);
+    await window.overcli.invoke('services:setMachineValueUsers', { name, workspaceIds, selected, form });
+    await Promise.all(workspaceIds.map((id) => get().load(id)));
+  },
+
+  sharedValues() {
+    return window.overcli.invoke('services:sharedValues', Object.keys(get().stacks));
+  },
+
+  async consolidateSharedValues(ids) {
+    const workspaceIds = Object.keys(get().stacks);
+    const result = await window.overcli.invoke('services:consolidateSharedValues', { workspaceIds, ids });
+    await Promise.all([get().loadMachine(), ...workspaceIds.map((id) => get().load(id))]);
+    return result;
   },
 
   async promptMachineNeeds(workspaceIds) {

@@ -388,6 +388,38 @@ export interface MachineValueNeed {
   services: string[];
 }
 
+/// Where a value that could become a machine value is typed in.
+export interface SharedValueUse {
+  workspaceId: string;
+  serviceId: string;
+  /// The service's name, for "used by billing-rest, acme-rest".
+  service: string;
+  kind: 'env' | 'option';
+  /// The variable or option key as the service has it — `DB_HOST`, `-Ddb.host`.
+  key: string;
+}
+
+/// A value typed identically into two or more services, offered as one
+/// machine value. A secret's `value` never crosses to the renderer.
+export interface SharedValueCandidate {
+  /// Stable across scans; what the pane sends back to say which it chose.
+  id: string;
+  name: string;
+  value?: string;
+  secret: boolean;
+  uses: SharedValueUse[];
+  /// A machine value of this name already exists: `same` holds this value and
+  /// is simply referred to, `different` holds another and cannot be used.
+  existing?: 'same' | 'different';
+}
+
+export interface SharedValuesView {
+  candidates: SharedValueCandidate[];
+  /// Names typed with different values in different services — never offered,
+  /// because a value that differs is not common.
+  differing: string[];
+}
+
 export interface MachineValuesView {
   entries: MachineEntry[];
   /// False when this machine has no keychain to encrypt secrets with. The

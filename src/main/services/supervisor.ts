@@ -21,7 +21,7 @@
 
 import path from 'node:path';
 
-import { buildCommand, missingMachineValues, resolveOptions } from './options';
+import { buildCommand, missingMachineValues, resolveOptions, substitute } from './options';
 import { debugLaunch } from './debug';
 import { leaseFor, portForOffset, type LeaseDecision, type PortClaim } from './ports';
 import type { PortOwner, ProcessMatch } from './portOwners';
@@ -786,7 +786,6 @@ export class Supervisor {
       return;
     }
 
-    const env = plan.env;
     try {
       await applyProjection(plan, { fs: this.deps.fs });
     } catch (err) {
@@ -837,7 +836,15 @@ export class Supervisor {
     // re-saving them.
     const machine = this.deps.machineValues?.() ?? {};
     const options = resolveOptions(this.specs, spec, machine);
-    const missing = missingMachineValues(options);
+    // Injected variables refer to machine values the same way options do, and
+    // a literal `${DB_HOST}` handed to the process is the same bad morning.
+    const env = Object.fromEntries(
+      Object.entries(plan.env).map(([key, value]) => [key, substitute(value, machine) ?? value]),
+    );
+    const missing = missingMachineValues([
+      ...options,
+      ...Object.entries(env).map(([key, value]) => ({ key, value, origin: 'own' as const })),
+    ]);
     if (missing.length > 0) {
       // Naming what is missing beats a stack trace from a service that started
       // with a literal `${DB_USER}` in its arguments.
