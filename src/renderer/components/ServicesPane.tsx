@@ -33,11 +33,21 @@ import type {
   ServiceOption,
   ServiceRuntime,
   ServiceSpec,
+  SharedValueCandidate,
+  SharedValuesView,
   StackView,
 } from '@shared/services';
-import { defaultReadyTimeoutSec, type TaskPreset } from '@shared/services';
+import { buildsOnJvm, defaultReadyTimeoutSec, type TaskPreset } from '@shared/services';
 import { describeDrift, driftedTasks, shortCommit, taskDrift } from '@shared/taskDrift';
-import { isSecretName, missingNamesFrom } from '@shared/machineValues';
+import {
+  isOptionKey,
+  isSecretName,
+  missingNamesFrom,
+  referencesTo,
+  SECRET_MASK,
+  suggestedOptionKey,
+  type MachineValueForm,
+} from '@shared/machineValues';
 import { hardcodedCheckouts, useCheckoutPlaceholder } from '@shared/checkoutPaths';
 import { useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
@@ -199,6 +209,7 @@ export function ServicesPane() {
       <>
         <SetUp workspaces={workspaces} projects={projects} loose={loose} />
         <MachineValuesHost />
+        <SharedValuesHost />
       </>
     );
   }
@@ -206,6 +217,7 @@ export function ServicesPane() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <MachineValuesHost />
+      <SharedValuesHost />
       <Toolbar stacks={stacks} choices={choices} />
       <HandoffBanner stacks={stacks} choices={choices} />
       <div className="flex min-h-0 flex-1">
@@ -4143,6 +4155,7 @@ export function MachineValuesSheet({
   const migrationError = useServicesStore((s) => s.migrationError);
   const backupPaths = useServicesStore((s) => s.backupPaths);
   const deleteMachineBackup = useServicesStore((s) => s.deleteMachineBackup);
+  const openSharedSheet = useServicesStore((s) => s.openSharedSheet);
   const [rows, setRows] = useState<MachineRow[]>(() => {
     // What is needed goes first, empty and waiting, marked secret by name.
     const wanted = needs
@@ -4170,6 +4183,42 @@ export function MachineValuesSheet({
   });
   const neededCount = rows.filter((r) => r.neededBy && !r.value).length;
   const [error, setError] = useState<string>();
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<MachineFilter>('all');
+
+  // Every service on screen, once: the chips and the filter both ask which of
+  // them refer to a value.
+  const stacks = useServicesStore((s) => s.stacks);
+  const services = useMemo<MachineServiceRef[]>(
+    () => Object.values(stacks).flatMap((stack) => stack.services.map((spec) => ({ workspaceId: stack.workspaceId, spec }))),
+    [stacks],
+  );
+  const usersOf = (valueName: string) => services.filter((s) => refsIn(s, services, valueName).length > 0);
+  const saved = (row: MachineRow) => machine.some((e) => e.name === name(row));
+  const missing = (row: MachineRow) => !!row.unreadable || (!!row.neededBy && !row.value);
+  const unused = (row: MachineRow) => saved(row) && usersOf(name(row)).length === 0;
+  const counts: Record<MachineFilter, number> = {
+    all: rows.length,
+    secret: rows.filter((r) => r.secret).length,
+    unused: rows.filter(unused).length,
+    missing: rows.filter(missing).length,
+  };
+  const needle = query.trim().toLowerCase();
+  const visible = rows.filter((row) => {
+    // A row just added has no name to match yet, and hiding it would make
+    // "+ Add value" look broken.
+    if (name(row) === '') return true;
+    if (filter === 'secret' && !row.secret) return false;
+    if (filter === 'unused' && !unused(row)) return false;
+    if (filter === 'missing' && !missing(row)) return false;
+    if (!needle) return true;
+    return (
+      name(row).toLowerCase().includes(needle) ||
+      (!row.secret && (row.value ?? '').toLowerCase().includes(needle)) ||
+      usersOf(name(row)).some((u) => u.spec.name.toLowerCase().includes(needle))
+    );
+  });
+  const filtered = needle !== '' || filter !== 'all';
 
   const update = (id: number, patch: Partial<MachineRow>) =>
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -4234,15 +4283,56 @@ export function MachineValuesSheet({
         </div>}
       </div>
 
-      <div className="max-h-[60vh] overflow-y-auto px-5 py-4">
+      <div className="flex items-center gap-2.5 border-b border-card px-5 py-2.5">
+        <label className="field flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="flex-shrink-0 text-ink-faint" aria-hidden>
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <input
+            className="min-w-0 flex-1 bg-transparent text-[12.5px] outline-none"
+            aria-label="Filter machine values"
+            placeholder="Filter by name, value or service"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Escape clears first; only an empty filter lets it close the sheet.
+              if (e.key === 'Escape' && query) {
+                e.stopPropagation();
+                setQuery('');
+              }
+            }}
+          />
+        </label>
+        <div className="flex items-center gap-0.5 rounded-md border border-card bg-card p-0.5">
+          {MACHINE_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              className={
+                'rounded px-2.5 py-1 text-[12px] ' +
+                (filter === f.id ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+              }
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label}{' '}
+              <span className={f.id === 'missing' && counts.missing > 0 ? 'text-amber-600 dark:text-amber-300' : 'text-ink-faint'}>
+                {counts[f.id]}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="max-h-[60vh] overflow-y-auto px-5 py-3">
         <div className="mb-2 flex items-center gap-3 px-1 text-[11.5px] font-medium uppercase tracking-wide text-ink-faint">
-          <span className="w-[36%]">Name</span>
+          <span className="w-[32%]">Name</span>
           <span className="flex-1">Value</span>
+          <span className="w-[150px]">Used by</span>
           <span className="w-8" />
         </div>
 
         <div className="flex flex-col gap-2">
-          {rows.map((row) => (
+          {visible.map((row) => (
             <MachineValueRow
               key={row.id}
               row={row}
@@ -4250,17 +4340,45 @@ export function MachineValuesSheet({
               onChange={(patch) => update(row.id, patch)}
               onPaste={(values) => addRows(values, row.id)}
               onRemove={() => setRows((rs) => rs.filter((r) => r.id !== row.id))}
+              usage={
+                // Only once saved: a service pointed at a name with no value
+                // yet cannot start.
+                saved(row) ? (
+                  <MachineValueChip name={name(row)} services={services} />
+                ) : (
+                  <span className="w-[150px] flex-shrink-0 px-2 text-[11.5px] text-ink-faint">Save to use</span>
+                )
+              }
             />
           ))}
         </div>
+        {visible.length === 0 && (
+          <div className="py-6 text-center text-[12.5px] text-ink-faint">
+            No machine values match.{' '}
+            <button
+              className="text-accent hover:underline"
+              onClick={() => {
+                setQuery('');
+                setFilter('all');
+              }}
+            >
+              Clear filter
+            </button>
+          </div>
+        )}
 
         <button
           className="svc-btn mt-3"
-          onClick={() =>
-            setRows((rs) => [...rs, { id: nextMachineRowId++, name: '', secret: false, value: '' }])
-          }
+          onClick={() => {
+            setQuery('');
+            setFilter('all');
+            setRows((rs) => [...rs, { id: nextMachineRowId++, name: '', secret: false, value: '' }]);
+          }}
         >
           + Add value
+        </button>
+        <button className="svc-btn ml-2 mt-3" onClick={openSharedSheet}>
+          Find values repeated across services…
         </button>
 
         {error && <p className="mt-3 text-[12.5px] text-red-600 dark:text-red-300">{error}</p>}
@@ -4280,6 +4398,7 @@ export function MachineValuesSheet({
 
       <div className="flex items-center gap-2 border-t border-card px-5 py-3">
         <span className="text-[11px] text-ink-faint">
+          {filtered && `${visible.filter((r) => name(r) !== '').length} of `}
           {rows.filter((r) => name(r) !== '').length} values
           {secretCount > 0 && ` · ${secretCount} secret`}
         </span>
@@ -4319,6 +4438,474 @@ export function MachineValuesSheet({
   );
 }
 
+/// Values typed identically into two or more services, offered as machine
+/// values. Only a value that is the same everywhere its name appears is
+/// offered — one that differs between services is listed, not moved.
+function SharedValuesHost() {
+  const open = useServicesStore((s) => s.sharedSheet);
+  const close = useServicesStore((s) => s.closeSharedSheet);
+  if (!open) return null;
+  return <SharedValuesSheet onClose={close} />;
+}
+
+function SharedValuesSheet({ onClose }: { onClose: () => void }) {
+  const load = useServicesStore((s) => s.sharedValues);
+  const consolidate = useServicesStore((s) => s.consolidateSharedValues);
+  const openMachineSheet = useServicesStore((s) => s.openMachineSheet);
+  const [view, setView] = useState<SharedValuesView>();
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    let live = true;
+    load()
+      .then((v) => {
+        if (!live) return;
+        setView(v);
+        setChosen(new Set(v.candidates.filter((c) => c.existing !== 'different').map((c) => c.id)));
+      })
+      .catch((err: unknown) => live && setError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      live = false;
+    };
+  }, [load]);
+
+  const toggle = (id: string) =>
+    setChosen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const candidates = view?.candidates ?? [];
+
+  return (
+    <Sheet onClose={onClose} width="w-[760px]">
+      <div className="border-b border-card px-5 py-4">
+        <div className="text-[15px] font-semibold">Shared values</div>
+        <div className="mt-1 text-[12.5px] leading-relaxed text-ink-muted">
+          Values typed identically into two or more services. Move one and it becomes a machine
+          value; each service then refers to it as{' '}
+          <span className="rounded bg-card-strong px-1 font-mono text-[12px]">${'{NAME}'}</span>, so
+          changing it is one edit.
+        </div>
+      </div>
+
+      <div className="max-h-[60vh] overflow-y-auto px-5 py-4">
+        {!view && !error && <div className="text-[12.5px] text-ink-faint">Looking…</div>}
+        {view && candidates.length === 0 && (
+          <div className="text-[12.5px] text-ink-muted">
+            Nothing is typed identically into more than one service.
+          </div>
+        )}
+        <div className="flex flex-col gap-2">
+          {candidates.map((c) => (
+            <SharedValueRow key={c.id} candidate={c} checked={chosen.has(c.id)} onToggle={() => toggle(c.id)} />
+          ))}
+        </div>
+        {view && view.differing.length > 0 && (
+          <div className="mt-4 text-[12px] leading-relaxed text-ink-faint">
+            Not offered, because services hold different values for them:{' '}
+            <span className="font-mono">{view.differing.join(', ')}</span>
+          </div>
+        )}
+        {error && <p className="mt-3 text-[12.5px] text-red-600 dark:text-red-300">{error}</p>}
+      </div>
+
+      <div className="flex items-center gap-2 border-t border-card px-5 py-3">
+        <span className="text-[11px] text-ink-faint">
+          {chosen.size} of {candidates.length} chosen
+        </span>
+        <div className="flex-1" />
+        <button className="review-btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="review-btn-primary"
+          disabled={busy || chosen.size === 0}
+          onClick={async () => {
+            try {
+              setBusy(true);
+              setError(undefined);
+              await consolidate([...chosen]);
+              // Straight to where the values now live, so the move is visible.
+              onClose();
+              openMachineSheet();
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Move {chosen.size || ''} to machine values
+        </button>
+      </div>
+    </Sheet>
+  );
+}
+
+function SharedValueRow({
+  candidate: c,
+  checked,
+  onToggle,
+}: {
+  candidate: SharedValueCandidate;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  const blocked = c.existing === 'different';
+  const services = [...new Set(c.uses.map((u) => u.service))];
+  // The keys only when they differ from the name — `-Ddb.host` is worth
+  // showing next to DB_HOST, `DB_HOST` is not.
+  const keys = [...new Set(c.uses.map((u) => u.key))].filter((k) => k !== c.name);
+  return (
+    <label
+      className={
+        'flex items-start gap-3 rounded-md border border-card px-3 py-2 ' +
+        (blocked ? 'opacity-60' : 'cursor-pointer hover:bg-card-strong')
+      }
+    >
+      <input type="checkbox" className="mt-1" checked={checked} disabled={blocked} onChange={onToggle} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="font-mono text-[12.5px] font-medium">{c.name}</span>
+          <span className="truncate font-mono text-[12px] text-ink-muted" title={c.secret ? undefined : c.value}>
+            {c.secret ? SECRET_MASK : c.value}
+          </span>
+          {c.secret && <span className="text-[11px] text-amber-600 dark:text-amber-300">🔒 secret</span>}
+        </div>
+        <div className="mt-0.5 text-[11.5px] text-ink-faint">
+          {services.length} services: {services.join(', ')}
+          {keys.length > 0 && <> · as <span className="font-mono">{keys.join(', ')}</span></>}
+        </div>
+        {c.existing === 'same' && (
+          <div className="mt-0.5 text-[11.5px] text-ink-faint">Already a machine value — services will refer to it.</div>
+        )}
+        {blocked && (
+          <div className="mt-0.5 text-[11.5px] text-amber-700 dark:text-amber-300">
+            A machine value named {c.name} already holds something else.
+          </div>
+        )}
+      </div>
+    </label>
+  );
+}
+
+type MachineFilter = 'all' | 'secret' | 'unused' | 'missing';
+
+const MACHINE_FILTERS: { id: MachineFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'secret', label: 'Secrets' },
+  { id: 'unused', label: 'Unused' },
+  { id: 'missing', label: 'Missing' },
+];
+
+interface MachineServiceRef {
+  workspaceId: string;
+  spec: ServiceSpec;
+}
+
+/// A service's references to a machine value, counting the options a copy
+/// inherits from its base.
+function refsIn(s: MachineServiceRef, services: readonly MachineServiceRef[], valueName: string) {
+  const base = s.spec.copyOf
+    ? services.find((x) => x.workspaceId === s.workspaceId && x.spec.id === s.spec.copyOf)?.spec
+    : undefined;
+  return referencesTo(s.spec, valueName, base);
+}
+
+/// How to hand a value to the next service ticked, before anyone has said:
+/// the way services already take it, else an option for a JVM-heavy list
+/// (`-Ddatabase.port`) and a variable for anything else.
+function defaultForm(valueName: string, rows: { spec: ServiceSpec; refs: ReturnType<typeof referencesTo> }[]): MachineValueForm {
+  const keys = rows.flatMap((r) => r.refs.filter((ref) => ref.kind === 'option' && !ref.inherited).map((ref) => ref.key));
+  if (keys.length > 0) {
+    const tally = new Map<string, number>();
+    for (const key of keys) tally.set(key, (tally.get(key) ?? 0) + 1);
+    return { kind: 'option', key: [...tally].sort((a, b) => b[1] - a[1])[0][0] };
+  }
+  if (rows.some((r) => r.refs.some((ref) => ref.kind === 'env'))) return { kind: 'env' };
+  const jvm = rows.filter((r) => buildsOnJvm(r.spec)).length;
+  return jvm * 2 > rows.length ? { kind: 'option', key: suggestedOptionKey(valueName) } : { kind: 'env' };
+}
+
+/// Which services use a machine value, as one column of the row, and a
+/// popover to choose them. Ticking a service injects `NAME=${NAME}` into it;
+/// unticking takes that away. A service that refers to the value from an
+/// option or inside a longer value stays ticked and locked — someone wrote
+/// that, and the picker did not.
+function MachineValueChip({ name: valueName, services }: { name: string; services: MachineServiceRef[] }) {
+  const setUsers = useServicesStore((s) => s.setMachineValueUsers);
+  const workspaces = useStore((s) => s.workspaces);
+  const projects = useStore((s) => s.projects);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [onlyUsing, setOnlyUsing] = useState(false);
+  const [form, setForm] = useState<MachineValueForm>({ kind: 'env' });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const anchor = useRef<HTMLButtonElement>(null);
+  const place = useAnchoredPanel(anchor, open, 340, 440);
+
+  const rows = services.map((s) => ({ ...s, refs: refsIn(s, services, valueName) }));
+  const formKey = form.kind === 'option' ? form.key.trim() : '';
+  const formOk = form.kind === 'env' || isOptionKey(formKey);
+  const adds = form.kind === 'env' ? `${valueName}=\${${valueName}}` : `${formKey || '-D…'}=\${${valueName}}`;
+  const using = rows.filter((r) => r.refs.length > 0);
+  const owners = new Set(rows.map((r) => r.workspaceId));
+  const ownerName = (id: string) =>
+    workspaces.find((w) => w.id === id)?.name ?? projects.find((p) => p.id === id)?.name ?? id;
+
+  const needle = query.trim().toLowerCase();
+  const shown = rows.filter(
+    (r) => (!onlyUsing || r.refs.length > 0) && (!needle || r.spec.name.toLowerCase().includes(needle)),
+  );
+  // The list's own grouping — "REST", "Processors" — under the workspace when
+  // there is more than one, in the order the list shows them.
+  const groups: { key: string; label: string; items: typeof rows }[] = [];
+  for (const row of shown) {
+    const group = row.spec.group || 'Other';
+    const key = `${row.workspaceId}\u0000${group}`;
+    let entry = groups.find((g) => g.key === key);
+    if (!entry) {
+      entry = { key, label: owners.size > 1 ? `${ownerName(row.workspaceId)} · ${group}` : group, items: [] };
+      groups.push(entry);
+    }
+    entry.items.push(row);
+  }
+
+  const apply = async (wants: (row: (typeof rows)[number]) => boolean) => {
+    const selected = rows
+      .filter(wants)
+      .map((r) => ({ workspaceId: r.workspaceId, serviceId: r.spec.id }));
+    try {
+      setBusy(true);
+      setError(undefined);
+      await setUsers(valueName, selected, form.kind === 'option' ? { kind: 'option', key: formKey } : form);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const close = () => {
+    setOpen(false);
+    setQuery('');
+    setOnlyUsing(false);
+  };
+
+  const label =
+    using.length === 0 ? 'Unused' : using.length === 1 ? using[0].spec.name : `${using.length} services`;
+
+  return (
+    <>
+      <button
+        ref={anchor}
+        className={
+          'flex h-8 w-[150px] flex-shrink-0 items-center gap-2 rounded-md border px-2.5 text-[12px] ' +
+          (open
+            ? 'border-accent bg-card-strong text-ink'
+            : 'field border-transparent hover:text-ink ' + (using.length === 0 ? 'text-ink-faint' : 'text-ink-muted'))
+        }
+        title={using.map((r) => r.spec.name).join(', ') || undefined}
+        aria-expanded={open}
+        onClick={() => {
+          if (open) return close();
+          setForm(defaultForm(valueName, rows));
+          setOpen(true);
+        }}
+      >
+        <span
+          aria-hidden
+          className={
+            'h-1.5 w-1.5 flex-shrink-0 rounded-full ' +
+            (using.length > 0 ? 'bg-green-500 dark:bg-green-400' : 'bg-card-border-strong')
+          }
+        />
+        <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+        <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+          <path d="M4 6l4 4 4-4" />
+        </svg>
+      </button>
+      {open && place && createPortal(
+        <>
+          {/* Above the sheet, which sits at z-50. */}
+          <div className="fixed inset-0 z-[60]" onClick={close} />
+          <div
+            role="dialog"
+            aria-label={`Use ${valueName} in services`}
+            className="fixed z-[61] w-[340px] overflow-hidden rounded-lg border border-card-strong bg-surface-elevated shadow-xl"
+            style={place}
+          >
+            <div className="border-b border-card p-2.5">
+              <div className="flex items-center gap-2 text-[12px] text-ink-muted">
+                <span className="min-w-0 flex-1 truncate">
+                  Pass <span className="font-mono text-ink">{valueName}</span> as
+                </span>
+                <div className="flex flex-shrink-0 items-center gap-0.5 rounded-md border border-card bg-card p-0.5">
+                  {[
+                    { kind: 'env' as const, label: 'Env var' },
+                    { kind: 'option' as const, label: 'Option' },
+                  ].map((k) => (
+                    <button
+                      key={k.kind}
+                      className={
+                        'rounded px-2 py-0.5 text-[11.5px] ' +
+                        (form.kind === k.kind ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+                      }
+                      onClick={() =>
+                        setForm(k.kind === 'env' ? { kind: 'env' } : { kind: 'option', key: suggestedOptionKey(valueName) })
+                      }
+                    >
+                      {k.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {form.kind === 'option' && (
+                <input
+                  className={
+                    'mt-2 w-full rounded-[5px] border bg-surface px-2 py-1 font-mono text-[12px] outline-none ' +
+                    (formOk ? 'border-card-strong focus:border-accent' : 'border-red-500/60')
+                  }
+                  aria-label="Option key"
+                  spellCheck={false}
+                  placeholder="-Ddatabase.port"
+                  value={form.key}
+                  onChange={(e) => setForm({ kind: 'option', key: e.target.value })}
+                />
+              )}
+              <input
+                autoFocus
+                className="mt-2 w-full rounded-[5px] border border-card-strong bg-surface px-2 py-1 text-[12px] outline-none focus:border-accent"
+                placeholder="Filter services"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Escape') return;
+                  // The popover's Escape, not the sheet's.
+                  e.stopPropagation();
+                  close();
+                }}
+              />
+              <div className="mt-2 flex gap-1">
+                {[
+                  { only: false, label: 'All services', count: rows.length },
+                  { only: true, label: 'Using it', count: using.length },
+                ].map((v) => (
+                  <button
+                    key={v.label}
+                    className={
+                      'rounded border px-2 py-0.5 text-[11.5px] ' +
+                      (onlyUsing === v.only
+                        ? 'border-card-strong bg-card-strong text-ink'
+                        : 'border-transparent text-ink-muted hover:text-ink')
+                    }
+                    onClick={() => setOnlyUsing(v.only)}
+                  >
+                    {v.label} <span className="text-ink-faint">{v.count}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="max-h-[260px] overflow-y-auto py-1">
+              {groups.length === 0 && (
+                <div className="px-3 py-2 text-[11.5px] text-ink-faint">
+                  {needle ? `No service matches “${query}”.` : 'No service uses it yet.'}
+                </div>
+              )}
+              {groups.map((group) => {
+                const free = group.items.filter((r) => !r.refs.some((ref) => !ref.exact));
+                const allOn = free.length > 0 && free.every((r) => r.refs.length > 0);
+                return (
+                  <div key={group.key}>
+                    <div className="flex items-center justify-between px-3 pb-0.5 pt-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">{group.label}</span>
+                      {free.length > 1 && (
+                        <button
+                          className="text-[11px] text-accent hover:underline disabled:opacity-50"
+                          disabled={busy || (!allOn && !formOk)}
+                          onClick={() => void apply((r) => (free.includes(r) ? !allOn : r.refs.length > 0))}
+                        >
+                          {allOn ? 'Clear' : 'Select all'}
+                        </button>
+                      )}
+                    </div>
+                    {group.items.map((r) => {
+                      const via = r.refs.find((ref) => !ref.exact);
+                      const exact = r.refs.find((ref) => ref.exact);
+                      // Ticking puts the reference in place of whatever the
+                      // service set under that key, so say so first.
+                      const replaces =
+                        r.refs.length === 0 &&
+                        (form.kind === 'env'
+                          ? r.spec.config.inject?.[valueName] !== undefined
+                          : (r.spec.options ?? []).some((o) => o.key === formKey));
+                      // Ticking needs a usable form; unticking never does.
+                      const blocked = !!via || busy || (r.refs.length === 0 && !formOk);
+                      return (
+                        <label
+                          key={`${r.workspaceId}:${r.spec.id}`}
+                          className={
+                            'flex items-center gap-2 px-3 py-1 text-[12.5px] ' +
+                            (blocked ? 'text-ink-muted' : 'cursor-pointer hover:bg-card-strong')
+                          }
+                          title={
+                            via
+                              ? via.inherited
+                                ? `Gets it from its base's ${via.key} — change it there`
+                                : `Refers to it from ${via.key}`
+                              : undefined
+                          }
+                        >
+                          <input
+                            type="checkbox"
+                            checked={r.refs.length > 0}
+                            disabled={blocked}
+                            onChange={() => void apply((x) => (x === r ? x.refs.length === 0 : x.refs.length > 0))}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{r.spec.name}</span>
+                          {via ? (
+                            <span className="flex-shrink-0 font-mono text-[10.5px] text-ink-faint">
+                              {via.inherited ? 'from base' : `via ${via.key}`}
+                            </span>
+                          ) : (
+                            exact && (
+                              <span className="flex-shrink-0 font-mono text-[10.5px] text-ink-faint">
+                                {exact.kind === 'option' ? exact.key : 'env'}
+                              </span>
+                            )
+                          )}
+                          {replaces && (
+                            <span className="flex-shrink-0 text-[10.5px] text-amber-700 dark:text-amber-300">replaces its own</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+              {error && <p className="px-3 py-1 text-[11.5px] text-red-600 dark:text-red-300">{error}</p>}
+            </div>
+            <div className="flex items-center gap-2 border-t border-card px-3 py-2 text-[11px] text-ink-faint">
+              <span className="min-w-0 flex-1 truncate" title={`Ticking adds ${adds}`}>
+                Adds <span className="font-mono text-ink-muted">{adds}</span> · on next start
+              </span>
+              <button className="svc-btn" onClick={close}>
+                Done
+              </button>
+            </div>
+          </div>
+        </>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 function name(row: MachineEntry): string {
   return row.name.trim();
 }
@@ -4333,12 +4920,15 @@ function MachineValueRow({
   onChange,
   onPaste,
   onRemove,
+  usage,
 }: {
   row: MachineRow;
   secureStorage: boolean;
   onChange: (patch: Partial<MachineRow>) => void;
   onPaste: (values: MachineValues) => void;
   onRemove: () => void;
+  /// The "Used by" column.
+  usage?: React.ReactNode;
 }) {
   const [replacing, setReplacing] = useState(false);
   const [revealed, setRevealed] = useState(false);
@@ -4350,7 +4940,7 @@ function MachineValueRow({
     <div className="flex flex-col gap-1">
     <div className="group flex items-center gap-3">
       <input
-        className="field w-[36%] min-w-0 px-2.5 py-2 font-mono text-[12px]"
+        className="field w-[32%] min-w-0 px-2.5 py-2 font-mono text-[12px]"
         placeholder="NAME"
         value={row.name}
         spellCheck={false}
@@ -4441,6 +5031,7 @@ function MachineValueRow({
         </div>
       </div>
 
+      {usage}
       <button
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-[15px] text-ink-faint opacity-50 hover:bg-card-strong hover:text-red-500 hover:opacity-100 group-hover:opacity-100"
         title="Remove"

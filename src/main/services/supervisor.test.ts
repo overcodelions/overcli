@@ -214,6 +214,29 @@ describe('Supervisor unresolved machine values', () => {
   });
 });
 
+describe('Supervisor injected machine values', () => {
+  it('fills a machine value into an injected variable', async () => {
+    const { deps, spawns } = harness({ machineValues: () => ({ DB_HOST: 'db.acme.test' }) });
+    const api = spec({ id: 'api', config: { inject: { DB_HOST: '${DB_HOST}', MODE: 'local' } } });
+    const sup = new Supervisor('mine', [api], [binding('api')], deps);
+    await sup.start('api');
+
+    expect(spawns[0].env.DB_HOST).toBe('db.acme.test');
+    expect(spawns[0].env.MODE).toBe('local');
+  });
+
+  it('refuses to start with an injected variable that names a missing value', async () => {
+    const { deps, spawns } = harness({ machineValues: () => ({}) });
+    const api = spec({ id: 'api', config: { inject: { DB_HOST: '${DB_HOST}' } } });
+    const sup = new Supervisor('mine', [api], [binding('api')], deps);
+    await sup.start('api');
+
+    expect(spawns).toHaveLength(0);
+    expect(sup.runtime('api').status).toBe('failed');
+    expect(sup.runtime('api').lastError).toContain('DB_HOST');
+  });
+});
+
 describe('shellSecretValues', () => {
   it('keeps credential-looking values under secret names', () => {
     expect(shellSecretValues({ ACME_API_TOKEN: 'shellsecret123', EDITOR: 'vim-editor' })).toEqual(['shellsecret123']);

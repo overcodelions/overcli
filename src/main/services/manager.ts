@@ -38,6 +38,7 @@ import {
   type ImportedService,
 } from './importers';
 import { resolveOptions, type ResolvedOption } from './options';
+import { differingNames, findSharedValues, referToShared, withMachineValue } from './consolidate';
 import type { PortClaim } from './ports';
 import { parseWorktreeList, type WorktreeChoice } from '../../shared/worktrees';
 import { parseBranchRefs, type BranchChoice } from '../../shared/refChoices';
@@ -73,7 +74,7 @@ import {
   unreadableSecretNames,
   type SecretCipher,
 } from './machineSecrets';
-import { isSecretName, SECRET_MASK } from '../../shared/machineValues';
+import { isOptionKey, isSecretName, SECRET_MASK, type MachineValueForm } from '../../shared/machineValues';
 import { createLogSink } from './logFile';
 import { MATCHES_TOTAL, readTail, toMatches } from './logSearch';
 import { log } from '../diagnostics';
@@ -91,6 +92,7 @@ import type {
   ServiceOption,
   ServiceProposal,
   ServiceSpec,
+  SharedValuesView,
   StackConfig,
   StackView,
   TaskRun,
@@ -1197,6 +1199,81 @@ export class ServicesManager {
     return [...needs.entries()]
       .map(([name, services]) => ({ name, services: [...services].sort() }))
       .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /// Values these stacks have typed identically into two or more services,
+  /// as the pane may see them: a secret's value stays here.
+  sharedValues(workspaceIds: readonly string[]): SharedValuesView {
+    const stacks = workspaceIds.map((id) => ({ workspaceId: id, services: this.stack(id).services }));
+    return {
+      candidates: findSharedValues(stacks, this.allMachineValues()).map(({ value, ...rest }) =>
+        rest.secret ? rest : { ...rest, value },
+      ),
+      differing: differingNames(stacks),
+    };
+  }
+
+  /// Move the chosen shared values into the machine values and point every
+  /// service that had one typed in at it. Re-scanned rather than trusting what
+  /// the pane sent: only ids cross, and a value edited since the sheet opened
+  /// is no longer the one that was chosen.
+  consolidateSharedValues(workspaceIds: readonly string[], ids: readonly string[]): { values: number; services: number } {
+    const stacks = workspaceIds.map((id) => ({ workspaceId: id, services: this.stack(id).services }));
+    const wanted = new Set(ids);
+    const chosen = findSharedValues(stacks, this.allMachineValues()).filter(
+      (c) => wanted.has(c.id) && c.existing !== 'different',
+    );
+    if (chosen.length === 0) return { values: 0, services: 0 };
+
+    // The values first: a service pointed at a name with no value cannot
+    // start, a value nobody refers to yet harms nothing.
+    const current = this.machineValues();
+    const fresh = chosen.filter((c) => c.existing !== 'same');
+    if (fresh.length > 0) {
+      this.saveMachineValues([
+        ...current.entries,
+        ...fresh.map((c) => ({ name: c.name, secret: c.secret && current.secureStorage, value: c.value })),
+      ]);
+    }
+
+    let services = 0;
+    for (const workspaceId of new Set(chosen.flatMap((c) => c.uses.map((u) => u.workspaceId)))) {
+      const stack = this.stack(workspaceId);
+      const next = stack.services.map((spec) => referToShared(spec, chosen));
+      services += next.filter((spec, i) => spec !== stack.services[i]).length;
+      this.write({ ...stack, services: next });
+    }
+    return { values: chosen.length, services };
+  }
+
+  /// Make exactly these services use a machine value. A newly chosen one is
+  /// handed it in `form` — an injected variable of the same name, or an option
+  /// such as `-Ddatabase.port`. Every other service in these stacks loses the
+  /// picker's references to it — what the pane sends is the whole selection.
+  setMachineValueUsers(
+    name: string,
+    workspaceIds: readonly string[],
+    selected: readonly { workspaceId: string; serviceId: string }[],
+    form: MachineValueForm = { kind: 'env' },
+  ): void {
+    if (!MACHINE_NAME_RE.test(name)) throw new Error(`${name} is not a name \${…} can refer to`);
+    if (form.kind === 'option' && !isOptionKey(form.key)) {
+      throw new Error(`${form.key || 'An empty key'} is not an option key — it should look like -Ddatabase.port`);
+    }
+    const wanted = new Set(selected.map((s) => `${s.workspaceId}\u0000${s.serviceId}`));
+    for (const workspaceId of workspaceIds) {
+      const stack = this.stack(workspaceId);
+      const next = stack.services.map((spec) =>
+        withMachineValue(
+          spec,
+          name,
+          wanted.has(`${workspaceId}\u0000${spec.id}`),
+          form,
+          spec.copyOf ? stack.services.find((s) => s.id === spec.copyOf) : undefined,
+        ),
+      );
+      if (next.some((spec, i) => spec !== stack.services[i])) this.write({ ...stack, services: next });
+    }
   }
 
   /// Every machine value, secrets decrypted. For launching and for the

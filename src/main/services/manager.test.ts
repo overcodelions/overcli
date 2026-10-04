@@ -252,6 +252,64 @@ describe('ServicesManager machine values', () => {
     ]);
   });
 
+  it('moves a value typed into several services into the machine values', () => {
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    const typed = { inject: { DB_HOST: 'db.acme.test', DB_PASSWORD: 'hunter2hunter2' } };
+    mgr.addService('ws1', { ...spec, id: 'a', name: 'billing-rest', config: typed }, { ref: 'master', path: repo });
+    mgr.addService('ws1', { ...spec, id: 'b', name: 'orders-rest', config: typed }, { ref: 'master', path: repo });
+
+    const view = mgr.sharedValues(['ws1']);
+    // The pane sees that a secret is shared, never what it is.
+    expect(view.candidates.map((c) => [c.name, c.value, c.secret])).toEqual([
+      ['DB_HOST', 'db.acme.test', false],
+      ['DB_PASSWORD', undefined, true],
+    ]);
+
+    expect(mgr.consolidateSharedValues(['ws1'], view.candidates.map((c) => c.id))).toEqual({ values: 2, services: 2 });
+    expect(mgr.machineValues().entries).toEqual([
+      { name: 'DB_HOST', secret: false, value: 'db.acme.test' },
+      { name: 'DB_PASSWORD', secret: true, stored: true },
+    ]);
+    for (const service of loadStack(dataDir, 'ws1').services) {
+      expect(service.config.inject).toEqual({ DB_HOST: '${DB_HOST}', DB_PASSWORD: '${DB_PASSWORD}' });
+    }
+    expect(mgr.sharedValues(['ws1']).candidates).toEqual([]);
+  });
+
+  it('injects a machine value into exactly the chosen services', () => {
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    mgr.saveMachineValues([{ name: 'DB_HOST', secret: false, value: 'db.acme.test' }]);
+    mgr.addService('ws1', { ...spec, id: 'a', name: 'billing-rest' }, { ref: 'master', path: repo });
+    mgr.addService('ws1', { ...spec, id: 'b', name: 'orders-rest' }, { ref: 'master', path: repo });
+    const injected = () =>
+      Object.fromEntries(loadStack(dataDir, 'ws1').services.map((s) => [s.id, s.config.inject?.DB_HOST]));
+
+    mgr.setMachineValueUsers('DB_HOST', ['ws1'], [{ workspaceId: 'ws1', serviceId: 'a' }]);
+    expect(injected()).toEqual({ a: '${DB_HOST}', b: undefined });
+
+    mgr.setMachineValueUsers('DB_HOST', ['ws1'], [{ workspaceId: 'ws1', serviceId: 'b' }]);
+    expect(injected()).toEqual({ a: undefined, b: '${DB_HOST}' });
+  });
+
+  it('hands a machine value to chosen services as an option', () => {
+    const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
+    mgr.saveMachineValues([{ name: 'DATABASE_PORT', secret: false, value: '5433' }]);
+    mgr.addService('ws1', { ...spec, id: 'a', name: 'billing-rest' }, { ref: 'master', path: repo });
+
+    mgr.setMachineValueUsers('DATABASE_PORT', ['ws1'], [{ workspaceId: 'ws1', serviceId: 'a' }], {
+      kind: 'option',
+      key: '-Ddatabase.port',
+    });
+    expect(loadStack(dataDir, 'ws1').services[0].options).toEqual([
+      { key: '-Ddatabase.port', value: '${DATABASE_PORT}' },
+    ]);
+    expect(mgr.resolvedOptions('ws1', 'a').map((o) => [o.key, o.value])).toEqual([['-Ddatabase.port', '5433']]);
+
+    expect(() =>
+      mgr.setMachineValueUsers('DATABASE_PORT', ['ws1'], [], { kind: 'option', key: '-Ddatabase.port=1' }),
+    ).toThrow(/not an option key/);
+  });
+
   it('masks secrets in the resolved options sent to the pane', () => {
     const mgr = new ServicesManager(dataDir, () => {}, [], fakeCipher);
     mgr.saveMachineValues([{ name: 'DB_PASSWORD', secret: true, value: 'hunter2hunter2' }]);

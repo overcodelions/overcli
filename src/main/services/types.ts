@@ -17,6 +17,8 @@ export type {
   MachineEntry,
   MachineValues,
   MachineValuesView,
+  SharedValueCandidate,
+  SharedValuesView,
   ServiceOption,
   Evidence,
   LeaseDecision,

@@ -103,3 +103,57 @@ export function missingNamesFrom(lastError: string | undefined): string[] {
   if (absent) names.push(...absent[1].split(','));
   return names.map((n) => n.trim()).filter(Boolean);
 }
+
+/// Where a service refers to a machine value. `exact` is a reference and
+/// nothing else — `NAME=${NAME}` injected, or `-Dkey=${NAME}` — the shapes the
+/// "Use in" picker adds and so the only ones it may take away. A longer value
+/// built around the reference was written by someone and stays, and so does
+/// an option a copy inherits from its base (`inherited`), which only the base
+/// can drop.
+export interface MachineValueReference {
+  kind: 'env' | 'option';
+  key: string;
+  exact: boolean;
+  inherited?: boolean;
+}
+
+type OptionLike = { key: string; value?: string; enabled?: boolean };
+
+export function referencesTo(
+  spec: { options?: OptionLike[]; config: { inject?: Record<string, string> } },
+  name: string,
+  base?: { options?: OptionLike[] },
+): MachineValueReference[] {
+  const ref = `\${${name}}`;
+  const out: MachineValueReference[] = [];
+  const own = (spec.options ?? []).filter((o) => o.enabled !== false);
+  for (const option of own) {
+    if (option.value?.includes(ref)) out.push({ kind: 'option', key: option.key, exact: option.value === ref });
+  }
+  // A copy restating a key wins over its base, so only the keys it leaves alone
+  // are inherited.
+  for (const option of base?.options ?? []) {
+    if (option.enabled === false || own.some((o) => o.key === option.key)) continue;
+    if (option.value?.includes(ref)) out.push({ kind: 'option', key: option.key, exact: false, inherited: true });
+  }
+  for (const [key, value] of Object.entries(spec.config.inject ?? {})) {
+    if (value.includes(ref)) out.push({ kind: 'env', key, exact: value === ref });
+  }
+  return out;
+}
+
+/// How the picker hands a machine value to a service it ticks: as an injected
+/// variable of the same name, or as a startup option with this key.
+export type MachineValueForm = { kind: 'env' } | { kind: 'option'; key: string };
+
+/// `DATABASE_PORT` -> `-Ddatabase.port`: the property a JVM service most
+/// likely reads it as, offered until someone types the real one.
+export function suggestedOptionKey(name: string): string {
+  return `-D${name.toLowerCase().replace(/_/g, '.')}`;
+}
+
+/// A startup option key the picker may write: a flag, with no value or space
+/// in it.
+export function isOptionKey(key: string): boolean {
+  return /^-[^\s=]+$/.test(key);
+}
