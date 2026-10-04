@@ -4,6 +4,15 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-10-04
+
+### Added
+- **Move repeated values into machine values** (#579). Machine values → "Find values repeated across services…" finds values typed identically into two or more services and moves them into one machine value the services refer to. A name whose value differs in even one service is left alone, and credential-looking values go to the Keychain.
+- A **Used by** chip on each machine value picks which services use it, passed as an env var or as an option such as `-Ddatabase.port`. The machine values sheet filters by name, value or service, with All, Secrets, Unused and Missing pills.
+
+### Fixed
+- A machine value referenced in a service's injected variables reaches the process as its value instead of the literal `${NAME}`, and a missing one stops the start with "Missing machine value" (#579).
+
 ## [0.20.0] - 2026-10-03
 
 ### Added
@@ -605,7 +614,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/overcodelions/overcli/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/overcodelions/overcli/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/overcodelions/overcli/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/overcodelions/overcli/compare/v0.18.0...v0.19.0
