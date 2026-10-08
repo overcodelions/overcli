@@ -1106,6 +1106,9 @@ describe('local config on a worktree swap', () => {
       const linked = path.join(worktree, 'billing/src/main/resources/config/application-local.properties');
       expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
       expect(fs.readFileSync(linked, 'utf8')).toContain('acme.url');
+      // The rebind's log line is written after the call returns; let it land
+      // before the folder is removed, rather than racing it (ENOTEMPTY on CI).
+      await mgr.flushLogs();
     } finally {
       fs.rmSync(worktree, { recursive: true, force: true });
     }

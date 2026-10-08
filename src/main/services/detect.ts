@@ -815,7 +815,10 @@ function resolveBuildVariable(
 ): { value: string; source?: string } | null {
   const variable = /^\$\{?([\w.]+)\}?$/.exec(raw);
   if (!variable) return { value: raw };
-  const name = variable[1].replace(/\./g, '\\.');
+  // Every metacharacter escaped, not just the dot the pattern above allows:
+  // the name goes into a RegExp, and an escape that trusts the shape of its
+  // input is one edit away from being wrong.
+  const name = variable[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const lookups: { text: string | null; source: string }[] = [
     { text: module.read('gradle.properties'), source: 'gradle.properties' },
     { text: root.read('gradle.properties'), source: 'gradle.properties' },

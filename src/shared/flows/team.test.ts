@@ -415,3 +415,11 @@ describe('checked team pieces', () => {
     expect(reply.stages[0].assignments[0].full).toBe(true);
   });
 });
+
+describe('a pack summary taken from the reply itself', () => {
+  it('leaves no tag behind, even one split by another', () => {
+    const { summary } = parsePackReply('Done. <scr<x>ipt>alert(1)</script> Shipped the fix.');
+    expect(summary).not.toMatch(/[<>]/);
+    expect(summary).toContain('Shipped the fix.');
+  });
+});

@@ -131,6 +131,12 @@ export class ServicesManager {
   /// Ignored files per main checkout, with when they were read.
   private readonly ignoredScans = new Map<string, { at: number; files: Promise<string[] | null> }>();
   private readonly supervisors = new Map<string, Supervisor>();
+
+  /// Every service log line written so far, on disk — for a caller that must
+  /// not race the fire-and-forget log writes (a test cleaning up).
+  async flushLogs(): Promise<void> {
+    await Promise.all([...this.supervisors.values()].map((s) => s.flushLogs()));
+  }
   /// One queue for every workspace's JVM builds: the cores are shared.
   private readonly launchGate = new LaunchGate(defaultLaunchLimit(os.cpus().length));
   /// Workspaces already looked at for services that outlived the app.

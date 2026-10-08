@@ -193,6 +193,11 @@ export const LATE_READY_INTERVAL_MS = 20_000;
 export const LATE_READY_BUDGET_MS = 10 * 60_000;
 
 export class Supervisor {
+  /// Every log line written so far, on disk. See LogSink.idle.
+  async flushLogs(): Promise<void> {
+    await this.deps.logSink?.idle?.();
+  }
+
   private readonly procs = new Map<string, SpawnedProcess>();
   /// Which launch of each service is the current one, while it waits for a
   /// turn at the gate.

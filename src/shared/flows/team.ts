@@ -1322,7 +1322,10 @@ export function parsePackReply(text: string): { summary: string; files: Array<{ 
 }
 
 function firstParagraph(text: string): string {
-  const clean = text.replace(/<[^>]+>/g, '').trim();
+  // Tags out, then any angle bracket left over: one pass of a tag pattern can
+  // leave a tag behind in crafted text ("<scr<x>ipt>"), and this summary is
+  // shown to you.
+  const clean = text.replace(/<[^>]*>/g, ' ').replace(/[<>]/g, ' ').trim();
   const para = clean.split(/\n\s*\n/).find((p) => p.trim() && !p.trim().startsWith('#')) ?? '';
   return para.trim().slice(0, 600);
 }

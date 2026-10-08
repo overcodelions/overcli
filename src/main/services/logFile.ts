@@ -17,6 +17,10 @@ export const LOG_FILE_LIMIT = 20 * 1024 * 1024;
 export interface LogSink {
   write(serviceId: string, line: string): void;
   close(serviceId: string): Promise<void>;
+  /// Resolves once every line written so far is on disk. Writes are
+  /// fire-and-forget; this is for whoever must not race them (a test about
+  /// to delete the folder).
+  idle?(): Promise<void>;
 }
 
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -73,5 +77,8 @@ export function createLogSink(
       void flush(serviceId);
     },
     async close(serviceId) { await flush(serviceId); await pending.get(serviceId); },
+    async idle() {
+      while (pending.size > 0) await Promise.all([...pending.values()]);
+    },
   };
 }
