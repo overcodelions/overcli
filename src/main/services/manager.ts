@@ -21,7 +21,7 @@ import { promisify } from 'node:util';
 import { nodeProbes, spawnService } from './adapter';
 import { defaultLaunchLimit, LaunchGate } from './launchGate';
 import { defaultDebugPort, debugKindFor, ensureGradleDebugInit } from './debug';
-import { detectServices, type RepoReader } from './detect';
+import { detectServices, proposalFor, type RepoReader } from './detect';
 import {
   factorByModule,
   parseCompose,
@@ -102,6 +102,7 @@ import type {
   OutputMatch,
   PortHolderKind,
   ReadinessProbe,
+  ReadyCandidate,
   RemovedServices,
   TaskPreset,
 } from '../../shared/services';
@@ -535,7 +536,7 @@ export class ServicesManager {
   private keepEditedCommand(
     workspaceId: string,
     spec: ServiceSpec,
-    from: { stated: boolean; detected?: readonly string[] },
+    from: { stated: boolean; detected: readonly (readonly string[])[] },
   ): ServiceSpec {
     const existing = this.stack(workspaceId).services.find((s) => s.id === spec.id);
     if (!existing || existing.command.length === 0) return spec;
@@ -543,7 +544,9 @@ export class ServicesManager {
       !!b && a.length === b.length && a.every((arg, i) => arg === b[i]);
     const typed =
       existing.commandEdited ||
-      (!from.stated && !same(existing.command, from.detected) && !same(existing.command, spec.command));
+      (!from.stated &&
+        !from.detected.some((d) => same(existing.command, d)) &&
+        !same(existing.command, spec.command));
     return typed ? { ...spec, command: existing.command, commandEdited: true } : spec;
   }
 
@@ -614,6 +617,25 @@ export class ServicesManager {
     const binding = stack.bindings.find((b) => b.serviceId === serviceId);
     if (!spec || !binding) return [];
     return taskPresets(fsRepoReader(binding.path), { name: slug(spec.name), subpath: spec.subpath });
+  }
+
+  /// The readiness probes detection would consider for this service, read
+  /// fresh from the checkout it is bound to — so the ready editor can offer
+  /// `/status` when `/actuator/health` turned out to answer 401.
+  readyCandidates(workspaceId: string, serviceId: string): ReadyCandidate[] {
+    const stack = this.stack(workspaceId);
+    const spec = stack.services.find((s) => s.id === serviceId);
+    const binding = stack.bindings.find((b) => b.serviceId === serviceId);
+    if (!spec || !binding || spec.task) return [];
+    try {
+      const found = proposalFor(detectServices(fsRepoReader(binding.path), spec.name), spec);
+      // Probes on the configured port only: a stack offset moves the process,
+      // and the probe moves with it at spawn, not here.
+      return found?.readyCandidates ?? [];
+    } catch (err) {
+      log('warn', 'services', `Could not read ready candidates for ${spec.name}`, err);
+      return [];
+    }
   }
 
   /// A task in the same checkout as this service, and — usually — waited for
@@ -1480,14 +1502,23 @@ export class ServicesManager {
       const stated = first?.command !== undefined;
       // A Tiltfile helper's own shell line comes last: detection knows the
       // module, but Apache-served checkouts and the like have nothing to detect.
+      // The start line the file hands its helper beats both: `ng serve --ssl
+      // --ssl-cert …` is what the app needs, and detection's `npm run start`
+      // is only package.json's guess at it.
+      const underNode = (argv: string[]) =>
+        first?.nodeVersion ? withNodeVersion(argv, first.nodeVersion) : argv;
       const command =
         first?.command ??
-        (detected && first?.nodeVersion ? withNodeVersion(detected, first.nodeVersion) : detected) ??
+        (first?.startCommand ? underNode(first.startCommand) : undefined) ??
+        (detected ? underNode(detected) : undefined) ??
         first?.helperCommand ??
         [];
       // Whose command ended up on the spec, which is also whose directory it
       // has to run in.
-      const usingDetected = !stated && detected !== undefined;
+      // What an import may have saved before without anyone typing it:
+      // detection's command, bare or under the file's Node.
+      const generated = detected ? [detected, underNode(detected)] : [];
+      const usingDetected = !stated && first?.startCommand === undefined && detected !== undefined;
       const names = factored.perService.map((entry) => entry.service.name);
 
       // Nowhere to put it and nothing to run: a service bound to the wrong
@@ -1556,7 +1587,7 @@ export class ServicesManager {
           ? { source: first.source, project: args.projectName, excerpt: first.excerpt }
           : undefined,
       };
-      this.addService(workspaceId, this.keepEditedCommand(workspaceId, baseSpec, { stated, detected }), {
+      this.addService(workspaceId, this.keepEditedCommand(workspaceId, baseSpec, { stated, detected: generated }), {
         ref: this.readRef(place.path),
         path: place.path,
       });
@@ -1583,7 +1614,7 @@ export class ServicesManager {
               options: applyMachineValues(entry.own, secrets),
               debugPort: entry.service.debugPort,
             },
-            { stated, detected },
+            { stated, detected: generated },
           ),
           { ref: this.readRef(place.path), path: place.path },
         );

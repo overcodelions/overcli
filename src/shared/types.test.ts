@@ -17,6 +17,7 @@ describe('DEFAULT_SETTINGS', () => {
       defaultShowToolActivity: false,
       autoDowngrade: true,
       theme: 'system',
+      uiScale: 1,
       sidebarWidth: 260,
       editorPaneWidth: 540,
       explorerTreeWidth: 280,

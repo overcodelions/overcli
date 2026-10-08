@@ -18,6 +18,7 @@ import { EFFORT_BACKENDS } from '@shared/effort';
 import type { UserProfile } from '@shared/flows/personalize';
 import { Group, SheetActionButton } from './settingsChrome';
 import { LABS, labOn, type LabKey } from '@shared/labs';
+import { UI_SCALE_STEPS } from '@shared/uiScale';
 import { ConversationsPane } from './ConversationsPane';
 import { AutoTidyPane } from './AutoTidyPane';
 
@@ -280,6 +281,12 @@ function GeneralPane({ local, patch }: { local: AppSettings; patch: (p: Partial<
     <div>
       <Group title="Appearance" description="Choose how overcli looks. System follows your OS setting.">
         <ThemePicker value={local.theme} onChange={(v) => patch({ theme: v })} />
+        <Row
+          label="Interface size"
+          help="Scales all text and controls. ⌘/Ctrl + and − change it from anywhere."
+        >
+          <UiScalePicker value={local.uiScale} onChange={(v) => patch({ uiScale: v })} />
+        </Row>
       </Group>
       <RememberedFacts />
       <Group title="Chat display">
@@ -321,6 +328,29 @@ function ThemePicker({ value, onChange }: { value: ThemePreference; onChange: (v
         >
           {o.swatch}
           <span className="text-[11px] text-ink-muted">{o.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/// A value between steps (hand-edited, say) highlights nothing rather than
+/// pretending to be the nearest step.
+function UiScalePicker({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <div className="flex gap-0.5 p-0.5 rounded-md border border-card-strong w-fit">
+      {UI_SCALE_STEPS.map((step) => (
+        <button
+          key={step}
+          onClick={() => onChange(step)}
+          className={
+            'text-[11px] px-2.5 py-1 rounded transition-colors ' +
+            (Math.abs(value - step) < 1e-6
+              ? 'bg-accent/10 text-accent'
+              : 'text-ink-muted hover:text-ink hover:bg-card-strong')
+          }
+        >
+          {Math.round(step * 100)}%
         </button>
       ))}
     </div>

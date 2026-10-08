@@ -284,6 +284,18 @@ export interface ServiceRuntime {
   /// pull on the same branch is still visibly older than the checkout.
   ranCommit?: string;
   finishedAt?: number;
+  /// While `unready`: the HTTP status the probe last got back, if it got one.
+  /// "Not answering" and "answering 401" are different problems — the second
+  /// means the app is up and the probe is pointed at a path it may not see —
+  /// and a bare "slow to start" hid which one this was.
+  probeStatus?: number;
+  /// While `unready`: one sentence on why the probe is failing and what to do
+  /// about it, worded in main so the pane never has to reason about statuses.
+  probeHint?: string;
+  /// While `unready`: overcli has stopped asking. A probe that will never pass
+  /// is not polled forever — each attempt is a request the app logs, and a
+  /// secured app logs a stack trace for every 401.
+  probeGaveUp?: boolean;
 }
 
 /// A port held by something, and by whom — for the sentence shown when two
@@ -320,9 +332,21 @@ export interface Evidence {
   source?: string;
 }
 
+/// One probe detection would consider, and the file that suggested it. A
+/// proposal picks one; the rest are offered beside the ready editor, because
+/// the right answer for a secured app is often the second-best guess.
+export interface ReadyCandidate {
+  probe: ReadinessProbe;
+  why: string;
+  source?: string;
+}
+
 export interface ServiceProposal {
   spec: Omit<ServiceSpec, 'id'>;
   evidence: Evidence[];
+  /// Every probe worth considering, the chosen one first. Absent when
+  /// detection had nothing to weigh.
+  readyCandidates?: ReadyCandidate[];
   /// How much came from the repo rather than from a default. `low` means we
   /// recognised the ecosystem but guessed the specifics — worth a look before
   /// accepting.

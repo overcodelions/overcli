@@ -470,7 +470,7 @@ function RecentUsagePanel({ recent }: { recent: RecentUsage }) {
                     <div className="min-w-0">
                       <div className="truncate max-w-[340px]">{nameFor(s, s.id)}</div>
                       <div className="text-[11px] text-ink-faint tabular-nums">
-                        {leafName(s.projectPath)} · {formatClock(s.firstTs)}–{formatClock(s.lastTs)}
+                        {s.context ?? leafName(s.projectPath)} · {formatClock(s.firstTs)}–{formatClock(s.lastTs)}
                       </div>
                     </div>
                   </div>

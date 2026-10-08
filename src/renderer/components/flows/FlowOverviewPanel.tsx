@@ -82,7 +82,13 @@ export function FlowOverviewPanel({
         <p className="text-sm text-ink-muted leading-relaxed">{flow.description}</p>
       )}
       {running ? (
-        <FlowRunLauncher flow={flow} onClose={() => setRunning(false)} />
+        // `shrink-0`: this column is a fixed-height scroller, and the
+        // launcher's card is `overflow-hidden`, which drops its min-height
+        // to 0 — on a flow tall enough to overflow, flex shrank it to a
+        // 1px ring and Run looked like it did nothing.
+        <div className="shrink-0">
+          <FlowRunLauncher flow={flow} onClose={() => setRunning(false)} />
+        </div>
       ) : (
         <div className="flex items-center gap-2.5">
           <button

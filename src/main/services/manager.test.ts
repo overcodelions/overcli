@@ -796,6 +796,51 @@ describe('importing services that live in another project', () => {
     ]);
   });
 
+  it("runs the start line a Tiltfile hands its helper, not detection's guess", () => {
+    // admin-console: detection reads `npm run start` out of package.json, which
+    // serves plain http. The Tiltfile's own line carries --ssl and a styles
+    // prep, and the app is useless without them.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'acme-admin-console-'));
+    try {
+      fs.writeFileSync(path.join(home, 'package.json'), JSON.stringify({ scripts: { start: 'ng serve' } }));
+      fs.writeFileSync(path.join(home, 'angular.json'), '{}');
+      const { mgr } = manager();
+      const service = {
+        name: 'admin-console',
+        repoHint: path.basename(home),
+        nodeVersion: 'v12.22.5',
+        options: [],
+        env: {},
+        source: 'tiltfile' as const,
+      };
+      const args = (startCommand?: string[]) => ({
+        projectId: 'tilt',
+        projectPath: repo,
+        projectName: 'acme-local-dev',
+        services: [{ ...service, startCommand }],
+        siblings: [{ id: 'acme-admin', name: 'admin-console', path: home }],
+      });
+
+      // What an import before start lines were read saved.
+      mgr.importServices('ws1', args());
+      expect(mgr.view('ws1').services[0].command[2]).toContain('nvm use v12.22.5 && exec npm run start');
+
+      // Importing again replaces it: nobody typed that.
+      mgr.importServices('ws1', args(['sh', '-c', 'npm run styles && ng serve --ssl']));
+      const [svc] = mgr.view('ws1').services;
+      expect(svc.command).toEqual([
+        'sh',
+        '-c',
+        '. "${NVM_DIR:-$HOME/.nvm}/nvm.sh" && nvm use v12.22.5 && npm run styles && ng serve --ssl',
+      ]);
+      expect(svc.commandEdited).toBeFalsy();
+      // Still the Angular app detection found: its readiness, its debugger.
+      expect(svc.runner).toBe('ng-serve');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to the Tiltfile helper command when nothing is detected', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-portal-'));
     try {

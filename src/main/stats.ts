@@ -24,6 +24,7 @@ import {
   ProjectStats,
   QuotaWindow,
   StatsReport,
+  RecentSession,
 } from '../shared/types';
 import { logSilent } from './diagnostics';
 import { recordDailyHistory } from './statsHistory';
@@ -40,7 +41,7 @@ import { loadAllRuns } from './flows/runsStore';
 import { loadRunSummaries, RunSummary } from './flows/runSummaryLog';
 import { readOllamaUsage } from './ollamaUsageLog';
 import { Store } from './store';
-import { classifyProject, groupProjects, CoordinatorRun, GroupingContext } from './statsGrouping';
+import { classifyProject, describeSessionPath, groupProjects, CoordinatorRun, GroupingContext } from './statsGrouping';
 import { flowRunOwnerPath } from '../shared/flows/schema';
 
 interface BackendAgg {
@@ -216,7 +217,7 @@ export function computeStats(opts: ComputeStatsOptions = {}): StatsReport {
     quotas: buildQuotas(byBackend, undefined, homeDir),
     flowImpact: computeFlowImpact(flowRuns, runSummaries),
     daily: filledDaily,
-    recent: computeRecentUsage(recentTranscripts, now, claudeLimitWindow()),
+    recent: nameRecentSessions(computeRecentUsage(recentTranscripts, now, claudeLimitWindow()), groupCtx),
   };
 }
 
@@ -1061,6 +1062,23 @@ function safeLoadFlowRuns(): import('../shared/flows/schema').FlowRun[] {
   }
 }
 
+/// Give each recent session a name and an owning project where its own
+/// transcript has none — worker and team runs, which would otherwise show as
+/// their run folder's id. A transcript's own title still wins.
+function nameRecentSessions<T extends { sessions: RecentSession[] }>(recent: T, ctx: GroupingContext): T {
+  return {
+    ...recent,
+    sessions: recent.sessions.map((s) => {
+      const named = describeSessionPath(s.projectPath, ctx);
+      return {
+        ...s,
+        ...(s.title ? {} : named.title ? { title: named.title } : {}),
+        context: named.context,
+      };
+    }),
+  };
+}
+
 /// Names for the rollup: the user's own project + workspace names, plus
 /// what launched each coordinator root.
 ///
@@ -1092,6 +1110,8 @@ function buildGroupingContext(
     coordinators.set(run.id.toLowerCase(), {
       flowName: run.flowSnapshot?.name || run.flowId,
       ownerPath: flowRunOwnerPath(run),
+      ...(run.workerName ? { workerName: run.workerName } : {}),
+      ...(run.title ? { title: run.title } : {}),
     });
   }
   return { homeDir, projects, workspaces, coordinators };

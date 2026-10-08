@@ -18,7 +18,7 @@
 // treats a Spring module and an Apache vhost identically, so a stack nobody
 // taught us still works. You just type the command once yourself.
 
-import type { Evidence, ReadinessProbe, RunnerKind, ServiceProposal } from './types';
+import type { Evidence, ReadinessProbe, ReadyCandidate, RunnerKind, ServiceProposal } from './types';
 import { defaultDebugPort, debugKindFor } from './debug';
 
 export type { Evidence, ServiceProposal };
@@ -62,6 +62,27 @@ export function detectServices(repo: RepoReader, name: string): ServiceProposal[
 /// The first service in a checkout, for callers that want just one.
 export function detectService(repo: RepoReader, name: string): ServiceProposal | null {
   return detectServices(repo, name)[0] ?? null;
+}
+
+/// The proposal that describes an existing service, for asking detection a
+/// question about a spec it did not just produce. The same module, launched
+/// the same way, wins; then the same port; then the only proposal there is.
+export function proposalFor(
+  proposals: readonly ServiceProposal[],
+  spec: { runner: RunnerKind; subpath?: string; command: readonly string[]; port?: number },
+): ServiceProposal | null {
+  const sameModule = proposals.filter(
+    (p) => p.spec.runner === spec.runner && (p.spec.subpath ?? '') === (spec.subpath ?? ''),
+  );
+  // A Gradle module is told apart by its task, `:billing-rest:bootRun`.
+  const sameTask = sameModule.find((p) => p.spec.command[1] === spec.command[1]);
+  if (sameTask) return sameTask;
+  if (spec.port !== undefined) {
+    const samePort = proposals.find((p) => p.spec.port === spec.port);
+    if (samePort) return samePort;
+  }
+  if (sameModule.length === 1) return sameModule[0];
+  return proposals.length === 1 ? proposals[0] : null;
 }
 
 // ── module enumeration ──────────────────────────────────────────────────────
@@ -304,21 +325,15 @@ function detectSpringModule(
   });
 
   const actuator = /spring-boot-starter-actuator/.test(build);
-  const ready: ReadinessProbe =
+  const readyCandidates =
     port === undefined
-      ? { kind: 'none' }
-      : actuator
-        ? { kind: 'http', path: '/actuator/health', port }
-        : { kind: 'tcp', port };
+      ? undefined
+      : springReadyCandidates({ root, module, relative, build, buildFile, port, profile: profile?.name, actuator });
+  const ready: ReadinessProbe = readyCandidates?.[0].probe ?? { kind: 'none' };
   evidence.push({
     field: 'ready',
-    why:
-      port === undefined
-        ? 'nothing to probe — ready as soon as it starts'
-        : actuator
-          ? 'actuator starter present'
-          : 'no actuator — falling back to the port opening',
-    source: actuator && port !== undefined ? relative(buildFile) : undefined,
+    why: readyCandidates ? readyCandidates[0].why : 'nothing to probe — ready as soon as it starts',
+    source: readyCandidates?.[0].source,
   });
 
   const devtools = /spring-boot-devtools/.test(build);
@@ -363,6 +378,7 @@ function detectSpringModule(
       },
     },
     evidence,
+    readyCandidates,
     confidence: found ? 'high' : viaConvention ? 'low' : 'medium',
   };
 }
@@ -487,6 +503,472 @@ function findSpringPort(
     if (own) return own;
   }
   return search(EXTENSIONS.map((ext) => `application.${ext}`));
+}
+
+// ── Spring readiness ────────────────────────────────────────────────────────
+//
+// "The actuator starter is on the classpath, so probe /actuator/health" is
+// right for a fresh Boot 3 app and wrong for most of the ones that have been
+// around a while. Boot 1 serves the endpoint at `/health`; a
+// `management.context-path` moves it; a `management.port` moves it to another
+// port entirely; and an app with its own security filter answers 401 to
+// anything not on its anonymous list. Each of those turned a working service
+// into one that read "unready" forever while the probe filled its log with a
+// stack trace per attempt.
+//
+// So the probe is chosen from what the code says, as a ranked list of
+// candidates, each with the file that suggested it — and the list is kept, so
+// the ready editor can offer the runner-up when the first guess is wrong.
+
+/// Path segments that name a liveness endpoint when a controller maps them.
+const HEALTHY_NAMES = new Set(['status', 'health', 'healthcheck', 'healthz', 'ping', 'heartbeat', 'alive']);
+
+/// How far a source walk goes. Detection runs on import over whole checkouts;
+/// a monolith with ten thousand classes must not stall it.
+const WALK_MAX_ENTRIES = 4_000;
+const WALK_MAX_READS = 400;
+
+interface Found {
+  value: string;
+  source: string;
+}
+
+interface Ranked extends ReadyCandidate {
+  score: number;
+}
+
+export interface SpringReadyInput {
+  root: RepoReader;
+  module: RepoReader;
+  /// Module-relative path to checkout-relative, for evidence.
+  relative(file: string): string;
+  build: string;
+  buildFile: string;
+  port: number;
+  profile?: string;
+  actuator: boolean;
+}
+
+/// Every probe worth considering for a Spring module, best first. Never empty:
+/// the port opening is always a candidate, and the floor.
+export function springReadyCandidates(input: SpringReadyInput): ReadyCandidate[] {
+  const { module, relative, port } = input;
+  const prop = (...keys: string[]) => {
+    const found = springProperty(module, input.profile, keys);
+    return found ? { ...found, source: relative(found.source) } : null;
+  };
+  const version = springBootVersion(input.root, module, input.build, input.buildFile, relative);
+  const security = springSecurity(module, input.build, relative);
+  const anonymous = (path: string) => security.anonymous.find((a) => antMatches(a.pattern, path));
+  const ranked: Ranked[] = [];
+
+  const serverContext = prop('server.servlet.context-path', 'server.context-path');
+  const appPrefix = trimSlash(serverContext?.value ?? '');
+
+  // Controllers that map something that sounds like a liveness endpoint.
+  const seen = new Set<string>();
+  for (const mapping of controllerHealthMappings(module, relative)) {
+    // A path variable cannot be probed, and `/partners/{id}/status` is a
+    // business endpoint that happens to end in a liveness word.
+    if (seen.has(mapping.value) || mapping.value.includes('{')) continue;
+    const open = anonymous(mapping.value);
+    // Nested and behind a login (`/connectors/slack/status`) is about
+    // something else; only a top-level one is worth offering unprotected.
+    if (!open && mapping.value.split('/').filter(Boolean).length > 1) continue;
+    seen.add(mapping.value);
+    ranked.push({
+      probe: { kind: 'http', port, path: appPrefix + mapping.value },
+      why: open
+        ? `a controller maps ${mapping.value}, and the security config lets anyone reach it (${open.source})`
+        : security.secured
+          ? `a controller maps ${mapping.value}, but the app is secured and nothing marks it anonymous — likely a 401`
+          : `a controller maps ${mapping.value}`,
+      source: mapping.source,
+      score: open ? 100 : security.secured ? 20 : 60,
+    });
+  }
+
+  // An anonymous exact path that names a liveness endpoint, even without the
+  // controller in this module — it often lives in a shared library.
+  for (const open of security.anonymous) {
+    const path = open.pattern;
+    if (!/^\/[\w\-/]*$/.test(path) || seen.has(path)) continue;
+    const last = path.split('/').filter(Boolean).pop() ?? '';
+    if (!HEALTHY_NAMES.has(last.toLowerCase())) continue;
+    seen.add(path);
+    ranked.push({
+      probe: { kind: 'http', port, path: appPrefix + path },
+      why: `the security config lets anyone reach ${path}`,
+      source: open.source,
+      score: 80,
+    });
+  }
+
+  if (input.actuator) {
+    const managementPort = numberOf(prop('management.server.port', 'management.port'));
+    const separate = managementPort !== undefined && managementPort > 0 && managementPort !== port;
+    const probePort = separate ? managementPort : port;
+    const portNote = separate ? ` on the management port (${prop('management.server.port', 'management.port')?.source})` : '';
+
+    const paths: { path: string; why: string; source?: string; sure: boolean }[] = [];
+    if (version && version.major === 1) {
+      const context = prop('management.context-path', 'management.contextpath');
+      const base = trimSlash(context?.value ?? '');
+      paths.push({
+        path: `${base}/health`,
+        why: context
+          ? `Spring Boot ${version.value} serves health at /health, under management.context-path ${base}`
+          : `Spring Boot ${version.value} serves health at /health, not /actuator/health`,
+        source: context?.source ?? version.source,
+        sure: true,
+      });
+    } else {
+      const basePath = prop('management.endpoints.web.base-path');
+      const managementContext = separate
+        ? prop('management.server.servlet.context-path', 'management.server.base-path')
+        : null;
+      const base = basePath ? trimSlash(basePath.value) : '/actuator';
+      const prefix = trimSlash(managementContext?.value ?? '');
+      paths.push({
+        path: `${prefix}${base}/health`,
+        why: version
+          ? basePath || managementContext
+            ? `Spring Boot ${version.value} with a configured actuator path`
+            : `Spring Boot ${version.value} serves health at /actuator/health`
+          : 'actuator starter present',
+        source: basePath?.source ?? managementContext?.source ?? version?.source ?? relative(input.buildFile),
+        sure: version !== null,
+      });
+      if (!version) {
+        paths.push({
+          path: '/health',
+          why: 'actuator starter present — /health if this is Spring Boot 1.x',
+          source: relative(input.buildFile),
+          sure: false,
+        });
+      }
+    }
+
+    for (const { path, why, source, sure } of paths) {
+      // The app's own prefix applies when the actuator shares its port.
+      const full = (separate ? '' : appPrefix) + path;
+      const open = anonymous(path) ?? (security.actuatorOpen ? { pattern: path, source: security.actuatorOpen } : undefined);
+      const reachable = !security.secured || !!open;
+      ranked.push({
+        probe: { kind: 'http', port: probePort, path: full },
+        why: reachable
+          ? `${why}${portNote}${open ? `, and the security config lets anyone reach it (${open.source})` : ''}`
+          : `${why}${portNote}, but the app is secured and nothing marks it anonymous — likely a 401`,
+        source,
+        score: reachable ? (sure ? 90 : path === '/health' ? 40 : 70) : 15,
+      });
+    }
+  }
+
+  ranked.push({
+    probe: { kind: 'tcp', port },
+    why: ranked.length === 0
+      ? input.actuator
+        ? 'the port accepting a connection'
+        : 'no actuator — falling back to the port opening'
+      : 'the port accepting a connection — passes whatever is secured, but before the app can answer',
+    score: 30,
+  });
+
+  // Stable: equal scores keep the order they were found in.
+  return ranked
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.score - a.r.score || a.i - b.i)
+    .map(({ r: { probe, why, source } }) => (source ? { probe, why, source } : { probe, why }));
+}
+
+function trimSlash(path: string): string {
+  const trimmed = path.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function numberOf(found: Found | null): number | undefined {
+  if (!found) return undefined;
+  const n = Number(found.value);
+  return Number.isInteger(n) ? n : undefined;
+}
+
+/// Whether an Ant-style pattern (`/manage/**`, `/a/*/b`) covers a path.
+export function antMatches(pattern: string, path: string): boolean {
+  const source = pattern
+    .split(/(\*\*|\*|\?)/)
+    .map((part) =>
+      part === '**' ? '.*' : part === '*' ? '[^/]*' : part === '?' ? '[^/]' : part.replace(/[.+^${}()|[\]\\]/g, '\\$&'),
+    )
+    .join('');
+  // `/manage/**` covers `/manage` itself, as Spring's matcher does.
+  return new RegExp(`^${source.replace(/\/\.\*$/, '(?:/.*)?')}$`).test(path);
+}
+
+/// A Spring property as the active profile would see it: the profile's file
+/// first, then the base config, in Spring's own location order. Keys compare
+/// the way relaxed binding does — `context-path`, `contextPath` and
+/// `context_path` are one key.
+export function springProperty(module: RepoReader, profile: string | undefined, keys: readonly string[]): Found | null {
+  const wanted = new Set(keys.map(relaxedKey));
+  const names = [
+    ...(profile ? EXTENSIONS.map((ext) => `application-${profile}.${ext}`) : []),
+    ...EXTENSIONS.map((ext) => `application.${ext}`),
+  ];
+  for (const name of names) {
+    for (const dir of PRECEDENCE) {
+      const file = at(dir, name);
+      const text = module.read(file);
+      if (!text) continue;
+      for (const entry of flattenConfig(text)) {
+        if (!wanted.has(relaxedKey(entry.key))) continue;
+        const value = resolvePlaceholder(entry.value);
+        if (value !== null) return { value, source: `${file}:${entry.line}` };
+      }
+    }
+  }
+  return null;
+}
+
+function relaxedKey(key: string): string {
+  return key.toLowerCase().replace(/[-_]/g, '');
+}
+
+/// `${PORT:8080}` reads as its default; `${PORT}` is unknowable from here.
+function resolvePlaceholder(value: string): string | null {
+  const placeholder = /^\$\{[^:}]+(?::([^}]*))?\}$/.exec(value);
+  if (placeholder) return placeholder[1] ?? null;
+  return value.includes('${') ? null : value;
+}
+
+/// Every `key = value` in a properties file or a YAML one, as dotted keys.
+/// Deliberately small: enough YAML for nested maps of scalars, which is all a
+/// Spring config uses for the keys asked about here.
+export function flattenConfig(text: string): { key: string; value: string; line: number }[] {
+  const out: { key: string; value: string; line: number }[] = [];
+  const stack: { indent: number; key: string }[] = [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('!') || trimmed.startsWith('-')) continue;
+    const m = /^(\s*)([^:=\s][^:=]*?)\s*[:=]\s*(.*)$/.exec(raw);
+    if (!m) continue;
+    const indent = m[1].length;
+    while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
+    const key = [...stack.map((s) => s.key), m[2].trim()].join('.');
+    const value = m[3].replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2');
+    if (value === '') stack.push({ indent, key: m[2].trim() });
+    else out.push({ key, value, line: i + 1 });
+  }
+  return out;
+}
+
+/// The Spring Boot version the module builds against, from the first place
+/// that names it: the module build, the root build, a version catalog, and a
+/// `$property` resolved through `gradle.properties` or a Maven property.
+export function springBootVersion(
+  root: RepoReader,
+  module: RepoReader,
+  build: string,
+  buildFile: string,
+  relative: (file: string) => string,
+): { value: string; major: number; source: string } | null {
+  const files: { text: string; source: string }[] = [{ text: build, source: relative(buildFile) }];
+  for (const file of ['build.gradle', 'build.gradle.kts', 'pom.xml', 'gradle/libs.versions.toml']) {
+    const text = root.read(file);
+    if (text && relative(buildFile) !== file) files.push({ text, source: file });
+  }
+  const patterns = [
+    /spring-boot-starter-parent<\/artifactId>\s*<version>\s*([^<\s]+)/,
+    /<spring-boot\.version>\s*([^<\s]+)/,
+    /id\s*\(?\s*['"]org\.springframework\.boot['"]\s*\)?\s*version\s*['"]([^'"]+)['"]/,
+    /spring-boot-gradle-plugin:([^'"\s)]+)/,
+    /springBootVersion\s*=\s*['"]([^'"]+)['"]/,
+    /^\s*spring-?[bB]oot\s*=\s*"([^"]+)"/m,
+    // A starter pinned on its own — the weakest hint, so last.
+    /org\.springframework\.boot:spring-boot-starter[\w-]*:(\d[^'"\s)]*)/,
+  ];
+  for (const pattern of patterns) {
+    for (const { text, source } of files) {
+      const m = pattern.exec(text);
+      if (!m) continue;
+      const line = text.slice(0, m.index).split('\n').length;
+      const resolved = resolveBuildVariable(m[1], root, module, files);
+      if (!resolved) continue;
+      const major = Number(/^(\d+)/.exec(resolved.value)?.[1]);
+      if (!Number.isFinite(major)) continue;
+      return { value: resolved.value, major, source: resolved.source ?? `${source}:${line}` };
+    }
+  }
+  return null;
+}
+
+/// `$springBootVersion`, `${spring.boot.version}` — looked up where builds keep
+/// them. A literal comes back as itself.
+function resolveBuildVariable(
+  raw: string,
+  root: RepoReader,
+  module: RepoReader,
+  files: readonly { text: string; source: string }[],
+): { value: string; source?: string } | null {
+  const variable = /^\$\{?([\w.]+)\}?$/.exec(raw);
+  if (!variable) return { value: raw };
+  const name = variable[1].replace(/\./g, '\\.');
+  const lookups: { text: string | null; source: string }[] = [
+    { text: module.read('gradle.properties'), source: 'gradle.properties' },
+    { text: root.read('gradle.properties'), source: 'gradle.properties' },
+    ...files,
+  ];
+  const definitions = [
+    new RegExp(`^\\s*${name}\\s*[=:]\\s*['"]?([^'"\\s]+)`, 'm'),
+    new RegExp(`<${name}>\\s*([^<\\s]+)`),
+    new RegExp(`\\b${name}\\s*=\\s*['"]([^'"]+)['"]`),
+  ];
+  for (const { text, source } of lookups) {
+    if (!text) continue;
+    for (const definition of definitions) {
+      const m = definition.exec(text);
+      if (m) return { value: m[1], source: `${source}:${text.slice(0, m.index).split('\n').length}` };
+    }
+  }
+  return null;
+}
+
+interface SpringSecurity {
+  /// Whether anything in the module puts a login in front of requests.
+  secured: boolean;
+  /// Ant patterns anyone may reach, with where each was declared.
+  anonymous: { pattern: string; source: string }[];
+  /// Where Java config opens the health endpoint by name
+  /// (`EndpointRequest.to("health")`), which no path pattern would show.
+  actuatorOpen?: string;
+}
+
+/// What the module's security config lets through without a login — from
+/// Spring Security XML and from Java/Kotlin `HttpSecurity` config.
+export function springSecurity(module: RepoReader, build: string, relative: (f: string) => string): SpringSecurity {
+  const anonymous: { pattern: string; source: string }[] = [];
+  let secured = /spring-boot-starter-security|spring-security/.test(build);
+  let actuatorOpen: string | undefined;
+
+  const xmlFiles = ['src/main/resources', 'src/main/webapp/WEB-INF'].flatMap((dir) =>
+    walk(module, dir, (name) => name.endsWith('.xml')),
+  );
+  for (const file of xmlFiles.slice(0, WALK_MAX_READS)) {
+    const text = module.read(file);
+    if (!text || !/springframework\.org\/schema\/security|<(?:\w+:)?(?:filter-chain|intercept-url|http)\b/.test(text)) continue;
+    let found = false;
+    for (const m of text.matchAll(/<(?:\w+:)?(filter-chain|intercept-url|http)\b([^>]*)>/g)) {
+      found = true;
+      const attrs = Object.fromEntries([...m[2].matchAll(/([\w-]+)\s*=\s*"([^"]*)"/g)].map((a) => [a[1], a[2]]));
+      const pattern = attrs.pattern;
+      if (!pattern) continue;
+      const open =
+        m[1] === 'filter-chain'
+          ? attrs.filters === 'none' ||
+            (/anonymous/i.test(attrs.filters ?? '') && !/SecurityInterceptor/i.test(attrs.filters ?? ''))
+          : m[1] === 'intercept-url'
+            ? /ROLE_ANONYMOUS|IS_AUTHENTICATED_ANONYMOUSLY|permitAll/.test(attrs.access ?? '')
+            : attrs.security === 'none';
+      if (open) {
+        const line = text.slice(0, m.index).split('\n').length;
+        anonymous.push({ pattern, source: `${relative(file)}:${line}` });
+      }
+    }
+    if (found) secured = true;
+  }
+
+  for (const file of sourceFiles(module, /(Security|Config|Configuration|Application)\w*\.(java|kt)$/)) {
+    const text = module.read(file);
+    if (!text || !/HttpSecurity|WebSecurity|SecurityFilterChain/.test(text)) continue;
+    secured = true;
+    const lineOf = (index: number) => `${relative(file)}:${text.slice(0, index).split('\n').length}`;
+    for (const m of text.matchAll(
+      /(?:antMatchers|requestMatchers|mvcMatchers|regexMatchers|pathMatchers)\s*\(([^)]*)\)\s*\.\s*permitAll\s*\(\s*\)/g,
+    )) {
+      for (const literal of m[1].matchAll(/"([^"]+)"/g)) anonymous.push({ pattern: literal[1], source: lineOf(m.index) });
+    }
+    for (const m of text.matchAll(/\.ignoring\s*\(\s*\)\s*\.\s*(?:antMatchers|requestMatchers|mvcMatchers)\s*\(([^)]*)\)/g)) {
+      for (const literal of m[1].matchAll(/"([^"]+)"/g)) anonymous.push({ pattern: literal[1], source: lineOf(m.index) });
+    }
+    const anyRequest = /anyRequest\s*\(\s*\)\s*\.\s*permitAll/.exec(text);
+    if (anyRequest) anonymous.push({ pattern: '/**', source: lineOf(anyRequest.index) });
+    const endpoint = /EndpointRequest\s*\.\s*(?:to\s*\([^)]*health|toAnyEndpoint)[\s\S]{0,80}?permitAll/.exec(text);
+    if (endpoint) actuatorOpen = lineOf(endpoint.index);
+  }
+
+  return { secured, anonymous, actuatorOpen };
+}
+
+/// Controller mappings that name a liveness endpoint (`/status`, `/health`,
+/// `/ping` …), each with the file and line that maps it.
+export function controllerHealthMappings(module: RepoReader, relative: (f: string) => string): Found[] {
+  const out: Found[] = [];
+  for (const file of sourceFiles(module, /(Controller|Resource|Endpoint|Health|Status|Ping|Api)\w*\.(java|kt)$/)) {
+    const text = module.read(file);
+    if (!text || !/@(?:Rest)?Controller\b/.test(text)) continue;
+    const classAt = /\bclass\s+\w+/.exec(text)?.index ?? 0;
+    const mappings = [...text.matchAll(/@(RequestMapping|GetMapping)\b\s*(?:\(([^)]*)\))?/g)];
+    const classLevel = mappings.filter((m) => m.index < classAt && m[1] === 'RequestMapping');
+    const methodLevel = mappings.filter((m) => m.index > classAt);
+    const prefixes = classLevel.length > 0 ? classLevel.flatMap((m) => mappingPaths(m[2])) : [''];
+    const methods = methodLevel.length > 0 ? methodLevel : [null];
+    for (const method of methods) {
+      for (const tail of method ? mappingPaths(method[2]) : ['']) {
+        for (const prefix of prefixes) {
+          const path = `${trimSlash(prefix)}${trimSlash(tail)}` || '/';
+          const last = path.split('/').filter(Boolean).pop() ?? '';
+          if (!HEALTHY_NAMES.has(last.toLowerCase())) continue;
+          const index = method?.index ?? classLevel[0]?.index ?? 0;
+          out.push({ value: path, source: `${relative(file)}:${text.slice(0, index).split('\n').length}` });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/// The paths a mapping annotation's arguments name. No arguments, or only a
+/// `method =`, maps the empty path.
+function mappingPaths(args: string | undefined): string[] {
+  if (!args || !args.trim()) return [''];
+  const keyed = /\b(?:value|path)\s*=\s*(\{[^}]*\}|"[^"]*")/.exec(args);
+  const scope = keyed ? keyed[1] : /^\s*(\{[^}]*\}|"[^"]*")/.exec(args)?.[1];
+  if (scope === undefined) return [''];
+  const literals = [...scope.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  return literals.length > 0 ? literals : [''];
+}
+
+/// Source files under the usual roots whose names pass `name`, bounded.
+function sourceFiles(module: RepoReader, name: RegExp): string[] {
+  return ['src/main/java', 'src/main/kotlin']
+    .flatMap((dir) => walk(module, dir, (file) => name.test(file)))
+    .slice(0, WALK_MAX_READS);
+}
+
+/// Files under `dir` whose names pass `accept`, breadth-first and bounded. A
+/// name with a dot is taken for a file and anything else for a directory —
+/// true of source trees, and it saves a stat per entry.
+function walk(module: RepoReader, dir: string, accept: (name: string) => boolean): string[] {
+  if (!module.list) return [];
+  const out: string[] = [];
+  const queue = [dir];
+  let entries = 0;
+  while (queue.length > 0 && entries < WALK_MAX_ENTRIES) {
+    const current = queue.shift() as string;
+    for (const name of module.list(current)) {
+      if (++entries > WALK_MAX_ENTRIES) break;
+      const full = `${current}/${name}`;
+      if (name.includes('.')) {
+        if (accept(name)) out.push(full);
+      } else {
+        queue.push(full);
+      }
+    }
+  }
+  return out;
 }
 
 // ── Node ────────────────────────────────────────────────────────────────────

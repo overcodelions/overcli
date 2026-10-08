@@ -981,8 +981,12 @@ export const FileEditorPane = memo(function FileEditorPane({
                 // a pale wash in dark and a gray one in light: it reads as a
                 // raised control in both without hardcoding a white tint that
                 // would vanish on the light surface.
+                // `max-w-full`: a button sizes to its content, and a no-wrap
+                // title's content is the whole title — without the cap a long
+                // worker heading ran out from under its ellipsis and beneath
+                // the mode group instead of truncating.
                 className={
-                  'flex items-center gap-1.5 min-w-0 -ml-1.5 px-1.5 py-0.5 rounded border shadow-sm text-xs text-ink ' +
+                  'flex items-center gap-1.5 min-w-0 max-w-full -ml-1.5 px-1.5 py-0.5 rounded border shadow-sm text-xs text-ink ' +
                   (fileMenuOpen
                     ? 'bg-ink/[0.16] border-ink-faint'
                     : 'bg-ink/10 border-card-strong hover:bg-ink/[0.16] hover:border-ink-faint')

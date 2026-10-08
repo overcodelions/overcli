@@ -19,6 +19,11 @@ export interface ImportedService {
   /// detection finds nothing: detection knows the module the options belong
   /// to, and a helper's shell glue does not.
   helperCommand?: string[];
+  /// The start line a Tiltfile call hands its helper (`start`, after any
+  /// `prep`), without the helper's worktree glue. Wins over detection: the
+  /// file's own `ng serve --ssl …` is what the service needs, and a detected
+  /// `npm run start` drops every flag in it. Run under `nodeVersion`.
+  startCommand?: string[];
   options: ServiceOption[];
   env: Record<string, string>;
   subpath?: string;

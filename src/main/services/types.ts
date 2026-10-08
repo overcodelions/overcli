@@ -24,6 +24,7 @@ export type {
   LeaseDecision,
   PortClaim,
   ReadinessProbe,
+  ReadyCandidate,
   RunnerKind,
   ServiceBinding,
   ServiceFinding,
