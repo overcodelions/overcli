@@ -20,7 +20,7 @@ describe('folderSections', () => {
           ['brief.md', 'You'],
           ['03-designs-and-feasibility-check-lena.md', 'Lena'],
           ['01-market-and-technical-groundwork-priya.md', 'Priya'],
-          ['pack/PRFAQ.md', 'Coordinator'],
+          ['pack/PROPOSAL.md', 'Coordinator'],
           ['files/lena/designs/00-index.html', 'Lena'],
           ['attachments/screen.png', 'You'],
           ['conversation.md', 'You and the team'],
@@ -30,7 +30,7 @@ describe('folderSections', () => {
       NOW,
     );
     expect(sections.map((s) => [s.id, s.items.map((i) => i.label)])).toEqual([
-      ['pack', ['PRFAQ.md']],
+      ['pack', ['PROPOSAL.md']],
       ['task', ['Your brief', 'Conversation']],
       ['pieces', ['Market and technical groundwork', 'Designs and feasibility check']],
       ['made', ['00-index.html']],
@@ -47,21 +47,21 @@ describe('folderSections', () => {
     const sections = folderSections(
       task(
         [
-          ['pack/PRFAQ.md', 'Coordinator', updated],
-          ['pack/MLP.md', 'Coordinator'],
-          ['pack-v1/PRFAQ.md', 'Coordinator'],
-          ['pack-v2/PRFAQ.md', 'Coordinator'],
+          ['pack/PROPOSAL.md', 'Coordinator', updated],
+          ['pack/PLAN.md', 'Coordinator'],
+          ['pack-v1/PROPOSAL.md', 'Coordinator'],
+          ['pack-v2/PROPOSAL.md', 'Coordinator'],
         ],
         [],
-        { summary: '', files: ['pack/PRFAQ.md', 'pack/MLP.md'], version: 3, updatedAt: updated },
+        { summary: '', files: ['pack/PROPOSAL.md', 'pack/PLAN.md'], version: 3, updatedAt: updated },
       ),
       NOW,
     );
     const [pack, earlier] = sections;
     expect(pack.note).toBe(`v3 · ${fileTime(updated, NOW)}`);
     expect(pack.items.map((i) => [i.label, !!i.fresh])).toEqual([
-      ['PRFAQ.md', true],
-      ['MLP.md', false],
+      ['PROPOSAL.md', true],
+      ['PLAN.md', false],
     ]);
     expect(earlier).toMatchObject({ id: 'earlier', collapsed: true });
     expect(earlier.items.map((i) => i.detail.split(' · ')[0])).toEqual(['Version 2', 'Version 1']);

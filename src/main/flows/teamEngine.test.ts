@@ -231,8 +231,8 @@ const team = (overrides: Partial<Team> = {}): Team => ({
 });
 
 const PLAN = `<team_plan>${JSON.stringify({
-  title: 'Teams PRFAQ',
-  deliverables: ['PRFAQ.md'],
+  title: 'Teams proposal',
+  deliverables: ['PROPOSAL.md'],
   stages: [
     {
       kind: 'contribute',
@@ -247,7 +247,7 @@ const PLAN = `<team_plan>${JSON.stringify({
   ],
 })}</team_plan>`;
 
-const PACK = '<summary>Build it.</summary><file name="PRFAQ.md"># PRFAQ</file><file name="challenge-log.md">| # |</file>';
+const PACK = '<summary>Build it.</summary><file name="PROPOSAL.md"># Proposal</file><file name="challenge-log.md">| # |</file>';
 
 function task(h: ReturnType<typeof makeHarness>): TeamTask {
   return h.engine.list().tasks[0];
@@ -261,7 +261,7 @@ describe('TeamEngine', () => {
     });
     h.engine.start();
 
-    const res = h.engine.brief('team-1', 'A PRFAQ for teams');
+    const res = h.engine.brief('team-1', 'A proposal for teams');
     expect(res.ok).toBe(true);
     await flush();
     expect(task(h).status).toBe('questions');
@@ -302,9 +302,9 @@ describe('TeamEngine', () => {
 
     const t = task(h);
     expect(t.status).toBe('review');
-    expect(t.pack).toEqual({ summary: 'Build it.', files: ['pack/PRFAQ.md', 'pack/challenge-log.md'] });
-    expect(h.files.get(`${t.id}/pack/PRFAQ.md`)).toBe('# PRFAQ\n');
-    expect(h.engine.readFile(t.id, 'pack/PRFAQ.md')).toEqual({ ok: true, body: '# PRFAQ\n' });
+    expect(t.pack).toEqual({ summary: 'Build it.', files: ['pack/PROPOSAL.md', 'pack/challenge-log.md'] });
+    expect(h.files.get(`${t.id}/pack/PROPOSAL.md`)).toBe('# Proposal\n');
+    expect(h.engine.readFile(t.id, 'pack/PROPOSAL.md')).toEqual({ ok: true, body: '# Proposal\n' });
 
     expect(h.engine.accept(t.id).ok).toBe(true);
     expect(task(h).status).toBe('done');
@@ -576,7 +576,7 @@ describe('TeamEngine', () => {
     h.engine.start();
     await flush();
     expect(task(h).status).toBe('review');
-    expect(task(h).pack?.files).toEqual(['pack/PRFAQ.md', 'pack/challenge-log.md']);
+    expect(task(h).pack?.files).toEqual(['pack/PROPOSAL.md', 'pack/challenge-log.md']);
   });
 
   it('validates and saves teams, and will not delete one mid-task', async () => {
@@ -613,15 +613,15 @@ describe('TeamEngine room', () => {
     files: [
       { name: '01-market-maya.md', author: 'Maya', at: 0 },
       { name: '01-tech-ade.md', author: 'Ade', at: 0 },
-      { name: 'pack/PRFAQ.md', author: 'Coordinator', at: 0 },
+      { name: 'pack/PROPOSAL.md', author: 'Coordinator', at: 0 },
     ],
-    pack: { summary: 'Build it.', files: ['pack/PRFAQ.md'] },
+    pack: { summary: 'Build it.', files: ['pack/PROPOSAL.md'] },
   });
   const room = (opts: { turns?: string[]; memberReplies?: string[]; status?: TeamTask['status'] }) => {
     const h = makeHarness({ seedTeams: [team()], seedTasks: [reviewTask(opts.status)], turns: opts.turns, memberReplies: opts.memberReplies });
     h.files.set('task-r/01-market-maya.md', 'Maya market notes');
     h.files.set('task-r/01-tech-ade.md', 'Ade tech notes');
-    h.files.set('task-r/pack/PRFAQ.md', '# PRFAQ v1');
+    h.files.set('task-r/pack/PROPOSAL.md', '# Proposal v1');
     h.engine.start();
     return h;
   };
@@ -682,7 +682,7 @@ describe('TeamEngine room', () => {
   it('folds the conversation into a new pack version and keeps the old one', async () => {
     const h = room({
       status: 'done',
-      turns: ['<route>[]</route>', 'OCR matters.', '<summary>Now with OCR.</summary><file name="PRFAQ.md"># PRFAQ v2</file>'],
+      turns: ['<route>[]</route>', 'OCR matters.', '<summary>Now with OCR.</summary><file name="PROPOSAL.md"># Proposal v2</file>'],
     });
     expect(h.engine.updatePack('task-r')).toMatchObject({ ok: false });
     h.engine.roomAsk('task-r', 'What about scans?');
@@ -690,10 +690,10 @@ describe('TeamEngine room', () => {
     expect(h.engine.updatePack('task-r')).toEqual({ ok: true });
     await flush();
     const t = task(h);
-    expect(h.files.get('task-r/pack/PRFAQ.md')).toBe('# PRFAQ v2\n');
-    expect(h.files.get('task-r/pack-v1/PRFAQ.md')).toBe('# PRFAQ v1');
+    expect(h.files.get('task-r/pack/PROPOSAL.md')).toBe('# Proposal v2\n');
+    expect(h.files.get('task-r/pack-v1/PROPOSAL.md')).toBe('# Proposal v1');
     expect(t.pack).toMatchObject({ summary: 'Now with OCR.', version: 2 });
-    expect(t.files.map((f) => f.name)).toContain('pack-v1/PRFAQ.md');
+    expect(t.files.map((f) => f.name)).toContain('pack-v1/PROPOSAL.md');
     expect(t.status).toBe('review');
     expect(h.engine.updatePack('task-r')).toMatchObject({ ok: false });
   });
@@ -732,7 +732,7 @@ describe('TeamEngine room', () => {
       expect(prompt).toContain('FOLLOW-UP WORK');
       expect(prompt).toContain('can you do the redesign on the console');
       expect(prompt).toContain('Redraw D-01 against the console billing UI.');
-      expect(prompt).toContain('# PRFAQ v1');
+      expect(prompt).toContain('# Proposal v1');
       expect(prompt).toContain('/data/team-files/task-r/files/maya/');
       // The room waits for the work.
       expect(h.engine.roomAsk('task-r', 'how is it going?')).toMatchObject({ ok: false });
@@ -750,7 +750,7 @@ describe('TeamEngine room', () => {
       expect(report.text).toContain('`files/maya/designs/01-page.html`');
 
       // The pack update reads what the work produced.
-      h.pushTurn('<summary>With the new designs.</summary><file name="PRFAQ.md"># PRFAQ v2</file>');
+      h.pushTurn('<summary>With the new designs.</summary><file name="PROPOSAL.md"># Proposal v2</file>');
       expect(h.engine.updatePack('task-r')).toEqual({ ok: true });
       await flush();
       expect(h.turnMessages.at(-1)).toContain('WORK MEMBERS DID SINCE');
@@ -808,7 +808,7 @@ describe('TeamEngine room', () => {
 
 describe('TeamEngine hiring', () => {
   const HIRING_PLAN = `<team_plan>${JSON.stringify({
-    title: 'Priced PRFAQ',
+    title: 'Priced proposal',
     stages: [
       {
         kind: 'contribute',
@@ -831,7 +831,7 @@ describe('TeamEngine hiring', () => {
       hire: () => ({ ok: true, worker: worker('pia', 'Pia') }),
     });
     h.engine.start();
-    h.engine.brief('team-1', 'A priced PRFAQ');
+    h.engine.brief('team-1', 'A priced proposal');
     await flush();
     expect(h.turnMessages[0]).toContain('HIRING: if the brief clearly needs');
     expect(task(h).status).toBe('proposed');
@@ -855,7 +855,7 @@ describe('TeamEngine hiring', () => {
       hire: () => ({ ok: false, error: 'drafter down' }),
     });
     h.engine.start();
-    h.engine.brief('team-1', 'A priced PRFAQ');
+    h.engine.brief('team-1', 'A priced proposal');
     await flush();
     h.engine.approve(task(h).id);
     await flush();
@@ -878,7 +878,7 @@ describe('TeamEngine hiring', () => {
   it('tells the coordinator it cannot hire when hiring is unavailable', async () => {
     const h = makeHarness({ seedTeams: [team({ checkpoints: noQuestions })], turns: [HIRING_PLAN, PLAN] });
     h.engine.start();
-    h.engine.brief('team-1', 'A priced PRFAQ');
+    h.engine.brief('team-1', 'A priced proposal');
     await flush();
     expect(h.turnMessages[0]).toContain('HIRING: not possible');
     // The hiring plan is refused and the retry plans with the team as is.
@@ -1044,7 +1044,7 @@ describe('TeamEngine task branch', () => {
 
   it('cuts the branch when the plan is approved, and forks every piece off it', async () => {
     const h = await start(['ok', 'ok', 'ok']);
-    expect(h.codeCalls[0]).toBe('open Teams PRFAQ /code/overcli');
+    expect(h.codeCalls[0]).toBe('open Teams proposal /code/overcli');
     expect(task(h).code?.branch).toBe('team/x');
     expect(h.commissions.map((c) => c.baseBranch)).toEqual(['team/x', 'team/x']);
     h.settle(h.commissions[0].id, 'done');

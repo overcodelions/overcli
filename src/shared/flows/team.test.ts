@@ -35,9 +35,9 @@ describe('parsePlanReply', () => {
   it('reads a plan, resolving members by name and role', () => {
     const reply = parsePlanReply(
       plan({
-        title: 'PRFAQ',
+        title: 'Proposal',
         note: 'Market first.',
-        deliverables: ['PRFAQ.md'],
+        deliverables: ['PROPOSAL.md'],
         stages: [
           { kind: 'contribute', title: 'Market', assignments: [{ member: 'maya', ask: 'Size it' }] },
           { kind: 'challenge', title: 'Attack', assignments: [{ member: 'Challenger', ask: 'Object' }] },
@@ -49,7 +49,7 @@ describe('parsePlanReply', () => {
     );
     expect(reply.kind).toBe('plan');
     if (reply.kind !== 'plan') return;
-    expect(reply.title).toBe('PRFAQ');
+    expect(reply.title).toBe('Proposal');
     expect(reply.stages.map((s) => s.kind)).toEqual(['contribute', 'challenge', 'synthesize']);
     expect(reply.stages[0].assignments[0]).toMatchObject({ workerId: 'w-maya', workerName: 'Maya', status: 'pending' });
     expect(reply.stages[1].assignments[0].workerId).toBe('w-rook');
@@ -113,12 +113,12 @@ describe('resolveMember', () => {
 describe('parsePackReply', () => {
   it('reads the summary and every file', () => {
     const pack = parsePackReply(
-      '<summary>Build it.</summary>\n<file name="PRFAQ.md">\n# PR\n</file>\n<file name="../../etc/MLP">\nscope\n</file>',
+      '<summary>Build it.</summary>\n<file name="PROPOSAL.md">\n# PR\n</file>\n<file name="../../etc/PLAN">\nscope\n</file>',
     );
     expect(pack.summary).toBe('Build it.');
     expect(pack.files).toEqual([
-      { name: 'PRFAQ.md', body: '# PR\n' },
-      { name: 'MLP.md', body: 'scope\n' },
+      { name: 'PROPOSAL.md', body: '# PR\n' },
+      { name: 'PLAN.md', body: 'scope\n' },
     ]);
   });
 

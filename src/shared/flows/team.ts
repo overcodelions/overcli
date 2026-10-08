@@ -1,5 +1,5 @@
 // A Team is a named group of workers that takes on ONE task at a time and
-// hands back a finished piece of work — a report, a PRFAQ, a decision pack.
+// hands back a finished piece of work — a report, a proposal, a decision pack.
 //
 // Where a worker's errand is one persona answering one ask, a team task is a
 // short sequence of STAGES run by a coordinator: members contribute pieces
@@ -199,7 +199,7 @@ export interface TeamStage {
 }
 
 export interface TeamTaskFile {
-  /// Path relative to the task folder (`pack/PRFAQ.md` for the final pack).
+  /// Path relative to the task folder (`pack/PROPOSAL.md` for the final pack).
   name: string;
   /// Who wrote it: a member's name, "Coordinator", or "You".
   author: string;
@@ -501,7 +501,7 @@ export const TEAM_PLAN_SYSTEM_PROMPT = [
   '{',
   '  "title": "Short title for the task",',
   '  "note": "One or two sentences on why this plan.",',
-  '  "deliverables": ["PRFAQ.md", "MLP.md"],',
+  '  "deliverables": ["PROPOSAL.md", "PLAN.md"],',
   '  "stages": [',
   '    {"kind": "contribute", "title": "Customer and market", "assignments": [{"member": "<member name>", "ask": "..."}]},',
   '    {"kind": "draft", "title": "First draft", "ask": "..."},',
