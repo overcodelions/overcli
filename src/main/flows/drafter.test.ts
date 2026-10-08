@@ -85,6 +85,14 @@ describe('the MCP tools the designer can grant', () => {
     expect(prompt).toContain('claude_ai_Gmail: search_threads, send_message*');
   });
 
+  it('knows Claude Design, so a flow that is asked for designs can be given it', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+    await draftFlowFromPrompt({ description: 'Design the feature in Claude Design' }, claudeDeps());
+    const prompt = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(prompt).toContain('For claude ONLY: Artifact');
+    expect(prompt).toContain('mark that step effect: external');
+  });
+
   it('leaves the section out when none are known', async () => {
     mockQuery.mockReturnValue(claudeStream(validYaml()));
     await draftFlowFromPrompt({ description: 'Plan my trips' }, claudeDeps());

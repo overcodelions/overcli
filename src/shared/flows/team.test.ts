@@ -423,3 +423,29 @@ describe('a pack summary taken from the reply itself', () => {
     expect(summary).toContain('Shipped the fix.');
   });
 });
+
+describe('a piece from a flow that acts outside the machine', () => {
+  const base: Flow = {
+    id: 'design',
+    name: 'Design',
+    input: 'user_prompt',
+    participants: [{ id: 'd', name: 'Designer', backend: 'claude', model: 'claude-sonnet-5-5' }],
+    steps: [
+      { id: 'survey', participantId: 'd', role: 'custom', inputs: ['user_prompt'], tools: ['Read'], effect: 'local', output: 'survey.md' },
+      { id: 'design', participantId: 'd', role: 'custom', inputs: ['survey.md'], tools: ['Write', 'Artifact'], effect: 'external', output: 'design.md' },
+    ],
+    source: 'user',
+    filePath: '',
+  };
+
+  it('keeps its tools, and is external like the flow', () => {
+    const [step] = teamPieceFlow(base).steps;
+    expect(step.tools).toContain('Artifact');
+    expect(step.effect).toBe('external');
+  });
+
+  it('stays local when nothing in the flow is external', () => {
+    const local = { ...base, steps: base.steps.map((s) => ({ ...s, effect: 'local' as const, tools: ['Read', 'Write'] })) };
+    expect(teamPieceFlow(local).steps[0].effect).toBe('local');
+  });
+});

@@ -15,9 +15,22 @@ const CLAUDE_BUILTINS: Array<Omit<FlowToolDescriptor, 'supportedBackends' | 'ava
   { id: 'Grep', displayName: 'Grep', description: 'Search file contents with a regex.', category: 'builtin' },
   { id: 'Bash', displayName: 'Bash', description: 'Run a shell command in the project cwd.', category: 'builtin' },
   { id: 'WebFetch', displayName: 'WebFetch', description: 'Fetch a URL and summarize.', category: 'builtin' },
+  { id: 'WebSearch', displayName: 'WebSearch', description: 'Search the web.', category: 'builtin' },
   { id: 'Agent', displayName: 'Agent', description: 'Spawn a subagent (formerly Task).', category: 'builtin' },
   { id: 'Workflow', displayName: 'Workflow', description: 'Run a multi-agent workflow script.', category: 'builtin' },
 ];
+
+/// Claude Design: designs, decks and documents built as private pages on the
+/// user's claude.ai account. Publishing leaves the machine, so a step that
+/// lists it is an external step.
+const CLAUDE_DESIGN_TOOL: FlowToolDescriptor = {
+  id: 'Artifact',
+  displayName: 'Claude Design (Artifact)',
+  description: 'Build a design, deck or document as a private page on your claude.ai account.',
+  category: 'builtin',
+  supportedBackends: ['claude'],
+  available: true,
+};
 
 const OLLAMA_BUILTINS: Array<Omit<FlowToolDescriptor, 'supportedBackends' | 'available'>> = [
   { id: 'read_file', displayName: 'read_file', description: 'Read a file from disk.', category: 'builtin' },
@@ -54,11 +67,13 @@ function backendFamilyTools(backend: Backend): FlowToolDescriptor[] {
   // claude, codex, gemini, copilot — surface Claude-family built-ins. Codex
   // and others differ in tool names but the picker is an approximation
   // until per-backend catalogs ship.
-  return CLAUDE_BUILTINS.map(t => ({
+  const shared = CLAUDE_BUILTINS.map(t => ({
     ...t,
     supportedBackends: ['claude', 'codex', 'gemini', 'copilot'] as Backend[],
     available: true,
   }));
+  // Claude Design is Claude Code's own: only a claude step can reach it.
+  return backend === 'claude' ? [...shared, CLAUDE_DESIGN_TOOL] : shared;
 }
 
 /// Public entry. Today it's a thin wrapper around `backendFamilyTools` but
