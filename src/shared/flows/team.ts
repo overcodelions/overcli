@@ -1470,6 +1470,11 @@ export function teamPieceFlow(flow: Flow, opts: { check?: boolean } = {}): Flow 
   // on every step keeps its piece careful — at `acceptEdits`, since a piece
   // has to write its files.
   const careful = flow.steps.length > 0 && flow.steps.every((step) => step.permissionMode && step.permissionMode !== 'bypassPermissions');
+  // A piece that can do what the member's flow does outside the machine —
+  // publish to Claude Design, post, send — is an external step too, so a
+  // member without the grant for external actions stops before it rather
+  // than doing it quietly. Everything else stays local.
+  const external = flow.steps.some((step) => step.effect === 'external');
   // A piece that changes code keeps the member's own check, as a second step
   // on the model that ran it in the member's flow. The check's reply ends
   // with the piece, so the piece is still what files into the shared folder.
@@ -1495,8 +1500,8 @@ export function teamPieceFlow(flow: Flow, opts: { check?: boolean } = {}): Flow 
         inputs: ['user_prompt'],
         tools,
         ...(careful ? { permissionMode: 'acceptEdits' as const } : {}),
-        // Writes stay in the run's own folder; nothing leaves the machine.
-        effect: 'local',
+        // Local unless the member's own flow acts outside the machine.
+        effect: external ? 'external' : 'local',
         output: 'piece.md',
       },
       ...(checkStep && checker

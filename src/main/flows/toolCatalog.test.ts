@@ -16,8 +16,11 @@ describe('listToolCatalog', () => {
         'Grep',
         'Bash',
         'WebFetch',
+        'WebSearch',
         'Agent',
         'Workflow',
+        // Claude Design is Claude Code's own.
+        ...(backend === 'claude' ? ['Artifact'] : []),
       ]);
       expect(catalog.every(t => t.available)).toBe(true);
       expect(catalog.every(t => t.category === 'builtin')).toBe(true);
