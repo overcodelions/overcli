@@ -261,6 +261,8 @@ export function App() {
       import('./workersStore').then(({ useWorkersStore }) =>
         useWorkersStore.getState().reload(),
       ),
+      // Teams with them: a team task can be mid-stage when the window opens.
+      import('./teamsStore').then(({ useTeamsStore }) => useTeamsStore.getState().reload()),
     ]);
     // The review dots, then the transcript warm — both after the sidebar can
     // draw itself, and in that order: the dots are one bounded scan, the warm

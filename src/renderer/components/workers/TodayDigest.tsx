@@ -10,6 +10,8 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useWorkersStore } from '../../workersStore';
+import { useTeamsStore } from '../../teamsStore';
+import { describeTeamTaskStatus } from '@shared/flows/team';
 import { useWorkerColors } from './WorkerAvatar';
 import { WorkerAvatar } from './WorkerAvatar';
 import { workerColorFor } from './workerPalette';
@@ -19,12 +21,16 @@ import { SectionLabel } from './NowSection';
 import { elapsedLabel, latestExchange, waitingLine } from './nowCards';
 import { clockStamp, type TodaySpine } from './todaySpine';
 import { hourBuckets } from './todayLayout';
+import { workerNow, type WorkerNow } from './workerBoard';
+import { workerTagline } from '@shared/flows/worker';
 import type { DigestSummary } from './digestSummary';
 import type { QueueRow } from './workQueue';
 import { baseName } from './workQueue';
 import type { WorkerFile } from './workerDeskSelectors';
 
-export type OpenItem = { kind: 'needs' | 'done'; key: string } | null;
+/// `team`: a team task on the crew's list, keyed by the task id — its
+/// members' pieces fold under it, and the reader shows the task itself.
+export type OpenItem = { kind: 'needs' | 'done' | 'team'; key: string } | null;
 
 export interface DigestModel {
   spine: TodaySpine;
@@ -43,7 +49,12 @@ export interface DigestModel {
 
 /// The item the inbox opens on: the oldest thing waiting on you, else what is
 /// working, else the newest result.
-export function defaultItem(model: DigestModel, isCleared: (row: QueueRow) => boolean = () => false): OpenItem {
+export function defaultItem(
+  model: DigestModel,
+  isCleared: (row: QueueRow) => boolean = () => false,
+  /// The crew's list, where a team piece stands for its team task.
+  groupTeams = false,
+): OpenItem {
   if (model.needs[0]) return { kind: 'needs', key: model.needs[0].key };
   // Something you have not read yet, if there is one: landing on a result you
   // already cleared is the page telling you what you told it to put away.
@@ -54,7 +65,8 @@ export function defaultItem(model: DigestModel, isCleared: (row: QueueRow) => bo
     model.earlier.map((g) => unread(g.rows)).find(Boolean) ??
     model.done[0] ??
     model.earlier[0]?.rows[0];
-  return first ? { kind: 'done', key: first.key } : null;
+  if (!first) return null;
+  return groupTeams && first.team ? { kind: 'team', key: first.team.taskId } : { kind: 'done', key: first.key };
 }
 
 export function findRow(model: DigestModel, item: NonNullable<OpenItem>): QueueRow | undefined {
@@ -80,6 +92,8 @@ function TodayHeader({
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const openWorkerSettings = useWorkersStore((s) => s.openWorkerSettings);
   const showToday = useWorkersStore((s) => s.showToday);
+  const progress = useWorkersStore((s) => (workerId ? s.shiftProgress[workerId] : undefined));
+  const nextShiftAt = useWorkersStore((s) => (workerId ? s.nextShiftAt[workerId] : undefined));
   const soonest = spine.upcoming[spine.upcoming.length - 1];
   const title = [
     spine.done > 0 ? `${spine.done} done` : 'Nothing done yet',
@@ -149,7 +163,13 @@ function TodayHeader({
             </svg>
           </button>
         </div>
-        <DayChart spine={spine} now={now} />
+        <WorkerNowLine
+          now={workerNow(worker, progress, model.working.length > 0, nextShiftAt, now)}
+          tagline={workerTagline(worker)}
+        />
+        {/* Empty, the chart is a row of stubs that reads as a divider; the
+            line above already says this worker has done nothing yet. */}
+        {hourBuckets(spine, now).some((b) => b.count > 0) && <DayChart spine={spine} now={now} />}
       </header>
     );
   }
@@ -179,6 +199,29 @@ function TodayHeader({
       </div>
       <DayChart spine={spine} now={now} />
     </header>
+  );
+}
+
+/// What the worker is doing right now, and what it is for — the question the
+/// page is opened to answer, asked before the history below it.
+function WorkerNowLine({ now, tagline }: { now: WorkerNow; tagline: string }) {
+  const dot =
+    now.tone === 'running' ? 'bg-emerald-500 animate-pulse' : now.tone === 'bench' ? 'bg-amber-500' : 'bg-ink-faint';
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-card bg-card px-3 py-2">
+      <div className="flex min-w-0 items-baseline gap-2 text-[12.5px]">
+        <span className={`relative top-[-1px] h-1.5 w-1.5 shrink-0 self-center rounded-full ${dot}`} aria-hidden />
+        <span className={`shrink-0 font-medium ${now.tone === 'running' ? 'text-emerald-600 dark:text-emerald-300' : 'text-ink'}`}>
+          {now.label}
+        </span>
+        {now.detail && (
+          <span className="min-w-0 truncate text-ink-muted" title={now.detail}>
+            {now.detail}
+          </span>
+        )}
+      </div>
+      {tagline && <div className="line-clamp-2 text-[11.5px] text-ink-faint">{tagline}</div>}
+    </div>
   );
 }
 
@@ -223,7 +266,7 @@ export function InboxList({
   /// Set when the list is one worker's inbox rather than the whole crew's.
   workerId?: string | null;
 }) {
-  const isOpen = (kind: 'needs' | 'done', key: string) => open?.kind === kind && open.key === key;
+  const isOpen = (kind: 'needs' | 'done' | 'team', key: string) => open?.kind === kind && open.key === key;
   const cleared = useTodayCleared((s) => s.cleared);
   const clear = useTodayCleared((s) => s.clear);
   const restore = useTodayCleared((s) => s.restore);
@@ -245,6 +288,45 @@ export function InboxList({
   const clearRow = (row: QueueRow, title: string) => {
     clear(row.key);
     setUndo({ key: row.key, title });
+  };
+  // The crew's list shows a team task as ONE row — the task is what you
+  // asked for; its pieces are how it got made — with the pieces folded under
+  // it. It sits in the first section any of its pieces is in, so a task
+  // still working is under Working however many of its pieces are done. One
+  // worker's own inbox keeps them as that worker's rows.
+  const groups = [{ label: 'Working', rows: model.working }, { label: 'Today', rows: model.done }, ...model.earlier];
+  const visibleIn = (group: { label: string; rows: QueueRow[] }) =>
+    group.rows
+      .filter((row) => !nested(row))
+      .filter((row) => group.label === 'Working' || clearStateOf(cleared, row.key, row.at) !== 'cleared');
+  const teamPieces = new Map<string, QueueRow[]>();
+  const teamHome = new Map<string, string>();
+  if (!workerId) {
+    for (const row of listed) {
+      if (!row.team) continue;
+      const pieces = teamPieces.get(row.team.taskId) ?? [];
+      pieces.push(row);
+      teamPieces.set(row.team.taskId, pieces);
+    }
+    for (const group of groups) {
+      for (const row of visibleIn(group)) {
+        if (row.team && !teamHome.has(row.team.taskId)) teamHome.set(row.team.taskId, group.label);
+      }
+    }
+  }
+  const homedElsewhere = (row: QueueRow, label: string) => {
+    const home = row.team && teamPieces.has(row.team.taskId) ? teamHome.get(row.team.taskId) : undefined;
+    return home !== undefined && home !== label;
+  };
+  /// The group's rows as listed: each team task once, in its home section.
+  const entriesOf = (group: { label: string; rows: QueueRow[] }) => {
+    const seen = new Set<string>();
+    return visibleIn(group).filter((row) => {
+      if (!row.team || !teamPieces.has(row.team.taskId)) return true;
+      if (teamHome.get(row.team.taskId) !== group.label || seen.has(row.team.taskId)) return false;
+      seen.add(row.team.taskId);
+      return true;
+    });
   };
   const nothing =
     model.needs.length + model.working.length + model.done.length + model.quiet.length + model.earlier.length === 0;
@@ -294,22 +376,36 @@ export function InboxList({
         </section>
       )}
       <HandedOn now={model.now} />
-      {[
-        { label: 'Working', rows: model.working },
-        { label: 'Today', rows: model.done },
-        ...model.earlier,
-      ].map(
+      {groups.map(
         (group) =>
-          // A heading over rows that all moved under a wrap-up is a heading
-          // over nothing.
-          group.rows.some((row) => !nested(row)) && (
+          // A heading over rows that all moved under a wrap-up, or into a
+          // team task listed further up, is a heading over nothing.
+          group.rows.some((row) => !nested(row) && !homedElsewhere(row, group.label)) && (
             <section key={group.label} className="flex flex-col gap-0.5">
               <SectionLabel>{group.label}</SectionLabel>
               <div className="mt-1 flex flex-col">
-                {group.rows
-                  .filter((row) => !nested(row))
-                  .filter((row) => group.label === 'Working' || clearStateOf(cleared, row.key, row.at) !== 'cleared')
-                  .map((row) => (
+                {entriesOf(group).map((row) =>
+                  row.team && teamPieces.has(row.team.taskId) ? (
+                    <TeamTaskEntry
+                      key={`team:${row.team.taskId}`}
+                      team={row.team}
+                      selected={isOpen('team', row.team.taskId)}
+                      onOpen={() => onOpen({ kind: 'team', key: row.team!.taskId })}
+                      pieces={teamPieces.get(row.team.taskId)!}
+                      openKey={open?.kind === 'done' ? open.key : null}
+                      renderRow={(piece) => (
+                        <ListEntry
+                          key={piece.key}
+                          row={piece}
+                          digest={model.digest[piece.key]}
+                          file={model.filed[piece.key] ?? null}
+                          showDay={group.label !== 'Working' && group.label !== 'Today'}
+                          selected={isOpen('done', piece.key)}
+                          onOpen={() => onOpen({ kind: 'done', key: piece.key })}
+                        />
+                      )}
+                    />
+                  ) : (
                     <Fragment key={row.key}>
                       <ListEntry
                         row={row}
@@ -339,7 +435,8 @@ export function InboxList({
                         />
                       )}
                     </Fragment>
-                  ))}
+                  ),
+                )}
               </div>
               {group.label !== 'Working' && (
                 <ClearedFold
@@ -461,10 +558,12 @@ function ShiftItems({
   rows,
   renderRow,
   openKey,
+  label = 'from this shift',
 }: {
   rows: QueueRow[];
   renderRow: (row: QueueRow) => React.ReactNode;
   openKey: string | null;
+  label?: string;
 }) {
   const holdsOpen = rows.some((r) => r.key === openKey);
   const [open, setOpen] = useState(holdsOpen);
@@ -484,7 +583,7 @@ function ShiftItems({
         <svg width="9" height="9" viewBox="0 0 16 16" aria-hidden className={'transition-transform ' + (open ? 'rotate-90' : '')}>
           <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
         </svg>
-        {rows.length} from this shift
+        {rows.length} {label}
         {live > 0 && <span className="text-emerald-600 dark:text-emerald-300">· {live} working</span>}
         {failed > 0 && <span className="text-red-400">· {failed} failed</span>}
       </button>
@@ -895,6 +994,66 @@ function ListEntry({
         </button>
       )}
     </div>
+    </div>
+  );
+}
+
+/// A team task on the crew's list: what the team is making and where it has
+/// got to. Opening it reads the task beside the list; its members' pieces
+/// fold under it.
+function TeamTaskEntry({
+  team,
+  selected,
+  onOpen,
+  pieces,
+  renderRow,
+  openKey,
+}: {
+  team: NonNullable<QueueRow['team']>;
+  selected: boolean;
+  onOpen: () => void;
+  pieces: QueueRow[];
+  renderRow: (row: QueueRow) => React.ReactNode;
+  openKey: string | null;
+}) {
+  const task = useTeamsStore((s) => s.tasks[team.taskId]);
+  const teamName = useTeamsStore((s) => s.teams[team.teamId]?.name) ?? team.teamName;
+  const workers = useWorkersStore((s) => s.workers);
+  const live = pieces.some((r) => r.status === 'running' || r.status === 'planning' || r.status === 'responding');
+  const failed = pieces.filter((r) => r.status === 'failed').length;
+  const title = task?.title ?? task?.brief.split('\n')[0] ?? pieces[0].batchLabel ?? teamName;
+  const status = task ? describeTeamTaskStatus(task) : live ? 'Working' : 'Done';
+  const at = Math.max(...pieces.map((r) => r.at));
+  const faces = [...new Set(pieces.map((r) => r.workerId))].flatMap((id) => (workers[id] ? [workers[id]] : []));
+  return (
+    <div className="flex flex-col">
+      <button
+        onClick={onOpen}
+        aria-current={selected ? 'true' : undefined}
+        className={
+          'relative flex w-full gap-2.5 rounded-lg border px-3 py-2.5 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
+          (selected ? 'border-accent/50 bg-accent/10' : 'border-transparent hover:bg-card-strong/50')
+        }
+        style={selected ? { boxShadow: 'inset 3px 0 0 var(--c-accent)' } : undefined}
+      >
+        <span className="flex shrink-0 items-start pt-0.5">
+          {faces.slice(0, 3).map((w, i) => (
+            <span key={w.id} className={i > 0 ? '-ml-1.5' : ''}>
+              <WorkerAvatar worker={w} size="xs" live={live && i === 0} />
+            </span>
+          ))}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="line-clamp-2 text-[13px] font-medium leading-snug text-ink">{title}</span>
+          <span className={'mt-0.5 line-clamp-1 text-[12px] ' + (failed > 0 && !live ? 'text-amber-500' : 'text-ink-muted')}>
+            {status}
+          </span>
+          <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
+            {[`${teamName} team`, live ? 'working now' : clockStamp(at)].join(' · ')}
+          </span>
+        </span>
+      </button>
+      <ShiftItems rows={pieces} renderRow={renderRow} openKey={openKey} label={pieces.length === 1 ? 'piece' : 'pieces'} />
     </div>
   );
 }

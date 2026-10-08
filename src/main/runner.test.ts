@@ -101,6 +101,36 @@ describe('oneShot unattended tool allowlists', () => {
   );
 });
 
+describe('oneShot approval prompts', () => {
+  // A hidden turn has nobody to answer an approval card. A coordinator in
+  // plan mode wrote its whole plan and then called ExitPlanMode, which asks —
+  // and the turn sat there for good.
+  it('refuses a permission request at once so the turn can finish', async () => {
+    const manager = new RunnerManager(() => {}, () => ({ backends: {} }) as never);
+    const priv = manager as unknown as {
+      send: () => { ok: boolean };
+      respondPermission: (...args: unknown[]) => void;
+      tapOneShot: (event: unknown) => boolean;
+    };
+    priv.send = () => ({ ok: true });
+    const answered: unknown[][] = [];
+    priv.respondPermission = (...args: unknown[]) => void answered.push(args);
+
+    const turn = manager.oneShot({ backend: 'claude', model: '', prompt: 'plan', cwd: '/repo', conversationId: 'hidden-1' });
+    priv.tapOneShot({
+      type: 'stream',
+      conversationId: 'hidden-1',
+      events: [
+        { kind: { type: 'assistant', info: { text: '<team_plan>{}</team_plan>', isPartial: false } } },
+        { kind: { type: 'permissionRequest', info: { requestId: 'r1', toolName: 'ExitPlanMode' } } },
+      ],
+    });
+    expect(answered).toEqual([['hidden-1', 'r1', false, undefined, 'once', 'ExitPlanMode']]);
+    priv.tapOneShot({ type: 'running', conversationId: 'hidden-1', isRunning: false });
+    await expect(turn).resolves.toMatchObject({ ok: true, text: expect.stringContaining('<team_plan>') });
+  });
+});
+
 describe('oneShot and Claude in Chrome', () => {
   // A one-shot is a hidden conversation with no window to put an approval
   // card in, and the producer runs it with bypassPermissions. Letting the

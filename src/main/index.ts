@@ -63,7 +63,7 @@ import {
 } from './git';
 import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
 import { inspectFolder } from './childRepos';
-import { isDocumentLikePath } from '../shared/everydayProjects';
+import { isDocumentLikePath, isEverydayProject } from '../shared/everydayProjects';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
 import {
   checkpointProject,
@@ -147,6 +147,7 @@ import {
   WEBHOOK_TOKEN_KEY,
 } from './webhookNotify';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
+import { renameIfTaken, teamHireJobDescription, teamPieceFlow, type TeamHireRequest } from '../shared/flows/team';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
 import { buildCiDeploy, buildFlowCiDeploy, type CiWorkspace } from '../shared/flows/ciDeploy';
 import { serializeFlow } from '../shared/flows/yaml';
@@ -164,7 +165,9 @@ import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
-import { runHandoffOutputs, workerOrigin } from '../shared/flows/worker';
+import { TeamEngine } from './flows/teamEngine';
+import { absorbPiece, closeTaskBranch, landTaskBranch, openTaskBranch, taskRepos } from './flows/teamBranch';
+import { runHandoffOutputs, workerOrigin, type Worker } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
 import {
@@ -194,7 +197,7 @@ import {
   previewRegistryFlow,
 } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
-import { draftFlowFromPrompt, reviseFlowFromPrompt, type DraftDeps } from './flows/drafter';
+import { draftFlowFromPrompt, oneShotDraftText, reviseFlowFromPrompt, type DraftDeps } from './flows/drafter';
 import {
   ensureWorkspaceSymlinkRoot,
   removeWorkspaceSymlinkRoot,
@@ -204,6 +207,7 @@ import {
   looseSyntheticRootFiles,
 } from './workspace';
 import { openTerminalAt, openTerminalIn, runInTerminal } from './terminal';
+import { DEFAULT_UI_SCALE, stepUiScale } from '../shared/uiScale';
 import {
   ArtifactPreviewResult,
   Backend,
@@ -238,6 +242,7 @@ let flowRuntime: FlowRuntime | null = null;
 let orchestrator: OrchestratorImpl | null = null;
 let scheduler: SchedulerEngine | null = null;
 let workerEngine: WorkerEngine | null = null;
+let teamEngine: TeamEngine | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
 let handoffInbox: HandoffInbox | null = null;
 /// Long-lived service processes, one supervisor per workspace. Built lazily
@@ -280,6 +285,13 @@ function createWindow(): void {
     mainWindow = null;
   });
 
+  // Interface size. Re-applied on every load, not once: a reload or a dev
+  // HMR full refresh can hand the page back at the origin's zoom.
+  const win = mainWindow;
+  win.webContents.on('did-finish-load', () => {
+    if (!win.isDestroyed()) win.webContents.setZoomFactor(Store.load().settings.uiScale);
+  });
+
   // The navigate/window-open lock that keeps the renderer on its own origin
   // and bounces external links to the browser is NOT installed here. It is
   // installed once, for every webContents, by the `web-contents-created`
@@ -303,6 +315,25 @@ function isSafeExternalUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/// Put the saved interface size on every open window. Cheap and idempotent,
+/// so it runs on every settings save rather than diffing for a change.
+function applyUiScale(): void {
+  const scale = Store.load().settings.uiScale;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.setZoomFactor(scale);
+  }
+}
+
+/// Interface size from the keyboard or the View menu. Main owns the change —
+/// it persists, applies, and tells the renderer, whose settings copy would
+/// otherwise write the old size back on its next save.
+function setUiScale(next: number): void {
+  const settings = Store.load().settings;
+  Store.saveSettings({ ...settings, uiScale: next });
+  applyUiScale();
+  emitToRenderer({ type: 'uiScaleChanged', uiScale: Store.load().settings.uiScale });
 }
 
 function emitToRenderer(event: MainToRendererEvent): void {
@@ -429,6 +460,122 @@ function drafterDeps(): DraftDeps {
   };
 }
 
+/// What the hire drafter is shown about this install: the flows it can
+/// route to, the projects a job can land in, the MCP servers it can grant,
+/// and the crew's names so a new one never collides.
+async function hireDraftContext() {
+  const store = Store.load();
+  // The drafter's own turns run strict and report no servers, so a user who
+  // comes straight here may have none recorded. Ask Claude once — it costs
+  // no model call (see mcpProbe) and only happens while the record is empty.
+  await ensureMcpSeen(resolveBackendPath('claude', store.settings.backendPaths.claude));
+  // The same servers the editor's picker offers. A failed scan means the
+  // drafter is not asked to choose, and the worker loads everything.
+  let mcpServers: string[] | undefined;
+  try {
+    const report = scanCapabilities();
+    mcpServers = Array.from(
+      new Set([
+        ...report.entries.filter((e) => e.kind === 'mcp' && e.clis.includes('claude')).map((e) => e.name),
+        ...(report.accountConnectors ?? []),
+      ]),
+    ).sort((a, b) => a.localeCompare(b));
+  } catch (err) {
+    log('warn', 'workers.hire', 'MCP scan for the hire drafter failed', err);
+  }
+  return {
+    mcpServers,
+    // Names only — `list()` would build a scorecard per worker, which is
+    // two whole-file log reads each for a prompt line.
+    crew: workerEngine ? workerEngine.workerNames() : [],
+    flows: loadAllFlows({
+      projectPaths: store.projects.map((p) => p.path),
+    }).map((f) => ({
+      id: f.id,
+      name: f.name,
+      description: f.description,
+    })),
+    // Workspaces first: a job that names one should land on the whole
+    // workspace, not one member repo that happens to share the name.
+    projects: [
+      ...store.workspaces.map((w) => ({
+        name: w.name,
+        path: w.rootPath,
+        kind: 'workspace' as const,
+      })),
+      ...store.projects.map((p) => ({
+        name: p.name,
+        path: p.path,
+        kind: 'project' as const,
+      })),
+    ],
+  };
+}
+
+/// Hire a worker for a team, start to finish, with nobody at the review
+/// screen: the drafter writes the contract and its flow, and the worker joins
+/// the crew ON DEMAND — no shifts — tagged with the team it was hired for.
+/// You approved it by asking for it (in the team editor) or by approving the
+/// plan that needs it; it starts on probation like every hire, and its
+/// settings are an ordinary worker's to change afterwards.
+async function hireForTeam(req: TeamHireRequest): Promise<{ ok: true; worker: Worker } | { ok: false; error: string }> {
+  if (!workerEngine) return { ok: false, error: 'Workers are not running.' };
+  const drafted = await draftWorkerFromPrompt(
+    { ...(await hireDraftContext()), jobDescription: teamHireJobDescription(req), interview: false, polish: false },
+    drafterDeps(),
+  );
+  if (!drafted.ok) return drafted;
+  if (!('contract' in drafted)) return { ok: false, error: 'The hire drafter asked a question instead of drafting.' };
+  const { flowPlan } = drafted;
+  // Checked against the crew as it is NOW, not as the drafter saw it: a hire
+  // drafted alongside this one may have just taken the same name. Nothing
+  // below awaits before the save, so no other hire can land in between.
+  const contract = renameIfTaken(drafted.contract, workerEngine.workerNames());
+  const flows = flowPlan.filter((p) => p.flowId);
+  if (flows.length === 0) {
+    return { ok: false, error: `No flow for ${contract.name}: ${drafted.flowError ?? 'the drafter named none.'}` };
+  }
+  // A drafted flow is new; it saves where the hire screen saves one. The
+  // wrap-up is left out: it combines a shift's items, and this worker has
+  // no shifts.
+  for (const p of flows) {
+    if (!p.flow) continue;
+    const saved = saveFlow({ flow: p.flow, target: 'user' });
+    if (!saved.ok) return { ok: false, error: `Could not save ${contract.name}'s flow: ${saved.error}` };
+  }
+  const store = Store.load();
+  // The team's project when it has one: a hire for an overcli release team
+  // works in overcli, whatever the drafter guessed from the job.
+  const projectPath = req.projectPath ?? contract.projectPath ?? store.workspaces[0]?.rootPath ?? store.projects[0]?.path;
+  if (!projectPath) return { ok: false, error: 'Add a project first — every worker needs one to work in.' };
+  const everyday = store.projects.find((p) => p.path === projectPath)?.everyday;
+  const saved = workerEngine.save({
+    name: contract.name,
+    ...(contract.tagline?.trim() ? { tagline: contract.tagline.trim() } : {}),
+    ...(contract.errandStarters?.length ? { errandStarters: contract.errandStarters } : {}),
+    jobDescription: contract.jobDescription,
+    projectPath,
+    cadence: null,
+    caps: {
+      maxItemsPerShift: contract.maxItemsPerShift,
+      runIn: 'worktree',
+      allowExternalActions: false,
+      canDelegate: false,
+      fileIntoProject: isEverydayProject({ path: projectPath, everyday }),
+    },
+    budgetUSDPerMonth: contract.budgetUSDPerMonth,
+    heartbeatModel: contract.heartbeatModel,
+    heartbeatBackend: contract.heartbeatBackend,
+    flowIds: flows.map((p) => p.flowId),
+    ...(contract.mcpServers ? { mcpServers: [...contract.mcpServers] } : {}),
+    ...(contract.browser ? { browser: true } : {}),
+    hiredFor: { teamName: req.teamName.trim() || 'New team', ...(req.teamId ? { teamId: req.teamId } : {}) },
+    enabled: true,
+  });
+  if (saved.ok) log('info', 'teams', `Hired ${saved.worker.name} for ${req.teamName}`);
+  return saved;
+}
+
 // Exported for tests only — production code always reaches this through the
 // `app.whenReady()` wiring at the bottom of the file.
 export function registerIpc(): void {
@@ -446,6 +593,9 @@ export function registerIpc(): void {
     // verdicts it cares about — approve/reject — are batch transitions, not
     // run transitions. It ignores every other event type.
     if (workerEngine) workerEngine.observeEvent(event);
+    // Teams watch the batches they commissioned to know when a stage's
+    // pieces are in. Ignores every batch without `origin.team`.
+    if (teamEngine) teamEngine.observeEvent(event);
     emitToRenderer(event);
   };
   runner = new RunnerManager(flowAwareEmit, () => Store.load().settings);
@@ -503,6 +653,36 @@ export function registerIpc(): void {
   // Workers park their shifts through the orchestrator exactly like scheduled
   // `orchestrate` targets do, so the engine is one more parkProposal caller —
   // built after the orchestrator for the same reason the scheduler is.
+  // A run's deliverables: its step artifacts in step order (the answer last),
+  // plus the files it wrote into a synthetic root. Shared by workers, which
+  // file them into a cabinet, and teams, which file them into a task folder.
+  const workerDeliverablesFor = (runId: string): Array<{ name: string; body?: string; sourcePath?: string }> => {
+    const run = flowRuntime?.getRun(runId);
+    if (!run) return [];
+    // Step order, so the answer is last and its supporting material reads in
+    // the order it was produced.
+    const seen = new Set<string>();
+    const out: Array<{ name: string; body?: string; sourcePath?: string }> = [];
+    for (const step of run.flowSnapshot?.steps ?? []) {
+      const art = run.artifacts?.[step.output];
+      if (!art || seen.has(art.name)) continue;
+      seen.add(art.name);
+      out.push({ name: art.name, body: art.body });
+    }
+    // Plus whatever the run WROTE rather than recorded. A step told to
+    // render a dashboard or a chart writes a real file into its working
+    // root and hands back a receipt — the receipt is the artifact, so
+    // filing artifacts alone kept the note and dropped the thing it
+    // described, which then died with the run's coordinator root.
+    for (const file of looseSyntheticRootFiles(run.projectPath, {
+      since: run.createdAt,
+    })) {
+      if (seen.has(file.name)) continue;
+      seen.add(file.name);
+      out.push({ name: file.name, sourcePath: file.path });
+    }
+    return out;
+  };
   workerEngine = new WorkerEngine({
     parker: orchestrator,
     isGitRepo: (projectPath) =>
@@ -580,33 +760,7 @@ export function registerIpc(): void {
     // like any other work it does.
     // A run's artifacts die with the run (MAX_RETAINED_RUNS). Hand the engine
     // a way to read the deliverable so it can file a copy under the worker.
-    deliverablesFor: (runId) => {
-      const run = flowRuntime?.getRun(runId);
-      if (!run) return [];
-      // Step order, so the answer is last and its supporting material reads in
-      // the order it was produced.
-      const seen = new Set<string>();
-      const out: Array<{ name: string; body?: string; sourcePath?: string }> = [];
-      for (const step of run.flowSnapshot?.steps ?? []) {
-        const art = run.artifacts?.[step.output];
-        if (!art || seen.has(art.name)) continue;
-        seen.add(art.name);
-        out.push({ name: art.name, body: art.body });
-      }
-      // Plus whatever the run WROTE rather than recorded. A step told to
-      // render a dashboard or a chart writes a real file into its working
-      // root and hands back a receipt — the receipt is the artifact, so
-      // filing artifacts alone kept the note and dropped the thing it
-      // described, which then died with the run's coordinator root.
-      for (const file of looseSyntheticRootFiles(run.projectPath, {
-        since: run.createdAt,
-      })) {
-        if (seen.has(file.name)) continue;
-        seen.add(file.name);
-        out.push({ name: file.name, sourcePath: file.path });
-      }
-      return out;
-    },
+    deliverablesFor: (runId) => workerDeliverablesFor(runId),
     // Only steps that declared `hands_off` are read for handoff blocks.
     runHandoffOutputs: (runId) => {
       const run = flowRuntime?.getRun(runId);
@@ -642,6 +796,13 @@ export function registerIpc(): void {
         const f = byId.get(id);
         return f ? [{ id: f.id, name: f.name, description: f.description }] : [];
       });
+    },
+    pieceFlow: (flowId, opts) => {
+      const flow = loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).find((f) => f.id === flowId);
+      if (!flow) return { ok: false, error: `flow "${flowId}" not found` };
+      const piece = teamPieceFlow(flow, { check: opts?.check });
+      const saved = saveFlow({ flow: piece, target: 'generated' });
+      return saved.ok ? { ok: true, flowId: piece.id } : saved;
     },
     generatedFlow: async ({ worker, errand, request, runIn }) => {
       const drafted = await draftFlowFromPrompt(
@@ -698,6 +859,116 @@ export function registerIpc(): void {
   // Away mode holds worker batches queued before you left (see pump).
   orchestrator.setCrewAwaySince(() => workerEngine?.awayState()?.since);
   workerEngine.start();
+  // Teams commission their members through the worker engine, so they are
+  // built after it and only ever reach a worker through `commission`.
+  teamEngine = new TeamEngine({
+    emit: flowAwareEmit,
+    notify: showDesktopNotification,
+    workers: () => workerEngine?.list().map((entry) => entry.worker) ?? [],
+    commission: (workerId, args) =>
+      workerEngine
+        ? workerEngine.commission(workerId, args)
+        : Promise.resolve({ ok: false as const, error: 'Worker engine not initialized.' }),
+    batch: (id) => orchestrator?.get(id) ?? null,
+    coordinatorTurn: async ({ system, message, cancelKey, onProgress, attachments }) => {
+      const res = await oneShotDraftText(drafterDeps(), {
+        buildSystemPrompt: () => system,
+        userMessage: message,
+        ...(attachments?.length ? { attachments } : {}),
+        verb: 'coordinate the team',
+        cancelKey,
+        onProgress,
+        // A coordinator turn reads every member's piece before it writes a
+        // word, on the strongest model, so minutes of silence is normal. The
+        // ceilings are only a backstop against a turn that has truly hung.
+        timeouts: { timeoutMs: 45 * 60_000, idleTimeoutMs: 15 * 60_000 },
+        // It is told it has no tools, but if it reaches for one anyway a
+        // hidden turn must never sit on a permission prompt nobody can see.
+        permissionMode: 'plan',
+      });
+      return res.ok ? { ok: true, text: res.text } : res;
+    },
+    cancelTurn: (cancelKey) => {
+      runner?.cancelOneShot(cancelKey);
+    },
+    cancelBatch: (id) => {
+      orchestrator?.abort({ id });
+    },
+    // A member speaking in the room runs on ITS OWN backend and model — the
+    // point of a Codex challenger is that Codex is the one answering. Same
+    // backend resolution as the worker supervisor; plan mode so a stray tool
+    // call reads or is refused rather than waiting on a prompt nobody sees.
+    memberTurn: async ({ worker, prompt, cancelKey, onProgress, attachments }) => {
+      const settings = Store.load().settings;
+      const healthy = await healthyBackends(settings.backendPaths);
+      const backend = pickDrafterBackend({
+        preferred: worker.heartbeatBackend ?? settings.preferredBackend,
+        isHealthy: (candidate) => healthy.has(candidate),
+        isEnabled: (candidate) => settings.disabledBackends[candidate] !== true,
+      });
+      if (!backend) return { ok: false, error: `No signed-in model is available for ${worker.name}.` };
+      const res = await runner!.oneShot({
+        backend,
+        model: resolveProducerModel(backend, worker.heartbeatModel, settings.flowModelDefaults),
+        prompt,
+        ...(attachments?.length ? { attachments } : {}),
+        cwd: os.homedir(),
+        permissionMode: 'plan',
+        skipGlobalMcp: true,
+        cancelKey,
+        ...(onProgress ? { onProgress: (snap: { text: string }) => onProgress(snap.text) } : {}),
+        timeoutMs: 20 * 60_000,
+        idleTimeoutMs: 10 * 60_000,
+      });
+      return res.ok ? { ok: true, text: res.text } : res;
+    },
+    deliverablesFor: (runId) => workerDeliverablesFor(runId),
+    hire: hireForTeam,
+    // One branch per team task across the repos it works in; see teamBranch.
+    code: {
+      open: ({ taskId, title, projectPath }) => {
+        const store = Store.load();
+        const byId = new Map(store.projects.map((p) => [p.id, p.path]));
+        const workspaces = store.workspaces.map((w) => ({
+          rootPath: w.rootPath,
+          memberPaths: w.projectIds.flatMap((id) => (byId.get(id) ? [byId.get(id)!] : [])),
+        }));
+        return openTaskBranch({ taskId, title, repos: taskRepos(projectPath, workspaces) });
+      },
+      pieceRepos: (runId) => {
+        const run = flowRuntime?.getRun(runId);
+        if (!run) return [];
+        if (run.workspaceWorktrees?.length) {
+          return run.workspaceWorktrees.map((m) => ({
+            projectPath: m.projectPath,
+            worktreePath: m.worktreePath,
+            branchName: m.branchName,
+          }));
+        }
+        return run.worktreePath && run.branchName
+          ? [{ projectPath: run.sourceProjectPath ?? run.projectPath, worktreePath: run.worktreePath, branchName: run.branchName }]
+          : [];
+      },
+      absorb: (args) => absorbPiece(args),
+      land: (code, repo, subject) => landTaskBranch(code, repo, subject),
+      close: (code) => closeTaskBranch(code),
+    },
+    projects: () => {
+      const store = Store.load();
+      // Workspaces first, as the hire drafter lists them.
+      return [
+        ...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath })),
+        ...store.projects.map((p) => ({ name: p.name, path: p.path })),
+      ];
+    },
+    spendForRuns: (runIds) => {
+      const wanted = new Set(runIds);
+      let total = 0;
+      for (const s of loadRunSummaries()) if (wanted.has(s.id)) total += s.costUSD;
+      return total;
+    },
+  });
+  teamEngine.start();
   // A sleeping Mac runs no timers. Both engines arm a `setTimeout` for the
   // next due moment, and a host that sleeps across it wakes with the alarm
   // already in the past and no promise about when the runtime will service
@@ -747,6 +1018,7 @@ export function registerIpc(): void {
   ipcMain.handle('store:saveSettings', (_e, settings) => {
     Store.saveSettings(settings);
     refreshUpdateChannel();
+    applyUiScale();
   });
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
   ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
@@ -1720,6 +1992,9 @@ export function registerIpc(): void {
   ipcMain.handle('services:taskPresets', (_e, { workspaceId, serviceId }) =>
     services().taskPresets(workspaceId, serviceId),
   );
+  ipcMain.handle('services:readyCandidates', (_e, { workspaceId, serviceId }) =>
+    services().readyCandidates(workspaceId, serviceId),
+  );
   ipcMain.handle('services:addTask', (_e, { workspaceId, serviceId, name, command, subpath, runBefore }) =>
     services().addTask(workspaceId, serviceId, { name, command, subpath, runBefore }),
   );
@@ -2216,6 +2491,77 @@ export function registerIpc(): void {
     scheduler ? scheduler.runNow(id) : ({ ok: false, error: 'Scheduler not initialized.' } as const),
   );
 
+  // Teams: groups of workers that take on one task at a time.
+  const noTeams = { ok: false, error: 'Team engine not initialized.' } as const;
+  ipcMain.handle('teams:list', () => (teamEngine ? teamEngine.list() : { teams: [], tasks: [] }));
+  ipcMain.handle('teams:save', (_e, { team }) => (teamEngine ? teamEngine.save(team) : noTeams));
+  ipcMain.handle('teams:delete', (_e, { id }) => (teamEngine ? teamEngine.remove(id) : noTeams));
+  ipcMain.handle('teams:draftRoster', (_e, { brief, current }) =>
+    teamEngine ? teamEngine.draftRoster({ brief: String(brief ?? ''), current }) : noTeams,
+  );
+  ipcMain.handle('teams:landCode', (_e, { taskId, projectPath }) =>
+    teamEngine ? teamEngine.landCode(taskId, String(projectPath ?? '')) : noTeams,
+  );
+  ipcMain.handle('teams:hireMember', (_e, { request }) => (teamEngine ? teamEngine.hireMember(request) : noTeams));
+  ipcMain.handle('teams:brief', (_e, { teamId, brief, attachments, projectPath }) =>
+    teamEngine
+      ? teamEngine.brief(
+          teamId,
+          brief,
+          Array.isArray(attachments) ? attachments : [],
+          projectPath === null || typeof projectPath === 'string' ? projectPath : undefined,
+        )
+      : noTeams,
+  );
+  ipcMain.handle('teams:answer', (_e, { taskId, answers }) =>
+    teamEngine ? teamEngine.answer(taskId, Array.isArray(answers) ? answers.map(String) : []) : noTeams,
+  );
+  ipcMain.handle('teams:revise', (_e, { taskId, feedback }) => (teamEngine ? teamEngine.revise(taskId, feedback) : noTeams));
+  ipcMain.handle('teams:approve', (_e, { taskId }) => (teamEngine ? teamEngine.approve(taskId) : noTeams));
+  ipcMain.handle('teams:continue', (_e, { taskId, extraBudgetUSD }) =>
+    teamEngine ? teamEngine.continueTask(taskId, { extraBudgetUSD }) : noTeams,
+  );
+  ipcMain.handle('teams:retry', (_e, { taskId }) => (teamEngine ? teamEngine.retry(taskId) : noTeams));
+  ipcMain.handle('teams:skip', (_e, { taskId, stage, workerId }) =>
+    teamEngine
+      ? workerId
+        ? teamEngine.skipPiece(taskId, Number(stage), workerId)
+        : teamEngine.skipStage(taskId, Number(stage))
+      : noTeams,
+  );
+  ipcMain.handle('teams:cancel', (_e, { taskId }) => (teamEngine ? teamEngine.cancel(taskId) : noTeams));
+  ipcMain.handle('teams:accept', (_e, { taskId }) => (teamEngine ? teamEngine.accept(taskId) : noTeams));
+  ipcMain.handle('teams:deleteTask', (_e, { taskId }) => (teamEngine ? teamEngine.deleteTask(taskId) : noTeams));
+  ipcMain.handle('teams:readFile', (_e, { taskId, name }) => (teamEngine ? teamEngine.readFile(taskId, name) : noTeams));
+  ipcMain.handle('teams:openFolder', async (_e, { taskId }) => {
+    const folder = teamEngine?.folderOf(taskId);
+    if (!folder) return { ok: false, error: 'That task no longer exists.' } as const;
+    fs.mkdirSync(folder, { recursive: true });
+    const error = await shell.openPath(folder);
+    return error ? ({ ok: false, error } as const) : ({ ok: true } as const);
+  });
+  ipcMain.handle('teams:openFile', async (_e, { taskId, name }) => {
+    const file = teamEngine?.filePath(taskId, name);
+    if (!file) return { ok: false, error: 'That file is not in the shared folder.' } as const;
+    const error = await shell.openPath(file);
+    return error ? ({ ok: false, error } as const) : ({ ok: true } as const);
+  });
+  ipcMain.handle('teams:roomAsk', (_e, { taskId, text, attachments }) =>
+    teamEngine ? teamEngine.roomAsk(taskId, text, Array.isArray(attachments) ? attachments : []) : noTeams,
+  );
+  ipcMain.handle('teams:roomContinue', (_e, { taskId }) => (teamEngine ? teamEngine.roomContinue(taskId) : noTeams));
+  ipcMain.handle('teams:roomStop', (_e, { taskId }) => (teamEngine ? teamEngine.roomStop(taskId) : noTeams));
+  ipcMain.handle('teams:updatePack', (_e, { taskId }) => (teamEngine ? teamEngine.updatePack(taskId) : noTeams));
+  ipcMain.handle('teams:roomStartWork', (_e, { taskId, messageId }) =>
+    teamEngine ? teamEngine.roomStartWork(taskId, messageId) : noTeams,
+  );
+  ipcMain.handle('teams:roomDismissWork', (_e, { taskId, messageId }) =>
+    teamEngine ? teamEngine.roomDismissWork(taskId, messageId) : noTeams,
+  );
+  ipcMain.handle('teams:roomHandOff', (_e, { taskId, messageId }) =>
+    teamEngine ? teamEngine.roomHandOff(taskId, messageId) : noTeams,
+  );
+
   // Workers: standing personas that plan their own shifts.
   ipcMain.handle('workers:list', () => (workerEngine ? workerEngine.list() : []));
   ipcMain.handle('workers:save', (_e, { worker }) =>
@@ -2658,58 +3004,8 @@ export function registerIpc(): void {
   ipcMain.handle(
     'workers:draftFromPrompt',
     async (_e, { jobDescription, attachments, conversation, interview }) => {
-    const store = Store.load();
-    // The drafter's own turns run strict and report no servers, so a user who
-    // comes straight here may have none recorded. Ask Claude once — it costs
-    // no model call (see mcpProbe) and only happens while the record is empty.
-    await ensureMcpSeen(resolveBackendPath('claude', store.settings.backendPaths.claude));
-    // The same servers the editor's picker offers. A failed scan means the
-    // drafter is not asked to choose, and the worker loads everything.
-    let mcpServers: string[] | undefined;
-    try {
-      const report = scanCapabilities();
-      mcpServers = Array.from(
-        new Set([
-          ...report.entries.filter((e) => e.kind === 'mcp' && e.clis.includes('claude')).map((e) => e.name),
-          ...(report.accountConnectors ?? []),
-        ]),
-      ).sort((a, b) => a.localeCompare(b));
-    } catch (err) {
-      log('warn', 'workers.hire', 'MCP scan for the hire drafter failed', err);
-    }
     return draftWorkerFromPrompt(
-      {
-        jobDescription,
-        attachments,
-        conversation,
-        interview,
-        mcpServers,
-        polish: true,
-        // Names only — `list()` would build a scorecard per worker, which is
-        // two whole-file log reads each for a prompt line.
-        crew: workerEngine ? workerEngine.workerNames() : [],
-        flows: loadAllFlows({
-          projectPaths: store.projects.map((p) => p.path),
-        }).map((f) => ({
-          id: f.id,
-          name: f.name,
-          description: f.description,
-        })),
-        // Workspaces first: a job that names one should land on the whole
-        // workspace, not one member repo that happens to share the name.
-        projects: [
-          ...store.workspaces.map((w) => ({
-            name: w.name,
-            path: w.rootPath,
-            kind: 'workspace' as const,
-          })),
-          ...store.projects.map((p) => ({
-            name: p.name,
-            path: p.path,
-            kind: 'project' as const,
-          })),
-        ],
-      },
+      { ...(await hireDraftContext()), jobDescription, attachments, conversation, interview, polish: true },
       drafterDeps(),
     );
     },
@@ -3544,7 +3840,40 @@ function buildMenu(): void {
             ] as Electron.MenuItemConstructorOptions[])),
       ],
     },
-    { role: 'viewMenu' },
+    {
+      // `role: 'viewMenu'` spelled out so its zoom items go through the
+      // interface-size setting. The native roles zoom by Chromium's own
+      // levels and remember nothing, so the size was lost on the next launch
+      // and Settings showed a value that was no longer true.
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', click: () => setUiScale(DEFAULT_UI_SCALE) },
+        {
+          label: 'Zoom In',
+          accelerator: 'CmdOrCtrl+=',
+          click: () => setUiScale(stepUiScale(Store.load().settings.uiScale, 1)),
+        },
+        // Same action under Cmd/Ctrl+Plus (Shift+= on most layouts, the
+        // keypad key on the rest). Hidden so the menu lists it once.
+        {
+          label: 'Zoom In',
+          accelerator: 'CmdOrCtrl+Plus',
+          visible: false,
+          click: () => setUiScale(stepUiScale(Store.load().settings.uiScale, 1)),
+        },
+        {
+          label: 'Zoom Out',
+          accelerator: 'CmdOrCtrl+-',
+          click: () => setUiScale(stepUiScale(Store.load().settings.uiScale, -1)),
+        },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
     { role: 'windowMenu' },
     {
       // Everything the app knew how to explain about itself used to be

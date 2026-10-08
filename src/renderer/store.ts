@@ -4162,6 +4162,11 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   ingestMainEvent(event) {
+    if (event.type === 'uiScaleChanged') {
+      // Main already saved it; only the in-memory copy needs to follow.
+      set((s) => ({ settings: { ...s.settings, uiScale: event.uiScale } }));
+      return;
+    }
     if (event.type === 'documentRevise') {
       set((s) => ({
         documentRevisions: { ...s.documentRevisions, [event.requestId]: event.text },
@@ -4518,6 +4523,34 @@ export const useStore = create<StoreState>((set, get) => ({
     } else if (event.type === 'workerHandoffs') {
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().applyHandoffs(event.handoffs);
+      });
+    } else if (event.type === 'teamUpdate') {
+      void import('./teamsStore').then(({ useTeamsStore }) => {
+        const before = useTeamsStore.getState().teams[event.team.id];
+        useTeamsStore.getState().applyTeam(event.team);
+        // A new member may be a worker main just hired for the team, whose
+        // flows main wrote straight to disk: the library mirror has to read
+        // them before the worker's settings can show them.
+        const known = new Set(before?.members.map((m) => m.workerId));
+        if (event.team.members.some((m) => !known.has(m.workerId))) {
+          void useFlowsStore.getState().reload(get().projects.map((p) => p.path));
+        }
+      });
+    } else if (event.type === 'teamDeleted') {
+      void import('./teamsStore').then(({ useTeamsStore }) => {
+        useTeamsStore.getState().removeTeamLocal(event.id);
+      });
+    } else if (event.type === 'teamTaskUpdate') {
+      void import('./teamsStore').then(({ useTeamsStore }) => {
+        useTeamsStore.getState().applyTask(event.task);
+      });
+    } else if (event.type === 'teamTaskProgress') {
+      void import('./teamsStore').then(({ useTeamsStore }) => {
+        useTeamsStore.getState().applyProgress(event.taskId, event.stage, event.tail, event.chars);
+      });
+    } else if (event.type === 'teamTaskDeleted') {
+      void import('./teamsStore').then(({ useTeamsStore }) => {
+        useTeamsStore.getState().removeTaskLocal(event.id);
       });
     } else if (event.type === 'workerDeleted') {
       void import('./workersStore').then(({ useWorkersStore }) => {

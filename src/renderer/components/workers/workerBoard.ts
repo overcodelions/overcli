@@ -21,7 +21,8 @@
 //      already made, extended to five groups instead of two.
 
 import type { FlowRun } from '@shared/flows/schema';
-import type { Worker } from '@shared/flows/worker';
+import { untilLabel } from '@shared/flows/schedule';
+import { describeCadence, type Worker } from '@shared/flows/worker';
 import { describeActivity, startOfDay, type WorkerActivity } from './workerDeskSelectors';
 
 /// The groups, in the order they are drawn. Ordered by how much of your
@@ -109,6 +110,57 @@ export function railDropIndex(
   return after ? index + 1 : index;
 }
 
+/// Workers hired for a team who work only for it: tagged `hiredFor`, on
+/// demand, and on a team now. The rail reaches them through their team rather
+/// than giving each its own row — they never work a shift and you brief the
+/// team, not them. Give one a shift and it is back on the crew list.
+export function teamOnlyIds(
+  workers: readonly Pick<Worker, 'id' | 'hiredFor' | 'cadence'>[],
+  teams: readonly { members: readonly { workerId: string }[] }[],
+): Set<string> {
+  const onTeam = new Set(teams.flatMap((t) => t.members.map((m) => m.workerId)));
+  return new Set(workers.filter((w) => !!w.hiredFor && w.cadence === null && onTeam.has(w.id)).map((w) => w.id));
+}
+
+export interface ProjectGroup {
+  /// The project path, the group's identity.
+  key: string;
+  label: string;
+  entries: BoardEntry[];
+}
+
+/// The crew by project, for the rail. Membership is where a worker works,
+/// never what it is doing, so a face only changes group when you move it.
+/// Groups come in the order their first worker does, and keep the roster's
+/// order inside — your order, unchanged, just with dividers in it.
+export function groupByProject(entries: readonly BoardEntry[], labelOf: (path: string) => string): ProjectGroup[] {
+  const groups: ProjectGroup[] = [];
+  for (const entry of entries) {
+    const key = entry.worker.projectPath;
+    let group = groups.find((g) => g.key === key);
+    if (!group) {
+      group = { key, label: labelOf(key), entries: [] };
+      groups.push(group);
+    }
+    group.entries.push(entry);
+  }
+  return groups;
+}
+
+/// What a folded group says about the faces it hides: only what you would
+/// act on, most urgent first.
+export function foldSummary(entries: readonly BoardEntry[]): Array<{ text: string; tone: 'waiting' | 'stopped' | 'running' }> {
+  const count = (mark: RailMark) => entries.filter((e) => railMark(e) === mark).length;
+  const out: Array<{ text: string; tone: 'waiting' | 'stopped' | 'running' }> = [];
+  const waiting = count('waiting');
+  const stopped = count('stopped');
+  const running = count('running');
+  if (waiting) out.push({ text: `${waiting} need${waiting === 1 ? 's' : ''} you`, tone: 'waiting' });
+  if (stopped) out.push({ text: `${stopped} stopped`, tone: 'stopped' });
+  if (running) out.push({ text: `${running} working`, tone: 'running' });
+  return out;
+}
+
 export type BoardGroups = Record<BoardGroupId, BoardEntry[]>;
 
 /// The whole roster, split. Input order is preserved inside every group, so
@@ -160,6 +212,52 @@ export function boardLine(
   return tagline || null;
 }
 
+
+/// What one worker is doing right now, for the head of its own page.
+///
+/// The roster row can afford two words ("working a shift"); a page given over
+/// to one worker cannot, because it is the page you open to find out. So this
+/// carries the live line the turn is streaming, and when nothing is running it
+/// says when something next will — "idle" alone reads as broken on a worker
+/// whose next shift is at nine.
+export interface WorkerNow {
+  tone: 'running' | 'idle' | 'bench';
+  label: string;
+  detail: string | null;
+}
+
+export function workerNow(
+  worker: Pick<Worker, 'enabled' | 'cadence'>,
+  progress: { task: 'shift' | 'errand'; text: string; tools: string[] } | undefined,
+  live: boolean,
+  nextShiftAt: number | null | undefined,
+  now: number,
+): WorkerNow {
+  if (!worker.enabled) return { tone: 'bench', label: 'On the bench', detail: 'paused — no shifts or errands' };
+  if (progress) {
+    return {
+      tone: 'running',
+      label: progress.task === 'errand' ? 'On your errand' : 'Working a shift',
+      detail: progressDetail(progress.text, progress.tools),
+    };
+  }
+  if (live) return { tone: 'running', label: 'Running a flow', detail: null };
+  if (worker.cadence === null) return { tone: 'idle', label: 'Idle', detail: 'works when you ask' };
+  if (nextShiftAt) return { tone: 'idle', label: 'Idle', detail: `next shift ${untilLabel(nextShiftAt, now)} · ${describeCadence(worker.cadence)}` };
+  return { tone: 'idle', label: 'Idle', detail: describeCadence(worker.cadence) };
+}
+
+/// The newest thing the turn said, one line of it — else the tool it reached for.
+function progressDetail(text: string, tools: string[]): string {
+  const line = text
+    .split('\n')
+    .map((l) => l.replace(/^[\s#>*\-`]+|[`*]+/g, '').trim())
+    .filter(Boolean)
+    .pop();
+  if (line) return line.length > 160 ? `${line.slice(0, 159).trimEnd()}…` : line;
+  const tool = tools[tools.length - 1];
+  return tool ? `using ${tool}` : 'getting started…';
+}
 
 // ---- The day strip -------------------------------------------------------
 

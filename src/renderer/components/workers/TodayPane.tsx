@@ -19,6 +19,8 @@ import { useRunningMap } from '../../runnersStore';
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
 import { InboxList, defaultItem, findRow, type DigestModel, type OpenItem } from './TodayDigest';
+import { useTeamsStore } from '../../teamsStore';
+import { TeamDesk } from './teams/TeamDesk';
 import { TodayEmpty } from './TodayEmpty';
 import { TodayReader } from './TodayReader';
 import { clearStateOf, useTodayCleared } from './todayCleared';
@@ -113,7 +115,12 @@ export function TodayPane({ workerId = null }: { workerId?: string | null }) {
   useEffect(() => {
     lastPicked[inboxKey] = picked;
   }, [inboxKey, picked]);
-  const pickedRow = picked ? findRow(model, picked) : undefined;
+  const pickedRow = picked && picked.kind !== 'team' ? findRow(model, picked) : undefined;
+  // A team task stays open while it exists; the crew's list is the only one
+  // that shows team tasks as items.
+  const teamTasks = useTeamsStore((s) => s.tasks);
+  const groupTeams = !workerId;
+  const pickedTeamTask = picked?.kind === 'team' && groupTeams ? teamTasks[picked.key] : undefined;
   // Keep the open item's key on the row it resolved to, so the list still
   // highlights it after an answer folds into a group.
   useEffect(() => {
@@ -154,10 +161,11 @@ export function TodayPane({ workerId = null }: { workerId?: string | null }) {
   // opened nothing, is the oldest decision. Track it too, so answering the
   // item the inbox opened on gets the same handoff.
   const cleared = useTodayCleared((s) => s.cleared);
-  const open = pickedRow
+  const open = pickedRow || pickedTeamTask
     ? picked
-    : defaultItem(model, (row) => clearStateOf(cleared, row.key, row.at) === 'cleared');
-  const openRow = open ? findRow(model, open) : undefined;
+    : defaultItem(model, (row) => clearStateOf(cleared, row.key, row.at) === 'cleared', groupTeams);
+  const openRow = open && open.kind !== 'team' ? findRow(model, open) : undefined;
+  const openTeamTask = open?.kind === 'team' ? teamTasks[open.key] : undefined;
   // A file opened from the reader belongs to the item it came from: reading
   // the next item under the last one's report is the same mistake as
   // carrying it onto another page.
@@ -226,10 +234,14 @@ export function TodayPane({ workerId = null }: { workerId?: string | null }) {
           }
           onNext={() => setHandoff(null)}
         />
+      ) : openTeamTask ? (
+        // The task itself, as its team's desk shows it: pack, conversation
+        // and shared folder, without leaving Today.
+        <TeamDesk key={openTeamTask.id} teamId={openTeamTask.teamId} taskId={openTeamTask.id} />
       ) : open && openRow ? (
         <TodayReader
           row={openRow}
-          kind={open.kind}
+          kind={open.kind === 'needs' ? 'needs' : 'done'}
           file={model.filed[openRow.key] ?? null}
           digest={model.digest[openRow.key]}
           now={now}

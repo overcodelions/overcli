@@ -183,6 +183,12 @@ export interface Worker {
   /// hand: a worker that only reads its repo should not carry ~22 browser
   /// tools into every run.
   browser?: boolean;
+  /// Hired from a team — in its editor, or by its coordinator's plan —
+  /// rather than from the hire screen. Such a hire works on demand (no
+  /// shifts) until you give it some; this only says where it came from, so
+  /// the roster can explain a worker you never hired by hand. The team id is
+  /// absent for a hire made while its team was still being created.
+  hiredFor?: { teamName: string; teamId?: UUID };
   enabled: boolean;
   createdAt: number;
   /// The desk conversation this worker is currently holding.
@@ -450,7 +456,7 @@ export const WORKER_FIRST_RUN_WINDOW_DAYS = 90;
 /// sentence.
 export const WORKER_NOTE_MAX = 600;
 
-export const WORKER_MAX_ITEMS_PER_SHIFT = 5;
+export const WORKER_MAX_ITEMS_PER_SHIFT = 10;
 export const WORKER_MIN_JOB_DESCRIPTION = 20;
 export const WORKER_MIN_INTERVAL_MINUTES = 15;
 /// This many consecutive rejections demote the worker one trust level. The

@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 
 import { useFlowsStore } from './flowsStore';
+import { useTeamsStore } from './teamsStore';
 
 import type { Attachment, Backend, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
@@ -200,7 +201,11 @@ interface WorkersState {
   /// what it came to (report); nothing answered NOW, so the tab opened on
   /// whichever worker happened to be hired first — an accident of sort order
   /// standing in for a front page.
-  view: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
+  view: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'team';
+  /// The team whose desk is on screen while `view` is 'team'. Teams live in
+  /// teamsStore; the selection lives here because it is a peer of the worker
+  /// selection — picking one leaves the other.
+  selectedTeamId: string | null;
   /// Today narrowed to one worker — what a face in the rail opens. Null is
   /// the whole crew. Only read while `view` is 'today'; the Today button
   /// clears it.
@@ -443,6 +448,10 @@ interface WorkersActions {
   remove(id: string): Promise<void>;
   workShiftNow(id: string): Promise<void>;
   selectWorker(id: string | null): void;
+  /// Open a team's desk.
+  selectTeam(id: string): void;
+  /// Open the team editor: `null` for a new team.
+  openTeamEditor(teamId: string | null): void;
   /// Open a worker's desk from outside the roster — the command palette, a
   /// link. The same arrival as clicking the row, plus dismissing any draft
   /// left open: the editor renders over the desk, so a half-written edit from
@@ -783,6 +792,7 @@ function leavePane(get: () => WorkersState & WorkersActions): void {
   const st = get();
   if (st.draft) st.closeEditor();
   if (st.hire.open) st.closeHire();
+  useTeamsStore.getState().closeEditor();
 }
 
 export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) => ({
@@ -810,6 +820,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   away: null,
   allocation: null,
   view: 'today',
+  selectedTeamId: null,
   inboxWorkerId: null,
   selectSeq: 0,
   deskFocus: null,
@@ -1010,6 +1021,17 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       deskSettings: null,
       selectSeq: st.selectSeq + 1,
     }));
+  },
+
+  selectTeam(id) {
+    leavePane(get);
+    set({ view: 'team', selectedTeamId: id });
+  },
+
+  openTeamEditor(teamId) {
+    leavePane(get);
+    if (teamId) set({ view: 'team', selectedTeamId: teamId });
+    useTeamsStore.getState().openEditor(teamId);
   },
 
   openWorkerSettings(id) {

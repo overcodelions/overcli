@@ -70,8 +70,8 @@ describe('worker', () => {
   });
 
   it('caps items per shift', () => {
-    expect(validateWorker(makeWorker({ caps: { maxItemsPerShift: 6, runIn: 'worktree' } }))).toBe(
-      'A shift is capped at 5 items.',
+    expect(validateWorker(makeWorker({ caps: { maxItemsPerShift: 11, runIn: 'worktree' } }))).toBe(
+      'A shift is capped at 10 items.',
     );
   });
 
@@ -242,7 +242,7 @@ describe('parseWorkerContract', () => {
       flowId: 'not-a-real-flow',
     })}</worker>`;
     const contract = parseWorkerContract(reply, opts)!;
-    expect(contract.maxItemsPerShift).toBe(5);
+    expect(contract.maxItemsPerShift).toBe(10);
     expect(contract.budgetUSDPerMonth).toBe(10);
     expect(contract.heartbeatModel).toBe('cheap-model');
     expect(contract.flows).toEqual([]);

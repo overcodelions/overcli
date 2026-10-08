@@ -10,10 +10,14 @@ import {
   boardReasons,
   dayProgress,
   dayTicks,
+  foldSummary,
+  groupByProject,
+  teamOnlyIds,
   groupBoard,
   railDropIndex,
   railMark,
   tickKind,
+  workerNow,
   type BoardEntry,
 } from './workerBoard';
 import { startOfDay, toWorkerActivity, type WorkerActivity } from './workerDeskSelectors';
@@ -257,5 +261,71 @@ describe('railDropIndex', () => {
 
   it('is null for a target that is not on the roster', () => {
     expect(railDropIndex(ordered, 'zz', false)).toBeNull();
+  });
+});
+
+describe('workerNow', () => {
+  const daily = { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] } as Worker['cadence'];
+  const now = 1_000_000_000;
+
+  it('says a paused worker is on the bench even mid-turn', () => {
+    expect(workerNow({ enabled: false, cadence: daily }, { task: 'shift', text: 'x', tools: [] }, true, null, now).tone).toBe('bench');
+  });
+
+  it('carries the newest streamed line of a running turn, stripped of markdown', () => {
+    const out = workerNow({ enabled: true, cadence: daily }, { task: 'errand', text: 'Looking around\n\n## **Reading the CI logs**', tools: ['Read'] }, false, null, now);
+    expect(out).toEqual({ tone: 'running', label: 'On your errand', detail: 'Reading the CI logs' });
+  });
+
+  it('falls back to the tool, then to getting started', () => {
+    expect(workerNow({ enabled: true, cadence: daily }, { task: 'shift', text: '', tools: ['Grep'] }, false, null, now).detail).toBe('using Grep');
+    expect(workerNow({ enabled: true, cadence: daily }, { task: 'shift', text: '  ', tools: [] }, false, null, now).detail).toBe('getting started…');
+  });
+
+  it('says when an idle worker next works', () => {
+    expect(workerNow({ enabled: true, cadence: null }, undefined, false, null, now).detail).toBe('works when you ask');
+    expect(workerNow({ enabled: true, cadence: daily }, undefined, false, now + 3 * 3_600_000, now).detail).toMatch(/^next shift in 3h · /);
+    expect(workerNow({ enabled: true, cadence: daily }, undefined, true, null, now).label).toBe('Running a flow');
+  });
+});
+
+describe('the rail with a big crew', () => {
+  it('reaches team-only hires through their team', () => {
+    const crew = [
+      worker('theo', { hiredFor: { teamName: 'Release Crew' }, cadence: null }),
+      worker('shifty', { hiredFor: { teamName: 'Release Crew' } }),
+      worker('loose', { hiredFor: { teamName: 'Gone' }, cadence: null }),
+      worker('lena'),
+    ];
+    const teams = [{ members: [{ workerId: 'theo' }, { workerId: 'shifty' }, { workerId: 'lena' }] }];
+    // Given shifts, or off every team, a hire is back on the crew list.
+    expect([...teamOnlyIds(crew, teams)]).toEqual(['theo']);
+  });
+
+  it('groups by project in roster order, first appearance first', () => {
+    const rows = [
+      entry({ worker: worker('a', { projectPath: '/acme' }) }),
+      entry({ worker: worker('b', { projectPath: '/overcli' }) }),
+      entry({ worker: worker('c', { projectPath: '/acme' }) }),
+    ];
+    const groups = groupByProject(rows, (p) => p.slice(1));
+    expect(groups.map((g) => [g.label, g.entries.map((e) => e.worker.id)])).toEqual([
+      ['acme', ['a', 'c']],
+      ['overcli', ['b']],
+    ]);
+  });
+
+  it('sums up a folded group by what you would act on', () => {
+    const rows = [
+      entry({ worker: worker('a'), review: 1 }),
+      entry({ worker: worker('b'), review: 2 }),
+      entry({ worker: worker('c'), live: true, today: [activity('1', NOON)] }),
+      entry({ worker: worker('d') }),
+    ];
+    expect(foldSummary(rows)).toEqual([
+      { text: '2 need you', tone: 'waiting' },
+      { text: '1 working', tone: 'running' },
+    ]);
+    expect(foldSummary([entry()])).toEqual([]);
   });
 });

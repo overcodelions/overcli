@@ -29,7 +29,10 @@ export interface NavLocation {
   /// selection rather than part of it — the calendar and the funds waterfall
   /// have no worker to be the selection of — so Back out of Funds has to
   /// know to return to the calendar rather than to a desk.
-  workersView: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
+  workersView: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'team';
+  /// The team whose desk is up while `workersView` is 'team'. Optional so a
+  /// location recorded without it still reads as "no team".
+  selectedTeamId?: string | null;
 }
 
 /// Identity of a location — two locations with the same key are the same
@@ -51,6 +54,7 @@ export function locationKey(loc: NavLocation): string {
     // Same reasoning as the library segment: only a place while you're in
     // the tab that owns it.
     loc.detailMode === 'workers' ? loc.workersView : '',
+    loc.detailMode === 'workers' && loc.workersView === 'team' ? (loc.selectedTeamId ?? '') : '',
   ].join(' ');
 }
 
@@ -70,6 +74,7 @@ export function readLocation(): NavLocation {
     activeOrchestrationId: o.activeOrchestrationId,
     selectedWorkerId: w.selectedWorkerId,
     workersView: w.view,
+    selectedTeamId: w.selectedTeamId,
   };
 }
 
@@ -259,6 +264,7 @@ function applyLocation(loc: NavLocation): void {
     else if (loc.workersView === 'calendar') useWorkersStore.getState().showCalendar();
     else if (loc.workersView === 'funds') useWorkersStore.getState().showFunds();
     else if (loc.workersView === 'report') useWorkersStore.getState().showReport();
+    else if (loc.workersView === 'team' && loc.selectedTeamId) useWorkersStore.getState().selectTeam(loc.selectedTeamId);
     // LAST: selectWorker and every Workers subview action call leavePane(),
     // which clears the active run. Flow locations still carry the globally
     // remembered Workers view, so restoring that view after the run used to
@@ -395,6 +401,7 @@ export function describeLocation(loc: NavLocation): string {
       if (loc.workersView === 'calendar') return 'the shift calendar';
       if (loc.workersView === 'funds') return 'funds';
       if (loc.workersView === 'report') return 'a shift report';
+      if (loc.workersView === 'team') return 'a team';
       return "a worker's desk";
     case 'flows':
       if (loc.activeRunId) return 'a flow run';

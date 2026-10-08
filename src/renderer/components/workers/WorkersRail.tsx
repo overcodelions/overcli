@@ -19,8 +19,13 @@
 //   3. THIN BY DEFAULT. Collapsed, the rail is faces only and the tooltip
 //      carries the name and status line. Expanded, it adds them as text. The
 //      width changes only when you toggle it, never because of what you click.
-//   4. NOTHING FOLDS. The old "9 quiet" and "on the bench" folds opened and
-//      closed under the cursor; here every worker keeps its own slot.
+//   4. NOTHING FOLDS BY ITSELF. The old "9 quiet" and "on the bench" folds
+//      opened and closed under the cursor as status changed; here every
+//      worker keeps its own slot. What does group a big crew is fixed by who
+//      a worker IS, never what it is doing: its project (a divider, and on
+//      the expanded rail a header you can fold — it stays folded until you
+//      open it), and for a hire that only works for a team, that team (it
+//      sits under the team's row, not on the crew list).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -49,6 +54,10 @@ import { PopMenu, type MenuItemDef } from "../SidebarPlaces";
 import { fundingFor } from "@shared/flows/treasury";
 import { searchWork } from "./workSearch";
 import { awayLine, morningAfter, nextMondayMorning } from "./awayMode";
+import { NewTeamButton, TeamRailSection } from "./teams/TeamRail";
+import { useTeamsStore } from "../../teamsStore";
+import { foldSummary, groupByProject, teamOnlyIds, type ProjectGroup } from "./workerBoard";
+import { projectName, useProjectOptions } from "./teams/ProjectChoice";
 
 export const RAIL_COLLAPSED_WIDTH = 64;
 export const RAIL_EXPANDED_WIDTH = 212;
@@ -112,8 +121,29 @@ export function WorkersRail({
   // empty; the rail follows it so the empty state can be looked at whole.
   const previewEmpty = useWorkersStore((s) => s.previewEmpty);
   const entries = previewEmpty ? [] : board.entries;
-  const active = entries.filter((entry) => entry.worker.enabled);
-  const bench = entries.filter((entry) => !entry.worker.enabled);
+  // Hires that only work for a team are reached through it. A search finds
+  // everyone, wherever they sit.
+  const teams = useTeamsStore((s) => s.teams);
+  const teamOnly = useMemo(
+    () => (query ? new Set<string>() : teamOnlyIds(Object.values(workers), Object.values(teams))),
+    [query, workers, teams],
+  );
+  const listed = entries.filter((entry) => !teamOnly.has(entry.worker.id));
+  const active = listed.filter((entry) => entry.worker.enabled);
+  const bench = listed.filter((entry) => !entry.worker.enabled);
+  const projectOptions = useProjectOptions();
+  const groups = groupByProject(active, (path) => projectName(projectOptions, path) ?? "Elsewhere");
+  const [folded, setFolded] = useState<Record<string, boolean>>(readFolded);
+  const toggleFold = (key: string) =>
+    setFolded((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      try {
+        localStorage.setItem(FOLD_KEY, JSON.stringify(next));
+      } catch {
+        // best-effort
+      }
+      return next;
+    });
   // Nobody hired, as opposed to nobody matching a search.
   const noCrew = previewEmpty || Object.keys(workers).length === 0;
   const needsYou = board.groups.needsYou.length;
@@ -158,6 +188,14 @@ export function WorkersRail({
   const onScreen = (id: string) =>
     onWorkers &&
     ((view === "today" && inboxWorkerId === id) || (view === "worker" && selectedWorkerId === id));
+
+  // A team holding the worker on screen shows its members, so that worker
+  // is never hidden inside a closed team.
+  const openTeamsFor = new Set(
+    Object.values(teams)
+      .filter((team) => team.members.some((m) => teamOnly.has(m.workerId) && onScreen(m.workerId)))
+      .map((team) => team.id),
+  );
 
   const face = (entry: BoardEntry, section: BoardEntry[]) => (
     <RailFace
@@ -313,7 +351,15 @@ export function WorkersRail({
 
       <div className="mx-3 my-2 h-px shrink-0 bg-card" />
 
-      <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden px-2">
+      {/* The narrow sidebar scrollbar (6px, thumb only on hover): the
+          system's full-width track left a selected face's highlight barely
+          wider than the face, its selection line touching the ring. */}
+      <div
+        className={
+          "sidebar-scroll flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden " +
+          (expanded ? "pl-2 pr-0.5" : "pl-1.5 pr-0")
+        }
+      >
         {entries.length === 0 ? (
           expanded && (
             <div className="px-2 py-1 text-[10px] text-ink-faint">
@@ -322,7 +368,40 @@ export function WorkersRail({
           )
         ) : (
           <>
-            {active.map((entry) => face(entry, active))}
+            {!query && (
+              <TeamRailSection
+                expanded={expanded}
+                forceOpen={openTeamsFor}
+                renderMembers={(team) =>
+                  team.members
+                    .map((m) => entries.find((e) => e.worker.id === m.workerId))
+                    .filter((e): e is BoardEntry => !!e)
+                    .map((e) => (
+                      <TeamMemberRow
+                        key={e.worker.id}
+                        entry={e}
+                        selected={onScreen(e.worker.id)}
+                        onOpen={() => showWorkerInbox(e.worker.id)}
+                      />
+                    ))
+                }
+              />
+            )}
+            {groups.length > 1
+              ? groups.map((group, i) => (
+                  <ProjectSection
+                    key={group.key}
+                    group={group}
+                    first={i === 0}
+                    expanded={expanded}
+                    // A folded group still shows the worker you have open.
+                    folded={expanded && !!folded[group.key] && !query}
+                    onToggle={() => toggleFold(group.key)}
+                    face={(entry) => face(entry, group.entries)}
+                    pinned={(entry) => onScreen(entry.worker.id)}
+                  />
+                ))
+              : active.map((entry) => face(entry, active))}
             {bench.length > 0 && (
               <>
                 <div className="mx-1 my-1.5 h-px shrink-0 bg-card" />
@@ -339,13 +418,112 @@ export function WorkersRail({
         {expanded && query && <WorkResults query={query} />}
       </div>
 
-      <div className="mt-2 flex flex-col gap-0.5 px-2">
+      <div className={"mt-2 flex flex-col gap-0.5 " + (expanded ? "px-2" : "px-1")}>
         <HireButton expanded={expanded} />
+        <NewTeamButton expanded={expanded} />
         <div className="mx-1 my-1.5 h-px bg-card" />
-        <RailFooter expanded={expanded} />
-        {toggle}
+        <RailFooter expanded={expanded} onToggleExpanded={onToggleExpanded} />
       </div>
     </nav>
+  );
+}
+
+/// Which project groups are folded on the expanded rail, by project path.
+const FOLD_KEY = "overcli.railProjectsFolded";
+
+function readFolded(): Record<string, boolean> {
+  try {
+    return JSON.parse(localStorage.getItem(FOLD_KEY) ?? "{}") as Record<string, boolean>;
+  } catch {
+    return {};
+  }
+}
+
+const FOLD_TONE = { waiting: "text-violet-400", stopped: "text-amber-400", running: "text-emerald-400" } as const;
+
+/// One project's workers. Collapsed, a rule between groups (its name in the
+/// tooltip). Expanded, a header that folds — by your click only — and, when
+/// folded, says what the hidden faces need: "1 needs you · 2 working".
+function ProjectSection({
+  group,
+  first,
+  expanded,
+  folded,
+  onToggle,
+  face,
+  pinned,
+}: {
+  group: ProjectGroup;
+  first: boolean;
+  expanded: boolean;
+  folded: boolean;
+  onToggle: () => void;
+  face: (entry: BoardEntry) => React.ReactNode;
+  pinned: (entry: BoardEntry) => boolean;
+}) {
+  const summary = folded ? foldSummary(group.entries) : [];
+  const shown = folded ? group.entries.filter(pinned) : group.entries;
+  return (
+    <>
+      {expanded ? (
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={!folded}
+          className={
+            "flex w-full items-center gap-1.5 rounded px-2 pb-0.5 text-left text-[10px] uppercase tracking-wider text-ink-faint hover:text-ink-muted " +
+            (first ? "pt-0.5" : "pt-2")
+          }
+        >
+          <svg width="8" height="8" viewBox="0 0 16 16" aria-hidden className={"shrink-0 transition-transform " + (folded ? "" : "rotate-90")}>
+            <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+          <span className="truncate">{group.label}</span>
+          <span className="shrink-0">· {group.entries.length}</span>
+          {summary.length > 0 && (
+            <span className="ml-auto flex shrink-0 gap-1.5 normal-case tracking-normal">
+              {summary.map((s) => (
+                <span key={s.tone} className={FOLD_TONE[s.tone]}>
+                  {s.text}
+                </span>
+              ))}
+            </span>
+          )}
+        </button>
+      ) : (
+        !first && <div title={group.label} className="mx-2 my-1 h-px shrink-0 bg-card" />
+      )}
+      {shown.map((entry) => face(entry))}
+    </>
+  );
+}
+
+/// A team member under its team on the expanded rail: smaller than a crew
+/// row, since the team is what you work with and they are who is on it.
+function TeamMemberRow({ entry, selected, onOpen }: { entry: BoardEntry; selected: boolean; onOpen: () => void }) {
+  const { worker } = entry;
+  const mark = railMark(entry);
+  const note =
+    mark === "waiting" ? "needs you" : mark === "stopped" ? "stopped" : mark === "running" ? "working" : !worker.enabled ? "paused" : "";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`${worker.name}${note ? ` · ${note}` : ""}`}
+      aria-current={selected ? "page" : undefined}
+      className={
+        "sidebar-row flex w-full items-center gap-2 rounded-md border border-transparent px-1.5 py-1 text-left " +
+        (selected ? "sidebar-row-selected text-ink" : "text-ink-muted hover:bg-card-strong hover:text-ink")
+      }
+    >
+      <WorkerAvatar worker={worker} size="xs" live={mark === "running"} untitled />
+      <span className="min-w-0 flex-1 truncate text-[11.5px]">{worker.name}</span>
+      {note && (
+        <span className={"shrink-0 text-[10px] " + (mark in FOLD_TONE ? FOLD_TONE[mark as keyof typeof FOLD_TONE] : "text-ink-faint")}>
+          {note}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -627,6 +805,8 @@ function RailButton({
 function HireButton({ expanded, first = false }: { expanded: boolean; first?: boolean }) {
   const openHire = useWorkersStore((s) => s.openHire);
   const openEditor = useWorkersStore((s) => s.openEditor);
+  const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
+  const crewSize = useWorkersStore((s) => Object.keys(s.workers).length);
   const importFromFile = useWorkersStore((s) => s.importFromFile);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
@@ -717,15 +897,35 @@ function HireButton({ expanded, first = false }: { expanded: boolean; first?: bo
           >
             Import…
           </button>
+          {/* A team can hire its own members, so it needs nobody hired first. */}
+          {crewSize >= 1 && (
+            <>
+              <div className="my-1 h-px bg-card" />
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  openTeamEditor(null);
+                }}
+                className={item + " text-ink-muted hover:text-ink"}
+              >
+                New team…
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-/// The occasional whole-crew views: a column of icons collapsed, labelled
-/// rows expanded.
-function RailFooter({ expanded }: { expanded: boolean }) {
+/// The occasional whole-crew views, as one row of icons (a 2-up grid on the
+/// collapsed rail) rather than a labelled row each: they are places you
+/// check, not the crew, and five full rows of them pushed the crew off the
+/// rail. Funds is also a meter across the top, so spend is visible without
+/// a number on screen; Away is a strip of its own only while you are away,
+/// the one time it matters.
+function RailFooter({ expanded, onToggleExpanded }: { expanded: boolean; onToggleExpanded: () => void }) {
   const onWorkers = useStore((s) => s.detailMode === "workers");
   const storeView = useWorkersStore((s) => s.view);
   const view = onWorkers ? storeView : null;
@@ -733,50 +933,136 @@ function RailFooter({ expanded }: { expanded: boolean }) {
   const showFunds = useWorkersStore((s) => s.showFunds);
   const showReport = useWorkersStore((s) => s.showReport);
   const allocation = useWorkersStore((s) => s.allocation);
+  const away = useWorkersStore((s) => s.away);
   const starved = allocation ? starvedCount(allocation) : 0;
+  const fundsTitle = allocation
+    ? `Funds · $${allocation.spentUSD.toFixed(2)} of $${allocation.poolUSD.toFixed(0)} spent this month${
+        starved > 0 ? ` · ${starved} worker(s) unfunded` : ""
+      }`
+    : "";
   return (
-    <>
-      <AwayButton expanded={expanded} />
-      <RailButton
-        label="Shifts"
-        title="When every worker's shifts fall, this week"
-        expanded={expanded}
-        active={view === "calendar"}
-        onClick={showCalendar}
-        icon={<CalendarIcon />}
-      />
-      {/* Funds only once a pool exists. */}
+    <div className="flex flex-col gap-1.5">
       {allocation && (
-        <RailButton
-          label="Funds"
-          detail={
-            expanded
-              ? `$${allocation.spentUSD.toFixed(0)} / $${allocation.poolUSD.toFixed(0)}`
-              : undefined
-          }
-          title={`$${allocation.spentUSD.toFixed(2)} of $${allocation.poolUSD.toFixed(0)} spent this month${
-            starved > 0 ? ` · ${starved} worker(s) unfunded` : ""
-          }`}
+        <FundsMeter
+          spent={allocation.spentUSD}
+          pool={allocation.poolUSD}
           expanded={expanded}
-          active={view === "funds"}
+          title={fundsTitle}
           onClick={showFunds}
-          icon={<PotIcon />}
-          badge={
-            starved > 0 ? (
-              <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-amber-400" />
-            ) : null
-          }
         />
       )}
-      <RailButton
-        label="Report"
-        title="Shifts, outcomes, tokens and time across the roster"
-        expanded={expanded}
-        active={view === "report"}
-        onClick={showReport}
-        icon={<ReportIcon />}
-      />
-    </>
+      {away && <AwayButton expanded={expanded} variant="strip" />}
+      <div className={expanded ? "flex items-center gap-0.5" : "grid grid-cols-2 justify-items-center gap-0.5"}>
+        {!away && <AwayButton expanded={expanded} variant="icon" />}
+        <FooterIcon
+          label="Shifts"
+          title="Shifts · when every worker's shifts fall, this week"
+          active={view === "calendar"}
+          onClick={showCalendar}
+          icon={<CalendarIcon />}
+        />
+        {allocation && (
+          <FooterIcon
+            label="Funds"
+            title={fundsTitle}
+            active={view === "funds"}
+            onClick={showFunds}
+            icon={<PotIcon />}
+            badge={starved > 0 ? <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-amber-400" /> : null}
+          />
+        )}
+        <FooterIcon
+          label="Report"
+          title="Report · shifts, outcomes, tokens and time across the roster"
+          active={view === "report"}
+          onClick={showReport}
+          icon={<ReportIcon />}
+        />
+        <FooterIcon
+          label={expanded ? "Collapse the rail" : "Show names"}
+          title={expanded ? "Collapse the rail" : "Show names"}
+          active={false}
+          onClick={onToggleExpanded}
+          icon={<RailToggleIcon />}
+          className={expanded ? "ml-auto" : ""}
+        />
+      </div>
+    </div>
+  );
+}
+
+function FooterIcon({
+  label,
+  title,
+  active,
+  onClick,
+  icon,
+  badge,
+  className = "",
+}: {
+  label: string;
+  title: string;
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  badge?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={label}
+      aria-current={active ? "page" : undefined}
+      className={
+        "relative flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-md border border-transparent " +
+        "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
+        (active ? "sidebar-row-selected text-ink " : "text-ink-faint hover:bg-card-strong hover:text-ink ") +
+        className
+      }
+    >
+      {icon}
+      {badge}
+    </button>
+  );
+}
+
+/// This month's spend against the pool, as a bar: quiet while there is room,
+/// amber near the end, red past it. The figure is in the tooltip, and the
+/// expanded rail adds it as text.
+function FundsMeter({
+  spent,
+  pool,
+  expanded,
+  title,
+  onClick,
+}: {
+  spent: number;
+  pool: number;
+  expanded: boolean;
+  title: string;
+  onClick: () => void;
+}) {
+  const share = pool > 0 ? spent / pool : spent > 0 ? 1 : 0;
+  const fill = share >= 1 ? "bg-red-500" : share >= 0.8 ? "bg-amber-400" : "bg-emerald-500/70";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className="group flex w-full items-center gap-2 rounded px-1.5 py-1 hover:bg-card-strong"
+    >
+      <span className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-card-strong">
+        <span className={"block h-full rounded-full " + fill} style={{ width: `${Math.min(100, Math.max(share > 0 ? 3 : 0, share * 100))}%` }} />
+      </span>
+      {expanded && (
+        <span className="shrink-0 text-[10px] tabular-nums text-ink-faint group-hover:text-ink-muted">
+          ${spent.toFixed(0)} / ${pool.toFixed(0)}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -784,7 +1070,7 @@ function RailFooter({ expanded }: { expanded: boolean }) {
 /// pausing each worker, so coming back restores the roster exactly as you
 /// left it. The menu offers the returns people actually mean; any other date
 /// is picked on the banner the Workers pane shows while you are away.
-function AwayButton({ expanded }: { expanded: boolean }) {
+function AwayButton({ expanded, variant }: { expanded: boolean; variant: "icon" | "strip" }) {
   const away = useWorkersStore((s) => s.away);
   const goAway = useWorkersStore((s) => s.goAway);
   const comeBack = useWorkersStore((s) => s.comeBack);
@@ -806,27 +1092,42 @@ function AwayButton({ expanded }: { expanded: boolean }) {
         ...returns,
       ]
     : returns;
+  const openMenu = () => {
+    if (at) return setAt(null);
+    const r = anchor.current?.getBoundingClientRect();
+    if (r) setAt({ x: r.right + 6, y: r.top });
+  };
   return (
-    <div ref={anchor}>
-      <RailButton
-        label={away ? "Away" : "Go away"}
-        detail={expanded && away ? awayLine(away, now).replace(/^Away · /, "") : undefined}
-        title={
-          away
-            ? `${awayLine(away, now)} — no shifts start and handoffs wait`
-            : "Take the whole crew off duty — no shifts start while you're offline"
-        }
-        expanded={expanded}
-        active={false}
-        quiet={!away}
-        onClick={() => {
-          if (at) return setAt(null);
-          const r = anchor.current?.getBoundingClientRect();
-          if (r) setAt({ x: r.right + 6, y: r.top });
-        }}
-        icon={<MoonIcon />}
-        badge={away ? <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-amber-400" /> : null}
-      />
+    <div ref={anchor} className={variant === "strip" ? "w-full" : ""}>
+      {variant === "strip" && away ? (
+        // While you are away it says so, with the way back one click on.
+        <button
+          type="button"
+          onClick={openMenu}
+          title={`${awayLine(away, now)} — no shifts start and handoffs wait`}
+          aria-label={awayLine(away, now)}
+          className={
+            "flex w-full items-center gap-2 rounded-md border border-amber-400/40 bg-amber-400/10 py-1.5 text-left text-amber-500 hover:bg-amber-400/15 " +
+            (expanded ? "px-2" : "justify-center px-0")
+          }
+        >
+          <MoonIcon />
+          {expanded && (
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate text-[11.5px] font-medium">{awayLine(away, now)}</span>
+              <span className="text-[10px] text-ink-faint">Click to come back</span>
+            </span>
+          )}
+        </button>
+      ) : (
+        <FooterIcon
+          label="Go away"
+          title="Go away · take the whole crew off duty — no shifts start while you're offline"
+          active={false}
+          onClick={openMenu}
+          icon={<MoonIcon />}
+        />
+      )}
       {at && (
         <PopMenu
           anchor={anchor}

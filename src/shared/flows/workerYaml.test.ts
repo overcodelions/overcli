@@ -178,7 +178,7 @@ flows: [x]
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.bundle.worker.caps.runIn).toBe('worktree');
-    expect(res.bundle.worker.caps.maxItemsPerShift).toBe(5);
+    expect(res.bundle.worker.caps.maxItemsPerShift).toBe(10);
   });
 
   it('reports flow ids the file did not carry', () => {
