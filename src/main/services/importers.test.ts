@@ -482,6 +482,51 @@ local_resource(
     expect(found.find((s) => s.name === 'acme-directory')?.repoHint).toBe('acme-directory');
   });
 
+  it("reads the start line a helper call hands over, without the helper's glue", () => {
+    // The helper builds its command with `if` blocks and worktree cd's, so the
+    // whole line is unknown — but `start` and `prep` are exactly what to run.
+    const tiltfile = `
+SSL_CERT = os.getenv('SSL_CERT', os.getenv('HOME', '') + '/.ssl/acme.cert')
+
+def frontend(name, repo, node_version, start, link, subdir='', prep=''):
+    resolve = 'cd ' + repo + '; '
+    if subdir != '':
+        resolve = resolve + 'cd "' + subdir + '"; '
+    prep_cmd = (prep + ' && ') if prep != '' else ''
+    local_resource(name, serve_cmd=['sh', '-c', resolve + 'nvm use ' + node_version + ' && ' + prep_cmd + start], links=[link])
+
+def apache(name, start):
+    local_resource(name, serve_cmd=['sh', '-c', 'tail -F /var/log/x'])
+
+frontend('admin-console', 'acme-admin-console', 'v12.22.5',
+    'ng serve --ssl --ssl-cert ' + SSL_CERT + ' --poll 2000',
+    'https://localhost:4200', subdir='admin-ui', prep='npm run styles')
+frontend('web', 'acme-web', 'v22', 'npm start', 'http://localhost:3000')
+apache('portal', 'unused')
+BUILD = ('build-a && ' +
+         'build-b')
+frontend('bridge', 'acme-bridge', 'v22', 'npm start', 'http://localhost:3001', prep=undefined_thing())
+frontend('site', 'acme-site', 'v22', 'npm start', 'http://localhost:3002', prep=BUILD)
+`;
+    const found = parseTiltfile(tiltfile, undefined, { dir: '/work', env: { HOME: '/home/me' } });
+    const admin = found.find((s) => s.name === 'admin-console');
+    expect(admin?.helperCommand).toBeUndefined();
+    expect(admin?.startCommand).toEqual([
+      'sh',
+      '-c',
+      'npm run styles && ng serve --ssl --ssl-cert /home/me/.ssl/acme.cert --poll 2000',
+    ]);
+    expect(found.find((s) => s.name === 'web')?.startCommand).toEqual(['sh', '-c', 'npm start']);
+    // A parameter the resource never runs is not its start line.
+    expect(found.find((s) => s.name === 'portal')?.startCommand).toBeUndefined();
+    // A prep it cannot read voids the line rather than being dropped from it.
+    expect(found.find((s) => s.name === 'bridge')?.startCommand).toBeUndefined();
+    // A global bracketed over several lines is read whole.
+    expect(found.find((s) => s.name === 'site')?.startCommand).toEqual(['sh', '-c', 'build-a && build-b && npm start']);
+    // Unresolvable (no environment to read SSL_CERT from): unknown, not half-built.
+    expect(parseTiltfile(tiltfile).find((s) => s.name === 'admin-console')?.startCommand).toBeUndefined();
+  });
+
   it('runs a command under the Node version the file switches to', () => {
     expect(withNodeVersion(['npm', 'run', 'start'], 'v12.22.5')).toEqual([
       'sh',
@@ -492,6 +537,12 @@ local_resource(
     expect(withNodeVersion(['node', "it's here"], '18')[2]).toContain(`exec node 'it'\\''s here'`);
     // Something that is not a version is not pasted into a shell line.
     expect(withNodeVersion(['npm', 'start'], 'v12; rm -rf ~')).toEqual(['npm', 'start']);
+    // A shell line stays one line rather than nesting another shell.
+    expect(withNodeVersion(['sh', '-c', 'a && b'], 'v12')).toEqual([
+      'sh',
+      '-c',
+      '. "${NVM_DIR:-$HOME/.nvm}/nvm.sh" && nvm use v12 && a && b',
+    ]);
   });
 
   it('leaves the command unknown when the Tiltfile builds it by concatenation', () => {

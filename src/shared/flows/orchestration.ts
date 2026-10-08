@@ -214,6 +214,14 @@ export interface Orchestration {
         /// shift batch whose results it combines. Its presence is also what
         /// stops a wrap-up from ever triggering a wrap-up of its own.
         wrapUpOf?: UUID;
+        /// Set when a TEAM commissioned this run as one member's piece of a
+        /// team task. The team engine watches for it to know when a stage's
+        /// work is in; the worker engine treats the batch as an ordinary
+        /// errand, so spend, journal and questions stay the worker's own.
+        /// `stage` is the index of the stage the piece belongs to: the batch's
+        /// first update can arrive before the launch call returns its id, so
+        /// the engine matches on (task, stage, worker) rather than on the id.
+        team?: { teamId: UUID; teamName: string; taskId: UUID; stage: number };
       };
   createdAt: number;
   /// Set once every item has reached a terminal status (done/failed/cancelled).

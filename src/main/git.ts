@@ -1470,7 +1470,7 @@ export function firstCompareURL(output: string): string | undefined {
 /// Stage and commit any uncommitted changes in `worktreePath`. No-op when
 /// the worktree is clean. Returns an error string on failure, otherwise
 /// the commit sha (or '' when there was nothing to commit).
-function autoCommitIfDirty(
+export function autoCommitIfDirty(
   worktreePath: string,
   subject: string,
   body?: string,

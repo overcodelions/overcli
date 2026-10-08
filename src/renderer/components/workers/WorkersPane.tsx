@@ -8,6 +8,9 @@
 //   - the hire screen (job description → drafted contract → editor)
 //   - the editor (review/adjust the contract; the only place Save lives)
 
+import { useTeamsStore } from "../../teamsStore";
+import { TeamDesk } from "./teams/TeamDesk";
+import { TeamEditor } from "./teams/TeamEditor";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { Attachment, Backend } from "@shared/types";
@@ -175,6 +178,8 @@ export function WorkersPane() {
   const view = useWorkersStore((s) => s.view);
   const inboxWorkerId = useWorkersStore((s) => s.inboxWorkerId);
   const selectSeq = useWorkersStore((s) => s.selectSeq);
+  const selectedTeamId = useWorkersStore((s) => s.selectedTeamId);
+  const teamEditor = useTeamsStore((s) => s.editor);
   const activeRun = useFlowsStore((s) =>
     s.activeRunId ? s.runs[s.activeRunId] : undefined,
   );
@@ -254,6 +259,7 @@ export function WorkersPane() {
   // pressing Edit — or picking the worker in ⌘K — while its run filled the
   // pane changed nothing on screen at all.
   if (draft) return <WorkerEditor />;
+  if (teamEditor) return <TeamEditor key={teamEditor.teamId ?? "new"} />;
 
   // A run this worker launched is shown HERE, not on the Flows tab. Sending
   // you to Flows swapped the whole left sidebar for the project tree — you
@@ -268,6 +274,8 @@ export function WorkersPane() {
   }
 
   if (hiring) return <HireWorker defaultProjectPath={defaultProjectPath} />;
+
+  if (view === "team") return <TeamDesk key={selectedTeamId ?? ""} teamId={selectedTeamId} />;
 
   return (
     // A column, not a scroll box. The desk is a conversation: its transcript
@@ -4543,7 +4551,10 @@ function WorkerLifecycle(props: {
       <div className="text-[11px] uppercase tracking-wider text-ink-faint mb-2">
         A shift, start to finish
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2">
+      {/* Fits as many stages per row as the card has room for, rather than
+          a column count picked from the window width — the card is often
+          half the window, beside an open file. */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(8.5rem,1fr))] gap-2">
         {stages.map((s, i) => (
           <div
             key={s.title}
@@ -5295,18 +5306,18 @@ function WorkerEditor() {
     selectedFlow?.steps.filter((s) => s.pauseBefore).length ?? 0;
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <div className="flex items-center gap-3 mb-4">
+    <div className="editor-shell flex-1 overflow-y-auto p-6">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-4">
         <button
           onClick={close}
-          className="text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5"
+          className="shrink-0 text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5"
         >
           ← Workers
         </button>
-        <div className="text-2xl font-semibold">
+        <div className="min-w-0 truncate text-2xl font-semibold">
           {draft.id ? `Edit ${draft.name || "worker"}` : "Review the contract"}
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <label className="flex items-center gap-1.5 text-xs text-ink-muted mr-1">
             <input
               type="checkbox"
@@ -5331,10 +5342,11 @@ function WorkerEditor() {
         </div>
       </div>
 
-      {/* Same two-column body as the flow and schedule editors: the 1fr main
+      {/* Same two-column body as the flow and schedule editors (collapsing to one
+          column in a narrow pane — see `.editor-body`): the 1fr main
           column keeps a readable measure, the rail absorbs the slack —
           left-aligned width control without centering anything. */}
-      <div className="grid grid-cols-[1fr_minmax(280px,360px)] gap-6 items-start">
+      <div className="editor-body">
         <div className="min-w-0 space-y-4">
           {/* First, like the flow editor's AI row: editing-by-instruction is
               the front door, the form below is the fine adjustment. */}

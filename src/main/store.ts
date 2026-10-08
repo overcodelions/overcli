@@ -23,6 +23,7 @@ import {
   UUID,
 } from '../shared/types';
 import { NEWCOMER_LABS } from '../shared/labs';
+import { clampUiScale } from '../shared/uiScale';
 import { isSupportedPremiumModel, liftMissingModel } from '../shared/modelCatalog';
 import { trimContextNotices } from '../shared/contextNotices';
 
@@ -200,7 +201,10 @@ function sanitizeSettings(raw: AppSettings): AppSettings {
     }
     flowModelDefaults[backend] = kept;
   }
-  return { ...settings, backendDefaultModels, flowModelDefaults };
+  // A hand-edited or corrupt zoom goes straight to `setZoomFactor`, and one
+  // far enough out leaves no window to fix it from.
+  const uiScale = clampUiScale(settings.uiScale);
+  return { ...settings, backendDefaultModels, flowModelDefaults, uiScale };
 }
 
 /// Persisted tab caps. The renderer enforces its own (MAX_TABS_PER_SCOPE

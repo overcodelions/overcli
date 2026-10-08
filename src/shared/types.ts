@@ -45,6 +45,7 @@ import type { PortableWorker, WorkerImportNotes } from './flows/workerYaml';
 import type { PersonalizationQuestion, UserProfile } from './flows/personalize';
 import type { WorkerReport } from './flows/workerReport';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
+import type { Team, TeamHireRequest, TeamMember, TeamRosterDraft, TeamTask } from './flows/team';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 import type { InboundHandoff } from './handoff';
@@ -1198,6 +1199,10 @@ export interface AppSettings {
   /// Theme preference. 'system' follows the OS's dark-mode setting via
   /// the `prefers-color-scheme` media query.
   theme: ThemePreference;
+  /// Interface size — the window's zoom factor (1 = 100%). Applied by main
+  /// with `setZoomFactor`, so it scales the px-sized UI too. Clamped on read;
+  /// see shared/uiScale.ts.
+  uiScale: number;
   /// Persisted pane widths. Clamped on read to the component's min/max
   /// so a stored-too-large value from a wider monitor doesn't pin the
   /// app's content region to zero.
@@ -2564,6 +2569,62 @@ export interface IPCInvokeMap {
   /// Every hired worker, newest first, each with its computed next shift time
   /// and its scorecard (both derived in main — the renderer never computes
   /// them, so they can't disagree with what the engine will actually do).
+  // Teams: a named group of workers that takes on one task at a time and
+  // hands back a finished pack. See shared/flows/team.ts.
+  'teams:list': () => { teams: Team[]; tasks: TeamTask[] };
+  'teams:save': (args: {
+    team: Omit<Team, 'id' | 'createdAt' | 'updatedAt'> & { id?: UUID };
+  }) => { ok: true; team: Team } | { ok: false; error: string };
+  'teams:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Suggest a team for what you describe — crew workers who fit and jobs to
+  /// hire for. Nothing is saved; the editor shows it for review.
+  'teams:draftRoster': (args: {
+    brief: string;
+    current?: { name?: string; purpose?: string; members: TeamMember[]; projectPath?: string; ownProjectOnly?: boolean };
+  }) => { ok: true; draft: TeamRosterDraft } | { ok: false; error: string };
+  /// Merge a team task's branch into one repo's base, in your checkout.
+  'teams:landCode': (args: { taskId: UUID; projectPath: string }) =>
+    | { ok: true; message: string }
+    | { ok: false; error: string };
+  /// Hire one worker for a team: drafted, saved on the crew with no shifts.
+  'teams:hireMember': (args: { request: TeamHireRequest }) =>
+    | { ok: true; worker: Worker }
+    | { ok: false; error: string };
+  /// `projectPath`: where this task works, over the team's project; `null`
+  /// for each member in their own.
+  'teams:brief': (args: { teamId: UUID; brief: string; attachments?: Attachment[]; projectPath?: string | null }) =>
+    | { ok: true; task: TeamTask }
+    | { ok: false; error: string };
+  'teams:answer': (args: { taskId: UUID; answers: string[] }) => { ok: true } | { ok: false; error: string };
+  'teams:revise': (args: { taskId: UUID; feedback: string }) => { ok: true } | { ok: false; error: string };
+  'teams:approve': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  'teams:continue': (args: { taskId: UUID; extraBudgetUSD?: number }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  'teams:retry': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  'teams:cancel': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Skip a stage that has not finished, or — with `workerId` — one
+  /// member's piece of it. Running work is stopped.
+  'teams:skip': (args: { taskId: UUID; stage: number; workerId?: UUID }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  'teams:accept': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  'teams:deleteTask': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Reveal a task's shared folder in Finder. By task id, not path: the
+  /// folder lives under userData, outside what `fs:openPath` may open.
+  'teams:openFolder': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Open one task file in its default app (a design page in the browser).
+  'teams:openFile': (args: { taskId: UUID; name: string }) => { ok: true } | { ok: false; error: string };
+  'teams:roomAsk': (args: { taskId: UUID; text: string; attachments?: Attachment[] }) => { ok: true } | { ok: false; error: string };
+  'teams:roomContinue': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  'teams:roomStop': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  'teams:updatePack': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  'teams:roomStartWork': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
+  'teams:roomDismissWork': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
+  'teams:roomHandOff': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
+  'teams:readFile': (args: { taskId: UUID; name: string }) =>
+    | { ok: true; body: string }
+    | { ok: false; error: string };
   'workers:list': () => Array<{
     worker: Worker;
     nextShiftAt: number | null;
@@ -3009,6 +3070,12 @@ export interface IPCInvokeMap {
     workspaceId: string;
     serviceId: string;
   }) => import('./services').TaskPreset[];
+  /// Readiness probes detection would consider for a service, best first,
+  /// each with why. Read fresh from the checkout it is bound to.
+  'services:readyCandidates': (args: {
+    workspaceId: string;
+    serviceId: string;
+  }) => import('./services').ReadyCandidate[];
   /// A task in the same checkout as a service, optionally run before it.
   /// Resolves the new task's id.
   'services:addTask': (args: {
@@ -3495,6 +3562,10 @@ export interface RecentSession {
   id: string;
   title?: string;
   projectPath: string;
+  /// The project or workspace this session belongs to, by name — for a
+  /// worker's run, the project it was launched from rather than its
+  /// throwaway run folder.
+  context?: string;
   models: string[];
   /// Replies on the main thread (subagent replies are in the totals but not here).
   turns: number;
@@ -3788,6 +3859,13 @@ export type MainToRendererEvent =
       command: MenuCommand;
     }
   | {
+      /// Interface size changed from the keyboard or the View menu, which
+      /// main persists itself. Sent so the renderer's copy of the settings
+      /// follows — its next save writes the whole object back.
+      type: 'uiScaleChanged';
+      uiScale: number;
+    }
+  | {
       /// Something changed under a watched explorer root (see
       /// `fs:watchTree`). Debounced in main and already filtered against the
       /// tree's skip list, so a tree seeing this should just relist itself.
@@ -3834,6 +3912,39 @@ export type MainToRendererEvent =
       worker: Worker;
       nextShiftAt: number | null;
       scorecard: WorkerScorecard;
+    }
+  | {
+      /// A team was created or edited.
+      type: 'teamUpdate';
+      team: Team;
+    }
+  | {
+      type: 'teamDeleted';
+      id: UUID;
+    }
+  | {
+      /// A team task changed — planned, a stage moved, a piece landed.
+      /// Whole-record, like `orchestrationUpdate`.
+      type: 'teamTaskUpdate';
+      task: TeamTask;
+    }
+  | {
+      type: 'teamTaskDeleted';
+      id: UUID;
+    }
+  | {
+      /// The coordinator's turn as it streams: what it has written so far,
+      /// so the desk can show work instead of a static "writing…". Not
+      /// persisted — a restart reruns the turn. `stage` null is planning.
+      type: 'teamTaskProgress';
+      taskId: UUID;
+      /// A stage index, null for planning, or 'room' for a turn in the
+      /// team's room after the pack.
+      stage: number | null | 'room';
+      /// The tail of the text so far, bounded.
+      tail: string;
+      /// Characters written so far, for a running count.
+      chars: number;
     }
   | {
       /// A worker was fired (deleted) from main.
@@ -3950,6 +4061,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultShowToolActivity: false,
   autoDowngrade: true,
   theme: 'system',
+  uiScale: 1,
   sidebarWidth: 260,
   editorPaneWidth: 540,
   explorerTreeWidth: 280,

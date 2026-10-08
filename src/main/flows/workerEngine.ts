@@ -292,6 +292,10 @@ export interface WorkerEngineDeps {
     request: string;
     runIn: 'cwd' | 'worktree';
   }) => Promise<{ ok: true; orchestrationId: UUID; flowId: string } | { ok: false; error: string }>;
+  /// Save the one-step team version of a worker's flow and return its id
+  /// (see `teamPieceFlow`). Optional: without it a team piece runs the
+  /// worker's flow as-is, whole pipeline and all.
+  pieceFlow?: (flowId: string, opts?: { check?: boolean }) => { ok: true; flowId: string } | { ok: false; error: string };
   /// Name and description of each flow on a worker's contract, in the order
   /// given, skipping ids that no longer resolve. Only needed to tell a
   /// multi-flow worker's planner what it can route to; without it every item
@@ -1299,6 +1303,83 @@ export class WorkerEngine {
     return { ok: true, result: res.errand };
   }
 
+  /// Run one piece of a TEAM task as this worker's own errand.
+  ///
+  /// The team engine has already planned the work and you approved that plan,
+  /// so there is no planning turn and nothing parks: the piece goes straight to
+  /// a one-step version of the worker's first flow (same backend, model and
+  /// tools, none of its pipeline), wrapped in its job description and cabinet
+  /// like a direct run. The pipeline is the worker's whole job; a piece is the
+  /// part of it the coordinator scoped, and running the pipeline redid the
+  /// whole job for every piece. Everything else stays the worker's — the funding gate, the
+  /// journal, the spend rollup, mid-run questions — and the batch carries
+  /// `origin.team` so the team engine can tell when the piece is in.
+  async commission(
+    id: UUID,
+    args: {
+      title: string;
+      prompt: string;
+      team: { teamId: UUID; teamName: string; taskId: UUID; stage: number };
+      /// The team task's project, over the worker's own: the member brings
+      /// their skills, the task brings the repo.
+      projectPath?: string;
+      /// The grant for external actions on THIS run, over the worker's own
+      /// setting — a team that lets its pieces work without asking. Absent:
+      /// the worker's own setting.
+      allowExternalActions?: boolean;
+      /// Fork off this branch: a team task's shared branch, so the piece
+      /// starts from what earlier pieces did. Always in a worktree then —
+      /// the branch is merged into, never your checkout.
+      baseBranch?: string;
+      /// `full`: the worker's own flow, every step — the ask is its whole
+      /// usual job. Otherwise one scoped piece (see `teamPieceFlow`).
+      mode?: 'piece' | 'full';
+      /// Keep the flow's own check step after the piece (code that will be
+      /// merged into a team branch).
+      check?: boolean;
+    },
+  ): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
+    if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
+    const ownFlowId = w.flowIds[0];
+    if (!ownFlowId) return { ok: false, error: `${w.name} has no flow to run.` };
+    const allocation = this.allocate(this.now());
+    const funding = fundingFor(allocation, id);
+    if (funding && !funding.funded) {
+      return { ok: false, error: describeFundingBlock(funding, allocation) };
+    }
+    let flowId = ownFlowId;
+    if (this.deps.pieceFlow && args.mode !== 'full') {
+      const piece = this.deps.pieceFlow(ownFlowId, { check: args.check });
+      if (!piece.ok) return { ok: false, error: `Could not set up ${w.name}'s piece: ${piece.error}` };
+      flowId = piece.flowId;
+    }
+    const label = `${args.team.teamName}: ${args.title}`;
+    const res = await this.deps.parker.parkDirect({
+      origin: {
+        ...workerOrigin(w, 'errand', label),
+        team: args.team,
+        ...(args.allowExternalActions ? { allowExternalActions: true } : {}),
+      },
+      projectPath: args.projectPath ?? w.projectPath,
+      // No "YOUR FILES" block: its cursor is a shift's bookmark, and a team
+      // piece runs sandboxed to its own folder — told to write the cursor
+      // there, it reported "Operation not permitted". The team's shared
+      // folder, named in the piece prompt, is its memory instead.
+      prompt: this.buildDirectPrompt(w, args.prompt, { files: false }),
+      title: label,
+      flowId,
+      runIn: args.baseBranch ? 'worktree' : this.effectiveRunIn(w, args.projectPath),
+      ...(args.baseBranch ? { baseBranch: args.baseBranch } : {}),
+      maxConcurrent: 1,
+      autoLaunch: true,
+      note: `Commissioned by the ${args.team.teamName} team.`,
+    });
+    if (!res.ok) return res;
+    return { ok: true, orchestrationId: res.orchestrationId };
+  }
+
   // ---- EVENTS -----------------------------------------------------------
 
   /// Tapped into the main emit chain. Folds worker-batch changes into the
@@ -2018,8 +2099,24 @@ export class WorkerEngine {
   /// Deliberately NOT the shift prompt's `filesBlock`: that one is written for
   /// something that LAUNCHES flows ("candidate instructions must use relative
   /// paths"), and this is the flow.
-  private buildDirectPrompt(w: Worker, work: string): string {
+  private buildDirectPrompt(w: Worker, work: string, opts: { files?: boolean } = {}): string {
     const digest = this.journal.digest(w.id);
+    const files = opts.files === false
+      ? []
+      : [
+          'YOUR FILES',
+          `This worker has a directory of its own at: ${workerFilesDir(w.id)}`,
+          'It persists across runs and nobody else writes to it. READ IT BEFORE YOU',
+          'START: a prior review, a baseline, or notes on what was already checked are',
+          'there if they exist, and they are how you know what has changed rather than',
+          'reporting everything as new. Write anything a future run will need. Use',
+          'ordinary absolute paths — it is outside the project, so nothing you put there',
+          'touches the repository. Create it if it does not exist.',
+          `If \`cursor.json\` is there, cover only what is new since the mark it holds; if`,
+          `it is not, this is the first pass — cover the last ${WORKER_FIRST_RUN_WINDOW_DAYS} days. Write the new mark`,
+          'LAST, once the work has actually succeeded.',
+          '',
+        ];
     return [
       'WHO YOU ARE (background)',
       `You are running as "${w.name}", a standing worker on this project. Its job`,
@@ -2033,18 +2130,7 @@ export class WorkerEngine {
       'WHAT THIS WORKER HAS ALREADY DONE (newest first)',
       digest || '(nothing yet — this is its first piece of work)',
       '',
-      'YOUR FILES',
-      `This worker has a directory of its own at: ${workerFilesDir(w.id)}`,
-      'It persists across runs and nobody else writes to it. READ IT BEFORE YOU',
-      'START: a prior review, a baseline, or notes on what was already checked are',
-      'there if they exist, and they are how you know what has changed rather than',
-      'reporting everything as new. Write anything a future run will need. Use',
-      'ordinary absolute paths — it is outside the project, so nothing you put there',
-      'touches the repository. Create it if it does not exist.',
-      `If \`cursor.json\` is there, cover only what is new since the mark it holds; if`,
-      `it is not, this is the first pass — cover the last ${WORKER_FIRST_RUN_WINDOW_DAYS} days. Write the new mark`,
-      'LAST, once the work has actually succeeded.',
-      '',
+      ...files,
       'THE WORK',
       work,
     ].join('\n');
@@ -3278,9 +3364,9 @@ export class WorkerEngine {
   /// Worktree preference degrades to cwd when the project isn't a repo —
   /// same reasoning as the scheduler's effectiveRunIn. A cwd *preference*
   /// (autonomous workers only) is honored as-is.
-  private effectiveRunIn(w: Worker): 'cwd' | 'worktree' {
+  private effectiveRunIn(w: Worker, projectPath: string = w.projectPath): 'cwd' | 'worktree' {
     if (w.caps.runIn !== 'worktree') return 'cwd';
-    return this.deps.isGitRepo(w.projectPath) ? 'worktree' : 'cwd';
+    return this.deps.isGitRepo(projectPath) ? 'worktree' : 'cwd';
   }
 
   /// The clock alone is not enough: two errands can run under a frozen clock

@@ -744,6 +744,79 @@ describe('a slow start', () => {
   });
 });
 
+describe('a probe that will not pass', () => {
+  it('stops at the first 401 past the allowance, and says why', async () => {
+    let clock = 0;
+    const urls: string[] = [];
+    const { deps } = harness({
+      probe: {
+        httpStatus: async (url: string) => {
+          urls.push(url);
+          return 401;
+        },
+        tcpOpen: async () => true,
+        exitCode: async () => 0,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          clock += ms;
+        },
+      },
+    });
+    const api = spec({
+      id: 'api',
+      port: 8088,
+      ready: { kind: 'http', path: '/actuator/health', port: 8088 },
+      readyTimeoutSec: 30,
+    });
+    const sup = new Supervisor('mine', [api], [binding('api')], deps);
+
+    await sup.start('api');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const runtime = sup.runtime('api');
+    expect(runtime.status).toBe('unready');
+    expect(runtime.probeStatus).toBe(401);
+    expect(runtime.probeGaveUp).toBe(true);
+    expect(runtime.probeHint).toContain('401 on /actuator/health');
+    // Backoff over 30s, not sixty requests — and none after it.
+    expect(urls.length).toBeLessThan(10);
+    expect(sup.log('api').some((l) => l.includes('stopped checking'))).toBe(true);
+  });
+
+  it('checks a slow one less often, then gives up after a bounded time', async () => {
+    let clock = 0;
+    let attempts = 0;
+    const { deps } = harness({
+      probe: {
+        httpStatus: async () => 200,
+        tcpOpen: async () => {
+          attempts++;
+          return false;
+        },
+        exitCode: async () => 0,
+        now: () => clock,
+        sleep: async (ms: number) => {
+          clock += ms;
+        },
+      },
+    });
+    const api = spec({ id: 'api', port: 8080, ready: { kind: 'tcp', port: 8080 }, readyTimeoutSec: 30 });
+    const sup = new Supervisor('mine', [api], [binding('api')], deps);
+
+    await sup.start('api');
+    expect(sup.runtime('api').probeGaveUp).toBeUndefined();
+
+    await vi.waitFor(() => expect(sup.runtime('api').probeGaveUp).toBe(true));
+    expect(sup.runtime('api').status).toBe('unready');
+    // Ten minutes at one every twenty seconds, after the initial backoff.
+    expect(clock).toBeLessThanOrEqual(30_000 + 10 * 60_000);
+    // Roughly 8 during the allowance and 30 after it, not the ~1,300 a fixed
+    // 500ms-then-3s schedule would have made over the same span.
+    expect(attempts).toBeLessThan(45);
+    expect(sup.log('api').some((l) => l.includes('stopped checking after 10 more minutes'))).toBe(true);
+  });
+});
+
 describe('a task', () => {
   /// Let the start reach its spawn before the fake process is told to exit.
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));

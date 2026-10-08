@@ -27,7 +27,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 
-import type { AppSettings, Attachment, Backend } from '../../shared/types';
+import type { AppSettings, Attachment, Backend, PermissionMode } from '../../shared/types';
 import type { Flow, FlowModelRef } from '../../shared/flows/schema';
 import { normalizeFlowTag } from '../../shared/flows/schema';
 import {
@@ -557,6 +557,16 @@ export async function oneShotDraftText(
     onProgress?: (text: string) => void;
     /// Handle for `RunnerManager.cancelOneShot`, so a caller can stop the turn.
     cancelKey?: string;
+    /// Override the runner's silence and wall-clock budgets. The defaults fit
+    /// a flow draft; a turn that reads a lot before it writes (a team
+    /// coordinator combining several long documents) can think in silence
+    /// for minutes, and being cut at 90s is a failure, not a safeguard.
+    timeouts?: { timeoutMs: number; idleTimeoutMs: number };
+    /// Override the CLI's permission mode. A hidden one-shot has nobody to
+    /// answer a permission prompt, so a model that reaches for a tool under
+    /// the default mode waits until the idle budget kills it. `plan` lets it
+    /// read and refuses anything else, without asking.
+    permissionMode?: PermissionMode;
   },
 ): Promise<
   { ok: true; text: string; label: string; backend: Backend } | { ok: false; error: string }
@@ -598,7 +608,7 @@ export async function oneShotDraftText(
     !(args.attachments && args.attachments.length > 0);
   const text = useClaudeSdk
     ? await draftViaClaudeSdk(args.userMessage, model, sys, deps.settings.backendPaths.claude)
-    : await draftViaRunner(deps.runner, backend, model, sys, args.userMessage, args.attachments, args.onProgress, args.cancelKey);
+    : await draftViaRunner(deps.runner, backend, model, sys, args.userMessage, args.attachments, args.onProgress, args.cancelKey, args.timeouts, args.permissionMode);
   if (!text.ok) return text;
   return { ok: true, text: text.text, label, backend };
 }
@@ -669,6 +679,8 @@ async function draftViaRunner(
   attachments?: Attachment[],
   onProgress?: (text: string) => void,
   cancelKey?: string,
+  timeouts?: { timeoutMs: number; idleTimeoutMs: number },
+  permissionMode?: PermissionMode,
 ): Promise<OneShotResult> {
   const prompt = `${systemPromptText}\n\n---\n\n${userMessage}`;
   return runner.oneShot({
@@ -699,8 +711,9 @@ async function draftViaRunner(
     // the worker planner use. A turn still streaming tokens keeps going; only
     // one that has genuinely gone quiet is cut, with a generous ceiling
     // behind it as the runaway backstop.
-    timeoutMs: 10 * 60_000,
-    idleTimeoutMs: 90_000,
+    ...(permissionMode ? { permissionMode } : {}),
+    timeoutMs: timeouts?.timeoutMs ?? 10 * 60_000,
+    idleTimeoutMs: timeouts?.idleTimeoutMs ?? 90_000,
   });
 }
 

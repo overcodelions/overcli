@@ -497,11 +497,14 @@ export function parseTiltfile(
               starlark.evaluate(serveCmd, starlark.bodyScope(def, call.args, starlark.global, resourceAt)),
             );
 
+      const startCommand = helperStartLine(def, call.args, starlark);
+
       found.push({
         index: call.index,
         service: {
           name,
           helperCommand,
+          startCommand,
           options,
           env: {},
           port: port !== undefined && port > 0 ? port : localhostPort(Object.values(bound)),
@@ -537,6 +540,44 @@ export function parseTiltfile(
     .filter((s) => (seen.has(s.name) ? false : (seen.add(s.name), true)));
 }
 
+/// What a helper's own parameters name as the start line: `start` (or
+/// `cmd`, `command`…) as the call handed it, after its `prep`.
+///
+/// `frontend('admin-console', 'acme-admin-console', 'v12.22.5', 'ng serve --ssl …',
+/// prep='npm run styles')` says exactly what to run; the helper wraps it in
+/// worktree `cd`s and `if` blocks that are Tilt's business, not the
+/// service's. Without this the start line was lost to detection's
+/// `npm run start` — no `--ssl`, no prep — and the app came up on the wrong
+/// scheme. Only parameters the resource's command actually uses count, and
+/// only a value that evaluates completely.
+function helperStartLine(
+  def: StarlarkDef,
+  args: StarlarkArg[],
+  starlark: ReturnType<typeof starlarkEvaluator>,
+): string[] | undefined {
+  const serveCmd = def.template?.serveCmd;
+  if (serveCmd === undefined) return undefined;
+  // The locals that build the command, and the command itself.
+  const body = `${def.body.slice(0, def.template!.resourceAt)}\n${serveCmd}`;
+  const used = (name: string) => new RegExp(`(^|[^\\w.'"])${name}\\b`).test(body);
+  const scope = starlark.bodyScope(def, args, starlark.global, 0);
+  // '' when the call leaves it empty; undefined when it cannot be read.
+  const value = (names: readonly string[]) => {
+    const param = def.params.find((p) => names.includes(p.name) && used(p.name));
+    if (!param) return '';
+    const line = scope(param.name);
+    return typeof line === 'string' ? line.trim() : undefined;
+  };
+  const start = value(START_PARAMS);
+  const prep = value(PREP_PARAMS);
+  // A prep that cannot be read is not skipped: the app may not start without it.
+  if (!start || prep === undefined) return undefined;
+  return ['sh', '-c', prep ? `${prep} && ${start}` : start];
+}
+
+const START_PARAMS = ['start', 'start_cmd', 'cmd', 'command', 'run', 'run_cmd'] as const;
+const PREP_PARAMS = ['prep', 'prep_cmd', 'pre_start', 'setup'] as const;
+
 /// How long a quoted piece of a config file may be. Enough for a helper and
 /// the call to it; not a whole Tiltfile riding along in every prompt.
 const EXCERPT_LIMIT = 4_000;
@@ -556,10 +597,15 @@ function excerpt(text: string): string {
 /// that is not a plain version string is not pasted into a shell line.
 export function withNodeVersion(command: readonly string[], version: string): string[] {
   if (!/^v?\d+(\.\d+)*$/.test(version)) return [...command];
+  const nvm = `. "\${NVM_DIR:-$HOME/.nvm}/nvm.sh" && nvm use ${version} && `;
+  // Already a shell line: run it as one, not as `exec sh -c '…'`.
+  if (command.length === 3 && command[0] === 'sh' && command[1] === '-c') {
+    return ['sh', '-c', nvm + command[2]];
+  }
   const line = command
     .map((arg) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`))
     .join(' ');
-  return ['sh', '-c', `. "\${NVM_DIR:-$HOME/.nvm}/nvm.sh" && nvm use ${version} && exec ${line}`];
+  return ['sh', '-c', `${nvm}exec ${line}`];
 }
 
 /// The flags a JVM-args script echoes. The shape Tilt setups converge on: one
@@ -956,11 +1002,12 @@ function findDefs(text: string): StarlarkDef[] {
 
 /// Top-level `NAME = expression` assignments, by name — how
 /// `serve_dir=LEGACY_PORTAL_REPO` comes to mean `SERVICES_DIR + '/legacy-portal'`. The
-/// first assignment wins; one spanning several lines is not read.
+/// first assignment wins; one bracketed across several lines is read whole.
 function findGlobals(text: string): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const match of text.matchAll(/^([A-Za-z_]\w*)\s*=(?!=)\s*(.+)$/gm)) {
-    out[match[1]] ??= match[2].trim();
+  for (const match of text.matchAll(/^([A-Za-z_]\w*)\s*=(?!=)[ \t]*(?=\S)/gm)) {
+    const start = match.index! + match[0].length;
+    out[match[1]] ??= text.slice(start, statementEnd(text, start)).trim();
   }
   return out;
 }

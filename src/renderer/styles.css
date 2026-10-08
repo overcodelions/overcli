@@ -1048,3 +1048,22 @@ body.dragging-divider iframe {
 @media (prefers-reduced-motion: reduce) {
   .sidebar-edge-tab { animation: none; }
 }
+
+/* Editor pages (worker contract) lay out against the pane they sit in, not
+ * the window: with a file open beside them the pane is half the window, and
+ * a window-wide breakpoint kept the side rail open and crushed the form into
+ * one-word columns. Below ~820px of pane the rail drops under the form. */
+.editor-shell {
+  container: editor / inline-size;
+}
+.editor-body {
+  display: grid;
+  gap: 1.5rem;
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+@container editor (min-width: 820px) {
+  .editor-body {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  }
+}

@@ -29,6 +29,7 @@ import type {
   MachineValueNeed,
   MachineValues,
   ReadinessProbe,
+  ReadyCandidate,
   ServiceBinding,
   ServiceOption,
   ServiceRuntime,
@@ -1540,9 +1541,19 @@ function Trouble({
     );
   }
   if (runtime.status === 'unready') {
+    // "Answering 401" is a wrong probe, not a slow start, and the row is where
+    // anyone looks first — so the status goes on the badge and the hint on
+    // its title.
     return (
-      <span className="flex-shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300">
-        slow to start
+      <span
+        className="flex-shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300"
+        title={runtime.probeHint}
+      >
+        {runtime.probeStatus !== undefined
+          ? `probe ${runtime.probeStatus}`
+          : runtime.probeGaveUp
+            ? 'never ready'
+            : 'slow to start'}
       </span>
     );
   }
@@ -3518,6 +3529,45 @@ function readyDraft(spec: ServiceSpec): ReadyDraft {
   };
 }
 
+/// The draft fields a probe fills, for picking a detected candidate.
+function draftFrom(probe: ReadinessProbe): Partial<ReadyDraft> {
+  switch (probe.kind) {
+    case 'http':
+      return { kind: 'http', port: String(probe.port), path: probe.path };
+    case 'tcp':
+      return { kind: 'tcp', port: String(probe.port) };
+    case 'log':
+      return { kind: 'log', pattern: probe.pattern };
+    case 'command':
+      return { kind: 'command', command: probe.command.join(' ') };
+    default:
+      return { kind: 'none' };
+  }
+}
+
+/// Whether two probes check the same thing — `okStatuses` aside, which the
+/// form does not show.
+function sameProbe(a: ReadinessProbe, b: ReadinessProbe): boolean {
+  const strip = (p: ReadinessProbe) => (p.kind === 'http' ? { ...p, okStatuses: undefined } : p);
+  return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+}
+
+/// A probe in one line, the way the editor's own fields read.
+function probeText(probe: ReadinessProbe): string {
+  switch (probe.kind) {
+    case 'http':
+      return `GET :${probe.port}${probe.path}`;
+    case 'tcp':
+      return `:${probe.port} accepts a connection`;
+    case 'log':
+      return `output says /${probe.pattern}/`;
+    case 'command':
+      return probe.command.join(' ');
+    default:
+      return 'as soon as it starts';
+  }
+}
+
 /// The probe a draft describes, or what is wrong with it.
 function draftProbe(draft: ReadyDraft): ReadinessProbe | string {
   const port = Number(draft.port);
@@ -3790,6 +3840,23 @@ function TaskToggle({ workspaceId, spec }: { workspaceId: string; spec: ServiceS
 /// button rather than on blur: a half-typed pattern is not a probe anyone meant.
 function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: ServiceSpec }) {
   const setReady = useServicesStore((s) => s.setReady);
+  const runtime = useServicesStore((s) => s.stacks[workspaceId]?.runtimes.find((r) => r.serviceId === spec.id));
+  const [candidates, setCandidates] = useState<ReadyCandidate[]>([]);
+  // Asked of the checkout rather than kept from the import: the probe that is
+  // failing is often one detection would no longer pick, and the code that
+  // says so may have changed since.
+  useEffect(() => {
+    let live = true;
+    void window.overcli
+      .invoke('services:readyCandidates', { workspaceId, serviceId: spec.id })
+      .then((found) => {
+        if (live) setCandidates(found);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [workspaceId, spec.id]);
   const saved = JSON.stringify([spec.ready, spec.readyTimeoutSec ?? defaultReadyTimeoutSec(spec)]);
   const [draft, setDraft] = useState(() => readyDraft(spec));
   // Reset when what is saved changes — not every time a reload hands over a
@@ -3823,8 +3890,18 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
     />
   );
 
+  const failing = runtime?.status === 'unready' ? runtime : undefined;
+  // Only worth a list when there is a choice to make.
+  const offered = candidates.length > 1 ? candidates : [];
+
   return (
     <div className="flex flex-col gap-2">
+      {failing && (failing.probeHint || failing.probeGaveUp) && (
+        <p className="text-[11.5px] text-amber-700 dark:text-amber-300">
+          {failing.probeHint ?? 'probe never passed'}
+          {failing.probeGaveUp ? ' · stopped checking until the next start' : ''}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <select
           className="field px-2 py-1 text-xs"
@@ -3872,6 +3949,28 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
           />
         )}
       </div>
+      {offered.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[11.5px] text-ink-faint">Found in the code:</span>
+          {offered.map((candidate) => {
+            const picked = !!probe && sameProbe(probe, candidate.probe);
+            return (
+              <button
+                key={JSON.stringify(candidate.probe)}
+                onClick={() => setDraft((d) => ({ ...d, ...draftFrom(candidate.probe) }))}
+                title={candidate.source}
+                className={
+                  'rounded-md border px-2.5 py-1 text-left ' +
+                  (picked ? 'border-accent bg-accent/10' : 'border-card hover:bg-card-strong')
+                }
+              >
+                <div className="font-mono text-[11.5px]">{probeText(candidate.probe)}</div>
+                <div className="text-[11px] text-ink-faint">{candidate.why}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
       {draft.kind !== 'none' && (
         <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-ink-muted">
           Allow up to
@@ -3881,7 +3980,7 @@ function ReadyEditor({ workspaceId, spec }: { workspaceId: string; spec: Service
             inputMode="numeric"
             onChange={(e) => edit({ timeout: e.target.value })}
           />
-          seconds, then call it slow and keep checking.
+          seconds, then call it slow and check now and then.
         </div>
       )}
       {/* Only once there is something to save: a Save sitting under an

@@ -27,7 +27,13 @@ import { leaseFor, portForOffset, type LeaseDecision, type PortClaim } from './p
 import type { PortOwner, ProcessMatch } from './portOwners';
 import { applyProjection, planProjection, type ProjectionFs } from './projection';
 import type { LogSink } from './logFile';
-import { waitUntilReady, type ProbeDeps } from './readiness';
+import {
+  describeProbe,
+  describeProbeFailure,
+  isRefusalStatus,
+  waitUntilReady,
+  type ProbeDeps,
+} from './readiness';
 import type { LaunchGate, ReleaseSlot } from './launchGate';
 import type { ServiceBinding, ServiceRuntime, ServiceSpec, TaskRun } from './types';
 import { normalizeWatchPatterns, restartDependents, shouldRestartOnChange, startOrder } from './types';
@@ -176,7 +182,22 @@ const CHANGE_DEBOUNCE_MS = 500;
 /// stops saying `ready` after it has gone.
 export const ADOPTED_POLL_MS = 5_000;
 
+/// How often a service past its readiness allowance is asked again. It is
+/// running and not answering; whatever it is doing takes minutes, not
+/// seconds, so a check every few seconds only adds to its log.
+export const LATE_READY_INTERVAL_MS = 20_000;
+
+/// How long that slower checking goes on before overcli stops asking and says
+/// so. A probe that has failed for this long past its allowance is pointed at
+/// the wrong thing far more often than it is about to pass.
+export const LATE_READY_BUDGET_MS = 10 * 60_000;
+
 export class Supervisor {
+  /// Every log line written so far, on disk. See LogSink.idle.
+  async flushLogs(): Promise<void> {
+    await this.deps.logSink?.idle?.();
+  }
+
   private readonly procs = new Map<string, SpawnedProcess>();
   /// Which launch of each service is the current one, while it waits for a
   /// turn at the gate.
@@ -989,18 +1010,49 @@ export class Supervisor {
     }
 
     // Past its allowance and still running. Slow is not broken, so say so and
-    // keep asking — less often — until it answers or dies. Not awaited: the
-    // start has reported all it can, and a slow service must not hold up the
-    // ones queued behind it.
-    this.setStatus(spec.id, { status: 'unready' });
+    // keep asking — far less often, and not forever — until it answers or
+    // dies. Not awaited: the start has reported all it can, and a slow service
+    // must not hold up the ones queued behind it.
+    const hint = describeProbeFailure(spec.ready, result.lastStatus);
+    this.append(
+      spec.id,
+      `── not ready after ${Math.round(result.waitedMs / 1000)}s · ${describeProbe(spec.ready)}` +
+        `${hint ? ` · ${hint}` : ''} ──`,
+    );
+
+    // A 401 or 403 is the app answering, and it will answer the same way the
+    // next thousand times. Asking again only fills its log with stack traces,
+    // so stop here and leave the hint to say what to change.
+    if (isRefusalStatus(result.lastStatus)) {
+      this.setStatus(spec.id, {
+        status: 'unready',
+        probeStatus: result.lastStatus,
+        probeHint: hint,
+        probeGaveUp: true,
+      });
+      this.append(spec.id, '── stopped checking: this probe will not pass as configured ──');
+      return;
+    }
+
+    this.setStatus(spec.id, { status: 'unready', probeStatus: result.lastStatus, probeHint: hint });
     void waitUntilReady(spec.ready, probe, {
       isAlive,
-      timeoutMs: Number.POSITIVE_INFINITY,
-      intervalMs: 3_000,
+      timeoutMs: LATE_READY_BUDGET_MS,
+      intervalMs: LATE_READY_INTERVAL_MS,
     }).then((late) => {
-      if (late.ready && isAlive()) {
+      if (!isAlive()) return;
+      if (late.ready) {
         this.setStatus(spec.id, { status: 'ready', readyAt: this.deps.probe.now() });
+        return;
       }
+      const lastStatus = late.lastStatus ?? result.lastStatus;
+      const lateHint = describeProbeFailure(spec.ready, lastStatus);
+      this.setStatus(spec.id, { status: 'unready', probeStatus: lastStatus, probeHint: lateHint, probeGaveUp: true });
+      this.append(
+        spec.id,
+        `── stopped checking after ${Math.round(LATE_READY_BUDGET_MS / 60_000)} more minutes` +
+          `${lateHint ? ` · ${lateHint}` : ''} · restart or change the probe to try again ──`,
+      );
     });
   }
 
@@ -1123,6 +1175,13 @@ export class Supervisor {
     if (next.status !== 'starting') {
       next.waitingOn = undefined;
       next.queued = undefined;
+    }
+    // What a failing probe saw belongs to that failure; a start, a pass or an
+    // exit makes it history.
+    if (next.status !== 'unready') {
+      next.probeStatus = undefined;
+      next.probeHint = undefined;
+      next.probeGaveUp = undefined;
     }
     // No longer adopted, however that came about: nothing left to watch.
     if (!next.adopted) this.forgetAdopted(serviceId);

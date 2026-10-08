@@ -130,6 +130,10 @@ export interface QueueRow {
   /// The colleague who handed this over, when one did rather than you.
   from?: string;
   fromId?: string;
+  /// Set on a piece a team commissioned. The crew's Today folds a team
+  /// task's pieces under one row for the task, since the task is what you
+  /// asked for and the pieces are how it got made.
+  team?: { teamId: string; teamName: string; taskId: string };
 }
 
 export interface WorkQueue {
@@ -327,6 +331,9 @@ export function buildWorkQueue(
         ...(item.note ? { note: item.note } : {}),
         ...(origin.wrapUpOf ? { wrapUpOf: origin.wrapUpOf } : {}),
         ...(origin.from ? { from: origin.from.workerName, fromId: origin.from.workerId } : {}),
+        ...(origin.team
+          ? { team: { teamId: origin.team.teamId, teamName: origin.team.teamName, taskId: origin.team.taskId } }
+          : {}),
       };
       (band === 'running' ? running : band === 'needsYou' ? needsYou : finished).push(row);
     }

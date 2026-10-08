@@ -1528,6 +1528,15 @@ export class RunnerManager {
       // but are exactly the activity a long investigation consists of.
       waiter.bump();
       for (const ev of event.events) {
+        // A hidden turn has nobody to answer its approval prompt, so a tool
+        // call that raises one would wait forever. Refuse it at once and the
+        // model carries on and ends its reply. (A coordinator in plan mode
+        // wrote its whole plan, then called ExitPlanMode — which asks — and
+        // sat there.)
+        if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
+          this.respondPermission(cid, ev.kind.info.requestId, false, undefined, 'once', ev.kind.info.toolName);
+          continue;
+        }
         if (ev.kind.type !== 'assistant' || ev.reviewer) continue;
         const info = ev.kind.info;
         if (info.isPartial) {

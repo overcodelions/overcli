@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyProject, groupProjects, GroupingContext } from './statsGrouping';
+import { classifyProject, describeSessionPath, groupProjects, GroupingContext } from './statsGrouping';
 import type { ProjectStats } from '../shared/types';
 
 const ctx: GroupingContext = {
@@ -133,5 +133,43 @@ describe('groupProjects', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].outputTokens).toBe(300);
     expect(groups[0].children).toHaveLength(2);
+  });
+});
+
+describe('describeSessionPath', () => {
+  const withWorker: GroupingContext = {
+    ...ctx,
+    coordinators: new Map([
+      ...ctx.coordinators,
+      [
+        '16126482-bd70-4e0a-ba07-ca88a3159334',
+        {
+          flowName: 'Native Feature Design',
+          workerName: 'Lena',
+          title: 'Product Discovery: Designs and feasibility check',
+          ownerPath: '/Users/x/git-services/overcli',
+        },
+      ],
+    ]),
+  };
+
+  it('names a worker run by its worker and work, and gives the project it came from', () => {
+    // The transcript folder name is slugged: the run id's hyphens came back as slashes.
+    const p = '/Users/x/Library/Application Support/overcli/coordinators/16126482/bd70/4e0a/ba07/ca88a3159334';
+    expect(describeSessionPath(p, withWorker)).toEqual({
+      title: 'Lena · Product Discovery: Designs and feasibility check',
+      context: 'overcli',
+    });
+  });
+
+  it('falls back to the flow name for a run no longer stored', () => {
+    expect(describeSessionPath('/Users/x/Library/Application Support/overcli/coordinators/run/1', ctx)).toEqual({
+      title: 'Release Warden',
+      context: 'Release Warden',
+    });
+  });
+
+  it('gives a plain checkout its project name and no title of its own', () => {
+    expect(describeSessionPath('/Users/x/git-services/overcli', ctx)).toEqual({ context: 'overcli' });
   });
 });

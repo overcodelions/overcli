@@ -83,6 +83,7 @@ function makeHarness(
     runHandoffOutputs?: WorkerEngineDeps['runHandoffOutputs'];
     runIdForConversation?: WorkerEngineDeps['runIdForConversation'];
     flowsFor?: WorkerEngineDeps['flowsFor'];
+    pieceFlow?: WorkerEngineDeps['pieceFlow'];
     away?: WorkersAway;
   } = {},
 ) {
@@ -230,6 +231,7 @@ function makeHarness(
     },
     generatedFlow: opts.generatedFlow,
     flowsFor: opts.flowsFor,
+    pieceFlow: opts.pieceFlow,
     clearActivity: opts.clearActivity,
     deleteActivity: opts.deleteActivity,
     supervisorTurn: opts.supervisorTurn,
@@ -3354,3 +3356,35 @@ describe('WorkerEngine away mode', () => {
     expect(h.engine.nextShiftAt('worker-1')).not.toBeNull();
   });
 });
+
+describe('WorkerEngine.commission', () => {
+  const team = { teamId: 't1', teamName: 'Discovery', taskId: 'task-1', stage: 2 };
+
+  it("runs a team piece as the one-step version of the worker's flow", async () => {
+    const asked: string[] = [];
+    const h = makeHarness({
+      seed: [seedWorker({ cadence: null })],
+      pieceFlow: (flowId) => {
+        asked.push(flowId);
+        return { ok: true, flowId: `team-piece-${flowId}` };
+      },
+    });
+    h.engine.start();
+    const res = await h.engine.commission('worker-1', { title: 'Architecture', prompt: 'Write ARCHITECTURE.md', team });
+    expect(res.ok).toBe(true);
+    expect(asked).toEqual(['fix-it']);
+    expect(h.direct[0].flowId).toBe('team-piece-fix-it');
+  });
+
+  it('refuses the piece rather than run the whole pipeline when the piece flow cannot be made', async () => {
+    const h = makeHarness({
+      seed: [seedWorker({ cadence: null })],
+      pieceFlow: () => ({ ok: false, error: 'disk full' }),
+    });
+    h.engine.start();
+    const res = await h.engine.commission('worker-1', { title: 'x', prompt: 'y', team });
+    expect(res).toEqual({ ok: false, error: expect.stringContaining('disk full') });
+    expect(h.direct).toHaveLength(0);
+  });
+});
+

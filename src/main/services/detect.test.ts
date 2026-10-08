@@ -741,3 +741,157 @@ describe('detectServices — convention plugin applied the old way', () => {
     expect(commands.some((c) => c.includes(':orders-service:bootRun'))).toBe(true);
   });
 });
+
+describe('detectService — choosing a Spring readiness probe', () => {
+  const bootModule = (extra = '') =>
+    `apply plugin: 'org.springframework.boot'\nbootRun {\n}\ncompile 'org.springframework.boot:spring-boot-starter-web'\n${extra}`;
+  const actuator = "compile 'org.springframework.boot:spring-boot-starter-actuator:1.4.6.RELEASE'";
+
+  /// A Boot 1.5 module the way catalog-rest is laid out: the version in the
+  /// root gradle.properties, actuator moved under /manage on its own port, a
+  /// security filter in front of everything but a short anonymous list, and a
+  /// StatusController that answers 200 to anyone.
+  const catalog: Record<string, string> = {
+    'settings.gradle': "include 'catalog-rest'",
+    'gradlew': '',
+    'gradle.properties': 'group=com.acme\nspringBootGradleVersion=1.5.4.RELEASE\n',
+    'catalog-rest/build.gradle':
+      'buildscript {\n  dependencies {\n    classpath("org.springframework.boot:spring-boot-gradle-plugin:$springBootGradleVersion")\n  }\n}\n' +
+      bootModule(actuator),
+    'catalog-rest/src/main/resources/config/application.properties':
+      'server.port=8088\nmanagement.port=9088\nmanagement.context-path=/manage\nmanagement.security.enabled=true\n',
+    'catalog-rest/src/main/resources/catalog-rest-securityContext.xml': `<beans xmlns:security="http://www.springframework.org/schema/security">
+  <bean id="springSecurityFilterChain" class="org.springframework.security.web.FilterChainProxy">
+    <security:filter-chain-map request-matcher="ant">
+      <security:filter-chain pattern="/status" filters="anonymousProcessingFilter"/>
+      <security:filter-chain pattern="/manage/**" filters="anonymousProcessingFilter"/>
+      <security:filter-chain pattern="/**" filters="httpSessionContextIntegrationFilter,authenticationProcessingFilter,filterSecurityInterceptor"/>
+    </security:filter-chain-map>
+  </bean>
+</beans>`,
+    'catalog-rest/src/main/java/com/acme/rest/StatusController.java': `package com.acme.rest;
+@Controller
+@RequestMapping(value = "/status", produces = MediaType.APPLICATION_JSON_VALUE)
+public class StatusController extends BaseController {
+  @RequestMapping(value = "", method = { RequestMethod.GET })
+  public @ResponseBody String status() { return "OK"; }
+}`,
+    'catalog-rest/src/main/java/com/acme/rest/UserController.java': `@RestController
+@RequestMapping("/users")
+public class UserController {
+  @GetMapping("/{id}")
+  public User get() { return null; }
+}`,
+  };
+
+  it('picks the anonymous /status over a health path the filter would refuse', () => {
+    const [proposal] = detectServices(repo(catalog), 'gitrepo');
+    expect(proposal.spec.ready).toEqual({ kind: 'http', port: 8088, path: '/status' });
+    const ready = proposal.evidence.find((e) => e.field === 'ready');
+    expect(ready?.why).toContain('lets anyone reach it');
+    expect(ready?.source).toBe('catalog-rest/src/main/java/com/acme/rest/StatusController.java:5');
+  });
+
+  it('offers Boot 1 health under the management context path and port as the runner-up', () => {
+    const [proposal] = detectServices(repo(catalog), 'gitrepo');
+    const probes = proposal.readyCandidates?.map((c) => c.probe);
+    expect(probes?.[1]).toEqual({ kind: 'http', port: 9088, path: '/manage/health' });
+    expect(probes).not.toContainEqual(expect.objectContaining({ path: '/actuator/health' }));
+    // The port opening is always on the list, as the floor.
+    expect(probes?.at(-1)).toEqual({ kind: 'tcp', port: 8088 });
+    const health = proposal.readyCandidates?.[1];
+    expect(health?.why).toContain('Spring Boot 1.5.4.RELEASE');
+    expect(health?.source).toBe('catalog-rest/src/main/resources/config/application.properties:3');
+  });
+
+  it('reads /health, not /actuator/health, for Boot 1 without a context path', () => {
+    const proposal = detectService(
+      repo({
+        'pom.xml':
+          '<parent><artifactId>spring-boot-starter-parent</artifactId><version>1.5.22.RELEASE</version></parent>' +
+          '<a>spring-boot-starter-web</a><a>spring-boot-starter-actuator</a>',
+      }),
+      'svc',
+    );
+    expect(proposal?.spec.ready).toEqual({ kind: 'http', port: 8080, path: '/health' });
+  });
+
+  it('honours a Boot 2 base path and server context path', () => {
+    const proposal = detectService(
+      repo({
+        'build.gradle':
+          "plugins { id 'org.springframework.boot' version '2.7.18' }\nbootRun {}\n" +
+          "implementation 'org.springframework.boot:spring-boot-starter-web'\nimplementation 'org.springframework.boot:spring-boot-starter-actuator'",
+        'src/main/resources/application.yml':
+          'server:\n  port: 8090\n  servlet:\n    context-path: /api\nmanagement:\n  endpoints:\n    web:\n      base-path: /ops\n',
+      }),
+      'svc',
+    );
+    expect(proposal?.spec.ready).toEqual({ kind: 'http', port: 8090, path: '/api/ops/health' });
+  });
+
+  it('falls back to the port when security covers the actuator and nothing is anonymous', () => {
+    const proposal = detectService(
+      repo({
+        'pom.xml':
+          '<parent><artifactId>spring-boot-starter-parent</artifactId><version>3.2.0</version></parent>' +
+          '<a>spring-boot-starter-web</a><a>spring-boot-starter-actuator</a><a>spring-boot-starter-security</a>',
+      }),
+      'svc',
+    );
+    expect(proposal?.spec.ready).toEqual({ kind: 'tcp', port: 8080 });
+    const health = proposal?.readyCandidates?.find((c) => c.probe.kind === 'http');
+    expect(health?.why).toContain('likely a 401');
+  });
+
+  it('uses the actuator when Java config permits it', () => {
+    const proposal = detectService(
+      repo({
+        'pom.xml':
+          '<parent><artifactId>spring-boot-starter-parent</artifactId><version>3.2.0</version></parent>' +
+          '<a>spring-boot-starter-web</a><a>spring-boot-starter-actuator</a><a>spring-boot-starter-security</a>',
+        'src/main/java/com/acme/SecurityConfig.java': `@EnableWebSecurity
+public class SecurityConfig {
+  SecurityFilterChain chain(HttpSecurity http) {
+    http.authorizeHttpRequests(a -> a.requestMatchers("/actuator/health", "/actuator/info").permitAll().anyRequest().authenticated());
+  }
+}`,
+      }),
+      'svc',
+    );
+    expect(proposal?.spec.ready).toEqual({ kind: 'http', port: 8080, path: '/actuator/health' });
+    expect(proposal?.evidence.find((e) => e.field === 'ready')?.source).toBe('pom.xml:1');
+  });
+
+  it('offers both health paths when the Boot version cannot be read', () => {
+    const proposal = detectService(
+      repo({ 'pom.xml': '<a>spring-boot-starter-web</a><a>spring-boot-starter-actuator</a>' }),
+      'svc',
+    );
+    expect(proposal?.readyCandidates?.map((c) => c.probe)).toEqual([
+      { kind: 'http', port: 8080, path: '/actuator/health' },
+      { kind: 'http', port: 8080, path: '/health' },
+      { kind: 'tcp', port: 8080 },
+    ]);
+  });
+});
+
+describe('proposalFor', () => {
+  it('finds the proposal for a gradle module by its task, then by port', async () => {
+    const { proposalFor } = await import('./detect');
+    const files = {
+      'settings.gradle': "include 'a', 'b'",
+      'gradlew': '',
+      'a/build.gradle': "apply plugin: 'org.springframework.boot'\nbootRun {}\ncompile 'spring-boot-starter-web'",
+      'a/src/main/resources/application.properties': 'server.port=5001\n',
+      'b/build.gradle': "apply plugin: 'org.springframework.boot'\nbootRun {}\ncompile 'spring-boot-starter-web'",
+      'b/src/main/resources/application.properties': 'server.port=5002\n',
+    };
+    const found = detectServices(repo(files), 'root');
+    const b = { runner: 'gradle' as const, command: ['./gradlew', ':b:bootRun'], port: 9999 };
+    expect(proposalFor(found, b)?.spec.port).toBe(5002);
+    // Renamed task, same port: still the same service.
+    expect(proposalFor(found, { runner: 'gradle', command: ['x'], port: 5001 })?.spec.name).toBe('a');
+    expect(proposalFor(found, { runner: 'gradle', command: ['x'], port: 1 })).toBeNull();
+  });
+});

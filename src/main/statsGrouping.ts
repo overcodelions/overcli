@@ -12,6 +12,10 @@ import type { ProjectGroupKind, ProjectGroupStats, ProjectStats } from '../share
 /// `ensureCoordinatorSymlinkRoot(runId, …)` in flows/runtime.ts).
 export interface CoordinatorRun {
   flowName: string;
+  /// The worker that ran it, and what it was asked to do — only known while
+  /// the run itself is still stored (the summary log keeps neither).
+  workerName?: string;
+  title?: string;
   /// `flowRunOwnerPath(run)` — the project/workspace the run was launched
   /// from. Absent for runs the LRU evicted before `ownerPath` was recorded
   /// in the summary log; those can only be grouped by flow name.
@@ -161,6 +165,25 @@ export function classifyProject(
     groupKind: 'repo',
     leafName: '',
   };
+}
+
+/// A human name for a session that has no conversation of its own — a
+/// worker's flow run, a team member's piece — plus the project it belongs
+/// to. Without this the session falls back to its folder name, which for
+/// every run is `coordinators/<run id>`: a hash.
+export function describeSessionPath(
+  displayPath: string,
+  ctx: GroupingContext,
+): { title?: string; context: string } {
+  const owner = classifyProject(displayPath, ctx);
+  const lower = segments(displayPath).map((s) => s.toLowerCase());
+  const coIdx = lower.findIndex((s, n) => s === 'coordinators' && n > 0 && lower[n - 1] === 'overcli');
+  if (coIdx < 0) return { context: owner.groupName };
+  const id = segments(displayPath).slice(coIdx + 1).join('-');
+  const run = ctx.coordinators.get(id.toLowerCase());
+  const what = run?.title?.trim() || run?.flowName;
+  const title = run?.workerName ? (what ? `${run.workerName} · ${what}` : run.workerName) : what;
+  return { ...(title ? { title } : {}), context: owner.groupName };
 }
 
 export function groupProjects(rows: ProjectStats[]): ProjectGroupStats[] {
