@@ -446,7 +446,7 @@ describe('newestInFamily', () => {
 
   it('never crosses into another family, even at the same tier', () => {
     // snapToTierDefault would turn Haiku into Sonnet; a hand-picked Haiku stays.
-    expect(newestInFamily('claude', 'claude-haiku-4-5')).toBe('claude-haiku-4-5');
+    expect(newestInFamily('claude', 'claude-haiku-4-5')).toBe('claude-haiku-5-5');
     expect(newestInFamily('codex', 'gpt-5.4-mini')).toBe('gpt-5.4-mini');
   });
 

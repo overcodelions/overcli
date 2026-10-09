@@ -63,6 +63,11 @@ describe('workLogEntryFor', () => {
     digest: { headline: 'MCP server shipped' },
   };
 
+  it('keeps the team task a piece belonged to', () => {
+    const team = { teamId: 't1', teamName: 'Acme Council', taskId: 'task-1' };
+    expect(workLogEntryFor({ ...base, team, state: { kind: 'done' } } as unknown as FlowRun)?.team).toEqual(team);
+  });
+
   it('logs a finished run with its ask, branch, owner and transcript cwd', () => {
     const e = workLogEntryFor({ ...base, state: { kind: 'done' } } as unknown as FlowRun);
     expect(e).toMatchObject({

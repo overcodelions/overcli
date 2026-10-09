@@ -206,6 +206,9 @@ interface WorkersState {
   /// teamsStore; the selection lives here because it is a peer of the worker
   /// selection — picking one leaves the other.
   selectedTeamId: string | null;
+  /// The task the team desk opens on, when something outside the desk asked
+  /// for one (a Work row). Null: the team's current task.
+  selectedTeamTaskId: string | null;
   /// Today narrowed to one worker — what a face in the rail opens. Null is
   /// the whole crew. Only read while `view` is 'today'; the Today button
   /// clears it.
@@ -448,8 +451,8 @@ interface WorkersActions {
   remove(id: string): Promise<void>;
   workShiftNow(id: string): Promise<void>;
   selectWorker(id: string | null): void;
-  /// Open a team's desk.
-  selectTeam(id: string): void;
+  /// Open a team's desk, on one of its tasks if given.
+  selectTeam(id: string, taskId?: string): void;
   /// Open the team editor: `null` for a new team.
   openTeamEditor(teamId: string | null): void;
   /// Open a worker's desk from outside the roster — the command palette, a
@@ -821,6 +824,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   allocation: null,
   view: 'today',
   selectedTeamId: null,
+  selectedTeamTaskId: null,
   inboxWorkerId: null,
   selectSeq: 0,
   deskFocus: null,
@@ -1023,9 +1027,9 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     }));
   },
 
-  selectTeam(id) {
+  selectTeam(id, taskId) {
     leavePane(get);
-    set({ view: 'team', selectedTeamId: id });
+    set({ view: 'team', selectedTeamId: id, selectedTeamTaskId: taskId ?? null });
   },
 
   openTeamEditor(teamId) {

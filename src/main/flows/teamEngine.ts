@@ -841,6 +841,10 @@ export class TeamEngine {
       stage.status = stage.assignments.some((a) => a.status === 'done') ? 'done' : 'failed';
       stage.finishedAt = this.now();
       this.reportRoomWork(task, stage);
+      // You stopped the work: what was queued behind it waits for you.
+      for (const m of task.room?.messages ?? []) {
+        if (m.handoff?.status === 'queued') m.handoff.status = 'proposed';
+      }
       task.stageIndex += 1;
       task.waiting = undefined;
       task.status = 'review';
@@ -1229,6 +1233,8 @@ export class TeamEngine {
   }
 
   private finish(task: TeamTask): void {
+    // Work queued in the room runs next; the task is not finished yet.
+    if (task.stages.at(-1)?.fromRoom && this.startQueued(task)) return;
     const team = this.teams.get(task.teamId);
     task.spentUSD = this.spent(task);
     task.waiting = undefined;
@@ -1571,7 +1577,7 @@ export class TeamEngine {
   /// coordinator routes the question.
   roomAsk(taskId: UUID, text: string, attachments: Attachment[] = []): Result {
     const task = this.tasks.get(taskId);
-    const ready = this.roomReady(task);
+    const ready = this.roomReady(task, { duringRoomWork: true });
     if (ready) return { ok: false, error: ready };
     const question = text.trim();
     if (!question) return { ok: false, error: 'Ask the team something.' };
@@ -1602,35 +1608,64 @@ export class TeamEngine {
     const ready = this.roomReady(task);
     if (ready) return { ok: false, error: ready };
     const message = task!.room?.messages.find((m) => m.id === messageId);
-    const handoff = message?.handoff;
-    if (!message || !handoff) return { ok: false, error: 'That proposal is gone.' };
-    if (handoff.status !== 'proposed') return { ok: false, error: 'That work was already started or set aside.' };
+    if (!message?.handoff) return { ok: false, error: 'That proposal is gone.' };
+    if (message.handoff.status !== 'proposed') return { ok: false, error: 'That work was already started or set aside.' };
+    return this.startHandoff(task!, message);
+  }
+
+  private startHandoff(task: TeamTask, message: TeamMessage): Result {
+    const handoff = message.handoff!;
     const workers = this.deps.workers();
     const assignments = handoff.assignments.filter((a) => workers.some((w) => w.id === a.workerId));
-    if (assignments.length === 0) return { ok: false, error: 'Nobody on that proposal is still on the team.' };
-    const index = task!.stages.length;
-    task!.stages.push({
+    if (assignments.length === 0) {
+      handoff.status = 'dismissed';
+      this.persist(task);
+      return { ok: false, error: 'Nobody on that proposal is still on the team.' };
+    }
+    const index = task.stages.length;
+    task.stages.push({
       kind: 'contribute',
       title: handoff.title,
       assignments: assignments.map((a) => ({ workerId: a.workerId, workerName: a.workerName, ask: a.ask, status: 'pending' })),
       status: 'pending',
-      fromRoom: { messageId, exchange: message.exchange },
+      fromRoom: { messageId: message.id, exchange: message.exchange },
     });
     handoff.status = 'started';
     handoff.stage = index;
-    task!.stageIndex = index;
-    task!.status = 'running';
-    task!.waiting = undefined;
-    this.persist(task!);
-    this.advance(taskId);
+    task.stageIndex = index;
+    task.status = 'running';
+    task.waiting = undefined;
+    this.persist(task);
+    this.advance(task.id);
     return { ok: true };
+  }
+
+  /// Work just handed off: held for you when the team approves follow-up
+  /// work first, else queued behind work already running, else started.
+  private placeHandoff(task: TeamTask, message: TeamMessage): void {
+    if (this.teams.get(task.teamId)?.checkpoints.approveRoomWork) return;
+    if (this.roomWorkUnderway(task)) {
+      message.handoff!.status = 'queued';
+      return;
+    }
+    this.startHandoff(task, message);
+  }
+
+  /// Start the oldest queued hand-off, if there is one.
+  private startQueued(task: TeamTask): boolean {
+    for (const m of task.room?.messages ?? []) {
+      if (m.handoff?.status === 'queued' && this.startHandoff(task, m).ok) return true;
+    }
+    return false;
   }
 
   roomDismissWork(taskId: UUID, messageId: string): Result {
     const task = this.tasks.get(taskId);
     const handoff = task?.room?.messages.find((m) => m.id === messageId)?.handoff;
     if (!task || !handoff) return { ok: false, error: 'That proposal is gone.' };
-    if (handoff.status !== 'proposed') return { ok: false, error: 'That work was already started or set aside.' };
+    if (handoff.status !== 'proposed' && handoff.status !== 'queued') {
+      return { ok: false, error: 'That work was already started or set aside.' };
+    }
     handoff.status = 'dismissed';
     this.persist(task);
     return { ok: true };
@@ -1651,10 +1686,13 @@ export class TeamEngine {
     }
     const question = messages.slice(0, at).reverse().find((m) => m.speaker.kind === 'you');
     const title = question ? firstWords(question.text, 60) : 'Follow-up work';
-    this.pushMessage(
+    const held = !!this.teams.get(task!.teamId)?.checkpoints.approveRoomWork;
+    const message = this.pushMessage(
       task!,
       { kind: 'coordinator' },
-      `${said.speaker.name} can do this as a real run, with their tools and the shared folder.`,
+      held
+        ? `${said.speaker.name} can do this as a real run, with their tools and the shared folder.`
+        : `Handing this to ${said.speaker.name} as a real run, with their tools and the shared folder.`,
       {
         exchange: said.exchange,
         handoff: {
@@ -1676,6 +1714,7 @@ export class TeamEngine {
         },
       },
     );
+    this.placeHandoff(task!, message);
     this.fileConversation(task!);
     this.persist(task!);
     return { ok: true };
@@ -1685,7 +1724,7 @@ export class TeamEngine {
   /// was said, or pass.
   roomContinue(taskId: UUID): Result {
     const task = this.tasks.get(taskId);
-    const ready = this.roomReady(task);
+    const ready = this.roomReady(task, { duringRoomWork: true });
     if (ready) return { ok: false, error: ready };
     const messages = task!.room?.messages ?? [];
     const lastQuestion = [...messages].reverse().find((m) => m.speaker.kind === 'you');
@@ -1724,14 +1763,25 @@ export class TeamEngine {
     return { ok: true };
   }
 
-  /// Why the room can't take a turn now, or null if it can.
-  private roomReady(task: TeamTask | undefined): string | null {
+  /// Why the room can't take a turn now, or null if it can. Talking is
+  /// allowed while work handed off from the room runs (`duringRoomWork`);
+  /// starting more work, or rewriting the pack, waits for it to land.
+  private roomReady(task: TeamTask | undefined, opts: { duringRoomWork?: boolean } = {}): string | null {
     if (!task) return 'That task no longer exists.';
-    if (task.status !== 'review' && task.status !== 'done') return 'The team is still working on this task.';
+    const talking = opts.duringRoomWork && !!this.roomWorkUnderway(task);
+    if (task.status !== 'review' && task.status !== 'done' && !talking) return 'The team is still working on this task.';
     if (!task.pack) return 'There is no pack to talk about yet.';
     if (task.room?.busy || this.turning.has(`room:${task.id}`)) return 'The team is still answering.';
     if (!this.teams.get(task.teamId)) return 'The team was deleted.';
     return null;
+  }
+
+  /// The room-handed-off stage running now, if that's what the task is doing.
+  private roomWorkUnderway(task: TeamTask): { title: string; who: string[] } | null {
+    if (task.status !== 'running' && task.status !== 'waiting') return null;
+    const stage = task.stages[task.stageIndex];
+    if (!stage?.fromRoom || !task.pack) return null;
+    return { title: stage.title, who: stage.assignments.map((a) => a.workerName) };
   }
 
   private roomMembers(task: TeamTask): RoomMember[] {
@@ -1778,6 +1828,7 @@ export class TeamEngine {
             conversation: (task.room?.messages ?? []).slice(0, -1),
             question: args.question,
             addressed: responders?.map((id) => byId.get(id)?.name).filter((n): n is string => !!n),
+            underway: this.roomWorkUnderway(task),
           }),
         });
         if (this.stopped(taskId)) return;
@@ -1798,6 +1849,7 @@ export class TeamEngine {
               pack: this.packFiles(task),
               conversation: task.room?.messages ?? [],
               question: args.question,
+              underway: this.roomWorkUnderway(task),
             }),
           });
           this.pushMessage(task, { kind: 'coordinator' }, answer.ok ? answer.text.trim() : answer.error, {
@@ -1866,22 +1918,26 @@ export class TeamEngine {
   }
 
   private proposeWork(task: TeamTask, exchange: number, work: { title: string; assign: Array<{ workerId: string; name: string; ask: string }> }): void {
-    // A newer proposal replaces one you never acted on.
+    // A newer proposal replaces one you never acted on. Queued work stays:
+    // you asked for it.
     for (const m of task.room?.messages ?? []) {
       if (m.handoff?.status === 'proposed') m.handoff.status = 'dismissed';
     }
-    const who = work.assign.map((a) => a.name);
+    const who = joinNames(work.assign.map((a) => a.name));
     const handoff: TeamHandoff = {
       title: work.title,
       status: 'proposed',
       assignments: work.assign.map((a) => ({ workerId: a.workerId, workerName: a.name, ask: a.ask })),
     };
-    this.pushMessage(
-      task,
-      { kind: 'coordinator' },
-      `That's work, not a question. ${joinNames(who)} can do it as a real run, with their tools and the shared folder; what they make lands back in the folder and they'll report here.`,
-      { exchange, handoff },
-    );
+    const held = !!this.teams.get(task.teamId)?.checkpoints.approveRoomWork;
+    const underway = this.roomWorkUnderway(task);
+    const text = held
+      ? `That's work, not a question. ${who} can do it as a real run, with their tools and the shared folder; what they make lands back in the folder and they'll report here.`
+      : underway
+        ? `That's work, not a question. ${who} will pick it up as a real run once "${underway.title}" reports back; what they make lands in the folder and they'll report here.`
+        : `That's work, not a question. ${who} ${work.assign.length === 1 ? 'is' : 'are'} on it as a real run, with their tools and the shared folder; what they make lands back in the folder and they'll report here.`;
+    const message = this.pushMessage(task, { kind: 'coordinator' }, text, { exchange, handoff });
+    this.placeHandoff(task, message);
   }
 
   /// A member's report on work handed off from the room, posted where it
@@ -2030,9 +2086,9 @@ export class TeamEngine {
     speaker: TeamSpeaker,
     text: string,
     opts: { exchange?: number; wrapUp?: boolean; failed?: boolean; attachments?: string[]; handoff?: TeamHandoff } = {},
-  ): void {
+  ): TeamMessage {
     task.room = task.room ?? { messages: [] };
-    task.room.messages.push({
+    const message: TeamMessage = {
       id: this.newId(),
       speaker,
       text,
@@ -2042,7 +2098,9 @@ export class TeamEngine {
       ...(opts.failed ? { failed: true } : {}),
       ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
       ...(opts.handoff ? { handoff: opts.handoff } : {}),
-    });
+    };
+    task.room.messages.push(message);
+    return message;
   }
 
   /// Save what you attached into the shared folder, under `attachments/`, so

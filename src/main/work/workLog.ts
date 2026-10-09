@@ -65,6 +65,7 @@ export function workLogEntryFor(run: FlowRun, workerName?: string): WorkLogEntry
     at: last?.endedAt ?? last?.startedAt ?? Date.now(),
     outcome: kind === 'aborted' ? 'failed' : 'done',
     ...(workerName ? { workerName } : {}),
+    ...(run.team ? { team: run.team } : {}),
   };
 }
 

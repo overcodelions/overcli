@@ -55,6 +55,12 @@ const CHECKPOINTS: Array<{ key: keyof TeamCheckpoints; label: string; detail: st
     label: "Final review before it's filed",
     detail: "Hold the finished pack for you instead of marking the task done.",
   },
+  {
+    key: "approveRoomWork",
+    label: "Approve follow-up work first",
+    detail:
+      "Hold work asked for in the conversation until you start it. Off: it starts straight away, or queues behind work already running.",
+  },
 ];
 
 export function TeamEditor() {
@@ -468,7 +474,7 @@ export function TeamEditor() {
                   <div key={c.key} className="flex items-center justify-between gap-3 px-3 py-2.5" title={c.detail}>
                     <span className="text-sm text-ink">{c.label}</span>
                     <Switch
-                      on={checkpoints[c.key]}
+                      on={!!checkpoints[c.key]}
                       label={c.label}
                       onChange={(on) => setCheckpoints((prev) => ({ ...prev, [c.key]: on }))}
                     />

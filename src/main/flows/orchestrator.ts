@@ -26,7 +26,7 @@ import type {
   Project,
   UUID,
 } from '../../shared/types';
-import type { FlowRun } from '../../shared/flows/schema';
+import type { FlowRun, FlowRunTeam } from '../../shared/flows/schema';
 import { flowRunOwnerPath } from '../../shared/flows/schema';
 import { runGitAsync } from '../git';
 import type {
@@ -74,6 +74,7 @@ export interface FlowLauncher {
     chainParentRunId?: UUID;
     workerId?: UUID;
     workerName?: string;
+    team?: FlowRunTeam;
     allowExternalActions?: boolean;
     /// Start with the browser switch on — see FlowRuntimeStartArgs.chrome.
     chrome?: boolean;
@@ -804,6 +805,9 @@ export class OrchestratorImpl {
                 workerName: o.origin.workerName,
                 allowExternalActions: o.origin.allowExternalActions,
                 ...(o.origin.browser ? { chrome: true } : {}),
+                ...(o.origin.team
+                  ? { team: { teamId: o.origin.team.teamId, teamName: o.origin.team.teamName, taskId: o.origin.team.taskId } }
+                  : {}),
               }
             : {}),
           // The RESOLVED policy, not the raw one: spreading an omitted policy

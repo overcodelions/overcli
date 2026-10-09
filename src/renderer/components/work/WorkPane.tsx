@@ -21,6 +21,7 @@ import {
 import { useFlowsStore } from '../../flowsStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { useStore } from '../../store';
+import { useWorkersStore } from '../../workersStore';
 import { RunTranscriptView } from './RunTranscriptView';
 import { KeepWorking } from './KeepWorking';
 import { RepoGitTable } from './RepoGitTable';
@@ -270,6 +271,12 @@ function WorkRow({ match, onOpen }: { match: WorkMatch; onOpen: () => void }) {
   );
 }
 
+/// A team task's desk, on that task — where its pieces are read.
+export function openTeamTask(teamId: string, taskId: string): void {
+  useWorkersStore.getState().selectTeam(teamId, taskId);
+  useStore.getState().setDetailMode('workers');
+}
+
 function Chip({ children }: { children: React.ReactNode }) {
   return <span className="px-1.5 py-0.5 rounded bg-card-strong">{children}</span>;
 }
@@ -395,9 +402,12 @@ function WorkRecordDetail({ record: r, onBack }: { record: WorkRecord; onBack: (
   }
   steps.sort((a, b) => a.at - b.at);
 
-  const primary = r.pr
-    ? { label: 'Open PR ↗', run: () => openExternal(r.pr!.url) }
-    : [...steps].reverse().find((s) => s.action)?.action;
+  const team = r.team;
+  const primary = team
+    ? { label: 'Open in team', run: () => openTeamTask(team.teamId, team.taskId) }
+    : r.pr
+      ? { label: 'Open PR ↗', run: () => openExternal(r.pr!.url) }
+      : [...steps].reverse().find((s) => s.action)?.action;
   const ask = askOf(r);
   const stats: Array<[string, string]> = [
     ['Runs', String(r.runs.length)],
@@ -417,7 +427,7 @@ function WorkRecordDetail({ record: r, onBack }: { record: WorkRecord; onBack: (
           <div className="flex-1 min-w-0 flex flex-col gap-3">
             <div className="flex items-center gap-2 text-[11px] text-ink-faint uppercase tracking-wider font-semibold">
               <span className={`w-2 h-2 rounded-sm ${KIND_DOT[r.kind]}`} aria-hidden />
-              {r.kind === 'batch' ? 'Batch' : r.kind === 'run' ? 'Flow work' : 'Chat'} · {r.placeName}
+              {r.team ? 'Team' : r.kind === 'batch' ? 'Batch' : r.kind === 'run' ? 'Flow work' : 'Chat'} · {r.placeName}
             </div>
             <h1
               className="m-0 text-[28px] leading-tight font-bold tracking-tight text-ink"

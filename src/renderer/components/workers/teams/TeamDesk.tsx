@@ -42,6 +42,7 @@ import { currentTeamTask } from "./TeamRail";
 import { folderSections, type FolderItem } from "./folderView";
 import { ProjectSelect, projectName, useProjectOptions } from "./ProjectChoice";
 import { exchangeOutcome, groupExchanges, plainLine, type Exchange } from "./roomView";
+import { COORDINATOR_LANE, pieceIn, planLayout, shortDuration } from "./planView";
 
 const primaryBtn = "text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40";
 const secondaryBtn =
@@ -746,7 +747,7 @@ function RunView({ task, team, onOpenFile }: { task: TeamTask; team: Team; onOpe
   const { done, total } = teamTaskProgress(task);
   return (
     <div className="flex flex-col gap-4">
-      <PlanStrip task={task} done={done} total={total} />
+      <PlanStrip task={task} done={done} total={total} onOpenFile={onOpenFile} />
 
       {task.status === "running" && unhired(task).length > 0 && <HiringCard task={task} />}
       {task.status === "waiting" && task.waiting && <WaitingCard task={task} team={team} />}
@@ -949,7 +950,7 @@ function PackTabs({
               </div>
             </CoordinatorSays>
           )}
-          <PlanStrip task={task} done={done} total={total} />
+          <PlanStrip task={task} done={done} total={total} onOpenFile={onOpenFile} />
           <ol className="flex flex-col overflow-hidden rounded-xl border border-card bg-surface-elevated">
             {task.stages.map((st, i) => (
               <StageRow key={i} task={task} stage={st} index={i} current={i === task.stageIndex} onOpenFile={onOpenFile} />
@@ -961,86 +962,160 @@ function PackTabs({
   );
 }
 
-/// This task's own plan across the full width — one tile per stage, in the
-/// coordinator's order, with who is on it and how far it got. Repeated kinds
-/// stay repeated: the strip is the plan, not the vocabulary.
-function PlanStrip({ task, done, total }: { task: TeamTask; done: number; total: number }) {
+/// This task's plan as swimlanes: the coordinator and each member get a lane,
+/// each stage a column, so who works when — and who works at the same time —
+/// reads at a glance. Work handed off from the room after the pack sits past a
+/// line, apart from the plan you approved.
+function PlanStrip({
+  task,
+  done,
+  total,
+  onOpenFile,
+}: {
+  task: TeamTask;
+  done: number;
+  total: number;
+  onOpenFile: (name: string) => void;
+}) {
   const [why, setWhy] = useState(false);
   const workers = useWorkersStore((s) => s.workers);
+  const live = task.stages.some((s) => s.status === "running");
+  const now = useTickingNow(live ? 30_000 : 3_600_000);
+  const { lanes, columns, packAt } = planLayout(task, now);
+  const zone = packAt !== undefined;
+  // Grid lines: the lane labels, then one per stage, with a thin gutter for
+  // the pack line where the room's work begins.
+  const colOf = (i: number) => 2 + i + (zone && i >= packAt ? 1 : 0);
+  const packCol = zone ? colOf(packAt) - 1 : 0;
+  const stageCol = "minmax(112px,1fr)";
+  const template = ["112px", ...columns.flatMap((c) => (zone && c.index === packAt ? ["20px", stageCol] : [stageCol]))].join(" ");
+  const top = zone ? 2 : 1;
+  const laneRow = (lane: number) => top + 1 + lane;
+  const footRow = laneRow(lanes.length);
+
   return (
     <section aria-label={`${done} of ${total} stages done`} className="flex flex-col gap-2.5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
           This task's plan · {total} {total === 1 ? "stage" : "stages"}
         </h3>
-        {task.planNote && (
-          <button className="text-[11px] text-accent hover:underline" aria-expanded={why} onClick={() => setWhy((v) => !v)}>
-            {why ? "Hide why" : "Why this plan"}
-          </button>
-        )}
+        <span className="flex items-center gap-4 text-[11px] text-ink-faint">
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden className="h-2 w-2 rounded-full bg-ink-faint" />
+            Members
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden className="h-2 w-2 rounded-[2px] bg-ink-faint" />
+            Coordinator
+          </span>
+          {task.planNote && (
+            <button className="text-accent hover:underline" aria-expanded={why} onClick={() => setWhy((v) => !v)}>
+              {why ? "Hide why" : "Why this plan"}
+            </button>
+          )}
+        </span>
       </div>
       {why && task.planNote && <p className="text-xs leading-relaxed text-ink-muted">{task.planNote}</p>}
-      <ol className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-1.5">
-        {task.stages.map((s, i) => {
-          const live = s.status === "running";
-          return (
-            <li
-              key={i}
-              className={
-                "flex min-w-0 flex-col gap-1.5 rounded-lg border-t-2 px-3 py-2.5 " +
-                (s.status === "done"
-                  ? "border-emerald-500 bg-surface-elevated"
-                  : s.status === "skipped"
-                    ? "border-card bg-surface-elevated opacity-60"
-                    : s.status === "failed"
-                      ? "border-amber-500 bg-surface-elevated"
-                    : live
-                      ? "border-accent bg-accent/10"
-                      : "border-card-strong bg-surface-elevated")
-              }
-            >
-              <span className={"flex items-center gap-1.5 text-[10.5px] " + (live ? "text-accent" : "text-ink-faint")}>
-                <KindMark kind={s.kind} />
-                {i + 1} · {TEAM_STAGE_LABEL[s.kind]}
+
+      <div className="overflow-x-auto pb-1">
+        <div className="grid" style={{ gridTemplateColumns: template }}>
+          {lanes.map((l, i) =>
+            i % 2 === 1 ? (
+              <div key={`band-${l.id}`} className="rounded-md bg-surface-elevated" style={{ gridColumn: "1 / -1", gridRow: laneRow(i) }} />
+            ) : null,
+          )}
+          {zone && (
+            <>
+              <div
+                className="rounded-lg border border-dashed border-accent/35 bg-accent/5"
+                style={{ gridColumn: `${packCol + 1} / -1`, gridRow: `1 / ${footRow + 1}` }}
+              />
+              <div className="relative" style={{ gridColumn: packCol, gridRow: `1 / ${footRow + 1}` }}>
+                <span className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-emerald-500/70" />
+              </div>
+              <span
+                className="relative flex items-center gap-2 px-2 pt-1.5 text-[11px] text-accent"
+                style={{ gridColumn: `${packCol + 1} / -1`, gridRow: 1 }}
+              >
+                <span className="rounded-full bg-emerald-500/15 px-2 py-px font-semibold text-emerald-400">
+                  Pack v{task.pack?.version ?? 1}
+                </span>
+                After the pack · asked for in the conversation
               </span>
-              <span className="line-clamp-2 text-xs font-semibold leading-snug text-ink" title={s.title}>
-                {s.title}
-              </span>
-              <span className="flex min-w-0 items-center gap-1 text-[11px]">
-                {s.assignments.map((a) => {
-                  const w = workers[a.workerId];
-                  return w ? <WorkerAvatar key={a.workerId} worker={w} size="xs" live={a.status === "running"} /> : null;
-                })}
+            </>
+          )}
+          {columns.map((c) =>
+            c.span ? (
+              <div
+                key={`span-${c.index}`}
+                aria-hidden
+                className="relative"
+                style={{ gridColumn: colOf(c.index), gridRow: `${laneRow(c.span[0])} / ${laneRow(c.span[1]) + 1}` }}
+              >
                 <span
                   className={
-                    "truncate " +
-                    (s.assignments.length > 0 ? "ml-1 " : "") +
-                    (s.status === "done"
-                      ? "text-emerald-400"
-                      : s.status === "failed"
-                        ? "text-amber-500"
-                        : live
-                          ? "text-accent"
-                          : "text-ink-faint")
+                    "absolute bottom-6 left-1/2 top-6 -translate-x-1/2 " +
+                    (c.stage.status === "running" ? "border-l-2 border-dashed border-accent" : "w-0.5 bg-card-strong")
                   }
-                >
-                  {s.status === "done"
-                    ? "Done"
-                    : s.status === "skipped"
-                      ? "Skipped"
-                      : s.status === "failed"
-                      ? "Needs you"
-                      : live
-                        ? "Working…"
-                        : isMemberStage(s.kind)
-                          ? "Up next"
-                          : "Coordinator"}
-                </span>
+                />
+              </div>
+            ) : null,
+          )}
+
+          {columns.map((c) => (
+            <PlanColumnHead key={`head-${c.index}`} stage={c.stage} index={c.index} style={{ gridColumn: colOf(c.index), gridRow: top }} />
+          ))}
+
+          {lanes.map((l, i) => {
+            const w = l.workerId ? workers[l.workerId] : undefined;
+            return (
+              <span
+                key={`lane-${l.id}`}
+                className="relative flex h-12 min-w-0 items-center gap-2 px-3 text-xs text-ink"
+                style={{ gridColumn: 1, gridRow: laneRow(i) }}
+              >
+                {l.id === COORDINATOR_LANE ? (
+                  <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-[3px] bg-ink-faint" />
+                ) : w ? (
+                  <WorkerAvatar worker={w} size="sm" />
+                ) : null}
+                <span className={"truncate " + (l.id === COORDINATOR_LANE ? "text-ink-muted" : "")}>{l.name}</span>
               </span>
-            </li>
-          );
-        })}
-      </ol>
+            );
+          })}
+
+          {columns.flatMap((c) =>
+            c.lanes.map((id) => {
+              const lane = lanes.findIndex((l) => l.id === id);
+              const style = { gridColumn: colOf(c.index), gridRow: laneRow(lane) };
+              const a = id === COORDINATOR_LANE ? undefined : pieceIn(c.stage, id);
+              return a ? (
+                <PieceCell key={`cell-${c.index}-${id}`} a={a} style={style} onOpenFile={onOpenFile} />
+              ) : (
+                <CoordinatorCell key={`cell-${c.index}-${id}`} task={task} stage={c.stage} style={style} onOpenFile={onOpenFile} />
+              );
+            }),
+          )}
+
+          {columns.map((c) => (
+            <span
+              key={`foot-${c.index}`}
+              className={
+                "relative truncate px-2 pb-1.5 pt-2 text-center text-[11px] tabular-nums " +
+                (c.stage.status === "running" ? "text-accent" : c.stage.kind === "synthesize" ? "text-emerald-400" : "text-ink-faint")
+              }
+              style={{ gridColumn: colOf(c.index), gridRow: footRow }}
+            >
+              {c.ms === undefined
+                ? ""
+                : `${c.stage.status === "running" ? "now" : c.stage.finishedAt ? clock(c.stage.finishedAt) : ""}${
+                    c.stage.status === "running" || c.stage.finishedAt ? " · " : ""
+                  }${shortDuration(c.ms)}`}
+            </span>
+          ))}
+        </div>
+      </div>
+
       <div className="flex items-center gap-3 text-[11px] text-ink-faint">
         <div className="h-1 flex-1 overflow-hidden rounded-full bg-card-strong">
           <div
@@ -1053,6 +1128,157 @@ function PlanStrip({ task, done, total }: { task: TeamTask; done: number; total:
         </span>
       </div>
     </section>
+  );
+}
+
+function clock(at: number): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function PlanColumnHead({ stage, index, style }: { stage: TeamStage; index: number; style: React.CSSProperties }) {
+  const live = stage.status === "running";
+  return (
+    <div
+      className={
+        "relative mx-1 mb-2 mt-1 flex min-w-0 flex-col gap-1 border-t-2 px-2 pt-2 " +
+        (stage.status === "done"
+          ? "border-emerald-500"
+          : stage.status === "failed"
+            ? "border-amber-500"
+            : live
+              ? "border-accent"
+              : stage.status === "skipped"
+                ? "border-card opacity-60"
+                : "border-card-strong")
+      }
+      style={style}
+    >
+      <span className={"flex items-center gap-1.5 text-[10.5px] " + (live ? "text-accent" : "text-ink-faint")}>
+        <KindMark kind={stage.kind} />
+        {index + 1} · {TEAM_STAGE_LABEL[stage.kind]}
+      </span>
+      <span
+        className={"line-clamp-2 text-xs font-semibold leading-snug " + (stage.status === "skipped" ? "text-ink-faint line-through" : "text-ink")}
+        title={stage.title}
+      >
+        {stage.title}
+      </span>
+    </div>
+  );
+}
+
+const cellBtn =
+  "relative mx-1 my-1.5 flex h-9 min-w-0 items-center gap-1.5 rounded-lg border px-2.5 text-left text-xs disabled:cursor-default";
+
+/// A member's piece in its lane. Opens what they wrote, or their run while
+/// there is nothing to read yet.
+function PieceCell({ a, style, onOpenFile }: { a: TeamAssignment; style: React.CSSProperties; onOpenFile: (name: string) => void }) {
+  const viewRun = () => {
+    if (!a.runId) return;
+    useWorkersStore.getState().selectWorker(a.workerId);
+    useFlowsStore.getState().setActiveRun(a.runId);
+  };
+  const open = a.file ? () => onOpenFile(a.file!) : a.runId ? viewRun : undefined;
+  const [label, tone, mark] =
+    a.status === "done"
+      ? ["Done", "border-card-strong bg-card text-ink", <Tick key="m" />]
+      : a.status === "running"
+        ? ["Working…", "border-accent bg-accent/10 text-ink", <span key="m" className="h-2 w-2 animate-pulse rounded-full bg-accent" />]
+        : a.status === "paused"
+          ? ["Waiting on you", "border-violet-400/60 bg-violet-400/10 text-violet-300", null]
+          : a.status === "failed"
+            ? ["Failed", "border-amber-500/60 bg-amber-500/10 text-amber-500", null]
+            : a.status === "skipped"
+              ? ["Skipped", "border-card text-ink-faint opacity-60", null]
+              : ["Up next", "border-dashed border-card-strong text-ink-faint", null];
+  return (
+    <button
+      className={cellBtn + " justify-between " + tone + (open ? " hover:border-accent/60" : "")}
+      style={style}
+      disabled={!open}
+      onClick={open}
+      title={`${a.workerName}: ${a.ask}${a.error ? `\n\n${a.error}` : ""}`}
+    >
+      <span className="truncate">{label}</span>
+      {mark}
+    </button>
+  );
+}
+
+/// The coordinator's draft or pack in its lane.
+function CoordinatorCell({
+  task,
+  stage,
+  style,
+  onOpenFile,
+}: {
+  task: TeamTask;
+  stage: TeamStage;
+  style: React.CSSProperties;
+  onOpenFile: (name: string) => void;
+}) {
+  const pack = stage.kind === "synthesize";
+  const done = stage.status === "done";
+  const label = done
+    ? pack
+      ? `Pack v${task.pack?.version ?? 1}`
+      : stage.file
+        ? fileStem(stage.file)
+        : "Done"
+    : stage.status === "running"
+      ? "Writing…"
+      : stage.status === "failed"
+        ? "Failed"
+        : stage.status === "skipped"
+          ? "Skipped"
+          : "Up next";
+  const tone =
+    done && pack
+      ? "border-emerald-600/60 bg-emerald-500/15 font-semibold text-emerald-300"
+      : done
+        ? "border-card-strong bg-card text-ink"
+        : stage.status === "running"
+          ? "border-accent bg-accent/10 text-ink"
+          : stage.status === "failed"
+            ? "border-amber-500/60 bg-amber-500/10 text-amber-500"
+            : "border-dashed border-card-strong text-ink-faint";
+  const open = done && stage.file ? () => onOpenFile(stage.file!) : undefined;
+  return (
+    <button
+      className={cellBtn + " rounded-md " + tone + (open ? " hover:border-accent/60" : "")}
+      style={style}
+      disabled={!open}
+      onClick={open}
+      title={stage.file ?? stage.ask ?? stage.title}
+    >
+      {stage.status === "running" ? (
+        <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent" />
+      ) : done ? (
+        <DocGlyph />
+      ) : null}
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
+
+/// `pack/PROPOSAL.md` → `PROPOSAL`; `02-ranked-plan-coordinator.md` → `ranked-plan-coordinator`.
+function fileStem(path: string): string {
+  return (path.split("/").pop() ?? path).replace(/\.[^.]+$/, "").replace(/^\d+-/, "");
+}
+
+function Tick() {
+  return (
+    <svg aria-hidden width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-emerald-400">
+      <path d="M2.5 6.2l2.3 2.3 4.7-5" />
+    </svg>
+  );
+}
+
+function DocGlyph() {
+  return (
+    <svg aria-hidden width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" className="shrink-0 opacity-70">
+      <path d="M3 1.5h4l2.5 2.5v6.5H3z" />
+    </svg>
   );
 }
 
@@ -1757,7 +1983,7 @@ function TeamRoom({
   });
   const working = task.status === "running" || task.status === "waiting" ? task.stages[task.stageIndex] : undefined;
   const workingOn = working?.fromRoom
-    ? `${working.assignments.map((a) => a.workerName).join(" and ")} ${working.assignments.length === 1 ? "is" : "are"} working on "${working.title}" — they'll report back here.`
+    ? `${working.assignments.map((a) => a.workerName).join(" and ")} ${working.assignments.length === 1 ? "is" : "are"} working on "${working.title}" — they'll report back here. Ask anything meanwhile…`
     : null;
   const idle = !busy && !workingOn && (task.status === "review" || task.status === "done");
 
@@ -1936,12 +2162,13 @@ function TeamRoom({
           rootPath={rootPath}
           isRunning={!!busy}
           onStop={() => void roomStop(task.id)}
-          disabled={sending || !!workingOn}
+          disabled={sending}
+          disabledPlaceholder="Sending…"
           placeholder={
-            workingOn ??
-            (busy
+            busy
               ? `${busy.speaker} is answering…`
-              : "Ask the team, or ask someone to make or change something… e.g. @Lena redo the settings mockup against the real billing screen.")
+              : (workingOn ??
+                "Ask the team, or ask someone to make or change something… e.g. @Lena redo the settings mockup against the real billing screen.")
           }
           onSend={send}
         />
@@ -2107,22 +2334,33 @@ function RoomMessage({
   );
 }
 
-/// Work proposed in the room: who does what, and — once you start it — how
-/// it is going. It runs as a stage of the task; this card is where you watch it.
+/// Work handed off in the room: who does what, and — once it starts — how it
+/// is going. It runs as a stage of the task; this card is where you watch it.
 function HandoffCard({ message, task, onOpenFile }: { message: TeamMessage; task: TeamTask; onOpenFile: (name: string) => void }) {
   const start = useTeamsStore((s) => s.roomStartWork);
   const dismiss = useTeamsStore((s) => s.roomDismissWork);
+  const stop = useTeamsStore((s) => s.cancel);
   const sending = useTeamsStore((s) => !!s.busy[task.id]);
   const roomBusy = !!task.room?.busy;
   const handoff = message.handoff!;
   const stage = handoff.stage !== undefined ? task.stages[handoff.stage] : undefined;
   const left = Math.max(0, task.budgetUSD - task.spentUSD);
+  const busyNow = task.status === "running" || task.status === "waiting";
+  const runningNow = busyNow && handoff.stage === task.stageIndex && !!stage && !isPieceSettledStage(stage);
+  const current = busyNow ? task.stages[task.stageIndex] : undefined;
   return (
     <div className="mt-1 flex flex-col gap-2 rounded-lg border border-card-strong bg-surface-elevated px-3 py-2.5">
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">Work to hand off</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+          {handoff.status === "proposed" ? "Work to hand off" : handoff.status === "queued" ? "Queued" : "Handed off"}
+        </span>
         <span className="text-sm font-medium text-ink">{handoff.title}</span>
         {handoff.status === "dismissed" && <span className="text-[11px] text-ink-faint">· set aside</span>}
+        {runningNow && (
+          <button className={quietBtn + " ml-auto"} disabled={sending} onClick={() => void stop(task.id)}>
+            Stop
+          </button>
+        )}
       </div>
       {stage ? (
         <div className="flex flex-col gap-1">
@@ -2133,11 +2371,21 @@ function HandoffCard({ message, task, onOpenFile }: { message: TeamMessage; task
       ) : (
         handoff.assignments.map((a) => <HandoffAsk key={a.workerId} assignment={a} />)
       )}
+      {handoff.status === "queued" && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-ink-faint">
+            Starts when {current?.fromRoom ? `"${current.title}"` : "the current work"} reports back
+          </span>
+          <button className={quietBtn} disabled={sending} onClick={() => void dismiss(task.id, message.id)}>
+            Don't start it
+          </button>
+        </div>
+      )}
       {handoff.status === "proposed" && (
         <div className="flex flex-wrap items-center gap-2">
           <button
             className={primaryBtn}
-            disabled={sending || roomBusy || task.status === "running" || task.status === "waiting"}
+            disabled={sending || roomBusy || busyNow}
             onClick={() => void start(task.id, message.id)}
           >
             Start the work
@@ -2146,12 +2394,18 @@ function HandoffCard({ message, task, onOpenFile }: { message: TeamMessage; task
             Not now
           </button>
           <span className="text-[11px] text-ink-faint">
-            Runs with their tools · {money(left)} left of the task's {money(task.budgetUSD)}
+            {busyNow
+              ? "Can start once the current work reports back"
+              : `Runs with their tools · ${money(left)} left of the task's ${money(task.budgetUSD)}`}
           </span>
         </div>
       )}
     </div>
   );
+}
+
+function isPieceSettledStage(stage: TeamStage): boolean {
+  return stage.status === "done" || stage.status === "failed" || stage.status === "skipped";
 }
 
 function HandoffAsk({ assignment }: { assignment: { workerId: string; workerName: string; ask: string } }) {

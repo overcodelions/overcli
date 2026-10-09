@@ -5,7 +5,8 @@
 // made of a single thing, opens that thing in one click, the way a Recent row
 // used to; only work with several parts (or a run that was evicted) goes to
 // the record page, which is where the trail and the transcripts are. ⌥-click
-// does whichever the row doesn't.
+// does whichever the row doesn't. A team task opens the team's desk on that
+// task: its pieces, plan and conversation are read there, not run by run.
 
 import type { FlowRun } from '@shared/flows/schema';
 import type { WorkRecord } from '@shared/workRecords';
@@ -18,6 +19,7 @@ export type LiveState = 'needs-you' | 'running' | 'paused';
 export type OpenTarget =
   | { type: 'chat'; id: string }
   | { type: 'run'; id: string }
+  | { type: 'team'; teamId: string; taskId: string }
   | { type: 'record' };
 
 export interface Liveness {
@@ -70,6 +72,7 @@ function singlePart(r: WorkRecord, runs: Record<string, FlowRun>): OpenTarget | 
 }
 
 export function primaryTarget(r: WorkRecord, live: Liveness, runs: Record<string, FlowRun>): OpenTarget {
+  if (r.team) return { type: 'team', teamId: r.team.teamId, taskId: r.team.taskId };
   if (live.target) return live.target;
   return singlePart(r, runs) ?? { type: 'record' };
 }

@@ -44,7 +44,8 @@ export function teamColorMap(teams: Team[]): Record<string, string> {
 /// A team's mark: a soft filled square — workers are rings, so shape and
 /// fill alone say "team" — the size of a worker's face, holding its members
 /// as dots in their own colours. Up to four; three sit as a triangle rather
-/// than a grid with a hole in it. No border of its own: the rail's selection
+/// than a grid with a hole in it. Past four, the rest are a count badged on
+/// the corner — text inside the grid broke it. No border of its own: the rail's selection
 /// is the only frame, so a selected team is not a box in a box.
 export function TeamMark({
   team,
@@ -59,7 +60,7 @@ export function TeamMark({
   const workers = useWorkersStore((s) => s.workers);
   const colors = useWorkerColors();
   const faces = team.members.map((m) => workers[m.workerId]).filter((w): w is Worker => !!w);
-  const shown = faces.length > 4 ? faces.slice(0, 3) : faces;
+  const shown = faces.slice(0, 4);
   const more = faces.length - shown.length;
   return (
     <span className="relative flex h-8 w-8 shrink-0" aria-hidden>
@@ -73,8 +74,15 @@ export function TeamMark({
         {shown.map((w) => (
           <span key={w.id} className="h-2 w-2 rounded-full" style={{ background: workerColorFor(colors, w.id) }} />
         ))}
-        {more > 0 && <span className="text-[8px] font-semibold leading-none text-ink-muted">+{more}</span>}
       </span>
+      {more > 0 && (
+        <span
+          className="absolute -right-1.5 -top-1.5 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-surface px-[3px] text-[8px] font-semibold leading-none text-ink-muted"
+          style={{ boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${tint} 45%, transparent)` }}
+        >
+          +{more}
+        </span>
+      )}
       {progress !== undefined && (
         <span className="absolute -bottom-1.5 left-1 right-1 h-[3px] overflow-hidden rounded-full bg-card-strong">
           <span className="block h-full rounded-full" style={{ width: `${Math.round(progress * 100)}%`, background: tint }} />
