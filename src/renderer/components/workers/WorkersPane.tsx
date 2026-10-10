@@ -179,6 +179,7 @@ export function WorkersPane() {
   const inboxWorkerId = useWorkersStore((s) => s.inboxWorkerId);
   const selectSeq = useWorkersStore((s) => s.selectSeq);
   const selectedTeamId = useWorkersStore((s) => s.selectedTeamId);
+  const selectedTeamTaskId = useWorkersStore((s) => s.selectedTeamTaskId);
   const teamEditor = useTeamsStore((s) => s.editor);
   const activeRun = useFlowsStore((s) =>
     s.activeRunId ? s.runs[s.activeRunId] : undefined,
@@ -275,7 +276,14 @@ export function WorkersPane() {
 
   if (hiring) return <HireWorker defaultProjectPath={defaultProjectPath} />;
 
-  if (view === "team") return <TeamDesk key={selectedTeamId ?? ""} teamId={selectedTeamId} />;
+  if (view === "team")
+    return (
+      <TeamDesk
+        key={`${selectedTeamId ?? ""}:${selectedTeamTaskId ?? ""}`}
+        teamId={selectedTeamId}
+        taskId={selectedTeamTaskId ?? undefined}
+      />
+    );
 
   return (
     // A column, not a scroll box. The desk is a conversation: its transcript

@@ -617,8 +617,10 @@ describe('TeamEngine room', () => {
     ],
     pack: { summary: 'Build it.', files: ['pack/PROPOSAL.md'] },
   });
-  const room = (opts: { turns?: string[]; memberReplies?: string[]; status?: TeamTask['status'] }) => {
-    const h = makeHarness({ seedTeams: [team()], seedTasks: [reviewTask(opts.status)], turns: opts.turns, memberReplies: opts.memberReplies });
+  const room = (opts: { turns?: string[]; memberReplies?: string[]; status?: TeamTask['status']; autoStart?: boolean }) => {
+    // Most room tests hold hand-offs for you, so each step can be seen.
+    const checkpoints = { askFirst: true, reviewBeforeChallenge: false, finalReview: true, approveRoomWork: !opts.autoStart };
+    const h = makeHarness({ seedTeams: [team({ checkpoints })], seedTasks: [reviewTask(opts.status)], turns: opts.turns, memberReplies: opts.memberReplies });
     h.files.set('task-r/01-market-maya.md', 'Maya market notes');
     h.files.set('task-r/01-tech-ade.md', 'Ade tech notes');
     h.files.set('task-r/pack/PROPOSAL.md', '# Proposal v1');
@@ -734,8 +736,6 @@ describe('TeamEngine room', () => {
       expect(prompt).toContain('Redraw D-01 against the console billing UI.');
       expect(prompt).toContain('# Proposal v1');
       expect(prompt).toContain('/data/team-files/task-r/files/maya/');
-      // The room waits for the work.
-      expect(h.engine.roomAsk('task-r', 'how is it going?')).toMatchObject({ ok: false });
 
       h.settle(h.commissions[0].id, 'done', 'Redrew D-01 with the credit banner.', [
         { name: 'designs/01-page.html', sourcePath: '/run/designs/01-page.html' },
@@ -755,6 +755,33 @@ describe('TeamEngine room', () => {
       await flush();
       expect(h.turnMessages.at(-1)).toContain('WORK MEMBERS DID SINCE');
       expect(h.turnMessages.at(-1)).toContain('Redrew D-01 with the credit banner.');
+    });
+
+    it('keeps talking while the work runs, but holds new work until it reports back', async () => {
+      const h = room({ turns: [WORK] });
+      h.engine.roomAsk('task-r', 'redo the designs');
+      await flush();
+      h.engine.roomStartWork('task-r', task(h).room!.messages[1].id);
+      await flush();
+
+      h.pushTurn('<route>[]</route>');
+      h.pushTurn('Maya is still on it; nothing back yet.');
+      expect(h.engine.roomAsk('task-r', 'how is it going?')).toEqual({ ok: true });
+      await flush();
+      expect(h.turnMessages.at(-1)).toContain('RIGHT NOW: Maya is doing "Redo the designs on the console"');
+      expect(task(h).room!.messages.at(-1)).toMatchObject({
+        speaker: { kind: 'coordinator' },
+        text: 'Maya is still on it; nothing back yet.',
+      });
+      expect(task(h).status).toBe('running');
+
+      h.pushTurn(WORK);
+      h.engine.roomAsk('task-r', 'and then redo the mobile one');
+      await flush();
+      const proposal = task(h).room!.messages.at(-1)!;
+      expect(proposal.handoff?.status).toBe('proposed');
+      expect(h.engine.roomStartWork('task-r', proposal.id)).toMatchObject({ ok: false });
+      expect(h.engine.updatePack('task-r')).toMatchObject({ ok: false });
     });
 
     it('lets the team take a new task while work handed off from the room runs', async () => {
@@ -788,6 +815,71 @@ describe('TeamEngine room', () => {
       expect(proposal.handoff!.assignments[0]).toMatchObject({ workerId: 'maya' });
       expect(proposal.handoff!.assignments[0].ask).toContain('I would redraw D-01 first.');
       expect(proposal.handoff!.title).toBe('Could the designs use the console?');
+    });
+
+    describe('without approving follow-up work', () => {
+      it('starts the work as soon as it is handed off', async () => {
+        const h = room({ turns: [WORK], autoStart: true });
+        h.engine.roomAsk('task-r', '@maya redo the designs on the console');
+        await flush();
+        const t = task(h);
+        expect(t.room!.messages[1].handoff).toMatchObject({ status: 'started', stage: 0 });
+        expect(t.room!.messages[1].text).toContain('Maya is on it');
+        expect(t.status).toBe('running');
+        expect(h.commissions).toHaveLength(1);
+      });
+
+      it('queues work asked for while other work runs, and starts it when that reports back', async () => {
+        const h = room({ turns: [WORK], autoStart: true });
+        h.engine.roomAsk('task-r', 'redo the designs');
+        await flush();
+        h.pushTurn(`<work>${JSON.stringify({ title: 'Redo the mobile one', assign: [{ name: 'Ade', ask: 'Mobile too.' }] })}</work>`);
+        h.engine.roomAsk('task-r', 'and then redo the mobile one');
+        await flush();
+        const queued = task(h).room!.messages.at(-1)!;
+        expect(queued.handoff?.status).toBe('queued');
+        expect(queued.text).toContain('once "Redo the designs on the console" reports back');
+        expect(h.commissions).toHaveLength(1);
+
+        h.settle(h.commissions[0].id, 'done', 'Redrew D-01.');
+        await flush();
+        const t = task(h);
+        expect(t.status).toBe('running');
+        expect(t.stages.map((s) => s.title)).toEqual(['Redo the designs on the console', 'Redo the mobile one']);
+        expect(t.room!.messages.find((m) => m.id === queued.id)!.handoff).toMatchObject({ status: 'started', stage: 1 });
+        expect(h.commissions).toHaveLength(2);
+
+        h.settle(h.commissions[1].id, 'done', 'Mobile done.');
+        await flush();
+        expect(task(h).status).toBe('review');
+      });
+
+      it('can take queued work back before it starts', async () => {
+        const h = room({ turns: [WORK, WORK], autoStart: true });
+        h.engine.roomAsk('task-r', 'redo the designs');
+        await flush();
+        h.engine.roomAsk('task-r', 'again');
+        await flush();
+        const queued = task(h).room!.messages.at(-1)!;
+        expect(h.engine.roomDismissWork('task-r', queued.id)).toEqual({ ok: true });
+        h.settle(h.commissions[0].id, 'done', 'Done.');
+        await flush();
+        expect(task(h).status).toBe('review');
+        expect(h.commissions).toHaveLength(1);
+      });
+
+      it('holds queued work for you once you stop the work ahead of it', async () => {
+        const h = room({ turns: [WORK, WORK], autoStart: true });
+        h.engine.roomAsk('task-r', 'redo the designs');
+        await flush();
+        h.engine.roomAsk('task-r', 'again');
+        await flush();
+        const queued = task(h).room!.messages.at(-1)!;
+        expect(h.engine.cancel('task-r')).toEqual({ ok: true });
+        expect(task(h).status).toBe('review');
+        expect(task(h).room!.messages.find((m) => m.id === queued.id)!.handoff!.status).toBe('proposed');
+        expect(h.commissions).toHaveLength(1);
+      });
     });
 
     it('stops the work, not the task, and says so in the room', async () => {

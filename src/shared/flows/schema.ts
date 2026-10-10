@@ -586,6 +586,10 @@ export interface FlowRun {
   /// say which worker started work nobody watched.
   workerId?: UUID;
   workerName?: string;
+  /// Set when a team commissioned this run as a piece of one of its tasks.
+  /// Lets the Work view fold every piece of a task into one entry, even after
+  /// the batch that launched it is gone.
+  team?: FlowRunTeam;
   /// Snapshot of the owning Worker's explicit permission to perform pushes,
   /// sends, publishes, and service updates without the runtime boundary.
   /// Missing on historical runs is deliberately equivalent to false.
@@ -697,6 +701,12 @@ export function flowRunIsOwnedBy(run: FlowRun, path: string): boolean {
 /// True when a Worker's shift or errand launched this run rather than the
 /// user. A worker run belongs to that worker's desk, never to the generic
 /// Flows list or the top-of-sidebar Active pool.
+export interface FlowRunTeam {
+  teamId: UUID;
+  teamName: string;
+  taskId: UUID;
+}
+
 export function isWorkerRun(run: Pick<FlowRun, 'workerId'>): boolean {
   return !!run.workerId;
 }

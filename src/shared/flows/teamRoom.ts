@@ -9,8 +9,8 @@
 // if more than one voice spoke. Members have no tools here: the room is for
 // talking about the work. A request to DO work — make or change files,
 // designs, code — is spotted when the question is routed and becomes a
-// hand-off: the coordinator proposes who does what, and once you start it the
-// members do it as real runs whose output lands back in the shared folder.
+// hand-off: the coordinator says who does what, and the members do it as real
+// runs whose output lands back in the shared folder.
 //
 // Pure prompt building and parsing; the engine runs the turns.
 
@@ -93,6 +93,23 @@ export function conversationMarkdown(title: string, messages: TeamMessage[]): st
   return `${parts.join('\n').trim()}\n`;
 }
 
+export interface RoomWorkUnderway {
+  title: string;
+  who: string[];
+}
+
+/// Tells the coordinator that work is in flight, so "how's it going?" gets
+/// an honest "not back yet" and new work is understood to start after it.
+function underwayLines(underway: RoomWorkUnderway | null | undefined): string[] {
+  if (!underway) return [];
+  return [
+    `RIGHT NOW: ${underway.who.join(' and ')} ${underway.who.length === 1 ? 'is' : 'are'} doing "${underway.title}" as a real run.`,
+    'It has not reported back yet, so you do not know its result. Any new work you hand off starts',
+    'once it finishes.',
+    '',
+  ];
+}
+
 export function buildRouteMessage(args: {
   teamName: string;
   members: Array<RoomMember & { pieces: string[] }>;
@@ -100,8 +117,11 @@ export function buildRouteMessage(args: {
   question: string;
   /// Members the user named with @Name: they answer, or do the work.
   addressed?: string[];
+  /// Work handed off from the room that is running right now.
+  underway?: RoomWorkUnderway | null;
 }): string {
   return [
+    ...underwayLines(args.underway),
     'FIRST, decide whether the user is asking the team to DO something rather than to talk about it:',
     'make or change files, designs, documents or code, or work in a codebase. That includes agreeing',
     'to an offer a member made in the conversation ("yes, go ahead", "do it"). Members cannot do work',
@@ -274,9 +294,11 @@ export function buildCoordinatorAnswerMessage(args: {
   pack: FolderFile[];
   conversation: TeamMessage[];
   question: string;
+  underway?: RoomWorkUnderway | null;
 }): string {
   return [
     `TEAM: ${args.teamName} · TASK: ${args.taskTitle}`,
+    ...underwayLines(args.underway),
     '',
     'THE FINAL PACK',
     folderForPrompt(args.pack, ROOM_PACK_BUDGET * 2, '', { pointToFiles: false }),

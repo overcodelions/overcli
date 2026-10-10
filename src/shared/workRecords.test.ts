@@ -167,6 +167,37 @@ describe('buildWorkRecords', () => {
     expect(r.jobs).toEqual([{ orchestrationId: 'o1', title: 'Nightly', workerName: 'Prometheus' }]);
   });
 
+  it('folds every piece of a team task into one record, titled by the task', () => {
+    const team = { teamId: 't1', teamName: 'Acme Council', taskId: 'task-1' };
+    const batch = (id: string, runId: string, branchName: string) =>
+      ({
+        id,
+        title: `Acme Council: stage ${id}`,
+        projectPath: '/code/acme',
+        maxConcurrent: 1,
+        items: [{ candidate: { id: 'k', title: `piece ${id}`, prompt: 'p' }, flowId: 'f', status: 'done', runId, branchName }],
+        origin: { kind: 'worker', workerId: 'w', workerName: 'Maya', team: { ...team, stage: 0 } },
+        createdAt: 0,
+      }) as unknown as Orchestration;
+    const log: WorkLogEntry[] = [
+      { runId: 'r3', flowName: 'F', title: 'old piece', prompt: 'p', ownerPath: '/code/acme', at: 5_000, outcome: 'done', team },
+    ];
+    const records = buildWorkRecords({
+      places: [acme],
+      runs: [run({ id: 'r1', branchName: 'feat/a' }), run({ id: 'r2', branchName: 'feat/b' }), run({ id: 'r4' })],
+      log,
+      orchestrations: [batch('o1', 'r1', 'feat/a'), batch('o2', 'r2', 'feat/b')],
+      prsByRepo: {},
+      teamTasks: { 'task-1': { title: 'Strategy deck' } },
+    });
+    const r = records.find((x) => x.key === 'team:task-1')!;
+    expect(r.title).toBe('Acme Council: Strategy deck');
+    expect(r.team).toEqual(team);
+    expect(r.runs.map((x) => x.id).sort()).toEqual(['r1', 'r2', 'r3']);
+    expect(r.branch).toBe('feat/a');
+    expect(records.map((x) => x.key).sort()).toEqual(['run:r4', 'team:task-1']);
+  });
+
   it('finds a workspace PR in a member repo', () => {
     const ws: WorkPlace = { path: '/ws/acme', name: 'acme ws', memberPaths: ['/code/api'], conversations: [conv({ id: 'c', name: 'x', branchName: 'feat/a' })] };
     const [r] = buildWorkRecords({

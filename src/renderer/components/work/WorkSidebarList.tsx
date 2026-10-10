@@ -15,9 +15,10 @@ import { useOrchestratorStore } from '../../orchestratorStore';
 import { useRunningMap } from '../../runnersStore';
 import { useRunTouchedAt } from '../../runTouched';
 import { useStore } from '../../store';
+import { useWorkersStore } from '../../workersStore';
 import { alternateTarget, liveness, primaryTarget, type LiveState, type Liveness, type OpenTarget } from './workOpen';
 import { useLoadWorkPrs, useWorkPlaces, useWorkRecords, useWorkStore } from '../../workStore';
-import { KIND_DOT, STATUS_LABEL, STATUS_TONE, groupByAge, shortDate } from './WorkPane';
+import { KIND_DOT, STATUS_LABEL, STATUS_TONE, groupByAge, openTeamTask, shortDate } from './WorkPane';
 
 type Filter = 'all' | 'shipped' | 'run' | 'chat';
 
@@ -42,6 +43,7 @@ export function WorkSidebarList() {
   const markSeen = useWorkStore((s) => s.markSeen);
   const openRecord = useWorkStore((s) => s.openRecord);
   const detailMode = useStore((s) => s.detailMode);
+  const selectedTeamTaskId = useWorkersStore((s) => s.selectedTeamTaskId);
   const selectedConversationId = useStore((s) => s.selectedConversationId);
   const runs = useFlowsStore((s) => s.runs);
   const activeRunId = useFlowsStore((s) => s.activeRunId);
@@ -103,6 +105,7 @@ export function WorkSidebarList() {
   const go = (target: OpenTarget, key: string) => {
     if (target.type === 'record') openRecord(key);
     else if (target.type === 'chat') useStore.getState().selectConversation(target.id);
+    else if (target.type === 'team') openTeamTask(target.teamId, target.taskId);
     else {
       useFlowsStore.getState().setActiveRun(target.id);
       useStore.getState().setDetailMode('flows');
@@ -111,7 +114,8 @@ export function WorkSidebarList() {
   const isOnScreen = (r: WorkRecord) =>
     (detailMode === 'work' && selectedKey === r.key) ||
     (detailMode === 'conversation' && r.chats.some((c) => c.id === selectedConversationId)) ||
-    (detailMode === 'flows' && r.runs.some((x) => x.id === activeRunId));
+    (detailMode === 'flows' && r.runs.some((x) => x.id === activeRunId)) ||
+    (detailMode === 'workers' && !!r.team && r.team.taskId === selectedTeamTaskId);
   const searching = query.trim().length >= 3 && promptHitsFor !== query.trim();
 
   return (

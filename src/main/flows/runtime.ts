@@ -89,7 +89,7 @@ import { notifyWatch } from './watch/notify';
 // Importing this registers the bundled watch source(s) with the registry as a
 // side effect. Keep it even though the symbol isn't referenced directly.
 import './watch/generic';
-import type { WatchState, WatchTickLogEntry } from '../../shared/flows/schema';
+import type { FlowRunTeam, WatchState, WatchTickLogEntry } from '../../shared/flows/schema';
 import { scanStepRisks } from '../../shared/flows/riskScan';
 import { hasEverydayMarker } from '../everydayProject';
 
@@ -136,6 +136,8 @@ export interface FlowRuntimeStartArgs {
   /// worker engine can route the terminal state and roll up cost.
   workerId?: UUID;
   workerName?: string;
+  /// The team task this run is a piece of — see FlowRun.team.
+  team?: FlowRunTeam;
   /// Explicit Worker capability. Missing is false for launches produced by
   /// older workers/orchestrations.
   allowExternalActions?: boolean;
@@ -1205,6 +1207,7 @@ export class FlowRuntimeImpl {
       chainParentRunId: args.chainParentRunId,
       workerId: args.workerId,
       workerName: args.workerName,
+      ...(args.team ? { team: args.team } : {}),
       ...(args.allowExternalActions ? { allowExternalActions: true } : {}),
       ...(args.chrome ? { chrome: true } : {}),
       ...(args.unattended ? { unattended: true } : {}),

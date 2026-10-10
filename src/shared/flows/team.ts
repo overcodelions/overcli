@@ -75,15 +75,20 @@ export interface TeamCheckpoints {
   reviewBeforeChallenge: boolean;
   /// Hold the finished pack for your review instead of filing it as done.
   finalReview: boolean;
+  /// Hold work handed off from the room until you start it. Off (absent):
+  /// it starts as soon as the coordinator hands it off, or queues behind
+  /// work already running — you asked for it, and the budget still caps it.
+  approveRoomWork?: boolean;
 }
 
 export const DEFAULT_TEAM_CHECKPOINTS: TeamCheckpoints = {
   askFirst: true,
   reviewBeforeChallenge: false,
   finalReview: true,
+  approveRoomWork: false,
 };
 
-export const DEFAULT_TEAM_BUDGET_USD = 12;
+export const DEFAULT_TEAM_BUDGET_USD = 1000;
 
 export interface Team {
   id: UUID;
@@ -320,9 +325,10 @@ export interface TeamMessage {
   attachments?: string[];
   /// Which exchange this belongs to: each question you ask starts one.
   exchange: number;
-  /// Work the coordinator proposes to hand off: members can't make or change
-  /// anything in the room, so a request to do work becomes real runs of
-  /// theirs, started when you say so.
+  /// Work the coordinator hands off: members can't make or change anything
+  /// in the room, so a request to do work becomes real runs of theirs —
+  /// started at once, queued behind running work, or held for you when the
+  /// team approves follow-up work first.
   handoff?: TeamHandoff;
   /// A member reporting back on work handed off from the room: the stage it
   /// ran as.
@@ -332,7 +338,9 @@ export interface TeamMessage {
 export interface TeamHandoff {
   title: string;
   assignments: Array<{ workerId: UUID; workerName: string; ask: string }>;
-  status: 'proposed' | 'started' | 'dismissed';
+  /// `proposed`: waiting for you to start it. `queued`: starts when the work
+  /// running now reports back.
+  status: 'proposed' | 'queued' | 'started' | 'dismissed';
   /// Once started, the stage it runs as.
   stage?: number;
 }
@@ -376,6 +384,7 @@ export function describeTeamCheckpoints(checkpoints: TeamCheckpoints): string[] 
     'you approve the plan',
     checkpoints.reviewBeforeChallenge && 'you read the draft before each challenge',
     checkpoints.finalReview && 'you review the pack',
+    checkpoints.approveRoomWork && 'you start follow-up work',
   ].filter((s): s is string => !!s);
   return steps.map((s, i) => (i === 0 ? s[0].toUpperCase() + s.slice(1) : s));
 }

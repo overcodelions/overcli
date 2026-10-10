@@ -85,6 +85,15 @@ describe('primaryTarget', () => {
   });
 });
 
+describe('a team task', () => {
+  it('opens the team desk on the task, live or not', () => {
+    const r = record({ runs: [part('a')], jobs: [{ orchestrationId: 'o', title: 'b' }], team: { teamId: 't', teamName: 'T', taskId: 'k' } });
+    const live = liveness(r, { a: run('a', 'running') }, new Set());
+    expect(primaryTarget(r, live, { a: run('a', 'running') })).toEqual({ type: 'team', teamId: 't', taskId: 'k' });
+    expect(alternateTarget(r, { type: 'team', teamId: 't', taskId: 'k' }, {})).toEqual({ type: 'record' });
+  });
+});
+
 describe('alternateTarget', () => {
   it('is the record page when the click goes straight in', () => {
     expect(alternateTarget(record({ chats: [chat('c')] }), { type: 'chat', id: 'c' }, {})).toEqual({ type: 'record' });

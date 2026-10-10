@@ -11,13 +11,16 @@
 // chat, a run and a batch item that worked on `feat/x` in the same place are
 // the same work, and the PR for `feat/x` is where it ended up. Anything with
 // no branch (a plain chat, a run in the main checkout) is a record of its own.
+// The exception is a team's work: every piece a team commissions for one task
+// is one record, whatever branch each piece ran on — the task is the work,
+// and the team's desk is where its pieces are read.
 //
 // Pure and Electron-free: the renderer builds records from what its stores
 // already hold plus the main-process work log (runs that outlived eviction)
 // and the PR lookup.
 
 import type { Conversation } from './types';
-import type { FlowRun } from './flows/schema';
+import type { FlowRun, FlowRunTeam } from './flows/schema';
 import type { Orchestration } from './flows/orchestration';
 import { isSamePath } from './pathScope';
 
@@ -48,6 +51,8 @@ export interface WorkLogEntry {
   at: number;
   outcome: 'done' | 'failed';
   workerName?: string;
+  /// The team task the run was a piece of.
+  team?: FlowRunTeam;
   /// Rebuilt from the summary log and a transcript after the fact, for runs
   /// evicted before this log existed. Title and prompt are best-effort.
   backfilled?: boolean;
@@ -186,6 +191,8 @@ export interface WorkRecord {
   runs: WorkRecordRun[];
   chats: WorkRecordChat[];
   jobs: WorkRecordJob[];
+  /// Set when the record is a team task: every piece the team ran for it.
+  team?: FlowRunTeam;
   /// Readable text the search and its snippets draw from.
   body: string;
 }
@@ -208,6 +215,8 @@ export interface BuildWorkRecordsInput {
   branchStatus?: Record<string, BranchStatus>;
   /// Branches whose names carry a ticket key, by key (upper case).
   ticketBranches?: Record<string, RepoBranch[]>;
+  /// Team tasks by id, for a team record's title.
+  teamTasks?: Record<string, { title?: string }>;
 }
 
 /// Branches that are never "the work" — sharing one is not a link.
@@ -385,12 +394,13 @@ interface Draft {
   jobs: WorkRecordJob[];
   repoBranches: Map<string, RepoBranch>;
   workerName?: string;
+  team?: FlowRunTeam;
 }
 
 export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
   const drafts = new Map<string, Draft>();
-  const draftFor = (placePath: string, branch: string | undefined, soloKey: string, at: number): Draft => {
-    const key = isWorkBranch(branch) ? `${norm(placePath)}::${branch}` : soloKey;
+  const draftFor = (placePath: string, branch: string | undefined, soloKey: string, at: number, team?: FlowRunTeam): Draft => {
+    const key = team ? `team:${team.taskId}` : isWorkBranch(branch) ? `${norm(placePath)}::${branch}` : soloKey;
     let d = drafts.get(key);
     if (!d) {
       d = {
@@ -405,8 +415,11 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
         chats: new Map(),
         jobs: [],
         repoBranches: new Map(),
+        ...(team ? { team } : {}),
       };
       drafts.set(key, d);
+      const taskTitle = team && input.teamTasks?.[team.taskId]?.title;
+      if (team) d.titles.push({ text: taskTitle ? `${team.teamName}: ${taskTitle}` : `${team.teamName} task`, weight: taskTitle ? 5 : 0 });
     }
     d.startedAt = Math.min(d.startedAt, at);
     d.updatedAt = Math.max(d.updatedAt, at);
@@ -415,9 +428,10 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
 
   // Batch items, indexed by run so a run lands in its batch's record even
   // after the worker shift renamed or deleted the branch.
-  const jobByRun = new Map<string, { job: WorkRecordJob; branch?: string; title: string; prompt: string }>();
+  const jobByRun = new Map<string, { job: WorkRecordJob; branch?: string; title: string; prompt: string; team?: FlowRunTeam }>();
   for (const o of input.orchestrations) {
     const workerName = o.origin?.kind === 'worker' ? o.origin.workerName : undefined;
+    const team = o.origin?.kind === 'worker' && o.origin.team ? o.origin.team : undefined;
     for (const item of o.items) {
       if (!item.runId) continue;
       jobByRun.set(item.runId, {
@@ -425,6 +439,7 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
         branch: item.branchName,
         title: item.candidate.title,
         prompt: item.candidate.prompt,
+        ...(team ? { team: { teamId: team.teamId, teamName: team.teamName, taskId: team.taskId } } : {}),
       });
     }
   }
@@ -449,10 +464,15 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
     cwd?: string;
     workerName?: string;
     repoBranches?: RepoBranch[];
+    team?: FlowRunTeam;
   }) => {
     seenRuns.add(r.id);
     const job = jobByRun.get(r.id);
-    const d = draftFor(r.ownerPath, r.branch ?? job?.branch, `run:${r.id}`, r.startedAt);
+    const team = job?.team ?? r.team;
+    const d = draftFor(r.ownerPath, r.branch ?? job?.branch, `run:${r.id}`, r.startedAt, team);
+    // A team task's pieces each ran on a branch; the record keeps the first
+    // (they share one when the task has a branch of its own).
+    if (team && !d.branch && isWorkBranch(r.branch ?? job?.branch)) d.branch = r.branch ?? job?.branch;
     d.updatedAt = Math.max(d.updatedAt, r.at);
     const title = job?.title || titleFromPrompt(r.prompt) || r.flowName;
     d.titles.push({ text: title, weight: job ? 3 : 2 });
@@ -497,6 +517,7 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
       headline: run.digest?.headline,
       summary: run.digest?.summary,
       cwd: run.worktreePath ?? run.projectPath,
+      ...(run.team ? { team: run.team } : {}),
       repoBranches: (run.workspaceWorktrees ?? [])
         .filter((w) => isWorkBranch(w.branchName))
         .map((w) => ({ repo: w.projectPath, branch: w.branchName, worktreePath: w.worktreePath })),
@@ -522,6 +543,7 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
       cwd: e.cwd,
       workerName: e.workerName,
       repoBranches: e.repoBranches,
+      ...(e.team ? { team: e.team } : {}),
     });
   }
 
@@ -637,6 +659,7 @@ export function buildWorkRecords(input: BuildWorkRecordsInput): WorkRecord[] {
       runs: runs.map(({ failed: _f, ...r }) => r),
       chats,
       jobs: d.jobs,
+      ...(d.team ? { team: d.team } : {}),
       body,
     });
   }

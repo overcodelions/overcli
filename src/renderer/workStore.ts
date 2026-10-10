@@ -20,6 +20,7 @@ import {
 import { useFlowsStore } from './flowsStore';
 import { useOrchestratorStore } from './orchestratorStore';
 import { useStore } from './store';
+import { useTeamsStore } from './teamsStore';
 
 const LAST_SEEN_KEY = 'work.lastSeenAt';
 const SIDEBAR_KEY = 'work.sidebar';
@@ -238,6 +239,7 @@ export function useWorkRecords(): WorkRecord[] {
   const prsByRepo = useWorkStore((s) => s.prsByRepo);
   const branchStatus = useWorkStore((s) => s.branchStatus);
   const ticketBranches = useWorkStore((s) => s.ticketBranches);
+  const teamTasks = useTeamsStore((s) => s.tasks);
   return useMemo(
     () =>
       buildWorkRecords({
@@ -248,8 +250,9 @@ export function useWorkRecords(): WorkRecord[] {
         prsByRepo,
         branchStatus,
         ticketBranches,
+        teamTasks,
       }),
-    [places, runs, orchestrations, log, prsByRepo, branchStatus, ticketBranches],
+    [places, runs, orchestrations, log, prsByRepo, branchStatus, ticketBranches, teamTasks],
   );
 }
 

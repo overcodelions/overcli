@@ -26,7 +26,7 @@ import type { Backend } from './types';
 /// auto-lifted to the next-highest version in the same family on load —
 /// see `liftMissingModel`.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-5-5', 'claude-haiku-4-5'],
   // `gpt-6.1-sol` (Sept 29 2026) is the auto-pick default: near-Astra
   // quality at a fifth of Astra's price, so it's the thinking-tier Sol
   // successor. `gpt-5.6-sol` stays right behind it for the same reason
@@ -205,6 +205,7 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   'claude-sonnet-5-5': 'fast',
   'claude-sonnet-5': 'fast',
   'claude-sonnet-4-6': 'fast',
+  'claude-haiku-5-5': 'fast',
   'claude-haiku-4-5': 'fast',
   // Codex (OpenAI). GPT-5.6 (sol/terra/luna) is the current generation and
   // maps cleanly onto all three tiers on its own: sol is the flagship
