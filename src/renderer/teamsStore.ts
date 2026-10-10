@@ -17,7 +17,9 @@ interface TeamsState {
   teams: Record<string, Team>;
   tasks: Record<string, TeamTask>;
   /// The create/edit screen: `teamId` null is a new team.
-  editor: { teamId: string | null } | null;
+  /// `brief`: what a new team should produce, already written — a starter
+  /// team picked off the empty Workers page.
+  editor: { teamId: string | null; brief?: string } | null;
   /// Task ids with an action in flight, so buttons can't be double-sent.
   busy: Record<string, boolean>;
   /// The last error per task (or per team for briefs and saves).
@@ -43,7 +45,7 @@ interface TeamsActions {
   roomHandOff(taskId: string, messageId: string): Promise<Result>;
   openFolder(taskId: string): Promise<Result>;
   openFile(taskId: string, name: string): Promise<Result>;
-  openEditor(teamId: string | null): void;
+  openEditor(teamId: string | null, brief?: string): void;
   closeEditor(): void;
   save(team: TeamInput): Promise<{ ok: true; team: Team } | { ok: false; error: string }>;
   remove(id: string): Promise<Result>;
@@ -136,8 +138,8 @@ export const useTeamsStore = create<TeamsState & TeamsActions>((set, get) => {
       set((s) => ({ progress: { ...s.progress, [taskId]: { stage, tail, chars } } }));
     },
 
-    openEditor(teamId) {
-      set({ editor: { teamId } });
+    openEditor(teamId, brief) {
+      set({ editor: { teamId, ...(brief ? { brief } : {}) } });
     },
 
     closeEditor() {
