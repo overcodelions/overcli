@@ -150,7 +150,7 @@ import {
   StarterCard,
   StarterGrid,
 } from "../onboarding/landing";
-import { LANDING_SERIF } from "../onboarding/landing";
+import { LANDING_DISPLAY, LANDING_SERIF } from "../onboarding/landing";
 import { RotaSpecimen, TrustLadderMark } from "../onboarding/specimens";
 import { PlacePicker } from "../PlacePicker";
 
@@ -169,6 +169,7 @@ export function WorkersPane() {
   const error = useWorkersStore((s) => s.error);
   const reload = useWorkersStore((s) => s.reload);
   const openEditor = useWorkersStore((s) => s.openEditor);
+  const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
   const clearError = useWorkersStore((s) => s.clearError);
   const selectedWorkerId = useWorkersStore((s) => s.selectedWorkerId);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
@@ -478,6 +479,7 @@ export function WorkersPane() {
                 projectPaths: projects.map((p) => p.path),
               })
             }
+            onMakeTeam={(brief) => openTeamEditor(null, brief)}
             onPickPosting={(job) => {
               openHire(defaultProjectPath);
               // A new posting is a new job: the old conversation was about
@@ -524,12 +526,17 @@ function WorkersEmptyState({
   onHire,
   onAddByHand,
   onImport,
+  onMakeTeam,
   onPickPosting,
 }: {
   canHire: boolean;
   onHire: () => void;
   onAddByHand: () => void;
   onImport: () => void;
+  /// Opens the team editor, with a starter team's brief already written when
+  /// one was picked. A team hires its own members, so it is a way in for
+  /// someone with nobody hired, not a second step after the first hire.
+  onMakeTeam: (brief?: string) => void;
   /// Opens the hire screen with this job description already written. The
   /// catalog is the fastest honest answer to "what would I even use this
   /// for", and it was buried one click inside a screen nobody empty-handed
@@ -569,6 +576,14 @@ function WorkersEmptyState({
             {/* The third way to fill a vacancy, and the fastest one for
                 anyone joining a team that already runs workers: take theirs. */}
             <QuietAction label="or import one" onClick={onImport} disabled={!canHire} />
+            {/* Teams sit below the postings, past the fold on most windows:
+                this is the hint that they exist. */}
+            <QuietAction
+              label="or start with a team ↓"
+              onClick={() =>
+                document.getElementById(TEAMS_BAND_ID)?.scrollIntoView({ behavior: "smooth", block: "start" })
+              }
+            />
           </>
         }
         note={
@@ -587,6 +602,8 @@ function WorkersEmptyState({
           every one of these is a real contract the hire screen will load. */}
       <Postings canHire={canHire} onPick={onPickPosting} />
 
+      <TeamsPitch canHire={canHire} onMakeTeam={onMakeTeam} />
+
       <LandingColumns wide>
         <Terms title="The terms" items={TERMS} />
         <div className="flex flex-col gap-5">
@@ -595,6 +612,231 @@ function WorkersEmptyState({
         </div>
       </LandingColumns>
     </LandingPage>
+  );
+}
+
+/// Teams, for someone who has hired nobody yet.
+///
+/// Sold on what comes back, not on how it works: a worker owns one standing
+/// job, a team takes one big task and hands back a pack that has already
+/// been argued over — the one thing neither a worker nor a chat gives you.
+/// So the band leads with that promise and the finished pack beside it, then
+/// the task end to end (where you come in, and the challenge before you see
+/// anything), then three starter teams, which answer "what would I use this
+/// for" the way the postings do for workers.
+function TeamsPitch({ canHire, onMakeTeam }: { canHire: boolean; onMakeTeam: (brief?: string) => void }) {
+  return (
+    <section id={TEAMS_BAND_ID} className="mb-8 mt-14 flex scroll-mt-6 flex-col gap-7 border-b border-card pb-10">
+      <div className="grid items-center gap-x-12 gap-y-8 lg:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="flex flex-col">
+          <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-ink-faint">Or start with a team</span>
+          <h2 className="mt-3.5 text-[38px] leading-[1.08] text-ink" style={{ ...LANDING_DISPLAY, letterSpacing: "-0.035em" }}>
+            Hand off the whole job.
+            <br />
+            <span className="text-accent">Get it back already argued over.</span>
+          </h2>
+          <p className="mt-4 max-w-[44ch] text-[14px] leading-[1.65] text-ink-muted">
+            Brief a team the way you'd brief people. They split the work, do it at the same time, and one of them
+            takes the draft apart before you ever see it. You get one finished pack — and a team you can keep asking.
+          </p>
+          <div className="mt-6 flex flex-wrap items-center gap-x-4 gap-y-2">
+            <PrimaryAction label="Make a team" onClick={() => onMakeTeam()} disabled={!canHire} />
+            <span className="text-[12.5px] text-ink-faint">
+              {canHire ? "No one to hire first — it suggests who." : "Add a project or workspace first — members are hired onto one."}
+            </span>
+          </div>
+        </div>
+        <PackSpecimen />
+      </div>
+      <TeamFlow />
+      <StarterTeams canHire={canHire} onPick={(brief) => onMakeTeam(brief)} />
+    </section>
+  );
+}
+
+const TEAMS_BAND_ID = "workers-teams";
+
+/// Three pre-drawn faces, as the desk draws a worker: initials in a ring of
+/// their colour. Invented hires with jobs for names, like the rota's.
+function Face({ initials, tint, size = 22, overlap = false }: { initials?: string; tint: string; size?: number; overlap?: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={"flex shrink-0 items-center justify-center rounded-full bg-surface-elevated font-bold " + (overlap ? "-ml-1.5" : "")}
+      style={{ width: size, height: size, boxShadow: `inset 0 0 0 1.5px ${tint}`, color: tint, fontSize: size * 0.38 }}
+    >
+      {initials}
+    </span>
+  );
+}
+
+/// The finished pack, stacked like the files it is.
+function PackSpecimen() {
+  const rows: Array<[string, string, string]> = [
+    ["Release notes", "ready", "text-emerald-400"],
+    ["Site copy", "ready", "text-emerald-400"],
+    ["Risks raised by Skeptic", "4 · all answered", "text-orange-300"],
+  ];
+  return (
+    <figure aria-label="A finished team pack" className="relative m-0 hidden h-[292px] lg:block">
+      <div className="absolute -right-2 left-6 top-0 h-[256px] rounded-[14px] border border-card bg-surface-muted" />
+      <div className="absolute left-3 right-1 top-2.5 h-[256px] rounded-[14px] border border-card bg-surface-elevated" />
+      <div className="absolute left-0 right-4 top-5 flex flex-col gap-3 rounded-[14px] border border-card-strong bg-surface-elevated px-5 py-[18px] shadow-[0_24px_48px_-24px_rgba(0,0,0,0.55)]">
+        <div className="flex items-center justify-between">
+          <span className="font-mono text-[11px] text-ink-muted">PROPOSAL.md</span>
+          <span className="rounded-full border border-emerald-600/60 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+            Pack v1
+          </span>
+        </div>
+        <span className="text-[20px] leading-[1.2] text-ink" style={{ ...LANDING_DISPLAY, letterSpacing: "-0.02em" }}>
+          Ship 2.0 on Thursday — with two conditions
+        </span>
+        <div className="flex flex-col gap-[7px] text-[12px]">
+          {rows.map(([label, state, tone]) => (
+            <div key={label} className="flex justify-between gap-3">
+              <span className="text-ink-muted">{label}</span>
+              <span className={tone}>{state}</span>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-2.5 border-t border-card pt-2.5">
+          <span className="flex">
+            <Face initials="SC" tint="#60a5fa" />
+            <Face initials="PX" tint="#a78bfa" overlap />
+            <Face initials="SK" tint="#fb923c" overlap />
+          </span>
+          <span className="text-[11px] text-ink-faint">Written by the Release team</span>
+        </div>
+      </div>
+    </figure>
+  );
+}
+
+/// The task end to end. You are in the first two stops; the line is lit
+/// through them and dark after, where the team takes over.
+function TeamFlow() {
+  const dot = "relative h-5 w-5 shrink-0 rounded-full";
+  return (
+    <section className="rounded-[14px] border border-card-strong bg-surface-elevated px-6 pb-6 pt-5">
+      <div className="mb-[18px] flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+        <span className="text-[18px] text-ink" style={{ ...LANDING_DISPLAY, letterSpacing: "-0.02em" }}>
+          One brief in. One finished pack out.
+        </span>
+        <span className="text-[11.5px] text-ink-faint">You're needed twice: the brief and the plan.</span>
+      </div>
+      <ol className="relative m-0 grid list-none gap-4 p-0 sm:grid-cols-2 lg:grid-cols-5">
+        <span
+          aria-hidden
+          className="absolute left-2.5 right-2.5 top-[9px] hidden h-0.5 lg:block"
+          style={{ background: "linear-gradient(90deg, var(--c-accent) 0 40%, var(--c-card-border-strong) 40%)" }}
+        />
+        <li className="flex flex-col gap-2.5">
+          <span className={dot + " border-4 border-surface-elevated bg-accent"} style={{ boxShadow: "0 0 0 2px var(--c-accent)" }} />
+          <span className="text-[13px] font-semibold text-ink">You brief it</span>
+          <span className="rounded-[10px] rounded-br-[3px] bg-accent/20 px-2.5 py-2 text-[11px] leading-[1.5] text-ink">
+            Get 2.0 out the door: notes, the site, and a go / no-go.
+          </span>
+        </li>
+        <li className="flex flex-col gap-2.5">
+          <span className={dot + " border-4 border-surface-elevated bg-accent"} style={{ boxShadow: "0 0 0 2px var(--c-accent)" }} />
+          <span className="text-[13px] font-semibold text-ink">You approve the plan</span>
+          <span className="flex flex-col gap-[5px] rounded-[9px] border border-card bg-surface px-2.5 py-2 text-[10.5px] text-ink-muted">
+            <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#60a5fa]" />Notes &amp; site copy</span>
+            <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-[1px] bg-ink-faint" />First draft</span>
+            <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#fb923c]" />Challenge it</span>
+          </span>
+        </li>
+        <li className="flex flex-col gap-2.5">
+          <span className={dot + " border-2 border-[#60a5fa] bg-surface-elevated"} />
+          <span className="text-[13px] font-semibold text-ink">They work at once</span>
+          <span className="flex flex-col gap-1.5 rounded-[9px] border border-card bg-surface px-2.5 py-[9px] text-[10.5px] text-ink-muted">
+            <span className="flex items-center gap-1.5"><Face tint="#60a5fa" size={14} />Scribe · notes</span>
+            <span className="flex items-center gap-1.5"><Face tint="#a78bfa" size={14} />Pixel · site copy</span>
+          </span>
+        </li>
+        <li className="flex flex-col gap-2.5">
+          <span className={dot + " border-2 border-[#fb923c] bg-surface-elevated"} />
+          <span className="text-[13px] font-semibold text-ink">One argues with it</span>
+          <span
+            className="flex flex-col gap-[5px] rounded-[9px] border px-2.5 py-2 text-[10.5px] text-ink-muted"
+            style={{ background: "color-mix(in srgb, #fb923c 8%, transparent)", borderColor: "color-mix(in srgb, #fb923c 30%, transparent)" }}
+          >
+            <span><span className="font-mono text-orange-300">1</span>&nbsp; Notes skip the breaking change</span>
+            <span><span className="font-mono text-orange-300">2</span>&nbsp; No rollback plan</span>
+          </span>
+        </li>
+        <li className="flex flex-col gap-2.5">
+          <span className="relative h-5 w-5 shrink-0 rounded-md bg-emerald-400" />
+          <span className="text-[13px] font-semibold text-ink">You get the pack</span>
+          <span className="flex flex-col gap-[3px] rounded-[9px] border border-emerald-600/60 bg-emerald-500/15 px-2.5 py-2">
+            <span className="text-[11px] font-semibold text-emerald-300">PROPOSAL.md</span>
+            <span className="text-[10.5px] text-emerald-400/90">Then ask it questions, or for changes</span>
+          </span>
+        </li>
+      </ol>
+    </section>
+  );
+}
+
+/// Three teams people actually start with. A click opens the team editor
+/// with the brief already written; "Suggest a team" drafts the roster from
+/// it, and nobody is hired until you say so.
+const STARTER_TEAMS: Array<{ name: string; body: string; back: string; tints: string[]; brief: string }> = [
+  {
+    name: "Release team",
+    body: "Checks the candidate, writes the notes and the site update, and calls go or no-go.",
+    back: "release notes · go / no-go",
+    tints: ["#60a5fa", "#a78bfa", "#fb923c"],
+    brief:
+      "A release team: check the release candidate is ready, write the release notes, update the website, and finish with a go / no-go and the risks behind it.",
+  },
+  {
+    name: "Proposal team",
+    body: "Market, design and engineering each make the case; a challenger pushes on all three.",
+    back: "proposal · options · recommendation",
+    tints: ["#38bdf8", "#f472b6", "#fb923c"],
+    brief:
+      "A proposal team: size the market, sketch the design and scope the build for a new idea, with someone pushing back on all three, ending in a proposal with options and a recommendation.",
+  },
+  {
+    name: "Review panel",
+    body: "Security, performance and UX read the same change and agree on what must be fixed first.",
+    back: "ranked findings · fix plan",
+    tints: ["#34d399", "#fde68a", "#a78bfa"],
+    brief:
+      "A review panel: security, performance and usability reviewers read the same change and agree on a ranked list of what to fix first, with a fix plan.",
+  },
+];
+
+function StarterTeams({ canHire, onPick }: { canHire: boolean; onPick: (brief: string) => void }) {
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-baseline gap-2 px-1">
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-ink-faint">Start from one of these</span>
+        <span className="text-[10.5px] text-ink-faint">· the team is drafted for you — change anything before it hires</span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {STARTER_TEAMS.map((t) => (
+          <button
+            key={t.name}
+            onClick={() => onPick(t.brief)}
+            disabled={!canHire}
+            className="flex flex-col gap-2.5 rounded-xl border border-card-strong bg-surface-elevated px-[18px] py-4 text-left hover:border-accent/50 hover:bg-card/40 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="flex w-full items-center justify-between gap-3">
+              <span className="text-[14px] font-semibold text-ink">{t.name}</span>
+              <span className="flex">
+                {t.tints.map((tint, i) => (
+                  <Face key={tint} tint={tint} size={18} overlap={i > 0} />
+                ))}
+              </span>
+            </span>
+            <span className="text-[12px] leading-[1.55] text-ink-muted">{t.body}</span>
+            <span className="font-mono text-[10.5px] text-emerald-400">→ {t.back}</span>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 

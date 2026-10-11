@@ -269,6 +269,8 @@ export function WorkersRail({
         <div className="flex flex-col gap-0.5 px-2">
           {orchestratorButton && <div data-orchestrator-button>{orchestratorButton}</div>}
           <HireButton expanded={expanded} first />
+          {/* A team hires its own members, so it is a door with nobody hired. */}
+          <NewTeamButton expanded={expanded} />
         </div>
         <div className="flex-1" />
         <div className="flex flex-col gap-0.5 px-2">{toggle}</div>
@@ -806,7 +808,6 @@ function HireButton({ expanded, first = false }: { expanded: boolean; first?: bo
   const openHire = useWorkersStore((s) => s.openHire);
   const openEditor = useWorkersStore((s) => s.openEditor);
   const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
-  const crewSize = useWorkersStore((s) => Object.keys(s.workers).length);
   const importFromFile = useWorkersStore((s) => s.importFromFile);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
@@ -898,21 +899,17 @@ function HireButton({ expanded, first = false }: { expanded: boolean; first?: bo
             Import…
           </button>
           {/* A team can hire its own members, so it needs nobody hired first. */}
-          {crewSize >= 1 && (
-            <>
-              <div className="my-1 h-px bg-card" />
-              <button
-                role="menuitem"
-                onClick={() => {
-                  setMenuOpen(false);
-                  openTeamEditor(null);
-                }}
-                className={item + " text-ink-muted hover:text-ink"}
-              >
-                New team…
-              </button>
-            </>
-          )}
+          <div className="my-1 h-px bg-card" />
+          <button
+            role="menuitem"
+            onClick={() => {
+              setMenuOpen(false);
+              openTeamEditor(null);
+            }}
+            className={item + " text-ink-muted hover:text-ink"}
+          >
+            New team…
+          </button>
         </div>
       )}
     </div>

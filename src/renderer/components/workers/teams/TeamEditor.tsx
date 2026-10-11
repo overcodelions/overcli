@@ -91,7 +91,7 @@ export function TeamEditor() {
   // The describe card leads a new team; once there is a team to look at it
   // folds to a line, and comes back to reshape it.
   const [describing, setDescribing] = useState(!existing);
-  const [brief, setBrief] = useState("");
+  const [brief, setBrief] = useState(existing ? "" : (editor?.brief ?? ""));
   const [drafting, setDrafting] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);

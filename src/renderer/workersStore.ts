@@ -454,7 +454,7 @@ interface WorkersActions {
   /// Open a team's desk, on one of its tasks if given.
   selectTeam(id: string, taskId?: string): void;
   /// Open the team editor: `null` for a new team.
-  openTeamEditor(teamId: string | null): void;
+  openTeamEditor(teamId: string | null, brief?: string): void;
   /// Open a worker's desk from outside the roster — the command palette, a
   /// link. The same arrival as clicking the row, plus dismissing any draft
   /// left open: the editor renders over the desk, so a half-written edit from
@@ -1032,10 +1032,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     set({ view: 'team', selectedTeamId: id, selectedTeamTaskId: taskId ?? null });
   },
 
-  openTeamEditor(teamId) {
+  openTeamEditor(teamId, brief) {
     leavePane(get);
     if (teamId) set({ view: 'team', selectedTeamId: teamId });
-    useTeamsStore.getState().openEditor(teamId);
+    useTeamsStore.getState().openEditor(teamId, brief);
   },
 
   openWorkerSettings(id) {
