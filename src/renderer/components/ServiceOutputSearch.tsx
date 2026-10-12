@@ -8,6 +8,7 @@
 // output already searched for the same thing.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 
 import { lineAtLevel, outputLineLevel, type OutputLevel, type OutputMatch } from '@shared/services';
 import { isServiceLive, logKey, useServicesStore } from '../servicesStore';
@@ -24,6 +25,11 @@ const DEBOUNCE_MS = 200;
 let lastQuery = '';
 let lastLevel: Level = 'all';
 let lastFiles = false;
+
+type Group = { key: string; workspaceId: string; serviceId: string; matches: OutputMatch[] };
+type Row = { kind: 'header'; group: Group } | { kind: 'match'; group: Group; m: OutputMatch };
+
+const listComponents = { Footer: () => <div className="h-3" /> };
 
 export const levelOf = outputLineLevel;
 
@@ -90,7 +96,7 @@ export function ServiceOutputSearch({ owners }: { owners: { id: string; name: st
     // Main already filtered by level; this only covers the moment between
     // switching the level and its answer arriving.
     const shown = (results ?? []).filter((m) => lineAtLevel(m.text, level));
-    const out: { key: string; workspaceId: string; serviceId: string; matches: OutputMatch[] }[] = [];
+    const out: Group[] = [];
     const byKey = new Map<string, (typeof out)[number]>();
     for (const m of shown) {
       const key = logKey(m.workspaceId, m.serviceId);
@@ -104,6 +110,15 @@ export function ServiceOutputSearch({ owners }: { owners: { id: string; name: st
     }
     return out;
   }, [results, level]);
+  // Up to 1000 matches: flatten so only the rows in view are mounted.
+  const rows = useMemo<Row[]>(
+    () =>
+      groups.flatMap<Row>((group) => [
+        { kind: 'header', group },
+        ...group.matches.map<Row>((m) => ({ kind: 'match', group, m })),
+      ]),
+    [groups],
+  );
   const total = groups.reduce((n, g) => n + g.matches.length, 0);
   const q = query.trim();
 
@@ -161,7 +176,7 @@ export function ServiceOutputSearch({ owners }: { owners: { id: string; name: st
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
+      <div className={'min-h-0 flex-1 ' + (q && !(results && total === 0) ? 'px-1.5' : 'overflow-y-auto px-1.5 pb-3')}>
         {!q ? (
           <p className="px-2 py-4 text-[11.5px] leading-relaxed text-ink-faint">
             Type to search what every running service has printed — an error, an order number, a port.
@@ -174,75 +189,85 @@ export function ServiceOutputSearch({ owners }: { owners: { id: string; name: st
             {!files && ' Include log files to look further back.'}
           </p>
         ) : (
-          groups.map((group) => {
-            const stack = stacks[group.workspaceId];
-            const spec = stack?.services.find((s) => s.id === group.serviceId);
-            const runtime = stack?.runtimes.find((r) => r.serviceId === group.serviceId);
-            const live = runtime ? isServiceLive(runtime.status) : false;
-            return (
-              <div key={group.key} className="mt-2">
-                <div className="flex h-[24px] items-center gap-2 px-2">
-                  <span
-                    aria-hidden
-                    className={
-                      'h-1.5 w-1.5 flex-shrink-0 rounded-full ' +
-                      (live ? 'bg-green-500 dark:bg-green-400' : 'bg-card-border-strong')
-                    }
-                  />
-                  <span className="min-w-0 truncate text-[12px] font-medium">{spec?.name ?? group.serviceId}</span>
-                  {runtime?.port !== undefined && (
-                    <span className="flex-shrink-0 font-mono text-[10.5px] text-ink-faint">:{runtime.port}</span>
-                  )}
-                  <span className="flex-1" />
-                  <span className="flex-shrink-0 text-[10.5px] text-ink-faint">
-                    {group.matches.length === 1 ? '1 match' : `${group.matches.length} matches`}
-                  </span>
-                </div>
-                {group.matches.map((m) => {
-                  const key = `${group.key}:${m.source}:${m.index}`;
-                  const cut = snippet(m.text, q);
-                  const l = levelOf(m.text);
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => {
-                        setPicked(key);
-                        void seekOutput(m.workspaceId, m.serviceId, q);
-                      }}
-                      title={m.text}
+          <Virtuoso
+            style={{ height: '100%' }}
+            data={rows}
+            components={listComponents}
+            computeItemKey={(_, row) =>
+              row.kind === 'header' ? row.group.key : `${row.group.key}:${row.m.source}:${row.m.index}`
+            }
+            itemContent={(_, row) => {
+              const group = row.group;
+              if (row.kind === 'header') {
+                const stack = stacks[group.workspaceId];
+                const spec = stack?.services.find((s) => s.id === group.serviceId);
+                const runtime = stack?.runtimes.find((r) => r.serviceId === group.serviceId);
+                const live = runtime ? isServiceLive(runtime.status) : false;
+                return (
+                  <div className="pt-2">
+                  <div className="flex h-[24px] items-center gap-2 px-2">
+                    <span
+                      aria-hidden
                       className={
-                        'flex w-full items-baseline gap-2 rounded py-1 pl-5 pr-2 text-left hover:bg-card-strong focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
-                        (picked === key ? 'bg-accent/15' : '')
+                        'h-1.5 w-1.5 flex-shrink-0 rounded-full ' +
+                        (live ? 'bg-green-500 dark:bg-green-400' : 'bg-card-border-strong')
+                      }
+                    />
+                    <span className="min-w-0 truncate text-[12px] font-medium">{spec?.name ?? group.serviceId}</span>
+                    {runtime?.port !== undefined && (
+                      <span className="flex-shrink-0 font-mono text-[10.5px] text-ink-faint">:{runtime.port}</span>
+                    )}
+                    <span className="flex-1" />
+                    <span className="flex-shrink-0 text-[10.5px] text-ink-faint">
+                      {group.matches.length === 1 ? '1 match' : `${group.matches.length} matches`}
+                    </span>
+                  </div>
+                  </div>
+                );
+              }
+              const m = row.m;
+              const key = `${group.key}:${m.source}:${m.index}`;
+              const cut = snippet(m.text, q);
+              const l = levelOf(m.text);
+              return (
+                <button
+                  key={key}
+                  onClick={() => {
+                    setPicked(key);
+                    void seekOutput(m.workspaceId, m.serviceId, q);
+                  }}
+                  title={m.text}
+                  className={
+                    'flex w-full items-baseline gap-2 rounded py-1 pl-5 pr-2 text-left hover:bg-card-strong focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
+                    (picked === key ? 'bg-accent/15' : '')
+                  }
+                >
+                  {m.at && (
+                    <span className="w-[52px] flex-shrink-0 font-mono text-[10px] text-ink-faint">
+                      {new Date(m.at).toLocaleTimeString(undefined, { hour12: false })}
+                    </span>
+                  )}
+                  {l && (
+                    <span
+                      className={
+                        'w-[34px] flex-shrink-0 font-mono text-[10px] ' +
+                        (l === 'error' ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400')
                       }
                     >
-                      {m.at && (
-                        <span className="w-[52px] flex-shrink-0 font-mono text-[10px] text-ink-faint">
-                          {new Date(m.at).toLocaleTimeString(undefined, { hour12: false })}
-                        </span>
-                      )}
-                      {l && (
-                        <span
-                          className={
-                            'w-[34px] flex-shrink-0 font-mono text-[10px] ' +
-                            (l === 'error' ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400')
-                          }
-                        >
-                          {l === 'error' ? 'ERROR' : 'WARN'}
-                        </span>
-                      )}
-                      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-muted">
-                        {cut.pre}
-                        {cut.match && (
-                          <mark className="rounded-sm bg-amber-400/30 px-px text-ink">{cut.match}</mark>
-                        )}
-                        {cut.post}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })
+                      {l === 'error' ? 'ERROR' : 'WARN'}
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-muted">
+                    {cut.pre}
+                    {cut.match && (
+                      <mark className="rounded-sm bg-amber-400/30 px-px text-ink">{cut.match}</mark>
+                    )}
+                    {cut.post}
+                  </span>
+                </button>
+              );
+            }}
+          />
         )}
       </div>
       <div className="flex h-[26px] flex-shrink-0 items-center border-t border-card px-3 text-[10.5px] text-ink-faint">
