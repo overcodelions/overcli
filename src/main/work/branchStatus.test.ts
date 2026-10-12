@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { branchStatus } from './branchStatus';
+import { branchStatus, branchStatuses } from './branchStatus';
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -88,5 +88,30 @@ describe('branchStatus', () => {
 
   it('reports a branch that is gone', async () => {
     expect(await branchStatus(repo, 'feat/gone')).toMatchObject({ local: false, remote: false });
+  });
+
+  it('answers deleted branches from one ref listing and caps the live ones', async () => {
+    git(repo, ['branch', 'feat/one']);
+    git(repo, ['branch', 'feat/two']);
+    git(repo, ['branch', 'feat/three']);
+    const items = ['feat/one', 'feat/long-gone', 'feat/two', 'feat/also-gone', 'feat/three'].map((branch) => ({ repo, branch }));
+    const out = await branchStatuses(items, 2);
+    // Gone branches still get an answer, and do not use up the cap.
+    expect(out[`${repo}::feat/long-gone`]).toMatchObject({ local: false, remote: false, trunk: 'main' });
+    expect(out[`${repo}::feat/also-gone`]).toMatchObject({ local: false, remote: false });
+    // The first two live ones, newest first; the third waits.
+    expect(out[`${repo}::feat/one`]).toMatchObject({ local: true, inTrunk: true });
+    expect(out[`${repo}::feat/two`]).toMatchObject({ local: true });
+    expect(out[`${repo}::feat/three`]).toBeUndefined();
+  });
+
+  it('falls back to the full check for a path that is not a repo', async () => {
+    const notRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-not-repo-'));
+    try {
+      const out = await branchStatuses([{ repo: notRepo, branch: 'feat/x' }]);
+      expect(out[`${notRepo}::feat/x`]).toMatchObject({ local: false, remote: false });
+    } finally {
+      fs.rmSync(notRepo, { recursive: true, force: true });
+    }
   });
 });

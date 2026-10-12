@@ -166,6 +166,7 @@ import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
 import { TeamEngine } from './flows/teamEngine';
+import { flushTeamTasks } from './flows/teamsStore';
 import { absorbPiece, closeTaskBranch, landTaskBranch, openTaskBranch, taskRepos } from './flows/teamBranch';
 import { runHandoffOutputs, workerOrigin, type Worker } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
@@ -517,7 +518,8 @@ async function hireDraftContext() {
 /// the crew ON DEMAND — no shifts — tagged with the team it was hired for.
 /// You approved it by asking for it (in the team editor) or by approving the
 /// plan that needs it; it starts on probation like every hire, and its
-/// settings are an ordinary worker's to change afterwards.
+/// settings are an ordinary worker's to change afterwards. It starts without
+/// connectors or the browser: those are yours to grant, not the drafter's.
 async function hireForTeam(req: TeamHireRequest): Promise<{ ok: true; worker: Worker } | { ok: false; error: string }> {
   if (!workerEngine) return { ok: false, error: 'Workers are not running.' };
   const drafted = await draftWorkerFromPrompt(
@@ -567,8 +569,9 @@ async function hireForTeam(req: TeamHireRequest): Promise<{ ok: true; worker: Wo
     heartbeatModel: contract.heartbeatModel,
     heartbeatBackend: contract.heartbeatBackend,
     flowIds: flows.map((p) => p.flowId),
-    ...(contract.mcpServers ? { mcpServers: [...contract.mcpServers] } : {}),
-    ...(contract.browser ? { browser: true } : {}),
+    // No connectors and no browser, whatever the drafter picked: nobody
+    // reviewed this hire, and both reach past the worktree with your
+    // sign-ins. You tick them on the worker yourself if the job needs them.
     hiredFor: { teamName: req.teamName.trim() || 'New team', ...(req.teamId ? { teamId: req.teamId } : {}) },
     enabled: true,
   });
@@ -894,6 +897,9 @@ export function registerIpc(): void {
     cancelBatch: (id) => {
       orchestrator?.abort({ id });
     },
+    // Away mode holds team stages too; coming back reaches the engine as
+    // the `workersAway` event through `flowAwareEmit`.
+    crewAway: () => !!workerEngine?.awayState(),
     // A member speaking in the room runs on ITS OWN backend and model — the
     // point of a Codex challenger is that Codex is the one answering. Same
     // backend resolution as the worker supervisor; plan mode so a stray tool
@@ -4046,6 +4052,8 @@ app.on('before-quit', (event) => {
   // snapshot synchronously so a quit inside the debounce window can't drop
   // the last mutation.
   flushStoreSync();
+  // Team task writes are coalesced the same way (see teamsStore.saveTeamTask).
+  flushTeamTasks();
   // Run writes are async now (see runsStore.saveRun). Defer the first quit
   // long enough to flush any in-flight checkpoint to disk, then quit for real.
   // Writes are sub-10ms, so the delay is imperceptible.

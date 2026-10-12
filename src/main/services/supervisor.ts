@@ -135,6 +135,11 @@ export interface SupervisorDeps {
   /// keeps a Stop from tree-killing whatever the OS gave an adopted pid to
   /// after the leftover exited. Without it adopted pids go unchecked.
   processStarted?(pid: number): Promise<string | null | undefined>;
+  /// `processStarted` for many pids in one `ps`, as the adopted poll asks it:
+  /// a stack that adopted six leftovers is one process spawned per tick, not
+  /// six. A pid missing from the map reads as `undefined`. Without it the poll
+  /// falls back to `processStarted` once per pid.
+  processesStarted?(pids: readonly number[]): Promise<ReadonlyMap<number, string | null | undefined>>;
   /// Stop a process by pid, SIGTERM then SIGKILL. The portless counterpart of
   /// `stopHolder`.
   stopProcess?(pid: number): Promise<void>;
@@ -220,7 +225,11 @@ export class Supervisor {
   private readonly queuedChanges = new Map<string, string>();
   /// What each adopted pid was when it was adopted — see `processStarted`.
   private readonly adoptedAs = new Map<string, { pid: number; started: string }>();
-  private readonly adoptedPolls = new Map<string, ReturnType<typeof setTimeout>>();
+  /// One timer for every adopted service, so a tick is one lookup however
+  /// many leftovers the stack adopted. Armed only while something is adopted.
+  private adoptedTick: ReturnType<typeof setTimeout> | null = null;
+  /// Ticks until each adopted service is next checked.
+  private readonly adoptedWait = new Map<string, number>();
   /// Consecutive unchanged polls for an adopted service, so a stack that
   /// never restarts stops being checked every five seconds forever.
   private readonly adoptedChecks = new Map<string, number>();
@@ -550,31 +559,73 @@ export class Supervisor {
     this.forgetAdopted(serviceId);
     if (started === undefined) return;
     this.adoptedAs.set(serviceId, { pid, started });
-    this.pollAdopted(serviceId);
+    this.adoptedWait.set(serviceId, 1);
+    this.armAdoptedTick();
   }
 
   private forgetAdopted(serviceId: string): void {
     this.adoptedAs.delete(serviceId);
-    const timer = this.adoptedPolls.get(serviceId);
-    if (timer) clearTimeout(timer);
-    this.adoptedPolls.delete(serviceId);
+    this.adoptedWait.delete(serviceId);
     this.adoptedChecks.delete(serviceId);
+    if (this.adoptedAs.size === 0 && this.adoptedTick) {
+      clearTimeout(this.adoptedTick);
+      this.adoptedTick = null;
+    }
   }
 
-  private pollAdopted(serviceId: string): void {
-    const n = this.adoptedChecks.get(serviceId) ?? 0;
-    const delay = n < 12 ? ADOPTED_POLL_MS : ADOPTED_POLL_MS * 6;
-    const timer = setTimeout(() => {
-      this.adoptedPolls.delete(serviceId);
-      void this.verifyAdopted(serviceId).then((same) => {
-        if (same && this.adoptedAs.has(serviceId) && !this.adoptedPolls.has(serviceId)) {
-          this.adoptedChecks.set(serviceId, n + 1);
-          this.pollAdopted(serviceId);
-        }
-      });
-    }, delay);
-    timer.unref?.();
-    this.adoptedPolls.set(serviceId, timer);
+  private armAdoptedTick(): void {
+    if (this.adoptedTick || this.adoptedAs.size === 0) return;
+    this.adoptedTick = setTimeout(() => {
+      this.adoptedTick = null;
+      void this.pollAdopted().finally(() => this.armAdoptedTick());
+    }, ADOPTED_POLL_MS);
+    this.adoptedTick.unref?.();
+  }
+
+  /// One tick: every adopted service that is due, checked with ONE lookup.
+  /// Twelve unchanged checks in, a service drops to every sixth tick.
+  private async pollAdopted(): Promise<void> {
+    const due: Array<{ serviceId: string; known: { pid: number; started: string } | undefined }> = [];
+    for (const serviceId of this.adoptedAs.keys()) {
+      const wait = (this.adoptedWait.get(serviceId) ?? 1) - 1;
+      this.adoptedWait.set(serviceId, wait);
+      if (wait <= 0) due.push({ serviceId, known: this.checkable(serviceId) });
+    }
+    if (due.length === 0) return;
+    const pids = [...new Set(due.flatMap((d) => (d.known ? [d.known.pid] : [])))];
+    let started: ReadonlyMap<number, string | null | undefined> = new Map();
+    try {
+      started = await this.lookupStarted(pids);
+    } catch {
+      // A failed lookup says nothing; every row keeps its state until the next.
+    }
+    for (const { serviceId, known } of due) {
+      const same = known ? this.settleAdopted(serviceId, known, started.get(known.pid)) : true;
+      if (!same || !this.adoptedAs.has(serviceId)) continue;
+      // Adopted afresh while `ps` ran: that adoption has its own count.
+      if (known && this.adoptedAs.get(serviceId) !== known) continue;
+      const checks = (this.adoptedChecks.get(serviceId) ?? 0) + 1;
+      this.adoptedChecks.set(serviceId, checks);
+      this.adoptedWait.set(serviceId, checks < 12 ? 1 : 6);
+    }
+  }
+
+  private async lookupStarted(pids: readonly number[]): Promise<ReadonlyMap<number, string | null | undefined>> {
+    if (pids.length === 0) return new Map();
+    if (this.deps.processesStarted) return this.deps.processesStarted(pids);
+    const ask = this.deps.processStarted;
+    if (!ask) return new Map();
+    return new Map(await Promise.all(pids.map(async (pid) => [pid, await ask(pid)] as const)));
+  }
+
+  /// What an adopted service is to be checked against — or undefined when
+  /// there is nothing to check, or no way to.
+  private checkable(serviceId: string): { pid: number; started: string } | undefined {
+    const known = this.adoptedAs.get(serviceId);
+    const runtime = this.runtime(serviceId);
+    if (!known || !runtime.adopted || runtime.pid !== known.pid) return undefined;
+    if (!this.deps.processStarted && !this.deps.processesStarted) return undefined;
+    return known;
   }
 
   /// Whether an adopted service's pid is still the process that was adopted.
@@ -583,10 +634,20 @@ export class Supervisor {
   /// and whatever holds its pid now is not ours. True when there is nothing to
   /// check, or no way to.
   async verifyAdopted(serviceId: string): Promise<boolean> {
-    const known = this.adoptedAs.get(serviceId);
-    const runtime = this.runtime(serviceId);
-    if (!known || !runtime.adopted || runtime.pid !== known.pid || !this.deps.processStarted) return true;
-    const now = await this.deps.processStarted(known.pid);
+    const known = this.checkable(serviceId);
+    if (!known) return true;
+    const now = this.deps.processStarted
+      ? await this.deps.processStarted(known.pid)
+      : (await this.lookupStarted([known.pid])).get(known.pid);
+    return this.settleAdopted(serviceId, known, now);
+  }
+
+  /// The verdict on one adopted service, given what `ps` said about its pid.
+  private settleAdopted(
+    serviceId: string,
+    known: { pid: number; started: string },
+    now: string | null | undefined,
+  ): boolean {
     if (now === undefined) return true;
     // Stopped, restarted or adopted afresh while `ps` ran: that owns it now.
     if (this.adoptedAs.get(serviceId) !== known) return true;

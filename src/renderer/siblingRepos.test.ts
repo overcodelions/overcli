@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Project, StreamEvent } from '@shared/types';
-import { siblingProjectsTouched, writtenPaths } from './siblingRepos';
+import { scanWritten, siblingProjectsTouched, writtenPaths } from './siblingRepos';
 
 const project = (id: string, path: string): Project => ({
   id,
@@ -101,5 +101,29 @@ describe('writtenPaths', () => {
     expect(writtenPaths(events)).toEqual(['/code/acme/acme-api/old.ts', '/code/acme/acme-api/new.ts']);
     expect(writtenPaths(events, 1)).toEqual(['/code/acme/acme-api/new.ts']);
     expect(writtenPaths(events, 2)).toEqual([]);
+  });
+});
+
+describe('scanWritten', () => {
+  it('rescans an event replaced in place, as the final assistant event replaces its partial', () => {
+    const partial = { ...typed('streaming'), id: 'a1' } as StreamEvent;
+    const first = scanWritten(null, [typed('hi'), partial]);
+    expect(first.written).toEqual([]);
+    const final = { ...tool({ file_path: '/code/acme/acme-api/src/login.ts' }), id: 'a1' } as StreamEvent;
+    const next = scanWritten(first, [first.events[0], final]);
+    expect(next.written).toEqual(['/code/acme/acme-api/src/login.ts']);
+  });
+
+  it('keeps what unchanged events wrote and adds what new ones write', () => {
+    const a = tool({ file_path: '/code/acme/acme-api/a.ts' });
+    const first = scanWritten(null, [a]);
+    const next = scanWritten(first, [a, tool({ file_path: '/code/acme/acme-infra/b.tf' })]);
+    expect(next.perEvent[0]).toBe(first.perEvent[0]);
+    expect(next.written).toEqual(['/code/acme/acme-api/a.ts', '/code/acme/acme-infra/b.tf']);
+  });
+
+  it('starts over when the transcript shrinks', () => {
+    const first = scanWritten(null, [tool({ file_path: '/code/acme/acme-api/a.ts' }), typed('x')]);
+    expect(scanWritten(first, [typed('fresh')]).written).toEqual([]);
   });
 });

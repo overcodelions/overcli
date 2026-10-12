@@ -88,6 +88,24 @@ describe('a team task branch across a workspace', () => {
     expect(git(res.code.repos[0].worktreePath, ['branch', '--show-current'])).toBe(res.code.branch);
   });
 
+  it('gives repos whose names slug alike a checkout each', () => {
+    fs.mkdirSync(path.join(sandbox, 'acme'));
+    const api = repo(path.join('acme', 'Api'), 'main');
+    const res = openTaskBranch({
+      taskId: 't-slug',
+      title: 'Rename the client',
+      repos: [
+        { name: 'api', projectPath: overcli },
+        { name: 'Api', projectPath: api },
+      ],
+    });
+    if (!res.ok || !res.code) throw new Error('no code');
+    const [a, b] = res.code.repos.map((r) => r.worktreePath);
+    expect(a).not.toBe(b);
+    expect(git(a, ['branch', '--show-current'])).toBe(res.code.branch);
+    expect(git(b, ['branch', '--show-current'])).toBe(res.code.branch);
+  });
+
   it('merges finished pieces in, so the next piece starts from them, and lands the result', () => {
     const res = openTaskBranch({ taskId: 't2', title: 'Release', repos: [{ name: 'overcli', projectPath: overcli }] });
     if (!res.ok || !res.code) throw new Error('no code');

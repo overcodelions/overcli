@@ -33,6 +33,8 @@ function makeHarness(opts: {
   hire?: (req: TeamHireRequest) => { ok: true; worker: Worker } | { ok: false; error: string };
   /// Fake git for the task branch: scripted absorb results, in order.
   code?: { absorbs: Array<'ok' | 'conflict'> };
+  /// Whether the crew is away, asked each time a stage would start.
+  crewAway?: () => boolean;
 } = {}) {
   const codeCalls: string[] = [];
   const absorbs = [...(opts.code?.absorbs ?? [])];
@@ -165,6 +167,7 @@ function makeHarness(opts: {
     },
     batch: (id) => batches.get(id) ?? null,
     cancelBatch: (id) => void cancelledBatches.push(id),
+    ...(opts.crewAway ? { crewAway: opts.crewAway } : {}),
     memberTurn: async ({ worker, prompt, attachments }) => {
       memberPrompts.push({ name: worker.name, prompt, attachments: (attachments ?? []).map((a) => a.label ?? a.id) });
       const next = memberReplies.shift();
@@ -817,7 +820,27 @@ describe('TeamEngine room', () => {
       expect(proposal.handoff!.title).toBe('Could the designs use the console?');
     });
 
+    it('holds hand-offs for you when the team never set the checkpoint', async () => {
+      const checkpoints = { askFirst: true, reviewBeforeChallenge: false, finalReview: true };
+      const h = makeHarness({ seedTeams: [team({ checkpoints })], seedTasks: [reviewTask()], turns: [WORK] });
+      h.engine.start();
+      h.engine.roomAsk('task-r', '@maya redo the designs on the console');
+      await flush();
+      expect(task(h).room!.messages[1].handoff?.status).toBe('proposed');
+      expect(h.commissions).toHaveLength(0);
+    });
+
     describe('without approving follow-up work', () => {
+      it('never gives work from the room the grant, even when pieces work without asking', async () => {
+        const checkpoints = { askFirst: true, reviewBeforeChallenge: false, finalReview: true, approveRoomWork: false };
+        const h = makeHarness({ seedTeams: [team({ checkpoints, piecesAskFirst: false })], seedTasks: [reviewTask()], turns: [WORK] });
+        h.engine.start();
+        h.engine.roomAsk('task-r', '@maya redo the designs on the console');
+        await flush();
+        expect(h.commissions).toHaveLength(1);
+        expect(h.commissions[0].allowExternalActions).toBeUndefined();
+      });
+
       it('starts the work as soon as it is handed off', async () => {
         const h = room({ turns: [WORK], autoStart: true });
         h.engine.roomAsk('task-r', '@maya redo the designs on the console');
@@ -1109,12 +1132,115 @@ describe('TeamEngine piece permissions', () => {
     return h.commissions;
   };
 
-  it('lets pieces work without asking by default', async () => {
-    expect((await firstStage({})).map((c) => c.allowExternalActions)).toEqual([true, true]);
+  it("holds pieces to each member's own permissions by default", async () => {
+    expect((await firstStage({})).map((c) => c.allowExternalActions)).toEqual([undefined, undefined]);
+    expect((await firstStage({ piecesAskFirst: true })).map((c) => c.allowExternalActions)).toEqual([undefined, undefined]);
   });
 
-  it("holds pieces to each member's own permissions when the team says so", async () => {
-    expect((await firstStage({ piecesAskFirst: true })).map((c) => c.allowExternalActions)).toEqual([undefined, undefined]);
+  it('lets pieces of an approved plan work without asking only when you turn ask-first off', async () => {
+    expect((await firstStage({ piecesAskFirst: false })).map((c) => c.allowExternalActions)).toEqual([true, true]);
+  });
+
+  it('saves a new team asking first, and keeps "ask first" off only when you turn it off', () => {
+    const h = makeHarness();
+    h.engine.start();
+    const base = { members: [{ workerId: 'maya', role: '' }, { workerId: 'ade', role: '' }], budgetUSDPerTask: 5, checkpoints: noQuestions };
+    const asks = h.engine.save({ ...base, name: 'Asks' });
+    const free = h.engine.save({ ...base, name: 'Free', piecesAskFirst: false });
+    if (!asks.ok || !free.ok) throw new Error('not saved');
+    expect(asks.team.piecesAskFirst).toBeUndefined();
+    expect(asks.team.checkpoints.approveRoomWork).toBe(true);
+    expect(free.team.piecesAskFirst).toBe(false);
+  });
+});
+
+describe('TeamEngine cancel', () => {
+  const noQuestions = { askFirst: false, reviewBeforeChallenge: false, finalReview: true };
+  const start = () => {
+    const h = makeHarness({
+      seedTeams: [team({ checkpoints: noQuestions, projectPath: '/code/overcli' })],
+      turns: [PLAN, PACK],
+      code: { absorbs: ['ok', 'ok', 'ok'] },
+    });
+    h.engine.start();
+    h.engine.brief('team-1', 'Ship it');
+    return h;
+  };
+
+  it('stops the running pieces, and nothing they finish lands afterwards', async () => {
+    const h = start();
+    await flush();
+    h.engine.approve(task(h).id);
+    await flush();
+    expect(h.commissions).toHaveLength(2);
+    expect(h.engine.cancel(task(h).id)).toEqual({ ok: true });
+    expect(h.cancelledBatches).toEqual(h.commissions.map((c) => c.id));
+    expect(task(h).stages[0].assignments.map((a) => a.status)).toEqual(['failed', 'failed']);
+
+    // The runs report in after all: no files copied, no merge, no next stage.
+    h.settle(h.commissions[0].id, 'done');
+    h.settle(h.commissions[1].id, 'done');
+    await flush();
+    const t = task(h);
+    expect(t.status).toBe('cancelled');
+    expect(h.codeCalls.filter((c) => c.startsWith('absorb'))).toEqual([]);
+    expect(t.files.filter((f) => f.stage === 0)).toEqual([]);
+    expect(h.commissions).toHaveLength(2);
+  });
+
+  it('commissions nothing more once cancelled mid-launch, and stops the piece in flight', async () => {
+    const h = start();
+    await flush();
+    h.engine.approve(task(h).id);
+    // The first commission is in flight; the second has not been asked for.
+    h.engine.cancel(task(h).id);
+    await flush();
+    expect(h.commissions).toHaveLength(1);
+    expect(h.cancelledBatches).toEqual([h.commissions[0].id]);
+    expect(task(h).status).toBe('cancelled');
+  });
+});
+
+describe('TeamEngine away', () => {
+  const noQuestions = { askFirst: false, reviewBeforeChallenge: false, finalReview: true };
+  const start = async (away: { now: boolean }) => {
+    const h = makeHarness({ seedTeams: [team({ checkpoints: noQuestions })], turns: [PLAN], crewAway: () => away.now });
+    h.engine.start();
+    h.engine.brief('team-1', 'Ship it');
+    await flush();
+    h.engine.approve(task(h).id);
+    await flush();
+    return h;
+  };
+
+  it('holds the next stage while the crew is away, and starts it when you come back', async () => {
+    const away = { now: true };
+    const h = await start(away);
+    expect(h.commissions).toHaveLength(0);
+    expect(task(h)).toMatchObject({ status: 'waiting', waiting: { reason: 'away' } });
+
+    away.now = false;
+    h.engine.observeEvent({ type: 'workersAway', away: null });
+    await flush();
+    expect(task(h).status).toBe('running');
+    expect(h.commissions).toHaveLength(2);
+  });
+
+  it('holds a stage that comes due while away, and lets you start one yourself', async () => {
+    const away = { now: false };
+    const h = await start(away);
+    expect(h.commissions).toHaveLength(2);
+    away.now = true;
+    h.settle(h.commissions[0].id, 'done');
+    h.settle(h.commissions[1].id, 'done');
+    await flush();
+    // The challenge stage would start now; it waits instead.
+    expect(h.commissions).toHaveLength(2);
+    expect(task(h).waiting?.reason).toBe('away');
+
+    expect(h.engine.continueTask(task(h).id)).toEqual({ ok: true });
+    await flush();
+    expect(h.commissions.map((c) => c.workerId)).toEqual(['maya', 'ade', 'rook']);
   });
 });
 

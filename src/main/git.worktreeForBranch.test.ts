@@ -47,6 +47,18 @@ describe('worktreeForBranch', () => {
     expect(fs.realpathSync(second.worktreePath)).toBe(fs.realpathSync(first.worktreePath));
   });
 
+  it('adds a fresh worktree when the listed one was deleted from disk', () => {
+    const first = worktreeForBranch({ projectPath, branch: 'feat/developer-mcp' });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    fs.rmSync(first.worktreePath, { recursive: true, force: true });
+    const second = worktreeForBranch({ projectPath, branch: 'feat/developer-mcp' });
+    expect(second).toMatchObject({ ok: true, reused: false });
+    if (!second.ok) return;
+    expect(fs.existsSync(second.worktreePath)).toBe(true);
+    expect(git(second.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('feat/developer-mcp');
+  });
+
   it('says so when the main checkout is on the branch', () => {
     const res = worktreeForBranch({ projectPath, branch: 'main' });
     expect(res).toMatchObject({ ok: true, reused: true, mainCheckout: true });

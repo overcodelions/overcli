@@ -1075,6 +1075,14 @@ export function worktreeForBranch(args: {
     for (const line of listing.stdout.split('\n')) {
       if (line.startsWith('worktree ')) current = line.slice('worktree '.length).trim();
       else if (line.trim() === `branch refs/heads/${args.branch}` && current) {
+        // Git still lists a worktree whose folder was deleted by hand (it
+        // reports it as prunable). Handing that path back opens nothing, and
+        // it holds the branch so a fresh add would refuse — prune it and
+        // fall through to adding one.
+        if (!fs.existsSync(current)) {
+          runGit(['worktree', 'prune'], args.projectPath);
+          break;
+        }
         const mainCheckout = path.resolve(current) === path.resolve(args.projectPath);
         return { ok: true, worktreePath: current, reused: true, mainCheckout };
       }

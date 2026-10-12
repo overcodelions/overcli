@@ -7,8 +7,9 @@
 // needs to find and describe it: the ask, the headline, the branch, and the
 // cwd its transcripts were filed under.
 //
-// Append-only JSONL, one line per run id, same bloat guards as the summary
-// log (dedup on read, last write wins).
+// Append-only JSONL keyed by run id: a changed run appends a fresh line and
+// the last write wins on read. Superseded lines are compacted away once they
+// pile up.
 //
 // Runs evicted before this log existed are backfilled once: the summary log
 // still names them, and a coordinator run's transcripts sit in a Claude
@@ -35,8 +36,6 @@ function filePath(): string {
     return path.join(process.cwd(), '.overcli-test-work-log.jsonl');
   }
 }
-
-let loggedIds: Set<string> | null = null;
 
 export function workLogEntryFor(run: FlowRun, workerName?: string): WorkLogEntry | null {
   const kind = run.state.kind;
@@ -69,43 +68,118 @@ export function workLogEntryFor(run: FlowRun, workerName?: string): WorkLogEntry
   };
 }
 
+/// Log a terminal run, or replace its entry when it changed. A run that was
+/// aborted and then re-run reaches here twice under one id; the second
+/// outcome has to win, so this is an upsert rather than first-write-only.
+/// An unchanged entry is not written again — the run store saves terminal
+/// runs more than once.
 export function appendWorkLog(run: FlowRun): void {
   try {
-    const ids = ensureIndex();
-    if (ids.has(run.id)) return;
     const entry = workLogEntryFor(run);
     if (!entry) return;
-    fs.mkdirSync(path.dirname(filePath()), { recursive: true });
-    fs.appendFileSync(filePath(), JSON.stringify(entry) + '\n');
-    ids.add(run.id);
+    const byId = entries();
+    const prev = byId.get(run.id);
+    // With no attempt to date it, `at` is "now" — keep the logged time so a
+    // re-save of the same run doesn't count as a change.
+    if (prev && !run.attempts?.length) entry.at = prev.at;
+    if (prev && JSON.stringify(prev) === JSON.stringify(entry)) return;
+    appendLines([entry]);
   } catch (err) {
     log('error', 'work.appendWorkLog', `failed to log run ${run.id}`, err);
   }
 }
 
-function readRaw(): WorkLogEntry[] {
-  let text: string;
+/// The parsed log, deduped by run id (last write wins). Held in memory and
+/// re-read only when the file's mtime or size says someone else wrote it, so
+/// the Work view doesn't parse the whole file on every load.
+interface LogCache {
+  mtimeMs: number;
+  size: number;
+  /// Lines in the file, duplicates included — compaction trigger.
+  lines: number;
+  byId: Map<string, WorkLogEntry>;
+}
+
+let cache: LogCache | null = null;
+
+/// Rewrite the file deduped once superseded lines outnumber live ones by this
+/// much. Upserts append, so a log of re-run runs would otherwise only grow.
+const COMPACT_SLACK = 200;
+
+function statOf(file: string): fs.Stats | null {
   try {
-    text = fs.readFileSync(filePath(), 'utf-8');
+    return fs.statSync(file);
   } catch {
-    return [];
+    return null;
   }
+}
+
+function entries(): Map<string, WorkLogEntry> {
+  const file = filePath();
+  const st = statOf(file);
+  if (cache && st && cache.mtimeMs === st.mtimeMs && cache.size === st.size) return cache.byId;
+  if (cache && !st && cache.size === 0) return cache.byId;
   const byId = new Map<string, WorkLogEntry>();
+  let lines = 0;
+  let text = '';
+  try {
+    text = st ? fs.readFileSync(file, 'utf-8') : '';
+  } catch {
+    // Unreadable — treat as empty; the next write recreates it.
+  }
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line) as WorkLogEntry;
-      if (e && typeof e.runId === 'string') byId.set(e.runId, e);
+      if (e && typeof e.runId === 'string') {
+        byId.set(e.runId, e);
+        lines++;
+      }
     } catch {
       // A torn last line from a crash — skip it.
     }
   }
-  return [...byId.values()];
+  cache = { mtimeMs: st?.mtimeMs ?? 0, size: st?.size ?? 0, lines, byId };
+  if (lines - byId.size > COMPACT_SLACK) compact();
+  return cache.byId;
 }
 
-function ensureIndex(): Set<string> {
-  if (!loggedIds) loggedIds = new Set(readRaw().map((e) => e.runId));
-  return loggedIds;
+/// Append entries and fold them into the cache, so our own writes never
+/// force a re-read.
+function appendLines(list: WorkLogEntry[]): void {
+  if (!list.length) return;
+  const byId = entries();
+  const file = filePath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, list.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  for (const e of list) byId.set(e.runId, e);
+  remember(file, cache!.lines + list.length);
+  if (cache!.lines - byId.size > COMPACT_SLACK) compact();
+}
+
+function compact(): void {
+  if (!cache) return;
+  const file = filePath();
+  try {
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, [...cache.byId.values()].map((e) => JSON.stringify(e) + '\n').join(''));
+    fs.renameSync(tmp, file);
+    remember(file, cache.byId.size);
+  } catch (err) {
+    log('warn', 'work.compact', 'work log compaction failed', err);
+  }
+}
+
+function remember(file: string, lines: number): void {
+  const st = statOf(file);
+  if (!cache) return;
+  cache.mtimeMs = st?.mtimeMs ?? 0;
+  cache.size = st?.size ?? 0;
+  cache.lines = lines;
+}
+
+function readRaw(): WorkLogEntry[] {
+  return [...entries().values()];
 }
 
 let backfillDone: Promise<void> | null = null;
@@ -130,7 +204,7 @@ function runFileExists(runId: string): boolean {
 }
 
 async function backfill(): Promise<void> {
-  const have = ensureIndex();
+  const have = entries();
   const missing = loadRunSummaries().filter((s) => !have.has(s.id) && !runFileExists(s.id));
   if (!missing.length) return;
   const root = path.join(os.homedir(), '.claude', 'projects');
@@ -140,7 +214,7 @@ async function backfill(): Promise<void> {
   } catch {
     // No Claude history on this machine — entries get the flow name only.
   }
-  const lines: string[] = [];
+  const backfilled: WorkLogEntry[] = [];
   for (const s of missing) {
     const dir = dirs.find((d) => d.toLowerCase().endsWith(s.id.toLowerCase()));
     const found = dir ? await firstPromptIn(path.join(root, dir)) : null;
@@ -159,13 +233,11 @@ async function backfill(): Promise<void> {
       backfilled: true,
     };
     if (!entry.ownerPath) continue;
-    lines.push(JSON.stringify(entry));
-    have.add(s.id);
+    backfilled.push(entry);
   }
-  if (lines.length) {
-    fs.mkdirSync(path.dirname(filePath()), { recursive: true });
-    fs.appendFileSync(filePath(), lines.join('\n') + '\n');
-  }
+  // A run may have been logged for real while the transcripts were read.
+  const now = entries();
+  appendLines(backfilled.filter((e) => !now.has(e.runId)));
 }
 
 /// The oldest transcript's first user prompt in a run's project dir.

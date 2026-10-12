@@ -1403,6 +1403,50 @@ describe('an adopted pid', () => {
     }
   });
 
+  it('checks every adopted service in one lookup per tick', async () => {
+    vi.useFakeTimers();
+    try {
+      const batches: number[][] = [];
+      let single = 0;
+      let alive = new Set([701, 702]);
+      const pidFor: Record<string, number> = { jobs: 701, mailer: 702 };
+      const { deps } = harness({
+        matchProcesses: async (targets) =>
+          new Map(targets.map((t): [string, ProcessMatch] => [t.serviceId, { pid: pidFor[t.serviceId], command: `run ${t.serviceId}`, kind: 'stale' }])),
+        processStarted: async (pid) => {
+          single++;
+          return alive.has(pid) ? 'Tue Sep 22 10:00:00 2026' : null;
+        },
+        processesStarted: async (pids) => {
+          batches.push([...pids].sort());
+          return new Map(pids.map((pid) => [pid, alive.has(pid) ? 'Tue Sep 22 10:00:00 2026' : null]));
+        },
+      });
+      const specs = [spec({ id: 'jobs' }), spec({ id: 'mailer' })];
+      const sup = new Supervisor('mine', specs, specs.map((s) => binding(s.id)), deps);
+      await sup.start('jobs');
+      await sup.start('mailer');
+      const singleAtAdopt = single;
+
+      await vi.advanceTimersByTimeAsync(ADOPTED_POLL_MS);
+      expect(batches).toEqual([[701, 702]]);
+
+      alive = new Set([702]);
+      await vi.advanceTimersByTimeAsync(ADOPTED_POLL_MS);
+      expect(batches).toEqual([[701, 702], [701, 702]]);
+      expect(sup.runtime('jobs')).toMatchObject({ status: 'stopped', adopted: undefined });
+      expect(sup.runtime('mailer').status).toBe('ready');
+
+      // Only the survivor is asked about from here on.
+      await vi.advanceTimersByTimeAsync(ADOPTED_POLL_MS);
+      expect(batches[2]).toEqual([702]);
+      // The poll never fell back to a ps per pid.
+      expect(single).toBe(singleAtAdopt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('is not trusted as ready by a dependent once it has gone', async () => {
     let alive = true;
     const { deps, spawns } = harness({

@@ -262,14 +262,16 @@ describe('parseRouteReply', () => {
 
 describe('describeTeamCheckpoints', () => {
   it('always includes approving the plan, and only the checkpoints that are on', () => {
-    expect(describeTeamCheckpoints({ askFirst: false, reviewBeforeChallenge: false, finalReview: false })).toEqual([
-      'You approve the plan',
-    ]);
+    expect(
+      describeTeamCheckpoints({ askFirst: false, reviewBeforeChallenge: false, finalReview: false, approveRoomWork: false }),
+    ).toEqual(['You approve the plan']);
+    // Follow-up work is held unless the team turned that off.
     expect(describeTeamCheckpoints({ askFirst: true, reviewBeforeChallenge: true, finalReview: true })).toEqual([
       'May ask questions first',
       'you approve the plan',
       'you read the draft before each challenge',
       'you review the pack',
+      'you start follow-up work',
     ]);
   });
 });

@@ -3305,10 +3305,14 @@ export class WorkerEngine {
     const each = Math.floor(budget / artifacts.length);
     return (await Promise.all(artifacts.map(async (a) => {
         let body = a.body;
+        // A file is read only up to a cap, so how much was left out has to
+        // come from its real size, not from the capped read.
+        let fileBytes: number | undefined;
         if (body === undefined && a.sourcePath) {
           try {
             const fh = await fs.promises.open(a.sourcePath, 'r');
             try {
+              fileBytes = (await fh.stat()).size;
               const buf = Buffer.alloc(Math.min(each * 4 + 4, 1_048_576));
               const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
               const head = buf.subarray(0, bytesRead);
@@ -3321,7 +3325,13 @@ export class WorkerEngine {
           }
         }
         if (body === undefined) return `--- ${a.name} (file: ${a.sourcePath ?? 'unavailable'})`;
-        const clipped = body.length > each ? `${body.slice(0, each)}\n[… cut to fit; ${body.length - each} more characters]` : body;
+        const shown = body.length > each ? body.slice(0, each) : body;
+        const more =
+          fileBytes !== undefined
+            ? fileBytes - Buffer.byteLength(shown, 'utf-8')
+            : body.length - shown.length;
+        const unit = fileBytes !== undefined ? 'bytes' : 'characters';
+        const clipped = more > 0 ? `${shown}\n[… cut to fit; ${more} more ${unit}]` : body;
         return `--- ${a.name}\n${clipped}`;
       })))
       .join('\n\n');

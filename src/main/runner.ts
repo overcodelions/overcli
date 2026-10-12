@@ -111,7 +111,7 @@ import {
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
 import { blockedMcpServerTools, buildClaudeMcpConfigArg } from './mcpConfig';
-import { seenMcpServers } from './flows/mcpToolCache';
+import { knownMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
 import { isSafeIdSegment } from '../shared/flows/safeId';
@@ -542,6 +542,58 @@ export function shouldSandboxSpawn(
   return true;
 }
 
+/// Where a jailed conversation's package-manager caches go. The jail denies
+/// writes to `~/.npm` and friends, so npm and uv are pointed at a writable
+/// per-conversation scratch dir instead. `root` is injectable for tests.
+export function sandboxScratchDir(conversationId: string, root: string = os.tmpdir()): string {
+  return path.join(root, 'overcli-sandbox', conversationId);
+}
+
+/// How long a scratch dir may sit untouched before the startup sweep takes
+/// it. A flow participant's conversation is rarely deleted, so `release`
+/// alone would leave most of them behind for good.
+const SANDBOX_SCRATCH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/// Delete one conversation's scratch dir. Best-effort and async: it is only
+/// a cache, and an npm cache can be big enough that a sync rm would stall
+/// the main process.
+export function removeSandboxScratch(conversationId: string, root?: string): Promise<void> {
+  return fs.promises
+    .rm(sandboxScratchDir(conversationId, root), { recursive: true, force: true })
+    .catch((err) => log('warn', 'runner.sandbox', `could not remove scratch for conv=${conversationId}`, err));
+}
+
+/// Delete every scratch dir not touched within `maxAgeMs`, skipping the ids
+/// in `keep` (conversations with a live process). `spawnFor` bumps a dir's
+/// mtime on each jailed launch, so age measures disuse, not creation.
+export async function sweepSandboxScratch(
+  keep: ReadonlySet<string>,
+  now = Date.now(),
+  maxAgeMs = SANDBOX_SCRATCH_MAX_AGE_MS,
+  root: string = os.tmpdir(),
+): Promise<string[]> {
+  const base = path.join(root, 'overcli-sandbox');
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(base);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const name of names) {
+    if (keep.has(name)) continue;
+    try {
+      const st = await fs.promises.stat(path.join(base, name));
+      if (now - st.mtimeMs < maxAgeMs) continue;
+      await fs.promises.rm(path.join(base, name), { recursive: true, force: true });
+      removed.push(name);
+    } catch {
+      // Raced with another sweep or a launch; leave it for next time.
+    }
+  }
+  return removed;
+}
+
 /// The allowlist as the launch should honour it. An account connector
 /// ("claude.ai Gmail") lives on the user's Claude account, not in any config
 /// file, and `--strict-mcp-config` drops every one of them — so a list that
@@ -563,7 +615,9 @@ export function mcpBlockedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' 
   if (args.backend !== 'claude' || !args.mcpAllowlist?.some(isAccountConnector)) return undefined;
   let seen: string[] = [];
   try {
-    seen = seenMcpServers();
+    // Every server ever reported, not just recent ones: a connector that
+    // aged out of the offer list must still be refused if it comes back.
+    seen = knownMcpServers();
   } catch {
     // No record yet (or no host in a test): config files still count.
   }
@@ -1080,6 +1134,14 @@ export class RunnerManager {
     // life: an idle session produces no event to arm it on.
     this.idleReapTimer = setInterval(() => this.reapIdleSessions(), IDLE_REAP_INTERVAL_MS);
     this.idleReapTimer.unref?.();
+    // Jailed conversations leave npm/uv caches in $TMPDIR. Sweep the ones
+    // nobody has launched in a week, once, after startup has settled.
+    const scratchSweep = setTimeout(() => {
+      void sweepSandboxScratch(new Set(this.procs.keys())).then((removed) => {
+        if (removed.length > 0) log('info', 'runner.sandbox', `swept ${removed.length} stale sandbox scratch dirs`);
+      });
+    }, 60_000);
+    scratchSweep.unref?.();
   }
 
   /// Conversations main currently believes are busy. The renderer
@@ -2213,6 +2275,8 @@ export class RunnerManager {
     this.reviewer.dispose(conversationId);
     this.codexExecTranscriptByConversation.delete(conversationId);
     this.claudeSdkFallbackConvs.delete(conversationId);
+    // The conversation is going (or parked); its sandbox caches go with it.
+    void removeSandboxScratch(conversationId);
     // Drop any running record too: no transport is left to emit the
     // `running: false` that would normally clear it, and the reconcile
     // sweep only runs while something is marked running.
@@ -3717,7 +3781,15 @@ export class RunnerManager {
     const binary = this.resolveBinary(args.backend);
     const env = this.buildEnv(binary, args.backend);
     if (shouldSandboxSpawn(args)) {
-      const scratch = path.join(os.tmpdir(), 'overcli-sandbox', args.conversationId);
+      const scratch = sandboxScratchDir(args.conversationId);
+      try {
+        // Marks the dir in use, so the startup sweep measures disuse.
+        fs.mkdirSync(scratch, { recursive: true });
+        const now = new Date();
+        fs.utimesSync(scratch, now, now);
+      } catch {
+        // npm and uv create it themselves; this is only the sweep's clock.
+      }
       env.npm_config_cache = path.join(scratch, 'npm');
       env.UV_CACHE_DIR = path.join(scratch, 'uv');
     }

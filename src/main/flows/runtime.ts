@@ -1950,7 +1950,7 @@ export class FlowRuntimeImpl {
       flowStep: true,
       // A run with no interactive owner does not inherit the global Chrome
       // setting; only an explicit `flows:setChrome` turns it on.
-      chrome: run.chrome ?? false,
+      chrome: this.browseFor(run, participant.backend),
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -3176,7 +3176,7 @@ export class FlowRuntimeImpl {
       permissionMode: this.resolvePermissionMode(run, step),
       // Runtime-driven, not a user hijack — see SendArgs.flowStep.
       flowStep: true,
-      chrome: run.chrome ?? false,
+      chrome: this.browseFor(run, stepModel.backend),
       turbo: step.turbo,
       reviewBackend: step.rebound?.critic.backend ?? null,
       reviewMode: step.rebound?.mode ?? null,
@@ -3298,7 +3298,7 @@ export class FlowRuntimeImpl {
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, next),
       turbo: next.turbo,
-      chrome: run.chrome ?? false,
+      chrome: this.browseFor(run, stepModel.backend),
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -3787,7 +3787,7 @@ export class FlowRuntimeImpl {
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
       flowStep: true,
-      chrome: run.chrome ?? false,
+      chrome: this.browseFor(run, stepModel.backend),
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -4268,6 +4268,17 @@ export class FlowRuntimeImpl {
   /// with its step's send would be reused unjailed. See runner.shouldSandboxSpawn.
   private sandboxFlowWrites(): boolean {
     return this.getSettings().sandboxFlowWrites !== false;
+  }
+
+  /// Whether a send browses: Claude in Chrome on claude, network access in
+  /// codex's workspace-write sandbox on codex. Codex has no domain allowlist,
+  /// so a worker's or unattended run gets the network only with the grant for
+  /// external actions — the same grant that lifts its approval prompts.
+  /// Without it the run stays offline: its fetches fail in the sandbox.
+  private browseFor(run: FlowRun, backend: Backend): boolean {
+    if (!run.chrome) return false;
+    if (backend === 'codex' && (run.workerId || run.unattended) && !run.allowExternalActions) return false;
+    return true;
   }
 
   private resolvePermissionMode(run: FlowRun, step: FlowStep): PermissionMode {

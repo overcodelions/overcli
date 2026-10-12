@@ -53,10 +53,13 @@ Three things, and nothing else originates from Overcli itself:
    or local), Overcli connects to it because you asked it to. Nothing is
    pre-connected without your action.
 4. **Workers you set to browse the web** — a worker with "Browse the web"
-   ticked drives your signed-in Chrome through Claude in Chrome, and on Codex
-   asks the workspace-write sandbox for network access. It runs unattended and
-   has no domain allowlist, so only turn it on for jobs that need it. It is
-   off unless you tick it.
+   ticked drives your signed-in Chrome through Claude in Chrome. On Codex it
+   asks the workspace-write sandbox for network access, but only when the
+   worker also has the grant for external actions: Codex's sandbox has no
+   domain allowlist, so a worker without the grant stays offline. Browsing
+   runs unattended, so only turn it on for jobs that need it. It is off unless
+   you tick it — workers a team hires for itself start with no browser and no
+   MCP connectors, whatever the drafter suggested.
 
 ## Permissions & approvals
 
@@ -65,6 +68,24 @@ sensitive actions flow through an approval/permission UI, and the boundary
 between the UI (renderer) and the privileged process (main) is a defined IPC
 contract — the renderer can't bypass the approval gates. Keeping those gates
 honest is explicitly in-scope for security reports.
+
+### Workers and the grant for external actions
+
+Workers run unattended, so nobody is there to click Allow. A worker **without**
+the grant for external actions runs every step in `acceptEdits`: edits inside
+its worktree go through, and anything outside a step's declared tools is
+refused rather than approved. A worker **with** the grant runs in
+`bypassPermissions` — it can push, post, send and call services with your
+credentials, with no prompt. Only give it to workers whose inputs you trust:
+text in a web page, a repo file or an attachment can steer what it does.
+
+**Teams** keep each member's own setting by default ("ask first" is on). You
+can turn it off for a team, and then the pieces of a plan *you approved* run
+with the grant. Work the coordinator hands off from the team's conversation
+never gets the grant, and by default waits for you to start it: it began on
+the model's say-so, not on a plan you read. Cancelling a team task stops its
+running pieces and nothing from them lands afterwards, and away mode holds
+every team stage until you come back or start it yourself.
 
 ## Flow-step sandbox (macOS)
 

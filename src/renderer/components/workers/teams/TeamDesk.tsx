@@ -1508,17 +1508,24 @@ function WaitingCard({ task, team }: { task: TeamTask; team: Team }) {
       <span className="text-xs font-semibold text-ink">
         {waiting.reason === "checkpoint"
           ? "Checkpoint"
-          : waiting.reason === "budget"
-            ? "Budget reached"
-            : hireFailed
-              ? "A hire needs you"
-              : "A stage needs you"}
+          : waiting.reason === "away"
+            ? "Crew away"
+            : waiting.reason === "budget"
+              ? "Budget reached"
+              : hireFailed
+                ? "A hire needs you"
+                : "A stage needs you"}
       </span>
       <p className="text-sm text-ink">{waiting.message}</p>
       <div className="flex flex-wrap gap-2">
         {waiting.reason === "checkpoint" && (
           <button className={primaryBtn} disabled={busy} onClick={() => void continueTask(task.id)}>
             Continue
+          </button>
+        )}
+        {waiting.reason === "away" && (
+          <button className={primaryBtn} disabled={busy} onClick={() => void continueTask(task.id)}>
+            Start now
           </button>
         )}
         {waiting.reason === "budget" && (

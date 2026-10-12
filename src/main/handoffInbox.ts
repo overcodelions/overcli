@@ -27,10 +27,20 @@ export function defaultInboxDir(): string {
 /// lands as one rescan.
 const RESCAN_DEBOUNCE_MS = 150;
 
+/// How long a handled or rejected handoff stays in `done/` or `rejected/`
+/// for inspection. Long enough to look back on last month's work; short
+/// enough that the folders don't grow for the life of the machine.
+export const HANDOFF_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/// A purge after a move is skipped if one ran this recently: a burst of
+/// resolves needn't each list both folders.
+const PURGE_EVERY_MS = 60 * 60 * 1000;
+
 export class HandoffInbox {
   private pending = new Map<string, { file: string; handoff: InboundHandoff }>();
   private watcher: fs.FSWatcher | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private lastPurge = 0;
 
   constructor(
     private readonly dir: string,
@@ -44,6 +54,7 @@ export class HandoffInbox {
     for (const sub of ['', 'done', 'rejected']) {
       fs.mkdirSync(path.join(this.dir, sub), { recursive: true });
     }
+    this.purge();
     this.scan();
     try {
       this.watcher = fs.watch(this.dir, { persistent: false }, () => this.scheduleScan());
@@ -60,19 +71,48 @@ export class HandoffInbox {
   }
 
   /// Handled — started as a conversation or dismissed. Moved, not deleted,
-  /// so what came in stays inspectable.
+  /// so what came in stays inspectable (for `HANDOFF_RETENTION_MS`).
   resolve(id: string): boolean {
     const entry = this.pending.get(id);
     if (!entry) return false;
-    try {
-      fs.renameSync(path.join(this.dir, entry.file), path.join(this.dir, 'done', entry.file));
-    } catch {
-      // Already gone (the sender withdrew it, or a second window beat us).
-      // Either way it is no longer pending.
-    }
+    // Already gone (the sender withdrew it, or a second window beat us)
+    // fails quietly: either way it is no longer pending.
+    this.moveTo('done', entry.file);
     this.pending.delete(id);
     this.onChange(this.list());
     return true;
+  }
+
+  /// Delete what has sat in `done/` and `rejected/` past the retention
+  /// window. Age is the file's mtime, which `moveTo` sets to the move, so it
+  /// counts from when the handoff was handled, not when it was sent.
+  /// Best-effort: a file that cannot be read or removed waits for next time.
+  /// Exposed for tests, which pass their own clock.
+  purge(now = Date.now(), maxAgeMs = HANDOFF_RETENTION_MS): void {
+    this.lastPurge = now;
+    for (const sub of ['done', 'rejected']) {
+      let names: string[];
+      try {
+        names = fs.readdirSync(path.join(this.dir, sub));
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        const full = path.join(this.dir, sub, name);
+        try {
+          const stat = fs.lstatSync(full);
+          // Files and links only: anything else in there is not ours.
+          if (stat.isDirectory() || now - stat.mtimeMs < maxAgeMs) continue;
+          fs.unlinkSync(full);
+        } catch {
+          // Raced with another window's purge, or not ours to remove.
+        }
+      }
+    }
+  }
+
+  private purgeIfDue(): void {
+    if (Date.now() - this.lastPurge >= PURGE_EVERY_MS) this.purge();
   }
 
   dispose(): void {
@@ -155,10 +195,22 @@ export class HandoffInbox {
   }
 
   private moveTo(sub: 'done' | 'rejected', name: string): void {
+    const dest = path.join(this.dir, sub, name);
     try {
-      fs.renameSync(path.join(this.dir, name), path.join(this.dir, sub, name));
+      fs.renameSync(path.join(this.dir, name), dest);
     } catch {
       // Gone already.
+      return;
     }
+    try {
+      // A rename keeps the sender's mtime; restamp it so retention counts
+      // from now. `lutimes`, so a file swapped for a link since the scan
+      // restamps the link and never whatever it points at.
+      const now = new Date();
+      fs.lutimesSync(dest, now, now);
+    } catch {
+      // Then it ages from when it was sent, and simply goes sooner.
+    }
+    this.purgeIfDue();
   }
 }

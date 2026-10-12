@@ -659,6 +659,33 @@ export async function processStarted(
   return alive(pid) ? undefined : null;
 }
 
+/// `processStarted` for many pids in one `ps` — the adopted-service poll asks
+/// about a whole stack each tick, and a `ps` per pid is a process spawned per
+/// leftover every five seconds. `-p` takes a comma list; a pid that is not
+/// running is simply absent from the output (and ps exits 1 if none are,
+/// which `run` still reads as "printed nothing").
+///
+/// A pid missing from the output is `null` when it is gone and `undefined`
+/// when it is alive but ps did not report it — the same reading as above.
+/// `undefined` for the whole answer where this cannot be told (Windows).
+export async function processesStarted(
+  pids: readonly number[],
+  runner: LookupRunner = run,
+  platform: NodeJS.Platform = process.platform,
+  alive: (pid: number) => boolean = pidAlive,
+): Promise<ReadonlyMap<number, string | null | undefined>> {
+  const out = new Map<number, string | null | undefined>();
+  const valid = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 1);
+  if (platform === 'win32' || valid.length === 0) return out;
+  const text = (await runner('ps', ['-o', 'pid=,lstart=', '-p', valid.join(',')])) ?? '';
+  for (const line of text.split('\n')) {
+    const m = /^\s*(\d+)\s+(\S.*?)\s*$/.exec(line);
+    if (m) out.set(Number(m[1]), m[2]);
+  }
+  for (const pid of valid) if (!out.has(pid)) out.set(pid, alive(pid) ? undefined : null);
+  return out;
+}
+
 /// Signal 0 checks existence without signalling. EPERM means it exists but is not ours.
 function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; }

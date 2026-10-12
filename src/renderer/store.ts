@@ -2043,25 +2043,20 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async captureWorkBranch(conversationId) {
-    const s = get();
-    let cwd: string | undefined;
-    for (const p of s.projects) {
-      const c = p.conversations.find((x) => x.id === conversationId);
-      if (c) {
-        cwd = c.worktreePath ?? p.path;
-        break;
-      }
-    }
-    // A workspace chat spans repos, so it has no one branch — unless it has
-    // a worktree of its own.
-    cwd ??= s.workspaces.flatMap((w) => w.conversations ?? []).find((x) => x.id === conversationId)?.worktreePath;
-    if (!cwd) return;
+    const where = workBranchCheckout(get(), conversationId);
+    const started = turnStartBranch.get(conversationId);
+    turnStartBranch.delete(conversationId);
+    if (!where) return;
     try {
-      const res = await window.overcli.invoke('git:currentBranch', { cwd });
+      const res = await window.overcli.invoke('git:currentBranch', { cwd: where.cwd });
       if (!res.isRepo || !res.branch) return;
       const conv = findConversation(get(), conversationId);
       if (!conv) return;
-      const workBranch = workBranchAfterTurn(conv, res.branch);
+      const workBranch = workBranchAfterTurn(
+        conv,
+        res.branch,
+        where.shared ? { turnStartedOn: started ? await started : null } : undefined,
+      );
       if (workBranch === conv.workBranch) return;
       mutateConversation(set, get, conversationId, (c) => ({ ...c, workBranch }));
       // The full save, not a patch: clearing the field sends `undefined`,
@@ -3535,6 +3530,10 @@ export const useStore = create<StoreState>((set, get) => ({
           : c.name,
     }));
 
+    // Where a shared checkout stood when this turn began, so the turn's end
+    // can tell whether THIS chat moved it (see captureWorkBranch).
+    noteTurnStartBranch(get(), conversationId);
+
     await window.overcli.invoke('runner:send', {
       conversationId,
       prompt: outgoingPrompt,
@@ -4803,6 +4802,35 @@ function mutateConversation(
     });
     return found ? { workspaces } : {};
   });
+}
+
+/// The checkout a chat's work branch is read from, and whether other chats
+/// share it. A project chat without a worktree of its own sits in the
+/// project's main folder, which every such chat shares. A workspace chat
+/// spans repos, so it has no one branch — unless it has a worktree of its own.
+function workBranchCheckout(s: StoreState, conversationId: UUID): { cwd: string; shared: boolean } | null {
+  for (const p of s.projects) {
+    const c = p.conversations.find((x) => x.id === conversationId);
+    if (c) return c.worktreePath ? { cwd: c.worktreePath, shared: false } : { cwd: p.path, shared: true };
+  }
+  const wt = s.workspaces.flatMap((w) => w.conversations ?? []).find((x) => x.id === conversationId)?.worktreePath;
+  return wt ? { cwd: wt, shared: false } : null;
+}
+
+/// Per conversation, the branch its shared checkout was on when its current
+/// turn began. Held as the pending read so a fast turn can still await it.
+const turnStartBranch = new Map<UUID, Promise<string | null>>();
+
+function noteTurnStartBranch(s: StoreState, conversationId: UUID): void {
+  const where = workBranchCheckout(s, conversationId);
+  if (!where?.shared) return;
+  turnStartBranch.set(
+    conversationId,
+    window.overcli
+      .invoke('git:currentBranch', { cwd: where.cwd })
+      .then((res) => (res.isRepo && res.branch ? res.branch : null))
+      .catch(() => null),
+  );
 }
 
 /// Incoming stream events either append to the tail OR replace an existing

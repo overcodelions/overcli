@@ -1,10 +1,24 @@
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
+import fs, { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mcpMocks = vi.hoisted(() => ({
+  blockedMcpServerTools: vi.fn((..._args: unknown[]): string[] => []),
+  knownMcpServers: vi.fn((): string[] => []),
+}));
 vi.mock('./mcpConfig', () => ({
   buildClaudeMcpConfigArg: (names: string[]) => JSON.stringify({ mcpServers: Object.fromEntries(names.map((name) => [name, { command: name }])) }),
-  blockedMcpServerTools: () => [],
+  blockedMcpServerTools: mcpMocks.blockedMcpServerTools,
+}));
+vi.mock('./flows/mcpToolCache', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./flows/mcpToolCache')>()),
+  knownMcpServers: mcpMocks.knownMcpServers,
+}));
+// The write jail is macOS-only; pretend it is available so the refusal
+// paths below run on any CI host.
+vi.mock('./sandbox/seatbeltProfile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./sandbox/seatbeltProfile')>()),
+  sandboxSupported: () => true,
 }));
 import {
   codexPermissionMapping,
@@ -35,6 +49,9 @@ import {
   resolveMcpScope,
   claudeMcpLaunchFingerprint,
   sanitizeSpawnArgs,
+  sandboxScratchDir,
+  removeSandboxScratch,
+  sweepSandboxScratch,
   RunnerManager,
 } from './runner';
 import type { Backend, StreamEvent } from '../shared/types';
@@ -1082,5 +1099,188 @@ describe('sanitizeSpawnArgs', () => {
     expect(safe).toEqual(['--mcp-config', '<mcp config redacted>', '<mcp config redacted>', '--strict-mcp-config']);
     expect(safe.join(' ')).not.toContain('Authorization');
     expect(safe.join(' ')).not.toContain('secret');
+  });
+});
+
+describe('RunnerManager.send — sandbox on the SDK transport', () => {
+  // The SDK transport spawns claude inside the agent SDK, outside
+  // `spawnFor`, so the write jail cannot reach it. A jailed flow step that
+  // lands there must stop, not run uncontained.
+  function setup() {
+    const events: Array<{ type: string; conversationId?: string; message?: string }> = [];
+    const manager = new RunnerManager((e) => void events.push(e as never), () => ({ backends: {} }) as never);
+    const priv = manager as unknown as {
+      sendClaudeSdk: (args: unknown) => { ok: boolean };
+      claudeSdkFallbackConvs: Set<string>;
+    };
+    const sdk = vi.fn(() => ({ ok: true as const }));
+    priv.sendClaudeSdk = sdk;
+    return { manager, priv, events, sdk };
+  }
+  const base = { prompt: 'build', backend: 'claude', cwd: '/work/acme-orders', model: '', permissionMode: 'acceptEdits' } as const;
+
+  it('refuses a jailed step on the SDK transport and says why', () => {
+    const { manager, events, sdk } = setup();
+    const res = manager.send({ ...base, conversationId: 'sdk-jailed', claudeTransport: 'sdk', sandboxFsWrites: true } as never);
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('cannot run sandboxed') });
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', conversationId: 'sdk-jailed' }));
+    expect(sdk).not.toHaveBeenCalled();
+  });
+
+  it('refuses a jailed step pinned to the SDK by the broker fallback', () => {
+    // The step asked for the CLI; the earlier broker failure moved it.
+    const { manager, priv, sdk } = setup();
+    priv.claudeSdkFallbackConvs.add('sdk-pinned');
+    const res = manager.send({ ...base, conversationId: 'sdk-pinned', sandboxFsWrites: true } as never);
+    expect(res).toMatchObject({ ok: false });
+    expect(sdk).not.toHaveBeenCalled();
+  });
+
+  it('runs an unjailed turn on the SDK transport as before', () => {
+    const { manager, sdk } = setup();
+    const res = manager.send({ ...base, conversationId: 'sdk-chat', claudeTransport: 'sdk' } as never);
+    expect(res).toEqual({ ok: true });
+    expect(sdk).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('RunnerManager.send — MCP scope and disallowed tools', () => {
+  // A list that names an account connector cannot go strict (strict drops
+  // the connector), so every other known server is blocked by name instead.
+  function setup() {
+    const manager = new RunnerManager(() => {}, () => ({ backends: {} }) as never);
+    const priv = manager as unknown as {
+      prepareClaudeBroker: (args: unknown) => Promise<void>;
+      sendSubprocess: (args: unknown) => { ok: boolean };
+      toBackendArgs: (args: unknown) => { disallowedTools?: string[]; skipGlobalMcp?: boolean };
+    };
+    let sent: unknown;
+    const delivered = new Promise<void>((resolve) => {
+      priv.prepareClaudeBroker = async () => {};
+      priv.sendSubprocess = (args) => {
+        sent = args;
+        resolve();
+        return { ok: true };
+      };
+    });
+    return { manager, priv, delivered, sent: () => sent };
+  }
+
+  beforeEach(() => {
+    mcpMocks.blockedMcpServerTools.mockReset().mockReturnValue([]);
+    mcpMocks.knownMcpServers.mockReset().mockReturnValue([]);
+  });
+
+  it('blocks every known server off the list, stale ones included', async () => {
+    mcpMocks.knownMcpServers.mockReturnValue(['acme-tracker', 'claude.ai Acme Calendar', 'claude.ai Acme Mail']);
+    mcpMocks.blockedMcpServerTools.mockReturnValue(['mcp__acme-tracker', 'mcp__claude_ai_Acme_Calendar']);
+    const { manager, priv, delivered, sent } = setup();
+
+    expect(
+      manager.send({
+        conversationId: 'mcp-connector', prompt: 'read mail', backend: 'claude', cwd: '/work/acme-orders', model: '',
+        permissionMode: 'acceptEdits', mcpAllowlist: ['claude.ai Acme Mail'],
+      } as never),
+    ).toEqual({ ok: true });
+    await delivered;
+
+    const backendArgs = priv.toBackendArgs(sent());
+    expect(backendArgs.disallowedTools).toEqual(['mcp__acme-tracker', 'mcp__claude_ai_Acme_Calendar']);
+    // Not strict: strict would drop the connector the list asked for.
+    expect(backendArgs.skipGlobalMcp).toBeUndefined();
+    expect(mcpMocks.blockedMcpServerTools).toHaveBeenCalledWith(
+      ['claude.ai Acme Mail'],
+      '/work/acme-orders',
+      undefined,
+      ['acme-tracker', 'claude.ai Acme Calendar', 'claude.ai Acme Mail'],
+    );
+  });
+
+  it('still blocks config-file servers when the seen record cannot be read', async () => {
+    mcpMocks.knownMcpServers.mockImplementation(() => {
+      throw new Error('no host');
+    });
+    mcpMocks.blockedMcpServerTools.mockReturnValue(['mcp__acme-tracker']);
+    const { manager, priv, delivered, sent } = setup();
+    manager.send({
+      conversationId: 'mcp-no-record', prompt: 'p', backend: 'claude', cwd: '/repo', model: '',
+      permissionMode: 'acceptEdits', mcpAllowlist: ['claude.ai Acme Mail'],
+    } as never);
+    await delivered;
+    expect(priv.toBackendArgs(sent()).disallowedTools).toEqual(['mcp__acme-tracker']);
+    expect(mcpMocks.blockedMcpServerTools).toHaveBeenCalledWith(['claude.ai Acme Mail'], '/repo', undefined, []);
+  });
+
+  it('goes strict with no deny list when the allowlist is config servers only', async () => {
+    const { manager, priv, delivered, sent } = setup();
+    manager.send({
+      conversationId: 'mcp-config-only', prompt: 'p', backend: 'claude', cwd: '/repo', model: '',
+      permissionMode: 'acceptEdits', mcpAllowlist: ['acme-tracker'],
+    } as never);
+    await delivered;
+    const backendArgs = priv.toBackendArgs(sent());
+    expect(backendArgs.skipGlobalMcp).toBe(true);
+    expect(backendArgs.disallowedTools).toBeUndefined();
+    expect(mcpMocks.blockedMcpServerTools).not.toHaveBeenCalled();
+  });
+
+  it('adds no deny list for a backend other than claude', () => {
+    const { manager, priv, sent } = setup();
+    manager.send({
+      conversationId: 'mcp-codex', prompt: 'p', backend: 'codex', cwd: '/repo', model: '',
+      permissionMode: 'acceptEdits', mcpAllowlist: ['claude.ai Acme Mail'],
+    } as never);
+    expect(priv.toBackendArgs(sent()).disallowedTools).toBeUndefined();
+    expect(mcpMocks.blockedMcpServerTools).not.toHaveBeenCalled();
+  });
+});
+
+describe('sandbox scratch cleanup', () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'scratch-test-'));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function makeScratch(id: string, ageMs: number): string {
+    const dir = sandboxScratchDir(id, root);
+    fs.mkdirSync(path.join(dir, 'npm'), { recursive: true });
+    const at = new Date(Date.now() - ageMs);
+    fs.utimesSync(dir, at, at);
+    return dir;
+  }
+
+  it('removes one conversation\'s scratch and tolerates a missing one', async () => {
+    const dir = makeScratch('conv-a', 0);
+    await removeSandboxScratch('conv-a', root);
+    expect(fs.existsSync(dir)).toBe(false);
+    await expect(removeSandboxScratch('never-made', root)).resolves.toBeUndefined();
+  });
+
+  it('sweeps only dirs untouched for a week, and never a live conversation', async () => {
+    const week = 7 * 24 * 60 * 60 * 1000;
+    const stale = makeScratch('stale', week + 1000);
+    const live = makeScratch('live', week + 1000);
+    const recent = makeScratch('recent', 60_000);
+    const removed = await sweepSandboxScratch(new Set(['live']), Date.now(), week, root);
+    expect(removed).toEqual(['stale']);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(live)).toBe(true);
+    expect(fs.existsSync(recent)).toBe(true);
+  });
+
+  it('returns nothing when no jailed conversation ever ran', async () => {
+    await expect(sweepSandboxScratch(new Set(), Date.now(), 0, root)).resolves.toEqual([]);
+  });
+
+  it('release() drops the conversation\'s scratch', async () => {
+    const id = `release-${Date.now()}`;
+    const dir = sandboxScratchDir(id);
+    fs.mkdirSync(dir, { recursive: true });
+    const manager = new RunnerManager(() => {}, () => ({ backends: {} }) as never);
+    manager.release(id);
+    await vi.waitFor(() => expect(fs.existsSync(dir)).toBe(false));
   });
 });
