@@ -4,6 +4,43 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-11
+
+### Added
+- **Teams** (#592, #602, #604, #605). Put workers together on one task. Write a brief and a coordinator plans the stages — who contributes, who challenges — for you to approve, then the members work their pieces, files land in a shared folder, and the coordinator writes the final pack. After the pack, ask the team follow-up questions in its room and hand work back to a member.
+  - **Hire as you build:** describe the team for a suggested roster, or hire for one role. A plan can propose hires, made when you approve it. Hires join the crew on demand, with no shifts, and names never collide.
+  - **Projects and workspaces:** a team works in one project or workspace, a task can pick another, and pieces and hires go there. Optionally, only members from that project.
+  - **One branch per task:** `team/<task>` in every repo the task works in. Each piece forks from it and merges back in a checkout of the task's own, never yours. A conflict or failed commit stops the stage (Retry / Continue without), and the pack offers "Merge into <base>" per repo.
+  - **The plan as swimlanes:** a lane per member and the coordinator, a column per stage, with follow-up work after the pack in its own area. Clicking a cell opens that piece's file or run.
+  - **Follow-up work:** work handed off in the conversation queues behind work already running, and the conversation stays open while it runs.
+  - **One Work entry per team task**, opening the team desk on that task. Finished tasks read as Pack / Conversation / Brief & plan, and Today shows one row per task.
+  - The empty Workers page offers starter teams (Release team, Proposal team, Review panel), and **New team** shows even with nobody hired.
+- **Flows can use Claude Design** (#594). The flow designer lists the `Artifact` tool on claude steps that produce a design, deck or document, and marks them `effect: external`. The flow editor offers Claude Design and WebSearch in the tool picker. Existing flows keep their tool lists.
+- Claude Haiku 5.5 (`claude-haiku-5-5`) in the model catalog as a fast model (#602).
+
+### Security
+- **Team pieces keep each member's own permissions by default** (#605). Turning "ask first" off for a team gives pieces of a plan you approved the grant for external actions. Work handed off from the room never gets it, and waits for you to start it unless you turn "Approve follow-up work first" off. Existing teams get the new defaults.
+- Workers a team hires start with no browser and no MCP connectors, whatever the drafter suggested (#605).
+- Codex runs for workers get sandbox network access only with the grant for external actions (#605). Codex's sandbox has no domain allowlist. See `docs/SECURITY.md`.
+- MCP connectors seen at any time are blocked when a step's allowlist leaves them out, not only those seen in the last 30 days (#605).
+- Dependency updates clear `npm audit` for production: `@modelcontextprotocol/sdk` 1.32.1, `proxy-addr`, `fast-uri`, `ip-address`, and chokidar 4, which drops `braces` (#606).
+
+### Fixed
+- Cancelling a team task stops its running pieces, and nothing they finish lands afterwards (#605).
+- Away mode holds team stages: a task shows "Crew away" with Start now, and carries on when you come back (#605).
+- Workspace repos whose names slug alike each get their own task checkout (#605).
+- The sibling-repo card appears on Claude turns again (#605).
+- A re-run of an aborted run replaces its failed work-log entry (#605).
+- A chat on a shared checkout is no longer filed under a branch another chat switched to (#605).
+- A wrap-up's "more bytes" note counts from the file's real size (#605).
+- Reusing a worktree whose folder was deleted prunes it and creates a fresh one (#605).
+- Spring readiness probes the security filter lets through, Boot 1 management paths, and Tiltfile start lines are detected for services (#592).
+
+### Changed
+- New teams default to a $1000 per-task budget (#602).
+- Service file watching uses chokidar 4: it watches each glob's base folder and matches changes itself (#606).
+- Faster and lighter in the background: team task writes are coalesced, the work log is cached, branch status is capped at the newest 150 branches, prompt search keeps a pre-lowered copy, the handoff inbox purges `done/` and `rejected/` after 30 days, adopted services share one `ps` per poll, and per-conversation sandbox folders are cleaned up (#605).
+
 ## [0.20.1] - 2026-10-04
 
 ### Added
@@ -614,7 +651,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/overcodelions/overcli/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/overcodelions/overcli/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/overcodelions/overcli/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/overcodelions/overcli/compare/v0.19.0...v0.19.1
