@@ -51,6 +51,7 @@ import {
   portOwners,
   portOwnersFor,
   processStarted,
+  processesStarted,
   stopPids,
   type OwnerContext,
 } from './portOwners';
@@ -1772,6 +1773,7 @@ export class ServicesManager {
         }));
       },
       processStarted: (pid) => processStarted(pid),
+      processesStarted: (pids) => processesStarted(pids),
       // The tree, not the pid: an adopted Gradle service is wrapper, daemon
       // and app, and the app is the one holding its ports.
       stopProcess: async (pid) => {

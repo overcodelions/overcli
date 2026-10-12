@@ -3,8 +3,8 @@ import { useStore } from '../store';
 import { useRunnerEvents } from '../runnersStore';
 import { findConvLocation } from '../conversationLookup';
 import { isEverydayProject } from '@shared/everydayProjects';
-import { siblingsFromWritten, writtenPaths } from '../siblingRepos';
-import type { StreamEvent, UUID } from '@shared/types';
+import { scanWritten, siblingsFromWritten, type WrittenScan } from '../siblingRepos';
+import type { UUID } from '@shared/types';
 
 /// Offers once per conversation per app session; "Stay here" means stay.
 const dismissed = new Set<UUID>();
@@ -23,28 +23,17 @@ export function SiblingRepoCard({ conversationId }: { conversationId: UUID }) {
   const openWorkspaceWith = useStore((s) => s.openWorkspaceWith);
   const events = useRunnerEvents(conversationId);
   const [hidden, setHidden] = useState(() => dismissed.has(conversationId));
-  const scan = useRef<{ events: readonly StreamEvent[] | null; count: number; written: string[] }>({
-    events: null,
-    count: 0,
-    written: [],
-  });
+  const scan = useRef<WrittenScan | null>(null);
 
   const location = findConvLocation({ projects, workspaces }, conversationId);
   const owner = location?.kind === 'project' ? location.project : null;
   const conversation = location?.conversation;
 
   const edits = useMemo(() => {
-    if (events && (events.length < scan.current.count || events[0] !== scan.current.events?.[0])) {
-      scan.current = { events, count: 0, written: [] };
-    }
-    if (events) {
-      scan.current.written.push(...writtenPaths(events, scan.current.count));
-      scan.current.count = events.length;
-      scan.current.events = events;
-    }
+    if (events) scan.current = scanWritten(scan.current, events);
     // Skipped once dismissed: this reruns as the transcript streams.
     return !hidden && owner && !isEverydayProject(owner) && events
-      ? siblingsFromWritten(owner, projects, scan.current.written).filter((e) => !isEverydayProject(e.project))
+      ? siblingsFromWritten(owner, projects, scan.current?.written ?? []).filter((e) => !isEverydayProject(e.project))
       : [];
   }, [hidden, owner, projects, events]);
 

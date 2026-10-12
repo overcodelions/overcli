@@ -336,6 +336,19 @@ describe('git status', () => {
     expect(workBranchAfterTurn({}, 'feat/b')).toBeUndefined();
   });
 
+  it('on a shared checkout, takes a branch only from the chat whose turn moved it', () => {
+    const c = { baseBranch: 'main' };
+    // This turn moved main -> feat/b.
+    expect(workBranchAfterTurn(c, 'feat/b', { turnStartedOn: 'main' })).toBe('feat/b');
+    // Another chat moved the checkout before this turn began: not ours.
+    expect(workBranchAfterTurn(c, 'feat/b', { turnStartedOn: 'feat/b' })).toBeUndefined();
+    expect(workBranchAfterTurn({ ...c, workBranch: 'feat/a' }, 'feat/b', { turnStartedOn: 'feat/b' })).toBe('feat/a');
+    // Never saw where the turn began: keep what it had.
+    expect(workBranchAfterTurn({ ...c, workBranch: 'feat/a' }, 'feat/b', { turnStartedOn: null })).toBe('feat/a');
+    // Moved back to where the chat started, during its own turn.
+    expect(workBranchAfterTurn({ ...c, workBranch: 'feat/a' }, 'main', { turnStartedOn: 'feat/a' })).toBeUndefined();
+  });
+
   it('marks a branch landed when its own commits are in the trunk, not when it was never committed to', () => {
     const base = { local: true, remote: true, trunk: 'main', ahead: 0, behind: 0, unpushed: 0, inTrunk: true };
     const build = (lastCommitAt: number) =>

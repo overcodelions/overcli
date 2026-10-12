@@ -319,3 +319,26 @@ describe('the Today digest headline', () => {
     expect(run.digest).toEqual({ headline: 'No regressions in the last 3 merges', points: ['2 flaky tests'] });
   });
 });
+
+describe('FlowRuntimeImpl browsing', () => {
+  const runtime = new FlowRuntimeImpl(
+    { send: () => ({ ok: true }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+    () => {},
+    () => [],
+    () => ({ backends: {} }) as never,
+  );
+  const browseFor = (run: object, backend: string): boolean =>
+    (runtime as unknown as { browseFor: (r: object, b: string) => boolean }).browseFor(run, backend);
+
+  it('gives a codex worker the network only with the grant for external actions', () => {
+    expect(browseFor({ chrome: true, workerId: 'w1' }, 'codex')).toBe(false);
+    expect(browseFor({ chrome: true, unattended: true }, 'codex')).toBe(false);
+    expect(browseFor({ chrome: true, workerId: 'w1', allowExternalActions: true }, 'codex')).toBe(true);
+  });
+
+  it('leaves Claude in Chrome and runs you started yourself as they were', () => {
+    expect(browseFor({ chrome: true, workerId: 'w1' }, 'claude')).toBe(true);
+    expect(browseFor({ chrome: true }, 'codex')).toBe(true);
+    expect(browseFor({ workerId: 'w1', allowExternalActions: true }, 'codex')).toBe(false);
+  });
+});

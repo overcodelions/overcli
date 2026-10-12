@@ -95,11 +95,38 @@ export function deleteTeam(id: string): void {
   }
 }
 
-export function saveTeamTask(task: TeamTask): void {
+/// Tasks waiting to be written. A room exchange persists its task after every
+/// message, and a long conversation makes each write bigger, so writes are
+/// coalesced: the latest state of each task goes to disk once the burst
+/// settles, off the call that changed it. `flushTeamTasks` writes the rest
+/// now (on quit).
+const pendingTasks = new Map<string, TeamTask>();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+const TASK_WRITE_DELAY_MS = 400;
+
+function writeTask(task: TeamTask): void {
   writeAtomic(recordPath(tasksDir(), task.id, 'team task'), JSON.stringify(task), task.id);
 }
 
+export function saveTeamTask(task: TeamTask): void {
+  // Checked now, not at flush: a bad id is the caller's bug to see.
+  recordPath(tasksDir(), task.id, 'team task');
+  pendingTasks.set(task.id, task);
+  if (flushTimer) return;
+  flushTimer = setTimeout(flushTeamTasks, TASK_WRITE_DELAY_MS);
+  flushTimer.unref?.();
+}
+
+export function flushTeamTasks(): void {
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = null;
+  const due = [...pendingTasks.values()];
+  pendingTasks.clear();
+  for (const task of due) writeTask(task);
+}
+
 export function loadAllTeamTasks(): TeamTask[] {
+  flushTeamTasks();
   return loadAll<TeamTask>(tasksDir(), (raw) => {
     const t = raw as TeamTask;
     if (!t || typeof t.id !== 'string' || typeof t.teamId !== 'string' || !Array.isArray(t.stages)) return null;
@@ -108,6 +135,7 @@ export function loadAllTeamTasks(): TeamTask[] {
 }
 
 export function deleteTeamTask(id: string): void {
+  pendingTasks.delete(id);
   try {
     fs.rmSync(recordPath(tasksDir(), id, 'team task'), { force: true });
   } catch {

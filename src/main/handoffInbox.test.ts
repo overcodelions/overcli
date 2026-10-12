@@ -141,4 +141,43 @@ describe('HandoffInbox', () => {
     box.scan();
     expect(box.list()).toEqual([]);
   });
+
+  it('purges handled and rejected entries past the retention window', () => {
+    const box = open();
+    const day = 24 * 60 * 60 * 1000;
+    const old = new Date(Date.now() - 31 * day);
+    for (const [sub, name] of [['done', 'old.json'], ['rejected', 'old.json'], ['rejected', 'old.json.reason.txt']]) {
+      fs.writeFileSync(path.join(dir, sub, name), '{}');
+      fs.utimesSync(path.join(dir, sub, name), old, old);
+    }
+    fs.writeFileSync(path.join(dir, 'done', 'recent.json'), '{}');
+    // A pending handoff is never touched, however old.
+    drop('1000-h1.json', handoff());
+    fs.utimesSync(path.join(dir, '1000-h1.json'), old, old);
+
+    box.purge();
+
+    expect(fs.readdirSync(path.join(dir, 'done'))).toEqual(['recent.json']);
+    expect(fs.readdirSync(path.join(dir, 'rejected'))).toEqual([]);
+    expect(fs.existsSync(path.join(dir, '1000-h1.json'))).toBe(true);
+  });
+
+  it('purges on startup', () => {
+    fs.mkdirSync(path.join(dir, 'done'), { recursive: true });
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    fs.writeFileSync(path.join(dir, 'done', 'old.json'), '{}');
+    fs.utimesSync(path.join(dir, 'done', 'old.json'), old, old);
+    open();
+    expect(fs.readdirSync(path.join(dir, 'done'))).toEqual([]);
+  });
+
+  it('counts retention from the move, not from when the sender wrote it', () => {
+    drop('1000-h1.json', handoff());
+    const sent = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(dir, '1000-h1.json'), sent, sent);
+    const box = open();
+    box.resolve('h1');
+    box.purge();
+    expect(fs.existsSync(path.join(dir, 'done', '1000-h1.json'))).toBe(true);
+  });
 });

@@ -16,6 +16,8 @@ import {
   DEFAULT_TEAM_CHECKPOINTS,
   TEAM_MAX_MEMBERS,
   describeTeamCheckpoints,
+  holdsRoomWork,
+  piecesActFreely,
   roleFromJob,
   type TeamCheckpoints,
   type TeamMember,
@@ -59,7 +61,7 @@ const CHECKPOINTS: Array<{ key: keyof TeamCheckpoints; label: string; detail: st
     key: "approveRoomWork",
     label: "Approve follow-up work first",
     detail:
-      "Hold work asked for in the conversation until you start it. Off: it starts straight away, or queues behind work already running.",
+      "Hold work asked for in the conversation until you start it. Off: it starts straight away, or queues behind work already running. Either way it runs with each member's own permissions.",
   },
 ];
 
@@ -80,7 +82,7 @@ export function TeamEditor() {
   const [purpose, setPurpose] = useState(existing?.purpose ?? "");
   const [projectPath, setProjectPath] = useState(existing?.projectPath ?? "");
   const [ownProjectOnly, setOwnProjectOnly] = useState(existing?.ownProjectOnly ?? false);
-  const [piecesAskFirst, setPiecesAskFirst] = useState(existing?.piecesAskFirst ?? false);
+  const [piecesAskFirst, setPiecesAskFirst] = useState(existing ? !piecesActFreely(existing) : true);
   const [members, setMembers] = useState<TeamMember[]>(existing?.members ?? []);
   const [planned, setPlanned] = useState<PlannedHire[]>([]);
   const [budget, setBudget] = useState(String(existing?.budgetUSDPerTask ?? DEFAULT_TEAM_BUDGET_USD));
@@ -195,7 +197,7 @@ export function TeamEditor() {
       purpose,
       ...(projectPath ? { projectPath } : {}),
       ...(onlyIn ? { ownProjectOnly: true } : {}),
-      ...(piecesAskFirst ? { piecesAskFirst: true } : {}),
+      ...(piecesAskFirst ? {} : { piecesAskFirst: false }),
       members: team,
       budgetUSDPerTask: Number(budget),
       checkpoints,
@@ -463,9 +465,11 @@ export function TeamEditor() {
                   <span className="flex flex-col">
                     <span className="text-sm text-ink">Members work without asking</span>
                     <span className="text-[11px] leading-relaxed text-ink-faint">
-                      A piece the team commissions may use any tool and act outside its folder — push, post, call a
-                      service — whatever the member's own settings say. Their own shifts and errands are unchanged.
-                      Off: each member's own permissions, and anything outside a piece's tools is refused.
+                      A piece of a plan you approved may use any tool and act outside its folder — push, post, call a
+                      service — with no approval prompt, whatever the member's own settings say. Only turn this on for
+                      a team whose sources you trust. Work started from the conversation never gets it. Their own
+                      shifts and errands are unchanged. Off (the default): each member's own permissions, and anything
+                      outside a piece's tools is refused.
                     </span>
                   </span>
                   <Switch on={!piecesAskFirst} label="Members work without asking" onChange={(on) => setPiecesAskFirst(!on)} />
@@ -474,7 +478,7 @@ export function TeamEditor() {
                   <div key={c.key} className="flex items-center justify-between gap-3 px-3 py-2.5" title={c.detail}>
                     <span className="text-sm text-ink">{c.label}</span>
                     <Switch
-                      on={!!checkpoints[c.key]}
+                      on={c.key === "approveRoomWork" ? holdsRoomWork(checkpoints) : !!checkpoints[c.key]}
                       label={c.label}
                       onChange={(on) => setCheckpoints((prev) => ({ ...prev, [c.key]: on }))}
                     />

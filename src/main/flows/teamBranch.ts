@@ -85,9 +85,15 @@ export function openTaskBranch(args: {
   for (let n = 2; args.repos.some((r) => branchExists(r.projectPath, branch)); n++) branch = `${base}-${n}`;
   const root = path.join(os.homedir(), '.overcli', 'team-worktrees', args.taskId);
   const opened: TaskRepo[] = [];
+  const taken = new Set<string>();
   for (const repo of args.repos) {
     const from = detectBaseBranch(repo.projectPath);
-    const worktreePath = path.join(root, slug(repo.name));
+    // Unique per repo: two workspace members named `api` (or `My App` and
+    // `my-app`) slug alike, and must not share the task's checkout.
+    let dir = slug(repo.name);
+    for (let n = 2; taken.has(dir); n++) dir = `${slug(repo.name)}-${n}`;
+    taken.add(dir);
+    const worktreePath = path.join(root, dir);
     fs.mkdirSync(root, { recursive: true });
     const res = runGit(['worktree', 'add', '-b', branch, worktreePath, from], repo.projectPath);
     if (res.exitCode !== 0) {

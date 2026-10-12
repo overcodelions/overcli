@@ -75,9 +75,12 @@ export interface TeamCheckpoints {
   reviewBeforeChallenge: boolean;
   /// Hold the finished pack for your review instead of filing it as done.
   finalReview: boolean;
-  /// Hold work handed off from the room until you start it. Off (absent):
-  /// it starts as soon as the coordinator hands it off, or queues behind
-  /// work already running — you asked for it, and the budget still caps it.
+  /// Hold work handed off from the room until you start it. On unless
+  /// explicitly false: a hand-off is the model deciding a question is work,
+  /// and a real run should not start on the model's say-so alone. False: it
+  /// starts as soon as the coordinator hands it off, or queues behind work
+  /// already running. Either way it never carries the grant for external
+  /// actions (see `Team.piecesAskFirst`).
   approveRoomWork?: boolean;
 }
 
@@ -85,7 +88,7 @@ export const DEFAULT_TEAM_CHECKPOINTS: TeamCheckpoints = {
   askFirst: true,
   reviewBeforeChallenge: false,
   finalReview: true,
-  approveRoomWork: false,
+  approveRoomWork: true,
 };
 
 export const DEFAULT_TEAM_BUDGET_USD = 1000;
@@ -104,11 +107,12 @@ export interface Team {
   projectPath?: string;
   /// Hold a member's team pieces to that member's own permissions: a worker
   /// without the grant for external actions has every call outside its
-  /// piece's tools refused. Absent or false — the default — a piece the team
-  /// commissions runs with the grant, whatever the member's own settings say:
-  /// you approved the plan that asked for it, the piece is scoped by the
-  /// coordinator, and it runs in its own worktree. The member's own shifts
-  /// and errands keep the member's settings either way.
+  /// piece's tools refused. On unless explicitly false — the default. False:
+  /// a piece of an approved plan runs with the grant, whatever the member's
+  /// own settings say. Work handed off from the room never gets the grant:
+  /// nobody approved a plan for it, and the room reads whatever was pasted
+  /// or fetched into it. The member's own shifts and errands keep the
+  /// member's settings either way. See `piecesActFreely`.
   piecesAskFirst?: boolean;
   /// Only workers from `projectPath` belong on this team: the roster
   /// drafter is shown no one else and hires for every other part.
@@ -120,6 +124,8 @@ export interface Team {
   createdAt: number;
   updatedAt?: number;
 }
+
+export type TeamWaitReason = 'checkpoint' | 'budget' | 'failed' | 'away';
 
 export type TeamTaskStatus =
   /// The coordinator is thinking: writing questions or a plan.
@@ -242,11 +248,15 @@ export interface TeamTask {
   stages: TeamStage[];
   /// The stage being worked, or `stages.length` once all are done.
   stageIndex: number;
-  /// Why a `waiting` task is waiting.
-  waiting?: { reason: 'checkpoint' | 'budget' | 'failed'; message: string };
+  /// Why a `waiting` task is waiting. `away`: the crew is off duty, and the
+  /// next stage holds until you come back or start it yourself.
+  waiting?: { reason: TeamWaitReason; message: string };
   /// The stage index whose checkpoint you already cleared, so continuing
   /// doesn't stop at the same checkpoint again.
   checkpointCleared?: number;
+  /// The stage index you started while the crew was away, so it is not held
+  /// again.
+  awayCleared?: number;
   error?: string;
   /// Member spend so far (finished runs), in USD.
   spentUSD: number;
@@ -354,6 +364,17 @@ export interface TeamRoom {
   foldedThrough?: number;
 }
 
+/// Whether a team's pieces run with the grant for external actions: only
+/// when you turned "ask first" off yourself.
+export function piecesActFreely(team: Pick<Team, 'piecesAskFirst'>): boolean {
+  return team.piecesAskFirst === false;
+}
+
+/// Whether work handed off from the room waits for you to start it.
+export function holdsRoomWork(checkpoints: Pick<TeamCheckpoints, 'approveRoomWork'> | undefined): boolean {
+  return checkpoints?.approveRoomWork !== false;
+}
+
 export function isTaskActive(status: TeamTaskStatus): boolean {
   return status === 'planning' || status === 'questions' || status === 'proposed' || status === 'running' || status === 'waiting';
 }
@@ -384,7 +405,7 @@ export function describeTeamCheckpoints(checkpoints: TeamCheckpoints): string[] 
     'you approve the plan',
     checkpoints.reviewBeforeChallenge && 'you read the draft before each challenge',
     checkpoints.finalReview && 'you review the pack',
-    checkpoints.approveRoomWork && 'you start follow-up work',
+    holdsRoomWork(checkpoints) && 'you start follow-up work',
   ].filter((s): s is string => !!s);
   return steps.map((s, i) => (i === 0 ? s[0].toUpperCase() + s.slice(1) : s));
 }
@@ -411,7 +432,9 @@ export function describeTeamTaskStatus(task: Pick<TeamTask, 'status' | 'stages' 
         ? 'Paused at the budget'
         : task.waiting?.reason === 'failed'
           ? 'A stage needs you'
-          : 'Waiting on you';
+          : task.waiting?.reason === 'away'
+            ? 'Held while the crew is away'
+            : 'Waiting on you';
     case 'review':
       return 'Pack ready to review';
     case 'done':

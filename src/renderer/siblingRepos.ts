@@ -57,6 +57,29 @@ export function writtenPaths(events: readonly StreamEvent[], from = 0): string[]
   return written;
 }
 
+/// An incremental `writtenPaths` over a streaming transcript: what each
+/// event wrote, keyed by position, so a re-render rescans only what changed.
+export interface WrittenScan {
+  events: readonly StreamEvent[];
+  perEvent: string[][];
+  written: string[];
+}
+
+/// Fold `events` into `prev`. An event is rescanned when it is new OR when
+/// the slot it sits in now holds a different object — the stream replaces
+/// its partial assistant bubble in place with the final one (same id, same
+/// index), and that final event is often the first to carry the tool use.
+export function scanWritten(prev: WrittenScan | null, events: readonly StreamEvent[]): WrittenScan {
+  if (prev?.events === events) return prev;
+  const old = prev && events.length >= prev.events.length ? prev : null;
+  const perEvent: string[][] = [];
+  for (let i = 0; i < events.length; i++) {
+    const kept = old && i < old.events.length && old.events[i] === events[i] ? old.perEvent[i] : null;
+    perEvent.push(kept ?? writtenPaths([events[i]]));
+  }
+  return { events, perEvent, written: perEvent.flat() };
+}
+
 export function siblingsFromWritten(
   owner: Project,
   projects: readonly Project[],

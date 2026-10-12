@@ -35,10 +35,12 @@ import {
   buildMemberStagePrompt,
   buildTeamPlanMessage,
   isMemberStage,
+  holdsRoomWork,
   isPieceSettled,
   canSkipStage,
   blocksNewTask,
   isTaskActive,
+  piecesActFreely,
   parsePackReply,
   parsePlanReply,
   safeTeamFileName,
@@ -56,6 +58,7 @@ import {
   type TeamRosterLine,
   type TeamStage,
   type TeamTask,
+  type TeamWaitReason,
 } from '../../shared/flows/team';
 import {
   ROOM_COORDINATOR_SYSTEM,
@@ -151,6 +154,9 @@ export interface TeamEngineDeps {
   cancelTurn?: (cancelKey: string) => void;
   /// Stop a commissioned batch (work you stopped from the room).
   cancelBatch?: (orchestrationId: UUID) => void;
+  /// Whether the whole crew is away (WorkerEngine.awayState). While it is,
+  /// no stage starts on its own; coming back picks the tasks up again.
+  crewAway?: () => boolean;
   /// One member's turn in the room, on that worker's own backend and model.
   /// No tools: it answers from the prompt.
   memberTurn: (args: {
@@ -341,7 +347,7 @@ export class TeamEngine {
       purpose: draft.purpose,
       ...(projectPath ? { projectPath } : {}),
       ...(projectPath && input.ownProjectOnly ? { ownProjectOnly: true } : {}),
-      ...(input.piecesAskFirst ? { piecesAskFirst: true } : {}),
+      ...(input.piecesAskFirst === false ? { piecesAskFirst: false } : {}),
       members,
       budgetUSDPerTask: Math.round(input.budgetUSDPerTask * 100) / 100,
       checkpoints: draft.checkpoints!,
@@ -674,6 +680,10 @@ export class TeamEngine {
       case 'checkpoint':
         task.checkpointCleared = task.stageIndex;
         break;
+      case 'away':
+        // You started it yourself: this stage goes, the next one holds again.
+        task.awayCleared = task.stageIndex;
+        break;
       case 'budget': {
         const extra = opts.extraBudgetUSD ?? 0;
         if (!(extra > 0)) return { ok: false, error: 'Add to the budget to continue.' };
@@ -851,6 +861,20 @@ export class TeamEngine {
       this.persist(task);
       return { ok: true };
     }
+    // Stopping the task stops its pieces: a run left going would keep
+    // spending, and its work would still land on the task branch.
+    for (const s of task.stages) {
+      for (const a of s.assignments) {
+        if (isPieceSettled(a.status)) continue;
+        a.status = 'failed';
+        a.error = 'You cancelled the task.';
+        if (a.orchestrationId) this.deps.cancelBatch?.(a.orchestrationId);
+      }
+      if (s.status === 'running' || s.status === 'pending') {
+        s.status = s.assignments.some((a) => a.status === 'done') ? 'done' : 'failed';
+        s.finishedAt = s.finishedAt ?? this.now();
+      }
+    }
     task.status = 'cancelled';
     task.waiting = undefined;
     task.finishedAt = this.now();
@@ -957,6 +981,15 @@ export class TeamEngine {
         return;
       }
 
+      // Crew away: nothing starts with nobody watching. Held without a
+      // notification — you are away — and picked up by `crewBack`.
+      if (this.deps.crewAway?.() && task.awayCleared !== task.stageIndex) {
+        task.status = 'waiting';
+        task.waiting = { reason: 'away', message: `The crew is away. "${stage.title}" starts when you're back, or start it now.` };
+        this.persist(task);
+        return;
+      }
+
       if (isMemberStage(stage.kind)) void this.launchMemberStage(taskId, task.stageIndex);
       else void this.runCoordinatorStage(taskId, task.stageIndex);
       return;
@@ -985,6 +1018,8 @@ export class TeamEngine {
       const workers = this.deps.workers();
       const project = task.projectPath ? { name: this.projectName(task.projectPath), path: task.projectPath } : undefined;
       for (const a of stage.assignments) {
+        // Cancelled mid-launch: nothing more is commissioned.
+        if (this.tasks.get(taskId) !== task || task.status !== 'running') break;
         if (a.status !== 'pending') continue;
         const member = team.members.find((m) => m.workerId === a.workerId);
         const prompt = buildMemberStagePrompt({
@@ -1019,15 +1054,18 @@ export class TeamEngine {
           prompt,
           team: { teamId: team.id, teamName: team.name, taskId, stage: index },
           ...(task.projectPath ? { projectPath: task.projectPath } : {}),
-          ...(team.piecesAskFirst ? {} : { allowExternalActions: true }),
+          // The grant only when you turned "ask first" off, and never for work
+          // the room handed off: that started on the model's say-so.
+          ...(piecesActFreely(team) && !stage.fromRoom ? { allowExternalActions: true } : {}),
           // Code that merges into the task branch is checked first, by the
           // member's own check step, when its flow has one.
           ...(task.code ? { baseBranch: task.code.branch, check: true } : {}),
           ...(a.full ? { mode: 'full' as const } : {}),
         });
-        // Skipped while the commission was in flight: the batch exists now,
-        // so stop it rather than let a run nobody wants spend.
-        if ((a.status as TeamAssignment['status']) === 'skipped') {
+        // Skipped, or the task cancelled, while the commission was in flight:
+        // the batch exists now, so stop it rather than let a run nobody wants
+        // spend.
+        if ((a.status as TeamAssignment['status']) === 'skipped' || !isTaskActive(task.status)) {
           if (res.ok) this.deps.cancelBatch?.(res.orchestrationId);
           continue;
         }
@@ -1060,6 +1098,9 @@ export class TeamEngine {
     // A retried piece gets a new batch; updates from the old one are history.
     if (a.orchestrationId && a.orchestrationId !== o.id) return;
     if (isPieceSettled(a.status)) return;
+    // A cancelled or finished task takes nothing more: a piece that lands
+    // after it ended must not copy files in or merge into the task branch.
+    if (!isTaskActive(task.status)) return;
     a.orchestrationId = o.id;
     const item = o.items[0];
     if (!item) return;
@@ -1092,6 +1133,10 @@ export class TeamEngine {
   }
 
   observeEvent(event: MainToRendererEvent): void {
+    if (event.type === 'workersAway') {
+      if (!event.away) this.crewBack();
+      return;
+    }
     if (event.type === 'orchestrationUpdate') {
       const o = event.orchestration;
       const team = o.origin?.kind === 'worker' ? o.origin.team : undefined;
@@ -1110,6 +1155,17 @@ export class TeamEngine {
         this.persist(task);
         this.checkStage(task);
       }
+    }
+  }
+
+  /// The crew is back: every task held while it was away carries on.
+  crewBack(): void {
+    for (const task of this.tasks.values()) {
+      if (task.status !== 'waiting' || task.waiting?.reason !== 'away') continue;
+      task.waiting = undefined;
+      task.status = 'running';
+      this.persist(task);
+      this.advance(task.id);
     }
   }
 
@@ -1391,7 +1447,7 @@ export class TeamEngine {
     return this.deps.projects?.().find((p) => p.path === path)?.name ?? path.split(/[\\/]/).filter(Boolean).pop() ?? path;
   }
 
-  private wait(task: TeamTask, reason: 'checkpoint' | 'budget' | 'failed', message: string): void {
+  private wait(task: TeamTask, reason: TeamWaitReason, message: string): void {
     task.status = 'waiting';
     task.waiting = { reason, message };
     this.persist(task);
@@ -1643,7 +1699,7 @@ export class TeamEngine {
   /// Work just handed off: held for you when the team approves follow-up
   /// work first, else queued behind work already running, else started.
   private placeHandoff(task: TeamTask, message: TeamMessage): void {
-    if (this.teams.get(task.teamId)?.checkpoints.approveRoomWork) return;
+    if (holdsRoomWork(this.teams.get(task.teamId)?.checkpoints)) return;
     if (this.roomWorkUnderway(task)) {
       message.handoff!.status = 'queued';
       return;
@@ -1686,7 +1742,7 @@ export class TeamEngine {
     }
     const question = messages.slice(0, at).reverse().find((m) => m.speaker.kind === 'you');
     const title = question ? firstWords(question.text, 60) : 'Follow-up work';
-    const held = !!this.teams.get(task!.teamId)?.checkpoints.approveRoomWork;
+    const held = holdsRoomWork(this.teams.get(task!.teamId)?.checkpoints);
     const message = this.pushMessage(
       task!,
       { kind: 'coordinator' },
@@ -1929,7 +1985,7 @@ export class TeamEngine {
       status: 'proposed',
       assignments: work.assign.map((a) => ({ workerId: a.workerId, workerName: a.name, ask: a.ask })),
     };
-    const held = !!this.teams.get(task.teamId)?.checkpoints.approveRoomWork;
+    const held = holdsRoomWork(this.teams.get(task.teamId)?.checkpoints);
     const underway = this.roomWorkUnderway(task);
     const text = held
       ? `That's work, not a question. ${who} can do it as a real run, with their tools and the shared folder; what they make lands back in the folder and they'll report here.`

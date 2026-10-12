@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -3180,6 +3183,26 @@ describe('shift wrap-up', () => {
     expect(call.prompt).toContain('Item b — FAILED: API down');
     expect(call.prompt).toContain('Item c — not run');
     expect(call.prompt).toContain('1 finished, 1 failed, 1 not run');
+  });
+
+  it('counts what a cut file left out from its real size, not from the capped read', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-wrapup-'));
+    const file = path.join(dir, 'report.md');
+    // Well past the read cap (4x the 60k budget), so the read stops short.
+    fs.writeFileSync(file, 'a'.repeat(500_000));
+    try {
+      const h = makeHarness({
+        seed: [seedWorker({ wrapUpFlowId: 'digest' })],
+        deliverablesFor: () => [{ name: 'report.md', sourcePath: file }],
+      });
+      h.engine.start();
+      await settle(h, workerBatch({ items: [item('a', 'done')] }));
+      // Real file reads: wait for them rather than guess how long they take.
+      await vi.waitFor(() => expect(h.direct).toHaveLength(1), { timeout: 4000 });
+      expect(h.direct[0].prompt).toContain(`[… cut to fit; ${500_000 - 60_000} more bytes]`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('launches it exactly once, however many updates arrive', async () => {

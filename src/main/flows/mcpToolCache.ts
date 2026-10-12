@@ -10,7 +10,8 @@
 //
 // Merged, never replaced: a turn run with a narrowed server list reports
 // fewer servers, and that is not the user disconnecting the rest. Entries
-// age out instead, once nothing has reported them for a while.
+// age out of what is OFFERED once nothing has reported them for a while, but
+// never out of what is BLOCKED — see `knownMcpServers`.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -107,6 +108,16 @@ function fresh(bucket: Record<string, number>, now: number): string[] {
 /// account connectors ("claude.ai Gmail") no config file mentions.
 export function seenMcpServers(now = Date.now()): string[] {
   return fresh(load().servers, now);
+}
+
+/// Every server Claude has EVER reported connected, stale or not. This is
+/// the deny side: a turn whose allowlist names an account connector cannot
+/// go strict, so every server not on the list is blocked by name, and a
+/// name can only come from here. Ageing a connector out of THIS list would
+/// let it back in unblocked the day it reconnects — the 30-day window is
+/// for what we offer, never for what we refuse.
+export function knownMcpServers(): string[] {
+  return Object.keys(load().servers).sort((a, b) => a.localeCompare(b));
 }
 
 /// Every `mcp__<server>__<tool>` Claude has reported recently.

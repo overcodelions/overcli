@@ -44,9 +44,29 @@ interface IndexFile {
 }
 
 let index: IndexFile | null = null;
+/// Each entry's text, lowercased once. Kept beside the index rather than in
+/// it so the file on disk doesn't carry every prompt twice; keyed on the
+/// entry object, so a re-read file (a new entry) is lowered afresh and the
+/// old copy goes with the old entry.
+const lowered = new WeakMap<FileEntry, string>();
+
+function lowerOf(e: FileEntry): string {
+  let lower = lowered.get(e);
+  if (lower === undefined) {
+    lower = e.text.toLowerCase();
+    lowered.set(e, lower);
+  }
+  return lower;
+}
 let refreshing: Promise<void> | null = null;
 let lastRefresh = 0;
 const REFRESH_EVERY_MS = 30_000;
+
+/// Tests drop the in-memory index so the next search rebuilds it.
+export function resetPromptIndexForTests(): void {
+  index = null;
+  lastRefresh = 0;
+}
 
 function indexPath(): string {
   return path.join(host().dataDir(), 'work-prompt-index.json');
@@ -152,7 +172,7 @@ async function refresh(): Promise<void> {
       if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue;
       try {
         const { text, cwd, at } = await readPrompts(full);
-        idx.files[full] = {
+        const entry: FileEntry = {
           mtimeMs: st.mtimeMs,
           size: st.size,
           sessionId: f.slice(0, -'.jsonl'.length),
@@ -160,6 +180,8 @@ async function refresh(): Promise<void> {
           at: at || st.mtimeMs,
           text,
         };
+        idx.files[full] = entry;
+        lowerOf(entry);
         changed = true;
       } catch (err) {
         log('warn', 'work.promptIndex', `could not read ${full}`, err);
@@ -208,7 +230,7 @@ export async function searchPrompts(query: string, limit = 60): Promise<PromptHi
   const idx = loadIndex();
   const hits: PromptHit[] = [];
   for (const e of Object.values(idx.files)) {
-    const lower = e.text.toLowerCase();
+    const lower = lowerOf(e);
     if (!words.every((w) => lower.includes(w))) continue;
     const at = lower.indexOf(words[0]);
     const start = Math.max(0, at - 90);

@@ -18,6 +18,7 @@ import {
   parseTasklistName,
   partialOutput,
   processStarted,
+  processesStarted,
   programMatches,
   type ProcessFacts,
 } from './portOwners';
@@ -584,6 +585,39 @@ describe('processStarted', () => {
 
   it('does not mark a live process gone when ps failed to report it', async () => {
     await expect(processStarted(4242, async () => null, 'darwin', () => true)).resolves.toBeUndefined();
+  });
+});
+
+describe('processesStarted', () => {
+  it('asks about every pid in one ps', async () => {
+    const calls: string[][] = [];
+    const runner = async (command: string, args: string[]) => {
+      calls.push([command, ...args]);
+      return '  4242 Tue Sep 22 10:04:31 2026    \n  4243 Tue Sep 22 10:05:00 2026\n';
+    };
+    const out = await processesStarted([4242, 4243, 4242], runner, 'darwin', () => true);
+    expect(calls).toEqual([['ps', '-o', 'pid=,lstart=', '-p', '4242,4243']]);
+    expect(out.get(4242)).toBe('Tue Sep 22 10:04:31 2026');
+    expect(out.get(4243)).toBe('Tue Sep 22 10:05:00 2026');
+  });
+
+  it('reads a pid missing from the output as gone, or unknown if still alive', async () => {
+    const runner = async () => '  4242 Tue Sep 22 10:04:31 2026\n';
+    const out = await processesStarted([4242, 5000, 5001], runner, 'darwin', (pid) => pid === 5001);
+    expect(out.get(5000)).toBeNull();
+    expect(out.has(5001)).toBe(true);
+    expect(out.get(5001)).toBeUndefined();
+  });
+
+  it('runs nothing for no valid pids, or on Windows', async () => {
+    let ran = false;
+    const runner = async () => {
+      ran = true;
+      return null;
+    };
+    expect((await processesStarted([0, 1, -3], runner, 'darwin')).size).toBe(0);
+    expect((await processesStarted([4242], runner, 'win32')).size).toBe(0);
+    expect(ran).toBe(false);
   });
 });
 

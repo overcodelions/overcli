@@ -157,22 +157,79 @@ export async function branchStatus(repo: string, branch: string, worktreePath?: 
   return status;
 }
 
-/// Statuses for many repo/branch pairs, a few repos at a time.
-export async function branchStatuses(
-  items: Array<{ repo: string; branch: string; worktreePath?: string }>,
-): Promise<Record<string, BranchStatus>> {
-  const out: Record<string, BranchStatus> = {};
+/// The most branches one call reads in full. The Work view asks for every
+/// branch it has ever recorded — times every member of a workspace — and the
+/// first load would otherwise run a dozen git commands for each. The list
+/// arrives newest first, so the cap keeps the records you are likely to look
+/// at; older ones go without a status, as if git had nothing to say.
+export const BRANCH_STATUS_MAX = 150;
+
+/// How many git reads run at once.
+const CONCURRENCY = 6;
+
+/// Every local and origin branch name in a repo, in one read — or null when
+/// git cannot say (not a repo), and the full per-branch check decides.
+async function refNames(repo: string): Promise<{ local: Set<string>; remote: Set<string> } | null> {
+  const res = await runGitAsync(['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes/origin'], repo);
+  if (res.exitCode !== 0) return null;
+  const local = new Set<string>();
+  const remote = new Set<string>();
+  for (const ref of res.stdout.split('\n')) {
+    if (ref.startsWith('refs/heads/')) local.add(ref.slice('refs/heads/'.length));
+    else if (ref.startsWith('refs/remotes/origin/')) remote.add(ref.slice('refs/remotes/origin/'.length));
+  }
+  return { local, remote };
+}
+
+/// Run `fn` over `items`, at most `limit` at a time.
+async function eachLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
   const worker = async () => {
-    while (next < items.length) {
-      const { repo, branch, worktreePath } = items[next++];
-      try {
-        out[`${repo}::${branch}`] = await branchStatus(repo, branch, worktreePath);
-      } catch {
-        // Not a repo, or git missing — the record just goes without it.
-      }
-    }
+    while (next < items.length) await fn(items[next++]);
   };
-  await Promise.all(Array.from({ length: Math.min(6, items.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+/// Statuses for many repo/branch pairs, a few at a time.
+///
+/// Most historical branches are long deleted, so one `for-each-ref` per repo
+/// sorts those out first: a branch that exists nowhere gets its answer
+/// without a git call of its own, and does not count toward the cap.
+export async function branchStatuses(
+  items: Array<{ repo: string; branch: string; worktreePath?: string }>,
+  max = BRANCH_STATUS_MAX,
+): Promise<Record<string, BranchStatus>> {
+  const out: Record<string, BranchStatus> = {};
+  const refsByRepo = new Map<string, { local: Set<string>; remote: Set<string> } | null>();
+  await eachLimited([...new Set(items.map((i) => i.repo))], CONCURRENCY, async (repo) => {
+    refsByRepo.set(repo, await refNames(repo));
+  });
+
+  const live: typeof items = [];
+  const gone: typeof items = [];
+  for (const item of items) {
+    const refs = refsByRepo.get(item.repo);
+    // A worktree on disk still has uncommitted files worth counting.
+    const exists = !refs || item.worktreePath || refs.local.has(item.branch) || refs.remote.has(item.branch);
+    (exists ? live : gone).push(item);
+  }
+
+  await eachLimited(gone, CONCURRENCY, async ({ repo, branch }) => {
+    try {
+      const trunk = await trunkOf(repo);
+      const status: BranchStatus = { local: false, remote: false, ahead: 0, behind: 0, unpushed: 0, inTrunk: false };
+      if (trunk) status.trunk = trunk.replace(/^origin\//, '');
+      out[`${repo}::${branch}`] = status;
+    } catch {
+      // Not a repo, or git missing — the record just goes without it.
+    }
+  });
+  await eachLimited(live.slice(0, max), CONCURRENCY, async ({ repo, branch, worktreePath }) => {
+    try {
+      out[`${repo}::${branch}`] = await branchStatus(repo, branch, worktreePath);
+    } catch {
+      // Not a repo, or git missing — the record just goes without it.
+    }
+  });
   return out;
 }

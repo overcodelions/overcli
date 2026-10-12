@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../diagnostics', () => ({ log: vi.fn() }));
 
 import {
+  knownMcpServers,
   recordMcpSeen,
   recordMcpSeenFromEvent,
   seenMcpServers,
@@ -54,6 +55,15 @@ describe('mcpToolCache', () => {
     recordMcpSeen([{ name: 'new', status: 'connected' }], []);
     expect(seenMcpServers()).toEqual(['new']);
     expect(seenMcpTools()).toEqual([]);
+  });
+
+  it('still knows a stale connector, so the block list fails closed', () => {
+    // Offered: only what is fresh. Blocked: everything ever seen — a
+    // connector quiet for 40 days must not come back unblocked.
+    recordMcpSeen([{ name: 'claude.ai Acme Mail', status: 'connected' }], [], Date.now() - 40 * DAY);
+    recordMcpSeen([{ name: 'acme-tracker', status: 'connected' }], []);
+    expect(seenMcpServers()).toEqual(['acme-tracker']);
+    expect(knownMcpServers()).toEqual(['acme-tracker', 'claude.ai Acme Mail']);
   });
 
   it('never throws on an init event missing its lists', () => {

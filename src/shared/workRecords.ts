@@ -229,10 +229,18 @@ export function isWorkBranch(branch: string | undefined | null): branch is strin
 /// What `workBranch` should be once a turn ends with the checkout on
 /// `current`: the branch, if the chat moved off the one it started on, or
 /// undefined if it is still there (or back there, or on a trunk).
+///
+/// `shared` is for a chat on a checkout other chats use too — the project's
+/// main folder. There the checkout moving says nothing about THIS chat: a
+/// different chat may have switched it. So a branch is only taken when the
+/// checkout moved during this chat's own turn (`turnStartedOn` is where the
+/// turn began); otherwise the chat keeps whatever branch it had.
 export function workBranchAfterTurn(
-  c: Pick<Conversation, 'branchName' | 'baseBranch'>,
+  c: Pick<Conversation, 'branchName' | 'baseBranch' | 'workBranch'>,
   current: string,
+  shared?: { turnStartedOn?: string | null },
 ): string | undefined {
+  if (shared && (!shared.turnStartedOn || shared.turnStartedOn === current)) return c.workBranch;
   const started = c.branchName || c.baseBranch;
   if (!started || current === started || !isWorkBranch(current)) return undefined;
   return current;
