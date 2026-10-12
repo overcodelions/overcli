@@ -1,0 +1,73 @@
+name: Download stats
+
+# Daily snapshot of release asset download counts. GitHub only keeps running
+# totals per release, so this appends them to downloads.csv on the orphan
+# `stats` branch to give a timeline. No telemetry: the signal is electron-updater
+# fetching latest-*.yml (update checks) and the -mac.zip (updates applied).
+#
+# Also flags a release that Macs are seeing but not taking: lots of
+# latest-mac.yml hits with zero arm64 zip downloads means auto-update is broken
+# for that build (as happened with v0.18.0). It fails the run rather than
+# opening an issue, so the alert is GitHub's failed-run email to the owner,
+# not something public.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # daily
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: download-stats
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Snapshot download counts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push to the stats branch
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout stats branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Switch to stats branch
+        run: |
+          if git ls-remote --exit-code --heads origin stats >/dev/null; then
+            git fetch --depth=1 origin stats
+            git checkout -B stats FETCH_HEAD
+          else
+            git checkout --orphan stats
+            git rm -rfq .
+            echo 'date,tag,asset,downloads' > downloads.csv
+          fi
+
+      - name: Append today's counts
+        run: |
+          today=$(date -u +%F)
+          gh api "repos/$REPO/releases" --paginate \
+            --jq ".[] | .tag_name as \$t | .assets[] | [\"$today\", \$t, .name, .download_count] | @csv" \
+            >> downloads.csv
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add downloads.csv
+          git commit -qm "stats: $today"
+          git push origin stats
+
+      - name: Flag a stalled Mac update
+        run: |
+          read -r tag published checks updates < <(gh api "repos/$REPO/releases/latest" --jq '
+            [.tag_name, .published_at,
+             ([.assets[] | select(.name == "latest-mac.yml") | .download_count] | add // 0),
+             ([.assets[] | select(.name | endswith("-arm64-mac.zip")) | .download_count] | add // 0)
+            ] | @tsv')
+          age_days=$(( ( $(date -u +%s) - $(date -u -d "$published" +%s) ) / 86400 ))
+          echo "$tag: ${age_days}d old, $checks update checks, $updates arm64 updates"
+          if [ "$age_days" -ge 2 ] && [ "$checks" -gt 20 ] && [ "$updates" -eq 0 ]; then
+            echo "::error::Macs are not auto-updating to $tag: $checks latest-mac.yml fetches over $age_days days but 0 -arm64-mac.zip downloads. Check the signature and notarization on the mac zip, and the release run."
+            exit 1
+          fi
