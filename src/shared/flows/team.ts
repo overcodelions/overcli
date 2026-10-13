@@ -283,7 +283,19 @@ export interface TeamTask {
 
 export interface TeamTaskCode {
   branch: string;
-  repos: Array<{ name: string; projectPath: string; base: string; worktreePath: string; landed?: boolean }>;
+  repos: Array<{
+    name: string;
+    projectPath: string;
+    base: string;
+    worktreePath: string;
+    landed?: boolean;
+    /// Commits on the task branch that `base` does not have, as of the last
+    /// merge into it. Absent: not counted yet.
+    ahead?: number;
+    /// Set once you pushed the task branch from this repo; the link the
+    /// remote gave for opening a pull request, when it gave one.
+    pushed?: { at: number; url?: string };
+  }>;
 }
 
 /// A member the coordinator wants to hire for this task's plan.
@@ -1175,6 +1187,8 @@ export function buildMemberStagePrompt(args: {
   budget: number;
   /// The project this task works in, when it is not the member's own.
   project?: { name: string; path: string; usual?: string };
+  /// The task's shared branch, when it works in code (TeamTask.code).
+  code?: { branch: string };
   /// Work handed off from the room after the pack was written.
   followUp?: {
     /// The conversation that led to it, as text.
@@ -1206,6 +1220,19 @@ export function buildMemberStagePrompt(args: {
     lines.push(
       `project's code and files${args.project.usual ? `, not ${args.project.usual} (the project you usually work in — your job description may describe that one)` : ''}.`,
     );
+  }
+  if (args.code) {
+    // Said outright because a member's own job description often says to
+    // cut a branch per ticket, or to push and open a PR — and work committed
+    // anywhere but the checked-out branch never reaches the team.
+    lines.push('');
+    lines.push(`THE CODE: the team's work lives on one git branch, ${args.code.branch}. Your checkout is`);
+    lines.push('already on the branch for your piece, which starts from everything earlier stages committed.');
+    lines.push('- Commit on the branch you are on. Several commits are fine (one per ticket, say).');
+    lines.push('- Do NOT create, switch to or rename branches, check out other commits, or rebase onto');
+    lines.push('  another base. Overcli merges only the branch you were given; work on any other branch is');
+    lines.push('  lost to the team.');
+    lines.push('- Do NOT push or open pull requests. The user pushes the team branch when the task is done.');
   }
   lines.push('');
   lines.push(`THE TASK${args.task.title ? `: ${args.task.title}` : ''}`);

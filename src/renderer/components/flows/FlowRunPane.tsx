@@ -297,7 +297,10 @@ export function FlowRunPane({
                 New chat here
               </button>
             )}
-            {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
+            {/* A team piece on its task's own branch merges from the team,
+                which owns that branch — not from here. (A batch sharing one
+                worktree reviews the whole branch from any of its runs.) */}
+            {run.adoptedWorktree !== true && (run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
               <button
                 onClick={() => openSheet({ type: 'flowRunReview', runId })}
                 className="text-xs px-3 py-1 rounded-md bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 whitespace-nowrap"

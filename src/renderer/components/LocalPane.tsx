@@ -138,7 +138,7 @@ export function LocalPane() {
     setInstallStatus({
       text:
         res.started === 'brew'
-          ? res.detail ?? 'Opened Terminal with the install command.'
+          ? res.detail ?? 'Opened a terminal with the install command.'
           : res.command
             ? `${res.detail} Opened the Ollama download page instead.`
             : 'Opened the Ollama download page in your browser.',

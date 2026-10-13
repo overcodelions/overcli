@@ -358,7 +358,7 @@ export async function updateOllama(
   if (process.platform === 'darwin' && brewManaged) {
     const command = 'brew upgrade ollama';
     const res = await runInTerminal(command, 'ollama-update');
-    if (res.ok) return { ok: true, message: `Opened Terminal running \`${command}\`.` };
+    if (res.ok) return { ok: true, message: `Opened a terminal running \`${command}\`.` };
     // The launch failed. Say so instead of claiming a window opened, and hand
     // back the command so the UI can offer it to copy.
     return { ok: false, message: res.error, command: res.command ?? command };

@@ -13,11 +13,14 @@
 // one source of truth for the shapes that cross IPC.
 
 import type { UUID } from '../types';
+import type { AdoptedWorktrees } from './schema';
 import type { WorkerMessageIntent } from './worker';
 
 /// Where a run does its work: `cwd` = the project's own working tree,
-/// `worktree` = a fresh git worktree forked from a base branch.
-export type RunIn = 'cwd' | 'worktree';
+/// `worktree` = a fresh git worktree forked from a base branch. A batch can
+/// also be `shared`: ONE worktree forked for the whole batch, every item
+/// working in it in turn (see Orchestration.runIn). A single run never is.
+export type RunIn = 'cwd' | 'worktree' | 'shared';
 
 /// One ask surfaced by the producer turn, before the user maps it to a
 /// flow. The producer is instructed to end its reply with a
@@ -135,11 +138,18 @@ export interface Orchestration {
   /// strictly one after another (see `startBatch`). Use it for work that has
   /// to see the tree as it actually is — uncommitted changes, untracked
   /// files, a local build — where a clean worktree would be the wrong input.
+  /// `shared` forks ONE worktree for the whole batch on its first launch
+  /// (recorded in `adoptWorktrees`) and runs every item in it, one at a time,
+  /// so each ask builds on the last and the batch lands as a single branch.
   runIn?: RunIn;
   /// Default base branch for items that don't override it. Ignored entirely
   /// when `runIn === 'cwd'` (nothing forks — the run uses whatever branch the
   /// working tree already has checked out).
   baseBranch?: string;
+  /// Work in these existing worktrees instead of forking new ones — a team
+  /// piece that has its stage to itself, or a `shared` batch's one worktree
+  /// once its first item forked it. Wins over `baseBranch`.
+  adoptWorktrees?: AdoptedWorktrees;
   /// Max items running at once. The `pump` never exceeds this. Always 1 for a
   /// `cwd` batch.
   maxConcurrent: number;

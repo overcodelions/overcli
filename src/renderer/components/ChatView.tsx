@@ -64,8 +64,8 @@ export function ChatView({
   const toolUseIndex = useMemo(() => indexToolUses(events), [events]);
   const toolResultIndex = useMemo(() => indexToolResults(events), [events]);
   const visibleEvents = useMemo(
-    () => filterRendered(events, showToolActivity, toolUseIndex),
-    [events, showToolActivity, toolUseIndex],
+    () => filterRendered(events, showToolActivity, toolUseIndex, toolResultIndex),
+    [events, showToolActivity, toolUseIndex, toolResultIndex],
   );
   // Verdict + intermediate sets. The server marks exactly one event
   // per round as `reviewer.verdict: true` at turn/completed — that's
@@ -777,7 +777,9 @@ function useLatestToolReveal(
       // walk will override this if the turn is still running.
       if (ev.kind.info.text.trim()) latestFlash = null;
       for (const use of ev.kind.info.toolUses) {
-        if (shouldFlash(use.name)) latestFlash = use;
+        // A command whose changes landed now has an inline card; leaving it
+        // in the slot as well would paint it twice.
+        if (shouldFlash(use.name) && !toolResultIndex.get(use.id)?.fileChanges?.length) latestFlash = use;
       }
     }
     // Note: Task/Agent calls used to be pinned in this reveal slot as
@@ -849,6 +851,7 @@ function filterRendered(
   events: StreamEvent[],
   showToolActivity: boolean,
   toolUseIndex: Map<string, ToolUseBlock>,
+  toolResultIndex: Map<string, ToolResultBlock>,
 ): StreamEvent[] {
   const keep = events.map((e) => {
     const t = e.kind.type;
@@ -895,7 +898,7 @@ function filterRendered(
           !info.text.trim() &&
           !hasRenderableThinking &&
           !info.hasOpaqueReasoning &&
-          !hasAlwaysVisibleTool(info.toolUses)
+          !hasAlwaysVisibleTool(info.toolUses, toolResultIndex)
         ) {
           return false;
         }

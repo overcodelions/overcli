@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { log } from '../diagnostics';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
 import type { Orchestration } from '../../shared/flows/orchestration';
+import type { AdoptedWorktrees } from '../../shared/flows/schema';
 import type { Worker } from '../../shared/flows/worker';
 import {
   DEFAULT_TEAM_CHECKPOINTS,
@@ -135,6 +136,8 @@ export interface TeamEngineDeps {
       allowExternalActions?: boolean;
       /// Fork the piece off the task branch rather than the project as it is.
       baseBranch?: string;
+      /// Work in the task branch's own worktrees instead of forking off it.
+      adoptWorktrees?: AdoptedWorktrees;
       mode?: 'piece' | 'full';
       check?: boolean;
     },
@@ -182,19 +185,31 @@ export interface TeamEngineDeps {
   store?: TeamStoreDeps;
 }
 
+/// The task branch's checkouts, as a piece adopts them.
+function taskWorktrees(code: TeamTaskCode): AdoptedWorktrees {
+  return {
+    branch: code.branch,
+    repos: code.repos.map((r) => ({ name: r.name, projectPath: r.projectPath, worktreePath: r.worktreePath })),
+  };
+}
+
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
 export interface TeamCodeDeps {
   /// Cut the task branch in every git repo of `projectPath`. Null: no repo.
   open(args: { taskId: UUID; title: string; projectPath: string }): Result<{ code: TeamTaskCode | null }>;
   /// Where a piece's run did its work: a worktree and branch per repo.
-  pieceRepos(runId: UUID): Array<{ projectPath: string; worktreePath: string; branchName: string }>;
+  pieceRepos(runId: UUID): Array<{ projectPath: string; worktreePath: string; branchName: string; startedAt?: number }>;
   absorb(args: {
     code: TeamTaskCode;
-    piece: Array<{ projectPath: string; worktreePath: string; branchName: string }>;
+    piece: Array<{ projectPath: string; worktreePath: string; branchName: string; startedAt?: number }>;
     message: string;
   }): Result<{ merged: string[] }>;
   land(code: TeamTaskCode, repo: TeamTaskCode['repos'][number], subject: string): Result<{ message: string }>;
+  /// Push the task branch from one repo; `compareUrl` opens a pull request.
+  push?(code: TeamTaskCode, repo: TeamTaskCode['repos'][number], subject: string): Result<{ message: string; compareUrl?: string }>;
+  /// Commits on the task branch that each repo's base lacks (null: unknown).
+  ahead?(code: TeamTaskCode): Array<number | null>;
   close(code: TeamTaskCode): void;
 }
 
@@ -257,6 +272,11 @@ export class TeamEngine {
 
   private recover(task: TeamTask): void {
     this.catchUpRunFiles(task);
+    // Tasks from before the counts existed list every repo as changed.
+    if (task.code?.repos.some((r) => r.ahead === undefined)) {
+      this.countCode(task);
+      this.persist(task);
+    }
     this.catchUpPackVersions(task);
     if (task.room?.busy) {
       // The turn died with the app. Say so in the room rather than leave a
@@ -1037,6 +1057,7 @@ export class TeamEngine {
           folder: task.folder,
           files,
           budget: MEMBER_FOLDER_BUDGET,
+          ...(task.code ? { code: { branch: task.code.branch } } : {}),
           ...(project && project.path !== workers.find((w) => w.id === a.workerId)?.projectPath
             ? {
                 project: {
@@ -1058,8 +1079,19 @@ export class TeamEngine {
           // the room handed off: that started on the model's say-so.
           ...(piecesActFreely(team) && !stage.fromRoom ? { allowExternalActions: true } : {}),
           // Code that merges into the task branch is checked first, by the
-          // member's own check step, when its flow has one.
-          ...(task.code ? { baseBranch: task.code.branch, check: true } : {}),
+          // member's own check step, when its flow has one. A piece with the
+          // stage to itself works on the task branch directly: nobody else is
+          // writing there, so a fork of its own would only cost a checkout per
+          // repo and a merge back. Pieces that share a stage still fork, or
+          // they would edit one checkout underneath each other.
+          ...(task.code
+            ? {
+                ...(stage.assignments.length === 1
+                  ? { adoptWorktrees: taskWorktrees(task.code) }
+                  : { baseBranch: task.code.branch }),
+                check: true,
+              }
+            : {}),
           ...(a.full ? { mode: 'full' as const } : {}),
         });
         // Skipped, or the task cancelled, while the commission was in flight:
@@ -1425,6 +1457,37 @@ export class TeamEngine {
     } catch (err) {
       a.mergeConflict = err instanceof Error ? err.message : String(err);
     }
+    this.countCode(task);
+  }
+
+  /// Recount which repos the task branch changed, so the desk can show those
+  /// and not every member of a large workspace.
+  private countCode(task: TeamTask): void {
+    if (!task.code || !this.deps.code?.ahead) return;
+    try {
+      const counts = this.deps.code.ahead(task.code);
+      task.code.repos.forEach((r, i) => {
+        const n = counts[i];
+        if (typeof n === 'number') r.ahead = n;
+      });
+    } catch (err) {
+      log('warn', 'teams', `Could not count task ${task.id}'s commits`, err);
+    }
+  }
+
+  /// Push the task branch from one repo, for a pull request you open.
+  pushCode(taskId: UUID, projectPath: string): Result<{ message: string; url?: string }> {
+    const task = this.tasks.get(taskId);
+    if (!task?.code) return { ok: false, error: 'This task has no branch to push.' };
+    const repo = task.code.repos.find((r) => r.projectPath === projectPath);
+    if (!repo) return { ok: false, error: 'That repo is not part of this task.' };
+    if (!this.deps.code?.push) return { ok: false, error: 'Pushing is not available.' };
+    const res = this.deps.code.push(task.code, repo, task.title ?? firstWords(task.brief, 60));
+    if (!res.ok) return res;
+    repo.pushed = { at: this.now(), ...(res.compareUrl ? { url: res.compareUrl } : {}) };
+    this.countCode(task);
+    this.persist(task);
+    return { ok: true, message: res.message, ...(res.compareUrl ? { url: res.compareUrl } : {}) };
   }
 
   /// Merge the task branch into one repo's base, in your checkout.
@@ -1437,6 +1500,7 @@ export class TeamEngine {
     const res = this.deps.code.land(task.code, repo, task.title ?? firstWords(task.brief, 60));
     if (!res.ok) return res;
     repo.landed = true;
+    this.countCode(task);
     this.persist(task);
     return res;
   }

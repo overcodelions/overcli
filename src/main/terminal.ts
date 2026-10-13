@@ -32,6 +32,44 @@ export type TerminalOrigin =
   | 'file-tree'
   | 'unknown';
 
+/// The app's own terminal drawer. Registered by main once it can open one;
+/// while set, every launch below goes there instead of a system window, after
+/// the same validation. Returning null means "can't right now" (no window,
+/// node-pty failed to load, the user prefers a system terminal) and the
+/// launch falls through to the system path, so nothing is left with nowhere
+/// to run.
+export type EmbeddedTerminal = (
+  cwd: string,
+  command: string | null,
+  origin: TerminalOrigin,
+) => TerminalLaunchResult | null;
+
+let embedded: EmbeddedTerminal | null = null;
+
+export function setEmbeddedTerminal(launch: EmbeddedTerminal | null): void {
+  embedded = launch;
+}
+
+/// `external` skips the drawer: the explicit "pop out" and Shift-click
+/// gestures, where a separate window is the whole point.
+export interface TerminalLaunchOptions {
+  external?: boolean;
+}
+
+function launchEmbedded(
+  cwd: string,
+  command: string | null,
+  origin: TerminalOrigin,
+  opts: TerminalLaunchOptions | undefined,
+): TerminalLaunchResult | null {
+  if (opts?.external || !embedded) return null;
+  const res = embedded(cwd, command, origin);
+  if (res) {
+    log('info', 'terminal', `[${origin}] built-in terminal in ${cwd}${command ? ` running \`${command}\`` : ''}`);
+  }
+  return res;
+}
+
 // `do script` passes the string to the user's login shell, so any shell
 // metacharacter in the command reaches sh/bash/zsh. Command substitution
 // (backtick, `$(...)`) and control operators (`;`, `&&`, `|`) are the
@@ -176,6 +214,7 @@ end tell`;
 export function runInTerminal(
   command: string,
   origin: TerminalOrigin = 'unknown',
+  opts?: TerminalLaunchOptions,
 ): Promise<TerminalLaunchResult> {
   if (FORBIDDEN_COMMAND_PATTERNS.test(command)) {
     log('warn', 'terminal', `[${origin}] refused \`${command}\`: shell metacharacters`);
@@ -184,6 +223,8 @@ export function runInTerminal(
       error: 'Command contains shell metacharacters and was refused.',
     });
   }
+  const inApp = launchEmbedded(os.homedir(), command, origin, opts);
+  if (inApp) return Promise.resolve(inApp);
   if (process.platform === 'win32') {
     return Promise.resolve(runWindowsTerminal(command));
   }
@@ -209,11 +250,14 @@ export function runInTerminal(
 export function openTerminalIn(
   cwd: string,
   origin: TerminalOrigin = 'file-tree',
+  opts?: TerminalLaunchOptions,
 ): TerminalLaunchResult {
   if (!cwd || /[\n\r]/.test(cwd) || cwd.startsWith('-')) {
     log('warn', 'terminal', `[${origin}] refused bare Terminal in ${cwd}: unsafe path`);
     return { ok: false, error: 'That folder path is unsafe to hand to a terminal.' };
   }
+  const inApp = launchEmbedded(cwd, null, origin, opts);
+  if (inApp) return inApp;
   log('info', 'terminal', `[${origin}] opening bare Terminal in ${cwd}`);
   try {
     if (process.platform === 'win32') {
@@ -242,6 +286,7 @@ export function openTerminalAt(
   cwd: string,
   command: string,
   origin: TerminalOrigin = 'unknown',
+  opts?: TerminalLaunchOptions,
 ): Promise<TerminalLaunchResult> {
   // `cwd` is passed to `open` as a dedicated argv entry (not shell-
   // interpolated), so quotes/backslashes are safe. Only reject blank or
@@ -258,6 +303,8 @@ export function openTerminalAt(
       error: 'Command contains shell metacharacters and was refused.',
     });
   }
+  const inApp = launchEmbedded(cwd, command, origin, opts);
+  if (inApp) return Promise.resolve(inApp);
   if (process.platform === 'win32') {
     return Promise.resolve(runWindowsTerminal(command, cwd));
   }

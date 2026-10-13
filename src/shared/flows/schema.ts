@@ -480,6 +480,13 @@ export interface FlowRun {
   /// Overcli files the finished documents into the project itself. The
   /// folder is removed with the run.
   scratchRoot?: boolean;
+  /// The run's worktree(s) were adopted, not forked (see AdoptedWorktrees),
+  /// so deleting it leaves the worktrees alone. `true`: a team piece working
+  /// straight on its task branch — nothing to review or merge from the run,
+  /// the team does that. `'batch'`: one item of an Orchestrator batch that
+  /// shares a single worktree — the run reviews and merges the whole branch,
+  /// every item's work so far.
+  adoptedWorktree?: boolean | 'batch';
   /// `git rev-parse HEAD` captured at the moment the run started, in the
   /// run's cwd. Used to compute real `git diff <baselineCommit>` output
   /// for `diff`-kind artifacts so they reflect what actually changed on
@@ -705,6 +712,19 @@ export interface FlowRunTeam {
   teamId: UUID;
   teamName: string;
   taskId: UUID;
+}
+
+/// Worktrees a run works in without owning them: a team task's checkouts of
+/// its task branch, one per repo. The run neither forks nor removes them —
+/// the team merges into them and takes them down when the task closes.
+export interface AdoptedWorktrees {
+  branch: string;
+  repos: Array<{ name: string; projectPath: string; worktreePath: string }>;
+  /// Set when an Orchestrator batch shares these (`runIn: 'shared'`) rather
+  /// than a team: the batch forked them itself, and each run may review and
+  /// merge the branch against this base. Empty `baseBranch` = each repo's
+  /// own default.
+  batch?: { baseBranch?: string };
 }
 
 export function isWorkerRun(run: Pick<FlowRun, 'workerId'>): boolean {

@@ -1,5 +1,6 @@
 import { CSSProperties, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { useTerminalStore } from '../terminalStore';
 import { useStore } from '../store';
 import {
   getRunner,
@@ -514,19 +515,26 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
             if (!cwd) return null;
             return (
               <IconButton
-	                onClick={async () => {
-	                  const res = await window.overcli.invoke('terminal:popConversation', {
-	                    cwd,
-	                    backend,
-	                    sessionId: conv.sessionId,
-	                    model: sessionModel || undefined,
-	                  });
-	                  if (!res.ok) {
-	                    window.alert(res.error);
-	                    refocusComposer();
-	                  }
-	                }}
-                title={`Pop to Terminal in ${cwd}${conv.sessionId ? ` · resume ${backendName(backend)}` : ''}`}
+                onClick={async (e: React.MouseEvent) => {
+                  const args = {
+                    cwd,
+                    backend,
+                    sessionId: conv.sessionId,
+                    model: sessionModel || undefined,
+                  };
+                  // The drawer by default; Shift for a separate system
+                  // terminal window, the same as the file tree's `>_`.
+                  if (!e.shiftKey) {
+                    void useTerminalStore.getState().openConversation(args);
+                    return;
+                  }
+                  const res = await window.overcli.invoke('terminal:popConversation', args);
+                  if (!res.ok) {
+                    window.alert(res.error);
+                    refocusComposer();
+                  }
+                }}
+                title={`Open in the terminal in ${cwd}${conv.sessionId ? ` · resume ${backendName(backend)}` : ''} (⇧-click for the system terminal)`}
               >
                 <TerminalIcon />
               </IconButton>
@@ -844,7 +852,7 @@ function IconButton({
   active,
   children,
 }: {
-  onClick: () => void;
+  onClick: (e: React.MouseEvent) => void;
   title: string;
   active?: boolean;
   children: React.ReactNode;

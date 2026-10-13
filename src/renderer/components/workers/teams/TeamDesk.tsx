@@ -1599,13 +1599,20 @@ function PackView({ task, onOpenFile }: { task: TeamTask; onOpenFile: (name: str
 
 /// Where the task's code is: one branch, in every repo the task works in.
 /// Each piece forked from it and merged back; once the pack is in, each repo
-/// merges it into its base — in your checkout, which has to be on that base
-/// and clean, as for any agent branch.
+/// either pushes it for a pull request or merges it into its base — in your
+/// checkout, which has to be on that base and clean, as for any agent branch.
+/// Only repos the task changed are listed: a workspace task cuts the branch
+/// in every member, and thirty rows of "in progress" hid the two that mattered.
 function CodeCard({ task, landable }: { task: TeamTask; landable: boolean }) {
   const landCode = useTeamsStore((s) => s.landCode);
-  const [landing, setLanding] = useState<string | null>(null);
+  const pushCode = useTeamsStore((s) => s.pushCode);
+  const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const code = task.code!;
+  // Uncounted (older tasks, or git could not say) stays listed.
+  const changed = code.repos.filter((r) => r.ahead !== 0 || r.landed);
+  const untouched = code.repos.length - changed.length;
+  const openLink = (url: string) => void window.overcli.invoke("app:openExternal", url);
   return (
     <section className="flex flex-col gap-2 rounded-xl border border-card bg-surface-elevated px-4 py-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -1613,37 +1620,72 @@ function CodeCard({ task, landable }: { task: TeamTask; landable: boolean }) {
           Code · <span className="font-mono font-normal text-ink-muted">{code.branch}</span>
         </span>
         <span className="text-[11px] text-ink-faint">
-          {landable ? "Every piece merged here. Merge it into each repo when you're happy." : "Each piece starts from this branch and merges back into it."}
+          {landable
+            ? "Every piece merged here. Push it for a pull request, or merge it into each repo."
+            : "Each piece starts from this branch and merges back into it."}
         </span>
       </div>
-      <ul className="flex flex-col divide-y divide-card">
-        {code.repos.map((repo) => (
-          <li key={repo.projectPath} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
-            <span className="text-sm text-ink">
-              {repo.name} <span className="text-[11px] text-ink-faint">from {repo.base}</span>
-            </span>
-            {repo.landed ? (
-              <span className="text-xs text-emerald-500">Merged into {repo.base}</span>
-            ) : landable ? (
-              <button
-                className={secondaryBtn}
-                disabled={landing !== null}
-                onClick={async () => {
-                  setLanding(repo.projectPath);
-                  setNote(null);
-                  const res = await landCode(task.id, repo.projectPath);
-                  setLanding(null);
-                  if (res.ok) setNote(res.message);
-                }}
-              >
-                {landing === repo.projectPath ? "Merging…" : `Merge into ${repo.base}`}
-              </button>
-            ) : (
-              <span className="text-[11px] text-ink-faint">in progress</span>
-            )}
-          </li>
-        ))}
-      </ul>
+      {changed.length === 0 ? (
+        <span className="text-[11px] text-ink-faint">No commits on this branch yet.</span>
+      ) : (
+        <ul className="flex flex-col divide-y divide-card">
+          {changed.map((repo) => (
+            <li key={repo.projectPath} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
+              <span className="text-sm text-ink">
+                {repo.name}{" "}
+                <span className="text-[11px] text-ink-faint">
+                  {repo.ahead ? `${repo.ahead} commit${repo.ahead === 1 ? "" : "s"} ` : ""}from {repo.base}
+                </span>
+              </span>
+              {repo.landed ? (
+                <span className="text-xs text-emerald-500">Merged into {repo.base}</span>
+              ) : landable ? (
+                <span className="flex items-center gap-2">
+                  {repo.pushed?.url && (
+                    <button className={primaryBtn} onClick={() => openLink(repo.pushed!.url!)}>
+                      Open pull request
+                    </button>
+                  )}
+                  <button
+                    className={repo.pushed?.url ? secondaryBtn : primaryBtn}
+                    disabled={busy !== null}
+                    title={`git push -u origin ${code.branch}, from the task's own checkout`}
+                    onClick={async () => {
+                      setBusy(`push:${repo.projectPath}`);
+                      setNote(null);
+                      const res = await pushCode(task.id, repo.projectPath);
+                      setBusy(null);
+                      if (res.ok) setNote(res.message);
+                    }}
+                  >
+                    {busy === `push:${repo.projectPath}` ? "Pushing…" : repo.pushed ? "Push again" : "Push"}
+                  </button>
+                  <button
+                    className={secondaryBtn}
+                    disabled={busy !== null}
+                    onClick={async () => {
+                      setBusy(`land:${repo.projectPath}`);
+                      setNote(null);
+                      const res = await landCode(task.id, repo.projectPath);
+                      setBusy(null);
+                      if (res.ok) setNote(res.message);
+                    }}
+                  >
+                    {busy === `land:${repo.projectPath}` ? "Merging…" : `Merge into ${repo.base}`}
+                  </button>
+                </span>
+              ) : (
+                <span className="text-[11px] text-ink-faint">in progress</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {untouched > 0 && (
+        <span className="text-[11px] text-ink-faint">
+          {untouched} other repo{untouched === 1 ? "" : "s"} in this workspace {untouched === 1 ? "has" : "have"} no changes.
+        </span>
+      )}
       {note && <span className="text-[11px] text-emerald-500">{note}</span>}
     </section>
   );

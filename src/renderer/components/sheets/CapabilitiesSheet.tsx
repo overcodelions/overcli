@@ -1189,7 +1189,7 @@ function AwsSsoLoginPanel() {
     setRows((r) => ({
       ...r,
       [t.name]: res.ok
-        ? { msg: mode === 'terminal' ? 'Running in Terminal…' : 'Signed in ✓' }
+        ? { msg: mode === 'terminal' ? 'Running in the terminal…' : 'Signed in ✓' }
         : { error: res.error, ...(res.command ? { command: res.command } : {}) },
     }));
   };
@@ -1282,7 +1282,7 @@ function AwsSsoLoginPanel() {
                   <button
                     disabled={state.busy}
                     onClick={() => void doLogin(t, 'terminal')}
-                    title="Run the same command in a Terminal window instead"
+                    title="Run the same command in a terminal instead"
                     className="shrink-0 text-[10.5px] px-2 py-1 rounded border border-card-strong text-ink-faint hover:text-ink hover:bg-card-strong disabled:opacity-50"
                   >
                     Terminal

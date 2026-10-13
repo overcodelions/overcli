@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../store';
+import { TerminalToggle } from './TerminalDrawer';
 import { useRunTouchedAt } from '../runTouched';
 import { PopMenu, type MenuItemDef } from './SidebarPlaces';
 import { toggleFoldsServiceList } from '../uiSlice';
@@ -404,6 +405,7 @@ export function TitleBar() {
             }
           />
         )}
+        <TerminalToggle />
         {/* Local and Usage are dashboards you check now and then, not places
             you work, so they share one menu instead of taking two tabs. */}
         <MoreMenu

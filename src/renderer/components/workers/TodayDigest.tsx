@@ -27,6 +27,7 @@ import type { DigestSummary } from './digestSummary';
 import type { QueueRow } from './workQueue';
 import { baseName } from './workQueue';
 import type { WorkerFile } from './workerDeskSelectors';
+import { TodayBatches } from './TodayBatches';
 
 /// `team`: a team task on the crew's list, keyed by the task id — its
 /// members' pieces fold under it, and the reader shows the task itself.
@@ -346,6 +347,7 @@ export function InboxList({
           if (row) onOpen({ kind: 'done', key: row.key });
         }}
       />
+      {!workerId && <TodayBatches />}
       {nothing && (
         <p className="text-[12.5px] text-ink-faint">
           {workerId ? 'Nothing from this worker yet — its work lands here as it happens.' : "Nothing yet — the crew's work lands here as it happens."}

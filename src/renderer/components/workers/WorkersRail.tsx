@@ -31,6 +31,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useFlowsStore } from "../../flowsStore";
 import { useOrchestratorStore } from "../../orchestratorStore";
+import { liveOrchestratorBatches, movingLine, tallyOf } from "../../orchestratorTally";
 import { useRunningMap } from "../../runnersStore";
 import { useTickingNow } from "../../hooks";
 import { useStore } from "../../store";
@@ -236,10 +237,33 @@ export function WorkersRail({
   // (the pane is the hiring page whichever you pick), and search has nothing
   // to search. So the rail is only the empty chair, in the slot the first
   // face will take — and the navigation arrives with the first hire.
+  // Batches you launched yourself never reach the Workers queue, so this row
+  // is the only place on the rail that says they are still going — or that
+  // one stopped and is waiting on you.
+  const orchTally = tallyOf(liveOrchestratorBatches(orchestrations));
+  const orchMoving = movingLine(orchTally);
   const orchestratorButton = showOrchestrator && (
     <RailButton
       label="Orchestrator"
-      detail={expanded ? "Runs any batch you hand it" : undefined}
+      detail={
+        !expanded
+          ? undefined
+          : orchTally.needsYou > 0
+            ? `${orchTally.needsYou} need${orchTally.needsYou === 1 ? "s" : ""} you${orchMoving ? ` · ${orchMoving}` : ""}`
+            : orchMoving || "Runs any batch you hand it"
+      }
+      badge={
+        orchTally.needsYou > 0 ? (
+          <span className="absolute -right-1 -top-1 min-w-[14px] rounded-full bg-amber-400 px-[3px] text-center text-[9px] font-bold leading-[14px] text-black">
+            {orchTally.needsYou}
+          </span>
+        ) : orchTally.running > 0 ? (
+          <span
+            title={orchMoving}
+            className="absolute right-0 top-0 h-1.5 w-1.5 animate-pulse rounded-full bg-accent"
+          />
+        ) : null
+      }
       title="The general worker: hand it a list and a flow, and it runs them side by side"
       expanded={expanded}
       active={detailMode === "orchestrator"}

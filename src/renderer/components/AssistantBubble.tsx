@@ -56,7 +56,7 @@ export function AssistantBubble({
   const dedupedToolUses = dedupeAskUserQuestion(info.toolUses);
   const visibleToolUses = showToolActivity
     ? dedupedToolUses
-    : dedupedToolUses.filter(rendersWhenToolActivityHidden);
+    : dedupedToolUses.filter((u) => rendersWhenToolActivityHidden(u, toolResultIndex?.get(u.id)));
 
   // Hide the machine-readable <watch_report> block the flow watcher emits for
   // the runtime to parse — the human-facing status already shows in the watch
@@ -181,6 +181,7 @@ export function AssistantBubble({
             use={use}
             result={toolResultIndex?.get(use.id)}
             conversationId={conversationId}
+            toolActivityHidden={!showToolActivity}
           />
         ))}
     </div>

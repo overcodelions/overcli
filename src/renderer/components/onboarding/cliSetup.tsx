@@ -239,7 +239,7 @@ function SignInButton({ backend, name }: { backend: Backend; name: string }) {
             // the command to run by hand, rather than a button that just
             // stops spinning.
             setError({
-              text: `Couldn't open Terminal: ${err instanceof Error ? err.message : String(err)}`,
+              text: `Couldn't open a terminal: ${err instanceof Error ? err.message : String(err)}`,
               command: CLI_SETUP.find((c) => c.backend === backend)?.auth ?? undefined,
             });
           } finally {
@@ -247,10 +247,10 @@ function SignInButton({ backend, name }: { backend: Backend; name: string }) {
           }
         }}
         disabled={launching}
-        title={`Open Terminal and sign into ${name}`}
+        title={`Open a terminal and sign into ${name}`}
         className="shrink-0 rounded px-2 py-0.5 text-[10px] font-medium bg-amber-500/20 text-amber-700 dark:text-amber-200 hover:bg-amber-500/30 disabled:opacity-50"
       >
-        {launching ? 'Opening…' : launched ? 'Reopen Terminal' : 'Sign in'}
+        {launching ? 'Opening…' : launched ? 'Reopen terminal' : 'Sign in'}
       </button>
     </>
   );

@@ -17,6 +17,7 @@
 // launch these" stays answerable.
 
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 
 import type {
   AppSettings,
@@ -26,9 +27,11 @@ import type {
   Project,
   UUID,
 } from '../../shared/types';
-import type { FlowRun, FlowRunTeam } from '../../shared/flows/schema';
+import type { AdoptedWorktrees, FlowRun, FlowRunTeam } from '../../shared/flows/schema';
 import { flowRunOwnerPath } from '../../shared/flows/schema';
+import { log } from '../diagnostics';
 import { runGitAsync } from '../git';
+import { teamPieceSlug } from './branchName';
 import type {
   Candidate,
   Orchestration,
@@ -63,6 +66,8 @@ export interface FlowLauncher {
     userPrompt: string;
     runIn?: 'cwd' | 'worktree';
     baseBranch?: string;
+    worktreeName?: string;
+    adoptWorktrees?: AdoptedWorktrees;
     parentOrchestrationId?: UUID;
     orchestrationItemTitle?: string;
     scheduleId?: UUID;
@@ -93,6 +98,57 @@ export interface FlowLauncher {
 export interface BatchLauncher extends FlowLauncher {
   holdRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
   releaseHold(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
+  /// Fork the one worktree a `shared` batch's items all work in.
+  forkBatchWorktrees(args: {
+    projectPath: string;
+    name: string;
+    baseBranch?: string;
+  }): Promise<{ ok: true; worktrees: AdoptedWorktrees } | { ok: false; error: string }>;
+}
+
+/// What every item of a shared batch is told, appended last so it wins over
+/// the ask itself. Asks are written to stand alone, and producers like to
+/// say "use the ticket in the branch name" or "do not commit" — obeyed here,
+/// either one strands the work off the branch the batch is reviewed on.
+export function sharedBranchInstruction(branch: string): string {
+  return [
+    '',
+    '',
+    `This ask is one of a batch that works in a single shared worktree on branch \`${branch}\`. ` +
+      'That overrides anything above about branches or committing: do not create, switch or rename ' +
+      `branches — stay on \`${branch}\` — and when the work is complete, commit it there. ` +
+      'Do not push or open a pull request; later asks in this batch build on the same branch.',
+  ].join('\n');
+}
+
+/// A flow with its own branching habit (`git checkout -b bugfix/<ticket>`)
+/// moves a shared batch's worktree off the batch branch, and every later item
+/// would then commit to that branch instead. Run between items: when a repo's
+/// checkout has moved to a branch that still builds on the batch branch, move
+/// the batch branch up to it and switch back — the same commit, so it is safe
+/// with uncommitted edits in the tree. The detour branch is left alone. A
+/// checkout that diverged is only logged: moving the batch branch there would
+/// drop its own commits from it.
+export async function reclaimSharedBranch(shared: AdoptedWorktrees): Promise<void> {
+  const { branch } = shared;
+  await Promise.all(
+    shared.repos.map(async (r) => {
+      if (!existsSync(r.worktreePath)) return;
+      const cur = await runGitAsync(['branch', '--show-current'], r.worktreePath);
+      const head = cur.exitCode === 0 ? cur.stdout.trim() : '';
+      if (head === branch) return;
+      const builds = await runGitAsync(['merge-base', '--is-ancestor', branch, 'HEAD'], r.worktreePath);
+      if (builds.exitCode !== 0) {
+        log('warn', 'orchestrator', `${r.name}: shared worktree is on ${head || 'a detached HEAD'}, which has diverged from ${branch}; leaving it.`);
+        return;
+      }
+      const moved = await runGitAsync(['branch', '-f', branch, 'HEAD'], r.worktreePath);
+      const back = moved.exitCode === 0 ? await runGitAsync(['switch', branch], r.worktreePath) : moved;
+      if (back.exitCode !== 0) {
+        log('warn', 'orchestrator', `${r.name}: couldn't put the shared worktree back on ${branch}: ${back.stderr.trim()}`);
+      }
+    }),
+  );
 }
 
 /// System prompt for the producer turn. Steers the model to triage rather
@@ -381,13 +437,13 @@ export class OrchestratorImpl {
     const items = args.items.filter((i) => i.candidate && i.flowId);
     if (items.length === 0) return { ok: false, error: 'No items to launch.' };
 
-    const runIn: RunIn = args.runIn === 'cwd' ? 'cwd' : 'worktree';
-    // A cwd batch shares one working tree across every item, so two items in
-    // flight would edit the same files underneath each other. Serialize it —
-    // the queue still drains, just strictly one at a time. (The UI pins the
-    // stepper to 1 in cwd mode; this is the load-bearing enforcement.)
+    const runIn: RunIn = args.runIn === 'cwd' || args.runIn === 'shared' ? args.runIn : 'worktree';
+    // A cwd or shared batch puts every item in one working tree, so two items
+    // in flight would edit the same files underneath each other. Serialize it
+    // — the queue still drains, just strictly one at a time. (The UI pins the
+    // stepper to 1 in those modes; this is the load-bearing enforcement.)
     const cap =
-      runIn === 'cwd' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1));
+      runIn !== 'worktree' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1));
     // Nothing forks from a base branch in cwd mode — the run just uses
     // whatever the tree has checked out. Drop it rather than record a value
     // the launch will ignore.
@@ -405,8 +461,9 @@ export class OrchestratorImpl {
       items: items.map<OrchestrationItem>((i) => ({
         candidate: i.candidate,
         flowId: i.flowId,
+        // A shared batch's items all fork from the batch's one base.
         baseBranch:
-          runIn === 'cwd' ? undefined : i.baseBranch?.trim() || baseBranch,
+          runIn === 'worktree' ? i.baseBranch?.trim() || baseBranch : undefined,
         status: 'queued',
       })),
     };
@@ -623,6 +680,8 @@ export class OrchestratorImpl {
     flowId: string;
     runIn: RunIn;
     baseBranch?: string;
+    /// Work in these worktrees rather than forking (see Orchestration).
+    adoptWorktrees?: AdoptedWorktrees;
     maxConcurrent: number;
     /// Launch immediately instead of parking. Off by default: the guarantee
     /// that nothing typed at a desk dispatches unattended lives with the
@@ -651,6 +710,7 @@ export class OrchestratorImpl {
       projectPath,
       runIn,
       baseBranch,
+      ...(runIn === 'worktree' && args.adoptWorktrees ? { adoptWorktrees: args.adoptWorktrees } : {}),
       maxConcurrent:
         runIn === 'cwd' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1)),
       // No `reply`: there was no turn to reply. The prompt is recorded so the
@@ -769,6 +829,10 @@ export class OrchestratorImpl {
     // slots when you come back.
     const awaySince = this.crewAwaySince();
     if (o.origin?.kind === 'worker' && awaySince !== undefined && o.createdAt < awaySince) return;
+    // Between items, put a shared batch's worktrees back on its branch.
+    if (o.runIn === 'shared' && o.adoptWorktrees && !o.items.some((i) => i.status === 'running')) {
+      await reclaimSharedBranch(o.adoptWorktrees);
+    }
     let launchedAny = false;
     // Loop because a slot may free up (a synchronous startRun failure)
     // while we're still filling — re-evaluate until no queued item can go.
@@ -785,15 +849,53 @@ export class OrchestratorImpl {
       launchedAny = true;
       let res: Awaited<ReturnType<FlowLauncher['startRun']>>;
       try {
+        // A shared batch forks its one worktree on its first launch, and
+        // again if it has since gone (merged and removed from a review) —
+        // every item adopts it. A fork that fails can't go better for the
+        // next item, so it fails them all; Retry tries again.
+        if (o.runIn === 'shared' && !o.adoptWorktrees?.repos.every((r) => existsSync(r.worktreePath))) {
+          const forked = await this.launcher.forkBatchWorktrees({
+            projectPath: o.projectPath,
+            // Not mined from the asks: a ticket key from the first one would
+            // name a branch that carries all of them after just that one.
+            name: `batch-${o.id.slice(0, 8)}`,
+            baseBranch: o.baseBranch,
+          });
+          if (!forked.ok) {
+            for (const i of o.items) {
+              if (i !== next && i.status !== 'queued') continue;
+              i.status = 'failed';
+              i.note = forked.error;
+              i.finishedAt = Date.now();
+            }
+            continue;
+          }
+          o.adoptWorktrees = forked.worktrees;
+        }
         // Batches persisted before `runIn` existed have it undefined — they
-        // were all worktree batches, so that's the default.
-        const runIn: RunIn = o.runIn ?? 'worktree';
+        // were all worktree batches, so that's the default. A shared batch's
+        // runs are worktree runs that adopt rather than fork.
+        const runIn: 'cwd' | 'worktree' = o.runIn === 'cwd' ? 'cwd' : 'worktree';
+        const baseBranch = runIn === 'cwd' ? undefined : (next.baseBranch ?? o.baseBranch);
+        // A team piece forks off its task branch; name it after that branch
+        // rather than whatever ticket key the member's prompt happens to quote.
+        const worker = o.origin?.kind === 'worker' ? o.origin : undefined;
+        const adoptWorktrees = runIn === 'cwd' ? undefined : o.adoptWorktrees;
+        const worktreeName =
+          !adoptWorktrees && worker?.team && baseBranch?.startsWith('team/')
+            ? teamPieceSlug(baseBranch, worker.team.stage, worker.workerName)
+            : undefined;
         res = await this.launcher.startRun({
           flowId: next.flowId,
           projectPath: o.projectPath,
-          userPrompt: next.candidate.prompt,
+          userPrompt:
+            o.runIn === 'shared' && adoptWorktrees
+              ? next.candidate.prompt + sharedBranchInstruction(adoptWorktrees.branch)
+              : next.candidate.prompt,
           runIn,
-          baseBranch: runIn === 'cwd' ? undefined : (next.baseBranch ?? o.baseBranch),
+          baseBranch,
+          ...(worktreeName ? { worktreeName } : {}),
+          ...(adoptWorktrees ? { adoptWorktrees } : {}),
           parentOrchestrationId: o.id,
           orchestrationItemTitle: next.candidate.title,
           // Stamp the worker on child runs of a worker's batch — the run

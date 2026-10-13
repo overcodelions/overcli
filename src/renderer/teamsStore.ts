@@ -57,6 +57,10 @@ interface TeamsActions {
   /// Hire one worker for a team. They land on the crew with no shifts; the
   /// editor puts them on the team.
   landCode(taskId: string, projectPath: string): Promise<{ ok: true; message: string } | { ok: false; error: string }>;
+  pushCode(
+    taskId: string,
+    projectPath: string,
+  ): Promise<{ ok: true; message: string; url?: string } | { ok: false; error: string }>;
   hireMember(request: TeamHireRequest): Promise<{ ok: true; worker: Worker } | { ok: false; error: string }>;
   /// `projectPath`: where this task works, over the team's; `null` for
   /// each member in their own.
@@ -162,6 +166,11 @@ export const useTeamsStore = create<TeamsState & TeamsActions>((set, get) => {
     hireMember: (request) => window.overcli.invoke('teams:hireMember', { request }),
     landCode: async (taskId, projectPath) => {
       const res = await window.overcli.invoke('teams:landCode', { taskId, projectPath });
+      set((s) => ({ errors: { ...s.errors, [taskId]: res.ok ? null : res.error } }));
+      return res;
+    },
+    pushCode: async (taskId, projectPath) => {
+      const res = await window.overcli.invoke('teams:pushCode', { taskId, projectPath });
       set((s) => ({ errors: { ...s.errors, [taskId]: res.ok ? null : res.error } }));
       return res;
     },

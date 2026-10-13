@@ -37,6 +37,7 @@ import {
 import type { NotifyArgs } from '../host';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
 import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
+import type { AdoptedWorktrees } from '../../shared/flows/schema';
 import {
   evaluateSchedule,
   nextOccurrenceAfter,
@@ -216,6 +217,7 @@ export interface WorkerParker {
     flowId: string;
     runIn: 'cwd' | 'worktree';
     baseBranch?: string;
+    adoptWorktrees?: AdoptedWorktrees;
     maxConcurrent: number;
     autoLaunch?: boolean;
     note?: string;
@@ -1331,6 +1333,10 @@ export class WorkerEngine {
       /// starts from what earlier pieces did. Always in a worktree then —
       /// the branch is merged into, never your checkout.
       baseBranch?: string;
+      /// Work straight in the task branch's own worktrees instead of forking
+      /// off it: the piece has its stage to itself, so nobody else writes
+      /// there, and there is nothing to merge back afterwards.
+      adoptWorktrees?: AdoptedWorktrees;
       /// `full`: the worker's own flow, every step — the ask is its whole
       /// usual job. Otherwise one scoped piece (see `teamPieceFlow`).
       mode?: 'piece' | 'full';
@@ -1370,8 +1376,8 @@ export class WorkerEngine {
       prompt: this.buildDirectPrompt(w, args.prompt, { files: false }),
       title: label,
       flowId,
-      runIn: args.baseBranch ? 'worktree' : this.effectiveRunIn(w, args.projectPath),
-      ...(args.baseBranch ? { baseBranch: args.baseBranch } : {}),
+      runIn: args.baseBranch || args.adoptWorktrees ? 'worktree' : this.effectiveRunIn(w, args.projectPath),
+      ...(args.adoptWorktrees ? { adoptWorktrees: args.adoptWorktrees } : args.baseBranch ? { baseBranch: args.baseBranch } : {}),
       maxConcurrent: 1,
       autoLaunch: true,
       note: `Commissioned by the ${args.team.teamName} team.`,

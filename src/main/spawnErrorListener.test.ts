@@ -32,6 +32,10 @@ const EXEMPT = new Set<string>([
   // other caller, and the supervisor requires it to report failures through
   // `onError`.
   'services/supervisor.ts',
+  // node-pty, injected. Its spawn is synchronous and throws on failure (the
+  // `terminal:create` handler catches it), and the PTY has no 'error' event:
+  // a shell that dies later is reported through onExit.
+  'ptyManager.ts',
 ]);
 
 function tsFilesUnder(dir: string): string[] {

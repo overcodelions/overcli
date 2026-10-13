@@ -793,7 +793,7 @@ export async function installOllama(
   if (process.platform === 'darwin' && brewAvailable()) {
     const command = 'brew install ollama';
     const res = await runInTerminal(command, 'ollama-install');
-    if (res.ok) return { started: 'brew', detail: `Opened Terminal running \`${command}\`` };
+    if (res.ok) return { started: 'brew', detail: `Opened a terminal running \`${command}\`` };
     // Terminal wouldn't take the command (usually a blocked Apple Event).
     // Fall back to the download page rather than reporting a phantom window.
     opener(OLLAMA_DOWNLOAD_URL);
