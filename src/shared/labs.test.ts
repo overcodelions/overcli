@@ -7,13 +7,13 @@ describe('labOn', () => {
     for (const { key } of LABS) expect(labOn({}, key)).toBe(true);
   });
 
-  it('starts a new install with every lab off', () => {
-    for (const { key } of LABS) expect(labOn(NEWCOMER_LABS, key)).toBe(false);
+  it('starts a new install with Workers on and every other lab off', () => {
+    for (const { key } of LABS) expect(labOn(NEWCOMER_LABS, key)).toBe(key === 'workers');
   });
 
   it('honours one switch without touching the others', () => {
-    const labs = { ...NEWCOMER_LABS, workers: true };
-    expect(labOn(labs, 'workers')).toBe(true);
+    const labs = { ...NEWCOMER_LABS, compare: true };
+    expect(labOn(labs, 'compare')).toBe(true);
     expect(labOn(labs, 'orchestrator')).toBe(false);
   });
 });
