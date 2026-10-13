@@ -38,6 +38,8 @@ import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
 import { SubagentDrawer } from './components/SubagentDrawer';
 import { ServiceLogDrawer } from './components/ServiceLogDrawer';
+import { TerminalDrawer } from './components/TerminalDrawer';
+import { useTerminalStore } from './terminalStore';
 import { useServicesStore } from './servicesStore';
 import { FileEditorPane } from './components/FileEditorPane';
 import { CompareView } from './components/CompareView';
@@ -191,6 +193,9 @@ export function App() {
 
   // Work other tools handed over — see handoffsStore.
   useEffect(() => initHandoffs(), []);
+
+  // Shells left running in the terminal drawer, picked back up after a reload.
+  useEffect(() => useTerminalStore.getState().init(), []);
 
   // Re-check which finished runs still have unreviewed work when the window
   // regains focus — reviewing means leaving this app, so coming back is when
@@ -643,39 +648,42 @@ export function App() {
           </>
         )}
         <main className="flex-1 min-w-0 flex flex-col bg-surface">
-          {detailMode === 'stats' ? (
-            <StatsPage />
-          ) : detailMode === 'local' ? (
-            <LocalPane />
-          ) : detailMode === 'explorer' ? (
-            // Everyday projects get the documents grid; a code project keeps
-            // the tree. Same entry point, two renderers — the file browser a
-            // repo needs and the one a folder of documents needs are not the
-            // same browser.
-            everydayExplorerProject ? (
-              <DocumentsPane
-                rootPath={everydayExplorerProject.path}
-                projectName={everydayExplorerProject.name}
-                onClose={() => useStore.getState().closeExplorer()}
-              />
+          <div className="flex-1 min-h-0 flex flex-col">
+            {detailMode === 'stats' ? (
+              <StatsPage />
+            ) : detailMode === 'local' ? (
+              <LocalPane />
+            ) : detailMode === 'explorer' ? (
+              // Everyday projects get the documents grid; a code project keeps
+              // the tree. Same entry point, two renderers — the file browser a
+              // repo needs and the one a folder of documents needs are not the
+              // same browser.
+              everydayExplorerProject ? (
+                <DocumentsPane
+                  rootPath={everydayExplorerProject.path}
+                  projectName={everydayExplorerProject.name}
+                  onClose={() => useStore.getState().closeExplorer()}
+                />
+              ) : (
+                <ExplorerPane />
+              )
+            ) : detailMode === 'flows' ? (
+              <FlowsLibraryPane />
+            ) : detailMode === 'orchestrator' ? (
+              <OrchestratorPane />
+            ) : detailMode === 'workers' ? (
+              <WorkersPane />
+            ) : detailMode === 'work' ? (
+              <WorkPane />
+            ) : detailMode === 'services' ? (
+              <ServicesPane />
+            ) : selectedConversationId ? (
+              <ConversationPane />
             ) : (
-              <ExplorerPane />
-            )
-          ) : detailMode === 'flows' ? (
-            <FlowsLibraryPane />
-          ) : detailMode === 'orchestrator' ? (
-            <OrchestratorPane />
-          ) : detailMode === 'workers' ? (
-            <WorkersPane />
-          ) : detailMode === 'work' ? (
-            <WorkPane />
-          ) : detailMode === 'services' ? (
-            <ServicesPane />
-          ) : selectedConversationId ? (
-            <ConversationPane />
-          ) : (
-            <WelcomePane />
-          )}
+              <WelcomePane />
+            )}
+          </div>
+          <TerminalDrawer />
         </main>
         {subagentDrawerParentId && drawerConvId && (
           <>

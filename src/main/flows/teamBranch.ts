@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { autoCommitIfDirty, detectBaseBranch, mergeAgent, removeWorktree, runGit } from '../git';
+import { autoCommitIfDirty, detectBaseBranch, mergeAgent, pushBranch, removeWorktree, runGit } from '../git';
 
 export interface TaskRepo {
   /// The repo's name, for messages ("overgit").
@@ -24,6 +24,8 @@ export interface TaskRepo {
   worktreePath: string;
   /// Merged into `base` by you.
   landed?: boolean;
+  ahead?: number;
+  pushed?: { at: number; url?: string };
 }
 
 export interface TaskCode {
@@ -36,6 +38,8 @@ export interface PieceRepo {
   projectPath: string;
   worktreePath: string;
   branchName: string;
+  /// When the piece's run started (ms), to spot branches it made on the side.
+  startedAt?: number;
 }
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
@@ -52,6 +56,29 @@ function slug(text: string): string {
 
 function isRepo(dir: string): boolean {
   return runGit(['rev-parse', '--is-inside-work-tree'], dir).exitCode === 0;
+}
+
+/// Branches that took commits since `since` (ms) which the task branch does
+/// not have, and which no checkout has on: work committed on the side. A
+/// sibling piece's branch is checked out in its own worktree, and your own
+/// branch in your checkout, so neither counts.
+export function strayBranches(repo: string, taskBranch: string, since: number, own: string[]): string[] {
+  const refs = runGit(
+    ['for-each-ref', `--no-merged=refs/heads/${taskBranch}`, '--format=%(refname:short)%09%(committerdate:unix)', 'refs/heads'],
+    repo,
+  );
+  if (refs.exitCode !== 0) return [];
+  const checkedOut = new Set(
+    runGit(['worktree', 'list', '--porcelain'], repo)
+      .stdout.split('\n')
+      .filter((l) => l.startsWith('branch refs/heads/'))
+      .map((l) => l.slice('branch refs/heads/'.length)),
+  );
+  return refs.stdout
+    .split('\n')
+    .map((l) => l.split('\t'))
+    .filter(([name, at]) => name && Number(at) * 1000 >= since && !checkedOut.has(name) && !own.includes(name))
+    .map(([name]) => name);
 }
 
 function branchExists(repo: string, branch: string): boolean {
@@ -118,6 +145,34 @@ export function absorbPiece(args: {
   for (const p of args.piece) {
     const repo = args.code.repos.find((r) => path.resolve(r.projectPath) === path.resolve(p.projectPath));
     if (!repo || !p.branchName) continue;
+    // Only the branch the piece was given gets merged. A piece that moved its
+    // checkout, or committed on a branch of its own, would otherwise be
+    // dropped without a word — so stop and say where its work went.
+    const on = runGit(['branch', '--show-current'], p.worktreePath).stdout.trim();
+    if (on !== p.branchName) {
+      return {
+        ok: false,
+        conflict: true,
+        error:
+          `${repo.name}: this piece left its branch \`${p.branchName}\` for ${on ? `\`${on}\`` : 'a detached checkout'}, ` +
+          `so its work is not where the team merges from. Merge it into \`${args.code.branch}\` yourself in ` +
+          `${repo.worktreePath}, then Retry — or Continue without it.`,
+      };
+    }
+    if (p.startedAt) {
+      const stray = strayBranches(repo.projectPath, args.code.branch, p.startedAt, [p.branchName]);
+      if (stray.length > 0) {
+        const named = stray.map((b) => `\`${b}\``).join(', ');
+        return {
+          ok: false,
+          conflict: true,
+          error:
+            `${repo.name}: while this piece ran, ${named} took commits that are not on the task branch — ` +
+            `likely the piece's work, committed on the side. Merge ${stray.length === 1 ? 'it' : 'them'} into ` +
+            `\`${args.code.branch}\` yourself in ${repo.worktreePath}, then Retry — or Continue without ${stray.length === 1 ? 'it' : 'them'}.`,
+        };
+      }
+    }
     const commit = autoCommitIfDirty(p.worktreePath, args.message);
     if (!commit.ok) {
       return {
@@ -154,6 +209,25 @@ export function landTaskBranch(code: TaskCode, repo: TaskRepo, subject: string):
     baseBranch: repo.base,
     commitSubject: subject,
   });
+}
+
+/// How many commits the task branch has that each repo's base does not —
+/// which repos the task actually changed. Null where git could not say.
+export function taskBranchAhead(code: TaskCode): Array<number | null> {
+  return code.repos.map((repo) => {
+    const res = runGit(['rev-list', '--count', `${repo.base}..${code.branch}`], repo.projectPath);
+    return res.exitCode === 0 ? Number(res.stdout.trim()) : null;
+  });
+}
+
+/// Push the task branch from one repo, for a pull request you open. Work left
+/// uncommitted in the task's checkout is committed first, as for any push.
+export function pushTaskBranch(
+  code: TaskCode,
+  repo: TaskRepo,
+  subject: string,
+): Result<{ message: string; compareUrl?: string }> {
+  return pushBranch({ worktreePath: repo.worktreePath, branchName: code.branch, commitSubject: subject });
 }
 
 /// Take the task's worktrees down. The branch goes too once landed; one with

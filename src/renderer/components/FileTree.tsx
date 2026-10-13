@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { useTerminalStore } from '../terminalStore';
 import { fileIconColor, folderIconColor, isTestFileName } from '../fileIcons';
 import type { FileTreeEntry } from '@shared/types';
 
@@ -159,12 +160,9 @@ export const FileTree = memo(function FileTree({
         </button>
         <button
           type="button"
-          onClick={async () => {
-            const res = await window.overcli.invoke('terminal:openFolder', { path: rootPath });
-            setActionError(res.ok ? null : res.error);
-          }}
-          title="Open this folder in Terminal"
-          aria-label="Open this folder in Terminal"
+          onClick={async (e) => setActionError(await openTerminalHere(rootPath, e.shiftKey))}
+          title="Open a terminal in this folder (⇧-click for the system terminal)"
+          aria-label="Open a terminal in this folder"
           className="flex h-5 shrink-0 items-center justify-center rounded px-1 font-mono text-[10px] text-ink-faint hover:text-ink hover:bg-card"
         >
           &gt;_
@@ -486,11 +484,10 @@ function OpenInTerminalButton({
     <button
       onClick={async (e) => {
         e.stopPropagation();
-        const res = await window.overcli.invoke('terminal:openFolder', { path });
-        onResult(res.ok ? null : res.error);
+        onResult(await openTerminalHere(path, e.shiftKey));
       }}
-      title="Open this folder in Terminal"
-      aria-label="Open this folder in Terminal"
+      title="Open a terminal in this folder (⇧-click for the system terminal)"
+      aria-label="Open a terminal in this folder"
       className="ml-auto shrink-0 px-1 rounded font-mono text-[10px] text-ink-faint opacity-0 group-hover:opacity-100 hover:text-ink hover:bg-card-strong"
     >
       &gt;_
@@ -536,4 +533,16 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${Math.round(bytes / 1024 / 1024)} MB`;
+}
+
+/// The `>_` buttons: a shell in the app's own drawer, or with Shift the
+/// system terminal, for anyone who wants a separate window. Returns the error
+/// to show beside the tree, if any; the drawer shows its own.
+async function openTerminalHere(path: string, external: boolean): Promise<string | null> {
+  if (external) {
+    const res = await window.overcli.invoke('terminal:openFolder', { path });
+    return res.ok ? null : res.error;
+  }
+  await useTerminalStore.getState().openAt(path);
+  return null;
 }

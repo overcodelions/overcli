@@ -53,6 +53,7 @@ function makeHarness(opts: {
     projectPath?: string;
     allowExternalActions?: boolean;
     baseBranch?: string;
+    adoptWorktrees?: { branch: string; repos: Array<{ worktreePath: string }> };
   }> = [];
   const turns = [...(opts.turns ?? [])];
   const turnMessages: string[] = [];
@@ -129,6 +130,11 @@ function makeHarness(opts: {
               codeCalls.push('land');
               return { ok: true as const, message: 'Merged' };
             },
+            push: () => {
+              codeCalls.push('push');
+              return { ok: true as const, message: 'Pushed', compareUrl: 'https://git.example/acme/overcli/pull-requests/new' };
+            },
+            ahead: () => [codeCalls.filter((c) => c.startsWith('absorb')).length],
             close: () => void codeCalls.push('close'),
           },
         }
@@ -158,6 +164,7 @@ function makeHarness(opts: {
         projectPath: args.projectPath,
         allowExternalActions: args.allowExternalActions,
         baseBranch: args.baseBranch,
+        adoptWorktrees: args.adoptWorktrees,
       });
       const b = batchFor(workerId, args.team, id, 'running', `run-${id}`);
       batches.set(id, b);
@@ -1260,7 +1267,7 @@ describe('TeamEngine task branch', () => {
     return h;
   };
 
-  it('cuts the branch when the plan is approved, and forks every piece off it', async () => {
+  it('cuts the branch when the plan is approved, and forks the pieces that share a stage off it', async () => {
     const h = await start(['ok', 'ok', 'ok']);
     expect(h.codeCalls[0]).toBe('open Teams proposal /code/overcli');
     expect(task(h).code?.branch).toBe('team/x');
@@ -1269,7 +1276,21 @@ describe('TeamEngine task branch', () => {
     h.settle(h.commissions[1].id, 'done');
     await flush();
     expect(h.codeCalls.filter((c) => c.startsWith('absorb'))).toEqual(['absorb Maya: Market and shape', 'absorb Ade: Market and shape']);
-    expect(h.commissions[2]).toMatchObject({ workerId: 'rook', baseBranch: 'team/x' });
+    expect(h.commissions[2].workerId).toBe('rook');
+  });
+
+  it('runs a piece that has its stage to itself in the task branch\'s own worktree', async () => {
+    const h = await start(['ok', 'ok', 'ok']);
+    expect(h.commissions[0].adoptWorktrees).toBeUndefined();
+    h.settle(h.commissions[0].id, 'done');
+    h.settle(h.commissions[1].id, 'done');
+    await flush();
+    const rook = h.commissions[2];
+    expect(rook.baseBranch).toBeUndefined();
+    expect(rook.adoptWorktrees).toEqual({
+      branch: 'team/x',
+      repos: task(h).code!.repos.map((r) => ({ name: r.name, projectPath: r.projectPath, worktreePath: r.worktreePath })),
+    });
   });
 
   it('stops the stage on a conflict; Retry merges again, Continue drops it', async () => {
@@ -1300,6 +1321,23 @@ describe('TeamEngine task branch', () => {
     expect(task(h).status).toBe('review');
     expect(h.engine.landCode(task(h).id, '/code/overcli')).toEqual({ ok: true, message: 'Merged' });
     expect(task(h).code?.repos[0].landed).toBe(true);
+  });
+
+  it('counts the commits each merge brings, and pushes the branch for a pull request', async () => {
+    const h = await start(['ok', 'ok', 'ok']);
+    expect(task(h).code?.repos[0].ahead).toBeUndefined();
+    h.settle(h.commissions[0].id, 'done');
+    h.settle(h.commissions[1].id, 'done');
+    await flush();
+    expect(task(h).code?.repos[0].ahead).toBe(2);
+
+    expect(h.engine.pushCode(task(h).id, '/code/overcli')).toEqual({
+      ok: true,
+      message: 'Pushed',
+      url: 'https://git.example/acme/overcli/pull-requests/new',
+    });
+    expect(task(h).code?.repos[0].pushed?.url).toBe('https://git.example/acme/overcli/pull-requests/new');
+    expect(h.engine.pushCode(task(h).id, '/elsewhere')).toEqual({ ok: false, error: 'That repo is not part of this task.' });
   });
 
   it('gives a task with no project no branch', async () => {

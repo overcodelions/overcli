@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
+import { CommandFileChange, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { useStore } from '../store';
 import { openPathWithHighlight, useInsideSubagentDrawer, useOpenFile } from '../openFile';
 import { useRunnerEvents, useSubagentEvents, useTaskProgress } from '../runnersStore';
@@ -21,6 +21,7 @@ export function ToolUseCard({
   result,
   compact = false,
   conversationId,
+  toolActivityHidden = false,
 }: {
   use: ToolUseBlock;
   result?: ToolResultBlock;
@@ -32,6 +33,10 @@ export function ToolUseCard({
   /// dropped answers into the wrong conversation when the user had
   /// switched away (e.g. between a flow run pane and a regular chat).
   conversationId?: UUID;
+  /// The chat is hiding routine tool activity. Cards that only show up in
+  /// that mode for part of what they did (a command that changed files)
+  /// render just that part.
+  toolActivityHidden?: boolean;
 }) {
   const openFile = useOpenFile();
   const insideDrawer = useInsideSubagentDrawer();
@@ -53,7 +58,15 @@ export function ToolUseCard({
     // The drawer is narrow; collapse Bash to its one-line header so the
     // subagent transcript stays scannable. Main-conversation cards keep
     // the full command + expandable output behavior.
-    return <BashCard args={args} result={result} compact={compact || insideDrawer} />;
+    return (
+      <BashCard
+        args={args}
+        result={result}
+        compact={compact || insideDrawer}
+        changesOnly={toolActivityHidden && !compact}
+        onOpen={(p) => openFile(p)}
+      />
+    );
   }
   if (use.name === 'TodoWrite') {
     return <TodoWriteCard args={args} />;
@@ -1011,15 +1024,25 @@ function BashCard({
   args,
   result,
   compact = false,
+  changesOnly = false,
+  onOpen,
 }: {
   args: Record<string, any>;
   result?: ToolResultBlock;
   compact?: boolean;
+  /// Show only the files the command changed, not the command — the chat
+  /// is hiding tool activity, and the edit is the part worth keeping.
+  changesOnly?: boolean;
+  onOpen: (p: string) => void;
 }) {
   const cmd = typeof args.command === 'string' ? args.command : '';
   const [showOutput, setShowOutput] = useState(false);
   const hasOutput = !!result?.content && result.content.trim().length > 0;
   const isError = !!result?.isError;
+  const changes = result?.fileChanges ?? [];
+  if (changesOnly && changes.length > 0) {
+    return <CommandChanges changes={changes} label={args.description || 'Changed by a command'} onOpen={onOpen} />;
+  }
   // Compact: collapse to a single header row for the transient "now
   // doing" slot, which clips at 3rem. Header shows description (or the
   // command itself as a fallback) so the slot still tells the user what
@@ -1072,6 +1095,80 @@ function BashCard({
           >
             {result!.content}
           </pre>
+        </div>
+      )}
+      {changes.length > 0 && <CommandChangeRows changes={changes} onOpen={onOpen} />}
+    </div>
+  );
+}
+
+/// Patches longer than this start folded, like a long Edit diff would
+/// otherwise push the rest of the turn off screen.
+const COMMAND_DIFF_OPEN_LINES = 60;
+
+/// A command's file changes as their own card, for when the command itself
+/// is hidden. Reads like an Edit card: what changed, then the diff.
+function CommandChanges({
+  changes,
+  label,
+  onOpen,
+}: {
+  changes: CommandFileChange[];
+  label: string;
+  onOpen: (p: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-card bg-card text-xs overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <span className="text-amber-400 text-[10px] uppercase tracking-wide font-medium">Edit</span>
+        <span className="text-ink-faint truncate text-[10px]">{label}</span>
+      </div>
+      <CommandChangeRows changes={changes} onOpen={onOpen} />
+    </div>
+  );
+}
+
+function CommandChangeRows({ changes, onOpen }: { changes: CommandFileChange[]; onOpen: (p: string) => void }) {
+  return (
+    <div className="flex flex-col">
+      {changes.map((c) => (
+        <CommandChangeRow key={c.path} change={c} onOpen={onOpen} />
+      ))}
+    </div>
+  );
+}
+
+function CommandChangeRow({ change, onOpen }: { change: CommandFileChange; onOpen: (p: string) => void }) {
+  const lines = change.patch ? change.patch.split('\n').length : 0;
+  const [open, setOpen] = useState(lines > 0 && lines <= COMMAND_DIFF_OPEN_LINES);
+  const deleted = change.status === 'deleted';
+  return (
+    <div className="border-t border-card">
+      <div className="flex items-center gap-2 px-3 py-1.5">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          disabled={!change.patch}
+          className="text-ink-faint hover:text-ink disabled:opacity-40 w-3 text-left"
+          title={change.patch ? (open ? 'Hide diff' : 'Show diff') : 'No diff to show (binary or too large)'}
+        >
+          {open ? '▾' : '▸'}
+        </button>
+        <code
+          className={'select-text truncate ' + (deleted ? 'text-ink-faint line-through' : 'text-ink cursor-pointer hover:underline')}
+          onClick={() => !deleted && onOpen(change.path)}
+          title={change.path}
+        >
+          {change.relPath}
+        </code>
+        {change.status !== 'modified' && <span className="text-[10px] text-ink-faint">{change.status}</span>}
+        <span className="ml-auto text-[10px] font-mono">
+          <span className="text-green-400/80">+{change.additions}</span>{' '}
+          <span className="text-red-400/80">−{change.deletions}</span>
+        </span>
+      </div>
+      {open && change.patch && (
+        <div className="overflow-x-auto">
+          <Diff unifiedDiff={change.patch} />
         </div>
       )}
     </div>

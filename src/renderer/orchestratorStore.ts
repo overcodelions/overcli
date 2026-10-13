@@ -215,13 +215,14 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     set({ defaultBaseBranch: branch });
   },
   setRunIn(runIn) {
-    // Items in a cwd batch share one working tree, so they can't overlap.
-    // Drop the cap to 1 as we switch, which is also what main enforces —
-    // better the UI shows the truth than launches something it didn't promise.
-    set(runIn === 'cwd' ? { runIn, maxConcurrent: 1 } : { runIn });
+    // Items in a cwd or shared batch share one working tree, so they can't
+    // overlap. Drop the cap to 1 as we switch, which is also what main
+    // enforces — better the UI shows the truth than launches something it
+    // didn't promise.
+    set(runIn !== 'worktree' ? { runIn, maxConcurrent: 1 } : { runIn });
   },
   setMaxConcurrent(n) {
-    if (get().runIn === 'cwd') return;
+    if (get().runIn !== 'worktree') return;
     set({ maxConcurrent: Math.max(1, Math.min(8, Math.round(n) || 1)) });
   },
   setOpenPrOnFinish(v) {
@@ -230,10 +231,10 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   restoreDefaults(d) {
     set((s) => {
       const runIn = d.runIn ?? s.runIn;
-      // cwd shares one working tree, so it can't overlap — pin the cap to 1,
-      // matching setRunIn/setMaxConcurrent. Otherwise clamp the saved cap.
+      // cwd and shared use one working tree, so they can't overlap — pin the
+      // cap to 1, matching setRunIn/setMaxConcurrent. Otherwise clamp it.
       const maxConcurrent =
-        runIn === 'cwd'
+        runIn !== 'worktree'
           ? 1
           : Math.max(1, Math.min(8, Math.round(d.maxConcurrent ?? s.maxConcurrent) || 1));
       return {
@@ -408,11 +409,16 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     // suffix makes the intent explicit for flows that merely could. A cwd run
     // has no worktree branch of its own to commit on, so it has to cut one
     // itself rather than commit onto whatever the user has checked out.
-    const prSuffix = !s.openPrOnFinish
-      ? ''
-      : s.runIn === 'cwd'
-        ? '\n\nWhen the work is complete, commit it on a new branch and open a pull request.'
-        : '\n\nWhen the work is complete, commit it on this worktree branch and open a pull request.';
+    // A shared batch gets its branch instruction from main at launch, once
+    // the branch exists (see sharedBranchInstruction) — and no PR per item.
+    const prSuffix =
+      s.runIn === 'shared'
+        ? ''
+        : !s.openPrOnFinish
+          ? ''
+          : s.runIn === 'cwd'
+            ? '\n\nWhen the work is complete, commit it on a new branch and open a pull request.'
+            : '\n\nWhen the work is complete, commit it on this worktree branch and open a pull request.';
 
     const items = selected.map((c) => {
       const flowId = get().effectiveFlowId(c.id);
@@ -421,7 +427,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
         candidate,
         flowId: flowId ?? '',
         baseBranch:
-          s.runIn === 'cwd' ? undefined : get().effectiveBaseBranch(c.id) || undefined,
+          s.runIn === 'worktree' ? get().effectiveBaseBranch(c.id) || undefined : undefined,
       };
     });
     const missingFlow = items.find((i) => !i.flowId);

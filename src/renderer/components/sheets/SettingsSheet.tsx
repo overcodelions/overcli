@@ -958,6 +958,14 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           </select>
         </Row>
       </Group>
+      <Group title="Terminal">
+        <Toggle
+          label="Use the system terminal"
+          help="Logins, installs and “open a terminal here” run in the built-in terminal drawer (⌘J). Turn this on to open Terminal.app or PowerShell windows instead. Shift-click a terminal button for a one-off system window either way."
+          value={local.useSystemTerminal === true}
+          onChange={(v) => patch({ useSystemTerminal: v })}
+        />
+      </Group>
       <Group title="Layout" description="Tuning reserved for when the defaults don't fit.">
         <Toggle
           label="Show Working on section"

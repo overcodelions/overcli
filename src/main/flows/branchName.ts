@@ -34,3 +34,21 @@ export function branchSlugFromPrompt(prompt: string, flowId: string): string {
 
   return slug || `flow-${flowId}`;
 }
+
+/// The worktree name for one piece of a team task: the task branch's own
+/// name plus the stage and member, so `team/fix-login` becomes
+/// `fix-login-s2-triage`. The piece's prompt is no use here — it carries the
+/// member's standing instructions, whose example ticket keys (`ABC-1234`)
+/// would win over the real one and name every piece after a ticket that
+/// doesn't exist. A sibling rather than `team/fix-login/…`, because git can't
+/// hold a branch and a branch nested under it at once.
+export function teamPieceSlug(taskBranch: string, stage: number, workerName: string): string {
+  const task = taskBranch.replace(/^team\//, '');
+  const who = workerName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 20)
+    .replace(/-+$/g, '');
+  return `${task}-s${stage + 1}${who ? `-${who}` : ''}`;
+}

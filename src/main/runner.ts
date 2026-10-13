@@ -93,6 +93,7 @@ import {
   normalizeAllowedDirs,
 } from './permissionRules';
 import { summarizeToolUse } from './toolDescription';
+import { CommandChangeTracker } from './commandFileChanges';
 import { collapsePartialAssistants } from './streamSnapshot';
 import { getBackendSpec } from './backends';
 import { codexExecSnapshotText } from './backends/codex';
@@ -1112,6 +1113,9 @@ export class RunnerManager {
   /// a conversation from history would lose it for as long as the same
   /// process lives. `runner:loadHistory` folds this back in.
   private lastInitByConv = new Map<UUID, StreamEvent>();
+  /// Diffs the working tree around shell commands so a `sed -i` shows up in
+  /// the transcript the way an Edit does.
+  readonly commandChanges: CommandChangeTracker;
   private reconcileTimer: NodeJS.Timeout | null = null;
   private idleReapTimer: NodeJS.Timeout | null = null;
 
@@ -1126,7 +1130,11 @@ export class RunnerManager {
       this.trackRunning(event);
       this.rememberInit(event);
       emit(event);
+      if (event.type === 'stream') this.commandChanges.observe(event.conversationId, event.events);
     };
+    this.commandChanges = new CommandChangeTracker((conversationId, ev) =>
+      this.emit({ type: 'stream', conversationId, events: [ev] }),
+    );
     this.settingsProvider = settingsProvider;
     this.reviewer = new ReviewerManager(emit);
     this.claudeBroker = new ClaudePermissionBroker((req) => this.handleClaudeApproval(req));
@@ -2057,6 +2065,8 @@ export class RunnerManager {
       };
     }
     const convId = args.conversationId;
+    // Hidden one-shot turns have no transcript to show a diff in.
+    if (!this.oneShotWaiters.has(convId)) this.commandChanges.beginTurn(convId, args.cwd);
     // Switching backends mid-conversation tears down whatever runtime was
     // holding this conversation's state (subprocess or Ollama session).
     const existing = this.procs.get(convId);
@@ -2275,6 +2285,7 @@ export class RunnerManager {
     this.reviewer.dispose(conversationId);
     this.codexExecTranscriptByConversation.delete(conversationId);
     this.claudeSdkFallbackConvs.delete(conversationId);
+    this.commandChanges.forget(conversationId);
     // The conversation is going (or parked); its sandbox caches go with it.
     void removeSandboxScratch(conversationId);
     // Drop any running record too: no transport is left to emit the

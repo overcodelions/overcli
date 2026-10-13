@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import 'highlight.js/styles/github-dark.css';
 import './styles.css';
 import { App } from './App';
+import { TerminalWindow } from './components/TerminalWindow';
 import { useStore } from './store';
 
 // Expose the store on `window` in the Vite dev server so the renderer
@@ -15,8 +16,8 @@ if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) {
 
 const container = document.getElementById('root');
 if (!container) throw new Error('root element missing');
+// A popped-out terminal is this same bundle opened with `?terminal=<id>`.
+const poppedTerminal = new URLSearchParams(window.location.search).get('terminal');
 createRoot(container).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
+  <React.StrictMode>{poppedTerminal ? <TerminalWindow id={poppedTerminal} /> : <App />}</React.StrictMode>,
 );

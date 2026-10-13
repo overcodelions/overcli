@@ -167,7 +167,15 @@ import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
 import { TeamEngine } from './flows/teamEngine';
 import { flushTeamTasks } from './flows/teamsStore';
-import { absorbPiece, closeTaskBranch, landTaskBranch, openTaskBranch, taskRepos } from './flows/teamBranch';
+import {
+  absorbPiece,
+  closeTaskBranch,
+  landTaskBranch,
+  openTaskBranch,
+  pushTaskBranch,
+  taskBranchAhead,
+  taskRepos,
+} from './flows/teamBranch';
 import { runHandoffOutputs, workerOrigin, type Worker } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
@@ -207,7 +215,8 @@ import {
   removeCoordinatorSymlinkRoot,
   looseSyntheticRootFiles,
 } from './workspace';
-import { openTerminalAt, openTerminalIn, runInTerminal } from './terminal';
+import { openTerminalAt, openTerminalIn, runInTerminal, setEmbeddedTerminal } from './terminal';
+import { PtyManager, type PtySpawn } from './ptyManager';
 import { DEFAULT_UI_SCALE, stepUiScale } from '../shared/uiScale';
 import {
   ArtifactPreviewResult,
@@ -949,14 +958,24 @@ export function registerIpc(): void {
             projectPath: m.projectPath,
             worktreePath: m.worktreePath,
             branchName: m.branchName,
+            startedAt: run.createdAt,
           }));
         }
         return run.worktreePath && run.branchName
-          ? [{ projectPath: run.sourceProjectPath ?? run.projectPath, worktreePath: run.worktreePath, branchName: run.branchName }]
+          ? [
+              {
+                projectPath: run.sourceProjectPath ?? run.projectPath,
+                worktreePath: run.worktreePath,
+                branchName: run.branchName,
+                startedAt: run.createdAt,
+              },
+            ]
           : [];
       },
       absorb: (args) => absorbPiece(args),
       land: (code, repo, subject) => landTaskBranch(code, repo, subject),
+      push: (code, repo, subject) => pushTaskBranch(code, repo, subject),
+      ahead: (code) => taskBranchAhead(code),
       close: (code) => closeTaskBranch(code),
     },
     projects: () => {
@@ -1089,7 +1108,8 @@ export function registerIpc(): void {
   // The transcript never holds the CLI's init event, so a renderer reload
   // mid-process would otherwise lose its live slash commands until respawn.
   ipcMain.handle('runner:loadHistory', (_e, args) => {
-    const events = loadHistory(args);
+    const loaded = loadHistory(args);
+    const events = runner ? runner.commandChanges.store.apply(args.conversationId, loaded) : loaded;
     const init = runner?.lastSystemInit(args.conversationId);
     return init ? [...events, init] : events;
   });
@@ -1193,7 +1213,7 @@ export function registerIpc(): void {
     if (mode === 'terminal') {
       const launched = await runInTerminal(command, 'aws-sso-login');
       return launched.ok
-        ? { ok: true as const, output: `Running \`${command}\` in Terminal.` }
+        ? { ok: true as const, output: `Running \`${command}\` in the terminal.` }
         : { ok: false as const, error: launched.error, command };
     }
     const res = await runAwsSsoLogin({
@@ -2163,50 +2183,11 @@ export function registerIpc(): void {
     return runInTerminal(`${quoted} ${args}`, 'agent-launch');
   });
 
-  ipcMain.handle(
-    'terminal:popConversation',
-    (_e, { cwd, backend, sessionId, model }: { cwd: string; backend: Backend; sessionId?: string; model?: string }) => {
-      if (backend === 'ollama') {
-        return {
-          ok: false,
-          error: 'Ollama runs in-app — there is no CLI to resume in a terminal.',
-        };
-      }
-      if (!isPathUnderRegisteredRoot(cwd)) {
-        return {
-          ok: false,
-          error: 'Workspace path is not inside a registered project root.',
-        };
-      }
-      // Only Claude/Gemini support `--resume`; Codex ignores sessionId
-      // entirely when popping to terminal. Validate only the backends that
-      // actually embed the ID into the shell command.
-      const needsResumeId = backend === 'claude' || backend === 'gemini';
-      // Session IDs come from backend CLIs (UUID-like for claude/gemini).
-      // Anything with shell metacharacters is rejected so it can't escape
-      // into the `do script` line as a separate command.
-      if (needsResumeId && sessionId && !/^[A-Za-z0-9._-]+$/.test(sessionId)) {
-        return {
-          ok: false,
-          error: 'Session ID contains unexpected characters.',
-        };
-      }
-      const settings = Store.load().settings;
-      const bin = resolveBackendPath(backend, settings.backendPaths[backend]);
-      const cmd = bin ?? backend;
-      const quoted = cmd.includes(' ') ? `"${cmd}"` : cmd;
-      // Codex has no --resume flag; just drop the user into the interactive
-      // TUI in the workspace and they can pick up from there.
-      const resumeSuffix = sessionId && needsResumeId ? ` --resume ${sessionId}` : '';
-      // Carry the session's model across. Without it the CLI resumes on its own
-      // default and silently swaps the model out from under the conversation.
-      // Same metacharacter guard as the session id — this lands in a `do script`
-      // line, so anything exotic is dropped rather than escaped.
-      const modelFlag = backend === 'claude' || backend === 'copilot' ? '--model' : '-m';
-      const modelSuffix = model && /^[A-Za-z0-9._-]+$/.test(model) ? ` ${modelFlag} ${model}` : '';
-      return openTerminalAt(cwd, `${quoted}${resumeSuffix}${modelSuffix}`, 'agent-launch');
-    },
-  );
+  ipcMain.handle('terminal:popConversation', (_e, args: ConversationResumeArgs) => {
+    const resume = conversationResumeCommand(args);
+    if (!resume.ok) return resume;
+    return openTerminalAt(args.cwd, resume.command, 'agent-launch', { external: true });
+  });
 
   ipcMain.handle('terminal:openFolder', async (_e, { path: target }: { path: string }) => {
     // Same containment rule as popping a conversation out: only folders
@@ -2225,7 +2206,74 @@ export function registerIpc(): void {
     } catch {
       return { ok: false, error: 'That folder no longer exists.' };
     }
-    return openTerminalIn(target, 'file-tree');
+    return openTerminalIn(target, 'file-tree', { external: true });
+  });
+
+  // The in-app terminal drawer. Same containment rule as the external
+  // window: a shell only starts inside a folder the user has registered.
+  ipcMain.handle(
+    'terminal:create',
+    async (_e, { cwd, cols, rows }: { cwd: string; cols: number; rows: number }) => {
+      if (!isPathUnderRegisteredRoot(cwd)) {
+        return { ok: false, error: 'That folder is not inside a registered project root.' };
+      }
+      try {
+        if (!(await fs.promises.stat(cwd)).isDirectory()) {
+          return { ok: false, error: 'That path is not a folder.' };
+        }
+      } catch {
+        return { ok: false, error: 'That folder no longer exists.' };
+      }
+      const manager = getPtyManager();
+      if (!manager.ok) return manager;
+      try {
+        return { ok: true, session: manager.pty.create({ cwd, cols, rows }) };
+      } catch (err) {
+        log('error', 'terminal.create', 'Could not start a shell', err);
+        return { ok: false, error: `Could not start a shell: ${(err as Error).message}` };
+      }
+    },
+  );
+  ipcMain.handle('terminal:createForConversation', async (_e, args: ConversationResumeArgs & { cols: number; rows: number }) => {
+    const resume = conversationResumeCommand(args);
+    if (!resume.ok) return resume;
+    const manager = getPtyManager();
+    if (!manager.ok) return manager;
+    try {
+      const session = manager.pty.create({
+        cwd: args.cwd,
+        cols: args.cols,
+        rows: args.rows,
+        command: resume.command,
+      });
+      return { ok: true, session };
+    } catch (err) {
+      log('error', 'terminal.create', 'Could not start a shell', err);
+      return { ok: false, error: `Could not start a shell: ${(err as Error).message}` };
+    }
+  });
+  ipcMain.handle('terminal:write', (_e, { id, data }: { id: string; data: string }) => {
+    if (typeof data === 'string') ptyManager?.write(id, data);
+  });
+  ipcMain.handle(
+    'terminal:resize',
+    (_e, { id, cols, rows }: { id: string; cols: number; rows: number }) => {
+      ptyManager?.resize(id, cols, rows);
+    },
+  );
+  ipcMain.handle('terminal:close', (_e, { id }: { id: string }) => {
+    ptyManager?.close(id);
+    const win = terminalWindows.get(id);
+    if (win && !win.isDestroyed()) win.close();
+  });
+  ipcMain.handle('terminal:snapshot', (_e, { id }: { id: string }) => ptyManager?.snapshot(id) ?? null);
+  ipcMain.handle('terminal:list', () =>
+    (ptyManager?.list() ?? []).map((t) => ({ ...t, poppedOut: terminalWindows.has(t.id) })),
+  );
+  ipcMain.handle('terminal:popOut', (_e, { id }: { id: string }) => popOutTerminal(id));
+  ipcMain.handle('terminal:popIn', (_e, { id }: { id: string }) => {
+    const win = terminalWindows.get(id);
+    if (win && !win.isDestroyed()) win.close();
   });
 
   ipcMain.handle('ollama:detect', () => detectOllama());
@@ -2507,6 +2555,9 @@ export function registerIpc(): void {
   );
   ipcMain.handle('teams:landCode', (_e, { taskId, projectPath }) =>
     teamEngine ? teamEngine.landCode(taskId, String(projectPath ?? '')) : noTeams,
+  );
+  ipcMain.handle('teams:pushCode', (_e, { taskId, projectPath }) =>
+    teamEngine ? teamEngine.pushCode(taskId, String(projectPath ?? '')) : noTeams,
   );
   ipcMain.handle('teams:hireMember', (_e, { request }) => (teamEngine ? teamEngine.hireMember(request) : noTeams));
   ipcMain.handle('teams:brief', (_e, { teamId, brief, attachments, projectPath }) =>
@@ -4031,9 +4082,156 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+type ConversationResumeArgs = { cwd: string; backend: Backend; sessionId?: string; model?: string };
+
+/// The CLI line that picks a conversation back up in a terminal — the system
+/// one or the drawer's. Built here from validated parts, never taken from the
+/// renderer as a string, because it is typed into a shell.
+function conversationResumeCommand({
+  cwd,
+  backend,
+  sessionId,
+  model,
+}: ConversationResumeArgs): { ok: true; command: string } | { ok: false; error: string } {
+  if (backend === 'ollama') {
+    return {
+      ok: false,
+      error: 'Ollama runs in-app — there is no CLI to resume in a terminal.',
+    };
+  }
+  if (!isPathUnderRegisteredRoot(cwd)) {
+    return {
+      ok: false,
+      error: 'Workspace path is not inside a registered project root.',
+    };
+  }
+  // Only Claude/Gemini support `--resume`; Codex ignores sessionId
+  // entirely when popping to terminal. Validate only the backends that
+  // actually embed the ID into the shell command.
+  const needsResumeId = backend === 'claude' || backend === 'gemini';
+  // Session IDs come from backend CLIs (UUID-like for claude/gemini).
+  // Anything with shell metacharacters is rejected so it can't escape
+  // into the shell line as a separate command.
+  if (needsResumeId && sessionId && !/^[A-Za-z0-9._-]+$/.test(sessionId)) {
+    return {
+      ok: false,
+      error: 'Session ID contains unexpected characters.',
+    };
+  }
+  const settings = Store.load().settings;
+  const bin = resolveBackendPath(backend, settings.backendPaths[backend]);
+  const cmd = bin ?? backend;
+  const quoted = cmd.includes(' ') ? `"${cmd}"` : cmd;
+  // Codex has no --resume flag; just drop the user into the interactive
+  // TUI in the workspace and they can pick up from there.
+  const resumeSuffix = sessionId && needsResumeId ? ` --resume ${sessionId}` : '';
+  // Carry the session's model across. Without it the CLI resumes on its own
+  // default and silently swaps the model out from under the conversation.
+  // Same metacharacter guard as the session id — this lands in a shell line,
+  // so anything exotic is dropped rather than escaped.
+  const modelFlag = backend === 'claude' || backend === 'copilot' ? '--model' : '-m';
+  const modelSuffix = model && /^[A-Za-z0-9._-]+$/.test(model) ? ` ${modelFlag} ${model}` : '';
+  return { ok: true, command: `${quoted}${resumeSuffix}${modelSuffix}` };
+}
+
+function emitToAllWindows(event: MainToRendererEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('main:event', event);
+  }
+}
+
+/// Shells moved out of the drawer into windows of their own, by terminal id.
+const terminalWindows = new Map<string, BrowserWindow>();
+
+/// A shell in its own overcli window: the same shell, still running, just
+/// somewhere with more room. Closing the window hands it back to the drawer
+/// rather than ending it, so nothing running there is lost by tidying up.
+function popOutTerminal(id: string): { ok: true } | { ok: false; error: string } {
+  const existing = terminalWindows.get(id);
+  if (existing && !existing.isDestroyed()) {
+    existing.show();
+    existing.focus();
+    return { ok: true };
+  }
+  if (!ptyManager?.list().some((t) => t.id === id)) {
+    return { ok: false, error: 'That terminal has already closed.' };
+  }
+  const win = new BrowserWindow({
+    width: 960,
+    height: 600,
+    minWidth: 420,
+    minHeight: 240,
+    title: 'Terminal',
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#1c1c21',
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  terminalWindows.set(id, win);
+  if (isDev && DEV_URL) {
+    const url = new URL(DEV_URL);
+    url.searchParams.set('terminal', id);
+    void win.loadURL(url.toString());
+  } else {
+    void win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), { query: { terminal: id } });
+  }
+  win.webContents.on('did-finish-load', () => {
+    if (!win.isDestroyed()) win.webContents.setZoomFactor(Store.load().settings.uiScale);
+  });
+  win.on('closed', () => {
+    terminalWindows.delete(id);
+    emitToAllWindows({ type: 'terminalPoppedOut', id, out: false });
+  });
+  emitToAllWindows({ type: 'terminalPoppedOut', id, out: true });
+  return { ok: true };
+}
+
+/// Built on the first terminal opened, not at startup: node-pty is a native
+/// module, and one that fails to load should cost the drawer, not the app.
+let ptyManager: PtyManager | null = null;
+function getPtyManager(): { ok: true; pty: PtyManager } | { ok: false; error: string } {
+  if (ptyManager) return { ok: true, pty: ptyManager };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const nodePty = require('node-pty') as { spawn: PtySpawn };
+    // To every window, not just the main one: a popped-out shell's own
+    // window has to hear its output too.
+    ptyManager = new PtyManager({ spawn: nodePty.spawn, emit: emitToAllWindows });
+    return { ok: true, pty: ptyManager };
+  } catch (err) {
+    log('error', 'terminal.load', 'Could not load node-pty', err);
+    return { ok: false, error: 'The built-in terminal is not available in this build.' };
+  }
+}
+
+// Logins, installs and preview commands open in the drawer rather than a
+// Terminal window, unless the user prefers the system one. Anything that
+// can't start here falls back to the system terminal (see terminal.ts).
+setEmbeddedTerminal((cwd, command) => {
+  if (Store.load().settings.useSystemTerminal) return null;
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const manager = getPtyManager();
+  if (!manager.ok) return null;
+  try {
+    const session = manager.pty.create({ cwd, cols: 100, rows: 24, command: command ?? undefined });
+    emitToRenderer({ type: 'terminalOpened', session });
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    return { ok: true };
+  } catch (err) {
+    log('error', 'terminal.create', 'Could not start a shell', err);
+    return null;
+  }
+});
+
 let flushedRuns = false;
 app.on('before-quit', (event) => {
   runner?.killAll();
+  ptyManager?.closeAll();
   // A service left running after the window closes is a port held by a
   // process the user has no way to find — so stopping them is the default.
   // Turning it off is for the person who deliberately keeps a database up

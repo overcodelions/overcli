@@ -26,6 +26,7 @@ import type React from 'react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../../store';
+import { isWorkerBatch, tallyOf } from '../../orchestratorTally';
 import { useFlowsStore } from '../../flowsStore';
 import { useOrchestratorStore, type ProducerTurn } from '../../orchestratorStore';
 import { backendColor } from '../../theme';
@@ -1151,10 +1152,17 @@ function MapPane({
                 >
                   worktree each
                 </SegmentButton>
+                <SegmentButton
+                  active={runIn === 'shared'}
+                  onClick={() => setRunIn('shared')}
+                  title="Fork one worktree for the whole batch and run every ask in it, one at a time — each builds on the last, and you review one branch"
+                >
+                  one worktree
+                </SegmentButton>
               </div>
               {/* Nothing forks from a base branch in the main tree — the runs
                   use whatever it already has checked out. */}
-              {runIn === 'worktree' && (
+              {runIn !== 'cwd' && (
                 <>
                   <span className="font-medium text-sm text-ink-muted ml-1">Base</span>
                   <input
@@ -1206,9 +1214,9 @@ function LaunchFooter() {
   const startBatch = useOrchestratorStore((s) => s.startBatch);
 
   // One working tree can't host two agents editing the same files, so a
-  // main-tree batch drains strictly one at a time. Show that as a fact
-  // rather than a stepper the user can move but main will overrule.
-  const serialized = runIn === 'cwd';
+  // main-tree or one-worktree batch drains strictly one at a time. Show that
+  // as a fact rather than a stepper the user can move but main will overrule.
+  const serialized = runIn !== 'worktree';
 
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
@@ -1228,9 +1236,10 @@ function LaunchFooter() {
       {serialized ? (
         <span
           className="text-xs text-ink-faint"
-          title="Every ask runs in the project's working tree, so they can't overlap — the queue runs them one after another."
+          title="Every ask runs in the same working tree, so they can't overlap — the queue runs them one after another."
         >
-          Running <b className="text-ink">one at a time</b> in the main tree
+          Running <b className="text-ink">one at a time</b>{' '}
+          {runIn === 'cwd' ? 'in the main tree' : 'in one worktree'}
         </span>
       ) : (
         <div className="flex items-center gap-2">
@@ -1253,10 +1262,14 @@ function LaunchFooter() {
           <span className="text-xs text-ink-faint">at a time</span>
         </div>
       )}
-      <label className="text-xs text-ink-faint flex items-center gap-1.5">
-        <input type="checkbox" checked={openPr} onChange={(e) => setOpenPr(e.target.checked)} />
-        open a PR when each finishes
-      </label>
+      {/* A one-worktree batch is one branch: each ask commits to it, and you
+          review and merge (or open a PR for) the lot from any of its runs. */}
+      {runIn !== 'shared' && (
+        <label className="text-xs text-ink-faint flex items-center gap-1.5">
+          <input type="checkbox" checked={openPr} onChange={(e) => setOpenPr(e.target.checked)} />
+          open a PR when each finishes
+        </label>
+      )}
       <div className="flex-1" />
       {launchError && <span className="text-xs text-red-400">{launchError}</span>}
       <button
@@ -1537,6 +1550,26 @@ function BatchLedger({
 }) {
   const abort = (id: string) => void window.overcli.invoke('orchestrator:abort', { id });
   const del = (id: string) => void window.overcli.invoke('orchestrator:delete', { id });
+  const openSheet = useStore((s) => s.openSheet);
+  // A one-worktree batch is one branch: review it from the FIRST run in the
+  // current worktree. A run's diff starts no earlier than the commit it
+  // started on, so only the first one's covers every item's work — a later
+  // run's shows just its own. (Its worktree is matched because a batch whose
+  // worktree went away mid-way forked a new one for the items after.)
+  const sharedBranch = batch.runIn === 'shared' ? batch.adoptWorktrees?.branch : undefined;
+  const sharedPath = batch.adoptWorktrees?.repos[0]?.worktreePath;
+  const runs = useFlowsStore((s) => s.runs);
+  const reviewRunId = sharedBranch
+    ? batch.items
+        .filter((i) => i.runId && runs[i.runId])
+        .map((i) => runs[i.runId!])
+        .filter(
+          (r) =>
+            r.worktreePath === sharedPath ||
+            r.workspaceWorktrees?.some((w) => w.worktreePath === sharedPath),
+        )
+        .sort((a, b) => a.createdAt - b.createdAt)[0]?.id
+    : undefined;
   const retryAll = (id: string) => void window.overcli.invoke('orchestrator:retry', { id });
 
   const running = batch.items.filter((i) => i.status === 'running').length;
@@ -1659,8 +1692,20 @@ function BatchLedger({
           {running > 0 && ` · ${running} running`}
           {paused > 0 && ` · ${paused} paused`}
           {batch.pausedAt && ' · batch paused'}
+          {sharedBranch && (
+            <span className="normal-case tracking-normal font-mono font-normal"> · {sharedBranch}</span>
+          )}
         </div>
         <div className="flex-1" />
+        {reviewRunId && (
+          <button
+            className="text-[11px] text-ink-faint hover:text-accent"
+            onClick={() => openSheet({ type: 'flowRunReview', runId: reviewRunId })}
+            title="Review and merge the batch's one branch — every ask's work so far"
+          >
+            Review branch
+          </button>
+        )}
         {(batch.pausedAt || isOrchestrationPausable(batch)) && (
           <button
             className="text-[11px] text-ink-faint hover:text-accent"
@@ -1761,37 +1806,6 @@ function matchesFilter(item: OrchestrationItem, filter: RunFilter): boolean {
     default:
       return true;
   }
-}
-
-/// Count every item on the ledger by who it is waiting on.
-///
-/// `failed` belongs under "needs you" and at first wasn't: a failed item has
-/// stopped dead and nothing moves until someone hits retry, which is the same
-/// obligation a paused or proposed one carries. On a ledger with one paused
-/// and four failed items, a count that says "1 needs you" is wrong by five.
-/// `cancelled` deliberately does NOT count — it is retryable too, but you
-/// already decided against it, and a number that says "needs you" has to mean
-/// it or it stops being read.
-function tallyOf(batches: Orchestration[]): {
-  running: number;
-  queued: number;
-  needsYou: number;
-  done: number;
-  total: number;
-} {
-  const acc = { running: 0, queued: 0, needsYou: 0, done: 0, total: 0 };
-  for (const b of batches) {
-    for (const i of b.items) {
-      acc.total++;
-      if (i.status === 'running') acc.running++;
-      else if (i.status === 'queued') acc.queued++;
-      else if (i.status === 'done') acc.done++;
-      else if (i.status === 'proposed' || i.status === 'paused' || i.status === 'failed') {
-        acc.needsYou++;
-      }
-    }
-  }
-  return acc;
 }
 
 /// The idle stage's page header.
@@ -1941,10 +1955,6 @@ function RunsBar({
       </div>
     </div>
   );
-}
-
-function isWorkerBatch(b: Orchestration): boolean {
-  return b.origin?.kind === 'worker';
 }
 
 interface WorkerShifts {

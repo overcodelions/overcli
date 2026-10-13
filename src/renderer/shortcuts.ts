@@ -6,6 +6,7 @@ import { isMac } from './platform';
 import { findContainerPath } from './conversationLookup';
 import { resolveNewConversationTarget } from './newConversationTarget';
 import { navigateBack, navigateForward } from './navHistory';
+import { useTerminalStore } from './terminalStore';
 
 export type ShortcutGroup = 'Navigation' | 'View' | 'Conversation' | 'App' | 'Editor';
 
@@ -76,7 +77,10 @@ function displayKey(key: string, mac: boolean): string {
   return key.length === 1 ? key.toUpperCase() : key;
 }
 
-function resolveFileFinderRoot(): string | null {
+/// The folder the user is looking at: the explorer's root, the run or
+/// worker on screen, else the selected conversation's project. Shared by ⌘P
+/// and the terminal drawer so both open in the same place.
+export function resolveHereRoot(): string | null {
   const state = useStore.getState();
   const flows = useFlowsStore.getState();
   const workers = useWorkersStore.getState();
@@ -111,8 +115,8 @@ export function startNewConversationHere(): void {
   else state.startNewConversation(target.id);
 }
 
-// ⌘K belongs to the app shell (palette). If an in-app terminal is added
-// later, give it a different binding rather than yielding ⌘K.
+// ⌘K belongs to the app shell (palette); the terminal drawer has ⌘J instead
+// of taking it over.
 export const SHORTCUTS: ShortcutDef[] = [
   {
     id: 'palette.open',
@@ -127,7 +131,7 @@ export const SHORTCUTS: ShortcutDef[] = [
     label: 'Find file in project',
     group: 'Navigation',
     run: () => {
-      const root = resolveFileFinderRoot();
+      const root = resolveHereRoot();
       if (root) useStore.getState().openSheet({ type: 'fileFinder', rootPath: root });
     },
   },
@@ -179,6 +183,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     label: 'Toggle sidebar',
     group: 'View',
     run: () => useStore.getState().toggleSidebar(),
+  },
+  {
+    id: 'terminal.toggle',
+    keys: [{ key: 'j', mod: true }],
+    label: 'Show or hide the terminal',
+    group: 'View',
+    skipInInput: false,
+    run: () => void useTerminalStore.getState().toggle(resolveHereRoot()),
   },
   {
     id: 'conversation.new',

@@ -20,6 +20,10 @@ vi.mock('../health', () => ({
   healthyBackends: async () => new Set(['claude', 'codex', 'gemini', 'copilot', 'ollama']),
 }));
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { runGitAsync } from '../git';
 import { OrchestratorImpl, type BatchLauncher } from './orchestrator';
 import type { FlowRun } from '../../shared/flows/schema';
@@ -35,6 +39,8 @@ function makeHarness(opts: {
   producerReply?: string;
   launchPolicy?: { unattended?: boolean; unattendedAllowedTools?: string[] };
   preferredBackend?: 'claude' | 'codex' | 'gemini' | 'copilot' | 'ollama';
+  /// Make `forkBatchWorktrees` fail with this error.
+  forkError?: string;
 } = {}) {
   const runs = new Map<string, FlowRun>();
   let counter = 0;
@@ -44,6 +50,8 @@ function makeHarness(opts: {
     flowId: string;
     runIn?: string;
     baseBranch?: string;
+    worktreeName?: string;
+    adoptWorktrees?: unknown;
     workerId?: string;
     workerName?: string;
     allowExternalActions?: boolean;
@@ -61,6 +69,9 @@ function makeHarness(opts: {
   /// Run ids the engine asked to hold / release, in order.
   const holds: string[] = [];
   const releases: string[] = [];
+  /// Every `forkBatchWorktrees` call, with the real temp folder it made — the
+  /// engine checks that a shared batch's worktree still exists on disk.
+  const forks: Array<{ name: string; baseBranch?: string; dir: string }> = [];
   const launcher: BatchLauncher = {
     async startRun(args) {
       const runId = `run-${++counter}`;
@@ -80,6 +91,8 @@ function makeHarness(opts: {
         flowId: args.flowId,
         runIn: args.runIn,
         baseBranch: args.baseBranch,
+        worktreeName: args.worktreeName,
+        adoptWorktrees: args.adoptWorktrees,
         workerId: args.workerId,
         workerName: args.workerName,
         allowExternalActions: args.allowExternalActions,
@@ -105,6 +118,19 @@ function makeHarness(opts: {
       const run = runs.get(runId);
       if (run?.state.kind === 'running') (run as any).holdRequested = true;
       return { ok: true };
+    },
+    async forkBatchWorktrees(args) {
+      if (opts.forkError) return { ok: false, error: opts.forkError };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-orch-shared-'));
+      forks.push({ name: args.name, baseBranch: args.baseBranch, dir });
+      return {
+        ok: true,
+        worktrees: {
+          branch: `agent/${args.name}`,
+          repos: [{ name: 'proj', projectPath: args.projectPath, worktreePath: dir }],
+          batch: args.baseBranch ? { baseBranch: args.baseBranch } : {},
+        },
+      };
     },
     // Mirrors the runtime: withdraw a pending hold, and continue a run the
     // hold already stopped — but nothing paused for another reason.
@@ -162,7 +188,7 @@ function makeHarness(opts: {
     await flush();
   };
 
-  return { engine, launcher, started, runs, finish, transition, emitted, oneShotCalls, flush, holds, releases };
+  return { engine, launcher, started, runs, finish, transition, emitted, oneShotCalls, flush, holds, releases, forks };
 }
 
 describe('producer permissions', () => {
@@ -1145,6 +1171,56 @@ describe('OrchestratorImpl worker batches', () => {
     expect(h.oneShotCalls[0].chrome).toBe(true);
   });
 
+  it('names a team piece after its task branch, not a ticket key in its prompt', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, {
+      autoApprove: { maxItems: 1 },
+      baseBranch: 'team/fix-login',
+      origin: {
+        kind: 'worker',
+        workerId: 'w1',
+        workerName: 'Scout',
+        team: { teamId: 't1', teamName: 'Squad', taskId: 'task-1', stage: 1 },
+      },
+    });
+    expect(h.started[0].baseBranch).toBe('team/fix-login');
+    expect(h.started[0].worktreeName).toBe('fix-login-s2-scout');
+  });
+
+  it('hands a direct team piece the task branch worktrees to work in', async () => {
+    const h = makeHarness();
+    const adoptWorktrees = {
+      branch: 'team/fix-login',
+      repos: [{ name: 'api', projectPath: '/proj', worktreePath: '/team/api' }],
+    };
+    const res = await h.engine.parkDirect({
+      origin: {
+        kind: 'worker',
+        workerId: 'w1',
+        workerName: 'Scout',
+        team: { teamId: 't1', teamName: 'Squad', taskId: 'task-1', stage: 2 },
+      },
+      projectPath: '/proj',
+      prompt: 'write the tests',
+      title: 'Squad: tests',
+      flowId: 'contract-main',
+      runIn: 'worktree',
+      adoptWorktrees,
+      maxConcurrent: 1,
+      autoLaunch: true,
+    });
+    expect(res.ok).toBe(true);
+    expect(h.started[0].adoptWorktrees).toEqual(adoptWorktrees);
+    // Nothing is forked, so there is no branch to name.
+    expect(h.started[0].worktreeName).toBeUndefined();
+  });
+
+  it('leaves a worker run off a team to name itself', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, { autoApprove: { maxItems: 1 }, baseBranch: 'main' });
+    expect(h.started[0].worktreeName).toBeUndefined();
+  });
+
   it('leaves the browser off for a worker that does not browse', async () => {
     const h = makeHarness({ producerReply: REPLY });
     await parkAsWorker(h, {
@@ -1199,5 +1275,71 @@ describe('OrchestratorImpl worker batches', () => {
       scheduleId: 's1',
       scheduleName: 'Morning',
     });
+  });
+});
+
+describe('one worktree for the whole batch', () => {
+  const items = ['a', 'b', 'c'].map((id) => ({
+    candidate: { id, title: id.toUpperCase(), prompt: `do ${id}` },
+    flowId: 'f',
+    baseBranch: 'ignored-per-item',
+  }));
+
+  it('forks once and runs every item in it, one at a time', async () => {
+    const h = makeHarness();
+    const res = await h.engine.startBatch({
+      title: 'Batch',
+      projectPath: '/proj',
+      runIn: 'shared',
+      baseBranch: 'develop',
+      maxConcurrent: 4,
+      items,
+    });
+    expect(res.ok).toBe(true);
+    expect(h.forks).toHaveLength(1);
+    expect(h.forks[0].baseBranch).toBe('develop');
+    expect(h.started).toHaveLength(1);
+
+    await h.finish('run-1');
+    await h.finish('run-2');
+    expect(h.started).toHaveLength(3);
+    expect(h.forks).toHaveLength(1);
+    for (const s of h.started) {
+      expect(s.runIn).toBe('worktree');
+      // Told to stay on the batch branch, after (so over) the ask's own words.
+      expect(s.prompt).toMatch(/^do [abc]\n\n.*stay on `agent\/batch-/s);
+      expect(s.adoptWorktrees).toMatchObject({
+        repos: [{ worktreePath: h.forks[0].dir }],
+        batch: { baseBranch: 'develop' },
+      });
+    }
+  });
+
+  it('forks again when the worktree has gone between items', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({ title: 'Batch', projectPath: '/proj', runIn: 'shared', maxConcurrent: 1, items });
+    fs.rmSync(h.forks[0].dir, { recursive: true, force: true });
+    await h.finish('run-1');
+    expect(h.forks).toHaveLength(2);
+    expect(h.started[1].adoptWorktrees).toMatchObject({ repos: [{ worktreePath: h.forks[1].dir }] });
+  });
+
+  it('fails the whole queue when the fork fails, rather than retrying per item', async () => {
+    const h = makeHarness({ forkError: 'no repo here' });
+    const res = await h.engine.startBatch({
+      title: 'Batch',
+      projectPath: '/proj',
+      runIn: 'shared',
+      maxConcurrent: 1,
+      items,
+    });
+    expect(res.ok).toBe(true);
+    expect(h.started).toHaveLength(0);
+    const batch = h.engine.list().find((b) => b.id === (res as { orchestrationId: string }).orchestrationId)!;
+    expect(batch.items.map((i) => [i.status, i.note])).toEqual([
+      ['failed', 'no repo here'],
+      ['failed', 'no repo here'],
+      ['failed', 'no repo here'],
+    ]);
   });
 });

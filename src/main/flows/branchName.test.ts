@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { branchSlugFromPrompt } from './branchName';
+import { branchSlugFromPrompt, teamPieceSlug } from './branchName';
 
 describe('branchSlugFromPrompt', () => {
   it('uses an upper-case ticket key verbatim', () => {
@@ -35,5 +35,23 @@ describe('branchSlugFromPrompt', () => {
   it('falls back to flow-<id> when the prompt has nothing usable', () => {
     expect(branchSlugFromPrompt('   ', 'my-flow')).toBe('flow-my-flow');
     expect(branchSlugFromPrompt('!!! ???', 'my-flow')).toBe('flow-my-flow');
+  });
+});
+
+describe('teamPieceSlug', () => {
+  it('names the piece after the task branch, stage and member', () => {
+    expect(teamPieceSlug('team/fix-login-redirect', 1, 'Triage')).toBe('fix-login-redirect-s2-triage');
+  });
+
+  it('slugs a member name with spaces and punctuation', () => {
+    expect(teamPieceSlug('team/fix-login', 0, "Test Coverage Warden's")).toBe('fix-login-s1-test-coverage-warden');
+  });
+
+  it('keeps a numbered task branch suffix', () => {
+    expect(teamPieceSlug('team/fix-login-2', 2, 'Greta')).toBe('fix-login-2-s3-greta');
+  });
+
+  it('drops the member when its name slugs to nothing', () => {
+    expect(teamPieceSlug('team/fix-login', 0, '***')).toBe('fix-login-s1');
   });
 });

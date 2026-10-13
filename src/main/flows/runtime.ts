@@ -26,7 +26,7 @@ import { isReadOnlyMcpTool } from '../../shared/flows/mcpTools';
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { log } from '../diagnostics';
 import { migrateClaudeSessionCwd } from '../history';
 
@@ -89,7 +89,7 @@ import { notifyWatch } from './watch/notify';
 // Importing this registers the bundled watch source(s) with the registry as a
 // side effect. Keep it even though the symbol isn't referenced directly.
 import './watch/generic';
-import type { FlowRunTeam, WatchState, WatchTickLogEntry } from '../../shared/flows/schema';
+import type { AdoptedWorktrees, FlowRunTeam, WatchState, WatchTickLogEntry } from '../../shared/flows/schema';
 import { scanStepRisks } from '../../shared/flows/riskScan';
 import { hasEverydayMarker } from '../everydayProject';
 
@@ -113,6 +113,13 @@ export interface FlowRuntimeStartArgs {
   /// Base branch to fork the worktree from. Required when
   /// `runIn === 'worktree'`. Ignored otherwise.
   baseBranch?: string;
+  /// The worktree/branch name to use instead of one mined from `userPrompt`
+  /// (still made unique on collision). Team pieces set it — see teamPieceSlug.
+  worktreeName?: string;
+  /// With `runIn: 'worktree'`: work in these existing worktrees rather than
+  /// forking new ones off `baseBranch`. The run does not own them — see
+  /// FlowRun.adoptedWorktree.
+  adoptWorktrees?: AdoptedWorktrees;
   /// Set when this run is one item of an Orchestrator batch. Recorded on
   /// the FlowRun so the runtime's run observer can route the run's terminal
   /// state back to the orchestrator (which pumps the next queued item).
@@ -947,6 +954,7 @@ export class FlowRuntimeImpl {
     //     the user's main checkouts.
     let cwd = args.projectPath;
     let scratchRoot = false;
+    let adopted: boolean | 'batch' = false;
     let worktreeMeta: { worktreePath: string; branchName: string } | undefined;
     let workspaceWorktrees:
       | Array<{ name: string; projectPath: string; worktreePath: string; branchName: string }>
@@ -974,134 +982,62 @@ export class FlowRuntimeImpl {
       }
       cwd = root;
       scratchRoot = true;
-    } else if (args.runIn === 'worktree') {
-      // Base branch is optional. When the user picked a single shared name we
-      // fork every repo off it; when absent, each repo forks off its OWN
-      // default branch (detectBaseBranch) — so a workspace whose members
-      // disagree (one `main`, one `master`) still runs.
-      const sharedBase = args.baseBranch?.trim() || undefined;
-      const matchingWorkspaceForWorktree = this.getWorkspaces().find(
-        (w) => w.rootPath === args.projectPath,
-      );
-      if (matchingWorkspaceForWorktree) {
-        // Workspace branch: mint a worktree per member project, then
-        // build a symlink farm at userData/coordinators/<runId> that
-        // resolves to those new worktrees. Members the user dropped
-        // from the workspace or with missing paths are skipped (same
-        // tolerance as workspace-agent), so a partially-cleaned
-        // workspace still launches as far as it can.
-        const projectsById = new Map(this.getProjects().map((p) => [p.id, p]));
-        const members = matchingWorkspaceForWorktree.projectIds
-          .map((pid) => projectsById.get(pid))
-          .filter((p): p is NonNullable<typeof p> => !!p && !!p.path);
-        if (members.length === 0) {
-          return { ok: false, error: 'Workspace has no eligible member projects.' };
-        }
-        const branchPrefix = settings.agentBranchPrefix || 'agent/';
-        const wtNameBase = uniqueWorktreeName(
-          members.map((p) => p.path),
-          branchSlugFromPrompt(args.userPrompt, flow.id),
-          branchPrefix,
-        );
-        // Mint every member's worktree CONCURRENTLY. They're independent
-        // repos, so a serial loop just stacked each repo's (potentially
-        // multi-second) `git worktree add` end to end; running them in
-        // parallel makes the whole launch take as long as the SLOWEST single
-        // repo rather than the sum. The async runner also keeps the rest of
-        // the app responsive while they check out.
-        let done = 0;
-        const results = await Promise.all(
-          members.map(async (p) => {
-            // A shared base is a HINT across N independent repos, not a
-            // contract. The launcher only offers names that exist in every
-            // member (BaseBranchSelect intersects the lists), but a stored
-            // one can outlive that guarantee — a schedule keeps whatever was
-            // picked when it was last edited, even after its target changed
-            // to a workspace those branches were never in. Falling back to
-            // this repo's own default beats failing the entire launch on the
-            // first member that never had the branch.
-            let baseBranch: string;
-            if (sharedBase && (await baseBranchExistsAsync(p.path, sharedBase))) {
-              baseBranch = sharedBase;
-            } else {
-              baseBranch = await detectBaseBranchAsync(p.path);
-              if (sharedBase) {
-                log(
-                  'warn',
-                  'flows',
-                  `${p.name}: base branch "${sharedBase}" doesn't exist here — forking off "${baseBranch}" instead.`,
-                );
-              }
-            }
-            const r = await createWorktreeAsync({
-              projectPath: p.path,
-              agentName: wtNameBase,
-              baseBranch,
-              branchPrefix,
-            });
-            this.emitLaunchProgress(args.projectPath, {
-              completed: ++done,
-              total: members.length,
-              message: r.ok
-                ? `Prepared worktree for ${p.name}`
-                : `Worktree failed for ${p.name}`,
-            });
-            return { p, r };
-          }),
-        );
-        const failed = results.find((x) => !x.r.ok);
-        if (failed && !failed.r.ok) {
-          return {
-            ok: false,
-            error: `Failed to create worktree for ${failed.p.name}: ${failed.r.error}`,
-          };
-        }
-        const minted = results.map(({ p, r }) => {
-          // Narrowed by the `failed` guard above — every result is ok here.
-          const ok = r as Extract<typeof r, { ok: true }>;
-          return {
-            name: p.name,
-            projectPath: p.path,
-            worktreePath: ok.worktreePath,
-            branchName: ok.branchName,
-          };
-        });
+    } else if (args.runIn === 'worktree' && args.adoptWorktrees) {
+      const { branch, repos } = args.adoptWorktrees;
+      const gone = repos.find((r) => !existsSync(r.worktreePath));
+      if (repos.length === 0 || gone) {
+        return { ok: false, error: `The ${branch} checkout${gone ? ` for ${gone.name}` : ''} is gone.` };
+      }
+      const isWorkspace = this.getWorkspaces().some((w) => w.rootPath === args.projectPath);
+      if (isWorkspace) {
+        // The same shape as a forked workspace run — a symlink root over one
+        // worktree per member — so everything downstream reads it alike. A
+        // team's worktree folders are unique per task, so they name the links;
+        // a batch's share one name across repos, so the projects name them.
+        const folders = repos.map((r) => basename(r.worktreePath));
+        const byFolder = new Set(folders).size === folders.length;
+        const members = repos.map((r, i) => ({
+          name: byFolder ? folders[i] : r.name,
+          projectPath: r.projectPath,
+          worktreePath: r.worktreePath,
+          branchName: branch,
+        }));
         const linked = ensureCoordinatorSymlinkRoot(
           runId,
-          minted.map((m) => ({ name: m.name, worktreePath: m.worktreePath })),
+          members.map((m) => ({ name: m.name, worktreePath: m.worktreePath })),
         );
         if (!linked.ok) {
           return { ok: false, error: `Failed to build workspace worktree root: ${linked.error}` };
         }
         cwd = linked.rootPath;
-        workspaceWorktrees = minted;
+        workspaceWorktrees = members;
       } else {
-        // Single-project worktree (original behavior). Async git so the
-        // `git worktree add` checkout doesn't block the main thread.
-        const branchPrefix = settings.agentBranchPrefix || 'agent/';
-        const wtName = uniqueWorktreeName(
-          [args.projectPath],
-          branchSlugFromPrompt(args.userPrompt, flow.id),
-          branchPrefix,
+        cwd = repos[0].worktreePath;
+        worktreeMeta = { worktreePath: repos[0].worktreePath, branchName: branch };
+      }
+      adopted = args.adoptWorktrees.batch ? 'batch' : true;
+    } else if (args.runIn === 'worktree') {
+      const forked = await this.forkWorktrees({
+        projectPath: args.projectPath,
+        name: args.worktreeName || branchSlugFromPrompt(args.userPrompt, flow.id),
+        baseBranch: args.baseBranch,
+      });
+      if (!forked.ok) return forked;
+      if (forked.members) {
+        // Workspace: a symlink farm at userData/coordinators/<runId> that
+        // resolves to the new member worktrees.
+        const linked = ensureCoordinatorSymlinkRoot(
+          runId,
+          forked.members.map((m) => ({ name: m.name, worktreePath: m.worktreePath })),
         );
-        this.emitLaunchProgress(args.projectPath, {
-          completed: 0,
-          total: 1,
-          message: 'Preparing worktree…',
-        });
-        const baseBranch = sharedBase ?? (await detectBaseBranchAsync(args.projectPath));
-        const result = await createWorktreeAsync({
-          projectPath: args.projectPath,
-          agentName: wtName,
-          baseBranch,
-          branchPrefix,
-        });
-        if (!result.ok) {
-          return { ok: false, error: `Failed to create worktree: ${result.error}` };
+        if (!linked.ok) {
+          return { ok: false, error: `Failed to build workspace worktree root: ${linked.error}` };
         }
-        this.emitLaunchProgress(args.projectPath, { completed: 1, total: 1, message: 'Worktree ready' });
-        cwd = result.worktreePath;
-        worktreeMeta = { worktreePath: result.worktreePath, branchName: result.branchName };
+        cwd = linked.rootPath;
+        workspaceWorktrees = forked.members;
+      } else {
+        cwd = forked.worktreePath;
+        worktreeMeta = { worktreePath: forked.worktreePath, branchName: forked.branchName };
       }
     }
 
@@ -1191,11 +1127,19 @@ export class FlowRuntimeImpl {
       attempts: [],
       worktreePath: worktreeMeta?.worktreePath,
       branchName: worktreeMeta?.branchName,
+      // A team piece has no base of its own: its changes are measured from
+      // the baseline captured below, and it merges nowhere. A batch's shared
+      // branch merges against the base the batch forked it from.
       baseBranch:
-        worktreeMeta || workspaceWorktrees ? args.baseBranch?.trim() || undefined : undefined,
+        adopted === 'batch'
+          ? args.adoptWorktrees?.batch?.baseBranch
+          : (worktreeMeta || workspaceWorktrees) && !adopted
+            ? args.baseBranch?.trim() || undefined
+            : undefined,
       sourceProjectPath:
         worktreeMeta || workspaceWorktrees || scratchRoot ? args.projectPath : undefined,
       ...(scratchRoot ? { scratchRoot: true } : {}),
+      ...(adopted ? { adoptedWorktree: adopted } : {}),
       baselineCommit,
       baselineCommitsByMember,
       workspaceWorktrees,
@@ -1406,6 +1350,9 @@ export class FlowRuntimeImpl {
     | { ok: false; error: string } {
     const run = this.runs.get(args.runId);
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if (run.adoptedWorktree === true) {
+      return { ok: false, error: "This run worked on its team task's branch — merge that from the team instead." };
+    }
     if ((run.workspaceWorktrees?.length ?? 0) > 0) {
       return {
         ok: false,
@@ -2073,8 +2020,9 @@ export class FlowRuntimeImpl {
   /// async (and is fired without awaiting from `deleteRun`) so the git
   /// worktree teardown never blocks the delete round-trip or freezes the UI.
   private async removeRunWorktrees(run: FlowRun): Promise<void> {
-    // A throwaway run folder: nothing in git to unwind, just the folder.
-    if (run.scratchRoot) {
+    // A throwaway run folder — or worktrees the run only borrowed, which
+    // belong to the team task: only the run's own symlink root goes.
+    if (run.scratchRoot || run.adoptedWorktree) {
       const removed = removeCoordinatorSymlinkRoot(run.id);
       if (!removed.ok) log('warn', 'flows.deleteRun', `run folder remove failed: ${removed.error}`);
       return;
@@ -4355,6 +4303,161 @@ export class FlowRuntimeImpl {
   /// Push a worktree-preparation progress beat to the renderer during a
   /// launch, before the FlowRun exists. The launching pane (keyed on the
   /// same target `projectPath`) renders it under its spinner.
+  /// Fork fresh worktree(s) for `projectPath` — one per member project when
+  /// it is a workspace root, else one — named `name` (made unique) off
+  /// `baseBranch`, or each repo's own default when that is empty.
+  private async forkWorktrees(args: {
+    projectPath: string;
+    name: string;
+    baseBranch?: string;
+  }): Promise<
+    | {
+        ok: true;
+        members: Array<{ name: string; projectPath: string; worktreePath: string; branchName: string }>;
+        worktreePath?: undefined;
+        branchName?: undefined;
+      }
+    | { ok: true; members?: undefined; worktreePath: string; branchName: string }
+    | { ok: false; error: string }
+  > {
+    const settings = this.getSettings();
+    // Base branch is optional. When the user picked a single shared name we
+    // fork every repo off it; when absent, each repo forks off its OWN
+    // default branch (detectBaseBranch) — so a workspace whose members
+    // disagree (one `main`, one `master`) still runs.
+    const sharedBase = args.baseBranch?.trim() || undefined;
+    const matchingWorkspaceForWorktree = this.getWorkspaces().find(
+      (w) => w.rootPath === args.projectPath,
+    );
+    if (matchingWorkspaceForWorktree) {
+      // Workspace branch: mint a worktree per member project. Members the user dropped
+      // from the workspace or with missing paths are skipped (same
+      // tolerance as workspace-agent), so a partially-cleaned
+      // workspace still launches as far as it can.
+      const projectsById = new Map(this.getProjects().map((p) => [p.id, p]));
+      const members = matchingWorkspaceForWorktree.projectIds
+        .map((pid) => projectsById.get(pid))
+        .filter((p): p is NonNullable<typeof p> => !!p && !!p.path);
+      if (members.length === 0) {
+        return { ok: false, error: 'Workspace has no eligible member projects.' };
+      }
+      const branchPrefix = settings.agentBranchPrefix || 'agent/';
+      const wtNameBase = uniqueWorktreeName(
+        members.map((p) => p.path),
+        args.name,
+        branchPrefix,
+      );
+      // Mint every member's worktree CONCURRENTLY. They're independent
+      // repos, so a serial loop just stacked each repo's (potentially
+      // multi-second) `git worktree add` end to end; running them in
+      // parallel makes the whole launch take as long as the SLOWEST single
+      // repo rather than the sum. The async runner also keeps the rest of
+      // the app responsive while they check out.
+      let done = 0;
+      const results = await Promise.all(
+        members.map(async (p) => {
+          // A shared base is a HINT across N independent repos, not a
+          // contract. The launcher only offers names that exist in every
+          // member (BaseBranchSelect intersects the lists), but a stored
+          // one can outlive that guarantee — a schedule keeps whatever was
+          // picked when it was last edited, even after its target changed
+          // to a workspace those branches were never in. Falling back to
+          // this repo's own default beats failing the entire launch on the
+          // first member that never had the branch.
+          let baseBranch: string;
+          if (sharedBase && (await baseBranchExistsAsync(p.path, sharedBase))) {
+            baseBranch = sharedBase;
+          } else {
+            baseBranch = await detectBaseBranchAsync(p.path);
+            if (sharedBase) {
+              log(
+                'warn',
+                'flows',
+                `${p.name}: base branch "${sharedBase}" doesn't exist here — forking off "${baseBranch}" instead.`,
+              );
+            }
+          }
+          const r = await createWorktreeAsync({
+            projectPath: p.path,
+            agentName: wtNameBase,
+            baseBranch,
+            branchPrefix,
+          });
+          this.emitLaunchProgress(args.projectPath, {
+            completed: ++done,
+            total: members.length,
+            message: r.ok
+              ? `Prepared worktree for ${p.name}`
+              : `Worktree failed for ${p.name}`,
+          });
+          return { p, r };
+        }),
+      );
+      const failed = results.find((x) => !x.r.ok);
+      if (failed && !failed.r.ok) {
+        return {
+          ok: false,
+          error: `Failed to create worktree for ${failed.p.name}: ${failed.r.error}`,
+        };
+      }
+      const minted = results.map(({ p, r }) => {
+        // Narrowed by the `failed` guard above — every result is ok here.
+        const ok = r as Extract<typeof r, { ok: true }>;
+        return {
+          name: p.name,
+          projectPath: p.path,
+          worktreePath: ok.worktreePath,
+          branchName: ok.branchName,
+        };
+      });
+      return { ok: true, members: minted };
+    } else {
+      // Single-project worktree (original behavior). Async git so the
+      // `git worktree add` checkout doesn't block the main thread.
+      const branchPrefix = settings.agentBranchPrefix || 'agent/';
+      const wtName = uniqueWorktreeName(
+        [args.projectPath],
+        args.name,
+        branchPrefix,
+      );
+      this.emitLaunchProgress(args.projectPath, {
+        completed: 0,
+        total: 1,
+        message: 'Preparing worktree…',
+      });
+      const baseBranch = sharedBase ?? (await detectBaseBranchAsync(args.projectPath));
+      const result = await createWorktreeAsync({
+        projectPath: args.projectPath,
+        agentName: wtName,
+        baseBranch,
+        branchPrefix,
+      });
+      if (!result.ok) {
+        return { ok: false, error: `Failed to create worktree: ${result.error}` };
+      }
+      this.emitLaunchProgress(args.projectPath, { completed: 1, total: 1, message: 'Worktree ready' });
+      return { ok: true, worktreePath: result.worktreePath, branchName: result.branchName };
+    }
+  }
+
+  /// One worktree (per repo) for a whole Orchestrator batch to share: every
+  /// item adopts it rather than forking its own. The batch owns it — no run
+  /// takes it down. See Orchestration.runIn `shared`.
+  async forkBatchWorktrees(args: {
+    projectPath: string;
+    name: string;
+    baseBranch?: string;
+  }): Promise<{ ok: true; worktrees: AdoptedWorktrees } | { ok: false; error: string }> {
+    const forked = await this.forkWorktrees(args);
+    if (!forked.ok) return forked;
+    const baseBranch = args.baseBranch?.trim() || undefined;
+    const repos = forked.members
+      ? forked.members.map((m) => ({ name: m.name, projectPath: m.projectPath, worktreePath: m.worktreePath }))
+      : [{ name: basename(args.projectPath), projectPath: args.projectPath, worktreePath: forked.worktreePath }];
+    const branch = forked.members ? forked.members[0].branchName : forked.branchName;
+    return { ok: true, worktrees: { branch, repos, batch: baseBranch ? { baseBranch } : {} } };
+  }
+
   private emitLaunchProgress(
     projectPath: string,
     p: { completed: number; total: number; message: string },

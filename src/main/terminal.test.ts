@@ -6,7 +6,7 @@ const spawn = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', () => ({ spawn }));
 vi.mock('./diagnostics', () => ({ log: vi.fn() }));
 
-import { openTerminalAt, runInTerminal } from './terminal';
+import { openTerminalAt, openTerminalIn, runInTerminal, setEmbeddedTerminal } from './terminal';
 
 /// A stand-in for the osascript child: emits `stderr` then closes with `code`.
 function fakeOsascript(code: number, stderr = '') {
@@ -97,5 +97,45 @@ describe('openTerminalAt', () => {
     const res = await openTerminalAt('/tmp/work', 'claude auth login');
     expect(res.ok).toBe(false);
     expect(res.ok === false && res.command).toBe('claude auth login');
+  });
+});
+
+describe('the built-in terminal', () => {
+  afterEach(() => setEmbeddedTerminal(null));
+
+  it('takes launches when registered, so no system window opens', async () => {
+    const embedded = vi.fn((_cwd: string, _command: string | null) => ({ ok: true as const }));
+    setEmbeddedTerminal(embedded);
+    expect(await openTerminalAt('/work/acme-api', 'claude --resume abc', 'agent-launch')).toEqual({ ok: true });
+    expect(openTerminalIn('/work/acme-api', 'file-tree')).toEqual({ ok: true });
+    expect(await runInTerminal('claude auth login', 'agent-launch')).toEqual({ ok: true });
+    expect(embedded.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ['/work/acme-api', 'claude --resume abc'],
+      ['/work/acme-api', null],
+      [expect.any(String), 'claude auth login'],
+    ]);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('still refuses shell metacharacters before handing anything over', async () => {
+    const embedded = vi.fn(() => ({ ok: true as const }));
+    setEmbeddedTerminal(embedded);
+    const res = await runInTerminal('brew install x; rm -rf ~', 'ollama-install');
+    expect(res.ok).toBe(false);
+    expect(embedded).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the system terminal when it cannot start, and is skipped for pop-outs', () => {
+    setEmbeddedTerminal(() => null);
+    spawn.mockImplementation(() => fakeOpen());
+    expect(openTerminalIn('/work/acme-api', 'file-tree')).toEqual({ ok: true });
+    expect(spawn).toHaveBeenCalledWith('open', ['-a', 'Terminal', '/work/acme-api'], expect.anything());
+
+    spawn.mockClear();
+    const embedded = vi.fn(() => ({ ok: true as const }));
+    setEmbeddedTerminal(embedded);
+    openTerminalIn('/work/acme-api', 'file-tree', { external: true });
+    expect(embedded).not.toHaveBeenCalled();
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 });

@@ -94,3 +94,24 @@ describe('hasAlwaysVisibleTool', () => {
     expect(hasAlwaysVisibleTool([])).toBe(false);
   });
 });
+
+// A command that edited files is an edit, whatever tool made it. Hiding tool
+// activity must not hide the one change in the turn that came through `sed`.
+describe('commands that changed files', () => {
+  const change = { path: '/r/a.ts', relPath: 'a.ts', status: 'modified' as const, additions: 1, deletions: 0 };
+
+  it('render with tool activity hidden once their result carries changes', () => {
+    const bash = use('Bash', { command: 'sed -i s/a/b/ a.ts' });
+    expect(rendersWhenToolActivityHidden(bash)).toBe(false);
+    expect(rendersWhenToolActivityHidden(bash, { id: 'tu_1', content: '', isError: false })).toBe(false);
+    expect(
+      rendersWhenToolActivityHidden(bash, { id: 'tu_1', content: '', isError: false, fileChanges: [change] }),
+    ).toBe(true);
+  });
+
+  it('keep the turn visible', () => {
+    const results = new Map([['tu_1', { id: 'tu_1', content: '', isError: false, fileChanges: [change] }]]);
+    expect(hasAlwaysVisibleTool([use('Bash', { command: 'x' })], results)).toBe(true);
+    expect(hasAlwaysVisibleTool([use('Bash', { command: 'x' })])).toBe(false);
+  });
+});

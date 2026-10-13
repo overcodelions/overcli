@@ -70,7 +70,7 @@ export function GitInstallNotice({ state, lead }: { state: GitAvailability['stat
               // The install itself runs on in that Terminal window; there is
               // nothing here to wait for and nothing to poll.
               setFailure({
-                error: 'Follow the install in the Terminal window, then reopen this project.',
+                error: 'Follow the install in the terminal, then reopen this project.',
                 command: res.command,
               });
             } else {
@@ -78,7 +78,7 @@ export function GitInstallNotice({ state, lead }: { state: GitAvailability['stat
             }
           }}
         >
-          {working ? 'Opening Terminal…' : 'Install Git'}
+          {working ? 'Opening terminal…' : 'Install Git'}
         </button>
       )}
     </div>

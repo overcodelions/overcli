@@ -89,6 +89,27 @@ export interface ToolResultBlock {
   id: string;
   content: string;
   isError: boolean;
+  /// Files a shell command changed, attached by main after the call returns
+  /// (see `commandFileChanges.ts`). Edit and Write carry their own diff in
+  /// their input; a `sed -i` or a heredoc'd script carries nothing, and
+  /// without this the most important edit of a turn shows up as a wall of
+  /// script with no way to see what it did.
+  fileChanges?: CommandFileChange[];
+}
+
+/// One file a command changed, measured by snapshotting the working tree on
+/// either side of the call.
+export interface CommandFileChange {
+  /// Absolute, so the row can open the file.
+  path: string;
+  /// Relative to the repo root, for display.
+  relPath: string;
+  status: 'added' | 'modified' | 'deleted';
+  additions: number;
+  deletions: number;
+  /// Unified diff for just this file. Absent for binaries and for patches
+  /// over the size cap — the counts still say how much moved.
+  patch?: string;
 }
 
 export interface AssistantEventInfo {
@@ -1145,6 +1166,11 @@ export interface AppSettings {
   /// service left behind is a port held by a process the user has no way to
   /// find. Turn it off to keep a database or a backend up between sessions.
   servicesStopOnQuit?: boolean;
+  /// Send logins, installs and "open a terminal here" to a system terminal
+  /// window (Terminal.app, PowerShell) instead of the built-in drawer. Off by
+  /// default: the drawer works on every platform and needs no permission to
+  /// control another app.
+  useSystemTerminal?: boolean;
   /// Initial value for the chat's "show tool activity" toggle at app
   /// launch. The toggle itself remains a per-session runtime flag so
   /// users can flip it mid-conversation without touching Settings.
@@ -1336,7 +1362,7 @@ export interface PersistedView {
   /// choice back to worktrees for the next batch. `runIn` is the flows RunIn
   /// union, kept loose here to avoid coupling shared types across modules.
   orchestrator?: {
-    runIn?: 'cwd' | 'worktree';
+    runIn?: 'cwd' | 'worktree' | 'shared';
     maxConcurrent?: number;
     openPrOnFinish?: boolean;
   };
@@ -2156,6 +2182,34 @@ export interface IPCInvokeMap {
   /// Open a terminal window sitting in a folder, nothing typed. Used by the
   /// file tree's per-folder terminal button.
   'terminal:openFolder': (args: { path: string }) => { ok: true } | { ok: false; error: string };
+  /// A shell in the app's own terminal drawer, started in a folder inside a
+  /// registered project. Output arrives as `terminalData` events.
+  'terminal:create': (args: {
+    cwd: string;
+    cols: number;
+    rows: number;
+  }) => { ok: true; session: TerminalSession } | { ok: false; error: string };
+  /// A drawer shell with a conversation's CLI resumed in it — the in-app
+  /// counterpart of `terminal:popConversation`, which opens a window instead.
+  'terminal:createForConversation': (args: {
+    cwd: string;
+    backend: Backend;
+    sessionId?: string;
+    model?: string;
+    cols: number;
+    rows: number;
+  }) => { ok: true; session: TerminalSession } | { ok: false; error: string };
+  'terminal:write': (args: { id: string; data: string }) => void;
+  'terminal:resize': (args: { id: string; cols: number; rows: number }) => void;
+  'terminal:close': (args: { id: string }) => void;
+  /// Recent output, to repaint a view opened over a shell already running.
+  'terminal:snapshot': (args: { id: string }) => string | null;
+  /// The drawer's shells, so a reloaded renderer picks its tabs back up.
+  'terminal:list': () => TerminalSession[];
+  /// Move a shell into its own overcli window, or focus it if it's there.
+  'terminal:popOut': (args: { id: string }) => { ok: true } | { ok: false; error: string };
+  /// Close a shell's own window, putting it back in the drawer.
+  'terminal:popIn': (args: { id: string }) => void;
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
@@ -2481,7 +2535,8 @@ export interface IPCInvokeMap {
   /// `worktree` (the default) gives each item its own fresh worktree forked
   /// from `baseBranch`; `cwd` runs them in the project's own working tree,
   /// which forces `maxConcurrent` to 1 (one checkout can't host two agents)
-  /// and ignores `baseBranch`. Returns the new orchestration id; progress
+  /// and ignores `baseBranch`; `shared` forks one worktree off `baseBranch`
+  /// for the whole batch, also one item at a time. Returns the new orchestration id; progress
   /// streams back via `orchestrationUpdate`.
   'orchestrator:startBatch': (args: {
     title: string;
@@ -2585,6 +2640,10 @@ export interface IPCInvokeMap {
   /// Merge a team task's branch into one repo's base, in your checkout.
   'teams:landCode': (args: { taskId: UUID; projectPath: string }) =>
     | { ok: true; message: string }
+    | { ok: false; error: string };
+  /// Push a team task's branch from one repo; `url` opens a pull request.
+  'teams:pushCode': (args: { taskId: UUID; projectPath: string }) =>
+    | { ok: true; message: string; url?: string }
     | { ok: false; error: string };
   /// Hire one worker for a team: drafted, saved on the crew with no shifts.
   'teams:hireMember': (args: { request: TeamHireRequest }) =>
@@ -3727,7 +3786,26 @@ export type MenuCommand =
   | 'about'
   | 'settings';
 
+/// One shell in the terminal drawer, as main reports it.
+export interface TerminalSession {
+  id: string;
+  cwd: string;
+  /// The shell's name (`zsh`, `bash`, `powershell`), for the tab.
+  shell: string;
+  pid: number;
+  /// Null while the shell is running.
+  exitCode: number | null;
+  /// Showing in its own window rather than the drawer.
+  poppedOut?: boolean;
+}
+
 export type MainToRendererEvent =
+  | { type: 'terminalData'; id: string; data: string }
+  | { type: 'terminalExit'; id: string; exitCode: number }
+  /// Main started a drawer shell on its own (a login, an install): show it.
+  | { type: 'terminalOpened'; session: TerminalSession }
+  /// A shell moved into its own window (`out`) or back to the drawer.
+  | { type: 'terminalPoppedOut'; id: string; out: boolean }
   | {
       /// Live text from an in-flight document rewrite. The rewrite runs on
       /// the hidden one-shot transport, which has no conversation to stream

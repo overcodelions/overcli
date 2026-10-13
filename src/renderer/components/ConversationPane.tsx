@@ -245,7 +245,7 @@ function OllamaServerDownBanner({
 }
 
 /// Shown above the chat when the selected backend's CLI is installed but
-/// not authenticated. Clicking "Sign in" opens Terminal.app with the
+/// not authenticated. Clicking "Sign in" opens a terminal with the
 /// backend's login command pre-typed so the user completes the flow
 /// (usually a browser OAuth round-trip) outside Electron. While the banner
 /// is visible we poll health every few seconds so it disappears on its
@@ -268,7 +268,7 @@ function BackendAuthBanner({
   }, [launched, onRefresh]);
 
   const label = launched
-    ? `Finish signing into ${backendName(backend)} in the Terminal window, then come back.`
+    ? `Finish signing into ${backendName(backend)} in the terminal, then come back.`
     : `You're signed out of ${backendName(backend)}. Sign in to send messages.`;
 
   return (
@@ -290,7 +290,7 @@ function BackendAuthBanner({
         disabled={launching}
         className="px-2 py-1 rounded border border-amber-400/50 text-amber-800 dark:text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
       >
-        {launching ? 'Opening Terminal…' : launched ? 'Reopen Terminal' : 'Sign in'}
+        {launching ? 'Opening terminal…' : launched ? 'Reopen terminal' : 'Sign in'}
       </button>
       <button
         onClick={onRefresh}

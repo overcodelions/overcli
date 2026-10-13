@@ -147,7 +147,7 @@ describe('updateOllama', () => {
   it('confirms the Terminal only when the launch succeeded', async () => {
     runInTerminal.mockResolvedValue({ ok: true });
     const res = await updateOllama(() => {}, true);
-    expect(res).toEqual({ ok: true, message: 'Opened Terminal running `brew upgrade ollama`.' });
+    expect(res).toEqual({ ok: true, message: 'Opened a terminal running `brew upgrade ollama`.' });
   });
 
   it('sends a non-Homebrew install to the download page rather than `brew upgrade`', async () => {

@@ -1,4 +1,4 @@
-import { ToolUseBlock } from '@shared/types';
+import { ToolResultBlock, ToolUseBlock } from '@shared/types';
 
 /// Which tool cards survive the "show tool activity" toggle, and which the
 /// transient flash slot is allowed to show.
@@ -49,8 +49,14 @@ const ALWAYS_VISIBLE = new Set([...PERSISTENT_TOOLS, ...INTERACTIVE_TOOLS]);
 /// its mind when the result lands. While the input is still streaming the
 /// JSON doesn't parse yet and this says no, so a card can appear late but
 /// never appears and then vanishes.
-export function rendersWhenToolActivityHidden(use: ToolUseBlock): boolean {
+///
+/// A shell command joins them once its result says it changed files: then it
+/// was an edit, just one made with `sed` or a script, and the files it
+/// touched matter exactly as much as an Edit's. Only the changes render —
+/// see BashCard's `changesOnly`.
+export function rendersWhenToolActivityHidden(use: ToolUseBlock, result?: ToolResultBlock): boolean {
   if (use.name === 'Artifact') return isArtifactPublish(use);
+  if (result?.fileChanges?.length) return true;
   return ALWAYS_VISIBLE.has(use.name);
 }
 
@@ -99,6 +105,6 @@ export function shouldFlash(name: string): boolean {
 }
 
 /// Does this turn hold a card that must survive `filterRendered`?
-export function hasAlwaysVisibleTool(uses: ToolUseBlock[]): boolean {
-  return uses.some(rendersWhenToolActivityHidden);
+export function hasAlwaysVisibleTool(uses: ToolUseBlock[], results?: Map<string, ToolResultBlock>): boolean {
+  return uses.some((u) => rendersWhenToolActivityHidden(u, results?.get(u.id)));
 }

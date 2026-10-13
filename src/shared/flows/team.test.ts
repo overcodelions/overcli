@@ -211,6 +211,27 @@ describe('prompts', () => {
     expect(prompt).toContain('/tmp/task');
   });
 
+  it('tells a member working in code to commit on the branch it was given, and nowhere else', () => {
+    const base = {
+      teamName: 'T',
+      task: { brief: 'Add tests' } as TeamTask,
+      stageNumber: 2,
+      stageCount: 3,
+      stage: { kind: 'contribute' as const, title: 'Write tests' },
+      role: 'Engineer',
+      ask: 'Write the tests',
+      teammates: [],
+      folder: '/tmp/task',
+      files: [],
+      budget: 1000,
+    };
+    const prompt = buildMemberStagePrompt({ ...base, code: { branch: 'team/add-tests' } });
+    expect(prompt).toContain('one git branch, team/add-tests');
+    expect(prompt).toContain('Do NOT create, switch to or rename branches');
+    expect(prompt).toContain('Do NOT push or open pull requests');
+    expect(buildMemberStagePrompt(base)).not.toContain('THE CODE');
+  });
+
   it('cuts a long file and says where the rest is', () => {
     const out = folderForPrompt([{ name: 'a.md', author: 'A', body: 'x'.repeat(2000) }], 500, '/f');
     expect(out).toContain('[… 1,500 more characters cut to fit; the full file is /f/a.md]');

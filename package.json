@@ -29,6 +29,7 @@
     "dist/cli/**/*.js",
     "dist/main/**/*.js",
     "dist/shared/**/*.js",
+    "scripts/fix-node-pty-perms.mjs",
     "!dist/**/*.test.js",
     "!dist/**/*.map"
   ],
@@ -52,7 +53,8 @@
     "security:aws-account-ids": "node scripts/check-no-aws-account-ids.mjs",
     "security:identities": "node scripts/check-no-forbidden-identities.mjs --all",
     "prepublishOnly": "npm run build:main",
-    "lint:flow": "node scripts/lint-flow.mjs"
+    "lint:flow": "node scripts/lint-flow.mjs",
+    "postinstall": "node scripts/fix-node-pty-perms.mjs"
   },
   "build": {
     "appId": "com.overcli.app",
@@ -85,7 +87,8 @@
       "**/node_modules/react-dom/**",
       "**/node_modules/scheduler/**",
       "**/node_modules/loose-envify/**",
-      "**/node_modules/js-tokens/**"
+      "**/node_modules/js-tokens/**",
+      "**/node_modules/node-pty/**"
     ],
     "electronFuses": {
       "runAsNode": true,
@@ -202,6 +205,8 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^4.1.11",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
@@ -229,6 +234,7 @@
     "chokidar": "^4.0.3",
     "electron-updater": "^6.8.3",
     "esbuild": "^0.25.12",
+    "node-pty": "^1.1.0",
     "picomatch": "^4.0.7",
     "yaml": "^2.9.0"
   },
