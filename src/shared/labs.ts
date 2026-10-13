@@ -4,8 +4,10 @@
 ///
 /// Stored so that nobody who already uses Overcli loses anything: a settings
 /// file written before Labs existed has no `labs` key, and a missing key means
-/// ON. Only a brand-new install starts with them off (see `NEWCOMER_LABS`,
-/// applied by the main store when there is no settings file at all).
+/// ON. A brand-new install starts with the rest off (see `NEWCOMER_LABS`,
+/// applied by the main store when there is no settings file at all). Workers
+/// stays on even there: the tab is the feature people come for, and nothing
+/// runs or spends until someone hires a worker, so showing it costs nothing.
 ///
 /// Usage is deliberately not a lab: "what is this costing me?" is a
 /// newcomer's question as much as anyone's, so that tab is always there.
@@ -44,7 +46,7 @@ export const LABS: ReadonlyArray<{ key: LabKey; label: string; pitch: string; he
 
 export const NEWCOMER_LABS: Labs = {
   orchestrator: false,
-  workers: false,
+  workers: true,
   compare: false,
   localModels: false,
 };
