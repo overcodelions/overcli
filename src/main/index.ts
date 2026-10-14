@@ -297,6 +297,14 @@ function createWindow(): void {
     mainWindow = null;
   });
 
+  // A dead or hung renderer leaves a blank window and nothing anywhere else:
+  // the renderer cannot report its own death. Say so in the session log.
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    log('error', 'renderer.gone', `reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  mainWindow.on('unresponsive', () => log('warn', 'renderer.unresponsive', 'main window stopped responding'));
+  mainWindow.on('responsive', () => log('info', 'renderer.unresponsive', 'main window responding again'));
+
   // Interface size. Re-applied on every load, not once: a reload or a dev
   // HMR full refresh can hand the page back at the origin's zoom.
   const win = mainWindow;

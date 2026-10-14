@@ -4,6 +4,7 @@ import 'highlight.js/styles/github-dark.css';
 import './styles.css';
 import { App } from './App';
 import { TerminalWindow } from './components/TerminalWindow';
+import { CrashBoundary } from './components/CrashBoundary';
 import { useStore } from './store';
 
 // Expose the store on `window` in the Vite dev server so the renderer
@@ -19,5 +20,7 @@ if (!container) throw new Error('root element missing');
 // A popped-out terminal is this same bundle opened with `?terminal=<id>`.
 const poppedTerminal = new URLSearchParams(window.location.search).get('terminal');
 createRoot(container).render(
-  <React.StrictMode>{poppedTerminal ? <TerminalWindow id={poppedTerminal} /> : <App />}</React.StrictMode>,
+  <React.StrictMode>
+    <CrashBoundary>{poppedTerminal ? <TerminalWindow id={poppedTerminal} /> : <App />}</CrashBoundary>
+  </React.StrictMode>,
 );
