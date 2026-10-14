@@ -14,6 +14,7 @@ import { runnableServices } from '../servicesGrouping';
 import { planChangedFilesRebind, type ChangedCheckout, type RebindTarget } from '../servicesRebindPlan';
 import { worktreeChoices, type WorktreeChoice } from '../worktreeChoices';
 import { isServiceLive, logKey, useServicesStore } from '../servicesStore';
+import { useStore } from '../store';
 
 interface Row {
   workspaceId: string;
@@ -74,12 +75,25 @@ export function RunOnBranchButton({
     // One `git worktree list` per checkout, not per service: a monorepo's ten
     // services share one answer.
     const byPath = new Map<string, Promise<WorktreeChoice[]>>();
+    const ask = (path: string) => {
+      if (!byPath.has(path)) byPath.set(path, worktreeChoices(path));
+      return byPath.get(path)!;
+    };
+    const projects = useStore.getState().projects;
     const choices: Record<string, WorktreeChoice[]> = {};
     await Promise.all(
       views.flatMap((view) =>
         view.bindings.map(async (b) => {
-          if (!byPath.has(b.path)) byPath.set(b.path, worktreeChoices(b.path));
-          choices[b.serviceId] = await byPath.get(b.path)!;
+          let found = await ask(b.path);
+          // Bound to a tree a flow has since deleted: git cannot answer from a
+          // folder that is gone, and the service would silently drop out of
+          // the list. Its project's own checkout is the same repo.
+          if (found.length === 0) {
+            const projectId = view.services.find((s) => s.id === b.serviceId)?.projectId;
+            const projectPath = projects.find((p) => p.id === projectId)?.path;
+            if (projectPath) found = await ask(projectPath);
+          }
+          choices[b.serviceId] = found;
         }),
       ),
     );
