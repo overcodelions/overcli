@@ -163,6 +163,8 @@ import { filedByWorker, recentlyFiled } from './flows/workerPublish';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
+import { auditWorkerLandings } from './flows/strandedLandings';
+import { discardLandingUpdate, finishLandingUpdate, startLandingUpdate } from './flows/landingUpdate';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
 import { TeamEngine } from './flows/teamEngine';
@@ -294,6 +296,14 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  // A dead or hung renderer leaves a blank window and nothing anywhere else:
+  // the renderer cannot report its own death. Say so in the session log.
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    log('error', 'renderer.gone', `reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  mainWindow.on('unresponsive', () => log('warn', 'renderer.unresponsive', 'main window stopped responding'));
+  mainWindow.on('responsive', () => log('info', 'renderer.unresponsive', 'main window responding again'));
 
   // Interface size. Re-applied on every load, not once: a reload or a dev
   // HMR full refresh can hand the page back at the origin's zoom.
@@ -2656,6 +2666,51 @@ export function registerIpc(): void {
   ipcMain.handle('workers:reorder', (_e, { ids }) =>
     workerEngine ? workerEngine.reorder(ids) : ({ ok: true } as const),
   );
+  // Read from the orchestrator's live batches, not the store on disk: the
+  // store's loader also applies retention, and the app already holds them.
+  ipcMain.handle('workers:auditLandings', () => auditWorkerLandings(orchestrator ? orchestrator.list() : []));
+  // The three "update with base" steps. Each resolves the item from the live
+  // batch by commit — the project and branch come from the record, not from
+  // the renderer — and writes the outcome back through the orchestrator so
+  // it persists and every window sees it.
+  const landingItem = (orchestrationId: string, headSha: string) => {
+    const o = orchestrator?.get(orchestrationId);
+    const item = o?.items.find((i) => i.headSha === headSha);
+    return o && item ? { o, item } : null;
+  };
+  ipcMain.handle('workers:updateLanding', async (_e, { orchestrationId, headSha, baseBranch }) => {
+    const found = landingItem(orchestrationId, headSha);
+    if (!found) return { ok: false as const, error: 'That shift is no longer on record.' };
+    if (found.item.landingUpdate) return { ok: true as const, status: 'conflicts' as const, pending: found.item.landingUpdate };
+    const res = await startLandingUpdate({
+      projectPath: found.o.projectPath,
+      headSha,
+      baseBranch,
+      branchName: found.item.branchName,
+    });
+    if (res.ok && res.status === 'merged') {
+      orchestrator?.setLandingUpdate(orchestrationId, headSha, { landed: { headSha: res.headSha, branchName: res.branchName } });
+    } else if (res.ok) {
+      orchestrator?.setLandingUpdate(orchestrationId, headSha, { pending: res.pending });
+    }
+    return res;
+  });
+  ipcMain.handle('workers:finishLandingUpdate', async (_e, { orchestrationId, headSha, baseBranch }) => {
+    const found = landingItem(orchestrationId, headSha);
+    if (!found?.item.landingUpdate) return { ok: false as const, error: 'There is no update in progress for that shift.' };
+    const res = await finishLandingUpdate({ projectPath: found.o.projectPath, pending: found.item.landingUpdate, baseBranch });
+    if (res.ok) {
+      orchestrator?.setLandingUpdate(orchestrationId, headSha, { landed: { headSha: res.headSha, branchName: res.branchName } });
+    }
+    return res;
+  });
+  ipcMain.handle('workers:discardLandingUpdate', async (_e, { orchestrationId, headSha }) => {
+    const found = landingItem(orchestrationId, headSha);
+    if (!found?.item.landingUpdate) return { ok: true as const };
+    const res = await discardLandingUpdate({ projectPath: found.o.projectPath, pending: found.item.landingUpdate, headSha });
+    if (res.ok) orchestrator?.setLandingUpdate(orchestrationId, headSha, { clear: true });
+    return res;
+  });
   ipcMain.handle('workers:treasury', () =>
     workerEngine
       ? workerEngine.treasury()

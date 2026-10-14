@@ -15,6 +15,7 @@
 import type { UUID } from '../types';
 import type { AdoptedWorktrees } from './schema';
 import type { WorkerMessageIntent } from './worker';
+import type { PendingLandingUpdate } from './landingAudit';
 
 /// Where a run does its work: `cwd` = the project's own working tree,
 /// `worktree` = a fresh git worktree forked from a base branch. A batch can
@@ -106,6 +107,10 @@ export interface OrchestrationItem {
   /// both already gone by the time the run reported terminal) and on every
   /// item that finished before this field existed.
   headSha?: string;
+  /// Set while an "update with base" merge of this item's work is parked
+  /// mid-conflict in its own worktree. Cleared when it is finished (and
+  /// `headSha`/`branchName` move to the merged result) or discarded.
+  landingUpdate?: PendingLandingUpdate;
   /// Short status note (e.g. an error message when `failed`).
   note?: string;
   /// Set when a restart settled this item rather than a person or a run: a

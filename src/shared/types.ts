@@ -4,6 +4,7 @@
 
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
+import type { LandingAudit, LandingUpdateResult } from './flows/landingAudit';
 import type { Schedule } from './flows/schedule';
 import type { FlowRiskFinding } from './flows/riskScan';
 import type { ImportSet, ImportedService } from './servicesImport';
@@ -2736,6 +2737,26 @@ export interface IPCInvokeMap {
     treasury: Treasury;
     allocation: TreasuryAllocation;
   };
+  /// Finished worker items whose commit never reached its base branch,
+  /// triaged by whether it still merges. Runs git in every project that has
+  /// one, so callers fetch it on demand rather than on a timer — see
+  /// main/flows/strandedLandings.ts.
+  'workers:auditLandings': () => LandingAudit;
+  /// Merge base into a stranded item's commit on a fresh branch. Clean →
+  /// committed and the item moves to that branch; conflicts → the merge is
+  /// parked in its own worktree (recorded on the item) for someone to resolve.
+  'workers:updateLanding': (args: { orchestrationId: UUID; headSha: string; baseBranch: string }) => LandingUpdateResult;
+  /// Accept a parked update once its merge is committed; the item moves to it.
+  'workers:finishLandingUpdate': (args: {
+    orchestrationId: UUID;
+    headSha: string;
+    baseBranch: string;
+  }) => { ok: true; branchName: string; headSha: string } | { ok: false; error: string };
+  /// Back a parked update out: abort, remove its worktree and branch.
+  'workers:discardLandingUpdate': (args: {
+    orchestrationId: UUID;
+    headSha: string;
+  }) => { ok: true; keptBranch?: string } | { ok: false; error: string };
   /// What the roster has actually done — shifts, outcomes, tokens, time.
   /// `sinceMs` is an epoch-ms floor; 0 means all time.
   'workers:report': (args: { sinceMs: number }) => WorkerReport;

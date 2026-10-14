@@ -18,6 +18,7 @@ import path from 'node:path';
 import { HELP, parseArgs } from './args';
 import { EXIT, makeReporter, runFile, writeArtifacts } from './run';
 import { serveCommand } from './serve';
+import { workersAuditCommand } from './workers';
 
 function version(): string {
   try {
@@ -35,7 +36,7 @@ export async function main(argv: string[]): Promise<number> {
     process.stderr.write(`${parsed.error}\n\nTry: overcli --help\n`);
     return EXIT.BAD_INPUT;
   }
-  const { command, run: opts, serve: serveOpts, warnings } = parsed.args;
+  const { command, run: opts, serve: serveOpts, workers: workersOpts, warnings } = parsed.args;
 
   if (command === 'help') {
     process.stdout.write(HELP);
@@ -53,6 +54,13 @@ export async function main(argv: string[]): Promise<number> {
     // time this resolves both engines are disposed and the exit is the last
     // thing left to do.
     return serveCommand(serveOpts, { out: (line) => process.stdout.write(`${line}\n`) });
+  }
+  if (command === 'workers') {
+    if (!workersOpts) return EXIT.BAD_INPUT;
+    return workersAuditCommand(workersOpts, {
+      out: (text) => process.stdout.write(text),
+      err: (text) => process.stderr.write(text),
+    });
   }
   if (!opts) return EXIT.BAD_INPUT;
 

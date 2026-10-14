@@ -43,6 +43,7 @@ import {
   isResidueOrchestration,
   parseCandidates,
 } from '../../shared/flows/orchestration';
+import type { PendingLandingUpdate } from '../../shared/flows/landingAudit';
 import { SCHEDULE_AUTO_APPROVE_MAX } from '../../shared/flows/schedule';
 import {
   pickDrafterBackend,
@@ -1239,6 +1240,33 @@ export class OrchestratorImpl {
     if (!item || item.runId !== run.id || item.headSha === sha) return;
     item.headSha = sha;
     this.persistAndEmit(o);
+  }
+
+  /// Record the outcome of an "update with base" on the item whose work is
+  /// at `headSha` (see main/flows/landingUpdate). Matched by commit rather
+  /// than candidate id because the audit that drives it only knows the
+  /// commit. `pending` parks a conflicted merge on the item; `landed` moves
+  /// the item to the merged branch and clears anything parked. Returns false
+  /// when no item matches — the batch was deleted or already repointed.
+  setLandingUpdate(
+    orchId: UUID,
+    headSha: string,
+    patch: { pending: PendingLandingUpdate } | { landed: { headSha: string; branchName: string } } | { clear: true },
+  ): boolean {
+    const o = this.batches.get(orchId);
+    const item = o?.items.find((i) => i.headSha === headSha);
+    if (!o || !item) return false;
+    if ('pending' in patch) {
+      item.landingUpdate = patch.pending;
+    } else if ('landed' in patch) {
+      item.headSha = patch.landed.headSha;
+      item.branchName = patch.landed.branchName;
+      delete item.landingUpdate;
+    } else {
+      delete item.landingUpdate;
+    }
+    this.persistAndEmit(o);
+    return true;
   }
 
   private persistAndEmit(o: Orchestration): void {

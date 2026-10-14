@@ -19,6 +19,7 @@ import { useRunningMap } from '../../runnersStore';
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
 import { InboxList, defaultItem, findRow, type DigestModel, type OpenItem } from './TodayDigest';
+import { NotMergedSection } from './NotMergedSection';
 import { useTeamsStore } from '../../teamsStore';
 import { TeamDesk } from './teams/TeamDesk';
 import { TodayEmpty } from './TodayEmpty';
@@ -205,6 +206,7 @@ export function TodayPane({ workerId = null }: { workerId?: string | null }) {
     <div className="flex min-h-0 flex-1">
       <div className="min-h-0 w-[420px] shrink-0 overflow-y-auto border-r border-card px-5 pb-10 pt-6">
         <InboxList model={model} open={open} onOpen={setPicked} workerId={workerId} />
+        <NotMergedSection workerId={workerId} />
         {/* Debug only: the empty states are screens you can never reach
             again once the crew has worked, so they need a way in. */}
         {showDebug && (
