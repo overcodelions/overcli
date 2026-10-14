@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COORDINATOR_LANE, pieceIn, planLayout, shortDuration } from './planView';
+import { COORDINATOR_LANE, pieceIn, planLayout, roleTitle, shortDuration } from './planView';
 import type { TeamAssignment, TeamStage } from '@shared/flows/team';
 
 const piece = (workerId: string, extra: Partial<TeamAssignment> = {}): TeamAssignment => ({
@@ -91,5 +91,19 @@ describe('shortDuration', () => {
     expect(shortDuration(29 * 60_000)).toBe('29m');
     expect(shortDuration(60 * 60_000)).toBe('1h');
     expect(shortDuration(98 * 60_000)).toBe('1h 38m');
+  });
+});
+
+describe('roleTitle', () => {
+  it('keeps the part before the colon', () => {
+    expect(roleTitle('Customer advocate: reviews the feedback and unmet demand')).toBe('Customer advocate');
+  });
+  it('takes a role with no colon whole, or its first clause', () => {
+    expect(roleTitle('Report writer')).toBe('Report writer');
+    expect(roleTitle('Challenger, attacks the case')).toBe('Challenger');
+  });
+  it('drops a title too long to be one', () => {
+    expect(roleTitle('Reviews every ticket the customer opened in the last quarter and more')).toBe('');
+    expect(roleTitle(undefined)).toBe('');
   });
 });

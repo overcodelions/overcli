@@ -42,7 +42,7 @@ import { currentTeamTask } from "./TeamRail";
 import { folderSections, type FolderItem } from "./folderView";
 import { ProjectSelect, projectName, useProjectOptions } from "./ProjectChoice";
 import { exchangeOutcome, groupExchanges, plainLine, type Exchange } from "./roomView";
-import { COORDINATOR_LANE, pieceIn, planLayout, shortDuration } from "./planView";
+import { COORDINATOR_LANE, pieceIn, planLayout, roleTitle, shortDuration } from "./planView";
 
 const primaryBtn = "text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40";
 const secondaryBtn =
@@ -979,6 +979,7 @@ function PlanStrip({
 }) {
   const [why, setWhy] = useState(false);
   const workers = useWorkersStore((s) => s.workers);
+  const team = useTeamsStore((s) => s.teams[task.teamId]);
   const live = task.stages.some((s) => s.status === "running");
   const now = useTickingNow(live ? 30_000 : 3_600_000);
   const { lanes, columns, packAt } = planLayout(task, now);
@@ -988,7 +989,7 @@ function PlanStrip({
   const colOf = (i: number) => 2 + i + (zone && i >= packAt ? 1 : 0);
   const packCol = zone ? colOf(packAt) - 1 : 0;
   const stageCol = "minmax(112px,1fr)";
-  const template = ["112px", ...columns.flatMap((c) => (zone && c.index === packAt ? ["20px", stageCol] : [stageCol]))].join(" ");
+  const template = ["128px", ...columns.flatMap((c) => (zone && c.index === packAt ? ["20px", stageCol] : [stageCol]))].join(" ");
   const top = zone ? 2 : 1;
   const laneRow = (lane: number) => top + 1 + lane;
   const footRow = laneRow(lanes.length);
@@ -1068,6 +1069,8 @@ function PlanStrip({
 
           {lanes.map((l, i) => {
             const w = l.workerId ? workers[l.workerId] : undefined;
+            const role = team?.members.find((m) => m.workerId === l.workerId)?.role;
+            const title = roleTitle(role);
             return (
               <span
                 key={`lane-${l.id}`}
@@ -1079,7 +1082,14 @@ function PlanStrip({
                 ) : w ? (
                   <WorkerAvatar worker={w} size="sm" />
                 ) : null}
-                <span className={"truncate " + (l.id === COORDINATOR_LANE ? "text-ink-muted" : "")}>{l.name}</span>
+                <span className="flex min-w-0 flex-col">
+                  <span className={"truncate " + (l.id === COORDINATOR_LANE ? "text-ink-muted" : "")}>{l.name}</span>
+                  {title && (
+                    <span className="truncate text-[10px] leading-tight text-ink-faint" title={role}>
+                      {title}
+                    </span>
+                  )}
+                </span>
               </span>
             );
           })}
@@ -1613,19 +1623,36 @@ function CodeCard({ task, landable }: { task: TeamTask; landable: boolean }) {
   const changed = code.repos.filter((r) => r.ahead !== 0 || r.landed);
   const untouched = code.repos.length - changed.length;
   const openLink = (url: string) => void window.overcli.invoke("app:openExternal", url);
+  // Folded while the team works: a long repo list pushes the plan off screen.
+  // Open once there is something to push or merge.
+  const [open, setOpen] = useState(landable);
+  useEffect(() => {
+    if (landable) setOpen(true);
+  }, [landable]);
   return (
     <section className="flex flex-col gap-2 rounded-xl border border-card bg-surface-elevated px-4 py-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="text-xs font-semibold text-ink">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="group flex flex-wrap items-baseline justify-between gap-2 text-left"
+      >
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-ink">
+          <svg aria-hidden width="8" height="8" viewBox="0 0 8 8" className={`text-ink-faint transition-transform ${open ? "rotate-90" : ""}`}>
+            <path d="M2 1l4 3-4 3" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
           Code · <span className="font-mono font-normal text-ink-muted">{code.branch}</span>
+          <span className="font-normal text-ink-faint">
+            {changed.length} repo{changed.length === 1 ? "" : "s"}
+          </span>
         </span>
-        <span className="text-[11px] text-ink-faint">
+        <span className="text-[11px] text-ink-faint group-hover:text-ink-muted">
           {landable
             ? "Every piece merged here. Push it for a pull request, or merge it into each repo."
             : "Each piece starts from this branch and merges back into it."}
         </span>
-      </div>
-      {changed.length === 0 ? (
+      </button>
+      {!open ? null : changed.length === 0 ? (
         <span className="text-[11px] text-ink-faint">No commits on this branch yet.</span>
       ) : (
         <ul className="flex flex-col divide-y divide-card">
@@ -1681,7 +1708,7 @@ function CodeCard({ task, landable }: { task: TeamTask; landable: boolean }) {
           ))}
         </ul>
       )}
-      {untouched > 0 && (
+      {open && untouched > 0 && (
         <span className="text-[11px] text-ink-faint">
           {untouched} other repo{untouched === 1 ? "" : "s"} in this workspace {untouched === 1 ? "has" : "have"} no changes.
         </span>

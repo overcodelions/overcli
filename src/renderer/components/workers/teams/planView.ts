@@ -68,6 +68,14 @@ export function planLayout(task: Pick<TeamTask, 'stages'>, now: number): PlanLay
   return { lanes, columns, packAt: packAt >= 0 ? packAt : undefined };
 }
 
+/// The title a member plays on the team, for a label too narrow for the whole
+/// role: "Customer advocate: reviews the feedback" reads "Customer advocate".
+/// A role with no colon is all title; a long one is cut at the first clause.
+export function roleTitle(role: string | undefined): string {
+  const head = (role ?? '').split(':')[0].split(/[.,;—–]| - /)[0].trim();
+  return head.length > 40 ? '' : head;
+}
+
 /// The member's piece in a stage, if that member has one.
 export function pieceIn(stage: TeamStage, workerId: string): TeamAssignment | undefined {
   return stage.assignments.find((a) => a.workerId === workerId);
