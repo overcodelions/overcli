@@ -4,6 +4,26 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-10-13
+
+### Added
+- **Terminal drawer** (#618). Shells open in a drawer under the main pane (⌘J), with a tab per shell. Logins, installs, the file tree's `>_` and "resume in terminal" open there. Shift-click, or the Settings option to prefer the system terminal, opens a separate window instead. A shell can pop out into its own window and goes back to the drawer when that window closes. Shells come back after a reload.
+- **Shell-edit diffs** (#618). Files a shell command changes show as per-file diffs on the Bash card, like an Edit.
+- **Shared-worktree batches** (#618). With `runIn: 'shared'`, a batch runs its items one at a time in one worktree, and you review the result as a single branch.
+- Live Orchestrator batches show on Today and the Workers rail (#618).
+- The team desk lists only repos with commits ahead of their base, with a Push button and a compare link per repo (#618).
+- Team plan lanes show each member's role title (#624).
+
+### Changed
+- **Workers is on by default** for new installs. Other labs stay opt-in (#620).
+- The team desk's Code card is folded while the team works and opens when there is something to push or merge (#624).
+- A piece that is alone in its stage works in the task's own worktrees instead of forking (#618).
+
+### Fixed
+- Team pieces that left their branch, or a branch that took other commits during the run, now stop with a conflict that says where the work went (#618).
+- Run on branch lists services that are still bound to a deleted flow worktree (#624).
+- Diffs pasted by Codex with bare `@@` hunk headers render as a diff instead of a bullet list (#624).
+
 ## [0.21.0] - 2026-10-11
 
 ### Added
@@ -651,7 +671,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/overcodelions/overcli/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/overcodelions/overcli/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/overcodelions/overcli/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/overcodelions/overcli/compare/v0.19.1...v0.20.0
