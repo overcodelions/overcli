@@ -72,10 +72,20 @@ export interface ServeOptions {
   allowTools: string[];
 }
 
+/// `overcli workers audit`. Read-only, so it takes no permission policy.
+export interface WorkersAuditOptions {
+  /// Where the saved batches live. Absent means $OVERCLI_HOME, then the
+  /// desktop app's data directory, then ~/.overcli — see
+  /// `resolveAuditStateDir` in workers.ts for why the app's comes first.
+  stateDir?: string;
+  json: boolean;
+}
+
 export interface ParsedArgs {
-  command: 'run' | 'serve' | 'help' | 'version';
+  command: 'run' | 'serve' | 'workers' | 'help' | 'version';
   run?: RunOptions;
   serve?: ServeOptions;
+  workers?: WorkersAuditOptions;
   /// Non-fatal complaints about the arguments themselves, printed before the
   /// run starts. A flag we accept but that cannot do anything in this context
   /// belongs here rather than in a failure.
@@ -202,6 +212,51 @@ function parseServe(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailu
   };
 }
 
+const WORKERS_AUDIT_FLAGS = new Set(['--state-dir', '--json']);
+
+function parseWorkers(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
+  if (rest[0] !== 'audit') {
+    return {
+      ok: false,
+      error: rest[0]
+        ? `Unknown workers subcommand "${rest[0]}". Try: overcli workers audit.`
+        : 'overcli workers needs a subcommand. Try: overcli workers audit.',
+    };
+  }
+  const opts: WorkersAuditOptions = { json: false };
+  const args = rest.slice(1);
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) {
+      return { ok: false, error: `overcli workers audit takes no arguments (got "${arg}").` };
+    }
+    let name = arg;
+    let inlineValue: string | undefined;
+    const eq = arg.indexOf('=');
+    if (eq !== -1) {
+      name = arg.slice(0, eq);
+      inlineValue = arg.slice(eq + 1);
+    }
+    if (!WORKERS_AUDIT_FLAGS.has(name)) {
+      return {
+        ok: false,
+        error: FLAGS_WITH_VALUES.has(name)
+          ? `${name} is not an audit option; overcli workers audit takes ${[...WORKERS_AUDIT_FLAGS].join(', ')}.`
+          : `Unknown option "${name}".`,
+      };
+    }
+    if (name === '--json') {
+      if (inlineValue !== undefined) return { ok: false, error: '--json takes no value.' };
+      opts.json = true;
+      continue;
+    }
+    const value = inlineValue ?? args[++i];
+    if (value === undefined) return { ok: false, error: `${name} needs a value.` };
+    opts.stateDir = value;
+  }
+  return { ok: true, args: { command: 'workers', workers: opts, warnings: [] } };
+}
+
 export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
   const warnings: string[] = [];
   if (argv.length === 0 || argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h') {
@@ -211,10 +266,11 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | Pars
     return { ok: true, args: { command: 'version', warnings } };
   }
   if (argv[0] === 'serve') return parseServe(argv.slice(1));
+  if (argv[0] === 'workers') return parseWorkers(argv.slice(1));
   if (argv[0] !== 'run') {
     return {
       ok: false,
-      error: `Unknown command "${argv[0]}". Try: overcli run <file.yaml>, or overcli serve.`,
+      error: `Unknown command "${argv[0]}". Try: overcli run <file.yaml>, overcli serve, or overcli workers audit.`,
     };
   }
 
@@ -332,6 +388,9 @@ USAGE
   overcli serve [options]             Stay up and run your saved schedules
                                       and standing workers. No file: the
                                       work comes from --state-dir.
+  overcli workers audit [options]     List standing-worker shifts that
+                                      committed work never merged into
+                                      its base branch. Read-only.
 
 RUN OPTIONS
   --cwd DIR              Project to run in. Default: $GITHUB_WORKSPACE, then
@@ -377,6 +436,19 @@ SERVE OPTIONS
   Only one daemon may hold a --state-dir at a time; a second refuses rather
   than double-firing every schedule. Ctrl-C or SIGTERM shuts it down and
   exits 0; a second signal forces the exit.
+
+WORKERS AUDIT OPTIONS
+  --state-dir DIR        Where the saved batches live. Default:
+                         $OVERCLI_HOME, then the desktop app's data directory
+                         (~/Library/Application Support/Overcli on macOS) if
+                         it has batches, then ~/.overcli.
+  --json                 One JSON object on stdout.
+
+  Each unmerged commit is test-merged in memory (git merge-tree, git 2.38+;
+  no ref moves): "clean" still merges, "conflicts" needs a rebuild. Work
+  already in base by squash or cherry-pick is counted as absorbed, not
+  stranded. Exits 2 when anything is stranded, 0 when clean, 4 when the
+  state directory has no batches.
 
 ENVIRONMENT
   OVERCLI_HOME           State root when --state-dir is absent.
