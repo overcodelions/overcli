@@ -31,6 +31,23 @@ describe('fenceStrayDiffs', () => {
     expect(fenceStrayDiffs(src)).toBe(['```diff', '@@ -1,3 +1,3 @@', ' a', '-b', '+c', '```'].join('\n'));
   });
 
+  it('fences a Codex-style diff whose hunks are a bare @@', () => {
+    const diff = [
+      'diff --git a/src/app/settings.html b/src/app/settings.html',
+      '@@',
+      '-    By default the owner comes from the manager rules.',
+      '+    By default the owner is the manager,',
+      '+    falling back to the default owner.',
+    ];
+    const out = fenceStrayDiffs(['Here is the change:', ...diff].join('\n'));
+    expect(out).toBe(['Here is the change:', '', '```diff', ...diff, '```'].join('\n'));
+  });
+
+  it('fences a bare @@ hunk with no file header', () => {
+    const src = ['@@', ' a', '-b', '+c'].join('\n');
+    expect(fenceStrayDiffs(src)).toBe(['```diff', '@@', ' a', '-b', '+c', '```'].join('\n'));
+  });
+
   it('keeps prose that follows the diff outside the fence', () => {
     const out = fenceStrayDiffs([...DIFF, '', 'That is the whole change.'].join('\n'));
     expect(out.endsWith(['```', '', 'That is the whole change.'].join('\n'))).toBe(true);

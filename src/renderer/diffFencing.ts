@@ -8,15 +8,16 @@
 const FENCE_RE = /^\s{0,3}(?:```|~~~)/;
 
 /// A hunk header — enough on its own to start a run, since models often paste
-/// bare hunks with no file header.
-const HUNK_RE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/;
+/// bare hunks with no file header. Codex writes a bare `@@` with no line
+/// numbers, which counts too.
+const HUNK_RE = /^@@(?: -\d+(?:,\d+)? \+\d+(?:,\d+)? @@|\s*$)/;
 
 /// An unambiguous patch header. A run starting with one of these is fenced
 /// even if no hunk has streamed in yet.
 const RUN_START_RE = /^(?:diff --git |Index: )/;
 
 /// Lines that may appear *inside* an already-started run.
-const BODY_RE = /^(?:diff --git |Index: |index [0-9a-f]|--- |\+\+\+ |@@ |[ +-]|\\ No newline|new file mode |deleted file mode |old mode |new mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch)/;
+const BODY_RE = /^(?:diff --git |Index: |index [0-9a-f]|--- |\+\+\+ |@@(?: |$)|[ +-]|\\ No newline|new file mode |deleted file mode |old mode |new mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch)/;
 
 /// Wrap every unfenced unified-diff run in `source` in a ```diff fence.
 /// Content already inside a fence is left untouched, so this is safe to run
@@ -24,7 +25,7 @@ const BODY_RE = /^(?:diff --git |Index: |index [0-9a-f]|--- |\+\+\+ |@@ |[ +-]|\
 export function fenceStrayDiffs(source: string): string {
   if (!source) return source;
   // Fast path: nothing that could start a run.
-  if (!/^(?:diff --git |Index: |--- |@@ )/m.test(source)) return source;
+  if (!/^(?:diff --git |Index: |--- |@@)/m.test(source)) return source;
 
   const lines = source.split('\n');
   const out: string[] = [];
