@@ -163,6 +163,7 @@ import { filedByWorker, recentlyFiled } from './flows/workerPublish';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
+import { auditWorkerLandings } from './flows/strandedLandings';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
 import { TeamEngine } from './flows/teamEngine';
@@ -2656,6 +2657,9 @@ export function registerIpc(): void {
   ipcMain.handle('workers:reorder', (_e, { ids }) =>
     workerEngine ? workerEngine.reorder(ids) : ({ ok: true } as const),
   );
+  // Read from the orchestrator's live batches, not the store on disk: the
+  // store's loader also applies retention, and the app already holds them.
+  ipcMain.handle('workers:auditLandings', () => auditWorkerLandings(orchestrator ? orchestrator.list() : []));
   ipcMain.handle('workers:treasury', () =>
     workerEngine
       ? workerEngine.treasury()

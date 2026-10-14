@@ -108,7 +108,9 @@ describe('auditWorkerLandings (real git)', () => {
     expect(audit.stranded).toHaveLength(1);
     const s = audit.stranded[0];
     expect(s).toMatchObject({
+      workerId: 'w1',
       workerName: 'Prometheus',
+      orchestrationId: 'b1',
       batchTitle: 'Nightly shift',
       itemTitle: 'clean',
       headSha: sha.clean,

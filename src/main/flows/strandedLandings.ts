@@ -23,60 +23,14 @@
 
 import { detectBaseBranchAsync, runGitAsync, type GitResult } from '../git';
 import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
+import type {
+  Landability,
+  LandingAudit,
+  LandingRef,
+  StrandedLanding,
+} from '../../shared/flows/landingAudit';
 
-export type Landability = 'clean' | 'conflicts' | 'unknown';
-
-export interface StrandedLanding {
-  workerName: string;
-  batchTitle: string;
-  itemTitle: string;
-  headSha: string;
-  branchName?: string;
-  finishedAt?: number;
-  projectPath: string;
-  /// The branch the commit was checked against. Recorded because it is
-  /// resolved per item and a reader should not have to guess.
-  baseBranch: string;
-  landability: Landability;
-  /// Commits base has gained since this work forked from it. A rough
-  /// staleness measure; null when the merge-base could not be computed.
-  baseAdvance: number | null;
-  /// Whether `branchName` still names a local branch. The branch is display
-  /// only (it is routinely deleted or renamed); the SHA is the real pointer.
-  branchResolves: boolean;
-}
-
-export interface UnresolvableLanding {
-  workerName: string;
-  batchTitle: string;
-  itemTitle: string;
-  headSha: string;
-  projectPath: string;
-  baseBranch: string;
-  /// First line of git's complaint — usually a pruned object or a missing
-  /// project directory.
-  reason: string;
-}
-
-export interface LandingRef {
-  workerName: string;
-  itemTitle: string;
-  headSha: string;
-  projectPath: string;
-  baseBranch: string;
-}
-
-export interface LandingAudit {
-  stranded: StrandedLanding[];
-  /// Not ancestors, but their content is already in base (squash merge,
-  /// cherry-pick, re-landed). Not a problem; reported so the count adds up.
-  absorbed: LandingRef[];
-  merged: LandingRef[];
-  unresolvable: UnresolvableLanding[];
-  /// Done worker items with no `headSha` — finished before the field existed,
-  /// or the capture failed. The audit is blind to these, and says so.
-  skippedNoSha: number;
-}
+export type { Landability, LandingAudit, LandingRef, StrandedLanding, UnresolvableLanding } from '../../shared/flows/landingAudit';
 
 export interface AuditDeps {
   git?: (args: string[], cwd: string) => Promise<GitResult>;
@@ -128,7 +82,7 @@ export async function auditWorkerLandings(
 
   for (const o of orchestrations) {
     if (o.origin?.kind !== 'worker') continue;
-    const workerName = o.origin.workerName;
+    const { workerId, workerName } = o.origin;
     for (const item of o.items) {
       if (item.status !== 'done') continue;
       const headSha = item.headSha?.trim();
@@ -138,6 +92,7 @@ export async function auditWorkerLandings(
       }
       const baseBranch = await resolveBase(o, item);
       const ref: LandingRef = {
+        workerId,
         workerName,
         itemTitle: item.candidate.title,
         headSha,
@@ -190,7 +145,9 @@ export async function auditWorkerLandings(
       }
 
       out.stranded.push({
+        workerId,
         workerName,
+        orchestrationId: o.id,
         batchTitle: o.title,
         itemTitle: item.candidate.title,
         headSha,
