@@ -18,6 +18,7 @@ import { createPortal } from 'react-dom';
 import { useStore } from '../store';
 import { useRunningMap } from '../runnersStore';
 import { useFlowsStore } from '../flowsStore';
+import { navigateToTab } from '../navHistory';
 import { useWorkersStore } from '../workersStore';
 import { useOrchestratorStore } from '../orchestratorStore';
 import type { Colosseum, Conversation, Project, UUID, Workspace } from '@shared/types';
@@ -693,6 +694,9 @@ function usePlaceFlowItems(ref_: PlaceRef, open: boolean): MenuItemDef[] {
   const starred = useStore((s) => s.settings.starredFlows);
   const openSheet = useStore((s) => s.openSheet);
   const setDetailMode = useStore((s) => s.setDetailMode);
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
+  const setLibrarySegment = useFlowsStore((s) => s.setLibrarySegment);
 
   // The library loads when something shows it; a sidebar menu may be first.
   useEffect(() => {
@@ -712,7 +716,16 @@ function usePlaceFlowItems(ref_: PlaceRef, open: boolean): MenuItemDef[] {
     [flows, starred, ref_],
   );
 
-  const openLibrary = () => setDetailMode('flows');
+  // The library itself, not whatever Flows last showed. detailMode alone
+  // reopened the last run or a half-edited flow, so "All flows…" seemed to
+  // do nothing. Same steps as the Flows tab, but always the list of flows.
+  const openLibrary = () =>
+    navigateToTab(() => {
+      setActiveRun(null);
+      closeFlowEditor();
+      setLibrarySegment('flows');
+      setDetailMode('flows');
+    });
   if (shown.length === 0) {
     return [
       { divider: true, label: '', onSelect: () => {} },
