@@ -41,6 +41,16 @@ function firstLine(s: string): string {
   return s.trim().split('\n')[0] ?? '';
 }
 
+/// The conflicted paths from `merge-tree --write-tree --name-only`: the tree
+/// id, then one path per line (a path can repeat, once per conflict stage),
+/// then a blank line before git's informational messages.
+export function parseConflictFiles(stdout: string): string[] {
+  const lines = stdout.split('\n').slice(1);
+  const end = lines.indexOf('');
+  const paths = (end === -1 ? lines : lines.slice(0, end)).map((l) => l.trim()).filter(Boolean);
+  return [...new Set(paths)];
+}
+
 export async function auditWorkerLandings(
   orchestrations: Orchestration[],
   deps: AuditDeps = {},
@@ -114,8 +124,9 @@ export async function auditWorkerLandings(
         continue;
       }
 
-      const merged = await git(['merge-tree', '--write-tree', baseBranch, headSha], o.projectPath);
+      const merged = await git(['merge-tree', '--write-tree', '--name-only', baseBranch, headSha], o.projectPath);
       let landability: Landability = 'unknown';
+      let conflictFiles: string[] = [];
       if (merged.exitCode === 0) {
         const tree = await treeOf(o.projectPath, baseBranch);
         if (tree && firstLine(merged.stdout) === tree) {
@@ -125,6 +136,7 @@ export async function auditWorkerLandings(
         landability = 'clean';
       } else if (merged.exitCode === 1) {
         landability = 'conflicts';
+        conflictFiles = parseConflictFiles(merged.stdout);
       }
 
       let baseAdvance: number | null = null;
@@ -157,8 +169,10 @@ export async function auditWorkerLandings(
         projectPath: o.projectPath,
         baseBranch,
         landability,
+        conflictFiles,
         baseAdvance,
         branchResolves,
+        ...(item.landingUpdate ? { pendingUpdate: item.landingUpdate } : {}),
       });
     }
   }

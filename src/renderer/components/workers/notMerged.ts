@@ -35,11 +35,19 @@ export function rebuildInstruction(s: StrandedLanding): string {
   const branch = s.branchName && s.branchResolves ? ` (branch \`${s.branchName}\`)` : '';
   const moved =
     s.baseAdvance == null ? '' : ` \`${s.baseBranch}\` has gained ${s.baseAdvance} commit${s.baseAdvance === 1 ? '' : 's'} since.`;
+  const files =
+    s.conflictFiles.length > 0 ? ` It conflicts in: ${s.conflictFiles.map((f) => `\`${f}\``).join(', ')}.` : '';
   return [
-    `Your earlier shift work "${s.itemTitle}" — commit \`${s.headSha}\`${branch} in ${s.projectPath} — was never merged, and it no longer merges cleanly into \`${s.baseBranch}\`.${moved}`,
+    `Your earlier shift work "${s.itemTitle}" — commit \`${s.headSha}\`${branch} in ${s.projectPath} — was never merged, and it no longer merges cleanly into \`${s.baseBranch}\`.${moved}${files}`,
     '',
     `Rebuild it on top of the current \`${s.baseBranch}\`: start a fresh branch from \`${s.baseBranch}\`, cherry-pick \`${s.headSha.slice(0, 12)}\` and resolve the conflicts (or re-implement the change if \`${s.baseBranch}\` has moved too far for a cherry-pick to make sense), run the relevant tests, and commit.`,
     '',
     `Do not merge into \`${s.baseBranch}\` and do not push — leave the rebuilt branch for review, and say in your reply which branch it is on and what conflicted.`,
   ].join('\n');
+}
+
+/// "a, b, +3 more" — enough to tell a one-file clash from a sprawling one.
+export function conflictSummary(files: string[], shown = 3): string {
+  if (files.length <= shown) return files.join(', ');
+  return `${files.slice(0, shown).join(', ')}, +${files.length - shown} more`;
 }

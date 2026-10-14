@@ -164,6 +164,7 @@ import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { auditWorkerLandings } from './flows/strandedLandings';
+import { discardLandingUpdate, finishLandingUpdate, startLandingUpdate } from './flows/landingUpdate';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
 import { TeamEngine } from './flows/teamEngine';
@@ -2660,6 +2661,48 @@ export function registerIpc(): void {
   // Read from the orchestrator's live batches, not the store on disk: the
   // store's loader also applies retention, and the app already holds them.
   ipcMain.handle('workers:auditLandings', () => auditWorkerLandings(orchestrator ? orchestrator.list() : []));
+  // The three "update with base" steps. Each resolves the item from the live
+  // batch by commit — the project and branch come from the record, not from
+  // the renderer — and writes the outcome back through the orchestrator so
+  // it persists and every window sees it.
+  const landingItem = (orchestrationId: string, headSha: string) => {
+    const o = orchestrator?.get(orchestrationId);
+    const item = o?.items.find((i) => i.headSha === headSha);
+    return o && item ? { o, item } : null;
+  };
+  ipcMain.handle('workers:updateLanding', async (_e, { orchestrationId, headSha, baseBranch }) => {
+    const found = landingItem(orchestrationId, headSha);
+    if (!found) return { ok: false as const, error: 'That shift is no longer on record.' };
+    if (found.item.landingUpdate) return { ok: true as const, status: 'conflicts' as const, pending: found.item.landingUpdate };
+    const res = await startLandingUpdate({
+      projectPath: found.o.projectPath,
+      headSha,
+      baseBranch,
+      branchName: found.item.branchName,
+    });
+    if (res.ok && res.status === 'merged') {
+      orchestrator?.setLandingUpdate(orchestrationId, headSha, { landed: { headSha: res.headSha, branchName: res.branchName } });
+    } else if (res.ok) {
+      orchestrator?.setLandingUpdate(orchestrationId, headSha, { pending: res.pending });
+    }
+    return res;
+  });
+  ipcMain.handle('workers:finishLandingUpdate', async (_e, { orchestrationId, headSha, baseBranch }) => {
+    const found = landingItem(orchestrationId, headSha);
+    if (!found?.item.landingUpdate) return { ok: false as const, error: 'There is no update in progress for that shift.' };
+    const res = await finishLandingUpdate({ projectPath: found.o.projectPath, pending: found.item.landingUpdate, baseBranch });
+    if (res.ok) {
+      orchestrator?.setLandingUpdate(orchestrationId, headSha, { landed: { headSha: res.headSha, branchName: res.branchName } });
+    }
+    return res;
+  });
+  ipcMain.handle('workers:discardLandingUpdate', async (_e, { orchestrationId, headSha }) => {
+    const found = landingItem(orchestrationId, headSha);
+    if (!found?.item.landingUpdate) return { ok: true as const };
+    const res = await discardLandingUpdate({ projectPath: found.o.projectPath, pending: found.item.landingUpdate, headSha });
+    if (res.ok) orchestrator?.setLandingUpdate(orchestrationId, headSha, { clear: true });
+    return res;
+  });
   ipcMain.handle('workers:treasury', () =>
     workerEngine
       ? workerEngine.treasury()

@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
-import { auditWorkerLandings } from './strandedLandings';
+import { auditWorkerLandings, parseConflictFiles } from './strandedLandings';
 
 let root: string;
 let repo: string;
@@ -128,6 +128,7 @@ describe('auditWorkerLandings (real git)', () => {
   it('marks stranded work that no longer merges as conflicts', async () => {
     const audit = await auditWorkerLandings([workerBatch([item('conflict', { headSha: sha.conflict })])]);
     expect(audit.stranded.map((s) => [s.itemTitle, s.landability])).toEqual([['conflict', 'conflicts']]);
+    expect(audit.stranded[0].conflictFiles).toEqual(['shared.txt']);
   });
 
   it('counts cherry-picked work as absorbed, not stranded', async () => {
@@ -189,5 +190,12 @@ describe('auditWorkerLandings (real git)', () => {
     } finally {
       git(repo, 'checkout', '-q', 'master');
     }
+  });
+});
+
+describe('parseConflictFiles', () => {
+  it('reads the paths between the tree id and the blank line, once each', () => {
+    expect(parseConflictFiles('abc123\nf\ng\nf\n\nAuto-merging f\nCONFLICT (content): Merge conflict in f\n')).toEqual(['f', 'g']);
+    expect(parseConflictFiles('abc123\n')).toEqual([]);
   });
 });

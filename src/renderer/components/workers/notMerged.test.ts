@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { StrandedLanding } from '../../../shared/flows/landingAudit';
-import { landabilityLabel, notMergedRows, rebuildInstruction } from './notMerged';
+import { conflictSummary, landabilityLabel, notMergedRows, rebuildInstruction } from './notMerged';
 
 function landing(over: Partial<StrandedLanding>): StrandedLanding {
   return {
@@ -15,6 +15,7 @@ function landing(over: Partial<StrandedLanding>): StrandedLanding {
     projectPath: '/repo',
     baseBranch: 'master',
     landability: 'clean',
+    conflictFiles: [],
     baseAdvance: 2,
     branchResolves: true,
     ...over,
@@ -64,5 +65,18 @@ describe('rebuildInstruction', () => {
 
   it('leaves out a branch that no longer resolves', () => {
     expect(rebuildInstruction(landing({ branchName: 'gone', branchResolves: false }))).not.toContain('`gone`');
+  });
+});
+
+describe('conflict files', () => {
+  it('names them in the rebuild brief', () => {
+    expect(rebuildInstruction(landing({ landability: 'conflicts', conflictFiles: ['a.ts', 'b.ts'] }))).toContain(
+      'It conflicts in: `a.ts`, `b.ts`.',
+    );
+  });
+
+  it('summarises a long list', () => {
+    expect(conflictSummary(['a', 'b'])).toBe('a, b');
+    expect(conflictSummary(['a', 'b', 'c', 'd', 'e'])).toBe('a, b, c, +2 more');
   });
 });

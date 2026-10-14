@@ -5,6 +5,23 @@
 
 export type Landability = 'clean' | 'conflicts' | 'unknown';
 
+/// An "update with base" merge waiting in a worktree for its conflicts to be
+/// resolved. Stored on the orchestration item so it survives a restart — a
+/// half-merged worktree the app forgot about is exactly the kind of stranded
+/// work this feature exists to find.
+export interface PendingLandingUpdate {
+  branchName: string;
+  worktreePath: string;
+  conflictFiles: string[];
+  startedAt: number;
+}
+
+/// What "Update with base" did.
+export type LandingUpdateResult =
+  | { ok: true; status: 'merged'; branchName: string; headSha: string }
+  | { ok: true; status: 'conflicts'; pending: PendingLandingUpdate }
+  | { ok: false; error: string };
+
 export interface StrandedLanding {
   workerId: string;
   workerName: string;
@@ -23,6 +40,11 @@ export interface StrandedLanding {
   /// resolved per item and a reader should not have to guess.
   baseBranch: string;
   landability: Landability;
+  /// Paths that collide with base, when `landability` is `conflicts`.
+  conflictFiles: string[];
+  /// Set while an "update with base" merge is parked mid-conflict in its own
+  /// worktree, waiting for someone to resolve it. See main/flows/landingUpdate.
+  pendingUpdate?: PendingLandingUpdate;
   /// Commits base has gained since this work forked from it. A rough
   /// staleness measure; null when the merge-base could not be computed.
   baseAdvance: number | null;
