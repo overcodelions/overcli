@@ -41,6 +41,10 @@ describe('notMergedRows', () => {
     const rows = notMergedRows([landing({ workerId: 'w1' }), landing({ workerId: 'w2', itemTitle: 'other' })], 'w2');
     expect(rows.map((r) => r.itemTitle)).toEqual(['other']);
   });
+  it('fills in conflict files an older main process did not send', () => {
+    const stale = { ...landing({}), conflictFiles: undefined } as unknown as StrandedLanding;
+    expect(notMergedRows([stale], null)[0].conflictFiles).toEqual([]);
+  });
 });
 
 describe('landabilityLabel', () => {

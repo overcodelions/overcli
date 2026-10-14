@@ -7,11 +7,16 @@ import type { StrandedLanding } from '../../../shared/flows/landingAudit';
 /// The rows one inbox shows, in the order worth working through: work that
 /// still merges first (it can land today), then work that needs a rebuild,
 /// newest first within each.
+///
+/// The audit comes from the main process, which in dev can be older than this
+/// renderer (Vite reloads the renderer; main runs until restarted). Fields
+/// added since are filled in here, so a stale main shows fewer details instead
+/// of taking the whole window down.
 export function notMergedRows(stranded: StrandedLanding[], workerId: string | null): StrandedLanding[] {
   const rank = (s: StrandedLanding) => (s.landability === 'clean' ? 0 : s.landability === 'conflicts' ? 1 : 2);
   return stranded
     .filter((s) => !workerId || s.workerId === workerId)
-    .slice()
+    .map((s) => ({ ...s, conflictFiles: s.conflictFiles ?? [] }))
     .sort((a, b) => rank(a) - rank(b) || (b.finishedAt ?? 0) - (a.finishedAt ?? 0));
 }
 
