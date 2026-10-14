@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { StrandedLanding } from '../../../shared/flows/landingAudit';
-import { landabilityLabel, notMergedRows } from './notMerged';
+import { landabilityLabel, notMergedRows, rebuildInstruction } from './notMerged';
 
 function landing(over: Partial<StrandedLanding>): StrandedLanding {
   return {
     workerId: 'w1',
     workerName: 'Prometheus',
     orchestrationId: 'o1',
+    batchCreatedAt: 0,
     batchTitle: 'Shift',
     itemTitle: 'Work',
     headSha: 'a'.repeat(40),
@@ -46,5 +47,22 @@ describe('landabilityLabel', () => {
     expect(landabilityLabel(landing({})).text).toBe('merges cleanly');
     expect(landabilityLabel(landing({ landability: 'conflicts', baseAdvance: 1 })).hint).toContain('master has moved 1 commit since');
     expect(landabilityLabel(landing({ landability: 'unknown', baseAdvance: null })).hint).not.toContain('moved');
+  });
+});
+
+describe('rebuildInstruction', () => {
+  it('names the commit, base and branch, and forbids merging or pushing', () => {
+    const text = rebuildInstruction(
+      landing({ itemTitle: 'Add audit', landability: 'conflicts', branchName: 'prometheus/x', baseAdvance: 4 }),
+    );
+    expect(text).toContain('"Add audit"');
+    expect(text).toContain('a'.repeat(40));
+    expect(text).toContain('`prometheus/x`');
+    expect(text).toContain('gained 4 commits');
+    expect(text).toMatch(/Do not merge into `master` and do not push/);
+  });
+
+  it('leaves out a branch that no longer resolves', () => {
+    expect(rebuildInstruction(landing({ branchName: 'gone', branchResolves: false }))).not.toContain('`gone`');
   });
 });

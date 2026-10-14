@@ -26,3 +26,20 @@ export function landabilityLabel(s: StrandedLanding): { text: string; tone: 'cle
   }
   return { text: 'not checked', tone: 'unknown', hint: `Could not test-merge (needs git 2.38+).${behind}` };
 }
+
+/// The errand a conflicting row hands back to the worker that produced it.
+/// Written as a brief the worker can act on with no other context: which
+/// commit, where it sits, what changed underneath it, and where the line is —
+/// rebuild on a fresh branch and stop; merging into base stays a human call.
+export function rebuildInstruction(s: StrandedLanding): string {
+  const branch = s.branchName && s.branchResolves ? ` (branch \`${s.branchName}\`)` : '';
+  const moved =
+    s.baseAdvance == null ? '' : ` \`${s.baseBranch}\` has gained ${s.baseAdvance} commit${s.baseAdvance === 1 ? '' : 's'} since.`;
+  return [
+    `Your earlier shift work "${s.itemTitle}" — commit \`${s.headSha}\`${branch} in ${s.projectPath} — was never merged, and it no longer merges cleanly into \`${s.baseBranch}\`.${moved}`,
+    '',
+    `Rebuild it on top of the current \`${s.baseBranch}\`: start a fresh branch from \`${s.baseBranch}\`, cherry-pick \`${s.headSha.slice(0, 12)}\` and resolve the conflicts (or re-implement the change if \`${s.baseBranch}\` has moved too far for a cherry-pick to make sense), run the relevant tests, and commit.`,
+    '',
+    `Do not merge into \`${s.baseBranch}\` and do not push — leave the rebuilt branch for review, and say in your reply which branch it is on and what conflicted.`,
+  ].join('\n');
+}

@@ -10,6 +10,9 @@ export interface StrandedLanding {
   workerName: string;
   /// The batch the item belongs to, so a UI can link back to its shift.
   orchestrationId: string;
+  /// When that batch was created — the day the worker's desk files the turn
+  /// under, which is what "go to this shift" has to open on.
+  batchCreatedAt: number;
   batchTitle: string;
   itemTitle: string;
   headSha: string;

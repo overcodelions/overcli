@@ -148,6 +148,7 @@ export async function auditWorkerLandings(
         workerId,
         workerName,
         orchestrationId: o.id,
+        batchCreatedAt: o.createdAt,
         batchTitle: o.title,
         itemTitle: item.candidate.title,
         headSha,
