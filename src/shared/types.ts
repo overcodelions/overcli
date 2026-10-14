@@ -3,6 +3,7 @@
 // types so the JSON persistence shape stays compatible where it can.
 
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
+import type { TranscriptLevel } from './transcriptLevel';
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
 import type { LandingAudit, LandingUpdateResult } from './flows/landingAudit';
 import type { Schedule } from './flows/schedule';
@@ -192,6 +193,13 @@ export interface PermissionRequestInfo {
   /// True when requestedPath is outside the conversation's current set of
   /// allowed directories (cwd + projects + workspaces + prior grants).
   outsideAllowedDirs?: boolean;
+  /// What "Always allow" grants, as a Claude Code rule. Undefined: the
+  /// request predates the chat policy (or is a flow step's) — grant the
+  /// tool name. Null: this call shouldn't be remembered (a risky or
+  /// compound command), so the card offers Allow only.
+  alwaysAllowRule?: string | null;
+  /// Set when the call is one overcli always asks about. Shown on the card.
+  riskNote?: string;
 }
 
 export interface CodexApprovalInfo {
@@ -529,6 +537,9 @@ export interface Conversation {
   /// process (`paramsChanged` on cli, a fresh client on sdk) — which is
   /// what we want, since the extension attaches at startup.
   chrome?: boolean;
+  /// This conversation's transcript level, picked in the header. Undefined
+  /// follows `AppSettings.defaultTranscriptLevel`.
+  transcriptLevel?: TranscriptLevel;
   colosseumId?: UUID;
   workspaceAgentMemberIds?: UUID[];
   workspaceAgentCoordinatorId?: UUID;
@@ -1172,10 +1183,16 @@ export interface AppSettings {
   /// default: the drawer works on every platform and needs no permission to
   /// control another app.
   useSystemTerminal?: boolean;
-  /// Initial value for the chat's "show tool activity" toggle at app
-  /// launch. The toggle itself remains a per-session runtime flag so
-  /// users can flip it mid-conversation without touching Settings.
+  /// The pre-levels form of `defaultTranscriptLevel`: true was Detailed,
+  /// false Quiet. Still read when `defaultTranscriptLevel` is unset — see
+  /// `defaultTranscriptLevel()` in shared/transcriptLevel.ts.
   defaultShowToolActivity: boolean;
+  /// How much of an agent's work a conversation shows unless it picks its
+  /// own level in the header. Unset on settings saved before levels.
+  defaultTranscriptLevel?: TranscriptLevel;
+  /// The "see what it's doing? try Summary" hint under a running Quiet turn
+  /// was closed. It also stops once a level is picked anywhere.
+  transcriptHintDismissed?: boolean;
   autoDowngrade: boolean;
   /// Where to POST a copy of every notification, so scheduled runs and
   /// unattended workers can reach you when you are not at the desktop.
@@ -1481,6 +1498,9 @@ export interface IPCInvokeMap {
     /// Per-conversation Claude in Chrome override. Undefined defers to the
     /// global `claudeChrome` setting.
     chrome?: boolean;
+    /// Ask the model to say what it's about to do and what it did — set
+    /// for any output level above quiet. Claude only; spawn-time.
+    narrate?: boolean;
     codexRolloutPaths?: string[];
     attachments?: Attachment[];
     /// Reviewer ("rebound") config for this turn. When `reviewBackend` is
@@ -1532,6 +1552,8 @@ export interface IPCInvokeMap {
     /// Must match what the eventual send will ask for: `--chrome` is argv,
     /// so a mismatch makes `paramsChanged` discard the warm process.
     chrome?: boolean;
+    /// Same reason: the narration directive is in the system prompt.
+    narrate?: boolean;
     allowedDirs?: string[];
     claudeTransport?: 'cli' | 'sdk';
   }) => void;
@@ -1553,14 +1575,13 @@ export interface IPCInvokeMap {
     /// allowedDirs and respawn Claude with it on the next turn so the
     /// directory gate admits it.
     addDir?: string;
-    /// 'always' with approved=true marks the tool auto-approvable for
-    /// the rest of this conversation's subprocess lifetime. Future
-    /// permission requests for the same toolName resolve without
-    /// surfacing a prompt.
+    /// 'always' with approved=true remembers `rule` for this project:
+    /// matching requests resolve without surfacing a prompt.
     scope?: 'once' | 'always';
-    /// Paired with scope='always' so main knows which tool name to add
-    /// to the conversation's auto-approve set.
-    toolName?: string;
+    /// Paired with scope='always': the rule to remember — the card's
+    /// `alwaysAllowRule` (`Bash(npm test:*)`), or the tool name for
+    /// requests that don't carry one.
+    rule?: string;
   }) => void;
   'runner:respondCodexApproval': (args: {
     conversationId: UUID;

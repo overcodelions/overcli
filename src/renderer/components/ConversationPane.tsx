@@ -157,7 +157,7 @@ export function ConversationPane() {
         )}
         <ChatView conversationId={convId} />
         <div className="px-4 pb-3 pt-1 flex flex-col gap-1.5">
-          <RunningIndicator conversationId={convId} />
+          <RunningIndicator conversationId={convId} offerSummary />
           <ChangesBar
             files={gitStatus?.changes ?? []}
             branch={gitStatus?.currentBranch}

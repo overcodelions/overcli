@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { claudeBackend } from './claude';
+import { BATCHING_DIRECTIVE } from './turbo';
+import { NARRATION_DIRECTIVE } from '../../shared/transcriptLevel';
 import type { BackendCtx, BackendSendArgs } from './types';
 
 const baseArgs: BackendSendArgs = {
@@ -211,6 +213,31 @@ describe('claudeBackend.buildArgs', () => {
   it('omits --disallowedTools when unset or empty', () => {
     expect(claudeBackend.buildArgs(baseArgs, noMcpCtx)).not.toContain('--disallowedTools');
     expect(claudeBackend.buildArgs({ ...baseArgs, disallowedTools: [] }, noMcpCtx)).not.toContain('--disallowedTools');
+  });
+
+  it('passes ask rules as layered --settings so they beat an existing allow rule', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, askRules: ['Bash(git push:*)'] }, noMcpCtx);
+    const i = a.indexOf('--settings');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(JSON.parse(a[i + 1])).toEqual({ permissions: { ask: ['Bash(git push:*)'] } });
+  });
+
+  it('omits --settings when there are no ask rules', () => {
+    expect(claudeBackend.buildArgs(baseArgs, noMcpCtx)).not.toContain('--settings');
+  });
+});
+
+describe('claudeBackend narration', () => {
+  const systemPrompt = (a: string[]) => a[a.indexOf('--append-system-prompt') + 1];
+
+  it('appends the narration directive after the batching one when asked', () => {
+    const prompt = systemPrompt(claudeBackend.buildArgs({ ...baseArgs, narrate: true }, noMcpCtx));
+    expect(prompt.startsWith(BATCHING_DIRECTIVE)).toBe(true);
+    expect(prompt).toContain(NARRATION_DIRECTIVE);
+  });
+
+  it('leaves the system prompt alone at quiet', () => {
+    expect(systemPrompt(claudeBackend.buildArgs(baseArgs, noMcpCtx))).toBe(BATCHING_DIRECTIVE);
   });
 });
 

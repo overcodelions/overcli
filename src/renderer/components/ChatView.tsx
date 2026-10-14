@@ -19,7 +19,9 @@ import { SystemNotice } from './SystemNotice';
 import { MetaReminder } from './MetaReminder';
 import { TaskNotification } from './TaskNotification';
 import { EasterEggBubble } from './EasterEggBubble';
-import { useConversation } from '../hooks';
+import { useConversation, useTranscriptLevel } from '../hooks';
+import { TurnActivity, turnActivityByResult } from './TurnActivity';
+import type { TranscriptLevel } from '@shared/transcriptLevel';
 
 export function ChatView({
   conversationId,
@@ -48,7 +50,8 @@ export function ChatView({
   timelineContentKey?: string;
 }) {
   const runner = useRunner(conversationId);
-  const showToolActivity = useStore((s) => s.showToolActivity);
+  const level = useTranscriptLevel(conversationId);
+  const showToolActivity = level === 'detailed';
   const events = runner?.events ?? [];
   const isRunning = runner?.isRunning ?? false;
   const error = runner?.errorMessage;
@@ -63,9 +66,15 @@ export function ChatView({
 
   const toolUseIndex = useMemo(() => indexToolUses(events), [events]);
   const toolResultIndex = useMemo(() => indexToolResults(events), [events]);
+  // Summary's per-turn activity line rides on the turn's closing `result`
+  // row. Built only at that level so the other two pay nothing for it.
+  const activityByResult = useMemo(
+    () => (level === 'summary' ? turnActivityByResult(events) : EMPTY_ACTIVITY),
+    [events, level],
+  );
   const visibleEvents = useMemo(
-    () => filterRendered(events, showToolActivity, toolUseIndex, toolResultIndex),
-    [events, showToolActivity, toolUseIndex, toolResultIndex],
+    () => filterRendered(events, level, toolUseIndex, toolResultIndex, activityByResult),
+    [events, level, toolUseIndex, toolResultIndex, activityByResult],
   );
   // Verdict + intermediate sets. The server marks exactly one event
   // per round as `reviewer.verdict: true` at turn/completed — that's
@@ -289,6 +298,7 @@ export function ChatView({
                 endorsementTint={reviewerTint}
                 reviewerCompact={isIntermediate}
                 reviewerTint={reviewerTint}
+                activity={activityByResult.get(event.id)}
               />
               {renderAfterEvent?.(event)}
             </>
@@ -341,6 +351,8 @@ type EventRowProps = {
   /// stay full-chrome regardless of this flag.
   reviewerCompact?: boolean;
   reviewerTint?: string;
+  /// Summary level only: the closed turn's tool calls, for a `result` row.
+  activity?: ToolUseBlock[];
 };
 
 /// Only `assistant` and `toolResult` rows look up their props' indices
@@ -359,6 +371,7 @@ const EventRow = memo(function EventRow({
   endorsementTint,
   reviewerCompact,
   reviewerTint,
+  activity,
 }: EventRowProps) {
   switch (event.kind.type) {
     case 'localUser':
@@ -379,7 +392,14 @@ const EventRow = memo(function EventRow({
     case 'toolResult':
       return <ToolResultCard results={event.kind.results} toolUseIndex={toolUseIndex} />;
     case 'result':
-      return <TurnCaption info={event.kind.info} />;
+      return (
+        <>
+          {activity && (
+            <TurnActivity uses={activity} toolResultIndex={toolResultIndex} conversationId={conversationId} />
+          )}
+          <TurnCaption info={event.kind.info} />
+        </>
+      );
     case 'permissionRequest':
       // ExitPlanMode is gated through the broker like any other tool, but
       // its plan + Approve/Deny live on the ExitPlanMode tool_use card
@@ -419,6 +439,9 @@ function areEventRowPropsEqual(prev: EventRowProps, next: EventRowProps): boolea
   if (prev.endorsementTint !== next.endorsementTint) return false;
   if (prev.reviewerCompact !== next.reviewerCompact) return false;
   if (prev.reviewerTint !== next.reviewerTint) return false;
+  // A closed turn's calls are final, so element identity is enough — and it
+  // keeps old result rows memoized while a new turn streams.
+  if (!sameUses(prev.activity, next.activity)) return false;
   const t = next.event.kind.type;
   if (t === 'assistant' || t === 'toolResult') {
     if (prev.toolUseIndex !== next.toolUseIndex) return false;
@@ -426,6 +449,14 @@ function areEventRowPropsEqual(prev: EventRowProps, next: EventRowProps): boolea
   }
   return true;
 }
+
+function sameUses(a: ToolUseBlock[] | undefined, b: ToolUseBlock[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((u, i) => u === b[i]);
+}
+
+const EMPTY_ACTIVITY = new Map<string, ToolUseBlock[]>();
 
 function ReviewerStepLine({ text, tint }: { text: string; tint: string }) {
   // Compact "process step" rendering for non-verdict reviewer assistant
@@ -847,12 +878,14 @@ const CONFIRMATION_TOOLS = new Set([
   'Bash',
 ]);
 
-function filterRendered(
+export function filterRendered(
   events: StreamEvent[],
-  showToolActivity: boolean,
+  level: TranscriptLevel,
   toolUseIndex: Map<string, ToolUseBlock>,
   toolResultIndex: Map<string, ToolResultBlock>,
+  activityByResult: Map<string, ToolUseBlock[]> = EMPTY_ACTIVITY,
 ): StreamEvent[] {
+  const showToolActivity = level === 'detailed';
   const keep = events.map((e) => {
     const t = e.kind.type;
     if (
@@ -934,7 +967,9 @@ function filterRendered(
           break;
         }
       }
-      if (!hasVisiblePeer) keep[i] = false;
+      // At Summary a turn that only used tools still has something to say:
+      // its activity line lives on this row.
+      if (!hasVisiblePeer && !activityByResult.get(ev.id)?.length) keep[i] = false;
       turnStart = i + 1;
     }
   }

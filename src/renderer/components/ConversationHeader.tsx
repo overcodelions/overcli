@@ -32,7 +32,8 @@ import { pathBasename } from '@shared/workspaceNames';
 import { effortForBackend } from '@shared/effort';
 import { latestAtTier, PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
 import { backendColor, backendName, shortModel } from '../theme';
-import { useConversation, useConversationRoot } from '../hooks';
+import { useConversation, useConversationRoot, useTranscriptLevel } from '../hooks';
+import { TRANSCRIPT_LEVELS, type TranscriptLevel } from '@shared/transcriptLevel';
 import { findOwningProjectPath } from '../diff-utils';
 import { CommitButton } from './CommitButton';
 import {
@@ -61,7 +62,6 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     settings,
     projects,
     workspaces,
-    showToolActivity,
     explorerRootPath,
     openExplorer,
     closeExplorer,
@@ -83,7 +83,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     removeAgent,
     resetConversation,
     openSheet,
-    toggleToolActivity,
+    setTranscriptLevel,
     send,
   } = useStore(
     useShallow((s) => ({
@@ -92,7 +92,6 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       settings: s.settings,
       projects: s.projects,
       workspaces: s.workspaces,
-      showToolActivity: s.showToolActivity,
       explorerRootPath: s.explorerRootPath,
       openExplorer: s.openExplorer,
       closeExplorer: s.closeExplorer,
@@ -114,7 +113,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       removeAgent: s.removeAgent,
       resetConversation: s.resetConversation,
       openSheet: s.openSheet,
-      toggleToolActivity: s.toggleToolActivity,
+      setTranscriptLevel: s.setTranscriptLevel,
       send: s.send,
     })),
   );
@@ -136,6 +135,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     else if (convRoot) openExplorer(convRoot);
   };
   const runnerModel = useRunnerCurrentModel(conversationId);
+  const transcriptLevel = useTranscriptLevel(conversationId);
   const {
     runtimeMode: codexRuntimeMode,
     sandboxMode: codexSandboxMode,
@@ -410,13 +410,18 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           />
         )}
 
-        <IconButton
-          active={showToolActivity}
-          onClick={toggleToolActivity}
-          title={showToolActivity ? 'Hide tool activity' : 'Show tool activity'}
-        >
-          {showToolActivity ? <EyeIcon /> : <EyeOffIcon />}
-        </IconButton>
+        <IconPicker
+          icon={transcriptLevel === 'quiet' ? <EyeOffIcon /> : <EyeIcon />}
+          label={`Detail: ${TRANSCRIPT_LEVELS.find((l) => l.value === transcriptLevel)?.label ?? ''}`}
+          iconOnly
+          items={TRANSCRIPT_LEVELS.map((l) => ({
+            value: l.value,
+            label: l.label,
+            description: l.help,
+            note: l.value === transcriptLevel ? 'current' : undefined,
+          }))}
+          onPick={(v) => void setTranscriptLevel(conversationId, v as TranscriptLevel)}
+        />
 
         <IconButton
           active={explorerOpen}

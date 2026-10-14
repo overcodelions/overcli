@@ -28,6 +28,10 @@ export interface BackendSendArgs {
   allowedTools?: string[];
   /// claude: `--disallowedTools`. Undefined/empty = none.
   disallowedTools?: string[];
+  /// claude: `ask` permission rules, passed as `--settings`. An ask rule
+  /// beats an allow rule, so these get a card even when settings.json
+  /// already allows the tool. Undefined/empty = none.
+  askRules?: string[];
   /// When true, launch the CLI with MCP debug logging (claude: `--debug mcp`).
   /// Surfaces MCP server startup/registration diagnostics on stderr, which the
   /// runner forwards to the Debug viewer. Honored by the claude backend.
@@ -35,6 +39,8 @@ export interface BackendSendArgs {
   /// When true, launch the CLI with `--chrome` so the session attaches to
   /// the Claude in Chrome extension. Honored by the claude backend.
   chrome?: boolean;
+  /// Append the narration directive to the system prompt. Claude only.
+  narrate?: boolean;
   /// Let the turn reach the network from inside the CLI's own sandbox.
   /// Honored by codex, whose workspace-write sandbox is offline by default —
   /// so a worker told to read a website failed every fetch. This is codex's
