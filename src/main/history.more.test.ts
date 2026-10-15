@@ -8,6 +8,7 @@ import {
   normalizeSigText,
   numberOrZero,
   parseClaudeHistoryLine,
+  dedupeClaudeUsageResults,
   parseCodexHistoryLine,
 } from './history';
 import type { StreamEvent } from '../shared/types';
@@ -445,5 +446,34 @@ describe('dedupeCodexEvents', () => {
       kind: { type: 'systemNotice', text: 'bump' } as any,
     };
     expect(dedupeCodexEvents([sysNotice, sysNotice])).toHaveLength(2);
+  });
+});
+
+describe('dedupeClaudeUsageResults', () => {
+  // One API response written as two JSONL lines (text, then a tool call),
+  // each repeating the message's usage.
+  const line = (id: string, block: unknown) =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: 1000,
+      message: { id, model: 'claude-opus-5-5', content: [block], usage: { input_tokens: 2, output_tokens: 3186 } },
+    });
+
+  it("keeps one caption per message, after the message's last line", () => {
+    const events = [
+      ...parseClaudeHistoryLine(line('msg_1', { type: 'text', text: 'Updating the tests:' })),
+      ...parseClaudeHistoryLine(line('msg_1', { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } })),
+      ...parseClaudeHistoryLine(line('msg_2', { type: 'text', text: 'Done.' })),
+    ];
+    const kinds = dedupeClaudeUsageResults(events).map((e) => e.kind.type);
+    expect(kinds).toEqual(['assistant', 'assistant', 'result', 'assistant', 'result']);
+  });
+
+  it('leaves results without a message id alone', () => {
+    const events = [
+      ...parseClaudeHistoryLine(line('', { type: 'text', text: 'a' })),
+      ...parseClaudeHistoryLine(line('', { type: 'text', text: 'b' })),
+    ];
+    expect(dedupeClaudeUsageResults(events).filter((e) => e.kind.type === 'result')).toHaveLength(2);
   });
 });
