@@ -19,6 +19,12 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
   // document, and a DesignSync plan is a path list. Summarize the part that
   // decides the answer and keep the JSON underneath.
   const outbound = outboundSummary(info.toolName, info.toolInput);
+  // A shell command or a file path says what the call does in one line;
+  // the JSON around it is mostly noise, so it folds away under the summary.
+  const action = actionSummary(info.toolName, info.toolInput);
+  // Undefined: a request from before the chat policy, or a flow step's —
+  // remember the tool name as before. Null: nothing safe to remember.
+  const rule = info.alwaysAllowRule === undefined ? info.toolName : info.alwaysAllowRule;
   return (
     <div className="rounded-lg border border-blue-500/30 bg-blue-500/8 px-3 py-2 text-xs">
       <div className="flex items-center gap-2 text-blue-400 font-medium">
@@ -38,6 +44,19 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
         </div>
       )}
       {info.description && <div className="mt-1 text-ink-muted">{info.description}</div>}
+      {info.riskNote && !decided && (
+        <div className="mt-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-200">
+          {info.riskNote}
+        </div>
+      )}
+      {action && (
+        <div className="mt-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-ink-faint">{action.label}</div>
+          <pre className="mt-0.5 text-[11px] font-mono bg-black/30 rounded px-2 py-1 whitespace-pre-wrap break-all select-text">
+            {action.value}
+          </pre>
+        </div>
+      )}
       {outbound && (
         <div className="mt-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
           <div className="text-[11px] font-medium text-amber-700 dark:text-amber-200">
@@ -53,10 +72,18 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
           </dl>
         </div>
       )}
-      {info.toolInput && showToolInput && (
+      {info.toolInput && showToolInput && !action && (
         <pre className="mt-1 text-[11px] font-mono bg-black/30 rounded px-2 py-1 overflow-x-auto select-text">
           {info.toolInput}
         </pre>
+      )}
+      {info.toolInput && showToolInput && action && (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-[10px] text-ink-faint">Full request</summary>
+          <pre className="mt-1 text-[11px] font-mono bg-black/30 rounded px-2 py-1 overflow-x-auto select-text">
+            {info.toolInput}
+          </pre>
+        </details>
       )}
       {canAddDir && addDirTarget && (
         <div className="mt-1 text-[11px] text-amber-300">
@@ -71,15 +98,15 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
           >
             Allow
           </button>
-          <button
-            onClick={() =>
-              void respond(conversationId, info.requestId, true, undefined, 'always', info.toolName)
-            }
-            className="px-3 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 border border-accent/40"
-            title={`Auto-approve ${info.toolName} for the rest of this session`}
-          >
-            Always allow
-          </button>
+          {rule && (
+            <button
+              onClick={() => void respond(conversationId, info.requestId, true, undefined, 'always', rule)}
+              className="px-3 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 border border-accent/40"
+              title={`Remembered for this project as ${rule}`}
+            >
+              {alwaysAllowLabel(rule)}
+            </button>
+          )}
           {canAddDir && addDirTarget && (
             <button
               onClick={() => void respond(conversationId, info.requestId, true, addDirTarget)}
@@ -98,6 +125,34 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
       )}
     </div>
   );
+}
+
+/// The button text for a remembered rule, in the user's terms rather than
+/// Claude Code's rule syntax.
+export function alwaysAllowLabel(rule: string): string {
+  const m = /^(\w+)\((.*)\)$/.exec(rule);
+  if (!m) return `Always allow ${rule}`;
+  const [, tool, body] = m;
+  if (tool === 'Bash') return `Always allow ${body.replace(/:\*$/, '')}`;
+  if (tool === 'WebFetch' && body.startsWith('domain:')) return `Always allow ${body.slice(7)}`;
+  return `Always allow ${rule}`;
+}
+
+/// One line that says what a local call does: the command it runs or the
+/// file it changes. Null for everything else, which keeps the raw JSON.
+export function actionSummary(toolName: string, toolInput?: string): { label: string; value: string } | null {
+  let input: any;
+  try {
+    input = JSON.parse(toolInput ?? '');
+  } catch {
+    return null;
+  }
+  if (toolName === 'Bash' && typeof input?.command === 'string') return { label: 'Runs', value: input.command };
+  const file = input?.file_path ?? input?.notebook_path;
+  if (typeof file !== 'string') return null;
+  if (toolName === 'Write') return { label: 'Writes', value: file };
+  if (toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') return { label: 'Edits', value: file };
+  return null;
 }
 
 interface OutboundSummary {

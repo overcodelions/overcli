@@ -8,6 +8,7 @@ import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from '../pa
 import { normalizeAllowedDirs } from '../permissionRules';
 import type { BackendCtx, BackendSendArgs, BackendSpec, ParseChunkResult } from './types';
 import { BATCHING_DIRECTIVE } from './turbo';
+import { NARRATION_DIRECTIVE } from '../../shared/transcriptLevel';
 
 interface ClaudeStreamState {
   /// Partial line carried from the previous chunk — claude emits
@@ -82,7 +83,7 @@ export const claudeBackend: BackendSpec = {
     // in answer quality, so there is no reason to make the user opt in. Safe
     // as argv precisely because it never varies — `paramsChanged` can't see
     // a value that is the same on every spawn, so this forces no respawns.
-    a.push('--append-system-prompt', BATCHING_DIRECTIVE);
+    a.push('--append-system-prompt', args.narrate ? `${BATCHING_DIRECTIVE}\n\n${NARRATION_DIRECTIVE}` : BATCHING_DIRECTIVE);
     for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
       a.push('--add-dir', dir);
     }
@@ -90,6 +91,8 @@ export const claudeBackend: BackendSpec = {
       a.push('--allowedTools', args.allowedTools.join(' '));
     }
     if (args.disallowedTools?.length) a.push('--disallowedTools', args.disallowedTools.join(' '));
+    // Layered on top of the user's own settings files, not instead of them.
+    if (args.askRules?.length) a.push('--settings', JSON.stringify({ permissions: { ask: args.askRules } }));
     return a;
   },
 

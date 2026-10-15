@@ -474,7 +474,13 @@ export const FileEditorPane = memo(function FileEditorPane({
   // Whether this file has a diff at all — known synchronously, from the path
   // alone (see resolveDiffTarget). The Diff tab is hidden when it doesn't, so
   // the tab is never a click that leads to a git error.
-  const diffable = !!diffTarget;
+  // A folder that isn't a git work tree has nothing to diff against. Worse,
+  // outside a repo `git diff HEAD -- f` silently becomes a plain two-path
+  // diff and fails with "Could not access 'HEAD'" — so a link that asked for
+  // the diff of, say, a flow's coordinator file showed only that error.
+  // Remembered per folder; such files open in their normal view instead.
+  const [noRepoCwd, setNoRepoCwd] = useState<string | null>(null);
+  const diffable = !!diffTarget && noRepoCwd !== diffTarget.cwd;
   const quiet = mode !== 'diff' && !missingFile;
   useEffect(() => {
     // A missing file has no readable content, so we fetch its diff whatever
@@ -506,6 +512,17 @@ export const FileEditorPane = memo(function FileEditorPane({
     }
     setDiffUntracked(false);
     (async () => {
+      const repo = await window.overcli.invoke('git:run', {
+        args: ['rev-parse', '--is-inside-work-tree'],
+        cwd: diffTarget.cwd,
+      });
+      if (repo.exitCode !== 0 || repo.stdout?.trim() !== 'true') {
+        setNoRepoCwd(diffTarget.cwd);
+        setDiffText('');
+        // Asked for the diff: show the file the way it reads best instead.
+        if (!quiet && !missingFile) setMode(previewable ? 'preview' : 'edit');
+        return;
+      }
       // Agents commit as they go, so `HEAD` already includes their
       // edits — diffing HEAD returns empty and the no-index fallback
       // then shows the whole file as added (all green). When we know
@@ -603,7 +620,7 @@ export const FileEditorPane = memo(function FileEditorPane({
       .finally(() => {
         if (!quiet) setLoading(false);
       });
-  }, [path, mode, quiet, diffTarget, unsupportedBinary, fileInfo, missingFile, refreshToken, diffToken]);
+  }, [path, mode, quiet, diffTarget, unsupportedBinary, fileInfo, missingFile, refreshToken, diffToken, previewable, setMode]);
 
   /// Lines the run touched, in the open document's numbering. The gutter
   /// marks are advisory — a stale or empty diff simply means no bars.

@@ -5,6 +5,11 @@ import { SlashCommandEntry } from './components/Composer';
 import { findConversation, findContainerPath } from './conversationLookup';
 import { useRunnerEvents } from './runnersStore';
 import { backendFromModel } from './theme';
+import {
+  conversationTranscriptLevel,
+  defaultTranscriptLevel,
+  type TranscriptLevel,
+} from '@shared/transcriptLevel';
 
 /// Memoized lookup of a conversation anywhere in the store. Recomputes
 /// only when the underlying projects/workspaces arrays change — cheap
@@ -12,6 +17,15 @@ import { backendFromModel } from './theme';
 /// reference when nothing touched the parent arrays.
 export function useConversation(id: UUID | null | undefined): Conversation | null {
   return useStore((s) => (id ? findConversation(s, id) : null));
+}
+
+/// How much of the agent's work this conversation's transcript shows: its
+/// own pick from the header, else the Settings default. A conversation the
+/// store can't find (a drawer with no owner) follows the default.
+export function useTranscriptLevel(id: UUID | null | undefined): TranscriptLevel {
+  return useStore((s) =>
+    conversationTranscriptLevel(id ? findConversation(s, id) : null, defaultTranscriptLevel(s.settings)),
+  );
 }
 
 /// Union of slash commands exposed to the given backend: the filesystem

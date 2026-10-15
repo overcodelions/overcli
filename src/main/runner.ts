@@ -15,6 +15,7 @@ import { host, runningUnderElectron } from './host';
 import {
   Backend,
   PermissionMode,
+  PermissionRequestInfo,
   EffortLevel,
   PersonaKey,
   StreamEvent,
@@ -66,6 +67,7 @@ import {
 import {
   OllamaChatMessage,
   detectOllama,
+  ollamaServer,
 } from './ollama';
 import {
   OLLAMA_BUILTIN_TOOLS,
@@ -92,12 +94,14 @@ import {
   isInsideAllowedDirs,
   normalizeAllowedDirs,
 } from './permissionRules';
+import { alwaysAllowRule, decideBeforeAsking, riskNote, riskyAskRules } from './permissionPolicy';
 import { summarizeToolUse } from './toolDescription';
 import { CommandChangeTracker } from './commandFileChanges';
 import { collapsePartialAssistants } from './streamSnapshot';
 import { getBackendSpec } from './backends';
 import { codexExecSnapshotText } from './backends/codex';
 import { withBatchingDirective, resolveTurboEffort } from './backends/turbo';
+import { NARRATION_DIRECTIVE } from '../shared/transcriptLevel';
 import {
   BROKER_LAUNCH_PARAM_KEYS,
   LaunchParams,
@@ -708,6 +712,21 @@ export function hijackWouldCancelFlowStep(
   return !!session.inFlight && !!session.flowStepInFlight && !send.flowStep;
 }
 
+/// Claude Code `ask` rules for a chat turn: the risky commands that must
+/// get a card even past an allow rule already in the user's settings.json.
+/// Not in bypass mode — that mode is the user saying "don't ask" — and not
+/// for unattended sends, where nobody would see the card.
+export function chatAskRules(args: Pick<SendArgs, 'interactive' | 'backend' | 'permissionMode'>): string[] | undefined {
+  if (!args.interactive || args.backend !== 'claude' || args.permissionMode === 'bypassPermissions') return undefined;
+  return riskyAskRules();
+}
+
+/// Narration is Claude-only: it's a system-prompt addition, and the other
+/// backends have nowhere equivalent to put it.
+function narrateFor(args: Pick<SendArgs, 'backend' | 'narrate'>): boolean {
+  return args.backend === 'claude' && !!args.narrate;
+}
+
 interface SendArgs {
   conversationId: UUID;
   prompt: string;
@@ -721,6 +740,12 @@ interface SendArgs {
   /// own turn from a user hijack typed into the run pane's composer, so the
   /// hijack can be refused rather than aborting the step.
   flowStep?: boolean;
+  /// Set at the IPC boundary for sends that come from the app's own
+  /// composer, where a person is watching. Turns on the chat permission
+  /// policy (see permissionPolicy.ts): reads go through without a card,
+  /// risky commands always get one. Flow steps, watches and hidden one-shots
+  /// leave it unset and keep the name-only behaviour they're built around.
+  interactive?: boolean;
   /// Run the backend CLI inside an OS write jail (macOS Seatbelt) that only
   /// lets it write its cwd, the repo's git dir, temp dirs, the extra
   /// `allowedDirs` and the CLI's own state dirs. Set by the flow runtime on
@@ -733,6 +758,9 @@ interface SendArgs {
   /// Per-send Claude in Chrome override. Undefined defers to the global
   /// `claudeChrome` setting; the renderer sets it from `conversation.chrome`.
   chrome?: boolean;
+  /// Append the narration directive to Claude's system prompt. Set by the
+  /// renderer for output levels above quiet. See shared/transcriptLevel.ts.
+  narrate?: boolean;
   /// See the note on `oneShot`'s `skipGlobalMcp`.
   skipGlobalMcp?: boolean;
   /// See the note on `oneShot`'s `mcpAllowlist`.
@@ -799,6 +827,9 @@ interface ActiveProcess {
   /// header picker flips, the next turn reuses the resident process, and
   /// the browser tools never appear even though the UI says they should.
   launchChrome: boolean;
+  /// Whether this process was launched with the narration directive in its
+  /// system prompt. Changing the conversation's output level respawns.
+  launchNarrate: boolean;
   /// Whether codex was given network access (`networkFor`). The exec
   /// transport bakes it into argv, so a toggle must respawn; app-server
   /// takes it per turn and hot-swaps like the permission mode does.
@@ -895,11 +926,13 @@ interface ActiveProcess {
   /// Used by handleClaudeApproval to decide whether a requested path is
   /// already inside the session's scope.
   allowedDirs: string[];
-  /// Tool names the user "always allowed" during this subprocess's life.
-  /// The settings.json write takes effect on the NEXT spawn; this set
-  /// covers the narrower case where Claude re-invokes the same tool later
-  /// in the current turn.
+  /// Rules the user "always allowed" during this subprocess's life — a
+  /// tool name, or a scoped rule like `Bash(npm test:*)`. The settings.json
+  /// write takes effect on the NEXT spawn; this set covers the narrower case
+  /// where Claude re-invokes the same tool later in the current turn.
   sessionAllowedTools: Set<string>;
+  /// Whether the chat permission policy applies. See SendArgs.interactive.
+  guarded: boolean;
   /// Opaque per-backend parser state, owned by the spec via
   /// `BackendSpec.makeParserState()`. The runner only stores it; the
   /// spec's `parseChunk` reads/writes it. Backends that haven't been
@@ -1664,8 +1697,10 @@ export class RunnerManager {
       allowedDirs: args.allowedDirs,
       allowedTools: args.backend === 'ollama' ? undefined : args.enabledTools,
       disallowedTools: mcpBlockedTools(args),
+      askRules: chatAskRules(args),
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
       chrome: this.chromeFor(args),
+      narrate: narrateFor(args),
       networkAccess: this.networkFor(args),
       turbo: args.turbo ?? false,
       ...resolveMcpScope(args),
@@ -1701,7 +1736,7 @@ export class RunnerManager {
       });
       return;
     }
-    if (active.sessionAllowedTools.has(req.toolName)) {
+    if (decideBeforeAsking(req.toolName, req.toolInput, active.sessionAllowedTools, active.guarded) === 'allow') {
       this.claudeBroker.resolve(req.conversationId, req.requestId, {
         behavior: 'allow',
         updatedInput: req.toolInput,
@@ -1754,12 +1789,28 @@ export class RunnerManager {
               toolInput: toolInputStr,
               requestedPath: requestedPath ?? undefined,
               outsideAllowedDirs: outsideAllowedDirs || undefined,
+              ...this.permissionHints(active, req.toolName, req.toolInput),
             },
           },
           revision: 0,
         },
       ],
     });
+  }
+
+  /// What the card offers beyond Allow/Deny: the rule "Always allow" would
+  /// write, and why a risky call is being asked about. Flow-step cards keep
+  /// the old name-only grant.
+  private permissionHints(
+    active: ActiveProcess,
+    toolName: string,
+    input: unknown,
+  ): Pick<PermissionRequestInfo, 'alwaysAllowRule' | 'riskNote'> {
+    if (!active.guarded) return {};
+    return {
+      alwaysAllowRule: alwaysAllowRule(toolName, input),
+      riskNote: riskNote(toolName, input) ?? undefined,
+    };
   }
 
   /// Ensure the Claude subprocess we're about to spawn has a registered
@@ -1920,6 +1971,7 @@ export class RunnerManager {
       collabRoundsInBurst: 0,
       allowedDirs,
       sessionAllowedTools: new Set(),
+      guarded: !!args.interactive,
       parserState: getBackendSpec('claude').makeParserState?.(),
       claudeTransport: 'sdk',
     };
@@ -1931,10 +1983,12 @@ export class RunnerManager {
       resumeSessionId: args.sessionId,
       effortLevel: args.effortLevel,
       canUseTool: this.buildClaudeSdkCanUseTool(convId),
+      askRules: chatAskRules(args),
       // Same resolution the cli transport does in `toBackendArgs`. Both
       // paths spawn the same binary, so the gate has to be opened on each
       // or Claude in Chrome works on one transport and not the other.
       chrome: this.chromeFor(args),
+      appendSystemPrompt: narrateFor(args) ? NARRATION_DIRECTIVE : undefined,
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.
@@ -2000,7 +2054,7 @@ export class RunnerManager {
       if (!active) {
         return { behavior: 'deny', message: 'no active overcli session' };
       }
-      if (active.sessionAllowedTools.has(toolName)) {
+      if (decideBeforeAsking(toolName, input, active.sessionAllowedTools, active.guarded) === 'allow') {
         return { behavior: 'allow', updatedInput: input };
       }
       // AskUserQuestion carries its own in-card answer UI and is not a
@@ -2037,6 +2091,7 @@ export class RunnerManager {
                   toolInput: toolInputStr,
                   requestedPath: requestedPath ?? undefined,
                   outsideAllowedDirs: outsideAllowedDirs || undefined,
+                  ...this.permissionHints(active, toolName, input),
                 },
               },
               revision: 0,
@@ -2301,7 +2356,7 @@ export class RunnerManager {
     approved: boolean,
     addDir?: string,
     scope?: 'once' | 'always',
-    toolName?: string,
+    rule?: string,
   ): void {
     const gemini = this.geminiAcpSessions.get(conversationId);
     if (gemini) {
@@ -2318,11 +2373,13 @@ export class RunnerManager {
     // in <cwd>/.claude/settings.json. Claude Code reads that on every spawn
     // and auto-allows matching tools without calling our permission-prompt-
     // tool, so the grant survives subprocess restarts and is shared across
-    // every conversation rooted at the same project directory.
-    if (approved && scope === 'always' && toolName) {
-      active.sessionAllowedTools.add(toolName);
+    // every conversation rooted at the same project directory. The rule is
+    // the one the card showed (`Bash(npm test:*)`, not `Bash`) — see
+    // alwaysAllowRule.
+    if (approved && scope === 'always' && rule) {
+      active.sessionAllowedTools.add(rule);
       try {
-        appendClaudeAllowRule(active.cwd, toolName);
+        appendClaudeAllowRule(active.cwd, rule);
       } catch (err) {
         log('warn', 'runner.persistAllowRule', 'failed to persist always-allow rule', err);
       }
@@ -2832,6 +2889,14 @@ export class RunnerManager {
 
     const driveLoop = async () => {
       const messageCountBefore = session!.messages.length;
+      // Picking a local model is the on switch: bring the server up here
+      // instead of making the user find a Start button. If it can't start,
+      // the turn fails below with the usual "can't reach Ollama" message.
+      if (ollamaServer.getStatus() !== 'running') {
+        this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Starting Ollama…' });
+        await ollamaServer.ensureRunning();
+        this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
+      }
       // Resolve the tool protocol BEFORE building the prompt: the prompt and
       // the wire must agree on which one is in play, or the model renders our
       // text format using its own control tokens and corrupts the JSON (see
@@ -3864,6 +3929,7 @@ export class RunnerManager {
       collabRoundsInBurst: 0,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
+      guarded: !!args.interactive,
       lastActivityAt: Date.now(),
       parserState: getBackendSpec(args.backend).makeParserState?.({ codexMode }),
     };
@@ -4467,6 +4533,7 @@ export class RunnerManager {
       collabRoundsInBurst: 0,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
+      guarded: !!args.interactive,
       // app-server takes its own transport; parserState exists only for
       // the inline handleStdout path (which app-server never reaches).
       parserState: undefined,
@@ -4832,6 +4899,7 @@ export class RunnerManager {
       launchTurbo: args.turbo ?? false,
       launchArtifacts: this.artifactsFor(args.backend),
       launchChrome: this.chromeFor(args),
+      launchNarrate: narrateFor(args),
       launchNetwork: this.networkFor(args),
       launchEffort: effortLevel,
       launchSandbox: shouldSandboxSpawn(args),

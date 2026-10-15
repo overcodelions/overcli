@@ -130,8 +130,9 @@ export function ConversationPane() {
   const editorVisible = explorerOpen || (!!openFilePath && !subagentDrawerOpen);
   const convBackend = conv?.primaryBackend;
   const isOllamaConv = convBackend === 'ollama';
-  const showOllamaWarning =
-    isOllamaConv && ollamaServerStatus !== 'running' && ollamaServerStatus !== 'starting';
+  // Sends start the server on their own, so a stopped server needs no
+  // banner — only a failed start does.
+  const showOllamaWarning = isOllamaConv && ollamaServerStatus === 'error';
   const showAuthBanner =
     !!convBackend &&
     convBackend !== 'ollama' &&
@@ -215,7 +216,7 @@ function OllamaServerDownBanner({
   const [starting, setStarting] = useState(false);
   const label =
     status === 'error'
-      ? 'Ollama server errored — check the Local tab for details.'
+      ? 'Ollama server couldn\'t start — check Local models for details.'
       : 'Ollama server isn\'t running. Start it to send messages.';
   return (
     <div className="mx-4 mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200 flex items-center gap-3">
@@ -232,13 +233,13 @@ function OllamaServerDownBanner({
         disabled={starting}
         className="px-2 py-1 rounded border border-amber-400/50 text-amber-800 dark:text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
       >
-        {starting ? 'Starting…' : 'Start server'}
+        {starting ? 'Starting…' : 'Try again'}
       </button>
       <button
         onClick={onOpenLocalTab}
         className="px-2 py-1 rounded text-amber-700/70 dark:text-amber-200/70 hover:text-amber-900 dark:hover:text-amber-100"
       >
-        Open Local tab
+        Open Local models
       </button>
     </div>
   );

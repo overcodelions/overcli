@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { outboundSummary } from './PermissionCard';
+import { actionSummary, alwaysAllowLabel, outboundSummary } from './PermissionCard';
 
 describe('Artifact permission summaries', () => {
   it.each([
@@ -31,5 +31,26 @@ describe('Artifact permission summaries', () => {
       '/tmp/style.css',
       '/tmp/assets',
     ]);
+  });
+});
+
+describe('alwaysAllowLabel', () => {
+  it('reads a rule in plain terms', () => {
+    expect(alwaysAllowLabel('Bash(npm test:*)')).toBe('Always allow npm test');
+    expect(alwaysAllowLabel('WebFetch(domain:docs.example.com)')).toBe('Always allow docs.example.com');
+    expect(alwaysAllowLabel('Edit')).toBe('Always allow Edit');
+  });
+});
+
+describe('actionSummary', () => {
+  it('pulls the command or file out of the request', () => {
+    expect(actionSummary('Bash', JSON.stringify({ command: 'npm test' }))).toEqual({ label: 'Runs', value: 'npm test' });
+    expect(actionSummary('Edit', JSON.stringify({ file_path: '/a/b.ts' }))).toEqual({ label: 'Edits', value: '/a/b.ts' });
+    expect(actionSummary('Write', JSON.stringify({ file_path: '/a/c.ts' }))).toEqual({ label: 'Writes', value: '/a/c.ts' });
+  });
+
+  it('leaves other tools and bad input to the raw JSON', () => {
+    expect(actionSummary('mcp__acme__send', JSON.stringify({ to: 'x' }))).toBeNull();
+    expect(actionSummary('Bash', '{not json')).toBeNull();
   });
 });

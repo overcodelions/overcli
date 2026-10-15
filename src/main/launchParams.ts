@@ -23,6 +23,8 @@ export interface LaunchParams {
   launchTurbo: boolean;
   launchArtifacts: boolean;
   launchChrome: boolean;
+  /// The narration directive rides in Claude's system prompt — argv.
+  launchNarrate: boolean;
   launchNetwork: boolean;
   launchSandbox: boolean;
   launchEffort?: EffortLevel;
@@ -39,6 +41,7 @@ export const LAUNCH_PARAM_KEYS = [
   'launchTurbo',
   'launchArtifacts',
   'launchChrome',
+  'launchNarrate',
   'launchNetwork',
   'launchSandbox',
   'launchEffort',

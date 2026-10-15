@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useStore } from '../store';
 import { useRunner } from '../runnersStore';
@@ -19,7 +19,9 @@ import { SystemNotice } from './SystemNotice';
 import { MetaReminder } from './MetaReminder';
 import { TaskNotification } from './TaskNotification';
 import { EasterEggBubble } from './EasterEggBubble';
-import { useConversation } from '../hooks';
+import { useConversation, useTranscriptLevel } from '../hooks';
+import { openTurnActivity, TurnActivity, turnActivityByResult, type MessageActivity } from './TurnActivity';
+import type { TranscriptLevel } from '@shared/transcriptLevel';
 
 export function ChatView({
   conversationId,
@@ -48,7 +50,8 @@ export function ChatView({
   timelineContentKey?: string;
 }) {
   const runner = useRunner(conversationId);
-  const showToolActivity = useStore((s) => s.showToolActivity);
+  const level = useTranscriptLevel(conversationId);
+  const showToolActivity = level === 'detailed';
   const events = runner?.events ?? [];
   const isRunning = runner?.isRunning ?? false;
   const error = runner?.errorMessage;
@@ -63,9 +66,37 @@ export function ChatView({
 
   const toolUseIndex = useMemo(() => indexToolUses(events), [events]);
   const toolResultIndex = useMemo(() => indexToolResults(events), [events]);
+  // Summary's per-turn activity line rides on the turn's closing `result`
+  // row. Built only at that level so the other two pay nothing for it.
+  const activityByResult = useMemo(
+    () => (level === 'summary' ? turnActivityByResult(events, isRunning) : EMPTY_ACTIVITY),
+    [events, level, isRunning],
+  );
+  // The turn in flight, at Summary: what it has done so far and the call
+  // running now. Settles onto the result row when the turn closes.
+  const live = useMemo(
+    () => (level === 'summary' && isRunning ? openTurnActivity(events) : NO_LIVE),
+    [events, level, isRunning],
+  );
+  const liveUses = live.uses;
+  // Which messages have their steps shown, by user-message id. Held here,
+  // not in the line, so it survives the line moving from the live footer
+  // to the message's row; reset per conversation.
+  const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(EMPTY_OPEN);
+  useEffect(() => setOpenSteps(EMPTY_OPEN), [conversationId]);
+  const toggleSteps = useCallback((messageId: string) => {
+    setOpenSteps((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  }, []);
+  const liveLabel =
+    level === 'summary' && isRunning ? latestPendingToolLabel(events, toolResultIndex) : null;
   const visibleEvents = useMemo(
-    () => filterRendered(events, showToolActivity, toolUseIndex, toolResultIndex),
-    [events, showToolActivity, toolUseIndex, toolResultIndex],
+    () => filterRendered(events, level, toolUseIndex, toolResultIndex, activityByResult),
+    [events, level, toolUseIndex, toolResultIndex, activityByResult],
   );
   // Verdict + intermediate sets. The server marks exactly one event
   // per round as `reviewer.verdict: true` at turn/completed — that's
@@ -120,7 +151,7 @@ export function ChatView({
       });
     });
     return () => cancelAnimationFrame(id);
-  }, [tailId, tailRevision, currentReveal?.id, isRunning, timelineContentKey]);
+  }, [tailId, tailRevision, currentReveal?.id, isRunning, timelineContentKey, liveUses.length, liveLabel]);
 
   // Land at the absolute bottom on conv switch. `initialTopMostItemIndex`
   // alone is unreliable here: virtuoso renders with estimated row heights
@@ -289,6 +320,9 @@ export function ChatView({
                 endorsementTint={reviewerTint}
                 reviewerCompact={isIntermediate}
                 reviewerTint={reviewerTint}
+                activity={activityByResult.get(event.id)}
+                activityOpen={openSteps.has(activityByResult.get(event.id)?.messageId ?? '\0')}
+                onToggleActivity={toggleSteps}
               />
               {renderAfterEvent?.(event)}
             </>
@@ -303,9 +337,24 @@ export function ChatView({
           Header: timelineHeader
             ? () => <div className="px-5 pt-3 space-y-3">{timelineHeader}</div>
             : undefined,
-          Footer: () => (
-            <div className="px-5 pb-10 pt-1.5 space-y-3">
-              {currentReveal && (
+          Footer: ChatFooter,
+        }}
+        context={{
+          footer: (
+            <>
+              {level === 'summary' && (liveUses.length > 0 || liveLabel) && (
+                <TurnActivity
+                  uses={liveUses}
+                  toolResultIndex={toolResultIndex}
+                  conversationId={conversationId}
+                  live={liveLabel}
+                  startedAt={live.startedAt}
+                  open={openSteps.has(live.messageId)}
+                  onToggle={() => toggleSteps(live.messageId)}
+                />
+              )}
+              {/* Summary's live chip already names the call in flight. */}
+              {currentReveal && level !== 'summary' && (
                 <div key={currentReveal.id} className="transient-slot">
                   <ToolUseCard
                     use={currentReveal}
@@ -317,7 +366,7 @@ export function ChatView({
               )}
               {error && <SystemNotice text={error} />}
               {timelineFooter}
-            </div>
+            </>
           ),
         }}
       />
@@ -341,6 +390,10 @@ type EventRowProps = {
   /// stay full-chrome regardless of this flag.
   reviewerCompact?: boolean;
   reviewerTint?: string;
+  /// Summary level only: the message's tool calls, for its last `result` row.
+  activity?: MessageActivity;
+  activityOpen?: boolean;
+  onToggleActivity?: (messageId: string) => void;
 };
 
 /// Only `assistant` and `toolResult` rows look up their props' indices
@@ -359,6 +412,9 @@ const EventRow = memo(function EventRow({
   endorsementTint,
   reviewerCompact,
   reviewerTint,
+  activity,
+  activityOpen,
+  onToggleActivity,
 }: EventRowProps) {
   switch (event.kind.type) {
     case 'localUser':
@@ -379,7 +435,20 @@ const EventRow = memo(function EventRow({
     case 'toolResult':
       return <ToolResultCard results={event.kind.results} toolUseIndex={toolUseIndex} />;
     case 'result':
-      return <TurnCaption info={event.kind.info} />;
+      return (
+        <>
+          {activity && (
+            <TurnActivity
+              uses={activity.uses}
+              toolResultIndex={toolResultIndex}
+              conversationId={conversationId}
+              open={activityOpen}
+              onToggle={() => onToggleActivity?.(activity.messageId)}
+            />
+          )}
+          <TurnCaption info={event.kind.info} />
+        </>
+      );
     case 'permissionRequest':
       // ExitPlanMode is gated through the broker like any other tool, but
       // its plan + Approve/Deny live on the ExitPlanMode tool_use card
@@ -419,6 +488,10 @@ function areEventRowPropsEqual(prev: EventRowProps, next: EventRowProps): boolea
   if (prev.endorsementTint !== next.endorsementTint) return false;
   if (prev.reviewerCompact !== next.reviewerCompact) return false;
   if (prev.reviewerTint !== next.reviewerTint) return false;
+  // A closed turn's calls are final, so element identity is enough — and it
+  // keeps old result rows memoized while a new turn streams.
+  if (!sameUses(prev.activity?.uses, next.activity?.uses)) return false;
+  if (prev.activityOpen !== next.activityOpen) return false;
   const t = next.event.kind.type;
   if (t === 'assistant' || t === 'toolResult') {
     if (prev.toolUseIndex !== next.toolUseIndex) return false;
@@ -426,6 +499,25 @@ function areEventRowPropsEqual(prev: EventRowProps, next: EventRowProps): boolea
   }
   return true;
 }
+
+function sameUses(a: ToolUseBlock[] | undefined, b: ToolUseBlock[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((u, i) => u === b[i]);
+}
+
+const EMPTY_ACTIVITY = new Map<string, MessageActivity>();
+const EMPTY_OPEN: ReadonlySet<string> = new Set();
+
+/// The list's footer, at module scope so its identity never changes. Defined
+/// inline it was a new component on every render, so React remounted it on
+/// each streamed event and threw away whatever was open inside — the live
+/// Summary line's steps snapped shut as fast as you could open them. Its
+/// content arrives through Virtuoso's `context` instead.
+function ChatFooter({ context }: { context?: { footer: ReactNode } }) {
+  return <div className="px-5 pb-10 pt-1.5 space-y-3">{context?.footer}</div>;
+}
+const NO_LIVE: ReturnType<typeof openTurnActivity> = { uses: [], startedAt: null, messageId: '' };
 
 function ReviewerStepLine({ text, tint }: { text: string; tint: string }) {
   // Compact "process step" rendering for non-verdict reviewer assistant
@@ -847,12 +939,14 @@ const CONFIRMATION_TOOLS = new Set([
   'Bash',
 ]);
 
-function filterRendered(
+export function filterRendered(
   events: StreamEvent[],
-  showToolActivity: boolean,
+  level: TranscriptLevel,
   toolUseIndex: Map<string, ToolUseBlock>,
   toolResultIndex: Map<string, ToolResultBlock>,
+  activityByResult: Map<string, MessageActivity> = EMPTY_ACTIVITY,
 ): StreamEvent[] {
+  const showToolActivity = level === 'detailed';
   const keep = events.map((e) => {
     const t = e.kind.type;
     if (
@@ -934,7 +1028,9 @@ function filterRendered(
           break;
         }
       }
-      if (!hasVisiblePeer) keep[i] = false;
+      // At Summary a turn that only used tools still has something to say:
+      // its activity line lives on this row.
+      if (!hasVisiblePeer && !activityByResult.get(ev.id)?.uses.length) keep[i] = false;
       turnStart = i + 1;
     }
   }

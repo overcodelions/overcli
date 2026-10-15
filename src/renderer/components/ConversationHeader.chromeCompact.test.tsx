@@ -34,6 +34,7 @@ let conv: Conversation;
 vi.mock('../hooks', () => ({
   useConversation: () => conv,
   useConversationRoot: () => null,
+  useTranscriptLevel: () => 'quiet',
 }));
 
 const noop = () => {};
@@ -48,7 +49,6 @@ vi.mock('../store', () => ({
         settings: DEFAULT_SETTINGS,
         projects: [],
         workspaces: [],
-        showToolActivity: false,
         explorerRootPath: null,
         openExplorer: noop,
         closeExplorer: noop,
@@ -70,7 +70,7 @@ vi.mock('../store', () => ({
         removeAgent: noopAsync,
         resetConversation: noopAsync,
         openSheet: noop,
-        toggleToolActivity: noop,
+        setTranscriptLevel: noop,
         send: noopAsync,
         gitStatusByConv: {},
       }),

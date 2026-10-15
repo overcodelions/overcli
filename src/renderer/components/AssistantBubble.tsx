@@ -9,7 +9,7 @@ import { rendersWhenToolActivityHidden } from './toolCardPolicy';
 import { parseOutputHandoff } from './flows/outputPointer';
 import { isDesignUnavailableNotice } from '@shared/claudeArtifacts';
 import { isChromeUnavailableNotice } from '@shared/claudeChrome';
-import { useConversation } from '../hooks';
+import { useConversation, useTranscriptLevel } from '../hooks';
 import { useRunForConversation } from '../flowsStore';
 
 export function AssistantBubble({
@@ -27,7 +27,7 @@ export function AssistantBubble({
   /// of a completed reviewer round.
   endorsed?: boolean;
   endorsementTint?: string;
-  /// Bypass the global `showToolActivity` toggle and render every
+  /// Bypass the conversation's transcript level and render every
   /// tool_use card. Used by SubagentDrawer — the whole point of
   /// opening that drawer is to inspect the agent's tool calls, so
   /// hiding them based on the chat-level toggle would be useless.
@@ -37,8 +37,7 @@ export function AssistantBubble({
   conversationId?: UUID;
 }) {
   const openFile = useOpenFile();
-  const showToolActivityGlobal = useStore((s) => s.showToolActivity);
-  const showToolActivity = forceShowTools || showToolActivityGlobal;
+  const showToolActivity = useTranscriptLevel(conversationId) === 'detailed' || !!forceShowTools;
   const [copied, setCopied] = useState<'plain' | 'raw' | null>(null);
   const renderedRef = useRef<HTMLDivElement>(null);
   const backend = backendFromModel(info.model);

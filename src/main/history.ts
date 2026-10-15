@@ -411,7 +411,34 @@ function loadClaudeHistory(
       out.push(ev);
     }
   }
-  return { events: out, truncated, readError: error };
+  return { events: dedupeClaudeUsageResults(out), truncated, readError: error };
+}
+
+/// Keep one replayed ✓ caption per API message.
+///
+/// Claude Code writes a single model response as several JSONL lines — one
+/// per content block, so text and then a tool call are two lines — and each
+/// line repeats the message's `usage`. Synthesizing a result from every line
+/// put two identical captions around one step. The last line's caption is
+/// the one kept: it sits after the step's tool call, where the turn's work
+/// ends. Lines with no message id can't be matched and are left alone.
+export function dedupeClaudeUsageResults(events: StreamEvent[]): StreamEvent[] {
+  const seen = new Set<string>();
+  const drop = new Set<number>();
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev.kind.type !== 'result') continue;
+    let id: unknown;
+    try {
+      id = JSON.parse(ev.raw)?.message?.id;
+    } catch {
+      continue;
+    }
+    if (typeof id !== 'string' || !id) continue;
+    if (seen.has(id)) drop.add(i);
+    else seen.add(id);
+  }
+  return drop.size ? events.filter((_, i) => !drop.has(i)) : events;
 }
 
 export function parseClaudeHistoryLine(line: string): StreamEvent[] {

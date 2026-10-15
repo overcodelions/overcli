@@ -1098,15 +1098,17 @@ export function registerIpc(): void {
   ipcMain.handle('app:markWhatsNewSeen', () => markWhatsNewSeen());
   ipcMain.handle('app:version', () => app.getVersion());
 
-  ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
-  ipcMain.handle('runner:prewarm', (_e, args) => runner!.prewarm({ ...args, prompt: '' }));
+  // Everything arriving here was typed into the app by a person who is
+  // watching, so the chat permission policy applies. See SendArgs.interactive.
+  ipcMain.handle('runner:send', (_e, args) => runner!.send({ ...args, interactive: true }));
+  ipcMain.handle('runner:prewarm', (_e, args) => runner!.prewarm({ ...args, prompt: '', interactive: true }));
   ipcMain.handle('runner:stop', (_e, { conversationId }) => runner!.stop(conversationId));
   ipcMain.handle('runner:newConversation', (_e, { conversationId }) => runner!.newConversation(conversationId));
   ipcMain.handle('runner:release', (_e, { conversationId, onlyIfIdle }) =>
     runner!.release(conversationId, { onlyIfIdle }),
   );
-  ipcMain.handle('runner:respondPermission', (_e, { conversationId, requestId, approved, addDir, scope, toolName }) =>
-      runner!.respondPermission(conversationId, requestId, approved, addDir, scope, toolName),
+  ipcMain.handle('runner:respondPermission', (_e, { conversationId, requestId, approved, addDir, scope, rule }) =>
+      runner!.respondPermission(conversationId, requestId, approved, addDir, scope, rule),
   );
   ipcMain.handle('runner:respondCodexApproval', (_e, { conversationId, callId, kind, approved }) =>
       runner!.respondCodexApproval(conversationId, callId, kind, approved),

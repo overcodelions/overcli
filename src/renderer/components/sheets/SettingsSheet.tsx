@@ -19,6 +19,7 @@ import type { UserProfile } from '@shared/flows/personalize';
 import { Group, SheetActionButton } from './settingsChrome';
 import { LABS, labOn, type LabKey } from '@shared/labs';
 import { UI_SCALE_STEPS } from '@shared/uiScale';
+import { defaultTranscriptLevel, TRANSCRIPT_LEVELS, type TranscriptLevel } from '@shared/transcriptLevel';
 import { ConversationsPane } from './ConversationsPane';
 import { AutoTidyPane } from './AutoTidyPane';
 
@@ -296,12 +297,22 @@ function GeneralPane({ local, patch }: { local: AppSettings; patch: (p: Partial<
           value={local.showCost}
           onChange={(v) => patch({ showCost: v })}
         />
-        <Toggle
-          label="Show tool activity by default"
-          help="Initial value for the eye toggle in the conversation header. Off keeps the chat focused on the assistant's prose; you can still flip it per session."
-          value={local.defaultShowToolActivity}
-          onChange={(v) => patch({ defaultShowToolActivity: v })}
-        />
+        <Row
+          label="Conversation detail"
+          help={`${TRANSCRIPT_LEVELS.find((l) => l.value === defaultTranscriptLevel(local))?.help ?? ''} Each conversation can pick its own from the eye in its header.`}
+        >
+          <select
+            value={defaultTranscriptLevel(local)}
+            onChange={(e) => patch({ defaultTranscriptLevel: e.target.value as TranscriptLevel })}
+            className="field px-2 py-1 text-xs"
+          >
+            {TRANSCRIPT_LEVELS.map((l) => (
+              <option key={l.value} value={l.value}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </Row>
       </Group>
     </div>
   );

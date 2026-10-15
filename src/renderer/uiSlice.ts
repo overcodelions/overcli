@@ -112,7 +112,6 @@ export interface UiSliceState {
   /// history arrows, which write state directly) never will. Two fields and a
   /// choice at render time cannot leak.
   servicesListHidden: boolean;
-  showToolActivity: boolean;
   /// Parent Task tool_use id currently being inspected in the
   /// SubagentDrawer. `null` means the drawer is closed.
   subagentDrawerParentId: string | null;
@@ -180,7 +179,6 @@ export interface UiSliceActions {
   /// explorer root.
   switchFileScope(key: string | null): void;
   toggleSidebar(): void;
-  toggleToolActivity(): void;
   setWhatsNewUnseen(unseen: boolean): void;
   markFileDirty(path: string): void;
   clearFileDirty(path: string): void;
@@ -213,7 +211,6 @@ export const uiSliceInitialState: UiSliceState = {
   explorerRootPath: null,
   sidebarVisible: true,
   servicesListHidden: false,
-  showToolActivity: false,
   subagentDrawerParentId: null,
   subagentDrawerConversationId: null,
   dirtyFiles: {},
@@ -507,9 +504,6 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
         toggleFoldsServiceList(s as T & { projects?: readonly unknown[] })
           ? { servicesListHidden: !s.servicesListHidden }
           : { sidebarVisible: !s.sidebarVisible }) as (s: T) => Partial<T>);
-    },
-    toggleToolActivity() {
-      set(((s) => ({ showToolActivity: !s.showToolActivity })) as (s: T) => Partial<T>);
     },
     setWhatsNewUnseen(unseen) {
       set(((s) => (s.whatsNewUnseen === unseen ? {} : { whatsNewUnseen: unseen })) as (

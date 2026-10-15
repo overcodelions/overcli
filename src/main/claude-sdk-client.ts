@@ -41,6 +41,8 @@ export interface ClaudeSdkStartOptions {
   /// pending-permission resolver and emits the same permissionRequest
   /// stream event the CLI broker produces.
   canUseTool: CanUseTool;
+  /// Claude Code `ask` rules — see BackendSendArgs.askRules.
+  askRules?: string[];
   /// Full environment for the spawned binary. The SDK defaults this to
   /// `process.env`, so a caller that sets it must spread process.env itself
   /// or the child loses PATH along with everything else.
@@ -51,6 +53,9 @@ export interface ClaudeSdkStartOptions {
   /// this spawns the binary with `--chrome`, exactly as the cli transport
   /// does in `backends/claude.ts`.
   chrome?: boolean;
+  /// Text appended to Claude Code's own system prompt — the narration
+  /// directive, when the conversation's output level asks for it.
+  appendSystemPrompt?: string;
 }
 
 export interface ClaudeSdkTurnInput {
@@ -109,11 +114,15 @@ export class ClaudeSdkClient extends EventEmitter {
       ...(o.allowedDirs?.length ? { additionalDirectories: o.allowedDirs } : {}),
       ...(o.resumeSessionId ? { resume: o.resumeSessionId } : {}),
       canUseTool: o.canUseTool,
+      ...(o.askRules?.length ? { settings: { permissions: { ask: o.askRules } } } : {}),
       includePartialMessages: true,
       ...(o.effortLevel ? { effort: o.effortLevel as Options['effort'] } : {}),
       ...(o.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(o.env ? { env: o.env } : {}),
       ...(o.chrome ? { extraArgs: { chrome: null } } : {}),
+      ...(o.appendSystemPrompt
+        ? { systemPrompt: { type: 'preset', preset: 'claude_code', append: o.appendSystemPrompt } }
+        : {}),
     };
     this.q = query({ prompt: this.iterableInput(), options });
     void this.consume();

@@ -81,6 +81,17 @@ import {
 } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
 import {
+  conversationTranscriptLevel,
+  defaultTranscriptLevel,
+  type TranscriptLevel,
+} from '@shared/transcriptLevel';
+
+/// Whether a send asks the model to narrate: any level above quiet. The
+/// prewarm and the send must agree — it's argv on the cli transport.
+function narrates(conv: Pick<Conversation, 'transcriptLevel'> | null, settings: AppSettings): boolean {
+  return conversationTranscriptLevel(conv, defaultTranscriptLevel(settings)) !== 'quiet';
+}
+import {
   enabledBackends,
   isBackendEnabled,
   pickDefaultBackend,
@@ -241,12 +252,6 @@ interface StoreState {
   /// Whether the service list is folded away on Services — see uiSlice. Kept
   /// apart from `sidebarVisible` so no transition can leave the other hidden.
   servicesListHidden: boolean;
-  /// Global toggle: show tool-use / tool-result cards in chat. Off
-  /// collapses the chat to just the model's assistant text for a cleaner
-  /// reading view. Seeded from `settings.defaultShowToolActivity` at
-  /// launch; the in-session flip is intentionally transient so users can
-  /// toggle it per task without editing Settings.
-  showToolActivity: boolean;
   /// Parent Task tool_use id currently being inspected in the
   /// SubagentDrawer. `null` means the drawer is closed.
   subagentDrawerParentId: string | null;
@@ -332,7 +337,6 @@ interface StoreState {
   markFileDirty(path: string): void;
   clearFileDirty(path: string): void;
   toggleSidebar(): void;
-  toggleToolActivity(): void;
   setWhatsNewUnseen(unseen: boolean): void;
   openSubagentDrawer(parentToolUseId: string, conversationId?: string): void;
   closeSubagentDrawer(): void;
@@ -510,6 +514,8 @@ interface StoreState {
   /// Per-conversation Claude in Chrome override. `undefined` clears it back
   /// to inheriting the global `claudeChrome` setting.
   setChrome(id: UUID, chrome: boolean | undefined): Promise<void>;
+  /// Pick this conversation's transcript level. See shared/transcriptLevel.ts.
+  setTranscriptLevel(id: UUID, level: TranscriptLevel): Promise<void>;
   setResponseStyle(id: UUID, style: ResponseStyle): Promise<void>;
   setResponseMode(id: UUID, backend: Backend, mode: ResponseMode): Promise<void>;
   applyClaudeFastPreset(id: UUID): Promise<void>;
@@ -543,7 +549,7 @@ interface StoreState {
     approved: boolean,
     addDir?: string,
     scope?: 'once' | 'always',
-    toolName?: string,
+    rule?: string,
   ): Promise<void>;
   respondCodexApproval(
     conversationId: UUID,
@@ -859,6 +865,14 @@ export function withResponseMode(
 /// otherwise falls back to whatever is on disk. Returns null if Ollama
 /// detection fails or no models are pulled, so callers can surface a
 /// clear error instead of blindly using a tag the server doesn't have.
+/// Fire-and-forget server start for when the user picks a local model. Only
+/// from 'stopped' — 'error' needs the banner, and 'unknown'/'starting'/
+/// 'running' have nothing to do.
+function warmOllamaServer(get: () => StoreState): void {
+  if (get().ollamaServerStatus !== 'stopped') return;
+  void window.overcli.invoke('ollama:startServer').catch(() => {});
+}
+
 async function pickInstalledOllamaModel(settings: AppSettings): Promise<string | null> {
   // The Ollama server can bind :11434 a beat before `/api/tags` lists the
   // on-disk models, so a send right after a "start server" prompt may race
@@ -1305,7 +1319,6 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: (view?.detailMode as DetailMode) ?? 'conversation',
       focusedProjectId: view?.focusedProjectId ?? null,
       focusedWorkspaceId: view?.focusedWorkspaceId ?? null,
-      showToolActivity: state.settings.defaultShowToolActivity ?? false,
       // Editor tabs come back per scope. `useFileScope` hydrates the live
       // `tabs` for whichever scope this view resolves to, right after the
       // fields above land.
@@ -1537,7 +1550,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   // setDetailMode, openSheet, openFile/setOpenFileMode/closeFile,
-  // toggleFileTree, toggleSidebar, toggleToolActivity now live in
+  // toggleFileTree and toggleSidebar now live in
   // ./uiSlice.ts and are spread into the store above.
 
   openExplorer(rootPath) {
@@ -3039,6 +3052,9 @@ export const useStore = create<StoreState>((set, get) => ({
       return next;
     });
     await saveConversationState(get);
+    // Choosing local models is the server's on switch. Start it now so it's
+    // warm by the first send; the send path also starts it if this lost.
+    if (backend === 'ollama') warmOllamaServer(get);
     // Auto-pick an Ollama model on first switch if none is set, so the
     // user doesn't hit "model required" on the first send.
     if (backend === 'ollama') {
@@ -3100,6 +3116,7 @@ export const useStore = create<StoreState>((set, get) => ({
       return next;
     });
     await saveConversationState(get);
+    if (backend === 'ollama') warmOllamaServer(get);
   },
   async setEffortLevel(id, effort) {
     mutateConversation(set, get, id, (c) =>
@@ -3124,6 +3141,11 @@ export const useStore = create<StoreState>((set, get) => ({
       return;
     }
     mutateConversation(set, get, id, (c) => ({ ...c, chrome }));
+    await saveConversationState(get);
+  },
+
+  async setTranscriptLevel(id, level) {
+    mutateConversation(set, get, id, (c) => ({ ...c, transcriptLevel: level }));
     await saveConversationState(get);
   },
 
@@ -3284,6 +3306,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // argv, so a prewarm that disagrees with the send is a spawn we throw
       // away and respawn on the first turn.
       chrome: conv.chrome,
+      narrate: narrates(conv, state.settings),
       allowedDirs: backend === 'claude' ? computeAllowedDirs(state, conversationId) : undefined,
       claudeTransport: backend === 'claude' ? state.settings.claudeTransport ?? 'cli' : undefined,
     });
@@ -3319,7 +3342,9 @@ export const useStore = create<StoreState>((set, get) => ({
       effortLevel: pending.effortLevel,
       // A brand-new conversation has no session to resume and no per-conv
       // turbo/chrome override, so the send ships these unset too — leaving
-      // them off here is what keeps `paramsChanged` quiet.
+      // them off here is what keeps `paramsChanged` quiet. Narration has no
+      // per-conv override yet either, so it follows the default.
+      narrate: narrates(null, state.settings),
       allowedDirs:
         pending.backend === 'claude'
           ? allowedDirsForNewConversation(state, pending)
@@ -3556,6 +3581,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // Undefined defers to the global setting in the runner, so an
       // untouched conversation follows Settings.
       chrome: conv.chrome,
+      narrate: narrates(conv, get().settings),
       codexRolloutPaths: conv.codexRolloutPaths,
       attachments: attachments.length ? attachments : undefined,
       reviewBackend: conv.reviewBackend ?? null,
@@ -3591,14 +3617,14 @@ export const useStore = create<StoreState>((set, get) => ({
     await saveConversationState(get);
   },
 
-  async respondPermission(conversationId, requestId, approved, addDir, scope, toolName) {
+  async respondPermission(conversationId, requestId, approved, addDir, scope, rule) {
     await window.overcli.invoke('runner:respondPermission', {
       conversationId,
       requestId,
       approved,
       addDir,
       scope,
-      toolName,
+      rule,
     });
     if (approved && addDir) {
       mutateConversation(set, get, conversationId, (c) => {

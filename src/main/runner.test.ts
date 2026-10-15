@@ -53,6 +53,7 @@ import {
   removeSandboxScratch,
   sweepSandboxScratch,
   RunnerManager,
+  chatAskRules,
 } from './runner';
 import type { Backend, StreamEvent } from '../shared/types';
 
@@ -1282,5 +1283,18 @@ describe('sandbox scratch cleanup', () => {
     const manager = new RunnerManager(() => {}, () => ({ backends: {} }) as never);
     manager.release(id);
     await vi.waitFor(() => expect(fs.existsSync(dir)).toBe(false));
+  });
+});
+
+describe('chatAskRules', () => {
+  it('guards interactive Claude chat outside bypass mode', () => {
+    expect(chatAskRules({ interactive: true, backend: 'claude', permissionMode: 'default' })).toContain('Bash(git push:*)');
+    expect(chatAskRules({ interactive: true, backend: 'claude', permissionMode: 'acceptEdits' })?.length).toBeGreaterThan(0);
+  });
+
+  it('leaves bypass mode, other backends and unattended sends alone', () => {
+    expect(chatAskRules({ interactive: true, backend: 'claude', permissionMode: 'bypassPermissions' })).toBeUndefined();
+    expect(chatAskRules({ interactive: true, backend: 'codex', permissionMode: 'default' })).toBeUndefined();
+    expect(chatAskRules({ backend: 'claude', permissionMode: 'default' })).toBeUndefined();
   });
 });

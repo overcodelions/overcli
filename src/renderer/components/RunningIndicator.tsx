@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { StreamEvent, UUID } from '@shared/types';
 import { useRunner } from '../runnersStore';
-import { useStore } from '../store';
+import { useTranscriptLevel } from '../hooks';
 import { ActivityStrip } from './ActivityStrip';
 import {
   countPendingSubagents,
@@ -25,7 +25,8 @@ const EMPTY_EVENTS: StreamEvent[] = [];
 /// is scrolled.
 export function RunningIndicator({ conversationId }: { conversationId: UUID }) {
   const runner = useRunner(conversationId);
-  const showToolActivity = useStore((s) => s.showToolActivity);
+  const level = useTranscriptLevel(conversationId);
+  const showToolActivity = level === 'detailed';
   const isRunning = runner?.isRunning ?? false;
   const activityLabel = runner?.activityLabel ?? '';
   const events = runner?.events ?? EMPTY_EVENTS;
@@ -47,7 +48,9 @@ export function RunningIndicator({ conversationId }: { conversationId: UUID }) {
     // When tool activity is hidden the user can't see which tool is
     // running — promote the latest in-flight tool to the strip. Falls back
     // to the runner's generic label ("Thinking…", "Running tools…").
-    (!showToolActivity && latestPendingToolLabel(events, toolResultIndex)) ||
+    // At Summary the live line under the transcript already names the
+    // call, so the strip stays generic rather than saying it twice.
+    (level === 'quiet' && latestPendingToolLabel(events, toolResultIndex)) ||
       activityLabel,
     pendingSubagents,
   );

@@ -28,7 +28,6 @@ describe('uiSliceInitialState', () => {
     expect(uiSliceInitialState.activeSheet).toBeNull();
     expect(uiSliceInitialState.sidebarVisible).toBe(true);
     expect(uiSliceInitialState.openFilePath).toBeNull();
-    expect(uiSliceInitialState.showToolActivity).toBe(false);
     expect(uiSliceInitialState.subagentDrawerParentId).toBeNull();
   });
 });
@@ -55,13 +54,6 @@ describe('createUiSlice', () => {
     expect(state.sidebarVisible).toBe(false);
     slice.toggleSidebar();
     expect(state.sidebarVisible).toBe(true);
-  });
-
-  it('toggleToolActivity flips state', () => {
-    const { state, slice } = makeStub();
-    expect(state.showToolActivity).toBe(false);
-    slice.toggleToolActivity();
-    expect(state.showToolActivity).toBe(true);
   });
 
   it('openFile sets path and clears highlight when not provided', () => {

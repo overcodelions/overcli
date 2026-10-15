@@ -57,6 +57,7 @@ export function TitleBar() {
   const showLab = (key: LabKey, mode: string, busy = false) =>
     labOn(labs, key) || detailMode === mode || busy;
   const setDetailMode = useStore((s) => s.setDetailMode);
+  const ollamaStatus = useStore((s) => s.ollamaServerStatus);
   const openSheet = useStore((s) => s.openSheet);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const servicesListHidden = useStore((s) => s.servicesListHidden);
@@ -405,15 +406,18 @@ export function TitleBar() {
             }
           />
         )}
+        {/* The local server only earns a spot while it's doing something —
+            it's a process holding RAM, and this is where you see and stop it.
+            Starting it is picking a local model; nobody needs a button for that. */}
+        {ollamaStatus !== 'stopped' && ollamaStatus !== 'unknown' && (
+          <OllamaIndicator
+            status={ollamaStatus}
+            active={detailMode === 'local'}
+            onOpen={() => setDetailMode('local')}
+          />
+        )}
         <TerminalToggle />
-        {/* Local and Usage are dashboards you check now and then, not places
-            you work, so they share one menu instead of taking two tabs. */}
-        <MoreMenu
-          active={detailMode === 'stats' || detailMode === 'local'}
-          showLocal={showLab('localModels', 'local')}
-          onUsage={() => setDetailMode('stats')}
-          onLocal={() => setDetailMode('local')}
-        />
+        <UsageButton active={detailMode === 'stats'} onClick={() => setDetailMode('stats')} />
       </div>
       <div className="w-px h-4 bg-card-border mx-2" />
       {/* Unread release notes ride the About button rather than earning their
@@ -841,40 +845,76 @@ function HistoryArrow({
   );
 }
 
-function MoreMenu({
+function UsageButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Usage — spend, tokens and time"
+      aria-label="Usage"
+      className={
+        'p-1 rounded ' +
+        (active ? 'text-ink bg-card-strong' : 'text-ink-muted hover:text-ink hover:bg-card-strong')
+      }
+    >
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
+        <path d="M4 16h12" />
+        <path d="M6.5 16V10M10 16V5M13.5 16v-4" />
+      </svg>
+    </button>
+  );
+}
+
+/// Shown only while the local server is up, coming up, or failed to start.
+/// Same shape as the automation pill: a dot that says state, a muted label.
+function OllamaIndicator({
+  status,
   active,
-  showLocal,
-  onUsage,
-  onLocal,
+  onOpen,
 }: {
+  status: 'starting' | 'running' | 'error';
   active: boolean;
-  showLocal: boolean;
-  onUsage: () => void;
-  onLocal: () => void;
+  onOpen: () => void;
 }) {
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const dot =
+    status === 'running'
+      ? 'bg-emerald-500 dark:bg-emerald-400'
+      : status === 'starting'
+        ? 'bg-sky-500 dark:bg-sky-400 animate-pulse'
+        : 'bg-red-500 dark:bg-red-400';
+  const title =
+    status === 'running'
+      ? 'Ollama server is running'
+      : status === 'starting'
+        ? 'Ollama server is starting'
+        : "Ollama server couldn't start";
   const items: MenuItemDef[] = [
-    { label: 'Usage', hint: 'Spend, tokens and time', onSelect: onUsage },
-    ...(showLocal ? [{ label: 'Local models', hint: 'Ollama', onSelect: onLocal }] : []),
+    { label: 'Local models', hint: 'Models, logs and updates', onSelect: onOpen },
+    ...(status === 'error'
+      ? [{ label: 'Try again', onSelect: () => void window.overcli.invoke('ollama:startServer') }]
+      : [
+          {
+            label: 'Stop server',
+            danger: true,
+            onSelect: () => void window.overcli.invoke('ollama:stopServer'),
+          },
+        ]),
   ];
   return (
     <>
       <button
         ref={anchor}
         onClick={() => setOpen((o) => !o)}
-        title="Usage and more"
-        aria-label="Usage and more"
+        title={title}
         aria-expanded={open}
         className={
-          'p-1 rounded ' +
-          (active ? 'text-ink bg-card-strong' : 'text-ink-muted hover:text-ink hover:bg-card-strong')
+          'px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 hover:bg-card-strong ' +
+          (active ? 'text-ink bg-card-strong' : status === 'error' ? 'text-red-700 dark:text-red-300' : 'text-ink-muted')
         }
       >
-        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
-          <path d="M4 16h12" />
-          <path d="M6.5 16V10M10 16V5M13.5 16v-4" />
-        </svg>
+        <span aria-hidden className={'inline-block w-1.5 h-1.5 rounded-full ' + dot} />
+        Ollama
       </button>
       {open && <PopMenu anchor={anchor} items={items} width={200} onClose={() => setOpen(false)} />}
     </>
