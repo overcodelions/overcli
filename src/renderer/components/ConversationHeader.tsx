@@ -1862,9 +1862,18 @@ function ConversationSettingsButton({
             </div>
           )}
           {backend === 'ollama' && ollamaPulled.length === 0 && (
-            <div className="text-[10px] text-amber-400">
-              No models pulled. Open the Local tab to pull one.
-            </div>
+            <div className="text-[10px] text-amber-400">No models pulled yet.</div>
+          )}
+          {backend === 'ollama' && (
+            <button
+              onClick={() => {
+                setOpen(false);
+                useStore.getState().setDetailMode('local');
+              }}
+              className="text-left text-[11px] text-accent hover:underline"
+            >
+              Manage local models…
+            </button>
           )}
           <div className="text-[10px] text-ink-faint">
             Leave blank to use the app's default model for {backend}.

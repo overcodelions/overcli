@@ -67,6 +67,7 @@ import {
 import {
   OllamaChatMessage,
   detectOllama,
+  ollamaServer,
 } from './ollama';
 import {
   OLLAMA_BUILTIN_TOOLS,
@@ -2888,6 +2889,14 @@ export class RunnerManager {
 
     const driveLoop = async () => {
       const messageCountBefore = session!.messages.length;
+      // Picking a local model is the on switch: bring the server up here
+      // instead of making the user find a Start button. If it can't start,
+      // the turn fails below with the usual "can't reach Ollama" message.
+      if (ollamaServer.getStatus() !== 'running') {
+        this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Starting Ollama…' });
+        await ollamaServer.ensureRunning();
+        this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
+      }
       // Resolve the tool protocol BEFORE building the prompt: the prompt and
       // the wire must agree on which one is in play, or the model renders our
       // text format using its own control tokens and corrupts the JSON (see

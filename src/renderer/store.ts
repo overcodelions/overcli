@@ -865,6 +865,14 @@ export function withResponseMode(
 /// otherwise falls back to whatever is on disk. Returns null if Ollama
 /// detection fails or no models are pulled, so callers can surface a
 /// clear error instead of blindly using a tag the server doesn't have.
+/// Fire-and-forget server start for when the user picks a local model. Only
+/// from 'stopped' — 'error' needs the banner, and 'unknown'/'starting'/
+/// 'running' have nothing to do.
+function warmOllamaServer(get: () => StoreState): void {
+  if (get().ollamaServerStatus !== 'stopped') return;
+  void window.overcli.invoke('ollama:startServer').catch(() => {});
+}
+
 async function pickInstalledOllamaModel(settings: AppSettings): Promise<string | null> {
   // The Ollama server can bind :11434 a beat before `/api/tags` lists the
   // on-disk models, so a send right after a "start server" prompt may race
@@ -3044,6 +3052,9 @@ export const useStore = create<StoreState>((set, get) => ({
       return next;
     });
     await saveConversationState(get);
+    // Choosing local models is the server's on switch. Start it now so it's
+    // warm by the first send; the send path also starts it if this lost.
+    if (backend === 'ollama') warmOllamaServer(get);
     // Auto-pick an Ollama model on first switch if none is set, so the
     // user doesn't hit "model required" on the first send.
     if (backend === 'ollama') {
@@ -3105,6 +3116,7 @@ export const useStore = create<StoreState>((set, get) => ({
       return next;
     });
     await saveConversationState(get);
+    if (backend === 'ollama') warmOllamaServer(get);
   },
   async setEffortLevel(id, effort) {
     mutateConversation(set, get, id, (c) =>

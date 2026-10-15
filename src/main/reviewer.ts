@@ -34,7 +34,7 @@ import {
   makeCodexAppServerParserState,
   parseCodexAppServerNotification,
 } from './parsers/codex-app-server';
-import { OllamaChatMessage } from './ollama';
+import { OllamaChatMessage, ollamaServer } from './ollama';
 import {
   buildOllamaToolSystemPrompt,
   modelSupportsTools,
@@ -794,6 +794,8 @@ export class ReviewerManager {
     mode: 'review' | 'collab';
   }): Promise<ReviewInfo> {
     const { mode } = args;
+    // A local reviewer starts the server the same way a local primary does.
+    await ollamaServer.ensureRunning();
     const round = (this.rounds.get(args.conversationId) ?? 0) + 1;
     this.rounds.set(args.conversationId, round);
 

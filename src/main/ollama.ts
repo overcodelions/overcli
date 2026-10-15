@@ -152,6 +152,69 @@ export function brewAvailable(): boolean {
   return !res.error && res.status === 0;
 }
 
+/// Where `ollama pull` stores weights. Honors OLLAMA_MODELS the same way the
+/// server does, so a relocated store is still found.
+function ollamaModelsDir(): string {
+  return process.env.OLLAMA_MODELS || path.join(os.homedir(), '.ollama', 'models');
+}
+
+/// Lists pulled models straight from Ollama's manifest store, without a
+/// server. Lets the model picker offer local models while the server is
+/// down, so choosing one can be what starts it. Manifests live at
+/// `manifests/<host>/<namespace>/<model>/<tag>`; names are rebuilt the way
+/// `ollama list` prints them (library models drop host and namespace).
+export function listModelsOnDisk(modelsDir: string = ollamaModelsDir()): OllamaModel[] {
+  const root = path.join(modelsDir, 'manifests');
+  const subdirs = (dir: string): string[] => {
+    try {
+      return fs
+        .readdirSync(dir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+        .map((d) => d.name);
+    } catch {
+      return [];
+    }
+  };
+  const models: OllamaModel[] = [];
+  for (const host of subdirs(root)) {
+    for (const ns of subdirs(path.join(root, host))) {
+      for (const model of subdirs(path.join(root, host, ns))) {
+        const modelDir = path.join(root, host, ns, model);
+        let tags: fs.Dirent[] = [];
+        try {
+          tags = fs.readdirSync(modelDir, { withFileTypes: true }).filter((d) => d.isFile());
+        } catch {
+          continue;
+        }
+        for (const tag of tags) {
+          if (tag.name.startsWith('.')) continue;
+          const file = path.join(modelDir, tag.name);
+          try {
+            const manifest = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+              config?: { size?: number };
+              layers?: Array<{ size?: number }>;
+            };
+            const sizeBytes =
+              (manifest.config?.size ?? 0) +
+              (manifest.layers ?? []).reduce((sum, l) => sum + (l.size ?? 0), 0);
+            const prefix =
+              host === 'registry.ollama.ai' ? (ns === 'library' ? '' : `${ns}/`) : `${host}/${ns}/`;
+            models.push({
+              name: `${prefix}${model}:${tag.name}`,
+              sizeBytes,
+              modifiedAt: fs.statSync(file).mtime.toISOString(),
+            });
+          } catch {
+            // Half-written or foreign file — skip it rather than fail the list.
+          }
+        }
+      }
+    }
+  }
+  // Newest first, matching `/api/tags`.
+  return models.sort((a, b) => (b.modifiedAt ?? '').localeCompare(a.modifiedAt ?? ''));
+}
+
 export async function detectOllama(): Promise<OllamaDetection> {
   const bin = firstExistingBinary();
   const server = await detectRunningServer();
@@ -172,7 +235,9 @@ export async function detectOllama(): Promise<OllamaDetection> {
     running: server.running,
     version: server.version,
     binaryPath: bin,
-    models: server.models,
+    // The server is the source of truth when it's up; when it's down, the
+    // manifest store still says what's pulled.
+    models: server.running ? server.models : listModelsOnDisk(),
   };
 }
 
@@ -986,6 +1051,26 @@ export class OllamaServerManager {
     void this.waitForPort(10_000);
 
     return { ok: true, message: 'Server starting.' };
+  }
+
+  /// Brings a server up if none is answering, and waits until one is. Called
+  /// before every local-model turn, so picking a local model is all it
+  /// takes — nobody has to find a Start button first. Returns false when
+  /// the server can't be started (not installed, spawn failed, never bound).
+  async ensureRunning(timeoutMs = 15_000): Promise<boolean> {
+    if ((await detectRunningServer()).running) {
+      this.setStatus('running');
+      return true;
+    }
+    const res = await this.start();
+    if (!res.ok) return false;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.status === 'running') return true;
+      if (this.status === 'error' || (this.status === 'stopped' && this.child == null)) return false;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return this.status === 'running';
   }
 
   /// Kills only the child overcli spawned. Used on app quit and by the
