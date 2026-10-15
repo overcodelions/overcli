@@ -101,7 +101,7 @@ import { collapsePartialAssistants } from './streamSnapshot';
 import { getBackendSpec } from './backends';
 import { codexExecSnapshotText } from './backends/codex';
 import { withBatchingDirective, resolveTurboEffort } from './backends/turbo';
-import { NARRATION_DIRECTIVE } from '../shared/transcriptLevel';
+import { claudeSystemPromptAppend } from './backends/claude';
 import {
   BROKER_LAUNCH_PARAM_KEYS,
   LaunchParams,
@@ -854,7 +854,7 @@ interface ActiveProcess {
   codexAppServer?: CodexAppServerClient;
   codexMode?: 'exec' | 'app-server';
   /// Claude Agent SDK client, when this conversation is on the 'sdk'
-  /// transport (Settings → Advanced → Use Claude Agent SDK). Mutually
+  /// transport (Settings → Labs → Experimental). Mutually
   /// exclusive with `proc`: SDK turns are driven in-process and have no
   /// subprocess. The runner subscribes to the client's `line` event and
   /// pipes each SDKMessage (stringified) into the standard claudeBackend
@@ -1988,7 +1988,7 @@ export class RunnerManager {
       // paths spawn the same binary, so the gate has to be opened on each
       // or Claude in Chrome works on one transport and not the other.
       chrome: this.chromeFor(args),
-      appendSystemPrompt: narrateFor(args) ? NARRATION_DIRECTIVE : undefined,
+      appendSystemPrompt: claudeSystemPromptAppend(narrateFor(args)),
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.

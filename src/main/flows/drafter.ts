@@ -17,8 +17,8 @@
 // RunnerManager, which already speaks all the backends — including Claude on
 // its default 'cli' transport (the user's installed `claude`). Claude only
 // takes the in-process @anthropic-ai/claude-agent-sdk path when the
-// experimental "Use Claude Agent SDK" transport is enabled (Settings →
-// Advanced). Auth uses whatever credentials that CLI relies on.
+// experimental Agent SDK transport is enabled (Settings → Labs →
+// Experimental). Auth uses whatever credentials that CLI relies on.
 
 import { renderMcpToolsSection } from '../../shared/flows/mcpTools';
 import os from 'node:os';

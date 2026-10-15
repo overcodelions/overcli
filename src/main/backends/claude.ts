@@ -19,6 +19,20 @@ interface ClaudeStreamState {
   inner: ClaudeParserState;
 }
 
+/// What overcli adds to Claude Code's system prompt, on either transport.
+///
+/// The batching directive is unconditional, not turbo-gated: consolidating
+/// tool calls costs nothing in answer quality, so there is no reason to make
+/// the user opt in. Narration rides along above the Quiet level.
+///
+/// One function because there are two ways to launch Claude — argv here,
+/// the SDK's `systemPrompt.append` in the runner — and the SDK copy went
+/// without the batching directive for as long as the two were written
+/// separately.
+export function claudeSystemPromptAppend(narrate: boolean): string {
+  return narrate ? `${BATCHING_DIRECTIVE}\n\n${NARRATION_DIRECTIVE}` : BATCHING_DIRECTIVE;
+}
+
 export const claudeBackend: BackendSpec = {
   name: 'claude',
 
@@ -79,11 +93,9 @@ export const claudeBackend: BackendSpec = {
     if (args.turbo || args.skipGlobalMcp) {
       a.push('--strict-mcp-config');
     }
-    // Unconditional, not turbo-gated: consolidating tool calls costs nothing
-    // in answer quality, so there is no reason to make the user opt in. Safe
-    // as argv precisely because it never varies — `paramsChanged` can't see
-    // a value that is the same on every spawn, so this forces no respawns.
-    a.push('--append-system-prompt', args.narrate ? `${BATCHING_DIRECTIVE}\n\n${NARRATION_DIRECTIVE}` : BATCHING_DIRECTIVE);
+    // Varies only with narration, which is a launch param — so a level change
+    // respawns, and nothing else does.
+    a.push('--append-system-prompt', claudeSystemPromptAppend(!!args.narrate));
     for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
       a.push('--add-dir', dir);
     }

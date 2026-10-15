@@ -53,8 +53,9 @@ export interface ClaudeSdkStartOptions {
   /// this spawns the binary with `--chrome`, exactly as the cli transport
   /// does in `backends/claude.ts`.
   chrome?: boolean;
-  /// Text appended to Claude Code's own system prompt — the narration
-  /// directive, when the conversation's output level asks for it.
+  /// Text appended to Claude Code's own system prompt — the same text the
+  /// cli transport passes as `--append-system-prompt` (see
+  /// `claudeSystemPromptAppend`).
   appendSystemPrompt?: string;
 }
 

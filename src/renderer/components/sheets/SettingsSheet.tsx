@@ -999,12 +999,6 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           onChange={(v) => patch({ showDebug: v })}
         />
         <Toggle
-          label="Use Claude Agent SDK (experimental)"
-          help="Route Claude turns through @anthropic-ai/claude-agent-sdk in-process instead of spawning `claude -p`. Permission prompts route directly via canUseTool (no MCP broker round-trip). Survives future restrictions on `-p`."
-          value={(local.claudeTransport ?? 'cli') === 'sdk'}
-          onChange={(v) => patch({ claudeTransport: v ? 'sdk' : 'cli' })}
-        />
-        <Toggle
           label="Claude MCP debug logging"
           help="Launch the Claude CLI with `--debug mcp` so MCP server startup and registration diagnostics print to stderr. View them in the Debug sheet (enable “Show Debug button” above). Useful for diagnosing MCP issues like the permission broker failing to register in a crowded config. Noisy — leave off for normal use."
           value={local.claudeMcpDebug ?? false}
@@ -1133,6 +1127,20 @@ function LabsPane({
           help="Lets overcli start and stop the things your projects run — a server, a web app, a database — and point them at whichever branch you are working on. Overcli also suggests it on a project that has something to run."
           value={local.servicesEnabled ?? false}
           onChange={(v) => patch({ servicesEnabled: v })}
+        />
+      </Group>
+      {/* Not a lab: labs are surfaces that default on when unset, and this
+          is an engine switch that must default off. It lives here because
+          it is the same promise — try it if you want, expect rough edges. */}
+      <Group
+        title="Experimental"
+        description="Alternative ways of running things. Off by default and not kept in step with the default path; new features land there first."
+      >
+        <Toggle
+          label="Run Claude through the Agent SDK"
+          help="Drives Claude turns in-process through the Claude Agent SDK instead of spawning `claude -p`. A fallback in case `-p` is ever restricted; use the default unless you are testing it."
+          value={(local.claudeTransport ?? 'cli') === 'sdk'}
+          onChange={(v) => patch({ claudeTransport: v ? 'sdk' : 'cli' })}
         />
       </Group>
     </div>
