@@ -122,19 +122,23 @@ function cachePath(): string | null {
   }
 }
 
-let memo: ClaudeUsageSnapshot | null = null;
+/// Keyed on the cache file's mtime, not just "read once": the stats scan runs
+/// in a long-lived utility process (statsWorker.ts) while refreshes run in
+/// main, so the worker only ever learns about a new snapshot from the file.
+let memo: { mtimeMs: number; snap: ClaudeUsageSnapshot } | null = null;
 
 /// Last known snapshot, no subprocess. Safe to call from the synchronous
 /// stats scan.
 export function readClaudeUsage(): ClaudeUsageSnapshot | null {
-  if (memo) return memo;
   const target = cachePath();
-  if (!target) return null;
+  if (!target) return memo?.snap ?? null;
   try {
+    const { mtimeMs } = fs.statSync(target);
+    if (memo && memo.mtimeMs === mtimeMs) return memo.snap;
     const parsed = JSON.parse(fs.readFileSync(target, 'utf8'));
     if (parsed && Array.isArray(parsed.windows) && typeof parsed.capturedAt === 'number') {
-      memo = parsed as ClaudeUsageSnapshot;
-      return memo;
+      memo = { mtimeMs, snap: parsed as ClaudeUsageSnapshot };
+      return memo.snap;
     }
   } catch {
     // Missing or unreadable — no snapshot yet.
@@ -143,7 +147,6 @@ export function readClaudeUsage(): ClaudeUsageSnapshot | null {
 }
 
 function writeCache(snap: ClaudeUsageSnapshot): void {
-  memo = snap;
   const target = cachePath();
   if (!target) return;
   const tmp = `${target}.${process.pid}.tmp`;
@@ -151,6 +154,7 @@ function writeCache(snap: ClaudeUsageSnapshot): void {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(tmp, JSON.stringify(snap), 'utf8');
     fs.renameSync(tmp, target);
+    memo = { mtimeMs: fs.statSync(target).mtimeMs, snap };
   } catch (e) {
     logSilent('claudeUsage.writeCache', e);
     try {

@@ -3,7 +3,8 @@ import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useStore } from '../store';
 import { useRunner } from '../runnersStore';
 import { backendColor, backendName } from '../theme';
-import { Backend, Conversation, StreamEvent, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
+import { Backend, Conversation, StreamEvent, TaskProgressInfo, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
+import { subagentStatus } from './subagentStatus';
 import { UserBubble } from './UserBubble';
 import { AssistantBubble } from './AssistantBubble';
 import { ToolUseCard } from './ToolUseCard';
@@ -1045,22 +1046,30 @@ export function filterRendered(
 export function countPendingSubagents(
   events: StreamEvent[],
   toolResultIndex: Map<string, ToolResultBlock>,
+  taskProgress: Record<string, TaskProgressInfo> = {},
 ): number {
-  let n = 0;
+  return pendingSubagentIds(events, toolResultIndex, taskProgress).length;
+}
+
+/// Tool_use ids of the Task/Agent calls still working, oldest first.
+export function pendingSubagentIds(
+  events: StreamEvent[],
+  toolResultIndex: Map<string, ToolResultBlock>,
+  taskProgress: Record<string, TaskProgressInfo> = {},
+): string[] {
+  const ids: string[] = [];
   for (const ev of events) {
     if (ev.kind.type !== 'assistant') continue;
     for (const use of ev.kind.info.toolUses) {
-      if (SUBAGENT_TOOLS.has(use.name) && !toolResultIndex.has(use.id)) n += 1;
+      if (!SUBAGENT_TOOLS.has(use.name)) continue;
+      // Background agents get their tool_result at launch, so only task
+      // progress knows whether they're still going. Without any, a
+      // launched background agent is assumed finished, not stuck.
+      const status = subagentStatus({ result: toolResultIndex.get(use.id), progress: taskProgress[use.id], events: [] });
+      if (status === 'running') ids.push(use.id);
     }
   }
-  return n;
-}
-
-export function withSubagentSuffix(label: string, pending: number): string {
-  if (pending <= 0) return label;
-  const note = pending === 1 ? '1 subagent running' : `${pending} subagents running`;
-  const base = label?.trim();
-  return base ? `${base} · ${note}` : `${note}…`;
+  return ids;
 }
 
 export function latestPendingToolLabel(

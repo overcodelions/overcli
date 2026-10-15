@@ -87,6 +87,11 @@ export function loadHistory(args: {
   const budget = Math.max(1, args.budgetBytes ?? HISTORY_TAIL_BUDGET_BYTES);
   const loaded = loadFullHistory(args, synthetic, budget);
   const replay = trimHistoryForReplay(loaded.events, budget, loaded.truncated);
+  if (args.backend === 'claude' && args.sessionId) {
+    // Appended after the trim so a chatty subagent can't push the main
+    // transcript's older turns out of the replay budget.
+    replay.push(...loadClaudeSubagentHistory(args.sessionId, args.projectPath, subagentToolUseIds(replay)));
+  }
   if (loaded.readError) replay.unshift(event({ type: 'systemNotice', text: 'Could not read this transcript; check file permissions or disk health.' }, '', Date.now()));
   return replay;
 }
@@ -412,6 +417,74 @@ function loadClaudeHistory(
     }
   }
   return { events: dedupeClaudeUsageResults(out), truncated, readError: error };
+}
+
+const SUBAGENT_TOOL_NAMES = new Set(['Task', 'Agent']);
+/// Each subagent transcript is read tail-first under its own cap, so one
+/// long-running agent can't make reopening the conversation slow.
+const SUBAGENT_TAIL_BUDGET_BYTES = 1_500_000;
+
+/// The Task/Agent tool_use ids the replayed main transcript still shows —
+/// the only subagents whose drawers can be opened.
+function subagentToolUseIds(events: StreamEvent[]): Set<string> {
+  const ids = new Set<string>();
+  for (const ev of events) {
+    if (ev.kind.type !== 'assistant') continue;
+    for (const use of ev.kind.info.toolUses) {
+      if (SUBAGENT_TOOL_NAMES.has(use.name)) ids.add(use.id);
+    }
+  }
+  return ids;
+}
+
+/// Claude Code writes each subagent's transcript beside the session, not
+/// inside it: `<sessionId>/subagents/agent-<id>.jsonl`, with a sibling
+/// `.meta.json` naming the Task/Agent tool_use that launched it. Without
+/// these a reopened conversation's subagent cards have nothing to show.
+export function loadClaudeSubagentHistory(
+  sessionId: string,
+  projectPath: string,
+  wanted: Set<string>,
+  root?: string,
+): StreamEvent[] {
+  if (wanted.size === 0) return [];
+  const dir = path.join(
+    root ?? resolveClaudeProjectDir(claudeProjectSlug(projectPath)),
+    sessionId,
+    'subagents',
+  );
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out: StreamEvent[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.meta.json')) continue;
+    let toolUseId: unknown;
+    try {
+      toolUseId = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf-8'))?.toolUseId;
+    } catch {
+      continue;
+    }
+    if (typeof toolUseId !== 'string' || !wanted.has(toolUseId)) continue;
+    const file = path.join(dir, name.replace(/\.meta\.json$/, '.jsonl'));
+    if (!fs.existsSync(file)) continue;
+    const { lines } = readTailLines(file, SUBAGENT_TAIL_BUDGET_BYTES);
+    const events: StreamEvent[] = [];
+    for (const line of lines) {
+      for (const ev of parseClaudeHistoryLine(line)) {
+        // Every row in the file says only `isSidechain`; the meta file is
+        // what ties them to their card.
+        ev.parentToolUseId = toolUseId;
+        ev.raw = '';
+        events.push(ev);
+      }
+    }
+    out.push(...dedupeClaudeUsageResults(events));
+  }
+  return out;
 }
 
 /// Keep one replayed ✓ caption per API message.

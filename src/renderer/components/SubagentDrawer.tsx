@@ -14,13 +14,16 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
-import { useRunner, useSubagentEvents, useSubagentKeys } from '../runnersStore';
+import { useRunner, useSubagentEvents, useSubagentKeys, useTaskProgress } from '../runnersStore';
 import { InsideSubagentDrawer, OpenFileOverride } from '../openFile';
 import { StreamEvent, ToolResultBlock, ToolUseBlock } from '@shared/types';
 import { AssistantBubble } from './AssistantBubble';
 import { ToolResultCard } from './ToolResultCard';
 import { SystemNotice } from './SystemNotice';
 import { Markdown } from './Markdown';
+import { isBackgroundLaunch, subagentStatus } from './subagentStatus';
+
+const SUBAGENT_POLL_MS = 3000;
 
 export function SubagentDrawer({ conversationId }: { conversationId: string }) {
   const activeId = useStore((s) => s.subagentDrawerParentId);
@@ -81,10 +84,32 @@ export function SubagentDrawer({ conversationId }: { conversationId: string }) {
   // the bottom of the drawer — that's the synthesized output the user
   // came here to read, and surfacing it inline saves a round-trip to
   // the main transcript.
-  const finalReport = useMemo(
+  const parentResult = useMemo(
     () => (activeId ? findParentToolResult(runner?.events ?? [], activeId) : null),
     [runner?.events, activeId],
   );
+  // A background agent's tool_result is only its launch receipt; its real
+  // report is the last message in its own events.
+  const finalReport = isBackgroundLaunch(parentResult ?? undefined) ? null : parentResult;
+  const activeProgress = useTaskProgress(conversationId, activeId);
+  const activeStatus = subagentStatus({
+    result: parentResult ?? undefined,
+    progress: activeProgress,
+    events: activeEvents,
+  });
+
+  // When the stream carried none of this agent's steps (background agents),
+  // read them from its transcript file — once on open, then every few
+  // seconds while it's still going. The store skips streamed buckets.
+  const loadSubagentTranscript = useStore((s) => s.loadSubagentTranscript);
+  const stillRunning = activeStatus === 'running';
+  useEffect(() => {
+    if (!activeId) return;
+    void loadSubagentTranscript(conversationId, activeId);
+    if (!stillRunning) return;
+    const id = setInterval(() => void loadSubagentTranscript(conversationId, activeId), SUBAGENT_POLL_MS);
+    return () => clearInterval(id);
+  }, [conversationId, activeId, stillRunning, loadSubagentTranscript]);
 
   // Auto-follow new events while the user is parked near the bottom.
   // We track a "stick to bottom" flag that flips off the moment the

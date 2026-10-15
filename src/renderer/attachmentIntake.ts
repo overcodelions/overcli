@@ -27,6 +27,11 @@ const DOCUMENT_EXTS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'rtf',
 ]);
 
+/// Images we accept but have to convert to JPEG first — Chromium can't draw
+/// them and no model API takes them. An iPhone photo is HEIC.
+const CONVERTIBLE_IMAGE_EXTS = new Set(['heic', 'heif', 'tif', 'tiff', 'bmp']);
+const MODEL_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
 const DOCUMENT_MIMES = new Set([
   'application/pdf',
   'application/msword',
@@ -49,7 +54,7 @@ export const ATTACHMENT_ACCEPT = [
   'application/xml',
   'application/x-yaml',
   ...DOCUMENT_MIMES,
-  ...[...TEXT_LIKE_EXTS, ...DOCUMENT_EXTS].map((e) => `.${e}`),
+  ...[...TEXT_LIKE_EXTS, ...DOCUMENT_EXTS, ...CONVERTIBLE_IMAGE_EXTS].map((e) => `.${e}`),
 ].join(',');
 
 export function guessMimeFromName(name: string): string | null {
@@ -78,6 +83,11 @@ export function guessMimeFromName(name: string): string | null {
     case 'ods': return 'application/vnd.oasis.opendocument.spreadsheet';
     case 'odp': return 'application/vnd.oasis.opendocument.presentation';
     case 'rtf': return 'application/rtf';
+    case 'heic': return 'image/heic';
+    case 'heif': return 'image/heif';
+    case 'tif':
+    case 'tiff': return 'image/tiff';
+    case 'bmp': return 'image/bmp';
     case 'log':
     case 'txt':
     case 'ini':
@@ -102,8 +112,29 @@ export function isAcceptedAttachment(f: File): boolean {
     const ext = f.name.slice(dot + 1).toLowerCase();
     if (TEXT_LIKE_EXTS.has(ext)) return true;
     if (DOCUMENT_EXTS.has(ext)) return true;
+    if (CONVERTIBLE_IMAGE_EXTS.has(ext)) return true;
   }
   return false;
+}
+
+/// An image the models can't read as-is. SVG stays out: it's text, and the
+/// non-image path already hands it over as a file.
+export function needsImageConversion(mimeType: string): boolean {
+  return mimeType.startsWith('image/') && mimeType !== 'image/svg+xml' && !MODEL_IMAGE_MIMES.has(mimeType);
+}
+
+/// The JPEG conversion lives in the main process (`sips` on macOS). Absent
+/// in tests and in a plain browser, which reads as "can't convert here".
+async function convertImage(
+  dataBase64: string,
+  label: string,
+): Promise<{ dataBase64: string; mimeType: string; label: string } | null> {
+  try {
+    const res = await window.overcli?.invoke?.('attachments:convertImage', { dataBase64, label });
+    return res?.ok ? res : null;
+  } catch {
+    return null;
+  }
 }
 
 export function fileToBase64(file: File): Promise<string> {
@@ -154,12 +185,24 @@ export async function intakeAttachments(
       rejections.push(`Couldn't read ${f.name || 'file'}.`);
       continue;
     }
+    let mimeType = f.type || guessMimeFromName(f.name) || 'application/octet-stream';
+    let label = f.name;
+    let size = f.size;
+    if (needsImageConversion(mimeType)) {
+      const converted = await convertImage(dataBase64, f.name);
+      if (!converted) {
+        rejections.push(`Couldn't convert ${f.name || 'image'} — save it as JPEG or PNG and attach that.`);
+        continue;
+      }
+      ({ dataBase64, mimeType, label } = converted);
+      size = Math.floor((dataBase64.length * 3) / 4);
+    }
     attachments.push({
       id: attachmentId(),
-      mimeType: f.type || guessMimeFromName(f.name) || 'application/octet-stream',
+      mimeType,
       dataBase64,
-      label: f.name,
-      size: f.size,
+      label,
+      size,
     });
   }
   return { attachments, rejections };

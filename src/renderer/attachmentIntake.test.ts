@@ -10,6 +10,7 @@ import {
   MAX_PROJECT_FILE_BYTES,
   guessMimeFromName,
   intakeAttachments,
+  needsImageConversion,
   intakeProjectFiles,
   isAcceptedAttachment,
 } from './attachmentIntake';
@@ -148,5 +149,45 @@ describe('intakeProjectFiles — a copy, not an attachment', () => {
 
     expect(files[0].sourcePath).toBeUndefined();
     expect(files[0].dataBase64).toBe(Buffer.from('hello').toString('base64'));
+  });
+});
+
+describe('intakeAttachments — images the models cannot read', () => {
+  it('only flags formats outside png/jpeg/gif/webp', () => {
+    expect(needsImageConversion('image/heic')).toBe(true);
+    expect(needsImageConversion('image/tiff')).toBe(true);
+    expect(needsImageConversion('image/jpeg')).toBe(false);
+    expect(needsImageConversion('image/svg+xml')).toBe(false);
+    expect(needsImageConversion('text/plain')).toBe(false);
+  });
+
+  it('accepts a .heic the OS gave no type for', () => {
+    expect(isAcceptedAttachment(new File([''], 'IMG_3942.HEIC'))).toBe(true);
+  });
+
+  it('swaps a HEIC for the JPEG the main process converted it to', async () => {
+    const jpeg = Buffer.from('jpeg-bytes').toString('base64');
+    (window as unknown as { overcli: unknown }).overcli = {
+      invoke: async () => ({ ok: true, dataBase64: jpeg, mimeType: 'image/jpeg', label: 'IMG_3942.jpg' }),
+    };
+    try {
+      const { attachments, rejections } = await intakeAttachments([
+        new File(['heic-bytes'], 'IMG_3942.HEIC', { type: 'image/heic' }),
+      ]);
+
+      expect(rejections).toEqual([]);
+      expect(attachments[0]).toMatchObject({ mimeType: 'image/jpeg', label: 'IMG_3942.jpg', dataBase64: jpeg });
+    } finally {
+      delete (window as unknown as { overcli?: unknown }).overcli;
+    }
+  });
+
+  it('rejects with a reason when there is nothing to convert it', async () => {
+    const { attachments, rejections } = await intakeAttachments([
+      new File(['heic-bytes'], 'IMG_3942.HEIC', { type: 'image/heic' }),
+    ]);
+
+    expect(attachments).toHaveLength(0);
+    expect(rejections[0]).toContain('IMG_3942.HEIC');
   });
 });
