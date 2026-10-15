@@ -1,9 +1,7 @@
 import { useMemo } from 'react';
 import { StreamEvent, UUID } from '@shared/types';
 import { useRunner } from '../runnersStore';
-import { useConversation, useTranscriptLevel } from '../hooks';
-import { useStore } from '../store';
-import { offerSummaryHint } from '@shared/transcriptLevel';
+import { useTranscriptLevel } from '../hooks';
 import { ActivityStrip } from './ActivityStrip';
 import {
   countPendingSubagents,
@@ -25,24 +23,10 @@ const EMPTY_EVENTS: StreamEvent[] = [];
 /// mid-flight and the user was busy approving its tool calls. Pinning the
 /// indicator here keeps the signal visible no matter where the transcript
 /// is scrolled.
-///
-/// `offerSummary` adds a one-time "try Summary" nudge at Quiet. Only the chat
-/// pane asks for it: a flow run's conversation is synthesized, so a level
-/// picked there would have nowhere to be saved.
-export function RunningIndicator({
-  conversationId,
-  offerSummary = false,
-}: {
-  conversationId: UUID;
-  offerSummary?: boolean;
-}) {
+export function RunningIndicator({ conversationId }: { conversationId: UUID }) {
   const runner = useRunner(conversationId);
   const level = useTranscriptLevel(conversationId);
   const showToolActivity = level === 'detailed';
-  const conv = useConversation(conversationId);
-  const settings = useStore((s) => s.settings);
-  const saveSettings = useStore((s) => s.saveSettings);
-  const setTranscriptLevel = useStore((s) => s.setTranscriptLevel);
   const isRunning = runner?.isRunning ?? false;
   const activityLabel = runner?.activityLabel ?? '';
   const events = runner?.events ?? EMPTY_EVENTS;
@@ -64,37 +48,12 @@ export function RunningIndicator({
     // When tool activity is hidden the user can't see which tool is
     // running — promote the latest in-flight tool to the strip. Falls back
     // to the runner's generic label ("Thinking…", "Running tools…").
-    (!showToolActivity && latestPendingToolLabel(events, toolResultIndex)) ||
+    // At Summary the live line under the transcript already names the
+    // call, so the strip stays generic rather than saying it twice.
+    (level === 'quiet' && latestPendingToolLabel(events, toolResultIndex)) ||
       activityLabel,
     pendingSubagents,
   );
 
-  // Quiet is the default, and from inside it nothing says there's more to
-  // see. Offer the middle level once, to people who never chose.
-  const hint = offerSummary && !!conv && level === 'quiet' && offerSummaryHint(settings, conv);
-  if (!hint) return <ActivityStrip label={label} />;
-  return (
-    <div className="flex items-center gap-3">
-      <ActivityStrip label={label} />
-      <span className="flex items-center gap-1.5 text-[11px] text-ink-faint">
-        Want to see what it's doing?
-        <button
-          type="button"
-          className="text-accent hover:underline"
-          onClick={() => void setTranscriptLevel(conversationId, 'summary')}
-        >
-          Try Summary
-        </button>
-        <button
-          type="button"
-          aria-label="Don't show this again"
-          title="Don't show this again"
-          className="px-1 hover:text-ink"
-          onClick={() => void saveSettings({ ...settings, transcriptHintDismissed: true })}
-        >
-          ×
-        </button>
-      </span>
-    </div>
-  );
+  return <ActivityStrip label={label} />;
 }

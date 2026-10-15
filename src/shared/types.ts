@@ -1183,16 +1183,13 @@ export interface AppSettings {
   /// default: the drawer works on every platform and needs no permission to
   /// control another app.
   useSystemTerminal?: boolean;
-  /// The pre-levels form of `defaultTranscriptLevel`: true was Detailed,
-  /// false Quiet. Still read when `defaultTranscriptLevel` is unset — see
+  /// The pre-levels eye toggle. When `defaultTranscriptLevel` is unset, true
+  /// maps to Detailed and false to Summary — see
   /// `defaultTranscriptLevel()` in shared/transcriptLevel.ts.
   defaultShowToolActivity: boolean;
   /// How much of an agent's work a conversation shows unless it picks its
   /// own level in the header. Unset on settings saved before levels.
   defaultTranscriptLevel?: TranscriptLevel;
-  /// The "see what it's doing? try Summary" hint under a running Quiet turn
-  /// was closed. It also stops once a level is picked anywhere.
-  transcriptHintDismissed?: boolean;
   autoDowngrade: boolean;
   /// Where to POST a copy of every notification, so scheduled runs and
   /// unattended workers can reach you when you are not at the desktop.
