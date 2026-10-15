@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { claudeBackend } from './claude';
+import { claudeBackend, claudeSystemPromptAppend } from './claude';
 import { BATCHING_DIRECTIVE } from './turbo';
 import { NARRATION_DIRECTIVE } from '../../shared/transcriptLevel';
 import type { BackendCtx, BackendSendArgs } from './types';
@@ -238,6 +238,12 @@ describe('claudeBackend narration', () => {
 
   it('leaves the system prompt alone at quiet', () => {
     expect(systemPrompt(claudeBackend.buildArgs(baseArgs, noMcpCtx))).toBe(BATCHING_DIRECTIVE);
+  });
+
+  it('builds the same text the SDK transport appends, batching included', () => {
+    expect(systemPrompt(claudeBackend.buildArgs({ ...baseArgs, narrate: true }, noMcpCtx))).toBe(claudeSystemPromptAppend(true));
+    expect(systemPrompt(claudeBackend.buildArgs(baseArgs, noMcpCtx))).toBe(claudeSystemPromptAppend(false));
+    expect(claudeSystemPromptAppend(false)).toContain(BATCHING_DIRECTIVE);
   });
 });
 
