@@ -80,6 +80,7 @@ import {
   foldContextUsage,
 } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
+import { isPopoutWindow } from './popoutWindow';
 import {
   conversationTranscriptLevel,
   defaultTranscriptLevel,
@@ -389,6 +390,18 @@ interface StoreState {
   newConversationInWorktree(args: {
     projectPath: string;
     worktreePath: string;
+    branchName?: string;
+    baseBranch?: string;
+    name: string;
+  }): Promise<Conversation | null>;
+  /// The workspace form of `newConversationInWorktree`: a fresh chat in a
+  /// workspace flow run's coordinator root, filed under the workspace whose
+  /// root is `workspaceRootPath` (`FlowRun.sourceProjectPath`). Returns null
+  /// when no workspace matches. See `Conversation.adoptedWorkspaceWorktrees`.
+  newConversationInWorkspaceWorktrees(args: {
+    workspaceRootPath: string;
+    coordinatorRootPath: string;
+    worktrees: Array<{ name: string; worktreePath: string }>;
     branchName?: string;
     baseBranch?: string;
     name: string;
@@ -1095,6 +1108,7 @@ function computeAllowedDirs(state: StoreState, convId: UUID): string[] {
             if (member?.worktreePath) dirs.push(member.worktreePath);
           }
         }
+        for (const t of c.adoptedWorkspaceWorktrees ?? []) dirs.push(t.worktreePath);
       } else {
         dirs.push(w.rootPath);
         for (const pid of w.projectIds) {
@@ -2120,6 +2134,36 @@ export const useStore = create<StoreState>((set, get) => ({
     }));
     // Not awaited, for the reason spelled out in `newConversation`.
     void get().saveProjects();
+    get().selectConversation(conv.id);
+    return conv;
+  },
+
+  async newConversationInWorkspaceWorktrees(args) {
+    const ws = get().workspaces.find((w) => isSamePath(w.rootPath, args.workspaceRootPath));
+    if (!ws) return null;
+    const conv: Conversation = {
+      id: uuid(),
+      name: args.name,
+      createdAt: Date.now(),
+      totalCostUSD: 0,
+      turnCount: 0,
+      currentModel: '',
+      permissionMode: get().settings.defaultPermissionMode,
+      primaryBackend: pickDefaultBackend(get().settings, get().backendHealth),
+      // The run's root, not one minted for this chat: archiving a coordinator
+      // removes the root named by ITS OWN id, so this one is never touched.
+      coordinatorRootPath: args.coordinatorRootPath,
+      adoptedWorkspaceWorktrees: args.worktrees,
+      branchName: args.branchName,
+      baseBranch: args.baseBranch,
+    };
+    set((s) => ({
+      workspaces: s.workspaces.map((w) =>
+        w.id === ws.id ? { ...w, conversations: [...(w.conversations ?? []), conv] } : w,
+      ),
+    }));
+    // Not awaited, for the reason spelled out in `newConversation`.
+    void get().saveWorkspaces();
     get().selectConversation(conv.id);
     return conv;
   },
@@ -4212,6 +4256,11 @@ export const useStore = create<StoreState>((set, get) => ({
         if (!c) continue;
         if (c.worktreePath) {
           cwd = c.worktreePath;
+        } else if (c.adoptedWorkspaceWorktrees?.length) {
+          workspaceProjects = c.adoptedWorkspaceWorktrees.map((t) => ({
+            name: t.name,
+            path: t.worktreePath,
+          }));
         } else if (c.workspaceAgentMemberIds?.length) {
           workspaceProjects = collectCoordinatorMembers(s.projects, c.workspaceAgentMemberIds).map(
             (m) => ({ name: m.name, path: m.worktreePath }),
@@ -4821,8 +4870,9 @@ export function serializeFileTabs(s: StoreState): PersistedFileTabs {
 // Persist open tabs whenever they change. A subscription rather than a call
 // in each action: opening, closing, reordering and switching scopes all end
 // up here, and the 250ms coalescing window collapses the burst you get from
-// an agent touching several files at once into one write.
-if (typeof window !== 'undefined') {
+// an agent touching several files at once into one write. A popped-out
+// window holds one scope's tabs, not the app's, so it never saves.
+if (typeof window !== 'undefined' && !isPopoutWindow) {
   useStore.subscribe((s, prev) => {
     if (
       s.tabs === prev.tabs &&

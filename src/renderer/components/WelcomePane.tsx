@@ -11,6 +11,7 @@ import { DocumentsPane } from './DocumentsPane';
 import { createBranchedAgent, createDetachedAgent } from './sheets/NewAgentSheet';
 import { BranchCombobox } from './sheets/BranchCombobox';
 import { useProjectBranches } from './sheets/useProjectBranches';
+import { worktreeChoices, type WorktreeChoice } from '../worktreeChoices';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
 import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
 import { FlowsAboutModal } from './flows/FlowsAbout';
@@ -64,7 +65,7 @@ const WELCOME_KEY = '__welcome__';
 /// How a send from the start page runs: in the project directory, in a
 /// fresh build worktree, or in a detached read-only worktree at another
 /// branch's tip (review / docs).
-type RunMode = 'local' | 'agent' | 'review' | 'docs';
+type RunMode = 'local' | 'agent' | 'worktree' | 'review' | 'docs';
 
 /// Composer-first start page. Modeled on the reference screenshot the user
 /// shared: a centered prompt + big input, with pills for model/effort/mode
@@ -84,6 +85,7 @@ export function WelcomePane() {
   const openWorkspaceWith = useStore((s) => s.openWorkspaceWith);
   const newConversation = useStore((s) => s.newConversation);
   const newConversationInWorkspace = useStore((s) => s.newConversationInWorkspace);
+  const newConversationInWorktree = useStore((s) => s.newConversationInWorktree);
   const startNewConversation = useStore((s) => s.startNewConversation);
   const startNewConversationInWorkspace = useStore((s) => s.startNewConversationInWorkspace);
   const send = useStore((s) => s.send);
@@ -132,8 +134,13 @@ export function WelcomePane() {
   // letting background work stay off the working checkout. 'review' and
   // 'docs' are the read-only kinds from the "+ agent" sheet — a detached
   // worktree at some other branch's tip — offered here so you don't have
-  // to leave the composer to review a branch.
+  // to leave the composer to review a branch. 'worktree' chats in a linked
+  // worktree that already exists — an earlier agent's or flow's — without
+  // touching it beyond pointing a new conversation at it.
   const [runMode, setRunMode] = useState<RunMode>('local');
+  const [existingTrees, setExistingTrees] = useState<WorktreeChoice[]>([]);
+  const [loadingTrees, setLoadingTrees] = useState(false);
+  const [pickedTreePath, setPickedTreePath] = useState('');
   const [targetBranch, setTargetBranch] = useState('');
   const [agentError, setAgentError] = useState<string | null>(null);
   // Live worktree-creation status. Workspace agents mint one worktree per
@@ -253,8 +260,45 @@ export function WelcomePane() {
   // Keep the toggle honest if the target changes out from under it.
   useEffect(() => {
     if (!canRunAgent && runMode === 'agent') setRunMode('local');
-    if (!canRunDetached && (runMode === 'review' || runMode === 'docs')) setRunMode('local');
+    if (!canRunDetached && (runMode === 'review' || runMode === 'docs' || runMode === 'worktree'))
+      setRunMode('local');
   }, [canRunAgent, canRunDetached, runMode]);
+
+  // Linked worktrees for the 'worktree' picker, newest first — the tree you
+  // want is almost always the one you made last. Re-read every time the mode
+  // is picked, because flows add and delete trees behind our back.
+  useEffect(() => {
+    if (runMode !== 'worktree' || !selectedProject) return;
+    let cancelled = false;
+    setLoadingTrees(true);
+    void worktreeChoices(selectedProject.path).then((all) => {
+      if (cancelled) return;
+      const linked = all
+        .filter((t) => !t.primary)
+        .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+      setExistingTrees(linked);
+      setPickedTreePath((cur) =>
+        linked.some((t) => t.path === cur) ? cur : (linked[0]?.path ?? ''),
+      );
+      setLoadingTrees(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [runMode, selectedProject]);
+  // The combobox matches on strings, so each tree gets a unique label. A
+  // branch can only be checked out once, but detached trees can share a sha.
+  const treeLabels = useMemo(() => {
+    const byLabel = new Map<string, WorktreeChoice>();
+    for (const t of existingTrees) {
+      const label = t.detached ? `${t.ref} (detached) · ${pathBasename(t.path)}` : t.ref;
+      byLabel.set(byLabel.has(label) ? `${label} · ${shortPath(t.path)}` : label, t);
+    }
+    return byLabel;
+  }, [existingTrees]);
+  const pickedTree = existingTrees.find((t) => t.path === pickedTreePath);
+  const pickedTreeLabel =
+    [...treeLabels.entries()].find(([, t]) => t.path === pickedTreePath)?.[0] ?? '';
 
   // Branches for the review/docs target picker. Fetches origin behind the
   // cached list so a branch pushed from elsewhere (the PR you just opened)
@@ -457,6 +501,29 @@ export function WelcomePane() {
     }
   };
 
+  // Existing-worktree mode: a plain chat whose cwd is a tree that is already
+  // there. Adopted, so archiving the chat later leaves the tree alone.
+  const handleSendInWorktree = async (prompt: string, attachments: Attachment[]) => {
+    if (!selectedProject) return;
+    if (!pickedTree) {
+      setAgentError('Pick a worktree first.');
+      return;
+    }
+    setAgentError(null);
+    const conv = await newConversationInWorktree({
+      projectPath: selectedProject.path,
+      worktreePath: pickedTree.path,
+      branchName: pickedTree.detached ? undefined : pickedTree.ref,
+      baseBranch: branch || undefined,
+      name: deriveAgentName(prompt),
+    });
+    if (!conv) {
+      setAgentError('Could not open a chat in that worktree.');
+      return;
+    }
+    await applyPillsAndSend(conv.id, prompt, attachments);
+  };
+
   // A handoff whose seeded draft is sent is handled: it leaves the tray.
   // Captured before the send, because sending clears the draft and that
   // puts the card (and `activeId`) away — see `initHandoffs`.
@@ -475,6 +542,10 @@ export function WelcomePane() {
     }
     if (runMode === 'agent' && canRunAgent) {
       await handleSendAsAgent(prompt, attachments);
+      return;
+    }
+    if (runMode === 'worktree' && canRunDetached) {
+      await handleSendInWorktree(prompt, attachments);
       return;
     }
     const conv = focusedWorkspace
@@ -928,6 +999,18 @@ export function WelcomePane() {
               >
                 {refreshingTargets ? '…' : '↻'}
               </button>
+            </div>
+          ) : runMode === 'worktree' ? (
+            <div className="min-w-[140px] max-w-[260px]">
+              <BranchCombobox
+                options={[...treeLabels.keys()]}
+                value={pickedTreeLabel}
+                onChange={(label) => setPickedTreePath(treeLabels.get(label)?.path ?? '')}
+                disabled={loadingTrees || existingTrees.length === 0}
+                className="px-2.5 py-1 rounded-full bg-card-strong border border-card text-xs"
+                placeholder={loadingTrees ? 'Loading worktrees…' : 'No other worktrees'}
+                emptyText="No matching worktrees."
+              />
             </div>
           ) : (
             !focusedWorkspace &&
@@ -1868,6 +1951,7 @@ function ContextPill({
 const RUN_MODE_LABELS: Record<RunMode, string> = {
   local: 'Work locally',
   agent: 'Run as agent',
+  worktree: 'Existing worktree',
   review: 'Review a branch',
   docs: 'Document a branch',
 };
@@ -1887,6 +1971,11 @@ function runModeItems(canRunAgent: boolean, canRunDetached: boolean): PillItem[]
     });
   }
   if (canRunDetached) {
+    items.push({
+      value: 'worktree',
+      label: 'Existing worktree',
+      note: 'Chat in a worktree that is already there, on its branch',
+    });
     items.push({
       value: 'review',
       label: 'Review a branch',

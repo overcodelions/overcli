@@ -4,6 +4,8 @@ import 'highlight.js/styles/github-dark.css';
 import './styles.css';
 import { App } from './App';
 import { TerminalWindow } from './components/TerminalWindow';
+import { ExplorerWindow } from './components/ExplorerWindow';
+import { popoutExplorerRoot, popoutTerminalId } from './popoutWindow';
 import { CrashBoundary } from './components/CrashBoundary';
 import { useStore } from './store';
 
@@ -17,10 +19,18 @@ if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) {
 
 const container = document.getElementById('root');
 if (!container) throw new Error('root element missing');
-// A popped-out terminal is this same bundle opened with `?terminal=<id>`.
-const poppedTerminal = new URLSearchParams(window.location.search).get('terminal');
+// A popped-out terminal or explorer is this same bundle opened with
+// `?terminal=<id>` or `?explorer=<root>`.
 createRoot(container).render(
   <React.StrictMode>
-    <CrashBoundary>{poppedTerminal ? <TerminalWindow id={poppedTerminal} /> : <App />}</CrashBoundary>
+    <CrashBoundary>
+      {popoutTerminalId ? (
+        <TerminalWindow id={popoutTerminalId} />
+      ) : popoutExplorerRoot ? (
+        <ExplorerWindow root={popoutExplorerRoot} />
+      ) : (
+        <App />
+      )}
+    </CrashBoundary>
   </React.StrictMode>,
 );

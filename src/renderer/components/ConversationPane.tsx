@@ -63,7 +63,11 @@ export function ConversationPane() {
   // files `<member>/<path>` (see `refreshGitStatus`), so each member worktree
   // is a checkout with that prefix.
   const memberIds = conv?.workspaceAgentMemberIds;
+  const adoptedTrees = conv?.adoptedWorkspaceWorktrees;
   const changedCheckouts = useMemo(() => {
+    if (adoptedTrees?.length) {
+      return adoptedTrees.map((t) => ({ path: t.worktreePath, prefix: t.name }));
+    }
     if (memberIds?.length) {
       return collectCoordinatorMembers(projects, memberIds).map((m) => ({
         path: m.worktreePath,
@@ -71,7 +75,7 @@ export function ConversationPane() {
       }));
     }
     return conv?.worktreePath ? [{ path: conv.worktreePath }] : [];
-  }, [projects, memberIds, conv?.worktreePath]);
+  }, [projects, memberIds, adoptedTrees, conv?.worktreePath]);
   // Count of file-modifying tool uses in this conversation. When it
   // changes we re-probe git — that keeps the ChangesBar and the
   // header +/- badge in lockstep with the working tree.
