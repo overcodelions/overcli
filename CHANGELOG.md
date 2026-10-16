@@ -4,6 +4,29 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-10-15
+
+### Added
+- **Transcript detail levels** (#636). Pick Quiet, Summary or Detailed from the header eye per conversation, with the default in Settings → General. **Summary**, the new default, shows one line per message naming what was read, run and changed (files link to their diff), and "Show N steps" expands the hidden calls. While the agent works, the line leads with the call in flight and an elapsed clock.
+- **Stranded worker audit** (#629). `overcli workers audit` finds finished worker items whose commit never reached base and sorts them into clean, conflicts or absorbed. Workers Today and each worker's inbox get a **Not merged** section with Recheck, and can ask the worker to rebuild on current base.
+- **Update with base** (#629). Merges base into a shift's work on a fresh branch. Conflicts are parked in the worktree and survive a restart, with Open in Terminal, "I've resolved it" and Discard. It never touches base or pushes.
+- A "N subagents running ▸" chip opens the subagent drawer, and stays after the turn ends (#643).
+
+### Changed
+- **Scoped chat permissions** (#636). Read-only calls go through without a card. Risky commands (push, hard reset, recursive rm, PR merge, publish, sudo, …) always ask, even when a bare `Bash` allow rule exists. "Always allow" remembers a command prefix or a WebFetch domain, not the whole shell. Flow steps and workers keep their current behaviour.
+- Picking a local model starts Ollama, and the stopped-server banner is gone. The title bar shows an Ollama indicator only while the server is running, starting or failed (#636).
+- The Agent SDK transport toggle moved to Labs → Experimental, and both Claude transports send the same system-prompt addition (#638).
+
+### Fixed
+- iPhone photos (HEIC) and TIFF/BMP attachments are converted to JPEG, so they show in the chat and the model can read them (#643).
+- Background subagents no longer read as done the moment they launch. Their cards show progress, and the drawer shows their steps (#643).
+- Reopened Claude conversations show their subagents' steps again (#643).
+- Claude usage stats pick up refreshed numbers instead of the first snapshot (#643).
+- A renderer crash shows an error with Try again / Reload instead of a blank window (#629).
+- The place menu's "All flows…" opens the flow library (#636).
+- Replayed Claude conversations show one turn caption per response (#636).
+- Opening the diff of a file outside a git repo shows the file instead of an error (#636).
+
 ## [0.21.1] - 2026-10-13
 
 ### Added
@@ -671,7 +694,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.21.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.21.2...HEAD
+[0.21.2]: https://github.com/overcodelions/overcli/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/overcodelions/overcli/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/overcodelions/overcli/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/overcodelions/overcli/compare/v0.20.0...v0.20.1
