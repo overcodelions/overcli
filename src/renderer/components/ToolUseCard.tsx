@@ -7,6 +7,7 @@ import { Diff } from './DiffView';
 import { Markdown } from './Markdown';
 import { CopyActions } from './CopyActions';
 import { toolActivityLine, trimDetail } from './toolActivity';
+import { isBackgroundLaunch, subagentStatus } from './subagentStatus';
 
 /// Generic card for a single tool_use block. Specialized renderings (file
 /// edits, bash commands, reads) branch by `use.name`. The optional
@@ -129,15 +130,33 @@ function SubagentCard({
   const events = useSubagentEvents(conversationId, use.id);
   const subtype: string = typeof args.subagent_type === 'string' ? args.subagent_type : '';
   const description: string = typeof args.description === 'string' ? args.description : '';
+  const progress = useTaskProgress(conversationId, use.id);
   const summary = summarizeSubagentEvents(events);
-  const isDone = !!result;
+  const background = isBackgroundLaunch(result);
+  const status = subagentStatus({ result, progress, events });
+  const isDone = status !== 'running';
+  // A background agent's own messages may never reach this stream — its
+  // progress ticks are then the only numbers there are.
+  const toolUseCount = Math.max(summary.toolUseCount, progress?.toolUses ?? 0);
+  const totalTokens = progress?.totalTokens || summary.totalTokens;
+  const hasActivity = events.length > 0 || !!progress;
+  const { startedAt } = summary;
   // Re-render once a second while the agent is running so the elapsed
   // counter ticks up. No-op when the agent has finished.
-  const now = useNow(!isDone && events.length > 0, 1000);
+  const now = useNow(!isDone && startedAt > 0, 1000);
   const elapsedMs =
-    summary.startedAt > 0
-      ? (isDone ? summary.endedAt || now : now) - summary.startedAt
-      : 0;
+    (isDone || startedAt === 0) && progress?.durationMs
+      ? progress.durationMs
+      : startedAt > 0
+        ? (isDone ? summary.endedAt || now : now) - startedAt
+        : 0;
+  const activityLine = summary.currentActivity
+    ? summary.currentActivity
+    : !isDone && progress?.description && progress.description !== description
+      ? { name: '', detail: trimDetail(progress.description) }
+      : null;
+  const statusIcon =
+    status === 'error' ? '✗' : status === 'done' ? '✓' : status === 'ranInBackground' ? '▸' : hasActivity ? '●' : '…';
   return (
     <button
       onClick={() => openSubagentDrawer(use.id, conversationId ?? undefined)}
@@ -151,24 +170,29 @@ function SubagentCard({
           {subtype && (
             <span className="text-ink text-[11px] font-medium">{subtype}</span>
           )}
+          {background && (
+            <span className="text-[9px] uppercase tracking-wide text-indigo-300/70">background</span>
+          )}
           {description && (
             <span className="text-ink-faint text-[10px] truncate flex-1">
               {description}
             </span>
           )}
           <span className="ml-auto text-[10px] text-indigo-300 flex items-center gap-1.5">
-            <span>{isDone ? '✓' : events.length > 0 ? '●' : '…'}</span>
-            {events.length > 0 ? (
+            <span>{statusIcon}</span>
+            {hasActivity ? (
               <>
-                <span>{summary.toolUseCount} tool{summary.toolUseCount === 1 ? '' : 's'}</span>
-                {summary.totalTokens > 0 && (
-                  <span className="text-ink-faint">· {formatTokens(summary.totalTokens)} tok</span>
+                <span>{toolUseCount} tool{toolUseCount === 1 ? '' : 's'}</span>
+                {totalTokens > 0 && (
+                  <span className="text-ink-faint">· {formatTokens(totalTokens)} tok</span>
                 )}
                 {elapsedMs > 0 && (
                   <span className="text-ink-faint">· {formatElapsed(elapsedMs)}</span>
                 )}
               </>
-            ) : (
+            ) : status === 'ranInBackground' ? (
+              <span>ran in background</span>
+            ) : isDone ? null : (
               <span>starting…</span>
             )}
           </span>
@@ -176,11 +200,13 @@ function SubagentCard({
         </div>
         {/* Currently doing — the most recent tool call, summarized.
             Mirrors Claude CLI's "Searching for 4 patterns..." line. */}
-        {summary.currentActivity && (
+        {activityLine && (
           <div className="text-[10px] text-ink-faint truncate pl-[3.25rem]">
-            <span className="text-indigo-300/70">{summary.currentActivity.name}</span>
-            {summary.currentActivity.detail && (
-              <span> · {summary.currentActivity.detail}</span>
+            {activityLine.name && (
+              <span className="text-indigo-300/70">{activityLine.name}</span>
+            )}
+            {activityLine.detail && (
+              <span>{activityLine.name ? ' · ' : ''}{activityLine.detail}</span>
             )}
           </div>
         )}

@@ -1605,6 +1605,14 @@ export interface IPCInvokeMap {
     /// resurface as a user-style bubble after restart.
     syntheticPrompts?: string[];
   }) => StreamEvent[];
+  /// One Claude subagent's transcript, read from its own file beside the
+  /// session. Background agents may never stream their steps to the parent,
+  /// so the drawer reads them from disk instead.
+  'runner:loadSubagentTranscript': (args: {
+    projectPath: string;
+    sessionId: string;
+    toolUseId: string;
+  }) => StreamEvent[];
   /// Conversations main currently believes have a turn in flight. The
   /// renderer polls this to reconcile its own per-conversation `isRunning`
   /// flags: the indicator is edge-triggered, so a single dropped `running`
@@ -1690,6 +1698,10 @@ export interface IPCInvokeMap {
     | { kind: 'documents' }
     | { kind: 'other' };
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
+  /// HEIC/TIFF/BMP → JPEG so the bubble can show it and the model can read it.
+  'attachments:convertImage': (args: { dataBase64: string; label?: string }) =>
+    | { ok: true; dataBase64: string; mimeType: 'image/jpeg'; label: string }
+    | { ok: false; error: string };
   'fs:readFile': (args: {
     path: string;
     rootPath?: string;

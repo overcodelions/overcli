@@ -16,7 +16,7 @@ import { Store, flushStoreSync } from './store';
 import { isAgentWrittenPath, recordWritesFromEvents } from './writtenPaths';
 import { RunnerManager } from './runner';
 import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
-import { loadHistory, migrateClaudeSessionCwd } from './history';
+import { loadClaudeSubagentHistory, loadHistory, migrateClaudeSessionCwd } from './history';
 import {
   probeBackendHealth,
   healthyBackends,
@@ -219,6 +219,7 @@ import {
 } from './workspace';
 import { openTerminalAt, openTerminalIn, runInTerminal, setEmbeddedTerminal } from './terminal';
 import { PtyManager, type PtySpawn } from './ptyManager';
+import { convertImageToJpeg } from './attachmentImages';
 import { DEFAULT_UI_SCALE, stepUiScale } from '../shared/uiScale';
 import {
   ArtifactPreviewResult,
@@ -1125,6 +1126,9 @@ export function registerIpc(): void {
     const init = runner?.lastSystemInit(args.conversationId);
     return init ? [...events, init] : events;
   });
+  ipcMain.handle('runner:loadSubagentTranscript', (_e, { projectPath, sessionId, toolUseId }) =>
+    loadClaudeSubagentHistory(sessionId, projectPath, new Set([toolUseId])),
+  );
   ipcMain.handle('runner:probeHealth', (_e, backend: Backend) => {
     const settings = Store.load().settings;
     return probeBackendHealth(backend, settings.backendPaths[backend]);
@@ -1255,6 +1259,9 @@ export function registerIpc(): void {
   );
   ipcMain.handle('fs:fileInfo', (_e, args: { path: string; rootPath?: string }) =>
     fileInfo(args?.path ?? '', args?.rootPath),
+  );
+  ipcMain.handle('attachments:convertImage', (_e, args: { dataBase64: string; label?: string }) =>
+    convertImageToJpeg({ dataBase64: args?.dataBase64 ?? '', label: args?.label }),
   );
   ipcMain.handle('fs:readFile', (_e, args: { path: string; rootPath?: string }) => {
     const hint = args?.path ?? '';

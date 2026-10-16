@@ -563,6 +563,10 @@ interface StoreState {
     answers: Record<string, { answers: string[] }>,
   ): Promise<void>;
   loadHistoryIfNeeded(conversationId: UUID): Promise<void>;
+  /// Fill a subagent's drawer from its transcript file when the live stream
+  /// carried none of its steps (a background agent). Leaves streamed
+  /// buckets alone.
+  loadSubagentTranscript(conversationId: UUID, toolUseId: string): Promise<void>;
   /// Background warm-up: after startup hydration, ensure each flow run's
   /// conversations have their transcript in the runner AND their markdown
   /// pre-rendered, so the first click into a run paints instantly instead of
@@ -702,6 +706,11 @@ async function releaseRuntime(id: UUID, onlyIfIdle = false): Promise<void> {
     logToMain('warn', 'renderer.releaseRuntime', `Failed to release runtime for ${id}: ${String(err)}`);
   }
 }
+
+/// `conversationId:toolUseId` of subagent buckets filled from the agent's
+/// transcript file rather than the live stream. Only these get re-read —
+/// a streamed bucket is already live and a file read would duplicate it.
+const fileSourcedSubagents = new Set<string>();
 
 function findConversation(state: StoreState, id: UUID): Conversation | null {
   return findConversationFromIndex(lookupSource(state), id);
@@ -3707,6 +3716,38 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 
+  async loadSubagentTranscript(conversationId, toolUseId) {
+    const state = get();
+    const conv = findConversation(state, conversationId);
+    if (!conv?.sessionId) return;
+    if ((conv.primaryBackend ?? pickDefaultBackend(state.settings, state.backendHealth)) !== 'claude') return;
+    const key = `${conversationId}:${toolUseId}`;
+    const current = useRunnersStore.getState().runners[conversationId]?.subagentEvents[toolUseId];
+    if (current?.length && !fileSourcedSubagents.has(key)) return;
+    const cwd = findContainerPath(state, conversationId);
+    if (!cwd) return;
+    let events: StreamEvent[];
+    try {
+      events = await window.overcli.invoke('runner:loadSubagentTranscript', {
+        projectPath: cwd,
+        sessionId: conv.sessionId,
+        toolUseId,
+      });
+    } catch {
+      return;
+    }
+    if (events.length === 0) return;
+    useRunnersStore.getState().patchRunner(conversationId, (runner) => {
+      const existing = runner.subagentEvents[toolUseId];
+      // Live rows showed up while we were reading — they win.
+      if (existing?.length && !fileSourcedSubagents.has(key)) return {};
+      fileSourcedSubagents.add(key);
+      // Each read mints fresh ids, so the file's view replaces the last one
+      // wholesale rather than merging.
+      return { subagentEvents: { ...runner.subagentEvents, [toolUseId]: events } };
+    });
+  },
+
   async loadHistoryIfNeeded(conversationId) {
     const state = get();
     const conv = findConversation(state, conversationId);
@@ -3796,7 +3837,20 @@ export const useStore = create<StoreState>((set, get) => ({
       // live duplicate, matching the prior behaviour.
       const seen = new Set<string>();
       const merged = [];
+      // Replayed subagent rows (tagged by the history loader) feed the
+      // drawer's per-parent buckets, same as their live counterparts. Any
+      // live rows that arrived during the load stay after the replay.
+      const replayedSubagents: Record<string, StreamEvent[]> = {};
       for (const e of events) {
+        if (e.parentToolUseId) (replayedSubagents[e.parentToolUseId] ??= []).push(e);
+      }
+      const subagentEvents = { ...existingRunner.subagentEvents };
+      for (const [parentId, replayed] of Object.entries(replayedSubagents)) {
+        if (!subagentEvents[parentId]?.length) fileSourcedSubagents.add(`${conversationId}:${parentId}`);
+        subagentEvents[parentId] = [...replayed, ...(subagentEvents[parentId] ?? [])];
+      }
+      for (const e of events) {
+        if (e.parentToolUseId) continue;
         if (seen.has(e.id)) continue;
         seen.add(e.id);
         merged.push(e);
@@ -3820,6 +3874,7 @@ export const useStore = create<StoreState>((set, get) => ({
       );
       return {
         events: merged,
+        subagentEvents,
         historyLoading: false,
         historyLoaded: true,
         historyLoadStartedAt: null,
