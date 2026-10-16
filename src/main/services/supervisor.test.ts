@@ -1658,7 +1658,8 @@ describe('Supervisor stopping and switching', () => {
   it('waits for the old process to exit before launching the next', async () => {
     // A JVM still holding :8088 made the new launch look ready at once.
     const { deps, spawns, procs } = harness();
-    deps.probe = { ...deps.probe, sleep: () => new Promise<void>(() => {}) };
+    // The port is free here; this is about the exit. The port is the next test.
+    deps.probe = { ...deps.probe, tcpOpen: async () => false, sleep: () => new Promise<void>(() => {}) };
     const sup = new Supervisor('mine', [spec({ id: 'api' })], [binding('api')], deps);
     await sup.start('api');
 
@@ -1669,6 +1670,64 @@ describe('Supervisor stopping and switching', () => {
     procs[0].emitExit(null);
     await restarting;
     expect(spawns).toHaveLength(2);
+  });
+
+  it('waits for the port to close after the launcher exits before relaunching', async () => {
+    // `npm` exits on SIGTERM at once; the server under it holds the port a
+    // moment longer, and a relaunch then died on "address already in use".
+    let held = true;
+    let wake = () => {};
+    const { deps, spawns, procs } = harness();
+    deps.probe = {
+      ...deps.probe,
+      tcpOpen: async () => held,
+      sleep: () => new Promise<void>((resolve) => (wake = resolve)),
+    };
+    const sup = new Supervisor('mine', [spec({ id: 'api', port: 8088 })], [binding('api')], deps);
+    void sup.start('api');
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    wake();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(spawns).toHaveLength(1);
+
+    const restarting = sup.restart('api');
+    procs[0].emitExit(null);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(spawns).toHaveLength(1);
+    expect(sup.runtime('api').stopping).toBe(true);
+
+    held = false;
+    wake();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(spawns).toHaveLength(2);
+    expect(sup.runtime('api').stopping).toBeUndefined();
+    void restarting;
+  });
+
+  it('holds a start pressed mid-stop until the stop has let go of the port', async () => {
+    let held = true;
+    let wake = () => {};
+    const { deps, spawns, procs } = harness();
+    const sup = new Supervisor('mine', [spec({ id: 'api', port: 8088 })], [binding('api')], deps);
+    await sup.start('api');
+    deps.probe = {
+      ...deps.probe,
+      tcpOpen: async () => held,
+      sleep: () => new Promise<void>((resolve) => (wake = resolve)),
+    };
+
+    const stopping = sup.stop('api');
+    procs[0].emitExit(null);
+    const starting = sup.start('api');
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(spawns).toHaveLength(1);
+
+    held = false;
+    wake();
+    await stopping;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(spawns).toHaveLength(2);
+    void starting;
   });
 
   it('mirrors into the new checkout of a stopped service without starting it', async () => {

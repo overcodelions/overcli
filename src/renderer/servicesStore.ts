@@ -52,6 +52,19 @@ const LOG_LIMIT = 10_000;
 /// here and applied together, a few times a second — still reads as live.
 const FLUSH_MS = 100;
 const pendingLines = new Map<string, string[]>();
+
+/// Starts pressed here that main has not answered yet, by log key. While one
+/// is in flight, a `stopped` from main is the tail of the run being replaced —
+/// a stop still waiting on its port — not news that should flip the row back
+/// to a Start button under the user's cursor.
+const inFlightStarts = new Set<string>();
+
+/// What an IPC rejection says, without Electron's "Error invoking remote
+/// method" wrapper in front of it.
+function reason(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+}
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface ServicesState {
@@ -164,6 +177,9 @@ interface ServicesState {
   start(workspaceId: string, serviceId: string, offset?: number, ignoreHeld?: boolean): Promise<void>;
   stop(workspaceId: string, serviceId: string): Promise<void>;
   restart(workspaceId: string, serviceId: string): Promise<void>;
+  /// Say on the toast that a start, stop or restart threw, rather than let the
+  /// button's `void` swallow it and leave the press looking ignored.
+  reportFailure(action: 'start' | 'stop' | 'restart', workspaceId: string, serviceId: string, err: unknown): void;
   rebind(workspaceId: string, serviceId: string, ref: string, path: string): Promise<void>;
   rebindAll(
     workspaceId: string,
@@ -581,32 +597,74 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
     // Remember what was asked for, so a failure that lands a second later can
     // be told apart from one that had nothing to do with this click.
     set({ awaiting: { workspaceId, serviceId } });
-    // Starting something is asking to watch it. Select it now rather than
-    // only when it goes wrong — the output is the point of pressing play.
-    await get().select(workspaceId, serviceId);
-    const result = await window.overcli.invoke('services:start', { workspaceId, serviceId, offset, ignoreHeld });
-    if (!result.started && result.lease) {
-      // Pressing play on a row that was not selected put the explanation on a
-      // page the user could not see, so nothing appeared to happen at all.
-      // Select the service that refused, so the reason is on screen next to
-      // the row that just went amber.
-      await get().select(workspaceId, serviceId);
-      set((s) => ({
-        pendingLease: { ...s.pendingLease, [workspaceId]: { serviceId, lease: result.lease! } },
-      }));
-      return;
+    // Starting something is asking to watch it, so select it — but don't make
+    // the start wait on it. Fetching the log first held the press back long
+    // enough that it looked ignored and got pressed again. Its requests go
+    // out before the start's, so main still snapshots the log first.
+    const selecting = get().select(workspaceId, serviceId).catch(() => {});
+    // Main says `starting` only after its port and process checks; the row
+    // says it now, so the press is answered when it is made.
+    const key = logKey(workspaceId, serviceId);
+    inFlightStarts.add(key);
+    set((s) => {
+      const stack = s.stacks[workspaceId];
+      if (!stack) return {};
+      const current = stack.runtimes.find((r) => r.serviceId === serviceId);
+      if (current && isServiceLive(current.status)) return {};
+      const runtime: ServiceRuntime = {
+        ...(current ?? { serviceId }),
+        status: 'starting',
+        stopping: undefined,
+        exitCode: undefined,
+        lastError: undefined,
+      };
+      const runtimes = current
+        ? stack.runtimes.map((r) => (r.serviceId === serviceId ? runtime : r))
+        : [...stack.runtimes, runtime];
+      return { stacks: { ...s.stacks, [workspaceId]: { ...stack, runtimes } } };
+    });
+
+    try {
+      const result = await window.overcli.invoke('services:start', { workspaceId, serviceId, offset, ignoreHeld });
+      await selecting;
+      if (!result.started && result.lease) {
+        set((s) => ({
+          pendingLease: { ...s.pendingLease, [workspaceId]: { serviceId, lease: result.lease! } },
+        }));
+      } else {
+        // A start that worked clears any complaint left from the last attempt.
+        set((s) => ({ pendingLease: { ...s.pendingLease, [workspaceId]: undefined } }));
+      }
+    } catch (err) {
+      set({ awaiting: undefined });
+      get().reportFailure('start', workspaceId, serviceId, err);
+    } finally {
+      inFlightStarts.delete(key);
     }
-    // A start that worked clears any complaint left from the last attempt.
-    set((s) => ({ pendingLease: { ...s.pendingLease, [workspaceId]: undefined } }));
-    await get().load(workspaceId);
+    // Whatever happened, the row now shows what main says — including taking
+    // back the `starting` above when the start was refused or threw.
+    await get().load(workspaceId).catch(() => {});
   },
 
   async stop(workspaceId, serviceId) {
-    await window.overcli.invoke('services:stop', { workspaceId, serviceId });
+    try {
+      await window.overcli.invoke('services:stop', { workspaceId, serviceId });
+    } catch (err) {
+      get().reportFailure('stop', workspaceId, serviceId, err);
+    }
   },
 
   async restart(workspaceId, serviceId) {
-    await window.overcli.invoke('services:restart', { workspaceId, serviceId });
+    try {
+      await window.overcli.invoke('services:restart', { workspaceId, serviceId });
+    } catch (err) {
+      get().reportFailure('restart', workspaceId, serviceId, err);
+    }
+  },
+
+  reportFailure(action, workspaceId, serviceId, err) {
+    const name = get().stacks[workspaceId]?.services.find((x) => x.id === serviceId)?.name ?? serviceId;
+    set({ notice: { text: `Couldn't ${action} ${name}`, sub: reason(err) } });
   },
 
   async rebind(workspaceId, serviceId, ref, path) {
@@ -670,11 +728,15 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
         await runWithConcurrency(layer, 4, async (serviceId) => {
           const runtime = get().stacks[workspaceId]?.runtimes.find((r) => r.serviceId === serviceId);
           if (runtime && isServiceLive(runtime.status)) return;
-          const result = await window.overcli.invoke('services:start', { workspaceId, serviceId });
-          if (!result.started && result.lease) {
-            set((s) => ({
-              pendingLease: { ...s.pendingLease, [workspaceId]: { serviceId, lease: result.lease! } },
-            }));
+          try {
+            const result = await window.overcli.invoke('services:start', { workspaceId, serviceId });
+            if (!result.started && result.lease) {
+              set((s) => ({
+                pendingLease: { ...s.pendingLease, [workspaceId]: { serviceId, lease: result.lease! } },
+              }));
+            }
+          } catch (err) {
+            get().reportFailure('start', workspaceId, serviceId, err);
           }
         });
       }
@@ -682,9 +744,10 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   },
 
   async stopMany(keys) {
-    await Promise.all(
-      keys.map((key) => window.overcli.invoke('services:stop', splitKey(key))),
-    );
+    await Promise.all(keys.map((key) => {
+      const { workspaceId, serviceId } = splitKey(key);
+      return get().stop(workspaceId, serviceId);
+    }));
   },
 
   async removeMany(keys) {
@@ -962,6 +1025,16 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
       awaiting?.serviceId === runtime.serviceId
     ) {
       set({ awaiting: undefined });
+    }
+
+    // The previous run settling while a start pressed here is still on its
+    // way: keep saying starting until main takes the start up. Only until
+    // then — the start call itself lasts until ready, and a Stop pressed
+    // during a long boot has to show.
+    const pressed = logKey(workspaceId, runtime.serviceId);
+    if (inFlightStarts.has(pressed)) {
+      if (runtime.status === 'stopped') runtime = { ...runtime, status: 'starting', stopping: undefined };
+      else inFlightStarts.delete(pressed);
     }
 
     set((s) => {

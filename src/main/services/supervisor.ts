@@ -181,6 +181,14 @@ const LOG_TRIM_BLOCK = 1_000;
 /// restart launched straight away beside a JVM still holding its port, and a
 /// port probe then called the NEW process ready on the old one's socket.
 const STOP_WAIT_MS = 7_000;
+/// How long a stop then waits for the service's ports to close. The launcher
+/// exiting is not the server letting go: `npm` answers SIGTERM at once while
+/// the node or JVM under it is still shutting down, so a restart launched on
+/// the launcher's exit hit "address already in use", and a Start pressed a
+/// second after Stop was refused over a port its own last run still held.
+/// Bounded by the adapter's SIGKILL, plus a margin.
+const PORT_RELEASE_MS = 6_000;
+const PORT_RELEASE_POLL_MS = 100;
 const CHANGE_DEBOUNCE_MS = 500;
 /// How often an adopted process is checked for still being there. There is no
 /// exit event for a process we did not start, so this is the only way its row
@@ -219,6 +227,8 @@ export class Supervisor {
   private readonly finishing = new Map<string, Promise<void>>();
   /// Settles when each service's current process has exited, however it exits.
   private readonly exits = new Map<string, Promise<void>>();
+  /// Settles when a stop has finished: the process gone and its ports closed.
+  private readonly stopping = new Map<string, Promise<void>>();
   private readonly watchers = new Map<string, ServiceFileWatcher>();
   private readonly changeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly restartingFromChange = new Set<string>();
@@ -308,6 +318,7 @@ export class Supervisor {
   ): Promise<{ started: boolean; lease?: LeaseDecision }> {
     const spec = this.spec(serviceId);
     if (!spec) return { started: false };
+    await this.settled(serviceId);
 
     if (opts.offset === undefined) {
       const claims = [...this.claims(), ...(opts.foreign ?? [])];
@@ -739,12 +750,51 @@ export class Supervisor {
     }
     this.procs.delete(serviceId);
     const exited = this.exits.get(serviceId);
+    const before = this.runtime(serviceId);
+    const ports = [before.port, before.debugPort].filter((p): p is number => p !== undefined);
     proc.kill('SIGTERM');
     this.setStatus(serviceId, {
       status: 'stopped', pid: undefined, port: undefined,
       debugKind: undefined, debugPort: undefined,
+      stopping: ports.length > 0 ? true : undefined,
     });
-    if (exited) await Promise.race([exited, this.deps.probe.sleep(STOP_WAIT_MS)]);
+    const done = (async () => {
+      if (exited) await Promise.race([exited, this.deps.probe.sleep(STOP_WAIT_MS)]);
+      await this.portsReleased(ports);
+    })();
+    this.stopping.set(serviceId, done);
+    try {
+      await done;
+    } finally {
+      if (this.stopping.get(serviceId) === done) {
+        this.stopping.delete(serviceId);
+        if (this.runtime(serviceId).stopping) this.setStatus(serviceId, { stopping: undefined });
+      }
+    }
+  }
+
+  /// Resolves once any stop in flight for this service has finished — its
+  /// process gone and its ports free — so a start right after a stop waits
+  /// for the port rather than being refused over it.
+  async settled(serviceId: string): Promise<void> {
+    await this.stopping.get(serviceId);
+  }
+
+  /// Poll until nothing answers on any of these ports, or give up. Counted in
+  /// attempts rather than against the clock, so a test's instant sleep cannot
+  /// spin forever on a port it reports open.
+  private async portsReleased(ports: readonly number[]): Promise<void> {
+    for (let i = 0; i < PORT_RELEASE_MS / PORT_RELEASE_POLL_MS; i++) {
+      let open = false;
+      for (const port of ports) {
+        if (await this.deps.probe.tcpOpen(port, '127.0.0.1').catch(() => false)) {
+          open = true;
+          break;
+        }
+      }
+      if (!open) return;
+      await this.deps.probe.sleep(PORT_RELEASE_POLL_MS);
+    }
   }
 
   async restart(serviceId: string): Promise<void> {
@@ -894,6 +944,7 @@ export class Supervisor {
       adopted: undefined,
       debugKind: undefined,
       debugPort: undefined,
+      stopping: undefined,
     });
 
     // After the status says starting: finding the local config reads the main
