@@ -444,6 +444,14 @@ export interface Conversation {
   /// must NOT `git worktree remove` — the run still owns that tree and
   /// its Review & merge path depends on it. See `removeAgent`.
   adoptedWorktree?: boolean;
+  /// The workspace counterpart of `adoptedWorktree`: a chat borrowing a
+  /// workspace flow run's per-repo worktrees. Its cwd is the run's
+  /// coordinator root (`coordinatorRootPath`), and these are what git status
+  /// and the changes bar read — the repos' main trees would report someone
+  /// else's work. `name` is each tree's link name under that root. Never
+  /// `workspaceAgentMemberIds`: there are no member rows, and the run, not
+  /// this chat, owns the trees.
+  adoptedWorkspaceWorktrees?: Array<{ name: string; worktreePath: string }>;
   orphaned?: boolean;
   hidden?: boolean;
   reviewBackend?: string | null;
@@ -1388,7 +1396,10 @@ export interface PersistedView {
 /// and which one was in front are persisted: view mode and any jumped-to
 /// line range are per-session, and unsaved buffers deliberately never
 /// reach disk.
-export type PersistedFileTabs = Record<string, { paths: string[]; activePath?: string | null }>;
+export type PersistedFileTabs = Record<string, PersistedScopeTabs>;
+/// One scope's worth of `PersistedFileTabs` — also what an explorer carries
+/// into and back out of its own window.
+export type PersistedScopeTabs = { paths: string[]; activePath?: string | null };
 
 /// What the "What's new" panel renders, assembled in src/main/whatsNew.ts
 /// from the CHANGELOG.md that ships in the app bundle.
@@ -2241,6 +2252,18 @@ export interface IPCInvokeMap {
   'terminal:popOut': (args: { id: string }) => { ok: true } | { ok: false; error: string };
   /// Close a shell's own window, putting it back in the drawer.
   'terminal:popIn': (args: { id: string }) => void;
+  /// Move an explorer (tree + editor) rooted at `root` into its own overcli
+  /// window, carrying its tabs, or focus the window if it's already out.
+  'explorer:popOut': (args: { root: string; tabs?: PersistedScopeTabs }) => { ok: true } | { ok: false; error: string };
+  /// Close an explorer's own window; its tabs come back via `explorerPoppedOut`.
+  'explorer:popIn': (args: { root: string }) => void;
+  /// The tabs an explorer window was popped out with, for it to open.
+  'explorer:initialTabs': (args: { root: string }) => PersistedScopeTabs | null;
+  /// The explorer window's current tabs, kept by main so closing the window
+  /// hands back what was open at the end rather than at the start.
+  'explorer:reportTabs': (args: { root: string; tabs: PersistedScopeTabs }) => void;
+  /// Roots whose explorer is in its own window, for a reloaded main window.
+  'explorer:list': () => string[];
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
@@ -3857,6 +3880,9 @@ export type MainToRendererEvent =
   | { type: 'terminalOpened'; session: TerminalSession }
   /// A shell moved into its own window (`out`) or back to the drawer.
   | { type: 'terminalPoppedOut'; id: string; out: boolean }
+  /// An explorer moved into its own window (`out`) or back. Coming back, it
+  /// carries the tabs that were open in the window.
+  | { type: 'explorerPoppedOut'; root: string; out: boolean; tabs?: PersistedScopeTabs }
   | {
       /// Live text from an in-flight document rewrite. The rewrite runs on
       /// the hidden one-shot transport, which has no conversation to stream

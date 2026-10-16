@@ -360,6 +360,9 @@ export class ServicesManager {
   async start(workspaceId: string, serviceId: string, opts: { offset?: number; ignoreHeld?: boolean } = {}) {
     const supervisor = this.supervisor(workspaceId);
     const spec = this.stack(workspaceId).services.find((s) => s.id === serviceId);
+    // A stop still in flight holds the port until its process lets go; asking
+    // the port now would refuse this start over this service's own last run.
+    await supervisor.settled(serviceId);
 
     // Something outside overcli may already be on the port — the service
     // started from a terminal an hour ago, or an unrelated program. We cannot
