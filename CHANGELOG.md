@@ -17,6 +17,15 @@ All notable changes to Overcli are documented here. The format is based on [Keep
   - **Connect:** copy-paste setup for Claude Code, Claude Desktop, Codex, the overcli app and Slack.
   - **People, without tokens:** invite people from your Slack (overcli DMs each a one-time sign-in link), let in people who type `/overcli join`, and change roles and allowances in the console. The overcli app signs in by pairing (Settings → Your org → Sign in, then confirm the code in the browser). People shows every sign-in and signs out one device or a person everywhere. On first run `serve` prints a one-time link for the first admin.
   - **Schedules:** a hire keeps the schedule its job description implies ("every weekday morning"), and the offer lets you change it. Each worker's page shows when it runs and when it runs next, has **Run now**, and edits the schedule in Settings (when asked, every day, weekdays, once a week, or every few hours within working hours). A worker on probation proposes its work: the manager approves some or all of it on Today, or with one button in Slack. Schedules run in the org's `timezone`. MCP has `list_proposals`, `decide_proposal`, `run_worker_now` and `set_worker_schedule`.
+  - **Hardening:**
+    - Org workers only work in projects the server has registered.
+    - Sign-in links are built only from `publicUrl` or an admin's own visit, and `X-Forwarded-*` headers are believed only with `OVERCLI_TRUST_PROXY=1`.
+    - A budget raise is held to the allowance of whoever answers for the worker, paused workers included.
+    - Only an admin hands a worker to someone else.
+    - Slack answers count only from the worker's current manager.
+    - Sign out (console and app) revokes the sign-in on the server, and Connect makes a separate key for each tool.
+    - A hand-broken `org.json` is never written over.
+    - A worker out of budget tells its manager in Slack.
   - Full-width console, and a flat overcli mark that follows the theme.
   - Light and dark themes; `deploy/` has a Dockerfile (Codex optional), a compose file, `org.example.json` and a deployment guide. A fresh server makes a default folder for workers to work in.
 

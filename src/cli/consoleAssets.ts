@@ -546,8 +546,9 @@ export const CONSOLE_JS = String.raw`
     return h('div', { class: 'login-wrap' }, h('div', { class: 'login panel stack' },
       brandMark(48, 'mark'),
       h('h1', { class: 'page-title', text: 'Your org’s workers' }),
-      h('p', { class: 'muted', text: 'Sign in with the access token your admin made for you. It stays in this browser.' }),
-      input, err, h('button', { class: 'btn go', onclick: submit, text: 'Sign in' })));
+      h('p', { class: 'muted', text: 'Open the sign-in link overcli sent you in Slack. Lost it, or in a new browser? Type /overcli join in Slack for a fresh one, or ask your admin to invite you again.' }),
+      h('details', null, h('summary', { class: 'faint', text: 'Sign in with an access token instead' }),
+        h('div', { class: 'stack', style: 'margin-top:10px' }, input, err, h('button', { class: 'btn go', onclick: submit, text: 'Sign in' })))));
   }
 
   // ---- shell -----------------------------------------------------------
@@ -605,7 +606,16 @@ export const CONSOLE_JS = String.raw`
     var wanted = read('overcli-org-open');
     if (wanted) { store('overcli-org-open', null); state.tab = wanted; }
     if (!state.me) {
-      api('GET', '/api/whoami').then(function (me) { state.me = me; render(); }).catch(function () {});
+      app.appendChild(h('div', { class: 'login-wrap' }, thinking('Signing in…')));
+      api('GET', '/api/whoami').then(function (me) { state.me = me; render(); }).catch(function (e) {
+        // 401 already sent us back to sign in; anything else, say so.
+        if (!token()) return;
+        app.textContent = '';
+        app.appendChild(h('div', { class: 'login-wrap' }, h('div', { class: 'login panel stack' },
+          h('h1', { class: 'page-title', text: 'Can’t reach the server' }),
+          h('p', { class: 'muted', text: (e && e.message) || 'The server didn’t answer.' }),
+          h('button', { class: 'btn go', text: 'Try again', onclick: function () { render(); } }))));
+      });
       return;
     }
     var me = state.me;
@@ -630,7 +640,7 @@ export const CONSOLE_JS = String.raw`
             h('div', { class: 'allow-label' }, h('span', { text: 'Your monthly allowance' }), h('span', { text: money(me.committedUSD) + ' of ' + money(me.allowanceUSD) })),
             h('div', { class: 'meter' + (pct >= 85 ? ' high' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' }))) : null,
           themeSwitch(),
-          h('button', { class: 'linkish', onclick: function () { store(TOKEN_KEY, null); state.me = null; render(); }, text: 'Sign out' }))),
+          h('button', { class: 'linkish', onclick: function () { var done = function () { store(TOKEN_KEY, null); state.me = null; render(); }; api('POST', '/api/signout').then(done, done); }, text: 'Sign out' }))),
       h('main', { class: 'main' }, main)));
     refreshCounts();
     var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect }[state.tab] || viewToday;
@@ -676,7 +686,7 @@ export const CONSOLE_JS = String.raw`
         };
       };
       approve.onclick = decide(true); reject.onclick = decide(false);
-      body = [h('p', { class: 'muted', text: 'Wants to run “' + it.stepId + '”, which reaches outside its sandbox: it may push, send, publish or change a service. Approving covers this one step.' }),
+      body = [h('p', { class: 'muted', text: 'Its next step reaches outside overcli: it may push code, send a message, publish, or change a service. Approving covers this one step.' }),
         it.instructions ? h('div', { class: 'stack', style: 'gap:6px' }, h('div', { class: 'faint', text: 'What the step is told to do' }), h('div', { class: 'preview' }, h('pre', { text: it.instructions }))) : null,
         (it.inputs || []).map(function (inp) {
           return h('details', null, h('summary', { text: 'What it will use: ' + inp.name }), h('div', { class: 'preview', style: 'margin-top:8px' }, h('pre', { text: inp.preview })));
@@ -770,15 +780,27 @@ export const CONSOLE_JS = String.raw`
     return card;
   }
 
-  function rateButtons(d) {
+  function rateButtons(d, slot) {
     var up = h('button', { class: 'btn small icon', 'aria-label': 'Useful', title: 'Useful', 'aria-pressed': d.rating && d.rating.useful ? 'true' : 'false' }, icon('up', 16));
     var down = h('button', { class: 'btn small icon', 'aria-label': 'Not useful', title: 'Not useful', 'aria-pressed': d.rating && !d.rating.useful ? 'true' : 'false' }, icon('down', 16));
     var rate = function (useful) {
       return function () {
-        var note = useful ? '' : (window.prompt('What would have made it useful? It goes to the worker. (Optional)') || '');
-        api('POST', '/api/rate', { entryId: d.entryId, useful: useful, note: note }).then(function (r) {
-          if (r.ok === false) { window.alert(r.error); return; }
+        api('POST', '/api/rate', { entryId: d.entryId, useful: useful }).then(function (r) {
+          slot.textContent = '';
+          if (r.ok === false) { slot.appendChild(msg(r)); return; }
           up.setAttribute('aria-pressed', useful ? 'true' : 'false'); down.setAttribute('aria-pressed', useful ? 'false' : 'true');
+          if (useful) return;
+          // Not useful: ask why, inline, so the worker learns more than a thumb.
+          var why = h('input', { type: 'text', placeholder: 'What would have made it useful? (optional)', 'aria-label': 'What would have made it useful' });
+          var send = function () {
+            if (!why.value.trim()) return;
+            api('POST', '/api/rate', { entryId: d.entryId, useful: false, note: why.value.trim() }).then(function (x) {
+              slot.textContent = ''; slot.appendChild(msg(x, 'Thanks. ' + d.workerName + ' reads that before its next run.'));
+            });
+          };
+          why.onkeydown = function (e) { if (e.key === 'Enter') send(); };
+          append(slot, [h('div', { class: 'row', style: 'margin-top:8px' }, h('span', { style: 'flex:1 1 260px' }, why), h('button', { class: 'btn small', text: 'Send', onclick: send }))]);
+          why.focus();
         });
       };
     };
@@ -790,13 +812,15 @@ export const CONSOLE_JS = String.raw`
     var detail = h('div', { hidden: true, style: 'grid-column:2 / -1' }, h('div', { class: 'quote', style: 'font-size:15px', text: d.summary || '' }));
     var meta = [d.workerName, d.forManager && opts && opts.showManager ? 'for ' + d.forManager : null, ago(d.at), d.costUSD != null ? money(d.costUSD) : null,
       d.rating ? (d.rating.useful ? 'useful to ' : 'not useful to ') + d.rating.by : null].filter(Boolean).join(', ');
+    var rateSlot = h('div', { style: 'grid-column:2 / -1' });
     return h('div', { class: 'item' },
       h('span', { style: 'grid-row: span 2' }, avatar(d.workerId, d.workerName, 's')),
       h('div', { class: 't', text: d.title }),
       h('div', { class: 'acts' },
         d.summary ? h('button', { class: 'btn small', text: 'Read', onclick: function (e) { detail.hidden = !detail.hidden; e.target.textContent = detail.hidden ? 'Read' : 'Hide'; } }) : null,
-        rateButtons(d)),
+        rateButtons(d, rateSlot)),
       h('div', { class: 'faint', text: meta }),
+      rateSlot,
       d.summary ? detail : null);
   }
 
@@ -982,7 +1006,7 @@ export const CONSOLE_JS = String.raw`
     var send = h('button', { class: 'btn go', text: 'Send' });
     var submit = function () {
       if (!input.value.trim()) { input.focus(); return; }
-      var restore = busy(send, 'Sent');
+      var restore = busy(send, 'Sending…');
       out.textContent = ''; out.appendChild(thinking(w.name + ' is working on it…'));
       api('POST', '/api/ask', { worker: w.id, message: input.value }).then(function (r) {
         out.textContent = '';
@@ -1125,7 +1149,7 @@ export const CONSOLE_JS = String.raw`
             t.purpose ? h('p', { class: 'muted', style: 'font-size:13.5px', text: t.purpose }) : null,
             h('div', { class: 'row', style: 'gap:6px' }, t.members.map(function (m) { return h('span', { class: 'tag', title: m.role, text: m.name }); })),
             t.canBrief ? [input, h('div', null, h('button', { class: 'btn go', text: 'Give it the task', onclick: function (e) {
-              if (input.value.trim().length < 10) { input.focus(); return; }
+              if (input.value.trim().length < 10) { out.textContent = ''; out.appendChild(h('div', { class: 'msg err', text: 'Say a little more about the task.' })); input.focus(); return; }
               var restore = busy(e.target, 'Sending…');
               api('POST', '/api/teams/brief', { team: t.id, text: input.value }).then(function (x) {
                 out.textContent = ''; out.appendChild(msg(x, 'The coordinator is planning. Questions or a plan will appear below and in Slack.'));
@@ -1292,7 +1316,7 @@ export const CONSOLE_JS = String.raw`
         state.hire = null;
         ctx.wrap.textContent = '';
         ctx.wrap.appendChild(r.hired
-          ? emptyState(r.hired.name + ' is hired.', 'You’re its manager. It starts on probation and works when it’s asked; its questions come to you.',
+          ? emptyState(r.hired.name + ' is hired.', 'You’re its manager. ' + (r.hired.cadence ? 'It runs ' + r.hired.schedule.toLowerCase() + ' and starts on probation, so you approve what it proposes. ' : 'It starts on probation and works when it’s asked. ') + 'Its questions come to you.',
               h('div', { class: 'row', style: 'justify-content:center' },
                 h('button', { class: 'btn go', onclick: function () { openWorker(r.hired.id); }, text: 'Open ' + r.hired.name }),
                 h('button', { class: 'btn', onclick: function () { render(); }, text: 'Hire another' })))
@@ -1305,7 +1329,7 @@ export const CONSOLE_JS = String.raw`
         h('div', null, h('h2', { class: 'offer-name', text: c.name }), c.tagline ? h('div', { class: 'offer-tag', text: c.tagline }) : null)),
       h('div', { class: 'offer-job quote', text: c.jobDescription }),
       h('div', { class: 'ofacts' },
-        fact('Works through', c.flows.join(', ') || 'A flow drafted for it'),
+        fact('How it works', c.flows.length ? plural(c.flows.length, 'routine', 'routines') + ' it follows each run' : 'A routine written for this job'),
         fact('Tools', c.connectors.length ? c.connectors.join(', ') : 'None to start'),
         fact('Starts', 'On probation: you approve what it proposes')),
       h('div', { class: 'terms' },
@@ -1314,7 +1338,7 @@ export const CONSOLE_JS = String.raw`
         h('label', { class: 'field' }, 'Reports to', reports),
         h('label', { class: 'field' }, 'Who may ask it', vis),
         h('label', { class: 'field' }, 'Monthly budget (USD)', budget)),
-      h('div', { class: 'offer-foot' }, hireBtn, h('button', { class: 'btn quiet', text: 'Start over', onclick: function () { state.hire = null; render(); } })),
+      h('div', { class: 'offer-foot' }, hireBtn, h('button', { class: 'btn quiet', text: 'Start over', onclick: function () { api('POST', '/api/hires/cancel', { hireId: hire.hireId }).catch(function () {}); state.hire = null; render(); } })),
       out));
   }
 
@@ -1348,12 +1372,11 @@ export const CONSOLE_JS = String.raw`
   function viewConnect() {
     var base = location.origin;
     var mcp = base + '/mcp';
-    var tok = token();
-    var shown = false;
-    var tokenLine = h('code', { text: tok.slice(0, 9) + '…' });
-    var reveal = h('button', { class: 'btn small quiet', text: 'Show' });
-    reveal.onclick = function () { shown = !shown; tokenLine.textContent = shown ? tok : tok.slice(0, 9) + '…'; reveal.textContent = shown ? 'Hide' : 'Show'; };
-    var CLIENTS = [
+    // Each tool gets a key of its own, made here and shown once, so signing
+    // out this browser (or one tool) leaves the others working.
+    var keys = {};
+    var tok = '';
+    var buildClients = function () { return [
       { id: 'claude-code', label: 'Claude Code', steps: [
         'Run this once on your machine. It adds your org as an MCP server for every project:',
         'claude mcp add --transport http --scope user overcli ' + mcp + ' \\\n  --header "Authorization: Bearer ' + tok + '"',
@@ -1374,26 +1397,44 @@ export const CONSOLE_JS = String.raw`
         'export OVERCLI_ORG_URL=' + base + '\nexport OVERCLI_ORG_TOKEN=' + tok + '\novercli workers push "Worker name"'] },
       { id: 'slack', label: 'Slack', steps: [
         'Nothing to set up: if your admin connected Slack, these work in any channel or DM:',
-        '/worker                     your workers\n/worker waiting             what’s waiting on you\n/worker <name> ask <text>   send a worker an errand\n/team <name>: <task>        give a team a task\n/hire <job>                 hire a worker',
-        'Questions and approvals from your workers arrive as DMs. Reply in the thread to answer.'] }
-    ];
+        '/worker                     your workers\n/worker waiting             what’s waiting on you\n/worker <name> ask <text>   ask a worker to do something\n/team <name>: <task>        give a team a task\n/hire <job>                 hire a worker\n/overcli join               ask to join, or get a new sign-in link',
+        'Questions, approvals and the work your workers propose arrive as DMs. Reply in the thread to answer, or press a button.'] }
+    ]; };
+    var CLIENTS = buildClients();
     var current = CLIENTS[0].id;
+    var NEEDS_KEY = { 'claude-code': 'Claude Code', 'claude-desktop': 'Claude Desktop', codex: 'Codex', app: 'Terminal' };
     var body = h('div', { class: 'stack' });
     var tablist = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Where to connect' });
     var draw = function () {
       tablist.textContent = '';
       CLIENTS.forEach(function (c) { tablist.appendChild(h('button', { role: 'tab', 'aria-selected': c.id === current ? 'true' : 'false', text: c.label, onclick: function () { current = c.id; draw(); } })); });
       body.textContent = '';
-      CLIENTS.filter(function (c) { return c.id === current; })[0].steps.forEach(function (s, i) {
+      var device = NEEDS_KEY[current];
+      if (device && !keys[current]) {
+        var make = h('button', { class: 'btn go', text: 'Make a key for ' + device });
+        var out = h('div');
+        make.onclick = function () {
+          var restore = busy(make, 'Making…');
+          api('POST', '/api/devices', { device: device }).then(function (x) {
+            restore();
+            if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); return; }
+            keys[current] = x.token; draw();
+          });
+        };
+        append(body, [h('p', { class: 'muted', text: device + ' needs a key of its own. It shows once, and you can sign it out from People without touching anything else.' }), h('div', null, make), out]);
+        return;
+      }
+      tok = keys[current] || '';
+      buildClients().filter(function (c) { return c.id === current; })[0].steps.forEach(function (s, i) {
         body.appendChild(i % 2 === 1 ? codeBlock(s) : h('p', { class: 'muted', text: s }));
       });
+      if (device) body.appendChild(h('p', { class: 'faint', text: 'This key is shown once. Treat it like a password.' }));
     };
     draw();
-    return Promise.resolve([head('Connect', 'Use your org’s workers from Claude, Codex, the overcli app or Slack. What’s below has your token in it, so treat it like a password.'),
+    return Promise.resolve([head('Connect', 'Use your org’s workers from Claude, Codex, the overcli app or Slack.'),
       h('section', { class: 'panel pad stack' },
         h('div', { class: 'spread', style: 'align-items:center' }, h('h2', { class: 'section-title', text: 'This server' }), h('span', { class: 'faint', text: state.me.org })),
-        h('div', { class: 'ofacts', style: 'margin:0' }, fact('MCP address', mcp), fact('Console', base),
-          h('div', null, h('div', { class: 'fact-k', text: 'Your token' }), h('div', { class: 'row', style: 'gap:6px' }, tokenLine, reveal)))),
+        h('div', { class: 'ofacts', style: 'margin:0' }, fact('MCP address', mcp), fact('Console', base))),
       h('section', { class: 'panel pad stack' }, tablist, body),
       h('p', { class: 'faint', text: 'claude.ai connectors call from Anthropic’s cloud, so they can only reach this server if your admin has given it a public HTTPS address.' })]);
   }
@@ -1452,7 +1493,16 @@ export const CONSOLE_JS = String.raw`
 
       var openState = hl.ok !== false && hl.rules.openJoin;
       var openToggle = h('input', { type: 'checkbox', checked: openState });
-      openToggle.onchange = function () { api('POST', '/api/admin/open-join', { on: openToggle.checked }); };
+      var openNote = h('span', { class: 'faint', 'aria-live': 'polite' });
+      openToggle.onchange = function () {
+        var want = openToggle.checked;
+        openToggle.disabled = true;
+        api('POST', '/api/admin/open-join', { on: want }).then(function (x) {
+          openToggle.disabled = false;
+          if (x.ok === false) { openToggle.checked = !want; openNote.textContent = x.error; return; }
+          openNote.textContent = 'Saved.';
+        }, function () { openToggle.disabled = false; openToggle.checked = !want; openNote.textContent = 'That didn’t save. Try again.'; });
+      };
 
       var table = h('div', { class: 'panel table-wrap' }, h('table', null,
         h('thead', null, h('tr', null, ['Person', 'Can', 'Workers', 'Spend of allowance', 'Signed in on', ''].map(function (t) { return h('th', { scope: 'col', text: t }); }))),
@@ -1468,7 +1518,7 @@ export const CONSOLE_JS = String.raw`
             h('h2', { id: 'ways', class: 'section-title', text: 'Other ways people get in' }),
             h('p', { class: 'muted', style: 'font-size:13.5px' }, 'Anyone in your Slack can type ', h('code', { text: '/overcli join' }), '. Slack has already said who they are, so they land in Asking to join for you to let in.'),
             h('p', { class: 'muted', style: 'font-size:13.5px', text: 'In the overcli app, Settings, Your org, Sign in pairs the app with this server: the person confirms a code here, and nobody copies a token.' }),
-            h('label', { class: 'toggle' }, openToggle, h('span', { text: 'Let anyone in our Slack in without asking. They can ask workers things; make them hirers here.' })),
+            h('label', { class: 'toggle' }, openToggle, h('span', { text: 'Let anyone in our Slack in without asking. They can ask workers things; make them hirers here.' })), openNote,
             hl.ok !== false && !hl.rules.publicUrl ? h('p', { class: 'faint', text: 'Links sent from Slack use the address you last opened this console at. Set publicUrl in org.json to pin it.' }) : null))));
       return nodes;
     });
@@ -1694,7 +1744,7 @@ export const CONSOLE_JS = String.raw`
     }
     api('GET', '/api/pair/' + encodeURIComponent(code)).then(function (info) {
       if (info.ok === false) {
-        append(left, [h('h1', { text: 'That code has expired' }), h('p', { class: 'lead', text: info.error })]);
+        append(left, [h('h1', { text: 'That code didn’t work' }), h('p', { class: 'lead', text: info.error + ' Start again from the overcli app.' })]);
         return;
       }
       return api('GET', '/api/whoami').then(function (me) {

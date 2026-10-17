@@ -127,6 +127,12 @@ export function parseInviteLink(raw: string): { base: string; code: string } | n
   }
 }
 
+/// Sign this app's own token out on the server, so it stops working there
+/// and not only here.
+export function signOutAt(base: string, token: string) {
+  return call<{ ok: boolean }>(base, token, 'POST', '/api/signout');
+}
+
 export function redeemInvite(base: string, code: string, device: string) {
   return callPublic<{ token: string; name: string; org: string }>(base, `/api/join/${encodeURIComponent(code)}`, { device });
 }

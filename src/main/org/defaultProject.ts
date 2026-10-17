@@ -40,3 +40,19 @@ export async function ensureDefaultProject(): Promise<string | null> {
   flushStoreSync();
   return dir;
 }
+
+const NO_PLACE = 'This server has no project for workers to work in. An admin can add one with: overcli projects add <folder>';
+
+/// Where an org worker may work: only a workspace or project an operator
+/// registered. A path from a request is never trusted on its own — a worker
+/// pointed at the state folder could rewrite org.json or read credentials.
+/// `requested` must match exactly; `suggested` (a drafter's guess) falls back
+/// to the default place when it does not.
+export function resolveWorkPlace(store: { workspaces: Array<{ rootPath: string }>; projects: Array<{ path: string }> }, requested?: string, suggested?: string): { ok: true; path: string } | { ok: false; error: string } {
+  const known = [...store.workspaces.map((w) => w.rootPath), ...store.projects.map((p) => p.path)];
+  if (requested !== undefined) {
+    return known.includes(requested) ? { ok: true, path: requested } : { ok: false, error: 'Workers can only work in a project this server has. Pick one from the list.' };
+  }
+  if (suggested && known.includes(suggested)) return { ok: true, path: suggested };
+  return known[0] ? { ok: true, path: known[0] } : { ok: false, error: NO_PLACE };
+}

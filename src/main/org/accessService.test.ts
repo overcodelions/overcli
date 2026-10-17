@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ORG_POLICY, parseOrgPolicy, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
-import { AccessService, PAIR_TTL_MS, personRole, type Invite, type JoinRequest } from './accessService';
+import { AccessService, PAIR_TTL_MS, SETUP_TTL_MS, personRole, type Invite, type JoinRequest } from './accessService';
 
 const ADMIN = 'U0ACMEBOSS';
 const PAT = 'U0ACMEPAT';
@@ -8,7 +8,7 @@ const admin: OrgCaller = { slackUserId: ADMIN, name: 'Bo', admin: true };
 const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
 const BASE = 'https://overcli.acme.example';
 
-function harness(orgFile: Record<string, unknown> = {}, opts: { slack?: boolean } = {}) {
+function harness(orgFile: Record<string, unknown> = {}, opts: { slack?: boolean; dmGate?: Promise<void> } = {}) {
   let raw: Record<string, unknown> = { name: 'Acme', admins: [ADMIN], hirers: [], ...orgFile };
   let invites: Invite[] = [];
   let requests: JoinRequest[] = [];
@@ -47,6 +47,7 @@ function harness(orgFile: Record<string, unknown> = {}, opts: { slack?: boolean 
       ? {
           slack: {
             dmInvite: async (invite, link) => {
+              await opts.dmGate;
               dms.push(`${invite.slackUserId}:${link}`);
               return true;
             },
@@ -101,6 +102,39 @@ describe('invites', () => {
   });
 });
 
+describe('invites, racing', () => {
+  it('keeps a link redeemed while the Slack DM was still being sent spent', async () => {
+    let open!: () => void;
+    const h = harness({}, { slack: true, dmGate: new Promise<void>((r) => (open = r)) });
+    const first = await h.svc.invite(admin, { name: 'Sam', role: 'member' }, BASE);
+    if (!first.ok) throw new Error(first.error);
+    const pending = h.svc.invite(admin, { name: 'Pat', slackUserId: PAT, role: 'member' }, BASE);
+    expect(h.svc.redeem(codeOf(first.link)).ok).toBe(true);
+    open();
+    expect((await pending).ok).toBe(true);
+    expect(h.svc.redeem(codeOf(first.link)).ok).toBe(false);
+  });
+
+  it('keeps one first-admin link, which lives a day', async () => {
+    const h = harness();
+    const a = await h.svc.invite(admin, { name: 'Admin', role: 'admin', setup: true }, BASE);
+    const b = await h.svc.invite(admin, { name: 'Admin', role: 'admin', setup: true }, BASE);
+    if (!a.ok || !b.ok) throw new Error('invite failed');
+    expect(h.svc.redeem(codeOf(a.link)).ok).toBe(false);
+    h.tick(SETUP_TTL_MS + 1);
+    expect(h.svc.redeem(codeOf(b.link)).ok).toBe(false);
+  });
+});
+
+describe('keys for tools', () => {
+  it('makes a key of the caller\'s own, listed as its own sign-in', () => {
+    const h = harness();
+    expect(h.svc.createDeviceKey(pat, 'Claude Code')).toMatchObject({ ok: true });
+    expect(h.tokens[0]).toMatchObject({ slackUserId: PAT, device: 'Claude Code' });
+    expect(h.svc.createDeviceKey({ name: 'Ops script', admin: true }, 'x').ok).toBe(false);
+  });
+});
+
 describe('roles', () => {
   it('moves someone between roles in org.json', () => {
     const h = harness();
@@ -133,6 +167,14 @@ describe('/overcli join', () => {
     if (!req.ok) throw new Error(req.error);
     expect(await h.svc.decideRequest(admin, req.requests[0].id, true, BASE)).toMatchObject({ ok: true, sentInSlack: true });
     expect(h.dms[0].startsWith(`${PAT}:${BASE}/join/`)).toBe(true);
+  });
+
+  it('sends someone already in a fresh link instead of asking the admins', async () => {
+    const h = harness({ hirers: [PAT] }, { slack: true });
+    expect(await h.svc.requestJoin({ slackUserId: PAT, name: 'Pat Lee' }, BASE)).toEqual({ ok: true, outcome: 'invited' });
+    expect(h.asked).toEqual([]);
+    expect(h.dms[0].startsWith(`${PAT}:${BASE}/join/`)).toBe(true);
+    expect((await h.svc.requestJoin({ slackUserId: PAT, name: 'Pat Lee' }, '')).ok).toBe(false);
   });
 
   it('lets them straight in when the org is open', async () => {

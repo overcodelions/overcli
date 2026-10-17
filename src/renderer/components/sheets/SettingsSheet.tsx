@@ -915,6 +915,9 @@ function OrgServerField({
       } else {
         setPairing({ userCode: res.userCode, verifyUrl: res.verifyUrl });
       }
+    }, (err: unknown) => {
+      setBusy(false);
+      setError(String(err));
     });
   };
 
@@ -957,10 +960,12 @@ function OrgServerField({
         {pairing ? (
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-3">
-              <span className="font-mono text-lg tracking-widest text-ink" aria-label="Pairing code">
+              <span className="font-mono text-lg tracking-widest text-ink" title="Pairing code">
                 {pairing.userCode}
               </span>
-              <span className="text-[11px] text-ink-muted">Check your browser shows this code, then press Allow. Waiting…</span>
+              <span className="text-[11px] text-ink-muted" aria-live="polite">
+                Check your browser shows this code, then press Allow. Waiting…
+              </span>
             </div>
             <div className="flex gap-2">
               <a href={pairing.verifyUrl} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
@@ -999,7 +1004,11 @@ function OrgServerField({
             </button>
           </div>
         )}
-        {error && <div className="text-[10px] text-red-300">{error}</div>}
+        {error && (
+          <div role="alert" className="text-[10px] text-red-300">
+            {error}
+          </div>
+        )}
         {status?.error && !pairing && <div className="text-[10px] text-red-300">{status.error}</div>}
       </Row>
       <details className="text-[11px] text-ink-faint">
@@ -1013,8 +1022,19 @@ function OrgServerField({
             onChange={(e) => setToken(e.target.value)}
             onBlur={() => {
               if (!token.trim()) return;
-              if (address.trim()) patch({ orgServerUrl: address.trim() });
-              void window.overcli.invoke('org:setToken', token.trim()).then(() => {
+              if (address.trim()) {
+                try {
+                  patch({ orgServerUrl: new URL(address.trim()).origin });
+                } catch {
+                  setError('That address is not a URL.');
+                  return;
+                }
+              }
+              void window.overcli.invoke('org:setToken', token.trim()).then((res) => {
+                if (!res.ok) {
+                  setError(res.error ?? 'Could not save the token.');
+                  return;
+                }
                 setToken('');
                 void window.overcli.invoke('org:status', address.trim() ? { url: address.trim() } : undefined).then(setStatus);
               });

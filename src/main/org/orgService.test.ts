@@ -194,6 +194,31 @@ describe('OrgService manage', () => {
     expect(svc.update(pat, 'mine', { budgetUSDPerMonth: 80 })).toMatchObject({ ok: false });
     expect(svc.update(pat, 'mine', { budgetUSDPerMonth: 40 })).toMatchObject({ ok: true });
   });
+
+  it('does not let a manager drop or hand off a worker to dodge the allowance', () => {
+    const { svc, roster } = harness({
+      roster: [
+        worker('boss', { manager: { name: 'Pat', slackUserId: PAT }, budgetUSDPerMonth: 10 }),
+        worker('mine', { manager: { name: 'Pat', slackUserId: PAT }, reportsTo: 'boss', budgetUSDPerMonth: 10 }),
+      ],
+      policy: { budgetAllowanceUSD: 50 },
+    });
+    expect(svc.update(pat, 'mine', { manager: null, budgetUSDPerMonth: 5000 })).toMatchObject({ ok: false });
+    expect(svc.update(pat, 'mine', { manager: { name: 'Sam', slackUserId: SAM } })).toMatchObject({ ok: false });
+    expect(roster.get('mine')!.budgetUSDPerMonth).toBe(10);
+  });
+
+  it('holds a raise on a worker managed through its boss to the boss\'s manager', () => {
+    const { svc } = harness({
+      roster: [
+        worker('boss', { manager: { name: 'Pat', slackUserId: PAT }, budgetUSDPerMonth: 30 }),
+        worker('under', { reportsTo: 'boss', budgetUSDPerMonth: 10 }),
+      ],
+      policy: { budgetAllowanceUSD: 50 },
+    });
+    expect(svc.update(pat, 'under', { budgetUSDPerMonth: 30 })).toMatchObject({ ok: false });
+    expect(svc.update(pat, 'under', { budgetUSDPerMonth: 20 })).toMatchObject({ ok: true });
+  });
 });
 
 describe('OrgService hiring', () => {

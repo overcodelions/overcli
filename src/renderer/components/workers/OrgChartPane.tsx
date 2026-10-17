@@ -19,6 +19,9 @@ import { WorkerAvatar } from './WorkerAvatar';
 /// The window the card counts cover. A month matches the report's default.
 const STATS_DAYS = 30;
 
+/// Siblings drawn as a tree row; more than this wrap as a grid.
+const MAX_TREE_ROW = 4;
+
 interface CardStats {
   done: number;
   errands: number;
@@ -37,9 +40,13 @@ export function OrgChartPane() {
     const from = new Date();
     from.setHours(0, 0, 0, 0);
     from.setDate(from.getDate() - (STATS_DAYS - 1));
-    void window.overcli.invoke('workers:report', { sinceMs: from.getTime() }).then((next) => {
-      if (!cancelled) setReport(next);
-    });
+    void window.overcli.invoke('workers:report', { sinceMs: from.getTime() }).then(
+      (next) => {
+        if (!cancelled) setReport(next);
+      },
+      // The cards still draw without the counts.
+      () => {},
+    );
     return () => {
       cancelled = true;
     };
@@ -88,7 +95,9 @@ export function OrgChartPane() {
       ) : (
         <div className="flex flex-col gap-12">
           {branches.map((branch) => (
-            <section key={branch.manager?.name ?? '\u0000unmanaged'} className="flex flex-col items-center">
+            // Safe centering: a branch wider than the pane starts at its left
+            // edge, where the scroll can reach it, instead of spilling off both.
+            <section key={branch.manager?.name ?? '\u0000unmanaged'} className="flex flex-col [align-items:safe_center]">
               <PersonCard
                 name={branch.manager?.name ?? 'Not managed yet'}
                 slack={!!branch.manager?.slackUserId}
@@ -145,6 +154,24 @@ function Children({
   onOpen: (id: string) => void;
 }) {
   if (nodes.length === 0) return null;
+  // A long row of siblings — a flat roster nobody has arranged yet, or one
+  // manager with many workers — would run off the side. Past a few, they
+  // wrap as a grid in one group under the parent instead.
+  if (nodes.length > MAX_TREE_ROW) {
+    return (
+      <>
+        <div className="h-5 w-px bg-ink/20" />
+        <div className="flex w-full flex-wrap justify-center gap-4 rounded-2xl border border-ink/10 p-4">
+          {nodes.map((node) => (
+            <div key={node.worker.id} className="flex flex-col items-center">
+              <WorkerCard worker={node.worker} stats={stats.get(node.worker.id)} onOpen={() => onOpen(node.worker.id)} />
+              <Children nodes={node.reports} stats={stats} onOpen={onOpen} />
+            </div>
+          ))}
+        </div>
+      </>
+    );
+  }
   return (
     <>
       <div className="h-5 w-px bg-ink/20" />

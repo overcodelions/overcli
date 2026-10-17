@@ -75,14 +75,16 @@ export function WorkerOrgFields({
     <div className="space-y-5">
       <div>
         <Label label="Manager" hint="the person its questions and approvals go to" />
-        <div className="grid grid-cols-[1fr_180px] gap-2">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_180px]">
           <input
+            aria-label="Manager's name"
             value={manager?.name ?? ''}
             onChange={(e) => setManager({ name: e.target.value })}
             placeholder={inherited ? `${inherited.name} (from the worker it reports to)` : 'Pat Lee'}
             className={INPUT}
           />
           <input
+            aria-label="Manager's Slack member ID"
             value={slackId}
             onChange={(e) => setManager({ slackUserId: e.target.value.trim() || undefined })}
             placeholder="Slack member ID"
@@ -98,10 +100,11 @@ export function WorkerOrgFields({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
           <Label label="Reports to" />
           <select
+            aria-label="Reports to"
             value={draft.reportsTo ?? ''}
             onChange={(e) => patch({ reportsTo: e.target.value || undefined })}
             className={INPUT}
@@ -121,6 +124,7 @@ export function WorkerOrgFields({
         <div>
           <Label label="Who may ask it" />
           <select
+            aria-label="Who may ask it"
             value={draft.visibility ?? 'private'}
             onChange={(e) => {
               const v = e.target.value as WorkerVisibility;

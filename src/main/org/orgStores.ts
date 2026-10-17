@@ -129,6 +129,17 @@ export function revokeTokensFor(slackUserId: string): number {
   return all.length - kept.length;
 }
 
+/// Sign out the one sign-in behind this token: what a device's own "Sign
+/// out" does, so the token stops working on the server, not just locally.
+export function revokeOwnToken(token: string): boolean {
+  const want = hashToken(token);
+  const all = listTokens();
+  const kept = all.filter((t) => t.hash !== want);
+  if (kept.length === all.length) return false;
+  writeAtomic(tokensPath(), kept);
+  return true;
+}
+
 export function revokeToken(idOrName: string): boolean {
   const all = listTokens();
   const kept = all.filter((t) => t.id !== idOrName && t.name !== idOrName);
@@ -192,8 +203,13 @@ export const fileHireStore: HireStore = {
 export function updateOrgFile(mutate: (raw: Record<string, unknown>) => void): void {
   const file = orgPolicyPath();
   const existing = readJson(file);
-  const raw: Record<string, unknown> =
-    existing && typeof existing === 'object' && !Array.isArray(existing) ? (existing as Record<string, unknown>) : {};
+  const isObject = !!existing && typeof existing === 'object' && !Array.isArray(existing);
+  // A file someone broke by hand is never written over: starting from {}
+  // would drop the org's name, Slack workspace, roles and allowances.
+  if (!isObject && fs.existsSync(file)) {
+    throw new Error(`${file} is not valid JSON, so it was left as it is. Fix it, then try again.`);
+  }
+  const raw: Record<string, unknown> = isObject ? (existing as Record<string, unknown>) : {};
   mutate(raw);
   writeAtomic(file, raw);
   policyCache = null;

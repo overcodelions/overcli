@@ -33,13 +33,17 @@ function out<T extends R>(res: T): CallToolResult {
 const VISIBILITY = z.enum(['private', 'team', 'org']);
 
 export function registerOrgTools(server: McpServer, org: OrgService, caller: OrgCaller): void {
-  server.registerTool(
+  // Hints for the client: read-only tools can run without a confirmation,
+  // and letting a worker go should always get one.
+  const tool: McpServer['registerTool'] = (name, config, cb) =>
+    server.registerTool(name, { ...config, annotations: { ...annotationsFor(name), ...config.annotations } }, cb);
+  tool(
     'whoami',
     { description: 'Who you are to this overcli org: admin or not, whether you may hire, and your monthly worker allowance.', inputSchema: {} },
     async () => json(org.whoami(caller)),
   );
 
-  server.registerTool(
+  tool(
     'list_workers',
     {
       description:
@@ -50,7 +54,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async () => json(org.listWorkers(caller)),
   );
 
-  server.registerTool(
+  tool(
     'get_worker',
     {
       description:
@@ -61,13 +65,13 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ worker }) => out(org.workerDetail(caller, worker)),
   );
 
-  server.registerTool(
+  tool(
     'org_chart',
     { description: 'The org chart: each manager, the workers they manage, and every worker\'s reports, as a tree.', inputSchema: {} },
     async () => json(org.orgChart(caller)),
   );
 
-  server.registerTool(
+  tool(
     'ask_worker',
     {
       description:
@@ -81,18 +85,19 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ worker, message }) => out(await org.ask(caller, worker, message)),
   );
 
-  server.registerTool(
+  tool(
     'list_waiting',
     {
       description:
         'Questions and approvals waiting on you from the workers you manage (every worker, for an admin). ' +
-        'Answer a question with answer_question; settle an approval with decide_approval.',
+        'Answer a question with answer_question; settle an approval with decide_approval. ' +
+        'Work proposed at a scheduled run is separate: list_proposals.',
       inputSchema: {},
     },
     async () => json(org.listWaiting(caller)),
   );
 
-  server.registerTool(
+  tool(
     'answer_question',
     {
       description: 'Answer a question a worker\'s run is paused on. The run carries on with your answer.',
@@ -104,7 +109,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ runId, answer }) => out(org.answer(caller, runId, answer)),
   );
 
-  server.registerTool(
+  tool(
     'decide_approval',
     {
       description:
@@ -115,7 +120,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ runId, approve }) => out(org.decideRun(caller, runId, approve)),
   );
 
-  server.registerTool(
+  tool(
     'draft_hire',
     {
       description:
@@ -131,12 +136,13 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async (args) => out(await org.draftHire(caller, args)),
   );
 
-  server.registerTool(
+  tool(
     'confirm_hire',
     {
       description:
         'Hire a drafted worker. You become its manager. It is hired now if it fits your allowance and the org policy; ' +
-        'otherwise it waits for an approver, who is notified. It starts on probation, on demand, with no browser.',
+        'otherwise it waits for an approver, who is notified. It keeps the schedule in its draft (change it later with set_worker_schedule); on probation, ' +
+        'each scheduled run proposes its work and waits for your approval (list_proposals).',
       inputSchema: {
         hireId: z.string(),
         reportsTo: z.string().optional().describe('A worker name or id it reports to.'),
@@ -148,13 +154,19 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ hireId, ...options }) => out(org.confirmHire(caller, hireId, options)),
   );
 
-  server.registerTool(
+  tool(
     'list_hires',
     { description: 'Hires in progress that are yours, and (for approvers) hires waiting on approval.', inputSchema: {} },
     async () => json(org.listHires(caller)),
   );
 
-  server.registerTool(
+  tool(
+    'cancel_hire',
+    { description: 'Drop a hire you started: a draft you decided against, or one still waiting on an approver.', inputSchema: { hireId: z.string() } },
+    async ({ hireId }) => out(org.cancelHire(caller, hireId)),
+  );
+
+  tool(
     'decide_hire',
     {
       description: 'As an approver or admin: approve or turn down a hire waiting on approval.',
@@ -163,7 +175,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ hireId, approve }) => out(org.decideHire(caller, hireId, approve)),
   );
 
-  server.registerTool(
+  tool(
     'update_worker',
     {
       description:
@@ -183,7 +195,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ worker, ...patch }) => out(org.update(caller, worker, patch)),
   );
 
-  server.registerTool(
+  tool(
     'set_worker_paused',
     {
       description: 'Pause a worker you manage (no shifts, no errands) or resume it.',
@@ -192,27 +204,27 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ worker, paused }) => out(org.setPaused(caller, worker, paused)),
   );
 
-  server.registerTool(
+  tool(
     'retire_worker',
     {
-      description: 'Let a worker you manage go. Its finished work and journal stay; its reports move up to its own boss.',
+      description: 'Let a worker you manage go, permanently. Confirm with the person first. Its finished work and journal stay; its reports move up to its own boss.',
       inputSchema: { worker: z.string() },
     },
     async ({ worker }) => out(org.retire(caller, worker)),
   );
 
-  server.registerTool(
+  tool(
     'today',
     {
       description:
-        "Your day: what is waiting on you (questions, approvals, hires to approve, team tasks), what your workers delivered " +
+        "Your day: what is waiting on you (questions, approvals, proposed work, hires to approve, team tasks), what your workers delivered " +
         'since yesterday, what each is doing now, and your spend this month with a month-end projection.',
       inputSchema: {},
     },
     async () => json(org.today(caller)),
   );
 
-  server.registerTool(
+  tool(
     'list_work',
     {
       description: 'Finished work from the workers you can see, newest first, with ratings. mine: only workers you manage.',
@@ -221,7 +233,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ mine, days }) => json(org.work(caller, { mine, days })),
   );
 
-  server.registerTool(
+  tool(
     'rate_work',
     {
       description:
@@ -232,7 +244,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async (args) => out(org.rate(caller, args)),
   );
 
-  server.registerTool(
+  tool(
     'set_worker_trust',
     {
       description:
@@ -243,13 +255,13 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ worker, trust }) => out(org.setTrust(caller, worker, trust)),
   );
 
-  server.registerTool(
+  tool(
     'list_roles',
     { description: "The org's approved role catalog, and whether each fits your allowance.", inputSchema: {} },
     async () => json(org.roles(caller)),
   );
 
-  server.registerTool(
+  tool(
     'hire_role',
     {
       description: 'Draft a hire from a catalog role, straight to an offer to confirm with confirm_hire.',
@@ -261,7 +273,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ role, extra }) => out(await org.hireRole(caller, role, extra)),
   );
 
-  server.registerTool(
+  tool(
     'publish_worker',
     {
       description:
@@ -278,19 +290,19 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ yaml, ...options }) => out(org.publishWorker(caller, yaml, options)),
   );
 
-  server.registerTool(
+  tool(
     'list_teams',
     { description: 'Teams of workers you can see, their members, and whether you can give them work.', inputSchema: {} },
     async () => json(org.teams(caller)),
   );
 
-  server.registerTool(
+  tool(
     'list_team_tasks',
     { description: 'Team tasks you can see: their stages, what they need, and whether they are waiting on you.', inputSchema: {} },
     async () => json(org.teamTasks(caller)),
   );
 
-  server.registerTool(
+  tool(
     'brief_team',
     {
       description:
@@ -301,7 +313,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ team, task }) => out(org.briefTeam(caller, team, task)),
   );
 
-  server.registerTool(
+  tool(
     'decide_team_task',
     {
       description:
@@ -327,25 +339,25 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
       ),
   );
 
-  server.registerTool(
+  tool(
     'org_people',
     { description: 'Admins: everyone with access, their role, workers, spend and allowance.', inputSchema: {} },
     async () => out(org.people(caller)),
   );
 
-  server.registerTool(
+  tool(
     'org_health',
     { description: 'Admins: whether Slack, the models and the workers are healthy, and spend by manager.', inputSchema: {} },
     async () => out(org.health(caller)),
   );
 
-  server.registerTool(
+  tool(
     'decision_log',
     { description: 'Admins: recent decisions — hires, approvals, promotions, changes — and who made them.', inputSchema: {} },
     async () => out(org.auditLog(caller, 60)),
   );
 
-  server.registerTool(
+  tool(
     'list_proposals',
     {
       description:
@@ -355,7 +367,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async () => json(org.proposals(caller)),
   );
 
-  server.registerTool(
+  tool(
     'decide_proposal',
     {
       description: 'Approve some or all items a worker proposed (they start running), and skip others.',
@@ -368,13 +380,18 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     async ({ batchId, approve, skip }) => out(await org.decideProposal(caller, batchId, { approve, skip })),
   );
 
-  server.registerTool(
+  tool(
     'run_worker_now',
-    { description: "Start a worker's scheduled run now instead of waiting for its next time.", inputSchema: { worker: z.string() } },
+    {
+      description:
+        "Start a worker's scheduled run now instead of waiting for its next time. A worker on probation only proposes its work; " +
+        'approve it with decide_proposal. To give a worker one specific task, use ask_worker instead.',
+      inputSchema: { worker: z.string() },
+    },
     async ({ worker }) => out(await org.runNow(caller, worker)),
   );
 
-  server.registerTool(
+  tool(
     'set_worker_schedule',
     {
       description:
@@ -399,4 +416,15 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
       return out(org.update(caller, worker, { cadence }));
     },
   );
+}
+
+const READ_ONLY = new Set([
+  'whoami', 'list_workers', 'get_worker', 'org_chart', 'list_waiting', 'list_hires', 'today', 'list_work',
+  'list_roles', 'list_teams', 'list_team_tasks', 'org_people', 'org_health', 'decision_log', 'list_proposals',
+]);
+
+function annotationsFor(name: string): Record<string, boolean> {
+  if (READ_ONLY.has(name)) return { readOnlyHint: true, openWorldHint: false };
+  if (name === 'retire_worker') return { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
+  return { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
 }

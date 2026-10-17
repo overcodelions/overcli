@@ -98,6 +98,8 @@ export interface AccessDeps {
 }
 
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/// The first-admin link goes to the log, where more people can read it.
+export const SETUP_TTL_MS = 24 * 60 * 60 * 1000;
 export const PAIR_TTL_MS = 10 * 60 * 1000;
 const MAX_PENDING_PAIRS = 100;
 
@@ -192,16 +194,21 @@ export class AccessService {
       ...(args.allowanceUSD !== undefined ? { allowanceUSD: args.allowanceUSD } : {}),
       invitedBy: { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) },
       createdAt: now,
-      expiresAt: now + INVITE_TTL_MS,
+      // The first-admin link is printed to the log, so it lives a day, not a week.
+      expiresAt: now + (args.setup ? SETUP_TTL_MS : INVITE_TTL_MS),
       ...(args.setup ? { setup: true } : {}),
     };
     const link = `${baseUrl.replace(/\/+$/, '')}/join/${code}`;
-    // A second invite for the same person replaces the first: one live link each.
-    const rest = this.deps.store.invites().filter((i) => !(slackUserId && i.slackUserId === slackUserId && !i.usedAt));
+    // A second invite for the same person replaces the first: one live link
+    // each. Likewise one first-admin link: each start prints a new one.
+    const replaced = (i: Invite) => !i.usedAt && ((!!slackUserId && i.slackUserId === slackUserId) || (!!args.setup && !!i.setup));
+    this.deps.store.saveInvites([...this.deps.store.invites().filter((i) => !replaced(i)), invite]);
     let sentInSlack = false;
     if (slackUserId && this.deps.slack) sentInSlack = await this.deps.slack.dmInvite(invite, link, this.org());
+    // Saved before the DM and marked after, from a fresh read: a link
+    // redeemed or cancelled while Slack was answering stays that way.
+    if (sentInSlack) this.deps.store.saveInvites(this.deps.store.invites().map((i) => (i.id === invite.id ? { ...i, sentInSlack } : i)));
     invite.sentInSlack = sentInSlack;
-    this.deps.store.saveInvites([...rest, invite]);
     return { ok: true, invite: summarize(invite), link, sentInSlack };
   }
 
@@ -321,6 +328,15 @@ export class AccessService {
   }
 
   /// Sign out one place. Your own any time; anyone's as an admin.
+  /// A key of the caller's own for one tool (Claude Code, Codex, a script),
+  /// listed among their sign-ins so it can be signed out on its own.
+  createDeviceKey(caller: OrgCaller, device: string): Result<{ token: string }> {
+    if (!caller.slackUserId) return { ok: false, error: 'Only a person signed in through Slack can make keys. Ask an admin for a service token.' };
+    const label = device.trim().slice(0, 40) || 'A tool';
+    const { token } = this.deps.tokens.create({ name: caller.name, slackUserId: caller.slackUserId, device: label });
+    return { ok: true, token };
+  }
+
   signOutDevice(caller: OrgCaller, tokenId: string): Result {
     const token = this.deps.tokens.list().find((t) => t.id === tokenId);
     if (!token) return { ok: false, error: 'No sign-in with that id.' };
@@ -336,9 +352,19 @@ export class AccessService {
   async requestJoin(person: { slackUserId: string; name: string }, baseUrl: string): Promise<Result<{ outcome: 'invited' | 'asked' | 'already' }>> {
     if (!isSlackUserId(person.slackUserId)) return { ok: false, error: 'Not a Slack member.' };
     const policy = this.deps.policy();
+    const known = this.deps.tokens.list().some((t) => t.slackUserId === person.slackUserId) || personRole(policy, person.slackUserId) !== 'member';
+    if ((policy.openJoin || known) && !baseUrl) {
+      return { ok: false, error: 'This org hasn’t told overcli its web address yet, so there’s no link to send. Ask an admin to set it (publicUrl in org.json).' };
+    }
     if (policy.openJoin) {
       const role: PersonRole = personRole(policy, person.slackUserId);
       const made = await this.invite({ name: 'Slack', admin: true }, { name: person.name, slackUserId: person.slackUserId, role }, baseUrl);
+      return made.ok ? { ok: true, outcome: 'invited' } : made;
+    }
+    // Someone already in — lost their link, new browser — gets a fresh one at
+    // the role they have: Slack has already said who they are.
+    if (known) {
+      const made = await this.invite({ name: 'Slack', admin: true }, { name: person.name, slackUserId: person.slackUserId, role: personRole(policy, person.slackUserId) }, baseUrl);
       return made.ok ? { ok: true, outcome: 'invited' } : made;
     }
     const requests = this.deps.store.requests();

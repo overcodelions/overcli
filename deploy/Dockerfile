@@ -25,7 +25,7 @@ RUN npm run build:main && npm prune --omit=dev
 FROM node:22-bookworm-slim
 # git for worktrees; ssh for git remotes; the model CLIs are what every
 # worker turn runs. Claude Code always; Codex when INSTALL_CODEX=1. Pin the
-# versions for reproducible images.
+# versions for reproducible images: --build-arg CLAUDE_CODE_VERSION=<x.y.z>.
 ARG CLAUDE_CODE_VERSION=latest
 ARG INSTALL_CODEX=0
 ARG CODEX_VERSION=latest
@@ -56,7 +56,7 @@ VOLUME ["/data"]
 EXPOSE 7420
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
-  CMD node -e "fetch('http://127.0.0.1:7420/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+  CMD node -e "const p=(process.env.OVERCLI_CONTROL||'7420').split(':').pop();fetch('http://127.0.0.1:'+p+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/app/dist/cli/index.js"]
 # Permissions: deny is the safe default, and a worker that can use no tools

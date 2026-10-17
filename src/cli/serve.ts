@@ -204,7 +204,7 @@ export function startDaemon(
     listenControlPlane(server, controlAt).then(
       () => {
         const shown = controlAt.host.includes(':') ? `[${controlAt.host}]` : controlAt.host;
-        deps.out(`control: http://${shown}:${controlAt.port}/ (console) and /mcp — tokens: overcli tokens create`);
+        deps.out(`control: http://${shown}:${controlAt.port}/ (console) and /mcp`);
         if (listTokens().length === 0) {
           // First run: nobody can sign in yet. Rather than send the operator
           // off to mint a token, hand them a one-time link that signs the

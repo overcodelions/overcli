@@ -168,15 +168,12 @@ export class SlackCommands {
     }
     const name = await this.realName(caller.slackUserId!, caller.name);
     const base = access.baseUrl();
-    if (!base && this.deps.policy().openJoin) {
-      return this.respond(responseUrl, 'This org hasn’t told overcli its address yet, so there’s no link to send. Ask an admin to set publicUrl in org.json.');
-    }
     const res = await access.requestJoin({ slackUserId: caller.slackUserId!, name }, base ?? '');
     if (!res.ok) return this.respond(responseUrl, res.error);
     return this.respond(
       responseUrl,
       res.outcome === 'invited'
-        ? 'You’re in. I’ve sent you a link in a DM to finish signing in.'
+        ? 'I’ve sent you a sign-in link in a DM.'
         : res.outcome === 'already'
           ? 'You’ve already asked. An admin will let you in soon.'
           : 'Asked. An admin will let you in, and I’ll DM you a link when they do.',
@@ -214,15 +211,21 @@ export class SlackCommands {
     const { org } = this.deps;
     if (!text || text === 'list') {
       const list = org.listWorkers(caller);
-      if (!list.length) return this.respond(responseUrl, 'You cannot see any workers yet.');
+      if (!list.length) return this.respond(responseUrl, 'No workers you can see yet. Hire one with `/hire <what the job is>`, or ask a teammate to share theirs.');
       return this.respond(responseUrl, `${list.length} workers`, [section(list.slice(0, MAX_LINES).map(workerLine).join('\n'))]);
     }
     if (text === 'waiting') {
       const items = org.listWaiting(caller);
-      if (!items.length) return this.respond(responseUrl, 'Nothing is waiting on you.');
-      return this.respond(responseUrl, `${items.length} waiting on you`, [
-        section(items.slice(0, MAX_LINES).map(waitingLine).join('\n')),
-        context('Answer a question in the DM thread it came in, or approve from its buttons.'),
+      const proposed = org.proposals(caller);
+      const total = items.length + proposed.length;
+      if (!total) return this.respond(responseUrl, 'Nothing is waiting on you.');
+      const lines = [
+        ...proposed.map((b) => `• *${escapeMrkdwn(b.workerName)}* proposes ${b.items.length === 1 ? 'one thing' : `${b.items.length} things`} to do`),
+        ...items.map(waitingLine),
+      ];
+      return this.respond(responseUrl, `${total} waiting on you`, [
+        section(lines.slice(0, MAX_LINES).join('\n')),
+        context('Answer a question in the DM thread it came in, or use the buttons on its DM. Pick proposed work item by item on Today in the console.'),
       ]);
     }
     if (text === 'help') return this.respond(responseUrl, HELP);
@@ -303,9 +306,9 @@ export class SlackCommands {
     await this.reply(channel, threadTs, `Ready to hire ${c.name}`, [
       section(`*${escapeMrkdwn(c.name)}*${c.tagline ? ` — ${escapeMrkdwn(c.tagline)}` : ''}\n${quote(clip(c.jobDescription, 1500))}`),
       context(
-        `$${c.budgetUSDPerMonth}/month · flows: ${escapeMrkdwn(c.flows.join(', ') || '—')} · connectors: ${escapeMrkdwn(c.connectors.join(', ') || 'none')}`,
+        `$${c.budgetUSDPerMonth}/month · ${escapeMrkdwn(c.schedule)} · tools: ${escapeMrkdwn(c.connectors.join(', ') || 'none')}`,
       ),
-      context('You become its manager. It starts on probation and works when asked; change who it reports to and who may ask it in the console or with update_worker.'),
+      context(`You become its manager. It starts on probation${c.cadence ? ', so you approve what it proposes at each run' : ''}. Change its schedule, who it reports to and who may ask it on its page in the console.`),
       {
         type: 'actions',
         elements: [
@@ -426,9 +429,15 @@ export class SlackCommands {
         await settle(approve ? `Let in by ${caller.name}. They have their link.` : `Turned down by ${caller.name}.`);
         return;
       }
-      case HIRE_CANCEL_ACTION:
+      case HIRE_CANCEL_ACTION: {
+        const res = org.cancelHire(caller, action.value);
+        if (!res.ok) {
+          if (channel && threadTs) await this.reply(channel, threadTs, res.error);
+          return;
+        }
         await settle('Hire cancelled.');
         return;
+      }
       case HIRE_CONFIRM_ACTION: {
         const res = org.confirmHire(caller, action.value);
         if (!res.ok) {
@@ -607,6 +616,26 @@ export class SlackCommands {
     }
   }
 
+  /// An engine notice an org should hear: a worker out of budget goes to its
+  /// manager, the shared pool running dry to the admins. The rest stays in
+  /// the log, where it always went.
+  onNotice(notice: { title: string; body: string; workerId?: string; forAdmins?: boolean }): void {
+    if (!this.deps.botToken()) return;
+    const to = notice.workerId
+      ? [this.deps.org.managerSlackId(notice.workerId)].filter((id): id is string => !!id)
+      : notice.forAdmins
+        ? this.deps.policy().admins
+        : [];
+    for (const id of to) {
+      void this.dm(id, notice.title, {
+        blocks: [
+          section(`*${escapeMrkdwn(notice.title)}*\n${escapeMrkdwn(clip(notice.body, 1500))}`),
+          context(notice.workerId ? 'Raise its monthly budget on its page in the console, or ask an admin.' : 'Raise budgets or pause some workers from the console.'),
+        ],
+      });
+    }
+  }
+
   tellRequester(slackUserId: string, text: string): void {
     void this.dm(slackUserId, text);
   }
@@ -615,14 +644,16 @@ export class SlackCommands {
 
   /// Ask each approver about a hire over someone's allowance.
   notifyApprovers(hire: PendingHire, approvers: string[]): void {
-    const c = hire.drafted?.contract;
+    // From the summary, not the draft: a worker published from someone's
+    // app has no draft, and the approver must still see what it costs.
+    const c = this.deps.org.summarize(hire).contract;
     const who = hire.requestedBy.slackUserId ? `<@${hire.requestedBy.slackUserId}>` : escapeMrkdwn(hire.requestedBy.name);
     for (const approver of approvers) {
       void this.dm(approver, `${hire.requestedBy.name} wants to hire ${c?.name ?? 'a worker'}`, {
         blocks: [
           section(`*Hire approval* — ${who} wants to hire *${escapeMrkdwn(c?.name ?? 'a worker')}*`),
           ...(c ? [section(quote(clip(c.jobDescription, 1200)))] : []),
-          context(`$${hire.options.budgetUSDPerMonth ?? c?.budgetUSDPerMonth ?? 0}/month · connectors: ${escapeMrkdwn((c?.mcpServers ?? []).join(', ') || 'none')}`),
+          context(`$${c?.budgetUSDPerMonth ?? 0}/month · ${escapeMrkdwn(c?.schedule ?? 'When asked')} · tools: ${escapeMrkdwn((c?.connectors ?? []).join(', ') || 'none')}`),
           section((hire.reasons ?? []).map((r) => `• ${escapeMrkdwn(r)}`).join('\n') || 'Needs an approver.'),
           {
             type: 'actions',
@@ -639,7 +670,7 @@ export class SlackCommands {
   notifyDecided(hire: PendingHire, outcome: { approved: boolean; by: string; worker?: Worker; error?: string }): void {
     const to = hire.requestedBy.slackUserId;
     if (!to) return;
-    const name = hire.drafted?.contract.name ?? 'your hire';
+    const name = this.deps.org.summarize(hire).contract?.name ?? 'your hire';
     const text = outcome.error
       ? `${outcome.by} approved ${name}, but hiring failed: ${outcome.error}`
       : outcome.approved
@@ -651,11 +682,13 @@ export class SlackCommands {
 
 const HELP = [
   '`/worker` — the workers you can see',
-  '`/worker waiting` — questions and approvals waiting on you',
+  '`/worker waiting` — questions, approvals and proposed work waiting on you',
   '`/worker <name>` — one worker',
-  '`/worker <name> ask <text>` — send it an errand',
+  '`/worker <name> ask <text>` — ask it to do something',
   '`/worker <name> pause` / `resume`',
   '`/hire <job description>` — hire a worker',
+  '`/team <name>: <task>` — give a team a task',
+  '`/overcli join` — ask to join, or get a new sign-in link',
 ].join('\n');
 
 function section(text: string) {
@@ -694,6 +727,6 @@ function workerLine(w: WorkerSummary): string {
 }
 
 function waitingLine(it: WaitingItem): string {
-  const what = it.kind === 'question' ? escapeMrkdwn(clip(it.question ?? 'a question', 160)) : `wants approval to run ${escapeMrkdwn(it.stepId)}`;
+  const what = it.kind === 'question' ? escapeMrkdwn(clip(it.question ?? 'a question', 160)) : 'wants your approval for a step that reaches outside overcli';
   return `• *${escapeMrkdwn(it.workerName)}* (${escapeMrkdwn(clip(it.title, 60))}): ${what}`;
 }

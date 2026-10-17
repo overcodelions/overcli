@@ -249,9 +249,12 @@ export function canHire(policy: OrgPolicy, caller: OrgCaller): boolean {
 /// manager is them. A worker that only inherits them through a boss counts
 /// against whoever manages that boss's branch directly — the person who
 /// hired it.
-export function committedBudget(roster: readonly Pick<Worker, 'manager' | 'budgetUSDPerMonth' | 'enabled'>[], slackUserId: string): number {
+/// What a person's workers may spend a month: every worker they answer for,
+/// directly or up the reporting chain. Paused ones count too — pausing one to
+/// fit another hire, then resuming it, must not slip past the allowance.
+export function committedBudget(roster: readonly Pick<Worker, 'id' | 'manager' | 'reportsTo' | 'budgetUSDPerMonth' | 'enabled'>[], slackUserId: string): number {
   return roster
-    .filter((w) => w.enabled && w.manager?.slackUserId === slackUserId)
+    .filter((w) => managerFor(roster, w.id)?.slackUserId === slackUserId)
     .reduce((sum, w) => sum + (Number.isFinite(w.budgetUSDPerMonth) ? w.budgetUSDPerMonth : 0), 0);
 }
 
@@ -262,7 +265,7 @@ export function allowanceFor(policy: OrgPolicy, slackUserId: string): number {
 /// Whether a hire may go ahead now or needs an approver, and why.
 export function hireDecision(
   policy: OrgPolicy,
-  roster: readonly Pick<Worker, 'manager' | 'budgetUSDPerMonth' | 'enabled'>[],
+  roster: readonly Pick<Worker, 'id' | 'manager' | 'reportsTo' | 'budgetUSDPerMonth' | 'enabled'>[],
   caller: OrgCaller,
   hire: { budgetUSDPerMonth: number; visibility?: WorkerVisibility; mcpServers?: string[]; role?: OrgRole },
 ): { kind: 'allowed' } | { kind: 'needsApproval'; reasons: string[] } | { kind: 'refused'; reason: string } {

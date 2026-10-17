@@ -64,6 +64,11 @@ export interface NotifyArgs {
   title: string;
   body: string;
   kind?: NotifyKind;
+  /// The worker it is about, when there is one — so an org server can tell
+  /// that worker's manager rather than whoever watches the log.
+  workerId?: string;
+  /// About the whole roster (the shared pool), for whoever runs the org.
+  forAdmins?: boolean;
 }
 
 export interface HostSecrets {

@@ -52,9 +52,9 @@ On first start it creates a **Workers** folder on the volume as the default plac
 ## 3. Say who the org is
 
 ```sh
-docker compose exec overcli overcli org init --name "Acme" --admin U012AB3CD --slack-team T012AB3CD \
+docker compose -f deploy/docker-compose.yml exec overcli overcli org init --name "Acme" --admin U012AB3CD --slack-team T012AB3CD \
   --url https://overcli.acme.internal:7420 --timezone America/New_York
-docker compose exec overcli overcli org show
+docker compose -f deploy/docker-compose.yml exec overcli overcli org show
 ```
 
 This writes `/data/org.json`. It names the org (in the console, Slack and MCP), pins the Slack workspace (the bridge refuses a token from any other), and holds the rules. Edit it any time: changes apply without a restart. `deploy/org.example.json` has every field:
@@ -80,8 +80,8 @@ A new `org.json` starts narrow: only admins hire, until you change `hirers`.
 Workers doing research and writing can use the default **Workers** folder. Workers doing code need the repo:
 
 ```sh
-docker compose exec overcli git clone git@github.com:acme/app.git /data/repos/app
-docker compose exec overcli overcli projects add /data/repos/app --name App
+docker compose -f deploy/docker-compose.yml exec overcli git clone git@github.com:acme/app.git /data/repos/app
+docker compose -f deploy/docker-compose.yml exec overcli overcli projects add /data/repos/app --name App
 ```
 
 For private repos, mount a deploy key into `/data/home/.ssh`, or put a GitHub App token in the remote URL.
@@ -96,7 +96,7 @@ On first start with nobody signed in, the log prints a one-time link:
 control: nobody has signed in yet. Open this once to sign in as the first admin: https://…/join/…
 ```
 
-Open it to sign in as the first admin (the Slack ID you gave `org init`). Set `publicUrl` in `org.json` (or `org init --url`) to the address people use, so links sent from Slack point at the right place.
+Open it to sign in as the first admin (the Slack ID you gave `org init`). It works once and for a day; each restart with nobody signed in prints a new one and cancels the last. Set `publicUrl` in `org.json` (or `org init --url`) to the address people use, so links sent from Slack point at the right place.
 
 After that, nobody copies a token. Every person is their Slack account, and there are three ways in:
 
@@ -109,9 +109,9 @@ People shows where each person is signed in (browser, app, token), lets an admin
 Tokens are still there for scripts and service accounts:
 
 ```sh
-docker compose exec overcli overcli tokens create --name "Ops automation" --admin
-docker compose exec overcli overcli tokens list
-docker compose exec overcli overcli tokens revoke "Ops automation"
+docker compose -f deploy/docker-compose.yml exec overcli overcli tokens create --name "Ops automation" --admin
+docker compose -f deploy/docker-compose.yml exec overcli overcli tokens list
+docker compose -f deploy/docker-compose.yml exec overcli overcli tokens revoke "Ops automation"
 ```
 
 ## Schedules
@@ -131,7 +131,7 @@ Every approval costs model time, so a worker's monthly budget still caps what it
 
 Anyone who can hire can bring a worker they built in their own overcli app:
 
-- **In the app:** Settings → Advanced → Org server (address and token), then **Publish to your org** on the worker's Share card.
+- **In the app:** Settings → Advanced → Your org (sign in), then **Publish to your org** on the worker's Share card.
 - **From a terminal:** `OVERCLI_ORG_URL=… OVERCLI_ORG_TOKEN=… overcli workers push "Worker name"`
 - **In the console:** Hire → *Bring a worker you built yourself*, then paste its file.
 
@@ -154,11 +154,12 @@ Three ways to expose the control plane, strictest first:
 2. **Internal load balancer with TLS** in front of 7420, for a proper `https://` name inside the network. The app and CLI require https for anything that isn't this machine.
 3. **Public HTTPS ingress**, only if you want claude.ai connectors. Use an ALB or API gateway with TLS, or Cloudflare Tunnel (outbound-only, like Socket Mode). Restrict it to Anthropic's published egress ranges, and keep token auth on.
 
-The compose file binds 7420 to loopback. Open it up deliberately.
+The compose file binds 7420 to loopback. Open it up deliberately. Behind a proxy or load balancer, set `OVERCLI_TRUST_PROXY=1` so rate limits see each person's address rather than the proxy's; without it, `X-Forwarded-*` headers are ignored.
 
 ## Operating it
 
 - **Run one instance per Slack app.** Socket Mode spreads events across every open connection, so a second instance on the same tokens takes replies meant for the first. To grow past one box, split by department, each with its own Slack app and volume.
+- **A bind mount instead of the named volume** must be writable by uid 1000 (`chown -R 1000:1000 <dir>`), the `node` user the image runs as.
 - **Back up `/data`.** It holds every worker, journal, run, token hash, `org.json`, ratings and the decision log (`org/audit.jsonl`).
 - **Permissions.** `--permissions deny` lets worker runs use no tools; the compose file uses an allow-list. External actions (push, send, publish) still stop for the manager's approval until the worker is trusted with them. Trust is raised from the worker's page when its record earns it.
 - **Logs.** stdout carries startup, Slack connection and control plane messages.

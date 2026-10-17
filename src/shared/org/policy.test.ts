@@ -4,6 +4,7 @@ import {
   canHire,
   canManage,
   canSee,
+  committedBudget,
   hireDecision,
   parseOrgPolicy,
   type OrgCaller,
@@ -82,6 +83,18 @@ describe('permissions', () => {
 
   it('allows nobody to hire by default', () => {
     expect(canHire(DEFAULT_ORG_POLICY, pat)).toBe(false);
+  });
+});
+
+describe('committedBudget', () => {
+  it('counts paused workers and workers managed through their boss', () => {
+    const roster = [
+      w('boss', { manager: { name: 'Pat', slackUserId: PAT }, budgetUSDPerMonth: 30 }),
+      w('paused', { manager: { name: 'Pat', slackUserId: PAT }, budgetUSDPerMonth: 20, enabled: false }),
+      w('under', { reportsTo: 'boss', budgetUSDPerMonth: 10 }),
+      w('other', { manager: { name: 'Sam', slackUserId: SAM }, budgetUSDPerMonth: 99 }),
+    ] as never[];
+    expect(committedBudget(roster, PAT)).toBe(60);
   });
 });
 

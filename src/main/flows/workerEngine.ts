@@ -1708,6 +1708,7 @@ export class WorkerEngine {
                 ? `${w.name} has no funds left this month. Raise the pool or reprioritize the roster.`
                 : `${starved.length} workers have no funds left this month, starting with ${w.name}. Raise the pool or reprioritize the roster.`,
             kind: 'failure',
+            forAdmins: true,
           });
         }
       } else if (wrote) {
@@ -1715,6 +1716,7 @@ export class WorkerEngine {
           title: `${w.name} is out of budget`,
           body: message,
           kind: 'failure',
+          workerId: w.id,
         });
       }
       w.lastShiftAt = now;

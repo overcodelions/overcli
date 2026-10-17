@@ -137,6 +137,10 @@ describe('the CLI import graph', () => {
     expect(rel).toContain('src/main/flows/runtime.ts');
     expect(rel).toContain('src/main/flows/workerEngine.ts');
     expect(rel).toContain('src/main/store.ts');
+    // The org layer runs headless too: its control plane, rules and Slack.
+    expect(rel).toContain('src/cli/controlPlane.ts');
+    expect(rel).toContain('src/main/org/orgService.ts');
+    expect(rel).toContain('src/main/slack/slackBridge.ts');
   });
 
   it('does not pull in the renderer', () => {

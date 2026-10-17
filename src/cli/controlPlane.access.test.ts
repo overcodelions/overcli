@@ -94,3 +94,13 @@ describe('pairing over HTTP', () => {
     expect(limited).toBe(true);
   });
 });
+
+describe('where links point', () => {
+  it('ignores forwarded headers from clients, and learns the address only from admins', async () => {
+    const asPat = await fetch(`${base}/api/whoami`, { headers: { Authorization: 'Bearer ocli_pat', 'X-Forwarded-Host': 'evil.example' } });
+    expect(asPat.ok).toBe(true);
+    expect(access.baseUrl()).not.toContain('evil.example');
+    await fetch(`${base}/api/whoami`, { headers: { Authorization: 'Bearer ocli_admin', 'X-Forwarded-Host': 'evil.example' } });
+    expect(access.baseUrl()).toBe(base);
+  });
+});

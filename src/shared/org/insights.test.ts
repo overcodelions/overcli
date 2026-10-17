@@ -31,7 +31,12 @@ describe('trustReadiness', () => {
 
 describe('projectMonthEnd', () => {
   it('scales spend so far to the whole month', () => {
-    expect(Math.round(projectMonthEnd(31, new Date(2026, 9, 10, 0)))).toBe(96);
+    // Nine days gone by midnight on the 10th.
+    expect(Math.round(projectMonthEnd(31, new Date(2026, 9, 10, 0)))).toBe(107);
+  });
+
+  it('counts the first day as one day, not zero or one and a half', () => {
+    expect(Math.round(projectMonthEnd(10, new Date(2026, 9, 1, 12)))).toBe(310);
   });
 });
 

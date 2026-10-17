@@ -182,6 +182,7 @@ import {
   pollPairing,
   publishToOrg,
   redeemInvite,
+  signOutAt,
   startPairing,
   whoamiAt,
 } from './org/orgClient';
@@ -916,6 +917,8 @@ export function registerIpc(): void {
     if (invalid) return { ok: false, error: invalid };
     try {
       const ok = storeSlackToken(kind, token);
+      // A running bridge holds the old token: reconnect so the new one is used.
+      if (ok && slackBridge?.running && slackEnabled()) void slackBridge.start();
       emitToRenderer({ type: 'slackStatus', status: slackStatus() });
       return ok ? { ok } : { ok, error: 'This build cannot store secrets — set the environment variable instead.' };
     } catch (err) {
@@ -947,71 +950,109 @@ export function registerIpc(): void {
       return { ok: false, error: String(err) };
     }
   });
-  // Signing this app in to the org. One pairing at a time; a new sign-in
-  // or Cancel stops the poll of the last.
-  let pairing: { stop: () => void } | null = null;
+  // Signing this app in to the org. One sign-in at a time: each one takes a
+  // number, and a newer sign-in, Cancel or Sign out bumps it, so anything an
+  // older one was still waiting on lands nowhere.
+  let signInGen = 0;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  const stopSignIn = () => {
+    signInGen++;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+  };
   const deviceName = `overcli app on ${os.hostname().replace(/\.local$/, '')}`;
-  const keepOrg = (base: string, token: string) => {
-    host().secrets.set(ORG_TOKEN_KEY, token);
-    Store.saveSettings({ ...Store.load().settings, orgServerUrl: base });
+  const keepOrg = (base: string, token: string): string | null => {
+    try {
+      if (!host().secrets.set(ORG_TOKEN_KEY, token)) return 'This build cannot store the sign-in — set $OVERCLI_ORG_TOKEN instead.';
+      Store.saveSettings({ ...Store.load().settings, orgServerUrl: base });
+      return null;
+    } catch (err) {
+      return `Could not save the sign-in: ${String(err)}`;
+    }
   };
   ipcMain.handle('org:signIn', async (_e, { url }) => {
-    pairing?.stop();
-    pairing = null;
+    stopSignIn();
+    const gen = signInGen;
     const invite = parseInviteLink(url);
     if (invite) {
       const base = normalizeOrgUrl(invite.base);
       if (!base.ok) return base;
       const res = await redeemInvite(base.url, invite.code, deviceName);
       if (!res.ok) return res;
-      keepOrg(base.url, res.data.token);
+      const failed = keepOrg(base.url, res.data.token);
+      if (failed) return { ok: false, error: failed };
       return { ok: true, signedIn: true, org: res.data.org, name: res.data.name };
     }
     const base = normalizeOrgUrl(url);
     if (!base.ok) return base;
     const started = await startPairing(base.url, deviceName);
     if (!started.ok) return started;
+    if (gen !== signInGen) return { ok: false, error: 'Cancelled.' };
     const { pairId, pollSecret, userCode, verifyUrl, expiresAt } = started.data;
+    // The server is only an address someone pasted: open its page only when
+    // it is a web page on that same server.
+    const sameServer = (() => {
+      try {
+        return new URL(verifyUrl).origin === new URL(base.url).origin;
+      } catch {
+        return false;
+      }
+    })();
+    if (!isSafeExternalUrl(verifyUrl) || !sameServer) return { ok: false, error: 'The org server sent back a sign-in page on another address. Check the address and try again.' };
     void shell.openExternal(verifyUrl);
-    let stopped = false;
-    const timer = setInterval(() => {
-      if (stopped) return;
+    // One poll at a time, two seconds apart. A blip is retried; only a run of
+    // failures ends the sign-in.
+    let misses = 0;
+    const poll = async (): Promise<void> => {
+      if (gen !== signInGen) return;
       if (Date.now() > expiresAt + 5_000) {
-        stop();
+        stopSignIn();
         emitToRenderer({ type: 'orgSignIn', outcome: 'expired' });
         return;
       }
-      void pollPairing(base.url, pairId, pollSecret).then((res) => {
-        if (stopped) return;
-        if (!res.ok) {
-          stop();
-          emitToRenderer({ type: 'orgSignIn', outcome: 'failed', error: res.error });
+      const res = await pollPairing(base.url, pairId, pollSecret);
+      if (gen !== signInGen) return;
+      if (!res.ok) {
+        if (++misses < 5) {
+          pollTimer = setTimeout(() => void poll(), 2_000);
           return;
         }
-        if (res.data.status === 'waiting') return;
-        stop();
-        if (res.data.status === 'signedIn') {
-          keepOrg(base.url, res.data.token);
-          emitToRenderer({ type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name });
-        } else {
-          emitToRenderer({ type: 'orgSignIn', outcome: res.data.status });
-        }
-      });
-    }, 2_000);
-    const stop = () => {
-      stopped = true;
-      clearInterval(timer);
-      if (pairing?.stop === stop) pairing = null;
+        stopSignIn();
+        emitToRenderer({ type: 'orgSignIn', outcome: 'failed', error: res.error });
+        return;
+      }
+      misses = 0;
+      if (res.data.status === 'waiting') {
+        pollTimer = setTimeout(() => void poll(), 2_000);
+        return;
+      }
+      stopSignIn();
+      if (res.data.status === 'signedIn') {
+        const failed = keepOrg(base.url, res.data.token);
+        emitToRenderer(
+          failed
+            ? { type: 'orgSignIn', outcome: 'failed', error: failed }
+            : { type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name },
+        );
+      } else {
+        emitToRenderer({ type: 'orgSignIn', outcome: res.data.status });
+      }
     };
-    pairing = { stop };
+    pollTimer = setTimeout(() => void poll(), 2_000);
     return { ok: true, signedIn: false, userCode, verifyUrl };
   });
   ipcMain.handle('org:cancelSignIn', () => {
-    pairing?.stop();
-    pairing = null;
+    stopSignIn();
     return { ok: true };
   });
-  ipcMain.handle('org:signOut', () => {
+  ipcMain.handle('org:signOut', async () => {
+    stopSignIn();
+    // Signed out on the server first, so the token stops working there too;
+    // the local copy goes whatever the server says.
+    const token = host().secrets.get(ORG_TOKEN_KEY);
+    const raw = Store.load().settings.orgServerUrl;
+    const url = raw ? normalizeOrgUrl(raw) : null;
+    if (token && url?.ok) await signOutAt(url.url, token);
     try {
       return { ok: host().secrets.set(ORG_TOKEN_KEY, null) };
     } catch {

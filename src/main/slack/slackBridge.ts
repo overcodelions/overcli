@@ -109,6 +109,16 @@ export class SlackBridge {
   /// Keys being posted right now, so a burst of run updates for one pause
   /// cannot post the same DM twice before the first post returns.
   private posting = new Set<string>();
+  /// When this process began. A thread settled before it — a run approved,
+  /// then the process died before the step ran — does not stop the restored
+  /// pause from being asked again.
+  private readonly bootedAt = Date.now();
+
+  /// Only the worker's manager as it is now may answer: a worker moved to
+  /// someone else, or a manager taken off it, ends the old manager's say.
+  private isCurrentManager(t: { workerId: UUID; managerSlackUserId: string }, user: string | undefined): boolean {
+    return !!user && user === t.managerSlackUserId && managerFor(this.deps.workers(), t.workerId)?.slackUserId === user;
+  }
   private status: SlackBridgeStatus = { enabled: false, connected: false, openThreads: 0 };
   /// `/worker`, `/hire` and hire approvals — set once the org control plane
   /// exists, which is built after the bridge.
@@ -138,14 +148,21 @@ export class SlackBridge {
     this.deps.onStatus?.(this.getStatus());
   }
 
+  /// Bumped by every start and stop. A start that finds it moved while it
+  /// waited on Slack gives up: two quick Reconnects must not open two
+  /// sockets, and turning Slack off mid-start must not connect anyway.
+  private generation = 0;
+
   async start(): Promise<Result> {
     this.stop();
+    const gen = this.generation;
     const { bot, app } = this.deps.tokens();
     if (!bot || !app) {
       this.setStatus({ enabled: true, connected: false, error: 'Add both the bot token and the app token.' });
       return { ok: false, error: 'Slack needs both a bot token and an app-level token.' };
     }
     const who = await authTest(bot, this.deps.fetchImpl);
+    if (gen !== this.generation) return { ok: false, error: 'Superseded by a newer start or stop.' };
     if (!who.ok) {
       this.setStatus({ enabled: true, connected: false, error: who.error });
       return { ok: false, error: who.error };
@@ -176,6 +193,7 @@ export class SlackBridge {
   }
 
   stop(): void {
+    this.generation++;
     this.socket?.stop();
     this.socket = null;
     this.identity = null;
@@ -197,7 +215,7 @@ export class SlackBridge {
     const stepId = run.state.nextStepId;
     const exchange = kind === 'question' ? openExchange(run, stepId) : undefined;
     const key = threadKey({ runId: run.id, stepId, kind, exchangeId: exchange?.id });
-    if (this.posting.has(key) || this.threads.some((t) => threadKey(t) === key)) return;
+    if (this.posting.has(key) || this.threads.some((t) => threadKey(t) === key && (!t.resolvedAt || t.resolvedAt >= this.bootedAt))) return;
 
     const workers = this.deps.workers();
     const worker = workers.find((w) => w.id === run.workerId);
@@ -371,7 +389,7 @@ export class SlackBridge {
       await this.commands?.onThreadReply(ev, p.team_id);
       return;
     }
-    if (ev.user !== t.managerSlackUserId) return;
+    if (!this.isCurrentManager(t, ev.user)) return;
     if (t.resolvedAt) {
       await this.reply(t, 'This one is already settled — start a new thread if something changed.');
       return;
@@ -414,7 +432,7 @@ export class SlackBridge {
     }
     if (!action || (action.action_id !== SLACK_APPROVE_ACTION && action.action_id !== SLACK_REJECT_ACTION)) return;
     const t = this.threads.find((x) => x.id === action.value && x.kind === 'approval');
-    if (!t || p.user?.id !== t.managerSlackUserId || t.resolvedAt) return;
+    if (!t || !this.isCurrentManager(t, p.user?.id) || t.resolvedAt) return;
     const run = this.deps.getRun(t.runId);
     if (!this.stillWaiting(run, t)) {
       await this.settleStale(t.runId, run);

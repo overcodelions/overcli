@@ -15,6 +15,7 @@ import { isEverydayProject } from '../../shared/everydayProjects';
 import type { Worker } from '../../shared/flows/worker';
 import { OrgService, type HealthItem, type OrgServiceDeps } from './orgService';
 import { draftHire, saveDraftedHire } from './hireDraft';
+import { resolveWorkPlace } from './defaultProject';
 import { fileAuditStore, fileHireStore, fileRatingStore, listTokens, loadOrgPolicy } from './orgStores';
 
 export interface OrgEngines {
@@ -66,8 +67,9 @@ function importSharedWorker(
   const missing = new Set(landed.result.notes.missingFlowIds);
   const flowIds = w.flowIds.filter((id) => !missing.has(id));
   if (flowIds.length === 0) return { ok: false, error: `${w.name} arrived without any flow it can run.` };
-  const projectPath = opts.projectPath ?? store.workspaces[0]?.rootPath ?? store.projects[0]?.path;
-  if (!projectPath) return { ok: false, error: 'This server has no project for workers to work in. An operator can add one with: overcli projects add <folder>' };
+  const place = resolveWorkPlace(store, opts.projectPath);
+  if (!place.ok) return place;
+  const projectPath = place.path;
   const everyday = store.projects.find((p) => p.path === projectPath)?.everyday;
   return workerEngine.save({
     name: w.name,
@@ -138,7 +140,12 @@ export function createOrgService(
     rejectRun: (runId) => rejectWorkerRun(engines, runId),
     policy: () => loadOrgPolicy().policy,
     draft: (args) => draftHire({ runner, ...args }),
-    saveHire: (drafted, opts) => saveDraftedHire(workerEngine, drafted, opts),
+    // A hire through the org may only work where an operator said workers
+    // can: never a path from the request, nor one the drafter made up.
+    saveHire: (drafted, opts) => {
+      const place = resolveWorkPlace(Store.load(), opts.projectPath, drafted.contract.projectPath);
+      return place.ok ? saveDraftedHire(workerEngine, drafted, { ...opts, projectPath: place.path }) : place;
+    },
     hires: fileHireStore,
     snapshots: () => workerEngine.list().map((s) => ({ worker: s.worker, nextShiftAt: s.nextShiftAt })),
     batches: {

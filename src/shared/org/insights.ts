@@ -69,10 +69,11 @@ export function trustReadiness(
 
 /// Spend at month end if the month carries on as it has gone.
 export function projectMonthEnd(spent: number, now: Date): number {
-  const day = now.getDate() + now.getHours() / 24;
+  // Days gone so far: midnight on the 1st is zero. Under a day of history
+  // is counted as one, so a busy first morning does not project a fortune.
+  const elapsed = now.getDate() - 1 + (now.getHours() + now.getMinutes() / 60) / 24;
   const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  if (day < 1) return spent;
-  return (spent / day) * days;
+  return (spent / Math.max(elapsed, 1)) * days;
 }
 
 export type WorkerState = 'working' | 'waiting' | 'paused' | 'stuck' | 'idle';

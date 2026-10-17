@@ -143,6 +143,8 @@ describe('/hire', () => {
         decided.push([id, approve]);
         return { ok: true, hired: { name: 'Ana' } as never };
       },
+      summarize: () =>
+        ({ contract: { name: 'Ana', jobDescription: 'Reads the board.', budgetUSDPerMonth: 500, connectors: ['acme-crm'], schedule: 'Weekdays at 9am' } }) as never,
     });
     cmds.notifyApprovers(
       {
@@ -160,6 +162,9 @@ describe('/hire', () => {
     await new Promise((r) => setTimeout(r, 0));
     const ask = posts.find((p) => p.url.endsWith('chat.postMessage'))!;
     expect(JSON.stringify(ask.body.blocks)).toContain(HIRE_APPROVE_ACTION);
+    // A published worker has no draft; the approver still sees what it costs.
+    expect(JSON.stringify(ask.body.blocks)).toContain('$500/month');
+    expect(JSON.stringify(ask.body.blocks)).toContain('acme-crm');
     await cmds.onAction({
       user: { id: 'U0ACMEBOSS', name: 'bo' },
       team: { id: TEAM },

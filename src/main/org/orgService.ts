@@ -625,6 +625,10 @@ export class OrgService {
     const admin = isAdmin(policy, caller);
     const next: Worker = structuredClone(w);
     if (patch.manager !== undefined) {
+      // Handing a worker (and its budget) to someone else is an admin's call;
+      // a manager may only make themselves its direct manager.
+      const toSelf = patch.manager !== null && !!caller.slackUserId && patch.manager.slackUserId === caller.slackUserId;
+      if (!admin && !toSelf) return { ok: false, error: 'Only an admin can hand a worker to someone else. Ask an admin.' };
       if (patch.manager === null) delete next.manager;
       else next.manager = { name: patch.manager.name, ...(patch.manager.slackUserId ? { slackUserId: patch.manager.slackUserId } : {}) };
     }
@@ -647,12 +651,13 @@ export class OrgService {
       if (!Number.isFinite(patch.budgetUSDPerMonth) || patch.budgetUSDPerMonth <= 0) {
         return { ok: false, error: 'A budget must be above zero.' };
       }
-      // A raise counts against the allowance of whoever manages the worker
-      // directly — the same rule a hire meets.
-      const owner = next.manager?.slackUserId;
-      if (!admin && owner && patch.budgetUSDPerMonth > w.budgetUSDPerMonth) {
-        const others = this.deps.workers.roster().filter((x) => x.id !== w.id);
-        const after = committedBudget(others, owner) + patch.budgetUSDPerMonth;
+      // A raise counts against the allowance of whoever answers for the
+      // worker — directly or up the chain — the same rule a hire meets.
+      const roster = this.deps.workers.roster().map((x) => (x.id === w.id ? next : x));
+      const owner = managerFor(roster, w.id)?.slackUserId ?? caller.slackUserId;
+      if (!admin && patch.budgetUSDPerMonth > w.budgetUSDPerMonth) {
+        if (!owner) return { ok: false, error: 'Raising a budget needs an admin.' };
+        const after = committedBudget(roster.filter((x) => x.id !== w.id), owner) + patch.budgetUSDPerMonth;
         if (after > allowanceFor(policy, owner)) {
           return { ok: false, error: `That takes this manager's workers to $${after.toFixed(0)}/month, over the allowance. Ask an admin.` };
         }
@@ -791,6 +796,11 @@ export class OrgService {
       interview: !args.skipQuestions,
     });
     if (!res.ok) return res;
+    // The model turn takes minutes. A hire made, cancelled or sent for
+    // approval meanwhile must not come back as a draft.
+    if (args.hireId && this.hire(args.hireId)?.status !== 'drafted') {
+      return { ok: false, error: 'That hire was settled while this was drafting.' };
+    }
     if (res.kind === 'questions') {
       hire.questions = res.questions;
       delete hire.drafted;
@@ -800,6 +810,17 @@ export class OrgService {
     }
     this.putHire(hire);
     return { ok: true, hire: this.summarize(hire) };
+  }
+
+  /// Drop a hire in progress: a draft the person decided against, or one
+  /// waiting on an approver they no longer want.
+  cancelHire(caller: OrgCaller, hireId: string): Result {
+    const hire = this.deps.hires.list().find((h) => h.id === hireId);
+    if (!hire) return { ok: true };
+    if (!this.mayTouchHire(caller, hire)) return { ok: false, error: 'That hire belongs to someone else.' };
+    this.putHire(null, hireId);
+    this.record(caller, `Cancelled the hire of ${this.summarize(hire).contract?.name ?? 'a worker'}.`);
+    return { ok: true };
   }
 
   private mayTouchHire(caller: OrgCaller, hire: PendingHire): boolean {

@@ -731,8 +731,10 @@ SERVE OPTIONS
   --control ADDR         Serve the org control plane: MCP at /mcp and the web
                          console at /. A bare port (7420) listens on loopback;
                          0.0.0.0:7420 listens on every interface, e.g. in a
-                         container. Every request needs a token from
-                         overcli tokens create.
+                         container. People sign in by invite link, Slack
+                         (/overcli join) or the app; scripts use a token
+                         from overcli tokens create. The first start prints
+                         a one-time link for the first admin.
 
   Only one daemon may hold a --state-dir at a time; a second refuses rather
   than double-firing every schedule. Ctrl-C or SIGTERM shuts it down and

@@ -20,13 +20,13 @@ import http from 'node:http';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
-import { callerForToken, loadOrgPolicy } from '../main/org/orgStores';
+import { callerForToken, loadOrgPolicy, revokeOwnToken } from '../main/org/orgStores';
 import { Store } from '../main/store';
 import type { ScheduleTrigger } from '../shared/flows/schedule';
 import type { AccessService, PersonRole } from '../main/org/accessService';
 import type { SlackPerson } from '../main/slack/slackApi';
 import type { OrgService } from '../main/org/orgService';
-import type { OrgCaller } from '../shared/org/policy';
+import { isAdmin, type OrgCaller } from '../shared/org/policy';
 import { CONSOLE_CSS, CONSOLE_HTML, CONSOLE_ICON, CONSOLE_JS } from './consoleAssets';
 import { registerOrgTools } from './orgMcpTools';
 
@@ -134,6 +134,7 @@ function accessRoutes(access: AccessService, slackPeople?: () => Promise<SlackPe
     { method: 'POST', path: /^\/api\/admin\/people\/signout$/, handle: (c, b) => access.signOutEverywhere(c, str(b.slackUserId)) },
     { method: 'POST', path: /^\/api\/admin\/open-join$/, handle: (c, b) => access.setOpenJoin(c, b.on === true) },
     { method: 'POST', path: /^\/api\/devices\/([^/]+)\/signout$/, handle: (c, _b, [id]) => access.signOutDevice(c, id) },
+    { method: 'POST', path: /^\/api\/devices$/, handle: (c, b) => access.createDeviceKey(c, str(b.device)) },
     {
       method: 'GET',
       path: /^\/api\/admin\/slack-people$/,
@@ -172,8 +173,10 @@ function rateLimiter(perMinute: number): (key: string) => boolean {
     const now = Date.now();
     const h = hits.get(key);
     if (!h || now - h.at > 60_000) {
+      // Forget finished windows, not live ones: clearing the lot would hand
+      // a guesser a fresh minute by flooding it with addresses.
+      if (hits.size > 10_000) for (const [k, v] of hits) if (now - v.at > 60_000) hits.delete(k);
       hits.set(key, { at: now, n: 1 });
-      if (hits.size > 10_000) hits.clear();
       return true;
     }
     h.n++;
@@ -181,12 +184,23 @@ function rateLimiter(perMinute: number): (key: string) => boolean {
   };
 }
 
+/// Forwarded headers are only believed behind a proxy the operator vouched
+/// for (OVERCLI_TRUST_PROXY=1); otherwise any client could set them.
+const trustProxy = (): boolean => process.env.OVERCLI_TRUST_PROXY === '1';
+
+/// Who is asking, for rate limits: the proxy's view of the client when it is
+/// trusted, else the socket.
+function clientKey(req: http.IncomingMessage): string {
+  const fwd = trustProxy() ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim() : '';
+  return fwd || req.socket.remoteAddress || 'unknown';
+}
+
 /// Where this request reached us, as the person's browser sees it — the base
 /// for links handed back to them.
 function originOf(req: http.IncomingMessage): string {
-  const fwdProto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim();
+  const fwdProto = trustProxy() ? String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() : '';
   const proto = fwdProto === 'https' || fwdProto === 'http' ? fwdProto : 'encrypted' in req.socket && (req.socket as { encrypted?: boolean }).encrypted ? 'https' : 'http';
-  const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost').split(',')[0].trim();
+  const host = String((trustProxy() ? req.headers['x-forwarded-host'] : undefined) ?? req.headers.host ?? 'localhost').split(',')[0].trim();
   return /^[A-Za-z0-9.\-:[\]]+$/.test(host) ? `${proto}://${host}` : 'http://localhost';
 }
 
@@ -331,6 +345,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       handle: (c, b) => org.confirmHire(c, str(b.hireId), hireOptions(b.options)),
     },
     { method: 'POST', path: /^\/api\/hires\/decide$/, handle: (c, b) => org.decideHire(c, str(b.hireId), b.approve === true) },
+    { method: 'POST', path: /^\/api\/hires\/cancel$/, handle: (c, b) => org.cancelHire(c, str(b.hireId)) },
   ];
 }
 
@@ -388,7 +403,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
         const base = loadOrgPolicy().policy.publicUrl ?? originOf(req);
         const openRoute = open.find((r) => r.method === req.method && r.path.test(path));
         if (openRoute) {
-          if (!allow(req.socket.remoteAddress ?? 'unknown')) return send(res, 429, { ok: false, error: 'Too many tries. Wait a minute.' });
+          if (!allow(clientKey(req))) return send(res, 429, { ok: false, error: 'Too many tries. Wait a minute.' });
           let body: Record<string, unknown> = {};
           if (req.method === 'POST') {
             try {
@@ -402,7 +417,10 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
         }
 
         const caller = authenticate(bearer(req));
-        if (caller) deps.access?.noteOrigin(originOf(req));
+        // Links sent from Slack fall back to where an admin last used the
+        // console. Only an admin's request counts: anyone else could aim
+        // other people's sign-in links at a host of their choosing.
+        if (caller && isAdmin(loadOrgPolicy().policy, caller)) deps.access?.noteOrigin(originOf(req));
         if (path === '/mcp') {
           if (!caller) {
             return send(res, 401, { jsonrpc: '2.0', error: { code: -32001, message: 'A bearer token from `overcli tokens create` is required.' }, id: null }, {
@@ -416,7 +434,10 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
         }
 
         if (path.startsWith('/api/')) {
-          if (!caller) return send(res, 401, { ok: false, error: 'Sign in with a token from `overcli tokens create`.' });
+          if (!caller) return send(res, 401, { ok: false, error: 'You are signed out. Open your sign-in link again, or type /overcli join in Slack.' });
+          // This browser's or app's own sign-out: the token stops working
+          // here, not just on the device.
+          if (req.method === 'POST' && path === '/api/signout') return send(res, 200, { ok: revokeOwnToken(bearer(req)!) });
           const route = routes.find((r) => r.method === req.method && r.path.test(path));
           if (!route) return send(res, 404, { ok: false, error: 'No such route.' });
           let body: Record<string, unknown> = {};

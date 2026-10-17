@@ -15,7 +15,7 @@
 
 import { currentBranch } from '../main/git';
 import { healthyBackends } from '../main/health';
-import { setHost } from '../main/host';
+import { setHost, type NotifyArgs } from '../main/host';
 import { nodeHost } from '../main/hostNode';
 import { withWebhookNotify } from '../main/webhookNotify';
 import { Store } from '../main/store';
@@ -93,7 +93,7 @@ export interface EngineOptions {
   /// after the permission tap has answered anything it needed to.
   onEvent?: (event: MainToRendererEvent) => void;
   onPermission?: (d: PermissionDecision) => void;
-  onNotify?: (args: { title: string; body: string }) => void;
+  onNotify?: (args: NotifyArgs) => void;
 }
 
 export function buildEngines(options: EngineOptions): HeadlessEngines {
@@ -248,6 +248,10 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   let slackCommands: SlackCommands | null = null;
   const engines = buildEngines({
     ...options,
+    onNotify: (args) => {
+      options.onNotify?.(args);
+      slackCommands?.onNotice(args);
+    },
     onEvent: (event) => {
       options.onEvent?.(event);
       teams?.observeEvent(event);
