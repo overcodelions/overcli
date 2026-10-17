@@ -633,6 +633,9 @@ export interface FlowWorkerExchange {
   question: string;
   answeredAt?: number;
   answer?: string;
+  /// The worker up the owner's reporting chain that answered, when the owner
+  /// itself escalated. Absent when the owner answered.
+  answeredBy?: { workerId: UUID; workerName: string };
   status: 'asking' | 'answered' | 'escalated' | 'failed';
   note?: string;
 }

@@ -376,6 +376,142 @@ describe('WorkerEngine flow supervision', () => {
   });
 });
 
+describe('WorkerEngine reporting chain', () => {
+  const question = {
+    workerId: 'analyst',
+    workerName: 'Ana',
+    flowName: 'Weekly summary',
+    projectPath: '/repo',
+    userPrompt: 'Summarize the week.',
+    step: { id: 'write', role: 'custom' as const, inputs: [], output: 'summary.md' },
+    question: 'Which segment counts as enterprise?',
+    artifacts: [],
+  };
+
+  it('climbs to the boss when the owner escalates, and says who answered', async () => {
+    const asked: Array<{ worker: string; prompt: string }> = [];
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'chief', name: 'Clara' }),
+        seedWorker({ id: 'analyst', name: 'Ana', reportsTo: 'chief' }),
+      ],
+      supervisorTurn: async (args) => {
+        asked.push({ worker: args.worker.id, prompt: args.prompt });
+        return args.worker.id === 'analyst'
+          ? { ok: true, text: '<escalate>No segment definition in my notes.</escalate>' }
+          : { ok: true, text: '<worker_answer>Over 500 seats.</worker_answer>' };
+      },
+    });
+    h.engine.start();
+    const result = await h.engine.answerFlowQuestion(question);
+    expect(result).toEqual({
+      kind: 'answer',
+      answer: 'Over 500 seats.',
+      answeredBy: { workerId: 'chief', workerName: 'Clara' },
+    });
+    expect(asked.map((a) => a.worker)).toEqual(['analyst', 'chief']);
+    expect(asked[1].prompt).toContain('ESCALATED TO YOU');
+    expect(asked[1].prompt).toContain('Ana: No segment definition in my notes.');
+  });
+
+  it('pauses for a person with every reason when the whole chain escalates', async () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'chief', name: 'Clara' }),
+        seedWorker({ id: 'analyst', name: 'Ana', reportsTo: 'chief' }),
+      ],
+      supervisorTurn: async (args) => ({
+        ok: true,
+        text: `<escalate>${args.worker.name} does not know.</escalate>`,
+      }),
+    });
+    h.engine.start();
+    const result = await h.engine.answerFlowQuestion(question);
+    expect(result).toEqual({
+      kind: 'escalate',
+      reason: 'Ana: Ana does not know.\nClara: Clara does not know.',
+    });
+  });
+
+  it('skips a paused boss and asks the one above it', async () => {
+    const asked: string[] = [];
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'top', name: 'Top' }),
+        seedWorker({ id: 'mid', name: 'Mid', reportsTo: 'top', enabled: false }),
+        seedWorker({ id: 'analyst', name: 'Ana', reportsTo: 'mid' }),
+      ],
+      supervisorTurn: async (args) => {
+        asked.push(args.worker.id);
+        return args.worker.id === 'top'
+          ? { ok: true, text: '<worker_answer>Yes.</worker_answer>' }
+          : { ok: true, text: '<escalate>Not mine.</escalate>' };
+      },
+    });
+    h.engine.start();
+    const result = await h.engine.answerFlowQuestion(question);
+    expect(asked).toEqual(['analyst', 'top']);
+    expect(result.kind).toBe('answer');
+  });
+
+  it('keeps the original escalation when nobody is above', async () => {
+    const h = makeHarness({
+      seed: [seedWorker({ id: 'analyst', name: 'Ana' })],
+      supervisorTurn: async () => ({ ok: true, text: '<escalate>Need a person.</escalate>' }),
+    });
+    h.engine.start();
+    expect(await h.engine.answerFlowQuestion(question)).toEqual({ kind: 'escalate', reason: 'Need a person.' });
+  });
+});
+
+describe('WorkerEngine org fields', () => {
+  it('refuses a boss that would make a loop', () => {
+    const h = makeHarness({
+      seed: [seedWorker({ id: 'a', name: 'A' }), seedWorker({ id: 'b', name: 'B', reportsTo: 'a' })],
+    });
+    h.engine.start();
+    const a = h.engine.get('a')!;
+    const res = h.engine.save({ ...a, reportsTo: 'b' });
+    expect(res).toMatchObject({ ok: false });
+    if (!res.ok) expect(res.error).toMatch(/loop/);
+  });
+
+  it('clears a manager the editor removed', () => {
+    const h = makeHarness({
+      seed: [seedWorker({ id: 'a', name: 'A', manager: { name: 'Pat', slackUserId: 'U0ACME01' }, visibility: 'org' })],
+    });
+    h.engine.start();
+    const { manager: _m, visibility: _v, ...rest } = h.engine.get('a')!;
+    const res = h.engine.save(rest);
+    expect(res.ok).toBe(true);
+    expect(h.engine.get('a')!.manager).toBeUndefined();
+    expect(h.engine.get('a')!.visibility).toBeUndefined();
+  });
+
+  it('moves reports up to their grand-boss when their boss is let go', () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'top', name: 'Top' }),
+        seedWorker({ id: 'mid', name: 'Mid', reportsTo: 'top' }),
+        seedWorker({ id: 'low', name: 'Low', reportsTo: 'mid' }),
+      ],
+    });
+    h.engine.start();
+    h.engine.remove('mid');
+    expect(h.engine.get('low')!.reportsTo).toBe('top');
+  });
+});
+
+describe('WorkerEngine.remember', () => {
+  it('writes a note into the journal without needing the turn it is about', () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    expect(h.engine.remember('worker-1', 'Pat found "Weekly sweep" not useful: lead with the numbers.')).toEqual({ ok: true });
+    expect(h.journal.at(-1)).toMatchObject({ kind: 'note', note: 'Pat found "Weekly sweep" not useful: lead with the numbers.' });
+    expect(h.engine.remember('nobody', 'x').ok).toBe(false);
+  });
+});
+
 describe('WorkerEngine on-demand workers', () => {
   it('never fires on the clock, and reports no next shift', async () => {
     const h = makeHarness({ seed: [seedWorker({ cadence: null })] });

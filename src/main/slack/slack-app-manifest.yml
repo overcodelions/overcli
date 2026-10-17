@@ -1,0 +1,58 @@
+# A Slack app for the overcli Slack bridge (src/main/slack/slackBridge.ts).
+#
+# api.slack.com/apps → Create New App → From a manifest → paste this. Then:
+#   1. Install to Workspace, and copy the Bot User OAuth Token (xoxb-…).
+#   2. Basic Information → App-Level Tokens → Generate, with the
+#      connections:write scope, and copy it (xapp-…).
+#   3. Paste both into overcli → Settings → Advanced → Slack, turn it on, Save.
+#      Headless: OVERCLI_SLACK_BOT_TOKEN, OVERCLI_SLACK_APP_TOKEN and
+#      OVERCLI_SLACK_ENABLED=1 for `overcli serve`.
+#
+# Run one overcli per app: Socket Mode spreads events across every open
+# connection, so a second process on these tokens would take replies meant
+# for the first.
+display_information:
+  name: overcli workers
+  description: Your workers ask their managers here.
+features:
+  bot_user:
+    display_name: overcli workers
+    always_online: true
+  slash_commands:
+    - command: /overcli
+      description: Join your org's AI workers
+      usage_hint: "join"
+      should_escape: false
+    - command: /worker
+      description: Your AI workers — list, ask, pause, what is waiting on you
+      usage_hint: "[name] [ask <text> | pause | resume] | waiting"
+      should_escape: false
+    - command: /team
+      description: Give a team of workers a task, or list teams
+      usage_hint: "[team name]: [what you want back]"
+      should_escape: false
+    - command: /hire
+      description: Hire an AI worker
+      usage_hint: "<what it should do, for whom, from which sources>"
+      should_escape: false
+  app_home:
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - chat:write.customize
+      - im:write
+      - im:history
+      - commands
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.im
+  interactivity:
+    is_enabled: true
+  socket_mode_enabled: true
+  org_deploy_enabled: false
+  token_rotation_enabled: false

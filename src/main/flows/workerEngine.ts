@@ -117,6 +117,7 @@ import {
   workerFilesDir,
 } from './workerFiles';
 import { publishDeliverableToProject } from './workerPublish';
+import { reportsChain, wouldCycle } from '../../shared/flows/org';
 import { WORKER_COMPACTION_KEEP_DAYS, compactionCutoff, isCompactionDue } from '../../shared/flows/workerCompaction';
 import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
 import { buildWorkerReport, type WorkerReport, type WorkerRunFact } from '../../shared/flows/workerReport';
@@ -514,6 +515,11 @@ export class WorkerEngine {
     return this.workers.get(id) ?? null;
   }
 
+  /// Each worker's spend since the 1st, for the org console and its tools.
+  spendThisMonth(): Map<UUID, number> {
+    return this.spendAll(monthStart(this.now()));
+  }
+
   journalFor(id: UUID): WorkerJournalEntry[] {
     return this.journal.load(id);
   }
@@ -521,9 +527,44 @@ export class WorkerEngine {
   /// Answer a question raised by one of this Worker's child flow steps.
   /// Serialized through the same per-worker queue as shifts and errands so
   /// the persona never takes two contradictory planning turns at once.
-  answerFlowQuestion(request: FlowWorkerQuestionRequest): Promise<FlowWorkerQuestionResult> {
-    return this.enqueue(request.workerId, async () => {
-      const worker = this.workers.get(request.workerId);
+  ///
+  /// When the owner escalates, the question climbs its reporting chain
+  /// (`reportsChain`) before it reaches a person: each boss in turn sees the
+  /// question and every reason given below it, and may answer or escalate
+  /// again. Only when the top of the chain escalates too does the run pause
+  /// for a human — with every reason joined, so the person sees why nobody
+  /// above could decide it.
+  async answerFlowQuestion(request: FlowWorkerQuestionRequest): Promise<FlowWorkerQuestionResult> {
+    const first = await this.answerAs(request.workerId, request, []);
+    if (first.kind !== 'escalate') return first;
+    const owner = this.workers.get(request.workerId);
+    const escalations = [{ name: owner?.name ?? 'The owner', reason: first.reason }];
+    // One hop at a time, each in its own boss's queue and never nested
+    // inside another's: a boss whose own run is escalating to a report would
+    // otherwise wait on that report's queue while the report waits on it.
+    for (const boss of reportsChain([...this.workers.values()], request.workerId)) {
+      const result = await this.answerAs(boss.id, request, escalations);
+      if (result.kind === 'answer') {
+        return { ...result, answeredBy: { workerId: boss.id, workerName: boss.name } };
+      }
+      // A boss that cannot run a turn is skipped, not the end of the chain.
+      if (result.kind === 'escalate') escalations.push({ name: boss.name, reason: result.reason });
+    }
+    if (escalations.length === 1) return first;
+    return {
+      kind: 'escalate',
+      reason: escalations.map((e) => `${e.name}: ${e.reason}`).join('\n'),
+    };
+  }
+
+  /// One worker's turn on a flow question, in that worker's queue.
+  private answerAs(
+    workerId: UUID,
+    request: FlowWorkerQuestionRequest,
+    escalations: ReadonlyArray<{ name: string; reason: string }>,
+  ): Promise<FlowWorkerQuestionResult> {
+    return this.enqueue(workerId, async () => {
+      const worker = this.workers.get(workerId);
       if (!worker) return { kind: 'error', error: 'The owning Worker no longer exists.' };
       if (!this.deps.supervisorTurn) {
         return {
@@ -532,7 +573,7 @@ export class WorkerEngine {
         };
       }
 
-      const prompt = this.buildFlowQuestionPrompt(worker, request);
+      const prompt = this.buildFlowQuestionPrompt(worker, request, escalations);
       const result = await this.deps.supervisorTurn({
         worker,
         prompt,
@@ -837,6 +878,21 @@ export class WorkerEngine {
     // get it back from the stored record.
     candidate.browser = input.browser || undefined;
     if (candidate.browser === undefined) delete candidate.browser;
+    // The org fields follow the same rule: clearing a manager or a boss in
+    // the editor has to stick.
+    for (const key of ['manager', 'reportsTo', 'visibility', 'avatarUrl'] as const) {
+      if (input[key] === undefined) delete candidate[key];
+    }
+    if (candidate.manager) {
+      const slackUserId = candidate.manager.slackUserId?.trim();
+      candidate.manager = { name: candidate.manager.name.trim(), ...(slackUserId ? { slackUserId } : {}) };
+    }
+    if (candidate.reportsTo && !this.workers.has(candidate.reportsTo)) {
+      return { ok: false, error: 'The worker this one reports to is no longer on the roster.' };
+    }
+    if (wouldCycle([...this.workers.values()], candidate.id, candidate.reportsTo)) {
+      return { ok: false, error: 'That would make a loop: the boss you picked already reports to this worker.' };
+    }
     if (candidate.distribution === undefined) delete candidate.distribution;
     if (candidate.deskSession === undefined) delete candidate.deskSession;
     if (input.caps.fileIntoProject && !existing?.caps.fileIntoProject) {
@@ -957,6 +1013,20 @@ export class WorkerEngine {
     return { ok: true };
   }
 
+  /// A note from outside the desk — a rating from the org control plane —
+  /// into the worker's memory. Not tied to a turn the way `note` is, because
+  /// the turn a rating is about may have been pruned long before anyone rated
+  /// it; the lesson still belongs in the journal its next plan reads.
+  remember(id: UUID, text: string): { ok: true } | { ok: false; error: string } {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'Worker not found.' };
+    const note = text.trim().slice(0, WORKER_NOTE_MAX);
+    if (!note) return { ok: false, error: 'Write the note first.' };
+    const at = this.now();
+    const wrote = this.journal.append({ id: `note-${w.id}-${at}`, workerId: w.id, kind: 'note', at, title: '', note });
+    return wrote ? { ok: true } : { ok: false, error: "Couldn't save that note." };
+  }
+
   /// The explicit promote/demote act. Demoting below autonomous flips a cwd
   /// worker back to worktrees — the working copy is an autonomous privilege.
   setTrust(id: UUID, trust: WorkerTrustLevel): { ok: true } | { ok: false; error: string } {
@@ -980,6 +1050,14 @@ export class WorkerEngine {
     this.workers.delete(id);
     this.store.remove(id);
     this.deps.emit({ type: 'workerDeleted', id });
+    // Its reports move up to its own boss, as people's do when a manager
+    // leaves, rather than pointing at nobody.
+    for (const report of this.workers.values()) {
+      if (report.reportsTo !== id) continue;
+      if (w.reportsTo) report.reportsTo = w.reportsTo;
+      else delete report.reportsTo;
+      this.persistAndEmit(report);
+    }
     // Its dated handoffs go with it — both the ones it was sending, which
     // nobody is left to have sent, and the ones meant for it, which would
     // only fail on the day. The senders of the latter hear about it now.
@@ -2203,7 +2281,22 @@ export class WorkerEngine {
     ];
   }
 
-  private buildFlowQuestionPrompt(worker: Worker, request: FlowWorkerQuestionRequest): string {
+  private buildFlowQuestionPrompt(
+    worker: Worker,
+    request: FlowWorkerQuestionRequest,
+    escalations: ReadonlyArray<{ name: string; reason: string }> = [],
+  ): string {
+    const owner = request.workerName ?? this.workers.get(request.workerId)?.name ?? 'a worker';
+    const escalated =
+      escalations.length > 0
+        ? [
+            'ESCALATED TO YOU',
+            `This run belongs to "${owner}", who reports up to you. Nobody below you could answer:`,
+            ...escalations.map((e) => `- ${e.name}: ${e.reason}`),
+            'Answer if your job and judgement cover it; escalate only what genuinely needs a person.',
+            '',
+          ].join('\n')
+        : '';
     const artifacts =
       request.artifacts.length > 0
       ? request.artifacts
@@ -2215,7 +2308,9 @@ export class WorkerEngine {
           .join('\n\n')
       : '(no earlier artifacts)';
     return [
-      `You are "${worker.name}", the standing Worker who owns this flow run.`,
+      escalations.length > 0
+        ? `You are "${worker.name}", a standing Worker above the one that owns this flow run.`
+        : `You are "${worker.name}", the standing Worker who owns this flow run.`,
       '',
       'YOUR JOB DESCRIPTION',
       worker.jobDescription,
@@ -2233,6 +2328,7 @@ export class WorkerEngine {
       'EARLIER ARTIFACTS',
       artifacts,
       '',
+      escalated,
       'THE FLOW IS ASKING YOU',
       request.question,
       '',

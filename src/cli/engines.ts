@@ -29,6 +29,15 @@ import { runHandoffOutputs } from '../shared/flows/worker';
 import type { MainToRendererEvent } from '../shared/types';
 import type { PermissionPolicy } from './args';
 import { permissionTap, type PermissionDecision } from './permissions';
+import type { SlackBridge } from '../main/slack/slackBridge';
+import { createOrgControl, createSlackBridge } from '../main/slack/wire';
+import type { TeamEngine } from '../main/flows/teamEngine';
+import type { SlackCommands } from '../main/slack/slackCommands';
+import { createTeamEngine } from '../main/flows/teamWire';
+import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraft';
+import { teamHireJobDescription } from '../shared/flows/team';
+import type { OrgService } from '../main/org/orgService';
+import type { AccessService } from '../main/org/accessService';
 
 export interface HeadlessEngines {
   runner: RunnerManager;
@@ -46,6 +55,17 @@ export interface HeadlessEngines {
 /// that watches the clock. Everything a daemon does beyond `run` is here.
 export interface DaemonEngines extends HeadlessEngines {
   scheduler: SchedulerEngine;
+  /// Built but not started: `serve` starts it after taking the state-dir
+  /// lock, so a second daemon refused at the lock never opens a Slack socket
+  /// that would steal the first one's replies.
+  slack: SlackBridge;
+  /// Team tasks. Started by `serve` with the other engines.
+  teams: TeamEngine;
+  /// The org control plane: what `--control` serves and the Slack commands
+  /// act through.
+  org: OrgService;
+  /// Invites, join requests and pairing the overcli app.
+  access: AccessService;
 }
 
 /// A workspace root is not itself a git repo, but the runtime mints a worktree
@@ -222,7 +242,18 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
 /// behaviour is untouched by construction: a one-shot run must NOT arm a
 /// scheduler and start firing unrelated saved schedules underneath itself.
 export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
-  const engines = buildEngines(options);
+  // Teams fold run and batch events into their tasks, so they hear the same
+  // emit every other engine does. Built below, after the engines it drives.
+  let teams: TeamEngine | null = null;
+  let slackCommands: SlackCommands | null = null;
+  const engines = buildEngines({
+    ...options,
+    onEvent: (event) => {
+      options.onEvent?.(event);
+      teams?.observeEvent(event);
+      slackCommands?.onEvent(event);
+    },
+  });
   const { flowRuntime, orchestrator, workerEngine, emit } = engines;
 
   const scheduler = new SchedulerEngine({
@@ -242,9 +273,46 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // adding to it. The orchestrator pumps its queue on a terminal child run; the
   // scheduler clears its overlap guard and notifies. Each ignores runs it did
   // not launch, so the fan-out is free.
+  // Built before the observer so the fan-out below can reach it. Inert until
+  // `serve` calls `start()`.
+  // Team tasks run here exactly as on the desktop. A team that needs a new
+  // member hires it the way an unattended hire is made: drafted, on demand,
+  // on probation, with no connectors.
+  teams = createTeamEngine({
+    emit,
+    notify: withWebhookNotify(options.onNotify ?? (() => {})),
+    runner: engines.runner,
+    flowRuntime,
+    orchestrator,
+    workerEngine,
+    drafterDeps: () => drafterDepsFor(engines.runner),
+    hire: async (req) => {
+      const drafted = await draftHire({
+        runner: engines.runner,
+        crew: workerEngine.workerNames(),
+        jobDescription: teamHireJobDescription(req),
+        interview: false,
+      });
+      if (!drafted.ok) return drafted;
+      if (drafted.kind !== 'drafted') return { ok: false, error: 'The hire drafter asked a question instead of drafting.' };
+      return saveDraftedHire(workerEngine, drafted.drafted, {
+        projectPath: req.projectPath,
+        extra: { hiredFor: { teamName: req.teamName.trim() || 'New team', ...(req.teamId ? { teamId: req.teamId } : {}) } },
+      });
+    },
+  });
+
+  const slack = createSlackBridge({ flowRuntime, orchestrator, workerEngine });
+  const { org, commands, access } = createOrgControl(
+    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams },
+    slack,
+  );
+  slackCommands = commands;
+
   flowRuntime.setRunObserver((run) => {
     orchestrator.onRunUpdate(run);
     scheduler.onRunUpdate(run);
+    void slack.onRunUpdate(run);
   });
 
   // index.ts:585. Missing from `buildEngines`, which is survivable for `run`
@@ -257,11 +325,20 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   return {
     ...engines,
     scheduler,
+    slack,
+    org,
+    access,
+    teams,
     // Ordered: stop the clocks before killing the children, so neither engine
     // can arm a fresh timer or launch a run on the way out. Each step is
     // independently guarded — disposal runs from a signal handler, and one
     // engine that is already dead must not strand the other two.
     dispose: () => {
+      try {
+        slack.stop();
+      } catch {
+        // already down
+      }
       try {
         scheduler.dispose();
       } catch {

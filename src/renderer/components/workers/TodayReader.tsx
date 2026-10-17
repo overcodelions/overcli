@@ -1052,7 +1052,7 @@ function WorkerDecisions({ run, workerName }: { run: FlowRun; workerName: string
               <span className="text-ink-faint">{d.stepId} asked:</span>{' '}
               <span className="text-ink-muted">{d.question.length > 240 ? `${d.question.slice(0, 239)}…` : d.question}</span>
               <span className="mt-0.5 block text-ink">
-                <span className="text-ink-faint">{workerName}:</span> {d.answer}
+                <span className="text-ink-faint">{d.answeredBy?.workerName ?? workerName}:</span> {d.answer}
               </span>
             </li>
           ))}

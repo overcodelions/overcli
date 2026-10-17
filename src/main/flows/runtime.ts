@@ -220,7 +220,9 @@ export interface FlowWorkerQuestionRequest {
 }
 
 export type FlowWorkerQuestionResult =
-  | { kind: 'answer'; answer: string }
+  /// `answeredBy` is set when a worker above the owner answered, after the
+  /// owner escalated up its reporting chain.
+  | { kind: 'answer'; answer: string; answeredBy?: { workerId: UUID; workerName: string } }
   | { kind: 'escalate'; reason: string }
   | { kind: 'error'; error: string };
 
@@ -3496,6 +3498,7 @@ export class FlowRuntimeImpl {
     if (result.kind === 'answer' && result.answer.trim()) {
       exchange.status = 'answered';
       exchange.answer = result.answer.trim();
+      if (result.answeredBy) exchange.answeredBy = result.answeredBy;
       this.workerAnswerFeedback.set(run.id, {
         stepId: step.id,
         exchangeId: exchange.id,

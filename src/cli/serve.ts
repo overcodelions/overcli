@@ -11,11 +11,17 @@
 // keeps the process alive, and takes them down cleanly on a signal.
 
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 
 import { host } from '../main/host';
 import { buildDaemonEngines, type DaemonEngines } from './engines';
-import type { ServeOptions } from './args';
+import { configuredSlackToken, slackEnabled } from '../main/slack/slackSettings';
+import { listPeople, type SlackPerson } from '../main/slack/slackApi';
+import { listTokens, loadOrgPolicy, orgPolicyPath } from '../main/org/orgStores';
+import { createControlPlane, listenControlPlane } from './controlPlane';
+import { ensureDefaultProject } from '../main/org/defaultProject';
+import { parseControlAddress, type ServeOptions } from './args';
 import { EXIT } from './run';
 
 /// Node's timer ceiling is 2^31-1 ms; stay comfortably under it.
@@ -175,8 +181,56 @@ export function startDaemon(
     };
   }
 
+  // Schedules fire in the process's local time. A container runs in UTC, so
+  // "weekdays at 09:00" would mean 09:00 UTC; the org's time zone, when
+  // org.json names one and TZ is not set, makes it 09:00 where the org is.
+  const orgZone = loadOrgPolicy().policy.timezone;
+  if (orgZone && !process.env.TZ) process.env.TZ = orgZone;
   engines.scheduler.start();
   engines.workerEngine.start();
+  engines.teams.start();
+  void ensureDefaultProject().then((dir) => {
+    if (dir) deps.out(`projects: none registered, so workers will work in ${dir}. Add repos with overcli projects add.`);
+  });
+  // The org control plane: MCP at /mcp, the console at /. $OVERCLI_CONTROL
+  // is the container-friendly spelling of --control.
+  let control: http.Server | null = null;
+  const controlAt = opts.control ?? (process.env.OVERCLI_CONTROL ? parseControlAddress(process.env.OVERCLI_CONTROL) : undefined);
+  if (controlAt && 'error' in controlAt) {
+    deps.out(`control: not started — $OVERCLI_CONTROL: ${controlAt.error}`);
+  } else if (controlAt) {
+    const server = createControlPlane({ org: engines.org, access: engines.access, slackPeople: slackDirectory(), log: deps.out });
+    control = server;
+    listenControlPlane(server, controlAt).then(
+      () => {
+        const shown = controlAt.host.includes(':') ? `[${controlAt.host}]` : controlAt.host;
+        deps.out(`control: http://${shown}:${controlAt.port}/ (console) and /mcp — tokens: overcli tokens create`);
+        if (listTokens().length === 0) {
+          // First run: nobody can sign in yet. Rather than send the operator
+          // off to mint a token, hand them a one-time link that signs the
+          // first admin in — the same invite anyone else gets.
+          const policy = loadOrgPolicy().policy;
+          const first = policy.admins[0];
+          const base = policy.publicUrl ?? `http://${shown}:${controlAt.port}`;
+          void engines.access
+            .invite({ name: 'overcli', admin: true }, { name: 'Admin', ...(first ? { slackUserId: first } : {}), role: 'admin', setup: true }, base)
+            .then((res) => {
+              if (res.ok) deps.out(`control: nobody has signed in yet. Open this once to sign in as the first admin: ${res.link}`);
+            });
+        }
+        const policy = loadOrgPolicy();
+        if (!policy.fromFile) deps.out(`control: no ${orgPolicyPath()} — run overcli org init. Until then nobody but admin tokens may hire.`);
+      },
+      (err: unknown) => deps.out(`control: could not listen on ${controlAt.host}:${controlAt.port} — ${err instanceof Error ? err.message : String(err)}`),
+    );
+  }
+
+  if (slackEnabled()) {
+    void engines.slack.start().then((res) => {
+      if (res.ok) deps.out('slack: connected — workers DM their managers');
+      else deps.out(`slack: not connected — ${res.error}`);
+    });
+  }
 
   const schedules = engines.scheduler.list();
   const enabled = schedules.filter((s) => s.enabled).length;
@@ -212,6 +266,7 @@ export function startDaemon(
     shuttingDown = true;
     deps.out(`${signal} — stopping schedules and workers.`);
     clearInterval(keepAlive);
+    control?.close();
     try {
       engines.dispose();
     } finally {
@@ -238,4 +293,19 @@ export async function serveCommand(opts: ServeOptions, deps: ServeDeps): Promise
     process.on(signal, () => started.handle.shutdown(signal));
   }
   return started.handle.done;
+}
+
+/// People in the org's Slack, for the invite picker: listed once and kept
+/// ten minutes, since a directory read pages through the whole workspace.
+function slackDirectory(): () => Promise<SlackPerson[]> {
+  let cache: { at: number; people: SlackPerson[] } | null = null;
+  return async () => {
+    if (cache && Date.now() - cache.at < 10 * 60_000) return cache.people;
+    const bot = configuredSlackToken('bot');
+    if (!bot) return [];
+    const res = await listPeople(bot);
+    if (!res.ok) return cache?.people ?? [];
+    cache = { at: Date.now(), people: res.data };
+    return res.data;
+  };
 }

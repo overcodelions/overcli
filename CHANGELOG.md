@@ -4,6 +4,24 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- **Org workers.** Workers can have a manager (a person, with a Slack member ID), a worker they report to, and a "who may ask it" setting, shown as an org chart in the Workers rail. A question a worker can't answer climbs its reporting chain before it reaches a person.
+- **Slack bridge.** Questions and approvals that need a person are DMed to the worker's manager, posted as the worker; a thread reply answers, and buttons approve or reject. `/worker` and `/hire` work from any channel. Runs over Socket Mode, so it needs no inbound route. Settings → Advanced → Slack, or `OVERCLI_SLACK_*` for `overcli serve`.
+- **Org control plane.** `overcli serve --control 7420` serves a web console at `/` and MCP at `/mcp`, behind per-person tokens (`overcli tokens create`). `org.json` (`overcli org init`) says who the org is (name, Slack workspace, time zone) and its rules: who may hire, allowances, approvers, teams, cleared tools and an approved role catalog.
+  - **Today:** what needs you (questions with one-tap answers, approvals showing what the step will do and use, hires to approve, team tasks), what came in since yesterday, what each worker is doing, and spend with a month-end projection.
+  - **Work:** everything delivered, rated useful or not; ratings go into the worker's journal.
+  - **Workers:** a page per worker with what it delivered, the questions it asked and who answered, what it has learned, and a promotion prompt when its record earns more trust.
+  - **Teams:** team tasks now run on `serve`. Brief a team from the console, MCP or `/team`; questions, the plan and checkpoints reach whoever asked, in Slack too.
+  - **Hire:** from the role catalog, from a description, or by bringing a worker you built yourself (**Publish to your org** in the app, `overcli workers push`, or paste its file).
+  - **Admin:** health (Slack, models, workers), spend by manager, people, the rules, and a decision log.
+  - **Connect:** copy-paste setup for Claude Code, Claude Desktop, Codex, the overcli app and Slack.
+  - **People, without tokens:** invite people from your Slack (overcli DMs each a one-time sign-in link), let in people who type `/overcli join`, and change roles and allowances in the console. The overcli app signs in by pairing (Settings → Your org → Sign in, then confirm the code in the browser). People shows every sign-in and signs out one device or a person everywhere. On first run `serve` prints a one-time link for the first admin.
+  - **Schedules:** a hire keeps the schedule its job description implies ("every weekday morning"), and the offer lets you change it. Each worker's page shows when it runs and when it runs next, has **Run now**, and edits the schedule in Settings (when asked, every day, weekdays, once a week, or every few hours within working hours). A worker on probation proposes its work: the manager approves some or all of it on Today, or with one button in Slack. Schedules run in the org's `timezone`. MCP has `list_proposals`, `decide_proposal`, `run_worker_now` and `set_worker_schedule`.
+  - Full-width console, and a flat overcli mark that follows the theme.
+  - Light and dark themes; `deploy/` has a Dockerfile (Codex optional), a compose file, `org.example.json` and a deployment guide. A fresh server makes a default folder for workers to work in.
+
+- **`overcli mcp`**. A stdio MCP server, so an MCP client (Claude Desktop, Claude Code) can use your saved flows. It has three tools: `list_flows`, `run_flow` (returns the run id at once) and `get_run` (status, each step's outcome and error, and a diff summary). It runs on the same headless engines as `overcli run`, takes the same `--permissions` policy, and does not start the scheduler. Client config: `{"command": "overcli", "args": ["mcp"]}`.
+
 ## [0.21.2] - 2026-10-15
 
 ### Added

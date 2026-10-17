@@ -7,6 +7,8 @@ import {
   AppSettings,
   ThemePreference,
   BackendHealth,
+  SlackStatus,
+  IPCInvokeMap,
 } from '@shared/types';
 import {
   PREMIUM_MODELS,
@@ -733,6 +735,298 @@ function describeAgo(at: number): string {
 /// into the keychain. The consequence is that it never comes BACK either — the
 /// renderer is told only WHETHER one is configured, so the field shows a
 /// placeholder and an explicit Clear button rather than a prefilled value.
+/// The Slack bridge. Tokens save on blur through their own channel, like the
+/// webhook token — they are credentials and never enter `AppSettings`. The
+/// on/off switch is an ordinary setting and applies on Save.
+function SlackField({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const [status, setStatus] = useState<SlackStatus | null>(null);
+  const [typed, setTyped] = useState<{ bot: string; app: string }>({ bot: '', app: '' });
+  const [errors, setErrors] = useState<{ bot?: string; app?: string }>({});
+  const [check, setCheck] = useState<{ ok: boolean; team?: string; error?: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void window.overcli.invoke('slack:status').then(setStatus).catch(() => setStatus(null));
+    return window.overcli.onMainEvent((event) => {
+      if (event.type === 'slackStatus') setStatus(event.status);
+    });
+  }, []);
+
+  const saveToken = (kind: 'bot' | 'app', value: string | null) => {
+    setErrors((e) => ({ ...e, [kind]: undefined }));
+    setCheck(null);
+    void window.overcli.invoke('slack:setToken', { kind, token: value }).then((res) => {
+      if (!res.ok) {
+        setErrors((e) => ({ ...e, [kind]: res.error ?? 'Could not store the token.' }));
+        return;
+      }
+      setTyped((t) => ({ ...t, [kind]: '' }));
+      return window.overcli.invoke('slack:status').then(setStatus);
+    });
+  };
+
+  const tokenRow = (kind: 'bot' | 'app') => {
+    const configured = kind === 'bot' ? status?.botConfigured : status?.appConfigured;
+    const fromEnv = kind === 'bot' ? status?.botFromEnv : status?.appFromEnv;
+    const env = kind === 'bot' ? 'OVERCLI_SLACK_BOT_TOKEN' : 'OVERCLI_SLACK_APP_TOKEN';
+    return (
+      <Row
+        label={kind === 'bot' ? 'Bot token' : 'App-level token'}
+        help={
+          kind === 'bot'
+            ? 'xoxb-… from OAuth & Permissions. Scopes: chat:write, chat:write.customize, im:write, im:history. Stored in the OS keychain.'
+            : 'xapp-… from Basic Information → App-Level Tokens, with connections:write. Turn on Socket Mode and Interactivity, and subscribe to the message.im bot event.'
+        }
+      >
+        <div className="flex gap-2">
+          <input
+            type="password"
+            placeholder={fromEnv ? `set by $${env}` : configured ? 'configured — type to replace' : 'none'}
+            value={typed[kind]}
+            disabled={fromEnv === true}
+            onChange={(e) => setTyped((t) => ({ ...t, [kind]: e.target.value }))}
+            onBlur={() => {
+              if (typed[kind].trim()) saveToken(kind, typed[kind].trim());
+            }}
+            className="field flex-1 px-2 py-1 text-xs font-mono disabled:opacity-40"
+          />
+          <button
+            disabled={fromEnv === true || (!configured && !typed[kind].trim())}
+            onClick={() => saveToken(kind, null)}
+            className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            Clear
+          </button>
+        </div>
+        {errors[kind] && <div className="text-[10px] text-red-300">{errors[kind]}</div>}
+      </Row>
+    );
+  };
+
+  const saved = status?.enabled === true;
+  return (
+    <>
+      <Toggle
+        label="Send questions and approvals to managers in Slack"
+        value={!!local.slackEnabled}
+        onChange={(v) => patch({ slackEnabled: v })}
+        help="Only for workers with a manager whose Slack member ID is set (in the worker's settings, or on a worker it reports to). Run one overcli per Slack app — a second one on the same tokens would take replies meant for this one."
+      />
+      {tokenRow('bot')}
+      {tokenRow('app')}
+      <Row label="Connection">
+        <div className="flex items-center gap-2">
+          <span className={'text-xs ' + (status?.connected ? 'text-emerald-300' : 'text-ink-muted')}>
+            {status?.connected
+              ? `Connected to ${status.team ?? 'Slack'}${status.openThreads ? ` · ${status.openThreads} waiting on a manager` : ''}`
+              : saved
+                ? 'Not connected'
+                : 'Off'}
+          </span>
+          <button
+            disabled={busy || !status?.botConfigured}
+            onClick={() => {
+              setBusy(true);
+              setCheck(null);
+              void window.overcli
+                .invoke(saved ? 'slack:reconnect' : 'slack:test')
+                .then((res) => setCheck(res as { ok: boolean; team?: string; error?: string }))
+                .finally(() => setBusy(false));
+            }}
+            className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            {saved ? 'Reconnect' : 'Test bot token'}
+          </button>
+        </div>
+        {status?.error && !status.connected && <div className="text-[10px] text-red-300">{status.error}</div>}
+        {check && (
+          <div className={'text-[10px] ' + (check.ok ? 'text-ink-muted' : 'text-red-300')}>
+            {check.ok ? (check.team ? `Bot token works for ${check.team}.` : 'Reconnected.') : check.error}
+          </div>
+        )}
+      </Row>
+    </>
+  );
+}
+
+/// Your org's overcli server. Signing in pairs this app with it: an invite
+/// link signs in at once; a server address opens the org's page in the
+/// browser to confirm a code. Either way the token goes to the keychain and
+/// nobody copies it. Pasting a token stays, folded away, for scripts.
+function OrgServerField({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const [address, setAddress] = useState(local.orgServerUrl ?? '');
+  const [status, setStatus] = useState<ReturnType<IPCInvokeMap['org:status']> | null>(null);
+  const [pairing, setPairing] = useState<{ userCode: string; verifyUrl: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [token, setToken] = useState('');
+  const refresh = () => {
+    void window.overcli.invoke('org:status').then(setStatus);
+  };
+  useEffect(() => {
+    refresh();
+    return window.overcli.onMainEvent((event) => {
+      if (event.type !== 'orgSignIn') return;
+      setPairing(null);
+      setBusy(false);
+      if (event.outcome === 'signedIn') refresh();
+      else
+        setError(
+          event.outcome === 'denied'
+            ? 'The sign-in was refused in the browser.'
+            : event.outcome === 'expired'
+              ? 'The code expired before it was confirmed. Try again.'
+              : event.error ?? 'Sign-in failed.',
+        );
+    });
+  }, []);
+
+  const signIn = () => {
+    const url = address.trim();
+    if (!url) return;
+    setBusy(true);
+    setError(null);
+    void window.overcli.invoke('org:signIn', { url }).then((res) => {
+      if (!res.ok) {
+        setBusy(false);
+        setError(res.error);
+        return;
+      }
+      try {
+        patch({ orgServerUrl: new URL(url).origin });
+      } catch {
+        // validated in main
+      }
+      if (res.signedIn) {
+        setBusy(false);
+        refresh();
+      } else {
+        setPairing({ userCode: res.userCode, verifyUrl: res.verifyUrl });
+      }
+    });
+  };
+
+  const who = status?.who;
+  if (who && !pairing) {
+    return (
+      <Row label="Your org" help="Workers you build here can join the org from their Share card: Publish to your org.">
+        <div className="flex items-center gap-3">
+          <div className="min-w-0">
+            <div className="text-sm text-ink">{who.org}</div>
+            <div className="text-[11px] text-ink-muted">
+              Signed in as {who.name}
+              {who.canHire ? '. You can publish workers.' : '. You cannot hire yet; ask an admin.'}
+            </div>
+          </div>
+          <button
+            disabled={status?.fromEnv === true}
+            onClick={() => {
+              void window.overcli.invoke('org:signOut').then(() => {
+                setStatus(null);
+                refresh();
+              });
+            }}
+            className="ml-auto text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0 disabled:opacity-40"
+          >
+            Sign out
+          </button>
+        </div>
+        <div className="text-[10px] text-ink-faint font-mono">{local.orgServerUrl}</div>
+      </Row>
+    );
+  }
+
+  return (
+    <>
+      <Row
+        label="Your org"
+        help="Paste the invite link you were sent, or your org’s address. With an address, your browser opens to confirm it’s you; the app signs in when you do."
+      >
+        {pairing ? (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-lg tracking-widest text-ink" aria-label="Pairing code">
+                {pairing.userCode}
+              </span>
+              <span className="text-[11px] text-ink-muted">Check your browser shows this code, then press Allow. Waiting…</span>
+            </div>
+            <div className="flex gap-2">
+              <a href={pairing.verifyUrl} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
+                Open the page again
+              </a>
+              <button
+                onClick={() => {
+                  void window.overcli.invoke('org:cancelSignIn');
+                  setPairing(null);
+                  setBusy(false);
+                }}
+                className="text-xs text-ink-muted hover:text-ink"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <input
+              type="text"
+              placeholder="https://overcli.acme.example or an invite link"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') signIn();
+              }}
+              className="field flex-1 px-2 py-1 text-xs font-mono"
+            />
+            <button
+              disabled={busy || !address.trim()}
+              onClick={signIn}
+              className="text-xs px-3 py-1 rounded bg-accent text-white flex-shrink-0 disabled:opacity-40"
+            >
+              {busy ? 'Signing in…' : 'Sign in'}
+            </button>
+          </div>
+        )}
+        {error && <div className="text-[10px] text-red-300">{error}</div>}
+        {status?.error && !pairing && <div className="text-[10px] text-red-300">{status.error}</div>}
+      </Row>
+      <details className="text-[11px] text-ink-faint">
+        <summary className="cursor-pointer">Use a token instead</summary>
+        <div className="mt-2 flex gap-2">
+          <input
+            type="password"
+            placeholder={status?.fromEnv ? 'set by $OVERCLI_ORG_TOKEN' : status?.tokenConfigured ? 'configured — type to replace' : 'ocli_…'}
+            value={token}
+            disabled={status?.fromEnv === true}
+            onChange={(e) => setToken(e.target.value)}
+            onBlur={() => {
+              if (!token.trim()) return;
+              if (address.trim()) patch({ orgServerUrl: address.trim() });
+              void window.overcli.invoke('org:setToken', token.trim()).then(() => {
+                setToken('');
+                void window.overcli.invoke('org:status', address.trim() ? { url: address.trim() } : undefined).then(setStatus);
+              });
+            }}
+            className="field flex-1 px-2 py-1 text-xs font-mono disabled:opacity-40"
+          />
+        </div>
+      </details>
+    </>
+  );
+}
+
 function WebhookField({
   local,
   patch,
@@ -956,6 +1250,18 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
         description="Where overcli tells you a scheduled run failed or a worker finished a shift."
       >
         <WebhookField local={local} patch={patch} />
+      </Group>
+      <Group
+        title="Slack"
+        description="Workers DM their manager in Slack when they need an answer or an approval, and carry on when the manager replies."
+      >
+        <SlackField local={local} patch={patch} />
+      </Group>
+      <Group
+        title="Org server"
+        description="Your org's overcli server, where shared workers run. Publish a worker you built here to it from the worker's Share card."
+      >
+        <OrgServerField local={local} patch={patch} />
       </Group>
       <Group title="Updates" description="Which build channel this app auto-updates from.">
         <Row label="Channel" help="Stable tracks tagged releases. Nightly tracks the rolling nightly prerelease — newer, less tested, and not notarized, so macOS Gatekeeper warns on a fresh nightly download. Switching takes effect immediately.">

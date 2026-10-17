@@ -338,3 +338,17 @@ describe('serializeCadence — event-driven cadence', () => {
     expect(doc.cadence).toBe(ON_DEMAND);
   });
 });
+
+describe('org fields stay home', () => {
+  it('never writes the manager, boss, visibility or avatar into a share', () => {
+    const yaml = shareOf(
+      worker({
+        manager: { name: 'Pat Acme', slackUserId: 'U0ACME01' },
+        reportsTo: 'chief-1',
+        visibility: 'org',
+        avatarUrl: 'https://acme.example/a.png',
+      }),
+    );
+    expect(yaml).not.toMatch(/U0ACME01|Pat Acme|chief-1|acme\.example|visibility/);
+  });
+});

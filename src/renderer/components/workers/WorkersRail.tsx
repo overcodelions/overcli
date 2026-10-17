@@ -953,6 +953,7 @@ function RailFooter({ expanded, onToggleExpanded }: { expanded: boolean; onToggl
   const showCalendar = useWorkersStore((s) => s.showCalendar);
   const showFunds = useWorkersStore((s) => s.showFunds);
   const showReport = useWorkersStore((s) => s.showReport);
+  const showOrg = useWorkersStore((s) => s.showOrg);
   const allocation = useWorkersStore((s) => s.allocation);
   const away = useWorkersStore((s) => s.away);
   const starved = allocation ? starvedCount(allocation) : 0;
@@ -998,6 +999,13 @@ function RailFooter({ expanded, onToggleExpanded }: { expanded: boolean; onToggl
           active={view === "report"}
           onClick={showReport}
           icon={<ReportIcon />}
+        />
+        <FooterIcon
+          label="Org"
+          title="Org chart · who reports to whom, and who each branch answers to"
+          active={view === "org"}
+          onClick={showOrg}
+          icon={<OrgIcon />}
         />
         <FooterIcon
           label={expanded ? "Collapse the rail" : "Show names"}
@@ -1292,6 +1300,17 @@ function ReportIcon() {
     <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
       <path d="M1.8 12.2h10.4" />
       <path d="M3.6 12.2V6.4M7 12.2V2.6M10.4 12.2V8.6" />
+    </svg>
+  );
+}
+
+function OrgIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
+      <rect x="5" y="1.6" width="4" height="3" rx="0.6" />
+      <rect x="1.4" y="9.4" width="4" height="3" rx="0.6" />
+      <rect x="8.6" y="9.4" width="4" height="3" rx="0.6" />
+      <path d="M7 4.6v2.4M3.4 9.4V7h7.2v2.4" />
     </svg>
   );
 }

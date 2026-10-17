@@ -63,7 +63,7 @@ import {
 } from './git';
 import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
 import { inspectFolder } from './childRepos';
-import { isDocumentLikePath, isEverydayProject } from '../shared/everydayProjects';
+import { isDocumentLikePath } from '../shared/everydayProjects';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
 import {
   checkpointProject,
@@ -79,7 +79,7 @@ import { scanOrphanTranscripts, removeOrphanTranscripts } from './transcriptSwee
 import { computeStatsOffThread, stopStatsWorker } from './statsService';
 import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
-import { recordMcpSeenFromEvent, seenMcpTools } from './flows/mcpToolCache';
+import { recordMcpSeenFromEvent } from './flows/mcpToolCache';
 import { ensureMcpSeen } from './flows/mcpProbe';
 import { routeErrand } from './flows/workerRouter';
 import { findBrowser, openInBrowser } from './openInBrowser';
@@ -147,7 +147,7 @@ import {
   WEBHOOK_TOKEN_KEY,
 } from './webhookNotify';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
-import { renameIfTaken, teamHireJobDescription, teamPieceFlow, type TeamHireRequest } from '../shared/flows/team';
+import { teamHireJobDescription, teamPieceFlow, type TeamHireRequest } from '../shared/flows/team';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
 import { buildCiDeploy, buildFlowCiDeploy, type CiWorkspace } from '../shared/flows/ciDeploy';
 import { serializeFlow } from '../shared/flows/yaml';
@@ -162,22 +162,38 @@ import {
 import { filedByWorker, recentlyFiled } from './flows/workerPublish';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
+import type { SlackBridge } from './slack/slackBridge';
+import type { SlackCommands } from './slack/slackCommands';
+import { testSlackTokens } from './slack/slackBridge';
+import {
+  configuredSlackToken,
+  slackEnabled,
+  slackTokenFromEnv,
+  storeSlackToken,
+  validateSlackToken,
+} from './slack/slackSettings';
+import { createOrgControl, createSlackBridge } from './slack/wire';
+import {
+  ORG_TOKEN_ENV,
+  ORG_TOKEN_KEY,
+  configuredOrgToken,
+  normalizeOrgUrl,
+  parseInviteLink,
+  pollPairing,
+  publishToOrg,
+  redeemInvite,
+  startPairing,
+  whoamiAt,
+} from './org/orgClient';
+import { draftHire, drafterDepsFor, hireDraftContext, saveDraftedHire } from './org/hireDraft';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { auditWorkerLandings } from './flows/strandedLandings';
 import { discardLandingUpdate, finishLandingUpdate, startLandingUpdate } from './flows/landingUpdate';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
-import { TeamEngine } from './flows/teamEngine';
+import type { TeamEngine } from './flows/teamEngine';
+import { createTeamEngine, runDeliverablesFor } from './flows/teamWire';
 import { flushTeamTasks } from './flows/teamsStore';
-import {
-  absorbPiece,
-  closeTaskBranch,
-  landTaskBranch,
-  openTaskBranch,
-  pushTaskBranch,
-  taskBranchAhead,
-  taskRepos,
-} from './flows/teamBranch';
 import { runHandoffOutputs, workerOrigin, type Worker } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
@@ -194,7 +210,6 @@ import {
 } from './flows/userProfileStore';
 import { flushRuns } from './flows/runsStore';
 import { loadRunSummaries } from './flows/runSummaryLog';
-import { renderProvenFlowsSection } from './flows/provenFlows';
 import { emptyWorkerReportTotals } from '../shared/flows/workerReport';
 import { flowDeletionBlocker } from './flows/flowGuards';
 import { listRecentPrompts, recordRecentPrompt, deleteRecentPrompt } from './flows/recentPromptsStore';
@@ -208,14 +223,13 @@ import {
   previewRegistryFlow,
 } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
-import { draftFlowFromPrompt, oneShotDraftText, reviseFlowFromPrompt, type DraftDeps } from './flows/drafter';
+import { draftFlowFromPrompt, reviseFlowFromPrompt, type DraftDeps } from './flows/drafter';
 import {
   ensureWorkspaceSymlinkRoot,
   removeWorkspaceSymlinkRoot,
   ensureCoordinatorSymlinkRoot,
   rebindCoordinatorRootToProjects,
   removeCoordinatorSymlinkRoot,
-  looseSyntheticRootFiles,
 } from './workspace';
 import { openTerminalAt, openTerminalIn, runInTerminal, setEmbeddedTerminal } from './terminal';
 import { PtyManager, type PtySpawn } from './ptyManager';
@@ -225,6 +239,7 @@ import {
   ArtifactPreviewResult,
   Backend,
   MainToRendererEvent,
+  SlackStatus,
   MenuCommand,
   ProjectPreviewCommand,
   ProjectPreviewHintsResult,
@@ -256,6 +271,8 @@ let orchestrator: OrchestratorImpl | null = null;
 let scheduler: SchedulerEngine | null = null;
 let workerEngine: WorkerEngine | null = null;
 let teamEngine: TeamEngine | null = null;
+let slackBridge: SlackBridge | null = null;
+let slackCommands: SlackCommands | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
 let handoffInbox: HandoffInbox | null = null;
 /// Long-lived service processes, one supervisor per workspace. Built lazily
@@ -355,6 +372,18 @@ function setUiScale(next: number): void {
   Store.saveSettings({ ...settings, uiScale: next });
   applyUiScale();
   emitToRenderer({ type: 'uiScaleChanged', uiScale: Store.load().settings.uiScale });
+}
+
+function slackStatus(): SlackStatus {
+  const bridge = slackBridge?.getStatus() ?? { enabled: false, connected: false, openThreads: 0 };
+  return {
+    ...bridge,
+    enabled: slackEnabled(),
+    botConfigured: configuredSlackToken('bot') !== null,
+    appConfigured: configuredSlackToken('app') !== null,
+    botFromEnv: slackTokenFromEnv('bot'),
+    appFromEnv: slackTokenFromEnv('app'),
+  };
 }
 
 function emitToRenderer(event: MainToRendererEvent): void {
@@ -469,68 +498,7 @@ installElectronHost(focusMainWindow);
 /// draft copies the shape of what already works here instead of inventing a
 /// deeper one.
 function drafterDeps(): DraftDeps {
-  const store = Store.load();
-  return {
-    settings: store.settings,
-    runner: runner!,
-    mcpTools: seenMcpTools(),
-    provenFlows: renderProvenFlowsSection(
-      loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }),
-      loadRunSummaries(),
-    ),
-  };
-}
-
-/// What the hire drafter is shown about this install: the flows it can
-/// route to, the projects a job can land in, the MCP servers it can grant,
-/// and the crew's names so a new one never collides.
-async function hireDraftContext() {
-  const store = Store.load();
-  // The drafter's own turns run strict and report no servers, so a user who
-  // comes straight here may have none recorded. Ask Claude once — it costs
-  // no model call (see mcpProbe) and only happens while the record is empty.
-  await ensureMcpSeen(resolveBackendPath('claude', store.settings.backendPaths.claude));
-  // The same servers the editor's picker offers. A failed scan means the
-  // drafter is not asked to choose, and the worker loads everything.
-  let mcpServers: string[] | undefined;
-  try {
-    const report = scanCapabilities();
-    mcpServers = Array.from(
-      new Set([
-        ...report.entries.filter((e) => e.kind === 'mcp' && e.clis.includes('claude')).map((e) => e.name),
-        ...(report.accountConnectors ?? []),
-      ]),
-    ).sort((a, b) => a.localeCompare(b));
-  } catch (err) {
-    log('warn', 'workers.hire', 'MCP scan for the hire drafter failed', err);
-  }
-  return {
-    mcpServers,
-    // Names only — `list()` would build a scorecard per worker, which is
-    // two whole-file log reads each for a prompt line.
-    crew: workerEngine ? workerEngine.workerNames() : [],
-    flows: loadAllFlows({
-      projectPaths: store.projects.map((p) => p.path),
-    }).map((f) => ({
-      id: f.id,
-      name: f.name,
-      description: f.description,
-    })),
-    // Workspaces first: a job that names one should land on the whole
-    // workspace, not one member repo that happens to share the name.
-    projects: [
-      ...store.workspaces.map((w) => ({
-        name: w.name,
-        path: w.rootPath,
-        kind: 'workspace' as const,
-      })),
-      ...store.projects.map((p) => ({
-        name: p.name,
-        path: p.path,
-        kind: 'project' as const,
-      })),
-    ],
-  };
+  return drafterDepsFor(runner!);
 }
 
 /// Hire a worker for a team, start to finish, with nobody at the review
@@ -542,58 +510,19 @@ async function hireDraftContext() {
 /// connectors or the browser: those are yours to grant, not the drafter's.
 async function hireForTeam(req: TeamHireRequest): Promise<{ ok: true; worker: Worker } | { ok: false; error: string }> {
   if (!workerEngine) return { ok: false, error: 'Workers are not running.' };
-  const drafted = await draftWorkerFromPrompt(
-    { ...(await hireDraftContext()), jobDescription: teamHireJobDescription(req), interview: false, polish: false },
-    drafterDeps(),
-  );
+  const drafted = await draftHire({
+    runner: runner!,
+    crew: workerEngine.workerNames(),
+    jobDescription: teamHireJobDescription(req),
+    interview: false,
+  });
   if (!drafted.ok) return drafted;
-  if (!('contract' in drafted)) return { ok: false, error: 'The hire drafter asked a question instead of drafting.' };
-  const { flowPlan } = drafted;
-  // Checked against the crew as it is NOW, not as the drafter saw it: a hire
-  // drafted alongside this one may have just taken the same name. Nothing
-  // below awaits before the save, so no other hire can land in between.
-  const contract = renameIfTaken(drafted.contract, workerEngine.workerNames());
-  const flows = flowPlan.filter((p) => p.flowId);
-  if (flows.length === 0) {
-    return { ok: false, error: `No flow for ${contract.name}: ${drafted.flowError ?? 'the drafter named none.'}` };
-  }
-  // A drafted flow is new; it saves where the hire screen saves one. The
-  // wrap-up is left out: it combines a shift's items, and this worker has
-  // no shifts.
-  for (const p of flows) {
-    if (!p.flow) continue;
-    const saved = saveFlow({ flow: p.flow, target: 'user' });
-    if (!saved.ok) return { ok: false, error: `Could not save ${contract.name}'s flow: ${saved.error}` };
-  }
-  const store = Store.load();
+  if (drafted.kind !== 'drafted') return { ok: false, error: 'The hire drafter asked a question instead of drafting.' };
   // The team's project when it has one: a hire for an overcli release team
   // works in overcli, whatever the drafter guessed from the job.
-  const projectPath = req.projectPath ?? contract.projectPath ?? store.workspaces[0]?.rootPath ?? store.projects[0]?.path;
-  if (!projectPath) return { ok: false, error: 'Add a project first — every worker needs one to work in.' };
-  const everyday = store.projects.find((p) => p.path === projectPath)?.everyday;
-  const saved = workerEngine.save({
-    name: contract.name,
-    ...(contract.tagline?.trim() ? { tagline: contract.tagline.trim() } : {}),
-    ...(contract.errandStarters?.length ? { errandStarters: contract.errandStarters } : {}),
-    jobDescription: contract.jobDescription,
-    projectPath,
-    cadence: null,
-    caps: {
-      maxItemsPerShift: contract.maxItemsPerShift,
-      runIn: 'worktree',
-      allowExternalActions: false,
-      canDelegate: false,
-      fileIntoProject: isEverydayProject({ path: projectPath, everyday }),
-    },
-    budgetUSDPerMonth: contract.budgetUSDPerMonth,
-    heartbeatModel: contract.heartbeatModel,
-    heartbeatBackend: contract.heartbeatBackend,
-    flowIds: flows.map((p) => p.flowId),
-    // No connectors and no browser, whatever the drafter picked: nobody
-    // reviewed this hire, and both reach past the worktree with your
-    // sign-ins. You tick them on the worker yourself if the job needs them.
-    hiredFor: { teamName: req.teamName.trim() || 'New team', ...(req.teamId ? { teamId: req.teamId } : {}) },
-    enabled: true,
+  const saved = saveDraftedHire(workerEngine, drafted.drafted, {
+    projectPath: req.projectPath,
+    extra: { hiredFor: { teamName: req.teamName.trim() || 'New team', ...(req.teamId ? { teamId: req.teamId } : {}) } },
   });
   if (saved.ok) log('info', 'teams', `Hired ${saved.worker.name} for ${req.teamName}`);
   return saved;
@@ -619,6 +548,7 @@ export function registerIpc(): void {
     // Teams watch the batches they commissioned to know when a stage's
     // pieces are in. Ignores every batch without `origin.team`.
     if (teamEngine) teamEngine.observeEvent(event);
+    slackCommands?.onEvent(event);
     emitToRenderer(event);
   };
   runner = new RunnerManager(flowAwareEmit, () => Store.load().settings);
@@ -671,6 +601,7 @@ export function registerIpc(): void {
   flowRuntime.setRunObserver((run) => {
     orchestrator?.onRunUpdate(run);
     scheduler?.onRunUpdate(run);
+    void slackBridge?.onRunUpdate(run);
   });
   scheduler.start();
   // Workers park their shifts through the orchestrator exactly like scheduled
@@ -679,33 +610,7 @@ export function registerIpc(): void {
   // A run's deliverables: its step artifacts in step order (the answer last),
   // plus the files it wrote into a synthetic root. Shared by workers, which
   // file them into a cabinet, and teams, which file them into a task folder.
-  const workerDeliverablesFor = (runId: string): Array<{ name: string; body?: string; sourcePath?: string }> => {
-    const run = flowRuntime?.getRun(runId);
-    if (!run) return [];
-    // Step order, so the answer is last and its supporting material reads in
-    // the order it was produced.
-    const seen = new Set<string>();
-    const out: Array<{ name: string; body?: string; sourcePath?: string }> = [];
-    for (const step of run.flowSnapshot?.steps ?? []) {
-      const art = run.artifacts?.[step.output];
-      if (!art || seen.has(art.name)) continue;
-      seen.add(art.name);
-      out.push({ name: art.name, body: art.body });
-    }
-    // Plus whatever the run WROTE rather than recorded. A step told to
-    // render a dashboard or a chart writes a real file into its working
-    // root and hands back a receipt — the receipt is the artifact, so
-    // filing artifacts alone kept the note and dropped the thing it
-    // described, which then died with the run's coordinator root.
-    for (const file of looseSyntheticRootFiles(run.projectPath, {
-      since: run.createdAt,
-    })) {
-      if (seen.has(file.name)) continue;
-      seen.add(file.name);
-      out.push({ name: file.name, sourcePath: file.path });
-    }
-    return out;
-  };
+  const workerDeliverablesFor = runDeliverablesFor((id) => flowRuntime?.getRun(id) ?? null);
   workerEngine = new WorkerEngine({
     parker: orchestrator,
     isGitRepo: (projectPath) =>
@@ -879,130 +784,32 @@ export function registerIpc(): void {
     },
   });
   flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
+  // Questions and approvals that reach a person go to their manager in Slack
+  // when the bridge is on. Built here, after every engine it reads.
+  slackBridge = createSlackBridge({
+    flowRuntime,
+    orchestrator,
+    workerEngine,
+    onStatus: () => emitToRenderer({ type: 'slackStatus', status: slackStatus() }),
+  });
+  // `/worker`, `/hire` and hire approvals in Slack, through the same org
+  // rules `overcli serve`'s control plane enforces.
+  slackCommands = createOrgControl({ runner: runner!, flowRuntime, orchestrator, workerEngine, teams: () => teamEngine }, slackBridge).commands;
+  if (slackEnabled()) void slackBridge.start();
   // Away mode holds worker batches queued before you left (see pump).
   orchestrator.setCrewAwaySince(() => workerEngine?.awayState()?.since);
   workerEngine.start();
   // Teams commission their members through the worker engine, so they are
   // built after it and only ever reach a worker through `commission`.
-  teamEngine = new TeamEngine({
+  teamEngine = createTeamEngine({
     emit: flowAwareEmit,
     notify: showDesktopNotification,
-    workers: () => workerEngine?.list().map((entry) => entry.worker) ?? [],
-    commission: (workerId, args) =>
-      workerEngine
-        ? workerEngine.commission(workerId, args)
-        : Promise.resolve({ ok: false as const, error: 'Worker engine not initialized.' }),
-    batch: (id) => orchestrator?.get(id) ?? null,
-    coordinatorTurn: async ({ system, message, cancelKey, onProgress, attachments }) => {
-      const res = await oneShotDraftText(drafterDeps(), {
-        buildSystemPrompt: () => system,
-        userMessage: message,
-        ...(attachments?.length ? { attachments } : {}),
-        verb: 'coordinate the team',
-        cancelKey,
-        onProgress,
-        // A coordinator turn reads every member's piece before it writes a
-        // word, on the strongest model, so minutes of silence is normal. The
-        // ceilings are only a backstop against a turn that has truly hung.
-        timeouts: { timeoutMs: 45 * 60_000, idleTimeoutMs: 15 * 60_000 },
-        // It is told it has no tools, but if it reaches for one anyway a
-        // hidden turn must never sit on a permission prompt nobody can see.
-        permissionMode: 'plan',
-      });
-      return res.ok ? { ok: true, text: res.text } : res;
-    },
-    cancelTurn: (cancelKey) => {
-      runner?.cancelOneShot(cancelKey);
-    },
-    cancelBatch: (id) => {
-      orchestrator?.abort({ id });
-    },
-    // Away mode holds team stages too; coming back reaches the engine as
-    // the `workersAway` event through `flowAwareEmit`.
-    crewAway: () => !!workerEngine?.awayState(),
-    // A member speaking in the room runs on ITS OWN backend and model — the
-    // point of a Codex challenger is that Codex is the one answering. Same
-    // backend resolution as the worker supervisor; plan mode so a stray tool
-    // call reads or is refused rather than waiting on a prompt nobody sees.
-    memberTurn: async ({ worker, prompt, cancelKey, onProgress, attachments }) => {
-      const settings = Store.load().settings;
-      const healthy = await healthyBackends(settings.backendPaths);
-      const backend = pickDrafterBackend({
-        preferred: worker.heartbeatBackend ?? settings.preferredBackend,
-        isHealthy: (candidate) => healthy.has(candidate),
-        isEnabled: (candidate) => settings.disabledBackends[candidate] !== true,
-      });
-      if (!backend) return { ok: false, error: `No signed-in model is available for ${worker.name}.` };
-      const res = await runner!.oneShot({
-        backend,
-        model: resolveProducerModel(backend, worker.heartbeatModel, settings.flowModelDefaults),
-        prompt,
-        ...(attachments?.length ? { attachments } : {}),
-        cwd: os.homedir(),
-        permissionMode: 'plan',
-        skipGlobalMcp: true,
-        cancelKey,
-        ...(onProgress ? { onProgress: (snap: { text: string }) => onProgress(snap.text) } : {}),
-        timeoutMs: 20 * 60_000,
-        idleTimeoutMs: 10 * 60_000,
-      });
-      return res.ok ? { ok: true, text: res.text } : res;
-    },
-    deliverablesFor: (runId) => workerDeliverablesFor(runId),
+    runner: runner!,
+    flowRuntime,
+    orchestrator,
+    workerEngine,
+    drafterDeps,
     hire: hireForTeam,
-    // One branch per team task across the repos it works in; see teamBranch.
-    code: {
-      open: ({ taskId, title, projectPath }) => {
-        const store = Store.load();
-        const byId = new Map(store.projects.map((p) => [p.id, p.path]));
-        const workspaces = store.workspaces.map((w) => ({
-          rootPath: w.rootPath,
-          memberPaths: w.projectIds.flatMap((id) => (byId.get(id) ? [byId.get(id)!] : [])),
-        }));
-        return openTaskBranch({ taskId, title, repos: taskRepos(projectPath, workspaces) });
-      },
-      pieceRepos: (runId) => {
-        const run = flowRuntime?.getRun(runId);
-        if (!run) return [];
-        if (run.workspaceWorktrees?.length) {
-          return run.workspaceWorktrees.map((m) => ({
-            projectPath: m.projectPath,
-            worktreePath: m.worktreePath,
-            branchName: m.branchName,
-            startedAt: run.createdAt,
-          }));
-        }
-        return run.worktreePath && run.branchName
-          ? [
-              {
-                projectPath: run.sourceProjectPath ?? run.projectPath,
-                worktreePath: run.worktreePath,
-                branchName: run.branchName,
-                startedAt: run.createdAt,
-              },
-            ]
-          : [];
-      },
-      absorb: (args) => absorbPiece(args),
-      land: (code, repo, subject) => landTaskBranch(code, repo, subject),
-      push: (code, repo, subject) => pushTaskBranch(code, repo, subject),
-      ahead: (code) => taskBranchAhead(code),
-      close: (code) => closeTaskBranch(code),
-    },
-    projects: () => {
-      const store = Store.load();
-      // Workspaces first, as the hire drafter lists them.
-      return [
-        ...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath })),
-        ...store.projects.map((p) => ({ name: p.name, path: p.path })),
-      ];
-    },
-    spendForRuns: (runIds) => {
-      const wanted = new Set(runIds);
-      let total = 0;
-      for (const s of loadRunSummaries()) if (wanted.has(s.id)) total += s.costUSD;
-      return total;
-    },
   });
   teamEngine.start();
   // A sleeping Mac runs no timers. Both engines arm a `setTimeout` for the
@@ -1052,9 +859,18 @@ export function registerIpc(): void {
   ipcMain.handle('store:patchConversation', (_e, { id, patch }) => Store.patchConversation(id, patch));
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
+    const wasSlack = slackEnabled();
     Store.saveSettings(settings);
     refreshUpdateChannel();
     applyUiScale();
+    // The Slack switch rides the sheet's Save like every other setting, so
+    // the bridge follows it here rather than through a call of its own that
+    // the sheet's next Save would overwrite.
+    const isSlack = slackEnabled();
+    if (slackBridge && isSlack !== wasSlack) {
+      if (isSlack) void slackBridge.start();
+      else slackBridge.stop();
+    }
   });
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
   ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
@@ -1093,6 +909,126 @@ export function registerIpc(): void {
       log('warn', 'webhook.notify', `Could not store the webhook auth token: ${String(err)}`);
       return { ok: false };
     }
+  });
+  ipcMain.handle('slack:status', () => slackStatus());
+  ipcMain.handle('slack:setToken', (_e, { kind, token }) => {
+    const invalid = validateSlackToken(kind, token ?? '');
+    if (invalid) return { ok: false, error: invalid };
+    try {
+      const ok = storeSlackToken(kind, token);
+      emitToRenderer({ type: 'slackStatus', status: slackStatus() });
+      return ok ? { ok } : { ok, error: 'This build cannot store secrets — set the environment variable instead.' };
+    } catch (err) {
+      log('warn', 'slack', `Could not store the Slack ${kind} token: ${String(err)}`);
+      return { ok: false, error: 'Could not store the token.' };
+    }
+  });
+  ipcMain.handle('slack:reconnect', async () => {
+    if (!slackBridge) return { ok: false, error: 'Workers are not running yet.' };
+    if (!slackEnabled()) return { ok: false, error: 'Turn Slack on and save first.' };
+    return await slackBridge.start();
+  });
+  ipcMain.handle('slack:test', () => testSlackTokens(configuredSlackToken('bot')));
+  ipcMain.handle('org:status', async (_e, args) => {
+    const token = configuredOrgToken();
+    const status = { tokenConfigured: !!token, fromEnv: !!process.env[ORG_TOKEN_ENV]?.trim() };
+    const raw = args?.url ?? Store.load().settings.orgServerUrl;
+    if (!raw || !token) return status;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...status, error: url.error };
+    const who = await whoamiAt(url.url, token);
+    return who.ok ? { ...status, who: who.data } : { ...status, error: who.error };
+  });
+  ipcMain.handle('org:setToken', (_e, token) => {
+    try {
+      const ok = host().secrets.set(ORG_TOKEN_KEY, token?.trim() || null);
+      return ok ? { ok } : { ok, error: 'This build cannot store secrets — set $OVERCLI_ORG_TOKEN instead.' };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+  // Signing this app in to the org. One pairing at a time; a new sign-in
+  // or Cancel stops the poll of the last.
+  let pairing: { stop: () => void } | null = null;
+  const deviceName = `overcli app on ${os.hostname().replace(/\.local$/, '')}`;
+  const keepOrg = (base: string, token: string) => {
+    host().secrets.set(ORG_TOKEN_KEY, token);
+    Store.saveSettings({ ...Store.load().settings, orgServerUrl: base });
+  };
+  ipcMain.handle('org:signIn', async (_e, { url }) => {
+    pairing?.stop();
+    pairing = null;
+    const invite = parseInviteLink(url);
+    if (invite) {
+      const base = normalizeOrgUrl(invite.base);
+      if (!base.ok) return base;
+      const res = await redeemInvite(base.url, invite.code, deviceName);
+      if (!res.ok) return res;
+      keepOrg(base.url, res.data.token);
+      return { ok: true, signedIn: true, org: res.data.org, name: res.data.name };
+    }
+    const base = normalizeOrgUrl(url);
+    if (!base.ok) return base;
+    const started = await startPairing(base.url, deviceName);
+    if (!started.ok) return started;
+    const { pairId, pollSecret, userCode, verifyUrl, expiresAt } = started.data;
+    void shell.openExternal(verifyUrl);
+    let stopped = false;
+    const timer = setInterval(() => {
+      if (stopped) return;
+      if (Date.now() > expiresAt + 5_000) {
+        stop();
+        emitToRenderer({ type: 'orgSignIn', outcome: 'expired' });
+        return;
+      }
+      void pollPairing(base.url, pairId, pollSecret).then((res) => {
+        if (stopped) return;
+        if (!res.ok) {
+          stop();
+          emitToRenderer({ type: 'orgSignIn', outcome: 'failed', error: res.error });
+          return;
+        }
+        if (res.data.status === 'waiting') return;
+        stop();
+        if (res.data.status === 'signedIn') {
+          keepOrg(base.url, res.data.token);
+          emitToRenderer({ type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name });
+        } else {
+          emitToRenderer({ type: 'orgSignIn', outcome: res.data.status });
+        }
+      });
+    }, 2_000);
+    const stop = () => {
+      stopped = true;
+      clearInterval(timer);
+      if (pairing?.stop === stop) pairing = null;
+    };
+    pairing = { stop };
+    return { ok: true, signedIn: false, userCode, verifyUrl };
+  });
+  ipcMain.handle('org:cancelSignIn', () => {
+    pairing?.stop();
+    pairing = null;
+    return { ok: true };
+  });
+  ipcMain.handle('org:signOut', () => {
+    try {
+      return { ok: host().secrets.set(ORG_TOKEN_KEY, null) };
+    } catch {
+      return { ok: false };
+    }
+  });
+  ipcMain.handle('org:publishWorker', async (_e, { id, visibility }) => {
+    const raw = Store.load().settings.orgServerUrl;
+    if (!raw) return { ok: false, error: 'Add your org server in Settings → Advanced → Org server first.' };
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return url;
+    const token = configuredOrgToken();
+    if (!token) return { ok: false, error: 'Add your org token in Settings → Advanced → Org server first.' };
+    const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
+    if (!worker) return { ok: false, error: 'No such worker.' };
+    const share = buildWorkerShare({ worker, library: loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }) });
+    return publishToOrg(url.url, token, share.yaml, visibility ? { visibility } : {});
   });
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
   ipcMain.handle('app:whatsNew', () => getWhatsNew());
@@ -3126,7 +3062,7 @@ export function registerIpc(): void {
     'workers:draftFromPrompt',
     async (_e, { jobDescription, attachments, conversation, interview }) => {
     return draftWorkerFromPrompt(
-      { ...(await hireDraftContext()), jobDescription, attachments, conversation, interview, polish: true },
+      { ...(await hireDraftContext(workerEngine ? workerEngine.workerNames() : [])), jobDescription, attachments, conversation, interview, polish: true },
       drafterDeps(),
     );
     },
@@ -4308,6 +4244,7 @@ app.on('before-quit', (event) => {
   // shift into a runtime that's already tearing its subprocesses down.
   scheduler?.dispose();
   workerEngine?.dispose();
+  slackBridge?.stop();
   ollamaServer.stop();
   stopStatsWorker();
   // Store writes are debounced now (see store.save). Take the freshest

@@ -225,6 +225,10 @@ export interface TeamTask {
   teamName: string;
   /// What you asked for, verbatim.
   brief: string;
+  /// Who asked, when the task came through the org control plane (Slack,
+  /// MCP, the console). Its questions, plan and checkpoints go to them.
+  /// Absent for a task briefed at the desk.
+  requestedBy?: { name: string; slackUserId?: string };
   /// Where this task's pieces run: chosen with the brief, else the team's.
   /// Absent: each member in their own project.
   projectPath?: string;

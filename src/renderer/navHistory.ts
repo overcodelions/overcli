@@ -29,7 +29,7 @@ export interface NavLocation {
   /// selection rather than part of it — the calendar and the funds waterfall
   /// have no worker to be the selection of — so Back out of Funds has to
   /// know to return to the calendar rather than to a desk.
-  workersView: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'team';
+  workersView: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'org' | 'team';
   /// The team whose desk is up while `workersView` is 'team'. Optional so a
   /// location recorded without it still reads as "no team".
   selectedTeamId?: string | null;
@@ -264,6 +264,7 @@ function applyLocation(loc: NavLocation): void {
     else if (loc.workersView === 'calendar') useWorkersStore.getState().showCalendar();
     else if (loc.workersView === 'funds') useWorkersStore.getState().showFunds();
     else if (loc.workersView === 'report') useWorkersStore.getState().showReport();
+    else if (loc.workersView === 'org') useWorkersStore.getState().showOrg();
     else if (loc.workersView === 'team' && loc.selectedTeamId) useWorkersStore.getState().selectTeam(loc.selectedTeamId);
     // LAST: selectWorker and every Workers subview action call leavePane(),
     // which clears the active run. Flow locations still carry the globally
@@ -401,6 +402,7 @@ export function describeLocation(loc: NavLocation): string {
       if (loc.workersView === 'calendar') return 'the shift calendar';
       if (loc.workersView === 'funds') return 'funds';
       if (loc.workersView === 'report') return 'a shift report';
+      if (loc.workersView === 'org') return 'the org chart';
       if (loc.workersView === 'team') return 'a team';
       return "a worker's desk";
     case 'flows':

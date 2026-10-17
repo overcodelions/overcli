@@ -153,6 +153,8 @@ import {
 import { LANDING_DISPLAY, LANDING_SERIF } from "../onboarding/landing";
 import { RotaSpecimen, TrustLadderMark } from "../onboarding/specimens";
 import { PlacePicker } from "../PlacePicker";
+import { WorkerOrgFields } from "./WorkerOrgFields";
+import { OrgChartPane } from "./OrgChartPane";
 
 // Zustand selectors are consumed through React's useSyncExternalStore. Returning
 // a new [] while this worker's journal is still loading makes the snapshot look
@@ -459,6 +461,8 @@ export function WorkersPane() {
         <ShiftCalendar />
       ) : view === "report" ? (
         <WorkerReportPane />
+      ) : view === "org" ? (
+        <OrgChartPane />
       ) : view === "funds" ? (
         <FundsPane />
       ) : rows.length === 0 ? (
@@ -1997,6 +2001,9 @@ function ShareCard({ worker }: { worker: Worker }) {
   } | null>(null);
   const [copied, setCopied] = useState(false);
   const [savedTo, setSavedTo] = useState<string | null>(null);
+  const orgServerUrl = useStore((s) => s.settings.orgServerUrl);
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState<{ ok: boolean; text: string } | null>(null);
 
   // Re-read whenever the card is open and the worker changes: the YAML is a
   // rendering of the contract above it, and one that lagged an edit would be
@@ -2056,7 +2063,32 @@ function ShareCard({ worker }: { worker: Worker }) {
         >
           {copied ? "Copied" : "Copy YAML"}
         </button>
+        {/* The org's server, when one is set up: the same file, handed to
+            the org under its rules instead of to one person. */}
+        {orgServerUrl && (
+          <button
+            disabled={publishing}
+            onClick={() => {
+              setPublishing(true);
+              setPublished(null);
+              void window.overcli
+                .invoke("org:publishWorker", { id: worker.id })
+                .then((res) =>
+                  setPublished(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error }),
+                )
+                .finally(() => setPublishing(false));
+            }}
+            className="rounded-md border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink disabled:opacity-50"
+          >
+            {publishing ? "Publishing…" : "Publish to your org"}
+          </button>
+        )}
       </div>
+      {published && (
+        <div className={"mt-2 text-[11px] " + (published.ok ? "text-emerald-300" : "text-red-300")}>
+          {published.text}
+        </div>
+      )}
 
       {savedTo && (
         <div
@@ -5670,6 +5702,10 @@ function WorkerEditor() {
               cadence={draft.cadence}
               onChange={(cadence) => patch({ cadence })}
             />
+          </div>
+
+          <div className="rounded-xl bg-card p-5 shadow-sm">
+            <WorkerOrgFields draft={draft} workers={workers} patch={patch} />
           </div>
 
           <div className="rounded-xl bg-card p-5 shadow-sm space-y-5">

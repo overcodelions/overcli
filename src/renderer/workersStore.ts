@@ -12,7 +12,7 @@ import { useTeamsStore } from './teamsStore';
 
 import type { Attachment, Backend, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
-import { hireAnswerText, moveInRoster, placeInRoster } from '@shared/flows/worker';
+import { hireAnswerText, moveInRoster, placeInRoster, type WorkerManager, type WorkerVisibility } from '@shared/flows/worker';
 import { isEverydayProject } from '@shared/everydayProjects';
 import { allocateTreasury, fundingFor, type Treasury, type TreasuryAllocation } from '@shared/flows/treasury';
 import type {
@@ -65,6 +65,12 @@ export interface WorkerDraft {
   mcpServers?: string[];
   /// See `Worker.browser`.
   browser?: boolean;
+  /// The org fields — see `Worker.manager` and its neighbours. Carried
+  /// through the editor so a save that never touched them keeps them.
+  manager?: WorkerManager;
+  reportsTo?: UUID;
+  visibility?: WorkerVisibility;
+  avatarUrl?: string;
 }
 
 /// A hire that finished drafting and was never saved.
@@ -201,7 +207,7 @@ interface WorkersState {
   /// what it came to (report); nothing answered NOW, so the tab opened on
   /// whichever worker happened to be hired first — an accident of sort order
   /// standing in for a front page.
-  view: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'team';
+  view: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'org' | 'team';
   /// The team whose desk is on screen while `view` is 'team'. Teams live in
   /// teamsStore; the selection lives here because it is a peer of the worker
   /// selection — picking one leaves the other.
@@ -467,6 +473,7 @@ interface WorkersActions {
   showCalendar(): void;
   showFunds(): void;
   showReport(): void;
+  showOrg(): void;
   applyTreasury(treasury: Treasury, allocation: TreasuryAllocation): void;
   applyHandoffs(handoffs: HeldHandoff[]): void;
   applyAway(away: WorkersAway | null): void;
@@ -611,6 +618,10 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     wrapUpFlowId: w.wrapUpFlowId,
     mcpServers: w.mcpServers ? [...w.mcpServers] : undefined,
     browser: w.browser,
+    manager: w.manager ? { ...w.manager } : undefined,
+    reportsTo: w.reportsTo,
+    visibility: w.visibility,
+    avatarUrl: w.avatarUrl,
     enabled: w.enabled,
   };
 }
@@ -1075,6 +1086,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   showReport() {
     leavePane(get);
     set({ view: 'report' });
+  },
+
+  showOrg() {
+    leavePane(get);
+    set({ view: 'org' });
   },
 
   clearDeskFocus() {

@@ -26,3 +26,6 @@ example-registry/
 
 # Design canvas working files (seeded into the published canvas, not app source)
 .design-*/
+
+# Deployment secrets
+deploy/.env

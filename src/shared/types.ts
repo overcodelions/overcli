@@ -1218,6 +1218,16 @@ export interface AppSettings {
   /// every finished shift gets muted, and a muted channel is the same as no
   /// webhook — see `src/main/webhookNotify.ts`.
   notificationWebhookFilter?: 'all' | 'failures';
+  /// Connect to Slack so workers' questions and approval requests reach their
+  /// managers as DMs, and the replies come back. The bot and app tokens live
+  /// in `host().secrets` (or `$OVERCLI_SLACK_BOT_TOKEN` /
+  /// `$OVERCLI_SLACK_APP_TOKEN` headless), never here. See
+  /// `src/main/slack/slackBridge.ts`.
+  slackEnabled?: boolean;
+  /// Your org's overcli control plane (`overcli serve --control`), for
+  /// publishing workers you build here to the org. The token lives in
+  /// `host().secrets`, never here.
+  orgServerUrl?: string;
   /// Hard USD ceiling for a SINGLE flow run. When a run's accumulated spend
   /// (`FlowRun.costUSD`) crosses this, the runtime aborts it mid-execution
   /// and fires a notification naming the flow, the cost and the ceiling.
@@ -1459,6 +1469,31 @@ export interface IPCInvokeMap {
   /// environment is the store — so the UI can say where to put it instead of
   /// reporting a save that did not happen.
   'notify:setWebhookToken': (token: string | null) => { ok: boolean };
+  /// The Slack bridge: whether it is on, connected, and which tokens exist.
+  /// Like the webhook token, the tokens themselves never come back.
+  'slack:status': () => SlackStatus;
+  /// Store a Slack token, or clear it with null. `ok: false` with an error
+  /// for a token of the wrong shape, or a host that cannot persist secrets.
+  'slack:setToken': (args: { kind: 'bot' | 'app'; token: string | null }) => { ok: boolean; error?: string };
+  /// Reconnect with the stored tokens — after changing one, say. The on/off
+  /// switch is `AppSettings.slackEnabled`, applied when settings are saved.
+  'slack:reconnect': () => { ok: boolean; error?: string };
+  /// Check the bot token against Slack without starting anything.
+  'slack:test': () => { ok: boolean; team?: string; error?: string };
+  /// Your org server: whether a token is stored, and who it says you are.
+  'org:status': (args?: { url?: string }) => { tokenConfigured: boolean; fromEnv: boolean; who?: { org: string; name: string; canHire: boolean }; error?: string };
+  'org:setToken': (token: string | null) => { ok: boolean; error?: string };
+  /// Sign this app in to an org: an invite link signs in at once; a server
+  /// address starts pairing — the browser opens on the org's page to confirm
+  /// the code, and an `orgSignIn` event says how it ended.
+  'org:signIn': (args: { url: string }) =>
+    | { ok: true; signedIn: true; org: string; name: string }
+    | { ok: true; signedIn: false; userCode: string; verifyUrl: string }
+    | { ok: false; error: string };
+  'org:cancelSignIn': () => { ok: true };
+  'org:signOut': () => { ok: boolean };
+  /// Publish one of your workers to the org server, under the org's rules.
+  'org:publishWorker': (args: { id: UUID; visibility?: 'private' | 'team' | 'org' }) => { ok: true; message: string } | { ok: false; error: string };
   /// The last outbound webhook attempt, so Settings can say the webhook is
   /// configured but not arriving. Null when nothing has been sent since the
   /// app started. In-memory and desktop-only: a headless run's failures go to
@@ -3850,7 +3885,25 @@ export interface TerminalSession {
   poppedOut?: boolean;
 }
 
+/// What Settings shows about the Slack bridge. Never carries a token.
+export interface SlackStatus {
+  enabled: boolean;
+  connected: boolean;
+  team?: string;
+  error?: string;
+  /// Questions and approvals DMed and still waiting on a manager.
+  openThreads: number;
+  botConfigured: boolean;
+  appConfigured: boolean;
+  /// Set from the environment, so the UI cannot change it.
+  botFromEnv: boolean;
+  appFromEnv: boolean;
+}
+
 export type MainToRendererEvent =
+  | { type: 'slackStatus'; status: SlackStatus }
+  /// How a pairing sign-in to the org server ended.
+  | { type: 'orgSignIn'; outcome: 'signedIn' | 'denied' | 'expired' | 'failed'; org?: string; name?: string; error?: string }
   | { type: 'terminalData'; id: string; data: string }
   | { type: 'terminalExit'; id: string; exitCode: number }
   /// Main started a drawer shell on its own (a login, an install): show it.

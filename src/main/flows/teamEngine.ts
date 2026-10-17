@@ -410,6 +410,7 @@ export class TeamEngine {
     /// Where this task works, over the team's own project. `null`: each
     /// member in their own, whatever the team says.
     projectPath?: string | null,
+    opts: { requestedBy?: TeamTask['requestedBy'] } = {},
   ): Result<{ task: TeamTask }> {
     const team = this.teams.get(teamId);
     if (!team) return { ok: false, error: 'That team no longer exists.' };
@@ -440,6 +441,7 @@ export class TeamEngine {
       teamId,
       teamName: team.name,
       brief,
+      ...(opts.requestedBy ? { requestedBy: opts.requestedBy } : {}),
       ...(workIn ? { projectPath: workIn } : {}),
       status: 'planning',
       createdAt: now,
