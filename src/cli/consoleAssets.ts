@@ -45,35 +45,42 @@ export const CONSOLE_HTML = `<!doctype html>
 </html>
 `;
 
+// The overcli app's own palette (src/renderer/styles.css): cool greys and
+// the indigo accent, so the console and the desktop app read as one product.
 const DARK = `
-  --bg: #10141f; --side: #0c101a; --panel: #171c2a; --panel-2: #1d2334; --line: #283049; --line-2: #343d5a;
-  --ink: #e8ebf3; --muted: #9ba4ba; --faint: #7d869e;
-  --go: #3fbfa8; --go-ink: #06201b; --go-soft: rgba(63, 191, 168, 0.14);
-  --need: #f0b43c; --need-ink: #241700; --need-soft: rgba(240, 180, 60, 0.12);
-  --bad: #ff8a80; --bad-soft: rgba(255, 138, 128, 0.12);
-  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --bg: #1c1c21; --side: #18181c; --panel: #24242b; --panel-2: #2a2a33; --line: #2f2f37; --line-2: #3d3d46;
+  --ink: #e8e8ee; --muted: #a0a0a8; --faint: #8a8a93; --solid: #e8e8ee; --solid-ink: #17171c;
+  --go: #7c8bff; --go-ink: #10121f; --go-soft: rgba(124, 139, 255, 0.16);
+  --need: #f2b04a; --need-ink: #241700; --need-soft: rgba(242, 176, 74, 0.13);
+  --bad: #ff8f84; --bad-ink: #2a0703; --bad-soft: rgba(255, 143, 132, 0.12); --bad-line: rgba(255, 143, 132, 0.35);
+  --shadow: none;
   color-scheme: dark;`;
 
 const LIGHT = `
-  --bg: #f4f5f8; --side: #eceff4; --panel: #ffffff; --panel-2: #f6f7fa; --line: #e0e4ec; --line-2: #c9d0dc;
-  --ink: #161b29; --muted: #545d72; --faint: #6f788d;
-  --go: #0f7a6a; --go-ink: #ffffff; --go-soft: rgba(15, 122, 106, 0.1);
-  --need: #9a5d00; --need-ink: #ffffff; --need-soft: #fff1d6;
-  --bad: #b3261e; --bad-soft: #fdecea;
-  --shadow: 0 1px 2px rgba(22, 27, 41, 0.05), 0 8px 24px -16px rgba(22, 27, 41, 0.22);
+  --bg: #f6f6f8; --side: #ececf0; --panel: #ffffff; --panel-2: #f6f6f8; --line: #dcdce2; --line-2: #c2c2cb;
+  --ink: #17171c; --muted: #4a4a52; --faint: #6b6b74; --solid: #17171c; --solid-ink: #ffffff;
+  --go: #4355e0; --go-ink: #ffffff; --go-soft: rgba(93, 114, 255, 0.11);
+  --need: #8a4a07; --need-ink: #ffffff; --need-soft: #fbefdd;
+  --bad: #b3261e; --bad-ink: #ffffff; --bad-soft: #fdecea; --bad-line: #f1c4bf;
+  --shadow: none;
   color-scheme: light;`;
 
 export const CONSOLE_CSS = `
+/* The app's own faces: Bricolage Grotesque for display (served from the
+   app's bundled file), the system face for text, SF Mono for code. The
+   brand has no serif. */
+@font-face { font-family: "Bricolage Grotesque"; font-style: normal; font-weight: 200 800; font-display: swap; src: url("/fonts/bricolage.woff2") format("woff2"); }
 :root {${DARK}
-  --serif: "Iowan Old Style", "Charter", "Palatino Linotype", "Book Antiqua", ui-serif, Georgia, serif;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --serif: "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
   --r-sm: 7px; --r: 10px; --r-lg: 14px;
 }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {${LIGHT} } }
 :root[data-theme="light"] {${LIGHT} }
 :root[data-theme="dark"] {${DARK} }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
 button, input, textarea, select { font: inherit; color: inherit; }
@@ -95,9 +102,14 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .nav button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 38px; padding: 7px 10px; border: 0; background: none; border-radius: var(--r-sm); color: var(--muted); cursor: pointer; text-align: left; }
 .nav button svg { flex: none; opacity: 0.85; }
 .nav button:hover { background: var(--panel); color: var(--ink); }
-.nav button[aria-current="page"] { background: var(--panel-2); color: var(--ink); box-shadow: inset 2px 0 0 var(--go); }
-.nav .count { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: 10px; font-size: 11px; font-weight: 650; text-align: center; line-height: 18px; background: var(--need); color: var(--need-ink); }
-.nav .sep { height: 1px; background: var(--line); margin: 8px 6px; }
+.nav button[aria-current="page"] { background: var(--go-soft); color: var(--go); font-weight: 600; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--go) 28%, transparent); }
+.nav button[aria-current="page"] svg { opacity: 1; }
+.nav .count { margin-left: auto; min-width: 20px; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 650; text-align: center; line-height: 19px; background: #f5b547; color: #16171a; }
+.nav .issue { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--bad); }
+.nav button[aria-current="page"] .issue { color: inherit; opacity: 0.85; }
+.nav .sep { height: 1px; background: var(--line); margin: 10px 6px; }
+.nav .group { padding: 4px 10px 6px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.nav-foot-link { background: none; border: 0; padding: 0; color: var(--go); font-size: 13px; cursor: pointer; text-align: left; }
 .me { margin-top: auto; border-top: 1px solid var(--line); padding: 14px 8px 0; display: flex; flex-direction: column; gap: 10px; }
 .me-row { display: flex; align-items: center; gap: 10px; }
 .me-name { font-weight: 600; }
@@ -113,7 +125,10 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .page { display: flex; flex-direction: column; gap: 26px; }
 .page-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; }
 .eyebrow { color: var(--faint); font-size: 13px; }
-.page-title { font-family: var(--serif); font-size: 32px; line-height: 1.15; letter-spacing: -0.015em; }
+.page-title { font-family: var(--serif); font-size: 38px; font-weight: 400; line-height: 1.1; letter-spacing: -0.03em; font-variation-settings: "opsz" 96, "wdth" 100; }
+.serif, .ask-name, .item .t, .who-name, .card-name, .person-name, .role h3, .offer-name, .dialog h2, .solo h1, .big, .brand-name, .place b { letter-spacing: -0.02em; font-weight: 500; }
+.label { margin: 0; font-size: 12.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.main { padding: 32px clamp(20px, 3vw, 56px) 64px; }
 .page-sub { margin-top: 6px; color: var(--muted); max-width: 66ch; }
 .section-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--need); flex: none; }
@@ -129,6 +144,46 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .faint { color: var(--faint); font-size: 12.5px; }
 .serif { font-family: var(--serif); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow); }
+.banner { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; background: var(--bad-soft); border: 1px solid var(--bad-line); color: var(--ink); border-radius: 12px; padding: 14px 18px; }
+.banner > span { flex: 1 1 320px; }
+.btn.bad { background: var(--bad); border-color: var(--bad); color: var(--bad-ink); }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+.sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
+.sdot.working { background: var(--go); } .sdot.waiting { background: #d98a1c; } .sdot.stuck, .sdot.bad { background: var(--bad); } .sdot.ok { background: var(--go); }
+.status { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
+.status.working { color: var(--go); } .status.waiting { color: var(--need); } .status.stuck, .status.bad { color: var(--bad); }
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.wcard { display: flex; flex-direction: column; gap: 12px; padding: 18px; text-align: left; cursor: pointer; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.wcard:hover { border-color: var(--line-2); }
+.wcard.attn { border-color: var(--bad-line); }
+.wcard.paused { background: var(--side); border-style: dashed; }
+.wcard > * { width: 100%; }
+.wcard .status { width: auto; }
+.wcard .foot-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+.timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.bubble-me { align-self: flex-end; max-width: 80%; background: var(--solid); color: var(--solid-ink); border-radius: 14px 14px 4px 14px; padding: 10px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble { background: var(--panel); border: 1px solid var(--line); border-radius: 4px 14px 14px 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.turn { display: flex; gap: 10px; align-items: flex-start; }
+.turn > .bubble { flex: 1; }
+.composer { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line-2); }
+.composer textarea { border: 0; background: transparent; min-height: 54px; font-size: 15px; padding: 0; box-shadow: none; }
+.composer textarea:focus { box-shadow: none; }
+.setup-row { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.setup-row:last-child { border-bottom: 0; }
+.setup-row .k { font-size: 12px; color: var(--muted); display: block; }
+.setup-row .v { display: block; }
+.rungs { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.rungs li { text-align: center; padding: 8px 4px; border-radius: 9px; border: 1px dashed var(--line-2); color: var(--muted); font-size: 13px; }
+.rungs li.on { background: var(--go); color: var(--go-ink); border: 1px solid var(--go); font-weight: 600; }
+.rungs li.next { border-color: var(--go); color: var(--go); }
+.checklist { list-style: none; margin: 0; padding: 0; }
+.checklist li { display: flex; gap: 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.checklist li > span { flex: 1; display: flex; flex-direction: column; }
+.checklist .ck-ok { color: var(--go); } .checklist .ck-bad { color: var(--bad); } .checklist .ck-off { color: var(--faint); }
+.hiresteps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.hiresteps li { display: flex; flex-direction: column; gap: 4px; padding: 14px 4px 0; border-top: 2px solid var(--line-2); }
+.hiresteps li.on { border-top-color: var(--ink); }
+.sgroup { display: grid; grid-template-columns: minmax(180px, 300px) minmax(0, 1fr); gap: 16px 32px; align-items: start; }
 .pad { padding: 20px 22px; }
 .list > * + * { border-top: 1px solid var(--line); }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; border: 1px solid var(--line-2); background: var(--panel-2); padding: 0 14px; border-radius: var(--r-sm); cursor: pointer; font-weight: 550; font-size: 13.5px; text-decoration: none; color: var(--ink); }
@@ -147,7 +202,7 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .chip:hover { border-color: var(--go); }
 .chip.dashed { border-style: dashed; background: none; color: var(--muted); }
 .chip[aria-pressed="true"] { border-color: var(--go); color: var(--ink); background: var(--go-soft); }
-textarea, input[type=text], input[type=number], input[type=search], input[type=time], select { width: 100%; border: 1px solid var(--line-2); background: var(--bg); border-radius: var(--r-sm); padding: 9px 11px; line-height: 1.5; }
+textarea, input[type=text], input[type=number], input[type=search], input[type=time], input[type=date], select { width: 100%; border: 1px solid var(--line-2); background: var(--bg); border-radius: var(--r-sm); padding: 9px 11px; line-height: 1.5; }
 textarea:focus, input:focus, select:focus { outline: none; border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
 textarea { min-height: 84px; resize: vertical; }
 textarea::placeholder, input::placeholder { color: var(--faint); }
@@ -155,13 +210,20 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
 .inline-form > input { flex: 1 1 260px; min-height: 42px; }
 .secret { -webkit-text-security: disc; font-family: var(--mono); letter-spacing: 0.04em; }
 label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.alpha { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 20px; }
+.picks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.picks .toggle { font-size: 13px; }
+.listed { display: flex; flex-direction: column; gap: 10px; }
+.listed > .panel { box-shadow: none; background: var(--panel-2); padding: 14px; }
+.foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .tag { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); font-size: 12px; white-space: nowrap; }
 .tag.need { background: var(--need-soft); border-color: transparent; color: var(--need); font-weight: 600; }
 .tag.go { background: var(--go-soft); border-color: transparent; color: var(--go); }
 .msg { font-size: 13px; padding: 8px 12px; border-radius: var(--r-sm); }
 .msg.ok { background: var(--go-soft); color: var(--go); }
 .msg.err { background: var(--bad-soft); color: var(--bad); }
-.quote { font-family: var(--serif); font-size: 17px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.quote { font-size: 15.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .why { color: var(--muted); font-size: 13px; border-left: 2px solid var(--line-2); padding-left: 10px; white-space: pre-line; }
 .empty { padding: 48px 24px; text-align: center; }
 .empty .quote { font-size: 20px; }
@@ -189,8 +251,9 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 
 /* ---- items ---- */
 .ask { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px 16px; padding: 20px 22px; }
-.ask.need { box-shadow: inset 3px 0 0 var(--need), var(--shadow); }
-.ask.done { opacity: 0.7; box-shadow: inset 3px 0 0 var(--go), var(--shadow); }
+.ask.fix { border-color: var(--bad-line); }
+.ask.done { opacity: 0.6; }
+.tag.bad { background: var(--bad-soft); border-color: transparent; color: var(--bad); font-weight: 600; }
 .ask-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .ask-name { font-family: var(--serif); font-size: 19px; }
 .ask-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -279,8 +342,8 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .health { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
 .health > div { padding: 14px 16px; display: flex; flex-direction: column; gap: 3px; }
 .health .h { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.health .light { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
-.health .light.ok { background: var(--go); } .health .light.bad { background: var(--bad); }
+.light { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
+.light.ok { background: var(--go); } .light.bad { background: var(--bad); }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 640px; }
 th { text-align: left; font-weight: 500; color: var(--faint); font-size: 12.5px; padding: 11px 14px; }
@@ -346,6 +409,8 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .login .page-title { font-size: 26px; margin: 16px 0 6px; }
 
 @media (max-width: 880px) {
+  .rungs, .hiresteps, .sgroup { grid-template-columns: minmax(0, 1fr); }
+  .nav .group { display: none; }
   .frame { grid-template-columns: minmax(0, 1fr); }
   .side { min-width: 0; position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; }
   .brand { padding: 0 8px 0 0; }
@@ -426,7 +491,15 @@ export const CONSOLE_JS = String.raw`
     up: [['path', 'M7 11v9H4v-9zM7 11l4-8c1.5 0 2.5 1 2.5 2.5V9h5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.3 20H7']],
     down: [['path', 'M17 13V4h3v9zM17 13l-4 8c-1.5 0-2.5-1-2.5-2.5V15h-5a2 2 0 0 1-2-2.3l1.2-7A2 2 0 0 1 6.7 4H17']],
     person: [['circle', 12, 8, 3.5], ['path', 'M5 20c.8-4 3.6-6 7-6s6.2 2 7 6']],
-    back: [['path', 'M15 5l-7 7 7 7']]
+    back: [['path', 'M15 5l-7 7 7 7']],
+    tool: [['path', 'M14.5 5.5a4 4 0 0 0 4.9 4.9l-8.6 8.6a2.1 2.1 0 0 1-3-3l8.6-8.6a4 4 0 0 0-1.9-1.9z']],
+    inbox: [['path', 'M3 13l3-8h12l3 8v6H3z'], ['path', 'M3 13h5l1.5 2.5h5L16 13h5']],
+    list: [['path', 'M4 7h16M4 12h16M4 17h10']],
+    check: [['circle', 12, 12, 9], ['path', 'M8 12l3 3 5-6']],
+    alert: [['circle', 12, 12, 9], ['path', 'M12 7v6M12 16.5v.5']],
+    arrow: [['path', 'M4 12h12M12 6l6 6-6 6']],
+    library: [['path', 'M5 4h4v16H5zM10 4h4v16h-4z'], ['path', 'M15.5 5.2l3.8-1 3.2 15.6-3.8 1z']],
+    bolt: [['path', 'M13 3L5 14h6l-1 7 8-11h-6z']]
   };
   function icon(name, size) {
     var s = document.createElementNS(SVG, 'svg');
@@ -526,7 +599,7 @@ export const CONSOLE_JS = String.raw`
       action ? h('div', { style: 'margin-top:18px' }, action) : null);
   }
   function go(tab, extra) { state.tab = tab; if (extra) Object.assign(state, extra); render(); window.scrollTo(0, 0); }
-  function openWorker(id) { go('worker', { workerId: id }); }
+  function openWorker(id) { go('worker', { workerId: id, workerTab: 'talk' }); }
 
   // ---- sign in ---------------------------------------------------------
 
@@ -543,32 +616,72 @@ export const CONSOLE_JS = String.raw`
     }
     input.onkeydown = function (e) { if (e.key === 'Enter') submit(); };
     setTimeout(function () { input.focus(); }, 0);
+    var lead = h('p', { class: 'muted', text: 'Open the sign-in link overcli sent you in Slack. Lost it, or in a new browser? Type /overcli join in Slack for a fresh one, or ask your admin to invite you again.' });
+    var ssoSlot = h('div');
+    var tokenBox = h('details', null, h('summary', { class: 'faint', text: 'Sign in with an access token instead' }),
+      h('div', { class: 'stack', style: 'margin-top:10px' }, input, err, h('button', { class: 'btn go', onclick: submit, text: 'Sign in' })));
+    // With company sign-in on, that is the way in.
+    fetch('/api/sso').then(function (r) { return r.json(); }).then(function (st) {
+      if (!st.enabled) return;
+      ssoSlot.appendChild(ssoButton(st, '/'));
+      lead.textContent = st.required ? 'Sign in with your company account.' : 'Sign in with your company account, or open the sign-in link overcli sent you in Slack.';
+    }).catch(function () {});
     return h('div', { class: 'login-wrap' }, h('div', { class: 'login panel stack' },
       brandMark(48, 'mark'),
-      h('h1', { class: 'page-title', text: 'Your org’s workers' }),
-      h('p', { class: 'muted', text: 'Open the sign-in link overcli sent you in Slack. Lost it, or in a new browser? Type /overcli join in Slack for a fresh one, or ask your admin to invite you again.' }),
-      h('details', null, h('summary', { class: 'faint', text: 'Sign in with an access token instead' }),
-        h('div', { class: 'stack', style: 'margin-top:10px' }, input, err, h('button', { class: 'btn go', onclick: submit, text: 'Sign in' })))));
+      h('div', { class: 'row', style: 'gap:10px' }, h('h1', { class: 'page-title', text: 'Your org’s workers' }), h('span', { class: 'alpha', text: 'alpha' })),
+      lead, ssoSlot, tokenBox));
+  }
+
+  function ssoButton(st, next) {
+    return h('a', { class: 'btn go', style: 'min-height:46px;justify-content:center', href: '/sso/start?next=' + encodeURIComponent(next), text: 'Sign in with ' + st.provider });
+  }
+
+  /// Back from the identity provider with a one-time code: swap it for this
+  /// browser's sign-in, then go where the person was headed.
+  function renderSsoDone() {
+    var q = new URLSearchParams(location.search);
+    var box = h('div', { class: 'login panel stack' }, brandMark(48, 'mark'));
+    app.appendChild(h('div', { class: 'login-wrap' }, box));
+    if (q.get('error')) {
+      append(box, [h('h1', { class: 'page-title', text: 'Sign-in didn’t work' }), h('p', { class: 'muted', text: q.get('error') }),
+        h('a', { class: 'btn go', href: '/sso/start?next=%2F', text: 'Try again' })]);
+      return;
+    }
+    box.appendChild(thinking('Signing you in…'));
+    fetch('/api/sso/redeem', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: q.get('code') || '' }) })
+      .then(function (r) { return r.json(); })
+      .then(function (x) {
+        if (x.ok === false) { box.lastChild.remove(); append(box, [h('p', { class: 'msg err', role: 'alert', text: x.error }), h('a', { class: 'btn go', href: '/sso/start?next=%2F', text: 'Try again' })]); return; }
+        store(TOKEN_KEY, x.token);
+        state.me = null;
+        var next = q.get('next') || '/';
+        location.replace(/^\/(?!\/)/.test(next) ? next : '/');
+      });
   }
 
   // ---- shell -----------------------------------------------------------
 
+  /// The day's work up top; the org's setup in its own group, for admins.
   function tabs() {
     var t = [
-      { id: 'today', label: 'Today', icon: 'sun', count: 'today' },
-      { id: 'work', label: 'Work', icon: 'doc' },
+      { id: 'today', label: 'Inbox', icon: 'inbox', count: 'today' },
+      { id: 'library', label: 'Library', icon: 'library' },
       { id: 'workers', label: 'Workers', icon: 'people' },
       { id: 'teams', label: 'Teams', icon: 'team' },
-      { id: 'chart', label: 'Org chart', icon: 'chart' },
-      { id: 'hire', label: 'Hire', icon: 'plus' },
-      'sep',
-      { id: 'connect', label: 'Connect', icon: 'plug' }
+      { id: 'hire', label: 'Hire', icon: 'plus' }
     ];
     if (state.me && state.me.admin) {
-      t.push({ id: 'people', label: 'People', icon: 'people', count: 'people' });
-      t.push({ id: 'admin', label: 'Admin', icon: 'gear' });
+      t.push('sep', { group: 'Org' });
+      t.push({ id: 'setup', label: 'Setup', icon: 'list', issue: 'setup' });
+      t.push({ id: 'people', label: 'People', icon: 'person', count: 'people' });
+      t.push({ id: 'admin', label: 'Activity', icon: 'doc' });
     }
     return t;
+  }
+
+  /// Which nav item a page belongs under.
+  function navFor(tab) {
+    return { worker: 'workers', chart: 'workers', work: 'today', tools: 'setup', rules: 'setup', log: 'admin' }[tab] || tab;
   }
 
   function refreshCounts() {
@@ -578,8 +691,16 @@ export const CONSOLE_JS = String.raw`
         document.querySelectorAll('[data-count="people"]').forEach(function (el) { el.textContent = state.counts.people ? String(state.counts.people) : ''; el.hidden = !state.counts.people; });
       }).catch(function () {});
     }
-    return api('GET', '/api/today').then(function (t) {
-      state.counts.today = t.waiting.length + t.hireApprovals.length + t.proposals.length + t.teamTasks.filter(function (x) { return x.waitingOnYou; }).length;
+    if (state.me && state.me.admin) {
+      api('GET', '/api/tools').then(function (r) {
+        state.counts.setup = r.ok === false ? 0 : r.missing.length;
+        document.querySelectorAll('[data-issue="setup"]').forEach(function (el) { el.textContent = state.counts.setup ? plural(state.counts.setup, 'issue', 'issues') : ''; el.hidden = !state.counts.setup; });
+      }).catch(function () {});
+    }
+    return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
+      var t = r[0], tl = r[1];
+      var fixes = tl && tl.ok !== false ? tl.missing.length : 0;
+      state.counts.today = fixes + t.waiting.length + t.hireApprovals.length + t.proposals.length + t.teamTasks.filter(function (x) { return x.waitingOnYou; }).length;
       document.querySelectorAll('[data-count]').forEach(function (el) {
         var n = state.counts[el.getAttribute('data-count')];
         el.textContent = n ? String(n) : ''; el.hidden = !n;
@@ -602,6 +723,7 @@ export const CONSOLE_JS = String.raw`
     var joinMatch = /^\/join\/([A-Za-z0-9_-]{10,100})$/.exec(location.pathname);
     if (joinMatch) { renderJoin(joinMatch[1]); return; }
     if (location.pathname === '/pair') { renderPair(new URLSearchParams(location.search).get('code') || ''); return; }
+    if (location.pathname === '/sso/done') { renderSsoDone(); return; }
     if (!token()) { app.appendChild(renderLogin()); return; }
     var wanted = read('overcli-org-open');
     if (wanted) { store('overcli-org-open', null); state.tab = wanted; }
@@ -622,18 +744,21 @@ export const CONSOLE_JS = String.raw`
     document.title = me.org + ' — overcli';
     var main = h('div', { class: 'page' }, thinking('Loading…'));
     var pct = me.allowanceUSD ? Math.min(100, (me.committedUSD / me.allowanceUSD) * 100) : 0;
-    var activeTab = state.tab === 'worker' ? 'workers' : state.tab;
+    var activeTab = navFor(state.tab);
     app.appendChild(h('div', { class: 'frame' },
       h('aside', { class: 'side' },
         h('div', { class: 'brand' }, brandMark(32),
-          h('div', null, h('div', { class: 'brand-name', text: 'overcli' }), h('div', { class: 'brand-sub', text: me.org }))),
+          h('div', null, h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'brand-name', text: 'overcli' }), h('span', { class: 'alpha', title: 'Org workers are an early alpha: expect rough edges and changes.', text: 'alpha' })), h('div', { class: 'brand-sub', text: me.org }))),
         h('nav', { class: 'nav', 'aria-label': 'Sections' }, tabs().map(function (t) {
           if (t === 'sep') return h('div', { class: 'sep', 'aria-hidden': 'true' });
+          if (t.group) return h('div', { class: 'group', text: t.group });
           return h('button', { 'aria-current': activeTab === t.id ? 'page' : null, onclick: function () { go(t.id); } },
             icon(t.icon), t.label,
-            t.count ? h('span', { class: 'count', 'data-count': t.count, hidden: !state.counts[t.count], text: state.counts[t.count] ? String(state.counts[t.count]) : '' }) : null);
+            t.count ? h('span', { class: 'count', 'data-count': t.count, hidden: !state.counts[t.count], text: state.counts[t.count] ? String(state.counts[t.count]) : '' }) : null,
+            t.issue ? h('span', { class: 'issue', 'data-issue': t.issue, hidden: !state.counts[t.issue], text: state.counts[t.issue] ? plural(state.counts[t.issue], 'issue', 'issues') : '' }) : null);
         })),
         h('div', { class: 'me' },
+          h('button', { class: 'nav-foot-link', text: 'Use from Slack or Claude', onclick: function () { go('connect'); } }),
           h('div', { class: 'me-row' }, avatar('', me.name, 's'),
             h('div', null, h('div', { class: 'me-name', text: me.name }), h('div', { class: 'me-role', text: me.admin ? 'Admin' : me.canHire ? 'Can hire' : 'Member' }))),
           me.allowanceUSD != null ? h('div', { class: 'allowance stack', style: 'gap:6px' },
@@ -643,7 +768,8 @@ export const CONSOLE_JS = String.raw`
           h('button', { class: 'linkish', onclick: function () { var done = function () { store(TOKEN_KEY, null); state.me = null; render(); }; api('POST', '/api/signout').then(done, done); }, text: 'Sign out' }))),
       h('main', { class: 'main' }, main)));
     refreshCounts();
-    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect }[state.tab] || viewToday;
+    if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
+    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary }[state.tab] || viewToday;
     view().then(function (node) { main.textContent = ''; append(main, node); })
       .catch(function (e) { main.textContent = ''; main.appendChild(h('div', { class: 'msg err', text: String(e.message || e) })); });
   }
@@ -676,8 +802,8 @@ export const CONSOLE_JS = String.raw`
         it.options ? h('div', { class: 'row' }, it.options.map(function (o) { return h('button', { class: 'chip', text: o, onclick: function () { answer(o); } }); })) : null,
         h('div', { class: 'inline-form' }, input, send)];
     } else {
-      var approve = h('button', { class: 'btn go', text: 'Approve this step' });
-      var reject = h('button', { class: 'btn danger', text: 'Reject' });
+      var approve = h('button', { class: 'btn go', text: 'Approve' });
+      var reject = h('button', { class: 'btn danger', text: 'Turn down' });
       var decide = function (yes) {
         return function () {
           approve.disabled = reject.disabled = true;
@@ -696,7 +822,7 @@ export const CONSOLE_JS = String.raw`
     append(card, [avatar(it.workerId, it.workerName, 'm'), h('div', { class: 'ask-body' },
       h('div', { class: 'ask-head' },
         h('button', { class: 'linkish ask-name', style: 'color:var(--ink);font-size:19px', text: it.workerName, onclick: function () { openWorker(it.workerId); } }),
-        h('span', { class: 'tag need', text: it.kind === 'question' ? 'Question' : 'Approval' }),
+        h('span', { class: 'tag need', text: it.kind === 'question' ? 'Asks' : 'Wants approval' }),
         h('span', { class: 'faint', text: it.title + (it.since ? ', ' + ago(it.since) : '') })),
       body, out)]);
     return card;
@@ -808,6 +934,20 @@ export const CONSOLE_JS = String.raw`
     return [up, down];
   }
 
+  /// A delivered piece of work in a narrow column: title, who and when, and
+  /// the same read and rate controls underneath rather than beside.
+  function compactItem(d) {
+    var detail = h('div', { hidden: true, style: 'white-space:pre-wrap;font-size:13.5px', text: d.summary || '' });
+    var slot = h('div');
+    return h('div', { class: 'stack', style: 'gap:6px;padding:14px 16px' },
+      h('span', { style: 'font-weight:550', text: d.title }),
+      h('span', { class: 'faint', text: [d.workerName, ago(d.at), d.costUSD != null ? money(d.costUSD) : null].filter(Boolean).join(' · ') }),
+      h('div', { class: 'row', style: 'gap:6px' },
+        d.summary ? h('button', { class: 'btn small', text: 'Read', onclick: function (e) { detail.hidden = !detail.hidden; e.target.textContent = detail.hidden ? 'Read' : 'Hide'; } }) : null,
+        d.event ? h('button', { class: 'btn small quiet', text: 'In the Library', onclick: function () { go('library'); } }) : rateButtons(d, slot)),
+      slot, d.summary ? detail : null);
+  }
+
   function workItem(d, opts) {
     var detail = h('div', { hidden: true, style: 'grid-column:2 / -1' }, h('div', { class: 'quote', style: 'font-size:15px', text: d.summary || '' }));
     var meta = [d.workerName, d.forManager && opts && opts.showManager ? 'for ' + d.forManager : null, ago(d.at), d.costUSD != null ? money(d.costUSD) : null,
@@ -889,8 +1029,8 @@ export const CONSOLE_JS = String.raw`
       return { it: it, box: box, row: h('label', { class: 'toggle', style: 'padding:8px 0;border-top:1px solid var(--line)' }, box,
         h('span', null, h('span', { class: 'serif', style: 'font-size:16px', text: it.title }), it.detail ? h('span', { class: 'faint', style: 'display:block', text: it.detail }) : null)) };
     });
-    var go_ = h('button', { class: 'btn go', text: b.items.length === 1 ? 'Approve' : 'Approve selected' });
-    var skip = h('button', { class: 'btn danger', text: 'Skip all' });
+    var go_ = h('button', { class: 'btn go', text: b.items.length === 1 ? 'Start it' : 'Start the ticked' });
+    var skip = h('button', { class: 'btn', text: 'Skip today' });
     var decide = function (body, okText) {
       go_.disabled = skip.disabled = true;
       api('POST', '/api/proposals/' + encodeURIComponent(b.batchId), body).then(function (x) {
@@ -910,7 +1050,7 @@ export const CONSOLE_JS = String.raw`
     append(card, [avatar(b.workerId, b.workerName, 'm'), h('div', { class: 'ask-body' },
       h('div', { class: 'ask-head' },
         h('button', { class: 'linkish ask-name', style: 'color:var(--ink);font-size:19px', text: b.workerName, onclick: function () { openWorker(b.workerId); } }),
-        h('span', { class: 'tag need', text: 'Proposes' }),
+        h('span', { class: 'tag need', text: 'Proposes ' + plural(b.items.length, 'thing', 'things') }),
         h('span', { class: 'faint', text: (b.task === 'errand' ? 'From an errand, ' : 'From its scheduled run, ') + ago(b.at) })),
       h('p', { class: 'muted', style: 'font-size:13.5px', text: 'It is on probation, so nothing starts until you say. Untick what you don’t want.' }),
       h('div', null, boxes.map(function (x) { return x.row; })),
@@ -920,48 +1060,91 @@ export const CONSOLE_JS = String.raw`
 
   // ---- today -----------------------------------------------------------
 
+  var WORDS = ['Nothing', 'One thing', 'Two things', 'Three things', 'Four things', 'Five things', 'Six things', 'Seven things', 'Eight things', 'Nine things', 'Ten things'];
+
+  /// A tool a worker needs that this server doesn't have: the commonest reason
+  /// a worker quietly does nothing useful, so it heads the inbox.
+  function fixCard(m) {
+    var who = m.workers.join(', ');
+    var name = m.name;
+    return h('article', { class: 'panel ask fix' },
+      h('span', { class: 'avatar m', style: 'background:var(--bad-soft);color:var(--bad)' }, icon('alert', 18)),
+      h('div', { class: 'ask-body' },
+        h('div', { class: 'ask-head' }, h('span', { class: 'tag bad', text: 'Fix' }), h('span', { class: 'ask-name', text: who + ' can’t reach ' + name })),
+        h('p', { class: 'muted', text: (m.workers.length === 1 ? 'Its job needs ' : 'Their jobs need ') + m.name + ', which isn’t installed on this server, so ' + (m.workers.length === 1 ? 'it works' : 'they work') + ' without it.' +
+          (m.template ? ' The setup came along from the desktop it was built on; only the secret is missing.' : '') }),
+        state.me.admin
+          ? h('div', { class: 'row' }, h('button', { class: 'btn go', text: 'Install ' + name, onclick: function () { go('setup', { setupTab: 'tools' }); } }))
+          : h('p', { class: 'faint', text: 'Ask an admin to install it on Setup → Tools.' })));
+  }
+
+  /// "Ask a worker…" from anywhere on the inbox: pick who, say what.
+  function quickAsk(workers) {
+    if (!workers.length) return null;
+    var who = h('select', { 'aria-label': 'Which worker', style: 'width:auto;border:0;background:transparent;padding:0 4px;font-weight:600' },
+      workers.map(function (w) { return h('option', { value: w.id, text: w.name }); }));
+    var text = h('input', { type: 'text', placeholder: 'Ask something, or give it a task…', 'aria-label': 'What to ask', style: 'border:0;background:transparent;box-shadow:none;padding:0;min-width:0;flex:1' });
+    var out = h('div', { 'aria-live': 'polite' });
+    var send = function () {
+      if (!text.value.trim()) { text.focus(); return; }
+      var w = workers.filter(function (x) { return x.id === who.value; })[0];
+      api('POST', '/api/ask', { worker: who.value, message: text.value }).then(function (r) {
+        out.textContent = '';
+        if (r.ok === false) { out.appendChild(msg(r)); return; }
+        text.value = '';
+        out.appendChild(h('div', { class: 'msg ok' }, 'Asked ' + w.name + '. ', h('button', { class: 'linkish', style: 'color:inherit;text-decoration:underline;font-size:13px', text: 'Follow it on ' + w.name + '’s page', onclick: function () { openWorker(w.id); } })));
+      });
+    };
+    text.onkeydown = function (e) { if (e.key === 'Enter') send(); };
+    return h('div', { class: 'stack', style: 'gap:6px;flex:0 1 460px;min-width:280px' },
+      h('div', { class: 'panel row', style: 'gap:8px;padding:6px 6px 6px 12px;flex-wrap:nowrap;border-color:var(--line-2)' },
+        h('span', { class: 'faint', style: 'flex:none' }, icon('arrow', 16)), who, text, h('button', { class: 'btn go small', text: 'Ask', onclick: send })),
+      out);
+  }
+
   function viewToday() {
-    return api('GET', '/api/today').then(function (t) {
+    return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; }), api('GET', '/api/workers'), api('GET', '/api/library').catch(function () { return []; })]).then(function (r) {
+      var t = r[0], tl = r[1], workers = r[2].filter(function (w) { return w.enabled; });
+      // Came in: what triggers delivered in the last day, then finished work.
+      var dayAgo = Date.now() - 86400000;
+      var events = (Array.isArray(r[3]) ? r[3] : []).filter(function (x) { return x.kind === 'event' && x.status === 'delivered' && x.at >= dayAgo; });
+      t.delivered = events.map(function (x) { return { entryId: x.id, workerId: x.workerId, workerName: x.workerName, title: x.title, at: x.at, summary: x.body, event: true }; }).concat(t.delivered);
+      var fixes = tl && tl.ok !== false ? tl.missing : [];
       var mineTasks = t.teamTasks.filter(function (x) { return x.waitingOnYou; });
-      var needs = t.waiting.length + t.hireApprovals.length + mineTasks.length + t.proposals.length;
-      var title = needs === 0 ? 'Nothing needs you' : needs === 1 ? 'One thing needs you' : plural(needs, 'thing needs', 'things need') + ' you';
-      if (t.delivered.length) title += (needs ? '. ' : ', and ') + (t.delivered.length === 1 ? 'one piece of work came in.' : plural(t.delivered.length, 'piece', 'pieces') + ' of work came in.');
-      else title += '.';
-      if (!needs && t.delivered.length) title = title.charAt(0).toUpperCase() + title.slice(1);
+      var needs = fixes.length + t.waiting.length + t.hireApprovals.length + mineTasks.length + t.proposals.length;
+      var title = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 ? ' needs you' : needs === 0 ? ' needs you' : ' need you');
+      var byWorker = {};
+      t.delivered.forEach(function (d) { byWorker[d.workerName] = (byWorker[d.workerName] || 0) + 1; });
+      var names = Object.keys(byWorker);
+      var sub = names.length
+        ? 'Since yesterday, ' + (names.length === 1 ? names[0] + ' delivered ' + plural(byWorker[names[0]], 'thing', 'things') : names.length === 2 ? names[0] + ' and ' + names[1] + ' delivered work' : names[0] + ', ' + names[1] + ' and ' + plural(names.length - 2, 'other', 'others') + ' delivered work') + '.'
+        : needs ? 'Nothing new came in since yesterday.' : 'All quiet. Ask a worker for something, or check back after its next run.';
       var date = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
       var pct = t.spend.allowanceUSD ? Math.min(100, (t.spend.spentUSD / t.spend.allowanceUSD) * 100) : 0;
-      var nodes = [head(title, null, state.me.canHire ? h('button', { class: 'btn go', onclick: function () { go('hire'); } }, icon('plus', 16), 'Hire a worker') : null, date)];
-      if (needs) {
-        nodes.push(h('section', { class: 'stack', 'aria-labelledby': 'needs' },
-          h('h2', { id: 'needs', class: 'section-title' }, h('span', { class: 'dot' }), 'Needs you'),
-          t.proposals.map(proposalCard), t.waiting.map(waitingCard), t.hireApprovals.map(hireApprovalCard), mineTasks.map(teamTaskCard)));
-      }
-      var crew = t.crew.length
-        ? h('section', { class: 'panel pad stack', style: 'gap:2px', 'aria-labelledby': 'crew' },
-            h('h2', { id: 'crew', class: 'section-title', style: 'margin-bottom:8px' }, 'Your workers right now'),
-            t.crew.map(function (w) {
-              return h('button', { class: 'crew-row', onclick: function () { openWorker(w.id); } }, avatar(w.id, w.name, 's'), h('span', { class: 'n', text: w.name }), h('span', { class: 'state ' + w.state, text: STATE[w.state] }));
-            }))
-        : null;
-      var upcoming = t.crew.filter(function (w) { return w.nextShiftAt; }).sort(function (a, b) { return a.nextShiftAt - b.nextShiftAt; }).slice(0, 5);
+      var nodes = [h('header', { class: 'page-head' },
+        h('div', null, h('div', { class: 'eyebrow', text: date }), h('h1', { class: 'page-title', text: title }), h('p', { class: 'page-sub', text: sub })),
+        quickAsk(workers))];
+      var upcoming = t.crew.filter(function (w) { return w.nextShiftAt; }).sort(function (a, b) { return a.nextShiftAt - b.nextShiftAt; }).slice(0, 4);
       nodes.push(h('div', { class: 'split' },
-        h('section', { class: 'wide', 'aria-labelledby': 'came' },
-          h('div', { class: 'spread' }, h('h2', { id: 'came', class: 'section-title', text: 'Came in since yesterday' }), h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'All work', onclick: function () { go('work'); } })),
-          t.delivered.length
-            ? [h('div', { class: 'panel list' }, t.delivered.map(function (d) { return workItem(d); })),
-               h('p', { class: 'faint', text: 'Your ratings go into each worker’s journal, so its next run leans toward what you found useful.' })]
-            : emptyState('Nothing new yet.', t.crew.length ? 'Ask a worker for something, or check back after its next run.' : 'You don’t manage any workers yet.', t.crew.length || !state.me.canHire ? null : h('button', { class: 'btn go', onclick: function () { go('hire'); }, text: 'Hire your first worker' }))),
-        h('aside', { class: 'narrow' },
+        h('section', { class: 'wide', style: 'gap:14px', 'aria-labelledby': 'needs' },
+          h('h2', { id: 'needs', class: 'label', text: 'Needs you' }),
+          needs ? [fixes.map(fixCard), t.waiting.map(waitingCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), mineTasks.map(teamTaskCard)]
+            : h('div', { class: 'panel empty' }, h('div', { class: 'quote', text: 'You’re all caught up.' }),
+                h('p', { text: t.crew.length ? 'Questions, approvals and proposed work from your workers land here.' : 'Hire a worker and what it needs from you lands here.' }),
+                !t.crew.length && state.me.canHire ? h('div', { style: 'margin-top:14px' }, h('button', { class: 'btn go', text: 'Hire your first worker', onclick: function () { go('hire'); } })) : null)),
+        h('aside', { class: 'narrow', style: 'gap:24px' },
+          h('section', { class: 'stack', 'aria-labelledby': 'came' },
+            h('div', { class: 'spread' }, h('h2', { id: 'came', class: 'label', text: 'Came in' }), h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'All work', onclick: function () { go('work'); } })),
+            t.delivered.length ? h('div', { class: 'panel list' }, t.delivered.slice(0, 6).map(compactItem))
+              : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing since yesterday.' })),
           h('section', { class: 'panel pad stack', style: 'gap:10px', 'aria-labelledby': 'month' },
-            h('h2', { id: 'month', class: 'section-title', text: 'This month' }),
+            h('h2', { id: 'month', class: 'label', text: 'Your workers this month' }),
             h('div', { class: 'row', style: 'align-items:baseline' }, h('span', { class: 'big', text: money(t.spend.spentUSD) }),
-              h('span', { class: 'muted', text: t.spend.allowanceUSD != null ? 'spent of your ' + money(t.spend.allowanceUSD) + ' allowance' : 'spent' })),
-            t.spend.allowanceUSD ? h('div', { class: 'meter' + (pct >= 85 ? ' high' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })) : null,
-            h('p', { class: 'muted', style: 'font-size:13px', text: 'On track for about ' + money(t.spend.projectedUSD) + ' by the end of the month.' })),
-          crew,
-          upcoming.length ? h('section', { class: 'panel pad stack', style: 'gap:10px', 'aria-labelledby': 'next' },
-            h('h2', { id: 'next', class: 'section-title', text: 'Coming up' }),
-            h('div', { class: 'sched' }, upcoming.map(function (w) { return [h('span', { class: 'faint', text: when(w.nextShiftAt) }), h('span', { text: w.name + '’s next run' })]; }))) : null)));
+              h('span', { class: 'muted', text: (t.spend.allowanceUSD != null ? 'of ' + money(t.spend.allowanceUSD) + ' · ' : '') + 'on track for ' + money(t.spend.projectedUSD) })),
+            t.spend.allowanceUSD ? h('div', { class: 'meter' + (pct >= 85 ? ' high' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })) : null),
+          upcoming.length ? h('section', { class: 'stack', style: 'gap:8px', 'aria-labelledby': 'next' },
+            h('h2', { id: 'next', class: 'label', text: 'Coming up' }),
+            h('div', { class: 'sched' }, upcoming.map(function (w) { return [h('span', { class: 'faint', text: when(w.nextShiftAt) }), h('button', { class: 'linkish', style: 'color:var(--ink);font-size:13.5px', text: w.name, onclick: function () { openWorker(w.id); } })]; }))) : null)));
       return nodes;
     });
   }
@@ -989,60 +1172,153 @@ export const CONSOLE_JS = String.raw`
 
   function hireButton() { return state.me && state.me.canHire ? h('button', { class: 'btn go', onclick: function () { go('hire'); } }, icon('plus', 16), 'Hire a worker') : null; }
 
+  /// What a worker is up to, in a few words, and how loudly to say it.
+  function workerStatus(w) {
+    var missing = (w.tools || []).filter(function (t) { return !t.ok; }).map(function (t) { return t.name; });
+    if (!w.enabled) return { cls: '', text: 'Paused' };
+    if (missing.length) return { cls: 'bad', text: 'Can’t reach ' + missing.join(', ') + (w.waiting ? ' · ' + w.waiting + ' waiting on you' : '') };
+    if (w.waiting) return { cls: 'waiting', text: 'Waiting on you: ' + plural(w.waiting, 'thing', 'things') };
+    if (w.state === 'working') return { cls: 'working', text: 'Working' };
+    if (w.state === 'stuck') return { cls: 'stuck', text: 'Stuck: its last run failed' };
+    return { cls: '', text: 'Idle · ' + (w.nextRunAt ? 'next run ' + when(w.nextRunAt) : 'works when asked') };
+  }
+
+  function workerCard(w) {
+    var st = workerStatus(w);
+    return h('button', { type: 'button', class: 'wcard' + (st.cls === 'bad' ? ' attn' : '') + (w.enabled ? '' : ' paused'), onclick: function () { openWorker(w.id); } },
+      h('span', { class: 'row', style: 'gap:12px;flex-wrap:nowrap' }, avatar(w.id, w.name, 'l'),
+        h('span', { style: 'display:flex;flex-direction:column;min-width:0' }, h('span', { style: 'font-weight:600;font-size:16px', text: w.name }), h('span', { class: 'who-tag', text: w.tagline }))),
+      h('span', { class: 'status ' + st.cls }, h('span', { class: 'sdot ' + (st.cls || (w.state === 'working' ? 'working' : '')) }), st.text),
+      h('span', { class: 'foot-row' }, h('span', { text: (w.manager || 'No manager') + ' · ' + w.schedule.toLowerCase().replace(/^when asked$/, 'when asked') }), h('span', { text: money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) })));
+  }
+
   function viewWorkers() {
     return api('GET', '/api/workers').then(function (list) {
       if (!list.length) return [head('Workers'), emptyState('No workers you can see yet.', 'Hire one, or ask your admin to make a team’s workers visible to you.', hireButton())];
-      var mine = list.filter(function (w) { return w.youManage; }).length;
-      return [head('Workers', plural(list.length, 'worker', 'workers') + ' you can ask. You manage ' + (mine === list.length ? 'all of them.' : mine + '.'), hireButton()),
-        h('div', { class: 'panel list' },
-          h('div', { class: 'wrow head' }, h('span', { text: 'Worker' }), h('span', { text: 'Answers to' }), h('span', { text: 'Spend this month' }), h('span')),
-          list.map(workerRow))];
+      var filter = state.workersFilter || 'all';
+      var attention = function (w) { return workerStatus(w).cls === 'bad' || w.waiting > 0 || w.state === 'stuck'; };
+      var counts = { all: list.length, mine: list.filter(function (w) { return w.youManage; }).length, attention: list.filter(attention).length };
+      var grid = h('div', { class: 'wgrid' });
+      var query = h('input', { type: 'search', placeholder: 'Find a worker', 'aria-label': 'Find a worker', style: 'min-height:38px;border-radius:999px;padding:6px 14px' });
+      var draw = function () {
+        var q = query.value.trim().toLowerCase();
+        grid.textContent = '';
+        list.filter(function (w) {
+          if (filter === 'mine' && !w.youManage) return false;
+          if (filter === 'attention' && !attention(w)) return false;
+          return !q || (w.name + ' ' + w.tagline).toLowerCase().indexOf(q) >= 0;
+        }).forEach(function (w) { grid.appendChild(workerCard(w)); });
+        if (!grid.children.length) grid.appendChild(h('p', { class: 'muted', text: 'No workers match.' }));
+      };
+      query.oninput = draw;
+      draw();
+      var waitingN = list.filter(function (w) { return w.waiting > 0; }).length;
+      var working = list.filter(function (w) { return w.state === 'working'; }).length;
+      var broken = list.filter(function (w) { return workerStatus(w).cls === 'bad'; }).length;
+      var bits = [];
+      if (waitingN) bits.push(plural(waitingN, 'waits', 'wait') + ' on you');
+      if (working) bits.push(working + ' ' + (working === 1 ? 'is' : 'are') + ' working');
+      if (broken) bits.push(broken + ' can’t reach a tool ' + (broken === 1 ? 'it needs' : 'they need'));
+      var sub = plural(list.length, 'worker', 'workers') + '.' + (bits.length ? ' ' + bits.join(', ').replace(/^./, function (c) { return c.toUpperCase(); }) + '.' : ' All quiet.');
+      var chip = function (id, label) {
+        return h('button', { class: 'chip', 'aria-pressed': filter === id ? 'true' : 'false', text: label + ' · ' + counts[id], onclick: function () { state.workersFilter = id; render(); } });
+      };
+      return [head('Workers', sub, hireButton()),
+        h('div', { class: 'row', role: 'group', 'aria-label': 'Show' }, chip('all', 'All'), chip('mine', 'Mine'), chip('attention', 'Needs attention'), h('span', { style: 'margin-left:auto;min-width:220px' }, query)),
+        grid,
+        h('p', { class: 'faint' }, 'Who reports to whom? ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px', text: 'See the org chart', onclick: function () { go('chart'); } }), '.')];
     });
   }
 
-  function askBox(w) {
-    var input = h('input', { type: 'text', placeholder: 'Ask ' + w.name + ' something, or give it an errand', 'aria-label': 'Message for ' + w.name });
-    var out = h('div');
-    var send = h('button', { class: 'btn go', text: 'Send' });
-    var submit = function () {
-      if (!input.value.trim()) { input.focus(); return; }
-      var restore = busy(send, 'Sending…');
-      out.textContent = ''; out.appendChild(thinking(w.name + ' is working on it…'));
-      api('POST', '/api/ask', { worker: w.id, message: input.value }).then(function (r) {
-        out.textContent = '';
-        out.appendChild(r.ok === false ? msg(r) : h('div', { class: 'panel pad stack', style: 'box-shadow:none;background:var(--panel-2)' },
-          h('div', { class: 'quote', style: 'font-size:15.5px', text: r.reply }),
-          r.launched ? h('div', { class: 'faint', text: 'Started ' + plural(r.launched, 'piece', 'pieces') + ' of work. It will show up under Work.' }) : null));
-        restore();
-      });
-    };
-    send.onclick = submit;
-    input.onkeydown = function (e) { if (e.key === 'Enter') submit(); };
-    return h('div', { class: 'stack', style: 'gap:8px' }, h('div', { class: 'inline-form' }, input, send), out);
+  /// One question and its answer, as a turn of conversation. A question
+  /// still being worked on says so; the page keeps checking until it is
+  /// answered.
+  function askItem(a) {
+    var reply = a.status === 'working'
+      ? thinking(a.workerName + ' is working on it… (asked ' + ago(a.at) + ')')
+      : a.status === 'failed'
+        ? h('div', { class: 'msg err', text: a.error || 'It could not answer.' })
+        : h('div', { class: 'stack', style: 'gap:6px' }, h('div', { style: 'white-space:pre-wrap;overflow-wrap:anywhere', text: a.reply || '' }),
+            a.launched ? h('div', { class: 'faint', text: 'Started ' + plural(a.launched, 'piece', 'pieces') + ' of work. It shows up here when done.' }) : null);
+    return h('li', { class: 'stack', style: 'gap:10px', 'data-at': String(a.at) },
+      h('div', { class: 'bubble-me', text: a.text }),
+      h('div', { class: 'turn' }, avatar(a.workerId || a.workerName, a.workerName, 's'),
+        h('div', { class: 'bubble' }, reply, h('span', { class: 'faint', text: (a.by ? a.by + ' · ' : '') + ago(a.at) + (a.doneAt && a.status !== 'working' ? ' · took ' + Math.max(1, Math.round((a.doneAt - a.at) / 1000)) + ' s' : '') }))));
   }
 
-  function workerRow(w) {
-    var pct = w.budgetUSDPerMonth > 0 ? Math.min(100, (w.spentThisMonthUSD / w.budgetUSDPerMonth) * 100) : 0;
-    return h('div', { class: 'wrow' },
-      h('button', { class: 'who', onclick: function () { openWorker(w.id); } }, avatar(w.id, w.name, 'm'),
-        h('span', { style: 'min-width:0;display:block' },
-          h('span', { class: 'row', style: 'gap:8px' }, h('span', { class: 'who-name', text: w.name }),
-            w.waiting ? h('span', { class: 'tag need', text: w.waiting + ' waiting' }) : null,
-            w.enabled ? null : h('span', { class: 'tag', text: 'Paused' })),
-          h('span', { class: 'who-tag', style: 'display:block', text: w.tagline }))),
-      h('div', { class: 'chain' },
-        w.manager ? h('div', null, h('b', { text: w.manager }), w.managerInherited ? ' through its boss' : '') : h('div', { text: 'No manager' }),
-        w.reportsTo ? h('div', { text: 'Reports to ' + w.reportsTo.name }) : null,
-        h('div', { class: 'faint', text: w.schedule + (w.nextRunAt ? ', next ' + when(w.nextRunAt) : '') })),
-      h('div', { class: 'spend' },
-        h('span', { text: money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) }),
-        h('div', { class: 'meter' + (pct >= 85 ? ' high' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' }))),
-      h('div', { class: 'actions' }, h('button', { class: 'btn small', text: 'Open', onclick: function () { openWorker(w.id); } })));
+  function deliveredItem(d) {
+    var slot = h('div');
+    return h('li', { class: 'turn', 'data-at': String(d.at) },
+      h('span', { class: 'avatar s person' }, icon('check', 15)),
+      h('div', { class: 'bubble', style: 'border-radius:14px' },
+        h('div', { class: 'spread' }, h('span', { style: 'font-weight:600', text: d.title }), h('span', { class: 'faint', text: ago(d.at) + (d.costUSD != null ? ' · ' + money(d.costUSD) : '') })),
+        d.summary ? h('details', null, h('summary', { text: 'Read it' }), h('div', { style: 'white-space:pre-wrap;margin-top:8px;font-size:13.5px', text: d.summary })) : null,
+        h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Useful?' }), rateButtons(d, slot)), slot));
+  }
+
+  function questionItem(q, w) {
+    return h('li', { class: 'turn', 'data-at': String(q.at) }, avatar(w.id, w.name, 's'),
+      h('div', { class: 'bubble', style: 'border-radius:14px' },
+        h('span', { class: 'label', style: 'font-size:11.5px', text: 'It asked' }),
+        h('span', { text: q.question }),
+        q.waiting ? h('span', { class: 'tag need', style: 'align-self:flex-start', text: 'Waiting on a person — answer it on the Inbox' })
+          : q.answer ? h('span', { class: 'muted', style: 'font-size:13.5px' }, h('b', { style: 'color:var(--ink);font-weight:600', text: (q.answeredBy || 'Someone') + ': ' }), q.answer)
+          : h('span', { class: 'faint', text: 'Not answered' }),
+        h('span', { class: 'faint', text: ago(q.at) })));
+  }
+
+  /// The conversation with a worker: a box to ask it something, then
+  /// everything between you, newest first — answers, delivered work and the
+  /// questions it asked.
+  function conversation(w, d) {
+    var input = h('textarea', { placeholder: 'Ask ' + w.name + ' something, or give it a task…', 'aria-label': 'Message for ' + w.name });
+    var out = h('div', { 'aria-live': 'polite' });
+    var items = []
+      .concat((d.asks || []).map(function (a) { return { at: a.at, node: askItem(a), ask: a }; }))
+      .concat((d.delivered || []).map(function (x) { return { at: x.at, node: deliveredItem(x) }; }))
+      .concat((d.questions || []).map(function (q) { return { at: q.at, node: questionItem(q, w) }; }))
+      .sort(function (a, b) { return b.at - a.at; });
+    var list = h('ol', { class: 'timeline' }, items.map(function (x) { return x.node; }));
+    // Follow one question until it is answered, while this page is showing.
+    var follow = function (id, li) {
+      if (!li.isConnected) return;
+      api('GET', '/api/asks/' + encodeURIComponent(id)).then(function (x) {
+        if (!li.isConnected || x.ok === false) return;
+        if (x.ask.status === 'working') { setTimeout(function () { follow(id, li); }, 3000); return; }
+        li.replaceWith(askItem(x.ask));
+      }, function () { setTimeout(function () { follow(id, li); }, 6000); });
+    };
+    items.forEach(function (x) { if (x.ask && x.ask.status === 'working') setTimeout(function () { follow(x.ask.id, x.node); }, 3000); });
+    var send = h('button', { class: 'btn go', style: 'margin-left:auto', text: 'Send' });
+    var submit = function (preset) {
+      var text = (preset || input.value).trim();
+      if (!text) { input.focus(); return; }
+      var restore = busy(send, 'Sending…');
+      api('POST', '/api/ask', { worker: w.id, message: text }).then(function (r) {
+        restore();
+        out.textContent = '';
+        if (r.ok === false) { out.appendChild(msg(r)); return; }
+        input.value = '';
+        var li = askItem({ id: r.askId, workerId: w.id, workerName: w.name, text: text, at: Date.now(), status: 'working', by: state.me.name });
+        list.prepend(li);
+        out.appendChild(h('p', { class: 'faint', text: 'You can leave this page: the answer is kept here' + (state.me.slackUserId ? ', and comes to you in Slack if it takes a while.' : '.') }));
+        setTimeout(function () { follow(r.askId, li); }, 3000);
+      });
+    };
+    send.onclick = function () { submit(); };
+    input.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); };
+    var starters = ['What did you do on your last run?', 'What would you work on next?', 'What do you need from me?'];
+    return h('section', { class: 'stack', style: 'gap:16px', 'aria-label': 'Conversation with ' + w.name },
+      w.enabled ? h('div', { class: 'panel composer' }, input,
+        h('div', { class: 'row' }, starters.map(function (t) { return h('button', { class: 'chip', style: 'min-height:32px;font-size:13px', text: t, onclick: function () { submit(t); } }); }), send), out)
+        : h('p', { class: 'muted', text: w.name + ' is paused. Resume it to ask it things.' }),
+      items.length ? list : h('div', { class: 'panel empty' }, h('div', { class: 'quote', text: 'Nothing between you yet.' }), h('p', { text: 'Ask it something above. Its answers, the work it delivers and the questions it asks you all show up here.' })));
   }
 
   function viewWorker() {
-    return Promise.all([api('GET', '/api/workers/' + encodeURIComponent(state.workerId) + '/detail'), api('GET', '/api/workers')]).then(function (r) {
-      var d = r[0], all = r[1];
+    return Promise.all([api('GET', '/api/workers/' + encodeURIComponent(state.workerId) + '/detail'), api('GET', '/api/workers'),
+      state.me.admin ? api('GET', '/api/admin/people') : Promise.resolve({ ok: false })]).then(function (r) {
+      var d = r[0], all = r[1], ppl = r[2];
       if (d.ok === false) return [msg(d)];
       var w = d.worker;
       var out = h('div');
@@ -1050,16 +1326,17 @@ export const CONSOLE_JS = String.raw`
         api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/trust', { trust: level }).then(function (x) { if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else render(); });
       };
       var rd = d.readiness;
-      var ladder = h('ol', { class: 'ladder', 'aria-label': 'Trust levels' }, ['probation', 'trusted', 'autonomous'].map(function (lvl) {
-        return h('li', { class: lvl === rd.level ? 'on' : lvl === rd.readyFor ? 'next' : '', text: TRUST[lvl] });
-      }));
-      var explain = rd.level === 'probation' ? 'On probation, you approve every run before it starts. ' : rd.level === 'trusted' ? 'Trusted, it starts its own runs and asks only before acting outside its sandbox. ' : 'Autonomous, it acts on its own. ';
+      var RUNG = { probation: 'Asks first', trusted: 'Trusted', autonomous: 'On its own' };
+      var explain = rd.level === 'probation' ? 'It proposes each run’s work and asks before anything leaves the server. ' : rd.level === 'trusted' ? 'It starts its own runs, and asks only before acting outside its sandbox. ' : 'It acts on its own. ';
       var trustCard = h('section', { class: 'panel pad stack', 'aria-labelledby': 'trust' },
-        h('div', { class: 'spread', style: 'align-items:center' }, h('h2', { id: 'trust', class: 'section-title', text: rd.readyFor ? 'Ready for more trust' : 'Trust' }), ladder),
-        h('p', { class: 'muted', text: explain + rd.reason }),
+        h('h2', { id: 'trust', class: 'label', text: 'How much it does alone' }),
+        h('ol', { class: 'rungs', 'aria-label': 'Trust levels' }, ['probation', 'trusted', 'autonomous'].map(function (lvl) {
+          return h('li', { class: lvl === rd.level ? 'on' : lvl === rd.readyFor ? 'next' : '', 'aria-current': lvl === rd.level ? 'step' : null, text: RUNG[lvl] });
+        })),
+        h('p', { style: 'font-size:13.5px', text: explain }, h('span', { class: 'muted', text: rd.reason })),
         w.youManage ? h('div', { class: 'row' },
-          rd.readyFor && (rd.readyFor !== 'autonomous' || state.me.admin) ? h('button', { class: 'btn go', text: 'Promote to ' + TRUST[rd.readyFor].toLowerCase(), onclick: function () { setTrust(rd.readyFor); } }) : null,
-          rd.level !== 'probation' ? h('button', { class: 'btn quiet small', text: 'Put back on probation', onclick: function () { setTrust('probation'); } }) : null) : null,
+          rd.readyFor && (rd.readyFor !== 'autonomous' || state.me.admin) ? h('button', { class: 'btn go small', text: 'Move to ' + RUNG[rd.readyFor].toLowerCase(), onclick: function () { setTrust(rd.readyFor); } }) : null,
+          rd.level !== 'probation' ? h('button', { class: 'btn quiet small', text: 'Back to asks first', onclick: function () { setTrust('probation'); } }) : null) : null,
         out);
 
       var settings = null;
@@ -1070,66 +1347,171 @@ export const CONSOLE_JS = String.raw`
         var budget = h('input', { type: 'number', min: '1', step: '1', value: String(w.budgetUSDPerMonth), 'aria-label': 'Monthly budget' });
         var sched = scheduleEditor(w.cadence);
         var saved = h('div');
-        settings = h('details', { class: 'panel pad' }, h('summary', { text: 'Settings: when it runs, who it reports to, who may ask it, its budget' }),
-          h('div', { class: 'stack', style: 'margin-top:14px' },
-            h('div', { class: 'terms', style: 'border:0;padding:0' },
-              h('label', { class: 'field' }, 'Reports to', reports), h('label', { class: 'field' }, 'Who may ask it', vis), h('label', { class: 'field' }, 'Monthly budget (USD)', budget)),
-            h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'When it runs on its own' }), sched.node),
+        // Handing a worker to someone else is an admin's call.
+        var mgr = null;
+        if (state.me.admin && ppl.ok !== false) {
+          var candidates = ppl.people.filter(function (p) { return p.slackUserId; });
+          mgr = h('select', { 'aria-label': 'Manager' },
+            h('option', { value: '', text: w.managerSlackUserId ? 'No manager of its own' : (w.manager ? w.manager + ' (through its boss)' : 'No manager') , selected: !w.managerSlackUserId }),
+            candidates.map(function (p) { return h('option', { value: p.slackUserId, text: p.name, selected: p.slackUserId === w.managerSlackUserId }); }));
+          mgr._people = candidates;
+        }
+        var letGo = h('button', { class: 'btn danger', text: 'Let ' + w.name + ' go' });
+        var armed = null;
+        letGo.onclick = function () {
+          if (!armed) {
+            letGo.textContent = 'Yes, let ' + w.name + ' go';
+            saved.textContent = ''; saved.appendChild(h('div', { class: 'msg err', role: 'alert', text: 'This retires ' + w.name + ' for good. Its finished work and journal stay; its reports move up to its boss. Press again to confirm.' }));
+            armed = setTimeout(function () { armed = null; letGo.textContent = 'Let ' + w.name + ' go'; saved.textContent = ''; }, 6000);
+            return;
+          }
+          clearTimeout(armed);
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/retire').then(function (x) {
+            if (x.ok === false) { saved.textContent = ''; saved.appendChild(msg(x)); return; }
+            go('workers');
+          });
+        };
+        // One section per question a manager asks: when, who, how much, and
+        // the irreversible ones apart at the bottom.
+        var group = function (title, sub, body) {
+          return h('section', { class: 'panel pad sgroup' },
+            h('div', null, h('h2', { class: 'section-title', text: title }), sub ? h('p', { class: 'faint', style: 'margin-top:4px', text: sub }) : null),
+            h('div', { class: 'stack' }, body));
+        };
+        var saveAll = h('button', { class: 'btn go', text: 'Save changes' });
+        saveAll.onclick = function () {
+          var patch = { reportsTo: reports.value || null, visibility: vis.value, budgetUSDPerMonth: Number(budget.value), cadence: sched.value() };
+          if (mgr && mgr.value !== (w.managerSlackUserId || '')) {
+            var who = mgr._people.filter(function (p) { return p.slackUserId === mgr.value; })[0];
+            patch.manager = who ? { name: who.name, slackUserId: who.slackUserId } : null;
+          }
+          var restore = busy(saveAll, 'Saving…');
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch })
+            .then(function (x) { restore(); saved.textContent = ''; saved.appendChild(msg(x, 'Saved. It applies from its next run.')); });
+        };
+        settings = h('div', { class: 'stack', style: 'gap:16px' },
+          group('When it runs', 'On its own schedule, or only when someone asks.', [sched.node]),
+          group('Who it answers to', 'Its questions and approvals go here, climbing the chain if its boss can’t answer.', [
+            h('div', { class: 'grid2' }, mgr ? h('label', { class: 'field' }, 'Manager', mgr) : h('div', { class: 'field' }, h('span', { text: 'Manager' }), h('span', { style: 'color:var(--ink)', text: w.manager || 'Nobody yet' })),
+              h('label', { class: 'field' }, 'Reports to (another worker)', reports))]),
+          group('Who can ask it', 'Anyone who can ask it can learn what its tools can reach.', [h('div', { style: 'max-width:360px' }, vis)]),
+          group('Budget', 'At its budget it stops until the month turns.', [h('label', { class: 'field', style: 'max-width:240px' }, 'Monthly budget (USD)', budget),
+            h('span', { class: 'faint', text: money(w.spentThisMonthUSD) + ' spent so far this month.' })]),
+          h('div', { class: 'foot' }, saveAll, saved),
+          h('section', { class: 'panel pad sgroup', style: 'border-color:var(--bad-line)' },
+            h('div', null, h('h2', { class: 'section-title', text: 'Pause or let go' }), h('p', { class: 'faint', style: 'margin-top:4px', text: 'Pausing keeps everything; letting go retires it for good.' })),
             h('div', { class: 'row' },
-              h('button', { class: 'btn go', text: 'Save', onclick: function () {
-                api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { reportsTo: reports.value || null, visibility: vis.value, budgetUSDPerMonth: Number(budget.value), cadence: sched.value() } })
-                  .then(function (x) { saved.textContent = ''; saved.appendChild(msg(x, 'Saved.')); });
-              } }),
-              h('button', { class: 'btn quiet', text: w.enabled ? 'Pause ' + w.name : 'Resume ' + w.name, onclick: function () {
+              h('button', { class: 'btn', text: w.enabled ? 'Pause ' + w.name : 'Resume ' + w.name, onclick: function () {
                 api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/paused', { paused: w.enabled }).then(function (x) { if (x.ok === false) { saved.textContent = ''; saved.appendChild(msg(x)); } else render(); });
-              } })),
-            saved));
+              } }),
+              letGo)));
       }
 
+      // The job, readable at full width; its manager can rewrite it.
+      var jobView = function () {
+        var text = h('div', { style: 'white-space:pre-wrap;font-size:15px;line-height:1.65;max-width:84ch', text: d.jobDescription });
+        var box = h('section', { class: 'panel pad stack', style: 'gap:16px' });
+        var out = h('div', { 'aria-live': 'polite' });
+        var edit = w.youManage ? h('button', { class: 'btn', text: 'Edit the job' }) : null;
+        if (edit) edit.onclick = function () {
+          var ta = h('textarea', { 'aria-label': w.name + '’s job', style: 'min-height:420px;font-size:14.5px;line-height:1.6' });
+          ta.value = d.jobDescription;
+          var save = h('button', { class: 'btn go', text: 'Save the job' });
+          save.onclick = function () {
+            var restore = busy(save, 'Saving…');
+            api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { jobDescription: ta.value } }).then(function (x) {
+              restore(); out.textContent = '';
+              if (x.ok === false) { out.appendChild(msg(x)); return; }
+              d.jobDescription = ta.value.trim(); render();
+            });
+          };
+          box.textContent = '';
+          append(box, [h('p', { class: 'muted', text: 'This is what ' + w.name + ' plans every run from. Say what to do, what to skip, and where things live.' }), ta,
+            h('div', { class: 'foot' }, save, h('button', { class: 'btn quiet', text: 'Cancel', onclick: function () { render(); } }), out)]);
+          ta.focus();
+        };
+        append(box, [h('div', { class: 'spread', style: 'align-items:center' }, h('h2', { class: 'label', text: 'The job it was hired for' }), edit), text]);
+        return h('div', { class: 'split' }, h('div', { class: 'wide' }, box),
+          h('aside', { class: 'narrow' }, h('section', { class: 'panel pad stack', style: 'gap:8px' },
+            h('h2', { class: 'label', text: 'What it has learned' }),
+            h('p', { class: 'faint', text: 'From your ratings and notes. It reads these alongside its job before every run.' }),
+            d.learned.length ? h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
+              : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing yet.' }))));
+      };
+
+      var st = workerStatus(w);
+      var missing = (w.tools || []).filter(function (t) { return !t.ok; }).map(function (t) { return t.name; });
+      var tab = state.workerTab || 'talk';
+      var change = w.youManage ? function () { state.workerTab = 'settings'; render(); } : null;
+      var row = function (k, v, extra) {
+        return h('div', { class: 'setup-row' }, h('span', { style: 'flex:1;min-width:0' }, h('span', { class: 'k', text: k }), h('span', { class: 'v', text: v }), extra || null),
+          change ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Change', onclick: change }) : null);
+      };
+      var pct = w.budgetUSDPerMonth > 0 ? Math.min(100, (w.spentThisMonthUSD / w.budgetUSDPerMonth) * 100) : 0;
+      var job = h('div', { class: 'setup-row', style: 'align-items:flex-start' }, h('span', { style: 'flex:1;min-width:0' }, h('span', { class: 'k', text: 'Its job' }),
+        h('span', { class: 'v', style: 'display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:13.5px', text: d.jobDescription })),
+        h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px;flex:none', text: w.youManage ? 'Read or edit' : 'Read', onclick: function () { state.workerTab = 'job'; render(); } }));
+      var onItsOwn = h('section', { class: 'panel pad stack', style: 'gap:8px', 'aria-labelledby': 'own' },
+        h('div', { class: 'spread' }, h('h2', { id: 'own', class: 'label', text: 'What it does on its own' }),
+          h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: (d.triggers || []).length ? 'Triggers' : w.youManage ? 'Add a trigger' : '', onclick: function () { state.workerTab = 'triggers'; render(); } })),
+        h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, h('span', { class: 'faint', style: 'display:inline-flex' }, icon('sun', 15)), h('span', { style: 'font-size:13.5px', text: w.cadence ? w.schedule : 'No schedule: works when asked' })),
+        (d.triggers || []).map(function (t) {
+          return h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, h('span', { style: 'display:inline-flex;color:' + (t.enabled ? 'var(--go)' : 'var(--faint)') }, icon('bolt', 15)), h('span', { style: 'font-size:13.5px', text: t.name + (t.enabled ? '' : ' (off)') }));
+        }),
+        d.value && d.value.handled ? h('p', { class: 'faint', text: plural(d.value.handled, 'event', 'events') + ' handled this month' + (d.value.medianMinutes != null ? ', typically in ' + (d.value.medianMinutes < 1 ? 'under a minute' : Math.round(d.value.medianMinutes) + ' min') : '') + '.' }) : null);
+      var aside = h('aside', { class: 'narrow', style: 'gap:14px', 'aria-label': 'Setup' },
+        onItsOwn,
+        trustCard,
+        (w.tools || []).length ? h('section', { class: 'panel pad stack', style: 'gap:10px', 'aria-labelledby': 'tl' },
+          h('h2', { id: 'tl', class: 'label', text: 'Tools' }),
+          w.tools.map(function (t) {
+            return h('div', { class: 'row', style: 'flex-wrap:nowrap' }, h('span', { class: 'sdot ' + (t.ok ? 'ok' : 'bad') }), h('span', { style: 'flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis', title: t.name, text: t.name }),
+              t.ok ? h('span', { class: 'faint', text: 'Installed' }) : state.me.admin ? h('button', { class: 'linkish', style: 'color:var(--bad);font-size:13px', text: 'Not on this server — install', onclick: function () { go('setup', { setupTab: 'tools' }); } }) : h('span', { class: 'faint', style: 'color:var(--bad)', text: 'Not on this server' }));
+          })) : null,
+        h('section', { class: 'panel', style: 'padding:4px 16px', 'aria-label': 'Settings' },
+          row('Runs', w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '')),
+          row('Answers to', (w.manager || 'Nobody yet') + (w.managerInherited ? ' (through its boss)' : '')),
+          w.reportsTo ? row('Reports to', w.reportsTo.name) : null,
+          row('Who can ask it', VIS[w.visibility]),
+          h('div', { class: 'setup-row', style: 'flex-direction:column;align-items:stretch;gap:8px' },
+            h('div', { class: 'row', style: 'flex-wrap:nowrap' }, h('span', { style: 'flex:1' }, h('span', { class: 'k', text: 'Budget' }), h('span', { class: 'v', text: money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) + ' this month' })),
+              change ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Change', onclick: change }) : null),
+            h('div', { class: 'meter' + (pct >= 85 ? ' high' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' }))),
+          job),
+        h('section', { class: 'panel pad stack', style: 'gap:8px', 'aria-labelledby': 'learn' },
+          h('h2', { id: 'learn', class: 'label', text: 'What it has learned' }),
+          d.learned.length ? h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
+            : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing yet. Rate its work and it learns what you want.' }),
+          h('p', { class: 'faint', text: 'Last 30 days: ' + plural(d.stats.runs, 'run', 'runs') + (d.stats.failed ? ', ' + d.stats.failed + ' failed' : '') + (d.stats.usefulPct != null ? ', ' + d.stats.usefulPct + '% rated useful' : '') + '.' })));
+
       return [h('div', null, h('button', { class: 'btn quiet small', onclick: function () { go('workers'); } }, icon('back', 16), 'All workers')),
-        h('header', { class: 'row', style: 'gap:18px;align-items:center' }, avatar(w.id, w.name, 'xl'),
-          h('div', { style: 'flex:1 1 300px;min-width:0' },
-            h('div', { class: 'row' }, h('h1', { class: 'page-title', style: 'font-size:36px', text: w.name }), w.enabled ? null : h('span', { class: 'tag', text: 'Paused' })),
+        h('header', { class: 'row', style: 'gap:20px;align-items:center' }, avatar(w.id, w.name, 'xl'),
+          h('div', { style: 'flex:1 1 320px;min-width:0' },
+            h('div', { class: 'row', style: 'gap:12px' }, h('h1', { class: 'page-title', text: w.name }),
+              h('span', { class: 'pill' }, h('span', { class: 'sdot ' + (st.cls || (w.state === 'working' ? 'working' : '')) }), st.text)),
             h('p', { class: 'page-sub', style: 'font-size:15px', text: w.tagline })),
           w.youManage && w.enabled ? h('button', { class: 'btn', text: 'Run now', onclick: function (e) {
             var restore = busy(e.target, 'Starting…');
             api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/run').then(function (x) {
               restore();
               var note = document.getElementById('run-note');
-              if (note) { note.textContent = ''; note.appendChild(msg(x, w.name + ' is running. What it proposes will show on Today.')); }
+              if (note) { note.textContent = ''; note.appendChild(msg(x, w.name + ' is running. What it proposes lands in your Inbox.')); }
             });
-          } }) : null),
+          } }) : null,
+          null),
         h('div', { id: 'run-note' }),
-        h('div', { class: 'facts' },
-          h('span', null, 'Manager ', h('b', { text: w.manager || 'none' })),
-          w.reportsTo ? h('span', null, 'Reports to ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:13.5px', text: w.reportsTo.name, onclick: function () { openWorker(w.reportsTo.id); } })) : null,
-          h('span', null, h('b', { text: w.schedule }), w.nextRunAt ? ', next ' + when(w.nextRunAt) : ''),
-          h('span', { text: VIS[w.visibility] + ' may ask it' }),
-          h('span', { text: money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) + ' this month' })),
-        trustCard,
-        h('section', { class: 'stack', 'aria-labelledby': 'askh' }, h('h2', { id: 'askh', class: 'section-title', text: 'Ask ' + w.name }), askBox(w)),
-        h('div', { class: 'split' },
-          h('div', { class: 'wide', style: 'gap:24px' },
-            h('section', { class: 'stack', 'aria-labelledby': 'del' }, h('h2', { id: 'del', class: 'section-title', text: 'What it delivered this month' }),
-              d.delivered.length ? h('div', { class: 'panel list' }, d.delivered.map(function (x) { return workItem(x); })) : h('p', { class: 'muted', text: 'Nothing finished this month yet.' })),
-            h('section', { class: 'stack', 'aria-labelledby': 'qs' }, h('h2', { id: 'qs', class: 'section-title', text: 'Questions it asked' }),
-              d.questions.length ? h('div', { class: 'panel list' }, d.questions.map(function (q) {
-                return h('div', { class: 'item', style: 'grid-template-columns:minmax(0,1fr) auto' },
-                  h('div', { class: 't', style: 'font-size:15.5px', text: q.question }), h('span', { class: 'faint', text: ago(q.at) }),
-                  h('div', { class: 'sub' }, q.waiting ? h('span', { class: 'tag need', text: 'Waiting on a person' }) : q.answer ? [h('b', { style: 'color:var(--ink);font-weight:600', text: (q.answeredBy || 'Someone') + ': ' }), q.answer] : 'Not answered'));
-              })) : h('p', { class: 'muted', text: 'No questions yet.' })),
-            settings),
-          h('aside', { class: 'narrow' },
-            h('section', { class: 'panel pad stats', 'aria-labelledby': 'st' },
-              h('h2', { id: 'st', class: 'section-title', style: 'grid-column:1/-1', text: 'Last 30 days' }),
-              h('div', null, h('div', { class: 'big', text: String(d.stats.runs) }), h('div', { class: 'faint', text: 'runs, ' + d.stats.failed + ' failed' })),
-              h('div', null, h('div', { class: 'big', text: d.stats.usefulPct == null ? '—' : d.stats.usefulPct + '%' }), h('div', { class: 'faint', text: d.stats.rated ? 'rated useful, of ' + d.stats.rated + ' rated' : 'not rated yet' }))),
-            h('section', { class: 'panel pad stack', style: 'gap:8px', 'aria-labelledby': 'learn' },
-              h('h2', { id: 'learn', class: 'section-title', text: 'What it has learned' }),
-              h('p', { class: 'faint', text: 'From ratings and notes. It plans every run from these.' }),
-              d.learned.length ? h('ul', { style: 'margin:4px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
-                : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing yet. Rate its work and it starts learning what you want.' })),
-            h('details', { class: 'panel pad' }, h('summary', { text: 'Its job description' }), h('div', { class: 'quote', style: 'font-size:14.5px;margin-top:10px', text: d.jobDescription }))))];
+        missing.length ? h('div', { class: 'banner', role: 'status' },
+          h('span', { style: 'color:var(--bad);flex:none' }, icon('alert', 20)),
+          h('span', { text: w.name + '’s job needs ' + missing.join(', ') + ', which ' + (missing.length === 1 ? 'isn’t' : 'aren’t') + ' installed on this server — so it works without ' + (missing.length === 1 ? 'it' : 'them') + '.' }),
+          state.me.admin ? h('button', { class: 'btn bad', text: 'Install ' + missing[0], onclick: function () { go('setup', { setupTab: 'tools' }); } }) : h('span', { class: 'faint', style: 'flex:none', text: 'Ask an admin to install it.' })) : null,
+        h('div', { class: 'tabs', role: 'tablist', 'aria-label': w.name },
+          [['talk', 'Conversation'], ['triggers', 'Triggers' + ((d.triggers || []).length ? ' · ' + d.triggers.length : '')], ['job', 'Job'], w.youManage ? ['settings', 'Settings'] : null].filter(Boolean).map(function (t) {
+            return h('button', { role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', text: t[1], onclick: function () { state.workerTab = t[0]; render(); } });
+          })),
+        tab === 'triggers' ? triggersView(w, d)
+          : tab === 'job' ? jobView()
+          : tab === 'settings' && settings ? settings
+          : h('div', { class: 'split' }, h('div', { class: 'wide' }, conversation(w, d)), aside)];
     });
   }
 
@@ -1213,9 +1595,15 @@ export const CONSOLE_JS = String.raw`
       var ctx = { workers: r[0], projects: r[2], wrap: wrap };
       if (state.hire && state.hire.contract) { wrap.appendChild(offer(state.hire, ctx)); return [head('Hire a worker'), wrap]; }
       if (state.hire && state.hire.questions) { wrap.appendChild(questions(state.hire, ctx)); return [head('Hire a worker'), wrap]; }
-      var nodes = [head('Hire a worker', 'Start from a role your org has approved, describe a new one, or bring a worker you built yourself. Nothing is hired until you review the offer.')];
+      wrap.appendChild(describe(ctx));
+      var nodes = [head('What do you need done?', 'Describe the job the way you’d brief a new colleague: what it does, for whom, how often, and where the information lives. You review the worker before anything runs.'),
+        wrap,
+        h('ol', { class: 'hiresteps', 'aria-label': 'How hiring works' },
+          h('li', { class: 'on' }, h('span', { class: 'faint', text: '1' }), h('b', { style: 'font-weight:600', text: 'You describe the job' }), h('span', { class: 'muted', style: 'font-size:13px', text: 'It may ask a question or two.' })),
+          h('li', null, h('span', { class: 'faint', text: '2' }), h('b', { style: 'font-weight:600', text: 'You read its offer' }), h('span', { class: 'muted', style: 'font-size:13px', text: 'Its routine, schedule, tools and budget, in plain words. Change anything.' })),
+          h('li', null, h('span', { class: 'faint', text: '3' }), h('b', { style: 'font-weight:600', text: 'It starts carefully' }), h('span', { class: 'muted', style: 'font-size:13px', text: 'It asks you before each run and before anything leaves the server, until it earns more trust.' })))];
       if (roles.length) {
-        nodes.push(h('section', { class: 'stack' }, h('h2', { class: 'section-title', text: 'Approved roles' }),
+        nodes.push(h('section', { class: 'stack' }, h('h2', { class: 'label', text: 'Or start from a role ' + state.me.org + ' has approved' }),
           h('div', { class: 'roles' }, roles.map(function (role) {
             var btn = h('button', { class: 'btn' + (role.fit === 'fits' ? ' go' : ''), text: 'Hire one', disabled: role.fit === 'notAllowed' });
             btn.onclick = function () {
@@ -1232,8 +1620,6 @@ export const CONSOLE_JS = String.raw`
                 h('span', { class: 'fit-' + role.fit, text: role.fit === 'fits' ? 'Fits your allowance' : role.fit === 'needsApproval' ? 'Needs an approver' : (role.why || 'Not open to you') }), btn));
           }))));
       }
-      wrap.appendChild(describe(ctx));
-      nodes.push(h('section', { class: 'stack' }, h('h2', { class: 'section-title', text: roles.length ? 'Something else' : 'Describe the job' }), wrap));
       nodes.push(publishPanel());
       return nodes;
     });
@@ -1253,22 +1639,25 @@ export const CONSOLE_JS = String.raw`
   ];
 
   function describe(ctx, error) {
-    var job = h('textarea', { placeholder: 'What should it do, for whom, and from which sources?', 'aria-label': 'Job description', style: 'min-height:120px' });
+    var job = h('textarea', { placeholder: 'e.g. Every weekday morning, find the open bugs in our sprint, fix the small well-specified ones, and open a pull request for each.', 'aria-label': 'Describe the job', style: 'min-height:120px;border:0;background:transparent;box-shadow:none;padding:0;font-size:17px' });
     var out = h('div');
     if (error) out.appendChild(h('div', { class: 'msg err', text: error }));
-    var draft = h('button', { class: 'btn go', text: 'Draft the offer' });
+    var draft = h('button', { class: 'btn go', text: 'Draft this worker' });
     draft.onclick = function () {
       if (job.value.trim().length < 20) { out.textContent = ''; out.appendChild(h('div', { class: 'msg err', text: 'Say a little more: what it does, for whom, from which sources.' })); job.focus(); return; }
       busy(draft, 'Drafting…');
       out.textContent = ''; out.appendChild(thinking('Reading the job and writing an offer. This takes a minute.'));
       api('POST', '/api/hires/draft', { jobDescription: job.value }).then(function (r) { show(ctx, r); });
     };
-    return h('div', { class: 'stack' }, steps(0), h('div', { class: 'panel pad stack' },
+    var left = state.me.allowanceUSD != null ? state.me.allowanceUSD - (state.me.committedUSD || 0) : null;
+    return h('div', { class: 'stack' }, h('div', { class: 'panel pad stack', style: 'border-color:var(--line-2)' },
       job,
-      h('div', { class: 'row', style: 'gap:10px' }, h('span', { class: 'faint', text: 'Or start from' }),
-        IDEAS.map(function (idea) { return h('button', { class: 'chip dashed', text: idea.label, title: idea.text, onclick: function () { job.value = idea.text; job.focus(); } }); })),
-      h('div', { class: 'spread', style: 'align-items:center' }, h('span', { class: 'faint', text: 'You’ll be its manager. Its questions come to you.' }), draft),
-      out));
+      h('div', { class: 'spread', style: 'align-items:center;border-top:1px solid var(--line);padding-top:12px' },
+        h('span', { class: 'status' }, h('span', { class: 'sdot ok' }), left != null ? (left > 0 ? 'Within your allowance: ' + money(left) + ' left this month' : 'Over your allowance: an approver will be asked') : 'You’ll be its manager. Its questions come to you.'),
+        draft),
+      out),
+      h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'faint', text: 'Try:' }),
+        IDEAS.map(function (idea) { return h('button', { class: 'chip', style: 'min-height:34px;font-size:13px', text: idea.label, title: idea.text, onclick: function () { job.value = idea.text; job.focus(); } }); })));
   }
 
   function questions(hire, ctx) {
@@ -1506,7 +1895,7 @@ export const CONSOLE_JS = String.raw`
 
       var table = h('div', { class: 'panel table-wrap' }, h('table', null,
         h('thead', null, h('tr', null, ['Person', 'Can', 'Workers', 'Spend of allowance', 'Signed in on', ''].map(function (t) { return h('th', { scope: 'col', text: t }); }))),
-        h('tbody', null, ppl.people.map(personRows))));
+        h('tbody', null, ppl.people.map(function (p) { return personRows(p, ppl.people); }))));
 
       nodes.push(h('div', { class: 'people-grid' },
         h('section', { class: 'stack', 'aria-labelledby': 'ppl' }, h('h2', { id: 'ppl', class: 'section-title', text: plural(ppl.people.length, 'person', 'people') }), table),
@@ -1550,7 +1939,34 @@ export const CONSOLE_JS = String.raw`
       h('span', { class: 'faint', text: meta }), out);
   }
 
-  function personRows(p) {
+  /// Someone has left: who takes their workers, then every way in closed.
+  function offboardBox(p, everyone, out) {
+    var others = everyone.filter(function (x) { return x.slackUserId && x.slackUserId !== p.slackUserId; });
+    var to = h('select', { 'aria-label': 'Who takes over ' + p.name + '’s workers' },
+      h('option', { value: '', text: p.workers ? 'Pick who takes over' : 'Nobody needed' }),
+      others.map(function (x) { return h('option', { value: x.slackUserId, text: x.name }); }));
+    var go_ = h('button', { class: 'btn danger small', text: p.name + ' has left' });
+    var armed = false;
+    go_.onclick = function () {
+      if (p.workers && !to.value) { out.textContent = ''; out.appendChild(h('div', { class: 'msg err', role: 'alert', text: 'Pick who takes over ' + plural(p.workers, 'worker', 'workers') + ' first.' })); return; }
+      if (!armed) {
+        armed = true; go_.textContent = 'Yes, offboard ' + p.name;
+        out.textContent = ''; out.appendChild(h('div', { class: 'msg err', role: 'alert', text: 'This hands their workers on, drops their hires in progress, signs them out everywhere and removes them from every rule. Press again to confirm.' }));
+        return;
+      }
+      var who = others.filter(function (x) { return x.slackUserId === to.value; })[0];
+      api('POST', '/api/admin/people/offboard', { slackUserId: p.slackUserId, to: who ? { name: who.name, slackUserId: who.slackUserId } : null }).then(function (x) {
+        out.textContent = '';
+        if (x.ok === false) { armed = false; go_.textContent = p.name + ' has left'; out.appendChild(msg(x)); return; }
+        out.appendChild(msg({}, p.name + ' is offboarded.' + (x.workers && x.workers.length ? ' ' + x.workers.join(', ') + ' now report' + (x.workers.length === 1 ? 's' : '') + ' to ' + who.name + '.' : '')));
+        setTimeout(render, 1800);
+      });
+    };
+    return h('div', { class: 'stack', style: 'gap:6px;border-top:1px solid var(--line);padding-top:12px' },
+      h('span', { class: 'faint', text: 'Offboarding' }), h('div', { class: 'row' }, to, go_));
+  }
+
+  function personRows(p, everyone) {
     var pct = p.allowanceUSD ? Math.min(100, (p.spentUSD / p.allowanceUSD) * 100) : 0;
     var manage = h('tr', { class: 'manage', hidden: true });
     var role = p.slackUserId ? roleSelect(ROLE_OF[p.role] || 'member', 'What ' + p.name + ' can do') : h('span', { class: 'muted', text: p.role });
@@ -1583,6 +1999,7 @@ export const CONSOLE_JS = String.raw`
         if (!window.confirm('Sign ' + p.name + ' out of every device? Their workers keep running.')) return;
         api('POST', '/api/admin/people/signout', { slackUserId: p.slackUserId }).then(function (x) { out.textContent = ''; out.appendChild(msg(x, 'Signed out of ' + plural(x.count || 0, 'place', 'places') + '.')); });
       } })) : null,
+      p.slackUserId && p.slackUserId !== state.me.slackUserId ? offboardBox(p, everyone, out) : null,
       out)));
     var where = p.devices.length ? p.devices.map(function (d) { return d.where.replace(/^overcli app: /, 'App: '); }).slice(0, 2).join(', ') + (p.devices.length > 2 ? ' +' + (p.devices.length - 2) : '') : 'Slack only';
     var row = h('tr', null,
@@ -1678,6 +2095,12 @@ export const CONSOLE_JS = String.raw`
       }
       document.title = 'Join ' + info.org + ' — overcli';
       var out = h('div');
+      if (info.ssoRequired && !info.setup) {
+        append(left, [h('h1', { text: info.invitedBy + ' invited you to ' + info.org + '\u2019s workers' }),
+          h('p', { class: 'lead', text: info.org + ' signs in with its company account. Sign in, and your invite applies.' }),
+          h('div', { style: 'max-width:360px' }, ssoButton({ provider: info.ssoProvider || 'your company account' }, '/'))]);
+        return;
+      }
       var join = h('button', { class: 'btn go', style: 'min-height:48px;font-size:15px', text: info.setup ? 'Sign in as the first admin' : 'Join ' + info.org + ' as ' + info.name });
       join.onclick = function () {
         var restore = busy(join, 'Joining…');
@@ -1737,6 +2160,9 @@ export const CONSOLE_JS = String.raw`
     app.appendChild(h('div', { class: 'solo' }, left, right));
     if (!token()) {
       append(left, [h('h1', { text: 'Sign in here first' }), h('p', { class: 'lead', text: 'The overcli app asked to sign in as you. Open your invite link in this browser first (or sign in with a token), then come back to this page.' })]);
+      fetch('/api/sso').then(function (r) { return r.json(); }).then(function (st) {
+        if (st.enabled) left.appendChild(h('div', { style: 'max-width:360px' }, ssoButton(st, '/pair?code=' + encodeURIComponent(code))));
+      }).catch(function () {});
       var t = h('input', { type: 'text', class: 'secret', placeholder: 'ocli_…', 'aria-label': 'Access token', autocomplete: 'off', 'data-1p-ignore': true });
       right.appendChild(h('div', { class: 'stack' }, h('label', { class: 'field' }, 'Already have a token?', t),
         h('button', { class: 'btn go', text: 'Sign in', onclick: function () { if (t.value.trim()) { store(TOKEN_KEY, t.value.trim()); location.reload(); } } })));
@@ -1776,41 +2202,693 @@ export const CONSOLE_JS = String.raw`
   // ---- admin -----------------------------------------------------------
 
   function viewAdmin() {
-    return Promise.all([api('GET', '/api/admin/health'), api('GET', '/api/admin/people'), api('GET', '/api/admin/audit')]).then(function (r) {
-      var hl = r[0], ppl = r[1], au = r[2];
+    return Promise.all([api('GET', '/api/admin/health'), api('GET', '/api/admin/people'), api('GET', '/api/admin/audit'), api('GET', '/api/admin/fleet')]).then(function (r) {
+      var hl = r[0], ppl = r[1], au = r[2], fl = r[3];
       if (hl.ok === false) return [msg(hl)];
       var total = hl.spend.spentUSD || 0;
-      return [head('Admin', 'Who can use the workers, the rules they work under, and whether everything is running.', null, hl.org.name || 'Your org'),
+      return [head('Activity', 'Whether everything is running, what the workers cost, and every decision people made.', null, hl.org.name || 'Your org'),
         h('section', { class: 'health', 'aria-label': 'Health' }, hl.items.map(function (it) {
           return h('div', { class: 'panel' }, h('span', { class: 'h' }, h('span', { class: 'light' + (it.ok === true ? ' ok' : it.ok === false ? ' bad' : '') }), it.name), h('span', { class: 'faint', text: it.detail }));
         })),
         h('section', { class: 'panel pad stack', 'aria-labelledby': 'sp' },
-          h('div', { class: 'spread' }, h('h2', { id: 'sp', class: 'section-title', text: 'Spend this month, by manager' }), h('span', { class: 'big', style: 'font-size:22px', text: money(total) })),
-          hl.spend.byManager.length ? h('div', { class: 'bars' }, hl.spend.byManager.map(function (m) {
-            var pct = total ? (m.spentUSD / total) * 100 : 0;
-            return h('div', null, h('span', { text: m.name }), h('div', { class: 'meter' }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })), h('span', { text: money(m.spentUSD) }));
-          })) : h('p', { class: 'muted', text: 'No workers yet.' })),
-        h('section', { class: 'panel pad spread', style: 'align-items:center' },
-          h('div', null, h('h2', { class: 'section-title', text: 'People' }), h('p', { class: 'muted', style: 'font-size:13.5px', text: ppl.ok === false ? '' : plural(ppl.people.length, 'person has', 'people have') + ' access.' })),
-          h('button', { class: 'btn', text: 'Manage people', onclick: function () { go('people'); } })),
-        h('div', { class: 'split' },
-          h('section', { class: 'narrow panel pad', 'aria-labelledby': 'ru' },
-            h('h2', { id: 'ru', class: 'section-title', text: 'Rules' }),
-            h('dl', { class: 'rules' },
-              h('dt', { text: 'Who may hire' }), h('dd', { text: hl.rules.hirers }),
-              h('dt', { text: 'Allowance per person' }), h('dd', { text: money(hl.rules.allowanceUSD) + ' a month' }),
-              h('dt', { text: 'Approves hires over it' }), h('dd', { text: hl.rules.approvers.join(', ') || 'Admins' }),
-              h('dt', { text: 'Visible to everyone needs' }), h('dd', { text: hl.rules.orgVisibilityNeedsAdmin ? 'An admin' : 'Nobody' }),
-              h('dt', { text: 'Tools cleared for hires' }), h('dd', { text: hl.rules.clearedTools.join(', ') || 'None' }),
-              h('dt', { text: 'Roles in the catalog' }), h('dd', { text: String(hl.rules.roles) }),
-              h('dt', { text: 'Console address' }), h('dd', { text: hl.rules.publicUrl || 'Not set' })),
-            h('p', { class: 'faint', text: 'Edit org.json on the server to change these. They apply without a restart.' })),
-          h('section', { class: 'wide panel pad', 'aria-labelledby': 'lg' },
-            h('h2', { id: 'lg', class: 'section-title', text: 'Recent decisions' }),
-            au.ok === false ? msg(au) : au.entries.length ? h('ol', { class: 'log' }, au.entries.map(function (e) {
-              return h('li', null, h('span', { class: 'faint', text: ago(e.at) }), h('span', null, h('b', { style: 'font-weight:600', text: e.by + ' ' }), e.what.charAt(0).toLowerCase() + e.what.slice(1)));
-            })) : h('p', { class: 'muted', text: 'Nothing decided yet.' })))];
+          h('div', { class: 'spread' }, h('h2', { id: 'sp', class: 'label', text: 'Spend this month' }),
+            h('span', { class: 'big', style: 'font-size:24px', text: money(total) + (hl.spend.orgBudgetUSD ? ' of ' + money(hl.spend.orgBudgetUSD) : '') })),
+          hl.spend.orgBudgetUSD ? h('div', { class: 'meter' + (total / hl.spend.orgBudgetUSD >= 0.85 ? ' high' : ''), role: 'img', 'aria-label': Math.round((total / hl.spend.orgBudgetUSD) * 100) + '% of the org budget' },
+            h('span', { style: 'width:' + Math.min(100, (total / hl.spend.orgBudgetUSD) * 100).toFixed(0) + '%' })) : null,
+          spendBars('By manager', hl.spend.byManager, total),
+          hl.spend.byTeam.length ? spendBars('By team', hl.spend.byTeam, total) : null),
+        fl.ok !== false && fl.servers.length ? fleetPanel(fl.servers) : null,
+        h('section', { class: 'panel pad', 'aria-labelledby': 'lg' },
+          h('div', { class: 'spread', style: 'margin-bottom:8px' }, h('h2', { id: 'lg', class: 'label', text: 'Recent decisions' }), h('button', { class: 'btn small', text: 'Search and export', onclick: function () { go('log'); } })),
+          au.ok === false ? msg(au) : au.entries.length ? h('ol', { class: 'log' }, au.entries.map(function (e) {
+            return h('li', null, h('span', { class: 'faint', text: ago(e.at) }), h('span', null, h('b', { style: 'font-weight:600', text: e.by + ' ' }), e.what.charAt(0).toLowerCase() + e.what.slice(1)));
+          })) : h('p', { class: 'muted', text: 'Nothing decided yet.' }))];
     });
+  }
+
+
+  // ---- rules -----------------------------------------------------------
+
+  /// Tick boxes for the people who have access, plus a box for anyone else
+  /// by Slack member ID. Reads back as a list of IDs.
+  function peoplePicker(people, chosen, label) {
+    var picked = {};
+    (chosen || []).forEach(function (id) { picked[id] = true; });
+    var known = people.filter(function (p) { return p.slackUserId; });
+    var extra = h('input', { type: 'text', placeholder: 'Others, by Slack member ID (U012AB3CD), comma separated', 'aria-label': label + ': others by Slack member ID' });
+    extra.value = (chosen || []).filter(function (id) { return !known.some(function (p) { return p.slackUserId === id; }); }).join(', ');
+    var boxes = known.map(function (p) {
+      var b = h('input', { type: 'checkbox', checked: !!picked[p.slackUserId] });
+      return { id: p.slackUserId, box: b, el: h('label', { class: 'toggle' }, b, h('span', { text: p.name })) };
+    });
+    return {
+      node: h('div', { class: 'stack', style: 'gap:8px', role: 'group', 'aria-label': label }, boxes.length ? h('div', { class: 'picks' }, boxes.map(function (b) { return b.el; })) : null, extra),
+      value: function () {
+        var ids = boxes.filter(function (b) { return b.box.checked; }).map(function (b) { return b.id; });
+        extra.value.split(',').map(function (x) { return x.trim(); }).filter(Boolean).forEach(function (id) { if (ids.indexOf(id) < 0) ids.push(id); });
+        return ids;
+      }
+    };
+  }
+
+  function ruleSection(title, sub, fields, collect) {
+    var out = h('div', { 'aria-live': 'polite' });
+    var save = h('button', { class: 'btn go', text: 'Save' });
+    save.onclick = function () {
+      var patch = collect();
+      if (!patch) return;
+      var restore = busy(save, 'Saving…');
+      api('POST', '/api/admin/rules', { patch: patch }).then(function (x) {
+        restore(); out.textContent = ''; out.appendChild(msg(x, 'Saved. It applies now.'));
+      });
+    };
+    return h('section', { class: 'panel pad stack' },
+      h('div', null, h('h2', { class: 'section-title', text: title }), sub ? h('p', { class: 'muted', style: 'font-size:13.5px', text: sub }) : null),
+      fields, h('div', { class: 'foot' }, save, out));
+  }
+
+  function numOrNull(input) { var v = input.value.trim(); return v === '' ? null : Number(v); }
+  function list(text) { return text.split(',').map(function (x) { return x.trim(); }).filter(Boolean); }
+
+  function viewRules() {
+    return Promise.all([api('GET', '/api/admin/rules'), api('GET', '/api/admin/people')]).then(function (r) {
+      var res = r[0], ppl = r[1];
+      if (res.ok === false) return [msg(res)];
+      var R = res.rules, people = ppl.ok === false ? [] : ppl.people;
+
+      // Who the org is.
+      var name = h('input', { type: 'text', value: R.name, placeholder: 'Acme' });
+      var url = h('input', { type: 'text', value: R.publicUrl, placeholder: 'https://overcli.acme.internal' });
+      var tz = h('input', { type: 'text', value: R.timezone, placeholder: 'America/New_York' });
+      var identity = ruleSection('The org', 'Its name, the address people use, and the time zone schedules run in.',
+        h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Name', name), h('label', { class: 'field' }, 'Console address', url), h('label', { class: 'field' }, 'Time zone', tz)),
+        function () { return { name: name.value.trim() || null, publicUrl: url.value.trim() || null, timezone: tz.value.trim() || null }; });
+
+      // Hiring.
+      var everyone = h('input', { type: 'checkbox', checked: R.hirers === '*' });
+      var hirers = peoplePicker(people, R.hirers === '*' ? [] : R.hirers, 'Who may hire');
+      var syncHirers = function () { hirers.node.style.display = everyone.checked ? 'none' : ''; };
+      everyone.onchange = syncHirers; syncHirers();
+      var allowance = h('input', { type: 'number', min: '0', step: '1', value: String(R.budgetAllowanceUSD) });
+      var approvers = peoplePicker(people, R.approvers, 'Who approves hires over an allowance');
+      var visAdmin = h('input', { type: 'checkbox', checked: R.orgVisibilityNeedsAdmin });
+      var cleared = h('input', { type: 'text', value: R.allowedMcpServers.join(', '), placeholder: 'acme-crm, acme-docs' });
+      var hiring = ruleSection('Hiring', 'Who may hire, what their workers may cost before a hire needs approval, and who approves.',
+        h('div', { class: 'stack' },
+          h('label', { class: 'toggle' }, everyone, h('span', { text: 'Everyone with access may hire' })),
+          hirers.node,
+          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Allowance per person (USD a month)', allowance), h('label', { class: 'field' }, 'Tools any hire may have without approval', cleared)),
+          h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Approves hires over an allowance (none ticked: the admins)' }), approvers.node),
+          h('label', { class: 'toggle' }, visAdmin, h('span', { text: 'Making a worker visible to everyone needs an admin' }))),
+        function () {
+          return { hirers: everyone.checked ? '*' : hirers.value(), budgetAllowanceUSD: Number(allowance.value || 0), approvers: approvers.value(), orgVisibilityNeedsAdmin: visAdmin.checked, allowedMcpServers: list(cleared.value) };
+        });
+
+      // Spending.
+      var cap = h('input', { type: 'number', min: '1', step: '1', value: R.orgBudgetUSD == null ? '' : String(R.orgBudgetUSD), placeholder: 'No cap' });
+      var alertAt = h('input', { type: 'number', min: '0', max: '100', step: '5', value: String(R.alertAtPercent) });
+      var spending = ruleSection('Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.',
+        h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Org-wide budget (USD a month)', cap), h('label', { class: 'field' }, 'Warn at (% of a budget; 0 for never)', alertAt)),
+        function () { return { orgBudgetUSD: numOrNull(cap), alertAtPercent: Number(alertAt.value || 0) }; });
+
+      // Records.
+      var keep = h('input', { type: 'number', min: '7', step: '1', value: R.retentionDays == null ? '' : String(R.retentionDays), placeholder: 'Forever' });
+      var records = ruleSection('Records', 'How long the decision log and finished runs are kept. Older ones are deleted each night.',
+        h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Keep for (days, 7 or more)', keep)),
+        function () { return { retentionDays: numOrNull(keep) }; });
+
+      // Teams.
+      var teamRows = h('div', { class: 'listed' });
+      var addTeam = function (tname, members) {
+        var n = h('input', { type: 'text', value: tname || '', placeholder: 'Product', 'aria-label': 'Team name' });
+        var pick = peoplePicker(people, members || [], 'Team members');
+        var row = h('div', { class: 'panel stack' }, h('div', { class: 'spread' }, h('label', { class: 'field', style: 'flex:1' }, 'Team', n),
+          h('button', { class: 'btn quiet small', text: 'Remove', onclick: function () { row.remove(); } })), pick.node);
+        row._read = function () { return { name: n.value.trim(), members: pick.value() }; };
+        teamRows.appendChild(row);
+      };
+      Object.keys(R.teams).forEach(function (k) { addTeam(k, R.teams[k]); });
+      var teams = ruleSection('Teams', 'Groups of people. A worker set to "my team may ask it" is open to everyone who shares a team with its manager.',
+        h('div', { class: 'stack' }, teamRows, h('div', null, h('button', { class: 'btn small', text: 'Add a team', onclick: function () { addTeam('', []); } }))),
+        function () {
+          var out = {};
+          [].slice.call(teamRows.children).forEach(function (row) { var t = row._read(); if (t.name) out[t.name] = t.members; });
+          return { teams: out };
+        });
+
+      // Roles.
+      var roleRows = h('div', { class: 'listed' });
+      var addRole = function (role) {
+        role = role || { name: '', job: '', tools: [], budgetUSDPerMonth: 30 };
+        var n = h('input', { type: 'text', value: role.name, placeholder: 'Product analyst' });
+        var job = h('textarea', { 'aria-label': 'What the job is', placeholder: 'Reads the product board and usage data, and writes a weekly summary for the product team.' });
+        job.value = role.job;
+        var tools = h('input', { type: 'text', value: role.tools.join(', '), placeholder: 'acme-analytics' });
+        var b = h('input', { type: 'number', min: '1', step: '1', value: String(role.budgetUSDPerMonth) });
+        var row = h('div', { class: 'panel stack' },
+          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Role', n), h('label', { class: 'field' }, 'Budget (USD a month)', b)),
+          h('label', { class: 'field' }, 'The job', job), h('label', { class: 'field' }, 'Tools cleared for it', tools),
+          h('div', null, h('button', { class: 'btn quiet small', text: 'Remove role', onclick: function () { row.remove(); } })));
+        row._read = function () { return { name: n.value.trim(), job: job.value.trim(), tools: list(tools.value), budgetUSDPerMonth: Number(b.value || 0) }; };
+        roleRows.appendChild(row);
+      };
+      R.roles.forEach(addRole);
+      var roles = ruleSection('Role catalog', 'Approved jobs on the Hire page. Hiring one skips the interview, and its tools need no approver.',
+        h('div', { class: 'stack' }, roleRows, h('div', null, h('button', { class: 'btn small', text: 'Add a role', onclick: function () { addRole(null); } }))),
+        function () { return { roles: [].slice.call(roleRows.children).map(function (row) { return row._read(); }).filter(function (x) { return x.name; }) }; });
+
+      return [head('Rules', 'What people may do with the workers. Changes apply at once, and each is written to the decision log.', null),
+        identity, hiring, spending, teams, roles, records].concat(ssoSection(R)).concat(fleetSection(R));
+    });
+  }
+
+  function spendBars(title, rows, total) {
+    if (!rows.length) return h('p', { class: 'muted', text: 'No workers yet.' });
+    return h('div', { class: 'stack', style: 'gap:8px' }, h('span', { class: 'faint', text: title }), h('div', { class: 'bars' }, rows.map(function (m) {
+      var pct = total ? (m.spentUSD / total) * 100 : 0;
+      return h('div', null, h('span', { text: m.name }), h('div', { class: 'meter' }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })), h('span', { text: money(m.spentUSD) }));
+    })));
+  }
+
+  // ---- decision log ------------------------------------------------------
+
+  function viewLog() {
+    var q = h('input', { type: 'search', placeholder: 'A person, a worker, “approved”…', 'aria-label': 'Search the decision log' });
+    var from = h('input', { type: 'date', 'aria-label': 'From' });
+    var to = h('input', { type: 'date', 'aria-label': 'To' });
+    var list = h('div', { 'aria-live': 'polite' });
+    var params = function () {
+      var p = new URLSearchParams();
+      if (q.value.trim()) p.set('q', q.value.trim());
+      if (from.value) p.set('from', String(new Date(from.value + 'T00:00:00').getTime()));
+      if (to.value) p.set('to', String(new Date(to.value + 'T00:00:00').getTime() + 86400000));
+      p.set('limit', '500');
+      return p.toString();
+    };
+    var load = function () {
+      list.textContent = ''; list.appendChild(thinking('Searching…'));
+      api('GET', '/api/admin/audit?' + params()).then(function (au) {
+        list.textContent = '';
+        if (au.ok === false) { list.appendChild(msg(au)); return; }
+        if (!au.entries.length) { list.appendChild(h('p', { class: 'muted', text: 'No decisions match.' })); return; }
+        append(list, [h('p', { class: 'faint', text: au.total > au.entries.length ? 'Showing the newest ' + au.entries.length + ' of ' + au.total + '. Download them all below.' : plural(au.total, 'decision', 'decisions') + '.' }),
+          h('ol', { class: 'log' }, au.entries.map(function (e) {
+            return h('li', null, h('span', { class: 'faint', text: new Date(e.at).toLocaleString() }), h('span', null, h('b', { style: 'font-weight:600', text: e.by + ' ' }), e.what.charAt(0).toLowerCase() + e.what.slice(1)));
+          }))]);
+      });
+    };
+    var timer = null;
+    q.oninput = function () { clearTimeout(timer); timer = setTimeout(load, 300); };
+    from.onchange = load; to.onchange = load;
+    var download = h('button', { class: 'btn', text: 'Download CSV' });
+    download.onclick = function () {
+      var restore = busy(download, 'Preparing…');
+      fetch('/api/admin/audit.csv?' + params(), { headers: { Authorization: 'Bearer ' + token() } }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.blob();
+      }).then(function (blob) {
+        var a = h('a', { href: URL.createObjectURL(blob), download: 'decision-log.csv' });
+        document.body.appendChild(a); a.click(); a.remove();
+        restore();
+      }, function () { restore(); list.prepend(msg({ ok: false, error: 'The download did not work. Try again.' })); });
+    };
+    load();
+    return Promise.resolve([head('Decision log', 'Every hire, approval, promotion, rule change and offboarding, and who made it.', h('button', { class: 'btn', text: 'Back to Activity', onclick: function () { go('admin'); } })),
+      h('section', { class: 'panel pad stack' }, h('div', { class: 'row' }, h('span', { style: 'flex:1 1 260px' }, q), from, to, download), list)]);
+  }
+
+  // ---- library -----------------------------------------------------------
+
+  var SOURCE = { watch: 'Watch', webhook: 'Webhook', slack: 'Slack', ask: 'Asked' };
+
+  /// One thing a worker delivered: what set it off, what came of it, where
+  /// it went, and whether it was useful.
+  function libraryCard(x) {
+    var body = x.body ? h('div', { hidden: true, style: 'white-space:pre-wrap;font-size:13.5px;border-top:1px solid var(--line);padding-top:10px', text: x.body }) : null;
+    var out = h('div');
+    var rate = function (useful) {
+      return function () {
+        var path = x.kind === 'event' ? '/api/library/' + encodeURIComponent(x.id) + '/rate' : '/api/rate';
+        api('POST', path, x.kind === 'event' ? { useful: useful } : { entryId: x.id, useful: useful }).then(function (r) { out.textContent = ''; out.appendChild(msg(r, useful ? 'Marked useful. It leans that way next time.' : 'Noted.')); });
+      };
+    };
+    var src = x.source || {};
+    return h('article', { class: 'panel', style: 'padding:16px 18px;display:flex;flex-direction:column;gap:8px' },
+      h('div', { class: 'row', style: 'gap:10px;flex-wrap:nowrap;align-items:flex-start' }, avatar(x.workerId, x.workerName, 's'),
+        h('div', { style: 'flex:1;min-width:0;display:flex;flex-direction:column;gap:3px' },
+          h('span', { style: 'font-weight:600', text: x.title }),
+          h('span', { class: 'faint', text: [x.workerName, x.kind === 'work' ? 'From a run' : (SOURCE[src.kind] || 'Asked') + (src.triggerName ? ': ' + src.triggerName : ''), ago(x.at), x.minutes != null ? 'handled in ' + (x.minutes < 1 ? 'under a minute' : Math.round(x.minutes) + ' min') : null].filter(Boolean).join(' · ') })),
+        x.status === 'working' ? h('span', { class: 'tag go', text: 'Working' }) : x.status === 'failed' ? h('span', { class: 'tag bad', text: 'Failed' }) : null),
+      x.error ? h('div', { class: 'msg err', text: x.error }) : null,
+      x.deliveredTo && x.deliveredTo.length ? h('span', { class: 'faint', text: 'Delivered to ' + x.deliveredTo.join(', ') }) : null,
+      h('div', { class: 'row', style: 'gap:6px' },
+        body ? h('button', { class: 'btn small', text: 'Read', onclick: function (e) { body.hidden = !body.hidden; e.target.textContent = body.hidden ? 'Read' : 'Hide'; } }) : null,
+        src.url ? h('a', { class: 'btn small quiet', href: src.url, target: '_blank', rel: 'noopener', text: 'What set it off' }) : null,
+        (x.links || []).slice(0, 4).map(function (l) {
+          var label = /\/pull\/\d+/.test(l) ? 'PR #' + l.split('/pull/')[1].split(/[/?#]/)[0] : /docs\.google|notion\.so|confluence/.test(l) ? 'Doc' : l.replace(/^https?:\/\//, '').split('/')[0];
+          return h('a', { class: 'btn small', href: l, target: '_blank', rel: 'noopener', text: label });
+        }),
+        x.status === 'delivered' ? h('span', { style: 'margin-left:auto', class: 'row' },
+          h('button', { class: 'btn small icon', 'aria-label': 'Useful', 'aria-pressed': x.rating && x.rating.useful ? 'true' : 'false', onclick: rate(true) }, icon('up', 15)),
+          h('button', { class: 'btn small icon', 'aria-label': 'Not useful', 'aria-pressed': x.rating && !x.rating.useful ? 'true' : 'false', onclick: rate(false) }, icon('down', 15))) : null),
+      out, body);
+  }
+
+  function viewLibrary() {
+    return Promise.all([api('GET', '/api/library'), api('GET', '/api/workers')]).then(function (r) {
+      var all = r[0], workers = r[1];
+      var who = h('select', { 'aria-label': 'Whose work', style: 'width:auto' }, h('option', { value: '', text: 'Every worker' }), workers.map(function (w) { return h('option', { value: w.id, text: w.name }); }));
+      var q = h('input', { type: 'search', placeholder: 'Search what they delivered', 'aria-label': 'Search the library', style: 'min-height:38px' });
+      var list = h('div', { class: 'stack', style: 'gap:10px' });
+      var draw = function () {
+        var words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        list.textContent = '';
+        var shown = all.filter(function (x) { return (!who.value || x.workerId === who.value) && words.every(function (w) { return (x.title + ' ' + x.workerName + ' ' + (x.body || '')).toLowerCase().indexOf(w) >= 0; }); });
+        var groups = [], last = null;
+        shown.forEach(function (x) { var l = dayLabel(x.at); if (l !== last) { groups.push({ label: l, items: [] }); last = l; } groups[groups.length - 1].items.push(x); });
+        groups.forEach(function (g) { append(list, [h('h2', { class: 'label', style: 'margin-top:8px', text: g.label }), g.items.map(libraryCard)]); });
+        if (!shown.length) list.appendChild(h('div', { class: 'panel empty' }, h('div', { class: 'quote', text: all.length ? 'Nothing matches.' : 'Nothing delivered yet.' }),
+          h('p', { text: all.length ? 'Try other words or every worker.' : 'Give a worker a trigger, and what it delivers on each event lands here — with where it went and how long it took.' })));
+      };
+      who.onchange = draw; q.oninput = draw;
+      draw();
+      var month = new Date(); month.setDate(1); month.setHours(0, 0, 0, 0);
+      var thisMonth = all.filter(function (x) { return x.at >= month.getTime() && x.status === 'delivered'; });
+      var mins = thisMonth.filter(function (x) { return x.minutes != null; }).map(function (x) { return x.minutes; }).sort(function (a, b) { return a - b; });
+      var median = mins.length ? mins[Math.floor(mins.length / 2)] : null;
+      return [head('Library', 'Everything the workers delivered — on business events and on request — and where it went.'),
+        h('div', { class: 'grid2', style: 'grid-template-columns:repeat(auto-fit,minmax(200px,1fr))' },
+          h('div', { class: 'panel pad' }, h('div', { class: 'label', text: 'Delivered this month' }), h('div', { class: 'big', style: 'margin-top:6px', text: String(thisMonth.length) })),
+          h('div', { class: 'panel pad' }, h('div', { class: 'label', text: 'Typical time to handle' }), h('div', { class: 'big', style: 'margin-top:6px', text: median == null ? '—' : median < 1 ? '<1 min' : Math.round(median) + ' min' })),
+          h('div', { class: 'panel pad' }, h('div', { class: 'label', text: 'Rated useful' }), h('div', { class: 'big', style: 'margin-top:6px', text: (function () { var rated = thisMonth.filter(function (x) { return x.rating; }); return rated.length ? Math.round(100 * rated.filter(function (x) { return x.rating.useful; }).length / rated.length) + '%' : '—'; })() }))),
+        h('div', { class: 'row' }, who, h('span', { style: 'flex:1 1 280px' }, q)),
+        list];
+    });
+  }
+
+  // ---- triggers ------------------------------------------------------------
+
+  /// A trigger in one plain sentence: what sets it off.
+  function triggerWhen(t) {
+    if (t.kind === 'watch' && t.watch) return 'Checks ' + t.watch.server + ' (' + t.watch.tool + ') every ' + t.watch.everyMinutes + ' min for new items';
+    if (t.kind === 'webhook') return 'When another system posts to its webhook';
+    if (t.kind === 'slack' && t.slack) return (t.slack.on === 'reaction' ? 'When someone reacts :' + t.slack.reaction + ': to a message' : t.slack.on === 'mention' ? 'When someone mentions the bot' : 'On each new message') + ' in #' + t.slack.channel + (t.slack.contains ? ' containing “' + t.slack.contains + '”' : '');
+    return 'On an event';
+  }
+
+  function triggerRow(t, canEdit) {
+    var out = h('div', { 'aria-live': 'polite' });
+    var act = function (path, body, ok) { return function () { api('POST', path, body).then(function (x) { if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else if (ok) { out.textContent = ''; out.appendChild(msg({}, ok)); setTimeout(render, 1200); } else render(); }); }; };
+    var deliver = (t.deliver || []).map(function (d) { return d.kind === 'slack' ? 'posts in #' + d.channel : d.kind === 'thread' ? 'replies in the thread' : d.text; });
+    return h('article', { class: 'panel', style: 'padding:16px 18px;display:flex;flex-direction:column;gap:8px' + (t.enabled ? '' : ';opacity:.7') },
+      h('div', { class: 'spread', style: 'align-items:center' },
+        h('div', { class: 'row', style: 'gap:10px' }, h('span', { style: 'color:var(--go);display:inline-flex' }, icon('bolt', 17)), h('b', { style: 'font-weight:600', text: t.name }), h('span', { class: 'tag' + (t.enabled ? ' go' : ''), text: t.enabled ? 'On' : 'Off' })),
+        canEdit ? h('div', { class: 'row', style: 'gap:6px' },
+          t.kind === 'watch' && t.enabled ? h('button', { class: 'btn small', text: 'Check now', onclick: act('/api/triggers/' + encodeURIComponent(t.id) + '/check', {}, 'Checked.') }) : null,
+          h('button', { class: 'btn small', text: t.enabled ? 'Pause' : 'Turn on', onclick: act('/api/triggers/' + encodeURIComponent(t.id), { patch: { enabled: !t.enabled } }) }),
+          h('button', { class: 'btn small quiet', text: 'Remove', onclick: function () { if (window.confirm('Remove “' + t.name + '”? What it already delivered stays in the Library.')) act('/api/triggers/' + encodeURIComponent(t.id) + '/remove', {})(); } })) : null),
+      h('span', { class: 'muted', style: 'font-size:13.5px', text: triggerWhen(t) + ' → ' + t.instructions.split('\n')[0].slice(0, 140) + (deliver.length ? ' → ' + deliver.join(', ') : '') }),
+      h('span', { class: 'faint', text: [t.handledTotal + ' handled', t.handledToday + ' today of ' + t.maxPerDay, t.lastFiredAt ? 'last ' + ago(t.lastFiredAt) : 'not set off yet', t.kind === 'watch' && t.lastPolledAt ? 'checked ' + ago(t.lastPolledAt) : null].filter(Boolean).join(' · ') }),
+      t.lastError ? h('div', { class: 'msg err', text: t.lastError }) : null,
+      out);
+  }
+
+  /// Build a trigger in plain steps: what sets it off, what to do, where the
+  /// result goes. A watch can be tried before it is saved.
+  function triggerBuilder(w, done) {
+    var kind = 'watch';
+    var name = h('input', { type: 'text', placeholder: 'e.g. New bugs in Support Backlog', 'aria-label': 'Name' });
+    var kinds = h('div', { class: 'grid2', role: 'radiogroup', 'aria-label': 'What sets it off', style: 'grid-template-columns:repeat(auto-fit,minmax(200px,1fr))' });
+    var parts = {};
+    // Watch
+    var server = h('select', { 'aria-label': 'Tool' }, h('option', { value: '', text: 'Loading tools…' }));
+    var call = h('select', { 'aria-label': 'Call' }, h('option', { value: '', text: 'Pick a tool first' }));
+    var args = h('textarea', { 'aria-label': 'Arguments (JSON)', placeholder: '{ "jql": "project = ACME AND sprint = \\"Support Backlog\\" AND statusCategory != Done" }', style: 'min-height:70px;font-family:var(--mono);font-size:12.5px' });
+    var every = h('select', { 'aria-label': 'How often', style: 'width:auto' }, [5, 10, 15, 30, 60].map(function (n) { return h('option', { value: String(n), text: 'every ' + n + ' min', selected: n === 15 }); }));
+    var itemsPath = h('input', { type: 'text', placeholder: 'e.g. issues', 'aria-label': 'Where the list is' });
+    var idPath = h('input', { type: 'text', placeholder: 'e.g. key', 'aria-label': 'What identifies an item' });
+    var testOut = h('div', { 'aria-live': 'polite' });
+    var parseArgs = function () { if (!args.value.trim()) return {}; try { return JSON.parse(args.value); } catch (e) { return null; } };
+    var test = h('button', { class: 'btn', text: 'Try it now' });
+    test.onclick = function () {
+      var a = parseArgs();
+      if (a === null) { testOut.textContent = ''; testOut.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
+      var restore = busy(test, 'Asking the tool…');
+      api('POST', '/api/triggers/test', { watch: { server: server.value, tool: call.value, args: a, everyMinutes: 15, itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() } }).then(function (x) {
+        restore(); testOut.textContent = '';
+        if (x.ok === false) { testOut.appendChild(msg(x)); return; }
+        append(testOut, [h('p', { class: 'faint', text: 'It sees ' + plural(x.items.length, 'item', 'items') + ' now. These are skipped when it starts; it acts on new ones after.' }),
+          h('ul', { style: 'margin:6px 0 0;padding-left:18px;font-size:13.5px' }, x.items.slice(0, 8).map(function (i) { return h('li', { text: i.title }); }))]);
+      });
+    };
+    api('GET', '/api/tools').then(function (r) {
+      server.textContent = '';
+      var tools = r.ok === false ? [] : r.tools;
+      if (!tools.length) { server.appendChild(h('option', { value: '', text: 'No tools installed — add one on Setup → Tools' })); return; }
+      server.appendChild(h('option', { value: '', text: 'Pick a tool' }));
+      tools.forEach(function (t) { server.appendChild(h('option', { value: t.name, text: t.name })); });
+    });
+    server.onchange = function () {
+      call.textContent = ''; call.appendChild(h('option', { value: '', text: 'Loading…' }));
+      if (!server.value) return;
+      api('GET', '/api/tools/' + encodeURIComponent(server.value) + '/calls').then(function (r) {
+        call.textContent = '';
+        if (r.ok === false) { call.appendChild(h('option', { value: '', text: r.error })); return; }
+        r.tools.forEach(function (t) { call.appendChild(h('option', { value: t.name, text: t.name, title: t.description || '' })); });
+      });
+    };
+    parts.watch = h('div', { class: 'stack' },
+      h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Tool', server), h('label', { class: 'field' }, 'What to ask it', call)),
+      h('label', { class: 'field' }, 'With (JSON)', args),
+      h('div', { class: 'row' }, h('span', { class: 'faint', text: 'Check' }), every),
+      h('details', null, h('summary', { text: 'If it can’t tell items apart' }), h('div', { class: 'grid2', style: 'margin-top:10px' }, h('label', { class: 'field' }, 'Where the list is', itemsPath), h('label', { class: 'field' }, 'What identifies an item', idPath))),
+      h('div', { class: 'row' }, test), testOut);
+    // Webhook
+    var hookId = h('input', { type: 'text', placeholder: 'optional, e.g. issue.key', 'aria-label': 'What identifies an event' });
+    parts.webhook = h('div', { class: 'stack' }, h('p', { class: 'muted', text: 'You get a secret address when you save. Paste it into Jira automation, a GitHub webhook, your CRM or Zapier. Each post is one event; repeats of the same event are handled once.' }),
+      h('label', { class: 'field', style: 'max-width:360px' }, 'What identifies an event', hookId));
+    // Slack
+    var channel = h('input', { type: 'text', placeholder: 'C012AB3CD', 'aria-label': 'Channel ID' });
+    var on = h('select', { 'aria-label': 'On' }, h('option', { value: 'message', text: 'each new message' }), h('option', { value: 'reaction', text: 'an emoji reaction' }), h('option', { value: 'mention', text: 'a mention of the bot' }));
+    var emoji = h('input', { type: 'text', placeholder: 'bug', 'aria-label': 'Emoji' });
+    var contains = h('input', { type: 'text', placeholder: 'optional', 'aria-label': 'Only if it contains' });
+    var emojiField = h('label', { class: 'field' }, 'Emoji', emoji);
+    on.onchange = function () { emojiField.style.display = on.value === 'reaction' ? '' : 'none'; };
+    on.onchange();
+    parts.slack = h('div', { class: 'stack' }, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)),
+      h('p', { class: 'faint', text: 'Invite the overcli bot to the channel first (/invite @overcli).' }));
+    var KINDS = [['watch', 'Something new shows up in a tool', 'A new ticket, deal, row or message, checked every few minutes. Works anywhere.'],
+      ['webhook', 'Another system tells us', 'Jira, GitHub, a CRM or Zapier posts each event to a secret address.'],
+      ['slack', 'Something happens in Slack', 'A new message, a mention, or an emoji reaction in a channel.']];
+    var drawKinds = function () {
+      kinds.textContent = '';
+      KINDS.forEach(function (k) {
+        kinds.appendChild(h('button', { type: 'button', role: 'radio', 'aria-checked': kind === k[0] ? 'true' : 'false', class: 'place', style: 'min-height:0;padding:14px' + (kind === k[0] ? ';border-color:var(--go);box-shadow:0 0 0 2px var(--go-soft)' : ''), onclick: function () { kind = k[0]; drawKinds(); sync(); } },
+          h('b', { style: 'font-size:15px', text: k[1] }), h('span', { class: 'muted', style: 'font-size:13px', text: k[2] })));
+      });
+    };
+    var kindBody = h('div');
+    var thread = h('input', { type: 'checkbox' });
+    var threadRow = h('label', { class: 'toggle' }, thread, h('span', { text: 'Reply in the Slack thread it came from' }));
+    var sync = function () { kindBody.textContent = ''; kindBody.appendChild(parts[kind]); threadRow.style.display = kind === 'slack' ? '' : 'none'; };
+    drawKinds(); sync();
+    var instructions = h('textarea', { 'aria-label': 'What to do with each one', placeholder: 'e.g. Triage the ticket: reproduce it if you can, label it, and say who owns it. If it’s small and clear, fix it and open a PR.', style: 'min-height:90px' });
+    var postTo = h('input', { type: 'text', placeholder: 'Channel ID, e.g. C012AB3CD (optional)', 'aria-label': 'Post each result in this Slack channel' });
+    var itself = h('input', { type: 'text', placeholder: 'e.g. Comment your triage on the ticket (optional)', 'aria-label': 'The worker delivers it itself' });
+    var perDay = h('input', { type: 'number', min: '1', max: '500', value: '50', 'aria-label': 'At most per day', style: 'width:110px' });
+    var out = h('div', { 'aria-live': 'polite' });
+    var save = h('button', { class: 'btn go', text: 'Save the trigger' });
+    save.onclick = function () {
+      var a = kind === 'watch' ? parseArgs() : {};
+      if (a === null) { out.textContent = ''; out.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
+      var deliver = [];
+      if (postTo.value.trim()) deliver.push({ kind: 'slack', channel: postTo.value.trim() });
+      if (kind === 'slack' && thread.checked) deliver.push({ kind: 'thread' });
+      if (itself.value.trim()) deliver.push({ kind: 'worker', text: itself.value.trim() });
+      var trigger = { name: name.value.trim(), kind: kind, instructions: instructions.value.trim(), deliver: deliver, maxPerDay: Number(perDay.value) || 50,
+        watch: { server: server.value, tool: call.value, args: a, everyMinutes: Number(every.value), itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() },
+        slack: { channel: channel.value.trim(), on: on.value, reaction: emoji.value.trim(), contains: contains.value.trim() },
+        webhook: { idPath: hookId.value.trim() } };
+      var restore = busy(save, 'Saving…');
+      api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/triggers', { trigger: trigger }).then(function (x) {
+        restore(); out.textContent = '';
+        if (x.ok === false) { out.appendChild(msg(x)); return; }
+        if (x.webhookPath) {
+          var url = location.origin + x.webhookPath;
+          append(out, [msg({}, 'Saved. Here is its secret address — shown once. Anyone with it can set the trigger off, so keep it like a password.'), linkBox(url, 'POST JSON events here:'),
+            codeBlock('curl -X POST ' + url + ' -H "Content-Type: application/json" -d \'{"title":"Test event","id":"test-1"}\''),
+            h('button', { class: 'btn', text: 'Done', onclick: done })]);
+          return;
+        }
+        done();
+      });
+    };
+    return h('section', { class: 'panel pad stack', style: 'gap:18px' },
+      h('h2', { class: 'section-title', text: 'New trigger for ' + w.name }),
+      h('label', { class: 'field', style: 'max-width:520px' }, 'Name', name),
+      h('div', { class: 'stack', style: 'gap:8px' }, h('span', { class: 'label', text: '1 · What sets it off' }), kinds, kindBody),
+      h('div', { class: 'stack', style: 'gap:8px' }, h('span', { class: 'label', text: '2 · What it does with each one' }), instructions,
+        h('p', { class: 'faint', text: 'It gets the event’s details with this. ' + (w.trust === 'probation' ? 'On probation, it proposes what it would do and waits for you.' : 'Trusted, it goes ahead.') })),
+      h('div', { class: 'stack', style: 'gap:8px' }, h('span', { class: 'label', text: '3 · Where the result goes' }),
+        h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Post each result in a Slack channel', postTo), h('label', { class: 'field' }, 'Or the worker delivers it itself', itself)),
+        threadRow, h('p', { class: 'faint', text: 'Everything it delivers is also kept in the Library.' })),
+      h('div', { class: 'row' }, h('span', { class: 'faint', text: 'At most' }), perDay, h('span', { class: 'faint', text: 'a day, to keep cost in check.' })),
+      h('div', { class: 'foot' }, save, h('button', { class: 'btn quiet', text: 'Cancel', onclick: done }), out));
+  }
+
+  function triggersView(w, d) {
+    var list = d.triggers || [];
+    var holder = h('div', { class: 'stack', style: 'gap:12px' });
+    var showBuilder = function () { holder.textContent = ''; holder.appendChild(triggerBuilder(w, function () { render(); })); holder.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    var v = d.value;
+    return h('div', { class: 'stack', style: 'gap:16px' },
+      v ? h('div', { class: 'grid2', style: 'grid-template-columns:repeat(auto-fit,minmax(170px,1fr))' },
+        h('div', { class: 'panel pad' }, h('div', { class: 'label', text: 'Handled this month' }), h('div', { class: 'big', style: 'margin-top:6px', text: String(v.handled) })),
+        h('div', { class: 'panel pad' }, h('div', { class: 'label', text: 'Typical time' }), h('div', { class: 'big', style: 'margin-top:6px', text: v.medianMinutes == null ? '—' : v.medianMinutes < 1 ? '<1 min' : Math.round(v.medianMinutes) + ' min' })),
+        h('div', { class: 'panel pad' }, h('div', { class: 'label', text: 'Cost per item' }), h('div', { class: 'big', style: 'margin-top:6px', text: v.costPerItemUSD == null ? '—' : money(v.costPerItemUSD) })),
+        h('div', { class: 'panel pad' }, h('div', { class: 'label', text: 'Rated useful' }), h('div', { class: 'big', style: 'margin-top:6px', text: v.rated ? Math.round((100 * v.useful) / v.rated) + '%' : '—' }))) : null,
+      h('div', { class: 'spread', style: 'align-items:center' },
+        h('p', { class: 'muted', text: list.length ? 'What sets ' + w.name + ' off on its own, besides its schedule (' + w.schedule.toLowerCase() + ').' : w.name + ' only works on its schedule (' + w.schedule.toLowerCase() + ') and when asked. Give it a trigger so it acts the moment work shows up.' }),
+        w.youManage ? h('button', { class: 'btn go', onclick: showBuilder }, icon('bolt', 15), 'Add a trigger') : null),
+      list.map(function (t) { return triggerRow(t, w.youManage); }),
+      holder);
+  }
+
+  // ---- setup (org) -------------------------------------------------------
+
+  /// Everything an admin sets up, in one place: how ready the server is,
+  /// the tools workers can use, and the rules.
+  function viewSetup() {
+    var tab = state.setupTab || 'ready';
+    var tabs_ = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Setup' },
+      [['ready', 'Readiness'], ['tools', 'Tools'], ['rules', 'Rules, spending and sign-in']].map(function (t) {
+        return h('button', { role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', text: t[1], onclick: function () { state.setupTab = t[0]; render(); } });
+      }));
+    var headNode = head('Setup', 'What this server needs so workers can do their jobs. Everything here applies at once.');
+    var body = tab === 'tools' ? viewTools() : tab === 'rules' ? viewRules() : readiness();
+    return body.then(function (nodes) { return [headNode, tabs_].concat(tab === 'ready' ? nodes : nodes.slice(1)); });
+  }
+
+  function readiness() {
+    return Promise.all([api('GET', '/api/admin/health'), api('GET', '/api/tools'), api('GET', '/api/projects'), api('GET', '/api/admin/people'), api('GET', '/api/admin/requests')]).then(function (r) {
+      var hl = r[0], tl = r[1], places = r[2] || [], ppl = r[3], req = r[4];
+      if (hl.ok === false) return [msg(hl)];
+      var item = function (name) { return hl.items.filter(function (i) { return i.name === name; })[0]; };
+      var model = item('Models'), slack = item('Slack'), sso = item('Company sign-in');
+      var missing = tl.ok === false ? [] : tl.missing;
+      var people = ppl.ok === false ? [] : ppl.people;
+      var asking = req.ok === false ? 0 : req.requests.length;
+      var checks = [
+        { ok: !!(model && model.ok), title: 'A model to think with', detail: model ? model.detail : 'Checking…', optional: false },
+        { ok: !!(slack && slack.ok), title: 'Slack, for questions and approvals', detail: slack ? slack.detail : 'Not connected.', optional: false,
+          action: slack && slack.ok ? null : ['How to connect it', function () { go('connect'); }] },
+        { ok: places.length > 0, title: 'A place to work', detail: places.length ? places.map(function (p) { return p.name; }).join(', ') : 'No repo or folder yet. An operator adds one with: overcli projects add <folder>', optional: false },
+        { ok: !missing.length, title: 'The tools workers need', detail: missing.length ? missing.map(function (m) { return m.name + ' is missing — ' + m.workers.join(', ') + (m.workers.length === 1 ? ' needs' : ' need') + ' it'; }).join('; ') : 'Every tool a worker lists is installed.', optional: false,
+          action: missing.length ? ['Install ' + missing[0].name, function () { state.setupTab = 'tools'; render(); }] : null, bad: missing.length > 0 },
+        { ok: people.length > 1 && !asking, title: 'People', detail: plural(people.length, 'person', 'people') + ' in' + (asking ? ', ' + asking + ' asking to join' : ''), optional: false,
+          action: asking ? ['Let them in', function () { go('people'); }] : people.length < 2 ? ['Invite people', function () { go('people'); }] : null },
+        { ok: !!(sso && sso.ok), title: 'Company sign-in', detail: sso ? sso.detail : 'Optional. People sign in through Slack links until you set it up.', optional: true,
+          action: sso && sso.ok ? null : ['Set it up', function () { state.setupTab = 'rules'; render(); }] }
+      ];
+      var core = checks.filter(function (c) { return !c.optional; });
+      var done = core.filter(function (c) { return c.ok; }).length;
+      return [h('section', { class: 'panel pad stack', 'aria-labelledby': 'ready' },
+        h('div', { class: 'spread' }, h('h2', { id: 'ready', class: 'section-title', style: 'font-size:18px', text: done === core.length ? 'Ready' : done + ' of ' + core.length + ' ready' }),
+          h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Check again', onclick: function () { render(); } })),
+        h('div', { class: 'meter', style: 'height:8px' }, h('span', { style: 'width:' + Math.round((done / core.length) * 100) + '%' })),
+        h('ul', { class: 'checklist' }, checks.map(function (c) {
+          return h('li', null,
+            h('span', { class: c.ok ? 'ck-ok' : c.bad ? 'ck-bad' : 'ck-off', style: 'flex:none;display:inline-flex' }, icon(c.ok ? 'check' : 'alert', 20)),
+            h('span', null, h('span', { style: 'font-weight:550', text: c.title + (c.optional ? ' (optional)' : '') }), h('span', { class: 'faint', style: c.bad ? 'color:var(--bad)' : '', text: c.detail })),
+            c.action ? h('button', { class: 'btn small' + (c.bad ? ' bad' : ''), text: c.action[0], onclick: c.action[1] }) : null);
+        })))];
+    });
+  }
+
+  // ---- tools (MCP servers on this server) --------------------------------
+
+  /// "KEY=value" lines, or "Key: value" for headers, into an object.
+  function kvLines(text, sep) {
+    var out = {};
+    text.split('\n').forEach(function (line) {
+      var i = line.indexOf(sep);
+      if (i < 1) return;
+      var k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
+      if (k) out[k] = v;
+    });
+    return out;
+  }
+
+  /// Split a command line on spaces, keeping "quoted parts" whole.
+  function splitArgs(text) {
+    var out = [], m, re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+    while ((m = re.exec(text))) out.push(m[1] != null ? m[1] : m[2] != null ? m[2] : m[3]);
+    return out;
+  }
+
+  /// The install form. prefill is a name, or what a published worker
+  /// brought: its command or URL and the names of its settings, no values.
+  function toolForm(prefill, onDone) {
+    var tpl = prefill && typeof prefill === 'object' ? prefill : null;
+    var name = h('input', { type: 'text', value: tpl ? tpl.name : prefill || '', placeholder: 'jira', 'aria-label': 'Name' });
+    var kind = h('select', { 'aria-label': 'How it runs' }, h('option', { value: 'command', text: 'A command on the server (npx, uvx, docker…)' }), h('option', { value: 'http', text: 'A remote server, by URL' }));
+    var cmd = h('input', { type: 'text', placeholder: 'npx -y @acme/jira-mcp', 'aria-label': 'Command' });
+    var env = h('textarea', { placeholder: 'JIRA_URL=https://acme.atlassian.example\nJIRA_API_TOKEN=…', 'aria-label': 'Environment', style: 'min-height:70px;font-family:var(--mono, monospace)' });
+    var url = h('input', { type: 'text', placeholder: 'https://mcp.acme.example/mcp', 'aria-label': 'URL' });
+    var headers = h('textarea', { placeholder: 'Authorization: Bearer …', 'aria-label': 'Headers', style: 'min-height:56px;font-family:var(--mono, monospace)' });
+    var cmdPart = h('div', { class: 'stack', style: 'gap:10px' }, h('label', { class: 'field' }, 'Command', cmd), h('label', { class: 'field' }, 'Settings and secrets (one KEY=value a line)', env));
+    var httpPart = h('div', { class: 'stack', style: 'gap:10px' }, h('label', { class: 'field' }, 'URL', url), h('label', { class: 'field' }, 'Headers (one "Name: value" a line)', headers));
+    var sync = function () { cmdPart.style.display = kind.value === 'command' ? '' : 'none'; httpPart.style.display = kind.value === 'http' ? '' : 'none'; };
+    if (tpl) {
+      kind.value = tpl.kind;
+      if (tpl.kind === 'http') { url.value = tpl.url || ''; headers.value = tpl.headerKeys.map(function (k) { return k + ': '; }).join('\n'); }
+      else { cmd.value = [tpl.command || ''].concat(tpl.args || []).map(function (a) { return /\s/.test(a) ? '"' + a + '"' : a; }).join(' '); env.value = tpl.envKeys.map(function (k) { return k + '='; }).join('\n'); }
+    }
+    kind.onchange = sync; sync();
+    var out = h('div', { 'aria-live': 'polite' });
+    var save = h('button', { class: 'btn go', text: 'Install' });
+    save.onclick = function () {
+      var parts = splitArgs(cmd.value.trim());
+      var tool = kind.value === 'http'
+        ? { name: name.value.trim(), kind: 'http', url: url.value.trim(), headers: kvLines(headers.value, ':') }
+        : { name: name.value.trim(), kind: 'command', command: parts[0] || '', args: parts.slice(1), env: kvLines(env.value, '=') };
+      var restore = busy(save, 'Installing…');
+      api('POST', '/api/admin/tools', { tool: tool }).then(function (x) {
+        restore(); out.textContent = '';
+        if (x.ok === false) { out.appendChild(msg(x)); return; }
+        out.appendChild(msg({}, 'Installed. Workers that list ' + tool.name + ' use it from their next run. Press “Check them” to see that it starts.'));
+        if (onDone) setTimeout(onDone, 1200);
+      });
+    };
+    return h('div', { class: 'stack' },
+      tpl ? h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Filled in from how it was set up where the worker was built. Add the values for each setting: secrets never travel with a published worker.' }) : null,
+      h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Name (what workers list)', name), h('label', { class: 'field' }, 'How it runs', kind)),
+      cmdPart, httpPart,
+      h('p', { class: 'faint', text: 'Secrets are written to the server’s own config on its volume and never shown again. Connectors that sign in through a browser (claude.ai connectors, OAuth pop-ups) cannot work on a server: use one that takes an API token.' }),
+      h('div', { class: 'foot' }, save, out));
+  }
+
+  function viewTools() {
+    return api('GET', '/api/tools').then(function (r) {
+      if (r.ok === false) return [msg(r)];
+      var lightFor = function (status) { return status === 'connected' ? ' ok' : status ? ' bad' : ''; };
+      var statusText = function (status) {
+        return !status ? 'Not checked yet' : status === 'connected' ? 'Starts and connects' : status === 'needs-auth' ? 'Needs a browser sign-in, which a server cannot do' : status === 'failed' ? 'Fails to start: check the command and its settings' : status;
+      };
+      var check = h('button', { class: 'btn', text: 'Check them' });
+      var checkOut = h('div', { 'aria-live': 'polite' });
+      check.onclick = function () {
+        var restore = busy(check, 'Checking… (up to a minute)');
+        api('POST', '/api/admin/tools/check').then(function (x) {
+          restore();
+          if (x.ok === false) { checkOut.textContent = ''; checkOut.appendChild(msg(x)); return; }
+          render();
+        });
+      };
+      var addPanel = h('section', { class: 'panel pad stack', hidden: true }, h('h2', { class: 'section-title', text: 'Install a tool' }), toolForm('', render));
+      var missing = r.missing.length ? h('section', { class: 'panel pad stack', 'aria-labelledby': 'miss' },
+        h('h2', { id: 'miss', class: 'section-title', text: 'Workers are missing these' }),
+        h('p', { class: 'muted', style: 'font-size:13.5px', text: 'A worker brought from someone’s desktop names the tools it had there. Until one is installed here under the same name, the worker runs without it.' }),
+        h('div', { class: 'listed' }, r.missing.map(function (m) {
+          var slot = h('div');
+          return h('div', { class: 'panel stack', style: 'gap:8px' },
+            h('div', { class: 'spread', style: 'align-items:center' },
+              h('div', null, h('b', { text: m.name }), h('span', { class: 'faint', text: '  needed by ' + m.workers.join(', ') })),
+              r.canEdit ? h('button', { class: 'btn small', text: 'Install ' + m.name, onclick: function (e) { e.target.remove(); slot.appendChild(toolForm(m.template || m.name, render)); } }) : null),
+            slot);
+        }))) : null;
+      var installed = h('section', { class: 'panel pad stack', 'aria-labelledby': 'inst' },
+        h('div', { class: 'spread', style: 'align-items:center' }, h('h2', { id: 'inst', class: 'section-title', text: 'Installed on this server' }),
+          r.canEdit ? h('div', { class: 'row' }, check, h('button', { class: 'btn go', text: 'Install a tool', onclick: function () { addPanel.hidden = false; addPanel.scrollIntoView({ behavior: 'smooth' }); } })) : null),
+        r.checkedAt ? h('p', { class: 'faint', text: 'Checked ' + ago(r.checkedAt) + '.' }) : null, checkOut,
+        r.tools.length ? h('div', { class: 'listed' }, r.tools.map(function (t) {
+          var out = h('div');
+          return h('div', { class: 'panel stack', style: 'gap:6px' },
+            h('div', { class: 'spread', style: 'align-items:center' },
+              h('div', { class: 'row', style: 'gap:10px' }, h('span', { class: 'light' + lightFor(t.status) }), h('b', { text: t.name }), h('span', { class: 'tag', text: t.kind === 'http' ? 'Remote' : 'Command' })),
+              r.canEdit ? h('button', { class: 'btn quiet small', text: 'Remove', onclick: function () {
+                if (!window.confirm('Remove ' + t.name + '? Workers that use it carry on without it.')) return;
+                api('POST', '/api/admin/tools/' + encodeURIComponent(t.name) + '/remove').then(function (x) { if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else render(); });
+              } }) : null),
+            h('code', { class: 'faint', style: 'font-size:12.5px;word-break:break-all', text: t.target }),
+            h('div', { class: 'faint', text: statusText(t.status) + (t.secrets.length ? ' · sets ' + t.secrets.join(', ') : '') + ' · ' + (t.usedBy.length ? 'used by ' + t.usedBy.join(', ') : 'no worker lists it yet') }),
+            out);
+        })) : h('p', { class: 'muted', text: 'Nothing installed yet. Workers here can use only their built-in tools: files, the shell (as allowed) and the web.' }));
+      return [head('Tools', 'The MCP servers this server’s workers can use: Jira, a CRM, a database. A worker gets a tool when its name here matches one it lists.'),
+        missing, installed, addPanel];
+    });
+  }
+
+  function ssoSection(R) {
+    var sso = R.sso || { issuer: '', clientId: '', allowedDomains: [], required: false };
+    var issuer = h('input', { type: 'text', value: sso.issuer, placeholder: 'https://acme.okta.example' });
+    var clientId = h('input', { type: 'text', value: sso.clientId, placeholder: '0oa1b2c3d4' });
+    var domains = h('input', { type: 'text', value: sso.allowedDomains.join(', '), placeholder: 'acme.com' });
+    var required = h('input', { type: 'checkbox', checked: sso.required });
+    var callback = (R.publicUrl || location.origin) + '/sso/callback';
+    var peopleRows = h('div', { class: 'stack', style: 'gap:8px' });
+    var addPerson = function (email, id) {
+      var e = h('input', { type: 'text', value: email || '', placeholder: 'pat@acme.com', 'aria-label': 'Work email' });
+      var i = h('input', { type: 'text', value: id || '', placeholder: 'U012AB3CD', 'aria-label': 'Slack member ID' });
+      var row = h('div', { class: 'row' }, h('span', { style: 'flex:1 1 200px' }, e), h('span', { style: 'flex:1 1 140px' }, i), h('button', { class: 'btn quiet small', text: 'Remove', onclick: function () { row.remove(); } }));
+      row._read = function () { return [e.value.trim().toLowerCase(), i.value.trim()]; };
+      peopleRows.appendChild(row);
+    };
+    Object.keys(R.people).forEach(function (k) { addPerson(k, R.people[k]); });
+    return [ruleSection('Sign-in', 'Let people sign in with the company account (Okta, Entra ID, Google — anything that speaks OpenID Connect).',
+      h('div', { class: 'stack' },
+        h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Issuer', issuer), h('label', { class: 'field' }, 'Client ID', clientId), h('label', { class: 'field' }, 'Only these email domains (optional)', domains)),
+        h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'In the provider, register this as the redirect (sign-in callback) address. A confidential client’s secret goes in OVERCLI_SSO_CLIENT_SECRET on the server, never here.' }), codeBlock(callback)),
+        h('label', { class: 'toggle' }, required, h('span', { text: 'Everyone signs in this way. Invite links still give people their role, but no longer sign them in.' })),
+        h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Who is who. overcli asks Slack for each email (the bot needs users:read.email); list anyone Slack can’t match here.' }),
+          peopleRows, h('div', null, h('button', { class: 'btn small', text: 'Add a person', onclick: function () { addPerson('', ''); } })))),
+      function () {
+        var people = {};
+        [].slice.call(peopleRows.children).forEach(function (row) { var v = row._read(); if (v[0] && v[1]) people[v[0]] = v[1]; });
+        var on = issuer.value.trim() && clientId.value.trim();
+        return { sso: on ? { issuer: issuer.value.trim(), clientId: clientId.value.trim(), allowedDomains: list(domains.value), required: required.checked } : null, people: people };
+      })];
+  }
+  function fleetPanel(servers) {
+    return h('section', { class: 'panel pad stack', 'aria-labelledby': 'fleet' },
+      h('div', null, h('h2', { id: 'fleet', class: 'section-title', text: 'Your other servers' }),
+        h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Each department’s overcli, read with an admin token from that server. Open one to manage it.' })),
+      h('div', { class: 'listed' }, servers.map(function (sv) {
+        var out = h('div');
+        var body = [h('div', { class: 'spread', style: 'align-items:center' },
+          h('div', { class: 'row', style: 'gap:10px' }, h('span', { class: 'light' + (sv.ok ? ' ok' : ' bad') }),
+            h('b', { text: sv.name }), sv.org && sv.org !== sv.name ? h('span', { class: 'faint', text: sv.org }) : null),
+          h('div', { class: 'row' },
+            sv.connected && sv.spentUSD != null ? h('span', { text: money(sv.spentUSD) + (sv.orgBudgetUSD ? ' of ' + money(sv.orgBudgetUSD) : '') + ' this month' }) : null,
+            h('a', { class: 'btn small', href: sv.url, target: '_blank', rel: 'noopener', text: 'Open' })))];
+        if (sv.workers) body.push(h('div', { class: 'faint', text: sv.workers }));
+        if (sv.error) body.push(h('div', { class: 'faint', text: sv.error }));
+        (sv.problems || []).forEach(function (p) { body.push(h('div', { class: 'faint', text: p })); });
+        if (!sv.connected || /token/.test(sv.error || '')) {
+          var t = h('input', { type: 'text', class: 'secret', placeholder: 'ocli_… (overcli tokens create --name "Fleet" --admin, on that server)', 'aria-label': 'Admin token for ' + sv.name, autocomplete: 'off', 'data-1p-ignore': true });
+          var save = h('button', { class: 'btn small', text: 'Connect', onclick: function () {
+            api('POST', '/api/admin/fleet/token', { url: sv.url, token: t.value }).then(function (x) { out.textContent = ''; if (x.ok === false) out.appendChild(msg(x)); else render(); });
+          } });
+          body.push(h('div', { class: 'row' }, h('span', { style: 'flex:1 1 280px' }, t), save));
+        }
+        body.push(out);
+        return h('div', { class: 'panel stack', style: 'gap:6px' }, body);
+      })));
+  }
+
+  function fleetSection(R) {
+    var rows = h('div', { class: 'stack', style: 'gap:8px' });
+    var add = function (name, url) {
+      var n = h('input', { type: 'text', value: name || '', placeholder: 'Sales', 'aria-label': 'Server name' });
+      var u = h('input', { type: 'text', value: url || '', placeholder: 'https://overcli-sales.acme.internal', 'aria-label': 'Server address' });
+      var row = h('div', { class: 'row' }, h('span', { style: 'flex:1 1 140px' }, n), h('span', { style: 'flex:2 1 260px' }, u), h('button', { class: 'btn quiet small', text: 'Remove', onclick: function () { row.remove(); } }));
+      row._read = function () { return { name: n.value.trim(), url: u.value.trim() }; };
+      rows.appendChild(row);
+    };
+    R.fleet.forEach(function (f) { add(f.name, f.url); });
+    return [ruleSection('Other servers', 'Other overcli servers in the company — one per department or Slack app — to watch from Admin. Connect each with an admin token there.',
+      h('div', { class: 'stack' }, rows, h('div', null, h('button', { class: 'btn small', text: 'Add a server', onclick: function () { add('', ''); } }))),
+      function () { return { fleet: [].slice.call(rows.children).map(function (r) { return r._read(); }).filter(function (f) { return f.name && f.url; }) }; })];
   }
 
   render();

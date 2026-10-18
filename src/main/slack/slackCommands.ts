@@ -15,6 +15,7 @@
 // MCP — and no more.
 
 import type { OrgService, HireSummary, PendingHire, WaitingItem, WorkerSummary } from '../org/orgService';
+import type { AskRecord } from '../org/orgStores';
 import { ROLE_TEXT, type AccessService, type Invite, type JoinRequest } from '../org/accessService';
 import { slackCall } from './slackApi';
 import { isAdmin, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
@@ -37,6 +38,10 @@ export const JOIN_DECLINE_ACTION = 'overcli_join_decline';
 export const OPEN_LINK_ACTION = 'overcli_open_link';
 export const PROPOSALS_APPROVE_ACTION = 'overcli_proposals_approve';
 export const PROPOSALS_SKIP_ACTION = 'overcli_proposals_skip';
+export const BUDGET_RAISE_ACTION = 'overcli_budget_raise';
+
+/// A console question answered later than this gets its answer DMed too.
+export const ASK_DM_AFTER_MS = 30_000;
 
 export interface SlackCommandsDeps {
   org: OrgService;
@@ -259,7 +264,7 @@ export class SlackCommands {
     if (verb === 'ask') {
       if (!rest.trim()) return this.respond(responseUrl, `What should I ask ${worker.name}? \`/worker ${worker.name} ask …\``);
       await this.respond(responseUrl, `Asked ${worker.name}. The answer will come to you in a DM.`);
-      const res = await org.ask(caller, worker.id, rest);
+      const res = await org.ask(caller, worker.id, rest, 'slack');
       await this.dm(
         caller.slackUserId!,
         res.ok ? `${worker.name}: ${clip(res.reply, 2800)}` : `${worker.name} could not take that: ${res.error}`,
@@ -367,6 +372,7 @@ export class SlackCommands {
       actionId === JOIN_LETIN_ACTION ||
       actionId === JOIN_DECLINE_ACTION ||
       actionId === OPEN_LINK_ACTION ||
+      actionId === BUDGET_RAISE_ACTION ||
       actionId === PROPOSALS_APPROVE_ACTION ||
       actionId === PROPOSALS_SKIP_ACTION
     );
@@ -395,6 +401,16 @@ export class SlackCommands {
     switch (action.action_id) {
       case OPEN_LINK_ACTION:
         return;
+      case BUDGET_RAISE_ACTION: {
+        const [workerId, amount] = action.value.split(':');
+        const res = org.update(caller, workerId, { budgetUSDPerMonth: Number(amount) });
+        if (!res.ok) {
+          if (channel && threadTs) await this.reply(channel, threadTs, res.error);
+          return;
+        }
+        await settle(`${caller.name} raised ${res.worker.name}'s budget to $${Number(amount)} a month.`);
+        return;
+      }
       case PROPOSALS_APPROVE_ACTION:
       case PROPOSALS_SKIP_ACTION: {
         const approve = action.action_id === PROPOSALS_APPROVE_ACTION;
@@ -626,14 +642,36 @@ export class SlackCommands {
       : notice.forAdmins
         ? this.deps.policy().admins
         : [];
+    // Out of budget: offer a raise of half again, which the allowance rules
+    // still check when it is pressed.
+    const worker = notice.workerId ? this.deps.org.listWorkers({ name: 'overcli', admin: true }).find((w) => w.id === notice.workerId) : undefined;
+    const raiseTo = worker ? Math.max(worker.budgetUSDPerMonth + 5, Math.ceil((worker.budgetUSDPerMonth * 1.5) / 5) * 5) : 0;
     for (const id of to) {
       void this.dm(id, notice.title, {
         blocks: [
           section(`*${escapeMrkdwn(notice.title)}*\n${escapeMrkdwn(clip(notice.body, 1500))}`),
-          context(notice.workerId ? 'Raise its monthly budget on its page in the console, or ask an admin.' : 'Raise budgets or pause some workers from the console.'),
+          ...(worker ? [{ type: 'actions', elements: [button(`Raise to $${raiseTo} a month`, BUDGET_RAISE_ACTION, `${worker.id}:${raiseTo}`, 'primary')] }] : []),
+          context(notice.workerId ? 'Or change its budget on its page in the console.' : 'Raise budgets or pause some workers from the console.'),
         ],
       });
     }
+  }
+
+  /// A question asked in the console came back after the asker had likely
+  /// moved on: the answer follows them to Slack.
+  askAnswered(ask: AskRecord): void {
+    if (ask.via !== 'console' || !ask.slackUserId || !this.deps.botToken()) return;
+    if ((ask.doneAt ?? 0) - ask.at < ASK_DM_AFTER_MS) return;
+    const head = ask.status === 'answered' ? `*${escapeMrkdwn(ask.workerName)}* answered _${escapeMrkdwn(clip(ask.text, 120))}_` : `*${escapeMrkdwn(ask.workerName)}* could not answer _${escapeMrkdwn(clip(ask.text, 120))}_`;
+    void this.dm(ask.slackUserId, `${ask.workerName}: ${clip(ask.reply ?? ask.error ?? '', 2800)}`, {
+      blocks: [section(head), section(escapeMrkdwn(clip(ask.reply ?? ask.error ?? '', 2800))), ...(ask.launched ? [context(`Started ${ask.launched} piece(s) of work.`)] : [])],
+    });
+  }
+
+  /// A plain notice to some people, e.g. a spend warning.
+  tellPeople(ids: string[], title: string, body: string): void {
+    if (!this.deps.botToken()) return;
+    for (const id of ids) void this.dm(id, title, { blocks: [section(`*${escapeMrkdwn(title)}*\n${escapeMrkdwn(clip(body, 1500))}`)] });
   }
 
   tellRequester(slackUserId: string, text: string): void {

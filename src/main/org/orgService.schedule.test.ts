@@ -108,6 +108,14 @@ describe('schedules', () => {
     expect(h.svc.update(sam, 'triage', { cadence: { kind: 'daily', time: '07:00' } }).ok).toBe(false);
   });
 
+  it('lets the manager rewrite the job, within sense, and nobody else', () => {
+    const h = harness();
+    expect(h.svc.update(pat, 'triage', { jobDescription: '  Every morning, triage the new support tickets and label each one.  ' }).ok).toBe(true);
+    expect(h.roster.get('triage')!.jobDescription).toBe('Every morning, triage the new support tickets and label each one.');
+    expect(h.svc.update(pat, 'triage', { jobDescription: 'too short' }).ok).toBe(false);
+    expect(h.svc.update(sam, 'triage', { jobDescription: 'Every morning, do something else entirely for me.' }).ok).toBe(false);
+  });
+
   it('runs a worker now for its manager, but not when paused', async () => {
     const h = harness({ roster: [worker('triage'), worker('idle', { enabled: false })] });
     expect(await h.svc.runNow(pat, 'Triage')).toEqual({ ok: true, name: 'Triage' });

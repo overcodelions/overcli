@@ -374,12 +374,27 @@ export class SlackBridge {
     return !!this.identity && teamId === this.identity.teamId;
   }
 
+  /// Channel messages, mentions and reactions, for workers' Slack triggers.
+  private eventTap: ((ev: Record<string, any>) => void | Promise<void>) | null = null;
+
+  setEventTap(tap: ((ev: Record<string, any>) => void | Promise<void>) | null): void {
+    this.eventTap = tap;
+  }
+
   private async onEvent(payload: unknown): Promise<void> {
     const p = payload as {
       team_id?: string;
       event?: { type?: string; channel_type?: string; user?: string; bot_id?: string; subtype?: string; text?: string; thread_ts?: string; channel?: string };
     };
     const ev = p?.event;
+    if (ev && ev.channel_type !== 'im' && this.fromOurTeam(p.team_id) && this.eventTap) {
+      try {
+        await this.eventTap(ev as Record<string, any>);
+      } catch (err) {
+        this.deps.log('warn', `A Slack trigger failed: ${String(err)}`);
+      }
+      return;
+    }
     if (!ev || ev.type !== 'message' || ev.channel_type !== 'im') return;
     if (ev.bot_id || ev.subtype || !ev.thread_ts || !ev.user) return;
     if (!this.fromOurTeam(p.team_id)) return;

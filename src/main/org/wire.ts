@@ -9,14 +9,20 @@ import type { TeamEngine } from '../flows/teamEngine';
 import { loadAllFlows, saveFlow } from '../flows/storage';
 import { loadRunSummaries } from '../flows/runSummaryLog';
 import { importWorkerYaml } from '../flows/workerShare';
-import { healthyBackends } from '../health';
+import { healthyBackends, resolveBackendPath } from '../health';
 import { Store } from '../store';
 import { isEverydayProject } from '../../shared/everydayProjects';
 import type { Worker } from '../../shared/flows/worker';
 import { OrgService, type HealthItem, type OrgServiceDeps } from './orgService';
 import { draftHire, saveDraftedHire } from './hireDraft';
 import { resolveWorkPlace } from './defaultProject';
-import { fileAuditStore, fileHireStore, fileRatingStore, listTokens, loadOrgPolicy } from './orgStores';
+import { installTool, listTools, loadToolTemplates, rememberToolTemplates, toolTemplatesFile, uninstallTool } from './tools';
+import { host } from '../host';
+import { readClaudeInit } from '../flows/mcpProbe';
+import { readClaudeMcpServers } from '../mcpConfig';
+import { listServerTools } from './mcpDirect';
+import type { TriggerService } from './triggers';
+import { fileAskStore, fileAuditStore, fileHireStore, fileRatingStore, listTokens, loadOrgPolicy } from './orgStores';
 
 export interface OrgEngines {
   runner: RunnerManager;
@@ -27,6 +33,8 @@ export interface OrgEngines {
   teams?: () => TeamEngine | null;
   /// Extra health lines from the host (the Slack bridge, chiefly).
   health?: () => HealthItem[];
+  /// A getter: triggers are built after the plane they act through.
+  triggers?: () => TriggerService | null;
 }
 
 /// Which model CLIs are signed in, re-checked every few minutes — a probe
@@ -116,7 +124,7 @@ export function rejectWorkerRun(
 
 export function createOrgService(
   engines: OrgEngines,
-  hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided'> = {},
+  hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided' | 'onAskDone'> = {},
 ): OrgService {
   const { runner, flowRuntime, workerEngine } = engines;
   return new OrgService({
@@ -182,6 +190,23 @@ export function createOrgService(
     },
     importWorker: (yaml, opts) => importSharedWorker(workerEngine, yaml, opts),
     audit: fileAuditStore,
+    asks: fileAskStore,
+    triggers: engines.triggers,
+    serverTools: async (name) => {
+      const config = readClaudeMcpServers()[name];
+      return config ? listServerTools(config) : { ok: false, error: `${name} isn't installed on this server.` };
+    },
+    tools: {
+      list: (roster, statuses) => listTools(roster, statuses, loadToolTemplates(toolTemplatesFile(host().dataDir()))),
+      remember: (templates) => rememberToolTemplates(toolTemplatesFile(host().dataDir()), templates),
+      install: installTool,
+      uninstall: uninstallTool,
+      check: async () => {
+        const binary = resolveBackendPath('claude', Store.load().settings.backendPaths.claude);
+        const init = binary ? await readClaudeInit(binary) : null;
+        return init ? Object.fromEntries(init.servers.map((s) => [s.name, s.status])) : null;
+      },
+    },
     ratings: fileRatingStore,
     health: (() => {
       const models = backendProbe();

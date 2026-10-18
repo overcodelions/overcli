@@ -316,3 +316,19 @@ describe('proposed work in Slack', () => {
     expect(posts.filter((p) => p.url.endsWith('chat.update'))[0].body.text).toMatch(/Approved by .*2 started/);
   });
 });
+
+describe('answers to console questions', () => {
+  const ask = (over: Record<string, unknown>) =>
+    ({ id: 'a1', workerId: 'w', workerName: 'Triage', by: 'Pat', slackUserId: PAT, text: 'How many open bugs?', at: 0, status: 'answered', reply: 'Twelve.', via: 'console', doneAt: 60_000, ...over }) as never;
+
+  it('follows the asker to Slack when it took a while, and only then', async () => {
+    const { cmds, posts } = harness({});
+    cmds.askAnswered(ask({}));
+    cmds.askAnswered(ask({ doneAt: 5_000 }));
+    cmds.askAnswered(ask({ via: 'slack' }));
+    await new Promise((r) => setTimeout(r, 0));
+    const dms = posts.filter((p) => p.url.endsWith('chat.postMessage'));
+    expect(dms).toHaveLength(1);
+    expect(JSON.stringify(dms[0].body.blocks)).toContain('Twelve.');
+  });
+});

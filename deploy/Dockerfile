@@ -40,6 +40,8 @@ WORKDIR /app
 COPY --from=build /src/package.json ./package.json
 COPY --from=build /src/node_modules ./node_modules
 COPY --from=build /src/dist ./dist
+# The console's display face, from the app's bundled fonts.
+COPY --from=build /src/src/renderer/fonts ./src/renderer/fonts
 RUN ln -s /app/dist/cli/index.js /usr/local/bin/overcli && chmod +x /app/dist/cli/index.js
 
 # All state — workers, journals, runs, tokens, the org policy, cloned repos —

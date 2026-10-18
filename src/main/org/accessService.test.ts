@@ -8,13 +8,14 @@ const admin: OrgCaller = { slackUserId: ADMIN, name: 'Bo', admin: true };
 const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
 const BASE = 'https://overcli.acme.example';
 
-function harness(orgFile: Record<string, unknown> = {}, opts: { slack?: boolean; dmGate?: Promise<void> } = {}) {
+function harness(orgFile: Record<string, unknown> = {}, opts: { slack?: boolean; dmGate?: Promise<void>; ssoRequired?: boolean } = {}) {
   let raw: Record<string, unknown> = { name: 'Acme', admins: [ADMIN], hirers: [], ...orgFile };
   let invites: Invite[] = [];
   let requests: JoinRequest[] = [];
   const tokens: Array<{ id: string; name: string; slackUserId?: string; device?: string; admin?: boolean; token: string }> = [];
   const dms: string[] = [];
   const asked: string[] = [];
+  const recorded: string[] = [];
   let now = 1_000_000;
   const policy = (): OrgPolicy => parseOrgPolicy(raw).policy;
   const svc = new AccessService({
@@ -57,8 +58,10 @@ function harness(orgFile: Record<string, unknown> = {}, opts: { slack?: boolean;
         }
       : {}),
     now: () => now,
+    record: (c, what) => recorded.push(`${c.name}: ${what}`),
+    ssoRequired: () => !!opts.ssoRequired,
   });
-  return { svc, tokens, dms, asked, raw: () => raw, policy, tick: (ms: number) => (now += ms), invites: () => invites };
+  return { recorded, svc, tokens, dms, asked, raw: () => raw, policy, tick: (ms: number) => (now += ms), invites: () => invites };
 }
 
 const codeOf = (link: string) => link.split('/join/')[1];
@@ -232,3 +235,57 @@ describe('signing people out', () => {
 });
 
 void DEFAULT_ORG_POLICY;
+
+describe('rules from the console', () => {
+  it('changes what it is given, refuses what would not read back, and logs it', () => {
+    const h = harness({ teams: { old: [PAT] } });
+    expect(h.svc.setRules(pat, { hirers: '*' }).ok).toBe(false);
+    const res = h.svc.setRules(admin, { hirers: '*', budgetAllowanceUSD: 75, orgBudgetUSD: 900, retentionDays: 90 });
+    expect(res).toMatchObject({ ok: true, rules: { hirers: '*', budgetAllowanceUSD: 75, orgBudgetUSD: 900, retentionDays: 90 } });
+    expect(h.raw()).toMatchObject({ teams: { old: [PAT] }, name: 'Acme' });
+    expect(h.recorded).toEqual(['Bo: Changed the rules: hirers, budgetAllowanceUSD, orgBudgetUSD, retentionDays.']);
+    expect(h.svc.setRules(admin, { timezone: 'Mars/Olympus' })).toMatchObject({ ok: false, error: expect.stringMatching(/timezone/) });
+    expect(h.svc.setRules(admin, { retentionDays: 2 }).ok).toBe(false);
+    expect(h.raw().retentionDays).toBe(90);
+    expect(h.svc.setRules(admin, { orgBudgetUSD: null }).ok).toBe(true);
+    expect('orgBudgetUSD' in h.raw()).toBe(false);
+  });
+
+  it('ignores keys the Admin page may not change', () => {
+    const h = harness();
+    expect(h.svc.setRules(admin, { admins: [PAT] }).ok).toBe(false);
+    expect(h.raw().admins).toEqual([ADMIN]);
+  });
+});
+
+describe('offboarding', () => {
+  it('closes every way in and takes them off every rule', async () => {
+    const h = harness({ hirers: [PAT], approvers: [PAT], allowances: { [PAT]: 90 }, teams: { product: [PAT, ADMIN] }, people: { 'pat@acme.com': PAT } });
+    const made = await h.svc.invite(admin, { name: 'Pat', slackUserId: PAT, role: 'hirer' }, BASE);
+    if (!made.ok) throw new Error(made.error);
+    h.svc.redeem(codeOf(made.link));
+    await h.svc.invite(admin, { name: 'Pat', slackUserId: PAT, role: 'hirer' }, BASE);
+    expect(h.svc.removePerson(admin, PAT)).toEqual({ ok: true, signedOut: 1 });
+    expect(h.raw()).toMatchObject({ hirers: [], approvers: [], allowances: {}, teams: { product: [ADMIN] }, people: {} });
+    expect(h.invites().filter((i) => !i.usedAt)).toEqual([]);
+    expect(h.svc.removePerson(admin, ADMIN).ok).toBe(false);
+    expect(h.svc.removePerson(pat, ADMIN).ok).toBe(false);
+  });
+});
+
+describe('company sign-in', () => {
+  it('stops invite links signing people in, but their role applies when they sign in', async () => {
+    const h = harness({}, { ssoRequired: true });
+    const made = await h.svc.invite(admin, { name: 'Pat', slackUserId: PAT, role: 'hirer', allowanceUSD: 40 }, BASE);
+    if (!made.ok) throw new Error(made.error);
+    expect(h.svc.inviteInfo(codeOf(made.link))).toMatchObject({ ok: true, ssoRequired: true });
+    expect(h.svc.redeem(codeOf(made.link)).ok).toBe(false);
+    h.svc.signInWithSso({ slackUserId: PAT, name: 'Pat Lee', email: 'pat@acme.com' });
+    expect(personRole(h.policy(), PAT)).toBe('hirer');
+    expect(h.policy().allowances[PAT]).toBe(40);
+    expect(h.tokens[0]).toMatchObject({ slackUserId: PAT, device: 'Browser (company sign-in)' });
+    const setup = await h.svc.invite(admin, { name: 'Admin', role: 'admin', setup: true }, BASE);
+    if (!setup.ok) throw new Error(setup.error);
+    expect(h.svc.redeem(codeOf(setup.link)).ok).toBe(true);
+  });
+});

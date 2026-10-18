@@ -1,4 +1,8 @@
-# Running overcli for an org
+# Running overcli for an org (alpha)
+
+> **Alpha.** Org workers are early. Expect rough edges and changes between versions, and back up `/data`. In the desktop app, they're switched on under Settings → Labs → Org workers.
+
+**On AWS or Google Cloud:** see [aws.md](aws.md) and [gcp.md](gcp.md). Those guides keep `/data` on a durable disk with snapshots, use Bedrock or Vertex with no API key on the box, and put HTTPS in front from inside your VPC.
 
 One container runs `overcli serve`. It holds the org's workers and teams, the Slack bridge, and the **control plane**: the web console and the MCP server people use to manage workers without the desktop app.
 
@@ -57,7 +61,7 @@ docker compose -f deploy/docker-compose.yml exec overcli overcli org init --name
 docker compose -f deploy/docker-compose.yml exec overcli overcli org show
 ```
 
-This writes `/data/org.json`. It names the org (in the console, Slack and MCP), pins the Slack workspace (the bridge refuses a token from any other), and holds the rules. Edit it any time: changes apply without a restart. `deploy/org.example.json` has every field:
+This writes `/data/org.json`. It names the org (in the console, Slack and MCP), pins the Slack workspace (the bridge refuses a token from any other), and holds the rules. After the first admin signs in, change the rules from the console (**Admin → Change the rules**) or from Claude (`set_org_rules`); each change is checked and written to the decision log. Editing the file by hand works too, and applies without a restart. `deploy/org.example.json` has every field:
 
 | Field | Meaning |
 |---|---|
@@ -72,8 +76,29 @@ This writes `/data/org.json`. It names the org (in the console, Slack and MCP), 
 | `allowedMcpServers` | Connectors any hire gets without approval |
 | `orgVisibilityNeedsAdmin` | Whether "everyone may ask it" needs an admin |
 | `roles` | The approved role catalog on the Hire page: a job, its tools (cleared for that role), and a budget |
+| `orgBudgetUSD` | What every worker together may cost a month. At the cap, scheduled runs stop until the month turns |
+| `alertAtPercent` | Warn a worker's manager (and the admins, for the org cap) at this share of a budget. Default 80; 0 turns it off |
+| `retentionDays` | Keep the decision log and finished runs this long (7 or more). Absent: forever |
+| `sso` | Company sign-in: `issuer`, `clientId`, `allowedDomains`, `required` (see below) |
+| `people` | Work email → Slack member ID, for anyone company sign-in can't match through Slack |
+| `fleet` | The company's other overcli servers, watched from Admin |
 
 A new `org.json` starts narrow: only admins hire, until you change `hirers`.
+
+## Tools (MCP servers)
+
+Workers on the server can use only the MCP servers installed **on the server**. They don't get the ones on someone's desktop. A worker lists its tools by name, and gets one when a server tool has the same name.
+
+- **Console:** **Tools** (admins). Install a command-based server (`npx …`, `uvx …`, with its settings and secrets) or a remote one (URL and headers). **Check them** starts Claude once on the server and shows which connect.
+  - **Workers are missing these** lists every tool a worker names that isn't installed.
+  - A worker published from the desktop brings its tools' setup with it, minus every secret, so installing one is mostly filling in the keys.
+- **From a terminal:**
+  ```sh
+  docker compose -f deploy/docker-compose.yml exec overcli claude mcp add --scope user jira -e JIRA_API_TOKEN=… -- npx -y <package>
+  ```
+- **What doesn't work:** connectors that sign in through a browser, such as claude.ai connectors or OAuth pop-ups. A server has nobody to click "Allow". Use servers that take an API token or a service account.
+
+Tools are kept in `/data/home/.claude.json` (and `.codex/config.toml`), so they survive restarts and upgrades.
 
 ## 4. Give it work to do
 
@@ -114,11 +139,44 @@ docker compose -f deploy/docker-compose.yml exec overcli overcli tokens list
 docker compose -f deploy/docker-compose.yml exec overcli overcli tokens revoke "Ops automation"
 ```
 
+## Company sign-in (SSO)
+
+People can sign in with the company account instead of a Slack link: Okta, Entra ID, Google Workspace, or anything that speaks OpenID Connect.
+
+1. In the identity provider, create a web app (OIDC, authorization code). Set its redirect address to `<publicUrl>/sso/callback`; the console shows the exact address. Assign it to the people who should have workers; the provider decides who gets in.
+2. On **Admin → Change the rules → Sign-in**, enter the issuer (e.g. `https://acme.okta.example`) and the client ID. A confidential client's secret goes in `OVERCLI_SSO_CLIENT_SECRET` in `deploy/.env`, never in `org.json`. Public clients work without one (PKCE).
+3. `publicUrl` must be set: the provider sends people back to a fixed address.
+
+overcli knows people by their Slack account, so an email is matched to a Slack member by asking Slack (the bot needs `users:read.email`, which the manifest includes) or through the `people` list. **Everyone signs in this way** turns invite links into role grants only: the person's role applies the first time they sign in. Scripts' tokens keep working.
+
+## Spend, records and offboarding
+
+- **Budgets.** Each worker has its own; `orgBudgetUSD` caps them all. Managers get a Slack DM when a worker passes `alertAtPercent` of its budget, with a button to raise it within their allowance; admins hear when the org does. Admin shows spend by manager and by team.
+- **Decision log.** Admin → **Full log** searches every decision by person, worker, words and dates, and downloads it as a CSV. `retentionDays` prunes it, and finished runs, once a day. A run whose work was never reviewed is never deleted.
+- **Someone leaves.** People → Manage → **has left**: pick who takes their workers. Their workers and hires in progress go to that person; they're signed out everywhere and taken off every rule. A worker can also be handed to someone else, or let go, from its own page.
+
+## More than one server
+
+One server serves one Slack app. A company that runs one per department lists the others under **Other servers** in the rules, and connects each with an admin token minted there (`overcli tokens create --name "Fleet" --admin`). Admin then shows each server's health and spend in one place.
+
+## Triggers: workers that act on business events
+
+A schedule runs a worker at set times. A trigger runs it the moment work shows up: a bug filed, a deal moved, a message in a channel. Set triggers on a worker's **Triggers** tab, or from Claude with `create_trigger`. Each one says three things:
+
+1. **What sets it off.**
+   - **Watch:** every few minutes, overcli calls one of the server's tools directly, with no model and no cost per check (for example a Jira search). It acts once on each item it hasn't seen. The first check only records what's already there, so turning a trigger on never floods the worker with the backlog. It works inside a VPC, because nothing has to reach the server. **Try it now** shows what it would see before you save.
+   - **Webhook:** Jira automation, GitHub, a CRM or Zapier posts each event to a secret address, `<publicUrl>/hooks/<id>/<secret>`, shown once when you save. The same event sent twice is handled once. This needs the control plane reachable from the sender.
+   - **Slack:** a new message, a mention of the bot, or an emoji reaction (say 🐛) in a channel. Invite the bot to the channel. This needs the manifest's channel scopes, so reinstall the Slack app after upgrading.
+2. **What it does with each one,** in plain words. The worker gets the event itself (the ticket, the PR, the message) with your instructions. On probation it proposes what it would do and waits; once trusted, it acts.
+3. **Where the result goes:** a Slack channel, the thread the event came from, or the worker delivers it itself with its tools ("comment your triage on the ticket", "open a PR").
+
+Every event, and what came of it, is kept in the **Library**: what set it off, the result and its links, where it went, how long it took, and whether people found it useful. A worker's Triggers tab shows what its events came to this month: items handled, typical time, cost per item and the share rated useful. A daily limit on each trigger keeps cost in check.
+
 ## Schedules
 
 A worker runs when someone asks it, or on a schedule. A hire takes the schedule its job description implies ("a summary every Monday morning"), and the offer and the worker's Settings let its manager change it: every day, weekdays, once a week, or every few hours inside working hours. The worker's page shows the next run and has **Run now**.
 
-Schedules run in the org's `timezone` from `org.json` (the container's `TZ`, if set, wins). The server has to be running for a schedule to fire; a run missed while it was down is not made up.
+Schedules run in the org's `timezone` from `org.json` (the container's `TZ`, if set, wins). Changing it while the server runs takes effect within five minutes. The server has to be running for a schedule to fire; a run missed while it was down is not made up.
 
 What a scheduled run does depends on the worker's trust:
 

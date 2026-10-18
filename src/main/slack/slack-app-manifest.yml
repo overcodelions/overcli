@@ -47,10 +47,19 @@ oauth_config:
       - im:history
       - commands
       - users:read
+      - users:read.email
+      - channels:history
+      - groups:history
+      - reactions:read
+      - app_mentions:read
 settings:
   event_subscriptions:
     bot_events:
       - message.im
+      - message.channels
+      - message.groups
+      - app_mention
+      - reaction_added
   interactivity:
     is_enabled: true
   socket_mode_enabled: true

@@ -1174,6 +1174,10 @@ export interface AppSettings {
   /// for everyone it does not apply to. Turning it on is the one decision
   /// needed before anything else in that pane means something.
   servicesEnabled?: boolean;
+  /// Org workers (alpha): Slack, signing in to an org's server, publishing
+  /// workers to it, and the guide to running one. Off until asked for —
+  /// it is early, and a person running workers on their own needs none of it.
+  orgAlpha?: boolean;
   /// Stop every running service when overcli quits. On by default, because a
   /// service left behind is a port held by a process the user has no way to
   /// find. Turn it off to keep a database or a backend up between sessions.

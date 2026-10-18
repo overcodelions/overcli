@@ -12,9 +12,15 @@ import { configuredSlackToken } from './slackSettings';
 import { fileThreadStore } from './threadStore';
 import { createOrgService, rejectWorkerRun, type OrgEngines } from '../org/wire';
 import type { OrgService } from '../org/orgService';
-import { createToken, fileAccessStore, listTokens, loadOrgPolicy, revokeToken, revokeTokensFor, updateOrgFile } from '../org/orgStores';
+import { createToken, fileAccessStore, fileAuditStore, listTokens, loadOrgPolicy, revokeToken, revokeTokensFor, updateOrgFile } from '../org/orgStores';
 import { AccessService } from '../org/accessService';
 import { SlackCommands } from './slackCommands';
+import { SsoService, SSO_CLIENT_SECRET_ENV } from '../org/sso';
+import { fetchMessage, lookupByEmail, postMessage } from './slackApi';
+import { TriggerService, triggerFiles } from '../org/triggers';
+import { callTool } from '../org/mcpDirect';
+import { readClaudeMcpServers } from '../mcpConfig';
+import { orgDir } from '../org/orgStores';
 
 export function createSlackBridge(engines: {
   flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun'>;
@@ -49,10 +55,12 @@ export function createSlackBridge(engines: {
 export function createOrgControl(
   engines: OrgEngines,
   slack: SlackBridge,
-): { org: OrgService; commands: SlackCommands; access: AccessService } {
+): { org: OrgService; commands: SlackCommands; access: AccessService; sso: SsoService; triggers: TriggerService } {
   let commands: SlackCommands | null = null;
+  let triggers: TriggerService | null = null;
   const access = new AccessService({
     policy: () => loadOrgPolicy().policy,
+    ssoRequired: () => !!loadOrgPolicy().policy.sso?.required && !!loadOrgPolicy().policy.publicUrl,
     store: fileAccessStore,
     tokens: {
       create: (args) => createToken(args),
@@ -61,6 +69,8 @@ export function createOrgControl(
       list: () => listTokens(),
     },
     updateOrg: (mutate) => updateOrgFile(mutate),
+    record: (caller, what) =>
+      fileAuditStore.append({ at: Date.now(), by: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}), what }),
     slack: {
       // Slack is optional: without a connected bot the DM is simply not
       // sent, and the console shows the link to hand over instead.
@@ -75,6 +85,7 @@ export function createOrgControl(
   });
   const org = createOrgService({
     ...engines,
+    triggers: () => triggers,
     health: () => {
       const s = slack.getStatus();
       return [
@@ -88,11 +99,18 @@ export function createOrgControl(
               ? `Connected to ${s.team ?? 'Slack'}. ${s.openThreads} DM${s.openThreads === 1 ? '' : 's'} waiting on managers.`
               : `Not connected${s.error ? `: ${s.error}` : '.'}`,
         },
+        ...(loadOrgPolicy().policy.sso
+          ? (() => {
+              const st = sso.status();
+              return [{ name: 'Company sign-in', ok: st.enabled, detail: st.enabled ? `Through ${st.provider}${st.required ? ', for everyone' : ''}.` : st.problem ?? 'Not set up.' }];
+            })()
+          : []),
       ];
     },
   }, {
     onHireAwaitingApproval: (hire, approvers) => commands?.notifyApprovers(hire, approvers),
     onHireDecided: (hire, outcome) => commands?.notifyDecided(hire, outcome),
+    onAskDone: (ask) => commands?.askAnswered(ask),
   });
   commands = new SlackCommands({
     org,
@@ -103,5 +121,57 @@ export function createOrgControl(
     log: (level, message) => log(level, 'slack', message),
   });
   slack.setCommands(commands);
-  return { org, commands, access };
+  const sso = new SsoService({
+    sso: () => loadOrgPolicy().policy.sso,
+    publicUrl: () => loadOrgPolicy().policy.publicUrl,
+    clientSecret: () => process.env[SSO_CLIENT_SECRET_ENV]?.trim() || undefined,
+    // org.json's people first; then Slack, which knows everyone's work email.
+    resolvePerson: async (email) => {
+      const listed = loadOrgPolicy().policy.people[email];
+      if (listed) return { slackUserId: listed };
+      const bot = configuredSlackToken('bot');
+      if (!bot) return null;
+      const found = await lookupByEmail(bot, email);
+      if (!found.ok) {
+        log('info', 'org', `Company sign-in: no Slack member for this email (${found.error}).`);
+        return null;
+      }
+      return { slackUserId: found.data.id, name: found.data.name };
+    },
+    signIn: (person) => access.signInWithSso(person),
+  });
+  // Workers acting on business events: watches, webhooks, Slack channels.
+  triggers = new TriggerService({
+    ...triggerFiles(orgDir()),
+    worker: (id) => {
+      const w = engines.workerEngine.roster().find((x) => x.id === id);
+      return w ? { id: w.id, name: w.name, enabled: w.enabled } : null;
+    },
+    ask: (workerId, triggerName, text) => {
+      const started = org.startAsk({ name: triggerName, admin: true }, workerId, text, 'trigger');
+      return started.ok
+        ? { ok: true, askId: started.askId, done: started.done.then((r) => (r.ok ? { ok: true as const, reply: r.reply, launched: r.launched } : r)) }
+        : started;
+    },
+    toolConfig: (name) => readClaudeMcpServers()[name] ?? null,
+    callTool,
+    slack: {
+      post: async (channel, text, threadTs) => {
+        const bot = configuredSlackToken('bot');
+        if (!bot || !slack.teamId()) return false;
+        const res = await postMessage(bot, { channel, text, ...(threadTs ? { threadTs } : {}) });
+        if (!res.ok) log('warn', 'slack', `A trigger could not post to ${channel}: ${res.error}`);
+        return res.ok;
+      },
+      message: async (channel, ts) => {
+        const bot = configuredSlackToken('bot');
+        if (!bot) return null;
+        const res = await fetchMessage(bot, channel, ts);
+        return res.ok ? res.data : null;
+      },
+    },
+    log: (message) => log('info', 'org', message),
+  });
+  slack.setEventTap((ev) => triggers?.slackEvent(ev));
+  return { org, commands, access, sso, triggers };
 }

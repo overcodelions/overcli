@@ -18,7 +18,7 @@ import { DEFAULT_ORG_POLICY, parseOrgPolicy, type OrgCaller, type OrgPolicy } fr
 import type { PendingHire } from './orgService';
 import type { AccessStore, Invite, JoinRequest } from './accessService';
 
-function orgDir(): string {
+export function orgDir(): string {
   return path.join(host().dataDir(), 'org');
 }
 
@@ -262,6 +262,29 @@ export interface AuditEntry {
 export interface AuditStore {
   append(entry: AuditEntry): void;
   recent(limit: number): AuditEntry[];
+  /// Every entry, oldest first — for the full log and its export.
+  all?(): AuditEntry[];
+  /// Drop entries older than `before`; returns how many went.
+  prune?(before: number): number;
+}
+
+function readAudit(): AuditEntry[] {
+  let text = '';
+  try {
+    text = fs.readFileSync(path.join(orgDir(), 'audit.jsonl'), 'utf8');
+  } catch {
+    return [];
+  }
+  const out: AuditEntry[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as AuditEntry);
+    } catch {
+      // a torn line
+    }
+  }
+  return out;
 }
 
 /// Append-only, one JSON object per line, so a crash mid-write loses at most
@@ -294,6 +317,18 @@ export const fileAuditStore: AuditStore = {
     }
     return out;
   },
+  all: readAudit,
+  prune(before) {
+    const all = readAudit();
+    const kept = all.filter((e) => e.at >= before);
+    if (kept.length === all.length) return 0;
+    // Rewritten whole and renamed into place, like every other store.
+    const file = path.join(orgDir(), 'audit.jsonl');
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, kept.map((e) => JSON.stringify(e)).join('\n') + (kept.length ? '\n' : ''), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    return all.length - kept.length;
+  },
 };
 
 // ---- RATINGS --------------------------------------------------------------
@@ -323,6 +358,42 @@ export const fileRatingStore: RatingStore = {
     // The newest few thousand are plenty for "was it useful"; older ones
     // already live on as notes in the workers' journals.
     writeAtomic(path.join(orgDir(), 'ratings.json'), ratings.slice(-5000));
+  },
+};
+
+// ---- QUESTIONS ------------------------------------------------------------
+
+/// Something someone asked a worker, kept so the answer outlives the page
+/// that asked: a worker can take minutes, and people walk away.
+export interface AskRecord {
+  id: string;
+  workerId: string;
+  workerName: string;
+  by: string;
+  slackUserId?: string;
+  text: string;
+  at: number;
+  status: 'working' | 'answered' | 'failed';
+  /// Where it was asked. Slack and MCP hand the answer back themselves.
+  via?: 'console' | 'slack' | 'mcp' | 'trigger';
+  reply?: string;
+  launched?: number;
+  error?: string;
+  doneAt?: number;
+}
+
+export interface AskStore {
+  list(): AskRecord[];
+  save(asks: AskRecord[]): void;
+}
+
+export const fileAskStore: AskStore = {
+  list() {
+    const raw = readJson(path.join(orgDir(), 'asks.json'));
+    return Array.isArray(raw) ? (raw as AskRecord[]) : [];
+  },
+  save(asks) {
+    writeAtomic(path.join(orgDir(), 'asks.json'), asks.slice(-1000));
   },
 };
 

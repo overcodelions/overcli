@@ -24,6 +24,7 @@ import { UI_SCALE_STEPS } from '@shared/uiScale';
 import { defaultTranscriptLevel, TRANSCRIPT_LEVELS, type TranscriptLevel } from '@shared/transcriptLevel';
 import { ConversationsPane } from './ConversationsPane';
 import { AutoTidyPane } from './AutoTidyPane';
+import { OrgSetupGuide } from './OrgSetupGuide';
 
 // Re-exported so the several sheets that already import it from here keep
 // working now that the definition lives in ./settingsChrome.
@@ -1271,18 +1272,23 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
       >
         <WebhookField local={local} patch={patch} />
       </Group>
-      <Group
-        title="Slack"
-        description="Workers DM their manager in Slack when they need an answer or an approval, and carry on when the manager replies."
-      >
-        <SlackField local={local} patch={patch} />
-      </Group>
-      <Group
-        title="Org server"
-        description="Your org's overcli server, where shared workers run. Publish a worker you built here to it from the worker's Share card."
-      >
-        <OrgServerField local={local} patch={patch} />
-      </Group>
+      {local.orgAlpha ? (
+        <>
+          <Group
+            title="Slack · alpha"
+            description="Workers DM their manager in Slack when they need an answer or an approval, and carry on when the manager replies."
+          >
+            <SlackField local={local} patch={patch} />
+          </Group>
+          <Group
+            title="Your org · alpha"
+            description="Your org's overcli server, where shared workers run for the whole team. Publish a worker you built here to it from the worker's Share card."
+          >
+            <OrgServerField local={local} patch={patch} />
+            <OrgSetupGuide />
+          </Group>
+        </>
+      ) : null}
       <Group title="Updates" description="Which build channel this app auto-updates from.">
         <Row label="Channel" help="Stable tracks tagged releases. Nightly tracks the rolling nightly prerelease — newer, less tested, and not notarized, so macOS Gatekeeper warns on a fresh nightly download. Switching takes effect immediately.">
           <select
@@ -1448,6 +1454,12 @@ function LabsPane({
         {/* Services keeps its own long-standing setting — off for everyone
             until asked for, unlike the labs above — but is switched here so
             every "off until you want it" surface lives in one place. */}
+        <Toggle
+          label="Org workers · alpha"
+          help="Very early. Workers for a whole team: a server that runs them, managers asked in Slack, a web console, and publishing workers you build here to it. Adds Slack and Your org to Advanced, and Manager and Who may ask it to each worker. Expect rough edges and changes."
+          value={local.orgAlpha ?? false}
+          onChange={(v) => patch({ orgAlpha: v })}
+        />
         <Toggle
           label="Services"
           help="Lets overcli start and stop the things your projects run — a server, a web app, a database — and point them at whichever branch you are working on. Overcli also suggests it on a project that has something to run."

@@ -67,6 +67,34 @@ export interface OrgPolicy {
   /// Anyone in the org's Slack who asks (`/overcli join`) gets in straight
   /// away, as someone who can ask workers things. Off: an admin lets them in.
   openJoin: boolean;
+  /// What every worker together may cost in a month. Past it, scheduled runs
+  /// stop until the month turns or someone raises it. Absent: no org cap,
+  /// only each worker's own budget.
+  orgBudgetUSD?: number;
+  /// Tell a worker's manager (and the admins, for the org cap) when spend
+  /// passes this share of a budget. 0 turns the warnings off.
+  alertAtPercent: number;
+  /// Keep the decision log and finished runs this many days. Absent: forever.
+  retentionDays?: number;
+  /// Sign in with the company's identity provider (OpenID Connect).
+  sso?: OrgSso;
+  /// Who is who by work email, for SSO: email → Slack member id. People not
+  /// listed are looked up in Slack by email when the bot may.
+  people: Record<string, string>;
+  /// Other overcli servers in the company, shown together on Admin.
+  fleet: Array<{ name: string; url: string }>;
+}
+
+export interface OrgSso {
+  /// The provider's issuer URL, e.g. https://acme.okta.example or
+  /// https://login.microsoftonline.com/<tenant>/v2.0.
+  issuer: string;
+  clientId: string;
+  /// Only these email domains may sign in. Empty: any the provider vouches for.
+  allowedDomains: string[];
+  /// Sign-in links and pasted tokens stop working in the browser; everyone
+  /// signs in through the provider. Scripts' tokens still work.
+  required: boolean;
 }
 
 export const DEFAULT_ORG_POLICY: OrgPolicy = {
@@ -79,6 +107,9 @@ export const DEFAULT_ORG_POLICY: OrgPolicy = {
   teams: {},
   orgVisibilityNeedsAdmin: true,
   openJoin: false,
+  alertAtPercent: 80,
+  people: {},
+  fleet: [],
 };
 
 /// The person (or program) behind a call.
@@ -183,6 +214,49 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
       }
     }
   }
+  const orgBudget = r.orgBudgetUSD === undefined ? undefined : num('orgBudgetUSD', 0) || undefined;
+  const alertAt = num('alertAtPercent', 80);
+  if (alertAt > 100) warnings.push('alertAtPercent must be between 0 and 100.');
+  let retentionDays: number | undefined;
+  if (r.retentionDays !== undefined) {
+    const v = r.retentionDays;
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 7) retentionDays = v;
+    else warnings.push('retentionDays must be a whole number of days, 7 or more.');
+  }
+  let sso: OrgSso | undefined;
+  if (r.sso !== undefined) {
+    const o = (r.sso ?? {}) as Record<string, unknown>;
+    let issuer = typeof o.issuer === 'string' ? o.issuer.trim().replace(/\/+$/, '') : '';
+    try {
+      if (new URL(issuer).protocol !== 'https:') issuer = '';
+    } catch {
+      issuer = '';
+    }
+    const clientId = typeof o.clientId === 'string' ? o.clientId.trim() : '';
+    if (!issuer || !clientId) warnings.push('sso needs an https issuer and a clientId.');
+    else sso = { issuer, clientId, allowedDomains: strings(o.allowedDomains).map((d) => d.toLowerCase().replace(/^@/, '')), required: o.required === true };
+  }
+  const people: Record<string, string> = {};
+  if (r.people && typeof r.people === 'object' && !Array.isArray(r.people)) {
+    for (const [email, id] of Object.entries(r.people as Record<string, unknown>)) {
+      if (/^[^@\s]+@[^@\s]+$/.test(email) && typeof id === 'string' && isSlackUserId(id)) people[email.toLowerCase()] = id;
+      else warnings.push(`people: "${email}" needs a work email and a Slack member id.`);
+    }
+  }
+  const fleet: Array<{ name: string; url: string }> = [];
+  if (Array.isArray(r.fleet)) {
+    for (const raw of r.fleet as unknown[]) {
+      const f = (raw ?? {}) as Record<string, unknown>;
+      const name = typeof f.name === 'string' ? f.name.trim() : '';
+      try {
+        const u = new URL(typeof f.url === 'string' ? f.url : '');
+        if (!name || (u.protocol !== 'https:' && u.protocol !== 'http:')) throw new Error('bad');
+        fleet.push({ name, url: `${u.protocol}//${u.host}` });
+      } catch {
+        warnings.push(`fleet: "${name || '(unnamed)'}" needs a name and a web address.`);
+      }
+    }
+  }
   return {
     policy: {
       ...(text('name', 80) ? { name: text('name', 80) } : {}),
@@ -199,6 +273,12 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
       ...(r.allowedMcpServers !== undefined ? { allowedMcpServers: strings(r.allowedMcpServers) } : {}),
       orgVisibilityNeedsAdmin: r.orgVisibilityNeedsAdmin !== false,
       openJoin: r.openJoin === true,
+      ...(orgBudget ? { orgBudgetUSD: orgBudget } : {}),
+      alertAtPercent: Math.min(alertAt, 100),
+      ...(retentionDays ? { retentionDays } : {}),
+      ...(sso ? { sso } : {}),
+      people,
+      fleet,
     },
     warnings,
   };

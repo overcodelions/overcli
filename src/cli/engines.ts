@@ -33,6 +33,8 @@ import type { SlackBridge } from '../main/slack/slackBridge';
 import { createOrgControl, createSlackBridge } from '../main/slack/wire';
 import type { TeamEngine } from '../main/flows/teamEngine';
 import type { SlackCommands } from '../main/slack/slackCommands';
+import type { SsoService } from '../main/org/sso';
+import type { TriggerService } from '../main/org/triggers';
 import { createTeamEngine } from '../main/flows/teamWire';
 import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraft';
 import { teamHireJobDescription } from '../shared/flows/team';
@@ -66,6 +68,12 @@ export interface DaemonEngines extends HeadlessEngines {
   org: OrgService;
   /// Invites, join requests and pairing the overcli app.
   access: AccessService;
+  /// The Slack commands and DMs the org layer sends through.
+  commands: SlackCommands;
+  /// Signing in with the company's identity provider.
+  sso: SsoService;
+  /// Workers acting on business events. Started by `serve`.
+  triggers: TriggerService;
 }
 
 /// A workspace root is not itself a git repo, but the runtime mints a worktree
@@ -307,7 +315,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   });
 
   const slack = createSlackBridge({ flowRuntime, orchestrator, workerEngine });
-  const { org, commands, access } = createOrgControl(
+  const { org, commands, access, sso, triggers } = createOrgControl(
     { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams },
     slack,
   );
@@ -332,6 +340,9 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     slack,
     org,
     access,
+    commands,
+    sso,
+    triggers,
     teams,
     // Ordered: stop the clocks before killing the children, so neither engine
     // can arm a fresh timer or launch a run on the way out. Each step is

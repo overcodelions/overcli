@@ -1,5 +1,6 @@
 // The crew as an org chart: each manager at the top of their branch, the
-// workers they manage below, and every worker's reports below it.
+// workers they manage below, and every worker's reports below it — one
+// chart per workspace or project, the way the rail groups them.
 //
 // Drawn from `reportsTo` and `manager` alone (`buildOrgTree`), so it is only
 // ever as true as the worker settings. A roster nobody has arranged reads as
@@ -7,20 +8,67 @@
 // prompt to fix it: each card opens the worker, and its settings hold the
 // fields.
 
-import { useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useWorkersStore } from '../../workersStore';
 import { useFlowsStore } from '../../flowsStore';
-import type { Worker } from '@shared/flows/worker';
+import type { Worker, WorkerManager } from '@shared/flows/worker';
 import { WORKER_VISIBILITY_LABEL, workerTagline } from '@shared/flows/worker';
-import { buildOrgTree, countNodes, type OrgNode } from '@shared/flows/org';
+import { buildOrgTree, countNodes, managerFor, wouldCycle, type OrgBranch, type OrgNode } from '@shared/flows/org';
 import type { WorkerReport, WorkerReportRow } from '@shared/flows/workerReport';
 import { WorkerAvatar } from './WorkerAvatar';
+import { projectName, useProjectOptions } from './teams/ProjectChoice';
 
 /// The window the card counts cover. A month matches the report's default.
 const STATS_DAYS = 30;
 
 /// Siblings drawn as a tree row; more than this wrap as a grid.
 const MAX_TREE_ROW = 4;
+
+/// Where a dragged worker can land: on a worker (it now reports to that
+/// one), on a person's card (it reports to them directly, at the top of
+/// their branch), or on "Not managed yet" (nobody).
+type DropTarget = { kind: 'worker'; id: string } | { kind: 'person'; manager?: WorkerManager };
+
+interface DragState {
+  dragging: string | null;
+  over: string | null;
+  start(id: string): void;
+  end(): void;
+  hover(key: string | null): void;
+  canDrop(target: DropTarget): boolean;
+  drop(target: DropTarget): void;
+}
+
+const DragContext = createContext<DragState | null>(null);
+
+const targetKey = (t: DropTarget) => (t.kind === 'worker' ? `w:${t.id}` : `p:${t.manager?.name ?? ''}`);
+
+/// The drag-and-drop props for one drop target.
+function useDropTarget(target: DropTarget) {
+  const drag = useContext(DragContext);
+  const key = targetKey(target);
+  const able = !!drag?.dragging && drag.canDrop(target);
+  return {
+    active: able && drag?.over === key,
+    able,
+    props: {
+      onDragOver: (e: React.DragEvent) => {
+        if (!able) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (drag!.over !== key) drag!.hover(key);
+      },
+      onDragLeave: (e: React.DragEvent) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null) && drag?.over === key) drag.hover(null);
+      },
+      onDrop: (e: React.DragEvent) => {
+        if (!able) return;
+        e.preventDefault();
+        drag!.drop(target);
+      },
+    },
+  };
+}
 
 interface CardStats {
   done: number;
@@ -52,7 +100,8 @@ export function OrgChartPane() {
     };
   }, []);
 
-  const branches = useMemo(() => buildOrgTree(Object.values(workers)), [workers]);
+  const projectOptions = useProjectOptions();
+  const places = useMemo(() => chartsByPlace(Object.values(workers), (path) => projectName(projectOptions, path) ?? 'Elsewhere'), [workers, projectOptions]);
 
   // Questions are counted from the runs the renderer holds, not the report:
   // they live on the run, and "waiting on someone" is a now-fact the report's
@@ -81,44 +130,132 @@ export function OrgChartPane() {
 
   const total = Object.keys(workers).length;
 
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [over, setOver] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const drag = useMemo<DragState>(() => {
+    const roster = Object.values(workers);
+    const moved = (target: DropTarget, w: Worker): Worker => {
+      if (target.kind === 'worker') return { ...w, reportsTo: target.id };
+      const { reportsTo: _boss, manager: _manager, ...rest } = w;
+      return target.manager ? { ...rest, manager: target.manager } : rest;
+    };
+    return {
+      dragging,
+      over,
+      start: (id) => {
+        setMoveError(null);
+        setDragging(id);
+      },
+      end: () => {
+        setDragging(null);
+        setOver(null);
+      },
+      hover: setOver,
+      canDrop: (target) => {
+        const w = dragging ? workers[dragging] : undefined;
+        if (!w) return false;
+        if (target.kind === 'worker') return target.id !== w.id && target.id !== w.reportsTo && !wouldCycle(roster, w.id, target.id);
+        // Already right there: nothing to do.
+        if (!w.reportsTo && (w.manager?.name ?? '') === (target.manager?.name ?? '')) return false;
+        return true;
+      },
+      drop: (target) => {
+        const w = dragging ? workers[dragging] : undefined;
+        setDragging(null);
+        setOver(null);
+        if (!w) return;
+        void window.overcli.invoke('workers:save', { worker: moved(target, w) }).then(
+          (res) => setMoveError(res.ok ? null : `Could not move ${w.name}: ${res.error}`),
+          (err: unknown) => setMoveError(`Could not move ${w.name}: ${String(err)}`),
+        );
+      },
+    };
+  }, [workers, dragging, over]);
+
   return (
     <div className="min-h-0 flex-1 overflow-auto px-6 pb-10 pt-4">
       <header className="mb-6">
         <h2 className="text-sm font-semibold text-ink">Org chart</h2>
         <p className="mt-0.5 text-xs text-ink-muted">
           Who reports to whom, and which person each branch answers to. A question climbs the chain before it
-          reaches a person. Set a worker&apos;s manager and boss in its settings.
+          reaches a person. Drag a worker onto another to have it report there, or onto a person to report to them
+          directly.
         </p>
+        {moveError && (
+          <p role="alert" className="mt-2 text-xs text-red-300">
+            {moveError}
+          </p>
+        )}
       </header>
       {total === 0 ? (
         <div className="text-sm text-ink-muted">Nobody is hired yet.</div>
       ) : (
-        <div className="flex flex-col gap-12">
-          {branches.map((branch) => (
-            // Safe centering: a branch wider than the pane starts at its left
-            // edge, where the scroll can reach it, instead of spilling off both.
-            <section key={branch.manager?.name ?? '\u0000unmanaged'} className="flex flex-col [align-items:safe_center]">
-              <PersonCard
-                name={branch.manager?.name ?? 'Not managed yet'}
-                slack={!!branch.manager?.slackUserId}
-                count={countNodes(branch.roots)}
-                unmanaged={!branch.manager}
-              />
-              <Children nodes={branch.roots} stats={stats} onOpen={selectWorker} />
+        <DragContext.Provider value={drag}>
+        <div className="flex flex-col gap-10">
+          {places.map((place) => (
+            <section key={place.key} aria-label={place.label} className="flex flex-col gap-8">
+              {places.length > 1 && (
+                <div className="flex items-baseline gap-2 border-b border-card pb-1.5">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">{place.label}</h3>
+                  <span className="text-[11px] text-ink-faint">· {place.count}</span>
+                </div>
+              )}
+              {place.branches.map((branch) => (
+                // Safe centering: a branch wider than the pane starts at its
+                // left edge, where the scroll can reach it, instead of
+                // spilling off both.
+                <div key={branch.manager?.name ?? '\u0000unmanaged'} className="flex flex-col [align-items:safe_center]">
+                  <PersonCard
+                    name={branch.manager?.name ?? 'Not managed yet'}
+                    slack={!!branch.manager?.slackUserId}
+                    count={countNodes(branch.roots)}
+                    manager={branch.manager}
+                  />
+                  <Children nodes={branch.roots} stats={stats} onOpen={selectWorker} />
+                </div>
+              ))}
             </section>
           ))}
         </div>
+        </DragContext.Provider>
       )}
     </div>
   );
 }
 
-function PersonCard({ name, slack, count, unmanaged }: { name: string; slack: boolean; count: number; unmanaged: boolean }) {
+interface PlaceChart {
+  key: string;
+  label: string;
+  count: number;
+  branches: OrgBranch<Worker>[];
+}
+
+/// One chart per place the crew works, in the order places first appear on
+/// the roster. A worker whose boss works somewhere else heads its own branch
+/// here, under the manager it inherits from that boss.
+function chartsByPlace(all: readonly Worker[], labelOf: (path: string) => string): PlaceChart[] {
+  const byPlace = new Map<string, Worker[]>();
+  for (const w of all) byPlace.set(w.projectPath, [...(byPlace.get(w.projectPath) ?? []), w]);
+  return [...byPlace.entries()].map(([path, members]) => {
+    const here = new Set(members.map((w) => w.id));
+    const local = members.map((w) =>
+      w.reportsTo && !here.has(w.reportsTo) && !w.manager ? { ...w, manager: managerFor(all, w.id) } : w,
+    );
+    return { key: path, label: labelOf(path), count: members.length, branches: buildOrgTree(local) };
+  });
+}
+
+function PersonCard({ name, slack, count, manager }: { name: string; slack: boolean; count: number; manager?: WorkerManager }) {
+  const unmanaged = !manager;
+  const drop = useDropTarget({ kind: 'person', manager });
   return (
     <div
+      {...drop.props}
       className={
-        'flex min-w-[220px] items-center gap-3 rounded-xl px-4 py-3 shadow-sm ' +
-        (unmanaged ? 'border border-dashed border-card-strong bg-card/40' : 'bg-ink text-surface')
+        'flex min-w-[220px] items-center gap-3 rounded-xl px-4 py-3 shadow-sm transition-shadow ' +
+        (unmanaged ? 'border border-dashed border-card-strong bg-card/40' : 'bg-ink text-surface') +
+        (drop.active ? ' ring-2 ring-accent ring-offset-2 ring-offset-surface' : drop.able ? ' ring-1 ring-accent/40' : '')
       }
     >
       <div
@@ -196,11 +333,25 @@ function Children({
 
 function WorkerCard({ worker, stats, onOpen }: { worker: Worker; stats?: CardStats; onOpen: () => void }) {
   const tagline = workerTagline(worker);
+  const drag = useContext(DragContext);
+  const drop = useDropTarget({ kind: 'worker', id: worker.id });
+  const lifted = drag?.dragging === worker.id;
   return (
     <div
+      draggable
+      title={`Drag ${worker.name} onto another worker or a person to change who it reports to`}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', worker.name);
+        drag?.start(worker.id);
+      }}
+      onDragEnd={() => drag?.end()}
+      {...drop.props}
       className={
-        'flex w-[212px] flex-col items-center rounded-xl bg-card px-4 pb-3 pt-4 text-center shadow-sm ' +
-        (worker.enabled ? '' : 'opacity-60')
+        'flex w-[212px] cursor-grab flex-col items-center rounded-xl bg-card px-4 pb-3 pt-4 text-center shadow-sm transition-shadow active:cursor-grabbing ' +
+        (worker.enabled ? '' : 'opacity-60 ') +
+        (lifted ? 'opacity-40 ' : '') +
+        (drop.active ? 'ring-2 ring-accent' : drop.able ? 'ring-1 ring-accent/40' : '')
       }
     >
       <WorkerAvatar worker={worker} size="lg" />

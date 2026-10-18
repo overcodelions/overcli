@@ -148,6 +148,26 @@ describe('OrgService visibility', () => {
     expect(res).toMatchObject({ ok: true, reply: 'Done.' });
     expect(calls[0]).toContain('Asked by Pat');
   });
+
+  it('keeps a question and its answer, for the asker and the manager, whether or not anyone waited', async () => {
+    const { svc } = harness({ roster });
+    const started = svc.startAsk(pat, 'Open', 'what changed?');
+    if (!started.ok) throw new Error(started.error);
+    expect(svc.askStatus(pat, started.askId)).toMatchObject({ ok: true, ask: { status: 'working', by: 'Pat', via: 'console' } });
+    await started.done;
+    expect(svc.askStatus(pat, started.askId)).toMatchObject({ ok: true, ask: { status: 'answered', reply: 'Done.' } });
+    expect(svc.askStatus(sam, started.askId).ok).toBe(true);
+    expect(svc.workerDetail(pat, 'Open')).toMatchObject({ ok: true, asks: [{ id: started.askId, status: 'answered' }] });
+  });
+});
+
+describe('questions across a restart', () => {
+  it('marks a question that was still working as failed, not working forever', () => {
+    let saved = [{ id: 'a1', workerId: 'open', workerName: 'Open', by: 'Pat', slackUserId: PAT, text: 'x', at: 1, status: 'working' as const }];
+    const h = harness({ roster: [worker('open', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'org' })] });
+    const svc = new OrgService({ ...(h.svc as unknown as { deps: ConstructorParameters<typeof OrgService>[0] }).deps, asks: { list: () => saved, save: (a) => (saved = a as typeof saved) } });
+    expect(svc.askStatus(pat, 'a1')).toMatchObject({ ok: true, ask: { status: 'failed', error: expect.stringMatching(/restarted/) } });
+  });
 });
 
 describe('OrgService runs', () => {
@@ -238,14 +258,14 @@ describe('OrgService hiring', () => {
 
   it('hires inside the allowance, with the asker as manager and only cleared connectors', async () => {
     const h = harness({
-      policy: { hirers: '*', budgetAllowanceUSD: 100, allowedMcpServers: ['productboard'] },
-      draft: drafted({ mcpServers: ['productboard'] }),
+      policy: { hirers: '*', budgetAllowanceUSD: 100, allowedMcpServers: ['acme-feedback'] },
+      draft: drafted({ mcpServers: ['acme-feedback'] }),
     });
     const d = await h.svc.draftHire(pat, { jobDescription: 'Watch usage and write a weekly summary for product.' });
     if (!d.ok) throw new Error(d.error);
     const res = h.svc.confirmHire(pat, d.hire.hireId);
     expect(res).toMatchObject({ ok: true, hired: { name: 'Ana', manager: 'Pat' } });
-    expect(h.roster.get('ana')!.mcpServers).toEqual(['productboard']);
+    expect(h.roster.get('ana')!.mcpServers).toEqual(['acme-feedback']);
     expect(h.hires()).toEqual([]);
   });
 

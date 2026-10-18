@@ -17,12 +17,14 @@
 // hashes; pairing secrets live in memory for ten minutes and no longer.
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { isAdmin, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
+import { isAdmin, parseOrgPolicy, type OrgCaller, type OrgPolicy, type OrgRole, type OrgSso } from '../../shared/org/policy';
 import { isSlackUserId } from '../../shared/flows/worker';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
 export type PersonRole = 'member' | 'hirer' | 'approver' | 'admin';
+
+const ROLE_NAME: Record<PersonRole, string> = { member: 'a member', hirer: 'a hirer', approver: 'an approver', admin: 'an admin' };
 
 export const ROLE_TEXT: Record<PersonRole, string> = {
   member: 'ask workers things and rate their work',
@@ -88,6 +90,11 @@ export interface AccessDeps {
   };
   /// Change org.json in place (roles, allowances).
   updateOrg(mutate: (raw: Record<string, unknown>) => void): void;
+  /// Write a line in the decision log.
+  record?(caller: OrgCaller, what: string): void;
+  /// Everyone signs in through the identity provider: invite links no longer
+  /// sign anyone in (bar the first admin's), though they still carry a role.
+  ssoRequired?(): boolean;
   /// Slack, when it is connected. Each returns whether the DM went.
   slack?: {
     dmInvite(invite: Invite, link: string, org: string): Promise<boolean>;
@@ -95,6 +102,32 @@ export interface AccessDeps {
     tellRequester(slackUserId: string, text: string): void;
   };
   now?(): number;
+}
+
+/// The rules the Admin page may change. Admins, allowances and roles of
+/// people are set from People; the Slack workspace only with `org init`.
+export const EDITABLE_RULES = [
+  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin',
+  'allowedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'retentionDays', 'sso', 'people', 'fleet',
+] as const;
+
+export interface EditableRules {
+  name: string;
+  publicUrl: string;
+  timezone: string;
+  hirers: '*' | string[];
+  budgetAllowanceUSD: number;
+  approvers: string[];
+  orgVisibilityNeedsAdmin: boolean;
+  allowedMcpServers: string[];
+  teams: Record<string, string[]>;
+  roles: OrgRole[];
+  orgBudgetUSD: number | null;
+  alertAtPercent: number;
+  retentionDays: number | null;
+  sso: OrgSso | null;
+  people: Record<string, string>;
+  fleet: Array<{ name: string; url: string }>;
 }
 
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -209,6 +242,7 @@ export class AccessService {
     // redeemed or cancelled while Slack was answering stays that way.
     if (sentInSlack) this.deps.store.saveInvites(this.deps.store.invites().map((i) => (i.id === invite.id ? { ...i, sentInSlack } : i)));
     invite.sentInSlack = sentInSlack;
+    if (!args.setup) this.deps.record?.(caller, `Invited ${name} as ${ROLE_NAME[args.role]}.`);
     return { ok: true, invite: summarize(invite), link, sentInSlack };
   }
 
@@ -235,7 +269,7 @@ export class AccessService {
 
   /// What the join page shows before anyone presses anything. Public: the
   /// code in the URL is the credential.
-  inviteInfo(code: string): Result<{ org: string; name: string; invitedBy: string; role: PersonRole; roleText: string; allowanceUSD?: number; expiresAt: number; setup?: boolean }> {
+  inviteInfo(code: string): Result<{ org: string; name: string; invitedBy: string; role: PersonRole; roleText: string; allowanceUSD?: number; expiresAt: number; setup?: boolean; ssoRequired?: boolean; ssoProvider?: string }> {
     const invite = this.findInvite(code);
     if (!invite) return { ok: false, error: 'This invite has been used, has expired, or was never sent. Ask for a new one.' };
     const allowance = invite.allowanceUSD ?? (invite.role === 'hirer' ? this.deps.policy().budgetAllowanceUSD : undefined);
@@ -249,6 +283,8 @@ export class AccessService {
       ...(allowance !== undefined ? { allowanceUSD: allowance } : {}),
       expiresAt: invite.expiresAt,
       ...(invite.setup ? { setup: true } : {}),
+      ...(this.deps.ssoRequired?.() ? { ssoRequired: true } : {}),
+      ...(this.deps.ssoRequired?.() && this.deps.policy().sso ? { ssoProvider: new URL(this.deps.policy().sso!.issuer).hostname } : {}),
     };
   }
 
@@ -256,6 +292,9 @@ export class AccessService {
   redeem(code: string, device = 'Browser'): Result<{ token: string; name: string; org: string }> {
     const invite = this.findInvite(code);
     if (!invite) return { ok: false, error: 'This invite has been used, has expired, or was never sent. Ask for a new one.' };
+    if (this.deps.ssoRequired?.() && !invite.setup) {
+      return { ok: false, error: 'This org signs in with its company sign-in. Open the console and press Sign in; your invite applies when you do.' };
+    }
     if (invite.slackUserId) this.applyRole(invite.slackUserId, invite.role, invite.allowanceUSD);
     const { token } = this.deps.tokens.create({
       name: invite.name,
@@ -270,6 +309,21 @@ export class AccessService {
     if (stored) stored.usedAt = this.now();
     this.deps.store.saveInvites(all);
     return { ok: true, token, name: invite.name, org: this.org() };
+  }
+
+  /// A browser signed in through the identity provider. An invite waiting for
+  /// this person is used up here, so its role applies; otherwise they come in
+  /// with whatever role org.json already gives them.
+  signInWithSso(person: { slackUserId: string; name: string; email: string }): { token: string } {
+    const now = this.now();
+    const all = this.deps.store.invites();
+    const waiting = all.find((i) => i.slackUserId === person.slackUserId && !i.usedAt && i.expiresAt > now);
+    if (waiting) {
+      this.applyRole(person.slackUserId, waiting.role, waiting.allowanceUSD);
+      waiting.usedAt = now;
+      this.deps.store.saveInvites(all);
+    }
+    return this.deps.tokens.create({ name: person.name, slackUserId: person.slackUserId, device: 'Browser (company sign-in)' });
   }
 
   // ---- ROLES ------------------------------------------------------------
@@ -304,10 +358,43 @@ export class AccessService {
       return { ok: false, error: 'You are the only admin. Make someone else an admin first.' };
     }
     this.applyRole(slackUserId, role, allowanceUSD);
+    this.deps.record?.(caller, `Made ${slackUserId} ${ROLE_NAME[role]}${allowanceUSD !== undefined ? `, allowance $${allowanceUSD}` : ''}.`);
     const now = personRole(this.deps.policy(), slackUserId);
     return now === role
       ? { ok: true, role: now }
       : { ok: true, role: now, note: 'Everyone in the org may hire (hirers is "*" in org.json), so this person can still hire.' };
+  }
+
+  /// Someone has left: every way in closed and every rule that names them
+  /// cleared. Their workers are handed on first, by `OrgService.handOverAll`.
+  removePerson(caller: OrgCaller, slackUserId: string): Result<{ signedOut: number }> {
+    const denied = this.requireAdmin(caller);
+    if (denied) return { ok: false, error: denied };
+    if (!isSlackUserId(slackUserId)) return { ok: false, error: 'That is not a Slack member ID.' };
+    if (caller.slackUserId === slackUserId) return { ok: false, error: 'Someone else has to offboard you.' };
+    const policy = this.deps.policy();
+    if (policy.admins.length === 1 && policy.admins[0] === slackUserId) return { ok: false, error: 'They are the only admin. Make someone else an admin first.' };
+    const signedOut = this.deps.tokens.revokeFor(slackUserId);
+    this.deps.updateOrg((raw) => {
+      for (const key of ['admins', 'approvers', 'hirers']) {
+        if (Array.isArray(raw[key])) raw[key] = (raw[key] as string[]).filter((x) => x !== slackUserId);
+      }
+      if (raw.allowances && typeof raw.allowances === 'object') delete (raw.allowances as Record<string, unknown>)[slackUserId];
+      if (raw.teams && typeof raw.teams === 'object') {
+        for (const [team, members] of Object.entries(raw.teams as Record<string, unknown>)) {
+          if (Array.isArray(members)) (raw.teams as Record<string, unknown>)[team] = members.filter((x) => x !== slackUserId);
+        }
+      }
+      if (raw.people && typeof raw.people === 'object') {
+        for (const [email, id] of Object.entries(raw.people as Record<string, unknown>)) {
+          if (id === slackUserId) delete (raw.people as Record<string, unknown>)[email];
+        }
+      }
+    });
+    this.deps.store.saveInvites(this.deps.store.invites().filter((i) => i.slackUserId !== slackUserId));
+    this.deps.store.saveRequests(this.deps.store.requests().filter((r) => r.slackUserId !== slackUserId));
+    this.deps.record?.(caller, `Offboarded ${slackUserId}: signed out of ${signedOut} place${signedOut === 1 ? '' : 's'} and removed from the rules.`);
+    return { ok: true, signedOut };
   }
 
   /// Whether anyone in the org's Slack gets in by asking.
@@ -317,14 +404,80 @@ export class AccessService {
     this.deps.updateOrg((raw) => {
       raw.openJoin = on;
     });
+    this.deps.record?.(caller, on ? 'Let anyone in the Slack join by asking.' : 'Made joining need an admin again.');
     return { ok: true, openJoin: this.deps.policy().openJoin };
+  }
+
+  // ---- RULES ------------------------------------------------------------
+
+  /// The rules as an admin edits them on the Admin page.
+  rules(caller: OrgCaller): Result<{ rules: EditableRules }> {
+    const denied = this.requireAdmin(caller);
+    if (denied) return { ok: false, error: denied };
+    const p = this.deps.policy();
+    return {
+      ok: true,
+      rules: {
+        name: p.name ?? '',
+        publicUrl: p.publicUrl ?? '',
+        timezone: p.timezone ?? '',
+        hirers: p.hirers,
+        budgetAllowanceUSD: p.budgetAllowanceUSD,
+        approvers: p.approvers,
+        orgVisibilityNeedsAdmin: p.orgVisibilityNeedsAdmin,
+        allowedMcpServers: p.allowedMcpServers ?? [],
+        teams: p.teams,
+        roles: p.roles,
+        orgBudgetUSD: p.orgBudgetUSD ?? null,
+        alertAtPercent: p.alertAtPercent,
+        retentionDays: p.retentionDays ?? null,
+        sso: p.sso ?? null,
+        people: p.people,
+        fleet: p.fleet,
+      },
+    };
+  }
+
+  /// Change some rules. Each key is checked the way org.json is read; a
+  /// value that would not survive the reading is refused, not written, so
+  /// the console can never save a rule that quietly falls back to a default.
+  /// `null` removes an optional rule.
+  setRules(caller: OrgCaller, patch: Record<string, unknown>): Result<{ rules: EditableRules }> {
+    const denied = this.requireAdmin(caller);
+    if (denied) return { ok: false, error: denied };
+    const keys = Object.keys(patch).filter((k) => (EDITABLE_RULES as readonly string[]).includes(k));
+    if (!keys.length) return { ok: false, error: 'Nothing to change.' };
+    let refused: string | null = null;
+    this.deps.updateOrg((raw) => {
+      const next: Record<string, unknown> = { ...raw };
+      for (const k of keys) {
+        const v = patch[k];
+        if (v === null || v === '') delete next[k];
+        else next[k] = v;
+      }
+      const { warnings } = parseOrgPolicy(next);
+      const mine = warnings.filter((w) => keys.some((k) => w.startsWith(k) || w.includes(` ${k} `)));
+      if (mine.length) {
+        refused = mine.join(' ');
+        return;
+      }
+      for (const k of keys) {
+        if (k in next) raw[k] = next[k];
+        else delete raw[k];
+      }
+    });
+    if (refused) return { ok: false, error: refused };
+    this.deps.record?.(caller, `Changed the rules: ${keys.join(', ')}.`);
+    return this.rules(caller);
   }
 
   signOutEverywhere(caller: OrgCaller, slackUserId: string): Result<{ count: number }> {
     const denied = this.requireAdmin(caller);
     if (denied) return { ok: false, error: denied };
     if (caller.slackUserId === slackUserId) return { ok: false, error: 'Sign yourself out from your own devices instead.' };
-    return { ok: true, count: this.deps.tokens.revokeFor(slackUserId) };
+    const count = this.deps.tokens.revokeFor(slackUserId);
+    this.deps.record?.(caller, `Signed ${slackUserId} out everywhere.`);
+    return { ok: true, count };
   }
 
   /// Sign out one place. Your own any time; anyone's as an admin.

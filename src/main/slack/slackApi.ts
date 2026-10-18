@@ -96,6 +96,37 @@ export async function listPeople(botToken: string, fetchImpl?: FetchLike): Promi
   return { ok: true, data: out };
 }
 
+/// The Slack member with this email, for company sign-in. Needs the
+/// `users:read.email` scope.
+export async function lookupByEmail(botToken: string, email: string, fetchImpl?: FetchLike): Promise<SlackResult<{ id: string; name: string }>> {
+  // users.lookupByEmail takes form parameters, not JSON.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SLACK_TIMEOUT_MS);
+  try {
+    const res = await (fetchImpl ?? fetch)(`${SLACK_API_BASE}/users.lookupByEmail?email=${encodeURIComponent(email)}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${botToken}` },
+      signal: controller.signal,
+    });
+    const json = (await res.json()) as { ok?: boolean; error?: string; user?: { id: string; deleted?: boolean; real_name?: string; profile?: { real_name?: string } } };
+    if (!json.ok || !json.user || json.user.deleted) return { ok: false, error: `Slack users.lookupByEmail: ${json.error ?? 'not found'}` };
+    return { ok: true, data: { id: json.user.id, name: json.user.profile?.real_name || json.user.real_name || email } };
+  } catch (err) {
+    return { ok: false, error: `Slack users.lookupByEmail: ${String(err)}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/// One message, by channel and timestamp — what a reaction was left on.
+/// Needs channels:history (groups:history for private channels).
+export async function fetchMessage(botToken: string, channel: string, ts: string, fetchImpl?: FetchLike): Promise<SlackResult<{ text: string; user?: string }>> {
+  const res = await slackCall<{ messages?: Array<{ text?: string; user?: string }> }>('conversations.history', botToken, { channel, latest: ts, inclusive: true, limit: 1 }, fetchImpl);
+  if (!res.ok) return res;
+  const m = res.data.messages?.[0];
+  return m ? { ok: true, data: { text: m.text ?? '', ...(m.user ? { user: m.user } : {}) } } : { ok: false, error: 'No such message.' };
+}
+
 /// The bot's DM channel with a person. Idempotent on Slack's side.
 export async function openIm(botToken: string, userId: string, fetchImpl?: FetchLike): Promise<SlackResult<string>> {
   const res = await slackCall<{ channel: { id: string } }>('conversations.open', botToken, { users: userId }, fetchImpl);

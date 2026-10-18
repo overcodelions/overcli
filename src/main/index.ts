@@ -186,6 +186,7 @@ import {
   startPairing,
   whoamiAt,
 } from './org/orgClient';
+import { templateFrom } from './org/tools';
 import { draftHire, drafterDepsFor, hireDraftContext, saveDraftedHire } from './org/hireDraft';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { auditWorkerLandings } from './flows/strandedLandings';
@@ -1061,15 +1062,22 @@ export function registerIpc(): void {
   });
   ipcMain.handle('org:publishWorker', async (_e, { id, visibility }) => {
     const raw = Store.load().settings.orgServerUrl;
-    if (!raw) return { ok: false, error: 'Add your org server in Settings → Advanced → Org server first.' };
+    if (!raw) return { ok: false, error: 'Sign in to your org first: Settings → Advanced → Your org.' };
     const url = normalizeOrgUrl(raw);
     if (!url.ok) return url;
     const token = configuredOrgToken();
-    if (!token) return { ok: false, error: 'Add your org token in Settings → Advanced → Org server first.' };
+    if (!token) return { ok: false, error: 'Sign in to your org first: Settings → Advanced → Your org.' };
     const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
     if (!worker) return { ok: false, error: 'No such worker.' };
     const share = buildWorkerShare({ worker, library: loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }) });
-    return publishToOrg(url.url, token, share.yaml, visibility ? { visibility } : {});
+    // Its tools' setup goes along without a single secret, so the server's
+    // admin can install them pre-filled.
+    const tools = (worker.mcpServers ?? []).flatMap((name) => {
+      const config = readMcpServer('claude', name);
+      const t = config ? templateFrom(name, config) : null;
+      return t ? [t] : [];
+    });
+    return publishToOrg(url.url, token, share.yaml, visibility ? { visibility } : {}, tools);
   });
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
   ipcMain.handle('app:whatsNew', () => getWhatsNew());

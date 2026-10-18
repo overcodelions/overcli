@@ -18,8 +18,11 @@ services:
       - allow-list
       - --allow-tool
       - Read,Glob,Grep,Edit,Write,WebSearch,WebFetch
+    # Everything that matters lives in /data. Leave OVERCLI_DATA unset for a
+    # Docker volume, or set it to a path on a durable disk (an EBS volume, a
+    # GCE persistent disk) owned by uid 1000. See deploy/aws.md, deploy/gcp.md.
     volumes:
-      - overcli-data:/data
+      - ${OVERCLI_DATA:-overcli-data}:/data
     # Loopback only: reach the console over an SSH tunnel or the VPN host's
     # reverse proxy. Change to "7420:7420" only behind a firewall.
     ports:

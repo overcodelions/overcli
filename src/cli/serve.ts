@@ -18,7 +18,9 @@ import { host } from '../main/host';
 import { buildDaemonEngines, type DaemonEngines } from './engines';
 import { configuredSlackToken, slackEnabled } from '../main/slack/slackSettings';
 import { listPeople, type SlackPerson } from '../main/slack/slackApi';
-import { listTokens, loadOrgPolicy, orgPolicyPath } from '../main/org/orgStores';
+import { fileAuditStore, listTokens, loadOrgPolicy, orgPolicyPath } from '../main/org/orgStores';
+import { startHousekeeping } from '../main/org/housekeeping';
+import type { OrgCaller } from '../shared/org/policy';
 import { createControlPlane, listenControlPlane } from './controlPlane';
 import { ensureDefaultProject } from '../main/org/defaultProject';
 import { parseControlAddress, type ServeOptions } from './args';
@@ -185,10 +187,14 @@ export function startDaemon(
   // "weekdays at 09:00" would mean 09:00 UTC; the org's time zone, when
   // org.json names one and TZ is not set, makes it 09:00 where the org is.
   const orgZone = loadOrgPolicy().policy.timezone;
-  if (orgZone && !process.env.TZ) process.env.TZ = orgZone;
+  // Set by the operator: theirs to keep. Otherwise the org's, and it follows
+  // org.json while running (housekeeping below).
+  const zoneFromOrg = !process.env.TZ;
+  if (orgZone && zoneFromOrg) process.env.TZ = orgZone;
   engines.scheduler.start();
   engines.workerEngine.start();
   engines.teams.start();
+  engines.triggers.start();
   void ensureDefaultProject().then((dir) => {
     if (dir) deps.out(`projects: none registered, so workers will work in ${dir}. Add repos with overcli projects add.`);
   });
@@ -199,7 +205,7 @@ export function startDaemon(
   if (controlAt && 'error' in controlAt) {
     deps.out(`control: not started — $OVERCLI_CONTROL: ${controlAt.error}`);
   } else if (controlAt) {
-    const server = createControlPlane({ org: engines.org, access: engines.access, slackPeople: slackDirectory(), log: deps.out });
+    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, triggers: engines.triggers, slackPeople: slackDirectory(), log: deps.out });
     control = server;
     listenControlPlane(server, controlAt).then(
       () => {
@@ -249,6 +255,24 @@ export function startDaemon(
   // still has to be up — the user may add a schedule from the app.
   const keepAlive = setInterval(() => {}, KEEP_ALIVE_MS);
 
+  const everyone: OrgCaller = { name: 'overcli', admin: true };
+  const housekeeping = startHousekeeping({
+    policy: () => loadOrgPolicy().policy,
+    workers: () => engines.org.listWorkers(everyone),
+    managerSlackId: (id) => engines.org.managerSlackId(id),
+    pool: { get: () => engines.workerEngine.treasury().treasury.monthlyUSD, set: (usd) => engines.workerEngine.setTreasury(usd) },
+    rearm: () => {
+      engines.scheduler.onHostResume();
+      engines.workerEngine.onHostResume();
+    },
+    notify: (to, title, body) => engines.commands.tellPeople(to, title, body),
+    audit: fileAuditStore,
+    runs: { list: () => engines.flowRuntime.listRuns(), delete: (runId) => engines.flowRuntime.deleteRun({ runId }) },
+    stateFile: path.join(dataDir, 'org', 'housekeeping.json'),
+    log: deps.out,
+    zoneFromOrg,
+  });
+
   let resolveDone: (code: number) => void;
   const done = new Promise<number>((resolve) => {
     resolveDone = resolve;
@@ -266,6 +290,8 @@ export function startDaemon(
     shuttingDown = true;
     deps.out(`${signal} — stopping schedules and workers.`);
     clearInterval(keepAlive);
+    housekeeping.stop();
+    engines.triggers.stop();
     control?.close();
     try {
       engines.dispose();

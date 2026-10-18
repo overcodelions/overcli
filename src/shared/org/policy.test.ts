@@ -36,7 +36,7 @@ describe('parseOrgPolicy', () => {
       budgetAllowanceUSD: 50,
       allowances: { [SAM]: 200 },
       teams: { product: [PAT, SAM] },
-      allowedMcpServers: ['productboard'],
+      allowedMcpServers: ['acme-feedback'],
     });
     expect(warnings).toEqual([]);
     expect(p).toMatchObject({ admins: [PAT], hirers: '*', budgetAllowanceUSD: 50, allowances: { [SAM]: 200 } });
@@ -123,13 +123,13 @@ describe('hireDecision', () => {
   });
 
   it('needs approval for org-wide visibility and uncleared connectors', () => {
-    const p = policy({ hirers: '*', budgetAllowanceUSD: 1000, allowedMcpServers: ['productboard'] });
-    const d = hireDecision(p, roster, pat, { budgetUSDPerMonth: 1, visibility: 'org', mcpServers: ['productboard', 'warehouse'] });
+    const p = policy({ hirers: '*', budgetAllowanceUSD: 1000, allowedMcpServers: ['acme-feedback'] });
+    const d = hireDecision(p, roster, pat, { budgetUSDPerMonth: 1, visibility: 'org', mcpServers: ['acme-feedback', 'warehouse'] });
     expect(d.kind).toBe('needsApproval');
     if (d.kind === 'needsApproval') {
       expect(d.reasons.join(' ')).toMatch(/whole org/);
       expect(d.reasons.join(' ')).toMatch(/warehouse/);
-      expect(d.reasons.join(' ')).not.toMatch(/productboard/);
+      expect(d.reasons.join(' ')).not.toMatch(/acme-feedback/);
     }
   });
 });

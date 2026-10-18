@@ -17,6 +17,53 @@ All notable changes to Overcli are documented here. The format is based on [Keep
   - **Connect:** copy-paste setup for Claude Code, Claude Desktop, Codex, the overcli app and Slack.
   - **People, without tokens:** invite people from your Slack (overcli DMs each a one-time sign-in link), let in people who type `/overcli join`, and change roles and allowances in the console. The overcli app signs in by pairing (Settings → Your org → Sign in, then confirm the code in the browser). People shows every sign-in and signs out one device or a person everywhere. On first run `serve` prints a one-time link for the first admin.
   - **Schedules:** a hire keeps the schedule its job description implies ("every weekday morning"), and the offer lets you change it. Each worker's page shows when it runs and when it runs next, has **Run now**, and edits the schedule in Settings (when asked, every day, weekdays, once a week, or every few hours within working hours). A worker on probation proposes its work: the manager approves some or all of it on Today, or with one button in Slack. Schedules run in the org's `timezone`. MCP has `list_proposals`, `decide_proposal`, `run_worker_now` and `set_worker_schedule`.
+  - **Triggers: workers act on business events.**
+    - **Watch:** a tool is checked every few minutes directly, with no model, acting once per new item.
+    - **Webhook:** a secret URL for Jira, GitHub, a CRM or Zapier.
+    - **Slack:** a message, mention or emoji reaction in a channel.
+
+    Each event becomes a task with the event attached, so trust still applies. The result goes to a Slack channel, the event's thread, or the worker's own tools. Build triggers on a worker's Triggers tab (watches can be tried before saving), or with `create_trigger`, `list_triggers` and `set_trigger_enabled` over MCP.
+  - **Library:** everything workers delivered, on events and on request, with links, where it went, time to handle and ratings, plus `library` over MCP. Each worker shows items handled, typical time, cost per item and the share rated useful.
+  - **A redesigned console.**
+    - **Inbox:** everything that needs you, each card acted on in place (answer, approve, pick proposed work, fix a missing tool), plus an "ask a worker" box.
+    - **Workers:** a grid that says in words what each one is doing.
+    - **A worker's page:** one conversation (your questions with its answers, its delivered work, the questions it asked) beside a plain Setup panel covering how much it does alone, its tools, schedule, manager and budget.
+    - **Hire:** starts from "What do you need done?".
+    - **Org → Setup:** opens on a readiness checklist (model, Slack, a place to work, tools, people, sign-in), with Tools and Rules beside it. Activity holds health, spend and the decision log.
+  - Claude on Bedrock or Vertex counts as a signed-in model.
+  - **Alpha, and off by default.** Settings → Labs → **Org workers · alpha** turns on everything for teams in the desktop app:
+    - Slack and Your org in Advanced
+    - Manager, Who may ask it and Avatar on each worker
+    - Publish to your org
+    - a **Run workers for your team** guide covering this Mac, AWS and Google Cloud
+
+    The console wears an Alpha badge.
+  - **Tools on the server:** the console's **Tools** page installs MCP servers on the server, by command or URL, with their secrets kept on the server. **Check them** shows which connect. **Workers are missing these** lists tools a worker names that aren't installed, and a worker's page says so too.
+    - Publishing a worker from the desktop brings its tools' setup, minus every secret, so installing is filling in the keys.
+    - `list_tools` is available over MCP.
+  - **Questions are kept.** A question asked in the console is saved with its answer, shown on the worker's page, and survives leaving the page. A slow answer is DMed in Slack. Over MCP, `ask_worker` hands back an id after 50 seconds, and `check_question` picks up the answer.
+  - **Org chart:** drag a worker onto another worker, or onto a person, to change who it reports to.
+  - **Deploy guides** for AWS (`deploy/aws.md`) and Google Cloud (`deploy/gcp.md`). `/data` lives on a durable, snapshotted disk, and `OVERCLI_DATA` points compose at it.
+  - **Rules in the console:** Admin → **Change the rules** edits:
+    - who may hire, allowances and approvers
+    - cleared tools, teams and the role catalog
+    - the org budget, retention, company sign-in and other servers
+
+    No SSH or JSON. Each change is checked as `org.json` would be read and goes in the decision log. Also available as `org_rules` and `set_org_rules` over MCP.
+  - **Company sign-in:** OpenID Connect sign-in (Okta, Entra ID, Google) with PKCE and a verified ID token. Emails are matched to people through Slack or the `people` list. **Everyone signs in this way** turns invite links into role grants.
+  - **Offboarding:** People → **has left** hands their workers and hires in progress to a successor, signs them out everywhere and takes them off every rule (`offboard_person` over MCP). An admin can hand any worker to someone else, and a manager can let a worker go, from the worker's page.
+  - **Decision log:**
+    - The full log on Admin searches by words and dates, and exports to CSV.
+    - Rule, role, invite and sign-out changes are logged too.
+    - `retentionDays` prunes the log and finished runs nightly, never touching unreviewed work.
+  - **Cost controls:**
+    - `orgBudgetUSD` caps the whole org.
+    - Managers get a Slack warning at `alertAtPercent` of a worker's budget, with a one-press raise. Admins are warned for the org.
+    - Admin shows spend by team.
+    - Without an org cap, the shared pool follows the roster's budgets, so new hires are no longer starved.
+  - **Other servers:** list the company's other overcli servers, and Admin shows each one's health and spend.
+  - Changing the org's time zone applies while the server runs, and re-arms schedules.
+  - The desktop org chart is grouped by workspace.
   - **Hardening:**
     - Org workers only work in projects the server has registered.
     - Sign-in links are built only from `publicUrl` or an admin's own visit, and `X-Forwarded-*` headers are believed only with `OVERCLI_TRUST_PROXY=1`.

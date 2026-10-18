@@ -12,6 +12,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import type { OrgService } from '../main/org/orgService';
+import type { AccessService } from '../main/org/accessService';
 import type { OrgCaller } from '../shared/org/policy';
 
 function json(value: unknown): CallToolResult {
@@ -32,7 +33,10 @@ function out<T extends R>(res: T): CallToolResult {
 
 const VISIBILITY = z.enum(['private', 'team', 'org']);
 
-export function registerOrgTools(server: McpServer, org: OrgService, caller: OrgCaller): void {
+/// How long ask_worker waits before handing back an id to check later.
+const ASK_WAIT_MS = 50_000;
+
+export function registerOrgTools(server: McpServer, org: OrgService, caller: OrgCaller, access?: AccessService): void {
   // Hints for the client: read-only tools can run without a confirmation,
   // and letting a worker go should always get one.
   const tool: McpServer['registerTool'] = (name, config, cb) =>
@@ -76,13 +80,110 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     {
       description:
         "Send a worker an errand or a question. It plans from its job description and journal and replies; it may also start " +
-        'work, which it reports. Can take a minute or more.',
+        'work, which it reports. If it is not done within about 50 seconds you get an askId instead: call check_question with it.',
       inputSchema: {
         worker: z.string().describe('Worker name or id.'),
         message: z.string().min(1).describe('What you want, in plain words.'),
       },
     },
-    async ({ worker, message }) => out(await org.ask(caller, worker, message)),
+    async ({ worker, message }) => {
+      const started = org.startAsk(caller, worker, message, 'mcp');
+      if (!started.ok) return out(started);
+      // Answer inside the client's patience, or say where to look later.
+      const later = new Promise<'later'>((resolve) => setTimeout(() => resolve('later'), ASK_WAIT_MS).unref?.());
+      const first = await Promise.race([started.done, later]);
+      if (first === 'later') {
+        return json({ askId: started.askId, status: 'working', note: 'Still working. Call check_question with this askId in a minute.' });
+      }
+      return out(first);
+    },
+  );
+
+  tool(
+    'list_tools',
+    {
+      description:
+        "The tools (MCP servers) installed on this org server, which workers use each, and any a worker names that is not installed — " +
+        'the usual reason a worker cannot reach Jira, a CRM or the like. Admins install them on the console\'s Tools page.',
+      inputSchema: {},
+    },
+    async () => out(org.tools(caller)),
+  );
+
+  tool(
+    'list_triggers',
+    { description: 'What sets a worker off on its own: watches (a tool checked every few minutes), webhooks and Slack channel events, with what each has handled.', inputSchema: { worker: z.string() } },
+    async ({ worker }) => out(org.triggers(caller, worker)),
+  );
+
+  tool(
+    'create_trigger',
+    {
+      description:
+        'Give a worker you manage a trigger: when something happens, it does a task and delivers the result. ' +
+        'kind "watch": every N minutes call one of the server\'s tools (e.g. a Jira search) and act once per NEW item — the first check only records what is already there. ' +
+        'kind "webhook": returns a secret URL path to post events to. kind "slack": a new message, a mention, or an emoji reaction in a channel. ' +
+        'deliver: post to a Slack channel, reply in the Slack thread (slack triggers), or have the worker deliver it with its tools (e.g. "comment on the ticket"). ' +
+        'Confirm the details with the person first.',
+      inputSchema: {
+        worker: z.string(),
+        name: z.string().describe('e.g. "New bugs in Support Backlog"'),
+        kind: z.enum(['watch', 'webhook', 'slack']),
+        instructions: z.string().describe('What to do with each event, in plain words.'),
+        watch: z
+          .object({ server: z.string(), tool: z.string(), args: z.record(z.string(), z.unknown()).optional(), everyMinutes: z.number().int().min(5).optional(), itemsPath: z.string().optional(), idPath: z.string().optional() })
+          .optional(),
+        slack: z.object({ channel: z.string(), on: z.enum(['message', 'mention', 'reaction']), reaction: z.string().optional(), contains: z.string().optional() }).optional(),
+        deliverToSlackChannel: z.string().optional().describe('A channel ID to post each result in.'),
+        replyInThread: z.boolean().optional(),
+        workerDelivers: z.string().optional().describe('What the worker should do with the result itself, e.g. "Comment your triage on the ticket."'),
+        maxPerDay: z.number().int().min(1).max(500).optional(),
+      },
+    },
+    async (a) =>
+      out(
+        org.createTrigger(caller, a.worker, {
+          name: a.name,
+          kind: a.kind,
+          instructions: a.instructions,
+          maxPerDay: a.maxPerDay ?? 50,
+          deliver: [
+            ...(a.deliverToSlackChannel ? [{ kind: 'slack' as const, channel: a.deliverToSlackChannel }] : []),
+            ...(a.replyInThread ? [{ kind: 'thread' as const }] : []),
+            ...(a.workerDelivers ? [{ kind: 'worker' as const, text: a.workerDelivers }] : []),
+          ],
+          ...(a.watch ? { watch: { server: a.watch.server, tool: a.watch.tool, args: a.watch.args ?? {}, everyMinutes: a.watch.everyMinutes ?? 15, ...(a.watch.itemsPath ? { itemsPath: a.watch.itemsPath } : {}), ...(a.watch.idPath ? { idPath: a.watch.idPath } : {}) } } : {}),
+          ...(a.slack ? { slack: a.slack } : {}),
+        }),
+      ),
+  );
+
+  tool(
+    'set_trigger_enabled',
+    { description: 'Switch one of a worker\'s triggers off or on.', inputSchema: { triggerId: z.string(), enabled: z.boolean() } },
+    async ({ triggerId, enabled }) => out(org.updateTrigger(caller, triggerId, { enabled })),
+  );
+
+  tool(
+    'library',
+    {
+      description: 'What workers delivered, newest first: results of their triggers and their finished work, with links. Filter by worker and words.',
+      inputSchema: { worker: z.string().optional(), query: z.string().optional(), limit: z.number().int().min(1).max(100).optional() },
+    },
+    async ({ worker, query, limit }) => {
+      const w = worker ? org.resolve(caller, worker) : null;
+      if (worker && !w) return out({ ok: false, error: 'No worker by that name that you can see.' });
+      return json(org.library(caller, { ...(w ? { workerId: w.id } : {}), ...(query ? { query } : {}), limit: limit ?? 30 }));
+    },
+  );
+
+  tool(
+    'check_question',
+    {
+      description: 'Where a question sent with ask_worker got to: still working, answered (with the reply), or failed.',
+      inputSchema: { askId: z.string() },
+    },
+    async ({ askId }) => out(org.askStatus(caller, askId)),
   );
 
   tool(
@@ -353,8 +454,21 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
 
   tool(
     'decision_log',
-    { description: 'Admins: recent decisions — hires, approvals, promotions, changes — and who made them.', inputSchema: {} },
-    async () => out(org.auditLog(caller, 60)),
+    {
+      description:
+        'Admins: decisions — hires, approvals, promotions, rule changes, offboarding — and who made them, newest first. ' +
+        'Filter by words (a person, a worker, "approved") and a date range.',
+      inputSchema: {
+        query: z.string().optional(),
+        from: z.string().optional().describe('ISO date, e.g. 2026-10-01.'),
+        to: z.string().optional().describe('ISO date, exclusive.'),
+        limit: z.number().int().min(1).max(500).optional(),
+      },
+    },
+    async ({ query, from, to, limit }) => {
+      const at = (d?: string) => (d && Number.isFinite(Date.parse(d)) ? Date.parse(d) : undefined);
+      return out(org.auditLog(caller, { limit: limit ?? 60, ...(query ? { query } : {}), ...(at(from) ? { from: at(from) } : {}), ...(at(to) ? { to: at(to) } : {}) }));
+    },
   );
 
   tool(
@@ -416,11 +530,56 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
       return out(org.update(caller, worker, { cadence }));
     },
   );
+
+  if (access) {
+    tool(
+      'org_rules',
+      { description: "Admins: the org's rules — who may hire, allowances, approvers, the org-wide budget and alerts, teams, roles, retention, sign-in.", inputSchema: {} },
+      async () => out(access.rules(caller)),
+    );
+
+    tool(
+      'offboard_person',
+      {
+        description:
+          'Admins: someone has left. Hands every worker they manage, and their hires in progress, to a successor; then signs them out ' +
+          'everywhere and takes them off every rule. Confirm with the person first: it cannot be undone.',
+        inputSchema: {
+          slackUserId: z.string().describe('Who left.'),
+          successor: z.object({ name: z.string(), slackUserId: z.string() }).optional().describe('Who takes their workers. Needed when they manage any.'),
+        },
+        annotations: { destructiveHint: true },
+      },
+      async ({ slackUserId, successor }) => {
+        if (successor) {
+          const handed = org.handOverAll(caller, slackUserId, successor);
+          if (!handed.ok) return out(handed);
+        } else if (org.listWorkers(caller).some((w) => w.managerSlackUserId === slackUserId)) {
+          return out({ ok: false, error: 'They still manage workers. Name a successor.' });
+        }
+        return out(access.removePerson(caller, slackUserId));
+      },
+    );
+
+    tool(
+      'set_org_rules',
+      {
+        description:
+          "Admins: change some of the org's rules. Pass only the keys to change; null removes an optional one. " +
+          'Keys: name, publicUrl, timezone, hirers ("*" or Slack ids), budgetAllowanceUSD, approvers, orgVisibilityNeedsAdmin, ' +
+          'allowedMcpServers, teams ({name: [Slack ids]}), roles ([{name, job, tools, budgetUSDPerMonth}]), orgBudgetUSD, alertAtPercent, ' +
+          'retentionDays, sso ({issuer, clientId, allowedDomains, required}), people ({email: Slack id}), fleet ([{name, url}]). ' +
+          'Read org_rules first, and confirm the change with the person.',
+        inputSchema: { patch: z.record(z.string(), z.unknown()) },
+      },
+      async ({ patch }) => out(access.setRules(caller, patch)),
+    );
+  }
 }
 
 const READ_ONLY = new Set([
   'whoami', 'list_workers', 'get_worker', 'org_chart', 'list_waiting', 'list_hires', 'today', 'list_work',
-  'list_roles', 'list_teams', 'list_team_tasks', 'org_people', 'org_health', 'decision_log', 'list_proposals',
+  'list_roles', 'list_teams', 'list_team_tasks', 'org_people', 'org_health', 'decision_log', 'list_proposals', 'org_rules', 'check_question', 'list_tools', 'list_triggers', 'library',
 ]);
 
 function annotationsFor(name: string): Record<string, boolean> {

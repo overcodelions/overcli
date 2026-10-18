@@ -6,6 +6,7 @@
 // before. Setting a manager's Slack member ID is what moves them to Slack.
 
 import { useMemo } from 'react';
+import { useStore } from '../../store';
 import type { UUID } from '@shared/types';
 import {
   WORKER_VISIBILITIES,
@@ -46,6 +47,9 @@ export function WorkerOrgFields({
   workers: Record<string, Worker>;
   patch: (p: Partial<WorkerOrgDraft>) => void;
 }) {
+  // Managers in Slack, who may ask it, and its face there are the org alpha's.
+  // Without it, only the reporting chain shows: that works for one person too.
+  const org = useStore((s) => s.settings.orgAlpha ?? false);
   const roster = useMemo(() => Object.values(workers), [workers]);
   // Anyone but itself and anyone already under it — picking one of those
   // would make a loop, which the engine refuses on save anyway.
@@ -73,6 +77,7 @@ export function WorkerOrgFields({
 
   return (
     <div className="space-y-5">
+      {org && (
       <div>
         <Label label="Manager" hint="the person its questions and approvals go to" />
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_180px]">
@@ -99,8 +104,9 @@ export function WorkerOrgFields({
               : 'Without a Slack member ID, questions wait in overcli as they always have.'}
         </div>
       </div>
+      )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className={'grid grid-cols-1 gap-4' + (org ? ' sm:grid-cols-2' : '')}>
         <div>
           <Label label="Reports to" />
           <select
@@ -121,6 +127,7 @@ export function WorkerOrgFields({
             A question it cannot answer goes to this worker first, then up the chain, before it reaches a person.
           </div>
         </div>
+        {org && (
         <div>
           <Label label="Who may ask it" />
           <select
@@ -142,17 +149,20 @@ export function WorkerOrgFields({
             Anyone who can ask it can learn what its tools can reach. Keep a worker with sensitive tools narrow.
           </div>
         </div>
+        )}
       </div>
 
-      <div>
-        <Label label="Avatar" hint="an https image — its face in Slack" />
-        <input
-          value={draft.avatarUrl ?? ''}
-          onChange={(e) => patch({ avatarUrl: e.target.value.trim() || undefined })}
-          placeholder="https://…"
-          className={INPUT + ' font-mono'}
-        />
-      </div>
+      {org && (
+        <div>
+          <Label label="Avatar" hint="an https image — its face in Slack" />
+          <input
+            value={draft.avatarUrl ?? ''}
+            onChange={(e) => patch({ avatarUrl: e.target.value.trim() || undefined })}
+            placeholder="https://…"
+            className={INPUT + ' font-mono'}
+          />
+        </div>
+      )}
     </div>
   );
 }

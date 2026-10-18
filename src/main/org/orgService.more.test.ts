@@ -109,7 +109,7 @@ function harness(opts: {
       roster.set(w.id, w);
       return { ok: true, worker: w };
     },
-    audit: { append: (e) => audit.push(e), recent: (n) => audit.slice(-n).reverse() },
+    audit: { append: (e) => audit.push(e), recent: (n) => audit.slice(-n).reverse(), all: () => [...audit] },
     ratings: { list: () => ratings, save: (r) => (ratings = r) },
     people: () => [{ name: 'Pat', slackUserId: PAT, admin: false, lastUsedAt: NOW }],
     now: () => NOW,
@@ -200,17 +200,17 @@ describe('trust', () => {
 });
 
 describe('publishing a local worker', () => {
-  const yaml = serializeWorker({ worker: worker('x', { name: 'Wes', budgetUSDPerMonth: 15, mcpServers: ['productboard', 'warehouse'] }), flows: [] });
+  const yaml = serializeWorker({ worker: worker('x', { name: 'Wes', budgetUSDPerMonth: 15, mcpServers: ['acme-feedback', 'warehouse'] }), flows: [] });
 
   it('lands it with the publisher as manager and only cleared tools', () => {
-    const h = harness({ policy: { hirers: '*', budgetAllowanceUSD: 100, allowedMcpServers: ['productboard'], approvers: [BOSS] } });
+    const h = harness({ policy: { hirers: '*', budgetAllowanceUSD: 100, allowedMcpServers: ['acme-feedback'], approvers: [BOSS] } });
     // Uncleared tools need an approver; clear both to land it directly.
-    const h2 = harness({ policy: { hirers: '*', budgetAllowanceUSD: 100, allowedMcpServers: ['productboard', 'warehouse'] } });
+    const h2 = harness({ policy: { hirers: '*', budgetAllowanceUSD: 100, allowedMcpServers: ['acme-feedback', 'warehouse'] } });
     expect(h.svc.publishWorker(pat, yaml)).toMatchObject({ ok: true, hire: { status: 'awaitingApproval' } });
     const res = h2.svc.publishWorker(pat, yaml);
     expect(res).toMatchObject({ ok: true, hired: { name: 'Landed' } });
     expect(h2.imported).toEqual([PAT]);
-    expect(h2.roster.get('landed')!.mcpServers).toEqual(['productboard', 'warehouse']);
+    expect(h2.roster.get('landed')!.mcpServers).toEqual(['acme-feedback', 'warehouse']);
   });
 
   it('refuses a file that is not a worker, and a caller who may not hire', () => {
@@ -291,5 +291,32 @@ describe('admin views', () => {
     const res = h.svc.health(admin);
     expect(res.ok && res.org.name).toBe('Acme');
     expect(res.ok && res.rules).toMatchObject({ hirers: 'Everyone', approvers: ['Pat'] });
+  });
+});
+
+describe('offboarding someone', () => {
+  it('hands their workers and drops their hires, for an admin only', () => {
+    const h = harness({
+      roster: [
+        worker('luke', { manager: { name: 'Pat', slackUserId: PAT } }),
+        worker('max', { manager: { name: 'Sam', slackUserId: SAM } }),
+      ],
+    });
+    expect(h.svc.handOverAll(pat, PAT, { name: 'Sam', slackUserId: SAM }).ok).toBe(false);
+    expect(h.svc.handOverAll(admin, PAT, { name: 'Sam', slackUserId: SAM })).toEqual({ ok: true, workers: ['Luke'], hires: 0 });
+    expect(h.roster.get('luke')!.manager).toEqual({ name: 'Sam', slackUserId: SAM });
+    expect(h.audit.at(-1)!.what).toMatch(/Handed Luke from U0ACMEPAT to Sam/);
+  });
+});
+
+describe('the decision log', () => {
+  it('searches by words and dates, newest first', () => {
+    const h = harness({ roster: [worker('luke', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    h.audit.push({ at: NOW - 3 * 86_400_000, by: 'Bo', what: 'Approved Luke posting.' }, { at: NOW - 86_400_000, by: 'Pat', what: 'Hired Ana.' }, { at: NOW, by: 'Bo', what: 'Approved Ana.' });
+    const words = h.svc.auditLog(admin, { query: 'approved' });
+    expect(words.ok && words.entries.map((e) => e.what)).toEqual(['Approved Ana.', 'Approved Luke posting.']);
+    const range = h.svc.auditLog(admin, { from: NOW - 2 * 86_400_000, to: NOW });
+    expect(range.ok && range.entries.map((e) => e.what)).toEqual(['Hired Ana.']);
+    expect(h.svc.auditLog(pat, { query: 'x' }).ok).toBe(false);
   });
 });

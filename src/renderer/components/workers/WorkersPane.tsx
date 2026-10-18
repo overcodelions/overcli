@@ -2001,7 +2001,9 @@ function ShareCard({ worker }: { worker: Worker }) {
   } | null>(null);
   const [copied, setCopied] = useState(false);
   const [savedTo, setSavedTo] = useState<string | null>(null);
-  const orgServerUrl = useStore((s) => s.settings.orgServerUrl);
+  const orgAlpha = useStore((s) => s.settings.orgAlpha ?? false);
+  const orgServerUrl = useStore((s) => (s.settings.orgAlpha ? s.settings.orgServerUrl : undefined));
+  const openSheet = useStore((s) => s.openSheet);
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -2065,10 +2067,16 @@ function ShareCard({ worker }: { worker: Worker }) {
         </button>
         {/* The org's server, when one is set up: the same file, handed to
             the org under its rules instead of to one person. */}
-        {orgServerUrl && (
+        {/* With the org alpha on, always offered: not signed in yet, it says
+            where to sign in rather than hiding. */}
+        {orgAlpha && (
           <button
             disabled={publishing}
             onClick={() => {
+              if (!orgServerUrl) {
+                setPublished({ ok: false, text: "Sign this app in to your org first: Settings → Advanced → Your org. No org server yet? The guide there shows how to run one." });
+                return;
+              }
               setPublishing(true);
               setPublished(null);
               void window.overcli
@@ -2080,13 +2088,21 @@ function ShareCard({ worker }: { worker: Worker }) {
             }}
             className="rounded-md border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink disabled:opacity-50"
           >
-            {publishing ? "Publishing…" : "Publish to your org"}
+            {publishing ? "Publishing…" : "Publish to your org (alpha)"}
           </button>
         )}
       </div>
       {published && (
         <div className={"mt-2 text-[11px] " + (published.ok ? "text-emerald-300" : "text-red-300")}>
           {published.text}
+          {!orgServerUrl && (
+            <button
+              onClick={() => openSheet({ type: "settings", section: "advanced" })}
+              className="ml-1 text-accent hover:underline"
+            >
+              Open Settings
+            </button>
+          )}
         </div>
       )}
 

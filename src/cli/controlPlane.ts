@@ -15,12 +15,20 @@
 // over Socket Mode, which the daemon dials out to. Put it behind the VPN, or
 // behind an HTTPS ingress when claude.ai connectors need to reach it.
 
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 import { callerForToken, loadOrgPolicy, revokeOwnToken } from '../main/org/orgStores';
+import { auditCsv } from '../main/org/retention';
+import { parseTemplates } from '../main/org/tools';
+import type { SsoService } from '../main/org/sso';
+import type { TriggerService } from '../main/org/triggers';
+import { fleetStatus, fleetTokensFile, fleetUrlProblem, loadFleetTokens, saveFleetToken } from '../main/org/fleet';
+import { host } from '../main/host';
 import { Store } from '../main/store';
 import type { ScheduleTrigger } from '../shared/flows/schedule';
 import type { AccessService, PersonRole } from '../main/org/accessService';
@@ -41,6 +49,10 @@ export interface ControlPlaneDeps {
   access?: AccessService;
   /// People in the org's Slack, for the invite picker. Absent: no picker.
   slackPeople?: () => Promise<SlackPerson[]>;
+  /// Sign-in with the company's identity provider. Absent: links and tokens only.
+  sso?: SsoService;
+  /// Workers' triggers, for the public webhook endpoint.
+  triggers?: TriggerService;
   log: (line: string) => void;
   /// Injected for tests; production reads the token file.
   authenticate?: (token: string | undefined) => OrgCaller | null;
@@ -98,7 +110,7 @@ const PAGE_HEADERS = {
   ...ASSET_HEADERS,
   'Content-Type': 'text/html; charset=utf-8',
   // Same-origin script and style only, no framing: the console holds a token.
-  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   'Referrer-Policy': 'no-referrer',
 };
 
@@ -111,7 +123,7 @@ type PublicHandler = (body: Record<string, unknown>, params: string[], base: str
 const ROLES = new Set(['member', 'hirer', 'approver', 'admin']);
 
 /// People: invites, join requests, roles, sign-ins.
-function accessRoutes(access: AccessService, slackPeople?: () => Promise<SlackPerson[]>): Array<{ method: string; path: RegExp; handle: Handler }> {
+function accessRoutes(org: OrgService, access: AccessService, slackPeople?: () => Promise<SlackPerson[]>): Array<{ method: string; path: RegExp; handle: Handler }> {
   const str = (v: unknown): string => (typeof v === 'string' ? v : '');
   const role = (v: unknown): PersonRole => (ROLES.has(str(v)) ? (str(v) as PersonRole) : 'member');
   const money = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
@@ -133,6 +145,54 @@ function accessRoutes(access: AccessService, slackPeople?: () => Promise<SlackPe
     { method: 'POST', path: /^\/api\/admin\/people\/role$/, handle: (c, b) => access.setRole(c, str(b.slackUserId), role(b.role), money(b.allowanceUSD)) },
     { method: 'POST', path: /^\/api\/admin\/people\/signout$/, handle: (c, b) => access.signOutEverywhere(c, str(b.slackUserId)) },
     { method: 'POST', path: /^\/api\/admin\/open-join$/, handle: (c, b) => access.setOpenJoin(c, b.on === true) },
+    { method: 'GET', path: /^\/api\/admin\/rules$/, handle: (c) => access.rules(c) },
+    {
+      // The company's other servers: each one's health and spend, read with
+      // an admin token from that server.
+      method: 'GET',
+      path: /^\/api\/admin\/fleet$/,
+      handle: async (c) => {
+        if (!isAdmin(loadOrgPolicy().policy, c)) return { ok: false, error: 'Only admins can see other servers.' };
+        return { ok: true, servers: await fleetStatus(loadOrgPolicy().policy.fleet, loadFleetTokens(fleetTokensFile(host().dataDir()))) };
+      },
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/fleet\/token$/,
+      handle: (c, b) => {
+        if (!isAdmin(loadOrgPolicy().policy, c)) return { ok: false, error: 'Only admins can connect other servers.' };
+        const server = loadOrgPolicy().policy.fleet.find((f) => f.url === str(b.url));
+        if (!server) return { ok: false, error: 'Add the server on Rules first.' };
+        const bad = fleetUrlProblem(server.url);
+        if (bad) return { ok: false, error: bad };
+        const token = str(b.token).trim();
+        if (token && !token.startsWith('ocli_')) return { ok: false, error: 'That does not look like an overcli token (ocli_…).' };
+        saveFleetToken(fleetTokensFile(host().dataDir()), server.url, token || null);
+        return { ok: true };
+      },
+    },
+    {
+      // Someone has left: their workers and hires to a successor, then every
+      // way in closed. Workers first, so nothing is left without a manager.
+      method: 'POST',
+      path: /^\/api\/admin\/people\/offboard$/,
+      handle: (c, b) => {
+        const from = str(b.slackUserId);
+        const to = (b.to ?? {}) as { name?: unknown; slackUserId?: unknown };
+        const manages = org.listWorkers({ name: 'admin', admin: true }).some((w) => w.managerSlackUserId === from);
+        let handed: { workers: string[]; hires: number } = { workers: [], hires: 0 };
+        if (typeof to.slackUserId === 'string' && to.slackUserId) {
+          const res = org.handOverAll(c, from, { name: str(to.name), slackUserId: to.slackUserId });
+          if (!res.ok) return res;
+          handed = res;
+        } else if (manages) {
+          return { ok: false, error: 'They still manage workers. Pick who takes them over.' };
+        }
+        const removed = access.removePerson(c, from);
+        return removed.ok ? { ok: true, ...handed, signedOut: removed.signedOut } : removed;
+      },
+    },
+    { method: 'POST', path: /^\/api\/admin\/rules$/, handle: (c, b) => access.setRules(c, b.patch && typeof b.patch === 'object' ? (b.patch as Record<string, unknown>) : {}) },
     { method: 'POST', path: /^\/api\/devices\/([^/]+)\/signout$/, handle: (c, _b, [id]) => access.signOutDevice(c, id) },
     { method: 'POST', path: /^\/api\/devices$/, handle: (c, b) => access.createDeviceKey(c, str(b.device)) },
     {
@@ -202,6 +262,92 @@ function originOf(req: http.IncomingMessage): string {
   const proto = fwdProto === 'https' || fwdProto === 'http' ? fwdProto : 'encrypted' in req.socket && (req.socket as { encrypted?: boolean }).encrypted ? 'https' : 'http';
   const host = String((trustProxy() ? req.headers['x-forwarded-host'] : undefined) ?? req.headers.host ?? 'localhost').split(',')[0].trim();
   return /^[A-Za-z0-9.\-:[\]]+$/.test(host) ? `${proto}://${host}` : 'http://localhost';
+}
+
+/// The app's display face, read once from the bundled file. The console
+/// falls back to the system face when it is not there.
+let fontCache: Buffer | null | undefined;
+function brandFont(): Buffer | null {
+  if (fontCache !== undefined) return fontCache;
+  const candidates = [
+    path.join(__dirname, '../../src/renderer/fonts/BricolageGrotesque-latin.woff2'),
+    path.join(__dirname, '../renderer/fonts/BricolageGrotesque-latin.woff2'),
+    path.join(process.cwd(), 'src/renderer/fonts/BricolageGrotesque-latin.woff2'),
+  ];
+  fontCache = null;
+  for (const file of candidates) {
+    try {
+      fontCache = fs.readFileSync(file);
+      break;
+    } catch {
+      // try the next
+    }
+  }
+  return fontCache;
+}
+
+/// A trigger from the console or MCP, cut to the fields it may set.
+function triggerInput(raw: unknown): Parameters<OrgService['createTrigger']>[2] {
+  const t = (raw ?? {}) as Record<string, any>;
+  const text = (v: unknown, max = 4000) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const kind = t.kind === 'webhook' || t.kind === 'slack' ? t.kind : 'watch';
+  const deliver = (Array.isArray(t.deliver) ? t.deliver : [])
+    .slice(0, 6)
+    .map((d: any) =>
+      d?.kind === 'slack' ? { kind: 'slack' as const, channel: text(d.channel, 20) } : d?.kind === 'thread' ? { kind: 'thread' as const } : d?.kind === 'worker' ? { kind: 'worker' as const, text: text(d.text, 1000) } : null,
+    )
+    .filter(Boolean);
+  const w = (t.watch ?? {}) as Record<string, any>;
+  const s = (t.slack ?? {}) as Record<string, any>;
+  return {
+    name: text(t.name, 120),
+    kind,
+    instructions: text(t.instructions),
+    deliver,
+    maxPerDay: Number(t.maxPerDay) || 50,
+    ...(kind === 'watch'
+      ? {
+          watch: {
+            server: text(w.server, 64),
+            tool: text(w.tool, 120),
+            args: w.args && typeof w.args === 'object' && !Array.isArray(w.args) ? (w.args as Record<string, unknown>) : {},
+            everyMinutes: Number(w.everyMinutes) || 15,
+            ...(text(w.itemsPath, 120) ? { itemsPath: text(w.itemsPath, 120) } : {}),
+            ...(text(w.idPath, 120) ? { idPath: text(w.idPath, 120) } : {}),
+          },
+        }
+      : {}),
+    ...(kind === 'slack'
+      ? { slack: { channel: text(s.channel, 20), on: s.on === 'mention' || s.on === 'reaction' ? s.on : 'message', ...(text(s.reaction, 60) ? { reaction: text(s.reaction, 60).replace(/:/g, '') } : {}), ...(text(s.contains, 200) ? { contains: text(s.contains, 200) } : {}) } }
+      : {}),
+    ...(kind === 'webhook' && text(t.webhook?.idPath, 120) ? { webhook: { idPath: text(t.webhook.idPath, 120) } } : {}),
+  } as Parameters<OrgService['createTrigger']>[2];
+}
+
+function triggerPatch(raw: unknown): Parameters<OrgService['updateTrigger']>[2] {
+  const p = (raw ?? {}) as Record<string, unknown>;
+  const full = triggerInput({ kind: 'watch', ...p });
+  return {
+    ...(typeof p.enabled === 'boolean' ? { enabled: p.enabled } : {}),
+    ...(typeof p.name === 'string' ? { name: full.name } : {}),
+    ...(typeof p.instructions === 'string' ? { instructions: full.instructions } : {}),
+    ...(Array.isArray(p.deliver) ? { deliver: full.deliver } : {}),
+    ...(p.maxPerDay !== undefined ? { maxPerDay: full.maxPerDay } : {}),
+    ...(p.watch ? { watch: full.watch } : {}),
+    ...(p.slack ? { slack: triggerInput({ kind: 'slack', slack: p.slack }).slack } : {}),
+  };
+}
+
+/// A handler's answer that is a file to download rather than JSON.
+const CSV = '__csv';
+
+function auditQuery(url: URL, limit: number): { limit: number; from?: number; to?: number; query?: string } {
+  const n = (k: string) => {
+    const v = Number(url.searchParams.get(k));
+    return Number.isFinite(v) && v > 0 ? v : undefined;
+  };
+  const q = url.searchParams.get('q')?.trim();
+  return { limit: n('limit') ?? limit, ...(n('from') ? { from: n('from') } : {}), ...(n('to') ? { to: n('to') } : {}), ...(q ? { query: q.slice(0, 200) } : {}) };
 }
 
 /// A schedule from the console: null ("when asked"), or a daily/interval
@@ -281,7 +427,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'GET', path: /^\/api\/roles$/, handle: (c) => org.roles(c) },
     { method: 'POST', path: /^\/api\/roles\/hire$/, handle: (c, b) => org.hireRole(c, str(b.role), str(b.extra)) },
-    { method: 'POST', path: /^\/api\/publish$/, handle: (c, b) => org.publishWorker(c, str(b.yaml), hireOptions(b.options)) },
+    { method: 'POST', path: /^\/api\/publish$/, handle: (c, b) => org.publishWorker(c, str(b.yaml), hireOptions(b.options), parseTemplates(b.tools)) },
     { method: 'GET', path: /^\/api\/teams$/, handle: (c) => org.teams(c) },
     { method: 'GET', path: /^\/api\/team-tasks$/, handle: (c) => org.teamTasks(c) },
     { method: 'POST', path: /^\/api\/teams\/brief$/, handle: (c, b) => org.briefTeam(c, str(b.team), str(b.text)) },
@@ -298,9 +444,18 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'GET', path: /^\/api\/admin\/people$/, handle: (c) => org.people(c) },
     { method: 'GET', path: /^\/api\/admin\/health$/, handle: (c) => org.health(c) },
-    { method: 'GET', path: /^\/api\/admin\/audit$/, handle: (c) => org.auditLog(c, 60) },
+    { method: 'GET', path: /^\/api\/admin\/audit$/, handle: (c, _b, _p, url) => org.auditLog(c, auditQuery(url, 60)) },
+    {
+      // The same search, as a spreadsheet to download.
+      method: 'GET',
+      path: /^\/api\/admin\/audit\.csv$/,
+      handle: (c, _b, _p, url) => {
+        const res = org.auditLog(c, { ...auditQuery(url, 10_000), limit: 10_000 });
+        return res.ok ? { ok: true, [CSV]: auditCsv([...res.entries].reverse()) } : res;
+      },
+    },
     { method: 'GET', path: /^\/api\/projects$/, handle: () => workPlaces() },
-    ...(access ? accessRoutes(access, slackPeople) : []),
+    ...(access ? accessRoutes(org, access, slackPeople) : []),
     { method: 'GET', path: /^\/api\/whoami$/, handle: (c) => org.whoami(c) },
     { method: 'GET', path: /^\/api\/workers$/, handle: (c) => org.listWorkers(c) },
     { method: 'GET', path: /^\/api\/workers\/([^/]+)$/, handle: (c, _b, [id]) => org.getWorker(c, decodeURIComponent(id)) },
@@ -309,12 +464,53 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'GET', path: /^\/api\/hires$/, handle: (c) => org.listHires(c) },
     { method: 'POST', path: /^\/api\/answer$/, handle: (c, b) => org.answer(c, str(b.runId), str(b.answer)) },
     { method: 'POST', path: /^\/api\/approval$/, handle: (c, b) => org.decideRun(c, str(b.runId), b.approve === true) },
-    { method: 'POST', path: /^\/api\/ask$/, handle: (c, b) => org.ask(c, str(b.worker), str(b.message)) },
+    {
+      // Returns at once: the console follows the question by id, so leaving
+      // the page loses nothing.
+      method: 'POST',
+      path: /^\/api\/ask$/,
+      handle: (c, b) => {
+        const res = org.startAsk(c, str(b.worker), str(b.message), 'console');
+        return res.ok ? { ok: true, askId: res.askId } : res;
+      },
+    },
+    { method: 'GET', path: /^\/api\/asks\/([^/]+)$/, handle: (c, _b, [id]) => org.askStatus(c, decodeURIComponent(id)) },
+    { method: 'GET', path: /^\/api\/tools$/, handle: (c) => org.tools(c) },
+    { method: 'GET', path: /^\/api\/tools\/([^/]+)\/calls$/, handle: (c, _b, [name]) => org.serverTools(c, decodeURIComponent(name)) },
+    { method: 'GET', path: /^\/api\/workers\/([^/]+)\/triggers$/, handle: (c, _b, [id]) => org.triggers(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/triggers$/, handle: (c, b, [id]) => org.createTrigger(c, decodeURIComponent(id), triggerInput(b.trigger)) },
+    { method: 'POST', path: /^\/api\/triggers\/test$/, handle: (c, b) => org.testWatch(c, triggerInput({ kind: 'watch', watch: b.watch }).watch!) },
+    { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/check$/, handle: (c, _b, [id]) => org.checkTriggerNow(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeTrigger(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/triggers\/([^/]+)$/, handle: (c, b, [id]) => org.updateTrigger(c, decodeURIComponent(id), triggerPatch(b.patch)) },
+    { method: 'GET', path: /^\/api\/library$/, handle: (c, _b, _p, url) => org.library(c, { ...(url.searchParams.get('worker') ? { workerId: url.searchParams.get('worker')! } : {}), ...(url.searchParams.get('q') ? { query: url.searchParams.get('q')!.slice(0, 200) } : {}) }) },
+    { method: 'POST', path: /^\/api\/library\/([^/]+)\/rate$/, handle: (c, b, [id]) => org.rateDeliverable(c, decodeURIComponent(id), b.useful === true) },
+    { method: 'POST', path: /^\/api\/admin\/tools\/check$/, handle: (c) => org.checkTools(c) },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/tools$/,
+      handle: (c, b) => {
+        const t = (b.tool ?? {}) as Record<string, unknown>;
+        const pairs = (v: unknown): Record<string, string> =>
+          v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v as Record<string, unknown>).filter(([, x]) => typeof x === 'string') as Array<[string, string]>) : {};
+        return org.installTool(c, {
+          name: str(t.name),
+          kind: t.kind === 'http' ? 'http' : 'command',
+          command: str(t.command),
+          args: Array.isArray(t.args) ? t.args.filter((a): a is string => typeof a === 'string') : [],
+          env: pairs(t.env),
+          url: str(t.url),
+          headers: pairs(t.headers),
+        });
+      },
+    },
+    { method: 'POST', path: /^\/api\/admin\/tools\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.uninstallTool(c, decodeURIComponent(name)) },
     {
       method: 'POST',
       path: /^\/api\/workers\/([^/]+)\/paused$/,
       handle: (c, b, [id]) => org.setPaused(c, decodeURIComponent(id), b.paused === true),
     },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/retire$/, handle: (c, _b, [id]) => org.retire(c, decodeURIComponent(id)) },
     {
       method: 'POST',
       path: /^\/api\/workers\/([^/]+)\/update$/,
@@ -349,7 +545,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
   ];
 }
 
-async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, org: OrgService, caller: OrgCaller): Promise<void> {
+async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, org: OrgService, caller: OrgCaller, access?: AccessService): Promise<void> {
   let body: unknown;
   try {
     body = await readBody(req);
@@ -360,7 +556,7 @@ async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, or
   // Stateless: a fresh server per request, bound to this caller. Nothing
   // about one caller's session can leak into another's.
   const server = new McpServer({ name: 'overcli-org', version: '1' });
-  registerOrgTools(server, org, caller);
+  registerOrgTools(server, org, caller, access);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on('close', () => {
     void transport.close();
@@ -373,7 +569,17 @@ async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, or
 export function createControlPlane(deps: ControlPlaneDeps): http.Server {
   const authenticate = deps.authenticate ?? ((token) => callerForToken(token, loadOrgPolicy().policy));
   const routes = apiRoutes(deps.org, deps.access, deps.slackPeople);
-  const open = deps.access ? publicRoutes(deps.access) : [];
+  const open = [
+    ...(deps.access ? publicRoutes(deps.access) : []),
+    // Whether to show "Sign in with …", and the console's swap of its
+    // one-time code for a token.
+    { method: 'GET', path: /^\/api\/sso$/, handle: () => ({ ok: true, ...(deps.sso?.status() ?? { enabled: false, required: false }) }) },
+    {
+      method: 'POST',
+      path: /^\/api\/sso\/redeem$/,
+      handle: (b: Record<string, unknown>) => (deps.sso ? deps.sso.redeem(typeof b.code === 'string' ? b.code : '') : { ok: false, error: 'Company sign-in is not set up.' }),
+    },
+  ] as Array<{ method: string; path: RegExp; handle: PublicHandler }>;
   const allow = rateLimiter(60);
 
   return http.createServer((req, res) => {
@@ -382,8 +588,43 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
       const path = url.pathname;
       try {
         if (req.method === 'GET' && path === '/healthz') return send(res, 200, { ok: true });
-        // The join and pairing pages are the console too: it reads the path.
-        if (req.method === 'GET' && (path === '/' || path === '/index.html' || path === '/pair' || /^\/join\/[A-Za-z0-9_-]{10,100}$/.test(path))) {
+        // Company sign-in: off to the provider, and back. The callback hands
+        // the console a one-time code, never the token, in its URL.
+        if (req.method === 'GET' && deps.sso && (path === '/sso/start' || path === '/sso/callback')) {
+          if (!allow(clientKey(req))) return send(res, 429, 'Too many tries. Wait a minute.');
+          const done = (q: Record<string, string>) => {
+            res.writeHead(302, { Location: `/sso/done?${new URLSearchParams(q).toString()}`, 'Cache-Control': 'no-store' });
+            res.end();
+          };
+          if (path === '/sso/start') {
+            const started = await deps.sso.start(url.searchParams.get('next') ?? '/');
+            if (!started.ok) return done({ error: started.error });
+            res.writeHead(302, { Location: started.url, 'Cache-Control': 'no-store' });
+            return res.end();
+          }
+          const back = await deps.sso.callback(url.searchParams);
+          if (!back.ok) {
+            deps.log(`control: company sign-in failed: ${back.error}`);
+            return done({ error: back.error });
+          }
+          return done({ code: back.handoff, next: back.next });
+        }
+        // A webhook from Jira, GitHub, a CRM or Zapier: the secret is in the
+        // path, so any sender can use it. Answers fast; the work runs after.
+        const hook = /^\/hooks\/([A-Za-z0-9_-]{6,40})\/([A-Za-z0-9_-]{20,80})$/.exec(path);
+        if (hook && req.method === 'POST' && deps.triggers) {
+          if (!allow(clientKey(req))) return send(res, 429, { ok: false, error: 'Too many events. Slow down.' });
+          let body: unknown;
+          try {
+            body = await readBody(req);
+          } catch {
+            return send(res, 400, { ok: false, error: 'Send JSON.' });
+          }
+          const r = deps.triggers.webhook(hook[1], hook[2], body);
+          return r.ok ? send(res, 202, r) : send(res, r.status, { ok: false, error: r.error });
+        }
+        // The join, pairing and sign-in pages are the console too: it reads the path.
+        if (req.method === 'GET' && (path === '/' || path === '/index.html' || path === '/pair' || path === '/sso/done' || /^\/join\/[A-Za-z0-9_-]{10,100}$/.test(path))) {
           res.writeHead(200, PAGE_HEADERS);
           return res.end(CONSOLE_HTML);
         }
@@ -394,6 +635,12 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
         if (req.method === 'GET' && path === '/icon.svg') {
           res.writeHead(200, { ...ASSET_HEADERS, 'Content-Type': 'image/svg+xml' });
           return res.end(CONSOLE_ICON);
+        }
+        if (req.method === 'GET' && path === '/fonts/bricolage.woff2') {
+          const font = brandFont();
+          if (!font) return send(res, 404, 'Not found.');
+          res.writeHead(200, { ...ASSET_HEADERS, 'Content-Type': 'font/woff2' });
+          return res.end(font);
         }
         if (req.method === 'GET' && path === '/console.css') {
           res.writeHead(200, { ...ASSET_HEADERS, 'Content-Type': 'text/css; charset=utf-8' });
@@ -430,7 +677,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           if (req.method !== 'POST') {
             return send(res, 405, { jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }, { Allow: 'POST' });
           }
-          return await handleMcp(req, res, deps.org, caller);
+          return await handleMcp(req, res, deps.org, caller, deps.access);
         }
 
         if (path.startsWith('/api/')) {
@@ -450,7 +697,14 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
             }
           }
           const params = route.path.exec(path)!.slice(1);
-          return send(res, 200, await route.handle(caller, body, params, url, base));
+          const answer = await route.handle(caller, body, params, url, base);
+          if (answer && typeof answer === 'object' && CSV in answer) {
+            return send(res, 200, String((answer as Record<string, unknown>)[CSV]), {
+              'Content-Type': 'text/csv; charset=utf-8',
+              'Content-Disposition': 'attachment; filename="decision-log.csv"',
+            });
+          }
+          return send(res, 200, answer);
         }
         send(res, 404, { ok: false, error: 'Not found.' });
       } catch (err) {

@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import type { FlowRun } from '../../shared/flows/schema';
 import { flowRunTitle } from '../../shared/flows/schema';
 import type { HireMessage, Worker, WorkerErrandResult, WorkerJournalEntry, WorkerTrustLevel, WorkerVisibility } from '../../shared/flows/worker';
-import { validateOrgFields, workerTagline } from '../../shared/flows/worker';
+import { isSlackUserId, validateOrgFields, workerTagline } from '../../shared/flows/worker';
 import { describeTrigger, type ScheduleTrigger } from '../../shared/flows/schedule';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import { buildOrgTree, managerFor, type OrgNode } from '../../shared/flows/org';
@@ -34,7 +34,9 @@ import { TEAM_STAGE_LABEL, isMemberStage } from '../../shared/flows/team';
 import { parseWorkerYaml } from '../../shared/flows/workerYaml';
 import type { UUID } from '../../shared/types';
 import type { DraftedHire, HireDraftResult } from './hireDraft';
-import type { AuditEntry, AuditStore, HireStore, Rating, RatingStore } from './orgStores';
+import type { ToolInput, ToolSummary, ToolTemplate } from './tools';
+import type { Deliverable, Destination, TriggerService, WorkerTrigger } from './triggers';
+import type { AskRecord, AskStore, AuditEntry, AuditStore, HireStore, Rating, RatingStore } from './orgStores';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -86,12 +88,18 @@ export interface WorkerSummary {
   manager?: string;
   /// Set when the manager is inherited from a worker above, not its own.
   managerInherited?: boolean;
+  /// Its own manager's Slack member ID, when it has one.
+  managerSlackUserId?: string;
   reportsTo?: { id: UUID; name: string };
   visibility: WorkerVisibility;
   budgetUSDPerMonth: number;
   spentThisMonthUSD: number;
   waiting: number;
   youManage: boolean;
+  /// What it is doing now: working, waiting on a person, paused, stuck, idle.
+  state: WorkerState;
+  /// The tools (MCP servers) it lists, and whether this server has each.
+  tools: Array<{ name: string; ok: boolean }>;
   /// When it runs, in words ("Weekdays at 09:00"), and the next time.
   schedule: string;
   cadence: ScheduleTrigger | null;
@@ -174,6 +182,38 @@ export interface TodayView {
   spend: { spentUSD: number; projectedUSD: number; allowanceUSD?: number; committedUSD?: number };
 }
 
+export type TriggerView = Omit<WorkerTrigger, 'webhook' | 'seen'> & { webhook?: { idPath?: string }; seenCount: number; handledToday: number; handledTotal: number };
+
+export interface LibraryItem {
+  id: string;
+  /// event: delivered on a trigger; work: a finished run.
+  kind: 'event' | 'work';
+  workerId: string;
+  workerName: string;
+  at: number;
+  title: string;
+  status: Deliverable['status'];
+  body?: string;
+  error?: string;
+  links: string[];
+  deliveredTo: string[];
+  source: Deliverable['source'];
+  minutes?: number;
+  rating?: { useful: boolean; by: string };
+}
+
+export interface WorkerValue {
+  handled: number;
+  failed: number;
+  medianMinutes: number | null;
+  useful: number;
+  rated: number;
+  spentUSD: number;
+  costPerItemUSD: number | null;
+}
+
+export type { Destination };
+
 export interface WorkerDetail {
   worker: WorkerSummary;
   jobDescription: string;
@@ -183,6 +223,13 @@ export interface WorkerDetail {
   questions: Array<{ question: string; answer?: string; answeredBy?: string; at: number; waiting: boolean }>;
   learned: Array<{ at: number; note: string }>;
   recent: Array<{ at: number; kind: string; title: string; note?: string }>;
+  /// What people asked it lately, newest first, with the answers.
+  asks: AskRecord[];
+  /// Tools it names that this server does not have: it works without them.
+  missingTools: string[];
+  /// Its triggers, and what its events came to this month.
+  triggers: TriggerView[];
+  value: WorkerValue | null;
 }
 
 export interface RoleOffer extends OrgRole {
@@ -292,6 +339,24 @@ export interface OrgServiceDeps {
   ): { ok: true; worker: Worker } | { ok: false; error: string };
   audit?: AuditStore;
   ratings?: RatingStore;
+  /// The MCP servers installed on this server. Absent: the Tools page is off.
+  tools?: {
+    list(roster: Worker[], statuses?: Record<string, string>): { tools: ToolSummary[]; missing: Array<{ name: string; workers: string[]; template?: ToolTemplate }> };
+    /// How a published worker's tools were set up where it came from.
+    remember?(templates: ToolTemplate[]): void;
+    install(input: ToolInput): { ok: true } | { ok: false; error: string };
+    uninstall(name: string): { ok: true } | { ok: false; error: string };
+    /// Start the model CLI once and read what each server reports.
+    check(): Promise<Record<string, string> | null>;
+  };
+  /// Workers acting on business events. Absent: no triggers on this host.
+  triggers?: () => TriggerService | null;
+  /// The tools an installed MCP server offers, for the trigger builder.
+  serverTools?(name: string): Promise<{ ok: true; tools: Array<{ name: string; description?: string }> } | { ok: false; error: string }>;
+  /// Questions people asked, and their answers. Absent: kept in memory only.
+  asks?: AskStore;
+  /// An answer that took long enough that the asker has likely moved on.
+  onAskDone?(ask: AskRecord): void;
   health?(): HealthItem[];
   /// Everyone holding access, from the token list.
   people?(): Array<{ id?: string; name: string; slackUserId?: string; admin: boolean; device?: string; lastUsedAt?: number }>;
@@ -375,10 +440,14 @@ export class OrgService {
     const spent = this.deps.workers.spentThisMonth();
     const waiting = this.waitingCounts();
     const next = new Map((this.deps.snapshots?.() ?? []).map((x) => [x.worker.id, x.nextShiftAt]));
+    const runs = this.deps.runs.listRuns();
+    // What this server has installed, by name. Unknown (no tools hook): say nothing is missing.
+    const installed = this.deps.tools ? new Set(this.deps.tools.list([]).tools.map((t) => t.name)) : null;
     return roster
       .filter((w) => canSee(policy, roster, w.id, caller))
       .map((w) => {
         const manager = managerFor(roster, w.id);
+        const tools = (w.mcpServers ?? []).map((name) => ({ name, ok: !installed || installed.has(name) }));
         const boss = w.reportsTo ? roster.find((x) => x.id === w.reportsTo) : undefined;
         return {
           id: w.id,
@@ -388,6 +457,7 @@ export class OrgService {
           trust: w.trust,
           ...(manager ? { manager: manager.name } : {}),
           ...(manager && !w.manager ? { managerInherited: true } : {}),
+          ...(w.manager?.slackUserId ? { managerSlackUserId: w.manager.slackUserId } : {}),
           ...(boss ? { reportsTo: { id: boss.id, name: boss.name } } : {}),
           visibility: w.visibility ?? 'private',
           budgetUSDPerMonth: w.budgetUSDPerMonth,
@@ -397,6 +467,8 @@ export class OrgService {
           schedule: scheduleText(w.cadence),
           cadence: w.cadence,
           nextRunAt: w.enabled ? next.get(w.id) ?? null : null,
+          state: workerState(w, runs),
+          tools,
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -586,14 +658,306 @@ export class OrgService {
   /// An errand: the worker plans from its job and answers, and may launch
   /// work. Anyone who can see a worker may ask it — visibility is exactly
   /// "who may ask it things".
-  async ask(caller: OrgCaller, idOrName: string, text: string): Promise<Result<{ reply: string; launched: number }>> {
+  async ask(caller: OrgCaller, idOrName: string, text: string, via: AskRecord['via'] = 'mcp'): Promise<Result<{ reply: string; launched: number; askId: string }>> {
+    const started = this.startAsk(caller, idOrName, text, via);
+    if (!started.ok) return started;
+    return started.done;
+  }
+
+  /// Ask without waiting: the question is on record at once, and its answer
+  /// lands there whenever the worker is done — whether or not anyone is
+  /// still looking.
+  startAsk(
+    caller: OrgCaller,
+    idOrName: string,
+    text: string,
+    via: AskRecord['via'] = 'console',
+  ): Result<{ askId: string; done: Promise<Result<{ reply: string; launched: number; askId: string }>> }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
+    if (!text.trim()) return { ok: false, error: `What should ${w.name} do?` };
     const from = canManage(this.policy(), this.deps.workers.roster(), w.id, caller) ? '' : `(Asked by ${caller.name}, who is not your manager.)\n`;
-    const res = await this.deps.workers.runErrand(w.id, from + text);
+    const record: AskRecord = {
+      id: randomUUID(),
+      workerId: w.id,
+      workerName: w.name,
+      by: caller.name,
+      ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}),
+      text: text.trim().slice(0, 4000),
+      at: this.now(),
+      status: 'working',
+      via,
+    };
+    this.putAsk(record);
+    const done = this.deps.workers.runErrand(w.id, from + text).then(
+      (res): Result<{ reply: string; launched: number; askId: string }> => {
+        const finished: AskRecord = res.ok
+          ? { ...record, status: 'answered', reply: res.result.reply, launched: res.result.queued, doneAt: this.now() }
+          : { ...record, status: 'failed', error: res.error, doneAt: this.now() };
+        this.putAsk(finished);
+        this.deps.onAskDone?.(finished);
+        return res.ok ? { ok: true, reply: res.result.reply, launched: res.result.queued, askId: record.id } : res;
+      },
+      (err: unknown) => {
+        const error = err instanceof Error ? err.message : String(err);
+        const failed: AskRecord = { ...record, status: 'failed', error, doneAt: this.now() };
+        this.putAsk(failed);
+        this.deps.onAskDone?.(failed);
+        return { ok: false as const, error };
+      },
+    );
+    return { ok: true, askId: record.id, done };
+  }
+
+  private memoryAsks: AskRecord[] = [];
+  private asksRestored = false;
+
+  private allAsks(): AskRecord[] {
+    if (!this.deps.asks) return this.memoryAsks;
+    const all = this.deps.asks.list();
+    // Questions still "working" from before a restart are not coming back.
+    if (!this.asksRestored) {
+      this.asksRestored = true;
+      if (all.some((a) => a.status === 'working')) {
+        const settled = all.map((a) => (a.status === 'working' ? { ...a, status: 'failed' as const, error: 'The server restarted before it finished. Ask again.', doneAt: this.now() } : a));
+        this.deps.asks.save(settled);
+        return settled;
+      }
+    }
+    return all;
+  }
+
+  private putAsk(record: AskRecord): void {
+    const all = this.allAsks().filter((a) => a.id !== record.id);
+    all.push(record);
+    if (this.deps.asks) this.deps.asks.save(all);
+    else this.memoryAsks = all.slice(-1000);
+  }
+
+  // ---- TOOLS --------------------------------------------------------------
+
+  private toolStatuses: { at: number; statuses: Record<string, string> } | null = null;
+
+  /// What MCP servers workers here can use, who uses each, and what a worker
+  /// names that is not installed. Admins see it all; a manager sees whether
+  /// their workers' tools are here.
+  tools(caller: OrgCaller): Result<{ tools: ToolSummary[]; missing: Array<{ name: string; workers: string[]; template?: ToolTemplate }>; checkedAt?: number; canEdit: boolean }> {
+    if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
+    const roster = this.deps.workers.roster();
+    const admin = isAdmin(this.policy(), caller);
+    const mine = admin ? roster : roster.filter((w) => canManage(this.policy(), roster, w.id, caller));
+    const listed = this.deps.tools.list(mine, this.toolStatuses?.statuses);
+    return {
+      ok: true,
+      tools: admin ? listed.tools : listed.tools.filter((t) => t.usedBy.length),
+      missing: listed.missing,
+      ...(this.toolStatuses ? { checkedAt: this.toolStatuses.at } : {}),
+      canEdit: admin,
+    };
+  }
+
+  installTool(caller: OrgCaller, input: ToolInput): Result {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can install tools on the server.' };
+    if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
+    const res = this.deps.tools.install(input);
+    if (res.ok) this.record(caller, `Installed the ${input.name} tool (${input.kind === 'http' ? input.url : input.command}).`);
+    return res;
+  }
+
+  uninstallTool(caller: OrgCaller, name: string): Result {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can remove tools from the server.' };
+    if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
+    const res = this.deps.tools.uninstall(name);
+    if (res.ok) this.record(caller, `Removed the ${name} tool.`);
+    return res;
+  }
+
+  async checkTools(caller: OrgCaller): Promise<Result<{ statuses: Record<string, string> }>> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can check the server\'s tools.' };
+    if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
+    const statuses = await this.deps.tools.check();
+    if (!statuses) return { ok: false, error: 'Claude did not start on the server, so the tools could not be checked. See Admin → health.' };
+    this.toolStatuses = { at: this.now(), statuses };
+    return { ok: true, statuses };
+  }
+
+  // ---- TRIGGERS -------------------------------------------------------------
+
+  private triggerSvc(): TriggerService | null {
+    return this.deps.triggers?.() ?? null;
+  }
+
+  /// A trigger as people see it: never its webhook secret or the ids it has seen.
+  private showTrigger(t: WorkerTrigger, s: TriggerService): TriggerView {
+    const { webhook, seen, ...rest } = t;
+    const start = new Date(this.now());
+    start.setHours(0, 0, 0, 0);
+    const mine = s.deliverables().filter((d) => d.source.triggerId === t.id);
+    return {
+      ...rest,
+      ...(webhook ? { webhook: { ...(webhook.idPath ? { idPath: webhook.idPath } : {}) } } : {}),
+      seenCount: seen?.length ?? 0,
+      handledToday: mine.filter((d) => d.at >= start.getTime()).length,
+      handledTotal: mine.filter((d) => d.status === 'delivered').length,
+    };
+  }
+
+  private deliverableList(): Deliverable[] {
+    return this.triggerSvc()?.deliverables() ?? [];
+  }
+
+  triggers(caller: OrgCaller, idOrName: string): Result<{ triggers: TriggerView[]; canEdit: boolean }> {
+    const s = this.triggerSvc();
+    if (!s) return { ok: false, error: 'Triggers run on the org server.' };
+    const w = this.resolve(caller, idOrName);
+    if (!w) return { ok: false, error: NOT_FOUND };
+    return { ok: true, triggers: s.list(w.id).map((t) => this.showTrigger(t, s)), canEdit: canManage(this.policy(), this.deps.workers.roster(), w.id, caller) };
+  }
+
+  createTrigger(
+    caller: OrgCaller,
+    idOrName: string,
+    input: Pick<WorkerTrigger, 'name' | 'kind' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack'> & { webhook?: { idPath?: string } },
+  ): Result<{ trigger: TriggerView; webhookPath?: string }> {
+    const s = this.triggerSvc();
+    if (!s) return { ok: false, error: 'Triggers run on the org server.' };
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const res = s.create({ ...input, workerId: found.worker.id, enabled: true, createdBy: caller.name });
     if (!res.ok) return res;
-    return { ok: true, reply: res.result.reply, launched: res.result.queued };
+    this.record(caller, `Gave ${found.worker.name} a trigger: ${res.trigger.name}.`);
+    return { ok: true, trigger: this.showTrigger(res.trigger, s), ...(res.token ? { webhookPath: `/hooks/${res.trigger.id}/${res.token}` } : {}) };
+  }
+
+  private managedTrigger(caller: OrgCaller, id: string): Result<{ trigger: WorkerTrigger; s: TriggerService }> {
+    const s = this.triggerSvc();
+    if (!s) return { ok: false, error: 'Triggers run on the org server.' };
+    const t = s.get(id);
+    if (!t) return { ok: false, error: 'No such trigger.' };
+    if (!canManage(this.policy(), this.deps.workers.roster(), t.workerId, caller)) return { ok: false, error: 'Only the worker’s manager can change its triggers.' };
+    return { ok: true, trigger: t, s };
+  }
+
+  updateTrigger(caller: OrgCaller, id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack'>>): Result<{ trigger: TriggerView }> {
+    const found = this.managedTrigger(caller, id);
+    if (!found.ok) return found;
+    const res = found.s.update(id, patch);
+    if (!res.ok) return res;
+    this.record(caller, `${patch.enabled === false ? 'Paused' : patch.enabled === true ? 'Resumed' : 'Changed'} the trigger ${res.trigger.name}.`);
+    return { ok: true, trigger: this.showTrigger(res.trigger, found.s) };
+  }
+
+  removeTrigger(caller: OrgCaller, id: string): Result {
+    const found = this.managedTrigger(caller, id);
+    if (!found.ok) return found;
+    found.s.remove(id);
+    this.record(caller, `Removed the trigger ${found.trigger.name}.`);
+    return { ok: true };
+  }
+
+  /// Check a trigger's watch once, now, without waiting for its timer.
+  async checkTriggerNow(caller: OrgCaller, id: string): Promise<Result> {
+    const found = this.managedTrigger(caller, id);
+    if (!found.ok) return found;
+    await found.s.poll(id);
+    return { ok: true };
+  }
+
+  async testWatch(caller: OrgCaller, watch: NonNullable<WorkerTrigger['watch']>): Promise<Result<{ items: Array<{ id: string; title: string; url?: string }> }>> {
+    const s = this.triggerSvc();
+    if (!s) return { ok: false, error: 'Triggers run on the org server.' };
+    if (!canHire(this.policy(), caller) && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only people who manage workers can test triggers.' };
+    const res = await s.test(watch);
+    return res.ok ? { ok: true, items: res.items.slice(0, 25).map((i) => ({ id: i.id, title: i.title, ...(i.url ? { url: i.url } : {}) })) } : res;
+  }
+
+  async serverTools(caller: OrgCaller, name: string): Promise<Result<{ tools: Array<{ name: string; description?: string }> }>> {
+    if (!this.deps.serverTools) return { ok: false, error: 'Tools cannot be listed here.' };
+    if (!canHire(this.policy(), caller) && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only people who manage workers can list a tool’s calls.' };
+    return this.deps.serverTools(name);
+  }
+
+  // ---- LIBRARY ---------------------------------------------------------------
+
+  /// Everything workers made that the caller can see, newest first: what
+  /// they delivered on events, and their finished work.
+  library(caller: OrgCaller, opts: { workerId?: string; query?: string; limit?: number } = {}): LibraryItem[] {
+    const roster = this.deps.workers.roster();
+    const policy = this.policy();
+    const visible = new Set(roster.filter((w) => canSee(policy, roster, w.id, caller)).map((w) => w.id));
+    const words = (opts.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+    const fromEvents: LibraryItem[] = this.deliverableList()
+      .filter((d) => d.status !== 'skipped' && visible.has(d.workerId))
+      .map((d) => ({
+        id: d.id,
+        kind: 'event',
+        workerId: d.workerId,
+        workerName: d.workerName,
+        at: d.doneAt ?? d.at,
+        title: d.title,
+        status: d.status,
+        ...(d.result ? { body: d.result } : {}),
+        ...(d.error ? { error: d.error } : {}),
+        links: d.links,
+        deliveredTo: d.deliveredTo,
+        source: d.source,
+        ...(d.doneAt ? { minutes: Math.max(0.1, Math.round(((d.doneAt - d.at) / 60_000) * 10) / 10) } : {}),
+        ...(d.rating ? { rating: d.rating } : {}),
+      }));
+    const fromWork: LibraryItem[] = this.workItems(roster.filter((w) => visible.has(w.id)), 0, 300).map((x) => ({
+      id: x.entryId,
+      kind: 'work',
+      workerId: x.workerId,
+      workerName: x.workerName,
+      at: x.at,
+      title: x.title,
+      status: 'delivered',
+      ...(x.summary ? { body: x.summary } : {}),
+      links: [...new Set((x.summary ?? '').match(/https?:\/\/[^\s<>)"'\]]+/g) ?? [])].slice(0, 10),
+      deliveredTo: [],
+      source: { kind: 'ask' as const },
+      ...(x.rating ? { rating: { useful: x.rating.useful, by: x.rating.by } } : {}),
+    }));
+    return [...fromEvents, ...fromWork]
+      .filter((x) => !opts.workerId || x.workerId === opts.workerId)
+      .filter((x) => words.every((w) => `${x.title} ${x.workerName} ${x.body ?? ''}`.toLowerCase().includes(w)))
+      .sort((a, b) => b.at - a.at)
+      .slice(0, Math.min(500, opts.limit ?? 200));
+  }
+
+  rateDeliverable(caller: OrgCaller, id: string, useful: boolean): Result {
+    const s = this.triggerSvc();
+    const d = this.deliverableList().find((x) => x.id === id);
+    if (!s || !d) return { ok: false, error: 'Nothing by that id.' };
+    if (!canSee(this.policy(), this.deps.workers.roster(), d.workerId, caller)) return { ok: false, error: 'Nothing by that id.' };
+    s.rate(id, useful, caller.name);
+    this.record(caller, `Rated ${d.workerName}'s "${d.title}" ${useful ? 'useful' : 'not useful'}.`);
+    return { ok: true };
+  }
+
+  /// What a worker delivered on events this month: the number the org pays for.
+  workerValue(workerId: string): WorkerValue | null {
+    const s = this.triggerSvc();
+    if (!s) return null;
+    const start = new Date(this.now());
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+    const st = s.stats(workerId, start.getTime());
+    const spent = this.deps.workers.spentThisMonth().get(workerId) ?? 0;
+    return { ...st, spentUSD: spent, costPerItemUSD: st.handled ? Math.round((spent / st.handled) * 100) / 100 : null };
+  }
+
+  /// One question, for whoever asked it, the worker's manager, or an admin.
+  askStatus(caller: OrgCaller, askId: string): Result<{ ask: AskRecord }> {
+    const ask = this.allAsks().find((a) => a.id === askId);
+    if (!ask || !this.maySeeAsk(caller, ask)) return { ok: false, error: 'No question by that id that you can see.' };
+    return { ok: true, ask };
+  }
+
+  private maySeeAsk(caller: OrgCaller, ask: AskRecord): boolean {
+    const mine = caller.slackUserId ? ask.slackUserId === caller.slackUserId : ask.by === caller.name;
+    return mine || canManage(this.policy(), this.deps.workers.roster(), ask.workerId, caller);
   }
 
   // ---- MANAGE -----------------------------------------------------------
@@ -616,6 +980,7 @@ export class OrgService {
       visibility?: WorkerVisibility;
       budgetUSDPerMonth?: number;
       cadence?: ScheduleTrigger | null;
+      jobDescription?: string;
     },
   ): Result<{ worker: WorkerSummary }> {
     const found = this.managed(caller, idOrName);
@@ -665,6 +1030,12 @@ export class OrgService {
       next.budgetUSDPerMonth = patch.budgetUSDPerMonth;
     }
     if (patch.cadence !== undefined) next.cadence = patch.cadence;
+    if (patch.jobDescription !== undefined) {
+      const job = String(patch.jobDescription).trim();
+      if (job.length < 20) return { ok: false, error: 'Describe the job in a sentence or more.' };
+      if (job.length > 20_000) return { ok: false, error: 'That job description is too long.' };
+      next.jobDescription = job;
+    }
     const invalid = validateOrgFields(next);
     if (invalid) return { ok: false, error: invalid };
     const saved = this.deps.workers.save(next);
@@ -675,6 +1046,27 @@ export class OrgService {
     const summary = this.listWorkers(caller).find((s) => s.id === w.id);
     if (!summary) return { ok: true, worker: { ...this.listWorkers({ name: 'admin', admin: true }).find((s) => s.id === w.id)!, youManage: false } };
     return { ok: true, worker: summary };
+  }
+
+  /// Someone is leaving: every worker they manage directly, and every hire
+  /// they have in progress, goes to `to`. Workers under those come along,
+  /// since they answer through their boss.
+  handOverAll(caller: OrgCaller, fromSlackUserId: string, to: { name: string; slackUserId: string }): Result<{ workers: string[]; hires: number }> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can hand someone\'s workers on.' };
+    if (!isSlackUserId(to.slackUserId) || !to.name.trim()) return { ok: false, error: 'Pick who takes the workers over.' };
+    if (to.slackUserId === fromSlackUserId) return { ok: false, error: 'Pick someone else to take them over.' };
+    const moved: string[] = [];
+    for (const w of this.deps.workers.roster()) {
+      if (w.manager?.slackUserId !== fromSlackUserId) continue;
+      const saved = this.deps.workers.save({ ...structuredClone(w), manager: { name: to.name.trim(), slackUserId: to.slackUserId } });
+      if (!saved.ok) return { ok: false, error: `Could not hand over ${w.name}: ${saved.error}` };
+      moved.push(w.name);
+    }
+    const hires = this.deps.hires.list();
+    const theirs = hires.filter((h) => h.requestedBy.slackUserId === fromSlackUserId);
+    if (theirs.length) this.deps.hires.save(hires.filter((h) => h.requestedBy.slackUserId !== fromSlackUserId));
+    this.record(caller, `Handed ${moved.length ? moved.join(', ') : 'no workers'} from ${fromSlackUserId} to ${to.name}${theirs.length ? `, and dropped ${theirs.length} hire${theirs.length === 1 ? '' : 's'} in progress` : ''}.`);
+    return { ok: true, workers: moved, hires: theirs.length };
   }
 
   setPaused(caller: OrgCaller, idOrName: string, paused: boolean): Result<{ name: string }> {
@@ -958,9 +1350,29 @@ export class OrgService {
     this.deps.audit?.append(entry);
   }
 
-  auditLog(caller: OrgCaller, limit = 50): Result<{ entries: AuditEntry[] }> {
+  /// The decision log, newest first: the latest few for the Admin page, or a
+  /// search by time, person and words for the full log and its export.
+  auditLog(
+    caller: OrgCaller,
+    opts: number | { limit?: number; from?: number; to?: number; query?: string } = 50,
+  ): Result<{ entries: AuditEntry[]; total: number }> {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can read the decision log.' };
-    return { ok: true, entries: this.deps.audit?.recent(Math.min(500, Math.max(1, limit))) ?? [] };
+    const o = typeof opts === 'number' ? { limit: opts } : opts;
+    const limit = Math.min(10_000, Math.max(1, o.limit ?? 50));
+    const audit = this.deps.audit;
+    if (!audit) return { ok: true, entries: [], total: 0 };
+    if (!o.from && !o.to && !o.query) {
+      const entries = audit.recent(limit);
+      return { ok: true, entries, total: entries.length };
+    }
+    const words = (o.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+    const all = (audit.all?.() ?? audit.recent(10_000).reverse()).filter(
+      (e) =>
+        (!o.from || e.at >= o.from) &&
+        (!o.to || e.at < o.to) &&
+        words.every((w) => `${e.by} ${e.slackUserId ?? ''} ${e.what}`.toLowerCase().includes(w)),
+    );
+    return { ok: true, entries: all.slice(-limit).reverse(), total: all.length };
   }
 
   // ---- WORK -------------------------------------------------------------
@@ -1089,6 +1501,16 @@ export class OrgService {
         .slice(-10)
         .reverse()
         .map((e) => ({ at: e.at, kind: e.kind, title: e.title, ...(e.note ? { note: e.note } : {}) })),
+      asks: this.allAsks()
+        .filter((a) => a.workerId === w.id && this.maySeeAsk(caller, a))
+        .slice(-10)
+        .reverse(),
+      missingTools: this.deps.tools ? this.deps.tools.list([w]).missing.map((m) => m.name) : [],
+      triggers: (() => {
+        const s = this.triggerSvc();
+        return s ? s.list(w.id).map((t) => this.showTrigger(t, s)) : [];
+      })(),
+      value: this.workerValue(w.id),
     };
   }
 
@@ -1183,8 +1605,11 @@ export class OrgService {
   /// Take a worker someone built on their own install (its share file) onto
   /// the org's roster, under the same rules as a hire: the publisher becomes
   /// its manager, and anything over their allowance waits for an approver.
-  publishWorker(caller: OrgCaller, yaml: string, options: HireOptions = {}): Result<{ hired?: WorkerSummary; hire: HireSummary }> {
+  publishWorker(caller: OrgCaller, yaml: string, options: HireOptions = {}, tools: ToolTemplate[] = []): Result<{ hired?: WorkerSummary; hire: HireSummary }> {
     if (!this.deps.importWorker) return { ok: false, error: 'This server cannot take published workers.' };
+    // What its tools looked like where it was built: the Tools page offers
+    // them pre-filled. Only names, commands and setting names — no secrets.
+    if (tools.length && canHire(this.policy(), caller)) this.deps.tools?.remember?.(tools);
     if (!canHire(this.policy(), caller)) {
       return { ok: false, error: 'You are not on the list of people who may hire workers. Ask an admin to add you to the org policy.' };
     }
@@ -1400,7 +1825,7 @@ export class OrgService {
   health(caller: OrgCaller): Result<{
     items: HealthItem[];
     org: { name?: string; slackTeamId?: string; timezone?: string };
-    spend: { spentUSD: number; byManager: Array<{ name: string; spentUSD: number }> };
+    spend: { spentUSD: number; orgBudgetUSD?: number; byManager: Array<{ name: string; spentUSD: number }>; byTeam: Array<{ name: string; spentUSD: number }> };
     rules: { hirers: string; allowanceUSD: number; approvers: string[]; orgVisibilityNeedsAdmin: boolean; clearedTools: string[]; roles: number; openJoin: boolean; publicUrl?: string };
   }> {
     const policy = this.policy();
@@ -1432,7 +1857,20 @@ export class OrgService {
       },
       spend: {
         spentUSD: [...spent.values()].reduce((a, b) => a + b, 0),
+        ...(policy.orgBudgetUSD ? { orgBudgetUSD: policy.orgBudgetUSD } : {}),
         byManager: [...byManager.entries()].map(([name, spentUSD]) => ({ name, spentUSD })).sort((a, b) => b.spentUSD - a.spentUSD),
+        // A worker counts toward every team its manager is on.
+        byTeam: Object.entries(policy.teams)
+          .map(([name, members]) => ({
+            name,
+            spentUSD: roster
+              .filter((w) => {
+                const m = managerFor(roster, w.id)?.slackUserId;
+                return !!m && members.includes(m);
+              })
+              .reduce((sum, w) => sum + (spent.get(w.id) ?? 0), 0),
+          }))
+          .sort((a, b) => b.spentUSD - a.spentUSD),
       },
       rules: {
         hirers: policy.hirers === '*' ? 'Everyone' : policy.hirers.length ? `${policy.hirers.length} people` : 'Admins only',

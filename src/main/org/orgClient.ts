@@ -9,6 +9,8 @@
 import { host } from '../host';
 import { log } from '../diagnostics';
 
+import type { ToolTemplate } from './tools';
+
 export const ORG_TOKEN_KEY = 'org-control-token';
 export const ORG_TOKEN_ENV = 'OVERCLI_ORG_TOKEN';
 export const ORG_URL_ENV = 'OVERCLI_ORG_URL';
@@ -74,13 +76,14 @@ export async function publishToOrg(
   token: string,
   yaml: string,
   options: { reportsTo?: string; visibility?: 'private' | 'team' | 'org'; projectPath?: string } = {},
+  tools: ToolTemplate[] = [],
 ): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
   const res = await call<{ hired?: { name: string }; hire: { status: string; reasons?: string[]; contract?: { name: string } } }>(
     base,
     token,
     'POST',
     '/api/publish',
-    { yaml, options },
+    { yaml, options, tools },
   );
   if (!res.ok) return res;
   const name = res.data.hired?.name ?? res.data.hire.contract?.name ?? 'The worker';
