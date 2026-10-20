@@ -2,6 +2,7 @@
 // `overcli serve` (cli/engines.ts), so the two hosts cannot drift on how an
 // answer reaches a run or how a rejection settles its batch item.
 
+import { initialsPicture } from '../../shared/flows/avatars';
 import { log } from '../diagnostics';
 import { collectKnownSecretValues, redactSecrets } from '../secretScrub';
 import type { FlowRuntimeImpl } from '../flows/runtime';
@@ -11,16 +12,29 @@ import { SlackBridge, type SlackBridgeStatus } from './slackBridge';
 import { configuredSlackToken } from './slackSettings';
 import { fileThreadStore } from './threadStore';
 import { createOrgService, rejectWorkerRun, type OrgEngines } from '../org/wire';
-import type { OrgService } from '../org/orgService';
-import { createToken, fileAccessStore, fileAuditStore, listTokens, loadOrgPolicy, revokeToken, revokeTokensFor, updateOrgFile } from '../org/orgStores';
+import { reachesOutside, type OrgService } from '../org/orgService';
+import { createToken, fileAccessStore, fileAuditStore, linkTokensToSlack, listTokens, loadOrgPolicy, revokeToken, revokeTokensFor, updateOrgFile } from '../org/orgStores';
 import { AccessService } from '../org/accessService';
-import { SlackCommands } from './slackCommands';
+import { SlackCommands, type TeamCardRef } from './slackCommands';
 import { SsoService, SSO_CLIENT_SECRET_ENV } from '../org/sso';
-import { fetchMessage, lookupByEmail, postMessage } from './slackApi';
+import { ConnectionsService } from '../org/connections';
+import { ToolSignIn } from '../org/toolSignIn';
+import { installTool } from '../org/tools';
+import { downloadFile, fetchMessage, fetchRecent, fetchThread, lookupByEmail, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
+import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
+import { routeRequest } from './frontDoorRoute';
+import { drafterDepsFor } from '../org/hireDraft';
+import { isAdmin } from '../../shared/org/policy';
+import { jsonOrgStore } from '../org/orgStores';
+import fs from 'node:fs';
+import { workerFilesDir } from '../flows/workerFiles';
+import { teamTaskDir } from '../flows/teamsStore';
+import path from 'node:path';
 import { TriggerService, triggerFiles } from '../org/triggers';
 import { callTool } from '../org/mcpDirect';
 import { readClaudeMcpServers } from '../mcpConfig';
 import { orgDir } from '../org/orgStores';
+import { Store } from '../store';
 
 export function createSlackBridge(engines: {
   flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun'>;
@@ -40,6 +54,7 @@ export function createSlackBridge(engines: {
     resumeRun: (args) => flowRuntime.resumeRun(args),
     rejectRun: (runId) => rejectWorkerRun({ flowRuntime, orchestrator }, runId),
     store: fileThreadStore,
+    standIn: () => loadOrgPolicy().policy.admins[0],
     onStatus: engines.onStatus,
     log: (level, message) => {
       const t = tokens();
@@ -55,8 +70,39 @@ export function createSlackBridge(engines: {
 export function createOrgControl(
   engines: OrgEngines,
   slack: SlackBridge,
-): { org: OrgService; commands: SlackCommands; access: AccessService; sso: SsoService; triggers: TriggerService } {
+  /// Who the Slack front door takes requests from. The org's server: anyone
+  /// in the workspace. The desktop: its owner only (`slackOwnerId`), since
+  /// the work runs on their laptop and their model account.
+  options: { frontDoorOwner?: () => string | undefined } = {},
+): { org: OrgService; commands: SlackCommands; access: AccessService; sso: SsoService; triggers: TriggerService; frontDoor: FrontDoor; connections: ConnectionsService } {
   let commands: SlackCommands | null = null;
+  // Each person's own Google Drive. Its client comes from Setup → Secrets
+  // (or the environment); its encryption key stays in the secrets store.
+  const secrets = engines.secrets;
+  const connections =
+    engines.connections ??
+    new ConnectionsService({
+      dir: () => orgDir(),
+      publicUrl: () => loadOrgPolicy().policy.publicUrl,
+      ...(secrets ? { privateSecrets: { get: (name) => secrets.getPrivate(name), set: (name, value) => secrets.setPrivate(name, value) } } : {}),
+      log: (message) => log('info', 'org', message),
+    });
+  // Remote tools an admin signs in to once for everyone, sealed with the
+  // same key; renewed on a timer so the header workers read stays good.
+  const toolSignIn =
+    engines.toolSignIn ??
+    new ToolSignIn({
+      dir: () => orgDir(),
+      publicUrl: () => loadOrgPolicy().policy.publicUrl,
+      sealKey: () => connections.encryptionKey(),
+      install: (name, url, token) => installTool({ name, kind: 'http', url, headers: { Authorization: `Bearer ${token}` } }),
+      installedUrl: (name) => {
+        const c = readClaudeMcpServers()[name];
+        return typeof c?.url === 'string' ? c.url : undefined;
+      },
+      log: (message) => log('info', 'org', message),
+    });
+  toolSignIn.keepFresh();
   let triggers: TriggerService | null = null;
   const access = new AccessService({
     policy: () => loadOrgPolicy().policy,
@@ -67,7 +113,9 @@ export function createOrgControl(
       revokeFor: (id) => revokeTokensFor(id),
       revoke: (id) => revokeToken(id),
       list: () => listTokens(),
+      link: (name, admin, id, slackName) => linkTokensToSlack(name, admin, id, slackName),
     },
+    linkManagers: (name, id, slackName) => org.linkManagers(name, id, slackName),
     updateOrg: (mutate) => updateOrgFile(mutate),
     record: (caller, what) =>
       fileAuditStore.append({ at: Date.now(), by: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}), what }),
@@ -81,10 +129,13 @@ export function createOrgControl(
       tellRequester: (id, text) => {
         if (slack.teamId()) commands?.tellRequester(id, text);
       },
+      dmLinkSlack: async (id, linkId, signedInAs, orgName) => (slack.teamId() && commands ? commands.dmLinkSlack(id, linkId, signedInAs, orgName) : false),
     },
   });
   const org = createOrgService({
     ...engines,
+    connections,
+    toolSignIn,
     triggers: () => triggers,
     health: () => {
       const s = slack.getStatus();
@@ -119,8 +170,54 @@ export function createOrgControl(
     botToken: () => configuredSlackToken('bot'),
     teamId: () => slack.teamId(),
     log: (level, message) => log(level, 'slack', message),
+    readFile: (file, maxBytes) => {
+      try {
+        return fs.statSync(file).size <= maxBytes ? fs.readFileSync(file) : null;
+      } catch {
+        return null;
+      }
+    },
+    libraryUrl: () => loadOrgPolicy().policy.publicUrl ?? null,
+    places: () => {
+      const store = Store.load();
+      return [...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath })), ...store.projects.map((x) => ({ name: x.name, path: x.path }))];
+    },
+    teamThreads: (() => {
+      const store = jsonOrgStore<Record<string, string>>('team-question-threads.json', () => ({}));
+      return { load: () => store.load(), save: (all) => store.save(all) };
+    })(),
+    teamCards: (() => {
+      const store = jsonOrgStore<Record<string, TeamCardRef>>('team-cards.json', () => ({}));
+      return { load: () => store.load(), save: (all) => store.save(all) };
+    })(),
+    pieceLook: (runId) => {
+      const run = engines.flowRuntime.getRun(runId);
+      if (!run) return null;
+      const said = engines.runActivity?.list(runId).filter((x) => x.kind === 'tool' || x.kind === 'said').at(-1);
+      const waitingOn = run.state.kind === 'paused' ? run.flowSnapshot.steps.find((s) => s.id === (run.state as { nextStepId?: string }).nextStepId) : undefined;
+      return { ...(said ? { last: { text: said.text, at: said.at } } : {}), ...(waitingOn ? { reaches: reachesOutside(waitingOn) } : {}) };
+    },
+    // A file in the task's own folder, by a plain name, links resolved.
+    teamFile: (taskId, name, maxBytes) => {
+      // Folders allowed ("pack/report.html"); no hidden parts or `..`, and
+      // links resolved below keep it inside the task's own folder.
+      if (!/^[\w.-]{1,40}$/.test(taskId) || !/^[\w. ()/-]{1,300}$/.test(name) || name.split('/').some((p) => !p || p.startsWith('.'))) return null;
+      try {
+        const root = fs.realpathSync(teamTaskDir(taskId));
+        const real = fs.realpathSync(path.join(root, name));
+        if (!real.startsWith(root + path.sep)) return null;
+        const st = fs.statSync(real);
+        return st.isFile() && st.size <= maxBytes ? fs.readFileSync(real) : null;
+      } catch {
+        return null;
+      }
+    },
   });
   slack.setCommands(commands);
+  slack.setThreadFor((runId) => org.slackThreadFor({ runId }));
+  // Cards a restart left behind catch up once Slack has had a moment to connect.
+  const catchUp = setTimeout(() => commands?.refreshTeamCards(engines.teams?.()?.list().tasks ?? []), 8000);
+  catchUp.unref?.();
   const sso = new SsoService({
     sso: () => loadOrgPolicy().policy.sso,
     publicUrl: () => loadOrgPolicy().policy.publicUrl,
@@ -172,6 +269,148 @@ export function createOrgControl(
     },
     log: (message) => log('info', 'org', message),
   });
-  slack.setEventTap((ev) => triggers?.slackEvent(ev));
-  return { org, commands, access, sso, triggers };
+  slack.setEventTap((ev) => triggers?.slackEvent(ev) ?? false);
+  // "@overcli …" and DMs: whichever worker fits takes the request.
+  const names = new Map<string, string>();
+  const bot = () => (slack.teamId() ? configuredSlackToken('bot') : undefined);
+  const owner = options.frontDoorOwner;
+  const frontDoor = new FrontDoor({
+    ...(owner
+      ? {
+          mayAsk: (slackUserId: string) => {
+            const id = owner();
+            if (!id) return "This is someone's own overcli, and it isn't taking requests from Slack. Its owner can turn that on under Settings → Your org → Slack.";
+            return id === slackUserId ? true : "This is someone's own overcli, so it only takes requests from them. Ask your org's workers instead.";
+          },
+        }
+      : {}),
+    caller: async (slackUserId) => {
+      let name = names.get(slackUserId);
+      const token = bot();
+      if (!name && token) {
+        const res = await slackRead<{ user?: { real_name?: string; profile?: { display_name?: string; real_name?: string } } }>('users.info', token, { user: slackUserId });
+        name = res.ok ? res.data.user?.profile?.display_name || res.data.user?.profile?.real_name || res.data.user?.real_name : undefined;
+        if (name) names.set(slackUserId, name);
+      }
+      const display = name ?? `<@${slackUserId}>`;
+      // On the desktop its owner is the only one through, and every worker
+      // there is theirs, managed or not.
+      const isOwner = !!owner && owner() === slackUserId;
+      return { slackUserId, name: display, admin: isOwner || isAdmin(loadOrgPolicy().policy, { slackUserId, name: display, admin: false }) };
+    },
+    workers: (caller) => {
+      const roster = new Map(engines.workerEngine.roster().map((w) => [w.id, w]));
+      return org
+        .listWorkers(caller)
+        .filter((w) => w.enabled)
+        .map((w): FrontDoorWorker => ({
+          id: w.id,
+          name: w.name,
+          ...(w.tagline ? { tagline: w.tagline } : {}),
+          ...(roster.get(w.id)?.jobDescription ? { job: roster.get(w.id)!.jobDescription } : {}),
+          ...(w.manager ? { manager: w.manager } : {}),
+          ...(w.tools.length ? { tools: w.tools.filter((t) => t.ok).map((t) => t.name) } : {}),
+          avatarUrl: roster.get(w.id)?.avatarUrl ?? initialsPicture(w.id, w.name),
+        }));
+    },
+    teams: (caller) =>
+      org
+        .teams(caller)
+        .filter((t) => t.canBrief)
+        .map((t) => ({ id: t.id, name: t.name, ...(t.purpose ? { purpose: t.purpose } : {}), members: t.members.map((m) => m.name) })),
+    briefTeam: (caller, teamId, brief) => {
+      const res = org.briefTeam(caller, teamId, brief);
+      return res.ok ? { ok: true, queued: res.task.status === 'queued' } : res;
+    },
+    ask: (caller, workerId, text, attachments, conversation, said) => {
+      const started = org.startAsk(caller, workerId, text, 'slack', attachments, undefined, conversation, said);
+      return started.ok ? { ok: true, done: started.done } : started;
+    },
+    handBack: (askId) => org.handBack(askId),
+    progress: (id) => org.errandProgress(id),
+    route: (text, workers) => routeRequest(drafterDepsFor(engines.runner), text, workers),
+    slack: {
+      post: async (channel, text, threadTs, as) => {
+        const token = bot();
+        if (!token) return false;
+        let res = await postMessage(token, { channel, text, threadTs, ...(as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {}) });
+        // An app installed before it could post under another name: as
+        // itself, the worker's name written in front instead.
+        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(token, { channel, text: `*${as.name}:* ${text}`, threadTs });
+        if (!res.ok) log('warn', 'slack', `The front door could not post to ${channel}: ${res.error}`);
+        return res.ok;
+      },
+      thread: async (channel, threadTs) => {
+        const token = bot();
+        if (!token) return [];
+        const res = await fetchThread(token, channel, threadTs);
+        return res.ok ? res.data : [];
+      },
+      recent: async (channel, beforeTs, limit) => {
+        const token = bot();
+        if (!token) return [];
+        const res = await fetchRecent(token, channel, beforeTs, limit);
+        return res.ok ? res.data : [];
+      },
+      download: async (url, maxBytes) => {
+        const token = bot();
+        if (!token) return null;
+        const res = await downloadFile(token, url, maxBytes);
+        return res.ok ? res.data : null;
+      },
+      postBlocks: async (channel, text, blocks, threadTs) => {
+        const token = bot();
+        if (!token) return false;
+        const res = await postMessage(token, { channel, text, blocks, threadTs });
+        return res.ok;
+      },
+      update: async (channel, ts, text) => {
+        const token = bot();
+        if (!token) return false;
+        const res = await updateMessage(token, { channel, ts, text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] });
+        return res.ok;
+      },
+      postTs: async (channel, text, threadTs, as) => {
+        const token = bot();
+        if (!token) return null;
+        const who = as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {};
+        let res = await postMessage(token, { channel, text, threadTs, ...who });
+        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(token, { channel, text, threadTs });
+        return res.ok ? res.data.ts : null;
+      },
+      upload: async (channel, threadTs, filename, bytes) => {
+        const token = bot();
+        if (!token) return false;
+        const res = await uploadFile(token, { channel, threadTs, filename, bytes });
+        if (!res.ok) log('warn', 'slack', `The front door could not attach ${filename}: ${res.error}`);
+        return res.ok;
+      },
+    },
+    libraryUrl: () => loadOrgPolicy().policy.publicUrl ?? null,
+    readFile: (file, maxBytes) => {
+      try {
+        return fs.statSync(file).size <= maxBytes ? fs.readFileSync(file) : null;
+      } catch {
+        return null;
+      }
+    },
+    // Only inside the worker's own files, with links resolved first: a reply
+    // naming `/etc/passwd`, or a link it planted pointing out, sends nothing.
+    workerFile: (workerId, file, maxBytes) => {
+      try {
+        const root = fs.realpathSync(workerFilesDir(workerId));
+        const real = fs.realpathSync(file);
+        if (!real.startsWith(root + path.sep)) return null;
+        const st = fs.statSync(real);
+        return st.isFile() && st.size <= maxBytes ? fs.readFileSync(real) : null;
+      } catch {
+        return null;
+      }
+    },
+    store: jsonOrgStore<FrontDoorState>('front-door.json', () => ({ threads: [], follows: [] })),
+    log: (message) => log('info', 'slack', message),
+  });
+  slack.setFrontDoor(frontDoor);
+  frontDoor.start();
+  return { org, commands, access, sso, triggers, frontDoor, connections };
 }

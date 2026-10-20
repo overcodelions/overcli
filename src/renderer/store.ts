@@ -4247,6 +4247,12 @@ export const useStore = create<StoreState>((set, get) => ({
       set((s) => ({ settings: { ...s.settings, uiScale: event.uiScale } }));
       return;
     }
+    if (event.type === 'orgSignIn' && event.orgServerUrl) {
+      // Likewise the org address a sign-in saved, or the next settings save
+      // from here would write the stale copy back over it.
+      set((s) => ({ settings: { ...s.settings, orgServerUrl: event.orgServerUrl } }));
+      return;
+    }
     if (event.type === 'documentRevise') {
       set((s) => ({
         documentRevisions: { ...s.documentRevisions, [event.requestId]: event.text },

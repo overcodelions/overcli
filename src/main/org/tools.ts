@@ -200,9 +200,11 @@ export function loadToolTemplates(file: string): Record<string, ToolTemplate> {
   }
 }
 
-export function rememberToolTemplates(file: string, templates: ToolTemplate[]): void {
+export function rememberToolTemplates(file: string, templates: ToolTemplate[], onlyNew = false): void {
+  const existing = loadToolTemplates(file);
+  if (onlyNew) templates = templates.filter((t) => !(t.name in existing));
   if (!templates.length) return;
-  const all = { ...loadToolTemplates(file), ...Object.fromEntries(templates.map((t) => [t.name, t])) };
+  const all = { ...existing, ...Object.fromEntries(templates.map((t) => [t.name, t])) };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(all), { mode: 0o600 });

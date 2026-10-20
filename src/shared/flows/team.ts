@@ -54,6 +54,8 @@ export const TEAM_MAX_STAGES = 8;
 export const TEAM_MAX_ASSIGNMENTS_PER_STAGE = 6;
 export const TEAM_MAX_MEMBERS = 8;
 export const TEAM_MAX_QUESTIONS = 5;
+/// Questions when the team already knows its world: only what that leaves open.
+export const TEAM_MAX_QUESTIONS_KNOWING = 2;
 /// New members one plan may hire. A plan that needs more than this is a
 /// different team, and that is a conversation for the team editor.
 export const TEAM_MAX_HIRES_PER_PLAN = 2;
@@ -99,6 +101,14 @@ export interface Team {
   /// One line: what the team is for. Shown under the name, and handed to the
   /// coordinator as the team's standing purpose.
   purpose?: string;
+  /// How the team should go about its work, in the words of the people who
+  /// run it: "when the ask is a PRFAQ, Hugo pulls the roadmap first, then
+  /// Priya drafts". Handed to the coordinator in every planning turn, above
+  /// its own habits. Up to `TEAM_GUIDANCE_MAX` characters.
+  guidance?: string;
+  /// Its picture: an https image, for the console and what it posts in
+  /// Slack. Initials without one.
+  avatarUrl?: string;
   members: TeamMember[];
   /// The project or workspace the team works in. Every member's piece runs
   /// there, whatever project the member usually works in — the member brings
@@ -123,11 +133,50 @@ export interface Team {
   checkpoints: TeamCheckpoints;
   createdAt: number;
   updatedAt?: number;
+  /// What the team knows: a brief its members wrote from their own tools
+  /// (the roadmap, the customers, what's decided), read at the start of every
+  /// task so the coordinator can answer from it, or ask less. Learned by a
+  /// task of its own (`kind: 'learn'`); refreshed the same way.
+  knowledge?: TeamKnowledge;
+  /// Learn again when what it knows is a week old: `weekly` (absent means
+  /// this) or only when someone asks (`off`).
+  knowledgeRefresh?: 'weekly' | 'off';
+  /// Disbanded: it takes no more work and is gone from every list, but kept,
+  /// so what it delivered stays in the Library for the people who could see
+  /// it. Its members stay hired. See `TeamEngine.disband`.
+  disbanded?: { at: number; by: string };
 }
+
+/// The longest a team's guidance may be.
+export const TEAM_GUIDANCE_MAX = 20_000;
+
+/// How old what a team knows gets before a weekly refresh runs.
+export const TEAM_KNOWLEDGE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface TeamKnowledge {
+  status: 'learning' | 'ready' | 'failed';
+  /// The brief itself (Markdown), once learned.
+  body?: string;
+  updatedAt?: number;
+  /// The learning task, while it runs and after.
+  taskId?: UUID;
+  error?: string;
+  /// When a pass last started, done or not: a refresh that keeps failing
+  /// tries again a day later, not every hour.
+  triedAt?: number;
+}
+
+/// The cap on one learning pass: a few minutes of each member's tools.
+export const TEAM_LEARN_BUDGET_USD = 10;
+/// What a learning pass writes, and what the coordinator reads from it.
+export const TEAM_KNOWLEDGE_FILE = 'TEAM_KNOWLEDGE.md';
 
 export type TeamWaitReason = 'checkpoint' | 'budget' | 'failed' | 'away';
 
 export type TeamTaskStatus =
+  /// Waiting its turn: the team is on another task, and starts this one
+  /// when that one ends.
+  | 'queued'
   /// The coordinator is thinking: writing questions or a plan.
   | 'planning'
   /// The coordinator asked questions; waiting on your answers.
@@ -224,6 +273,13 @@ export interface TeamTask {
   /// Snapshot of the team name at brief time.
   teamName: string;
   /// What you asked for, verbatim.
+  /// `learn`: the team finding out what it needs to know (`Team.knowledge`),
+  /// not a request from someone.
+  kind?: 'learn';
+  /// Plan it as work, never answer it straight from what the team knows.
+  forcePlan?: boolean;
+  /// The coordinator answered it from what the team knows: no stages ran.
+  answered?: boolean;
   brief: string;
   /// Who asked, when the task came through the org control plane (Slack,
   /// MCP, the console). Its questions, plan and checkpoints go to them.
@@ -392,14 +448,14 @@ export function holdsRoomWork(checkpoints: Pick<TeamCheckpoints, 'approveRoomWor
 }
 
 export function isTaskActive(status: TeamTaskStatus): boolean {
-  return status === 'planning' || status === 'questions' || status === 'proposed' || status === 'running' || status === 'waiting';
+  return status === 'queued' || status === 'planning' || status === 'questions' || status === 'proposed' || status === 'running' || status === 'waiting';
 }
 
 /// Whether this task keeps its team from taking a new one. Work handed off
 /// from the room doesn't: the task itself is finished, and that work is an
 /// errand on the side.
 export function blocksNewTask(task: Pick<TeamTask, 'status' | 'stages' | 'stageIndex'>): boolean {
-  if (!isTaskActive(task.status)) return false;
+  if (!isTaskActive(task.status) || task.status === 'queued') return false;
   const roomWork = (task.status === 'running' || task.status === 'waiting') && !!task.stages[task.stageIndex]?.fromRoom;
   return !roomWork;
 }
@@ -429,6 +485,8 @@ export function describeTeamCheckpoints(checkpoints: TeamCheckpoints): string[] 
 /// One short line for the rail and the task list.
 export function describeTeamTaskStatus(task: Pick<TeamTask, 'status' | 'stages' | 'stageIndex' | 'waiting' | 'hires'>): string {
   switch (task.status) {
+    case 'queued':
+      return 'Up next';
     case 'planning':
       return 'Planning…';
     case 'questions':
@@ -500,6 +558,7 @@ export interface TeamRosterLine {
 }
 
 export type PlanReply =
+  | { kind: 'answer'; answer: string }
   | { kind: 'questions'; questions: string[]; note: string }
   | {
       kind: 'plan';
@@ -541,14 +600,28 @@ export const TEAM_PLAN_SYSTEM_PROMPT = [
   '',
   'Reply with ONE of these, and nothing after it:',
   '',
-  'A) Questions, only when allowed and only when the answers would change the plan:',
-  '<team_questions>["question 1", "question 2"]</team_questions>',
+  '0) An answer, when allowed and WHAT THE TEAM KNOWS (or the brief itself) already answers',
+  '   the request: a question, a status, "what is next on X". Reply with',
+  '   <team_answer>the answer, in Markdown, saying where each fact comes from</team_answer>.',
+  '   No stages run and it costs the user almost nothing, so prefer it whenever the answer',
+  '   is there. Never answer from guesses: work that needs finding out, writing or making is',
+  '   a plan.',
+  '',
+  'A) Questions, when allowed. The task is long and the user is not watching it: a guess that',
+  '   turns out wrong costs the whole run, and members cannot ask the user once work starts.',
+  '   So ask, in this one round, everything you would otherwise have to guess that would change',
+  '   the plan or the result: who it is for, what good looks like, what is in and out of scope,',
+  '   constraints (dates, budget, policy), decisions already made, sources to use or avoid.',
+  '   Do not ask what the brief already answers, what a member can look up, or matters of taste.',
+  '   End each question with the default you will use if it goes unanswered, in brackets:',
+  '   "Who is the PR/FAQ for? (I’ll assume existing enterprise customers.)"',
+  '<team_questions>["question 1 (default)", "question 2 (default)"]</team_questions>',
   '',
   'B) A plan, as JSON:',
   '<team_plan>',
   '{',
   '  "title": "Short title for the task",',
-  '  "note": "One or two sentences on why this plan.",',
+  '  "note": "One or two sentences on why this plan, naming any assumption it rests on that the user did not state.",',
   '  "deliverables": ["PROPOSAL.md", "PLAN.md"],',
   '  "stages": [',
   '    {"kind": "contribute", "title": "Customer and market", "assignments": [{"member": "<member name>", "ask": "..."}]},',
@@ -562,9 +635,18 @@ export const TEAM_PLAN_SYSTEM_PROMPT = [
   'You may write a sentence or two of prose before the block.',
 ].join('\n');
 
+/// The coordinator's questions with the user's answers. Once answering is
+/// over, a question left blank keeps the default it named.
+function clarified(task: Pick<TeamTask, 'questions' | 'answers'>): Array<{ q: string; a: string }> {
+  if (!task.answers) return [];
+  return (task.questions ?? []).map((q, i) => ({ q, a: task.answers?.[i]?.trim() || '(no answer: the default in the question stands)' }));
+}
+
 export function buildTeamPlanMessage(args: {
   teamName: string;
   purpose?: string;
+  /// How the team should work (`Team.guidance`).
+  guidance?: string;
   roster: TeamRosterLine[];
   brief: string;
   allowQuestions: boolean;
@@ -579,9 +661,24 @@ export function buildTeamPlanMessage(args: {
   project?: string;
   /// Set on a retry: why the last reply could not be used.
   repair?: string;
+  /// What the team knows (`Team.knowledge`), and when it was written.
+  knowledge?: { body: string; updatedAt?: number };
+  /// Whether this may be answered straight from what the team knows.
+  allowAnswer?: boolean;
 }): string {
   const lines: string[] = [];
   lines.push(`THE TEAM: ${args.teamName}${args.purpose?.trim() ? ` — ${args.purpose.trim()}` : ''}`);
+  if (args.guidance?.trim()) {
+    lines.push('');
+    lines.push('HOW THIS TEAM WORKS (from the people who run it: follow it over your own habits. When it names a process for this kind of ask, plan that process, with the members it names.)');
+    lines.push(args.guidance.trim().slice(0, TEAM_GUIDANCE_MAX));
+  }
+  if (args.knowledge?.body.trim()) {
+    lines.push('');
+    lines.push(`WHAT THE TEAM KNOWS${args.knowledge.updatedAt ? ` (written ${new Date(args.knowledge.updatedAt).toISOString().slice(0, 10)})` : ''}`);
+    const body = args.knowledge.body.trim();
+    lines.push(body.length > 24_000 ? `${body.slice(0, 24_000)}\n…(cut)` : body);
+  }
   if (args.project) {
     lines.push(`WORKS IN: the ${args.project} project. Every member's piece runs there, whatever their usual project is.`);
   }
@@ -606,7 +703,7 @@ export function buildTeamPlanMessage(args: {
     lines.push('YOUR QUESTIONS AND THE USER’S ANSWERS');
     for (const { q, a } of answered) {
       lines.push(`Q: ${q}`);
-      lines.push(`A: ${a || '(no answer — use your judgment)'}`);
+      lines.push(`A: ${a || '(no answer — the default in the question stands)'}`);
     }
   }
   if (args.previousPlan && (args.revisions?.length ?? 0) > 0) {
@@ -618,12 +715,22 @@ export function buildTeamPlanMessage(args: {
     for (const r of args.revisions ?? []) lines.push(`- ${r}`);
   }
   lines.push('');
+  const knows = !!args.knowledge?.body.trim();
+  if (args.allowAnswer) {
+    lines.push(
+      knows
+        ? 'First: if what the team knows already answers this, reply with <team_answer> (see 0) and nothing else.'
+        : 'If the brief is a simple question you can answer from the brief alone, reply with <team_answer> (see 0). The team has not learned about its work yet, so most requests need a plan.',
+    );
+  }
   if (args.allowQuestions && answered.length === 0 && !(args.revisions?.length)) {
     lines.push(
-      `You may ask up to ${TEAM_MAX_QUESTIONS} questions first if the answers would change the plan. Otherwise plan now.`,
+      knows
+        ? `Otherwise, ask only what neither the brief nor what the team knows settles (see A): at most ${TEAM_MAX_QUESTIONS_KNOWING}, each with its default. If nothing that matters is open, plan now.`
+        : `Before planning, look for what you would otherwise have to guess (see A). If there is any, ask now: up to ${TEAM_MAX_QUESTIONS} questions, each with its default. If the brief leaves nothing that matters open, plan now.`,
     );
   } else {
-    lines.push('Do not ask questions now. Reply with a plan.');
+    lines.push(args.allowAnswer ? 'Do not ask questions now. Answer, or reply with a plan.' : 'Do not ask questions now. Reply with a plan.');
   }
   if (args.repair) {
     lines.push('');
@@ -711,10 +818,18 @@ export function resolveMember(ref: string, roster: Array<Pick<TeamRosterLine, 'w
 export function parsePlanReply(
   text: string,
   roster: Array<Pick<TeamRosterLine, 'workerId' | 'name' | 'role'>>,
-  opts: { allowQuestions: boolean; maxHires?: number },
+  opts: { allowQuestions: boolean; maxHires?: number; allowAnswer?: boolean; maxQuestions?: number },
 ): PlanReply {
   const planRaw = extractTag(text, 'team_plan');
   const questionsRaw = extractTag(text, 'team_questions');
+  const answerRaw = extractTag(text, 'team_answer');
+
+  if (answerRaw !== null && !planRaw && questionsRaw === null) {
+    if (!opts.allowAnswer) return { kind: 'error', error: 'Answered directly when a plan was required.' };
+    const answer = answerRaw.trim();
+    if (!answer) return { kind: 'error', error: 'The answer block was empty.' };
+    return { kind: 'answer', answer };
+  }
 
   if (!planRaw && questionsRaw !== null) {
     if (!opts.allowQuestions) return { kind: 'error', error: 'Asked questions when a plan was required.' };
@@ -729,7 +844,7 @@ export function parsePlanReply(
       .filter((q): q is string => typeof q === 'string')
       .map((q) => q.trim())
       .filter(Boolean)
-      .slice(0, TEAM_MAX_QUESTIONS);
+      .slice(0, opts.maxQuestions ?? TEAM_MAX_QUESTIONS);
     if (questions.length === 0) return { kind: 'error', error: 'The questions block was empty.' };
     return { kind: 'questions', questions, note: proseBefore(text, 'team_questions') };
   }
@@ -1241,7 +1356,7 @@ export function buildMemberStagePrompt(args: {
   lines.push('');
   lines.push(`THE TASK${args.task.title ? `: ${args.task.title}` : ''}`);
   lines.push(args.task.brief.trim());
-  const qa = (args.task.questions ?? []).map((q, i) => ({ q, a: args.task.answers?.[i]?.trim() ?? '' })).filter((x) => x.a);
+  const qa = clarified(args.task);
   if (qa.length > 0) {
     lines.push('');
     lines.push('WHAT THE USER CLARIFIED');
@@ -1311,6 +1426,26 @@ export const TEAM_COORDINATOR_SYSTEM_PROMPT = [
   'than filling the gap with a guess. Never invent figures, quotes or sources.',
 ].join('\n');
 
+/// The deliverables a member already made: for each the task asked for by
+/// name, the newest file of that name a member (not the coordinator, not an
+/// earlier pack) wrote in the folder. The plan gave someone that document to
+/// make; it goes in the pack as they made it.
+export function madeDeliverables(
+  deliverables: readonly string[] | undefined,
+  files: ReadonlyArray<{ name: string; author: string; at?: number }>,
+): Array<{ deliverable: string; from: string; author: string }> {
+  const out: Array<{ deliverable: string; from: string; author: string }> = [];
+  for (const d of deliverables ?? []) {
+    const want = d.trim().toLowerCase();
+    if (!want) continue;
+    const hit = files
+      .filter((f) => f.author !== 'Coordinator' && f.author !== 'You' && !f.name.startsWith('pack/') && (f.name.split('/').pop() ?? '').toLowerCase() === want)
+      .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0];
+    if (hit) out.push({ deliverable: safeTeamFileName(d), from: hit.name, author: hit.author });
+  }
+  return out;
+}
+
 /// The coordinator's message for a draft or synthesize stage.
 export function buildCoordinatorStageMessage(args: {
   teamName: string;
@@ -1321,12 +1456,15 @@ export function buildCoordinatorStageMessage(args: {
   folder: string;
   files: FolderFile[];
   budget: number;
+  /// Deliverables members already made (`madeDeliverables` over every file,
+  /// the ones runs wrote under files/ included, which `files` leaves out).
+  made?: Array<{ deliverable: string; from: string; author: string }>;
 }): string {
   const lines: string[] = [];
   lines.push(`TEAM: ${args.teamName}`);
   lines.push(`TASK${args.task.title ? `: ${args.task.title}` : ''}`);
   lines.push(args.task.brief.trim());
-  const qa = (args.task.questions ?? []).map((q, i) => ({ q, a: args.task.answers?.[i]?.trim() ?? '' })).filter((x) => x.a);
+  const qa = clarified(args.task);
   if (qa.length > 0) {
     lines.push('');
     lines.push('WHAT THE USER CLARIFIED');
@@ -1352,8 +1490,22 @@ export function buildCoordinatorStageMessage(args: {
     lines.push('…the full document…');
     lines.push('</file>');
     lines.push('(one <file> block per document)');
+    lines.push('<include name="NAME.html" from="files/hugo/report.html"/>');
+    lines.push('(one per document a member already made, by its name in the folder above)');
     lines.push('');
-    lines.push(`The documents to write: ${wanted}.`);
+    // A member's report, deck or page is the work: retyped into this one
+    // reply it comes back shorter and from memory. The server copies an
+    // include byte for byte.
+    lines.push('When a member already made a document the user asked for (a page, a report, a deck,');
+    lines.push('data), put THAT file in the pack with <include>: do not write it again. Write a <file>');
+    lines.push('only for what nobody has written yet, such as a summary that ties the pieces together.');
+    const made = args.made ?? madeDeliverables(args.task.deliverables, args.files);
+    if (made.length) {
+      lines.push('Already made, and going in the pack as they are (the server adds them; do not write them):');
+      for (const m of made) lines.push(`- ${m.deliverable}: by ${m.author}, ${m.from}`);
+    }
+    const rest = (args.task.deliverables ?? []).filter((d) => !made.some((m) => m.deliverable.toLowerCase() === safeTeamFileName(d).toLowerCase()));
+    lines.push(`The documents to write: ${args.task.deliverables?.length ? rest.join(', ') || 'none beyond the summary' : wanted}.`);
     lines.push('If a challenge stage ran, also write challenge-log.md: a table of every objection, its');
     lines.push('severity, and how it was answered (resolved, accepted risk, or scope change).');
   }
@@ -1362,26 +1514,39 @@ export function buildCoordinatorStageMessage(args: {
 
 /// Read the synthesize reply into a summary and its files. A reply that
 /// ignored the format still yields a pack: the whole text as report.md.
-export function parsePackReply(text: string): { summary: string; files: Array<{ name: string; body: string }> } {
+export function parsePackReply(text: string): { summary: string; files: Array<{ name: string; body: string }>; includes: Array<{ name: string; from: string }> } {
   const summary = (text.match(/<summary>([\s\S]*?)<\/summary>/i)?.[1] ?? '').trim();
   const files: Array<{ name: string; body: string }> = [];
+  const used = new Set<string>();
+  // Documents a member already made, by their name in the folder. The engine
+  // copies only a file the folder lists; this only reads the tag.
+  const includes: Array<{ name: string; from: string }> = [];
+  const inc = /<include\s+name\s*=\s*["']([^"']+)["']\s+from\s*=\s*["']([^"']+)["']\s*\/?>(?:\s*<\/include>)?/gi;
+  let i: RegExpExecArray | null;
+  while ((i = inc.exec(text))) {
+    const name = safeTeamFileName(i[1]);
+    if (used.has(name.toLowerCase())) continue;
+    used.add(name.toLowerCase());
+    includes.push({ name, from: i[2].trim() });
+  }
   const re = /<file\s+name\s*=\s*["']([^"']+)["']\s*>([\s\S]*?)<\/file>/gi;
   let m: RegExpExecArray | null;
-  const used = new Set<string>();
   while ((m = re.exec(text))) {
     let name = safeTeamFileName(m[1]);
     const body = m[2].replace(/^\n+/, '').replace(/\s+$/, '') + '\n';
     if (!body.trim()) continue;
+    // Included as the member made it: a retyped copy of the same name is dropped.
+    if (includes.some((x) => x.name.toLowerCase() === name.toLowerCase())) continue;
     let n = 2;
     while (used.has(name.toLowerCase())) name = name.replace(/(\.[^.]+)?$/, (ext) => `-${n++}${ext}`);
     used.add(name.toLowerCase());
     files.push({ name, body });
   }
-  if (files.length === 0) {
+  if (files.length === 0 && includes.length === 0) {
     const body = text.replace(/<summary>[\s\S]*?<\/summary>/i, '').trim();
     if (body) files.push({ name: 'report.md', body: `${body}\n` });
   }
-  return { summary: summary || firstParagraph(text), files };
+  return { summary: summary || firstParagraph(text), files, includes };
 }
 
 function firstParagraph(text: string): string {
@@ -1586,4 +1751,35 @@ export function teamPieceFlow(flow: Flow, opts: { check?: boolean } = {}): Flow 
     source: 'generated',
     filePath: '',
   };
+}
+
+/// The learning pass for a team: each member reports, from its own tools and
+/// files, what the team will need to know; the coordinator writes it up as
+/// TEAM_KNOWLEDGE.md. A fixed plan: nothing to ask or approve.
+export function learnStages(team: Pick<Team, 'name' | 'purpose' | 'members'>, names: Map<string, string>): TeamStage[] {
+  const purpose = team.purpose?.trim() ? ` (${team.purpose.trim()})` : '';
+  return [
+    {
+      kind: 'contribute',
+      title: 'What each member knows',
+      status: 'pending',
+      assignments: team.members.map((m) => ({
+        workerId: m.workerId,
+        workerName: names.get(m.workerId) ?? 'A member',
+        ask: [
+          `${team.name}${purpose} is learning what it needs to know, so that later it can answer questions straight away and start work without asking the basics.`,
+          `As ${m.role || 'a member'}, use your own tools and files to find the current state of things in your area: what exists, what is planned and when, what has been decided, who owns what, and where it lives.`,
+          'Facts with their source (a link, a ticket, a page, a file) and date. No opinions or recommendations. Say what you could not find. A page or two at most.',
+        ].join(' '),
+        status: 'pending' as const,
+      })),
+    },
+    {
+      kind: 'synthesize',
+      title: 'What the team knows',
+      status: 'pending',
+      ask: `Write ${TEAM_KNOWLEDGE_FILE}: what the team knows, by topic, each fact with its source and date, then what is unknown or out of date. Facts only, under about 2,000 words. The summary says in a line what it covers.`,
+      assignments: [],
+    },
+  ];
 }

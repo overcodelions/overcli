@@ -15,6 +15,7 @@ import path from 'node:path';
 import { host } from '../host';
 import { log } from '../diagnostics';
 import { DEFAULT_ORG_POLICY, parseOrgPolicy, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
+import type { TeamCheckpoints } from '../../shared/flows/team';
 import type { PendingHire } from './orgService';
 import type { AccessStore, Invite, JoinRequest } from './accessService';
 
@@ -127,6 +128,23 @@ export function revokeTokensFor(slackUserId: string): number {
   const kept = all.filter((t) => t.slackUserId !== slackUserId);
   if (kept.length !== all.length) writeAtomic(tokensPath(), kept);
   return all.length - kept.length;
+}
+
+/// Tie a sign-in made before Slack was connected to the person's Slack id:
+/// every token held by that name with no Slack id, which the server already
+/// treats as one person. They take the person's Slack name when there is
+/// one. Returns how many changed.
+export function linkTokensToSlack(name: string, admin: boolean, slackUserId: string, slackName?: string): number {
+  const all = listTokens();
+  let n = 0;
+  for (const t of all) {
+    if (t.slackUserId || t.name !== name || t.admin !== admin) continue;
+    t.slackUserId = slackUserId;
+    if (slackName) t.name = slackName;
+    n++;
+  }
+  if (n) writeAtomic(tokensPath(), all);
+  return n;
 }
 
 /// Sign out the one sign-in behind this token: what a device's own "Sign
@@ -361,6 +379,62 @@ export const fileRatingStore: RatingStore = {
   },
 };
 
+// ---- TEAM FILES -----------------------------------------------------------
+
+/// A team task's file someone kept in the Library. The text is a snapshot
+/// (the first 6,000 characters), so it outlives the task's folder.
+export interface KeptFile {
+  id: string;
+  taskId: string;
+  teamId: string;
+  teamName: string;
+  name: string;
+  title: string;
+  body: string;
+  /// Who wrote it: a member, or absent for the coordinator.
+  writer?: { workerId: string; name: string };
+  by: string;
+  slackUserId?: string;
+  at: number;
+}
+
+/// A team task's file saved to a Drive or SharePoint through its tool.
+export interface SavedFile {
+  taskId: string;
+  name: string;
+  destination: string;
+  label: string;
+  at: number;
+  link?: string;
+  by?: string;
+  /// Whose own account it went to (a personal Drive): only they see it listed.
+  person?: string;
+}
+
+export interface TeamFileStore {
+  kept(): KeptFile[];
+  saveKept(all: KeptFile[]): void;
+  saved(): SavedFile[];
+  saveSaved(all: SavedFile[]): void;
+}
+
+export const fileTeamFileStore: TeamFileStore = {
+  kept() {
+    const raw = readJson(path.join(orgDir(), 'kept-files.json'));
+    return Array.isArray(raw) ? (raw as KeptFile[]) : [];
+  },
+  saveKept(all) {
+    writeAtomic(path.join(orgDir(), 'kept-files.json'), all.slice(-2000));
+  },
+  saved() {
+    const raw = readJson(path.join(orgDir(), 'saved-files.json'));
+    return Array.isArray(raw) ? (raw as SavedFile[]) : [];
+  },
+  saveSaved(all) {
+    writeAtomic(path.join(orgDir(), 'saved-files.json'), all.slice(-5000));
+  },
+};
+
 // ---- QUESTIONS ------------------------------------------------------------
 
 /// Something someone asked a worker, kept so the answer outlives the page
@@ -378,8 +452,88 @@ export interface AskRecord {
   via?: 'console' | 'slack' | 'mcp' | 'trigger';
   reply?: string;
   launched?: number;
+  /// The batch its answer led to, when it proposed or started work.
+  orchestrationId?: string;
+  /// The thread on the worker's page this replies to (a `WorkThread` id).
+  replyTo?: string;
+  /// One-tap answers the worker offered with its reply.
+  choices?: string[];
   error?: string;
   doneAt?: number;
+  /// What the worker was given, in full (who asked, the thread it replies
+  /// to, the question), so a restart can ask it again.
+  prompt?: string;
+  /// How many files came with it. They are not kept, so an ask started
+  /// again after a restart says they were lost.
+  attachments?: number;
+  /// Started again after a restart cut it short. Once only.
+  resumed?: boolean;
+  /// The work it handed off has finished and gone back to the worker to
+  /// finish up (`OrgService.handBack`). Once only.
+  handedBack?: boolean;
+  /// The Slack thread it was asked in (see `OrgService.startAsk`).
+  conversation?: string;
+  /// Asked by someone who doesn't manage the worker, or by a trigger: its errands run untrusted.
+  untrusted?: boolean;
+}
+
+/// What came from someone's own install, by the id it had there: their
+/// worker or team id → the one on this server. Publishing the same thing
+/// again finds it here, so a team brings members the org already has rather
+/// than a second copy, and a team published again is updated in place.
+export interface PublishedTeamWaiting {
+  localTeamId: string;
+  team: TeamPublishShape;
+  by: { name: string; slackUserId?: string };
+  /// Members waiting on an approver: their local id → the hire.
+  waiting: Record<string, string>;
+  at: number;
+}
+
+/// A published team, members by their local ids. See OrgService.publishTeam.
+export interface TeamPublishShape {
+  name: string;
+  purpose?: string;
+  budgetUSDPerTask: number;
+  checkpoints?: Partial<TeamCheckpoints>;
+  piecesAskFirst?: boolean;
+  members: Array<{ localId: string; role: string }>;
+}
+
+export interface PublishedState {
+  workers: Record<string, string>;
+  teams: Record<string, string>;
+  waiting: PublishedTeamWaiting[];
+}
+
+export interface PublishedStore {
+  load(): PublishedState;
+  save(state: PublishedState): void;
+}
+
+export const filePublishedStore: PublishedStore = {
+  load() {
+    const raw = readJson(path.join(orgDir(), 'published.json')) as Partial<PublishedState> | null;
+    const obj = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, string>) : {});
+    return { workers: obj(raw?.workers), teams: obj(raw?.teams), waiting: Array.isArray(raw?.waiting) ? raw.waiting : [] };
+  },
+  save(state) {
+    writeAtomic(path.join(orgDir(), 'published.json'), state);
+  },
+};
+
+/// A small JSON document in the org folder, for state that must outlive a
+/// restart but is nobody's record (what the Slack front door is following).
+export function jsonOrgStore<T>(name: string, fallback: () => T): { load(): T; save(value: T): void } {
+  return {
+    load() {
+      const raw = readJson(path.join(orgDir(), name));
+      return raw && typeof raw === 'object' ? ({ ...fallback(), ...(raw as object) } as T) : fallback();
+    },
+    save(value) {
+      writeAtomic(path.join(orgDir(), name), value);
+    },
+  };
 }
 
 export interface AskStore {

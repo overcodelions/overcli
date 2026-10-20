@@ -15,6 +15,7 @@
 // over Socket Mode, which the daemon dials out to. Put it behind the VPN, or
 // behind an HTTPS ingress when claude.ai connectors need to reach it.
 
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -25,22 +26,31 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { callerForToken, loadOrgPolicy, revokeOwnToken } from '../main/org/orgStores';
 import { auditCsv } from '../main/org/retention';
 import { parseTemplates } from '../main/org/tools';
+import { DOCS_CSS, DOCS_JS, renderDocsPage } from './docsPages';
 import type { SsoService } from '../main/org/sso';
+import { CONNECT_COOKIE, type ConnectionsService } from '../main/org/connections';
+import { TOOL_CALLBACK_PATH, TOOL_SIGNIN_COOKIE } from '../main/org/toolSignIn';
 import type { TriggerService } from '../main/org/triggers';
 import { fleetStatus, fleetTokensFile, fleetUrlProblem, loadFleetTokens, saveFleetToken } from '../main/org/fleet';
 import { host } from '../main/host';
 import { Store } from '../main/store';
 import type { ScheduleTrigger } from '../shared/flows/schedule';
+import { PICTURE_TONES, avatarChoices, searchPictures } from '../shared/flows/avatars';
+import { FLUENT_EMOJI } from '../shared/flows/fluentEmoji';
 import type { AccessService, PersonRole } from '../main/org/accessService';
 import type { SlackPerson } from '../main/slack/slackApi';
-import type { OrgService } from '../main/org/orgService';
+import type { OrgService, SetupPublishInput, TeamPublishInput } from '../main/org/orgService';
 import { isAdmin, type OrgCaller } from '../shared/org/policy';
 import { CONSOLE_CSS, CONSOLE_HTML, CONSOLE_ICON, CONSOLE_JS } from './consoleAssets';
 import { registerOrgTools } from './orgMcpTools';
+import { FileLinks, fileHeaders } from './fileLinks';
 
 /// A request body larger than this is refused unread. Every legitimate body
 /// here is a short JSON object.
 const MAX_BODY_BYTES = 1_000_000;
+/// A published worker or team carries its flows whole; only signed-in
+/// callers get this far.
+const MAX_PUBLISH_BYTES = 16_000_000;
 
 export interface ControlPlaneDeps {
   org: OrgService;
@@ -51,6 +61,8 @@ export interface ControlPlaneDeps {
   slackPeople?: () => Promise<SlackPerson[]>;
   /// Sign-in with the company's identity provider. Absent: links and tokens only.
   sso?: SsoService;
+  /// Each person's own connected accounts (their Google Drive). Absent: none.
+  connections?: ConnectionsService;
   /// Workers' triggers, for the public webhook endpoint.
   triggers?: TriggerService;
   log: (line: string) => void;
@@ -69,13 +81,13 @@ function send(res: http.ServerResponse, status: number, body: unknown, headers: 
   res.end(text);
 }
 
-function readBody(req: http.IncomingMessage): Promise<unknown> {
+function readBody(req: http.IncomingMessage, limit = MAX_BODY_BYTES): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > limit) {
         reject(new Error('too large'));
         req.destroy();
         return;
@@ -110,11 +122,12 @@ const PAGE_HEADERS = {
   ...ASSET_HEADERS,
   'Content-Type': 'text/html; charset=utf-8',
   // Same-origin script and style only, no framing: the console holds a token.
-  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  // img-src https: for workers' pictures, which are links (Slack fetches them too).
+  'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data: https:; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
   'Referrer-Policy': 'no-referrer',
 };
 
-type Handler = (caller: OrgCaller, body: Record<string, unknown>, params: string[], url: URL, base: string) => unknown | Promise<unknown>;
+type Handler = (caller: OrgCaller, body: Record<string, unknown>, params: string[], url: URL, base: string, secure: boolean) => unknown | Promise<unknown>;
 type PublicHandler = (body: Record<string, unknown>, params: string[], base: string) => unknown | Promise<unknown>;
 
 /// The console's JSON API. Every handler returns what `OrgService` returned,
@@ -129,6 +142,8 @@ function accessRoutes(org: OrgService, access: AccessService, slackPeople?: () =
   const money = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
   return [
     { method: 'GET', path: /^\/api\/admin\/invites$/, handle: (c) => access.invites(c) },
+    // Link this sign-in to its Slack account; Slack asks that person to confirm.
+    { method: 'POST', path: /^\/api\/me\/slack$/, handle: (c, b) => access.linkSlackStart(c, str(b.slackUserId)) },
     {
       method: 'POST',
       path: /^\/api\/admin\/invites$/,
@@ -255,6 +270,53 @@ function clientKey(req: http.IncomingMessage): string {
   return fwd || req.socket.remoteAddress || 'unknown';
 }
 
+/// Whether a request's body crossed the wire where nobody else could read it:
+/// over TLS, through a trusted proxy that saw https, or from this machine
+/// itself. Never from the Host header, which any client can set.
+function privateChannel(req: http.IncomingMessage): boolean {
+  if ('encrypted' in req.socket && (req.socket as { encrypted?: boolean }).encrypted) return true;
+  if (trustProxy()) return String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
+  const ip = req.socket.remoteAddress ?? '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+/// A desktop's setup, as sent: kept to plain shapes and sane sizes.
+function setupInput(b: Record<string, unknown>): SetupPublishInput {
+  const s = (v: unknown, max: number) => (typeof v === 'string' && v.length <= max ? v : undefined);
+  const arr = (v: unknown) => (Array.isArray(v) ? v : []);
+  const pairs = (v: unknown): Record<string, string> =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>).filter(([k, x]) => /^[A-Za-z0-9_-]{1,100}$/.test(k) && typeof x === 'string' && x.length <= 4000).slice(0, 30) as Array<[string, string]>)
+      : {};
+  const keysRaw = b.keys && typeof b.keys === 'object' && !Array.isArray(b.keys) ? (b.keys as Record<string, unknown>) : {};
+  return {
+    tools: parseTemplates(b.tools),
+    repos: arr(b.repos).slice(0, 100).flatMap((r) => {
+      const o = (r ?? {}) as Record<string, unknown>;
+      const name = s(o.name, 100);
+      if (!name) return [];
+      const url = s(o.url, 500);
+      const localPath = s(o.localPath, 1000);
+      return [{ name, ...(url ? { url } : {}), ...(localPath && localPath.startsWith('/') ? { localPath } : {}) }];
+    }),
+    workspaces: arr(b.workspaces).slice(0, 30).flatMap((w) => {
+      const o = (w ?? {}) as Record<string, unknown>;
+      const name = s(o.name, 80);
+      if (!name) return [];
+      const instructions = s(o.instructions, 8000);
+      return [{ name, repos: arr(o.repos).filter((x): x is string => typeof x === 'string' && x.length <= 100).slice(0, 30), ...(instructions ? { instructions } : {}) }];
+    }),
+    keys: Object.fromEntries(
+      Object.entries(keysRaw)
+        .slice(0, 30)
+        .map(([name, v]) => {
+          const o = (v ?? {}) as Record<string, unknown>;
+          return [name, { env: pairs(o.env), headers: pairs(o.headers) }];
+        }),
+    ),
+  };
+}
+
 /// Where this request reached us, as the person's browser sees it — the base
 /// for links handed back to them.
 function originOf(req: http.IncomingMessage): string {
@@ -284,6 +346,52 @@ function brandFont(): Buffer | null {
     }
   }
   return fontCache;
+}
+
+const CHECKPOINT_KEYS = ['askFirst', 'reviewBeforeChallenge', 'finalReview', 'approveRoomWork'] as const;
+
+/// A team published from the app or `overcli teams push`.
+function teamPublishInput(b: Record<string, unknown>): TeamPublishInput {
+  const s = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const checkpoints = b.checkpoints && typeof b.checkpoints === 'object' ? (b.checkpoints as Record<string, unknown>) : {};
+  return {
+    localId: s(b.localId, 64),
+    name: s(b.name, 80),
+    purpose: s(b.purpose, 500),
+    budgetUSDPerTask: typeof b.budgetUSDPerTask === 'number' ? b.budgetUSDPerTask : NaN,
+    checkpoints: Object.fromEntries(CHECKPOINT_KEYS.filter((k) => typeof checkpoints[k] === 'boolean').map((k) => [k, checkpoints[k] as boolean])),
+    ...(b.piecesAskFirst === false ? { piecesAskFirst: false } : {}),
+    members: (Array.isArray(b.members) ? b.members : []).slice(0, 20).map((m) => {
+      const o = m && typeof m === 'object' ? (m as Record<string, unknown>) : {};
+      return { localId: s(o.localId, 64), role: s(o.role, 200), yaml: s(o.yaml, 2_000_000), tools: parseTemplates(o.tools) };
+    }),
+  };
+}
+
+/// A team made in the console from workers already here.
+function teamInput(b: Record<string, unknown>): Parameters<OrgService['makeTeam']>[1] {
+  const s = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const cp = b.checkpoints && typeof b.checkpoints === 'object' ? (b.checkpoints as Record<string, unknown>) : null;
+  return {
+    ...(cp
+      ? {
+          checkpoints: {
+            askFirst: cp.askFirst !== false,
+            reviewBeforeChallenge: cp.reviewBeforeChallenge === true,
+            finalReview: cp.finalReview !== false,
+            approveRoomWork: cp.approveRoomWork !== false,
+          },
+        }
+      : {}),
+    name: s(b.name, 80),
+    purpose: s(b.purpose, 500),
+    budgetUSDPerTask: typeof b.budgetUSDPerTask === 'number' ? b.budgetUSDPerTask : NaN,
+    members: (Array.isArray(b.members) ? b.members : []).slice(0, 20).map((m) => {
+      const o = m && typeof m === 'object' ? (m as Record<string, unknown>) : {};
+      return { workerId: s(o.workerId, 64), role: s(o.role, 200) };
+    }),
+    ...(s(b.workIn, 80) ? { workIn: s(b.workIn, 80) } : {}),
+  };
 }
 
 /// A trigger from the console or MCP, cut to the fields it may set.
@@ -340,6 +448,38 @@ function triggerPatch(raw: unknown): Parameters<OrgService['updateTrigger']>[2] 
 
 /// A handler's answer that is a file to download rather than JSON.
 const CSV = '__csv';
+/// The same, for a zip: `{ filename, data }`.
+const ZIP = '__zip';
+/// A Set-Cookie header to send with a JSON answer, taken off the answer.
+const COOKIE = '__cookie';
+
+function cookieValue(header: string | undefined, name: string): string | undefined {
+  for (const part of (header ?? '').split(';')) {
+    const at = part.indexOf('=');
+    if (at > 0 && part.slice(0, at).trim() === name) return part.slice(at + 1).trim();
+  }
+  return undefined;
+}
+
+/// A person's own accounts: list, connect (Google's consent page, with a
+/// cookie tying the sign-in to this browser) and disconnect.
+function connectionRoutes(connections: ConnectionsService): Array<{ method: string; path: RegExp; handle: Handler }> {
+  return [
+    { method: 'GET', path: /^\/api\/connections$/, handle: async (c, _b, _p, _u, base) => ({ ok: true, connections: await connections.list(c, base) }) },
+    {
+      method: 'POST',
+      path: /^\/api\/connections\/google\/start$/,
+      handle: (c, b, _p, _u, base) => {
+        const started = connections.start(c, { next: typeof b.next === 'string' ? b.next : undefined, base });
+        if (!started.ok) return started;
+        // Only the callback reads it; scripts can't; ten minutes, like the state.
+        const cookie = `${CONNECT_COOKIE}=${started.browserKey}; Path=/oauth/google/; HttpOnly; SameSite=Lax; Max-Age=600${base.startsWith('https:') ? '; Secure' : ''}`;
+        return { ok: true, url: started.url, [COOKIE]: cookie };
+      },
+    },
+    { method: 'POST', path: /^\/api\/connections\/google\/disconnect$/, handle: (c) => connections.disconnect(c, 'google') },
+  ];
+}
 
 function auditQuery(url: URL, limit: number): { limit: number; from?: number; to?: number; query?: string } {
   const n = (k: string) => {
@@ -379,7 +519,16 @@ function workPlaces(): Array<{ name: string; path: string }> {
   ];
 }
 
-function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => Promise<SlackPerson[]>): Array<{ method: string; path: RegExp; handle: Handler }> {
+/// A number from the query string; missing, empty or not a number → undefined
+/// (Number(null) is 0, so a bare Number() would turn "absent" into 0).
+function numParam(url: URL, key: string): number | undefined {
+  const raw = url.searchParams.get(key);
+  if (raw == null || raw.trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => Promise<SlackPerson[]>, links: FileLinks = new FileLinks()): Array<{ method: string; path: RegExp; handle: Handler }> {
   const str = (v: unknown): string => (typeof v === 'string' ? v : '');
   const TRUST = new Set(['probation', 'trusted', 'autonomous']);
   const VIS = new Set(['private', 'team', 'org']);
@@ -415,6 +564,43 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'GET', path: /^\/api\/workers\/([^/]+)\/detail$/, handle: (c, _b, [id]) => org.workerDetail(c, decodeURIComponent(id)) },
     {
+      method: 'GET',
+      path: /^\/api\/workers\/([^/]+)\/threads$/,
+      handle: (c, _b, [id], url) => org.workerThreads(c, decodeURIComponent(id), { before: numParam(url, 'before'), limit: numParam(url, 'limit') }),
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/workers\/([^/]+)\/journal$/,
+      handle: (c, _b, [id], url) => org.workerJournal(c, decodeURIComponent(id), { before: numParam(url, 'before'), limit: numParam(url, 'limit') }),
+    },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/journal$/, handle: (c, b, [id]) => org.addWorkerNote(c, decodeURIComponent(id), str(b.note)) },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/journal\/forget$/, handle: (c, b, [id]) => org.forgetWorkerNote(c, decodeURIComponent(id), str(b.entryId)) },
+    {
+      method: 'GET',
+      path: /^\/api\/workers\/([^/]+)\/shifts$/,
+      handle: (c, _b, [id], url) =>
+        org.workerShifts(c, decodeURIComponent(id), {
+          before: numParam(url, 'before'),
+          limit: numParam(url, 'limit'),
+          decision: url.searchParams.get('decision') ?? undefined,
+        }),
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/workers\/([^/]+)\/runs$/,
+      handle: (c, _b, [id], url) =>
+        org.workerRuns(c, decodeURIComponent(id), {
+          before: numParam(url, 'before'),
+          limit: numParam(url, 'limit'),
+          outcome: url.searchParams.get('outcome') ?? undefined,
+        }),
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/workers\/([^/]+)\/feed$/,
+      handle: (c, _b, [id], url) => org.workerFeed(c, decodeURIComponent(id), { before: numParam(url, 'before'), days: numParam(url, 'days') }),
+    },
+    {
       method: 'POST',
       path: /^\/api\/rate$/,
       handle: (c, b) => org.rate(c, { entryId: str(b.entryId), useful: b.useful === true, ...(typeof b.note === 'string' ? { note: b.note } : {}) }),
@@ -427,8 +613,123 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'GET', path: /^\/api\/roles$/, handle: (c) => org.roles(c) },
     { method: 'POST', path: /^\/api\/roles\/hire$/, handle: (c, b) => org.hireRole(c, str(b.role), str(b.extra)) },
-    { method: 'POST', path: /^\/api\/publish$/, handle: (c, b) => org.publishWorker(c, str(b.yaml), hireOptions(b.options), parseTemplates(b.tools)) },
+    { method: 'POST', path: /^\/api\/publish$/, handle: (c, b) => org.publishWorker(c, str(b.yaml), hireOptions(b.options), parseTemplates(b.tools), str(b.localId) || undefined) },
+    { method: 'POST', path: /^\/api\/publish\/team$/, handle: (c, b) => org.publishTeam(c, teamPublishInput(b)) },
+    { method: 'POST', path: /^\/api\/publish\/setup$/, handle: (c, b, _p, _u, _base, secure) => org.publishSetup(c, setupInput(b), secure) },
+    { method: 'GET', path: /^\/api\/setup\/offers$/, handle: (c) => org.setupOffers(c) },
+    { method: 'POST', path: /^\/api\/setup\/offers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.dismissSetupOffer(c, decodeURIComponent(id)) },
+    {
+      method: 'POST',
+      path: /^\/api\/teams$/,
+      handle: (c, b) => {
+        // The new members a suggestion said to hire, made along with the team.
+        const hires = (Array.isArray(b.hires) ? b.hires : []).slice(0, 3).flatMap((x) => {
+          const o = x && typeof x === 'object' ? (x as Record<string, unknown>) : {};
+          return typeof o.job === 'string' ? [{ key: str(o.key).slice(0, 20), job: o.job.slice(0, 2000), role: typeof o.role === 'string' ? o.role.slice(0, 200) : '' }] : [];
+        });
+        // A run the console follows: made at once with no hires, else as each is hired.
+        return org.startTeamRun(c, { ...teamInput(b), hires });
+      },
+    },
+    { method: 'GET', path: /^\/api\/teams\/runs$/, handle: (c) => ({ ok: true, runs: org.teamRunsFor(c) }) },
+    { method: 'GET', path: /^\/api\/teams\/runs\/([^/]+)$/, handle: (c, _b, [id]) => org.teamRun(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/teams\/runs\/([^/]+)\/retry$/, handle: (c, b, [id]) => org.retryTeamRunHire(c, decodeURIComponent(id), str(b.key)) },
+    { method: 'POST', path: /^\/api\/teams\/runs\/([^/]+)\/skip$/, handle: (c, b, [id]) => org.skipTeamRunHire(c, decodeURIComponent(id), str(b.key)) },
+    { method: 'POST', path: /^\/api\/teams\/suggest$/, handle: (c, b) => org.suggestTeam(c, str(b.purpose).slice(0, 1000), str(b.name).slice(0, 80)) },
+    { method: 'POST', path: /^\/api\/runs\/([^/]+)\/resume$/, handle: (c, _b, [id]) => org.resumeInterrupted(c, decodeURIComponent(id)) },
+    { method: 'GET', path: /^\/api\/secrets$/, handle: (c) => org.secretList(c) },
+    { method: 'POST', path: /^\/api\/secrets$/, handle: (c, b) => org.setSecret(c, str(b.name), str(b.value)) },
+    { method: 'POST', path: /^\/api\/secrets\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.removeSecret(c, decodeURIComponent(name)) },
+    { method: 'GET', path: /^\/api\/repos$/, handle: (c) => org.repoList(c) },
+    { method: 'POST', path: /^\/api\/workspaces$/, handle: (c, b) => org.createWorkspace(c, { name: str(b.name), repos: Array.isArray(b.repos) ? b.repos.map(String) : [], instructions: str(b.instructions) || undefined }) },
+    { method: 'POST', path: /^\/api\/workspaces\/([^/]+)$/, handle: (c, b, [id]) => org.updateWorkspace(c, decodeURIComponent(id), { ...(Array.isArray(b.repos) ? { repos: b.repos.map(String) } : {}), ...(typeof b.instructions === 'string' ? { instructions: b.instructions } : {}) }) },
+    { method: 'POST', path: /^\/api\/workspaces\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeWorkspace(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/push$/, handle: (c, _b, [id]) => org.pushTeamCode(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/repos$/, handle: (c, b) => org.connectRepo(c, { url: str(b.url), name: str(b.name) || undefined, testCommand: str(b.testCommand) || undefined }) },
+    { method: 'POST', path: /^\/api\/repos\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.disconnectRepo(c, decodeURIComponent(name)) },
+    { method: 'POST', path: /^\/api\/repos\/([^/]+)\/workers$/, handle: (c, b, [name]) => org.letWorkOnRepo(c, str(b.worker), decodeURIComponent(name)) },
     { method: 'GET', path: /^\/api\/teams$/, handle: (c) => org.teams(c) },
+    { method: 'GET', path: /^\/api\/now$/, handle: (c) => org.workingNow(c) },
+    {
+      method: 'GET',
+      path: /^\/api\/workers\/([^/]+)\/files$/,
+      handle: (c, _b, [id]) => {
+        const workerId = decodeURIComponent(id);
+        const res = org.workerFileList(c, workerId);
+        if (!res.ok) return res;
+        return {
+          ok: true,
+          files: res.files.map((f) => ({ ...f, url: `/files/${links.issue({ caller: c, runId: '', workerId, name: f.name })}/${encodeURIComponent(f.name.split('/').pop() ?? 'file')}` })),
+        };
+      },
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/runs\/([^/]+)\/files$/,
+      // Each with a link to open it by: see fileLinks.ts.
+      handle: (c, _b, [id]) => {
+        const runId = decodeURIComponent(id);
+        const res = org.runFiles(c, runId);
+        if (!res.ok) return res;
+        return {
+          ok: true,
+          files: res.files.map((f) => ({ ...f, url: `/files/${links.issue({ caller: c, runId, name: f.name })}/${encodeURIComponent(f.name.split('/').pop() ?? 'file')}` })),
+        };
+      },
+    },
+    { method: 'GET', path: /^\/api\/runs\/([^/]+)\/live$/, handle: (c, _b, [id], url) => org.runLive(c, decodeURIComponent(id), numParam(url, 'after') ?? 0) },
+    {
+      method: 'POST',
+      path: /^\/api\/teams\/([^/]+)\/settings$/,
+      handle: (c, b, [id]) => {
+        const cp = b.checkpoints && typeof b.checkpoints === 'object' ? (b.checkpoints as Record<string, unknown>) : null;
+        const flag = (v: unknown) => (typeof v === 'boolean' ? v : undefined);
+        const checkpoints = cp
+          ? Object.fromEntries((['askFirst', 'reviewBeforeChallenge', 'finalReview', 'approveRoomWork'] as const).flatMap((k) => (typeof cp[k] === 'boolean' ? [[k, cp[k] as boolean]] : [])))
+          : undefined;
+        return org.updateTeamSettings(c, decodeURIComponent(id), {
+          ...(checkpoints ? { checkpoints } : {}),
+          ...(flag(b.piecesAskFirst) !== undefined ? { piecesAskFirst: flag(b.piecesAskFirst) } : {}),
+          ...(typeof b.budgetUSDPerTask === 'number' ? { budgetUSDPerTask: b.budgetUSDPerTask } : {}),
+          ...(typeof b.guidance === 'string' ? { guidance: b.guidance } : {}),
+          ...(typeof b.avatarUrl === 'string' || b.avatarUrl === null ? { avatarUrl: b.avatarUrl as string | null } : {}),
+        });
+      },
+    },
+    { method: 'POST', path: /^\/api\/teams\/([^/]+)\/refresh$/, handle: (c, b, [id]) => org.setTeamKnowledgeRefresh(c, decodeURIComponent(id), typeof b.mode === 'string' ? b.mode : '') },
+    { method: 'POST', path: /^\/api\/teams\/([^/]+)\/disband$/, handle: (c, _b, [id]) => org.disbandTeam(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/teams\/([^/]+)\/delete$/, handle: (c, _b, [id]) => org.deleteTeam(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/teams\/([^/]+)\/learn$/, handle: (c, _b, [id]) => org.learnTeam(c, decodeURIComponent(id)) },
+    { method: 'GET', path: /^\/api\/teams\/([^/]+)\/knowledge$/, handle: (c, _b, [id]) => org.teamKnowledge(c, decodeURIComponent(id)) },
+    { method: 'GET', path: /^\/api\/teams\/([^/]+)\/page$/, handle: (c, _b, [id]) => org.teamPage(c, decodeURIComponent(id)) },
+    { method: 'GET', path: /^\/api\/team-tasks\/([^/]+)\/file$/, handle: (c, _b, [id], url) => org.teamTaskFile(c, decodeURIComponent(id), url.searchParams.get('name') ?? '') },
+    { method: 'GET', path: /^\/api\/team-tasks\/([^/]+)\/page$/, handle: (c, _b, [id]) => org.teamTaskPage(c, decodeURIComponent(id)) },
+    {
+      method: 'GET',
+      path: /^\/api\/team-tasks\/([^/]+)\/files$/,
+      // Each with a link to open it by, as a run's files have: an HTML report
+      // shown as the page it is, in a frame the console's token can't reach.
+      handle: async (c, _b, [id]) => {
+        const taskId = decodeURIComponent(id);
+        const res = await org.teamTaskFiles(c, taskId);
+        if (!res.ok) return res;
+        return {
+          ...res,
+          files: res.files.map((f) => ({ ...f, url: `/files/${links.issue({ caller: c, runId: '', taskId, name: f.name })}/${encodeURIComponent(f.name.split('/').pop() ?? 'file')}` })),
+        };
+      },
+    },
+    { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/files\/keep$/, handle: (c, b, [id]) => org.keepTeamFiles(c, decodeURIComponent(id), b.names) },
+    { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/files\/save$/, handle: (c, b, [id]) => org.saveTeamFiles(c, decodeURIComponent(id), b.names, str(b.destination)) },
+    {
+      // The whole shared folder, as one download.
+      method: 'GET',
+      path: /^\/api\/team-tasks\/([^/]+)\/files\.zip$/,
+      handle: (c, _b, [id]) => {
+        const res = org.teamTaskZip(c, decodeURIComponent(id));
+        return res.ok ? { ok: true, [ZIP]: { filename: res.filename, data: res.data } } : res;
+      },
+    },
     { method: 'GET', path: /^\/api\/team-tasks$/, handle: (c) => org.teamTasks(c) },
     { method: 'POST', path: /^\/api\/teams\/brief$/, handle: (c, b) => org.briefTeam(c, str(b.team), str(b.text)) },
     {
@@ -438,8 +739,9 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         const kind = str(b.kind);
         if (kind === 'answer') return org.decideTeamTask(c, id, { kind, answers: Array.isArray(b.answers) ? b.answers.map(String) : [str(b.answers)] });
         if (kind === 'revise') return org.decideTeamTask(c, id, { kind, feedback: str(b.feedback) });
-        if (kind === 'approve' || kind === 'continue' || kind === 'cancel') return org.decideTeamTask(c, id, { kind });
-        return { ok: false, error: 'Say answer, approve, revise, continue or cancel.' };
+        if (kind === 'approve' || kind === 'continue' || kind === 'cancel' || kind === 'accept' || kind === 'plan') return org.decideTeamTask(c, id, { kind });
+        if (kind === 'retryPiece') return org.decideTeamTask(c, id, { kind, workerId: str(b.workerId) });
+        return { ok: false, error: 'Say answer, approve, revise, continue, cancel, accept or retryPiece.' };
       },
     },
     { method: 'GET', path: /^\/api\/admin\/people$/, handle: (c) => org.people(c) },
@@ -460,22 +762,25 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'GET', path: /^\/api\/workers$/, handle: (c) => org.listWorkers(c) },
     { method: 'GET', path: /^\/api\/workers\/([^/]+)$/, handle: (c, _b, [id]) => org.getWorker(c, decodeURIComponent(id)) },
     { method: 'GET', path: /^\/api\/chart$/, handle: (c) => org.orgChart(c) },
+    { method: 'GET', path: /^\/api\/report$/, handle: (c, _b, _p, url) => org.report(c, Number(url.searchParams.get('days') ?? 30)) },
     { method: 'GET', path: /^\/api\/waiting$/, handle: (c) => org.listWaiting(c) },
     { method: 'GET', path: /^\/api\/hires$/, handle: (c) => org.listHires(c) },
     { method: 'POST', path: /^\/api\/answer$/, handle: (c, b) => org.answer(c, str(b.runId), str(b.answer)) },
-    { method: 'POST', path: /^\/api\/approval$/, handle: (c, b) => org.decideRun(c, str(b.runId), b.approve === true) },
+    { method: 'POST', path: /^\/api\/approval$/, handle: (c, b) => org.decideRun(c, str(b.runId), b.approve === true, b.forRun === true) },
     {
       // Returns at once: the console follows the question by id, so leaving
       // the page loses nothing.
       method: 'POST',
       path: /^\/api\/ask$/,
       handle: (c, b) => {
-        const res = org.startAsk(c, str(b.worker), str(b.message), 'console');
+        const res = org.startAsk(c, str(b.worker), str(b.message), 'console', undefined, typeof b.replyTo === 'string' ? b.replyTo : undefined);
         return res.ok ? { ok: true, askId: res.askId } : res;
       },
     },
     { method: 'GET', path: /^\/api\/asks\/([^/]+)$/, handle: (c, _b, [id]) => org.askStatus(c, decodeURIComponent(id)) },
     { method: 'GET', path: /^\/api\/tools$/, handle: (c) => org.tools(c) },
+    { method: 'GET', path: /^\/api\/admin\/tools\/([^/]+)\/scope$/, handle: (c, _b, [name]) => org.toolScopePage(c, decodeURIComponent(name)) },
+    { method: 'POST', path: /^\/api\/admin\/tools\/([^/]+)\/scope$/, handle: (c, b, [name]) => org.setToolDefault(c, decodeURIComponent(name), b.default ?? null) },
     { method: 'GET', path: /^\/api\/tools\/([^/]+)\/calls$/, handle: (c, _b, [name]) => org.serverTools(c, decodeURIComponent(name)) },
     { method: 'GET', path: /^\/api\/workers\/([^/]+)\/triggers$/, handle: (c, _b, [id]) => org.triggers(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/triggers$/, handle: (c, b, [id]) => org.createTrigger(c, decodeURIComponent(id), triggerInput(b.trigger)) },
@@ -483,7 +788,22 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/check$/, handle: (c, _b, [id]) => org.checkTriggerNow(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeTrigger(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)$/, handle: (c, b, [id]) => org.updateTrigger(c, decodeURIComponent(id), triggerPatch(b.patch)) },
-    { method: 'GET', path: /^\/api\/library$/, handle: (c, _b, _p, url) => org.library(c, { ...(url.searchParams.get('worker') ? { workerId: url.searchParams.get('worker')! } : {}), ...(url.searchParams.get('q') ? { query: url.searchParams.get('q')!.slice(0, 200) } : {}) }) },
+    {
+      method: 'GET',
+      path: /^\/api\/library$/,
+      handle: (c, _b, _p, url) => {
+        const kind = url.searchParams.get('kind');
+        const visibility = url.searchParams.get('visibility');
+        return org.library(c, {
+          ...(url.searchParams.get('worker') ? { workerId: url.searchParams.get('worker')! } : {}),
+          ...(url.searchParams.get('q') ? { query: url.searchParams.get('q')!.slice(0, 200) } : {}),
+          ...(kind === 'task' || kind === 'work' || kind === 'event' || kind === 'file' || kind === 'answer' ? { kind } : {}),
+          ...(visibility === 'private' || visibility === 'team' || visibility === 'org' ? { visibility } : {}),
+          ...(numParam(url, 'limit') ? { limit: Math.max(1, numParam(url, 'limit')!) } : {}),
+        });
+      },
+    },
+    { method: 'GET', path: /^\/api\/library\/([^/]+)$/, handle: (c, _b, [id]) => org.libraryItem(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/library\/([^/]+)\/rate$/, handle: (c, b, [id]) => org.rateDeliverable(c, decodeURIComponent(id), b.useful === true) },
     { method: 'POST', path: /^\/api\/admin\/tools\/check$/, handle: (c) => org.checkTools(c) },
     {
@@ -505,11 +825,47 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       },
     },
     { method: 'POST', path: /^\/api\/admin\/tools\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.uninstallTool(c, decodeURIComponent(name)) },
+    { method: 'POST', path: /^\/api\/admin\/tools\/discover$/, handle: (c, b, _p, _u, base) => org.discoverToolSignIn(c, str(b.url), base) },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/tools\/signin$/,
+      handle: async (c, b, _p, _u, base) => {
+        const t = (b.tool ?? {}) as Record<string, unknown>;
+        const started = await org.startToolSignIn(
+          c,
+          { name: str(t.name), url: str(t.url), ...(typeof b.next === 'string' ? { next: b.next } : {}), ...(str(t.clientId) ? { clientId: str(t.clientId) } : {}), ...(str(t.clientSecret) ? { clientSecret: str(t.clientSecret) } : {}) },
+          base,
+        );
+        if (!started.ok) return started;
+        // Only the callback reads it; scripts can't; ten minutes, like the state.
+        const cookie = `${TOOL_SIGNIN_COOKIE}=${started.browserKey}; Path=${TOOL_CALLBACK_PATH}; HttpOnly; SameSite=Lax; Max-Age=600${base.startsWith('https:') ? '; Secure' : ''}`;
+        return { ok: true, url: started.url, [COOKIE]: cookie };
+      },
+    },
     {
       method: 'POST',
       path: /^\/api\/workers\/([^/]+)\/paused$/,
       handle: (c, b, [id]) => org.setPaused(c, decodeURIComponent(id), b.paused === true),
     },
+    {
+      method: 'GET',
+      path: /^\/api\/avatars$/,
+      // Fluent pictures by search (the picks with none), or drawn avatars.
+      handle: (_c, _b, _p, url) =>
+        url.searchParams.get('kind') === 'drawn'
+          ? { ok: true, choices: avatarChoices(() => randomBytes(6).toString('hex')) }
+          : {
+              ok: true,
+              choices: searchPictures(
+                FLUENT_EMOJI,
+                (url.searchParams.get('q') ?? '').slice(0, 60),
+                48,
+                PICTURE_TONES.find((t) => t === url.searchParams.get('tone')),
+              ).map((p) => ({ style: p.name, url: p.url })),
+            },
+    },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/picture\/pick$/, handle: (c, _b, [id]) => org.pickWorkerPicture(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/runs\/([^/]+)\/stop$/, handle: (c, _b, [id]) => org.stopRun(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/retire$/, handle: (c, _b, [id]) => org.retire(c, decodeURIComponent(id)) },
     {
       method: 'POST',
@@ -568,7 +924,8 @@ async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, or
 
 export function createControlPlane(deps: ControlPlaneDeps): http.Server {
   const authenticate = deps.authenticate ?? ((token) => callerForToken(token, loadOrgPolicy().policy));
-  const routes = apiRoutes(deps.org, deps.access, deps.slackPeople);
+  const links = new FileLinks();
+  const routes = [...apiRoutes(deps.org, deps.access, deps.slackPeople, links), ...(deps.connections ? connectionRoutes(deps.connections) : [])];
   const open = [
     ...(deps.access ? publicRoutes(deps.access) : []),
     // Whether to show "Sign in with …", and the console's swap of its
@@ -609,6 +966,35 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           }
           return done({ code: back.handoff, next: back.next });
         }
+        // Back from Google's consent page, connecting someone's own Drive. No
+        // token comes with a redirect: the single-use state says who, and the
+        // cookie set when it started says it is the same browser.
+        if (req.method === 'GET' && deps.connections && path === '/oauth/google/callback') {
+          if (!allow(clientKey(req))) return send(res, 429, 'Too many tries. Wait a minute.');
+          const back = await deps.connections.callback(url.searchParams, cookieValue(req.headers.cookie, CONNECT_COOKIE));
+          if (!back.ok) deps.log(`control: connecting Google Drive failed (${back.reason}).`);
+          res.writeHead(302, {
+            Location: back.location,
+            'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer',
+            'Set-Cookie': `${CONNECT_COOKIE}=; Path=/oauth/google/; HttpOnly; SameSite=Lax; Max-Age=0`,
+          });
+          return res.end();
+        }
+        // Back from a tool's sign-in page, signing it in for the org. Like
+        // Google's: the state says who, the cookie says the same browser.
+        if (req.method === 'GET' && path === TOOL_CALLBACK_PATH) {
+          if (!allow(clientKey(req))) return send(res, 429, 'Too many tries. Wait a minute.');
+          const back = await deps.org.finishToolSignIn(url.searchParams, cookieValue(req.headers.cookie, TOOL_SIGNIN_COOKIE));
+          if (!back.ok) deps.log(`control: signing a tool in failed (${back.reason}).`);
+          res.writeHead(302, {
+            Location: back.location,
+            'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer',
+            'Set-Cookie': `${TOOL_SIGNIN_COOKIE}=; Path=${TOOL_CALLBACK_PATH}; HttpOnly; SameSite=Lax; Max-Age=0`,
+          });
+          return res.end();
+        }
         // A webhook from Jira, GitHub, a CRM or Zapier: the secret is in the
         // path, so any sender can use it. Answers fast; the work runs after.
         const hook = /^\/hooks\/([A-Za-z0-9_-]{6,40})\/([A-Za-z0-9_-]{20,80})$/.exec(path);
@@ -642,6 +1028,20 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           res.writeHead(200, { ...ASSET_HEADERS, 'Content-Type': 'font/woff2' });
           return res.end(font);
         }
+        if (req.method === 'GET' && path === '/docs.css') {
+          res.writeHead(200, { ...ASSET_HEADERS, 'Content-Type': 'text/css; charset=utf-8' });
+          return res.end(DOCS_CSS);
+        }
+        if (req.method === 'GET' && path === '/docs.js') {
+          res.writeHead(200, { ...ASSET_HEADERS, 'Content-Type': 'text/javascript; charset=utf-8' });
+          return res.end(DOCS_JS);
+        }
+        if (req.method === 'GET' && (path === '/docs' || path.startsWith('/docs/'))) {
+          const page = renderDocsPage(path);
+          if (!page) return send(res, 404, { ok: false, error: 'No such page in the docs.' });
+          res.writeHead(200, PAGE_HEADERS);
+          return res.end(page);
+        }
         if (req.method === 'GET' && path === '/console.css') {
           res.writeHead(200, { ...ASSET_HEADERS, 'Content-Type': 'text/css; charset=utf-8' });
           return res.end(CONSOLE_CSS);
@@ -661,6 +1061,24 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
             }
           }
           return send(res, 200, await openRoute.handle(body, openRoute.path.exec(path)!.slice(1), base));
+        }
+
+        // A run's or a team task's file, by the link its listing handed out,
+        // in the browser that listed it: the cookie the listing set has to
+        // name the same person, so a forwarded link opens nothing for whoever
+        // it went to.
+        const fileLink = req.method === 'GET' ? /^\/files\/([A-Za-z0-9_-]{20,64})(?:\/[^/]*)?$/.exec(path) : null;
+        if (fileLink) {
+          const opened = links.open(fileLink[1], req.headers.cookie);
+          if (!opened.ok && opened.why === 'elsewhere') return send(res, 403, 'This link only opens for the person it was made for. Open the file from the console.');
+          const link = opened.ok ? opened.link : null;
+          const got = !link ? null
+            : link.workerId ? deps.org.workerFile(link.caller, link.workerId, link.name)
+            : link.taskId ? (() => { const t = deps.org.teamTaskFile(link.caller, link.taskId!, link.name); return t.ok ? { ok: true as const, data: Buffer.from(t.body, 'utf8') } : t; })()
+            : deps.org.runFile(link.caller, link.runId, link.name);
+          if (!link || !got?.ok) return send(res, 404, link ? 'That file is no longer there.' : 'This link has expired. Open the file from the console again.');
+          res.writeHead(200, fileHeaders(link.name, url.searchParams.get('download') === '1'));
+          return res.end(got.data);
         }
 
         const caller = authenticate(bearer(req));
@@ -690,21 +1108,39 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           let body: Record<string, unknown> = {};
           if (req.method === 'POST') {
             try {
-              const parsed = await readBody(req);
+              const parsed = await readBody(req, path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : MAX_BODY_BYTES);
               body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
             } catch {
               return send(res, 400, { ok: false, error: 'Send a JSON object.' });
             }
           }
           const params = route.path.exec(path)!.slice(1);
-          const answer = await route.handle(caller, body, params, url, base);
+          const answer = await route.handle(caller, body, params, url, base, privateChannel(req));
+          if (answer && typeof answer === 'object' && ZIP in answer) {
+            const zip = (answer as Record<string, unknown>)[ZIP] as { filename: string; data: Buffer };
+            res.writeHead(200, {
+              'Content-Type': 'application/zip',
+              'Content-Length': String(zip.data.length),
+              'Content-Disposition': `attachment; filename="${zip.filename.replace(/[^A-Za-z0-9._-]/g, '_')}"`,
+              'Cache-Control': 'no-store',
+              'X-Content-Type-Options': 'nosniff',
+            });
+            return res.end(zip.data);
+          }
           if (answer && typeof answer === 'object' && CSV in answer) {
             return send(res, 200, String((answer as Record<string, unknown>)[CSV]), {
               'Content-Type': 'text/csv; charset=utf-8',
               'Content-Disposition': 'attachment; filename="decision-log.csv"',
             });
           }
-          return send(res, 200, answer);
+          // A file listing hands out links; this cookie is what lets them open,
+          // in this browser, for this person only.
+          const lists = /^\/api\/(?:runs|team-tasks|workers)\/[^/]+\/files$/.test(path) && answer && typeof answer === 'object' && (answer as { ok?: unknown }).ok !== false;
+          if (answer && typeof answer === 'object' && COOKIE in answer) {
+            const { [COOKIE]: cookie, ...rest } = answer as Record<string, unknown>;
+            return send(res, 200, rest, { 'Set-Cookie': String(cookie) });
+          }
+          return send(res, 200, answer, lists ? { 'Set-Cookie': links.cookieFor(caller, originOf(req).startsWith('https:')) } : {});
         }
         send(res, 404, { ok: false, error: 'Not found.' });
       } catch (err) {

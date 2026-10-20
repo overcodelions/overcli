@@ -5,6 +5,7 @@
 // requests, and the task re-renders when main says it moved.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { OrgNudge } from "../OrgNudge";
 
 import { Markdown } from "../../Markdown";
 import { Composer } from "../../Composer";
@@ -65,6 +66,10 @@ export function TeamDesk({
   const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
   const workers = useWorkersStore((s) => s.workers);
   const projectOptions = useProjectOptions();
+  const orgAlpha = useStore((s) => s.settings.orgAlpha ?? false);
+  const openSheet = useStore((s) => s.openSheet);
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState<{ ok: boolean; text: string; signIn?: boolean } | null>(null);
   const current = team ? currentTeamTask(tasks, team.id) : undefined;
   const past = useMemo(
     () =>
@@ -162,11 +167,50 @@ export function TeamDesk({
               New task
             </button>
           )}
+          {/* The org's server: members it doesn't have go up first, then
+              the team; published again, it's updated there. */}
+          {orgAlpha && (
+            <button
+              className="review-btn shrink-0"
+              disabled={publishing}
+              title="Put this team and its members on your org's server, where people can give it work from the console, Slack or Claude."
+              onClick={() => {
+                setPublishing(true);
+                setPublished(null);
+                void window.overcli
+                  .invoke("org:publishTeam", { id: team.id })
+                  .then((res) => setPublished(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error, signIn: res.signIn }))
+                  .finally(() => setPublishing(false));
+              }}
+            >
+              {publishing ? "Publishing…" : "Publish to your org"}
+            </button>
+          )}
           <button className="review-btn shrink-0" onClick={() => openTeamEditor(team.id)}>
             Edit team
           </button>
         </div>
       </header>
+      {!orgAlpha && (
+        <div className="px-6">
+          <OrgNudge id="share-team">
+            Want people across your company to give {team.name} work? Put it on your org&apos;s server, and they can from Slack, Claude or the web.
+          </OrgNudge>
+        </div>
+      )}
+      {published && (
+        <div role="status" className={"flex items-center gap-2 px-6 pb-3 text-[11.5px] " + (published.ok ? "text-emerald-300" : "text-red-300")}>
+          <span>{published.text}</span>
+          {published.signIn && (
+            <button className="text-accent hover:underline" onClick={() => openSheet({ type: "settings", section: "org" })}>
+              Open Settings
+            </button>
+          )}
+          <button className="ml-auto text-ink-faint hover:text-ink" aria-label="Dismiss" onClick={() => setPublished(null)}>
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Two columns that scroll on their own when there is room for both,
           so the shared folder stays beside a long conversation. On a narrow

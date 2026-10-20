@@ -51,3 +51,27 @@ export function SheetActionButton({
     </button>
   );
 }
+
+/// A setting: its label on the left, its control on the right, and help
+/// under the control.
+export function Row({ label, children, help }: { label: string; children: React.ReactNode; help?: string }) {
+  return (
+    // Help sits in its own grid row rather than inside the control column.
+    // Inside it, the label could only ever be wrong: `items-center` centred it
+    // against control-plus-help, so a long help line pushed it down, and
+    // `items-start` left it a few pixels ABOVE the control — visibly so next
+    // to a native select, which renders taller than a text input. As its own
+    // row the label centres against the control alone, and the help still
+    // lines up under the control, with no per-control padding to re-tune.
+    <div className="grid grid-cols-[168px_1fr] items-center gap-x-4 gap-y-1">
+      <div className="text-xs text-ink-muted">{label}</div>
+      <div className="min-w-0">{children}</div>
+      {help && (
+        <>
+          <div />
+          <div className="text-[11px] text-ink-faint">{help}</div>
+        </>
+      )}
+    </div>
+  );
+}

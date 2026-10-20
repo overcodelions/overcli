@@ -50,7 +50,7 @@ describe('isReadOnlyBashCommand', () => {
     'git remote -v',
     'rg TODO src',
     'find . -name "*.ts"',
-    'cd src && grep -rn foo .',
+    'ls src && grep -rn foo .',
     'wc -l src/*.ts 2>/dev/null',
   ])('reads only: %s', (cmd) => {
     expect(isReadOnlyBashCommand(cmd)).toBe(true);
@@ -65,6 +65,11 @@ describe('isReadOnlyBashCommand', () => {
     'git remote add origin x',
     'git commit -m x',
     'sort -o out.txt in.txt',
+    'rg --pre=sh x /tmp/a',
+    'rg --pre sh x .',
+    'rg --pre-glob "*" --pre=sh x .',
+    'rg -z x .',
+    'sort --compress-program=sh a',
     'cat $(echo file)',
     'npm test',
     'FOO=1 ls',
@@ -117,7 +122,7 @@ describe('bashAllowPrefix', () => {
   });
 
   it('ignores read-only parts of a compound line', () => {
-    expect(bashAllowPrefix('cd app && npm test 2>&1 | tail -20')).toBe('npm test');
+    expect(bashAllowPrefix('ls app && npm test 2>&1 | tail -20')).toBe('npm test');
   });
 
   it('refuses risky, opaque, or multi-action lines', () => {
@@ -151,7 +156,7 @@ describe('alwaysAllowRule', () => {
 describe('ruleCovers', () => {
   it('matches a prefix rule against every acting command', () => {
     expect(ruleCovers('Bash(npm test:*)', 'Bash', bash('npm test'))).toBe(true);
-    expect(ruleCovers('Bash(npm test:*)', 'Bash', bash('cd app && npm test -- x'))).toBe(true);
+    expect(ruleCovers('Bash(npm test:*)', 'Bash', bash('ls app && npm test -- x'))).toBe(true);
     expect(ruleCovers('Bash(npm test:*)', 'Bash', bash('npm testing'))).toBe(false);
     expect(ruleCovers('Bash(npm test:*)', 'Bash', bash('npm test && npm publish'))).toBe(false);
   });

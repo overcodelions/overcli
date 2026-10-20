@@ -1228,6 +1228,10 @@ export interface AppSettings {
   /// `$OVERCLI_SLACK_APP_TOKEN` headless), never here. See
   /// `src/main/slack/slackBridge.ts`.
   slackEnabled?: boolean;
+  /// Your own Slack member ID. On the desktop the Slack front door (a DM or
+  /// an @mention asking for work) takes requests from this person only — it
+  /// is your laptop and your model account. Unset: it takes none.
+  slackOwnerId?: string;
   /// Your org's overcli control plane (`overcli serve --control`), for
   /// publishing workers you build here to the org. The token lives in
   /// `host().secrets`, never here.
@@ -1497,7 +1501,27 @@ export interface IPCInvokeMap {
   'org:cancelSignIn': () => { ok: true };
   'org:signOut': () => { ok: boolean };
   /// Publish one of your workers to the org server, under the org's rules.
-  'org:publishWorker': (args: { id: UUID; visibility?: 'private' | 'team' | 'org' }) => { ok: true; message: string } | { ok: false; error: string };
+  /// `signIn` on a failure that signing in fixes, so the card links to it.
+  'org:publishWorker': (args: { id: UUID; visibility?: 'private' | 'team' | 'org' }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  /// A team, its members published first (or reused), onto the org.
+  'org:publishTeam': (args: { id: UUID }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  /// What "Publish my setup" would send: tools (key names only), workspaces
+  /// and projects. Nothing secret crosses to the renderer.
+  'org:setupPreview': () =>
+    | {
+        ok: true;
+        server: string;
+        /// The server is this machine: it already reads your own config.
+        sameMachine: boolean;
+        admin: boolean;
+        tools: Array<{ name: string; kind: 'command' | 'http'; target: string; keys: string[] }>;
+        workspaces: Array<{ id: UUID; name: string; projectIds: UUID[] }>;
+        projects: Array<{ id: UUID; name: string; url?: string }>;
+      }
+    | { ok: false; error: string; signIn?: true };
+  /// Publish the picked parts. Key values are read in main, for the tools in
+  /// `sendKeysFor` only.
+  'org:publishSetup': (args: { tools: string[]; sendKeysFor: string[]; workspaceIds: UUID[]; projectIds: UUID[] }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
   /// The last outbound webhook attempt, so Settings can say the webhook is
   /// configured but not arriving. Null when nothing has been sent since the
   /// app started. In-memory and desktop-only: a headless run's failures go to
@@ -2281,6 +2305,8 @@ export interface IPCInvokeMap {
   /// Close a shell's own window, putting it back in the drawer.
   'terminal:popIn': (args: { id: string }) => void;
   'app:openExternal': (url: string) => void;
+  /// The org server the app runs on this Mac, to try the org setup.
+  'org:localServer': (action: 'start' | 'stop' | 'status' | 'linkUsed') => LocalOrgServerStatus;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
   /// Shell out to `claude -p "/usage"` for Claude's real limit percentages —
@@ -3907,7 +3933,8 @@ export interface SlackStatus {
 export type MainToRendererEvent =
   | { type: 'slackStatus'; status: SlackStatus }
   /// How a pairing sign-in to the org server ended.
-  | { type: 'orgSignIn'; outcome: 'signedIn' | 'denied' | 'expired' | 'failed'; org?: string; name?: string; error?: string }
+  /// `orgServerUrl` on success: main saved it, the renderer's copy follows.
+  | { type: 'orgSignIn'; outcome: 'signedIn' | 'denied' | 'expired' | 'failed'; org?: string; name?: string; error?: string; orgServerUrl?: string }
   | { type: 'terminalData'; id: string; data: string }
   | { type: 'terminalExit'; id: string; exitCode: number }
   /// Main started a drawer shell on its own (a login, an install): show it.
@@ -4273,3 +4300,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   updateChannel: 'stable',
   idleSessionTimeoutMinutes: 30,
 };
+
+/// An org server the desktop app started on this Mac ("Try it on this Mac").
+export interface LocalOrgServerStatus {
+  running: boolean;
+  starting: boolean;
+  /// Its console, e.g. http://127.0.0.1:7420.
+  url: string | null;
+  /// The one-time link that signs in the first admin, until it has been used.
+  firstAdminLink: string | null;
+  stateDir: string;
+  error: string | null;
+  log: string[];
+}

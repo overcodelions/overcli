@@ -17,6 +17,10 @@
 const READ_WORDS = new Set([
   'search', 'list', 'get', 'read', 'fetch', 'query', 'find', 'lookup', 'describe', 'view',
   'download', 'show', 'retrieve', 'count', 'check', 'info', 'whoami',
+  // Nouns a tool names what it returns by: a release timeline, a product
+  // hierarchy, an issue's history. A write word still makes it a write.
+  'timeline', 'hierarchy', 'history', 'detail', 'details', 'overview', 'stats', 'summary', 'status',
+  'preview', 'browse', 'inspect',
 ]);
 
 const WRITE_WORDS = new Set([

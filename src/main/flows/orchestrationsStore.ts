@@ -96,9 +96,19 @@ export function settleItemOnLoad(
   batchPaused = false,
 ): boolean {
   const ended = () => item.finishedAt ?? item.startedAt ?? settledAt;
+  if (item.status === 'running' && item.runId && exists(item.runId)) {
+    // Its subprocess died with the app, but the run itself is kept, paused
+    // where it stopped (runsStore demotes it the same way), and a worker's
+    // run carries on by itself after a restart. Failing the item here wrote
+    // off work that went on to finish: a team moved past a member whose
+    // piece landed minutes later, and built on an empty folder. Paused, the
+    // item follows its run to the end like any parked item.
+    item.status = 'paused';
+    item.note = 'Stopped by a restart; it carries on from where it was.';
+    return true;
+  }
   if (item.status === 'running') {
-    // Its subprocess died with the app, mirroring how runsStore demotes
-    // in-flight runs.
+    // Its run is gone too: nothing will finish it.
     item.status = 'failed';
     item.note = item.note ?? 'Interrupted by app restart.';
     item.finishedAt = ended();

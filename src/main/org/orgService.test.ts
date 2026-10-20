@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
 import type { Worker } from '../../shared/flows/worker';
+import type { Team, TeamTask } from '../../shared/flows/team';
 import { DEFAULT_ORG_POLICY, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
 import { OrgService, type PendingHire } from './orgService';
 import type { DraftedHire } from './hireDraft';
@@ -48,8 +49,10 @@ function drafted(over: Partial<DraftedHire['contract']> = {}): DraftedHire {
   } as DraftedHire;
 }
 
-function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<OrgPolicy>; draft?: DraftedHire | string[] } = {}) {
+function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<OrgPolicy>; draft?: DraftedHire | string[]; teams?: boolean; overlap?: string } = {}) {
   const roster = new Map((opts.roster ?? []).map((w) => [w.id, w]));
+  const teams = new Map<string, Team>();
+  const teamTasks: TeamTask[] = [];
   const runs = new Map((opts.runs ?? []).map((r) => [r.id, r]));
   let hires: PendingHire[] = [];
   const calls: string[] = [];
@@ -96,6 +99,10 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
       calls.push(`reject:${id}`);
       return { ok: true };
     },
+    stopRun: (id) => {
+      calls.push(`stop:${id}`);
+      return { ok: true };
+    },
     policy: () => policy,
     draft: async () => {
       const d = opts.draft ?? drafted();
@@ -107,10 +114,38 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
       return { ok: true, worker: w };
     },
     hires: { list: () => hires, save: (h) => (hires = structuredClone(h)) },
+    ...(opts.overlap ? { overlap: async () => ({ workerId: opts.overlap!, why: 'already writes these summaries' }) } : {}),
     onHireAwaitingApproval: (hire, approvers) => awaiting.push({ hire, approvers }),
     onHireDecided: (_h, o) => decided.push(o),
+    ...(opts.teams
+      ? {
+          teams: {
+            list: () => ({ teams: [...teams.values()], tasks: teamTasks }),
+            disband: (id: string, by: string) => {
+              teams.set(id, { ...teams.get(id)!, disbanded: { at: 1, by } });
+              return { ok: true as const, cancelled: 0 };
+            },
+            remove: (id: string) => {
+              teams.delete(id);
+              teamTasks.splice(0, teamTasks.length, ...teamTasks.filter((t) => t.teamId !== id));
+              return { ok: true as const };
+            },
+            brief: () => ({ ok: false, error: 'no' }),
+            answer: () => ({ ok: true }),
+            approve: () => ({ ok: true }),
+            revise: () => ({ ok: true }),
+            continueTask: () => ({ ok: true }),
+            cancel: () => ({ ok: true }),
+            save: (input: Omit<Team, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }) => {
+              const team = { ...input, id: input.id ?? `team-${teams.size + 1}`, createdAt: 0 } as Team;
+              teams.set(team.id, team);
+              return { ok: true as const, team };
+            },
+          },
+        }
+      : {}),
   });
-  return { svc, roster, calls, awaiting, decided, hires: () => hires };
+  return { svc, roster, calls, awaiting, decided, teams, teamTasks, hires: () => hires };
 }
 
 const paused = (reason: 'needsInput' | 'externalAction', workerId = 'chief'): FlowRun =>
@@ -167,6 +202,140 @@ describe('questions across a restart', () => {
     const h = harness({ roster: [worker('open', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'org' })] });
     const svc = new OrgService({ ...(h.svc as unknown as { deps: ConstructorParameters<typeof OrgService>[0] }).deps, asks: { list: () => saved, save: (a) => (saved = a as typeof saved) } });
     expect(svc.askStatus(pat, 'a1')).toMatchObject({ ok: true, ask: { status: 'failed', error: expect.stringMatching(/restarted/) } });
+  });
+});
+
+describe('a worker’s picture', () => {
+  it('is set and cleared by its manager, must be an https link, and shows on its summary', () => {
+    const { svc, roster } = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    expect(svc.update(sam, 'open', { avatarUrl: 'https://img.acme.example/a.png' }).ok).toBe(false);
+    expect(svc.update(pat, 'open', { avatarUrl: 'http://img.acme.example/a.png' }).ok).toBe(false);
+    const set = svc.update(pat, 'open', { avatarUrl: 'https://img.acme.example/a.png' });
+    if (!set.ok) throw new Error(set.error);
+    expect(set.worker.avatarUrl).toBe('https://img.acme.example/a.png');
+    expect(roster.get('open')!.avatarUrl).toBe('https://img.acme.example/a.png');
+    expect(svc.update(pat, 'open', { avatarUrl: null }).ok).toBe(true);
+    expect(roster.get('open')!.avatarUrl).toBeUndefined();
+  });
+});
+
+describe('a picture picked for a worker', () => {
+  const setup = (pick: string | null, over: Partial<Worker> = {}) => {
+    const h = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT }, ...over }), worker('other', { avatarUrl: 'https://img.acme.example/owl.png' })] });
+    const asked: Array<{ name: string; taken: string[] }> = [];
+    const svc = new OrgService({
+      ...(h.svc as unknown as { deps: ConstructorParameters<typeof OrgService>[0] }).deps,
+      pickPicture: async (w, taken) => (asked.push({ name: w.name, taken }), pick),
+    });
+    return { svc, roster: h.roster, asked };
+  };
+
+  it('is given to a worker with none, unlike any other worker’s, and never over one someone chose', async () => {
+    const a = setup('https://img.acme.example/fox.png');
+    expect(await a.svc.choosePicture('open')).toBe('https://img.acme.example/fox.png');
+    expect(a.roster.get('open')!.avatarUrl).toBe('https://img.acme.example/fox.png');
+    expect(a.asked[0].taken).toEqual(['https://img.acme.example/owl.png']);
+    const b = setup('https://img.acme.example/fox.png', { avatarUrl: 'https://img.acme.example/mine.png' });
+    expect(await b.svc.choosePicture('open')).toBeNull();
+    expect(b.roster.get('open')!.avatarUrl).toBe('https://img.acme.example/mine.png');
+  });
+
+  it('is picked again on request by its manager, and says so when nothing suited', async () => {
+    const a = setup('https://img.acme.example/fox.png', { avatarUrl: 'https://img.acme.example/mine.png' });
+    expect(await a.svc.pickWorkerPicture(sam, 'open')).toMatchObject({ ok: false });
+    expect(await a.svc.pickWorkerPicture(pat, 'open')).toEqual({ ok: true, avatarUrl: 'https://img.acme.example/fox.png' });
+    expect(await setup(null).svc.pickWorkerPicture(pat, 'open')).toMatchObject({ ok: false, error: expect.stringMatching(/Nothing suited/) });
+  });
+});
+
+describe('a team’s picture', () => {
+  it('is set by whoever may change the team, and Slack posts the team and its workers under their pictures, initials otherwise', async () => {
+    const ours = (id: string, over: Partial<Worker> = {}) => worker(id, { manager: { name: 'Pat', slackUserId: PAT }, ...over });
+    const h = harness({ roster: [ours('vantage'), ours('lena', { avatarUrl: 'https://img.acme.example/lena.png' })], policy: { hirers: '*', budgetAllowanceUSD: 100 }, teams: true });
+    const made = await h.svc.makeTeamWithHires(pat, { name: 'Council', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }, { workerId: 'lena', role: 'Customers' }], hires: [] });
+    if (!made.ok) throw new Error(made.error);
+    const id = [...h.teams.values()][0].id;
+    expect(h.svc.pictureOf(id)).toMatch(/\/initials\/png\?seed=C&/);
+    expect(h.svc.updateTeamSettings(pat, id, { avatarUrl: 'http://img.acme.example/t.png' }).ok).toBe(false);
+    expect(h.svc.updateTeamSettings(pat, id, { avatarUrl: 'https://img.acme.example/t.png' }).ok).toBe(true);
+    expect(h.svc.pictureOf(id)).toBe('https://img.acme.example/t.png');
+    expect(h.svc.teams(pat)[0].avatarUrl).toBe('https://img.acme.example/t.png');
+    expect(h.svc.pictureOf('lena')).toBe('https://img.acme.example/lena.png');
+    expect(h.svc.pictureOf('vantage')).toMatch(/\/initials\/png\?seed=V&/);
+    expect(h.svc.updateTeamSettings(pat, id, { avatarUrl: null }).ok).toBe(true);
+    expect(h.teams.get(id)!.avatarUrl).toBeUndefined();
+  });
+});
+
+describe('a worker’s journal', () => {
+  it('shows its notes apart from what it did, and lets its manager add and remove them', () => {
+    const journal: Array<{ id: string; workerId: string; kind: string; at: number; title: string; note?: string }> = [
+      { id: 'e1', workerId: 'open', kind: 'shift', at: 1, title: '', note: 'Looked, found nothing.' },
+      { id: 'n1', workerId: 'open', kind: 'note', at: 2, title: '', note: 'Each weekly check also covers Introw.' },
+    ];
+    const h = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org' })] });
+    const deps = (h.svc as unknown as { deps: ConstructorParameters<typeof OrgService>[0] }).deps;
+    const svc = new OrgService({
+      ...deps,
+      workers: {
+        ...deps.workers,
+        journalFor: () => journal as never,
+        remember: (id, text) => (journal.push({ id: `n${journal.length + 1}`, workerId: id, kind: 'note', at: 9, title: '', note: text }), { ok: true }),
+        forgetNote: (_id, entryId) => (journal.splice(journal.findIndex((e) => e.id === entryId), 1), { ok: true }),
+      },
+    });
+    const page = svc.workerJournal(sam, 'open');
+    if (!page.ok) throw new Error(page.error);
+    expect(page.notes.map((n) => n.note)).toEqual(['Each weekly check also covers Introw.']);
+    expect(page.entries.map((e) => e.kind)).toEqual(['shift']);
+    expect(page.canChange).toBe(false);
+    expect(svc.addWorkerNote(sam, 'open', 'stop').ok).toBe(false);
+    expect(svc.addWorkerNote(pat, 'open', 'Skip the pricing page.').ok).toBe(true);
+    expect(journal.at(-1)!.note).toBe('From Pat: Skip the pricing page.');
+    expect(svc.forgetWorkerNote(pat, 'open', 'n1').ok).toBe(true);
+    expect(journal.some((e) => e.id === 'n1')).toBe(false);
+  });
+});
+
+describe('handed-off work', () => {
+  const batch = { id: 'o1', items: [{ candidate: { title: 'Ticket tally' }, status: 'done', runId: 'r1' }] };
+  const setup = (ask: Record<string, unknown>) => {
+    let saved = [{ id: 'a1', workerId: 'open', workerName: 'Open', by: 'Pat', slackUserId: PAT, text: 'graph my tickets', status: 'answered' as const, orchestrationId: 'o1', via: 'slack' as const, conversation: 'slack:D1:1.0', ...ask }];
+    const h = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    const svc = new OrgService({
+      ...(h.svc as unknown as { deps: ConstructorParameters<typeof OrgService>[0] }).deps,
+      asks: { list: () => saved as never, save: (a) => (saved = a as typeof saved) },
+      orchestration: () => batch as never,
+      runDeliverables: () => [{ name: 'result.json', body: '{"total":429,"monthly":{"2026-09":125}}' }],
+    });
+    return { svc, calls: h.calls, saved: () => saved };
+  };
+
+  it('knows the Slack thread the work was asked for in, by its batch or a run it started', () => {
+    const { svc } = setup({ at: Date.now(), conversation: 'slack:D0REQ:1792.5' });
+    expect(svc.slackThreadFor({ orchestrationId: 'o1' })).toEqual({ channel: 'D0REQ', threadTs: '1792.5', slackUserId: PAT });
+    expect(svc.slackThreadFor({ runId: 'r1' })).toEqual({ channel: 'D0REQ', threadTs: '1792.5', slackUserId: PAT });
+    expect(svc.slackThreadFor({ runId: 'r9' })).toBeNull();
+  });
+
+  it('goes back to the worker, in the same conversation, to finish up for a business reader', async () => {
+    const { svc, calls, saved } = setup({ at: Date.now() });
+    const back = svc.handBack('a1');
+    if (!back) throw new Error('nothing handed back');
+    await back.done;
+    expect(calls[0]).toContain('The work you handed off for Pat\'s request has finished: Ticket tally.');
+    expect(calls[0]).toContain('--- result.json\n{"total":429');
+    expect(calls[0]).toMatch(/No raw JSON/);
+    const reply = saved().find((a) => a.id !== 'a1')!;
+    expect(reply).toMatchObject({ replyTo: 'ask:a1', via: 'slack', conversation: 'slack:D1:1.0', status: 'answered', handedBack: true });
+    expect(saved().find((a) => a.id === 'a1')).toMatchObject({ handedBack: true });
+    expect(svc.handBack('a1')).toBeNull();
+  });
+
+  it('hands back console asks made since the server started, and leaves older ones alone', () => {
+    expect(setup({ via: 'console', at: 1 }).svc.handBackDue()).toBe(0);
+    expect(setup({ via: 'console', at: Date.now() + 1000 }).svc.handBackDue()).toBe(1);
+    expect(setup({ via: 'slack', at: Date.now() + 1000 }).svc.handBackDue()).toBe(0);
   });
 });
 
@@ -286,5 +455,136 @@ describe('OrgService hiring', () => {
     const d = await h.svc.draftHire(pat, { jobDescription: 'Watch usage and write a weekly summary for product.' });
     if (!d.ok) throw new Error(d.error);
     expect(h.svc.confirmHire(sam, d.hire.hireId)).toMatchObject({ ok: false });
+  });
+});
+
+describe('making a team with a new hire', () => {
+  const mine = (id: string) => worker(id, { manager: { name: 'Pat', slackUserId: PAT } });
+  const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
+  const hire = { job: 'Reviews the current UX and writes recommendations for each screen.', role: 'UX reviewer' };
+
+  it('hires the suggested member and puts it on the team', async () => {
+    const h = harness({ roster: [mine('vantage')], policy: { hirers: '*', budgetAllowanceUSD: 100 }, teams: true });
+    const res = await h.svc.makeTeamWithHires(pat, { name: 'Product', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }], hires: [hire] });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.hired).toEqual([{ name: expect.any(String), role: 'UX reviewer' }]);
+    expect([...h.teams.values()][0].members.map((m) => m.role)).toEqual(['Drafts', 'UX reviewer']);
+  });
+
+  it('makes the team now and adds a hire that waited on an approver once it’s approved', async () => {
+    const h = harness({ roster: [mine('vantage'), mine('lena')], policy: { hirers: '*', budgetAllowanceUSD: 10, approvers: [BOSS] }, teams: true });
+    const res = await h.svc.makeTeamWithHires(pat, { name: 'Product', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }, { workerId: 'lena', role: 'Customers' }], hires: [hire] });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.waiting).toHaveLength(1);
+    const team = [...h.teams.values()][0];
+    expect(team.members).toHaveLength(2);
+    const waiting = h.hires().find((x) => x.status === 'awaitingApproval')!;
+    expect(waiting.joinTeam).toEqual({ teamId: team.id, role: 'UX reviewer' });
+    expect(h.svc.decideHire({ slackUserId: BOSS, name: 'Bo', admin: false }, waiting.id, true).ok).toBe(true);
+    expect(h.teams.get(team.id)!.members.map((m) => m.role)).toEqual(['Drafts', 'Customers', 'UX reviewer']);
+  });
+
+  it('keeps how the team should work, set by whoever manages a member', async () => {
+    const h = harness({ roster: [mine('vantage'), mine('lena')], policy: { hirers: '*', budgetAllowanceUSD: 100 }, teams: true });
+    const made = await h.svc.makeTeamWithHires(pat, { name: 'Product', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }, { workerId: 'lena', role: 'Customers' }], hires: [] });
+    if (!made.ok) throw new Error(made.error);
+    const id = [...h.teams.values()][0].id;
+    expect(h.svc.updateTeamSettings(sam, id, { guidance: 'Lena first.' })).toMatchObject({ ok: false });
+    expect(h.svc.updateTeamSettings(pat, id, { guidance: 'x'.repeat(20_001) })).toMatchObject({ ok: false, error: expect.stringMatching(/20,000/) });
+    expect(h.svc.updateTeamSettings(pat, id, { guidance: 'When the ask is a PRFAQ: Lena pulls customer asks, then Vantage drafts.' }).ok).toBe(true);
+    expect(h.teams.get(id)!.guidance).toBe('When the ask is a PRFAQ: Lena pulls customer asks, then Vantage drafts.');
+    const page = h.svc.teamPage(pat, id);
+    if (!page.ok) throw new Error(page.error);
+    expect(page.team.guidance).toMatch(/^When the ask is a PRFAQ/);
+  });
+
+  it('disbands a team: gone from every list, its finished work still in the Library; deleting it is an admin’s call', async () => {
+    const h = harness({ roster: [mine('vantage'), mine('lena')], policy: { hirers: '*', budgetAllowanceUSD: 100 }, teams: true });
+    const made = await h.svc.makeTeamWithHires(pat, { name: 'Council', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }, { workerId: 'lena', role: 'Customers' }], hires: [] });
+    if (!made.ok) throw new Error(made.error);
+    const id = [...h.teams.values()][0].id;
+    h.teamTasks.push({ id: 'task-1', teamId: id, teamName: 'Council', brief: 'Review the roadmap', title: 'Roadmap review', status: 'done', stages: [], stageIndex: 0, files: [], createdAt: 1, updatedAt: 2, spentUSD: 3, budgetUSD: 50, pack: { summary: 'The likely plan.', files: [] } } as unknown as TeamTask);
+    expect(h.svc.disbandTeam(sam, id)).toMatchObject({ ok: false });
+    expect(h.svc.disbandTeam(pat, id).ok).toBe(true);
+    expect(h.svc.teams(pat)).toEqual([]);
+    expect(h.svc.briefTeam(pat, 'Council', 'more work')).toMatchObject({ ok: false });
+    expect(h.svc.library(pat).some((x) => x.kind === 'task' && x.title === 'Roadmap review')).toBe(true);
+    expect(h.svc.deleteTeam(pat, id)).toMatchObject({ ok: false, error: expect.stringMatching(/admin/) });
+    expect(h.svc.deleteTeam({ name: 'Ad', admin: true }, id).ok).toBe(true);
+    expect(h.teams.size).toBe(0);
+    expect(h.svc.library(pat).some((x) => x.kind === 'task')).toBe(false);
+  });
+
+  it('won’t make a one-member team while the hire waits', async () => {
+    const h = harness({ roster: [mine('vantage')], policy: { hirers: '*', budgetAllowanceUSD: 10, approvers: [BOSS] }, teams: true });
+    const res = await h.svc.makeTeamWithHires(pat, { name: 'Product', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }], hires: [hire] });
+    expect(res).toMatchObject({ ok: false, error: expect.stringContaining('waiting on an approver') });
+    expect(h.teams.size).toBe(0);
+  });
+});
+
+describe('a team being made, followed as it goes', () => {
+  const mine = (id: string) => worker(id, { manager: { name: 'Pat', slackUserId: PAT } });
+  const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
+  const hire = { key: 'h1', job: 'Reviews the current UX and writes recommendations for each screen.', role: 'UX reviewer' };
+  const settled = () => new Promise((r) => setTimeout(r, 0));
+
+  it('shows each hire’s state, waits on a failed one, and makes the team once it’s skipped', async () => {
+    // A drafter that only asks questions: the hire can't be confirmed.
+    const h = harness({ roster: [mine('vantage'), mine('lena')], policy: { hirers: '*', budgetAllowanceUSD: 100 }, draft: ['Which product?'], teams: true });
+    const started = h.svc.startTeamRun(pat, { name: 'Product', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }, { workerId: 'lena', role: 'Customers' }], hires: [hire] });
+    if (!started.ok) throw new Error(started.error);
+    expect(started.run).toMatchObject({ status: 'hiring', hires: [{ key: 'h1', state: 'drafting' }] });
+    await settled();
+    const stuck = h.svc.teamRun(pat, started.run.id);
+    expect(stuck).toMatchObject({ ok: true, run: { status: 'needsYou', hires: [{ state: 'failed' }] } });
+    // Someone else can't see or steer it.
+    expect(h.svc.teamRun({ slackUserId: SAM, name: 'Sam', admin: false }, started.run.id).ok).toBe(false);
+    const skipped = h.svc.skipTeamRunHire(pat, started.run.id, 'h1');
+    expect(skipped).toMatchObject({ ok: true, run: { status: 'done', team: { name: 'Product' } } });
+    expect(h.teams.size).toBe(1);
+    expect(h.svc.teamRunsFor(pat)).toEqual([]);
+  });
+
+  it('makes a team with no hires before it answers', () => {
+    const h = harness({ roster: [mine('vantage'), mine('lena')], teams: true });
+    const started = h.svc.startTeamRun(pat, { name: 'Pair', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }, { workerId: 'lena', role: 'Customers' }] });
+    expect(started).toMatchObject({ ok: true, run: { status: 'done', team: { name: 'Pair' } } });
+  });
+});
+
+describe('changing an offer before it’s accepted', () => {
+  const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
+
+  it('renames it, sets its budget and who can ask it, and confirming weighs the change', async () => {
+    const h = harness({ roster: [worker('chief', { name: 'Chief', manager: { name: 'Pat', slackUserId: PAT } })], policy: { hirers: '*', budgetAllowanceUSD: 100, approvers: [BOSS] } });
+    const drafted = await h.svc.draftHire(pat, { jobDescription: 'Watches usage data and writes a weekly product summary.' });
+    if (!drafted.ok) throw new Error(drafted.error);
+    const edited = h.svc.editHire(pat, drafted.hire.hireId, { name: 'Iris', budgetUSDPerMonth: 150, visibility: 'org', reportsTo: 'Chief' });
+    expect(edited).toMatchObject({ ok: true, hire: { contract: { name: 'Iris', budgetUSDPerMonth: 150, visibility: 'org', reportsTo: 'Chief' } } });
+    expect(h.svc.editHire(pat, drafted.hire.hireId, { name: 'Chief' })).toMatchObject({ ok: false, error: expect.stringContaining('already a worker') });
+    expect(h.svc.editHire({ slackUserId: SAM, name: 'Sam', admin: false }, drafted.hire.hireId, { name: 'Mine' }).ok).toBe(false);
+    // $150 is over Pat's $100 allowance: it goes to an approver now.
+    const confirmed = h.svc.confirmHire(pat, drafted.hire.hireId);
+    expect(confirmed).toMatchObject({ ok: true, hire: { status: 'awaitingApproval' } });
+  });
+});
+
+describe('a hire someone already does', () => {
+  it('says which worker the person can see already does the job', async () => {
+    const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
+    const h = harness({ roster: [worker('hugo', { name: 'Hugo', tagline: 'Writes reports', manager: { name: 'Pat', slackUserId: PAT } })], policy: { hirers: '*' }, overlap: 'hugo' });
+    const res = await h.svc.draftHire(pat, { jobDescription: 'I need a report builder for the weekly numbers.' });
+    expect(res).toMatchObject({ ok: true, hire: { alreadyDoes: { workerId: 'hugo', name: 'Hugo', why: 'already writes these summaries' } } });
+  });
+});
+
+describe('stopping a worker’s run', () => {
+  it('lets its manager stop it, and nobody else', () => {
+    const running = { ...paused('externalAction'), state: { kind: 'running', currentStepId: 'write' } } as unknown as FlowRun;
+    const h = harness({ roster: [worker('chief', { manager: { name: 'Pat', slackUserId: PAT } })], runs: [running] });
+    expect(h.svc.stopRun({ slackUserId: SAM, name: 'Sam', admin: false }, 'run-1')).toMatchObject({ ok: false });
+    expect(h.svc.stopRun({ slackUserId: PAT, name: 'Pat', admin: false }, 'run-1')).toEqual({ ok: true });
+    expect(h.calls).toContain('stop:run-1');
   });
 });

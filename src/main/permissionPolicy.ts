@@ -45,13 +45,15 @@ const READ_ONLY_TOOLS = new Set([
 const READ_ONLY_COMMANDS = new Set([
   'ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg',
   'find', 'tree', 'file', 'stat', 'du', 'df', 'which', 'type', 'sort', 'uniq', 'cut', 'diff',
-  'basename', 'dirname', 'realpath', 'readlink', 'date', 'whoami', 'jq', 'nl', 'cd', 'true',
-  'env', 'printenv', 'uname', 'hostname', 'id', 'ps', 'lsof', 'column', 'tac', 'rev', 'cmp',
+  'basename', 'dirname', 'realpath', 'readlink', 'date', 'whoami', 'jq', 'nl', 'true',
+  'uname', 'column', 'tac', 'rev', 'cmp',
 ]);
 
 const UNSAFE_FLAGS: Record<string, RegExp> = {
   find: /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/,
-  sort: /^(-o|--output)/,
+  sort: /^(-o|--output|--compress-program)/,
+  // `--pre` runs a program on every file searched; `-z` runs decompressors.
+  rg: /^(--pre|--pre-glob|-z$|--search-zip)/,
   // `env FOO=1 cmd` runs cmd; bare `env` only prints.
   env: /./,
 };

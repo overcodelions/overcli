@@ -27,6 +27,9 @@ export interface SlackThread {
   channel: string;
   /// The DM's own ts; replies carry it as `thread_ts`.
   threadTs: string;
+  /// The message with the buttons, when it is a reply in an earlier thread
+  /// rather than the thread's first message.
+  messageTs?: string;
   createdAt: number;
   resolvedAt?: number;
   resolution?: 'answered' | 'approved' | 'rejected' | 'elsewhere';

@@ -18,7 +18,7 @@ import path from 'node:path';
 import { HELP, parseArgs } from './args';
 import { EXIT, makeReporter, runFile, writeArtifacts } from './run';
 import { mcpCommand } from './mcpServer';
-import { orgCommand, projectsCommand, tokensCommand, workersPushCommand } from './setup';
+import { orgCommand, projectsCommand, teamsPushCommand, tokensCommand, workersPushCommand } from './setup';
 import { serveCommand } from './serve';
 import { workersAuditCommand } from './workers';
 
@@ -38,7 +38,7 @@ export async function main(argv: string[]): Promise<number> {
     process.stderr.write(`${parsed.error}\n\nTry: overcli --help\n`);
     return EXIT.BAD_INPUT;
   }
-  const { command, run: opts, serve: serveOpts, mcp: mcpOpts, workers: workersOpts, tokens: tokensOpts, projects: projectsOpts, org: orgOpts, workersPush: pushOpts, warnings } = parsed.args;
+  const { command, run: opts, serve: serveOpts, mcp: mcpOpts, workers: workersOpts, tokens: tokensOpts, projects: projectsOpts, org: orgOpts, workersPush: pushOpts, teamsPush: teamsPushOpts, warnings } = parsed.args;
 
   if (command === 'help') {
     process.stdout.write(HELP);
@@ -73,6 +73,13 @@ export async function main(argv: string[]): Promise<number> {
   if (command === 'workersPush') {
     if (!pushOpts) return EXIT.BAD_INPUT;
     return workersPushCommand(pushOpts, {
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => process.stderr.write(`${line}\n`),
+    });
+  }
+  if (command === 'teamsPush') {
+    if (!teamsPushOpts) return EXIT.BAD_INPUT;
+    return teamsPushCommand(teamsPushOpts, {
       out: (line) => process.stdout.write(`${line}\n`),
       err: (line) => process.stderr.write(`${line}\n`),
     });

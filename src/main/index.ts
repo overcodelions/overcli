@@ -5,6 +5,7 @@
 // lives here — the Store, the RunnerManager, health probes, stats.
 
 // First, before anything can read the userData path. See devProfile.ts.
+import { effectiveScopes } from '../shared/flows/toolScope';
 import './devProfile';
 import { randomUUID } from 'node:crypto';
 
@@ -180,13 +181,17 @@ import {
   normalizeOrgUrl,
   parseInviteLink,
   pollPairing,
+  publishTeamToOrg,
+  publishSetupToOrg,
   publishToOrg,
   redeemInvite,
   signOutAt,
   startPairing,
   whoamiAt,
 } from './org/orgClient';
-import { templateFrom } from './org/tools';
+import { shareForOrg, teamForOrg } from './org/orgShare';
+import { gatherSetup, keyValuesFor } from './org/setupShare';
+import { readClaudeMcpServers } from './mcpConfig';
 import { draftHire, drafterDepsFor, hireDraftContext, saveDraftedHire } from './org/hireDraft';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { auditWorkerLandings } from './flows/strandedLandings';
@@ -236,6 +241,7 @@ import {
 import { openTerminalAt, openTerminalIn, runInTerminal, setEmbeddedTerminal } from './terminal';
 import { PtyManager, type PtySpawn } from './ptyManager';
 import { convertImageToJpeg } from './attachmentImages';
+import { LocalOrgServer } from './org/localServer';
 import { DEFAULT_UI_SCALE, stepUiScale } from '../shared/uiScale';
 import {
   ArtifactPreviewResult,
@@ -273,6 +279,7 @@ let orchestrator: OrchestratorImpl | null = null;
 let scheduler: SchedulerEngine | null = null;
 let workerEngine: WorkerEngine | null = null;
 let teamEngine: TeamEngine | null = null;
+
 let slackBridge: SlackBridge | null = null;
 let slackCommands: SlackCommands | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
@@ -600,6 +607,8 @@ export function registerIpc(): void {
   // One observer slot on the runtime, two consumers. The orchestrator pumps
   // its queue on a terminal child run; the scheduler clears its overlap guard
   // and notifies. Each ignores runs it didn't launch, so the fan-out is free.
+  // A worker's tool scopes, enforced on its runs (toolScope.ts).
+  flowRuntime.setToolScopes((id) => effectiveScopes(workerEngine?.get(id)?.toolScopes, undefined));
   flowRuntime.setRunObserver((run) => {
     orchestrator?.onRunUpdate(run);
     scheduler?.onRunUpdate(run);
@@ -718,6 +727,8 @@ export function registerIpc(): void {
         })
         .catch((err) => log('warn', 'versions.checkpoint', `checkpoint threw for ${projectPath}`, err));
     },
+    activeRuns: (workerId) =>
+      (flowRuntime?.listRuns() ?? []).filter((r) => r.workerId === workerId && (r.state.kind === 'running' || r.state.kind === 'paused')),
     flowsFor: (ids) => {
       const byId = new Map(
         loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).map((f) => [f.id, f]),
@@ -796,7 +807,9 @@ export function registerIpc(): void {
   });
   // `/worker`, `/hire` and hire approvals in Slack, through the same org
   // rules `overcli serve`'s control plane enforces.
-  slackCommands = createOrgControl({ runner: runner!, flowRuntime, orchestrator, workerEngine, teams: () => teamEngine }, slackBridge).commands;
+  slackCommands = createOrgControl({ runner: runner!, flowRuntime, orchestrator, workerEngine, teams: () => teamEngine }, slackBridge, {
+    frontDoorOwner: () => Store.load().settings.slackOwnerId?.trim() || undefined,
+  }).commands;
   if (slackEnabled()) void slackBridge.start();
   // Away mode holds worker batches queued before you left (see pump).
   orchestrator.setCrewAwaySince(() => workerEngine?.awayState()?.since);
@@ -982,6 +995,7 @@ export function registerIpc(): void {
       if (!res.ok) return res;
       const failed = keepOrg(base.url, res.data.token);
       if (failed) return { ok: false, error: failed };
+      emitToRenderer({ type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url });
       return { ok: true, signedIn: true, org: res.data.org, name: res.data.name };
     }
     const base = normalizeOrgUrl(url);
@@ -1033,7 +1047,7 @@ export function registerIpc(): void {
         emitToRenderer(
           failed
             ? { type: 'orgSignIn', outcome: 'failed', error: failed }
-            : { type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name },
+            : { type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url },
         );
       } else {
         emitToRenderer({ type: 'orgSignIn', outcome: res.data.status });
@@ -1062,22 +1076,87 @@ export function registerIpc(): void {
   });
   ipcMain.handle('org:publishWorker', async (_e, { id, visibility }) => {
     const raw = Store.load().settings.orgServerUrl;
-    if (!raw) return { ok: false, error: 'Sign in to your org first: Settings → Advanced → Your org.' };
+    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
+    if (!raw) return signIn;
     const url = normalizeOrgUrl(raw);
-    if (!url.ok) return url;
+    if (!url.ok) return { ...url, signIn: true as const };
     const token = configuredOrgToken();
-    if (!token) return { ok: false, error: 'Sign in to your org first: Settings → Advanced → Your org.' };
+    if (!token) return signIn;
     const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
     if (!worker) return { ok: false, error: 'No such worker.' };
-    const share = buildWorkerShare({ worker, library: loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }) });
-    // Its tools' setup goes along without a single secret, so the server's
-    // admin can install them pre-filled.
-    const tools = (worker.mcpServers ?? []).flatMap((name) => {
-      const config = readMcpServer('claude', name);
-      const t = config ? templateFrom(name, config) : null;
-      return t ? [t] : [];
+    const { yaml, tools } = shareForOrg(worker);
+    return publishToOrg(url.url, token, yaml, visibility ? { visibility } : {}, tools, worker.id);
+  });
+  ipcMain.handle('org:publishTeam', async (_e, { id }) => {
+    const raw = Store.load().settings.orgServerUrl;
+    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
+    if (!raw) return signIn;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...url, signIn: true as const };
+    const token = configuredOrgToken();
+    if (!token) return signIn;
+    const team = teamEngine?.list().teams.find((t) => t.id === id);
+    if (!team) return { ok: false, error: 'No such team.' };
+    const built = teamForOrg(team, (workerEngine?.list() ?? []).map((row) => row.worker));
+    if (!built.ok) return built;
+    return publishTeamToOrg(url.url, token, built.payload);
+  });
+  // Publish my setup: what this desktop has, for the org server's admin to
+  // install and connect. The renderer only ever sees key NAMES; values are
+  // read here, for the tools the person ticked, when they press Publish.
+  const orgSignedIn = () => {
+    const raw = Store.load().settings.orgServerUrl;
+    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org.', signIn: true as const };
+    if (!raw) return signIn;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...url, signIn: true as const };
+    const token = configuredOrgToken();
+    if (!token) return signIn;
+    return { ok: true as const, url: url.url, token };
+  };
+  const desktopSetup = () => {
+    const store = Store.load();
+    return gatherSetup(readClaudeMcpServers(), store.projects.map((p) => ({ id: p.id, name: p.name, path: p.path })));
+  };
+  ipcMain.handle('org:setupPreview', async () => {
+    const at = orgSignedIn();
+    if (!at.ok) return at;
+    const [setup, who] = await Promise.all([desktopSetup(), whoamiAt(at.url, at.token)]);
+    const host_ = new URL(at.url).hostname;
+    return {
+      ok: true as const,
+      server: at.url,
+      sameMachine: ['localhost', '127.0.0.1', '[::1]', '::1'].includes(host_),
+      admin: who.ok ? who.data.admin : false,
+      tools: setup.tools.map((t) => ({ name: t.name, kind: t.kind, target: t.target, keys: t.keys })),
+      workspaces: Store.load().workspaces.map((w) => ({ id: w.id, name: w.name, projectIds: w.projectIds })),
+      projects: setup.repos.map((r) => ({ id: r.projectId, name: r.name, ...(r.url ? { url: r.url } : {}) })),
+    };
+  });
+  ipcMain.handle('org:publishSetup', async (_e, args: { tools: string[]; sendKeysFor: string[]; workspaceIds: string[]; projectIds: string[] }) => {
+    const at = orgSignedIn();
+    if (!at.ok) return at;
+    const setup = await desktopSetup();
+    const store = Store.load();
+    const spaces = store.workspaces.filter((w) => args.workspaceIds.includes(w.id));
+    const wanted = new Set([...args.projectIds, ...spaces.flatMap((w) => w.projectIds)]);
+    const repos = setup.repos.filter((r) => wanted.has(r.projectId));
+    const nameOf = new Map(repos.map((r) => [r.projectId, r.name]));
+    const tools = setup.tools.filter((t) => args.tools.includes(t.name));
+    const servers = readClaudeMcpServers();
+    const keys = Object.fromEntries(
+      tools.filter((t) => args.sendKeysFor.includes(t.name) && servers[t.name]).map((t) => [t.name, keyValuesFor(servers[t.name], t.template)]),
+    );
+    return publishSetupToOrg(at.url, at.token, {
+      tools: tools.map((t) => t.template),
+      repos: repos.map((r) => ({ name: r.name, ...(r.url ? { url: r.url } : {}), localPath: r.localPath })),
+      workspaces: spaces.map((w) => ({
+        name: w.name,
+        repos: w.projectIds.map((id) => nameOf.get(id)).filter((n): n is string => !!n),
+        ...(w.instructions ? { instructions: w.instructions } : {}),
+      })),
+      ...(Object.keys(keys).length ? { keys } : {}),
     });
-    return publishToOrg(url.url, token, share.yaml, visibility ? { visibility } : {}, tools);
   });
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
   ipcMain.handle('app:whatsNew', () => getWhatsNew());
@@ -2131,6 +2210,13 @@ export function registerIpc(): void {
     services().resolvedOptions(workspaceId, serviceId),
   );
 
+  ipcMain.handle('org:localServer', async (_e, action: 'start' | 'stop' | 'status' | 'linkUsed') => {
+    localOrgServer ??= new LocalOrgServer();
+    if (action === 'start') return localOrgServer.start();
+    if (action === 'stop') return localOrgServer.stop();
+    if (action === 'linkUsed') localOrgServer.forgetFirstAdminLink();
+    return localOrgServer.status();
+  });
   ipcMain.handle('app:openExternal', (_e, url: string) => {
     if (!isSafeExternalUrl(url)) return;
     return shell.openExternal(url);
@@ -4278,8 +4364,12 @@ setEmbeddedTerminal((cwd, command) => {
 });
 
 let flushedRuns = false;
+// "Try it on this Mac": an org server the app started, which lives only as
+// long as the app does.
+let localOrgServer: LocalOrgServer | null = null;
 app.on('before-quit', (event) => {
   runner?.killAll();
+  localOrgServer?.stop();
   ptyManager?.closeAll();
   // A service left running after the window closes is a port held by a
   // process the user has no way to find — so stopping them is the default.

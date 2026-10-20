@@ -149,6 +149,28 @@ describe('oneShot approval prompts', () => {
   });
 });
 
+describe('oneShot approval prompts it may grant itself', () => {
+  // A worker working out an answer reads its own tracker; nobody can approve
+  // that lookup, so the turn says which requests it grants. All else: no.
+  it('grants what its permit allows and refuses the rest', async () => {
+    const manager = new RunnerManager(() => {}, () => ({ backends: {} }) as never);
+    const priv = manager as unknown as { send: () => { ok: boolean }; respondPermission: (...args: unknown[]) => void; tapOneShot: (event: unknown) => boolean };
+    priv.send = () => ({ ok: true });
+    const answered: unknown[][] = [];
+    priv.respondPermission = (...args: unknown[]) => void answered.push(args);
+    void manager.oneShot({ backend: 'claude', model: '', prompt: 'q', cwd: '/repo', conversationId: 'hidden-2', permit: (t) => t === 'mcp__acme__list_items' });
+    priv.tapOneShot({
+      type: 'stream',
+      conversationId: 'hidden-2',
+      events: [
+        { kind: { type: 'permissionRequest', info: { requestId: 'r1', toolName: 'mcp__acme__list_items' } } },
+        { kind: { type: 'permissionRequest', info: { requestId: 'r2', toolName: 'mcp__acme__delete_item' } } },
+      ],
+    });
+    expect(answered.map((a) => [a[1], a[2]])).toEqual([['r1', true], ['r2', false]]);
+  });
+});
+
 describe('oneShot and Claude in Chrome', () => {
   // A one-shot is a hidden conversation with no window to put an approval
   // card in, and the producer runs it with bypassPermissions. Letting the

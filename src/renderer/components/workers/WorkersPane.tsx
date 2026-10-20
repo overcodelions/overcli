@@ -9,6 +9,7 @@
 //   - the editor (review/adjust the contract; the only place Save lives)
 
 import { useTeamsStore } from "../../teamsStore";
+import { OrgNudge } from "./OrgNudge";
 import { TeamDesk } from "./teams/TeamDesk";
 import { TeamEditor } from "./teams/TeamEditor";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -1355,6 +1356,13 @@ function WorkerRow({
           </div>
 
           {shiftBlock && <ShiftBlockNotice block={shiftBlock} />}
+          {/* It missed a shift while this Mac was asleep or closed: the one
+              thing an always-on org server fixes outright. */}
+          {journal.some((e) => e.kind === "shift" && (e.note ?? "").startsWith("Missed a shift") && Date.now() - e.at < 14 * 24 * 60 * 60 * 1000) && (
+            <OrgNudge id="missed-shift">
+              {worker.name} missed a shift while this Mac was asleep or closed. Workers here only work while the app is open. An org server keeps them working around the clock, and lets your team ask them in Slack.
+            </OrgNudge>
+          )}
 
           <div className="no-scrollbar mt-5 flex items-center gap-6 overflow-x-auto overflow-y-hidden border-b border-card-strong">
             {(
@@ -2002,10 +2010,9 @@ function ShareCard({ worker }: { worker: Worker }) {
   const [copied, setCopied] = useState(false);
   const [savedTo, setSavedTo] = useState<string | null>(null);
   const orgAlpha = useStore((s) => s.settings.orgAlpha ?? false);
-  const orgServerUrl = useStore((s) => (s.settings.orgAlpha ? s.settings.orgServerUrl : undefined));
   const openSheet = useStore((s) => s.openSheet);
   const [publishing, setPublishing] = useState(false);
-  const [published, setPublished] = useState<{ ok: boolean; text: string } | null>(null);
+  const [published, setPublished] = useState<{ ok: boolean; text: string; signIn?: boolean } | null>(null);
 
   // Re-read whenever the card is open and the worker changes: the YAML is a
   // rendering of the contract above it, and one that lagged an edit would be
@@ -2073,16 +2080,14 @@ function ShareCard({ worker }: { worker: Worker }) {
           <button
             disabled={publishing}
             onClick={() => {
-              if (!orgServerUrl) {
-                setPublished({ ok: false, text: "Sign this app in to your org first: Settings → Advanced → Your org. No org server yet? The guide there shows how to run one." });
-                return;
-              }
+              // Main decides whether this app is signed in: it holds the
+              // address and the keychain token.
               setPublishing(true);
               setPublished(null);
               void window.overcli
                 .invoke("org:publishWorker", { id: worker.id })
                 .then((res) =>
-                  setPublished(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error }),
+                  setPublished(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error, signIn: res.signIn }),
                 )
                 .finally(() => setPublishing(false));
             }}
@@ -2092,12 +2097,17 @@ function ShareCard({ worker }: { worker: Worker }) {
           </button>
         )}
       </div>
+      {!orgAlpha && (
+        <OrgNudge id="share-worker">
+          Want your team to use {worker.name}? Put it on your org&apos;s server, where anyone you allow can ask it from Slack, Claude or the web.
+        </OrgNudge>
+      )}
       {published && (
         <div className={"mt-2 text-[11px] " + (published.ok ? "text-emerald-300" : "text-red-300")}>
           {published.text}
-          {!orgServerUrl && (
+          {published.signIn && (
             <button
-              onClick={() => openSheet({ type: "settings", section: "advanced" })}
+              onClick={() => openSheet({ type: "settings", section: "org" })}
               className="ml-1 text-accent hover:underline"
             >
               Open Settings

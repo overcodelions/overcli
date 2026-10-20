@@ -16,6 +16,7 @@
 // it persists across restarts and remembers the producer turn so "why did I
 // launch these" stays answerable.
 
+import { isReadOnlyMcpTool } from '../../shared/flows/mcpTools';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 
@@ -315,6 +316,8 @@ export class OrchestratorImpl {
     /// Load only these MCP servers for the producer turn (see
     /// `RunnerManager.oneShot`). Undefined inherits the user's whole config.
     mcpAllowlist?: string[];
+    /// Calls the worker's tool scope refuses (see `RunnerManager.oneShot`).
+    mcpDeniedTools?: string[];
     /// Attach the browser to the producer turn (see `RunnerManager.oneShot`).
     /// A worker that browses answers errands from this turn, so it needs the
     /// same access its runs get — otherwise "what does the site say?" at the
@@ -379,6 +382,11 @@ export class OrchestratorImpl {
       attachments: args.attachments,
       cwd,
       mcpAllowlist: args.mcpAllowlist,
+      ...(args.mcpDeniedTools?.length ? { mcpDeniedTools: args.mcpDeniedTools } : {}),
+      // A worker working out an answer reads its own tools (its turn loads
+      // only those): a tracker lookup is no one's to approve. Writes, and
+      // calls its scope refuses, still are refused.
+      permit: (tool: string) => tool.startsWith('mcp__') && isReadOnlyMcpTool(tool) && !(args.mcpDeniedTools ?? []).includes(tool),
       ...(args.chrome ? { chrome: true } : {}),
       conversationId: args.conversationId,
       resumeSessionId: args.resumeSessionId,
@@ -540,6 +548,7 @@ export class OrchestratorImpl {
     /// See `propose`. A worker carries its own MCP allowlist and, at the
     /// desk, its own conversation.
     mcpAllowlist?: string[];
+    mcpDeniedTools?: string[];
     conversationId?: UUID;
     resumeSessionId?: string;
   }): Promise<
@@ -566,6 +575,7 @@ export class OrchestratorImpl {
       priorTurns: args.priorTurns,
       attachments: args.attachments,
       mcpAllowlist: args.mcpAllowlist,
+      ...(args.mcpDeniedTools?.length ? { mcpDeniedTools: args.mcpDeniedTools } : {}),
       conversationId: args.conversationId,
       resumeSessionId: args.resumeSessionId,
       progressWorkerId: args.origin?.kind === 'worker' ? args.origin.workerId : undefined,

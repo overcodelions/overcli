@@ -32,14 +32,14 @@ import type { WorkerEngine } from './workerEngine';
 /// file them into a cabinet, and teams, which file them into a task folder.
 export function runDeliverablesFor(
   getRun: (runId: UUID) => ReturnType<FlowRuntimeImpl['getRun']>,
-): (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string }> {
+): (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string; bytes?: number }> {
   return (runId) => {
     const run = getRun(runId);
     if (!run) return [];
     // Step order, so the answer is last and its supporting material reads in
     // the order it was produced.
     const seen = new Set<string>();
-    const out: Array<{ name: string; body?: string; sourcePath?: string }> = [];
+    const out: Array<{ name: string; body?: string; sourcePath?: string; bytes?: number }> = [];
     for (const step of run.flowSnapshot?.steps ?? []) {
       const art = run.artifacts?.[step.output];
       if (!art || seen.has(art.name)) continue;
@@ -56,7 +56,7 @@ export function runDeliverablesFor(
     })) {
       if (seen.has(file.name)) continue;
       seen.add(file.name);
-      out.push({ name: file.name, sourcePath: file.path });
+      out.push({ name: file.name, sourcePath: file.path, bytes: file.bytes });
     }
     return out;
   };

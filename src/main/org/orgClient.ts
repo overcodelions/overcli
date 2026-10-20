@@ -44,11 +44,34 @@ export function normalizeOrgUrl(raw: string): { ok: true; url: string } | { ok: 
   return { ok: true, url: `${u.protocol}//${u.host}` };
 }
 
+/// Why a request never got an answer, in words someone can act on.
+export function unreachable(base: string, err: unknown): string {
+  const code = (err as { cause?: { code?: string } } | null)?.cause?.code;
+  if (code === 'ECONNREFUSED') return `Nothing is answering at ${base}. Is overcli serve running there? If it just started, try again in a few seconds.`;
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return `Could not find ${base}. Check the address in Settings → Your org.`;
+  if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET') return `${base} dropped the connection. If the server was restarting, try again.`;
+  return `Could not reach the org server at ${base}${code ? ` (${code})` : ''}.`;
+}
+
+/// Where to connect for `base`. `localhost` can resolve to ::1 first, and
+/// `overcli serve` listens on 127.0.0.1 only; a browser falls back to IPv4 on
+/// its own, Node's fetch does not. Links shown to people keep `localhost`.
+export function dialable(base: string): string {
+  try {
+    const u = new URL(base);
+    if (u.hostname !== 'localhost') return base;
+    u.hostname = '127.0.0.1';
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return base;
+  }
+}
+
 async function call<T>(base: string, token: string, method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(`${base}${path}`, {
+    const res = await fetch(`${dialable(base)}${path}`, {
       method,
       headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
@@ -61,7 +84,7 @@ async function call<T>(base: string, token: string, method: 'GET' | 'POST', path
     return { ok: true, data };
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError';
-    return { ok: false, error: aborted ? 'The org server did not answer in time.' : `Could not reach the org server: ${String(err)}` };
+    return { ok: false, error: aborted ? 'The org server did not answer in time.' : unreachable(base, err) };
   } finally {
     clearTimeout(timer);
   }
@@ -77,13 +100,15 @@ export async function publishToOrg(
   yaml: string,
   options: { reportsTo?: string; visibility?: 'private' | 'team' | 'org'; projectPath?: string } = {},
   tools: ToolTemplate[] = [],
+  /// The worker's id here, so a team published later finds this copy.
+  localId?: string,
 ): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
   const res = await call<{ hired?: { name: string }; hire: { status: string; reasons?: string[]; contract?: { name: string } } }>(
     base,
     token,
     'POST',
     '/api/publish',
-    { yaml, options, tools },
+    { yaml, options, tools, ...(localId ? { localId } : {}) },
   );
   if (!res.ok) return res;
   const name = res.data.hired?.name ?? res.data.hire.contract?.name ?? 'The worker';
@@ -95,11 +120,65 @@ export async function publishToOrg(
   };
 }
 
+/// A team, with its members' share files, onto the org. Members the org
+/// already has (published from here before) are reused; the team itself is
+/// updated in place when published again.
+export interface TeamPublishPayload {
+  localId: string;
+  name: string;
+  purpose?: string;
+  budgetUSDPerTask: number;
+  checkpoints?: Record<string, boolean>;
+  piecesAskFirst?: boolean;
+  members: Array<{ localId: string; role: string; yaml: string; tools?: ToolTemplate[] }>;
+}
+
+export async function publishTeamToOrg(base: string, token: string, team: TeamPublishPayload): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  const res = await call<{ team?: { name: string }; updated: boolean; added: string[]; reused: string[]; waitingOn: string[] }>(base, token, 'POST', '/api/publish/team', team);
+  if (!res.ok) return res;
+  const d = res.data;
+  const list = (names: string[]) => names.join(', ');
+  const parts = [
+    d.team ? `${d.team.name} is ${d.updated ? 'updated' : 'on the org'}.` : `${team.name} is waiting for ${list(d.waitingOn)} to be approved, then it's made.`,
+    d.added.length ? `Added ${list(d.added)}, on probation with you as manager.` : '',
+    d.reused.length ? `${list(d.reused)} ${d.reused.length === 1 ? 'was' : 'were'} already there.` : '',
+    d.team ? 'Members work in their own projects there until you pick one on the console.' : '',
+  ];
+  return { ok: true, message: parts.filter(Boolean).join(' ') };
+}
+
+/// A desktop's picked setup onto the org (see setupShare.ts).
+export async function publishSetupToOrg(
+  base: string,
+  token: string,
+  payload: {
+    tools: ToolTemplate[];
+    repos: Array<{ name: string; url?: string; localPath?: string }>;
+    workspaces: Array<{ name: string; repos: string[]; instructions?: string }>;
+    keys?: Record<string, { env?: Record<string, string>; headers?: Record<string, string> }>;
+  },
+): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  const res = await call<{ installed: string[]; offered: { tools: number; repos: number; workspaces: number } }>(base, token, 'POST', '/api/publish/setup', payload);
+  if (!res.ok) return res;
+  const { installed, offered } = res.data;
+  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+  return {
+    ok: true,
+    message: [
+      `Sent ${n(offered.tools, 'tool', 'tools')}, ${n(offered.repos, 'repo', 'repos')} and ${n(offered.workspaces, 'workspace', 'workspaces')}.`,
+      installed.length ? `Installed ${installed.join(', ')} with the keys you sent.` : '',
+      'An admin finishes the rest on the server: Setup → From desktops.',
+    ]
+      .filter(Boolean)
+      .join(' '),
+  };
+}
+
 async function callPublic<T>(base: string, path: string, body: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(`${base}${path}`, {
+    const res = await fetch(`${dialable(base)}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -112,7 +191,7 @@ async function callPublic<T>(base: string, path: string, body: unknown): Promise
     return { ok: true, data };
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError';
-    return { ok: false, error: aborted ? 'The org server did not answer in time.' : `Could not reach the org server: ${String(err)}` };
+    return { ok: false, error: aborted ? 'The org server did not answer in time.' : unreachable(base, err) };
   } finally {
     clearTimeout(timer);
   }

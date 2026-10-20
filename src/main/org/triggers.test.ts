@@ -60,6 +60,18 @@ const watch = (over: Partial<WorkerTrigger> = {}) => ({
 });
 
 describe('watch triggers', () => {
+  it('fires a backlog over the next polls instead of dropping it', async () => {
+    const h = harness();
+    const made = h.svc.create(watch());
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.poll(made.trigger.id);
+    h.setItems({ issues: Array.from({ length: 25 }, (_, i) => ({ key: `ACME-${i + 10}`, fields: { summary: `Bug ${i}` } })) });
+    await h.svc.poll(made.trigger.id);
+    expect(h.asked).toHaveLength(10);
+    await h.svc.poll(made.trigger.id);
+    expect(h.asked).toHaveLength(20);
+  });
+
   it('skips what is already there, then acts once on each new item and delivers it', async () => {
     const h = harness();
     const made = h.svc.create(watch());
@@ -70,7 +82,7 @@ describe('watch triggers', () => {
     await h.svc.poll(made.trigger.id);
     await h.svc.poll(made.trigger.id);
     expect(h.asked).toHaveLength(1);
-    expect(h.asked[0]).toContain('Title: ACME-2: Login loops');
+    expect(h.asked[0]).toContain('Title (untrusted): ACME-2: Login loops');
     expect(h.asked[0]).toContain("When it's done: Comment your triage on the ticket.");
     await tick();
     const d = h.deliverables()[0];
@@ -118,7 +130,7 @@ describe('webhook triggers', () => {
     expect(h.svc.webhook(made.trigger.id, made.token, body).ok).toBe(true);
     expect(h.svc.webhook(made.trigger.id, made.token, body)).toMatchObject({ ok: true, duplicate: true });
     expect(h.asked).toHaveLength(1);
-    expect(h.asked[0]).toContain('Title: ACME-9: Crash on save');
+    expect(h.asked[0]).toContain('Title (untrusted): ACME-9: Crash on save');
   });
 });
 

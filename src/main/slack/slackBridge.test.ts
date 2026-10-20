@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
 import type { Worker } from '../../shared/flows/worker';
-import { SLACK_APPROVE_ACTION, SLACK_REJECT_ACTION, SlackBridge, type SlackBridgeDeps } from './slackBridge';
+import { SLACK_APPROVE_ACTION, SLACK_APPROVE_RUN_ACTION, SLACK_REJECT_ACTION, SlackBridge, type SlackBridgeDeps } from './slackBridge';
 import type { SocketCtor, SocketLike } from './socketMode';
 import type { SlackThread } from './threadStore';
 
@@ -83,12 +83,13 @@ function pausedRun(reason: 'needsInput' | 'externalAction', over: Partial<FlowRu
   } as unknown as FlowRun;
 }
 
-function harness(opts: { runs?: FlowRun[]; workers?: Worker[] } = {}) {
+function harness(opts: { runs?: FlowRun[]; workers?: Worker[]; standIn?: string; threadFor?: SlackBridgeDeps['threadFor'] } = {}) {
   const slack = fakeSlack();
   const runs = new Map((opts.runs ?? []).map((r) => [r.id, r]));
   let saved: SlackThread[] = [];
   const steers: Array<{ runId: string; text: string }> = [];
   const resumed: string[] = [];
+  const forRun: boolean[] = [];
   const rejected: string[] = [];
   const deps: SlackBridgeDeps = {
     tokens: () => ({ bot: 'xoxb-test', app: 'xapp-test' }),
@@ -101,6 +102,7 @@ function harness(opts: { runs?: FlowRun[]; workers?: Worker[] } = {}) {
     },
     resumeRun: (a) => {
       resumed.push(a.runId);
+      forRun.push(!!a.forRun);
       const r = runs.get(a.runId);
       if (r) r.state = { kind: 'running', currentStepId: 'write' };
       return { ok: true };
@@ -110,12 +112,14 @@ function harness(opts: { runs?: FlowRun[]; workers?: Worker[] } = {}) {
       return { ok: true };
     },
     store: { list: () => saved, save: (t) => (saved = structuredClone(t)) },
+    ...(opts.standIn ? { standIn: () => opts.standIn } : {}),
+    ...(opts.threadFor ? { threadFor: opts.threadFor } : {}),
     log: () => {},
     fetchImpl: slack.fetchImpl as never,
     WebSocketCtor: FakeSocket as unknown as SocketCtor,
   };
   const bridge = new SlackBridge(deps);
-  return { bridge, slack, runs, steers, resumed, rejected, saved: () => saved };
+  return { bridge, slack, runs, steers, resumed, forRun, rejected, deps, saved: () => saved };
 }
 
 const reply = (text: string, over: Record<string, unknown> = {}) => ({
@@ -151,6 +155,69 @@ describe('SlackBridge outbound', () => {
     const h = harness({ runs: [pausedRun('needsInput')], workers: [worker({ manager: undefined })] });
     await h.bridge.start();
     expect(h.slack.calls.some((c) => c.method === 'chat.postMessage')).toBe(false);
+  });
+
+  it('sends an approval to the admin standing in when the manager isn’t in Slack, and only their press counts', async () => {
+    const ADMIN = 'U0ACMEBOSS';
+    const h = harness({ runs: [pausedRun('externalAction')], workers: [worker({ manager: { name: 'Me' } })], standIn: ADMIN });
+    await h.bridge.start();
+    const open = h.slack.calls.find((c) => c.method === 'conversations.open')!;
+    expect(open.body.users).toBe(ADMIN);
+    const post = h.slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    expect(JSON.stringify(post.body.blocks)).toContain('isn’t linked to Slack');
+    const id = h.saved()[0].id;
+    const press = (user: string) =>
+      h.bridge.onEnvelope({
+        type: 'interactive',
+        envelope_id: 'e9',
+        payload: { type: 'block_actions', user: { id: user }, team: { id: TEAM }, actions: [{ action_id: SLACK_APPROVE_ACTION, value: id }] },
+      });
+    await press(MANAGER);
+    expect(h.resumed).toEqual([]);
+    await press(ADMIN);
+    expect(h.resumed).toEqual(['run-1']);
+  });
+
+  it('asks in the thread the work was asked for in, when the asker is who it asks, and takes the answer there', async () => {
+    const h = harness({ runs: [pausedRun('needsInput')], threadFor: () => ({ channel: 'D0REQ', threadTs: '50.1', slackUserId: MANAGER }) });
+    await h.bridge.start();
+    expect(h.slack.calls.some((c) => c.method === 'conversations.open')).toBe(false);
+    const post = h.slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    expect(post.body).toMatchObject({ channel: 'D0REQ', thread_ts: '50.1' });
+    await h.bridge.onEnvelope({
+      type: 'events_api',
+      envelope_id: 'e11',
+      payload: { team_id: TEAM, event: { type: 'message', channel_type: 'im', channel: 'D0REQ', user: MANAGER, text: 'Enterprise is 500+ seats', ts: '50.9', thread_ts: '50.1' } },
+    });
+    expect(h.steers[0].text).toContain('Enterprise is 500+ seats');
+    expect(h.resumed).toEqual(['run-1']);
+  });
+
+  it('still asks the manager in a DM when someone else asked in the thread', async () => {
+    const h = harness({ runs: [pausedRun('externalAction')], threadFor: () => ({ channel: 'C0CHAN', threadTs: '60.1', slackUserId: 'U0SOMEONE' }) });
+    await h.bridge.start();
+    expect(h.slack.calls.find((c) => c.method === 'chat.postMessage')!.body).toMatchObject({ channel: 'D0ACME' });
+  });
+
+  it('offers one OK for the run when later steps need only the same tools', async () => {
+    const steps = [
+      { id: 'gather', role: 'researcher', inputs: [], tools: ['Read', 'Bash'], effect: 'local', output: 'issues.json' },
+      { id: 'tally', role: 'researcher', inputs: [], tools: ['Read', 'Bash'], effect: 'local', output: 'counts.json' },
+    ];
+    const h = harness({ runs: [pausedRun('externalAction', { flowSnapshot: { name: 'Tally', steps }, state: { kind: 'paused', nextStepId: 'gather', reason: 'externalAction' } } as unknown as Partial<FlowRun>)] });
+    await h.bridge.start();
+    const post = h.slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    const blocks = JSON.stringify(post.body.blocks);
+    expect(blocks).toContain('Approve for this run');
+    expect(blocks).toContain('Just this step');
+    expect(blocks).toContain('the 1 later step that uses the same tools');
+    await h.bridge.onEnvelope({
+      type: 'interactive',
+      envelope_id: 'e10',
+      payload: { type: 'block_actions', user: { id: MANAGER }, team: { id: TEAM }, actions: [{ action_id: SLACK_APPROVE_RUN_ACTION, value: h.saved()[0].id }] },
+    });
+    expect(h.resumed).toEqual(['run-1']);
+    expect(h.forRun).toEqual([true]);
   });
 
   it('reaches the boss worker\'s manager when the owner has none', async () => {
@@ -222,6 +289,32 @@ describe('SlackBridge inbound', () => {
     expect(h.resumed).toEqual(['run-1']);
     expect(h.saved()[0].resolution).toBe('approved');
     expect(h.slack.calls.some((c) => c.method === 'chat.update')).toBe(true);
+  });
+
+  it('asks again in the same thread when a restart puts an approved step back at the gate', async () => {
+    const run = pausedRun('externalAction');
+    const h = harness({ runs: [run] });
+    await h.bridge.start();
+    const first = h.slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    await h.bridge.onEnvelope({
+      type: 'interactive',
+      envelope_id: 'e2',
+      payload: { type: 'block_actions', user: { id: MANAGER }, team: { id: TEAM }, actions: [{ action_id: SLACK_APPROVE_ACTION, value: h.saved()[0].id }] },
+    });
+    h.bridge.stop();
+    // A restart: the approval was before this process began, and the step is
+    // back at the gate.
+    h.saved()[0].resolvedAt = 1;
+    run.state = { kind: 'paused', nextStepId: 'write', reason: 'externalAction' };
+    const again = new SlackBridge(h.deps);
+    await again.start();
+    const posts = h.slack.calls.filter((c) => c.method === 'chat.postMessage');
+    const asked = posts.at(-1)!;
+    expect(asked.body.thread_ts).toBe(h.saved()[0].threadTs);
+    expect(asked.body.reply_broadcast).toBe(true);
+    expect(JSON.stringify(asked.body.blocks)).toContain('Asking again');
+    expect(h.saved().at(-1)!.messageTs).toBeTruthy();
+    expect(first).toBeTruthy();
   });
 
   it('rejects from the button, and only for the manager', async () => {

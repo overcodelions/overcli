@@ -96,6 +96,14 @@ export async function listPeople(botToken: string, fetchImpl?: FetchLike): Promi
   return { ok: true, data: out };
 }
 
+/// A person's name as Slack shows it. Needs the `users:read` scope.
+export async function userName(botToken: string, userId: string, fetchImpl?: FetchLike): Promise<string | null> {
+  const res = await slackRead<{ user?: { name?: string; real_name?: string; profile?: { real_name?: string; display_name?: string } } }>('users.info', botToken, { user: userId }, fetchImpl);
+  if (!res.ok || !res.data.user) return null;
+  const u = res.data.user;
+  return (u.profile?.real_name || u.real_name || u.profile?.display_name || u.name || '').trim() || null;
+}
+
 /// The Slack member with this email, for company sign-in. Needs the
 /// `users:read.email` scope.
 export async function lookupByEmail(botToken: string, email: string, fetchImpl?: FetchLike): Promise<SlackResult<{ id: string; name: string }>> {
@@ -120,8 +128,110 @@ export async function lookupByEmail(botToken: string, email: string, fetchImpl?:
 
 /// One message, by channel and timestamp — what a reaction was left on.
 /// Needs channels:history (groups:history for private channels).
+/// A read method, form-encoded: Slack's read methods take their arguments as
+/// form fields or a query string, and ignore a JSON body.
+export async function slackRead<T extends object>(
+  method: string,
+  token: string,
+  params: Record<string, string | number | boolean>,
+  fetchImpl: FetchLike = fetch,
+): Promise<SlackResult<T>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SLACK_TIMEOUT_MS);
+  try {
+    const form = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
+    const res = await fetchImpl(`${SLACK_API_BASE}/${method}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+      signal: controller.signal,
+    });
+    if (!res.ok) return { ok: false, error: `Slack ${method} returned HTTP ${res.status}.` };
+    const json = (await res.json()) as { ok?: boolean; error?: string } & T;
+    if (!json.ok) return { ok: false, error: `Slack ${method}: ${json.error ?? 'unknown error'}` };
+    return { ok: true, data: json };
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === 'AbortError';
+    return { ok: false, error: aborted ? `Slack ${method} timed out.` : `Slack ${method}: ${String(err)}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/// A file someone shared in Slack, as the bot sees it.
+export interface SlackFile {
+  id: string;
+  name: string;
+  mimetype?: string;
+  size?: number;
+  url_private?: string;
+  permalink?: string;
+}
+
+export interface SlackMessage {
+  ts: string;
+  user?: string;
+  bot_id?: string;
+  text: string;
+  files?: SlackFile[];
+}
+
+/// A thread, oldest first. Needs the history scope for the conversation type.
+export async function fetchThread(botToken: string, channel: string, threadTs: string, fetchImpl?: FetchLike): Promise<SlackResult<SlackMessage[]>> {
+  const res = await slackRead<{ messages?: Array<Partial<SlackMessage>> }>('conversations.replies', botToken, { channel, ts: threadTs, limit: 50 }, fetchImpl);
+  if (!res.ok) return res;
+  return { ok: true, data: (res.data.messages ?? []).filter((m): m is Partial<SlackMessage> & { ts: string } => typeof m.ts === 'string').map((m) => ({ ...m, ts: m.ts, text: m.text ?? '' })) };
+}
+
+/// The last few messages in a channel before `beforeTs`, oldest first: what
+/// "this ticket" in a top-level mention may point at.
+export async function fetchRecent(botToken: string, channel: string, beforeTs: string, limit: number, fetchImpl?: FetchLike): Promise<SlackResult<SlackMessage[]>> {
+  const res = await slackRead<{ messages?: Array<Partial<SlackMessage>> }>('conversations.history', botToken, { channel, latest: beforeTs, inclusive: false, limit }, fetchImpl);
+  if (!res.ok) return res;
+  return { ok: true, data: (res.data.messages ?? []).filter((m): m is Partial<SlackMessage> & { ts: string } => typeof m.ts === 'string').map((m) => ({ ...m, ts: m.ts, text: m.text ?? '' })).reverse() };
+}
+
+/// A shared file's bytes. Needs `files:read`; capped so a video can't fill memory.
+export async function downloadFile(botToken: string, url: string, maxBytes: number, fetchImpl: FetchLike = fetch): Promise<SlackResult<Buffer>> {
+  try {
+    if (!/^https:\/\/files\.slack\.com\//.test(url)) return { ok: false, error: 'Not a Slack file address.' };
+    const res = await fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${botToken}` } });
+    if (!res.ok) return { ok: false, error: `Slack file returned HTTP ${res.status}.` };
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length > maxBytes) return { ok: false, error: 'That file is too large to pass on.' };
+    return { ok: true, data: bytes };
+  } catch (err) {
+    return { ok: false, error: `Slack file: ${String(err)}` };
+  }
+}
+
+/// Post a file into a conversation, in a thread when given. Needs
+/// `files:write`. Slack's three-step upload: ask for an address, send the
+/// bytes there, then share the file.
+export async function uploadFile(
+  botToken: string,
+  args: { channel: string; threadTs?: string; filename: string; bytes: Buffer; title?: string },
+  fetchImpl: FetchLike = fetch,
+): Promise<SlackResult<{ fileId: string }>> {
+  const slot = await slackRead<{ upload_url: string; file_id: string }>('files.getUploadURLExternal', botToken, { filename: args.filename, length: args.bytes.length }, fetchImpl);
+  if (!slot.ok) return slot;
+  try {
+    const put = await fetchImpl(slot.data.upload_url, { method: 'POST', body: new Uint8Array(args.bytes) });
+    if (!put.ok) return { ok: false, error: `Slack upload returned HTTP ${put.status}.` };
+  } catch (err) {
+    return { ok: false, error: `Slack upload: ${String(err)}` };
+  }
+  const done = await slackCall<{ files?: unknown[] }>(
+    'files.completeUploadExternal',
+    botToken,
+    { files: [{ id: slot.data.file_id, title: args.title ?? args.filename }], channel_id: args.channel, ...(args.threadTs ? { thread_ts: args.threadTs } : {}) },
+    fetchImpl,
+  );
+  return done.ok ? { ok: true, data: { fileId: slot.data.file_id } } : done;
+}
+
 export async function fetchMessage(botToken: string, channel: string, ts: string, fetchImpl?: FetchLike): Promise<SlackResult<{ text: string; user?: string }>> {
-  const res = await slackCall<{ messages?: Array<{ text?: string; user?: string }> }>('conversations.history', botToken, { channel, latest: ts, inclusive: true, limit: 1 }, fetchImpl);
+  const res = await slackRead<{ messages?: Array<{ text?: string; user?: string }> }>('conversations.history', botToken, { channel, latest: ts, inclusive: true, limit: 1 }, fetchImpl);
   if (!res.ok) return res;
   const m = res.data.messages?.[0];
   return m ? { ok: true, data: { text: m.text ?? '', ...(m.user ? { user: m.user } : {}) } } : { ok: false, error: 'No such message.' };
@@ -142,6 +252,9 @@ export interface SlackPost {
   /// speaks as each worker. Needs the `chat:write.customize` scope.
   username?: string;
   iconUrl?: string;
+  /// A thread reply that also shows in the conversation, so it notifies
+  /// like a new message rather than waiting in the thread.
+  broadcast?: boolean;
 }
 
 export async function postMessage(
@@ -159,6 +272,7 @@ export async function postMessage(
       ...(post.threadTs ? { thread_ts: post.threadTs } : {}),
       ...(post.username ? { username: post.username } : {}),
       ...(post.iconUrl ? { icon_url: post.iconUrl } : {}),
+      ...(post.threadTs && post.broadcast ? { reply_broadcast: true } : {}),
       // A worker's question must read as the question, not as a preview card
       // of whatever link it happened to quote.
       unfurl_links: false,
@@ -180,6 +294,12 @@ export async function updateMessage(
     { channel: args.channel, ts: args.ts, text: args.text, blocks: args.blocks ?? [] },
     fetchImpl,
   );
+}
+
+/// Open a pop-up form (a modal) in answer to a button press, within the
+/// three seconds its trigger lasts.
+export async function openView(botToken: string, triggerId: string, view: unknown, fetchImpl?: FetchLike): Promise<SlackResult<object>> {
+  return slackCall<object>('views.open', botToken, { trigger_id: triggerId, view }, fetchImpl);
 }
 
 /// Slack's mrkdwn treats `&`, `<` and `>` as control characters: `<@U…>` is

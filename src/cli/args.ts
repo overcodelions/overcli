@@ -141,7 +141,7 @@ export interface WorkersAuditOptions {
 }
 
 export interface ParsedArgs {
-  command: 'run' | 'serve' | 'mcp' | 'workers' | 'workersPush' | 'tokens' | 'projects' | 'org' | 'help' | 'version';
+  command: 'run' | 'serve' | 'mcp' | 'workers' | 'workersPush' | 'teamsPush' | 'tokens' | 'projects' | 'org' | 'help' | 'version';
   run?: RunOptions;
   serve?: ServeOptions;
   mcp?: McpOptions;
@@ -150,6 +150,8 @@ export interface ParsedArgs {
   projects?: ProjectsOptions;
   org?: OrgOptions;
   workersPush?: WorkersPushOptions;
+  /// `overcli teams push`: the same options; the target is a team's name.
+  teamsPush?: WorkersPushOptions;
   /// Non-fatal complaints about the arguments themselves, printed before the
   /// run starts. A flag we accept but that cannot do anything in this context
   /// belongs here rather than in a failure.
@@ -342,7 +344,7 @@ function parseMcp(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure
 
 const WORKERS_AUDIT_FLAGS = new Set(['--state-dir', '--json']);
 
-function parseWorkersPush(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
+function parseWorkersPush(rest: string[], what: 'workers' | 'teams' = 'workers'): { ok: true; args: ParsedArgs } | ParseFailure {
   let target: string | undefined;
   const opts: Partial<WorkersPushOptions> = {};
   for (let i = 0; i < rest.length; i += 1) {
@@ -359,13 +361,22 @@ function parseWorkersPush(rest: string[]): { ok: true; args: ParsedArgs } | Pars
     if (name === '--to') opts.to = value;
     else if (name === '--token') opts.token = value;
     else if (name === '--state-dir') opts.stateDir = value;
-    else if (name === '--visibility') {
+    else if (name === '--visibility' && what === 'workers') {
       if (value !== 'private' && value !== 'team' && value !== 'org') return { ok: false, error: '--visibility is private, team or org.' };
       opts.visibility = value;
     } else return { ok: false, error: `Unknown option "${name}".` };
   }
+  if (what === 'teams') {
+    if (!target) return { ok: false, error: 'overcli teams push needs a team name.' };
+    return { ok: true, args: { command: 'teamsPush', teamsPush: { ...opts, target }, warnings: [] } };
+  }
   if (!target) return { ok: false, error: 'overcli workers push needs a worker name or a worker .yaml file.' };
   return { ok: true, args: { command: 'workersPush', workersPush: { ...opts, target }, warnings: [] } };
+}
+
+function parseTeams(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
+  if (rest[0] === 'push') return parseWorkersPush(rest.slice(1), 'teams');
+  return { ok: false, error: rest[0] ? `Unknown teams subcommand "${rest[0]}". Try: overcli teams push.` : 'overcli teams needs a subcommand. Try: overcli teams push.' };
 }
 
 function parseWorkers(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
@@ -541,6 +552,7 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | Pars
   if (argv[0] === 'serve') return parseServe(argv.slice(1));
   if (argv[0] === 'mcp') return parseMcp(argv.slice(1));
   if (argv[0] === 'workers') return parseWorkers(argv.slice(1));
+  if (argv[0] === 'teams') return parseTeams(argv.slice(1));
   if (argv[0] === 'tokens') return parseTokens(argv.slice(1));
   if (argv[0] === 'projects') return parseProjects(argv.slice(1));
   if (argv[0] === 'org') return parseOrg(argv.slice(1));
@@ -684,6 +696,10 @@ USAGE
                                       Publish a worker you built to your
                                       org's server ($OVERCLI_ORG_URL and
                                       $OVERCLI_ORG_TOKEN work too).
+  overcli teams push <name> --to URL [--token T]
+                                      Publish a team you built, members
+                                      and all; published again, it's
+                                      updated there.
   overcli workers audit [options]     List standing-worker shifts that
                                       committed work never merged into
                                       its base branch. Read-only.

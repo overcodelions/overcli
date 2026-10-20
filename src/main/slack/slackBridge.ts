@@ -35,8 +35,14 @@ import {
 import { SocketModeClient, type SocketCtor, type SocketEnvelope } from './socketMode';
 import { threadKey, type SlackThread, type SlackThreadKind, type ThreadStore } from './threadStore';
 import type { SlackCommands } from './slackCommands';
+import { DOOR_CHOICE_ACTION, type FrontDoor } from './frontDoor';
+import { stepsARunGrantCovers } from '../flows/stepEffect';
+import { initialsPicture } from '../../shared/flows/avatars';
+import type { SlackFile } from './slackApi';
 
 export const SLACK_APPROVE_ACTION = 'overcli_approve';
+/// Approve the step and the later ones needing only the same tools.
+export const SLACK_APPROVE_RUN_ACTION = 'overcli_approve_run';
 export const SLACK_REJECT_ACTION = 'overcli_reject';
 
 /// What the bridge reports to Settings. Never carries a token.
@@ -59,11 +65,18 @@ export interface SlackBridgeDeps {
   getRun(runId: UUID): FlowRun | null;
   listRuns(): FlowRun[];
   steerRun(args: { runId: UUID; text: string }): Result;
-  resumeRun(args: { runId: UUID }): Result;
+  resumeRun(args: { runId: UUID; forRun?: boolean }): Result;
+  /// The Slack thread a run's work was asked for in, and who asked: its
+  /// questions and approvals go there when that person is who's asked.
+  threadFor?(runId: UUID): { channel: string; threadTs: string; slackUserId?: string } | null;
   /// Decline a paused run: abort it and settle its batch item, as Reject
   /// does at the desk.
   rejectRun(runId: UUID): Result;
   store: ThreadStore;
+  /// Who answers in Slack for a worker whose manager isn't in it (signed in
+  /// before Slack was connected, say): an admin, so a question or approval
+  /// still reaches someone. Absent: it waits in the console.
+  standIn?(workerId: UUID): string | undefined;
   onStatus?(status: SlackBridgeStatus): void;
   log(level: 'info' | 'warn', message: string): void;
   now?(): number;
@@ -117,7 +130,16 @@ export class SlackBridge {
   /// Only the worker's manager as it is now may answer: a worker moved to
   /// someone else, or a manager taken off it, ends the old manager's say.
   private isCurrentManager(t: { workerId: UUID; managerSlackUserId: string }, user: string | undefined): boolean {
-    return !!user && user === t.managerSlackUserId && managerFor(this.deps.workers(), t.workerId)?.slackUserId === user;
+    return !!user && user === t.managerSlackUserId && this.slackAnswerer(t.workerId)?.id === user;
+  }
+
+  /// Who the worker's questions and approvals go to in Slack now: its
+  /// manager, or the stand-in when the manager isn't in Slack.
+  private slackAnswerer(workerId: UUID): { id: string; standIn: boolean } | null {
+    const own = managerFor(this.deps.workers(), workerId)?.slackUserId;
+    if (own) return { id: own, standIn: false };
+    const other = this.deps.standIn?.(workerId);
+    return other ? { id: other, standIn: true } : null;
   }
   private status: SlackBridgeStatus = { enabled: false, connected: false, openThreads: 0 };
   /// `/worker`, `/hire` and hire approvals — set once the org control plane
@@ -128,6 +150,12 @@ export class SlackBridge {
 
   setCommands(commands: SlackCommands): void {
     this.commands = commands;
+  }
+
+  /// How to find a run's Slack thread, once the org that knows is up.
+  private threadFinder: SlackBridgeDeps['threadFor'] | null = null;
+  setThreadFor(find: NonNullable<SlackBridgeDeps['threadFor']>): void {
+    this.threadFinder = find;
   }
 
   /// The workspace the bot token belongs to, once connected.
@@ -219,12 +247,12 @@ export class SlackBridge {
 
     const workers = this.deps.workers();
     const worker = workers.find((w) => w.id === run.workerId);
-    const manager = managerFor(workers, run.workerId!);
-    if (!worker || !manager?.slackUserId) return;
+    const to = this.slackAnswerer(run.workerId!);
+    if (!worker || !to) return;
 
     this.posting.add(key);
     try {
-      await this.post(run, worker, manager.slackUserId, kind, stepId, exchange);
+      await this.post(run, worker, to.id, kind, stepId, exchange, to.standIn ? managerFor(workers, run.workerId!)?.name ?? 'nobody' : undefined);
     } finally {
       this.posting.delete(key);
     }
@@ -237,15 +265,23 @@ export class SlackBridge {
     kind: SlackThreadKind,
     stepId: string,
     exchange: ReturnType<typeof openExchange>,
+    /// Set when this goes to a stand-in: the manager it would have gone to.
+    standInFor?: string,
   ): Promise<void> {
     const bot = this.deps.tokens().bot;
     if (!bot) return;
-    const im = await openIm(bot, managerSlackUserId, this.deps.fetchImpl);
+    // Asked for in a thread by the person being asked: it goes in that thread.
+    const asked = (this.threadFinder ?? this.deps.threadFor)?.(run.id);
+    const inThread = asked && asked.slackUserId === managerSlackUserId ? asked : null;
+    const im = inThread ? { ok: true as const, data: inThread.channel } : await openIm(bot, managerSlackUserId, this.deps.fetchImpl);
     if (!im.ok) {
       this.deps.log('warn', `Could not open a DM with the manager of ${worker.name}: ${im.error}`);
       return;
     }
     const id = randomUUID();
+    // The same step asking again (overcli restarted while it ran) asks in the
+    // thread it asked in before, rather than as one more message.
+    const earlier = kind === 'approval' ? this.threads.filter((t) => t.runId === run.id && t.stepId === stepId && t.kind === 'approval' && t.managerSlackUserId === managerSlackUserId).at(-1) : undefined;
     const title = escapeMrkdwn(clip(flowRunTitle(run), 200));
     const step = run.flowSnapshot.steps.find((s) => s.id === stepId);
     let text: string;
@@ -263,32 +299,50 @@ export class SlackBridge {
       ];
     } else {
       const what = step ? `the step *${escapeMrkdwn(step.id)}*` : 'the next step';
-      text = `${worker.name} wants to act outside its sandbox on "${flowRunTitle(run)}"`;
+      // Later steps needing only the same tools: one OK can cover them.
+      const later = !earlier && run.state.kind === 'paused' && run.state.reason === 'externalAction' ? stepsARunGrantCovers(run.flowSnapshot.steps, stepId).length : 0;
+      text = earlier ? `${worker.name} needs your OK again on "${flowRunTitle(run)}"` : `${worker.name} wants to act outside its sandbox on "${flowRunTitle(run)}"`;
       blocks = [
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text:
-              `*Approval needed* for _${title}_\n` +
-              `I am about to run ${what}, which reaches outside my sandbox — it may push, send, publish or change a service.`,
+            text: earlier
+              ? `*Asking again.* overcli restarted while ${what} was running. It can change a service, so running it again could repeat what it already did, and it needs your OK again.`
+              : `*Approval needed* for _${title}_\n` +
+                `I am about to run ${what}, which reaches outside my sandbox — it may push, send, publish or change a service.`,
           },
         },
-        ...(step?.systemPromptOverride
+        ...(step?.systemPromptOverride && !earlier
           ? [{ type: 'section', text: { type: 'mrkdwn', text: quote(clip(step.systemPromptOverride, 1200)) } }]
           : []),
         {
           type: 'actions',
           elements: [
-            { type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Approve' }, action_id: SLACK_APPROVE_ACTION, value: id },
+            ...(later ? [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Approve for this run' }, action_id: SLACK_APPROVE_RUN_ACTION, value: id }] : []),
+            { type: 'button', ...(later ? {} : { style: 'primary' }), text: { type: 'plain_text', text: later ? 'Just this step' : 'Approve' }, action_id: SLACK_APPROVE_ACTION, value: id },
             { type: 'button', style: 'danger', text: { type: 'plain_text', text: 'Reject' }, action_id: SLACK_REJECT_ACTION, value: id },
           ],
         },
+        ...(later
+          ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `For this run also covers ${later === 1 ? 'the 1 later step that uses' : `the ${later} later steps that use`} the same tools. Anything new still asks.` }] }]
+          : []),
       ];
+    }
+    if (standInFor) {
+      blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `This came to you, an admin, because ${escapeMrkdwn(worker.name)}’s manager (${escapeMrkdwn(standInFor)}) isn’t linked to Slack. Link them on People in the console, or pick a manager in its Settings.` }] });
     }
     const posted = await postMessage(
       bot,
-      { channel: im.data, text, blocks, username: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) },
+      {
+        channel: earlier?.channel ?? im.data,
+        text,
+        blocks,
+        username: worker.name,
+        iconUrl: worker.avatarUrl ?? initialsPicture(worker.id, worker.name),
+        // Shown in the conversation too, so asking again still notifies.
+        ...(earlier ? { threadTs: earlier.threadTs, broadcast: true } : inThread ? { threadTs: inThread.threadTs } : {}),
+      },
       this.deps.fetchImpl,
     );
     if (!posted.ok) {
@@ -305,7 +359,8 @@ export class SlackBridge {
       workerName: worker.name,
       managerSlackUserId,
       channel: posted.data.channel,
-      threadTs: posted.data.ts,
+      threadTs: earlier?.threadTs ?? inThread?.threadTs ?? posted.data.ts,
+      ...(earlier || inThread ? { messageTs: posted.data.ts } : {}),
       createdAt: this.now(),
     });
     this.persist();
@@ -354,7 +409,7 @@ export class SlackBridge {
       bot,
       {
         channel: t.channel,
-        ts: t.threadTs,
+        ts: t.messageTs ?? t.threadTs,
         text: outcome,
         blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `*${escapeMrkdwn(t.workerName)}* asked for approval. ${outcome}` } }],
       },
@@ -375,33 +430,81 @@ export class SlackBridge {
   }
 
   /// Channel messages, mentions and reactions, for workers' Slack triggers.
-  private eventTap: ((ev: Record<string, any>) => void | Promise<void>) | null = null;
+  /// Resolves true when a trigger took the event.
+  private eventTap: ((ev: Record<string, any>) => boolean | void | Promise<boolean | void>) | null = null;
 
-  setEventTap(tap: ((ev: Record<string, any>) => void | Promise<void>) | null): void {
+  setEventTap(tap: ((ev: Record<string, any>) => boolean | void | Promise<boolean | void>) | null): void {
     this.eventTap = tap;
+  }
+
+  /// "@overcli …" and DMs that aren't answers to anything: requests for
+  /// whichever worker fits. See frontDoor.ts.
+  private frontDoor: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice'> | null = null;
+
+  setFrontDoor(door: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice'> | null): void {
+    this.frontDoor = door;
+  }
+
+  private async toFrontDoor(ev: { channel?: string; ts?: string; thread_ts?: string; user?: string; text?: string; files?: SlackFile[] }, dm: boolean): Promise<void> {
+    if (!this.frontDoor || !ev.channel || !ev.ts || !ev.user) return;
+    try {
+      await this.frontDoor.onMessage({
+        channel: ev.channel,
+        ts: ev.ts,
+        ...(ev.thread_ts ? { threadTs: ev.thread_ts } : {}),
+        user: ev.user,
+        text: ev.text ?? '',
+        ...(ev.files?.length ? { files: ev.files } : {}),
+        dm,
+      });
+    } catch (err) {
+      this.deps.log('warn', `The front door failed: ${String(err)}`);
+    }
   }
 
   private async onEvent(payload: unknown): Promise<void> {
     const p = payload as {
       team_id?: string;
-      event?: { type?: string; channel_type?: string; user?: string; bot_id?: string; subtype?: string; text?: string; thread_ts?: string; channel?: string };
+      event?: { type?: string; channel_type?: string; user?: string; bot_id?: string; subtype?: string; text?: string; ts?: string; thread_ts?: string; channel?: string; files?: SlackFile[] };
     };
     const ev = p?.event;
-    if (ev && ev.channel_type !== 'im' && this.fromOurTeam(p.team_id) && this.eventTap) {
-      try {
-        await this.eventTap(ev as Record<string, any>);
-      } catch (err) {
-        this.deps.log('warn', `A Slack trigger failed: ${String(err)}`);
+    // A message with a screenshot is a `file_share`; every other subtype is
+    // an edit, a join, a bot — not something someone said.
+    const said = !!ev && !ev.bot_id && (!ev.subtype || ev.subtype === 'file_share') && !!ev.user;
+    if (ev && ev.channel_type !== 'im' && this.fromOurTeam(p.team_id)) {
+      let took = false;
+      if (this.eventTap) {
+        try {
+          took = (await this.eventTap(ev as Record<string, any>)) === true;
+        } catch (err) {
+          this.deps.log('warn', `A Slack trigger failed: ${String(err)}`);
+        }
       }
+      if (took || !said) return;
+      if (ev.type === 'app_mention') return this.toFrontDoor(ev, false);
+      // A plain reply in a thread the door started carries on that request.
+      // One that mentions the bot arrives again as an app_mention.
+      const mentioned = !!this.identity && (ev.text ?? '').includes(`<@${this.identity.botUserId}>`);
+      // A run's question asked in this thread takes the reply as its answer.
+      const asking = ev.type === 'message' && ev.thread_ts && ev.channel && !mentioned ? this.openQuestion(ev.channel, ev.thread_ts) : undefined;
+      if (asking) return this.answer(asking, ev);
+      if (ev.type === 'message' && ev.thread_ts && ev.channel && !mentioned && this.frontDoor?.owns(ev.channel, ev.thread_ts)) return this.toFrontDoor(ev, false);
       return;
     }
     if (!ev || ev.type !== 'message' || ev.channel_type !== 'im') return;
-    if (ev.bot_id || ev.subtype || !ev.thread_ts || !ev.user) return;
-    if (!this.fromOurTeam(p.team_id)) return;
+    if (!said || !this.fromOurTeam(p.team_id)) return;
+    // A new DM: a request for whoever fits.
+    if (!ev.thread_ts) return this.toFrontDoor(ev, true);
+    // A request's thread, where the work it started asks and gets approved:
+    // a reply answers an open question, else carries on the conversation.
+    const asking = this.openQuestion(ev.channel!, ev.thread_ts);
+    if (asking) return this.answer(asking, ev);
+    if (this.frontDoor?.owns(ev.channel!, ev.thread_ts)) return this.toFrontDoor(ev, true);
     const t = this.threads.find((x) => x.channel === ev.channel && x.threadTs === ev.thread_ts);
     if (!t) {
-      // Not a run's thread — maybe a hire interview.
-      await this.commands?.onThreadReply(ev, p.team_id);
+      // Not a run's thread — maybe a hire interview, else a request's thread.
+      const took = await this.commands?.onThreadReply(ev, p.team_id);
+      if (!took) await this.toFrontDoor(ev, true);
       return;
     }
     if (!this.isCurrentManager(t, ev.user)) return;
@@ -413,6 +516,17 @@ export class SlackBridge {
       await this.reply(t, 'Use Approve or Reject above — a reply here does not approve anything.');
       return;
     }
+    await this.answer(t, ev);
+  }
+
+  /// A run's question still open in this thread, if there is one.
+  private openQuestion(channel: string, threadTs: string): SlackThread | undefined {
+    return this.threads.find((x) => x.channel === channel && x.threadTs === threadTs && x.kind === 'question' && !x.resolvedAt);
+  }
+
+  /// A reply to a run's question: its answer, from its manager.
+  private async answer(t: SlackThread, ev: { user?: string; text?: string }): Promise<void> {
+    if (!this.isCurrentManager(t, ev.user)) return;
     const answer = (ev.text ?? '').trim();
     if (!answer) return;
     const run = this.deps.getRun(t.runId);
@@ -439,13 +553,28 @@ export class SlackBridge {
       team?: { id?: string };
       actions?: Array<{ action_id?: string; value?: string }>;
     };
+    // A Change it form saved: its handler redraws the message it came from.
+    const view = (payload as { view?: { callback_id?: string } })?.view;
+    if (p?.type === 'view_submission' && this.fromOurTeam(p.team?.id) && this.commands?.handlesView(view?.callback_id)) {
+      await this.commands.onViewSubmit(payload);
+      return;
+    }
     if (p?.type !== 'block_actions' || !this.fromOurTeam(p.team?.id)) return;
     const action = p.actions?.[0];
+    // A one-tap answer under a worker's reply in a front-door thread.
+    if (action?.action_id?.startsWith(DOOR_CHOICE_ACTION) && this.frontDoor) {
+      const m = (payload as { message?: { ts?: string; thread_ts?: string }; channel?: { id?: string }; container?: { channel_id?: string } });
+      const channel = m.channel?.id ?? m.container?.channel_id;
+      const ts = m.message?.ts;
+      const user = p.user?.id;
+      if (channel && ts && user && action.value) await this.frontDoor.onChoice({ channel, messageTs: ts, threadTs: m.message?.thread_ts ?? ts, user, text: action.value });
+      return;
+    }
     if (action && this.commands?.handlesAction(action.action_id)) {
       await this.commands.onAction(payload);
       return;
     }
-    if (!action || (action.action_id !== SLACK_APPROVE_ACTION && action.action_id !== SLACK_REJECT_ACTION)) return;
+    if (!action || (action.action_id !== SLACK_APPROVE_ACTION && action.action_id !== SLACK_APPROVE_RUN_ACTION && action.action_id !== SLACK_REJECT_ACTION)) return;
     const t = this.threads.find((x) => x.id === action.value && x.kind === 'approval');
     if (!t || !this.isCurrentManager(t, p.user?.id) || t.resolvedAt) return;
     const run = this.deps.getRun(t.runId);
@@ -453,8 +582,9 @@ export class SlackBridge {
       await this.settleStale(t.runId, run);
       return;
     }
-    const approve = action.action_id === SLACK_APPROVE_ACTION;
-    const res = approve ? this.deps.resumeRun({ runId: t.runId }) : this.deps.rejectRun(t.runId);
+    const forRun = action.action_id === SLACK_APPROVE_RUN_ACTION;
+    const approve = forRun || action.action_id === SLACK_APPROVE_ACTION;
+    const res = approve ? this.deps.resumeRun({ runId: t.runId, ...(forRun ? { forRun: true } : {}) }) : this.deps.rejectRun(t.runId);
     if (!res.ok) {
       await this.reply(t, `That did not go through: ${res.error}`);
       return;
@@ -462,7 +592,7 @@ export class SlackBridge {
     t.resolvedAt = this.now();
     t.resolution = approve ? 'approved' : 'rejected';
     this.persist();
-    await this.clearButtons(t, approve ? `Approved by <@${t.managerSlackUserId}>.` : `Rejected by <@${t.managerSlackUserId}>.`);
+    await this.clearButtons(t, !approve ? `Rejected by <@${t.managerSlackUserId}>.` : forRun ? `Approved for this run by <@${t.managerSlackUserId}>.` : `Approved by <@${t.managerSlackUserId}>.`);
   }
 }
 

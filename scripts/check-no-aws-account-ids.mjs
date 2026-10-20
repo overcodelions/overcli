@@ -13,6 +13,9 @@ export function findAwsAccountIds(bytes) {
 
   for (const match of text.matchAll(ACCOUNT_ID)) {
     const offset = match.index + match[1].length;
+    // Twelve digits inside a full git commit hash (a pinned action, say) are
+    // part of the hash, not an account.
+    if (insideCommitHash(text, offset, match[2].length)) continue;
     const before = text.slice(0, offset);
     const lastNewline = before.lastIndexOf('\n');
     findings.push({
@@ -22,6 +25,14 @@ export function findAwsAccountIds(bytes) {
   }
 
   return findings;
+}
+
+function insideCommitHash(text, start, length) {
+  let from = start;
+  let to = start + length;
+  while (from > 0 && /[0-9a-f]/i.test(text[from - 1])) from--;
+  while (to < text.length && /[0-9a-f]/i.test(text[to])) to++;
+  return to - from === 40;
 }
 
 function redactAccountIds(value) {

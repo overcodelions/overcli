@@ -25,6 +25,7 @@ import type { Worker } from '../../shared/flows/worker';
 import {
   DEFAULT_TEAM_CHECKPOINTS,
   TEAM_COORDINATOR_SYSTEM_PROMPT,
+  TEAM_GUIDANCE_MAX,
   TEAM_MAX_HIRES_PER_PLAN,
   TEAM_MAX_MEMBERS,
   TEAM_PLAN_SYSTEM_PROMPT,
@@ -42,7 +43,13 @@ import {
   blocksNewTask,
   isTaskActive,
   piecesActFreely,
+  learnStages,
+  TEAM_KNOWLEDGE_FILE,
+  TEAM_KNOWLEDGE_MAX_AGE_MS,
+  TEAM_LEARN_BUDGET_USD,
+  TEAM_MAX_QUESTIONS_KNOWING,
   parsePackReply,
+  madeDeliverables,
   parsePlanReply,
   safeTeamFileName,
   slugify,
@@ -268,6 +275,43 @@ export class TeamEngine {
         log('warn', 'teams', `Could not resume task ${task.id}`, err);
       }
     }
+    // A task that ended while the app was closed lets the next one in.
+    for (const id of this.teams.keys()) this.startNextTask(id);
+    // What teams know, kept a week fresh: checked hourly, and never keeps
+    // the process alive by itself.
+    const refresh = setInterval(() => this.refreshDue(), 60 * 60 * 1000);
+    refresh.unref?.();
+  }
+
+  /// Teams whose knowledge is a week old learn again: those set to weekly
+  /// (the default), idle (no task going or queued), and not tried in the last
+  /// day. Returns the teams it started.
+  refreshDue(now = this.now()): UUID[] {
+    const started: UUID[] = [];
+    for (const team of this.teams.values()) {
+      const k = team.knowledge;
+      if (!k || k.status !== 'ready' || team.knowledgeRefresh === 'off' || team.disbanded) continue;
+      if (now - (k.updatedAt ?? 0) < TEAM_KNOWLEDGE_MAX_AGE_MS) continue;
+      if (k.triedAt && now - k.triedAt < 24 * 60 * 60 * 1000) continue;
+      if ([...this.tasks.values()].some((t) => t.teamId === team.id && (isTaskActive(t.status) || t.status === 'queued'))) continue;
+      if (!this.learn(team.id).ok) continue;
+      // Tried at this check's time, which is the clock the next check reads.
+      const fresh = this.teams.get(team.id);
+      if (fresh?.knowledge) this.saveKnowledge(fresh, { ...fresh.knowledge, triedAt: now });
+      started.push(team.id);
+    }
+    return started;
+  }
+
+  /// Weekly, or only when someone asks.
+  setKnowledgeRefresh(teamId: UUID, mode: 'weekly' | 'off'): Result {
+    const team = this.teams.get(teamId);
+    if (!team) return { ok: false, error: 'That team no longer exists.' };
+    const next: Team = { ...team, knowledgeRefresh: mode, updatedAt: this.now() };
+    this.teams.set(next.id, next);
+    this.store.saveTeam(next);
+    this.deps.emit({ type: 'teamUpdate', team: next });
+    return { ok: true };
   }
 
   private recover(task: TeamTask): void {
@@ -365,6 +409,9 @@ export class TeamEngine {
       id: prior?.id ?? this.newId(),
       name: draft.name!,
       purpose: draft.purpose,
+      // Absent from the input: an edit that didn't touch it keeps it.
+      ...((input.guidance ?? prior?.guidance)?.trim() ? { guidance: (input.guidance ?? prior!.guidance)!.trim().slice(0, TEAM_GUIDANCE_MAX) } : {}),
+      ...((input.avatarUrl ?? prior?.avatarUrl) ? { avatarUrl: input.avatarUrl ?? prior!.avatarUrl } : {}),
       ...(projectPath ? { projectPath } : {}),
       ...(projectPath && input.ownProjectOnly ? { ownProjectOnly: true } : {}),
       ...(input.piecesAskFirst === false ? { piecesAskFirst: false } : {}),
@@ -373,6 +420,10 @@ export class TeamEngine {
       checkpoints: draft.checkpoints!,
       createdAt: prior?.createdAt ?? now,
       ...(prior ? { updatedAt: now } : {}),
+      // What it learned is the team's, not the form's: an edit keeps it.
+      ...(prior?.knowledge ? { knowledge: prior.knowledge } : {}),
+      ...(prior?.knowledgeRefresh ? { knowledgeRefresh: prior.knowledgeRefresh } : {}),
+      ...(prior?.disbanded ? { disbanded: prior.disbanded } : {}),
     };
     this.teams.set(team.id, team);
     this.store.saveTeam(team);
@@ -383,6 +434,24 @@ export class TeamEngine {
       if (task.teamId === team.id && isTaskActive(task.status) && this.liftBudget(task, team)) this.persist(task);
     }
     return { ok: true, team };
+  }
+
+  /// Retire a team: its open tasks cancelled, and it takes no more work.
+  /// Unlike `remove`, it's kept, and so is every task it ran: what it
+  /// delivered stays where people find it. Its members aren't touched.
+  disband(id: UUID, by: string): Result<{ cancelled: number }> {
+    const team = this.teams.get(id);
+    if (!team) return { ok: false, error: 'That team no longer exists.' };
+    if (team.disbanded) return { ok: false, error: `${team.name} is already disbanded.` };
+    let cancelled = 0;
+    for (const task of [...this.tasks.values()]) {
+      if (task.teamId === id && isTaskActive(task.status) && this.cancel(task.id).ok) cancelled++;
+    }
+    const next: Team = { ...this.teams.get(id)!, disbanded: { at: this.now(), by }, updatedAt: this.now() };
+    this.teams.set(id, next);
+    this.store.saveTeam(next);
+    this.deps.emit({ type: 'teamUpdate', team: next });
+    return { ok: true, cancelled };
   }
 
   remove(id: UUID): Result {
@@ -410,16 +479,15 @@ export class TeamEngine {
     /// Where this task works, over the team's own project. `null`: each
     /// member in their own, whatever the team says.
     projectPath?: string | null,
-    opts: { requestedBy?: TeamTask['requestedBy'] } = {},
+    opts: { requestedBy?: TeamTask['requestedBy']; forcePlan?: boolean } = {},
   ): Result<{ task: TeamTask }> {
     const team = this.teams.get(teamId);
     if (!team) return { ok: false, error: 'That team no longer exists.' };
+    if (team.disbanded) return { ok: false, error: `${team.name} was disbanded.` };
     const brief = text.trim();
     if (!brief) return { ok: false, error: 'Say what you want the team to produce.' };
+    // A team busy on another task takes this one next, in the order asked.
     const active = [...this.tasks.values()].find((t) => t.teamId === teamId && blocksNewTask(t));
-    if (active) {
-      return { ok: false, error: `This team is still on "${active.title ?? firstWords(active.brief, 60)}". Finish or cancel it first.` };
-    }
     const workers = this.deps.workers();
     const invalid = validateTeam(team, workers);
     if (invalid) return { ok: false, error: invalid };
@@ -442,8 +510,9 @@ export class TeamEngine {
       teamName: team.name,
       brief,
       ...(opts.requestedBy ? { requestedBy: opts.requestedBy } : {}),
+      ...(opts.forcePlan ? { forcePlan: true } : {}),
       ...(workIn ? { projectPath: workIn } : {}),
-      status: 'planning',
+      status: active ? 'queued' : 'planning',
       createdAt: now,
       updatedAt: now,
       stages: [],
@@ -457,9 +526,125 @@ export class TeamEngine {
     const saved = this.saveAttachments(task, attachments);
     if (saved.length > 0) task.attachments = saved;
     this.writeBrief(task);
+    this.shareKnowledge(task, team);
     this.persist(task);
-    void this.plan(id);
+    if (!active) void this.plan(id);
     return { ok: true, task };
+  }
+
+  /// What the team knows, in the task's folder, so every member's piece and
+  /// every coordinator turn starts from it.
+  private shareKnowledge(task: TeamTask, team: Team): void {
+    const body = team.knowledge?.body?.trim();
+    if (!body) return;
+    this.store.writeFile(task.id, 'team-knowledge.md', `# What ${team.name} knows\n\n${body}\n`);
+    this.recordFile(task, { name: 'team-knowledge.md', author: 'Team', at: this.now() });
+  }
+
+  /// Learn what the team needs to know (`Team.knowledge`): each member, from
+  /// its own tools, then the coordinator writes it up. A fixed plan with
+  /// nothing to approve; a busy team does it next. Refreshing is the same.
+  learn(teamId: UUID, opts: { requestedBy?: TeamTask['requestedBy'] } = {}): Result<{ task: TeamTask }> {
+    const team = this.teams.get(teamId);
+    if (!team) return { ok: false, error: 'That team no longer exists.' };
+    if (team.disbanded) return { ok: false, error: `${team.name} was disbanded.` };
+    const workers = this.deps.workers();
+    const invalid = validateTeam(team, workers);
+    if (invalid) return { ok: false, error: invalid };
+    const going = [...this.tasks.values()].find((t) => t.teamId === teamId && t.kind === 'learn' && isTaskActive(t.status));
+    if (going) return { ok: false, error: `${team.name} is already learning.` };
+    const active = [...this.tasks.values()].find((t) => t.teamId === teamId && blocksNewTask(t));
+    const now = this.now();
+    const id = this.newId();
+    const names = new Map(workers.map((w) => [w.id, w.name]));
+    const task: TeamTask = {
+      id,
+      teamId,
+      teamName: team.name,
+      kind: 'learn',
+      brief: `Learn what ${team.name} needs to know.`,
+      title: `What ${team.name} knows`,
+      ...(opts.requestedBy ? { requestedBy: opts.requestedBy } : {}),
+      status: active ? 'queued' : 'running',
+      createdAt: now,
+      updatedAt: now,
+      deliverables: [TEAM_KNOWLEDGE_FILE],
+      stages: learnStages(team, names),
+      stageIndex: 0,
+      spentUSD: 0,
+      budgetUSD: Math.min(team.budgetUSDPerTask, TEAM_LEARN_BUDGET_USD),
+      folder: this.store.taskDir(id),
+      files: [],
+    };
+    this.tasks.set(id, task);
+    this.writeBrief(task);
+    this.saveKnowledge(team, { ...(team.knowledge ?? {}), status: 'learning', taskId: id, error: undefined, triedAt: now });
+    this.persist(task);
+    if (!active) this.advance(id);
+    return { ok: true, task };
+  }
+
+  /// A request the coordinator answered straight away, asked again as work.
+  planAsTask(taskId: UUID): Result<{ task: TeamTask }> {
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'That task no longer exists.' };
+    if (!task.answered) return { ok: false, error: 'Only an answered question can be planned again.' };
+    return this.brief(task.teamId, task.brief, [], task.projectPath ?? null, { ...(task.requestedBy ? { requestedBy: task.requestedBy } : {}), forcePlan: true });
+  }
+
+  private saveKnowledge(team: Team, knowledge: Team['knowledge']): void {
+    const next: Team = { ...team, ...(knowledge ? { knowledge } : {}) };
+    if (!knowledge) delete next.knowledge;
+    if (next.knowledge?.error === undefined) delete next.knowledge?.error;
+    this.teams.set(next.id, next);
+    this.store.saveTeam(next);
+    this.deps.emit({ type: 'teamUpdate', team: next });
+  }
+
+  /// A learning pass that ended: done keeps what it wrote; stopped or failed
+  /// keeps what the team knew before, and says why.
+  private settleLearning(task: TeamTask): void {
+    if (task.kind !== 'learn') return;
+    const team = this.teams.get(task.teamId);
+    if (!team) return;
+    const prior = team.knowledge;
+    if (task.status === 'done') {
+      const file = task.pack?.files.find((f) => f.endsWith(TEAM_KNOWLEDGE_FILE)) ?? task.pack?.files[0];
+      const body = file ? this.store.readFile(task.id, file) : null;
+      if (body?.trim()) {
+        this.saveKnowledge(team, { status: 'ready', body: body.trim(), updatedAt: this.now(), taskId: task.id, ...(prior?.triedAt ? { triedAt: prior.triedAt } : {}) });
+        return;
+      }
+    }
+    const why = task.status === 'cancelled' ? 'You stopped it.' : task.error ?? 'It wrote nothing.';
+    this.saveKnowledge(team, prior?.body ? { ...prior, status: 'ready', error: `The last refresh didn't finish: ${why}` } : { status: 'failed', taskId: task.id, error: why });
+  }
+
+  /// The team's next queued task, started once nothing else holds the team.
+  /// Members are checked again: one may have been paused since it queued.
+  private startNextTask(teamId: UUID): void {
+    const tasks = [...this.tasks.values()].filter((t) => t.teamId === teamId);
+    if (tasks.some((t) => blocksNewTask(t))) return;
+    const next = tasks.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)[0];
+    if (!next) return;
+    const team = this.teams.get(teamId);
+    const workers = this.deps.workers();
+    const invalid = team ? validateTeam(team, workers) : 'That team no longer exists.';
+    const paused = team?.members.map((m) => workers.find((w) => w.id === m.workerId)).filter((w): w is Worker => !!w && !w.enabled) ?? [];
+    if (invalid || paused.length > 0) {
+      // Not started, and said why: it stays first in line until it can start.
+      log('info', 'teams', `Queued task ${next.id} can't start yet: ${invalid ?? `${paused.map((w) => w.name).join(', ')} paused`}`);
+      return;
+    }
+    if (next.kind === 'learn') {
+      next.status = 'running';
+      this.persist(next);
+      this.advance(next.id);
+      return;
+    }
+    next.status = 'planning';
+    this.persist(next);
+    void this.plan(next.id);
   }
 
   answer(taskId: UUID, answers: string[]): Result {
@@ -503,10 +688,13 @@ export class TeamEngine {
         }
         const roster = this.roster(team);
         const allowQuestions = team.checkpoints.askFirst && !task.answers && !(task.revisions?.length);
+        const allowAnswer = !task.forcePlan && task.kind !== 'learn' && !(task.revisions?.length);
+        const knowledge = team.knowledge?.body?.trim() ? { body: team.knowledge.body, updatedAt: team.knowledge.updatedAt } : undefined;
         const maxHires = this.deps.hire ? Math.max(0, Math.min(TEAM_MAX_HIRES_PER_PLAN, TEAM_MAX_MEMBERS - roster.length)) : 0;
         const message = buildTeamPlanMessage({
           teamName: team.name,
           purpose: team.purpose,
+          guidance: team.guidance,
           roster,
           brief: task.brief,
           allowQuestions,
@@ -518,6 +706,8 @@ export class TeamEngine {
           maxHires,
           project: task.projectPath ? this.projectName(task.projectPath) : undefined,
           repair,
+          ...(knowledge ? { knowledge } : {}),
+          allowAnswer,
         });
         const res = await this.deps.coordinatorTurn({
           system: TEAM_PLAN_SYSTEM_PROMPT,
@@ -532,7 +722,11 @@ export class TeamEngine {
           this.fail(fresh, `The coordinator could not plan: ${res.error}`);
           return;
         }
-        const reply = parsePlanReply(res.text, roster, { allowQuestions, maxHires });
+        const reply = parsePlanReply(res.text, roster, { allowQuestions, maxHires, allowAnswer, maxQuestions: knowledge ? TEAM_MAX_QUESTIONS_KNOWING : undefined });
+        if (reply.kind === 'answer') {
+          this.answerDirectly(fresh, reply.answer);
+          return;
+        }
         if (reply.kind === 'error') {
           repair = reply.error;
           log('warn', 'teams', `Plan for ${taskId} unusable (attempt ${attempt + 1}): ${reply.error}`);
@@ -569,6 +763,21 @@ export class TeamEngine {
     } finally {
       this.turning.delete(key);
     }
+  }
+
+  /// The coordinator answered from what the team knows: the answer is the
+  /// whole of it, filed as the pack, and the task is done. Nothing ran.
+  private answerDirectly(task: TeamTask, answer: string): void {
+    const at = this.now();
+    this.store.writeFile(task.id, 'pack/answer.md', `${answer.trim()}\n`);
+    this.recordFile(task, { name: 'pack/answer.md', author: 'Coordinator', at });
+    task.title = task.title ?? (task.brief.length > 80 ? `${task.brief.slice(0, 79)}…` : task.brief);
+    task.answered = true;
+    task.pack = { summary: answer.trim(), files: ['pack/answer.md'] };
+    task.status = 'done';
+    task.finishedAt = at;
+    this.persist(task);
+    this.deps.notify({ title: `${task.teamName} answered`, body: answer.trim().slice(0, 180) });
   }
 
   private roster(team: Team): TeamRosterLine[] {
@@ -798,6 +1007,30 @@ export class TeamEngine {
     return { ok: true };
   }
 
+  /// Run one member's failed piece of the current stage again, now — while
+  /// the rest of the stage is still working, or after it stopped to ask.
+  retryPiece(taskId: UUID, workerId: UUID): Result {
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'That task no longer exists.' };
+    const stage = task.stages[task.stageIndex];
+    const a = stage?.assignments.find((x) => x.workerId === workerId);
+    if (!stage || !a || !isMemberStage(stage.kind)) return { ok: false, error: 'That member has no piece in the current stage.' };
+    if (a.status !== 'failed') return { ok: false, error: `${a.workerName}'s piece hasn't failed.` };
+    if (task.status !== 'running' && !(task.status === 'waiting' && task.waiting?.reason === 'failed')) return { ok: false, error: 'This task isn’t running.' };
+    a.status = 'pending';
+    a.error = undefined;
+    a.orchestrationId = undefined;
+    a.runId = undefined;
+    stage.error = undefined;
+    if (task.status === 'waiting') {
+      task.waiting = undefined;
+      task.status = 'running';
+    }
+    this.persist(task);
+    void this.launchMemberStage(taskId, task.stageIndex);
+    return { ok: true };
+  }
+
   /// Drop one member's piece of a stage that has not finished — before it
   /// starts, or by stopping its run — and carry on without it. For when a
   /// piece turns out to repeat work the team already has.
@@ -901,6 +1134,7 @@ export class TeamEngine {
     task.waiting = undefined;
     task.finishedAt = this.now();
     this.persist(task);
+    this.settleLearning(task);
     return { ok: true };
   }
 
@@ -1274,6 +1508,7 @@ export class TeamEngine {
         folder: task.folder,
         files: this.folderFiles(task),
         budget: COORDINATOR_FOLDER_BUDGET,
+        made: madeDeliverables(task.deliverables, task.files),
       });
       const res = await this.deps.coordinatorTurn({
         system: TEAM_COORDINATOR_SYSTEM_PROMPT,
@@ -1292,6 +1527,32 @@ export class TeamEngine {
       if (stage.kind === 'synthesize') {
         const pack = parsePackReply(res.text);
         const names: string[] = [];
+        // A deliverable the plan gave a member to make is theirs: it goes in
+        // as they made it, whatever the coordinator typed under that name.
+        const made = madeDeliverables(task.deliverables, task.files);
+        const taken = new Set<string>();
+        for (const m of made) {
+          const bytes = this.store.readBytes(taskId, m.from);
+          if (!bytes) continue;
+          const name = `pack/${m.deliverable}`;
+          this.store.writeBytes(taskId, name, bytes);
+          this.recordFile(task, { name, author: m.author, stage: index, at });
+          names.push(name);
+          taken.add(m.deliverable.toLowerCase());
+        }
+        pack.includes = pack.includes.filter((x) => !taken.has(x.name.toLowerCase()));
+        pack.files = pack.files.filter((f) => !taken.has(f.name.toLowerCase()));
+        // A member's own document, copied as it is. Only a file the folder
+        // lists: `from` is the model's word, and the folder is what we know.
+        for (const inc of pack.includes) {
+          const listed = task.files.find((f) => f.name === inc.from);
+          const bytes = listed ? this.store.readBytes(taskId, listed.name) : null;
+          if (!listed || !bytes) continue;
+          const name = `pack/${inc.name}`;
+          this.store.writeBytes(taskId, name, bytes);
+          this.recordFile(task, { name, author: listed.author, stage: index, at });
+          names.push(name);
+        }
         for (const f of pack.files) {
           const name = `pack/${safeTeamFileName(f.name)}`;
           this.store.writeFile(taskId, name, f.body);
@@ -1328,10 +1589,12 @@ export class TeamEngine {
     const team = this.teams.get(task.teamId);
     task.spentUSD = this.spent(task);
     task.waiting = undefined;
-    const review = team?.checkpoints.finalReview ?? true;
+    // Learning is the team's own: there is no one to review it for.
+    const review = task.kind !== 'learn' && (team?.checkpoints.finalReview ?? true);
     task.status = review ? 'review' : 'done';
     task.finishedAt = this.now();
     this.persist(task);
+    this.settleLearning(task);
     const last = task.stages.at(-1);
     if (last?.fromRoom) {
       const who = last.assignments.filter((a) => a.status === 'done').map((a) => a.workerName);
@@ -1371,10 +1634,13 @@ export class TeamEngine {
   async draftRoster(args: {
     brief: string;
     current?: { name?: string; purpose?: string; members: TeamMember[]; projectPath?: string; ownProjectOnly?: boolean };
+    /// Pick only from these workers (the org server: the ones the person manages).
+    onlyWorkerIds?: UUID[];
   }): Promise<Result<{ draft: TeamRosterDraft }>> {
     const brief = args.brief.trim();
     if (!brief) return { ok: false, error: 'Say what the team is for.' };
-    const workers = this.deps.workers();
+    const only = args.onlyWorkerIds ? new Set(args.onlyWorkerIds) : null;
+    const workers = this.deps.workers().filter((w) => !only || only.has(w.id));
     const onlyIn = args.current?.ownProjectOnly ? args.current.projectPath : undefined;
     const crew = workers
       .filter((w) => w.enabled && (!onlyIn || w.projectPath === onlyIn))
@@ -1525,6 +1791,7 @@ export class TeamEngine {
     task.error = error;
     task.finishedAt = this.now();
     this.persist(task);
+    this.settleLearning(task);
     this.deps.notify({ title: `${task.teamName}: task failed`, body: error });
   }
 
@@ -1646,7 +1913,7 @@ export class TeamEngine {
     const qa = (task.questions ?? []).map((q, i) => ({ q, a: task.answers?.[i] ?? '' }));
     if (qa.length > 0 && task.answers) {
       lines.push('', '## Questions and answers', '');
-      for (const { q, a } of qa) lines.push(`**${q}**`, '', a || '_No answer._', '');
+      for (const { q, a } of qa) lines.push(`**${q}**`, '', a || '_No answer: the default in the question stands._', '');
     }
     try {
       this.store.writeFile(task.id, 'brief.md', `${lines.join('\n').trim()}\n`);
@@ -1660,6 +1927,8 @@ export class TeamEngine {
   /// added to it to get past the cap — and lowering the team's budget does
   /// not cut a plan you already approved.
   private liftBudget(task: TeamTask, team: Team): boolean {
+    // A learning pass keeps its own, smaller cap (TEAM_LEARN_BUDGET_USD).
+    if (task.kind === 'learn') return false;
     if (team.budgetUSDPerTask <= task.budgetUSD) return false;
     task.budgetUSD = team.budgetUSDPerTask;
     return true;
@@ -2304,6 +2573,8 @@ export class TeamEngine {
     task.updatedAt = this.now();
     this.store.saveTask(task);
     this.deps.emit({ type: 'teamTaskUpdate', task: structuredClone(task) });
+    // A task that no longer holds its team lets the next one in line start.
+    if (!blocksNewTask(task) && task.status !== 'queued') queueMicrotask(() => this.startNextTask(task.teamId));
   }
 }
 

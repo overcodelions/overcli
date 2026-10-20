@@ -2,6 +2,8 @@
 
 > **Alpha.** Org workers are early. Expect rough edges and changes between versions, and back up `/data`. In the desktop app, they're switched on under Settings → Labs → Org workers.
 
+**The docs:** [deploy/docs](docs/README.md) covers everyone, from people asking workers for things to managers and admins. They're also served by every org server at `/docs`. This page is the operator's guide to the container.
+
 **On AWS or Google Cloud:** see [aws.md](aws.md) and [gcp.md](gcp.md). Those guides keep `/data` on a durable disk with snapshots, use Bedrock or Vertex with no API key on the box, and put HTTPS in front from inside your VPC.
 
 One container runs `overcli serve`. It holds the org's workers and teams, the Slack bridge, and the **control plane**: the web console and the MCP server people use to manage workers without the desktop app.
@@ -31,17 +33,28 @@ Every way in goes through one set of rules (`org.json`):
 | Admins | Console → **Admin** | Health, people, spend, the rules, the decision log |
 | Operators | `docker exec … overcli` | `org`, `tokens`, `projects` |
 
-## 1. Build and configure
+## 1. Get the image and configure
 
 ```sh
-docker build -f deploy/Dockerfile -t overcli-org .
-# with Codex too:  docker build -f deploy/Dockerfile --build-arg INSTALL_CODEX=1 -t overcli-org .
 cp deploy/.env.example deploy/.env
+docker compose -f deploy/docker-compose.yml pull
 ```
+
+Each release publishes one image, the same for every org: `ghcr.io/overcodelions/overcli-server`, for Intel and ARM, with Claude Code and Codex inside. Nothing about your org is in it; that all lives on the `/data` volume. Tags: the exact version (`0.22.0`), the minor version (`0.22`, which takes fixes), and `latest`. Pick one with `OVERCLI_VERSION` in `.env`.
+
+Each image is signed (keyless, by this repo's release workflow) and carries an SBOM and build provenance. Check one before you run it, or before you mirror it into your own registry:
+
+```sh
+cosign verify ghcr.io/overcodelions/overcli-server:0.22 \
+  --certificate-identity-regexp 'https://github.com/overcodelions/overcli/.github/workflows/release.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+To build it yourself instead (to change the code, say): `docker build -f deploy/Dockerfile -t overcli-org .` (add `--build-arg INSTALL_CODEX=1` for Codex), and point `image:` in `docker-compose.yml` at `overcli-org`.
 
 In `deploy/.env`:
 
-- **The model.** Workers run through the Claude Code CLI inside the container. Give it `ANTHROPIC_API_KEY`, or Bedrock (`CLAUDE_CODE_USE_BEDROCK=1` and AWS credentials, ideally from the instance role), or Vertex. For Codex, build with `INSTALL_CODEX=1` and set `OPENAI_API_KEY`. The console's Admin page shows which models are signed in.
+- **The model.** Workers run through the Claude Code CLI inside the container. Give it `ANTHROPIC_API_KEY`, or Bedrock (`CLAUDE_CODE_USE_BEDROCK=1` and AWS credentials, ideally from the instance role), or Vertex. For Codex, set `OPENAI_API_KEY`: the published image has it. The console's Admin page shows which models are signed in.
 - **Slack** (optional). Create an app from `src/main/slack/slack-app-manifest.yml` and put its bot token (`xoxb-`) and app-level token (`xapp-`, scope `connections:write`) in `.env`.
 
 ## 2. Start it
@@ -102,16 +115,65 @@ Tools are kept in `/data/home/.claude.json` (and `.codex/config.toml`), so they 
 
 ## 4. Give it work to do
 
-Workers doing research and writing can use the default **Workers** folder. Workers doing code need the repo:
+Workers doing research and writing can use the default **Workers** folder. Workers doing code need a repo.
+
+### Code: repos and branches
+
+Workers change code by pushing a branch. The reply hands back the link to open a pull request from it, and a person opens the PR. GitHub, Bitbucket Cloud and any other git host work.
+
+1. **Give the server a way to push.** Over https, add a token for a bot account on **Setup → Secrets** (or right on the Repos page). No restart is needed:
+   - **GitHub:** `GH_TOKEN`, a fine-grained or GitHub App token with contents read and write.
+   - **Bitbucket Cloud:** `BITBUCKET_TOKEN`, a repository or workspace access token with read and write.
+   - **Any other host** (Bitbucket Data Center, GitLab, …): `GIT_TOKEN` and `GIT_USER`.
+
+   Or use the repo's `git@` address with an ssh key mounted in `/data/home/.ssh`. The key needs write access; Bitbucket's per-repo access keys are read-only.
+2. **Connect the repo** on **Setup → Repos**: its address, and the test command to run before every push (`npm test`). Or from Claude: `connect_repo`. The server clones it into `/data/repos/<name>` and registers it as a project.
+3. **Point a worker at it.** On the same page, pick a worker and press **Let it change this repo**. Or from Claude: `let_worker_change_repo`. The worker now works in that repo, with a flow that plans the change, makes it, and writes the pull request.
+4. **When the run finishes,** the server commits the change and pushes `overcli/<change>`. The clone's pre-push hook runs the repo's tests first, and a failing push is held back. The reply carries the link to open the pull request (GitHub's compare page, Bitbucket's new pull request page, or the link git printed for other hosts).
+
+**Workspaces** group repos that change together, like an API and the app that uses it. Make one on **Setup → Repos → Make a workspace**, or from Claude with `create_workspace`. Give it instructions every run reads ("the API owns prices…"), then point a worker or a team at it.
+
+- **Each run gets its own worktree of every repo,** side by side.
+- **The worker plans across them** and changes the repos the request needs.
+- **The server pushes one branch per changed repo,** each past that repo's tests, and the reply has one pull request link per repo.
+- **Teams:** set **Works in** to the workspace when making the team. A finished team task's code gets **Push the branches** on its card (or `push_team_code`), which pushes each repo's branch past its tests the same way.
+
+What keeps it reviewable:
+
+- **The token stays in the secrets store.** Git reads it from the server's environment through a credential helper set on that clone only. It's never written into the repo or its config.
+- **No pushes to the default branch.** The clone refuses them with a pre-push hook. Protect the branch on the host too: required reviews, no force pushes. That's the real guard, since git can be told to skip hooks.
+- **Pushing waits for a yes.** The pull request step counts as external, so a worker on probation waits for its manager's yes in Slack. Nothing is pushed without it.
+- **Workers run no git.** The model plans, edits files and writes the pull request. The server commits and pushes, one command per repo, the same way every time. Connecting a repo grants only read-only git for planning.
+- **Tests guard every push.** The pre-push hook runs the repo's test command, and a failing push is held back with the output, for the server's pushes and the team's alike.
+
+Plain folders, with no remote to push to, still work the old way:
 
 ```sh
-docker compose -f deploy/docker-compose.yml exec overcli git clone git@github.com:acme/app.git /data/repos/app
 docker compose -f deploy/docker-compose.yml exec overcli overcli projects add /data/repos/app --name App
 ```
 
-For private repos, mount a deploy key into `/data/home/.ssh`, or put a GitHub App token in the remote URL.
+### Asking from Slack
 
-**Teams** are put together in the overcli app (a coordinator plus members), and run on the server. People give them tasks from the console's Teams page, from Claude (`brief_team`), or with `/team Pricing: …` in Slack. The plan comes back to whoever asked, for approval.
+Anyone in your Slack can ask, with no names to learn:
+
+- **`@overcli add an export button to the reports page`** in any channel the app is in, or the same in a DM to the app.
+- **Who takes it:** a request that starts with a worker's name goes to that worker. Otherwise the server matches the request against each worker's job, and asks a model when the words alone don't decide it. When nobody fits clearly, it replies with a short list of names to pick from.
+- **What comes with it:** a request made inside a thread brings the thread along, and screenshots in it are attached for the worker to see.
+- **What comes back, all in the thread:**
+  - who took it, then the worker's answer;
+  - for a long answer, a summary in the message with the full text attached;
+  - when the answer was to start work, the results once it ends: the link to open a pull request from the pushed branch, the report attached, any files it made, and a link to the Library.
+- **Follow-ups:** reply in the thread ("and make it blue") to give the same worker more.
+- **Who can ask what:** a person can ask any worker they're allowed to see (its "who may ask it" setting). Approvals still go to each worker's manager.
+
+The Slack app needs `files:read` and `files:write` for screenshots and attachments. They're in the manifest; reinstall the app after updating it.
+
+The desktop app can use the same front door, but only for its owner: set **Your Slack member ID** under Settings → Your org → Slack, and DM the bot to ask your own workers from anywhere. Everyone else is turned down, because the work runs on that laptop and its model account.
+
+**Teams** run on the server. People give them tasks from the console's Teams page, from Claude (`brief_team`), or with `/team Pricing: …` in Slack. The plan comes back to whoever asked, for approval. A team gets there two ways:
+
+- **Publish one you built in the app:** open the team and press **Publish to your org**, or run `overcli teams push "Launch crew"`. Members the server doesn't have go up first, each a hire under the usual rules with you as manager; members published from your install before are reused. A member over your allowance holds the team until an approver says yes, and a no means the team isn't made. Publish again to update it in place. The project it worked in stays on your laptop: on the server each member works in their own until one is picked.
+- **Make one on the console:** **Teams → Make a team**, from workers you manage.
 
 ## 5. Sign in, then invite people
 
@@ -127,7 +189,7 @@ After that, nobody copies a token. Every person is their Slack account, and ther
 
 - **Invite**, from the console's **People** page. Pick people from your Slack (the bot needs the `users:read` scope) or type a name and Slack member ID, and choose what they can do: ask workers, hire within an allowance, approve hires, or admin. overcli DMs each a one-time link that signs them in. Without Slack, you get the link to send yourself.
 - **`/overcli join`** in Slack. Slack has already proved who's asking, so they appear under *Asking to join* for an admin to let in. With `"openJoin": true` in `org.json`, they're let in straight away, able to ask workers things.
-- **The overcli app**: Settings → Advanced → Your org, paste the address, press **Sign in**. The browser opens on the org's page showing a code; the person confirms it, and the app gets its own sign-in in the keychain.
+- **The overcli app**: Settings → Your org, paste the address, press **Sign in**. The browser opens on the org's page showing a code; the person confirms it, and the app gets its own sign-in in the keychain.
 
 People shows where each person is signed in (browser, app, token), lets an admin change their role or allowance, and signs out one device or a person everywhere. Their **Connect** page has copy-paste setup for Claude Code, Claude Desktop, Codex and the app.
 
@@ -138,6 +200,20 @@ docker compose -f deploy/docker-compose.yml exec overcli overcli tokens create -
 docker compose -f deploy/docker-compose.yml exec overcli overcli tokens list
 docker compose -f deploy/docker-compose.yml exec overcli overcli tokens revoke "Ops automation"
 ```
+
+## Secrets
+
+Admins manage the server's secrets on **Setup → Secrets**: git host tokens, the Slack tokens, the SSO client secret, model API keys, and credentials for tools (`JIRA_API_TOKEN`).
+
+- **Values go in and never come back out.** The page shows each secret's name, whether it's set, by whom and when, and what needs a missing one. Changes are recorded in the decision log by name.
+- **Changes apply at once.** New worker runs and git pick up a change immediately, and Slack reconnects when its tokens change. No restart.
+- **Where they're kept** is set by `OVERCLI_SECRETS`:
+  - **Unset:** an encrypted file on the data volume. The key comes from `OVERCLI_SECRETS_KEY`, from the login keychain when the server runs on a Mac, or else from a key file beside the secrets (the page warns about that one).
+  - **`aws:overcli/acme/`:** AWS Secrets Manager, through the instance or task role. See [aws.md](aws.md#secrets-policy).
+  - **`gcp:<project>/overcli-`:** GCP Secret Manager, through the service account. See [gcp.md](gcp.md).
+- **The environment wins.** Anything set in `deploy/.env` or the task definition shows as "set by the environment" and is changed there.
+- **Read-only mode:** with `OVERCLI_SECRETS_READONLY=1` (for secrets managed in Terraform), the page lists them and changes nothing. They're re-read every five minutes either way.
+- **Allowed names:** the listed names, or a credential name for a tool (capitals, ending `_TOKEN`, `_API_KEY`, `_KEY`, `_SECRET` or `_PASSWORD`). Names that could redirect overcli, git or the model are refused.
 
 ## Company sign-in (SSO)
 
@@ -189,7 +265,7 @@ Every approval costs model time, so a worker's monthly budget still caps what it
 
 Anyone who can hire can bring a worker they built in their own overcli app:
 
-- **In the app:** Settings → Advanced → Your org (sign in), then **Publish to your org** on the worker's Share card.
+- **In the app:** Settings → Your org (sign in), then **Publish to your org** on the worker's Share card.
 - **From a terminal:** `OVERCLI_ORG_URL=… OVERCLI_ORG_TOKEN=… overcli workers push "Worker name"`
 - **In the console:** Hire → *Bring a worker you built yourself*, then paste its file.
 

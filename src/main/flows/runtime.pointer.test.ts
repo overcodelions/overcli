@@ -439,7 +439,7 @@ describe('a pointer at a gitignored file across steps', () => {
 // (an unattended worker hanging on a permission request) must not also
 // discard a real human clicking Continue on an `externalAction` pause.
 describe('resuming an externalAction pause', () => {
-  it('runs the approved step without forcing it through the broker, and consumes the grant once the step finishes', async () => {
+  it('lets the approved step make its calls, and consumes the grant once the step finishes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'overcli-run-approve-'));
     try {
       execFileSync('git', ['init'], { cwd: dir });
@@ -466,7 +466,7 @@ describe('resuming an externalAction pause', () => {
       expect(res.ok).toBe(true);
       await flush();
 
-      // The step remains brokered; its first request consumes the approval.
+      // The step remains brokered, and the approval covers every request it makes.
       expect(h.sends).toHaveLength(1);
       expect(h.sends[0]!.permissionMode).toBe('acceptEdits');
       expect(r.externalActionApprovedStepId).toBe('render-report');
@@ -479,10 +479,10 @@ describe('resuming an externalAction pause', () => {
           events: [{ timestamp: Date.now(), kind: { type: 'permissionRequest', info: { requestId, toolName: 'Bash', description: '', toolInput: '' } } } as never],
         });
       }
-      expect(approvals).toEqual([true, false]);
-      expect(r.externalActionApprovedStepId).toBeUndefined();
+      expect(approvals).toEqual([true, true]);
+      expect(r.externalActionApprovedStepId).toBe('render-report');
 
-      // The grant is one-shot: consumed the moment the approved step
+      // The grant lasts one step: consumed the moment the approved step
       // finishes, so it can't leak into whatever step runs after it.
       await finishWith(h, '<output name="throughput_report.html" file="throughput_report.html" />');
       expect(r.externalActionApprovedStepId).toBeUndefined();
@@ -544,7 +544,7 @@ describe('resuming an externalAction pause', () => {
     (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
     (h.rt as never as { convIdToRun: Map<UUID, UUID> }).convIdToRun.set('conv-1' as UUID, RUN_ID);
     const info: Record<string, unknown> = {
-      requestId: 'req-1', toolName: 'mcp__claude_ai_Gmail__search_threads', description: '', toolInput: '',
+      requestId: 'req-1', toolName: 'mcp__claude_ai_Gmail__send_message', description: '', toolInput: '',
     };
     (h.rt as never as { observeEvent: (e: MainToRendererEvent) => void }).observeEvent({
       type: 'stream', conversationId: 'conv-1' as UUID,
@@ -552,7 +552,7 @@ describe('resuming an externalAction pause', () => {
     });
     expect(info.decided).toBe('deny');
     expect(info.decidedBy).toBe('policy');
-    expect(info.decisionNote).toContain('mcp__claude_ai_Gmail__search_threads');
+    expect(info.decisionNote).toContain('mcp__claude_ai_Gmail__send_message');
   });
 
   it('denies a paused worker without an explicit approval', () => {

@@ -15,10 +15,10 @@ import path from 'node:path';
 import { Store, flushStoreSync } from '../main/store';
 import { ensureProject } from './engines';
 import type { OrgOptions, ProjectsOptions, TokensOptions, WorkersPushOptions } from './args';
-import { ORG_TOKEN_ENV, ORG_URL_ENV, normalizeOrgUrl, publishToOrg } from '../main/org/orgClient';
+import { ORG_TOKEN_ENV, ORG_URL_ENV, normalizeOrgUrl, publishTeamToOrg, publishToOrg } from '../main/org/orgClient';
+import { shareForOrg, teamForOrg } from '../main/org/orgShare';
+import { loadAllTeams } from '../main/flows/teamsStore';
 import { loadAllWorkers } from '../main/flows/workersStore';
-import { loadAllFlows } from '../main/flows/storage';
-import { buildWorkerShare } from '../main/flows/workerShare';
 import { EXIT } from './run';
 
 export function tokensCommand(opts: TokensOptions, deps: { out: (line: string) => void; err: (line: string) => void }): number {
@@ -102,27 +102,36 @@ export function orgCommand(opts: OrgOptions, deps: { out: (line: string) => void
   return EXIT.OK;
 }
 
+/// Where to publish, from flags or the environment.
+function orgTarget(opts: WorkersPushOptions, err: (line: string) => void): { url: string; token: string } | null {
+  const rawUrl = opts.to ?? process.env[ORG_URL_ENV];
+  if (!rawUrl) {
+    err(`Say where: --to https://overcli.acme.internal:7420, or set $${ORG_URL_ENV}.`);
+    return null;
+  }
+  const url = normalizeOrgUrl(rawUrl);
+  if (!url.ok) {
+    err(url.error);
+    return null;
+  }
+  const token = opts.token ?? process.env[ORG_TOKEN_ENV]?.trim();
+  if (!token) {
+    err(`Add your org token: --token, or $${ORG_TOKEN_ENV}. An admin makes one with overcli tokens create.`);
+    return null;
+  }
+  return { url: url.url, token };
+}
+
 /// `overcli workers push` — hand a worker you built to your org's server.
 export async function workersPushCommand(
   opts: WorkersPushOptions,
   deps: { out: (line: string) => void; err: (line: string) => void },
 ): Promise<number> {
-  const rawUrl = opts.to ?? process.env[ORG_URL_ENV];
-  if (!rawUrl) {
-    deps.err(`Say where: --to https://overcli.acme.internal:7420, or set $${ORG_URL_ENV}.`);
-    return EXIT.BAD_INPUT;
-  }
-  const url = normalizeOrgUrl(rawUrl);
-  if (!url.ok) {
-    deps.err(url.error);
-    return EXIT.BAD_INPUT;
-  }
-  const token = opts.token ?? process.env[ORG_TOKEN_ENV]?.trim();
-  if (!token) {
-    deps.err(`Add your org token: --token, or $${ORG_TOKEN_ENV}. An admin makes one with overcli tokens create.`);
-    return EXIT.BAD_INPUT;
-  }
+  const target = orgTarget(opts, deps.err);
+  if (!target) return EXIT.BAD_INPUT;
   let yaml: string;
+  let localId: string | undefined;
+  let tools: ReturnType<typeof shareForOrg>['tools'] = [];
   if (/\.ya?ml$/i.test(opts.target) && fs.existsSync(opts.target)) {
     yaml = fs.readFileSync(opts.target, 'utf8');
   } else {
@@ -133,11 +142,43 @@ export async function workersPushCommand(
       deps.err(`No worker called "${opts.target}" in this state directory, and no such .yaml file.`);
       return EXIT.BAD_INPUT;
     }
-    const share = buildWorkerShare({ worker, library: loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }) });
+    const share = shareForOrg(worker);
     if (share.missingFlowIds.length) deps.err(`! ${worker.name}'s flows not found here, so not sent: ${share.missingFlowIds.join(', ')}`);
     yaml = share.yaml;
+    tools = share.tools;
+    localId = worker.id;
   }
-  const res = await publishToOrg(url.url, token, yaml, opts.visibility ? { visibility: opts.visibility } : {});
+  const res = await publishToOrg(target.url, target.token, yaml, opts.visibility ? { visibility: opts.visibility } : {}, tools, localId);
+  if (!res.ok) {
+    deps.err(res.error);
+    return EXIT.RUN_FAILED;
+  }
+  deps.out(res.message);
+  return EXIT.OK;
+}
+
+/// `overcli teams push` — a team you built, members and all, to your org's
+/// server. Members it already has are reused; published again, the team is
+/// updated there.
+export async function teamsPushCommand(
+  opts: WorkersPushOptions,
+  deps: { out: (line: string) => void; err: (line: string) => void },
+): Promise<number> {
+  const target = orgTarget(opts, deps.err);
+  if (!target) return EXIT.BAD_INPUT;
+  setHost(nodeHost({ dataDir: opts.stateDir }));
+  const key = opts.target.trim().toLowerCase();
+  const team = loadAllTeams().find((t) => t.name.trim().toLowerCase() === key || t.id === opts.target);
+  if (!team) {
+    deps.err(`No team called "${opts.target}" in this state directory.`);
+    return EXIT.BAD_INPUT;
+  }
+  const built = teamForOrg(team, loadAllWorkers());
+  if (!built.ok) {
+    deps.err(built.error);
+    return EXIT.BAD_INPUT;
+  }
+  const res = await publishTeamToOrg(target.url, target.token, built.payload);
   if (!res.ok) {
     deps.err(res.error);
     return EXIT.RUN_FAILED;

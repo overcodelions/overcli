@@ -21,8 +21,12 @@
 // the sidebar but are otherwise normal Conversations that the existing
 // runner pipeline drives.
 
+import { resolveStepEffect, runGrantCovers, stepOutsideTools } from './stepEffect';
+import { teamTaskDir } from './teamsStore';
 import { parseRunDigest, RUN_DIGEST_INSTRUCTION } from '../../shared/flows/runDigest';
 import { isReadOnlyMcpTool } from '../../shared/flows/mcpTools';
+import { inToolScope, scopeDenies, scopeRefusal, type ToolScopes } from '../../shared/flows/toolScope';
+import { knownMcpTools } from './mcpToolCache';
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -189,9 +193,20 @@ export interface FlowRuntimeStartArgs {
 }
 
 export function enabledToolsFor(run: Pick<FlowRun, 'unattended' | 'unattendedAllowedTools'>, step: Pick<FlowStep, 'tools'>): string[] {
-  return run.unattended
-    ? step.tools.filter((tool) => (run.unattendedAllowedTools ?? []).includes(tool))
-    : step.tools;
+  if (!run.unattended) return step.tools;
+  const allowed = run.unattendedAllowedTools ?? [];
+  // A narrowed grant, `Bash(git:*)`, stands in for the whole tool: a step
+  // asking for Bash gets only the commands the policy names, and the CLI
+  // routes any other command to the approval broker, which refuses it.
+  return step.tools.flatMap((tool) => {
+    if (allowed.includes(tool)) return [tool];
+    // A connector tool the step names and that only reads — a tracker
+    // search, a list of features — acts on nothing, and the worker was
+    // granted the connector. Stripping it left a team piece refused every
+    // lookup it was put on the team to make.
+    if (tool.startsWith('mcp__') && isReadOnlyMcpTool(tool)) return [tool];
+    return allowed.filter((a) => a.startsWith(`${tool}(`) && a.endsWith(')'));
+  });
 }
 
 export interface FlowRuntimeResumeArgs {
@@ -201,6 +216,10 @@ export interface FlowRuntimeResumeArgs {
   /// re-running it — the "override the gate" escape hatch. Ignored on
   /// non-failure pauses. See `resumeRun`.
   override?: boolean;
+  /// On an `externalAction` pause: approve the rest of the run's steps that
+  /// need only the same outside tools, not just this one. See
+  /// `FlowRun.externalActionRunGrant`.
+  forRun?: boolean;
 }
 
 export interface FlowRuntimeDeleteArgs {
@@ -611,9 +630,19 @@ export class FlowRuntimeImpl {
         const interruptedStep = run.flowSnapshot.steps.find(
           (step) => step.id === interruptedStepId,
         );
+        // A step someone already approved keeps that approval across a
+        // restart, unless re-running it could repeat what it did outside:
+        // a write to a service, or shipping. A research step (shell, web,
+        // reads) asking again after every restart was all a person saw.
+        const approvedAlready =
+          !!interruptedStep &&
+          (run.externalActionApprovedStepId === interruptedStep.id || runGrantCovers(run, interruptedStep)) &&
+          interruptedStep.role !== 'shipper' &&
+          !(interruptedStep.tools ?? []).some((t) => t.startsWith('mcp__') && !isReadOnlyMcpTool(t));
         if (
           interruptedStep &&
           !run.allowExternalActions &&
+          !approvedAlready &&
           resolveStepEffect(interruptedStep) === 'external'
         ) {
           run.state = {
@@ -710,16 +739,44 @@ export class FlowRuntimeImpl {
       // EXCEPT the one step the user just approved via the externalAction
       // pause (see resumeRunInner) — that is a real human clicking Continue,
       // and auto-denying it anyway would silently discard their approval.
+      // The approval covers that step, as the card says, until it finishes
+      // (onStepFinished clears it). It used to cover one call: a research
+      // step's second shell command was refused, and the person who had just
+      // approved it was asked again.
       const currentStepId = run.state.kind === 'running' ? run.state.currentStepId : undefined;
+      // A worker's tool scope comes first: outside it is no, whoever approved
+      // the step. Inside it, a worker trusted to act needs no click (its run
+      // is only routed here because of the scope); one without the grant
+      // falls through to the rule below.
+      const scopes = this.scopesOf(run);
+      if (scopes) {
+        for (const ev of event.events) {
+          if (ev.kind.type !== 'permissionRequest' || ev.kind.info.decided) continue;
+          const tool = ev.kind.info.toolName;
+          const allowed = inToolScope(scopes, tool);
+          if (allowed && !run.allowExternalActions) continue;
+          log('info', 'flows.permission', `${allowed ? 'allowed' : 'refused'} "${tool}" for worker run ${runId} (tool scope)`);
+          this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, allowed);
+          ev.kind.info.decided = allowed ? 'allow' : 'deny';
+          ev.kind.info.decidedBy = 'policy';
+          ev.kind.info.decisionNote = allowed ? 'Allowed: within this worker’s tools.' : scopeRefusal(scopes, tool, run.workerName ?? 'This worker');
+        }
+      }
       if (run.workerId && !run.allowExternalActions) {
         for (const ev of event.events) {
           if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
-            const allow = !!run.externalActionApprovedStepId && run.externalActionApprovedStepId === currentStepId;
-            if (allow) delete run.externalActionApprovedStepId;
+            const current = run.flowSnapshot.steps.find((s) => s.id === currentStepId);
+            const approvedStep = (!!run.externalActionApprovedStepId && run.externalActionApprovedStepId === currentStepId) || (!!current && runGrantCovers(run, current));
+            // A tool call that only reads acts on nothing: a team piece
+            // looking up its tracker is what it was put on the team to do,
+            // and the step's tools never list every lookup. Its scope, if it
+            // has one, was checked just above.
+            const read = ev.kind.info.toolName.startsWith('mcp__') && isReadOnlyMcpTool(ev.kind.info.toolName);
+            const allow = approvedStep || read;
             log(
               'info',
               'flows.permission',
-              `auto-${allow ? 'approved' : 'denied'} "${ev.kind.info.toolName}" for worker run ${runId} (no grant for external actions)`,
+              `auto-${allow ? 'approved' : 'denied'} "${ev.kind.info.toolName}" for worker run ${runId} (${read && !approvedStep ? 'reads only' : 'no grant for external actions'})`,
             );
             this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, allow);
             // Say so on the event itself before it reaches the renderer (this
@@ -729,7 +786,7 @@ export class FlowRuntimeImpl {
             ev.kind.info.decided = allow ? 'allow' : 'deny';
             ev.kind.info.decidedBy = 'policy';
             ev.kind.info.decisionNote = allow
-              ? 'Allowed: you approved this step.'
+              ? approvedStep ? 'Allowed: you approved this step.' : 'Allowed: a tool call that only reads.'
               : `Denied automatically: this worker has no grant for external actions, and the step does not list ${ev.kind.info.toolName} in its tools.`;
             if (allow) this.checkpoint(run);
           }
@@ -1165,8 +1222,11 @@ export class FlowRuntimeImpl {
       this.pendingAttachments.set(runId, args.attachments);
     }
     this.emitRunUpdate(run);
-    if (firstPauseReason) this.checkpoint(run);
-    else void this.executeStep(runId, firstStep.id);
+    // On disk from the first moment: a run started seconds before a restart
+    // used to be lost outright, its batch item failed with no run left to
+    // carry on, and a team stage written off with it.
+    this.checkpoint(run);
+    if (!firstPauseReason) void this.executeStep(runId, firstStep.id);
     return { ok: true, runId };
   }
 
@@ -1429,6 +1489,12 @@ export class FlowRuntimeImpl {
     // completes, so it can never leak into a later, unapproved step.
     if (pausedReason === 'externalAction' || pausedReason === 'riskyStep') {
       run.externalActionApprovedStepId = nextStepId;
+      // "For this run": the outside tools this step needed, approved for the
+      // later steps that need only those. Never for a risky step: that's the
+      // step's own words looking hostile, and each one is looked at.
+      const step = run.flowSnapshot.steps.find((s) => s.id === nextStepId);
+      const outside = args.forRun && pausedReason === 'externalAction' && step ? stepOutsideTools(step) : null;
+      if (outside?.length) run.externalActionRunGrant = [...new Set([...(run.externalActionRunGrant ?? []), ...outside])];
       this.checkpoint(run);
     }
 
@@ -2946,6 +3012,18 @@ export class FlowRuntimeImpl {
     return { ok: true };
   }
 
+  /// Add a document to a run from outside its steps: what the server did
+  /// after it finished (the branches it pushed, say). Shown with the run's
+  /// own artifacts, and read like them.
+  attachArtifact(runId: UUID, name: string, body: string): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(runId);
+    if (!run) return { ok: false, error: `Run ${runId} not found.` };
+    run.artifacts = { ...run.artifacts, [name]: { name, kind: 'markdown', body, producedByStepId: 'overcli', producedAt: Date.now() } };
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return { ok: true };
+  }
+
   /// Queue a course correction for the next step to run. Valid while a step
   /// is running AND while the run is paused: a pause is the moment the user
   /// is most likely to want to correct what happens next, and the pending
@@ -3148,7 +3226,14 @@ export class FlowRuntimeImpl {
       // claude.ts emits --allowedTools '' for [], so an empty declared set pre-authorises nothing and every call routes to the broker.
       // An unattended run may only use the intersection of what the step asked
       // for and what the caller allowed — see `unattendedAllowedTools`.
-      enabledTools: enabledToolsFor(run, step),
+      // A scoped worker's out-of-scope calls are never pre-approved, and the
+      // ones the server has seen are refused by the CLI outright.
+      enabledTools: (() => {
+        const tools = enabledToolsFor(run, step);
+        const scopes = this.scopesOf(run);
+        return scopes ? tools.filter((t) => inToolScope(scopes, t)) : tools;
+      })(),
+      ...this.scopeDeniedArgs(run),
     });
     if (!sendResult.ok) {
       this.finishAttempt(run, step.id, { outcome: 'error', errorMessage: sendResult.error });
@@ -3262,7 +3347,7 @@ export class FlowRuntimeImpl {
     if (!run) return;
     const step = run.flowSnapshot.steps.find(s => s.id === stepId);
     if (!step) return;
-    // The externalAction approval is one-shot: consumed the moment the step
+    // The externalAction approval lasts one step: consumed the moment the step
     // it was granted for finishes, so it can never carry into whichever step
     // runs next. See resumeRunInner (where it's set) and resolvePermissionMode
     // / observeEvent (where it's consulted).
@@ -3857,13 +3942,28 @@ export class FlowRuntimeImpl {
   /// Returned for every send in the run, not just the ones that actually
   /// attached something, so the allowed set never changes mid-conversation.
   private runAllowedDirs(run: FlowRun): string[] {
+    // A workspace run's folder only LINKS to its worktrees, one per repo, and
+    // the CLI resolves a link before deciding whether a path is its own — so
+    // an edit through `api/` lands outside the folder it was given, and an
+    // unattended worker has it refused. The worktrees are this run's own;
+    // name them.
+    const worktrees = (run.workspaceWorktrees ?? []).map((m) => m.worktreePath);
+    // A team piece reads its teammates' work in the task's shared folder,
+    // which sits outside its own run: without naming it, every "read the
+    // shared folder first" was refused.
+    let shared: string[] = [];
     try {
-      return [ensureAttachmentDir(run.id)];
+      shared = run.team ? [teamTaskDir(run.team.taskId)] : [];
+    } catch {
+      shared = [];
+    }
+    try {
+      return [ensureAttachmentDir(run.id), ...worktrees, ...shared];
     } catch (err) {
       // Can't create the dir — attachment writes will fail too and
       // `buildStepPrompt` falls back to inlining, so the step still runs.
       log('warn', 'flows.attachmentDir', `attachment dir unavailable for run ${run.id}`, err);
-      return [];
+      return [...worktrees, ...shared];
     }
   }
 
@@ -4257,6 +4357,10 @@ export class FlowRuntimeImpl {
     if (run.workerId && !run.allowExternalActions) {
       return 'acceptEdits';
     }
+    // A worker with a tool scope, even one trusted to act: its calls that
+    // aren't pre-approved must reach the approval check, which refuses
+    // anything outside the scope (observeEvent). Bypass would skip it.
+    if (this.scopesOf(run)) return 'acceptEdits';
     // The same clamp for a run launched with nobody watching. `bypassPermissions`
     // makes backends/claude.ts drop `--permission-prompt-tool`, so the run emits
     // no permission requests at all — which turns the CLI's `--permissions deny`
@@ -4290,6 +4394,32 @@ export class FlowRuntimeImpl {
 
   /// Register the run observer (see `runObserver`). Called once at wiring
   /// time in main/index.ts after both the runtime and orchestrator exist.
+  private toolScopesFor: ((workerId: UUID) => ToolScopes | undefined) | null = null;
+
+  /// Where a worker run's tool scopes come from (the worker's record). See
+  /// toolScope.ts for the two places they are enforced.
+  setToolScopes(fn: (workerId: UUID) => ToolScopes | undefined): void {
+    this.toolScopesFor = fn;
+  }
+
+  private scopeDeniedArgs(run: Pick<FlowRun, 'workerId'>): { mcpDeniedTools?: string[] } {
+    const scopes = this.scopesOf(run);
+    if (!scopes) return {};
+    let known: string[] = [];
+    try {
+      known = knownMcpTools();
+    } catch {
+      // No record: the approval check still refuses.
+    }
+    const denied = scopeDenies(scopes, known);
+    return denied.length ? { mcpDeniedTools: denied } : {};
+  }
+
+  private scopesOf(run: Pick<FlowRun, 'workerId'>): ToolScopes | undefined {
+    const scopes = run.workerId ? this.toolScopesFor?.(run.workerId) : undefined;
+    return scopes && Object.keys(scopes).length ? scopes : undefined;
+  }
+
   setRunObserver(cb: (run: FlowRun) => void): void {
     this.runObserver = cb;
   }
@@ -4654,74 +4784,13 @@ export function isGatingReviewStep(
   return definesApproval && definesRejection && step.onFail?.action === 'goto';
 }
 
-/// Resolve the side-effect class for a step. New flows state it explicitly;
-/// old flows get a conservative compatibility inference so existing worker
-/// contracts gain the external approval boundary without being hand-edited.
-/// A clear external directive always wins over an erroneous `effect: local`:
-/// safety metadata can add a boundary, never waive an obvious one.
-export function resolveStepEffect(
-  step: Pick<
-    FlowStep,
-    'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect'
-  >,
-): 'local' | 'external' {
-  if (step.effect === 'external') return 'external';
-  if (step.role === 'shipper') return 'external';
-
-  const text = [step.id, step.output, step.systemPromptOverride ?? '', ...(step.tools ?? [])]
-    .join(' ')
-    .replace(/[_-]+/g, ' ');
-  const actionableText = text.replace(
-    /\b(?:do\s+not|don't|never|must\s+not)\s+(?:git\s+)?(?:push|deploy|publish|send|post|reply|respond|message|create|update|edit|delete|close|merge)\b[^.\n]*/gi,
-    '',
-  );
-  const directExternal =
-    /\bgit\s+push\b|\bpush\s+(?:the\s+)?(?:branch|code|changes|commit)|\bdeploy\b|\brelease\s+to\b|\bpublish\s+(?:the\s+)?(?:site|app|package|release|document)|\bmerge\s+(?:the\s+)?(?:branch|pull request|pr)\b/i;
-  const prWrite =
-    /\b(?:open|create|update|edit|close|merge)\b[^.\n]{0,80}\b(?:pull request|merge request|pr)\b|\b(?:pull request|merge request|pr)\b[^.\n]{0,80}\b(?:open|create|update|edit|close|merge)\b/i;
-  const messageWrite =
-    /\b(?:send|post|reply|respond|message|dm|deliver)\b[^.\n]{0,100}\b(?:slack|teams|email|e-mail|message|dm|channel|thread|recipient|inbox)\b|\b(?:slack|teams|email|e-mail|message|dm|channel|thread|recipient|inbox)\b[^.\n]{0,100}\b(?:send|post|reply|respond|message|deliver)\b/i;
-  const serviceWrite =
-    /\b(?:create|update|edit|change|delete|remove|close|transition|assign|comment|add|record|schedule|invite|upload)\b[^.\n]{0,110}\b(?:jira|productboard|zendesk|salesforce|linear|asana|trello|ticket|issue|insight|card|calendar|event|crm|record)\b|\b(?:jira|productboard|zendesk|salesforce|linear|asana|trello|ticket|issue|insight|card|calendar|event|crm)\b[^.\n]{0,110}\b(?:create|update|edit|change|delete|remove|close|transition|assign|comment|add|record|schedule|invite|upload)\b/i;
-  if (directExternal.test(actionableText) || prWrite.test(actionableText) || messageWrite.test(actionableText) || serviceWrite.test(actionableText)) {
-    return 'external';
-  }
-  // Fail closed: a step that reaches for a tool we don't recognise as read-only
-  // is treated as external, so an unattended worker pauses rather than acting.
-  // Covers both the Claude-style tool names and the Ollama built-in kit
-  // (read_file/list_dir/write_file/edit_file/grep/bash — see ollamaTools.ts)
-  // used by the shipped templates' `build`/`tests` steps.
-  // `bash`, `websearch` and `webfetch` are NOT here on purpose: bash reaches
-  // curl/git push/ssh/aws with the user's on-disk credentials, and webfetch is
-  // a bare SSRF primitive. An unattended worker must stop and ask first.
-  const LOCAL_TOOLS = new Set([
-    'read', 'grep', 'glob', 'ls', 'edit', 'write', 'notebookedit', 'todowrite', 'task',
-    'read_file', 'list_dir', 'write_file', 'edit_file',
-  ]);
-  // Scoped read-only git is local: `Bash(git diff:*)` cannot mutate anything,
-  // and forcing a pause on it made two shipped templates stall at step 1.
-  const READONLY_BASH = /^bash\(\s*git\s+(?:diff|log|show|status|ls-files|rev-parse)(?::\*)?\s*\)$/;
-  // An MCP tool that only reads — searching a mailbox, listing a calendar —
-  // is not acting on the world, so granting it keeps the step local. One
-  // whose name says it sends, creates or updates, or says nothing we can
-  // place, stays external (see isReadOnlyMcpTool).
-  const isLocalTool = (t: string): boolean => {
-    const name = t.toLowerCase().trim();
-    if (name.startsWith('mcp__')) return isReadOnlyMcpTool(t.trim());
-    return LOCAL_TOOLS.has(name.split('__')[0]) || READONLY_BASH.test(name);
-  };
-  const declared = step.tools ?? [];
-  // Fail closed on an absent or empty declaration: a step that names nothing
-  // is granted everything by the CLI, which is the opposite of "local".
-  if (declared.length === 0) return 'external';
-  return declared.some((t) => !isLocalTool(t)) ? 'external' : 'local';
-}
+export { resolveStepEffect, runGrantCovers, stepOutsideTools } from './stepEffect';
 
 export function pauseReasonBeforeStep(
-  run: Pick<FlowRun, 'workerId' | 'allowExternalActions'>,
+  run: Pick<FlowRun, 'workerId' | 'allowExternalActions' | 'externalActionRunGrant'>,
   step: Pick<FlowStep, 'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect' | 'pauseBefore'>,
 ): 'externalAction' | 'riskyStep' | 'preStep' | null {
-  if (run.workerId && !run.allowExternalActions && resolveStepEffect(step) === 'external') {
+  if (run.workerId && !run.allowExternalActions && resolveStepEffect(step) === 'external' && !runGrantCovers(run, step)) {
     return 'externalAction';
   }
   // The other way a step can be unsafe to run. `resolveStepEffect` above hunts

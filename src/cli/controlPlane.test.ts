@@ -21,6 +21,58 @@ function fakeOrg() {
       return [{ id: 'w1', name: 'Ana' }];
     },
     listWaiting: () => [],
+    report: (c: OrgCaller, days: number) => {
+      calls.push({ op: 'report', caller: c.name, args: { days } });
+      return { ok: true, report: { days } };
+    },
+    workerRuns: (c: OrgCaller, id: string, opts: unknown) => {
+      calls.push({ op: 'workerRuns', caller: c.name, args: { id, opts } });
+      return { ok: true, runs: [], nextBefore: null, total: 0 };
+    },
+    workerFeed: (c: OrgCaller, id: string, opts: unknown) => {
+      calls.push({ op: 'workerFeed', caller: c.name, args: { id, opts } });
+      return { ok: true, from: 0, to: 1, asks: [], delivered: [], questions: [], history: [], older: false };
+    },
+    publishSetup: (c: OrgCaller, input: unknown, secure: boolean) => {
+      calls.push({ op: 'publishSetup', caller: c.name, args: { input, secure } });
+      return { ok: true, installed: [], offered: { tools: 0, repos: 0, workspaces: 0 } };
+    },
+    runFiles: (c: OrgCaller, runId: string) => {
+      calls.push({ op: 'runFiles', caller: c.name, args: { runId } });
+      return { ok: true, files: [{ name: 'reports/acme.html', bytes: 20 }] };
+    },
+    workerFileList: (c: OrgCaller, workerId: string) => {
+      calls.push({ op: 'workerFileList', caller: c.name, args: { workerId } });
+      return { ok: true, files: [{ name: '2026-10-19-errand-acme/acme-summary.html', bytes: 30, at: 1 }] };
+    },
+    workerFile: (c: OrgCaller, workerId: string, name: string) => {
+      calls.push({ op: 'workerFile', caller: c.name, args: { workerId, name } });
+      return { ok: true, name, data: Buffer.from('<h1>Acme summary</h1>') };
+    },
+    runFile: (c: OrgCaller, runId: string, name: string) => {
+      calls.push({ op: 'runFile', caller: c.name, args: { runId, name } });
+      return { ok: true, name, data: Buffer.from('<h1>Acme weekly</h1>') };
+    },
+    teamTaskPage: (c: OrgCaller, id: string) => {
+      calls.push({ op: 'teamTaskPage', caller: c.name, args: { id } });
+      return { ok: true, team: { id: 'team-1', name: 'Council', members: [] }, task: { id } };
+    },
+    teamTaskFiles: async (c: OrgCaller, id: string) => {
+      calls.push({ op: 'teamTaskFiles', caller: c.name, args: { id } });
+      return { ok: true, files: [], destinations: [{ id: 'library', label: 'Library', kind: 'library', ready: true }] };
+    },
+    keepTeamFiles: (c: OrgCaller, id: string, names: unknown) => {
+      calls.push({ op: 'keepTeamFiles', caller: c.name, args: { id, names } });
+      return { ok: true, kept: 1 };
+    },
+    saveTeamFiles: async (c: OrgCaller, id: string, names: unknown, destination: string) => {
+      calls.push({ op: 'saveTeamFiles', caller: c.name, args: { id, names, destination } });
+      return { ok: true, saved: [{ name: 'plan.md' }], failed: [] };
+    },
+    teamTaskZip: (c: OrgCaller, id: string) => {
+      calls.push({ op: 'teamTaskZip', caller: c.name, args: { id } });
+      return id === 'empty' ? { ok: false, error: 'This task has no files yet.' } : { ok: true, filename: 'roadmap-ranking.zip', data: Buffer.from('PK-acme') };
+    },
     answer: (c: OrgCaller, runId: string, answer: string) => {
       calls.push({ op: 'answer', caller: c.name, args: { runId, answer } });
       return { ok: false, error: "Only this worker's manager can do that." };
@@ -48,6 +100,39 @@ afterAll(() => {
 });
 
 describe('control plane HTTP', () => {
+  it('opens a worker’s own file by the link its Files list handed out', async () => {
+    const res = await fetch(`${base}/api/workers/w1/files`, { headers: { Authorization: 'Bearer ocli_good' } });
+    const listed = (await res.json()) as { files: Array<{ name: string; url: string }> };
+    expect(listed.files[0].url).toMatch(/^\/files\/[A-Za-z0-9_-]{32}\/acme-summary\.html$/);
+    const cookie = res.headers.get('set-cookie')!.split(';')[0];
+    const page = await fetch(`${base}${listed.files[0].url}`, { headers: { cookie } });
+    expect(await page.text()).toBe('<h1>Acme summary</h1>');
+    expect(calls.filter((c) => c.op === 'workerFile').at(-1)).toEqual({ op: 'workerFile', caller: 'Pat', args: { workerId: 'w1', name: '2026-10-19-errand-acme/acme-summary.html' } });
+  });
+
+  it('opens a run file by the link its listing handed out, sandboxed, as the person who listed it', async () => {
+    const res = await fetch(`${base}/api/runs/run1/files`, { headers: { Authorization: 'Bearer ocli_good' } });
+    // The listing sets the cookie its links need, readable by no script.
+    const setCookie = res.headers.get('set-cookie') ?? '';
+    expect(setCookie).toMatch(/^ocli_files=[A-Za-z0-9_-]+; Path=\/files\/; HttpOnly; SameSite=Lax/);
+    const cookie = { Cookie: setCookie.split(';')[0] };
+    const listed = (await res.json()) as { files: Array<{ name: string; url: string }> };
+    const url = listed.files[0].url;
+    expect(url).toMatch(/^\/files\/[A-Za-z0-9_-]{32}\/acme\.html$/);
+    // Without the lister's cookie, or with a made-up one, the link opens nothing.
+    expect((await fetch(`${base}${url}`)).status).toBe(403);
+    expect((await fetch(`${base}${url}`, { headers: { Cookie: 'ocli_files=someone-else' } })).status).toBe(403);
+    const page = await fetch(`${base}${url}`, { headers: cookie });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toBe('<h1>Acme weekly</h1>');
+    expect(page.headers.get('content-security-policy')).toMatch(/^sandbox allow-scripts/);
+    expect(calls.filter((c) => c.op === 'runFile').at(-1)).toEqual({ op: 'runFile', caller: 'Pat', args: { runId: 'run1', name: 'reports/acme.html' } });
+    expect((await fetch(`${base}${url}?download=1`, { headers: cookie })).headers.get('content-disposition')).toBe('attachment; filename="acme.html"');
+    expect((await fetch(`${base}/files/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/acme.html`)).status).toBe(404);
+    // The console may frame its own files, and nothing else.
+    expect((await fetch(`${base}/`)).headers.get('content-security-policy')).toMatch(/frame-src 'self'/);
+  });
+
   it('serves the console page and its assets without a token, with a strict CSP', async () => {
     const page = await fetch(`${base}/`);
     expect(page.status).toBe(200);
@@ -74,6 +159,83 @@ describe('control plane HTTP', () => {
     ).json();
     expect(res).toEqual({ ok: false, error: "Only this worker's manager can do that." });
     expect(calls.find((c) => c.op === 'answer')).toEqual({ op: 'answer', caller: 'Pat', args: { runId: 'r1', answer: 'yes' } });
+  });
+
+  it('tells a setup whether it came over a private channel, and keeps it to plain shapes', async () => {
+    const auth = { Authorization: 'Bearer ocli_good', 'Content-Type': 'application/json' };
+    const body = {
+      tools: [{ name: 'tracker', kind: 'command', command: 'npx', args: ['@acme/tracker-mcp'], envKeys: ['TRACKER_TOKEN'], headerKeys: [] }, { name: 'bad name!' }],
+      repos: [{ name: 'app', url: 'https://github.com/acme/app', localPath: 'relative/not/allowed' }],
+      workspaces: [{ name: 'Shop', repos: ['app', 7] }],
+      keys: { tracker: { env: { TRACKER_TOKEN: 'tk', 'bad key': 'x' } } },
+    };
+    await fetch(`${base}/api/publish/setup`, { method: 'POST', headers: auth, body: JSON.stringify(body) });
+    const local = calls.filter((c) => c.op === 'publishSetup').at(-1)!.args as { input: Record<string, unknown>; secure: boolean };
+    // From this machine: private, whatever the Host header says.
+    expect(local.secure).toBe(true);
+    expect(local.input).toEqual({
+      tools: [{ name: 'tracker', kind: 'command', command: 'npx', args: ['@acme/tracker-mcp'], envKeys: ['TRACKER_TOKEN'], headerKeys: [] }],
+      repos: [{ name: 'app', url: 'https://github.com/acme/app' }],
+      workspaces: [{ name: 'Shop', repos: ['app'] }],
+      keys: { tracker: { env: { TRACKER_TOKEN: 'tk' }, headers: {} } },
+    });
+    // Behind a proxy, only https counts — and a forged header doesn't, unless the proxy is trusted.
+    process.env.OVERCLI_TRUST_PROXY = '1';
+    try {
+      await fetch(`${base}/api/publish/setup`, { method: 'POST', headers: { ...auth, 'X-Forwarded-Proto': 'http' }, body: JSON.stringify(body) });
+      expect((calls.filter((c) => c.op === 'publishSetup').at(-1)!.args as { secure: boolean }).secure).toBe(false);
+      await fetch(`${base}/api/publish/setup`, { method: 'POST', headers: { ...auth, 'X-Forwarded-Proto': 'https' }, body: JSON.stringify(body) });
+      expect((calls.filter((c) => c.op === 'publishSetup').at(-1)!.args as { secure: boolean }).secure).toBe(true);
+    } finally {
+      delete process.env.OVERCLI_TRUST_PROXY;
+    }
+  });
+
+  it('passes the report window through, defaulting to 30 days', async () => {
+    const auth = { Authorization: 'Bearer ocli_good' };
+    expect(await (await fetch(`${base}/api/report?days=7`, { headers: auth })).json()).toEqual({ ok: true, report: { days: 7 } });
+    expect(await (await fetch(`${base}/api/report`, { headers: auth })).json()).toEqual({ ok: true, report: { days: 30 } });
+    expect(calls.filter((c) => c.op === 'report')).toEqual([
+      { op: 'report', caller: 'Pat', args: { days: 7 } },
+      { op: 'report', caller: 'Pat', args: { days: 30 } },
+    ]);
+  });
+
+  it("passes a worker's runs and feed paging through, leaving absent or junk numbers undefined", async () => {
+    const auth = { Authorization: 'Bearer ocli_good' };
+    await fetch(`${base}/api/workers/Ana%20B/runs?before=1700&limit=5&outcome=failed`, { headers: auth });
+    await fetch(`${base}/api/workers/w1/runs`, { headers: auth });
+    await fetch(`${base}/api/workers/w1/feed?before=soon&days=7`, { headers: auth });
+    await fetch(`${base}/api/workers/w1/feed`, { headers: auth });
+    expect(calls.filter((c) => c.op === 'workerRuns' || c.op === 'workerFeed')).toEqual([
+      { op: 'workerRuns', caller: 'Pat', args: { id: 'Ana B', opts: { before: 1700, limit: 5, outcome: 'failed' } } },
+      { op: 'workerRuns', caller: 'Pat', args: { id: 'w1', opts: { before: undefined, limit: undefined, outcome: undefined } } },
+      { op: 'workerFeed', caller: 'Pat', args: { id: 'w1', opts: { before: undefined, days: 7 } } },
+      { op: 'workerFeed', caller: 'Pat', args: { id: 'w1', opts: { before: undefined, days: undefined } } },
+    ]);
+  });
+
+  it("routes a team task's page and files, and hands the folder over as a zip", async () => {
+    const auth = { Authorization: 'Bearer ocli_good', 'Content-Type': 'application/json' };
+    expect(await (await fetch(`${base}/api/team-tasks/task%201/page`, { headers: auth })).json()).toEqual({ ok: true, team: { id: 'team-1', name: 'Council', members: [] }, task: { id: 'task 1' } });
+    expect(await (await fetch(`${base}/api/team-tasks/t1/files`, { headers: auth })).json()).toMatchObject({ ok: true, destinations: [{ id: 'library' }] });
+    expect(await (await fetch(`${base}/api/team-tasks/t1/files/keep`, { method: 'POST', headers: auth, body: JSON.stringify({ names: ['plan.md'] }) })).json()).toEqual({ ok: true, kept: 1 });
+    const saved = await fetch(`${base}/api/team-tasks/t1/files/save`, { method: 'POST', headers: auth, body: JSON.stringify({ names: ['plan.md'], destination: 'mcp:gdrive' }) });
+    expect(await saved.json()).toEqual({ ok: true, saved: [{ name: 'plan.md' }], failed: [] });
+    const zip = await fetch(`${base}/api/team-tasks/t1/files.zip`, { headers: auth });
+    expect(zip.headers.get('content-type')).toBe('application/zip');
+    expect(zip.headers.get('content-disposition')).toBe('attachment; filename="roadmap-ranking.zip"');
+    expect(Buffer.from(await zip.arrayBuffer()).toString()).toBe('PK-acme');
+    expect(await (await fetch(`${base}/api/team-tasks/empty/files.zip`, { headers: auth })).json()).toEqual({ ok: false, error: 'This task has no files yet.' });
+    expect((await fetch(`${base}/api/team-tasks/t1/files.zip`)).status).toBe(401);
+    expect(calls.filter((c) => c.op.startsWith('team') || c.op.endsWith('TeamFiles'))).toEqual([
+      { op: 'teamTaskPage', caller: 'Pat', args: { id: 'task 1' } },
+      { op: 'teamTaskFiles', caller: 'Pat', args: { id: 't1' } },
+      { op: 'keepTeamFiles', caller: 'Pat', args: { id: 't1', names: ['plan.md'] } },
+      { op: 'saveTeamFiles', caller: 'Pat', args: { id: 't1', names: ['plan.md'], destination: 'mcp:gdrive' } },
+      { op: 'teamTaskZip', caller: 'Pat', args: { id: 't1' } },
+      { op: 'teamTaskZip', caller: 'Pat', args: { id: 'empty' } },
+    ]);
   });
 
   it('serves the overcli icon', async () => {
@@ -124,6 +286,10 @@ describe('--control', () => {
     const push = parseArgs(['workers', 'push', 'Luke', '--to', 'https://overcli.acme.example', '--visibility', 'team']);
     expect(push.ok && push.args.workersPush).toEqual({ target: 'Luke', to: 'https://overcli.acme.example', visibility: 'team' });
     expect(parseArgs(['workers', 'push']).ok).toBe(false);
+    const teamPush = parseArgs(['teams', 'push', 'Launch crew', '--to', 'https://overcli.acme.example']);
+    expect(teamPush.ok && teamPush.args).toMatchObject({ command: 'teamsPush', teamsPush: { target: 'Launch crew', to: 'https://overcli.acme.example' } });
+    expect(parseArgs(['teams', 'push', 'X', '--visibility', 'org']).ok).toBe(false);
+    expect(parseArgs(['teams']).ok).toBe(false);
     const proj = parseArgs(['projects', 'add', '/data/repos/app', '--name', 'App']);
     expect(proj.ok && proj.args.projects).toMatchObject({ action: 'add', path: '/data/repos/app', name: 'App' });
   });
@@ -151,5 +317,125 @@ describe('parseCadence', () => {
     expect(parseCadence({ kind: 'cron', expr: '* * * * *' })).toBeUndefined();
     expect(parseCadence('daily')).toBeUndefined();
     expect(parseCadence(undefined)).toBeUndefined();
+  });
+});
+
+describe('connections routes', () => {
+  let cserver: http.Server;
+  let cbase: string;
+  const seen: Array<{ op: string; caller?: string; args?: unknown }> = [];
+  const connections = {
+    list: async (c: OrgCaller, b: string) => {
+      seen.push({ op: 'list', caller: c.name, args: { base: b } });
+      return [{ provider: 'google', label: 'Google Drive', ready: true, redirectUri: `${b}/oauth/google/callback`, connected: false }];
+    },
+    start: (c: OrgCaller, opts: { next?: string; base: string }) => {
+      seen.push({ op: 'start', caller: c.name, args: opts });
+      return { ok: true, url: 'https://accounts.google.com/o/oauth2/v2/auth?state=acme', browserKey: 'acme-browser-key' };
+    },
+    callback: async (q: URLSearchParams, browserKey: string | undefined) => {
+      seen.push({ op: 'callback', args: { state: q.get('state'), browserKey } });
+      return browserKey ? { ok: true, location: '/#connections?connected=google' } : { ok: false, reason: 'browser', location: '/#connections/google-error?reason=browser' };
+    },
+    disconnect: async (c: OrgCaller, provider: string) => {
+      seen.push({ op: 'disconnect', caller: c.name, args: { provider } });
+      return { ok: true };
+    },
+  };
+
+  beforeAll(async () => {
+    cserver = createControlPlane({ org, connections: connections as never, log: () => {}, authenticate: (t) => (t === 'ocli_good' ? PAT : null) });
+    await listenControlPlane(cserver, { host: '127.0.0.1', port: 0 });
+    cbase = `http://127.0.0.1:${(cserver.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => {
+    cserver.close();
+  });
+
+  it('lists, starts and disconnects as the token’s caller, and needs a token for each', async () => {
+    const auth = { Authorization: 'Bearer ocli_good', 'Content-Type': 'application/json' };
+    expect(await (await fetch(`${cbase}/api/connections`, { headers: auth })).json()).toEqual({
+      ok: true,
+      connections: [{ provider: 'google', label: 'Google Drive', ready: true, redirectUri: `${cbase}/oauth/google/callback`, connected: false }],
+    });
+    const started = await fetch(`${cbase}/api/connections/google/start`, { method: 'POST', headers: auth, body: JSON.stringify({ next: '#teams/council' }) });
+    // The browser key goes only in a cookie for the callback, never in the JSON.
+    expect(await started.json()).toEqual({ ok: true, url: 'https://accounts.google.com/o/oauth2/v2/auth?state=acme' });
+    expect(started.headers.get('set-cookie')).toBe('ocli_connect=acme-browser-key; Path=/oauth/google/; HttpOnly; SameSite=Lax; Max-Age=600');
+    expect(await (await fetch(`${cbase}/api/connections/google/disconnect`, { method: 'POST', headers: auth })).json()).toEqual({ ok: true });
+    for (const [method, p] of [['GET', '/api/connections'], ['POST', '/api/connections/google/start'], ['POST', '/api/connections/google/disconnect']]) {
+      expect((await fetch(`${cbase}${p}`, { method })).status).toBe(401);
+    }
+    expect(seen.filter((s) => s.op !== 'callback')).toEqual([
+      { op: 'list', caller: 'Pat', args: { base: cbase } },
+      { op: 'start', caller: 'Pat', args: { next: '#teams/council', base: cbase } },
+      { op: 'disconnect', caller: 'Pat', args: { provider: 'google' } },
+    ]);
+  });
+
+  it('takes Google’s callback without a token, with the browser’s cookie, and redirects to the console', async () => {
+    const back = await fetch(`${cbase}/oauth/google/callback?state=s1&code=c1`, { redirect: 'manual', headers: { Cookie: 'other=1; ocli_connect=acme-browser-key' } });
+    expect(back.status).toBe(302);
+    expect(back.headers.get('location')).toBe('/#connections?connected=google');
+    expect(back.headers.get('set-cookie')).toMatch(/^ocli_connect=; Path=\/oauth\/google\/; .*Max-Age=0/);
+    const bare = await fetch(`${cbase}/oauth/google/callback?state=s2&code=c2`, { redirect: 'manual' });
+    expect(bare.status).toBe(302);
+    expect(bare.headers.get('location')).toBe('/#connections/google-error?reason=browser');
+    expect(seen.filter((s) => s.op === 'callback')).toEqual([
+      { op: 'callback', args: { state: 's1', browserKey: 'acme-browser-key' } },
+      { op: 'callback', args: { state: 's2', browserKey: undefined } },
+    ]);
+  });
+
+  it('has no connection routes on a host without them', async () => {
+    expect((await fetch(`${base}/api/connections`, { headers: { Authorization: 'Bearer ocli_good' } })).status).toBe(404);
+    expect((await fetch(`${base}/oauth/google/callback?state=x`, { redirect: 'manual' })).status).toBe(404);
+  });
+});
+
+describe('tool sign-in routes', () => {
+  let tserver: http.Server;
+  let tbase: string;
+  const seen: unknown[] = [];
+  const signing = {
+    ...org,
+    startToolSignIn: async (c: OrgCaller, input: unknown, b: string) => {
+      seen.push({ op: 'start', caller: c.name, input, base: b });
+      return { ok: true, url: 'https://auth.acme.example/authorize?state=t1', browserKey: 'tool-browser-key' };
+    },
+    finishToolSignIn: async (q: URLSearchParams, browserKey: string | undefined) => {
+      seen.push({ op: 'finish', state: q.get('state'), browserKey });
+      return browserKey ? { ok: true, location: '/#setup/tools?signedin=acme' } : { ok: false, reason: 'browser', location: '/#setup/tools?signin-error=browser' };
+    },
+  };
+
+  beforeAll(async () => {
+    tserver = createControlPlane({ org: signing as never, log: () => {}, authenticate: (t) => (t === 'ocli_good' ? PAT : null) });
+    await listenControlPlane(tserver, { host: '127.0.0.1', port: 0 });
+    tbase = `http://127.0.0.1:${(tserver.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => {
+    tserver.close();
+  });
+
+  it('starts a sign-in with a cookie for the callback only, and takes the callback without a token', async () => {
+    const started = await fetch(`${tbase}/api/admin/tools/signin`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ocli_good', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool: { name: 'acme', url: 'https://mcp.acme.example/mcp' }, next: '#setup/tools' }),
+    });
+    expect(await started.json()).toEqual({ ok: true, url: 'https://auth.acme.example/authorize?state=t1' });
+    expect(started.headers.get('set-cookie')).toBe('ocli_tool=tool-browser-key; Path=/oauth/tools/callback; HttpOnly; SameSite=Lax; Max-Age=600');
+    expect((await fetch(`${tbase}/api/admin/tools/signin`, { method: 'POST' })).status).toBe(401);
+    const back = await fetch(`${tbase}/oauth/tools/callback?state=t1&code=c`, { redirect: 'manual', headers: { Cookie: 'ocli_tool=tool-browser-key' } });
+    expect(back.status).toBe(302);
+    expect(back.headers.get('location')).toBe('/#setup/tools?signedin=acme');
+    expect(back.headers.get('set-cookie')).toMatch(/^ocli_tool=; Path=\/oauth\/tools\/callback; .*Max-Age=0/);
+    expect(seen).toEqual([
+      { op: 'start', caller: 'Pat', input: { name: 'acme', url: 'https://mcp.acme.example/mcp', next: '#setup/tools' }, base: tbase },
+      { op: 'finish', state: 't1', browserKey: 'tool-browser-key' },
+    ]);
   });
 });

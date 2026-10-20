@@ -87,7 +87,12 @@ export interface AccessDeps {
     revokeFor(slackUserId: string): number;
     revoke(id: string): boolean;
     list(): Array<{ id: string; name: string; slackUserId?: string; device?: string }>;
+    /// Give a no-Slack sign-in its Slack id (see `linkSlack`).
+    link?(name: string, admin: boolean, slackUserId: string, slackName?: string): number;
   };
+  /// After a link: workers managed by that name, with no Slack id, get it
+  /// (and the Slack name, when known).
+  linkManagers?(name: string, slackUserId: string, slackName?: string): number;
   /// Change org.json in place (roles, allowances).
   updateOrg(mutate: (raw: Record<string, unknown>) => void): void;
   /// Write a line in the decision log.
@@ -100,6 +105,8 @@ export interface AccessDeps {
     dmInvite(invite: Invite, link: string, org: string): Promise<boolean>;
     askAdmins(request: JoinRequest, admins: string[], org: string): void;
     tellRequester(slackUserId: string, text: string): void;
+    /// Ask that person, in a DM with a button, whether a console sign-in is them.
+    dmLinkSlack?(slackUserId: string, linkId: string, signedInAs: string, org: string): Promise<boolean>;
   };
   now?(): number;
 }
@@ -107,8 +114,8 @@ export interface AccessDeps {
 /// The rules the Admin page may change. Admins, allowances and roles of
 /// people are set from People; the Slack workspace only with `org init`.
 export const EDITABLE_RULES = [
-  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin',
-  'allowedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'retentionDays', 'sso', 'people', 'fleet',
+  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'webNeedsApproval',
+  'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'retentionDays', 'sso', 'people', 'fleet',
 ] as const;
 
 export interface EditableRules {
@@ -119,7 +126,9 @@ export interface EditableRules {
   budgetAllowanceUSD: number;
   approvers: string[];
   orgVisibilityNeedsAdmin: boolean;
+  webNeedsApproval: boolean;
   allowedMcpServers: string[];
+  sharedMcpServers: string[];
   teams: Record<string, string[]>;
   roles: OrgRole[];
   orgBudgetUSD: number | null;
@@ -173,6 +182,61 @@ export class AccessService {
 
   noteOrigin(origin: string): void {
     if (/^https?:\/\/[^/]+$/.test(origin)) this.seenOrigin = origin;
+  }
+
+  // ---- LINK SLACK ---------------------------------------------------------
+
+  /// "This is me" requests waiting for the named Slack person to press the
+  /// button in their DM. In memory: a restart, like the quarter hour, ends one.
+  private pendingLinks = new Map<string, { name: string; admin: boolean; slackUserId: string; until: number }>();
+
+  /// A sign-in made before Slack was connected (the first admin's link, a
+  /// token from the command line) has no Slack id, so nothing in Slack can
+  /// reach that person and the workers they manage DM nobody. This links
+  /// it — but only once the Slack person themselves says so: the server DMs
+  /// them a button, and only they can press it. A member ID typed into the
+  /// console alone would let anyone act as a colleague.
+  async linkSlackStart(caller: OrgCaller, slackUserId: string): Promise<Result<{ sentTo: string }>> {
+    const id = slackUserId.trim();
+    if (caller.slackUserId) return { ok: false, error: 'This sign-in is already linked to Slack.' };
+    if (!isSlackUserId(id)) return { ok: false, error: 'That is not a Slack member ID (it looks like U012AB3CD). In Slack: your profile → ⋮ → Copy member ID.' };
+    if (!this.deps.slack?.dmLinkSlack || !this.deps.tokens.link) return { ok: false, error: 'Slack is not connected to this server yet.' };
+    const now = this.now();
+    for (const [k, v] of this.pendingLinks) if (v.until <= now) this.pendingLinks.delete(k);
+    const linkId = randomUUID();
+    this.pendingLinks.set(linkId, { name: caller.name, admin: caller.admin, slackUserId: id, until: now + 15 * 60_000 });
+    const sent = await this.deps.slack.dmLinkSlack(id, linkId, caller.name, this.org());
+    if (!sent) {
+      this.pendingLinks.delete(linkId);
+      return { ok: false, error: 'Slack could not DM that member ID. Check it, and that the app is installed in your workspace.' };
+    }
+    this.deps.record?.(caller, `Asked Slack to link this sign-in to <@${id}>.`);
+    return { ok: true, sentTo: id };
+  }
+
+  /// The button in that DM, pressed by `pressedBy` as Slack reports it.
+  /// `slackName` is their name in Slack: the sign-in and its workers'
+  /// manager take it, so People shows one person by their real name.
+  linkSlackConfirm(pressedBy: string, linkId: string, slackName?: string): Result<{ name: string; was: string; signIns: number; workers: number }> {
+    const p = this.pendingLinks.get(linkId);
+    if (!p || p.until <= this.now()) {
+      this.pendingLinks.delete(linkId);
+      return { ok: false, error: 'That request has expired. Start again from People in the console.' };
+    }
+    if (pressedBy !== p.slackUserId) return { ok: false, error: 'This request is for someone else.' };
+    this.pendingLinks.delete(linkId);
+    const name = slackName?.trim().slice(0, 80) || undefined;
+    const signIns = this.deps.tokens.link?.(p.name, p.admin, p.slackUserId, name) ?? 0;
+    const workers = this.deps.linkManagers?.(p.name, p.slackUserId, name) ?? 0;
+    this.deps.record?.({ name: name ?? p.name, slackUserId: p.slackUserId, admin: p.admin }, `Linked the sign-in "${p.name}" to <@${p.slackUserId}> (${signIns} sign-in${signIns === 1 ? '' : 's'}, ${workers} worker${workers === 1 ? '' : 's'} managed).`);
+    return { ok: true, name: name ?? p.name, was: p.name, signIns, workers };
+  }
+
+  /// "No, that's not me": the request goes, and nothing changes.
+  linkSlackDecline(pressedBy: string, linkId: string): Result {
+    const p = this.pendingLinks.get(linkId);
+    if (p && pressedBy === p.slackUserId) this.pendingLinks.delete(linkId);
+    return { ok: true };
   }
 
   /// Where links sent from Slack point: org.json's publicUrl, else wherever
@@ -425,7 +489,9 @@ export class AccessService {
         budgetAllowanceUSD: p.budgetAllowanceUSD,
         approvers: p.approvers,
         orgVisibilityNeedsAdmin: p.orgVisibilityNeedsAdmin,
+        webNeedsApproval: p.webNeedsApproval,
         allowedMcpServers: p.allowedMcpServers ?? [],
+        sharedMcpServers: p.sharedMcpServers ?? [],
         teams: p.teams,
         roles: p.roles,
         orgBudgetUSD: p.orgBudgetUSD ?? null,
@@ -484,8 +550,13 @@ export class AccessService {
   /// A key of the caller's own for one tool (Claude Code, Codex, a script),
   /// listed among their sign-ins so it can be signed out on its own.
   createDeviceKey(caller: OrgCaller, device: string): Result<{ token: string }> {
-    if (!caller.slackUserId) return { ok: false, error: 'Only a person signed in through Slack can make keys. Ask an admin for a service token.' };
     const label = device.trim().slice(0, 40) || 'A tool';
+    // An admin not known in Slack (signed in with the first-admin link, no
+    // Slack) gets an admin key: they could invite themselves one anyway.
+    if (!caller.slackUserId) {
+      if (!caller.admin) return { ok: false, error: 'Only people signed in through Slack, or admins, can make keys. Ask an admin for a service token.' };
+      return { ok: true, token: this.deps.tokens.create({ name: caller.name, admin: true, device: label }).token };
+    }
     const { token } = this.deps.tokens.create({ name: caller.name, slackUserId: caller.slackUserId, device: label });
     return { ok: true, token };
   }

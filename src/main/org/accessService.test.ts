@@ -134,7 +134,9 @@ describe('keys for tools', () => {
     const h = harness();
     expect(h.svc.createDeviceKey(pat, 'Claude Code')).toMatchObject({ ok: true });
     expect(h.tokens[0]).toMatchObject({ slackUserId: PAT, device: 'Claude Code' });
-    expect(h.svc.createDeviceKey({ name: 'Ops script', admin: true }, 'x').ok).toBe(false);
+    expect(h.svc.createDeviceKey({ name: 'Me', admin: true }, 'Codex')).toMatchObject({ ok: true });
+    expect(h.tokens[1]).toMatchObject({ name: 'Me', admin: true, device: 'Codex' });
+    expect(h.svc.createDeviceKey({ name: 'Ops script', admin: false }, 'x').ok).toBe(false);
   });
 });
 

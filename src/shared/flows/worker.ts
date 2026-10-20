@@ -6,6 +6,7 @@
 // meter. The engine lives in src/main/flows/workerEngine.ts; this module is
 // the shared contract both main and renderer validate against.
 
+import type { ToolScopes } from './toolScope';
 import type { Backend, UUID } from '../types';
 import type { FlowRun } from './schema';
 import type { ScheduleTrigger } from './schedule';
@@ -175,6 +176,9 @@ export interface Worker {
   /// a worker pinned to a server the user has since removed keeps working,
   /// just without it. See `buildClaudeMcpConfigArg`.
   mcpServers?: string[];
+  /// How much of each tool it may use, by server name: read only, or only
+  /// some calls. A tool with no entry is the whole tool. See toolScope.ts.
+  toolScopes?: ToolScopes;
   /// The job needs to read or operate web pages. Its planning turns (desk
   /// errands and shift planning) and every run it launches start with the
   /// browser switch on — Claude in Chrome on
@@ -205,6 +209,11 @@ export interface Worker {
   /// thread that ran for a week would carry Monday's tangent into Friday, and
   /// the day boundary is the natural place to hand off a summary and start
   /// clean (see `priorDayHandoff`).
+  /// One conversation per Slack thread, by the thread's key: a thread is a
+  /// conversation of its own, so two people talking to the worker in two
+  /// threads don't share one session, and a thread picked up days later
+  /// resumes where it was. Newest kept; old ones expire (`THREAD_SESSION_*`).
+  threadSessions?: Record<string, { conversationId: string; sessionId?: string; at: number }>;
   deskSession?: {
     /// Local midnight of the day this thread belongs to.
     day: number;
@@ -512,6 +521,8 @@ export interface WorkerJournalEntry {
   runId?: string;
   orchestrationId?: string;
   costUSD?: number;
+  /// On a shift: started by hand (Run now) rather than by its schedule.
+  manual?: boolean;
 }
 
 // ---- Caps and trust -----------------------------------------------------
@@ -601,6 +612,8 @@ export interface WorkerErrandResult {
   launchedNothing: boolean;
   /// Planning prose with the machine candidate payload removed and bounded.
   reply: string;
+  /// One-tap answers the worker offered its manager, when it asked them to decide.
+  choices?: string[];
 }
 
 export function computeWorkerScorecard(

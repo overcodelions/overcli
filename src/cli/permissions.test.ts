@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MainToRendererEvent } from '../shared/types';
-import { decide, permissionTap, refuseUserInput } from './permissions';
+import { decide, permissionTap, readsOnlyUnder, refuseUserInput } from './permissions';
 
 function responder() {
   return {
@@ -220,5 +220,65 @@ describe('a worker’s caps outrank the CLI flag', () => {
     const tap = permissionTap({ policy: 'auto-approve', allowTools: [], responder: runner });
     tap(permissionEvent('Read', 'r2'));
     expect(runner.outcomes).toEqual([{ requestId: 'r2', approved: true }]);
+  });
+});
+
+describe('a worker looking at its own files', () => {
+  const root = '/data/worker-files';
+  const bash = (command: string) => JSON.stringify({ command });
+
+  it('needs every command to name a path inside its files', () => {
+    expect(readsOnlyUnder('Bash', bash('printenv; cat /data/worker-files/w1/x'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('cat /data/worker-files/w1/x; ls'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('grep foo /data/worker-files/w1/x'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('cat /data/worker-files/w1/x'), [root])).toBe(true);
+  });
+
+  it('lets read-only commands inside its files through', () => {
+    expect(readsOnlyUnder('Bash', bash('ls -la /data/worker-files/w1 2>&1; cat /data/worker-files/w1/cursor.json 2>&1'), [root])).toBe(true);
+    expect(readsOnlyUnder('Bash', bash('head -50 "/data/worker-files/w1/notes.md"'), [root])).toBe(true);
+  });
+
+  it('refuses anything that writes, escapes, or looks elsewhere', () => {
+    expect(readsOnlyUnder('Bash', bash('cat /data/worker-files/w1/a > /data/worker-files/w1/b'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('cat /data/worker-files/../secrets.enc'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('cat /etc/passwd'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('ls /data/worker-files-evil'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('cat $(echo /etc/passwd)'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('rm /data/worker-files/w1/notes.md'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('ls'), [root])).toBe(false);
+    expect(readsOnlyUnder('Read', bash('ls /data/worker-files'), [root])).toBe(false);
+  });
+
+  it('answers yes under an allow-list that would refuse Bash, and says why', () => {
+    const r = responder();
+    const decisions: Array<{ reason: string }> = [];
+    const tap = permissionTap({ policy: 'allow-list', allowTools: ['Read'], responder: r, readOnlyRoots: () => [root], onDecision: (d) => decisions.push(d) });
+    tap({
+      type: 'stream',
+      conversationId: 'c1',
+      events: [{ kind: { type: 'permissionRequest', info: { requestId: 'r1', toolName: 'Bash', description: '', toolInput: bash('ls /data/worker-files/w1') } } } as never],
+    } as MainToRendererEvent);
+    expect(r.respondPermission).toHaveBeenCalledWith('c1', 'r1', true);
+    expect(decisions[0].reason).toMatch(/read-only look at a worker's own files/);
+    tap(permissionEvent('Bash', 'r2'));
+    expect(r.respondPermission).toHaveBeenLastCalledWith('c1', 'r2', false);
+  });
+});
+
+describe('tool calls that only read, on the org server', () => {
+  it('lets a read through the allow-list and still refuses a write, only when asked to', async () => {
+    const { permissionTap } = await import('./permissions');
+    const answers: Array<[string, boolean]> = [];
+    const responder = { respondPermission: (_c: string, id: string, ok: boolean) => answers.push([id, ok]), respondCodexApproval: () => {}, respondUserInput: () => {} };
+    const ask = (tap: (e: never) => void, id: string, toolName: string) =>
+      tap({ type: 'stream', conversationId: 'c1', events: [{ timestamp: 0, kind: { type: 'permissionRequest', info: { requestId: id, toolName, description: '', toolInput: '{}' } } }] } as never);
+    const server = permissionTap({ policy: 'allow-list', allowTools: ['Read'], responder, allowToolReads: true });
+    ask(server, 'r1', 'mcp__acme-tracker__release_timeline');
+    ask(server, 'r2', 'mcp__acme-tracker__feature_list');
+    ask(server, 'r3', 'mcp__acme-tracker__feature_update');
+    const strict = permissionTap({ policy: 'allow-list', allowTools: ['Read'], responder });
+    ask(strict, 'r4', 'mcp__acme-tracker__feature_list');
+    expect(answers).toEqual([['r1', true], ['r2', true], ['r3', false], ['r4', false]]);
   });
 });

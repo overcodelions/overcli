@@ -13,9 +13,20 @@
 // permission tap sits in the middle, because a run with nobody watching has to
 // answer its own tool prompts. See permissions.ts.
 
+import path from 'node:path';
+import { RunActivity } from '../main/flows/runActivity';
+import { workerFilesRoot } from '../main/flows/workerFiles';
+import { randomUUID } from 'node:crypto';
+import { projectIdFor } from '../main/projectIds';
+import { loadAllFlows, saveFlow } from '../main/flows/storage';
+import { teamPieceFlow } from '../shared/flows/team';
+import { draftFlowFromPrompt } from '../main/flows/drafter';
+import { workerOrigin } from '../shared/flows/worker';
 import { currentBranch } from '../main/git';
 import { healthyBackends } from '../main/health';
-import { setHost, type NotifyArgs } from '../main/host';
+import { UpdateCheck, serverVersion } from '../main/org/updateCheck';
+import { effectiveScopes } from '../shared/flows/toolScope';
+import { host, setHost, type NotifyArgs } from '../main/host';
 import { nodeHost } from '../main/hostNode';
 import { withWebhookNotify } from '../main/webhookNotify';
 import { Store } from '../main/store';
@@ -34,9 +45,18 @@ import { createOrgControl, createSlackBridge } from '../main/slack/wire';
 import type { TeamEngine } from '../main/flows/teamEngine';
 import type { SlackCommands } from '../main/slack/slackCommands';
 import type { SsoService } from '../main/org/sso';
+import type { ConnectionsService } from '../main/org/connections';
 import type { TriggerService } from '../main/org/triggers';
-import { createTeamEngine } from '../main/flows/teamWire';
+import { createTeamEngine, runDeliverablesFor } from '../main/flows/teamWire';
 import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraft';
+import { bindAllowList } from '../main/org/repoGrants';
+import { BranchLander } from '../main/org/landBranches';
+import { HOST_CREDENTIALS, type ConnectedRepo } from '../main/org/repos';
+import { stripSecrets } from '../main/org/secrets';
+import { execFile } from 'node:child_process';
+import { setWebReadsTrusted } from '../main/flows/trustedCommands';
+import { loadOrgPolicy } from '../main/org/orgStores';
+import type { SecretsService } from '../main/org/secrets/service';
 import { teamHireJobDescription } from '../shared/flows/team';
 import type { OrgService } from '../main/org/orgService';
 import type { AccessService } from '../main/org/accessService';
@@ -46,6 +66,8 @@ export interface HeadlessEngines {
   flowRuntime: FlowRuntimeImpl;
   orchestrator: OrchestratorImpl;
   workerEngine: WorkerEngine;
+  /// What each run is doing, step by step, for the console.
+  runActivity: RunActivity;
   /// The emit tee, exposed so `buildDaemonEngines` can hand the scheduler the
   /// SAME one every other engine writes to. Building a second tee would give
   /// the scheduler a channel the permission tap never sees.
@@ -72,6 +94,8 @@ export interface DaemonEngines extends HeadlessEngines {
   commands: SlackCommands;
   /// Signing in with the company's identity provider.
   sso: SsoService;
+  /// People's own connected accounts (their Google Drive).
+  connections: ConnectionsService;
   /// Workers acting on business events. Started by `serve`.
   triggers: TriggerService;
 }
@@ -97,11 +121,17 @@ export interface EngineOptions {
   /// See `permissionTap`. The CLI sets this when the file it is running is a
   /// worker whose caps do not include external actions.
   denyCodexApprovals?: boolean;
+  /// Let a tool call that only reads through the allow-list (the org server:
+  /// see `permissionTap`).
+  allowToolReads?: boolean;
   /// Every event, after the runtime and worker engine have observed it and
   /// after the permission tap has answered anything it needed to.
   onEvent?: (event: MainToRendererEvent) => void;
   onPermission?: (d: PermissionDecision) => void;
   onNotify?: (args: NotifyArgs) => void;
+  /// Secrets managed from the console (`overcli serve`), loaded before the
+  /// engines start so everything reads them from the environment.
+  secrets?: SecretsService;
 }
 
 export function buildEngines(options: EngineOptions): HeadlessEngines {
@@ -121,6 +151,16 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
   // in index.ts, for the same reason.
   let answerPermissions: (event: MainToRendererEvent) => void = () => {};
 
+  // What each run is doing, step by step, for the console. Kept as long as
+  // the org keeps things (Setup → Rules), and a week when it keeps forever.
+  const runActivity = new RunActivity(
+    (conversationId) => flowRuntime?.listRuns().find((r) => Object.values(r.conversationIds).includes(conversationId))?.id,
+    { dir: path.join(host().dataDir(), 'run-activity'), keepDays: () => loadOrgPolicy().policy.retentionDays ?? 7 },
+  );
+  runActivity.prune();
+  const pruneTimer = setInterval(() => runActivity.prune(), 6 * 60 * 60 * 1000);
+  pruneTimer.unref?.();
+
   const emit = (event: MainToRendererEvent) => {
     // Order matters. The runtime's own tap auto-denies external actions on a
     // worker run that was never granted them, and it has to see the event
@@ -129,6 +169,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     flowRuntime?.observeEvent(event);
     workerEngine?.observeEvent(event);
     answerPermissions(event);
+    runActivity.observe(event);
     options.onEvent?.(event);
   };
 
@@ -139,6 +180,10 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     responder: runner,
     onDecision: options.onPermission,
     denyCodexApprovals: options.denyCodexApprovals,
+    // A worker looking at its own files with ls and cat, which the allow-list
+    // would otherwise refuse.
+    readOnlyRoots: () => [workerFilesRoot()],
+    ...(options.allowToolReads ? { allowToolReads: true } : {}),
   });
 
   flowRuntime = new FlowRuntimeImpl(
@@ -201,25 +246,75 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
         idleTimeoutMs: 60_000,
       });
     },
-    deliverablesFor: (runId) => {
-      const run = flowRuntime.getRun(runId);
-      if (!run) return [];
-      const seen = new Set<string>();
-      const out: Array<{ name: string; body?: string }> = [];
-      for (const step of run.flowSnapshot?.steps ?? []) {
-        const art = run.artifacts?.[step.output];
-        if (!art || seen.has(art.name)) continue;
-        seen.add(art.name);
-        out.push({ name: art.name, body: art.body });
-      }
-      return out;
+    // What the worker already has under way, so a question asked mid-run
+    // isn't planned as the same work again.
+    // Tools the org gives every worker (Setup → Tools → Who can use it).
+    sharedMcpServers: () => loadOrgPolicy().policy.sharedMcpServers ?? [],
+    toolDefaults: () => loadOrgPolicy().policy.toolDefaults,
+    activeRuns: (workerId) => flowRuntime.listRuns().filter((r) => r.workerId === workerId && (r.state.kind === 'running' || r.state.kind === 'paused')),
+    // Copied from index.ts: which flows a worker has, so its planning turn
+    // can send each candidate to the one that fits. Without it every item
+    // ran through the worker's first flow — a worker given a repo's flow
+    // still answered with its research flow.
+    flowsFor: (ids) => {
+      const byId = new Map(loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).map((f) => [f.id, f]));
+      return ids.flatMap((id) => {
+        const f = byId.get(id);
+        return f ? [{ id: f.id, name: f.name, ...(f.description ? { description: f.description } : {}) }] : [];
+      });
     },
+    // A team member's piece runs its flow cut down to the piece, as in the app.
+    pieceFlow: (flowId, opts) => {
+      const flow = loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).find((f) => f.id === flowId);
+      if (!flow) return { ok: false, error: `flow "${flowId}" not found` };
+      const piece = teamPieceFlow(flow, { check: opts?.check });
+      const saved = saveFlow({ flow: piece, target: 'generated' });
+      return saved.ok ? { ok: true, flowId: piece.id } : saved;
+    },
+    // A question no flow covers: draft a read-only flow to find out, as in the
+    // app (index.ts), and launch it.
+    generatedFlow: async ({ worker, errand, request, runIn }) => {
+      const drafted = await draftFlowFromPrompt(
+        {
+          description:
+            `${request}\n\nThis flow exists to ANSWER a question, so it must not change ` +
+            `anything — but it may do whatever it takes to find the answer. Give its ` +
+            `steps the tools to read files, search, query services, and run commands ` +
+            `whose only effect is reporting: the test suite, a build, a linter, a ` +
+            `type-check. Running a command is fine; changing the project is not — no ` +
+            `edits, no writes, no commits, no pushes. The final step must output a ` +
+            `written answer.`,
+        },
+        drafterDepsFor(runner),
+      );
+      if (!drafted.ok) return drafted;
+      const flow = { ...drafted.flow, id: `generated-${randomUUID().slice(0, 8)}`, source: 'generated' as const };
+      const saved = saveFlow({ flow, target: 'generated' });
+      if (!saved.ok) return saved;
+      const launched = await orchestrator.startBatch({
+        title: `[Errand] ${errand.split('\n')[0]?.trim().slice(0, 80) || 'Investigation'}`,
+        projectPath: worker.projectPath,
+        runIn,
+        maxConcurrent: 1,
+        origin: workerOrigin(worker, 'errand', errand),
+        items: [{ candidate: { id: flow.id, title: flow.name, prompt: errand }, flowId: flow.id }],
+      });
+      if (!launched.ok) return launched;
+      return { ok: true, orchestrationId: launched.orchestrationId, flowId: flow.id };
+    },
+    // The shared reading, as the desktop uses: what each step recorded and
+    // the files the run wrote. A copy here filed only the first, so an HTML
+    // report a worker rendered never reached its Files and died with the
+    // run's scratch folder.
+    deliverablesFor: runDeliverablesFor((id) => flowRuntime.getRun(id)),
     runHandoffOutputs: (runId) => {
       const run = flowRuntime.getRun(runId);
       return run ? runHandoffOutputs(run) : [];
     },
   });
 
+  // A worker's tool scopes, enforced on its runs (toolScope.ts).
+  flowRuntime.setToolScopes((id) => effectiveScopes(workerEngine.get(id)?.toolScopes, loadOrgPolicy().policy.toolDefaults));
   flowRuntime.setRunObserver((run) => {
     orchestrator.onRunUpdate(run);
   });
@@ -229,6 +324,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     flowRuntime,
     orchestrator,
     workerEngine,
+    runActivity,
     emit,
     dispose: () => {
       try {
@@ -250,12 +346,18 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
 /// behaviour is untouched by construction: a one-shot run must NOT arm a
 /// scheduler and start firing unrelated saved schedules underneath itself.
 export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
+  // Research without asking, unless the org's rules say to ask. Before the
+  // engines: restoring runs at startup already decides which steps ask.
+  setWebReadsTrusted(() => !loadOrgPolicy().policy.webNeedsApproval);
   // Teams fold run and batch events into their tasks, so they hear the same
   // emit every other engine does. Built below, after the engines it drives.
   let teams: TeamEngine | null = null;
   let slackCommands: SlackCommands | null = null;
   const engines = buildEngines({
     ...options,
+    // A worker asked a question reads its own tools while it works out the
+    // answer; nobody is there to approve a lookup.
+    allowToolReads: true,
     onNotify: (args) => {
       options.onNotify?.(args);
       slackCommands?.onNotice(args);
@@ -314,17 +416,51 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     },
   });
 
+  // Connected repos add their PR commands to this list as they come and go.
+  if (options.policy === 'allow-list') bindAllowList(options.allowTools);
   const slack = createSlackBridge({ flowRuntime, orchestrator, workerEngine });
-  const { org, commands, access, sso, triggers } = createOrgControl(
-    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams },
+  // The server's version, and whether a newer release is out (Readiness).
+  const updates = new UpdateCheck({ current: serverVersion(), enabled: () => process.env.OVERCLI_UPDATE_CHECK !== '0' });
+  updates.start();
+  const { org, commands, access, sso, triggers, connections } = createOrgControl(
+    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, health: () => [updates.health()], ...(options.secrets ? { secrets: options.secrets } : {}) },
     slack,
   );
   slackCommands = commands;
+
+  // A finished repo or workspace run's change, committed and pushed by the
+  // server (landBranches.ts).
+  // Git gets the host tokens and nothing else secret; the tests get no secrets at all.
+  const gitEnv = (): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = { ...stripSecrets(process.env), GIT_TERMINAL_PROMPT: '0' };
+    for (const c of Object.values(HOST_CREDENTIALS)) {
+      for (const k of [c.tokenEnv, c.userEnv]) if (process.env[k]) env[k] = process.env[k];
+    }
+    return env;
+  };
+  const lander = new BranchLander({
+    test: (command, cwd) =>
+      new Promise((resolve) => {
+        execFile('/bin/sh', ['-c', command], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: stripSecrets(process.env) }, (err, stdout, stderr) =>
+          resolve(err ? { ok: false, error: `${stdout}${stderr}`.trim() || err.message } : { ok: true }),
+        );
+      }),
+    git: (args, cwd) =>
+      new Promise((resolve) => {
+        execFile('git', args, { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: gitEnv() }, (err, stdout, stderr) =>
+          resolve(err ? { ok: false, error: `${stderr}${stdout}`.trim() || err.message } : { ok: true, stdout: `${stdout}${stderr}` }),
+        );
+      }),
+    repos: () => org.repoList({ name: 'overcli', admin: true }).ok ? (org.repoList({ name: 'overcli', admin: true }) as { repos: ConnectedRepo[] }).repos : [],
+    attach: (runId, name, body) => void flowRuntime.attachArtifact(runId, name, body),
+    log: (message) => options.onNotify?.({ title: 'Push', body: message }),
+  });
 
   flowRuntime.setRunObserver((run) => {
     orchestrator.onRunUpdate(run);
     scheduler.onRunUpdate(run);
     void slack.onRunUpdate(run);
+    lander.onRun(run);
   });
 
   // index.ts:585. Missing from `buildEngines`, which is survivable for `run`
@@ -342,6 +478,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     access,
     commands,
     sso,
+    connections,
     triggers,
     teams,
     // Ordered: stop the clocks before killing the children, so neither engine
@@ -379,7 +516,7 @@ export function ensureProject(projectPath: string, name?: string): void {
   Store.saveProjects([
     ...store.projects,
     {
-      id: `cli-${Buffer.from(projectPath).toString('hex').slice(0, 24)}`,
+      id: projectIdFor('cli', projectPath),
       name: name ?? projectPath.split('/').filter(Boolean).pop() ?? 'project',
       path: projectPath,
       conversations: [],

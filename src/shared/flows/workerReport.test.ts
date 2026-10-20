@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorkerReport, type WorkerRunFact } from './workerReport';
+import { buildWorkerReport, rollUpWorkerReport, type WorkerRunFact } from './workerReport';
 import type { Orchestration, OrchestrationItem } from './orchestration';
 import type { Worker, WorkerJournalEntry } from './worker';
 
@@ -314,5 +314,38 @@ describe('buildWorkerReport · daily buckets', () => {
     });
     expect(r.daily[0].day).toBe('2026-08-17');
     expect(r.daily).toHaveLength(4);
+  });
+});
+
+describe('rollUpWorkerReport', () => {
+  const runs = (workerId: string, costUSD: number, at: number): WorkerRunFact => ({
+    workerId, completed: true, turns: 2, inputTokens: 100, outputTokens: 50, costUSD, wallClockMs: 60_000, terminalAt: at,
+  });
+
+  it('matches the builder on the full roster, and drops a removed row from totals and daily', () => {
+    const now = new Date(2026, 8, 10, 12).getTime();
+    const yesterday = now - 86_400_000;
+    const report = buildWorkerReport({
+      workers: [makeWorker({ id: 'a', name: 'Ana' }), makeWorker({ id: 'b', name: 'Ben' })],
+      journal: () => [],
+      orchestrations: [],
+      runs: [runs('a', 1, yesterday), runs('b', 4, now)],
+      sinceMs: now - 3 * 86_400_000,
+      generatedAt: now,
+    });
+    const axis = report.daily.map((d) => d.day);
+
+    const all = rollUpWorkerReport(report.byWorker, axis);
+    expect(all.totals).toEqual(report.totals);
+    expect(all.daily).toEqual(report.daily);
+
+    const onlyA = rollUpWorkerReport(report.byWorker.filter((r) => r.workerId === 'a'), axis);
+    expect(onlyA.totals.costUSD).toBe(1);
+    expect(onlyA.totals.runs).toBe(1);
+    expect(onlyA.daily.map((d) => d.costUSD)).toEqual(axis.map((_, i) => (i === axis.length - 2 ? 1 : 0)));
+
+    const none = rollUpWorkerReport([], axis);
+    expect(none.totals.costUSD).toBe(0);
+    expect(none.daily).toHaveLength(axis.length);
   });
 });

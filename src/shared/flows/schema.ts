@@ -609,6 +609,12 @@ export interface FlowRun {
   /// cleared by `onStepFinished` once that step completes so it can never
   /// carry into a later step nobody approved.
   externalActionApprovedStepId?: string;
+  /// A standing grant for the rest of THIS run, given by approving a step
+  /// "for this run": the outside tools that step needed (the shell, say),
+  /// lowercased. A later step whose only reason to ask is tools all on this
+  /// list goes ahead; one that needs anything else, or reads as pushing,
+  /// sending or editing a service, still asks. See `runGrantCovers`.
+  externalActionRunGrant?: string[];
   /// When the user last typed AT this run: a hijack turn sent to one of its
   /// participants, or a correction held for the next step. Persisted, and
   /// deliberately distinct from `attempts` — those are the runtime's own

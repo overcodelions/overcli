@@ -2,6 +2,8 @@
 
 > **Alpha.** The org layer is early: expect changes, and back up `/data`.
 
+**Prefer one click?** [deploy/aws/README.md](https://github.com/overcodelions/overcli/blob/master/deploy/aws/README.md) builds the recommended setup below as one CloudFormation stack.
+
 ## What has to survive
 
 The container is disposable. Everything that matters lives in **`/data`**:
@@ -38,7 +40,8 @@ So on AWS the job is to put `/data` on a durable disk, snapshot it, and run exac
    CLAUDE_CODE_USE_BEDROCK=1
    AWS_REGION=us-east-1
    ```
-5. **Secrets.** Keep the Slack tokens and `OVERCLI_SSO_CLIENT_SECRET` in Secrets Manager or SSM Parameter Store, and write them into `deploy/.env` at boot from user data. Never bake them into the image.
+   The CloudFormation template runs the container on the host network so the server can read Secrets Manager and Bedrock through the instance role. Accepted risk (RRW-aws-imds-host-network): code a worker runs inside the container can reach that role too, so keep the role to Bedrock invoke and the `overcli/<Org>/` secrets prefix only.
+5. **Secrets.** Keep them in Secrets Manager, managed from the console. In `deploy/.env`, set `OVERCLI_SECRETS=aws:overcli/acme/`. Then add the git host tokens, Slack tokens and SSO client secret on **Setup → Secrets**. They're written to Secrets Manager under that prefix and used at once, with no restart. Give the instance role the [secrets policy](#secrets-policy) below. Never bake secrets into the image.
 6. **Image.** Build once and push to ECR. The instance pulls it.
    ```sh
    docker build -f deploy/Dockerfile -t <acct>.dkr.ecr.<region>.amazonaws.com/overcli-org:<version> .
@@ -72,7 +75,44 @@ Launch a new instance and attach the same EBS volume (or one restored from the l
 ECS works, with care:
 
 - **ECS on EC2 with an EBS-backed volume** is closest to the setup above.
-- **Fargate with EFS** works too. Mount EFS at `/data` (uid 1000) and set `desiredCount: 1`, `maximumPercent: 100` and `minimumHealthyPercent: 0`, so a deploy never runs two tasks at once. EFS is slower for git worktrees, which makes runs feel sluggish on big repos.
+- **Fargate with EFS** works too:
+  - Mount EFS at `/data` (uid 1000).
+  - Set `desiredCount: 1`, `maximumPercent: 100` and `minimumHealthyPercent: 0`, so a deploy never runs two tasks at once.
+  - Set `OVERCLI_SECRETS=aws:overcli/acme/` in the task definition's environment, and give the task role the secrets policy below. Nothing secret then lives on EFS or in the task definition, and secrets set on the console survive every redeploy.
+  - Secrets you'd rather inject through the task definition's own `secrets` block still work. They show on the console as "set by the environment" and win.
+  - EFS is slower for git worktrees, which makes runs feel sluggish on big repos.
+
+## Secrets policy
+
+The role overcli runs as (instance role or task role) needs this on its prefix. Drop the write actions and set `OVERCLI_SECRETS_READONLY=1` if Terraform manages the secrets instead; the console then lists them and points there.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["secretsmanager:ListSecrets"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:CreateSecret",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:RestoreSecret",
+        "secretsmanager:TagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:<region>:<account>:secret:overcli/acme/*"
+    }
+  ]
+}
+```
+
+With a customer-managed KMS key, add `kms:Decrypt` and `kms:GenerateDataKey` on it. overcli reads the secrets at start and every five minutes, so one rotated in Secrets Manager applies without a redeploy.
 
 ## Not a fit
 

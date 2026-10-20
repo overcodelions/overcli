@@ -25,6 +25,9 @@ import { createControlPlane, listenControlPlane } from './controlPlane';
 import { ensureDefaultProject } from '../main/org/defaultProject';
 import { parseControlAddress, type ServeOptions } from './args';
 import { EXIT } from './run';
+import { nodeHost } from '../main/hostNode';
+import { SECRETS_ENV, SecretsService, createSecretStore, parseSecretsSpec, type SecretStore } from '../main/org/secrets';
+import { autonomousWithoutGrant } from '../main/org/orgService';
 
 /// Node's timer ceiling is 2^31-1 ms; stay comfortably under it.
 const KEEP_ALIVE_MS = 1 << 30;
@@ -160,12 +163,19 @@ export function acquireLock(dataDir: string): { ok: true; release: () => void } 
 export function startDaemon(
   opts: ServeOptions,
   deps: ServeDeps,
+  secrets?: SecretsService,
 ): { ok: true; handle: ServeHandle } | { ok: false; exitCode: number; error: string } {
   const engines = buildDaemonEngines({
     stateDir: opts.stateDir,
     policy: opts.permissions,
     allowTools: opts.allowTools,
+    ...(secrets ? { secrets } : {}),
   });
+  // A new Slack token from Setup → Secrets: reconnect with it.
+  secrets?.onChange((names) => {
+    if (names.some((n) => n.startsWith('OVERCLI_SLACK_')) && slackEnabled()) void engines.slack.start();
+  });
+  secrets?.start();
 
   // Read AFTER the engines exist: `buildDaemonEngines` installs the host, and
   // `dataDir()` is what resolves --state-dir / $OVERCLI_HOME / ~/.overcli.
@@ -193,6 +203,11 @@ export function startDaemon(
   if (orgZone && zoneFromOrg) process.env.TZ = orgZone;
   engines.scheduler.start();
   engines.workerEngine.start();
+  for (const w of autonomousWithoutGrant(engines.workerEngine.roster())) engines.workerEngine.save(w);
+  const carried = carryOnInterrupted(engines, opts);
+  if (carried) deps.out(`runs: carried on ${carried} that a restart cut short`);
+  const asked = engines.org.resumeAsks();
+  if (asked) deps.out(`asks: asked ${asked} again that a restart cut short`);
   engines.teams.start();
   engines.triggers.start();
   void ensureDefaultProject().then((dir) => {
@@ -205,7 +220,7 @@ export function startDaemon(
   if (controlAt && 'error' in controlAt) {
     deps.out(`control: not started — $OVERCLI_CONTROL: ${controlAt.error}`);
   } else if (controlAt) {
-    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, triggers: engines.triggers, slackPeople: slackDirectory(), log: deps.out });
+    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, slackPeople: slackDirectory(), log: deps.out });
     control = server;
     listenControlPlane(server, controlAt).then(
       () => {
@@ -254,6 +269,9 @@ export function startDaemon(
   // open and node would fall straight out of `main`. A daemon with no work yet
   // still has to be up — the user may add a schedule from the app.
   const keepAlive = setInterval(() => {}, KEEP_ALIVE_MS);
+  // A console ask's handed-off work, back to its worker to finish up once it
+  // ends. Slack's front door does its own, to answer in the thread.
+  const handBack = setInterval(() => engines.org.handBackDue(), 30_000);
 
   const everyone: OrgCaller = { name: 'overcli', admin: true };
   const housekeeping = startHousekeeping({
@@ -290,7 +308,9 @@ export function startDaemon(
     shuttingDown = true;
     deps.out(`${signal} — stopping schedules and workers.`);
     clearInterval(keepAlive);
+    clearInterval(handBack);
     housekeeping.stop();
+    secrets?.stop();
     engines.triggers.stop();
     control?.close();
     try {
@@ -306,7 +326,13 @@ export function startDaemon(
 
 /// The command as `main` calls it: start, wire real signals, wait forever.
 export async function serveCommand(opts: ServeOptions, deps: ServeDeps): Promise<number> {
-  const started = startDaemon(opts, deps);
+  // Secrets first: the engines, Slack and git read them from the environment.
+  const secrets = await loadSecrets(opts, deps);
+  if (!secrets.ok) {
+    process.stderr.write(`${secrets.error}\n`);
+    return EXIT.BAD_INPUT;
+  }
+  const started = startDaemon(opts, deps, secrets.service);
   if (!started.ok) {
     process.stderr.write(`${started.error}\n`);
     return started.exitCode;
@@ -319,6 +345,42 @@ export async function serveCommand(opts: ServeOptions, deps: ServeDeps): Promise
     process.on(signal, () => started.handle.shutdown(signal));
   }
   return started.handle.done;
+}
+
+/// Worker runs a restart cut short (a deploy, an upgrade, a crash) pick up
+/// where they stopped, at the start of the step they were in. A step that
+/// acts outside the server was already turned back into an approval when
+/// the run was restored (runtime.ts), so nothing is pushed or sent twice
+/// without a person saying so. A day old or more, they wait for someone.
+/// They run under the allow-list the server has now, not the one they
+/// started with.
+function carryOnInterrupted(engines: DaemonEngines, opts: ServeOptions): number {
+  let count = 0;
+  for (const run of engines.flowRuntime.listRuns()) {
+    if (!run.workerId || run.state.kind !== 'paused' || run.state.reason !== 'interrupted') continue;
+    if (Date.now() - run.createdAt > 24 * 3_600_000) continue;
+    if (run.unattended && opts.permissions === 'allow-list') run.unattendedAllowedTools = opts.allowTools;
+    if (engines.flowRuntime.resumeRun({ runId: run.id }).ok) count++;
+  }
+  return count;
+}
+
+/// The secrets store $OVERCLI_SECRETS names (an encrypted file by default),
+/// read once before anything starts.
+async function loadSecrets(opts: ServeOptions, deps: ServeDeps): Promise<{ ok: true; service: SecretsService } | { ok: false; error: string }> {
+  const spec = parseSecretsSpec(process.env[SECRETS_ENV]);
+  if (!spec.ok) return spec;
+  let store: SecretStore;
+  try {
+    store = await createSecretStore(spec.spec, nodeHost({ dataDir: opts.stateDir }).dataDir());
+  } catch (err) {
+    return { ok: false, error: `secrets: could not open the store: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const service = new SecretsService({ store, log: deps.out });
+  const loaded = await service.load();
+  deps.out(loaded.ok ? `secrets: ${store.where}${store.readOnly ? ' (read-only)' : ''}` : `secrets: ${loaded.error} — starting with the environment only`);
+  if (store.warning) deps.out(`secrets: ${store.warning}`);
+  return { ok: true, service };
 }
 
 /// People in the org's Slack, for the invite picker: listed once and kept

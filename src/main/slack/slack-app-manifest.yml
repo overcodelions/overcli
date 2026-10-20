@@ -4,7 +4,7 @@
 #   1. Install to Workspace, and copy the Bot User OAuth Token (xoxb-…).
 #   2. Basic Information → App-Level Tokens → Generate, with the
 #      connections:write scope, and copy it (xapp-…).
-#   3. Paste both into overcli → Settings → Advanced → Slack, turn it on, Save.
+#   3. Paste both into overcli → Settings → Your org → Slack, turn it on, Save.
 #      Headless: OVERCLI_SLACK_BOT_TOKEN, OVERCLI_SLACK_APP_TOKEN and
 #      OVERCLI_SLACK_ENABLED=1 for `overcli serve`.
 #
@@ -12,11 +12,11 @@
 # connection, so a second process on these tokens would take replies meant
 # for the first.
 display_information:
-  name: overcli workers
-  description: Your workers ask their managers here.
+  name: overcli
+  description: Ask your org's AI workers for anything — mention @overcli or DM it. Workers ask their managers here too.
 features:
   bot_user:
-    display_name: overcli workers
+    display_name: overcli
     always_online: true
   slash_commands:
     - command: /overcli
@@ -28,8 +28,8 @@ features:
       usage_hint: "[name] [ask <text> | pause | resume] | waiting"
       should_escape: false
     - command: /team
-      description: Give a team of workers a task, or list teams
-      usage_hint: "[team name]: [what you want back]"
+      description: Give a team of workers a task, make a team, or list teams
+      usage_hint: "[team name]: [what you want back] | new [what it's for]"
       should_escape: false
     - command: /hire
       description: Hire an AI worker
@@ -52,6 +52,8 @@ oauth_config:
       - groups:history
       - reactions:read
       - app_mentions:read
+      - files:read
+      - files:write
 settings:
   event_subscriptions:
     bot_events:

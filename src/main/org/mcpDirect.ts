@@ -63,11 +63,22 @@ async function withClient<T>(config: McpServerConfig, fn: (c: Client) => Promise
   }
 }
 
-/// The tools a server offers, for the trigger builder's picker.
-export async function listServerTools(config: McpServerConfig): Promise<{ ok: true; tools: Array<{ name: string; description?: string }> } | { ok: false; error: string }> {
+/// The tools a server offers, for the trigger builder's picker — with each
+/// one's input schema when asked, to fill its arguments in.
+export async function listServerTools(
+  config: McpServerConfig,
+  opts: { schemas?: boolean } = {},
+): Promise<{ ok: true; tools: Array<{ name: string; description?: string; inputSchema?: unknown }> } | { ok: false; error: string }> {
   try {
     const res = await withClient(config, (c) => c.listTools());
-    return { ok: true, tools: res.tools.map((t) => ({ name: t.name, ...(t.description ? { description: t.description.slice(0, 300) } : {}) })) };
+    return {
+      ok: true,
+      tools: res.tools.map((t) => ({
+        name: t.name,
+        ...(t.description ? { description: t.description.slice(0, 300) } : {}),
+        ...(opts.schemas && t.inputSchema ? { inputSchema: t.inputSchema } : {}),
+      })),
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

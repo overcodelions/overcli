@@ -14,6 +14,7 @@ import type { UUID } from '../types';
 import type { Worker, WorkerVisibility } from '../flows/worker';
 import { isSlackUserId } from '../flows/worker';
 import { managerFor } from '../flows/org';
+import { parseToolScope, type ToolScopes } from '../flows/toolScope';
 
 /// A role the org has approved for hiring: a known job, a known cost, and
 /// tools cleared in advance. Hiring from one skips the drafter's interview,
@@ -62,8 +63,20 @@ export interface OrgPolicy {
   /// MCP servers a hire may be granted without an admin. Absent: none — a
   /// hire starts with no connectors and someone grants them by hand.
   allowedMcpServers?: string[];
+  /// MCP servers every worker gets, without anyone giving them — tools that
+  /// read, mostly. Absent: none.
+  sharedMcpServers?: string[];
+  /// How much of each tool a worker gets unless its own scope says
+  /// otherwise, by tool name (toolScope.ts). Absent: the whole tool.
+  toolDefaults?: ToolScopes;
   /// Whether making a worker visible to the whole org needs an admin.
   orgVisibilityNeedsAdmin: boolean;
+  /// Whether a worker on the org's server must ask before it reads the web
+  /// (WebSearch, WebFetch). Off by default: research is most of what
+  /// workers do, and a manager asked before every page stops reading them.
+  /// On for a server whose network can reach things the web must not (see
+  /// docs/security.md).
+  webNeedsApproval: boolean;
   /// Anyone in the org's Slack who asks (`/overcli join`) gets in straight
   /// away, as someone who can ask workers things. Off: an admin lets them in.
   openJoin: boolean;
@@ -106,6 +119,7 @@ export const DEFAULT_ORG_POLICY: OrgPolicy = {
   approvers: [],
   teams: {},
   orgVisibilityNeedsAdmin: true,
+  webNeedsApproval: true,
   openJoin: false,
   alertAtPercent: 80,
   people: {},
@@ -271,7 +285,18 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
       approvers: ids('approvers'),
       teams,
       ...(r.allowedMcpServers !== undefined ? { allowedMcpServers: strings(r.allowedMcpServers) } : {}),
+      ...(r.sharedMcpServers !== undefined ? { sharedMcpServers: strings(r.sharedMcpServers) } : {}),
+      ...(() => {
+        const raw = r.toolDefaults && typeof r.toolDefaults === 'object' ? (r.toolDefaults as Record<string, unknown>) : {};
+        const out: ToolScopes = {};
+        for (const [name, v] of Object.entries(raw)) {
+          const scope = parseToolScope(v);
+          if (scope && scope.mode !== 'full' && /^[A-Za-z0-9 ._-]{1,80}$/.test(name)) out[name] = scope;
+        }
+        return Object.keys(out).length ? { toolDefaults: out } : {};
+      })(),
       orgVisibilityNeedsAdmin: r.orgVisibilityNeedsAdmin !== false,
+      webNeedsApproval: r.webNeedsApproval !== false,
       openJoin: r.openJoin === true,
       ...(orgBudget ? { orgBudgetUSD: orgBudget } : {}),
       alertAtPercent: Math.min(alertAt, 100),
@@ -362,7 +387,7 @@ export function hireDecision(
   if (hire.visibility === 'org' && policy.orgVisibilityNeedsAdmin) {
     reasons.push('Making a worker visible to the whole org needs an admin.');
   }
-  const allowed = [...(policy.allowedMcpServers ?? []), ...(hire.role?.tools ?? [])];
+  const allowed = [...(policy.allowedMcpServers ?? []), ...(policy.sharedMcpServers ?? []), ...(hire.role?.tools ?? [])];
   const extra = (hire.mcpServers ?? []).filter((s) => !allowed.includes(s));
   if (extra.length) reasons.push(`It asks for connectors not cleared for workers: ${extra.join(', ')}.`);
   return reasons.length ? { kind: 'needsApproval', reasons } : { kind: 'allowed' };

@@ -37,8 +37,11 @@
 // explicit refusal that names the question, so the step fails with a readable
 // reason instead of hanging.
 
+import { isReadOnlyMcpTool } from '../shared/flows/mcpTools';
 import type { MainToRendererEvent, UserInputAnswer } from '../shared/types';
 import type { PermissionPolicy } from './args';
+import path from 'node:path';
+import { isReadOnlyBashCommand, splitCommands, words } from '../main/permissionPolicy';
 
 export interface PermissionDecision {
   kind: 'permission' | 'codex' | 'userInput';
@@ -84,6 +87,38 @@ export function decide(
     return { approved: false, reason: `denied ${toolName} (not in --allow-tool)` };
   }
   return { approved: false, reason: `denied ${toolName} (--permissions deny)` };
+}
+
+/// A shell command that only reads, and only inside one of `roots`: a worker
+/// running `ls` and `cat` on its own files. Models reach for the shell to look
+/// around however the prompt steers them, and refusing a read of the worker's
+/// own baseline left it convinced it had none. Anything that writes, runs a
+/// substitution, climbs with `..`, or names a path outside the roots is not
+/// this.
+export function readsOnlyUnder(toolName: string, toolInput: string, roots: readonly string[]): boolean {
+  if (toolName !== 'Bash' || !roots.length) return false;
+  let command = toolInput;
+  try {
+    const parsed = JSON.parse(toolInput) as { command?: unknown };
+    if (typeof parsed?.command === 'string') command = parsed.command;
+  } catch {
+    // Already the command line.
+  }
+  if (!command.trim() || !isReadOnlyBashCommand(command)) return false;
+  const inside = (p: string) => roots.some((r) => p === r || p.startsWith(r.endsWith(path.sep) ? r : r + path.sep));
+  for (const c of splitCommands(command).commands) {
+    let namedHere = false;
+    for (const w of words(c).slice(1)) {
+      if (w === '/dev/null' || /^\d?>&\d$/.test(w)) continue;
+      if (w.includes('..') || w.startsWith('~') || w.includes('$')) return false;
+      if (w.startsWith('-')) continue;
+      if (!w.startsWith('/') || !inside(path.resolve(w))) return false;
+      namedHere = true;
+    }
+    // A bare `ls` reads wherever the turn happens to be; only a path we can check counts.
+    if (!namedHere) return false;
+  }
+  return true;
 }
 
 /// The refusal handed back to a model that asked the user a question. Written
@@ -134,6 +169,14 @@ export function permissionTap(args: {
   /// actions. Fixed here rather than in the runtime because the app has a
   /// human who can legitimately answer that prompt; a CI job does not.
   denyCodexApprovals?: boolean;
+  /// Directories a read-only shell command may look inside even when the
+  /// policy would refuse Bash: workers' own files.
+  readOnlyRoots?: () => string[];
+  /// Let a tool call that only reads through, under the allow-list: a worker
+  /// asked a question reads its tracker while it works out the answer, and
+  /// nobody is there to approve a lookup. Its turn loads only its own tools,
+  /// and calls outside its scope never reach here (Claude refuses them).
+  allowToolReads?: boolean;
 }): (event: MainToRendererEvent) => void {
   const allow = new Set(args.allowTools);
   const seen = new Set<string>();
@@ -151,7 +194,13 @@ export function permissionTap(args: {
         const key = `p:${event.conversationId}:${kind.info.requestId}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const { approved, reason } = decide(args.policy, kind.info.toolName, allow);
+        const own = args.policy !== 'auto-approve' && !allow.has(kind.info.toolName) && readsOnlyUnder(kind.info.toolName, kind.info.toolInput, args.readOnlyRoots?.() ?? []);
+        const toolRead = args.policy === 'allow-list' && !!args.allowToolReads && !allow.has(kind.info.toolName) && kind.info.toolName.startsWith('mcp__') && isReadOnlyMcpTool(kind.info.toolName);
+        const { approved, reason } = own
+          ? { approved: true, reason: `allowed ${kind.info.toolName}: a read-only look at a worker's own files` }
+          : toolRead
+            ? { approved: true, reason: `allowed ${kind.info.toolName}: a tool call that only reads` }
+            : decide(args.policy, kind.info.toolName, allow);
         args.responder.respondPermission(event.conversationId, kind.info.requestId, approved);
         args.onDecision?.({
           kind: 'permission',

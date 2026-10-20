@@ -111,6 +111,64 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
   );
 
   tool(
+    'list_secrets',
+    {
+      description:
+        "Admins: the secrets this server uses (git host tokens, Slack tokens, API keys) — which are set, where they're kept, and what needs a missing one. Never the values. " +
+        'Values are set on the console (Setup → Secrets), not here, so they never pass through a chat.',
+      inputSchema: {},
+    },
+    async () => out(org.secretList(caller)),
+  );
+
+  tool(
+    'list_repos',
+    { description: "The code repos connected to this server, each repo's test command, and which workers change it. Workers change a repo by pushing a branch and handing back the link to open a pull request.", inputSchema: {} },
+    async () => out(org.repoList(caller)),
+  );
+
+  tool(
+    'connect_repo',
+    {
+      description:
+        'Admins: connect a code repo (GitHub, Bitbucket or any git host) so workers can change it by pushing branches. Clones it onto the server and refuses pushes to its default branch. ' +
+        'Over https it needs the host\'s token on the server (GH_TOKEN, BITBUCKET_TOKEN or GIT_TOKEN); git@ addresses use the server\'s ssh key. testCommand (e.g. "npm test") runs before every push. Confirm with the person first.',
+      inputSchema: { url: z.string(), name: z.string().optional(), testCommand: z.string().optional() },
+    },
+    async ({ url, name, testCommand }) => out(await org.connectRepo(caller, { url, ...(name ? { name } : {}), ...(testCommand ? { testCommand } : {}) })),
+  );
+
+  tool(
+    'let_worker_change_repo',
+    {
+      description:
+        "Point a worker you manage at a connected repo, or a workspace of repos: it works there from now on, and each code change arrives as a pushed branch per repo with the link to open each pull request (on probation, each push waits for its manager's yes). repo: a repo's or a workspace's name.",
+      inputSchema: { worker: z.string(), repo: z.string() },
+    },
+    async ({ worker, repo }) => out(org.letWorkOnRepo(caller, worker, repo)),
+  );
+
+  tool(
+    'create_workspace',
+    {
+      description:
+        'Admins: group connected repos into a workspace, so one worker or team can change them together (an API and the app that uses it). Each run gets its own worktree of every repo. ' +
+        'instructions: what every run in it should know — which repo owns what, what must stay in step. Confirm with the person first.',
+      inputSchema: { name: z.string(), repos: z.array(z.string()), instructions: z.string().optional() },
+    },
+    async ({ name, repos, instructions }) => out(org.createWorkspace(caller, { name, repos, ...(instructions ? { instructions } : {}) })),
+  );
+
+  tool(
+    'push_team_code',
+    {
+      description: "Push a finished team task's branch from every repo it changed, and get one link per repo to open its pull request. For whoever asked for the task, or an admin.",
+      inputSchema: { taskId: z.string() },
+    },
+    async ({ taskId }) => out(org.pushTeamCode(caller, taskId)),
+  );
+
+  tool(
     'list_triggers',
     { description: 'What sets a worker off on its own: watches (a tool checked every few minutes), webhooks and Slack channel events, with what each has handled.', inputSchema: { worker: z.string() } },
     async ({ worker }) => out(org.triggers(caller, worker)),
@@ -215,10 +273,14 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
     {
       description:
         'Approve or reject a step a worker wants to run that acts outside its sandbox (a push, a message, a publish). ' +
-        'Approval covers that one step only.',
-      inputSchema: { runId: z.string().describe('From list_waiting.'), approve: z.boolean() },
+        'Approval covers that one step, or with forRun the later steps of the same run that need only the same tools (list_waiting says how many: coversLater).',
+      inputSchema: {
+        runId: z.string().describe('From list_waiting.'),
+        approve: z.boolean(),
+        forRun: z.boolean().optional().describe('Also approve the later steps that need only the same tools. Only when list_waiting shows coversLater.'),
+      },
     },
-    async ({ runId, approve }) => out(org.decideRun(caller, runId, approve)),
+    async ({ runId, approve, forRun }) => out(org.decideRun(caller, runId, approve, forRun === true)),
   );
 
   tool(
@@ -566,7 +628,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
       {
         description:
           "Admins: change some of the org's rules. Pass only the keys to change; null removes an optional one. " +
-          'Keys: name, publicUrl, timezone, hirers ("*" or Slack ids), budgetAllowanceUSD, approvers, orgVisibilityNeedsAdmin, ' +
+          'Keys: name, publicUrl, timezone, hirers ("*" or Slack ids), budgetAllowanceUSD, approvers, orgVisibilityNeedsAdmin, webNeedsApproval (workers ask before reading the web), ' +
           'allowedMcpServers, teams ({name: [Slack ids]}), roles ([{name, job, tools, budgetUSDPerMonth}]), orgBudgetUSD, alertAtPercent, ' +
           'retentionDays, sso ({issuer, clientId, allowedDomains, required}), people ({email: Slack id}), fleet ([{name, url}]). ' +
           'Read org_rules first, and confirm the change with the person.',
@@ -579,7 +641,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
 
 const READ_ONLY = new Set([
   'whoami', 'list_workers', 'get_worker', 'org_chart', 'list_waiting', 'list_hires', 'today', 'list_work',
-  'list_roles', 'list_teams', 'list_team_tasks', 'org_people', 'org_health', 'decision_log', 'list_proposals', 'org_rules', 'check_question', 'list_tools', 'list_triggers', 'library',
+  'list_roles', 'list_teams', 'list_team_tasks', 'org_people', 'org_health', 'decision_log', 'list_proposals', 'org_rules', 'check_question', 'list_tools', 'list_triggers', 'library', 'list_repos', 'list_secrets',
 ]);
 
 function annotationsFor(name: string): Record<string, boolean> {

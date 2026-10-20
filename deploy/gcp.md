@@ -27,7 +27,10 @@ Replace the container freely; keep `/data` on a persistent disk and snapshot it.
    ANTHROPIC_VERTEX_PROJECT_ID=<project>
    ```
    Turn on Private Google Access on the subnet so Vertex is reached privately.
-5. **Secrets.** Keep the Slack tokens and the SSO client secret in Secret Manager, and write them into `deploy/.env` at boot from a startup script.
+5. **Secrets.** Keep them in Secret Manager, managed from the console:
+   - In `deploy/.env`, set `OVERCLI_SECRETS=gcp:<project>/overcli-acme-`.
+   - Give the VM's service account `roles/secretmanager.admin` on the project, or `roles/secretmanager.secretAccessor` with `OVERCLI_SECRETS_READONLY=1` if you manage the secrets yourself.
+   - Add the git host tokens, Slack tokens and SSO client secret on **Setup → Secrets**. They're used at once and re-read every five minutes.
 6. **Image.** Build and push to Artifact Registry.
    ```sh
    docker build -f deploy/Dockerfile -t <region>-docker.pkg.dev/<project>/overcli/overcli-org:<version> .

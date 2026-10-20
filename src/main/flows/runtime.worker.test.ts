@@ -35,6 +35,18 @@ vi.mock('./storage', () => ({
       filePath: '/tmp/review.yaml',
     },
     {
+      id: 'shell-flow',
+      name: 'Ticket tally',
+      input: 'user_prompt',
+      participants: [{ id: 'primary', name: 'Primary', backend: 'claude', model: 'claude-sonnet-4-6', kind: 'primary' }],
+      steps: [
+        { id: 'gather', participantId: 'primary', role: 'researcher', inputs: [], tools: ['Read', 'Bash'], effect: 'local', output: 'issues.json' },
+        { id: 'tally', participantId: 'primary', role: 'researcher', inputs: ['issues.json'], tools: ['Read', 'Bash', 'Write'], effect: 'local', output: 'counts.json' },
+      ],
+      source: 'user',
+      filePath: '/tmp/shell.yaml',
+    },
+    {
       id: 'external-flow',
       name: 'Send update',
       input: 'user_prompt',
@@ -80,7 +92,7 @@ vi.mock('../git', () => ({
   worktreeNameTaken: () => false,
 }));
 
-import { FlowRuntimeImpl } from './runtime';
+import { FlowRuntimeImpl, pauseReasonBeforeStep } from './runtime';
 
 describe('FlowRuntimeImpl.startRun', () => {
   it('stamps worker attribution onto the launched run', async () => {
@@ -105,6 +117,20 @@ describe('FlowRuntimeImpl.startRun', () => {
       workerId: 'worker-1',
       workerName: 'Scout',
     });
+  });
+
+  it('saves a run the moment it starts, so a restart a second later still has it', async () => {
+    const { saveRun } = await import('./runsStore');
+    (saveRun as unknown as { mockClear: () => void }).mockClear();
+    const runtime = new FlowRuntimeImpl(
+      { send: () => ({ ok: true }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+    const result = await runtime.startRun({ flowId: 'flow-1', projectPath: '/tmp/project', userPrompt: 'Review it.', workerId: 'worker-1', workerName: 'Scout' });
+    if (!result.ok) throw new Error(result.error);
+    expect((saveRun as unknown as { mock: { calls: Array<[{ id: string }]> } }).mock.calls.some(([r]) => r.id === result.runId)).toBe(true);
   });
 
   it('refuses a worker worktree run that names the persistent source as an output', async () => {
@@ -156,6 +182,29 @@ describe('FlowRuntimeImpl.startRun', () => {
       reason: 'externalAction',
     });
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it('approving a step for the run lets later steps needing only the same tools through, and just this step does not', async () => {
+    const make = () => new FlowRuntimeImpl({ send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never, () => {}, () => [], () => ({ backends: {} }) as never);
+    const start = async (runtime: FlowRuntimeImpl) => {
+      const r = await runtime.startRun({ flowId: 'shell-flow', projectPath: '/tmp/project', userPrompt: 'Tally my tickets.', workerId: 'worker-1', workerName: 'Ruby' });
+      if (!r.ok) throw new Error(r.error);
+      expect(runtime.getRun(r.runId)?.state).toMatchObject({ kind: 'paused', nextStepId: 'gather', reason: 'externalAction' });
+      return r.runId;
+    };
+    const tally = (runtime: FlowRuntimeImpl, id: string) => runtime.getRun(id)!.flowSnapshot.steps[1];
+
+    const whole = make();
+    const a = await start(whole);
+    expect(whole.resumeRun({ runId: a, forRun: true }).ok).toBe(true);
+    expect(whole.getRun(a)?.externalActionRunGrant).toEqual(['bash']);
+    expect(pauseReasonBeforeStep(whole.getRun(a)!, tally(whole, a))).toBeNull();
+
+    const once = make();
+    const b = await start(once);
+    expect(once.resumeRun({ runId: b }).ok).toBe(true);
+    expect(once.getRun(b)?.externalActionRunGrant).toBeUndefined();
+    expect(pauseReasonBeforeStep(once.getRun(b)!, tally(once, b))).toBe('externalAction');
   });
 
   it('starts an external first step when the worker explicitly allows external actions', async () => {
