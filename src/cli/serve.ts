@@ -28,6 +28,8 @@ import { EXIT } from './run';
 import { nodeHost } from '../main/hostNode';
 import { SECRETS_ENV, SecretsService, createSecretStore, parseSecretsSpec, type SecretStore } from '../main/org/secrets';
 import { autonomousWithoutGrant } from '../main/org/orgService';
+import { draftProcessFromImage } from '../main/org/processDraft';
+import { drafterDepsFor } from '../main/org/hireDraft';
 
 /// Node's timer ceiling is 2^31-1 ms; stay comfortably under it.
 const KEEP_ALIVE_MS = 1 << 30;
@@ -220,7 +222,8 @@ export function startDaemon(
   if (controlAt && 'error' in controlAt) {
     deps.out(`control: not started — $OVERCLI_CONTROL: ${controlAt.error}`);
   } else if (controlAt) {
-    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, slackPeople: slackDirectory(), log: deps.out });
+    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, processes: engines.processes,
+      draftProcess: (input) => draftProcessFromImage(drafterDepsFor(engines.runner), input), slackPeople: slackDirectory(), log: deps.out });
     control = server;
     listenControlPlane(server, controlAt).then(
       () => {

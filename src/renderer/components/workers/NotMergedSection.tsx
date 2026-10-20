@@ -27,7 +27,7 @@ import { useWorkersStore } from '../../workersStore';
 import { conflictSummary, landabilityLabel, notMergedRows, rebuildInstruction } from './notMerged';
 
 const TONE: Record<'clean' | 'conflicts' | 'unknown', string> = {
-  clean: 'text-emerald-400',
+  clean: 'text-emerald-700 dark:text-emerald-400',
   conflicts: 'text-amber-500',
   unknown: 'text-ink-faint',
 };
@@ -208,7 +208,7 @@ function NotMergedRow({ s, showWorker, onChanged }: { s: StrandedLanding; showWo
             <button onClick={() => void window.overcli.invoke('fs:openInFinder', pending.worktreePath)} className={ACTION}>
               Show in Finder
             </button>
-            <button onClick={() => void finish()} disabled={!!busy} className="text-emerald-400 hover:underline disabled:opacity-50">
+            <button onClick={() => void finish()} disabled={!!busy} className="text-emerald-700 dark:text-emerald-400 hover:underline disabled:opacity-50">
               {busy === 'finish' ? 'Checking…' : "I've resolved it"}
             </button>
             <button onClick={() => void discard()} disabled={!!busy} className={ACTION}>
@@ -251,7 +251,7 @@ function NotMergedRow({ s, showWorker, onChanged }: { s: StrandedLanding; showWo
         </span>
       )}
       {note && (
-        <span className={`text-[11px] ${note.error ? 'text-rose-400' : 'text-emerald-400'}`} role="status">
+        <span className={`text-[11px] ${note.error ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-700 dark:text-emerald-400'}`} role="status">
           {note.text}
         </span>
       )}

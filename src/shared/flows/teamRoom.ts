@@ -319,10 +319,29 @@ export function buildRoomWrapUpMessage(args: { exchange: TeamMessage[] }): strin
     '',
     renderConversation(args.exchange),
     '',
-    'Write a short wrap-up, under 120 words, in exactly this shape (omit a line that would be empty):',
-    'Agreed: …',
-    'Still open: …',
-    'Worth changing in the pack: …',
+    'Write a short wrap-up, under 180 words. The user reads it on its own, so lead with the answer:',
+    '',
+    '1. First, the bottom line: one or two plain sentences on where the discussion landed. No label.',
+    '2. Then these three headings, each followed by a bullet list, one point per bullet:',
+    '   "Agreed:" — what the members settled on.',
+    '   "Still open:" — each question nobody could settle, then " — " and who answers it and by when, if known.',
+    '   "Worth changing in the pack:" — each concrete change to the pack the discussion calls for.',
+    'Leave out a heading with nothing under it. No other headings, no preamble, no sign-off.',
+    '',
+    'The shape, with made-up content:',
+    '<example>',
+    'The plan holds, but only the cautious figure is safe to commit to until the data is in.',
+    '',
+    '**Agreed:**',
+    '- Commit to the floor figure, not the upper one.',
+    '',
+    '**Still open:**',
+    '- Which roles are actually filled? — finance, by Friday',
+    '',
+    '**Worth changing in the pack:**',
+    '- Show the saving as a range.',
+    '</example>',
+    'Write the wrap-up itself, without the <example> tags.',
   ].join('\n');
 }
 
@@ -335,6 +354,9 @@ export function buildPackUpdateMessage(args: {
   conversation: TeamMessage[];
   /// Reports of work handed off from the room since the pack was written.
   newWork?: FolderFile[];
+  /// The wrap-up's pack changes the user picked, when they picked: make
+  /// these, and leave out the ones they unticked.
+  changes?: string[];
   /// The version this rewrite becomes. The app numbers the pack; the model is
   /// told the number rather than left to count revisions from the text.
   version: number;
@@ -357,6 +379,15 @@ export function buildPackUpdateMessage(args: {
     'WHAT THE USER AND THE TEAM DISCUSSED SINCE IT WAS WRITTEN',
     renderConversation(args.conversation, 60_000),
     '',
+    ...(args.changes?.length
+      ? [
+          'THE CHANGES THE USER PICKED FROM THE TEAM\'S WRAP-UP',
+          ...args.changes.map((c) => `- ${c}`),
+          'Make each of these changes. Where a wrap-up proposed a change to the pack that is not on this',
+          'list, the user chose not to make it: leave it out.',
+          '',
+        ]
+      : []),
     'Revise the pack so it reflects what the conversation settled: corrections, decisions, answers',
     'to open questions, and risks raised. Leave alone anything the conversation did not touch.',
     'Where the conversation left something open, say so in the document rather than deciding it.',

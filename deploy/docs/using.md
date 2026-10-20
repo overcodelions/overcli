@@ -44,6 +44,7 @@ What happens:
 | `/team Pricing: <task>` | Gives a team a task; its plan comes back for approval |
 | `/team new <what it's for>` | Suggests a team from your workers, to make with one button |
 | `/hire <the job>` | Hires a worker, with a short interview |
+| `/idea <process>: <the idea>` | Puts an idea into a process; `/idea` alone shows where yours are |
 
 ## The web console
 

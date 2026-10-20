@@ -123,7 +123,7 @@ export function WorkerDeployCard({ worker }: { worker: Worker }) {
                     Auto-approve all tools
                   </button>
                 </div>
-                <div className={`mt-1 text-[10px] ${permissionPolicy === 'auto-approve' ? 'text-amber-400' : 'text-ink-faint'}`}>
+                <div className={`mt-1 text-[10px] ${permissionPolicy === 'auto-approve' ? 'text-amber-700 dark:text-amber-400' : 'text-ink-faint'}`}>
                   {permissionPolicy === 'auto-approve'
                     ? 'Keeps the selected heartbeat backend, but every tool request runs without review. Use narrow CI credentials.'
                     : 'Recommended. Allows only tools declared by this worker’s flows; unsupported heartbeat CLIs will fail closed.'}

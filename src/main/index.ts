@@ -165,6 +165,12 @@ import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import type { SlackBridge } from './slack/slackBridge';
 import type { SlackCommands } from './slack/slackCommands';
+import { processScheduleText, type ProcessService } from './org/processes';
+import { draftProcessFromImage, imageFromDataUrl, imageFromFile } from './org/processDraft';
+import { workerTagline } from '../shared/flows/worker';
+import type { TriggerService } from './org/triggers';
+import type { OrgService } from './org/orgService';
+import type { OrgCaller } from '../shared/org/policy';
 import { testSlackTokens } from './slack/slackBridge';
 import {
   configuredSlackToken,
@@ -181,6 +187,8 @@ import {
   normalizeOrgUrl,
   parseInviteLink,
   pollPairing,
+  processPublishPayload,
+  publishProcessToOrg,
   publishTeamToOrg,
   publishSetupToOrg,
   publishToOrg,
@@ -282,6 +290,11 @@ let teamEngine: TeamEngine | null = null;
 
 let slackBridge: SlackBridge | null = null;
 let slackCommands: SlackCommands | null = null;
+/// Processes on this desktop, through its own team engine. Built with the
+/// org control (it moves items on its own poll timer), kept for the IPC.
+let processService: ProcessService | null = null;
+let orgTriggers: TriggerService | null = null;
+let orgService: OrgService | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
 let handoffInbox: HandoffInbox | null = null;
 /// Long-lived service processes, one supervisor per workspace. Built lazily
@@ -290,6 +303,17 @@ let handoffInbox: HandoffInbox | null = null;
 let servicesManager: ServicesManager | null = null;
 const pendingServiceLines = new Map<string, { workspaceId: string; serviceId: string; lines: string[] }>();
 let serviceLinesFlush: NodeJS.Immediate | undefined;
+
+/// Whoever is at this desktop, as the org layer knows people: the app's owner,
+/// with every right. Named after the manager on their crew who carries their
+/// Slack id, when there is one; else just "You".
+function desktopCaller(): OrgCaller {
+  const slackUserId = Store.load().settings.slackOwnerId?.trim() || undefined;
+  const named = slackUserId
+    ? workerEngine?.list().map((row) => row.worker.manager).find((m) => m?.slackUserId === slackUserId && m.name.trim())?.name.trim()
+    : undefined;
+  return { name: named ?? 'You', ...(slackUserId ? { slackUserId } : {}), admin: true };
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -807,9 +831,15 @@ export function registerIpc(): void {
   });
   // `/worker`, `/hire` and hire approvals in Slack, through the same org
   // rules `overcli serve`'s control plane enforces.
-  slackCommands = createOrgControl({ runner: runner!, flowRuntime, orchestrator, workerEngine, teams: () => teamEngine }, slackBridge, {
+  const orgControl = createOrgControl({ runner: runner!, flowRuntime, orchestrator, workerEngine, teams: () => teamEngine }, slackBridge, {
     frontDoorOwner: () => Store.load().settings.slackOwnerId?.trim() || undefined,
-  }).commands;
+  });
+  slackCommands = orgControl.commands;
+  processService = orgControl.processes;
+  orgTriggers = orgControl.triggers;
+  orgService = orgControl.org;
+  // Watches that feed processes poll from here, like the org server's.
+  orgControl.triggers.start();
   if (slackEnabled()) void slackBridge.start();
   // Away mode holds worker batches queued before you left (see pump).
   orchestrator.setCrewAwaySince(() => workerEngine?.awayState()?.since);
@@ -1100,6 +1130,24 @@ export function registerIpc(): void {
     const built = teamForOrg(team, (workerEngine?.list() ?? []).map((row) => row.worker));
     if (!built.ok) return built;
     return publishTeamToOrg(url.url, token, built.payload);
+  });
+  ipcMain.handle('org:publishProcess', async (_e, { id }) => {
+    const raw = Store.load().settings.orgServerUrl;
+    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
+    if (!raw) return signIn;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...url, signIn: true as const };
+    const token = configuredOrgToken();
+    if (!token) return signIn;
+    const got = processService?.get(desktopCaller(), id);
+    if (!got?.ok) return { ok: false, error: got?.error ?? 'Processes are not running here.' };
+    // "You" on this desktop is whoever the org knows this token as.
+    const who = await whoamiAt(url.url, token);
+    const slackUserId = Store.load().settings.slackOwnerId?.trim();
+    const me = who.ok ? { name: who.data.name, ...(slackUserId ? { slackUserId } : {}) } : undefined;
+    const built = processPublishPayload(got.process, got.teams, me);
+    if (!built.ok) return built;
+    return publishProcessToOrg(url.url, token, built.payload);
   });
   // Publish my setup: what this desktop has, for the org server's admin to
   // install and connect. The renderer only ever sees key NAMES; values are
@@ -2635,6 +2683,97 @@ export function registerIpc(): void {
     scheduler ? scheduler.runNow(id) : ({ ok: false, error: 'Scheduler not initialized.' } as const),
   );
 
+  // Processes: work moving through teams and your decisions, stage by stage.
+  // The board asks often, so each read first catches up with the team tasks
+  // rather than waiting for the service's own poll.
+  const noProcesses = { ok: false, error: 'Processes are not running yet.' } as const;
+  ipcMain.handle('processes:list', () => {
+    processService?.poll();
+    return processService ? processService.list(desktopCaller()) : [];
+  });
+  ipcMain.handle('processes:get', (_e, { id }) => {
+    processService?.poll();
+    return processService ? processService.get(desktopCaller(), id) : noProcesses;
+  });
+  ipcMain.handle('processes:places', () => {
+    const store = Store.load();
+    return [...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath, kind: 'workspace' as const })), ...store.projects.map((p) => ({ name: p.name, path: p.path, kind: 'project' as const }))];
+  });
+  ipcMain.handle('processes:save', (_e, { id, name, purpose, about, templateId, codeIn, stages }) => {
+    if (!processService) return noProcesses;
+    const me = desktopCaller();
+    // A new process is yours; a changed one keeps its owner.
+    return processService.save(me, { ...(id ? { id } : { owner: { name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) } }), name, purpose, about, templateId, ...(codeIn !== undefined ? { codeIn } : {}), stages });
+  });
+  // A process drafted from a picture of one (a data URL, or a file the
+  // picker chose), matched against this app's teams and workers. Not saved:
+  // the editor opens with it.
+  ipcMain.handle('processes:draftFromImage', async (_e, { image, note }) => {
+    if (!processService) return noProcesses;
+    const raw = typeof image === 'string' ? image : '';
+    const picture = raw.startsWith('data:') ? imageFromDataUrl(raw) : raw ? imageFromFile(raw) : imageFromDataUrl(raw);
+    if (!picture.ok) return picture;
+    const teams = (teamEngine?.list().teams ?? []).filter((t) => !t.disbanded).map((t) => ({ id: t.id, name: t.name, ...(t.purpose ? { purpose: t.purpose } : {}), members: t.members.map((m) => ({ role: m.role })) }));
+    const workers = (workerEngine?.roster() ?? []).filter((w) => w.enabled).map((w) => ({ id: w.id, name: w.name, tagline: workerTagline(w) }));
+    return draftProcessFromImage(drafterDeps(), { image: picture.image, ...(typeof note === 'string' && note.trim() ? { note: note.slice(0, 1000) } : {}), teams, workers });
+  });
+  ipcMain.handle('processes:archive', (_e, { id }) => (processService ? processService.archive(desktopCaller(), id) : noProcesses));
+  ipcMain.handle('processes:submit', (_e, { processId, title, brief }) => {
+    if (!processService) return noProcesses;
+    const me = desktopCaller();
+    const res = processService.submit({ name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, processId, { title, brief, source: 'desktop' });
+    return res.ok ? { ok: true as const, item: res.item } : res;
+  });
+  ipcMain.handle('processes:act', (_e, { itemId, action, note, stageIndex }) =>
+    processService ? processService.act(desktopCaller(), itemId, action, { note, stageIndex }) : noProcesses,
+  );
+  ipcMain.handle('processes:intake', (_e, { id }) => {
+    const def = processService?.get(desktopCaller(), id);
+    const schedules = def?.ok ? (def.process.schedules ?? []).map((s) => ({ ...s, nextAt: processService!.nextAt(s), when: processScheduleText(s.cadence) })) : [];
+    const watches = (orgTriggers?.list() ?? [])
+      .filter((t) => t.hand?.kind === 'process' && t.hand.processId === id && t.watch)
+      .map((t) => ({ id: t.id, server: t.watch!.server, tool: t.watch!.tool, everyMinutes: t.watch!.everyMinutes, ...(t.lastFiredAt ? { lastFiredAt: t.lastFiredAt } : {}), ...(t.lastError ? { lastError: t.lastError } : {}) }));
+    return { schedules, watches };
+  });
+  ipcMain.handle('processes:addSchedule', (_e, { id, cadence, title, brief }) => {
+    if (!processService) return noProcesses;
+    const res = processService.addSchedule(desktopCaller(), id, { cadence, title, brief });
+    return res.ok ? { ok: true as const } : res;
+  });
+  ipcMain.handle('processes:removeSchedule', (_e, { id, scheduleId }) => (processService ? processService.removeSchedule(desktopCaller(), id, scheduleId) : noProcesses));
+  ipcMain.handle('processes:tools', () => {
+    const res = orgService?.tools(desktopCaller());
+    return res?.ok ? res.tools.map((t) => t.name) : [];
+  });
+  ipcMain.handle('processes:toolCalls', async (_e, { server }) => (orgService ? orgService.serverTools(desktopCaller(), server) : noProcesses));
+  ipcMain.handle('processes:testWatch', async (_e, { server, tool, args }) =>
+    orgService ? orgService.testWatch(desktopCaller(), { server, tool, args, everyMinutes: 15 }) : noProcesses,
+  );
+  ipcMain.handle('processes:addWatch', (_e, { id, server, tool, args, everyMinutes, instructions }) => {
+    if (!orgTriggers || !processService) return noProcesses;
+    if (!processService.canSteer(desktopCaller(), id)) return { ok: false, error: 'No such process.' };
+    const name = processService.find(id)?.name ?? 'A process';
+    const res = orgTriggers.create({
+      workerId: '',
+      hand: { kind: 'process', processId: id },
+      name: `${name}: new items in ${server}`,
+      kind: 'watch',
+      watch: { server, tool, args, everyMinutes: Math.max(5, Math.round(everyMinutes || 15)) },
+      instructions: instructions ?? '',
+      deliver: [],
+      maxPerDay: 50,
+      enabled: true,
+      createdBy: desktopCaller().name,
+    });
+    return res.ok ? { ok: true as const } : res;
+  });
+  ipcMain.handle('processes:removeWatch', (_e, { triggerId }) => {
+    const t = orgTriggers?.get(triggerId);
+    if (!t || t.hand?.kind !== 'process') return { ok: false, error: 'No such watch.' };
+    orgTriggers!.remove(triggerId);
+    return { ok: true as const };
+  });
+
   // Teams: groups of workers that take on one task at a time.
   const noTeams = { ok: false, error: 'Team engine not initialized.' } as const;
   ipcMain.handle('teams:list', () => (teamEngine ? teamEngine.list() : { teams: [], tasks: [] }));
@@ -2678,6 +2817,10 @@ export function registerIpc(): void {
   );
   ipcMain.handle('teams:cancel', (_e, { taskId }) => (teamEngine ? teamEngine.cancel(taskId) : noTeams));
   ipcMain.handle('teams:accept', (_e, { taskId }) => (teamEngine ? teamEngine.accept(taskId) : noTeams));
+  ipcMain.handle('teams:comment', (_e, { taskId, text, file, quote, about, workerId }) =>
+    teamEngine ? teamEngine.comment(taskId, { text, ...(file ? { file } : {}), ...(quote ? { quote } : {}), ...(about ? { about } : {}), ...(workerId ? { workerId } : {}) }) : noTeams,
+  );
+  ipcMain.handle('teams:redoPiece', (_e, { taskId, workerId, note }) => (teamEngine ? teamEngine.redoPiece(taskId, workerId, note) : noTeams));
   ipcMain.handle('teams:deleteTask', (_e, { taskId }) => (teamEngine ? teamEngine.deleteTask(taskId) : noTeams));
   ipcMain.handle('teams:readFile', (_e, { taskId, name }) => (teamEngine ? teamEngine.readFile(taskId, name) : noTeams));
   ipcMain.handle('teams:openFolder', async (_e, { taskId }) => {
@@ -2698,7 +2841,7 @@ export function registerIpc(): void {
   );
   ipcMain.handle('teams:roomContinue', (_e, { taskId }) => (teamEngine ? teamEngine.roomContinue(taskId) : noTeams));
   ipcMain.handle('teams:roomStop', (_e, { taskId }) => (teamEngine ? teamEngine.roomStop(taskId) : noTeams));
-  ipcMain.handle('teams:updatePack', (_e, { taskId }) => (teamEngine ? teamEngine.updatePack(taskId) : noTeams));
+  ipcMain.handle('teams:updatePack', (_e, { taskId, changes }) => (teamEngine ? teamEngine.updatePack(taskId, { changes }) : noTeams));
   ipcMain.handle('teams:roomStartWork', (_e, { taskId, messageId }) =>
     teamEngine ? teamEngine.roomStartWork(taskId, messageId) : noTeams,
   );
@@ -4384,6 +4527,7 @@ app.on('before-quit', (event) => {
   scheduler?.dispose();
   workerEngine?.dispose();
   slackBridge?.stop();
+  processService?.stop();
   ollamaServer.stop();
   stopStatsWorker();
   // Store writes are debounced now (see store.save). Take the freshest

@@ -27,7 +27,8 @@ aws cloudformation deploy --template-file deploy/aws/overcli.yaml --stack-name o
 1. **Org name.** A short lowercase name, like `acme`. Secrets go under `overcli/acme/` in Secrets Manager.
 2. **Where it runs.** The VPC, the two private subnets, and who may reach the console (default `10.0.0.0/8`; narrow it to your VPN).
 3. **HTTPS (optional).** An ACM certificate and the name people will use (`overcli.acme.internal`). With them, the console is on HTTPS and port 80 redirects. Without, it's plain HTTP on 80, inside the VPC only. Point your DNS record at the `LoadBalancerDnsName` output.
-4. **Advanced** (the defaults are fine): the image, the instance type (`t3.large`), the disk size (50 GiB), the Bedrock region (the stack's), and an AMI to pin.
+4. **CloudWatch for workers (optional).** The log groups workers may read, comma separated. End a name with `*` for every group under a prefix (`/acme/api,/ecs/acme-*`). This also lets them list alarms and read metrics. Choose **yes** for private endpoints to keep CloudWatch calls inside the VPC, unless the VPC already has `logs` and `monitoring` endpoints. See [CloudWatch logs for workers](../aws.md#cloudwatch-logs-for-workers).
+5. **Advanced** (the defaults are fine): the image, the instance type (`t3.large`), the disk size (50 GiB), the Bedrock region (the stack's), and an AMI to pin.
 
 ## What it creates
 
@@ -36,7 +37,8 @@ aws cloudformation deploy --template-file deploy/aws/overcli.yaml --stack-name o
 | EC2 instance | Amazon Linux 2023, private subnet, no public IP, no SSH key. IMDSv2 only, one hop. You get in with Session Manager. |
 | Data volume | EBS gp3, encrypted, mounted at `/srv/overcli-data` and passed to the container as `/data`. It's only formatted when it's empty. |
 | Snapshots | A Data Lifecycle Manager policy: daily, keep 14. |
-| Instance role | Bedrock invoke, Secrets Manager under `overcli/<org>/*` ([the secrets policy](../aws.md#secrets-policy)), ECR pull, Session Manager, and writing one SSM parameter: the sign-in link. |
+| Instance role | Bedrock invoke, Secrets Manager under `overcli/<org>/*` ([the secrets policy](../aws.md#secrets-policy)), ECR pull, Session Manager, and writing one SSM parameter: the sign-in link. With log groups named, read-only CloudWatch Logs on those groups, plus listing alarms and reading metrics. |
+| CloudWatch endpoints | Only with **yes**: interface endpoints for `logs` and `monitoring` in both subnets, open to the instance on 443. |
 | The server | A systemd unit runs one container on the host network, restarting it if it stops. It uses Bedrock, Secrets Manager and the same tool allow-list as `docker-compose.yml`. |
 | Load balancer | Internal ALB. The console is open to your CIDR; the instance takes 7420 from the ALB only. The health check is on `/healthz`. |
 

@@ -8,7 +8,7 @@ import { validateFlow } from '../../shared/flows/validation';
 import { enabledToolsFor, resolveStepEffect } from '../flows/runtime';
 import { setTrustedCommands } from '../flows/trustedCommands';
 import { applyRepoGrants, bindAllowList } from './repoGrants';
-import { BranchLander, PR_STEP_OUTPUT } from './landBranches';
+import { BranchLander, PR_STEP_OUTPUT, testUserRefusal } from './landBranches';
 import type { FlowRun } from '../../shared/flows/schema';
 import { RepoService, checkTestCommand, credentialHelper, newPullRequestLink, parseRepoUrl, prFlowId, prFlowYaml, prePushHook, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
 
@@ -181,6 +181,61 @@ describe('workspaces', () => {
 });
 
 describe('the server pushing a finished run', () => {
+  it('refuses to run repo tests as the server unless an operator chose that', () => {
+    expect(testUserRefusal({})).toContain('OVERCLI_TEST_UID');
+    expect(testUserRefusal({ OVERCLI_TEST_UID: '1001' })).toBeUndefined();
+    expect(testUserRefusal({ OVERCLI_TEST_AS_SERVER: '1' })).toBeUndefined();
+    expect(testUserRefusal({ OVERCLI_TEST_AS_SERVER: '0' })).toContain('OVERCLI_TEST_UID');
+  });
+  it('refuses a test user it could not switch to, or root', () => {
+    expect(testUserRefusal({ OVERCLI_TEST_UID: 'runner' })).toContain('not a number');
+    expect(testUserRefusal({ OVERCLI_TEST_UID: '0' })).toContain('root');
+    expect(testUserRefusal({ OVERCLI_TEST_UID: '1001', OVERCLI_TEST_GID: 'staff' })).toContain('OVERCLI_TEST_GID');
+    expect(testUserRefusal({ OVERCLI_TEST_UID: ' 1001 ', OVERCLI_TEST_GID: '1001' })).toBeUndefined();
+  });
+  it('says tests are turned off, not that they failed, when the server would not run them', async () => {
+    const pushed: string[][] = [];
+    const attached: string[] = [];
+    const lander = new BranchLander({
+      git: async (args) => {
+        if (args[0] === 'push') pushed.push(args);
+        return { ok: true, stdout: args[0] === 'status' ? ' M a\n' : args[0] === 'rev-list' ? '1\n' : '' };
+      },
+      repos: () => [{ name: 'app', url: 'https://github.com/acme/app.git', path: '/x', defaultBranch: 'main', testCommand: 'npm test', addedBy: 'Bo', at: 0 }],
+      test: async () => ({ ok: false, error: testUserRefusal({})!, refused: true }),
+      attach: (_id, _name, body) => attached.push(body),
+      log: () => {},
+    });
+    const run = { id: 'abcdef123', flowId: 'org-pr-app', projectPath: '/x', userPrompt: 'x', artifacts: {}, workspaceWorktrees: [{ name: 'app', projectPath: '/x', worktreePath: '/x-wt', branchName: 'agent/x' }] };
+    const [landed] = await lander.land(run as never);
+    expect(pushed).toEqual([]);
+    expect(landed.skipped).toMatch(/^repo tests are turned off on this server, so nothing was pushed\. The server would run them as its own user/);
+    expect(landed.skipped).not.toContain('failed');
+    expect(attached[0]).toContain('app: not pushed — repo tests are turned off on this server');
+  });
+  it('still lands the other repos, with their links, when one of them throws', async () => {
+    const attached: string[] = [];
+    const lander = new BranchLander({
+      git: async (args, cwd) => {
+        if (cwd === '/a-wt' && args[0] === 'status') throw new Error('disk gone');
+        return { ok: true, stdout: args[0] === 'status' ? ' M a\n' : args[0] === 'rev-list' ? '1\n' : '' };
+      },
+      repos: () => [
+        { name: 'a', url: 'https://github.com/acme/a.git', path: '/a', defaultBranch: 'main', addedBy: 'Bo', at: 0 },
+        { name: 'b', url: 'https://github.com/acme/b.git', path: '/b', defaultBranch: 'main', addedBy: 'Bo', at: 0 },
+      ],
+      attach: (_id, _name, body) => attached.push(body),
+      log: () => {},
+    });
+    const run = { id: 'abcdef123', flowId: 'org-pr-ws', projectPath: '/ws', userPrompt: 'x', artifacts: {}, workspaceWorktrees: [
+      { name: 'a', projectPath: '/a', worktreePath: '/a-wt', branchName: 'agent/a' },
+      { name: 'b', projectPath: '/b', worktreePath: '/b-wt', branchName: 'agent/b' },
+    ] };
+    const landed = await lander.land(run as never);
+    expect(landed[0]).toEqual({ repo: 'a', error: 'disk gone' });
+    expect(landed[1].url).toContain('github.com/acme/b/compare/main...');
+    expect(attached).toHaveLength(1);
+  });
   it('commits and pushes without running hooks', async () => {
     const calls: string[][] = [];
     const lander = new BranchLander({

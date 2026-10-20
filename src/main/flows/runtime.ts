@@ -1472,7 +1472,16 @@ export class FlowRuntimeImpl {
     // (see advanceAfterStep). Consult them now: pausing a batch and resuming
     // it must not walk a worker's run straight past an approval.
     if (pausedReason === 'held') {
-      const next = run.flowSnapshot.steps.find((s) => s.id === nextStepId);
+      const idx = run.flowSnapshot.steps.findIndex((s) => s.id === nextStepId);
+      const next = run.flowSnapshot.steps[idx];
+      // A step that may be skipped decides that first, as it would have.
+      if (next?.onlyIfChanged && idx > 0) {
+        const prior = run.flowSnapshot.steps[idx - 1].id;
+        run.state = { kind: 'running', currentStepId: prior };
+        this.emitRunUpdate(run);
+        void this.enterIfChanged(run.id, prior, next);
+        return { ok: true };
+      }
       const gate = next ? pauseReasonBeforeStep(run, next) : null;
       if (gate) {
         run.state = { kind: 'paused', nextStepId, reason: gate };
@@ -3636,6 +3645,37 @@ export class FlowRuntimeImpl {
       this.checkpoint(run);
       return;
     }
+    if (next.onlyIfChanged) {
+      void this.enterIfChanged(runId, finishedStepId, next);
+      return;
+    }
+    this.enterStep(run, next);
+  }
+
+  /// Start `next` — or skip it, when the run changed nothing that it checks.
+  /// Measured before the gates, so a skipped check never asks for approval.
+  private async enterIfChanged(runId: UUID, finishedStepId: string, next: FlowStep): Promise<void> {
+    let changed: boolean;
+    try {
+      const run = this.runs.get(runId);
+      changed = run ? await runChangedBeyondNotes(run) : true;
+    } catch (err) {
+      log('warn', 'flows', `Could not measure run ${runId}'s changes; running ${next.id}`, err);
+      changed = true;
+    }
+    const run = this.runs.get(runId);
+    if (!run || run.state.kind !== 'running' || run.state.currentStepId !== finishedStepId) return;
+    if (changed) {
+      this.enterStep(run, next);
+      return;
+    }
+    log('info', 'flows', `Run ${runId}: skipped ${next.id}, nothing changed in the repo to check.`);
+    run.state = { kind: 'running', currentStepId: next.id };
+    this.advanceAfterStep(runId, next.id);
+  }
+
+  private enterStep(run: FlowRun, next: FlowStep): void {
+    const runId = run.id;
     // Worker-owned runs always stop before effects outside the run cwd.
     // This is independent of tool permissions: local edits/tests stay fully
     // autonomous, while pushes/messages/ticket updates require one explicit
@@ -4400,6 +4440,16 @@ export class FlowRuntimeImpl {
   /// toolScope.ts for the two places they are enforced.
   setToolScopes(fn: (workerId: UUID) => ToolScopes | undefined): void {
     this.toolScopesFor = fn;
+  }
+
+  /// The worker behind a conversation and its tool scopes, for the tool
+  /// gateway to judge and name its calls. Undefined: not a worker's run.
+  workerForConversation(conversationId: UUID): { workerName: string; scopes?: ToolScopes } | undefined {
+    const runId = this.convIdToRun.get(conversationId);
+    const run = runId ? this.runs.get(runId) : undefined;
+    if (!run?.workerId) return undefined;
+    const scopes = this.scopesOf(run);
+    return { workerName: run.workerName ?? 'A worker', ...(scopes ? { scopes } : {}) };
   }
 
   private scopeDeniedArgs(run: Pick<FlowRun, 'workerId'>): { mcpDeniedTools?: string[] } {
@@ -5489,6 +5539,32 @@ async function computeRunDiffForRun(run: FlowRun): Promise<string | null> {
     return computeRunDiff(run.projectPath, run.baselineCommit);
   }
   return null;
+}
+
+/// Files a run may leave without there being anything to check: what it
+/// wrote down, not what it built.
+const NOTE_FILE = /\.(?:md|markdown|txt)$/i;
+
+/// Whether the run changed anything in its repo(s) since its baseline —
+/// edits, commits, new files — beyond notes. True when it can't be measured,
+/// so a step gated on it runs rather than being skipped on a guess.
+export async function runChangedBeyondNotes(run: Pick<FlowRun, 'projectPath' | 'baselineCommit' | 'baselineCommitsByMember'>): Promise<boolean> {
+  const repos = run.baselineCommitsByMember
+    ? Object.values(run.baselineCommitsByMember).map((m) => ({ cwd: m.path, commit: m.commit }))
+    : run.baselineCommit
+      ? [{ cwd: run.projectPath, commit: run.baselineCommit }]
+      : [];
+  if (repos.length === 0) return true;
+  for (const { cwd, commit } of repos) {
+    const [tracked, untracked] = await Promise.all([
+      runGitAsync(['diff', '--name-only', commit], cwd),
+      runGitAsync(['ls-files', '--others', '--exclude-standard'], cwd),
+    ]);
+    if (tracked.exitCode !== 0 || untracked.exitCode !== 0) return true;
+    const paths = `${tracked.stdout}\n${untracked.stdout}`.split('\n').map((p) => p.trim()).filter(Boolean);
+    if (paths.some((p) => !NOTE_FILE.test(p))) return true;
+  }
+  return false;
 }
 
 /// Snapshot the CURRENT working tree as a git tree object and return its

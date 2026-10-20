@@ -29,6 +29,12 @@ describe('splitCommands', () => {
     expect(splitCommands('ls >> out.txt').writes).toBe(true);
     expect(splitCommands('ls 2>&1').writes).toBe(false);
     expect(splitCommands('ls 2>/dev/null').writes).toBe(false);
+    expect(splitCommands('ls 2>&-').writes).toBe(false);
+    expect(splitCommands('ls 2>&1 | head').writes).toBe(false);
+    // The fd or /dev/null must end the word; anything after it is a file.
+    expect(splitCommands('echo x >&1foo').writes).toBe(true);
+    expect(splitCommands('echo x >/dev/nullfoo').writes).toBe(true);
+    expect(splitCommands('echo x >& out').writes).toBe(true);
     expect(splitCommands(`echo "a > b"`).writes).toBe(false);
   });
 
@@ -55,6 +61,15 @@ describe('isReadOnlyBashCommand', () => {
     'head -50 README.md',
     'grep -rn foo src',
     'sort -rn a.txt',
+    'git log --oneline -n 5 --author "Pat" -- src',
+    'git diff --stat --cached',
+    'git show --name-only HEAD',
+    'git grep -n -e foo -- src',
+    'git rev-parse --abbrev-ref HEAD',
+    'git status --porcelain=v2 -b',
+    'git stash list',
+    'git worktree list --porcelain',
+    'git ls-files --others --exclude-standard',
   ])('reads only: %s', (cmd) => {
     expect(isReadOnlyBashCommand(cmd)).toBe(true);
   });
@@ -84,6 +99,21 @@ describe('isReadOnlyBashCommand', () => {
     'git diff --output=/tmp/x',
     'git diff --ext-diff',
     'git grep -Osh foo',
+    // git takes any unambiguous prefix of a long flag, so only flags spelled
+    // out in full are accepted.
+    'git grep --open=sh PWNED',
+    'git grep --open-files-in-pager=sh PWNED',
+    'git grep --open sh PWNED',
+    'git diff --out=/tmp/x',
+    'git log --outp=/tmp/x',
+    'git show --ext HEAD',
+    'git cat-file --textconv HEAD:a',
+    'git log -O/tmp/order',
+    'git worktree add ../x',
+    'git stash pop',
+    'git reflog delete HEAD@{0}',
+    'echo x >&1foo',
+    'echo x >/dev/nullfoo',
     "rg --p''re=sh x .",
     'rg --p\\re=sh x .',
     'rg --pre=sh x .',

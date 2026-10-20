@@ -53,6 +53,10 @@ function fakeOrg() {
       calls.push({ op: 'runFile', caller: c.name, args: { runId, name } });
       return { ok: true, name, data: Buffer.from('<h1>Acme weekly</h1>') };
     },
+    teamRoom: (c: OrgCaller, id: string, action: unknown) => {
+      calls.push({ op: 'teamRoom', caller: c.name, args: { id, action } });
+      return { ok: true };
+    },
     teamTaskPage: (c: OrgCaller, id: string) => {
       calls.push({ op: 'teamTaskPage', caller: c.name, args: { id } });
       return { ok: true, team: { id: 'team-1', name: 'Council', members: [] }, task: { id } };
@@ -235,6 +239,21 @@ describe('control plane HTTP', () => {
       { op: 'saveTeamFiles', caller: 'Pat', args: { id: 't1', names: ['plan.md'], destination: 'mcp:gdrive' } },
       { op: 'teamTaskZip', caller: 'Pat', args: { id: 't1' } },
       { op: 'teamTaskZip', caller: 'Pat', args: { id: 'empty' } },
+    ]);
+  });
+
+  it("routes a finished task's room: a question, another round, and the pack updated with picked changes", async () => {
+    const auth = { Authorization: 'Bearer ocli_good', 'Content-Type': 'application/json' };
+    const post = (p: string, body: unknown) => fetch(`${base}${p}`, { method: 'POST', headers: auth, body: JSON.stringify(body) }).then((r) => r.json());
+    expect(await post('/api/team-tasks/t%201/room', { text: '@Eli redo the model' })).toEqual({ ok: true });
+    await post('/api/team-tasks/t1/room/continue', {});
+    await post('/api/team-tasks/t1/update-pack', { changes: ['Show 73% as an upper bound.', 7, '  ', 'Split cash timing out.'] });
+    await post('/api/team-tasks/t1/update-pack', {});
+    expect(calls.filter((c) => c.op === 'teamRoom')).toEqual([
+      { op: 'teamRoom', caller: 'Pat', args: { id: 't 1', action: { kind: 'ask', text: '@Eli redo the model' } } },
+      { op: 'teamRoom', caller: 'Pat', args: { id: 't1', action: { kind: 'continue' } } },
+      { op: 'teamRoom', caller: 'Pat', args: { id: 't1', action: { kind: 'updatePack', changes: ['Show 73% as an upper bound.', 'Split cash timing out.'] } } },
+      { op: 'teamRoom', caller: 'Pat', args: { id: 't1', action: { kind: 'updatePack' } } },
     ]);
   });
 
@@ -437,5 +456,77 @@ describe('tool sign-in routes', () => {
       { op: 'start', caller: 'Pat', input: { name: 'acme', url: 'https://mcp.acme.example/mcp', next: '#setup/tools' }, base: tbase },
       { op: 'finish', state: 't1', browserKey: 'tool-browser-key' },
     ]);
+  });
+});
+
+describe('process from a picture', () => {
+  let pserver: http.Server;
+  let pbase: string;
+  const asked: Array<{ caller?: string; input: unknown }> = [];
+  const png = 'data:image/png;base64,' + Buffer.alloc(300, 7).toString('base64');
+  const draftOrg = {
+    teams: () => [
+      { id: 't1', name: 'Acme Legal', purpose: 'Legal review', members: [{ name: 'Lex', role: 'Counsel' }], canBrief: true },
+      { id: 't2', name: 'Hidden', members: [], canBrief: false },
+    ],
+    listWorkers: () => [{ id: 'w1', name: 'Ana', tagline: 'Writes notes', enabled: true }, { id: 'w2', name: 'Off', tagline: '', enabled: false }],
+    directory: () => ({ people: [{ name: 'Pat', slackUserId: 'U0ACMEPAT' }], groups: [] }),
+  } as unknown as OrgService;
+  let release: (() => void) | null = null;
+
+  beforeAll(async () => {
+    pserver = createControlPlane({
+      org: draftOrg,
+      processes: {} as never,
+      draftProcess: async (input) => {
+        asked.push({ input: { ...input, image: { mimeType: input.image.mimeType, size: input.image.size } } });
+        if (input.note === 'slow') await new Promise<void>((r) => (release = r));
+        return { ok: true, draft: { name: 'Contract approval', stages: [{ id: 'd1', name: 'Legal review', kind: 'team', teamId: 't1' }] }, notes: ['One branch runs in parallel.'] };
+      },
+      log: () => {},
+      authenticate: (t) => (t === 'ocli_good' ? PAT : null),
+    });
+    await listenControlPlane(pserver, { host: '127.0.0.1', port: 0 });
+    pbase = `http://127.0.0.1:${(pserver.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => {
+    pserver.close();
+  });
+
+  const post = (body: unknown, token = 'ocli_good') =>
+    fetch(`${pbase}/api/processes/draft-from-image`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('drafts from a data URL with the teams and workers the caller can use, saving nothing', async () => {
+    const res = await post({ image: png, note: 'Use Acme Legal for review' });
+    expect(await res.json()).toEqual({ ok: true, draft: { name: 'Contract approval', stages: [{ id: 'd1', name: 'Legal review', kind: 'team', teamId: 't1' }] }, notes: ['One branch runs in parallel.'] });
+    expect(asked.at(-1)!.input).toEqual({
+      image: { mimeType: 'image/png', size: 300 },
+      note: 'Use Acme Legal for review',
+      teams: [{ id: 't1', name: 'Acme Legal', purpose: 'Legal review', members: [{ role: 'Counsel' }] }],
+      workers: [{ id: 'w1', name: 'Ana', tagline: 'Writes notes' }],
+      people: [{ name: 'Pat', slackUserId: 'U0ACMEPAT' }],
+    });
+  });
+
+  it('refuses no token, a non-image and one draft on top of another', async () => {
+    expect((await post({ image: png }, 'ocli_bad')).status).toBe(401);
+    expect(await (await post({ image: 'data:text/plain;base64,aGk=' })).json()).toMatchObject({ ok: false });
+    const before = asked.length;
+    const first = post({ image: png, note: 'slow' });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await (await post({ image: png })).json()).toEqual({ ok: false, error: expect.stringMatching(/already drafting/) });
+    release!();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    expect(asked.length).toBe(before + 1);
+  });
+
+  it('takes a picture bigger than an ordinary body', async () => {
+    const big = 'data:image/jpeg;base64,' + Buffer.alloc(3 * 1024 * 1024, 3).toString('base64');
+    expect(await (await post({ image: big })).json()).toMatchObject({ ok: true });
+  });
+
+  it('has no such route on a host without processes', async () => {
+    expect(await (await fetch(`${base}/api/processes/draft-from-image`, { method: 'POST', headers: { Authorization: 'Bearer ocli_good' }, body: '{}' })).status).toBe(404);
   });
 });

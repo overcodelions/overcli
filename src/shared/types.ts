@@ -48,6 +48,8 @@ import type { PersonalizationQuestion, UserProfile } from './flows/personalize';
 import type { WorkerReport } from './flows/workerReport';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { Team, TeamHireRequest, TeamMember, TeamRosterDraft, TeamTask } from './flows/team';
+import type { ProcessDef, ProcessItem, ProcessSchedule, ProcessStage } from './org/process';
+import type { ScheduleTrigger } from './flows/schedule';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 import type { InboundHandoff } from './handoff';
@@ -1505,6 +1507,9 @@ export interface IPCInvokeMap {
   'org:publishWorker': (args: { id: UUID; visibility?: 'private' | 'team' | 'org' }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
   /// A team, its members published first (or reused), onto the org.
   'org:publishTeam': (args: { id: UUID }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  /// A local process onto the org. Its teams have to be published first:
+  /// the server finds each by the id it had here.
+  'org:publishProcess': (args: { id: string }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
   /// What "Publish my setup" would send: tools (key names only), workspaces
   /// and projects. Nothing secret crosses to the renderer.
   'org:setupPreview': () =>
@@ -2764,21 +2769,73 @@ export interface IPCInvokeMap {
     | { ok: true }
     | { ok: false; error: string };
   'teams:accept': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// A comment on the work: a passage of a file, the questions or plan, or
+  /// to one member. Kept for every later piece; acted on now where it can be.
+  'teams:comment': (args: { taskId: UUID; text: string; file?: string; quote?: string; about?: 'questions' | 'plan' | 'coordinator'; workerId?: UUID }) =>
+    | { ok: true; comment: import('./flows/team').TeamComment }
+    | { ok: false; error: string };
+  /// Start a member's piece of the current stage again, with a note to it.
+  'teams:redoPiece': (args: { taskId: UUID; workerId: UUID; note?: string }) => { ok: true } | { ok: false; error: string };
   'teams:deleteTask': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Reveal a task's shared folder in Finder. By task id, not path: the
   /// folder lives under userData, outside what `fs:openPath` may open.
   'teams:openFolder': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Open one task file in its default app (a design page in the browser).
   'teams:openFile': (args: { taskId: UUID; name: string }) => { ok: true } | { ok: false; error: string };
-  'teams:roomAsk': (args: { taskId: UUID; text: string; attachments?: Attachment[] }) => { ok: true } | { ok: false; error: string };
+  /// `queued`: someone was answering, so it goes in when they finish.
+  'teams:roomAsk': (args: { taskId: UUID; text: string; attachments?: Attachment[] }) => { ok: true; queued?: boolean } | { ok: false; error: string };
   'teams:roomContinue': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
   'teams:roomStop': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
-  'teams:updatePack': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// `changes`: the wrap-up's "worth changing in the pack" items you picked;
+  /// the rewrite makes those and leaves the rest of the wrap-up's out.
+  'teams:updatePack': (args: { taskId: UUID; changes?: string[] }) => { ok: true } | { ok: false; error: string };
   'teams:roomStartWork': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:roomDismissWork': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:roomHandOff': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:readFile': (args: { taskId: UUID; name: string }) =>
     | { ok: true; body: string }
+    | { ok: false; error: string };
+  // Processes: one piece of work moving through teams and people's
+  // decisions, stage by stage. See shared/org/process.ts. On the desktop the
+  // caller is always this app's owner.
+  'processes:list': () => ProcessSummary[];
+  'processes:get': (args: { id: string }) =>
+    | { ok: true; process: ProcessDef & { canSteer: boolean }; items: ProcessItemView[]; teams: Array<{ id: string; name: string }>; workers?: Array<{ id: string; name: string }> }
+    | { ok: false; error: string };
+  /// How work comes in besides by hand: its schedules and its tool watches.
+  'processes:intake': (args: { id: string }) => {
+    schedules: Array<ProcessSchedule & { nextAt: number; when: string }>;
+    watches: Array<{ id: string; server: string; tool: string; everyMinutes: number; lastFiredAt?: number; lastError?: string }>;
+  };
+  'processes:addSchedule': (args: { id: string; cadence: ScheduleTrigger; title: string; brief: string }) => { ok: true } | { ok: false; error: string };
+  'processes:removeSchedule': (args: { id: string; scheduleId: string }) => { ok: true } | { ok: false; error: string };
+  /// The tools a watch can ask, the calls one offers, and what a watch sees now.
+  'processes:tools': () => string[];
+  'processes:toolCalls': (args: { server: string }) => { ok: true; tools: Array<{ name: string; description?: string }> } | { ok: false; error: string };
+  'processes:testWatch': (args: { server: string; tool: string; args: Record<string, unknown> }) =>
+    | { ok: true; items: Array<{ id: string; title: string; url?: string }> }
+    | { ok: false; error: string };
+  'processes:addWatch': (args: { id: string; server: string; tool: string; args: Record<string, unknown>; everyMinutes: number; instructions?: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  'processes:removeWatch': (args: { triggerId: string }) => { ok: true } | { ok: false; error: string };
+  /// Create (no `id`) or change one. Checked with `validateProcess`.
+  /// Where a process's code can live: this app's workspaces and projects.
+  'processes:places': () => Array<{ name: string; path: string; kind: 'workspace' | 'project' }>;
+  'processes:save': (args: { id?: string; name: string; purpose?: string; about?: string; templateId?: string; codeIn?: { name: string; path: string } | null; stages: ProcessStage[] }) =>
+    | { ok: true; process: ProcessDef; updated: boolean }
+    | { ok: false; error: string };
+  'processes:archive': (args: { id: string }) => { ok: true } | { ok: false; error: string };
+  /// A process drafted from a picture of one: `image` is a data URL or a
+  /// file path. Not saved. See main/org/processDraft.ts.
+  'processes:draftFromImage': (args: { image: string; note?: string }) =>
+    | { ok: true; draft: { name: string; about?: string; stages: Array<ProcessStage & { suggestedRole?: string }> }; notes: string[] }
+    | { ok: false; error: string };
+  'processes:submit': (args: { processId: string; title?: string; brief: string }) =>
+    | { ok: true; item: ProcessItem }
+    | { ok: false; error: string };
+  'processes:act': (args: { itemId: string; action: ProcessItemAction; note?: string; stageIndex?: number }) =>
+    | { ok: true; item: ProcessItem }
     | { ok: false; error: string };
   'workers:list': () => Array<{
     worker: Worker;
@@ -4313,3 +4370,22 @@ export interface LocalOrgServerStatus {
   error: string | null;
   log: string[];
 }
+
+/// A process on the list: how many items are live, and at which stage.
+export type ProcessSummary = ProcessDef & { active: number; byStage: number[]; canSteer: boolean };
+
+/// An item as the board shows it to one person (see ProcessService.view).
+export interface ProcessItemView extends ProcessItem {
+  stageName: string;
+  /// The viewer may approve, send back or stop it here.
+  canDecide: boolean;
+  /// The viewer owns the process: stop, move, start again.
+  canSteer: boolean;
+  /// It waits on the viewer: a decision, or their team's or worker's
+  /// questions, plan, pack or paused run.
+  yourTurn: boolean;
+  /// Who it waits on, when it waits on someone.
+  waitsOn?: string;
+}
+
+export type ProcessItemAction = 'approve' | 'sendBack' | 'stop' | 'retry' | 'move' | 'note' | 'startNow';

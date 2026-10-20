@@ -326,6 +326,16 @@ describe('buildPackUpdateMessage', () => {
     const msg = buildPackUpdateMessage({ teamName: 'T', taskTitle: 'X', brief: 'b', pack: [], conversation: [], version: 5 });
     expect(msg).toContain('VERSION 5 of the pack');
     expect(msg).toContain('Do not state stage numbers');
+    expect(msg).not.toContain('PICKED FROM THE TEAM');
+  });
+
+  it('lists the wrap-up changes you picked, and says to leave the others out', () => {
+    const msg = buildPackUpdateMessage({
+      teamName: 'T', taskTitle: 'X', brief: 'b', pack: [], conversation: [], version: 2,
+      changes: ['Show the saving as a range.', 'Split cash timing out.'],
+    });
+    expect(msg).toContain("THE CHANGES THE USER PICKED FROM THE TEAM'S WRAP-UP\n- Show the saving as a range.\n- Split cash timing out.");
+    expect(msg).toMatch(/not on this\nlist, the user chose not to make it/);
   });
 });
 
@@ -446,6 +456,9 @@ describe('checked team pieces', () => {
     ]);
     expect(piece.steps[1].inputs).toEqual(['user_prompt', 'piece.md']);
     expect(piece.steps[1].tools).toContain('Bash');
+    // Skipped when the piece only wrote notes: nothing to test, nothing to approve.
+    expect(piece.steps[1].onlyIfChanged).toBe(true);
+    expect(piece.steps[0].onlyIfChanged).toBeUndefined();
     expect(validateFlow(piece).errors).toEqual([]);
     // Not asked, or nothing to keep: one step, as before.
     expect(teamPieceFlow(flow).steps).toHaveLength(1);

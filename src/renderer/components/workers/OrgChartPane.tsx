@@ -183,7 +183,7 @@ export function OrgChartPane() {
           directly.
         </p>
         {moveError && (
-          <p role="alert" className="mt-2 text-xs text-red-300">
+          <p role="alert" className="mt-2 text-xs text-red-700 dark:text-red-300">
             {moveError}
           </p>
         )}
@@ -398,7 +398,7 @@ function Chip({ children, title }: { children: React.ReactNode; title?: string }
 function Stat({ value, label, title, warn }: { value: number; label: string; title: string; warn?: boolean }) {
   return (
     <div title={title} className="flex flex-col items-center">
-      <span className={'text-sm font-semibold tabular-nums ' + (warn ? 'text-amber-300' : 'text-ink')}>{value}</span>
+      <span className={'text-sm font-semibold tabular-nums ' + (warn ? 'text-amber-700 dark:text-amber-300' : 'text-ink')}>{value}</span>
       <span className="text-[9px] uppercase tracking-wider text-ink-faint">{label}</span>
     </div>
   );

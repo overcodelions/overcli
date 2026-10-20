@@ -72,7 +72,7 @@ const SAFE_FLAGS: Record<string, RegExp> = {
   basename: /^-[as]$/,
   realpath: /^-[esqmz]+$/,
   readlink: /^-[fmenqz]+$/,
-  date: /^(-[uRI]\w*|-d|--date=.*|--iso-8601(=\w+)?)$/,
+  date: /^(-[uRI]\w*|-d|--date(=.*)?|--iso-8601(=\w+)?)$/,
   uname: /^-[asnrvmpio]+$/,
   nl: /^(-b\S*|-n\S*|-w\d*)$/,
   column: /^(-[tnex]+|-s\S*)$/,
@@ -82,13 +82,41 @@ const SAFE_FLAGS: Record<string, RegExp> = {
 SAFE_FLAGS.egrep = SAFE_FLAGS.grep;
 SAFE_FLAGS.fgrep = SAFE_FLAGS.grep;
 
-/// git subcommands that only read. `branch`, `tag`, `remote` and `stash`
-/// read only in their listing forms — see `gitReadsOnly`.
-const READ_ONLY_GIT = new Set([
-  'status', 'diff', 'log', 'show', 'blame', 'rev-parse', 'ls-files', 'ls-tree', 'grep', 'describe',
-  'shortlog', 'cat-file', 'merge-base', 'rev-list', 'whatchanged', 'name-rev', 'for-each-ref',
-  'check-ignore', 'show-ref', 'worktree list', 'reflog',
-]);
+/// Flags shared by git's history and diff readers (`log`, `show`, `diff`…).
+/// Spelled out in full: git accepts any unambiguous prefix of a long flag
+/// (`--open` for `--open-files-in-pager`, `--out` for `--output`), so a
+/// list of flags to refuse can never be complete. Only these are accepted.
+const GIT_HISTORY_FLAGS =
+  /^(-p|-u|-s|-z|-w|-b|-R|-M\d*%?|-C\d*%?|-U\d*|-n\d*|-\d+|--patch|--no-patch|--stat(=[\d,]+)?|--shortstat|--numstat|--dirstat(=[\w,]+)?|--summary|--name-only|--name-status|--raw|--check|--exit-code|--quiet|--oneline|--graph|--decorate(=\w+)?|--no-decorate|--all|--branches|--tags|--remotes|--first-parent|--no-merges|--merges|--reverse|--follow|--topo-order|--date-order|--full-history|--simplify-by-decoration|--boundary|--left-right|--cherry-pick|--source|--format=.*|--pretty(=.*)?|--abbrev(=\d+)?|--abbrev-commit|--no-abbrev|--max-count=\d+|--skip=\d+|--since(=.*)?|--until(=.*)?|--after(=.*)?|--before(=.*)?|--author(=.*)?|--committer(=.*)?|--grep(=.*)?|--date=.*|--relative-date|--diff-filter=.*|--find-renames(=\d+%?)?|--cached|--staged|--merge-base|--no-index|--unified=\d+|--word-diff(=\w+)?|--ignore-all-space|--ignore-space-change|--ignore-blank-lines|--minimal|--patience|--histogram|--color(=\w+)?|--no-color|--no-ext-diff|--no-textconv|--count|--objects|-S.+|-G.+|-L.+|--)$/;
+
+/// git subcommands that only read, each with the flags it may take. `branch`,
+/// `tag`, `remote`, `stash`, `worktree` and `reflog` read only in their
+/// listing forms — see `gitReadsOnly`.
+const READ_ONLY_GIT: Record<string, RegExp> = {
+  status: /^(-[sbuvz]+|-u\w+|--short|--branch|--long|--porcelain(=v\d)?|--untracked-files(=\w+)?|--ignored(=\w+)?|--ahead-behind|--no-ahead-behind|--show-stash|--verbose|--)$/,
+  diff: GIT_HISTORY_FLAGS,
+  log: GIT_HISTORY_FLAGS,
+  show: GIT_HISTORY_FLAGS,
+  whatchanged: GIT_HISTORY_FLAGS,
+  'rev-list': GIT_HISTORY_FLAGS,
+  shortlog: /^(-[nsec]+|--numbered|--summary|--email|--committer|--all|--no-merges|--since=.*|--until=.*|--author=.*|--format=.*|--group=.*|--)$/,
+  blame: /^(-[lstfnecwp]+|-L.+|-M\d*|-C\d*|--porcelain|--line-porcelain|--incremental|--root|--show-email|--show-name|--show-number|--date=.*|--abbrev=\d+|--ignore-rev=.*|--)$/,
+  grep: /^(-[nivwcLlhHEFPIqozapW]+|-[ABC]\d*|-e|--line-number|--ignore-case|--word-regexp|--invert-match|--count|--files-with-matches|--files-without-match|--name-only|--cached|--untracked|--no-index|--exclude-standard|--no-exclude-standard|--recurse-submodules|--heading|--break|--full-name|--column|--only-matching|--show-function|--function-context|--context=\d+|--after-context=\d+|--before-context=\d+|--max-depth=-?\d+|--threads=\d+|--and|--or|--not|--all-match|--text|--null|--quiet|--basic-regexp|--extended-regexp|--fixed-strings|--perl-regexp|--color(=\w+)?|--no-color|--)$/,
+  'rev-parse': /^(-q|--quiet|--verify|--short(=\d+)?|--abbrev-ref(=\w+)?|--symbolic|--symbolic-full-name|--show-toplevel|--show-prefix|--show-cdup|--git-dir|--git-common-dir|--absolute-git-dir|--is-inside-work-tree|--is-inside-git-dir|--is-bare-repository|--is-shallow-repository|--all|--branches|--tags|--remotes|--)$/,
+  'ls-files': /^(-[cdmoiskutvfz]+|-x.+|--cached|--deleted|--modified|--others|--ignored|--stage|--unmerged|--killed|--directory|--no-empty-directory|--exclude-standard|--exclude=.*|--full-name|--error-unmatch|--eol|--format=.*|--)$/,
+  'ls-tree': /^(-[rtdlz]+|--name-only|--name-status|--object-only|--full-name|--full-tree|--long|--abbrev(=\d+)?|--format=.*|--)$/,
+  describe: /^(--tags|--all|--always|--long|--contains|--exact-match|--first-parent|--abbrev=\d+|--candidates=\d+|--dirty(=\S*)?|--broken(=\S*)?|--match=.*|--exclude=.*)$/,
+  'cat-file': /^(-[tspe]|--batch|--batch-check|--batch-command|--batch-all-objects|--buffer|--unordered|--follow-symlinks|--allow-unknown-type)$/,
+  'merge-base': /^(-a|--all|--octopus|--independent|--is-ancestor|--fork-point)$/,
+  'name-rev': /^(--name-only|--tags|--all|--always|--undefined|--no-undefined|--refs=.*|--exclude=.*|--annotate-stdin)$/,
+  'for-each-ref': /^(--format=.*|--sort=.*|--count=\d+|--points-at(=.*)?|--merged(=.*)?|--no-merged(=.*)?|--contains(=.*)?|--no-contains(=.*)?|--ignore-case|--shell|--perl|--python|--tcl)$/,
+  'check-ignore': /^(-[vnqz]+|--verbose|--non-matching|--quiet|--no-index|--stdin|--)$/,
+  'show-ref': /^(-[dsq]|--heads|--branches|--tags|--head|--dereference|--hash(=\d+)?|--abbrev(=\d+)?|--verify|--exists|--quiet)$/,
+};
+READ_ONLY_GIT.reflog = GIT_HISTORY_FLAGS;
+READ_ONLY_GIT.stash = GIT_HISTORY_FLAGS;
+READ_ONLY_GIT.worktree = /^(-v|-z|--verbose|--porcelain)$/;
+READ_ONLY_GIT.remote = /^(-v|--verbose)$/;
 
 /// Commands that are hard or impossible to take back, or act outside this
 /// machine. Matched as a prefix of each command in a compound line.
@@ -169,9 +197,10 @@ export function splitCommands(line: string): { commands: string[]; writes: boole
     }
     if ((c === '<' || c === '>') && line[i + 1] === '(') opaque = true;
     if (c === '>') {
-      // Discarding output or merging stderr into stdout writes nothing.
+      // Discarding output or merging stderr into stdout writes nothing. Both
+      // must end the word: `>/dev/nullx` and `>&1foo` write a file.
       const rest = line.slice(i);
-      const m = /^>>?\s*\/dev\/null/.exec(rest) ?? /^>&\d/.exec(rest);
+      const m = /^>>?\s*\/dev\/null(?=$|[\s;|&)])/.exec(rest) ?? /^>&(\d+|-)(?=$|[\s;|&)<>])/.exec(rest);
       if (m) {
         cur += m[0];
         i += m[0].length - 1;
@@ -219,20 +248,22 @@ function gitReadsOnly(w: string[]): boolean {
     if (w[i] === '-C') { i++; continue; }
     if (w[i] !== '--no-pager') return false;
   }
-  // Flags that write a file or run a program from a read-only subcommand.
-  if (w.some((a) => /^(--output(=.*)?|-O.*|--open-files-in-pager(=.*)?|--ext-diff|--textconv)$/.test(a))) return false;
   const args = gitArgs(w);
   const sub = args[0];
   if (!sub) return false;
-  if (sub === 'worktree') return args[1] === 'list';
-  if (sub === 'stash') return args[1] === 'list' || args[1] === 'show';
-  if (sub === 'remote') return !args[1] || ['-v', '--verbose', 'show', 'get-url'].includes(args[1]);
   if (sub === 'branch' || sub === 'tag') {
     // Listing flags only; a bare name creates one.
     return args.slice(1).every((a) => /^(-a|-r|-v|-vv|-l|--list|--all|--remotes|--show-current|--merged|--no-merged|--contains|--sort=.*|--format=.*)$/.test(a));
   }
-  if (sub === 'reflog') return !args[1] || args[1] === 'show';
-  return READ_ONLY_GIT.has(sub);
+  if (sub === 'worktree' && args[1] !== 'list') return false;
+  if (sub === 'stash' && args[1] !== 'list' && args[1] !== 'show') return false;
+  if (sub === 'remote' && args[1] && !['-v', '--verbose', 'show', 'get-url'].includes(args[1])) return false;
+  if (sub === 'reflog' && args[1] && args[1] !== 'show') return false;
+  const flags = Object.prototype.hasOwnProperty.call(READ_ONLY_GIT, sub) ? READ_ONLY_GIT[sub] : null;
+  if (!flags) return false;
+  // Every flag must be one this subcommand reads with — see GIT_HISTORY_FLAGS
+  // for why this is a list of flags to accept, not to refuse.
+  return args.slice(1).every((a) => !a.startsWith('-') || flags.test(a));
 }
 
 /// True when a word would read differently to bash than to `words()`:

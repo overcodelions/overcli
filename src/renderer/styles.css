@@ -900,6 +900,17 @@ body.dragging-divider iframe {
   color: #fff;
 }
 
+/* Passages of a team task's file you commented on, and the one a comment
+ * in the list just opened. Registered in workers/teams/TaskComments.tsx, for
+ * the same reason as the find box above. */
+::highlight(team-comment) {
+  background-color: color-mix(in srgb, #f59e0b 18%, transparent);
+  text-decoration: underline dotted color-mix(in srgb, #f59e0b 70%, transparent);
+}
+::highlight(team-comment-focus) {
+  background-color: color-mix(in srgb, #f59e0b 45%, transparent);
+}
+
 /* A planning turn read as a document rather than as a chat bubble: bigger
  * type and a looser line, against the .md defaults tuned for message-sized
  * prose. The measure is capped in the component, not here. */
@@ -1066,4 +1077,207 @@ body.dragging-divider iframe {
   .editor-body {
     grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
   }
+}
+
+/* Team task desk ("Where it landed"): the wrap-up's change checkboxes take
+ * the accent, like every other pick on the desk. */
+.tl-check {
+  accent-color: var(--c-accent);
+}
+
+/* ---- Process item page (.pil-*) ------------------------------------------
+ * One item of a process, full width: the stage track, the "your call" band,
+ * the segmented tabs and the cards under them. Colours come from the theme
+ * tokens; amber (a decision waiting on you) is the one colour of its own. */
+:root {
+  --pil-amber: #b7791f;
+}
+:root.dark {
+  --pil-amber: #f2b04a;
+}
+.pil-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border-width: 1px;
+  border-style: solid;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.pil-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.pil-track {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.pil-amber {
+  background: color-mix(in srgb, var(--pil-amber) 9%, var(--c-surface-elevated));
+  border: 1px solid color-mix(in srgb, var(--pil-amber) 45%, transparent);
+}
+.pil-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--c-card-border);
+  background: var(--c-surface-muted);
+}
+.pil-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-ink-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.pil-tab:hover {
+  color: var(--c-ink);
+}
+.pil-tab[aria-selected="true"] {
+  color: var(--c-ink);
+  background: var(--c-surface-elevated);
+  box-shadow: 0 0 0 1px var(--c-card-border-strong);
+}
+.pil-tab:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 60%, transparent);
+  outline-offset: 1px;
+}
+.pil-tab-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 99px;
+  font-size: 11px;
+  line-height: 17px;
+  text-align: center;
+  color: var(--c-ink-muted);
+  background: var(--c-card-bg-strong);
+}
+.pil-tab[aria-selected="true"] .pil-tab-count {
+  color: #fff;
+  background: var(--c-accent);
+}
+.pil-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--c-card-border);
+  font-size: 12.5px;
+  color: var(--c-ink-muted);
+  text-decoration: none;
+}
+.pil-pill {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.pil-cards {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.pil-clamp {
+  max-height: 19.5em; /* about twelve lines */
+  overflow: hidden;
+}
+.pil-clamp-fade {
+  -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent);
+  mask-image: linear-gradient(to bottom, #000 80%, transparent);
+}
+.pil-lead p {
+  margin: 0 0 0.5em;
+}
+.pil-lead p:last-child {
+  margin-bottom: 0;
+}
+.pil-pack > summary {
+  list-style: none;
+}
+.pil-pack > summary::-webkit-details-marker {
+  display: none;
+}
+.pil-caret {
+  display: inline-block;
+  width: 10px;
+  transition: transform 0.15s;
+}
+.pil-pack[open] .pil-caret {
+  transform: rotate(90deg);
+}
+
+/* ---- Process page: the flow diagram (ProcessFlow.tsx) ------------------ */
+.ppg-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.ppg-line,
+.ppg-loop {
+  fill: none;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ppg-line {
+  stroke: var(--c-ink-faint);
+}
+.ppg-loop {
+  stroke: var(--pil-amber);
+  stroke-dasharray: 5 5;
+}
+.ppg-head-solid {
+  fill: var(--c-ink-faint);
+}
+.ppg-head-loop {
+  fill: var(--pil-amber);
+}
+.ppg-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+  pointer-events: none;
+  font-size: 11px;
+  line-height: 14px;
+}
+.ppg-label-loop {
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: var(--pil-amber);
+  background: var(--c-surface-elevated);
+}
+.ppg-label-wait {
+  transform: translate(-50%, calc(-100% - 5px));
+  text-align: center;
+  font-size: 10.5px;
+  line-height: 12px;
+  color: var(--c-ink-muted);
+}
+.ppg-key {
+  display: inline-block;
+  width: 18px;
+  border-top-width: 2px;
+}
+.ppg-key-solid {
+  border-top-style: solid;
+  border-top-color: var(--c-ink-faint);
+}
+.ppg-key-loop {
+  border-top-style: dashed;
+  border-top-color: var(--pil-amber);
 }

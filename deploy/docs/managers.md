@@ -93,6 +93,33 @@ You can give a team work if you manage one of its members.
 A `/hire` offer in Slack has **Change it** too. It opens a form for the worker's name, budget, who can ask it, its tools, the repo it works in, and who it reports to.
 - **In the desktop app:** build it, then **Publish to your org**.
 
+## Processes
+
+A process moves one piece of work through several teams and people's decisions, in order. For example, an idea becomes a PR/FAQ, then a prototype, then a decision, then a build, a launch and a check on how it's doing. Make one on the console's **Processes** page.
+
+**The process library** (**Processes → Process library**) has eleven ways SaaS teams commonly run work that crosses teams: idea to launch, bug report to fix, customer escalation, security vulnerability response, incident postmortem, launch readiness, quarterly roadmap planning, growth experiments, a content pipeline, customer onboarding and pricing changes. Each one says when to use it, what goes in and what comes out, and why each stage is there. For each team stage it names the team of yours that fits, or the crew a new team would need, with **Make this team**. For each decision it says who usually decides. **Use this process** opens it in the editor with those teams filled in.
+
+**From an image** (on **Processes** and in the library) starts one from a picture: a flowchart, a swimlane or a slide you found online. Drop it in, pick the file or paste it, and add a note if you want something changed ("use our Product Team for design"). Reading it takes a minute or so. Each box becomes a stage, decision diamonds and approvals become people who decide, rework or reject arrows say where work is sent back, and waits or "weekly" steps become waits and repeats. Where one of your teams or workers clearly fits a stage it's filled in; otherwise the stage says who the picture names ("Legal reviewer") so you can pick. The editor opens with the draft, unsaved, with what the reading was unsure of (a parallel branch it put in order, steps it left out past twelve) and the picture to keep open beside it. Nothing is saved until you make the process. Pictures are PNG, JPEG, WebP or GIF, under 5 MB.
+
+Each stage is one of two kinds:
+
+- **A team.** It's briefed with the stage's job, the original request, and what every earlier stage produced, pack files included. The team works as it always does: questions, a plan to approve, its pack to sign off. Those go to the stage's lead: the person you name, or else the team's manager. The item moves on when the lead signs off the pack.
+- **People who decide.** They get a DM with **Approve**, **Send back…** and **Stop it**, and the same buttons are on the console. Any one of them can decide. **Send back** asks what needs to change and returns the item to the team stage before (or the stage you pick), briefed with that note.
+
+Who owns what:
+
+- **The process owner** sees every item, can move it to any stage, start a team stage again, or stop it, and hears when an item is stuck.
+- **Each stage's lead** answers its team's questions, approves its plan and signs off what leaves it.
+- **The person who put an item in** hears in Slack each time it moves, and when it finishes or stops.
+
+Work comes in from `/idea` in Slack (`/idea Idea to launch: CSV export for reports`; `/idea` alone shows where yours are), from `@overcli` (`@overcli idea: CSV export`, `@overcli Bug report to fix: the export button is greyed out`, or a request the router judges to be a new item for a process), from **Put something in** on the console, from every new message in a Slack channel, or from events posted to a secret URL. It can also start items **on a schedule** (every week, every weekday, the 1st of each month, the first day of each quarter: "Quarterly roadmap · Jan 1, 2027"), or **watch a tool**: each new ticket, deal or row a tool call returns goes in, checked every few minutes from inside your network. Set these up under **How work comes in** on the process's page.
+
+A team or worker stage can **wait** (start two weeks after the stage before, when there's adoption to read) and **repeat** (weekly, four times, each run building on the last) before the item moves on. The board says when a waiting stage starts; its owner can **Start now**.
+
+On the board, a card marked **Your call** is waiting on your decision and **Stuck** means a team stage failed or was cancelled. "How are we doing?" to @overcli lists the decisions waiting on you.
+
+In the desktop app you can build a process from your own teams and try it on your own, then **Publish to your org**. Publish its teams first.
+
 ## Handing over
 
 Leaving, or changing jobs? An admin hands your workers to someone else from **People**, or you hand over one at a time from the worker's settings. The worker keeps its journal and its record.

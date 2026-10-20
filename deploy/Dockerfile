@@ -5,6 +5,11 @@
 #
 # See deploy/README.md for running it, the volume, and the VPC notes.
 
+# uv runs Python tools packaged for uvx, such as AWS's CloudWatch MCP server
+# (deploy/aws.md). Pin it with --build-arg UV_VERSION=<x.y.z>.
+ARG UV_VERSION=0.8.0
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
 # ---- build: compile the CLI (tsc) with dev dependencies, then drop them ----
 FROM node:22-bookworm-slim AS build
 # node-pty is a dependency of the desktop app and compiles on install.
@@ -35,6 +40,9 @@ RUN apt-get update \
  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && if [ "$INSTALL_CODEX" = "1" ]; then npm install -g "@openai/codex@${CODEX_VERSION}"; fi \
  && npm cache clean --force
+# uvx fetches a tool and the Python it needs on first use, into the cache
+# under HOME on the volume, so later starts reuse them.
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 COPY --from=build /src/package.json ./package.json
@@ -49,9 +57,12 @@ RUN ln -s /app/dist/cli/index.js /usr/local/bin/overcli && chmod +x /app/dist/cl
 
 # All state — workers, journals, runs, tokens, the org policy, cloned repos —
 # lives on this volume. Lose it and the org loses its workers.
+# Remote tools' credentials stay sealed in the server; workers reach the
+# tools through a loopback gateway (src/main/org/toolGateway.ts).
 ENV OVERCLI_HOME=/data \
     HOME=/data/home \
-    OVERCLI_CONTROL=0.0.0.0:7420
+    OVERCLI_CONTROL=0.0.0.0:7420 \
+    OVERCLI_TOOL_GATEWAY=1
 RUN mkdir -p /data/home \
  && chown -R node:node /data \
  && git config --system user.name "overcli workers" \

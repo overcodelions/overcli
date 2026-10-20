@@ -18,6 +18,8 @@ import path from 'node:path';
 import type { FlowRun } from '../../shared/flows/schema';
 import { newPullRequestLink, type ConnectedRepo } from './repos';
 
+export { testUserRefusal } from './repos';
+
 /// The artifact the server attaches: one line per repo.
 export const LANDED_ARTIFACT = 'pull-requests.md';
 /// The flow step whose output is the pull request's title and description.
@@ -27,7 +29,8 @@ export interface LandDeps {
   git(args: string[], cwd: string): Promise<{ ok: true; stdout: string } | { ok: false; error: string }>;
   repos(): ConnectedRepo[];
   /// Runs the repo's test command in the checkout, with no server secrets in its environment.
-  test?(command: string, cwd: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  /// `refused`: the server would not run them at all (see testUserRefusal), so `error` says why.
+  test?(command: string, cwd: string): Promise<{ ok: true } | { ok: false; error: string; refused?: true }>;
   attach(runId: string, name: string, body: string): void;
   log(message: string): void;
 }
@@ -36,7 +39,7 @@ export interface Landed {
   repo: string;
   branch?: string;
   url?: string;
-  /// Why nothing was pushed: no changes, or the tests failed.
+  /// Why nothing was pushed: no changes, the tests failed, or tests are turned off here.
   skipped?: string;
   error?: string;
 }
@@ -86,7 +89,8 @@ export class BranchLander {
     const out: Landed[] = [];
     for (const place of places) {
       const repo = this.deps.repos().find((r) => r.path === place.projectPath);
-      out.push(await this.landOne(place, repo, branch, title, body));
+      // One repo going wrong must not cost the others their links.
+      out.push(await this.landOne(place, repo, branch, title, body).catch((err: unknown) => ({ repo: place.name, error: err instanceof Error ? err.message : String(err) })));
     }
     this.deps.attach(run.id, LANDED_ARTIFACT, describe(out));
     return out;
@@ -113,6 +117,7 @@ export class BranchLander {
     if (ahead.ok && Number(ahead.stdout.trim()) === 0) return { repo: place.name, skipped: 'no changes' };
     if (repo?.testCommand && this.deps.test) {
       const tested = await this.deps.test(repo.testCommand, place.worktreePath);
+      if (!tested.ok && tested.refused) return { repo: place.name, skipped: `repo tests are turned off on this server, so nothing was pushed. ${tested.error}` };
       if (!tested.ok) return { repo: place.name, skipped: `its tests failed, so nothing was pushed:\n${tested.error.slice(-1500)}` };
     }
     const pushed = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${branch}`]);

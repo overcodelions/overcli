@@ -13,6 +13,8 @@ import { Store } from '../store';
 import { looseSyntheticRootFiles } from '../workspace';
 import { oneShotDraftText, type DraftDeps } from './drafter';
 import type { FlowRuntimeImpl } from './runtime';
+import type { FlowRun } from '../../shared/flows/schema';
+import { stepOutsideTools } from './stepEffect';
 import type { OrchestratorImpl } from './orchestrator';
 import { loadRunSummaries } from './runSummaryLog';
 import { TeamEngine } from './teamEngine';
@@ -30,6 +32,34 @@ import type { WorkerEngine } from './workerEngine';
 /// A run's deliverables: its step artifacts in step order (the answer last),
 /// plus the files it wrote into a synthetic root. Shared by workers, which
 /// file them into a cabinet, and teams, which file them into a task folder.
+/// What a paused run is waiting on you for, as the end of "<member> …";
+/// null when it isn't paused, or is held because you paused its batch.
+export function describeRunPause(run: Pick<FlowRun, 'state' | 'flowSnapshot'> | null): string | null {
+  if (!run || run.state.kind !== 'paused') return null;
+  const { reason, nextStepId } = run.state;
+  const step = run.flowSnapshot?.steps.find((s) => s.id === nextStepId);
+  switch (reason) {
+    case 'externalAction': {
+      const tools = step ? stepOutsideTools(step) : null;
+      return tools?.length
+        ? `wants your OK to use ${tools.join(', ')}${step ? ` for "${step.id}"` : ''}`
+        : `wants your OK before "${step?.id ?? nextStepId}", which reaches outside`;
+    }
+    case 'riskyStep':
+      return `stopped before "${step?.id ?? nextStepId}": its instructions look risky, so look first`;
+    case 'needsInput':
+      return 'has a question for you';
+    case 'preStep':
+      return `is at a checkpoint before "${step?.id ?? nextStepId}"`;
+    case 'failure':
+      return 'hit a failure and stopped';
+    case 'interrupted':
+      return 'was interrupted when the app closed: continue it';
+    case 'held':
+      return null;
+  }
+}
+
 export function runDeliverablesFor(
   getRun: (runId: UUID) => ReturnType<FlowRuntimeImpl['getRun']>,
 ): (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string; bytes?: number }> {
@@ -66,7 +96,7 @@ export function createTeamEngine(deps: {
   emit: (event: MainToRendererEvent) => void;
   notify: (args: { title: string; body: string }) => void;
   runner: RunnerManager;
-  flowRuntime: Pick<FlowRuntimeImpl, 'getRun'>;
+  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'steerRun'>;
   orchestrator: Pick<OrchestratorImpl, 'get' | 'abort'>;
   workerEngine: WorkerEngine;
   drafterDeps: () => DraftDeps;
@@ -100,6 +130,8 @@ export function createTeamEngine(deps: {
     cancelTurn: (cancelKey) => {
       runner.cancelOneShot(cancelKey);
     },
+    steer: (runId, text) => flowRuntime.steerRun({ runId, text }),
+    pauseOf: (runId) => describeRunPause(flowRuntime.getRun(runId)),
     cancelBatch: (id) => {
       orchestrator.abort({ id });
     },
@@ -138,14 +170,14 @@ export function createTeamEngine(deps: {
     ...(deps.hire ? { hire: deps.hire } : {}),
     // One branch per team task across the repos it works in; see teamBranch.
     code: {
-      open: ({ taskId, title, projectPath }) => {
+      open: ({ taskId, title, projectPath, from }) => {
         const store = Store.load();
         const byId = new Map(store.projects.map((p) => [p.id, p.path]));
         const workspaces = store.workspaces.map((w) => ({
           rootPath: w.rootPath,
           memberPaths: w.projectIds.flatMap((id) => (byId.get(id) ? [byId.get(id)!] : [])),
         }));
-        return openTaskBranch({ taskId, title, repos: taskRepos(projectPath, workspaces) });
+        return openTaskBranch({ taskId, title, repos: taskRepos(projectPath, workspaces), ...(from ? { from } : {}) });
       },
       pieceRepos: (runId) => {
         const run = flowRuntime.getRun(runId);

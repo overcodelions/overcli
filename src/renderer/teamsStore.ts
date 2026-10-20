@@ -5,7 +5,7 @@
 
 import { create } from 'zustand';
 import type { Attachment, UUID } from '@shared/types';
-import type { Team, TeamHireRequest, TeamMember, TeamRosterDraft, TeamTask } from '@shared/flows/team';
+import type { Team, TeamComment, TeamHireRequest, TeamMember, TeamRosterDraft, TeamTask } from '@shared/flows/team';
 import type { Worker } from '@shared/flows/worker';
 
 export type TeamInput = Omit<Team, 'id' | 'createdAt' | 'updatedAt'> & { id?: UUID };
@@ -39,7 +39,8 @@ interface TeamsActions {
   roomAsk(taskId: string, text: string, attachments?: Attachment[]): Promise<Result>;
   roomContinue(taskId: string): Promise<Result>;
   roomStop(taskId: string): Promise<Result>;
-  updatePack(taskId: string): Promise<Result>;
+  /// `changes`: only these wrap-up changes, picked on the desk.
+  updatePack(taskId: string, changes?: string[]): Promise<Result>;
   roomStartWork(taskId: string, messageId: string): Promise<Result>;
   roomDismissWork(taskId: string, messageId: string): Promise<Result>;
   roomHandOff(taskId: string, messageId: string): Promise<Result>;
@@ -75,6 +76,14 @@ interface TeamsActions {
   accept(taskId: string): Promise<Result>;
   deleteTask(taskId: string): Promise<Result>;
   readFile(taskId: string, name: string): Promise<{ ok: true; body: string } | { ok: false; error: string }>;
+  /// A comment on the work: a passage of a file, the questions or plan, or
+  /// to one member. The task comes back through the usual events.
+  comment(
+    taskId: string,
+    input: { text: string; file?: string; quote?: string; about?: 'questions' | 'plan' | 'coordinator'; workerId?: string },
+  ): Promise<{ ok: true; comment: TeamComment } | { ok: false; error: string }>;
+  /// Start a member's piece of the current stage again, with a note to it.
+  redoPiece(taskId: string, workerId: string, note?: string): Promise<Result>;
 }
 
 export const useTeamsStore = create<TeamsState & TeamsActions>((set, get) => {
@@ -201,12 +210,29 @@ export const useTeamsStore = create<TeamsState & TeamsActions>((set, get) => {
         return res;
       }),
     readFile: (taskId, name) => window.overcli.invoke('teams:readFile', { taskId, name }),
+    // Not through `act`: a comment is said beside whatever else is going on,
+    // and its error belongs in the box it was written in.
+    comment: async (taskId, input) => {
+      try {
+        return await window.overcli.invoke('teams:comment', { taskId, ...input });
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    redoPiece: async (taskId, workerId, note) => {
+      try {
+        return await window.overcli.invoke('teams:redoPiece', { taskId, workerId, note });
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
     roomAsk: (taskId, text, attachments) =>
       act(taskId, () => window.overcli.invoke('teams:roomAsk', { taskId, text, attachments })),
     roomContinue: (taskId) => act(taskId, () => window.overcli.invoke('teams:roomContinue', { taskId })),
     // Not through `act`: stopping has to work while the room is busy.
     roomStop: (taskId) => window.overcli.invoke('teams:roomStop', { taskId }),
-    updatePack: (taskId) => act(taskId, () => window.overcli.invoke('teams:updatePack', { taskId })),
+    updatePack: (taskId, changes) =>
+      act(taskId, () => window.overcli.invoke('teams:updatePack', { taskId, ...(changes?.length ? { changes } : {}) })),
     roomStartWork: (taskId, messageId) =>
       act(taskId, () => window.overcli.invoke('teams:roomStartWork', { taskId, messageId })),
     roomDismissWork: (taskId, messageId) =>

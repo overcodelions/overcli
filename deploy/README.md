@@ -144,7 +144,7 @@ What keeps it reviewable:
 - **No pushes to the default branch.** The clone refuses them with a pre-push hook. Protect the branch on the host too: required reviews, no force pushes. That's the real guard, since git can be told to skip hooks.
 - **Pushing waits for a yes.** The pull request step counts as external, so a worker on probation waits for its manager's yes in Slack. Nothing is pushed without it.
 - **Workers run no git.** The model plans, edits files and writes the pull request. The server commits and pushes, one command per repo, the same way every time. Connecting a repo grants only read-only git for planning.
-- **Tests guard every push.** The pre-push hook runs the repo's test command, and a failing push is held back with the output, for the server's pushes and the team's alike.
+- **Tests guard every push, when you turn them on.** The repo's test command runs before the push, and a failing push is held back with the output. By default the server refuses to run it, because its own user can read its secrets, **and a repo with a test command then pushes nothing**: the run says "repo tests are turned off on this server", and the Repos tab warns on that repo. Repos with no test command push as usual. Set `OVERCLI_TEST_UID`/`OVERCLI_TEST_GID` to the numeric id of a user that cannot read `/data` (the server must be able to switch user), or `OVERCLI_TEST_AS_SERVER=1` to accept running tests as the server. See `deploy/.env.example`.
 
 Plain folders, with no remote to push to, still work the old way:
 

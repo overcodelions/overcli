@@ -18,10 +18,11 @@ import { useOrchestratorStore } from '../../orchestratorStore';
 import { useRunningMap } from '../../runnersStore';
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
-import { InboxList, defaultItem, findRow, type DigestModel, type OpenItem } from './TodayDigest';
+import { InboxList, defaultItem, findRow, processOf, type DigestModel, type OpenItem } from './TodayDigest';
 import { NotMergedSection } from './NotMergedSection';
 import { useTeamsStore } from '../../teamsStore';
 import { TeamDesk } from './teams/TeamDesk';
+import { ProcessItemPage } from './processes/ProcessItemPage';
 import { TodayEmpty } from './TodayEmpty';
 import { TodayReader } from './TodayReader';
 import { clearStateOf, useTodayCleared } from './todayCleared';
@@ -30,6 +31,9 @@ import { earlierDays, finishedJobs } from './todayLayout';
 import { useDigest } from './useDigest';
 import { buildWorkQueue, upcomingShifts, type QueueRow } from './workQueue';
 import { useDeliverables } from './useDeliverables';
+import { buildTodayBoard } from './todayBoard';
+import { usePollTodayProcesses, useTodayProcesses } from './todayProcesses';
+import { labOn } from '@shared/labs';
 
 /// The item Today had open when you last left it, for this session — per
 /// inbox, so opening a worker's inbox and coming back to everyone lands where
@@ -116,11 +120,29 @@ export function TodayPane({ workerId = null }: { workerId?: string | null }) {
   useEffect(() => {
     lastPicked[inboxKey] = picked;
   }, [inboxKey, picked]);
-  const pickedRow = picked && picked.kind !== 'team' ? findRow(model, picked) : undefined;
+  const pickedRow = picked && picked.kind !== 'team' && picked.kind !== 'process' ? findRow(model, picked) : undefined;
   // A team task stays open while it exists; the crew's list is the only one
   // that shows team tasks as items.
   const teamTasks = useTeamsStore((s) => s.tasks);
+  const teams = useTeamsStore((s) => s.teams);
   const groupTeams = !workerId;
+  // Team tasks and process items, beside the crew's runs: everything that
+  // needs you and everything moving, on the crew's page. One worker's inbox
+  // is that worker's runs only.
+  const processesLab = useStore((s) => labOn(s.settings.labs, 'processes'));
+  usePollTodayProcesses(processesLab && groupTeams);
+  const processBoards = useTodayProcesses((s) => s.boards);
+  const board = useMemo(
+    () =>
+      buildTodayBoard({
+        working: model.working,
+        tasks: groupTeams ? teamTasks : {},
+        processes: groupTeams && processesLab ? processBoards : [],
+        teamNames: Object.fromEntries(Object.values(teams).map((t) => [t.id, t.name])),
+        groupTeams,
+      }),
+    [model.working, teamTasks, teams, processBoards, processesLab, groupTeams],
+  );
   const pickedTeamTask = picked?.kind === 'team' && groupTeams ? teamTasks[picked.key] : undefined;
   // Keep the open item's key on the row it resolved to, so the list still
   // highlights it after an answer folds into a group.
@@ -162,10 +184,19 @@ export function TodayPane({ workerId = null }: { workerId?: string | null }) {
   // opened nothing, is the oldest decision. Track it too, so answering the
   // item the inbox opened on gets the same handoff.
   const cleared = useTodayCleared((s) => s.cleared);
-  const open = pickedRow || pickedTeamTask
+  // With no run waiting on you, a team task that is waiting comes first —
+  // it is still the oldest thing you have to do.
+  const teamNeed = model.needs.length === 0 ? board.needs.find((n) => n.target.kind === 'team') : undefined;
+  // A process item stays open while it is on the list, or was opened from it.
+  const pickedProcess = picked?.kind === 'process' && groupTeams && processesLab ? picked : null;
+  const open = pickedRow || pickedTeamTask || pickedProcess
     ? picked
-    : defaultItem(model, (row) => clearStateOf(cleared, row.key, row.at) === 'cleared', groupTeams);
-  const openRow = open && open.kind !== 'team' ? findRow(model, open) : undefined;
+    : teamNeed?.target.kind === 'team'
+      ? { kind: 'team' as const, key: teamNeed.target.taskId }
+      : defaultItem(model, (row) => clearStateOf(cleared, row.key, row.at) === 'cleared', groupTeams);
+  const openRow = open && open.kind !== 'team' && open.kind !== 'process' ? findRow(model, open) : undefined;
+  const openProcess = open?.kind === 'process' ? processOf(open.key) : null;
+  const showProcesses = useWorkersStore((s) => s.showProcesses);
   const openTeamTask = open?.kind === 'team' ? teamTasks[open.key] : undefined;
   // A file opened from the reader belongs to the item it came from: reading
   // the next item under the last one's report is the same mistake as
@@ -205,7 +236,7 @@ export function TodayPane({ workerId = null }: { workerId?: string | null }) {
   return (
     <div className="flex min-h-0 flex-1">
       <div className="min-h-0 w-[420px] shrink-0 overflow-y-auto border-r border-card px-5 pb-10 pt-6">
-        <InboxList model={model} open={open} onOpen={setPicked} workerId={workerId} />
+        <InboxList model={model} open={open} onOpen={setPicked} workerId={workerId} board={board} upcoming={soon} />
         <NotMergedSection workerId={workerId} />
         {/* Debug only: the empty states are screens you can never reach
             again once the crew has worked, so they need a way in. */}
@@ -235,6 +266,15 @@ export function TodayPane({ workerId = null }: { workerId?: string | null }) {
               : undefined
           }
           onNext={() => setHandoff(null)}
+        />
+      ) : openProcess ? (
+        // The item's page, without leaving Today; its process name goes to
+        // the process's own page.
+        <ProcessItemPage
+          key={open!.key}
+          processId={openProcess.processId}
+          itemId={openProcess.itemId}
+          onOpenProcess={() => showProcesses(openProcess.processId, openProcess.itemId)}
         />
       ) : openTeamTask ? (
         // The task itself, as its team's desk shows it: pack, conversation
@@ -276,7 +316,7 @@ function HandoffNote({
       <div className="flex max-w-[520px] flex-col items-center gap-3 text-center">
         <span
           aria-hidden
-          className="flex h-10 w-10 items-center justify-center rounded-full text-[18px] text-emerald-400"
+          className="flex h-10 w-10 items-center justify-center rounded-full text-[18px] text-emerald-700 dark:text-emerald-400"
           style={{ background: 'color-mix(in srgb, #34d399 14%, transparent)' }}
         >
           ✓

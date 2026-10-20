@@ -8,7 +8,7 @@
 // returning plain data each surface renders in its own way.
 
 import { randomUUID } from 'node:crypto';
-import type { FlowRun } from '../../shared/flows/schema';
+import type { FlowRun, FlowRunState } from '../../shared/flows/schema';
 import { flowRunTitle } from '../../shared/flows/schema';
 import type { HireMessage, Worker, WorkerErrandResult, WorkerJournalEntry, WorkerTrustLevel, WorkerVisibility } from '../../shared/flows/worker';
 import { WORKER_NOTE_MAX, isSlackUserId, validateOrgFields, workerTagline } from '../../shared/flows/worker';
@@ -40,7 +40,7 @@ import { stepsARunGrantCovers } from '../flows/stepEffect';
 import { initialsPicture } from '../../shared/flows/avatars';
 import { describeScope, mcpServerKey, parseToolScope, withinScope, type ToolScope, type ToolScopes } from '../../shared/flows/toolScope';
 import { answerOptions, projectMonthEnd, trustReadiness, workerState, type TrustReadiness, type WorkerState } from '../../shared/org/insights';
-import type { Team, TeamCheckpoints, TeamRosterDraft, TeamStageKind, TeamTask } from '../../shared/flows/team';
+import type { Team, TeamCheckpoints, TeamComment, TeamRosterDraft, TeamStageKind, TeamTask } from '../../shared/flows/team';
 import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, isMemberStage, isTaskActive } from '../../shared/flows/team';
 import { parseWorkerYaml } from '../../shared/flows/workerYaml';
 import type { Attachment, UUID } from '../../shared/types';
@@ -58,6 +58,9 @@ import { buildZip, type ZipEntry } from './zip';
 import { personKey } from './connections';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
+
+/// A bare Slack member id, as a name stands in for it before it's known.
+const SLACK_ID = /^[UW][A-Z0-9]{6,}$/;
 
 /// One new member being hired for a team that is being made.
 export interface TeamRunHire {
@@ -170,6 +173,9 @@ export interface WorkerSummary {
   schedule: string;
   cadence: ScheduleTrigger | null;
   nextRunAt?: number | null;
+  /// Where it works: a connected repo, a workspace of repos, or a folder.
+  /// Absent: nowhere in particular, so it can't change code.
+  place?: { kind: 'repo' | 'workspace' | 'folder'; name: string; repos?: string[] };
 }
 
 /// One run's worth of work a worker on probation proposed, waiting for its
@@ -249,6 +255,8 @@ export interface TeamTaskSummary {
   /// Its code, when it changed some: the task branch, and per repo how far
   /// ahead it is and whether it's been pushed (with the link to open a PR).
   code?: { branch: string; repos: Array<{ name: string; ahead?: number; pushed?: { url?: string } }> };
+  /// What the person who asked said about the work, and what came of each.
+  comments?: TeamComment[];
   updatedAt: number;
 }
 
@@ -283,7 +291,18 @@ export interface TeamTaskDetail extends TeamTaskSummary {
   answers?: string[];
   error?: string;
   files: Array<{ name: string; author: string; at: number }>;
-  pack?: { summary: string; files: string[] };
+  /// `changed`: files the latest version changed (absent on older packs: all of them).
+  pack?: { summary: string; files: string[]; version?: number; updatedAt?: number; changed?: string[] };
+  /// The team talking about its pack: who said what, the coordinator's
+  /// wrap-ups, and how much of it the pack has taken in.
+  room?: {
+    messages: Array<{ id: string; speaker: { kind: 'you' | 'coordinator' | 'member'; name?: string; workerId?: UUID }; text: string; at: number; exchange: number; wrapUp?: boolean; failed?: boolean }>;
+    busy?: { speaker: string; since: number };
+    foldedThrough?: number;
+    queued?: number;
+  };
+  /// The caller asked for it (or is an admin): may answer, approve, talk to the team and update the pack.
+  canSteer: boolean;
   stagesDetail: Array<{
     title: string;
     label: string;
@@ -294,6 +313,8 @@ export interface TeamTaskDetail extends TeamTaskSummary {
     finishedAt?: number;
     error?: string;
     current: boolean;
+    /// Work handed off from the room, run as one more stage.
+    fromRoom?: boolean;
     pieces: Array<{
       workerId: UUID;
       workerName: string;
@@ -616,8 +637,16 @@ export interface OrgServiceDeps {
     cancel(taskId: UUID): Result;
     /// Run one member's failed piece of the current stage again.
     retryPiece?(taskId: UUID, workerId: UUID): Result;
+    /// A comment on the work, and a piece done again with a note (TeamEngine).
+    comment?(taskId: UUID, input: { text: string; file?: string; quote?: string; about?: 'questions' | 'plan' | 'coordinator'; workerId?: UUID }): Result<{ comment: TeamComment }>;
+    redoPiece?(taskId: UUID, workerId: UUID, note?: string): Result;
     /// The pack held for review is good: the task is done.
     accept?(taskId: UUID): Result;
+    /// The room: ask the team, another round on the last question, and the
+    /// pack rewritten with what was said (or only the picked `changes`).
+    roomAsk?(taskId: UUID, text: string): Result<{ queued?: boolean }>;
+    roomContinue?(taskId: UUID): Result;
+    updatePack?(taskId: UUID, opts: { changes?: string[] }): Result;
     /// Push the task branch from one of its repos.
     pushCode?(taskId: UUID, projectPath: string): Result<{ message: string; url?: string }>;
     /// One of a task's shared files, by its name in the task folder.
@@ -636,6 +665,8 @@ export interface OrgServiceDeps {
   setupOffers?: { load(): { offers: SetupOffer[] }; save(value: { offers: SetupOffer[] }): void };
   /// An errand's batch, to follow the work it started to the end.
   orchestration?(id: UUID): Orchestration | null;
+  /// Stop a batch: what's queued or proposed never starts, what runs stops.
+  stopBatch?(id: UUID): { ok: true } | { ok: false; error: string };
   /// Repos workers may change, landing work as pull requests. Absent: none.
   repos?: {
     list(): ConnectedRepo[];
@@ -645,6 +676,8 @@ export interface OrgServiceDeps {
     canPush(repo: ConnectedRepo): boolean;
     /// The secret it needs to push over https, or null.
     tokenFor(repo: ConnectedRepo): string | null;
+    /// Why this server won't run repo tests, or undefined when it will.
+    testsOff?(): string | undefined;
     workspaces(): OrgWorkspace[];
     createWorkspace(input: { name: string; repos: string[]; instructions?: string }, by: string): Result<{ workspace: OrgWorkspace }>;
     updateWorkspace(id: string, patch: { repos?: string[]; instructions?: string }): Result<{ workspace: OrgWorkspace }>;
@@ -829,6 +862,8 @@ export function scheduleText(cadence: ScheduleTrigger | null | undefined): strin
 }
 
 const NOT_FOUND = 'No worker by that name or id that you can see.';
+/// How long a page further back in a worker's threads reuses the first page's build.
+const THREAD_REUSE_MS = 60_000;
 /// The caller's own Google Drive, through the account they connected.
 const GOOGLE_ME = 'google:me';
 const YOUR_DRIVE = 'Your Google Drive';
@@ -879,11 +914,24 @@ export interface ErrandProgress {
   done: boolean;
   /// Each piece; one running says where it is, since when, and the last
   /// thing it said, so whoever asked can see it moving.
-  items: Array<{ title: string; status: string; runId?: UUID; branch?: string; note?: string; step?: { index: number; total: number; name: string }; startedAt?: number; said?: string }>;
+  /// `paused` is why a running piece stopped for a person: "waits for an OK
+  /// before verify shipped".
+  items: Array<{ title: string; status: string; runId?: UUID; branch?: string; note?: string; step?: { index: number; total: number; name: string }; startedAt?: number; said?: string; paused?: string }>;
   files: Array<{ name: string; body?: string; sourcePath?: string }>;
   /// Pull requests (and pages to open one), and documents the work links to.
   links: string[];
 }
+
+/// Why a run stopped for a person, as the asker hears it.
+const PAUSED_WORDS: Record<Extract<FlowRunState, { kind: 'paused' }>['reason'], string> = {
+  preStep: 'waits for an OK',
+  externalAction: 'waits for an OK to act outside',
+  riskyStep: 'waits for an OK on a risky step',
+  needsInput: 'needs an answer',
+  failure: 'stopped on a failed step',
+  interrupted: 'was interrupted',
+  held: 'is on hold',
+};
 
 /// A worker or team id from someone's install: kept as a key, so held to a
 /// plain shape.
@@ -948,6 +996,15 @@ export class OrgService {
   // ---- READ -------------------------------------------------------------
 
   listWorkers(caller: OrgCaller): WorkerSummary[] {
+    return this.summaries(caller);
+  }
+
+  /// One worker's summary, as listWorkers shows it, without building the rest.
+  private summaryFor(caller: OrgCaller, id: UUID): WorkerSummary | undefined {
+    return this.summaries(caller, id)[0];
+  }
+
+  private summaries(caller: OrgCaller, onlyId?: UUID): WorkerSummary[] {
     const roster = this.deps.workers.roster();
     const policy = this.policy();
     const spent = this.deps.workers.spentThisMonth();
@@ -956,8 +1013,24 @@ export class OrgService {
     const runs = this.deps.runs.listRuns();
     // What this server has installed, by name. Unknown (no tools hook): say nothing is missing.
     const installed = this.deps.tools ? new Set(this.deps.tools.list([]).tools.map((t) => t.name)) : null;
+    const repos = this.deps.repos?.list() ?? [];
+    const spaces = this.deps.repos?.workspaces() ?? [];
+    // A manager saved before their name was known is stored under their
+    // Slack id: show the name anyone else has for them.
+    const named = new Map<string, string>();
+    for (const t of this.deps.people?.() ?? []) if (t.slackUserId && !SLACK_ID.test(t.name)) named.set(t.slackUserId, t.name);
+    for (const x of roster) if (x.manager?.slackUserId && !SLACK_ID.test(x.manager.name)) named.set(x.manager.slackUserId, x.manager.name);
+    const display = (m: { name: string; slackUserId?: string }) => (SLACK_ID.test(m.name) && m.slackUserId ? named.get(m.slackUserId) ?? m.name : m.name);
+    const placeOf = (dir?: string): WorkerSummary['place'] => {
+      if (!dir) return undefined;
+      const repo = repos.find((r) => r.path === dir);
+      if (repo) return { kind: 'repo', name: repo.name };
+      const ws = spaces.find((x) => x.rootPath === dir);
+      if (ws) return { kind: 'workspace', name: ws.name, repos: ws.repos };
+      return { kind: 'folder', name: dir.split(/[\\/]/).filter(Boolean).pop() ?? dir };
+    };
     return roster
-      .filter((w) => canSee(policy, roster, w.id, caller))
+      .filter((w) => (!onlyId || w.id === onlyId) && canSee(policy, roster, w.id, caller))
       .map((w) => {
         const manager = managerFor(roster, w.id);
         const shared = (this.policy().sharedMcpServers ?? []).filter((n) => !(w.mcpServers ?? []).includes(n));
@@ -973,7 +1046,7 @@ export class OrgService {
           tagline: workerTagline(w),
           enabled: w.enabled,
           trust: w.trust,
-          ...(manager ? { manager: manager.name } : {}),
+          ...(manager ? { manager: display(manager) } : {}),
           ...(manager && !w.manager ? { managerInherited: true } : {}),
           ...(w.manager?.slackUserId ? { managerSlackUserId: w.manager.slackUserId } : {}),
           ...(boss ? { reportsTo: { id: boss.id, name: boss.name } } : {}),
@@ -988,6 +1061,7 @@ export class OrgService {
           nextRunAt: w.enabled ? next.get(w.id) ?? null : null,
           state: this.deps.planning?.(w.id) && workerState(w, runs) === 'idle' ? 'working' : workerState(w, runs),
           tools,
+          ...(w.projectPath ? { place: placeOf(w.projectPath) } : {}),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -996,7 +1070,7 @@ export class OrgService {
   getWorker(caller: OrgCaller, idOrName: string): Result<{ worker: WorkerSummary; jobDescription: string; recent: Array<{ at: number; kind: string; title: string; note?: string }> }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
-    const summary = this.listWorkers(caller).find((s) => s.id === w.id)!;
+    const summary = this.summaryFor(caller, w.id)!;
     const recent = this.deps.workers
       .journalFor(w.id)
       .slice(-8)
@@ -1379,6 +1453,22 @@ export class OrgService {
     return started.done;
   }
 
+  /// Call off an ask nobody wants any more (a process item stopped, moved or
+  /// started again): the work its answer started stops, and an ask still
+  /// thinking has what it starts stopped as it lands. For the host, which
+  /// checks who may.
+  cancelAsk(askId: string): Result {
+    const a = this.allAsks().find((x) => x.id === askId);
+    if (!a) return { ok: false, error: 'No such ask.' };
+    if (a.cancelled) return { ok: true };
+    this.putAsk({ ...a, cancelled: true });
+    if (a.orchestrationId) {
+      const res = this.deps.stopBatch?.(a.orchestrationId);
+      if (res && !res.ok) return res;
+    }
+    return { ok: true };
+  }
+
   /// Ask without waiting: the question is on record at once, and its answer
   /// lands there whenever the worker is done — whether or not anyone is
   /// still looking.
@@ -1395,12 +1485,15 @@ export class OrgService {
     /// What the person typed, when `text` is that wrapped for the worker
     /// (the Slack thread, where the answer goes): the ask is shown by this.
     said?: string,
+    /// Taken as a proposal whoever asks: for a caller who may reach the
+    /// worker but isn't speaking for its manager (a process stage).
+    proposal = false,
   ): Result<{ askId: string; done: Promise<Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }>> }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     if (!text.trim()) return { ok: false, error: `What should ${w.name} do?` };
-    const manages = via !== 'trigger' && canManage(this.policy(), this.deps.workers.roster(), w.id, caller);
+    const manages = via !== 'trigger' && !proposal && canManage(this.policy(), this.deps.workers.roster(), w.id, caller);
     const from = manages ? '' : `(Asked by ${caller.name}, who is not your manager. Treat the request as a proposal: suggest work, do not launch it without approval.)\n`;
     const thread = replyTo && /^(ask|shift|batch|run):[\w-]{1,80}$/.test(replyTo) ? replyTo : undefined;
     const context = thread ? this.replyContext(caller, w, thread) : '';
@@ -1433,10 +1526,14 @@ export class OrgService {
   ): Promise<Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }>> {
     return run.then(
       (res): Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }> => {
+        const cancelled = this.allAsks().find((a) => a.id === record.id)?.cancelled === true;
         const finished: AskRecord = res.ok
           ? { ...record, status: 'answered', reply: res.result.reply, launched: res.result.queued, ...(res.result.count ? { orchestrationId: res.result.orchestrationId } : {}), ...(res.result.choices?.length ? { choices: res.result.choices } : {}), doneAt: this.now() }
           : { ...record, status: 'failed', error: res.error, doneAt: this.now() };
+        if (cancelled) finished.cancelled = true;
         this.putAsk(finished);
+        // Cancelled while it thought: what its answer started stops now.
+        if (cancelled && finished.orchestrationId) this.deps.stopBatch?.(finished.orchestrationId);
         this.deps.onAskDone?.(finished);
         // Work it started, or proposed and is waiting on its manager for:
         // either way the batch is worth following to the end.
@@ -2352,8 +2449,8 @@ export class OrgService {
     this.record(caller, `Changed ${w.name}: ${Object.keys(patch).join(', ')}.`);
     // Re-read through the caller's eyes: moving a worker to another manager
     // can take it out of the caller's sight.
-    const summary = this.listWorkers(caller).find((s) => s.id === w.id);
-    if (!summary) return { ok: true, worker: { ...this.listWorkers({ name: 'admin', admin: true }).find((s) => s.id === w.id)!, youManage: false } };
+    const summary = this.summaryFor(caller, w.id);
+    if (!summary) return { ok: true, worker: { ...this.summaryFor({ name: 'admin', admin: true }, w.id)!, youManage: false } };
     return { ok: true, worker: summary };
   }
 
@@ -2659,7 +2756,7 @@ export class OrgService {
       if (!landed.ok) return landed;
       this.putHire(null, hire.id);
       if (hire.imported.localId) this.landedPublished(hire.imported.localId, hire.id, landed.worker.id);
-      const summary = this.listWorkers({ name: 'admin', admin: true }).find((s) => s.id === landed.worker.id)!;
+      const summary = this.summaryFor({ name: 'admin', admin: true }, landed.worker.id)!;
       return { ok: true, worker: landed.worker, summary };
     }
     const saved = this.deps.saveHire(hire.drafted!, {
@@ -2677,7 +2774,7 @@ export class OrgService {
     this.putHire(null, hire.id);
     // Its face, picked while it settles in: nobody waits on it.
     void this.choosePicture(saved.worker.id);
-    const summary = this.listWorkers({ name: 'admin', admin: true }).find((s) => s.id === saved.worker.id)!;
+    const summary = this.summaryFor({ name: 'admin', admin: true }, saved.worker.id)!;
     return { ok: true, worker: saved.worker, summary };
   }
 
@@ -2956,7 +3053,7 @@ export class OrgService {
   workerDetail(caller: OrgCaller, idOrName: string): Result<WorkerDetail> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
-    const summary = this.listWorkers(caller).find((s) => s.id === w.id)!;
+    const summary = this.summaryFor(caller, w.id)!;
     const journal = this.deps.workers.journalFor(w.id);
     const now = this.now();
     const month = journal.filter((e) => now - e.at <= 30 * 86_400_000);
@@ -3324,6 +3421,28 @@ export class OrgService {
   ): Result<{ threads: WorkThread[]; nextBefore: number | null; total: number; now: ReturnType<typeof nowLine>; waiting: WaitingItem[]; youManage: boolean }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
+    const all = this.threadsFor(caller, w, opts.before != null);
+    const limit = Number.isFinite(opts.limit) ? Math.min(100, Math.max(1, Math.floor(opts.limit!))) : 20;
+    const page = opts.before != null && Number.isFinite(opts.before) ? all.filter((t) => t.lastAt < opts.before!) : all;
+    const threads = page.slice(0, limit);
+    return {
+      ok: true,
+      threads,
+      nextBefore: page.length > limit ? threads[threads.length - 1].lastAt : null,
+      total: all.length,
+      now: nowLine(all, w.name, this.now()),
+      waiting: this.listWaiting(caller).filter((x) => x.workerId === w.id),
+      youManage: canManage(this.policy(), this.deps.workers.roster(), w.id, caller),
+    };
+  }
+
+  /// Every thread of one worker, as this caller sees them. The first page
+  /// builds them fresh; a page further back, asked for soon after, reuses
+  /// that build instead of walking the whole history again.
+  private threadsFor(caller: OrgCaller, w: Worker, paging: boolean): WorkThread[] {
+    const key = `${w.id}|${caller.slackUserId ?? ''}|${caller.name}|${caller.admin ? 1 : 0}`;
+    const hit = this.threadBuilds.get(key);
+    if (paging && hit && this.now() - hit.at < THREAD_REUSE_MS) return hit.all;
     const filed = new Map<string, { entryId: string; title: string; rating?: WorkItem['rating'] }>();
     for (const it of this.workItems([w], 0, 1000)) {
       if (it.runId && !filed.has(it.runId)) filed.set(it.runId, { entryId: it.entryId, title: it.title, ...(it.rating ? { rating: it.rating } : {}) });
@@ -3339,21 +3458,27 @@ export class OrgService {
       runNow: (this.deps.audit?.recent(5000) ?? []).filter((e) => e.what === `Started a run of ${w.name} now.`).map((e) => ({ at: e.at, by: e.by })),
       now: this.now(),
     });
-    const limit = Number.isFinite(opts.limit) ? Math.min(100, Math.max(1, Math.floor(opts.limit!))) : 20;
-    const page = opts.before != null && Number.isFinite(opts.before) ? all.filter((t) => t.lastAt < opts.before!) : all;
-    const threads = page.slice(0, limit);
-    return {
-      ok: true,
-      threads,
-      nextBefore: page.length > limit ? threads[threads.length - 1].lastAt : null,
-      total: all.length,
-      now: nowLine(all, w.name, this.now()),
-      waiting: this.listWaiting(caller).filter((x) => x.workerId === w.id),
-      youManage: canManage(this.policy(), this.deps.workers.roster(), w.id, caller),
-    };
+    this.threadBuilds.delete(key);
+    this.threadBuilds.set(key, { at: this.now(), all });
+    if (this.threadBuilds.size > 50) this.threadBuilds.delete(this.threadBuilds.keys().next().value as string);
+    return all;
   }
 
+  private threadBuilds = new Map<string, { at: number; all: WorkThread[] }>();
+
   /// Runs of this worker still under way, newest first.
+  /// Every run going now on the workers this person can see, newest first:
+  /// for the Inbox's "in flight".
+  runningNow(caller: OrgCaller): Array<{ workerId: UUID; workerName: string; run: RunNow }> {
+    const policy = this.policy();
+    const roster = this.deps.workers.roster();
+    return roster
+      .filter((w) => canSee(policy, roster, w.id, caller))
+      .flatMap((w) => this.runsNow(w.id).map((run) => ({ workerId: w.id, workerName: w.name, run })))
+      .sort((a, b) => b.run.startedAt - a.run.startedAt)
+      .slice(0, 30);
+  }
+
   private runsNow(workerId: UUID): RunNow[] {
     return this.deps.runs
       .listRuns()
@@ -3508,7 +3633,7 @@ export class OrgService {
   }
 
   /// Where a running run is: its step, since when, and the last thing it said.
-  private runPlace(runId: UUID): { step?: { index: number; total: number; name: string }; startedAt?: number; said?: string } {
+  private runPlace(runId: UUID): { step?: { index: number; total: number; name: string }; startedAt?: number; said?: string; paused?: string } {
     const r = this.deps.runs.getRun(runId);
     if (!r) return {};
     const steps = r.flowSnapshot.steps;
@@ -3519,17 +3644,19 @@ export class OrgService {
       ...(index >= 0 ? { step: { index: index + 1, total: steps.length, name: steps[index].id.replace(/[-_]+/g, ' ') } } : {}),
       startedAt: r.createdAt,
       ...(said ? { said: said.replace(/\s+/g, ' ').trim().slice(0, 240) } : {}),
+      ...(r.state.kind === 'paused' ? { paused: `${PAUSED_WORDS[r.state.reason]}${index >= 0 ? ` before ${steps[index].id.replace(/[-_]+/g, ' ')}` : ''}` } : {}),
     };
   }
 
   // ---- REPOS ------------------------------------------------------------
 
   /// Connected repos, and who works in each.
-  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }> }> {
+  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string }> {
     if (!this.deps.repos) return { ok: false, error: 'Repos are not available on this server.' };
     if (!canHire(this.policy(), caller)) return { ok: false, error: 'Only people who may hire workers can see the repos.' };
     const roster = this.deps.workers.roster();
     const repos = this.deps.repos;
+    const testsOff = repos.testsOff?.();
     return {
       ok: true,
       repos: repos.list().map((r) => {
@@ -3537,17 +3664,19 @@ export class OrgService {
         return { ...r, canPush: repos.canPush(r), ...(tokenEnv ? { tokenEnv } : {}), workers: roster.filter((w) => w.projectPath === r.path).map((w) => w.name) };
       }),
       workspaces: repos.workspaces().map((ws) => ({ ...ws, workers: roster.filter((w) => w.projectPath === ws.rootPath).map((w) => w.name) })),
+      ...(testsOff ? { testsOff } : {}),
     };
   }
 
-  async connectRepo(caller: OrgCaller, input: { url: string; name?: string; testCommand?: string }): Promise<Result<{ repo: ConnectedRepo }>> {
+  async connectRepo(caller: OrgCaller, input: { url: string; name?: string; testCommand?: string }): Promise<Result<{ repo: ConnectedRepo; warning?: string }>> {
     if (!this.deps.repos) return { ok: false, error: 'Repos are not available on this server.' };
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can connect repos.' };
     const res = await this.deps.repos.connect(input, caller.name);
     if (!res.ok) return res;
     this.deps.repos.changed();
     this.record(caller, `Connected the repo ${res.repo.name} (${res.repo.url})${res.repo.testCommand ? `, tests: ${res.repo.testCommand}` : ''}.`);
-    return res;
+    const testsOff = res.repo.testCommand ? this.deps.repos.testsOff?.() : undefined;
+    return testsOff ? { ...res, warning: `Repo tests are turned off on this server, so nothing is pushed from ${res.repo.name} until they're on. ${testsOff}` } : res;
   }
 
   disconnectRepo(caller: OrgCaller, name: string): Result {
@@ -3695,6 +3824,16 @@ export class OrgService {
   // ---- PUBLISH A TEAM ---------------------------------------------------
 
   private memoryPublished: PublishedState = { workers: {}, teams: {}, waiting: [] };
+
+  /// The org's id for a worker published from someone's install, by its id there.
+  publishedWorkerId(localId: string): string | undefined {
+    return this.publishedState().workers[localId];
+  }
+
+  /// The org's id for a team published from someone's install, by its id there.
+  publishedTeamId(localId: string): string | undefined {
+    return this.publishedState().teams[localId];
+  }
 
   private publishedState(): PublishedState {
     return this.deps.published?.load() ?? this.memoryPublished;
@@ -4163,6 +4302,7 @@ export class OrgService {
             },
           }
         : {}),
+      ...(task.comments?.length ? { comments: task.comments } : {}),
       updatedAt: task.updatedAt,
     };
   }
@@ -4257,6 +4397,7 @@ export class OrgService {
       ...(s.finishedAt ? { finishedAt: s.finishedAt } : {}),
       ...(s.error ? { error: s.error } : {}),
       current: i === task.stageIndex,
+      ...(s.fromRoom ? { fromRoom: true } : {}),
       pieces: (s.assignments ?? []).map((a) => {
         const run = a.runId ? runsById.get(a.runId) : undefined;
         const steps = run?.flowSnapshot.steps ?? [];
@@ -4310,7 +4451,36 @@ export class OrgService {
       ...(task.answers?.length ? { answers: task.answers } : {}),
       ...(task.error ? { error: task.error } : {}),
       files: task.files.map((f) => ({ name: f.name, author: f.author, at: f.at })),
-      ...(task.pack ? { pack: { summary: task.pack.summary, files: task.pack.files } } : {}),
+      ...(task.pack
+        ? {
+            pack: {
+              summary: task.pack.summary,
+              files: task.pack.files,
+              ...(task.pack.version ? { version: task.pack.version } : {}),
+              ...(task.pack.updatedAt ? { updatedAt: task.pack.updatedAt } : {}),
+              ...(task.pack.changed ? { changed: task.pack.changed } : {}),
+            },
+          }
+        : {}),
+      ...(task.room?.messages.length || task.room?.busy
+        ? {
+            room: {
+              messages: task.room.messages.map((m) => ({
+                id: m.id,
+                speaker: m.speaker.kind === 'member' ? { kind: 'member' as const, name: m.speaker.name, workerId: m.speaker.workerId } : { kind: m.speaker.kind },
+                text: m.text,
+                at: m.at,
+                exchange: m.exchange,
+                ...(m.wrapUp ? { wrapUp: true } : {}),
+                ...(m.failed ? { failed: true } : {}),
+              })),
+              ...(task.room.busy ? { busy: task.room.busy } : {}),
+              ...(task.room.foldedThrough ? { foldedThrough: task.room.foldedThrough } : {}),
+              ...(task.room.queue?.length ? { queued: task.room.queue.length } : {}),
+            },
+          }
+        : {}),
+      canSteer: this.askedForTask(task, caller) || isAdmin(this.policy(), caller),
       stagesDetail: stages,
       nowSentence,
     };
@@ -4769,6 +4939,55 @@ export class OrgService {
     return { ok: true, body: k.body, ...(k.updatedAt ? { updatedAt: k.updatedAt } : {}) };
   }
 
+  /// A comment on a team task's work, or a member's piece done again with a
+  /// note: for whoever asked for the task, or an admin.
+  commentOnTeamTask(caller: OrgCaller, taskId: UUID, input: { text: string; file?: string; quote?: string; about?: 'questions' | 'plan' | 'coordinator'; workerId?: string; redo?: boolean }): Result<{ comment?: TeamComment }> {
+    const teams = this.deps.teams;
+    if (!teams?.comment || !teams.redoPiece) return { ok: false, error: 'Commenting on team work isn’t available here.' };
+    const task = teams.list().tasks.find((t) => t.id === taskId);
+    if (!task) return { ok: false, error: 'No team task with that id.' };
+    if (!this.askedForTask(task, caller) && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can comment on it.' };
+    if (input.redo) {
+      if (!input.workerId) return { ok: false, error: 'Say whose piece to do again.' };
+      const res = teams.redoPiece(taskId, input.workerId, input.text);
+      if (res.ok) this.record(caller, `Asked for a piece of ${task.teamName}'s task "${task.title ?? task.brief.slice(0, 60)}" again.`);
+      return res;
+    }
+    return teams.comment(taskId, {
+      text: input.text,
+      ...(input.file ? { file: input.file } : {}),
+      ...(input.quote ? { quote: input.quote } : {}),
+      ...(input.about ? { about: input.about } : {}),
+      ...(input.workerId ? { workerId: input.workerId } : {}),
+    });
+  }
+
+  /// Talk to a finished task's team, or fold what it said into the pack:
+  /// for whoever asked for the task, or an admin.
+  teamRoom(caller: OrgCaller, taskId: UUID, action: { kind: 'ask'; text: string } | { kind: 'continue' } | { kind: 'updatePack'; changes?: string[] }): Result<{ queued?: boolean }> {
+    const teams = this.deps.teams;
+    if (!teams) return { ok: false, error: 'Teams are not running on this server.' };
+    const task = teams.list().tasks.find((t) => t.id === taskId);
+    if (!task) return { ok: false, error: 'No team task with that id.' };
+    if (!this.askedForTask(task, caller) && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can talk to its team.' };
+    const name = `${task.teamName}'s task "${task.title ?? task.brief.slice(0, 60)}"`;
+    if (action.kind === 'ask') {
+      if (!teams.roomAsk) return { ok: false, error: 'Talking to the team isn’t available here.' };
+      if (!action.text.trim()) return { ok: false, error: 'Ask the team something.' };
+      const res = teams.roomAsk(taskId, action.text);
+      if (res.ok) this.record(caller, `Asked the team on ${name}.`);
+      return res;
+    }
+    if (action.kind === 'continue') {
+      if (!teams.roomContinue) return { ok: false, error: 'Talking to the team isn’t available here.' };
+      return teams.roomContinue(taskId);
+    }
+    if (!teams.updatePack) return { ok: false, error: 'Updating the pack isn’t available here.' };
+    const res = teams.updatePack(taskId, action.changes ? { changes: action.changes } : {});
+    if (res.ok) this.record(caller, `Asked for the pack of ${name} to be updated${action.changes?.length ? ` with ${action.changes.length} change${action.changes.length === 1 ? '' : 's'}` : ''}.`);
+    return res;
+  }
+
   /// Answer a team's questions, approve or change its plan, carry on past a
   /// checkpoint, or cancel — for whoever asked for the task, or an admin.
   decideTeamTask(
@@ -4825,7 +5044,7 @@ export class OrgService {
     if (!teams?.pushCode) return { ok: false, error: 'Teams can’t push code on this server.' };
     const task = teams.list().tasks.find((t) => t.id === taskId);
     if (!task) return { ok: false, error: 'No team task with that id.' };
-    if (!this.askedForTask(task, caller)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can push its code.' };
+    if (!this.askedForTask(task, caller) && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can push its code.' };
     if (!task.code) return { ok: false, error: 'This task changed no code.' };
     const pushed: Array<{ repo: string; url?: string }> = [];
     const failed: Array<{ repo: string; error: string }> = [];
@@ -4852,6 +5071,37 @@ export class OrgService {
     for (const t of this.deps.people?.() ?? []) if (t.slackUserId) known.set(t.slackUserId, t.name);
     for (const w of this.deps.workers.roster()) if (w.manager?.slackUserId) known.set(w.manager.slackUserId, w.manager.name);
     return ids.map((id) => known.get(id) ?? id);
+  }
+
+  /// The people and groups the org knows, for picking who decides or leads:
+  /// its named groups (org.json `teams`), the admins and hire approvers as
+  /// groups, and everyone named anywhere. Names only, nothing private.
+  directory(): { people: Array<{ name: string; slackUserId: string }>; groups: Array<{ id: string; name: string; members: Array<{ name: string; slackUserId: string }> }> } {
+    const policy = this.policy();
+    const ids = new Set<string>([...policy.admins, ...approversFor(policy), ...Object.values(policy.teams).flat()]);
+    for (const t of this.deps.people?.() ?? []) if (t.slackUserId) ids.add(t.slackUserId);
+    for (const w of this.deps.workers.roster()) if (w.manager?.slackUserId) ids.add(w.manager.slackUserId);
+    const all = [...ids];
+    const names = this.namesFor(all);
+    const person = new Map(all.map((id, i) => [id, { name: names[i], slackUserId: id }]));
+    const members = (list: readonly string[]) => list.map((id) => person.get(id) ?? { name: id, slackUserId: id });
+    return {
+      people: [...person.values()].filter((p) => !SLACK_ID.test(p.name)).sort((a, b) => a.name.localeCompare(b.name)),
+      groups: [
+        ...Object.entries(policy.teams).map(([name, list]) => ({ id: `team:${name}`, name, members: members(list) })),
+        { id: 'admins', name: 'Admins', members: members(policy.admins) },
+        { id: 'approvers', name: 'Hire approvers', members: members(approversFor(policy)) },
+      ].filter((g) => g.members.length),
+    };
+  }
+
+  /// A person's name, learned from Slack: workers saved with their bare
+  /// Slack id as their manager's name take it.
+  learnName(slackUserId: string, name: string): void {
+    if (!name || SLACK_ID.test(name)) return;
+    for (const w of this.deps.workers.roster()) {
+      if (w.manager?.slackUserId === slackUserId && SLACK_ID.test(w.manager.name)) this.deps.workers.save({ ...w, manager: { ...w.manager, name } });
+    }
   }
 
   people(caller: OrgCaller): Result<{ people: PersonRow[] }> {

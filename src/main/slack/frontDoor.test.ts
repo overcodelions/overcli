@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Attachment } from '../../shared/types';
 import type { ErrandProgress } from '../org/orgService';
-import { FrontDoor, namedWorker, rankByWords, toSlack, type FrontDoorState, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
+import { FrontDoor, namedWorker, rankByWords, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
 import { readRoute, routePrompt } from './frontDoorRoute';
 import type { SlackMessage } from './slackApi';
 
@@ -10,15 +10,21 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const TRIAGE: FrontDoorWorker = { id: 'w-triage', name: 'Triage', tagline: 'Fixes product bugs', job: 'Reproduce bugs in the web app, fix them, and open a pull request with tests.' };
 const VANTAGE: FrontDoorWorker = { id: 'w-vantage', name: 'Vantage', tagline: 'Competitive analyst', job: 'Research competitors and write competitive analysis reports on features, pricing and positioning.' };
 
-function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; recent?: SlackMessage[]; track?: boolean; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null } = {}) {
+function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null } = {}) {
   const posts: string[] = [];
   const briefs: Array<{ teamId: string; brief: string }> = [];
+  const items: Array<{ processId: string; brief: string }> = [];
   const tracks: string[] = [];
   const uploads: string[] = [];
   const edits: Array<{ ts: string; text: string }> = [];
   let statusN = 0;
   const asks: Array<{ workerId: string; text: string; attachments: Attachment[]; conversation?: string; said?: string }> = [];
   let routed = 0;
+  const related: Array<Array<{ title: string; who: string }> | undefined> = [];
+  const candidates: string[][] = [];
+  const looked: string[] = [];
+  const teamAsks: Array<{ taskId: string; text: string }> = [];
+  const blocks: Array<{ text: string; blocks: unknown[] }> = [];
   let progress: ErrandProgress | null = opts.progress ?? null;
   let state: FrontDoorState = { threads: [], follows: [] };
   const door = new FrontDoor({
@@ -42,14 +48,43 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
           },
         }
       : {}),
+    ...(opts.processes
+      ? {
+          processes: () => opts.processes!,
+          submitProcess: (_c: unknown, processId: string, brief: string) => {
+            items.push({ processId, brief });
+            const p = opts.processes!.find((x) => x.id === processId)!;
+            return { ok: true as const, title: brief.split('\n')[0], process: p.name, stage: p.firstStage };
+          },
+        }
+      : {}),
     ask: (_c, workerId, text, attachments, conversation, said) => {
       asks.push({ workerId, text, attachments, conversation, said });
       return { ok: true, done: Promise.resolve({ ok: true as const, reply: opts.reply ?? 'On it.', askId: 'ask-1', ...(opts.proposed ? { proposed: opts.proposed } : {}), ...(opts.orchestrationId ? { orchestrationId: opts.orchestrationId } : {}) }) };
     },
     ...(opts.handBack ? { handBack: opts.handBack } : {}),
+    ...(opts.status ? { status: opts.status } : {}),
+    ...(opts.findExisting
+      ? {
+          findExisting: (_c: unknown, text: string) => {
+            looked.push(text);
+            return opts.findExisting!(text);
+          },
+        }
+      : {}),
+    ...(opts.askTeam
+      ? {
+          askTeam: (_c: unknown, taskId: string, text: string) => {
+            teamAsks.push({ taskId, text });
+            return { ok: true as const };
+          },
+        }
+      : {}),
     progress: () => progress,
-    route: async () => {
+    route: async (_text, offered, rel) => {
       routed++;
+      related.push(rel);
+      candidates.push(offered.map((w) => w.id));
       return opts.route ?? null;
     },
     slack: {
@@ -72,6 +107,14 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
         uploads.push(filename);
         return true;
       },
+      ...(opts.blocks
+        ? {
+            postBlocks: async (_c: string, text: string, b: unknown[]) => {
+              blocks.push({ text, blocks: b });
+              return true;
+            },
+          }
+        : {}),
     },
     libraryUrl: () => 'https://overcli.acme.example',
     readFile: () => Buffer.from('<html>report</html>'),
@@ -79,10 +122,79 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
     store: { load: () => structuredClone(state), save: (s) => (state = structuredClone(s)) },
     log: () => {},
   });
-  return { door, posts, uploads, edits, asks, briefs, tracks, routed: () => routed, setProgress: (p: ErrandProgress) => (progress = p), state: () => state };
+  return { door, posts, uploads, edits, asks, briefs, items, tracks, related, candidates, looked, teamAsks, blocks, routed: () => routed, setProgress: (p: ErrandProgress) => (progress = p), state: () => state };
 }
 
 describe('the front door', () => {
+  it('puts "idea: …" into a process, asking which when there are several', async () => {
+    const IDEAS = { id: 'p-ideas', name: 'Idea to launch', purpose: 'New product ideas', firstStage: 'PR/FAQ' };
+    const BUGS = { id: 'p-bugs', name: 'Bug report to fix', purpose: 'Bugs', firstStage: 'Triage' };
+    const one = harness({ processes: [IDEAS] });
+    await one.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> idea: CSV export for reports', dm: false });
+    expect(one.items).toEqual([{ processId: 'p-ideas', brief: 'CSV export for reports' }]);
+    expect(one.posts[0]).toContain('goes into *Idea to launch*, starting at *PR/FAQ*');
+    await one.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'and PDF too', dm: false });
+    expect(one.items).toHaveLength(1);
+    expect(one.posts.at(-1)).toContain("That's in Idea to launch now.");
+
+    const two = harness({ processes: [IDEAS, BUGS] });
+    await two.door.onMessage({ channel: 'C0ACME', ts: '2.0', user: 'U1', text: 'new idea - dark mode', dm: false });
+    expect(two.posts[0]).toContain('Which process should it go into?');
+    await two.door.onMessage({ channel: 'C0ACME', ts: '2.1', threadTs: '2.0', user: 'U1', text: 'idea to launch', dm: false });
+    expect(two.items).toEqual([{ processId: 'p-ideas', brief: 'dark mode' }]);
+
+    const named = harness({ processes: [IDEAS, BUGS] });
+    await named.door.onMessage({ channel: 'C0ACME', ts: '3.0', user: 'U1', text: 'Bug report to fix: export button greyed out', dm: false });
+    expect(named.items).toEqual([{ processId: 'p-bugs', brief: 'export button greyed out' }]);
+    expect(named.asks).toHaveLength(0);
+  });
+
+  it('keeps a "which process?" answer among the processes, never handing the idea to a worker', async () => {
+    const IDEAS = { id: 'p-ideas', name: 'Idea to launch', purpose: 'New product ideas', firstStage: 'PR/FAQ' };
+    const BUGS = { id: 'p-bugs', name: 'Bug report to fix', purpose: 'Bugs', firstStage: 'Triage' };
+    // The router would pick an ordinary worker if it could see one.
+    const h = harness({ processes: [IDEAS, BUGS], route: { workerId: 'w-triage', why: 'it fixes things' } });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '4.0', user: 'U1', text: 'idea: a faster export', dm: false });
+    expect(h.posts[0]).toContain('Which process should it go into?');
+    await h.door.onMessage({ channel: 'C0ACME', ts: '4.1', threadTs: '4.0', user: 'U1', text: 'the launch one I guess', dm: false });
+    await tick();
+    expect(h.candidates.at(-1)).toEqual(['process:p-ideas', 'process:p-bugs']);
+    expect(h.asks).toHaveLength(0);
+    expect(h.items).toHaveLength(0);
+    expect(h.posts.at(-1)).toBe('C0ACME@4.0: Reply with one of: Idea to launch, Bug report to fix, or say *anyone* and I\'ll pick.');
+
+    // A pick among the processes still goes in, with the answer added.
+    const ok = harness({ processes: [IDEAS, BUGS], route: { workerId: 'process:p-ideas', why: 'it takes new ideas' } });
+    await ok.door.onMessage({ channel: 'C0ACME', ts: '5.0', user: 'U1', text: 'idea: a faster export', dm: false });
+    await ok.door.onMessage({ channel: 'C0ACME', ts: '5.1', threadTs: '5.0', user: 'U1', text: 'the launch one I guess', dm: false });
+    expect(ok.asks).toHaveLength(0);
+    expect(ok.items).toEqual([{ processId: 'p-ideas', brief: 'a faster export\nthe launch one I guess' }]);
+    expect(ok.posts.at(-1)).toContain('goes into *Idea to launch* (it takes new ideas)');
+  });
+
+  it('answers "how are we doing?" itself when it can, and routes it like any request when it can\'t', async () => {
+    const h = harness({ status: (c) => `${c.name}: 2 waiting on you, Triage is working.` });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '6.0', user: 'U1', text: 'How are we doing?', dm: true });
+    await tick();
+    expect(h.posts).toEqual(['D0ACME@6.0: Pat: 2 waiting on you, Triage is working.']);
+    expect(h.asks).toHaveLength(0);
+    expect(h.routed()).toBe(0);
+    expect(h.state().threads).toEqual([]);
+
+    // In a thread a worker already has, it's more for that worker.
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.0', user: 'U1', text: 'Triage, look at the export bug', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.1', threadTs: '7.0', user: 'U1', text: 'status update', dm: true });
+    await tick();
+    expect(h.asks.map((a) => a.workerId)).toEqual(['w-triage', 'w-triage']);
+    expect(h.asks[1].text).toContain('status update');
+
+    const none = harness();
+    await none.door.onMessage({ channel: 'D0ACME', ts: '8.0', user: 'U1', text: 'How are we doing?', dm: true });
+    await tick();
+    expect(none.routed()).toBe(1);
+    expect(none.posts[0]).toContain('Who should take this?');
+  });
+
   it('gives a request that names a worker to it, and answers in the thread', async () => {
     const h = harness({ reply: 'Done — the button is in.' });
     await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U0ACMEPAT', text: 'Triage, add an export button to the reports page', dm: true });
@@ -113,6 +225,12 @@ describe('the front door', () => {
     await unsure.door.onMessage({ channel: 'C0ACME', ts: '4.1', threadTs: '4.0', user: 'U1', text: 'vantage', dm: false });
     expect(unsure.asks[0]).toMatchObject({ workerId: 'w-vantage' });
     expect(unsure.asks[0].text).toContain('can someone look at this');
+
+    const anyone = harness({ route: null });
+    await anyone.door.onMessage({ channel: 'C0ACME', ts: '6.0', user: 'U1', text: 'how are we doing today', dm: false });
+    await anyone.door.onMessage({ channel: 'C0ACME', ts: '6.1', threadTs: '6.0', user: 'U1', text: 'anyone', dm: false });
+    expect(anyone.asks).toHaveLength(1);
+    expect(anyone.posts.join('\n')).toContain('(you said anyone)');
   });
 
   it('brings the thread and its screenshots along, and keeps a thread with its worker', async () => {
@@ -428,9 +546,114 @@ describe('tracking a ticket from Slack', () => {
     const h = harness({ track: true });
     await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U1', text: 'Triage, track ACME-412 too', dm: true });
     await h.door.onMessage({ channel: 'D0ACME', ts: '2.0', user: 'U1', text: 'Triage, stop tracking ACME-412', dm: true });
-    expect(h.tracks).toEqual(['w-triage:ACME-412:true', 'w-triage:ACME-412:false']);
+    await h.door.onMessage({ channel: 'D0ACME', ts: '3.0', user: 'U1', text: 'Triage, untrack ACME-412', dm: true });
+    expect(h.tracks).toEqual(['w-triage:ACME-412:true', 'w-triage:ACME-412:false', 'w-triage:ACME-412:false']);
     expect(h.asks).toHaveLength(0);
     expect(h.routed()).toBe(0);
     expect(h.posts[0]).toContain('Tracking ACME-412. Triage tracks 3');
+  });
+});
+
+describe('looking up existing work first', () => {
+  const NOW = Date.now();
+  const ROADMAP: ExistingHit = {
+    kind: 'team',
+    title: 'Q1 2027 roadmap: company announcement and customer-facing version',
+    who: 'Product Team',
+    at: NOW,
+    summary: 'Three themes for Q1: reporting, the mobile app, integrations.',
+    url: 'https://overcli.acme.example/#teamtask/t-1',
+    teamTaskId: 't-1',
+    teamId: 'team-product',
+    status: 'waiting on your review',
+  };
+  const HUGO: FrontDoorWorker = { id: 'w-hugo', name: 'Hugo', tagline: 'Product planning', job: 'Writes plans and roadmaps.' };
+  const CHURN: ExistingHit = { kind: 'worker', title: 'Churn report for September', who: 'Hugo', at: NOW, summary: 'Churn fell to 2%.', workerId: 'w-hugo' };
+
+  it('answers a question with the work that already exists, and does not route it', async () => {
+    const h = harness({ blocks: true, askTeam: true, findExisting: () => [ROADMAP], route: { workerId: 'w-triage', why: 'x' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U1', text: 'whats the roadmap for q1 2027', dm: true });
+    expect(h.looked).toEqual(['whats the roadmap for q1 2027']);
+    expect(h.routed()).toBe(0);
+    expect(h.asks).toHaveLength(0);
+    expect(h.blocks[0].text).toBe('*Product Team* finished _Q1 2027 roadmap: company announcement and customer-facing version_ today — waiting on your review.\n> Three themes for Q1: reporting, the mobile app, integrations.');
+    const buttons = (h.blocks[0].blocks[1] as { elements: Array<{ text: { text: string }; url?: string; value: string }> }).elements;
+    expect(buttons.map((b) => b.text.text)).toEqual(['Open it', 'Ask the team about it', "That's not it"]);
+    expect(buttons[0].url).toBe('https://overcli.acme.example/#teamtask/t-1');
+    expect(h.state().threads[0].existing?.hits).toHaveLength(1);
+    // The button, pressed: the question goes to the task's team.
+    await h.door.onChoice({ channel: 'D0ACME', messageTs: '1.1', threadTs: '1.0', user: 'U1', text: buttons[1].value });
+    expect(h.teamAsks).toEqual([{ taskId: 't-1', text: 'whats the roadmap for q1 2027' }]);
+    expect(h.posts.at(-1)).toBe('D0ACME@1.0: Asked *Product Team* — their answer will land in the task: https://overcli.acme.example/#teamtask/t-1');
+    expect(h.edits.at(-1)?.text).toBe('<@U1> picked: Ask the team about it');
+    expect(h.routed()).toBe(0);
+  });
+
+  it('routes the question as usual on "That\'s not it", with the near misses as hints', async () => {
+    const weak: ExistingHit = { kind: 'worker', title: 'Roadmap themes', who: 'Hugo', at: NOW, summary: '', workerId: 'w-hugo', weak: true };
+    const h = harness({ findExisting: () => [ROADMAP, weak], route: { workerId: 'w-triage', why: 'it fits' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '2.0', user: 'U1', text: 'whats the roadmap for q1 2027', dm: true });
+    // No buttons here: the same, in words.
+    expect(h.posts[0]).toContain('Open it: https://overcli.acme.example/#teamtask/t-1');
+    expect(h.posts[0]).toContain("Reply *ask* to put your question to the team, or *not it* and I'll find someone to take it.");
+    expect(h.door.owns('D0ACME', '2.0')).toBe(true);
+    await h.door.onMessage({ channel: 'D0ACME', ts: '2.1', threadTs: '2.0', user: 'U1', text: 'That’s not it', dm: true });
+    expect(h.routed()).toBe(1);
+    expect(h.related[0]).toEqual([{ title: 'Roadmap themes', who: 'Hugo' }]);
+    expect(h.asks[0]).toMatchObject({ workerId: 'w-triage' });
+    expect(h.asks[0].text).toContain('whats the roadmap for q1 2027');
+    expect(h.state().threads[0].existing).toBeUndefined();
+  });
+
+  it('routes as before when nothing matches, telling the router what was close', async () => {
+    const none = harness({ findExisting: () => [], route: { workerId: 'w-vantage', why: 'research' } });
+    await none.door.onMessage({ channel: 'D0ACME', ts: '3.0', user: 'U1', text: 'what are competitors charging?', dm: true });
+    expect(none.looked).toHaveLength(1);
+    expect(none.routed()).toBe(1);
+    expect(none.related[0]).toBeUndefined();
+    expect(none.posts[0]).toContain('*Vantage* has this (research)');
+
+    const close = harness({ findExisting: () => [{ ...ROADMAP, weak: true }], route: { workerId: 'w-vantage', why: 'research' } });
+    await close.door.onMessage({ channel: 'D0ACME', ts: '3.1', user: 'U1', text: 'what is in the roadmap?', dm: true });
+    expect(close.related[0]).toEqual([{ title: ROADMAP.title, who: 'Product Team' }]);
+    expect(close.asks).toHaveLength(1);
+  });
+
+  it('never looks for a request to make something, or one that names a worker', async () => {
+    const h = harness({ findExisting: () => [ROADMAP], route: { workerId: 'w-triage', why: 'x' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '4.0', user: 'U1', text: 'write me a plan for the q1 2027 roadmap', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '4.1', user: 'U1', text: 'Vantage, what is the q1 2027 roadmap?', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '4.2', user: 'U1', text: 'what does Triage think of the q1 2027 roadmap?', dm: true });
+    expect(h.looked).toEqual([]);
+    expect(h.asks.map((a) => a.workerId)).toEqual(['w-triage', 'w-vantage', 'w-triage']);
+  });
+
+  it('offers several as a list to pick from, by button or by "the second one"', async () => {
+    const h = harness({ blocks: true, workers: [TRIAGE, HUGO], findExisting: () => [ROADMAP, CHURN], route: { workerId: 'w-triage', why: 'x' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '5.0', user: 'U1', text: 'what did we ship?', dm: true });
+    expect(h.blocks[0].text).toMatch(/^This may already exist:\n1\. _Q1 2027 roadmap: .+_ · \*Product Team\* · today · waiting on your review\n2\. _Churn report for September_ · \*Hugo\* · today$/);
+    const buttons = (h.blocks[0].blocks[1] as { elements: Array<{ text: { text: string } }> }).elements;
+    expect(buttons.map((b) => b.text.text).at(-1)).toBe('None of these');
+    await h.door.onMessage({ channel: 'D0ACME', ts: '5.1', threadTs: '5.0', user: 'U1', text: 'the second one', dm: true });
+    expect(h.blocks[1].text).toBe('*Hugo* delivered _Churn report for September_ today.\n> Churn fell to 2%.');
+    expect((h.blocks[1].blocks[1] as { elements: Array<{ text: { text: string } }> }).elements.map((b) => b.text.text)).toEqual(['Ask Hugo about it', "That's not it"]);
+    // Asking a worker about its own work starts from it.
+    await h.door.onMessage({ channel: 'D0ACME', ts: '5.2', threadTs: '5.0', user: 'U1', text: 'Ask Hugo about it', dm: true });
+    expect(h.asks[0].workerId).toBe('w-hugo');
+    expect(h.asks[0].text).toContain('what did we ship?');
+    expect(h.asks[0].text).toContain('This is about what you delivered today: "Churn report for September". It said: Churn fell to 2%.');
+    expect(h.routed()).toBe(0);
+
+    const no = harness({ workers: [TRIAGE, HUGO], findExisting: () => [ROADMAP, CHURN], route: { workerId: 'w-triage', why: 'x' } });
+    await no.door.onMessage({ channel: 'D0ACME', ts: '6.0', user: 'U1', text: 'what did we ship?', dm: true });
+    expect(no.posts[0]).toContain("Reply with its number, or *none* and I'll find someone to take it.");
+    await no.door.onMessage({ channel: 'D0ACME', ts: '6.1', threadTs: '6.0', user: 'U1', text: 'None of these', dm: true });
+    expect(no.routed()).toBe(1);
+    expect(no.asks[0].workerId).toBe('w-triage');
+  });
+
+  it('lists recent related work for the router', () => {
+    expect(routePrompt('whats the roadmap', [TRIAGE], [{ title: 'Q1 2027 roadmap', who: 'Product Team' }])).toContain('Recent work that may be related:\n- Q1 2027 roadmap — by Product Team');
+    expect(routePrompt('whats the roadmap', [TRIAGE])).not.toContain('Recent work');
   });
 });

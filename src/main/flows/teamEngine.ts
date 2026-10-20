@@ -16,6 +16,7 @@
 // Main decides; the renderer only mirrors `teamUpdate` / `teamTaskUpdate`.
 
 import fs from 'node:fs';
+import type { TeamComment } from '../../shared/flows/team';
 import { randomUUID } from 'node:crypto';
 import { log } from '../diagnostics';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
@@ -164,6 +165,11 @@ export interface TeamEngineDeps {
   cancelTurn?: (cancelKey: string) => void;
   /// Stop a commissioned batch (work you stopped from the room).
   cancelBatch?: (orchestrationId: UUID) => void;
+  /// Hand a running member's run a correction, taken at its next step.
+  steer?: (runId: UUID, text: string) => { ok: true } | { ok: false; error: string };
+  /// What a member's paused run is waiting on you for, said plainly ("wants
+  /// your OK to use bash"); null when nobody needs to act (you held it).
+  pauseOf?: (runId: UUID) => string | null;
   /// Whether the whole crew is away (WorkerEngine.awayState). While it is,
   /// no stage starts on its own; coming back picks the tasks up again.
   crewAway?: () => boolean;
@@ -204,7 +210,7 @@ type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
 export interface TeamCodeDeps {
   /// Cut the task branch in every git repo of `projectPath`. Null: no repo.
-  open(args: { taskId: UUID; title: string; projectPath: string }): Result<{ code: TeamTaskCode | null }>;
+  open(args: { taskId: UUID; title: string; projectPath: string; from?: string }): Result<{ code: TeamTaskCode | null }>;
   /// Where a piece's run did its work: a worktree and branch per repo.
   pieceRepos(runId: UUID): Array<{ projectPath: string; worktreePath: string; branchName: string; startedAt?: number }>;
   absorb(args: {
@@ -479,7 +485,7 @@ export class TeamEngine {
     /// Where this task works, over the team's own project. `null`: each
     /// member in their own, whatever the team says.
     projectPath?: string | null,
-    opts: { requestedBy?: TeamTask['requestedBy']; forcePlan?: boolean } = {},
+    opts: { requestedBy?: TeamTask['requestedBy']; forcePlan?: boolean; startFrom?: string } = {},
   ): Result<{ task: TeamTask }> {
     const team = this.teams.get(teamId);
     if (!team) return { ok: false, error: 'That team no longer exists.' };
@@ -512,6 +518,7 @@ export class TeamEngine {
       ...(opts.requestedBy ? { requestedBy: opts.requestedBy } : {}),
       ...(opts.forcePlan ? { forcePlan: true } : {}),
       ...(workIn ? { projectPath: workIn } : {}),
+      ...(opts.startFrom ? { startFrom: opts.startFrom } : {}),
       status: active ? 'queued' : 'planning',
       createdAt: now,
       updatedAt: now,
@@ -1031,6 +1038,84 @@ export class TeamEngine {
     return { ok: true };
   }
 
+  /// You said something about the work: on a passage of a file, on the
+  /// questions or plan, or to one member. It's kept, so every later piece
+  /// and the pack are briefed with it, and acted on now where it can be:
+  /// a plan waiting on you is re-planned, a running member is told, and
+  /// once the pack is written it goes to the team conversation.
+  comment(taskId: UUID, input: { text: string; file?: string; quote?: string; about?: 'questions' | 'plan' | 'coordinator'; workerId?: UUID }): Result<{ comment: TeamComment }> {
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'That task no longer exists.' };
+    const text = input.text?.trim() ?? '';
+    if (!text) return { ok: false, error: 'Write the comment.' };
+    const team = this.teams.get(task.teamId);
+    const member = input.workerId ? this.roster(team!).find((m) => m.workerId === input.workerId) : undefined;
+    if (input.workerId && !member) return { ok: false, error: 'That worker isn’t on this team.' };
+    const comment: TeamComment = {
+      id: this.newId(),
+      at: this.now(),
+      text: text.slice(0, 4000),
+      ...(input.file ? { file: input.file.slice(0, 300) } : {}),
+      ...(input.quote?.trim() ? { quote: input.quote.trim().slice(0, 1000) } : {}),
+      ...(input.about ? { about: input.about } : {}),
+      ...(member ? { workerId: member.workerId, workerName: member.name } : {}),
+      outcome: 'queued',
+    };
+    task.comments = [...(task.comments ?? []), comment].slice(-100);
+    const where = comment.file ? `On ${comment.file}${comment.quote ? ` (“${comment.quote.slice(0, 160)}”)` : ''}: ` : comment.about ? `On the ${comment.about}: ` : '';
+    const said = `${where}${member ? `For ${member.name}: ` : ''}${text}`;
+    if (task.status === 'proposed') {
+      this.persist(task);
+      const res = this.revise(taskId, said);
+      if (!res.ok) return res;
+      comment.outcome = 'replanned';
+    } else if (task.status === 'review' || task.status === 'done') {
+      this.persist(task);
+      const res = this.roomAsk(taskId, said);
+      if (!res.ok) return res;
+      comment.outcome = res.queued ? 'waiting' : 'asked';
+    } else if (member && (task.status === 'running' || task.status === 'waiting')) {
+      const a = task.stages[task.stageIndex]?.assignments.find((x) => x.workerId === member.workerId);
+      if (a?.runId && a.status === 'running' && this.deps.steer?.(a.runId, `From the person who asked for this task: ${said}`).ok) comment.outcome = 'steered';
+    }
+    this.persist(task);
+    return { ok: true, comment };
+  }
+
+  /// Start one member's piece of the current stage again, with what you
+  /// said to it: a finished piece is replaced, a running one stopped first.
+  redoPiece(taskId: UUID, workerId: UUID, note?: string): Result {
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'That task no longer exists.' };
+    const stage = task.stages[task.stageIndex];
+    const a = stage?.assignments.find((x) => x.workerId === workerId);
+    if (!stage || !a || !isMemberStage(stage.kind)) return { ok: false, error: 'That member has no piece in the current stage.' };
+    if (task.status !== 'running' && !(task.status === 'waiting' && (task.waiting?.reason === 'failed' || task.waiting?.reason === 'checkpoint'))) {
+      return { ok: false, error: 'Only a piece of the stage that’s running can be done again.' };
+    }
+    // Always on the record, so the coordinator and later stages know the
+    // piece changed, and why when you said.
+    const said = note?.trim() ? note.trim() : `Redo your piece of "${stage.title}".`;
+    const res = this.comment(taskId, { text: said, workerId });
+    if (!res.ok) return res;
+    res.comment.outcome = 'redo';
+    res.comment.text = `${a.workerName}'s piece of "${stage.title}" was done again, so use the new version${note?.trim() ? `. What was asked: ${note.trim()}` : '.'}`;
+    if (a.status === 'running' && a.orchestrationId) this.deps.cancelBatch?.(a.orchestrationId);
+    a.status = 'pending';
+    a.error = undefined;
+    a.orchestrationId = undefined;
+    a.runId = undefined;
+    stage.error = undefined;
+    stage.status = 'running';
+    if (task.status === 'waiting') {
+      task.waiting = undefined;
+      task.status = 'running';
+    }
+    this.persist(task);
+    void this.launchMemberStage(taskId, task.stageIndex);
+    return { ok: true };
+  }
+
   /// Drop one member's piece of a stage that has not finished — before it
   /// starts, or by stopping its run — and carry on without it. For when a
   /// piece turns out to repeat work the team already has.
@@ -1279,6 +1364,7 @@ export class TeamEngine {
         if (a.status !== 'pending') continue;
         const member = team.members.find((m) => m.workerId === a.workerId);
         const prompt = buildMemberStagePrompt({
+          workerId: a.workerId,
           ...(followUp ? { followUp: { ...followUp, ownFilesDir: `files/${slugify(a.workerName, 20)}/` } } : {}),
           teamName: team.name,
           task,
@@ -1373,15 +1459,23 @@ export class TeamEngine {
     const item = o.items[0];
     if (!item) return;
     if (item.runId) a.runId = item.runId;
+    if (item.status !== 'paused') a.waitingFor = undefined;
     switch (item.status) {
       case 'proposed':
       case 'queued':
       case 'running':
         a.status = 'running';
         break;
-      case 'paused':
+      case 'paused': {
+        const was = a.status;
+        const why = a.runId ? (this.deps.pauseOf?.(a.runId) ?? null) : null;
         a.status = 'paused';
+        a.waitingFor = why ?? undefined;
+        // The run is stopped for you, but the task still reads as running:
+        // say so, or a stage sits behind an approval nobody saw.
+        if (was !== 'paused' && why) this.deps.notify({ title: `${task.teamName} needs you`, body: `${a.workerName} ${why}.` });
         break;
+      }
       case 'done':
         this.collectPiece(task, origin.team.stage, a);
         this.absorbPiece(task, stage, a);
@@ -1705,7 +1799,7 @@ export class TeamEngine {
   private openCode(task: TeamTask): void {
     if (task.code || !task.projectPath || !this.deps.code) return;
     try {
-      const res = this.deps.code.open({ taskId: task.id, title: task.title ?? task.brief, projectPath: task.projectPath });
+      const res = this.deps.code.open({ taskId: task.id, title: task.title ?? task.brief, projectPath: task.projectPath, ...(task.startFrom ? { from: task.startFrom } : {}) });
       if (!res.ok) task.codeError = res.error;
       else if (res.code) task.code = res.code;
     } catch (err) {
@@ -1966,12 +2060,20 @@ export class TeamEngine {
 
   /// Ask the team something. `@Name` picks who answers; otherwise the
   /// coordinator routes the question.
-  roomAsk(taskId: UUID, text: string, attachments: Attachment[] = []): Result {
+  roomAsk(taskId: UUID, text: string, attachments: Attachment[] = []): Result<{ queued?: boolean }> {
     const task = this.tasks.get(taskId);
-    const ready = this.roomReady(task, { duringRoomWork: true });
-    if (ready) return { ok: false, error: ready };
     const question = text.trim();
     if (!question) return { ok: false, error: 'Ask the team something.' };
+    // Someone is answering: it waits its turn rather than being refused.
+    // Files can't wait, so a question with files still has to.
+    if (task && this.roomTalking(task) && !attachments.length) {
+      const room = (task.room ??= { messages: [] });
+      room.queue = [...(room.queue ?? []), { text: question, at: this.now() }].slice(-20);
+      this.persist(task);
+      return { ok: true, queued: true };
+    }
+    const ready = this.roomReady(task, { duringRoomWork: true });
+    if (ready) return { ok: false, error: ready };
     const members = this.roomMembers(task!);
     const mentions = parseMentions(question, members);
     const exchange = (task!.room?.messages.at(-1)?.exchange ?? -1) + 1;
@@ -2141,22 +2243,48 @@ export class TeamEngine {
   }
 
   /// Fold what the room settled back into the pack, keeping the old version.
-  updatePack(taskId: UUID): Result {
+  /// `changes`: the wrap-up's pack changes you picked — made, and the
+  /// wrap-up's others left out. Sanitised here: it comes over IPC.
+  updatePack(taskId: UUID, opts: { changes?: unknown } = {}): Result {
     const task = this.tasks.get(taskId);
     const ready = this.roomReady(task);
     if (ready) return { ok: false, error: ready };
+    const changes = Array.isArray(opts.changes)
+      ? opts.changes
+          .filter((c): c is string => typeof c === 'string')
+          .map((c) => c.trim().slice(0, 600))
+          .filter(Boolean)
+          .slice(0, 20)
+      : [];
     const room = task!.room;
     const fresh = (room?.messages ?? []).slice(room?.foldedThrough ?? 0).filter((m) => !m.failed);
-    if (!fresh.some((m) => m.speaker.kind !== 'you')) {
+    if (!fresh.some((m) => m.speaker.kind !== 'you') && changes.length === 0) {
       return { ok: false, error: 'Nothing new has been said since the pack was written.' };
     }
-    void this.rewritePack(taskId, fresh);
+    void this.rewritePack(taskId, fresh, changes);
     return { ok: true };
   }
 
   /// Why the room can't take a turn now, or null if it can. Talking is
   /// allowed while work handed off from the room runs (`duringRoomWork`);
   /// starting more work, or rewriting the pack, waits for it to land.
+  /// Someone in the room is answering, on a task whose room is open.
+  private roomTalking(task: TeamTask): boolean {
+    if (!task.pack || (task.status !== 'review' && task.status !== 'done' && !this.roomWorkUnderway(task))) return false;
+    return !!task.room?.busy || this.turning.has(`room:${task.id}`);
+  }
+
+  /// The next thing you said while the room was busy, now that it isn't.
+  private drainRoomQueue(taskId: UUID): void {
+    const task = this.tasks.get(taskId);
+    const next = task?.room?.queue?.[0];
+    if (!task || !next || this.roomReady(task, { duringRoomWork: true })) return;
+    task.room!.queue = task.room!.queue!.slice(1);
+    for (const c of task.comments ?? []) if (c.outcome === 'waiting' && next.text.endsWith(c.text)) c.outcome = 'asked';
+    this.persist(task);
+    this.roomAsk(taskId, next.text);
+  }
+
   private roomReady(task: TeamTask | undefined, opts: { duringRoomWork?: boolean } = {}): string | null {
     if (!task) return 'That task no longer exists.';
     const talking = opts.duringRoomWork && !!this.roomWorkUnderway(task);
@@ -2305,6 +2433,7 @@ export class TeamEngine {
       if (task.room) task.room.busy = null;
       this.fileConversation(task);
       this.persist(task);
+      queueMicrotask(() => this.drainRoomQueue(taskId));
     }
   }
 
@@ -2369,7 +2498,7 @@ export class TeamEngine {
     this.fileConversation(task);
   }
 
-  private async rewritePack(taskId: UUID, fresh: TeamMessage[]): Promise<void> {
+  private async rewritePack(taskId: UUID, fresh: TeamMessage[], changes: string[] = []): Promise<void> {
     const key = `room:${taskId}`;
     const task = this.tasks.get(taskId);
     if (!task?.pack || this.turning.has(key)) return;
@@ -2385,6 +2514,7 @@ export class TeamEngine {
           conversation: fresh,
           newWork: this.roomWorkSincePack(task),
           version: (task.pack.version ?? 1) + 1,
+          ...(changes.length ? { changes } : {}),
         }),
       });
       if (this.stopped(taskId)) return;
@@ -2395,11 +2525,15 @@ export class TeamEngine {
       }
       const pack = parsePackReply(res.text);
       const version = (task.pack.version ?? 1) + 1;
+      // What each file said before, so the desk can say which ones this
+      // version actually changed rather than badging every file.
+      const before = new Map<string, string>();
       // Keep the version being replaced, beside the pack, so nothing the
       // conversation changed is lost.
       for (const name of task.pack.files) {
         const body = this.store.readFile(taskId, name);
         if (body === null) continue;
+        before.set(name, body);
         const kept = name.replace(/^pack\//, `pack-v${version - 1}/`);
         this.store.writeFile(taskId, kept, body);
         const was = task.files.find((f) => f.name === name);
@@ -2407,13 +2541,16 @@ export class TeamEngine {
       }
       const at = this.now();
       const names: string[] = [];
+      const changed: string[] = [];
       for (const f of pack.files) {
         const name = `pack/${safeTeamFileName(f.name)}`;
+        const was = before.get(name);
+        if (was === undefined || was.trim() !== f.body.trim()) changed.push(name);
         this.store.writeFile(taskId, name, f.body);
         this.recordFile(task, { name, author: 'Coordinator', at });
         names.push(name);
       }
-      task.pack = { summary: pack.summary, files: names, version, updatedAt: at };
+      task.pack = { summary: pack.summary, files: names, version, updatedAt: at, changed };
       if (task.room) task.room.foldedThrough = task.room.messages.length + 1;
       this.pushMessage(task, { kind: 'coordinator' }, `Updated the pack (version ${version}). ${pack.summary}`, { exchange });
       // A changed pack is a pack to read again.
@@ -2430,6 +2567,7 @@ export class TeamEngine {
       if (task.room) task.room.busy = null;
       this.fileConversation(task);
       this.persist(task);
+      queueMicrotask(() => this.drainRoomQueue(taskId));
     }
   }
 

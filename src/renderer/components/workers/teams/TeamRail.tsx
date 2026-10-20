@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { useStore } from "../../../store";
 import { useTeamsStore } from "../../../teamsStore";
 import { useWorkersStore } from "../../../workersStore";
+import { labOn } from "@shared/labs";
 import { describeTeamTaskStatus, isTaskActive, teamTaskProgress, type Team, type TeamTask } from "@shared/flows/team";
 import type { Worker } from "@shared/flows/worker";
 import { useWorkerColors } from "../WorkerAvatar";
@@ -184,7 +185,7 @@ export function TeamRailSection({
             {expanded && (
               <span className={"flex min-w-0 flex-col " + (members ? "pr-6" : "")}>
                 <span className="truncate text-xs">{team.name}</span>
-                <span className={"truncate text-[10.5px] " + (needsYou ? "text-violet-400" : "text-ink-faint")}>
+                <span className={"truncate text-[10.5px] " + (needsYou ? "text-violet-600 dark:text-violet-400" : "text-ink-faint")}>
                   {status}
                 </span>
               </span>
@@ -241,6 +242,43 @@ export function NewTeamButton({ expanded }: { expanded: boolean }) {
         </svg>
       </span>
       {expanded && <span className="text-xs">New team</span>}
+    </button>
+  );
+}
+
+/// Processes, under "New team": work that moves through several teams and
+/// your decisions in order. Always there, like teams.
+export function ProcessesButton({ expanded }: { expanded: boolean }) {
+  const showProcesses = useWorkersStore((s) => s.showProcesses);
+  const onWorkers = useStore((s) => s.detailMode === "workers");
+  const active = useWorkersStore((s) => onWorkers && s.view === "processes");
+  // Processes is a lab, off until asked for in Settings → Labs.
+  const lab = useStore((s) => labOn(s.settings.labs, "processes"));
+  if (!lab) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => showProcesses(null)}
+      title="Processes · work that moves through several teams and your decisions, stage by stage"
+      aria-label={expanded ? undefined : "Processes"}
+      aria-current={active ? "page" : undefined}
+      className={
+        "flex min-h-[44px] w-full items-center gap-2.5 rounded-md py-1.5 text-left " +
+        "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
+        (active ? "sidebar-row-selected text-ink " : "text-ink-muted hover:bg-card-strong hover:text-ink ") +
+        (expanded ? "px-2" : "justify-center px-0")
+      }
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border-[1.5px] border-card-strong">
+        <svg viewBox="0 0 16 16" aria-hidden className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          {/* A pipeline: one stage feeding the next, then forking to two. */}
+          <circle cx="3" cy="8" r="1.75" />
+          <circle cx="13" cy="3.75" r="1.75" />
+          <circle cx="13" cy="12.25" r="1.75" />
+          <path d="M4.75 8H7c1.6 0 2-4.25 4.25-4.25M7 8c1.6 0 2 4.25 4.25 4.25" />
+        </svg>
+      </span>
+      {expanded && <span className="text-xs">Processes</span>}
     </button>
   );
 }

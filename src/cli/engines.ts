@@ -13,6 +13,7 @@
 // permission tap sits in the middle, because a run with nobody watching has to
 // answer its own tool prompts. See permissions.ts.
 
+import type { ProcessService } from '../main/org/processes';
 import path from 'node:path';
 import { RunActivity } from '../main/flows/runActivity';
 import { workerFilesDir } from '../main/flows/workerFiles';
@@ -51,11 +52,16 @@ import { createTeamEngine, runDeliverablesFor } from '../main/flows/teamWire';
 import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraft';
 import { bindAllowList } from '../main/org/repoGrants';
 import { BranchLander } from '../main/org/landBranches';
+import { runRepoTests } from './repoTests';
 import { credentialGitEnv, type ConnectedRepo } from '../main/org/repos';
-import { stripSecrets } from '../main/org/secrets';
 import { execFile } from 'node:child_process';
 import { setWebReadsTrusted } from '../main/flows/trustedCommands';
-import { loadOrgPolicy } from '../main/org/orgStores';
+import { loadOrgPolicy, orgDir } from '../main/org/orgStores';
+import { guardCredentials } from '../main/org/credentialGuard';
+import { closeToolGateway, openToolGateway, type ToolGateway } from '../main/org/toolGateway';
+import { useRemoteToolVault } from '../main/org/tools';
+import { readClaudeMcpServers, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
+import { log } from '../main/diagnostics';
 import type { SecretsService } from '../main/org/secrets/service';
 import { teamHireJobDescription } from '../shared/flows/team';
 import type { OrgService } from '../main/org/orgService';
@@ -98,6 +104,7 @@ export interface DaemonEngines extends HeadlessEngines {
   connections: ConnectionsService;
   /// Workers acting on business events. Started by `serve`.
   triggers: TriggerService;
+  processes: ProcessService;
 }
 
 /// A workspace root is not itself a git repo, but the runtime mints a worktree
@@ -421,11 +428,40 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
 
   // Connected repos add their PR commands to this list as they come and go.
   if (options.policy === 'allow-list') bindAllowList(options.allowTools);
+  // No process this server spawns may read or change credential files
+  // (credentialGuard.ts), and with the gateway on, none holds a remote
+  // tool's credentials at all (toolGateway.ts).
+  guardCredentials(host().dataDir());
+  const toolFile = { read: () => readClaudeMcpServers(), write: (name: string, c: McpServerConfig) => writeMcpServer('claude', name, c) };
+  let gateway: ToolGateway | null = null;
+  if (process.env.OVERCLI_TOOL_GATEWAY === '1') {
+    openToolGateway(
+      {
+        dir: orgDir,
+        callerFor: (id) => flowRuntime.workerForConversation(id),
+        onCall: (c) => log(c.allowed ? 'info' : 'warn', 'org.tools', `${c.who} ${c.allowed ? 'called' : 'was refused'} ${c.tool}.${c.call}`),
+        log: (message) => log('warn', 'org.tools', message),
+      },
+      toolFile,
+    ).then(
+      (opened) => {
+        gateway = opened;
+        useRemoteToolVault(opened);
+      },
+      (err) => log('error', 'org.tools', `tool gateway did not start: ${err instanceof Error ? err.message : String(err)}`),
+    );
+  } else {
+    try {
+      closeToolGateway(orgDir(), toolFile);
+    } catch (err) {
+      log('error', 'org.tools', `could not put tools back from the gateway's vault: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   const slack = createSlackBridge({ flowRuntime, orchestrator, workerEngine });
   // The server's version, and whether a newer release is out (Readiness).
   const updates = new UpdateCheck({ current: serverVersion(), enabled: () => process.env.OVERCLI_UPDATE_CHECK !== '0' });
   updates.start();
-  const { org, commands, access, sso, triggers, connections } = createOrgControl(
+  const { org, commands, access, sso, triggers, connections, processes } = createOrgControl(
     { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, health: () => [updates.health()], ...(options.secrets ? { secrets: options.secrets } : {}) },
     slack,
   );
@@ -436,14 +472,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // Git gets the host tokens and nothing else secret; the tests get no secrets at all.
   const gitEnv = credentialGitEnv;
   const lander = new BranchLander({
-    test: (command, cwd) =>
-      new Promise((resolve) => {
-        execFile('/bin/sh', ['-c', command], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: stripSecrets(process.env),
-          // Set OVERCLI_TEST_UID to run repo tests as a user that cannot read the data directory (secrets.key).
-          ...(process.env.OVERCLI_TEST_UID ? { uid: Number(process.env.OVERCLI_TEST_UID), gid: Number(process.env.OVERCLI_TEST_GID ?? process.env.OVERCLI_TEST_UID) } : {}) }, (err, stdout, stderr) =>
-          resolve(err ? { ok: false, error: `${stdout}${stderr}`.trim() || err.message } : { ok: true }),
-        );
-      }),
+    test: (command, cwd) => runRepoTests(command, cwd),
     git: (args, cwd) =>
       new Promise((resolve) => {
         execFile('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: gitEnv() }, (err, stdout, stderr) =>
@@ -479,6 +508,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     sso,
     connections,
     triggers,
+    processes,
     teams,
     // Ordered: stop the clocks before killing the children, so neither engine
     // can arm a fresh timer or launch a run on the way out. Each step is
@@ -490,6 +520,8 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       } catch {
         // already down
       }
+      useRemoteToolVault(null);
+      gateway?.stop();
       try {
         scheduler.dispose();
       } catch {

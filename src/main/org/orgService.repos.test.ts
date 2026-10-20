@@ -34,6 +34,7 @@ function harness(runs: FlowRun[] = []) {
   const audit: string[] = [];
   const set: string[] = [];
   let changed = 0;
+  let testsOff: string | undefined;
   const svc = new OrgService({
     workers: {
       roster: () => [...roster.values()],
@@ -58,13 +59,14 @@ function harness(runs: FlowRun[] = []) {
     repos: {
       list: () => repos,
       connect: async (input, by) => {
-        const repo: ConnectedRepo = { name: 'app', url: input.url, path: '/data/repos/app', defaultBranch: 'main', addedBy: by, at: 0 };
+        const repo: ConnectedRepo = { name: 'app', url: input.url, path: '/data/repos/app', defaultBranch: 'main', ...(input.testCommand ? { testCommand: input.testCommand } : {}), addedBy: by, at: 0 };
         repos.push(repo);
         return { ok: true, repo };
       },
       disconnect: () => ({ ok: true }),
       canPush: () => true,
       tokenFor: () => null,
+      testsOff: () => testsOff,
       workspaces: () => workspaces,
       createWorkspace: (input, by) => {
         const workspace = { id: 'ws-shop', name: input.name, repos: input.repos, rootPath: '/data/workspaces/ws-shop', addedBy: by, at: 0 };
@@ -91,10 +93,28 @@ function harness(runs: FlowRun[] = []) {
     audit: { append: (e) => audit.push(e.what), recent: () => [], all: () => [] },
     now: () => 0,
   });
-  return { svc, roster, flows, audit, set, changed: () => changed };
+  return { svc, roster, flows, audit, set, changed: () => changed, turnTestsOff: (why: string | undefined) => (testsOff = why) };
 }
 
 describe('repos', () => {
+  it('warns, on connecting and on the list, when its tests would hold every push back', async () => {
+    const h = harness();
+    h.turnTestsOff('Set OVERCLI_TEST_UID.');
+    const res = await h.svc.connectRepo(admin, { url: 'https://github.com/acme/app', testCommand: 'npm test' });
+    expect(res).toMatchObject({ ok: true, warning: 'Repo tests are turned off on this server, so nothing is pushed from app until they\'re on. Set OVERCLI_TEST_UID.' });
+    expect(h.svc.repoList(admin)).toMatchObject({ ok: true, testsOff: 'Set OVERCLI_TEST_UID.' });
+    h.turnTestsOff(undefined);
+    const list = h.svc.repoList(admin);
+    expect(list.ok && 'testsOff' in list).toBe(false);
+  });
+
+  it('does not warn for a repo with no test command', async () => {
+    const h = harness();
+    h.turnTestsOff('Set OVERCLI_TEST_UID.');
+    const res = await h.svc.connectRepo(admin, { url: 'https://github.com/acme/app' });
+    expect(res.ok && 'warning' in res).toBe(false);
+  });
+
   it('lets only admins connect one, and updates the grants when they do', async () => {
     const h = harness();
     expect(await h.svc.connectRepo(pat, { url: 'https://github.com/acme/app' })).toMatchObject({ ok: false });
@@ -169,6 +189,18 @@ describe("a worker's work as threads", () => {
     const rest = h.svc.workerThreads(pat, 'Triage', { before: first.nextBefore! });
     expect(rest.ok && rest.threads.map((t) => t.id)).toEqual(['run:r2']);
     expect(h.svc.workerThreads(sam, 'Triage').ok).toBe(false);
+  });
+
+  it('builds the threads once for a first page and the pages behind it', () => {
+    const h = harness([run('r1', { kind: 'done', success: true } as FlowRun['state'], 3_000), run('r2', { kind: 'done', success: true } as FlowRun['state'], 1_000)]);
+    const first = h.svc.workerThreads(pat, 'Triage', { limit: 1 });
+    if (!first.ok) throw new Error(first.error);
+    // The runs go; a page behind still reads the first page's build, a new first page does not.
+    (h.svc as unknown as { deps: { runs: { listRuns: () => FlowRun[] } } }).deps.runs.listRuns = () => [];
+    const rest = h.svc.workerThreads(pat, 'Triage', { before: first.nextBefore! });
+    expect(rest.ok && rest.threads.map((t) => t.id)).toEqual(['run:r2']);
+    const fresh = h.svc.workerThreads(pat, 'Triage', { limit: 1 });
+    expect(fresh.ok && fresh.threads).toEqual([]);
   });
 });
 
@@ -249,6 +281,17 @@ describe("a team task's code", () => {
     expect(h.svc.pushTeamCode(sam, 'task-1').ok).toBe(false);
     expect(h.svc.pushTeamCode(pat, 'task-1')).toEqual({ ok: true, pushed: [{ repo: 'app', url: 'https://github.com/acme/app/pull/new/team/add-prices' }], failed: [] });
     expect(pushed).toEqual(['/data/repos/app']);
+  });
+
+  it('lets an admin push a task someone else asked for from Slack', () => {
+    const task = {
+      id: 'task-2', teamId: 't', teamName: 'Shop crew', brief: 'Add tax', status: 'done', stages: [], stageIndex: 0, spentUSD: 1, budgetUSD: 40, updatedAt: 0,
+      requestedBy: { name: 'Pat', slackUserId: PAT },
+      code: { branch: 'team/add-tax', repos: [{ name: 'app', projectPath: '/data/repos/app', base: 'main', worktreePath: '/w/app', ahead: 1 }] },
+    };
+    const h = harnessWithTeams([task], () => ({ ok: true, message: 'Pushed.' }));
+    expect(h.svc.pushTeamCode(sam, 'task-2').ok).toBe(false);
+    expect(h.svc.pushTeamCode(admin, 'task-2').ok).toBe(true);
   });
 });
 

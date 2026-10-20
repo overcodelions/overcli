@@ -12,7 +12,7 @@
 // name must be one overcli knows, or look like a credential for a tool
 // (…_TOKEN, …_API_KEY), and never one of the prefixes those live under.
 
-import type { SecretMeta, SecretStore } from './store';
+import { SECRETS_KEY_ENV, type SecretMeta, type SecretStore } from './store';
 
 export interface KnownSecret {
   name: string;
@@ -335,9 +335,10 @@ export class SecretsService {
 
 const MODEL_KEYS = new Set(['ANTHROPIC_API_KEY', 'AWS_BEARER_TOKEN_BEDROCK', 'OPENAI_API_KEY']);
 const applied = new Set<string>();
-/// Names a spawned worker must never see: every stored secret except the model keys.
+/// Names a spawned worker must never see: every stored secret except the model
+/// keys, and the keys that unlock the server's own stores, however they were set.
 export function workerHiddenSecretNames(): Set<string> {
-  return new Set([...KNOWN_SECRETS.map((s) => s.name), ...applied].filter((n) => !MODEL_KEYS.has(n)));
+  return new Set([...KNOWN_SECRETS.map((s) => s.name), ...applied, SECRETS_KEY_ENV, ...PRIVATE_SECRETS].filter((n) => !MODEL_KEYS.has(n)));
 }
 export function stripSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const hidden = workerHiddenSecretNames();

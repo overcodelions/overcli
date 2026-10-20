@@ -9,6 +9,7 @@
 import { host } from '../host';
 import { log } from '../diagnostics';
 
+import type { ProcessDef, ProcessPerson, ProcessStage } from '../../shared/org/process';
 import type { ToolTemplate } from './tools';
 
 export const ORG_TOKEN_KEY = 'org-control-token';
@@ -145,6 +146,68 @@ export async function publishTeamToOrg(base: string, token: string, team: TeamPu
     d.team ? 'Members work in their own projects there until you pick one on the console.' : '',
   ];
   return { ok: true, message: parts.filter(Boolean).join(' ') };
+}
+
+/// A process onto the org. Team stages name the team by its id here
+/// (`localTeamId`); the server maps each to the copy published from this
+/// desktop, so the teams go up first.
+export interface ProcessPublishPayload {
+  localId: string;
+  name: string;
+  purpose?: string;
+  owner?: ProcessPerson;
+  stages: Array<Omit<ProcessStage, 'teamId'> & { localTeamId?: string; teamName?: string }>;
+}
+
+/// The payload for one local process. On the desktop people are often just
+/// "You"; on the org that has to be someone, so "You" becomes `me`, the
+/// person the org knows this app as (or is dropped, for the owner, and the
+/// server makes the publisher the owner).
+export function processPublishPayload(
+  def: Pick<ProcessDef, 'id' | 'name' | 'purpose' | 'owner' | 'stages'>,
+  teams: ReadonlyArray<{ id: string; name: string }>,
+  me?: ProcessPerson,
+): { ok: true; payload: ProcessPublishPayload } | { ok: false; error: string } {
+  const isYou = (p: ProcessPerson) => p.name.trim().toLowerCase() === 'you';
+  const person = (p: ProcessPerson): ProcessPerson | null => (isYou(p) ? me ?? null : { name: p.name, ...(p.slackUserId ? { slackUserId: p.slackUserId } : {}) });
+  const stages: ProcessPublishPayload['stages'] = [];
+  for (const s of def.stages) {
+    const { teamId, owner, approvers, ...rest } = s;
+    const stageOwner = owner ? person(owner) : null;
+    const base = { ...rest, ...(stageOwner ? { owner: stageOwner } : {}) };
+    if (s.kind === 'team') {
+      const team = teams.find((t) => t.id === teamId);
+      if (!team) return { ok: false, error: `The team for ${s.name} is gone. Pick another, then publish.` };
+      stages.push({ ...base, localTeamId: team.id, teamName: team.name });
+    } else {
+      const who = (approvers ?? []).map(person).filter((p): p is ProcessPerson => !!p);
+      if (!who.length) return { ok: false, error: `Say who decides at ${s.name} by name before publishing: "You" means nobody on the org.` };
+      stages.push({ ...base, approvers: who });
+    }
+  }
+  const owner = person(def.owner);
+  return {
+    ok: true,
+    payload: {
+      localId: def.id,
+      name: def.name,
+      ...(def.purpose ? { purpose: def.purpose } : {}),
+      ...(owner ? { owner } : {}),
+      stages,
+    },
+  };
+}
+
+export async function publishProcessToOrg(base: string, token: string, payload: ProcessPublishPayload): Promise<{ ok: true; message: string } | { ok: false; error: string }> {
+  const res = await call<{ process?: { name: string; stages?: unknown[] }; updated: boolean }>(base, token, 'POST', '/api/publish/process', payload);
+  if (!res.ok) return res;
+  const name = res.data.process?.name ?? payload.name;
+  return {
+    ok: true,
+    message: res.data.updated
+      ? `${name} is updated on the org. Items already in it carry on.`
+      : `${name} is on the org. People can put work into it from the console or Slack.`,
+  };
 }
 
 /// A desktop's picked setup onto the org (see setupShare.ts).

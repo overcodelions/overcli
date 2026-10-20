@@ -2,6 +2,7 @@
 // `overcli serve` (cli/engines.ts), so the two hosts cannot drift on how an
 // answer reaches a run or how a rejection settles its batch item.
 
+import { statusReply } from './statusReply';
 import { initialsPicture } from '../../shared/flows/avatars';
 import { log } from '../diagnostics';
 import { collectKnownSecretValues, redactSecrets } from '../secretScrub';
@@ -19,12 +20,16 @@ import { SlackCommands, type TeamCardRef } from './slackCommands';
 import { SsoService, SSO_CLIENT_SECRET_ENV } from '../org/sso';
 import { ConnectionsService } from '../org/connections';
 import { ToolSignIn } from '../org/toolSignIn';
-import { installTool } from '../org/tools';
+import { installTool, installedToolUrl } from '../org/tools';
 import { downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, lookupByEmail, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
 import { routeRequest } from './frontDoorRoute';
+import { libraryCandidates, matchExisting, type WorkCandidate } from './existingWork';
 import { drafterDepsFor } from '../org/hireDraft';
-import { isAdmin } from '../../shared/org/policy';
+import { canManage, canSee, isAdmin } from '../../shared/org/policy';
+import { managerFor } from '../../shared/flows/org';
+import type { ProcessPerson, ProcessState } from '../../shared/org/process';
+import { ProcessService } from '../org/processes';
 import { jsonOrgStore } from '../org/orgStores';
 import fs from 'node:fs';
 import { workerFilesDir } from '../flows/workerFiles';
@@ -74,7 +79,7 @@ export function createOrgControl(
   /// in the workspace. The desktop: its owner only (`slackOwnerId`), since
   /// the work runs on their laptop and their model account.
   options: { frontDoorOwner?: () => string | undefined } = {},
-): { org: OrgService; commands: SlackCommands; access: AccessService; sso: SsoService; triggers: TriggerService; frontDoor: FrontDoor; connections: ConnectionsService } {
+): { org: OrgService; commands: SlackCommands; access: AccessService; sso: SsoService; triggers: TriggerService; frontDoor: FrontDoor; connections: ConnectionsService; processes: ProcessService } {
   let commands: SlackCommands | null = null;
   // Each person's own Google Drive. Its client comes from Setup → Secrets
   // (or the environment); its encryption key stays in the secrets store.
@@ -96,10 +101,7 @@ export function createOrgControl(
       publicUrl: () => loadOrgPolicy().policy.publicUrl,
       sealKey: () => connections.encryptionKey(),
       install: (name, url, token) => installTool({ name, kind: 'http', url, headers: { Authorization: `Bearer ${token}` } }),
-      installedUrl: (name) => {
-        const c = readClaudeMcpServers()[name];
-        return typeof c?.url === 'string' ? c.url : undefined;
-      },
+      installedUrl: (name) => installedToolUrl(name),
       log: (message) => log('info', 'org', message),
     });
   toolSignIn.keepFresh();
@@ -164,6 +166,11 @@ export function createOrgControl(
     onAskDone: (ask) => commands?.askAnswered(ask),
   });
   commands = new SlackCommands({
+    processes: () => processes,
+    processDms: (() => {
+      const store = jsonOrgStore<Record<string, Array<{ channel: string; ts: string }>>>('process-decision-dms.json', () => ({}));
+      return { load: () => store.load(), save: (all) => store.save(all) };
+    })(),
     org,
     access,
     policy: () => loadOrgPolicy().policy,
@@ -237,8 +244,110 @@ export function createOrgControl(
     },
     signIn: (person) => access.signInWithSso(person),
   });
+  // Work moving between teams and people's decisions. A team stage briefs
+  // its team as the stage's owner; a people stage DMs its deciders.
+  const processes = new ProcessService({
+    store: jsonOrgStore<ProcessState>('processes.json', () => ({ processes: [], items: [] })),
+    teams: () => {
+      const roster = engines.workerEngine.roster();
+      return (engines.teams?.()?.list().teams ?? [])
+        .filter((t) => !t.disbanded)
+        .map((t) => {
+          const lead = t.members.map((m) => managerFor(roster, m.workerId)).find(Boolean);
+          return { id: t.id, name: t.name, ...(lead ? { owner: { name: lead.name, ...(lead.slackUserId ? { slackUserId: lead.slackUserId } : {}) } } : {}) };
+        });
+    },
+    task: (taskId) => {
+      const t = engines.teams?.()?.list().tasks.find((x) => x.id === taskId);
+      if (!t) return null;
+      return {
+        status: t.status,
+        ...(t.title ? { title: t.title } : {}),
+        ...(t.pack ? { pack: { summary: t.pack.summary, files: t.pack.files } } : {}),
+        ...(t.code?.branch ? { branch: t.code.branch } : {}),
+        ...(t.error ? { error: t.error } : {}),
+        ...(t.waiting ? { waiting: t.waiting.message } : {}),
+      };
+    },
+    brief: (teamId, text, by, code) => {
+      const teams = engines.teams?.();
+      if (!teams) return { ok: false, error: 'Teams are not running here.' };
+      const res = teams.brief(teamId, text, [], code?.projectPath, { requestedBy: by, ...(code?.startFrom ? { startFrom: code.startFrom } : {}) });
+      return res.ok ? { ok: true, taskId: res.task.id } : res;
+    },
+    readFile: (taskId, name) => {
+      const res = engines.teams?.()?.readFile(taskId, name);
+      return res?.ok ? res.body : null;
+    },
+    cancelTask: (taskId) => void engines.teams?.()?.cancel(taskId),
+    cancelAsk: (askId) => void org.cancelAsk(askId),
+    workerAccess: (caller, workerId) => {
+      const policy = loadOrgPolicy().policy;
+      const roster = engines.workerEngine.roster();
+      return canManage(policy, roster, workerId, caller) ? 'manage' : canSee(policy, roster, workerId, caller) ? 'see' : null;
+    },
+    workers: () => {
+      const roster = engines.workerEngine.roster();
+      return roster
+        .filter((w) => w.enabled)
+        .map((w) => {
+          const lead = managerFor(roster, w.id);
+          return { id: w.id, name: w.name, ...(lead ? { owner: { name: lead.name, ...(lead.slackUserId ? { slackUserId: lead.slackUserId } : {}) } } : {}) };
+        });
+    },
+    // Whoever put the worker in the stage could see it then (the process
+    // checks), so its visibility doesn't stop it now. It acts on the work as
+    // from its manager only when its manager put it there; otherwise it
+    // takes it as a proposal, as from anyone else.
+    askWorker: (workerId, text, by, trusted) => {
+      const started = org.startAsk({ name: by.name, ...(by.slackUserId ? { slackUserId: by.slackUserId } : {}), admin: true }, workerId, text, 'console', undefined, undefined, undefined, undefined, !trusted);
+      if (!started.ok) return started;
+      started.done.catch(() => {});
+      return { ok: true, askId: started.askId };
+    },
+    workerTask: (askId) => {
+      const found = org.askStatus({ name: 'overcli', admin: true }, askId);
+      if (!found.ok) return null;
+      const ask = found.ask;
+      if (ask.status === 'working') return { status: 'running' };
+      if (ask.status === 'failed') return { status: 'failed', ...(ask.error ? { error: ask.error } : {}) };
+      // It answered by starting work: done when that work ends.
+      const progress = ask.orchestrationId ? org.errandProgress(ask.orchestrationId) : null;
+      if (progress && !progress.done) {
+        if (progress.items.some((i) => i.status === 'proposed')) return { status: 'waiting', waiting: 'its plan waits for an OK' };
+        const paused = progress.items.find((i) => i.paused);
+        return paused ? { status: 'waiting', waiting: paused.paused } : { status: 'running' };
+      }
+      const links = progress?.links ?? [];
+      return {
+        status: 'done',
+        title: ask.workerName,
+        pack: { summary: [ask.reply ?? '', links.length ? `Links: ${links.join(' ')}` : ''].filter(Boolean).join('\n\n'), files: [] },
+      };
+    },
+    isAdmin: (caller) => isAdmin(loadOrgPolicy().policy, caller),
+    groupMembers: (groupId) => org.directory().groups.find((g) => g.id === groupId)?.members ?? [],
+    notify: (to, text, decide) => void commands?.processNotify(to, text, decide),
+    decided: (itemId, stageId, text, final) => void commands?.processDecided(itemId, stageId, text, final),
+    log: (message) => log('info', 'org', message),
+  });
+  processes.start();
   // Workers acting on business events: watches, webhooks, Slack channels.
   triggers = new TriggerService({
+    handTo: (hand, ev) => {
+      const brief = ev.url ? `${ev.text}\n\nSource: ${ev.url}` : ev.text;
+      if (hand.kind === 'process') {
+        const res = processes.submit({ name: ev.triggerName }, hand.processId, { title: ev.title, brief, source: 'trigger', ...(ev.url ? { sourceUrl: ev.url } : {}) });
+        return res.ok ? { ok: true, label: `${res.process.name} (${res.process.stages[0].name})` } : res;
+      }
+      const teams = engines.teams?.();
+      const team = teams?.list().teams.find((t) => t.id === hand.teamId && !t.disbanded);
+      if (!teams || !team) return { ok: false, error: 'That team is gone.' };
+      const roster = engines.workerEngine.roster();
+      const lead = team.members.map((m) => managerFor(roster, m.workerId)).find(Boolean);
+      const res = teams.brief(team.id, brief, [], undefined, lead ? { requestedBy: { name: lead.name, ...(lead.slackUserId ? { slackUserId: lead.slackUserId } : {}) } } : {});
+      return res.ok ? { ok: true, label: `${team.name} (a team task)` } : res;
+    },
     ...triggerFiles(orgDir()),
     worker: (id) => {
       const w = engines.workerEngine.roster().find((x) => x.id === id);
@@ -284,6 +393,45 @@ export function createOrgControl(
   const bot = () => (slack.teamId() ? configuredSlackToken('bot') : undefined);
   const owner = options.frontDoorOwner;
   const frontDoor = new FrontDoor({
+    processes: () =>
+      processes.list({ name: 'overcli', admin: true }).filter((p) => p.stages.length).map((p) => ({ id: p.id, name: p.name, ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),
+    submitProcess: (caller, processId, brief) => {
+      const res = processes.submit({ name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) }, processId, { brief, source: 'slack' });
+      return res.ok ? { ok: true, title: res.item.title, process: res.process.name, stage: res.process.stages[0].name } : res;
+    },
+    status: (caller) => statusReply(org.today(caller), loadOrgPolicy().policy.publicUrl, processes.waitingOn(caller)),
+    // What the caller can see in the Library, and finished process items,
+    // matched against the question: what already answers it is offered first.
+    findExisting: (caller, text) => {
+      const consoleUrl = loadOrgPolicy().policy.publicUrl;
+      const tasks = new Map((engines.teams?.()?.list().tasks ?? []).map((t) => [t.id, t]));
+      const candidates: WorkCandidate[] = libraryCandidates(org.library(caller, { limit: 300 }), {
+        ...(consoleUrl ? { consoleUrl } : {}),
+        taskStatus: (taskId) => {
+          const t = tasks.get(taskId);
+          if (t?.status !== 'review') return undefined;
+          return t.requestedBy?.slackUserId && t.requestedBy.slackUserId === caller.slackUserId ? 'waiting on your review' : 'waiting on review';
+        },
+      });
+      for (const p of processes.list(caller)) {
+        const got = processes.get(caller, p.id);
+        if (!got.ok) continue;
+        for (const i of got.items) {
+          if (i.status !== 'done') continue;
+          const last = i.artifacts.at(-1);
+          candidates.push({
+            hit: { kind: 'process', title: i.title, who: p.name, at: i.finishedAt ?? i.updatedAt, ...(consoleUrl ? { url: `${consoleUrl.replace(/\/+$/, '')}/#process/${encodeURIComponent(p.id)}/${encodeURIComponent(i.id)}` } : {}) },
+            body: last ? `${last.summary}\n${i.brief}` : i.brief,
+            ...(last?.taskId ? { group: `task:${last.taskId}` } : {}),
+          });
+        }
+      }
+      return matchExisting(text, candidates, Date.now());
+    },
+    askTeam: (caller, taskId, text) => {
+      const res = org.teamRoom(caller, taskId, { kind: 'ask', text });
+      return res.ok ? { ok: true } : res;
+    },
     ...(owner
       ? {
           mayAsk: (slackUserId: string) => {
@@ -299,7 +447,10 @@ export function createOrgControl(
       if (!name && token) {
         const res = await slackRead<{ user?: { real_name?: string; profile?: { display_name?: string; real_name?: string } } }>('users.info', token, { user: slackUserId });
         name = res.ok ? res.data.user?.profile?.display_name || res.data.user?.profile?.real_name || res.data.user?.real_name : undefined;
-        if (name) names.set(slackUserId, name);
+        if (name) {
+          names.set(slackUserId, name);
+          org.learnName(slackUserId, name);
+        }
       }
       const display = name ?? `<@${slackUserId}>`;
       // On the desktop its owner is the only one through, and every worker
@@ -341,7 +492,7 @@ export function createOrgControl(
     },
     handBack: (askId) => org.handBack(askId),
     progress: (id) => org.errandProgress(id),
-    route: (text, workers) => routeRequest(drafterDepsFor(engines.runner), text, workers),
+    route: (text, workers, related) => routeRequest(drafterDepsFor(engines.runner), text, workers, related),
     slack: {
       post: async (channel, text, threadTs, as) => {
         const token = bot();
@@ -425,5 +576,5 @@ export function createOrgControl(
   });
   slack.setFrontDoor(frontDoor);
   frontDoor.start();
-  return { org, commands, access, sso, triggers, frontDoor, connections };
+  return { org, commands, access, sso, triggers, frontDoor, connections, processes };
 }

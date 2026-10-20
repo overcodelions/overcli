@@ -137,7 +137,8 @@ function hash(text: string): string {
   return (h >>> 0).toString(36);
 }
 
-const TITLE_KEYS = ['title', 'summary', 'name', 'subject', 'fields.summary', 'text'];
+// CloudWatch alarms name themselves by alarm name (snake or Pascal case, by client).
+const TITLE_KEYS = ['title', 'summary', 'name', 'subject', 'fields.summary', 'text', 'alarm_name', 'AlarmName'];
 const ID_KEYS = ['id', 'key', 'number', 'url', 'html_url'];
 const URL_KEYS = ['url', 'html_url', 'permalink', 'self', 'web_url'];
 

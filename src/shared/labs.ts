@@ -12,7 +12,7 @@
 /// Usage is deliberately not a lab: "what is this costing me?" is a
 /// newcomer's question as much as anyone's, so that tab is always there.
 
-export type LabKey = 'orchestrator' | 'workers' | 'compare' | 'localModels';
+export type LabKey = 'orchestrator' | 'workers' | 'compare' | 'localModels' | 'processes';
 export type Labs = Partial<Record<LabKey, boolean>>;
 
 /// `help` is the Settings description; `pitch` is the few words the start
@@ -37,6 +37,12 @@ export const LABS: ReadonlyArray<{ key: LabKey; label: string; pitch: string; he
     help: 'Send the same task to several CLIs at once, each on its own branch, and keep the best answer. Shown on a project as "+ colosseum".',
   },
   {
+    key: 'processes',
+    label: 'Processes',
+    pitch: 'work moving through teams, stage by stage',
+    help: 'One piece of work moving through several teams, workers and your decisions, in order. Shown on the Workers rail.',
+  },
+  {
     key: 'localModels',
     label: 'Local models',
     pitch: 'models running on this machine',
@@ -49,8 +55,13 @@ export const NEWCOMER_LABS: Labs = {
   workers: true,
   compare: false,
   localModels: false,
+  processes: false,
 };
 
+/// Labs added after Labs existed, which nobody was using yet: absent means
+/// OFF for these, so an older settings file doesn't switch them on.
+const OFF_UNTIL_ASKED: ReadonlySet<LabKey> = new Set<LabKey>(['processes']);
+
 export function labOn(labs: Labs | undefined, key: LabKey): boolean {
-  return labs?.[key] ?? true;
+  return labs?.[key] ?? !OFF_UNTIL_ASKED.has(key);
 }

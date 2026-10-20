@@ -40,7 +40,7 @@ So on AWS the job is to put `/data` on a durable disk, snapshot it, and run exac
    CLAUDE_CODE_USE_BEDROCK=1
    AWS_REGION=us-east-1
    ```
-   The CloudFormation template runs the container on the host network so the server can read Secrets Manager and Bedrock through the instance role. Accepted risk (RRW-aws-imds-host-network): code a worker runs inside the container can reach that role too, so keep the role to Bedrock invoke and the `overcli/<Org>/` secrets prefix only.
+   The CloudFormation template runs the container on the host network so the server can read Secrets Manager and Bedrock through the instance role. Accepted risk: code a worker runs inside the container can reach that role too, so keep the role to Bedrock invoke and the `overcli/<Org>/` secrets prefix only. Repo test commands do not run in this setup unless you set `OVERCLI_TEST_AS_SERVER=1` in `deploy/.env` (the container cannot switch user), so until then a repo with a test command pushes nothing; connect it without one, or decide that trade-off with the role kept that small.
 5. **Secrets.** Keep them in Secrets Manager, managed from the console. In `deploy/.env`, set `OVERCLI_SECRETS=aws:overcli/acme/`. Then add the git host tokens, Slack tokens and SSO client secret on **Setup → Secrets**. They're written to Secrets Manager under that prefix and used at once, with no restart. Give the instance role the [secrets policy](#secrets-policy) below. Never bake secrets into the image.
 6. **Image.** Build once and push to ECR. The instance pulls it.
    ```sh
@@ -54,7 +54,7 @@ So on AWS the job is to put `/data` on a durable disk, snapshot it, and run exac
    ```
    Change the compose port mapping to `"7420:7420"` so the load balancer can reach it. The instance's security group should allow 7420 only from the ALB.
 8. **HTTPS.** Put an internal ALB in front with an ACM certificate, a target group on 7420, and the health check on `/healthz`. Set `OVERCLI_TRUST_PROXY=1` in `.env`, and `publicUrl` in `org.json` to the ALB's name (e.g. `https://overcli.acme.internal`).
-9. **Egress.** Through a NAT gateway: `slack.com`, `wss-primary.slack.com`, `wss-backup.slack.com`, your git host, and package registries if your tools use `npx` or `uvx`.
+9. **Egress.** Through a NAT gateway: `slack.com`, `wss-primary.slack.com`, `wss-backup.slack.com`, your git host, and package registries if your tools use `npx` or `uvx`. `uvx` also fetches its Python from `github.com` the first time.
 
 ### Upgrading
 
@@ -113,6 +113,72 @@ The role overcli runs as (instance role or task role) needs this on its prefix. 
 ```
 
 With a customer-managed KMS key, add `kms:Decrypt` and `kms:GenerateDataKey` on it. overcli reads the secrets at start and every five minutes, so one rotated in Secrets Manager applies without a redeploy.
+
+## CloudWatch logs for workers
+
+Workers can read CloudWatch logs through AWS's CloudWatch MCP server, using the role overcli already runs as. There is no key to paste and nothing to renew: the instance or task role's credentials rotate on their own, and the tool starts fresh for each run.
+
+1. **Give the role read access to the log groups workers may see.** Name them, or end a name with `*` for every group under a prefix (`/ecs/acme-*`). A bare `*` gives every group, which is rarely what you want.
+
+    ```json
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["logs:DescribeLogGroups", "logs:StopQuery"],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:DescribeLogStreams",
+            "logs:GetLogEvents",
+            "logs:FilterLogEvents",
+            "logs:StartQuery",
+            "logs:GetQueryResults",
+            "logs:GetLogGroupFields",
+            "logs:GetLogRecord"
+          ],
+          "Resource": [
+            "arn:aws:logs:<region>:<account>:log-group:/acme/api:*",
+            "arn:aws:logs:<region>:<account>:log-group:/ecs/acme-*:*"
+          ]
+        }
+      ]
+    }
+    ```
+
+    `DescribeLogGroups` and `StopQuery` can't be limited to log groups. Workers can list every group's name, but read only the groups named here. `StopQuery` only stops a query the role started.
+
+2. **Install the tool** on Setup → Tools → Install a tool, as a command:
+    - Name: `cloudwatch`
+    - Command: `uvx`, arguments `awslabs.cloudwatch-mcp-server@latest`
+    - Environment: `AWS_REGION=<region>`
+
+    The image includes `uv`. The first run downloads the server and its Python into the volume, so it takes a minute; later runs start at once.
+3. **Give it only to the workers that need it,** and leave its scope as the whole tool. The role is what keeps it read-only, and overcli's "Read only" scope judges calls by name, so it would refuse queries like `execute_log_insights_query`.
+
+**Treat it as confidential.** Logs often carry customer data, and a worker that's trusted to act and has a shell can use whatever the role can. Keep the role's log access to the groups above, and make the tool admin-only on Setup → Tools.
+
+The one-click stack sets up step 1's policy for you: name the groups in **Log groups workers may read** (`deploy/aws/README.md`).
+
+### Inside a private VPC
+
+Everything here goes out from the server; nothing has to reach it.
+
+- **CloudWatch's APIs.** Through the NAT gateway (`logs.<region>.amazonaws.com`, `monitoring.<region>.amazonaws.com`), or VPC interface endpoints for `logs` and `monitoring` to keep them inside the VPC. The stack makes both endpoints when **Private CloudWatch endpoints** is yes.
+- **The first run of the tool.** `uvx` downloads the server from PyPI (`pypi.org`, `files.pythonhosted.org`) and a Python build from `github.com`, once, into `/data`. Without a route to those, run the tool once from a machine that has one, or bake it into the image.
+
+### Alarms that start a worker
+
+Let CloudWatch decide what's wrong, and let the worker find out why:
+
+1. **An alarm for each thing you care about.** For a pattern in the logs ("more than 20 5xx in 5 minutes", "any `OutOfMemory`"), make a metric filter on the log group and an alarm on that metric. That's cheaper than a worker reading logs on a timer, and it only fires on real trouble.
+2. **A watch trigger on the alarms.** On the worker, add a trigger: **Something new or changed in a tool** → tool `cloudwatch` → **Set it up for CloudWatch alarms**. It asks `get_active_alarms` every 5 minutes with no model running. Each alarm that goes off is handed to the worker once; one that recovers and goes off again is handed over again.
+3. **What the worker does.** The setup fills in a starting point: pull the logs around the alarm with a Logs Insights query, find the likely cause, and post a summary. Send it to a Slack channel, a DM or a team. On probation it proposes; trusted, it acts. **At most per day** keeps an alarm that flaps from running up cost.
+
+An alarm can take up to the watch's interval (5 minutes) to reach the worker. A webhook from EventBridge would be instant, but EventBridge can't reach a server behind an internal load balancer.
 
 ## Not a fit
 

@@ -29,10 +29,13 @@ export interface NavLocation {
   /// selection rather than part of it — the calendar and the funds waterfall
   /// have no worker to be the selection of — so Back out of Funds has to
   /// know to return to the calendar rather than to a desk.
-  workersView: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'org' | 'team';
+  workersView: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report' | 'org' | 'team' | 'processes';
   /// The team whose desk is up while `workersView` is 'team'. Optional so a
   /// location recorded without it still reads as "no team".
   selectedTeamId?: string | null;
+  /// The process whose board is up while `workersView` is 'processes'; null
+  /// or absent is the list.
+  selectedProcessId?: string | null;
 }
 
 /// Identity of a location — two locations with the same key are the same
@@ -55,6 +58,7 @@ export function locationKey(loc: NavLocation): string {
     // the tab that owns it.
     loc.detailMode === 'workers' ? loc.workersView : '',
     loc.detailMode === 'workers' && loc.workersView === 'team' ? (loc.selectedTeamId ?? '') : '',
+    loc.detailMode === 'workers' && loc.workersView === 'processes' ? (loc.selectedProcessId ?? '') : '',
   ].join(' ');
 }
 
@@ -75,6 +79,7 @@ export function readLocation(): NavLocation {
     selectedWorkerId: w.selectedWorkerId,
     workersView: w.view,
     selectedTeamId: w.selectedTeamId,
+    selectedProcessId: w.selectedProcessId,
   };
 }
 
@@ -266,6 +271,7 @@ function applyLocation(loc: NavLocation): void {
     else if (loc.workersView === 'report') useWorkersStore.getState().showReport();
     else if (loc.workersView === 'org') useWorkersStore.getState().showOrg();
     else if (loc.workersView === 'team' && loc.selectedTeamId) useWorkersStore.getState().selectTeam(loc.selectedTeamId);
+    else if (loc.workersView === 'processes') useWorkersStore.getState().showProcesses(loc.selectedProcessId ?? null);
     // LAST: selectWorker and every Workers subview action call leavePane(),
     // which clears the active run. Flow locations still carry the globally
     // remembered Workers view, so restoring that view after the run used to
@@ -404,6 +410,7 @@ export function describeLocation(loc: NavLocation): string {
       if (loc.workersView === 'report') return 'a shift report';
       if (loc.workersView === 'org') return 'the org chart';
       if (loc.workersView === 'team') return 'a team';
+      if (loc.workersView === 'processes') return loc.selectedProcessId ? 'a process' : 'processes';
       return "a worker's desk";
     case 'flows':
       if (loc.activeRunId) return 'a flow run';

@@ -226,6 +226,16 @@ export interface TeamAssignment {
   /// The piece finished, but its changes would not merge into the task
   /// branch: why, and where to resolve it.
   mergeConflict?: string;
+  /// Paused: what its run is waiting on you for ("wants your OK to use
+  /// bash"). Absent while it isn't, or when you held it yourself.
+  waitingFor?: string;
+}
+
+/// The current stage's pieces whose runs are stopped for you: the task
+/// still reads as running, but it is not moving until you act.
+export function piecesWaiting(task: Pick<TeamTask, 'status' | 'stages' | 'stageIndex'>): TeamAssignment[] {
+  if (task.status !== 'running') return [];
+  return (task.stages[task.stageIndex]?.assignments ?? []).filter((a) => a.status === 'paused' && !!a.waitingFor);
 }
 
 export type TeamStageStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
@@ -267,6 +277,44 @@ export interface TeamTaskFile {
   at: number;
 }
 
+/// A comment on a team task's work, from the person who asked for it.
+export interface TeamComment {
+  id: string;
+  at: number;
+  text: string;
+  /// The file it is about, by task-folder name, and the passage quoted.
+  file?: string;
+  quote?: string;
+  /// It is about the coordinator's questions or plan, not a file.
+  about?: 'questions' | 'plan' | 'coordinator';
+  /// Said to one member.
+  workerId?: string;
+  workerName?: string;
+  /// What happened to it: it went into a re-plan, was sent to a running
+  /// member, went to the team conversation, or waits for the next stage.
+  outcome?: 'replanned' | 'steered' | 'asked' | 'queued' | 'redo' | 'waiting';
+}
+
+/// The comments as a brief section: each with what it's about.
+export function commentLines(comments: readonly TeamComment[] | undefined, forWorkerId?: string): string[] {
+  // Every comment goes to everyone: one said to a teammate still shapes the work around it.
+  const list = comments ?? [];
+  if (!list.length) return [];
+  const out = ['', 'WHAT THE USER SAID ABOUT THE WORK SO FAR (take it into account; it overrides earlier choices):'];
+  for (const c of list.slice(-30)) {
+    const about = c.file
+      ? `on ${c.file}${c.quote ? `, the passage "${c.quote.replace(/\s+/g, ' ').slice(0, 300)}"` : ''}`
+      : c.about === 'coordinator'
+        ? 'to the coordinator'
+        : c.about
+          ? `on the ${c.about}`
+          : 'on the task';
+    const to = c.workerId ? (c.workerId === forWorkerId ? ' (to you)' : ` (to ${c.workerName ?? 'a teammate'})`) : '';
+    out.push(`- ${about}${to}: ${c.text.replace(/\s+/g, ' ').slice(0, 1200)}`);
+  }
+  return out;
+}
+
 export interface TeamTask {
   id: UUID;
   teamId: UUID;
@@ -288,6 +336,9 @@ export interface TeamTask {
   /// Where this task's pieces run: chosen with the brief, else the team's.
   /// Absent: each member in their own project.
   projectPath?: string;
+  /// Start the task branch from this branch where a repo has it: the code an
+  /// earlier stage of a process left. Absent: from each repo's base.
+  startFrom?: string;
   /// Short title the coordinator gives the task once it has planned it.
   title?: string;
   status: TeamTaskStatus;
@@ -298,6 +349,10 @@ export interface TeamTask {
   answers?: string[];
   /// Changes you asked for to the plan, oldest first.
   revisions?: string[];
+  /// What you said about the work as it went: on a passage of a file, on a
+  /// question, or to one member. Every later piece and the pack are briefed
+  /// with them.
+  comments?: TeamComment[];
   /// Files you attached to the brief, saved in the shared folder under
   /// `attachments/` (task-folder names). Every planning turn sees them.
   attachments?: string[];
@@ -325,7 +380,10 @@ export interface TeamTask {
   folder: string;
   files: TeamTaskFile[];
   /// Set once the synthesize stage has written the pack.
-  pack?: { summary: string; files: string[]; version?: number; updatedAt?: number };
+  /// `changed`: the pack files this version added or rewrote, against the
+  /// version before it. Absent on a first pack, and on packs updated before
+  /// it was recorded.
+  pack?: { summary: string; files: string[]; version?: number; updatedAt?: number; changed?: string[] };
   /// The conversation you have with the team once the pack is written. See
   /// shared/flows/teamRoom.ts.
   room?: TeamRoom;
@@ -431,6 +489,9 @@ export interface TeamRoom {
   messages: TeamMessage[];
   /// Set while a turn is in flight: who is speaking, since when.
   busy?: { speaker: string; since: number } | null;
+  /// What you said while someone was answering, oldest first: each goes in
+  /// as its own question once the room is free.
+  queue?: Array<{ text: string; at: number }>;
   /// How many messages the pack has already absorbed, so "Update the pack"
   /// knows whether there is anything new to fold in.
   foldedThrough?: number;
@@ -1294,7 +1355,9 @@ const STAGE_GUIDANCE: Record<TeamStageKind, string> = {
 /// The prompt a member's run receives for its piece of a stage.
 export function buildMemberStagePrompt(args: {
   teamName: string;
-  task: Pick<TeamTask, 'brief' | 'title' | 'questions' | 'answers' | 'deliverables'>;
+  task: Pick<TeamTask, 'brief' | 'title' | 'questions' | 'answers' | 'deliverables' | 'comments'>;
+  /// The member being briefed, so comments said to them are marked so.
+  workerId?: string;
   stageNumber: number;
   stageCount: number;
   stage: Pick<TeamStage, 'kind' | 'title'>;
@@ -1362,6 +1425,7 @@ export function buildMemberStagePrompt(args: {
     lines.push('WHAT THE USER CLARIFIED');
     for (const { q, a } of qa) lines.push(`- ${q} → ${a}`);
   }
+  lines.push(...commentLines(args.task.comments, args.workerId));
   if (args.task.deliverables?.length) {
     lines.push('');
     lines.push(`The final pack will contain: ${args.task.deliverables.join(', ')}.`);
@@ -1449,7 +1513,7 @@ export function madeDeliverables(
 /// The coordinator's message for a draft or synthesize stage.
 export function buildCoordinatorStageMessage(args: {
   teamName: string;
-  task: Pick<TeamTask, 'brief' | 'title' | 'questions' | 'answers' | 'deliverables'>;
+  task: Pick<TeamTask, 'brief' | 'title' | 'questions' | 'answers' | 'deliverables' | 'comments'>;
   stage: Pick<TeamStage, 'kind' | 'title' | 'ask'>;
   stageNumber: number;
   stageCount: number;
@@ -1470,6 +1534,7 @@ export function buildCoordinatorStageMessage(args: {
     lines.push('WHAT THE USER CLARIFIED');
     for (const { q, a } of qa) lines.push(`- ${q} → ${a}`);
   }
+  lines.push(...commentLines(args.task.comments));
   lines.push('');
   lines.push(`STAGE ${args.stageNumber} of ${args.stageCount}: ${args.stage.title} [${args.stage.kind}]`);
   if (args.stage.ask) lines.push(args.stage.ask);
@@ -1744,6 +1809,9 @@ export function teamPieceFlow(flow: Flow, opts: { check?: boolean } = {}): Flow 
               ...(careful ? { permissionMode: 'acceptEdits' as const } : {}),
               effect: 'local' as const,
               output: 'checked.md',
+              // A piece that only researched or wrote has nothing to test,
+              // and the check's Bash would stop it to ask you first.
+              onlyIfChanged: true,
             },
           ]
         : []),

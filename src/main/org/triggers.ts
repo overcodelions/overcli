@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { McpServerConfig } from '../mcpConfig';
 import { at, itemsFrom, type ToolCall, type WatchItem } from './mcpDirect';
+import { escapeMrkdwn } from '../slack/slackApi';
 
 export type TriggerKind = 'watch' | 'webhook' | 'slack';
 
@@ -33,9 +34,15 @@ export type Destination =
   /// A Slack DM to one person: "message me when it moves".
   | { kind: 'dm'; slackUserId: string };
 
+/// Where an event goes instead of a worker: a team task, or a new item in
+/// a process ("each message in #ideas starts Idea to launch").
+export type TriggerHand = { kind: 'team'; teamId: string } | { kind: 'process'; processId: string };
+
 export interface WorkerTrigger {
   id: string;
+  /// The worker it hands events to. Empty when `hand` says where they go.
   workerId: string;
+  hand?: TriggerHand;
   name: string;
   kind: TriggerKind;
   enabled: boolean;
@@ -100,6 +107,8 @@ export interface TriggerDeps {
   store: { list(): WorkerTrigger[]; save(all: WorkerTrigger[]): void };
   deliverables: { list(): Deliverable[]; save(all: Deliverable[]): void };
   worker(id: string): { id: string; name: string; enabled: boolean } | null;
+  /// Hand an event to a team or a process. Absent: those triggers skip.
+  handTo?(hand: TriggerHand, event: { title: string; text: string; url?: string; triggerName: string }): { ok: true; label: string } | { ok: false; error: string };
   /// Hand the worker a task; the answer arrives on `done`.
   ask(workerId: string, triggerName: string, text: string):
     | { ok: true; askId: string; done: Promise<{ ok: true; reply: string; launched: number } | { ok: false; error: string }> }
@@ -146,7 +155,7 @@ export class TriggerService {
   /// Checked shape for a new or changed trigger. Returns the error, or null.
   validate(t: Partial<WorkerTrigger>): string | null {
     if (!t.name?.trim()) return 'Give the trigger a name, e.g. "New bugs in Support Backlog".';
-    if (!t.notifyOnly && (!t.instructions || t.instructions.trim().length < 10)) return 'Say what the worker should do with each one.';
+    if (!t.notifyOnly && !t.hand && (!t.instructions || t.instructions.trim().length < 10)) return 'Say what the worker should do with each one.';
     if (t.kind === 'watch') {
       const w = t.watch;
       if (!w?.server || !w.tool) return 'Pick the tool to check, and what to call.';
@@ -332,7 +341,8 @@ export class TriggerService {
       this.putDeliverable({ ...d, status: 'skipped', error: `Over today's limit of ${t.maxPerDay}.`, doneAt: this.now() });
       return;
     }
-    const text = `*${item.title}* moved from _${from}_ to *${to}*${item.url ? ` · <${item.url}|open it>` : ''}`;
+    const link = item.url && /^https?:\/\//i.test(item.url) ? ` · <${item.url.replace(/[<>|]/g, '')}|open it>` : '';
+    const text = `*${escapeMrkdwn(item.title)}* moved from _${escapeMrkdwn(from)}_ to *${escapeMrkdwn(to)}*${link}`;
     for (const dest of t.deliver) {
       if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, text))) d.deliveredTo.push(`Slack #${dest.channel}`);
       if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, text))) d.deliveredTo.push('a DM');
@@ -426,6 +436,7 @@ export class TriggerService {
 
   /// One event becomes one task for the worker, and one Deliverable.
   fire(t: WorkerTrigger, item: WatchItem, thread?: { channel: string; ts: string }): Deliverable | null {
+    if (t.hand) return this.handOn(t, item);
     const worker = this.deps.worker(t.workerId);
     const base: Deliverable = {
       id: randomUUID(),
@@ -467,6 +478,33 @@ export class TriggerService {
       this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, deliveredTo, doneAt: this.now() });
     });
     return d;
+  }
+
+  /// An event for a team or a process: handed straight on, no worker turn.
+  private handOn(t: WorkerTrigger, item: WatchItem): Deliverable | null {
+    const d: Deliverable = {
+      id: randomUUID(),
+      workerId: t.workerId,
+      workerName: t.name,
+      at: this.now(),
+      status: 'working',
+      title: item.title,
+      source: { kind: t.kind, triggerId: t.id, triggerName: t.name, ...(item.url ? { url: item.url } : {}) },
+      links: [],
+      deliveredTo: [],
+    };
+    const settle = (patch: Partial<Deliverable>) => {
+      this.putDeliverable({ ...d, ...patch, doneAt: this.now() });
+      return null;
+    };
+    if (this.firedToday(t.id) >= t.maxPerDay) return settle({ status: 'skipped', error: `Over today's limit of ${t.maxPerDay}.` });
+    if (!this.deps.handTo) return settle({ status: 'skipped', error: 'Teams and processes are not running here.' });
+    const raw = item.data as { text?: unknown } | undefined;
+    const said = typeof raw?.text === 'string' ? raw.text : JSON.stringify(item.data ?? {}, null, 2).slice(0, 6000);
+    const text = [t.instructions?.trim(), said].filter(Boolean).join('\n\n');
+    const res = this.deps.handTo(t.hand!, { title: item.title, text, ...(item.url ? { url: item.url } : {}), triggerName: t.name });
+    this.patchState(t.id, { lastFiredAt: this.now() });
+    return res.ok ? settle({ status: 'delivered', deliveredTo: [res.label] }) : settle({ status: 'failed', error: res.error });
   }
 
   private patchState(id: string, patch: Partial<WorkerTrigger>): void {

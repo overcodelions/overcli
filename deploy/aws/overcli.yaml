@@ -94,6 +94,27 @@ Parameters:
       Optional. Blank uses the latest Amazon Linux 2023 when the stack is made.
       Set an AMI ID to pin it.
 
+  CloudWatchLogGroups:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional. Log groups workers may read through the CloudWatch tool, comma
+      separated. A name may end in * for every group under it (e.g.
+      /acme/api,/ecs/acme-*); * alone is every group. Also lets them list
+      alarms and read metrics. Blank gives no CloudWatch access. See
+      deploy/aws.md, "CloudWatch logs for workers".
+    AllowedPattern: '^[A-Za-z0-9_./#,*-]*$'
+    ConstraintDescription: Log group names or prefixes ending in *, comma separated, no spaces.
+
+  CloudWatchEndpoints:
+    Type: String
+    Default: 'no'
+    AllowedValues: ['no', 'yes']
+    Description: >-
+      Optional. yes adds VPC endpoints for CloudWatch Logs and CloudWatch, so
+      those calls stay inside the VPC instead of going out through the NAT.
+      Leave no if the VPC already has them: two with private DNS conflict.
+
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -103,6 +124,8 @@ Metadata:
         Parameters: [VpcId, PrivateSubnetId, SecondPrivateSubnetId, AllowedCidr]
       - Label: { default: HTTPS (optional) }
         Parameters: [CertificateArn, DomainName]
+      - Label: { default: CloudWatch for workers (optional) }
+        Parameters: [CloudWatchLogGroups, CloudWatchEndpoints]
       - Label: { default: Advanced }
         Parameters: [ImageUri, InstanceType, DiskSizeGiB, BedrockRegion, AmiId]
     ParameterLabels:
@@ -112,12 +135,16 @@ Metadata:
       AllowedCidr: { default: Who may reach the console }
       ImageUri: { default: Container image }
       DiskSizeGiB: { default: Data volume size (GiB) }
+      CloudWatchLogGroups: { default: Log groups workers may read }
+      CloudWatchEndpoints: { default: Private CloudWatch endpoints }
 
 Conditions:
   HasCert: !Not [!Equals [!Ref CertificateArn, '']]
   HasDomain: !Not [!Equals [!Ref DomainName, '']]
   HasBedrockRegion: !Not [!Equals [!Ref BedrockRegion, '']]
   HasAmi: !Not [!Equals [!Ref AmiId, '']]
+  HasLogGroups: !Not [!Equals [!Ref CloudWatchLogGroups, '']]
+  WantsCloudWatchEndpoints: !Equals [!Ref CloudWatchEndpoints, 'yes']
 
 Resources:
 
@@ -157,6 +184,39 @@ Resources:
       ToPort: 7420
       SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
       Description: the console and /mcp, from the load balancer only
+
+  # CloudWatch endpoints: reachable from the instance only, on 443.
+  CloudWatchEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: WantsCloudWatchEndpoints
+    Properties:
+      GroupDescription: overcli CloudWatch endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: !Ref InstanceSecurityGroup, Description: from overcli }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-cloudwatch-endpoints' }]
+
+  LogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: WantsCloudWatchEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnetId, !Ref SecondPrivateSubnetId]
+      SecurityGroupIds: [!Ref CloudWatchEndpointSecurityGroup]
+
+  MonitoringEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: WantsCloudWatchEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnetId, !Ref SecondPrivateSubnetId]
+      SecurityGroupIds: [!Ref CloudWatchEndpointSecurityGroup]
 
   # ---- What the instance may do --------------------------------------------
 
@@ -208,6 +268,55 @@ Resources:
                 Resource: !Sub
                   - arn:${AWS::Partition}:secretsmanager:${Region}:${AWS::AccountId}:secret:overcli/${OrgName}/*
                   - Region: !If [HasBedrockRegion, !Ref BedrockRegion, !Ref AWS::Region]
+              # The CloudWatch tool: read the named log groups, list alarms and
+              # read metrics. Nothing that changes anything. Workers who are
+              # trusted to act can reach this role,
+              # so it names the groups rather than allowing every one.
+              - !If
+                - HasLogGroups
+                # Neither can be held to a log group. StopQuery only stops a
+                # query this role started on the groups below.
+                - Sid: CloudWatchLogsList
+                  Effect: Allow
+                  Action:
+                    - logs:DescribeLogGroups
+                    - logs:StopQuery
+                  Resource: '*'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLogGroups
+                - Sid: CloudWatchLogsRead
+                  Effect: Allow
+                  Action:
+                    - logs:DescribeLogStreams
+                    - logs:GetLogEvents
+                    - logs:FilterLogEvents
+                    - logs:StartQuery
+                    - logs:GetQueryResults
+                    - logs:GetLogGroupFields
+                    - logs:GetLogRecord
+                  # One ARN per named group. A Join's delimiter can't hold a
+                  # function, so the ARNs name the groups in any region and
+                  # account; another account's groups still need its say-so.
+                  Resource: !Split
+                    - ','
+                    - !Join
+                      - ''
+                      - - 'arn:aws:logs:*:*:log-group:'
+                        - !Join [':*,arn:aws:logs:*:*:log-group:', !Split [',', !Ref CloudWatchLogGroups]]
+                        - ':*'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLogGroups
+                - Sid: CloudWatchAlarmsAndMetrics
+                  Effect: Allow
+                  Action:
+                    - cloudwatch:DescribeAlarms
+                    - cloudwatch:DescribeAlarmHistory
+                    - cloudwatch:GetMetricData
+                    - cloudwatch:ListMetrics
+                  Resource: '*'
+                - !Ref AWS::NoValue
               # The one place the first admin's sign-in link is written.
               - Sid: FirstAdminLink
                 Effect: Allow
@@ -230,7 +339,7 @@ Resources:
   # bridged container. The container runs on the host network, so it can: the
   # server reads Secrets Manager and Bedrock through the instance role. That
   # also means code a worker runs in the container can reach the role (an
-  # accepted risk, RRW-aws-imds-host-network; see deploy/aws.md).
+  # accepted risk; see deploy/aws.md).
   InstanceLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:

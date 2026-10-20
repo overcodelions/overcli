@@ -42,6 +42,28 @@ export interface ToolInput {
 
 const codexInstalled = (): boolean => fs.existsSync(path.join(os.homedir(), '.codex'));
 
+/// Where remote tools' real addresses and headers live when the server keeps
+/// them out of the CLIs' config (toolGateway.ts). Absent: in the config.
+export interface RemoteToolVault {
+  wrap(name: string, url: string, headers: Record<string, string>): McpServerConfig;
+  forget(name: string): void;
+  real(name: string): { url: string; headerNames: string[] } | undefined;
+}
+
+let vault: RemoteToolVault | null = null;
+
+export function useRemoteToolVault(v: RemoteToolVault | null): void {
+  vault = v;
+}
+
+/// The address a tool is installed with, the real one when it is vaulted.
+export function installedToolUrl(name: string): string | undefined {
+  const real = vault?.real(name);
+  if (real) return real.url;
+  const c = readClaudeMcpServers()[name];
+  return typeof c?.url === 'string' ? c.url : undefined;
+}
+
 export function listTools(
   roster: ReadonlyArray<{ name: string; mcpServers?: string[] }>,
   statuses: Record<string, string> = {},
@@ -55,12 +77,13 @@ export function listTools(
   const tools = Object.entries(installed)
     .map(([name, c]): ToolSummary => {
       const http = typeof c.url === 'string';
+      const real = vault?.real(name);
       const env = c.env && typeof c.env === 'object' && !Array.isArray(c.env) ? Object.keys(c.env) : [];
-      const headers = c.headers && typeof c.headers === 'object' && !Array.isArray(c.headers) ? Object.keys(c.headers) : [];
+      const headers = real ? real.headerNames : c.headers && typeof c.headers === 'object' && !Array.isArray(c.headers) ? Object.keys(c.headers) : [];
       return {
         name,
         kind: http ? 'http' : 'command',
-        target: http ? String(c.url) : [String(c.command ?? ''), ...(Array.isArray(c.args) ? c.args.map(String) : [])].join(' ').trim(),
+        target: real ? real.url : http ? String(c.url) : [String(c.command ?? ''), ...(Array.isArray(c.args) ? c.args.map(String) : [])].join(' ').trim(),
         secrets: [...env, ...headers],
         usedBy: users(name),
         ...(statuses[name] ? { status: statuses[name] } : {}),
@@ -90,7 +113,11 @@ export function installTool(input: ToolInput): { ok: true } | { ok: false; error
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return { ok: false, error: 'Use an https:// address.' };
     const headers = clean(input.headers);
-    config = { type: 'http', url: url.toString(), ...(Object.keys(headers).length ? { headers } : {}) };
+    try {
+      config = vault ? vault.wrap(name, url.toString(), headers) : { type: 'http', url: url.toString(), ...(Object.keys(headers).length ? { headers } : {}) };
+    } catch (err) {
+      return { ok: false, error: `Could not keep the tool's sign-in safe: ${err instanceof Error ? err.message : String(err)}` };
+    }
   } else {
     const command = input.command?.trim() ?? '';
     if (!command) return { ok: false, error: 'Say what command starts it, e.g. npx.' };
@@ -113,6 +140,7 @@ export function uninstallTool(name: string): { ok: true } | { ok: false; error: 
   try {
     removeMcpServer('claude', name);
     if (codexInstalled()) removeMcpServer('codex', name);
+    vault?.forget(name);
   } catch (err) {
     return { ok: false, error: `Could not write the config: ${err instanceof Error ? err.message : String(err)}` };
   }

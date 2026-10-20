@@ -67,6 +67,11 @@ describe('the secrets service', () => {
     const out = stripSecrets({ JIRA_API_TOKEN: 'abc', GH_TOKEN: 'g', ANTHROPIC_API_KEY: 'k', PATH: '/bin' });
     expect(out).toEqual({ ANTHROPIC_API_KEY: 'k', PATH: '/bin' });
   });
+  it('hides the keys to the server\'s own stores, even when only the environment set them', () => {
+    const out = stripSecrets({ OVERCLI_SECRETS_KEY: 's', OVERCLI_CONNECTIONS_KEY: 'c', OVERCLI_ORG_TOKEN: 'o', PATH: '/bin' });
+    // The org token is a person's own sign-in, which their codex config can name; it stays.
+    expect(out).toEqual({ OVERCLI_ORG_TOKEN: 'o', PATH: '/bin' });
+  });
   it('applies what is stored, leaves what the environment set, and says what needs a missing one', async () => {
     const env: NodeJS.ProcessEnv = { OVERCLI_SLACK_BOT_TOKEN: 'xoxb-from-env' };
     const store = memoryStore();

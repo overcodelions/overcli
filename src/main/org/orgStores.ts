@@ -468,6 +468,8 @@ export interface AskRecord {
   attachments?: number;
   /// Started again after a restart cut it short. Once only.
   resumed?: boolean;
+  /// Called off by whoever started it: what its answer starts is stopped.
+  cancelled?: boolean;
   /// The work it handed off has finished and gone back to the worker to
   /// finish up (`OrgService.handBack`). Once only.
   handedBack?: boolean;

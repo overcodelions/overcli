@@ -156,6 +156,8 @@ import { RotaSpecimen, TrustLadderMark } from "../onboarding/specimens";
 import { PlacePicker } from "../PlacePicker";
 import { WorkerOrgFields } from "./WorkerOrgFields";
 import { OrgChartPane } from "./OrgChartPane";
+import { labOn } from "@shared/labs";
+import { ProcessesLabOff, ProcessesPane } from "./processes/ProcessesPane";
 
 // Zustand selectors are consumed through React's useSyncExternalStore. Returning
 // a new [] while this worker's journal is still loading makes the snapshot look
@@ -165,6 +167,7 @@ const EMPTY_WORKER_JOURNAL: WorkerJournalEntry[] = [];
 
 export function WorkersPane() {
   const projects = useStore((s) => s.projects);
+  const processesLab = useStore((s) => labOn(s.settings.labs, "processes"));
   const workspaces = useStore((s) => s.workspaces);
   const loaded = useWorkersStore((s) => s.loaded);
   const workers = useWorkersStore((s) => s.workers);
@@ -279,6 +282,8 @@ export function WorkersPane() {
   }
 
   if (hiring) return <HireWorker defaultProjectPath={defaultProjectPath} />;
+
+  if (view === "processes") return processesLab ? <ProcessesPane /> : <ProcessesLabOff />;
 
   if (view === "team")
     return (
@@ -678,9 +683,9 @@ function Face({ initials, tint, size = 22, overlap = false }: { initials?: strin
 /// The finished pack, stacked like the files it is.
 function PackSpecimen() {
   const rows: Array<[string, string, string]> = [
-    ["Release notes", "ready", "text-emerald-400"],
-    ["Site copy", "ready", "text-emerald-400"],
-    ["Risks raised by Skeptic", "4 · all answered", "text-orange-300"],
+    ["Release notes", "ready", "text-emerald-700 dark:text-emerald-400"],
+    ["Site copy", "ready", "text-emerald-700 dark:text-emerald-400"],
+    ["Risks raised by Skeptic", "4 · all answered", "text-orange-700 dark:text-orange-300"],
   ];
   return (
     <figure aria-label="A finished team pack" className="relative m-0 hidden h-[292px] lg:block">
@@ -689,7 +694,7 @@ function PackSpecimen() {
       <div className="absolute left-0 right-4 top-5 flex flex-col gap-3 rounded-[14px] border border-card-strong bg-surface-elevated px-5 py-[18px] shadow-[0_24px_48px_-24px_rgba(0,0,0,0.55)]">
         <div className="flex items-center justify-between">
           <span className="font-mono text-[11px] text-ink-muted">PROPOSAL.md</span>
-          <span className="rounded-full border border-emerald-600/60 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+          <span className="rounded-full border border-emerald-600/60 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
             Pack v1
           </span>
         </div>
@@ -766,16 +771,16 @@ function TeamFlow() {
             className="flex flex-col gap-[5px] rounded-[9px] border px-2.5 py-2 text-[10.5px] text-ink-muted"
             style={{ background: "color-mix(in srgb, #fb923c 8%, transparent)", borderColor: "color-mix(in srgb, #fb923c 30%, transparent)" }}
           >
-            <span><span className="font-mono text-orange-300">1</span>&nbsp; Notes skip the breaking change</span>
-            <span><span className="font-mono text-orange-300">2</span>&nbsp; No rollback plan</span>
+            <span><span className="font-mono text-orange-700 dark:text-orange-300">1</span>&nbsp; Notes skip the breaking change</span>
+            <span><span className="font-mono text-orange-700 dark:text-orange-300">2</span>&nbsp; No rollback plan</span>
           </span>
         </li>
         <li className="flex flex-col gap-2.5">
           <span className="relative h-5 w-5 shrink-0 rounded-md bg-emerald-400" />
           <span className="text-[13px] font-semibold text-ink">You get the pack</span>
           <span className="flex flex-col gap-[3px] rounded-[9px] border border-emerald-600/60 bg-emerald-500/15 px-2.5 py-2">
-            <span className="text-[11px] font-semibold text-emerald-300">PROPOSAL.md</span>
-            <span className="text-[10.5px] text-emerald-400/90">Then ask it questions, or for changes</span>
+            <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">PROPOSAL.md</span>
+            <span className="text-[10.5px] text-emerald-700/90 dark:text-emerald-400/90">Then ask it questions, or for changes</span>
           </span>
         </li>
       </ol>
@@ -837,7 +842,7 @@ function StarterTeams({ canHire, onPick }: { canHire: boolean; onPick: (brief: s
               </span>
             </span>
             <span className="text-[12px] leading-[1.55] text-ink-muted">{t.body}</span>
-            <span className="font-mono text-[10.5px] text-emerald-400">→ {t.back}</span>
+            <span className="font-mono text-[10.5px] text-emerald-700 dark:text-emerald-400">→ {t.back}</span>
           </button>
         ))}
       </div>
@@ -1394,7 +1399,7 @@ function WorkerRow({
                   </span>
                 )}
                 {key === "tasks" && activeTaskCount > 0 && (
-                  <span className="rounded-full bg-sky-400/15 px-1.5 text-[10px] text-sky-400">
+                  <span className="rounded-full bg-sky-400/15 px-1.5 text-[10px] text-sky-600 dark:text-sky-400">
                     {activeTaskCount}
                   </span>
                 )}
@@ -1436,14 +1441,14 @@ function WorkerRow({
                   {shift?.task === "shift" && (
                     <button
                       onClick={() => setTab("shifts")}
-                      className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-400 transition-colors hover:bg-sky-400/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/50"
+                      className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-600 dark:text-sky-400 transition-colors hover:bg-sky-400/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/50"
                     >
                       <span
                         className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400"
                         aria-hidden="true"
                       />
                       Shift {worker.shiftCount ?? 1} planning
-                      <span className="text-sky-300/70">View shift →</span>
+                      <span className="text-sky-700/70 dark:text-sky-300/70">View shift →</span>
                     </button>
                   )}
                 </>
@@ -1563,7 +1568,7 @@ function WorkerStats({
     {
       label: "Approved",
       value: String(scorecard.approved),
-      cls: "text-emerald-600 dark:text-emerald-400",
+      cls: "text-emerald-700 dark:text-emerald-400",
     },
     {
       label: "Rejected",
@@ -1956,7 +1961,7 @@ function WorkerSettings({
             ) : (
               <button
                 onClick={() => setConfirmingFire(true)}
-                className="shrink-0 text-[11px] text-ink-faint hover:text-red-400"
+                className="shrink-0 text-[11px] text-ink-faint hover:text-red-600 dark:hover:text-red-400"
               >
                 Fire
               </button>
@@ -2103,7 +2108,7 @@ function ShareCard({ worker }: { worker: Worker }) {
         </OrgNudge>
       )}
       {published && (
-        <div className={"mt-2 text-[11px] " + (published.ok ? "text-emerald-300" : "text-red-300")}>
+        <div className={"mt-2 text-[11px] " + (published.ok ? "text-emerald-700 dark:text-emerald-300" : "text-red-700 dark:text-red-300")}>
           {published.text}
           {published.signIn && (
             <button
@@ -2130,7 +2135,7 @@ function ShareCard({ worker }: { worker: Worker }) {
           promises. Said here rather than on the recipient's screen: it is
           this install's problem to fix. */}
       {share && share.missingFlowIds.length > 0 && (
-        <div className="mt-2 text-[10px] text-amber-400">
+        <div className="mt-2 text-[10px] text-amber-700 dark:text-amber-400">
           {share.missingFlowIds.join(", ")}{" "}
           {share.missingFlowIds.length === 1 ? "is" : "are"} not in your
           library, so{" "}
@@ -2947,13 +2952,13 @@ function WorkerTasksPane({
       {(active > 0 || needsReview > 0) && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-sky-400/20 bg-sky-400/[0.05] px-3 py-2 text-xs">
           {active > 0 && (
-            <span className="font-medium text-sky-400">{active} active</span>
+            <span className="font-medium text-sky-600 dark:text-sky-400">{active} active</span>
           )}
           {active > 0 && needsReview > 0 && (
             <span className="text-ink-faint">·</span>
           )}
           {needsReview > 0 && (
-            <span className="font-medium text-violet-400">
+            <span className="font-medium text-violet-600 dark:text-violet-400">
               {needsReview} awaiting review
             </span>
           )}
@@ -3095,25 +3100,25 @@ function ShiftOutcomeBadges({ item }: { item: WorkerActivity }) {
     ? [
         {
           label: "Quiet · nothing proposed",
-          cls: "border-sky-400/20 bg-sky-400/10 text-sky-400",
+          cls: "border-sky-400/20 bg-sky-400/10 text-sky-600 dark:text-sky-400",
         },
       ]
     : [
         item.proposed > 0 && {
           label: `${item.proposed} awaiting review`,
-          cls: "border-violet-400/25 bg-violet-400/10 text-violet-400",
+          cls: "border-violet-400/25 bg-violet-400/10 text-violet-600 dark:text-violet-400",
         },
         item.running > 0 && {
           label: `${item.running} running`,
-          cls: "border-sky-400/25 bg-sky-400/10 text-sky-400",
+          cls: "border-sky-400/25 bg-sky-400/10 text-sky-600 dark:text-sky-400",
         },
         item.done > 0 && {
           label: `${item.done} completed`,
-          cls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-400",
+          cls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-700 dark:text-emerald-400",
         },
         item.failed > 0 && {
           label: `${item.failed} failed`,
-          cls: "border-red-400/25 bg-red-400/10 text-red-400",
+          cls: "border-red-400/25 bg-red-400/10 text-red-600 dark:text-red-400",
         },
       ].filter((badge): badge is { label: string; cls: string } => !!badge);
   return (
@@ -3523,7 +3528,7 @@ function PlanningDesk({
   return (
     <div className="flex min-h-full items-center justify-center pb-16">
       <div className="w-full max-w-md text-center">
-        <div className="relative mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-400/25 bg-sky-400/10 text-sky-400">
+        <div className="relative mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-400/25 bg-sky-400/10 text-sky-600 dark:text-sky-400">
           <svg
             viewBox="0 0 24 24"
             className="h-5 w-5"
@@ -3541,7 +3546,7 @@ function PlanningDesk({
           </svg>
           <span className="absolute right-0 top-0 h-2.5 w-2.5 animate-pulse rounded-full border-2 border-surface bg-sky-400" />
         </div>
-        <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-sky-400">
+        <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-sky-600 dark:text-sky-400">
           Shift {shiftNumber} in progress
         </div>
         <div className="mt-1.5 text-base font-semibold text-ink">
@@ -3999,11 +4004,11 @@ function ShiftActions({
         </button>
       )}
       {paused && busy !== "pause" && (
-        <span className="text-[11px] text-amber-600 dark:text-amber-400">
+        <span className="text-[11px] text-amber-700 dark:text-amber-400">
           Paused — running flows stop after their current step
         </span>
       )}
-      {pauseError && <span className="text-[11px] text-red-400">{pauseError}</span>}
+      {pauseError && <span className="text-[11px] text-red-600 dark:text-red-400">{pauseError}</span>}
       {isLatest && (
         <button
           onClick={() => setConfirmingRedo(true)}
@@ -4024,7 +4029,7 @@ function ShiftActions({
               setConfirmingRedo(false);
               void run("redo");
             }}
-            className="text-[11px] text-red-300 hover:text-red-200"
+            className="text-[11px] text-red-700 dark:text-red-300 hover:text-red-800 dark:hover:text-red-200"
           >
             Re-run
           </button>
@@ -4061,7 +4066,7 @@ function ShiftActions({
         <button
           onClick={() => setConfirming(true)}
           disabled={!!busy}
-          className="text-[11px] text-ink-faint hover:text-red-400 disabled:opacity-50 focus:outline-none"
+          className="text-[11px] text-ink-faint hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 focus:outline-none"
         >
           Delete this shift
         </button>
@@ -4416,7 +4421,7 @@ function PlanItemRow({
           {context?.onReview && item.status === "proposed" && (
             <button
               onClick={context.onReview}
-              className="shrink-0 rounded-md border border-violet-400/25 bg-violet-400/10 px-2 py-1 text-[10px] font-medium text-violet-400 hover:bg-violet-400/15"
+              className="shrink-0 rounded-md border border-violet-400/25 bg-violet-400/10 px-2 py-1 text-[10px] font-medium text-violet-600 dark:text-violet-400 hover:bg-violet-400/15"
             >
               Review in Shifts →
             </button>
@@ -4590,7 +4595,7 @@ const PLAN_STATUS: Record<string, { text: string; cls: string; pill: string }> =
     proposed: {
       text: "Awaiting review",
       cls: "text-violet-500",
-      pill: "border-violet-400/25 bg-violet-400/10 text-violet-400",
+      pill: "border-violet-400/25 bg-violet-400/10 text-violet-600 dark:text-violet-400",
     },
     queued: {
       text: "Queued",
@@ -4600,27 +4605,27 @@ const PLAN_STATUS: Record<string, { text: string; cls: string; pill: string }> =
     running: {
       text: "Running",
       cls: "text-sky-500",
-      pill: "border-sky-400/25 bg-sky-400/10 text-sky-400",
+      pill: "border-sky-400/25 bg-sky-400/10 text-sky-600 dark:text-sky-400",
     },
     paused: {
       text: "Paused",
       cls: "text-amber-500",
-      pill: "border-amber-400/25 bg-amber-400/10 text-amber-400",
+      pill: "border-amber-400/25 bg-amber-400/10 text-amber-700 dark:text-amber-400",
     },
     done: {
       text: "Completed",
       cls: "text-emerald-500",
-      pill: "border-emerald-400/25 bg-emerald-400/10 text-emerald-400",
+      pill: "border-emerald-400/25 bg-emerald-400/10 text-emerald-700 dark:text-emerald-400",
     },
     failed: {
       text: "Failed",
       cls: "text-red-500",
-      pill: "border-red-400/25 bg-red-400/10 text-red-400",
+      pill: "border-red-400/25 bg-red-400/10 text-red-600 dark:text-red-400",
     },
     cancelled: {
       text: "Rejected",
-      cls: "text-red-400",
-      pill: "border-red-400/20 bg-red-400/[0.06] text-red-400",
+      cls: "text-red-600 dark:text-red-400",
+      pill: "border-red-400/20 bg-red-400/[0.06] text-red-600 dark:text-red-400",
     },
   };
 
@@ -5263,7 +5268,7 @@ function WrapUpField({
         <div className="mt-1.5 text-[11px] text-ink-muted">{current.description}</div>
       )}
       {isNew && (
-        <div className="mt-1 text-[11px] text-emerald-600 dark:text-emerald-400">
+        <div className="mt-1 text-[11px] text-emerald-700 dark:text-emerald-400">
           New — drafted for this worker, saved with the hire.
         </div>
       )}
@@ -5316,7 +5321,7 @@ function OtherFlowsField({
                   <div className="text-sm text-ink">
                     {flow?.name ?? id}
                     {isNew && (
-                      <span className="ml-2 text-[11px] text-emerald-600 dark:text-emerald-400">
+                      <span className="ml-2 text-[11px] text-emerald-700 dark:text-emerald-400">
                         new — saved with the hire
                       </span>
                     )}
@@ -5777,13 +5782,13 @@ function WorkerEditor() {
                     ))}
                   </select>
                   {draftedFlow && draft.flowIds[0] === draftedFlow.id && (
-                    <div className="mt-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+                    <div className="mt-1.5 text-[11px] text-emerald-700 dark:text-emerald-400">
                       “{draftedFlow.name}” has unsaved AI changes — they save
                       with this worker.
                     </div>
                   )}
                   {hireFlowError && draft.flowIds.length === 0 && (
-                    <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                    <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
                       The hire asked for a new flow and the flow drafter
                       couldn&rsquo;t produce one ({hireFlowError}). Pick an
                       existing flow, or describe the flow you want in the AI box
@@ -5793,7 +5798,7 @@ function WorkerEditor() {
                 </>
               )}
               {pauseSteps > 0 && (
-                <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
                   This flow pauses at{" "}
                   {pauseSteps === 1 ? "one step" : `${pauseSteps} steps`} for
                   your review — runs wait there even for an autonomous worker.
@@ -6189,7 +6194,7 @@ function WorkerEditor() {
                     strict mode on, so a warning that waits for it has already
                     missed the decision it exists to inform. */}
                 {
-                  <div className="mt-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                  <div className="mt-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
                     Picking any of these also switches off the services
                     connected through your Claude account — Gmail, Calendar,
                     Superhuman, Atlassian Rovo, Drive. They can&rsquo;t be
@@ -6369,7 +6374,7 @@ function WorkerPersonalizePanel() {
       )}
 
       {state.error && (
-        <div className="flex items-center gap-2 text-[11px] text-rose-400">
+        <div className="flex items-center gap-2 text-[11px] text-rose-600 dark:text-rose-400">
           <span className="min-w-0 break-words">{state.error}</span>
           <button
             onClick={() => void rescan()}
@@ -6608,7 +6613,7 @@ function AttachmentField({
         </button>
       </div>
       {rejection && (
-        <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+        <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
           {rejection}
         </div>
       )}
@@ -6918,7 +6923,7 @@ function CadenceField({
             often than every {WORKER_MIN_INTERVAL_MINUTES} minutes.
           </div>
           {cronError(cadence.expr) && (
-            <div className="mt-1 text-[11px] leading-snug text-red-400">
+            <div className="mt-1 text-[11px] leading-snug text-red-600 dark:text-red-400">
               {cronError(cadence.expr)}
             </div>
           )}

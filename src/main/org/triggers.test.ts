@@ -180,6 +180,15 @@ describe('reading a tool’s answer', () => {
     expect(itemsFrom({ text: 'Build is green', json: null })).toHaveLength(1);
   });
 
+  it('names CloudWatch alarms and treats one that goes off again as new', () => {
+    const alarm = { alarm_name: 'acme-api-5xx', state_value: 'ALARM', state_updated_timestamp: '2026-10-20T09:00:00Z', state_reason: 'Threshold crossed' };
+    const first = itemsFrom({ text: '', json: { metric_alarms: [alarm], composite_alarms: [] } });
+    expect(first[0].title).toBe('acme-api-5xx');
+    expect(itemsFrom({ text: '', json: { metric_alarms: [alarm], composite_alarms: [] } })[0].id).toBe(first[0].id);
+    const again = itemsFrom({ text: '', json: { metric_alarms: [{ ...alarm, state_updated_timestamp: '2026-10-20T14:30:00Z' }], composite_alarms: [] } });
+    expect(again[0].id).not.toBe(first[0].id);
+  });
+
   it('names posted events from GitHub and Jira', () => {
     expect(eventItem({ action: 'opened', pull_request: { number: 12, title: 'Fix export', html_url: 'https://github.com/acme/app/pull/12' } })).toMatchObject({ title: 'PR #12: Fix export', url: 'https://github.com/acme/app/pull/12' });
     expect(eventItem({ webhookEvent: 'jira:issue_created', issue: { key: 'ACME-3', fields: { summary: 'Slow' } } })).toMatchObject({ id: 'jira:issue_created:ACME-3', title: 'ACME-3: Slow' });
@@ -214,6 +223,31 @@ describe('watching tracked tickets for a change', () => {
     await h.svc.poll(made.trigger.id);
     await tick();
     expect(h.posts).toHaveLength(1);
+  });
+
+  it('escapes ticket text so a title cannot plant a mention', async () => {
+    const h = harness({ items: issues('To do', 'In review') });
+    const made = h.svc.create(tracker());
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.poll(made.trigger.id);
+    h.setItems({ issues: [{ key: 'ACME-1', fields: { summary: 'Export fails', status: { name: 'To do' } } }, { key: 'ACME-2', fields: { summary: '<!channel> look', status: { name: 'Done' } } }] });
+    await h.svc.poll(made.trigger.id);
+    await tick();
+    expect(h.posts).toEqual(['dm:U0ACMEPAT:*ACME-2: &lt;!channel&gt; look* moved from _In review_ to *Done*']);
+  });
+
+  it('links the ticket over http or https, and a link cannot break out of itself', async () => {
+    const h = harness({ items: issues('To do', 'In review') });
+    const made = h.svc.create(tracker());
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.poll(made.trigger.id);
+    h.setItems({ issues: [{ key: 'ACME-1', url: 'http://tracker.acme.test/browse/ACME-1', fields: { summary: 'Export fails', status: { name: 'Done' } } }, { key: 'ACME-2', url: 'https://tracker.acme.test/browse/ACME-2>|<!here', fields: { summary: 'Slow login', status: { name: 'Done' } } }] });
+    await h.svc.poll(made.trigger.id);
+    await tick();
+    expect(h.posts).toEqual([
+      'dm:U0ACMEPAT:*ACME-1: Export fails* moved from _To do_ to *Done* · <http://tracker.acme.test/browse/ACME-1|open it>',
+      'dm:U0ACMEPAT:*ACME-2: Slow login* moved from _In review_ to *Done* · <https://tracker.acme.test/browse/ACME-2!here|open it>',
+    ]);
   });
 
   it('hands a change to the worker when it should do more than say so', async () => {

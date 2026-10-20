@@ -15,6 +15,12 @@
 // over Socket Mode, which the daemon dials out to. Put it behind the VPN, or
 // behind an HTTPS ingress when claude.ai connectors need to reach it.
 
+import { parseCron } from '../shared/flows/cron';
+import { scheduleText } from '../main/org/orgService';
+import { PROCESS_LIBRARY, libraryProcess, suggestTeamFor } from '../shared/org/processLibrary';
+import type { ProcessPerson, ProcessStage } from '../shared/org/process';
+import { processScheduleText, type ItemAction, type ProcessService } from '../main/org/processes';
+import { imageFromDataUrl, type ProcessDraftResult, type ProcessImageInput } from '../main/org/processDraft';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -51,6 +57,9 @@ const MAX_BODY_BYTES = 1_000_000;
 /// A published worker or team carries its flows whole; only signed-in
 /// callers get this far.
 const MAX_PUBLISH_BYTES = 16_000_000;
+/// A process drafted from a picture carries it as a data URL: 5 MB of image
+/// is about 7 MB of base64.
+const MAX_IMAGE_BODY_BYTES = 7_200_000;
 
 export interface ControlPlaneDeps {
   org: OrgService;
@@ -65,6 +74,11 @@ export interface ControlPlaneDeps {
   connections?: ConnectionsService;
   /// Workers' triggers, for the public webhook endpoint.
   triggers?: TriggerService;
+  /// Work moving between teams and people. Absent: no Processes page.
+  processes?: ProcessService;
+  /// Read a picture of a process into a draft (processDraft.ts). Absent:
+  /// "From an image" says it isn't set up here.
+  draftProcess?: (input: ProcessImageInput) => Promise<ProcessDraftResult>;
   log: (line: string) => void;
   /// Injected for tests; production reads the token file.
   authenticate?: (token: string | undefined) => OrgCaller | null;
@@ -220,6 +234,18 @@ function accessRoutes(org: OrgService, access: AccessService, slackPeople?: () =
         const all = await slackPeople();
         const hits = q ? all.filter((p) => p.name.toLowerCase().includes(q) || p.handle.toLowerCase().includes(q)) : all;
         return { ok: true, slack: true, people: hits.slice(0, 12) };
+      },
+    },
+    // Anyone signed in: picking who owns a stage or decides at one.
+    {
+      method: 'GET',
+      path: /^\/api\/slack-people$/,
+      handle: async (_c, _b, _p, url) => {
+        if (!slackPeople) return { ok: true, people: [], slack: false };
+        const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+        if (q.length < 2) return { ok: true, slack: true, people: [] };
+        const all = await slackPeople();
+        return { ok: true, slack: true, people: all.filter((p) => p.name.toLowerCase().includes(q) || p.handle.toLowerCase().includes(q)).slice(0, 8).map((p) => ({ id: p.id, name: p.name, handle: p.handle })) };
       },
     },
     { method: 'GET', path: /^\/api\/pair\/([A-Za-z0-9-]+)$/, handle: (c, _b, [code]) => access.pairInfo(c, code) },
@@ -476,6 +502,319 @@ function cookieValue(header: string | undefined, name: string): string | undefin
 
 /// A person's own accounts: list, connect (Google's consent page, with a
 /// cookie tying the sign-in to this browser) and disconnect.
+/// A person as a form sends one: a name, and their Slack id when known.
+function personInput(raw: unknown): ProcessPerson | undefined {
+  const p = raw as { name?: unknown; slackUserId?: unknown } | null;
+  const name = typeof p?.name === 'string' ? p.name.trim().slice(0, 120) : '';
+  if (!name) return undefined;
+  const id = typeof p?.slackUserId === 'string' && /^[UW][A-Z0-9]{6,}$/.test(p.slackUserId) ? p.slackUserId : undefined;
+  return { name, ...(id ? { slackUserId: id } : {}) };
+}
+
+function stagesInput(raw: unknown): ProcessStage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 20).map((x) => {
+    const r = (x ?? {}) as Record<string, unknown>;
+    const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+    const kind = r.kind === 'people' ? 'people' : r.kind === 'worker' ? 'worker' : 'team';
+    const owner = personInput(r.owner);
+    const approvers = Array.isArray(r.approvers) ? r.approvers.map(personInput).filter((p): p is ProcessPerson => !!p).slice(0, 20) : [];
+    const groups = Array.isArray(r.approverGroups)
+      ? (r.approverGroups as Array<{ id?: unknown; name?: unknown }>)
+          .filter((g) => typeof g?.id === 'string' && typeof g.name === 'string')
+          .slice(0, 10)
+          .map((g) => ({ id: (g.id as string).slice(0, 120), name: (g.name as string).slice(0, 120) }))
+      : [];
+    return {
+      id: str(r.id, 40),
+      name: str(r.name, 80),
+      kind,
+      ...(kind === 'team' && str(r.teamId, 80) ? { teamId: str(r.teamId, 80) } : {}),
+      ...(kind === 'worker' && str(r.workerId, 80) ? { workerId: str(r.workerId, 80) } : {}),
+      ...(owner ? { owner } : {}),
+      ...(kind === 'people' ? { approvers, ...(groups.length ? { approverGroups: groups } : {}) } : {}),
+      ...(kind === 'people' && (r.needs === 'all' || (typeof r.needs === 'number' && Number.isInteger(r.needs) && r.needs > 1)) ? { needs: r.needs } : {}),
+      ...(str(r.ask, 2000) ? { ask: str(r.ask, 2000) } : {}),
+      ...(str(r.sendBackTo, 40) ? { sendBackTo: str(r.sendBackTo, 40) } : {}),
+      ...(str(r.why, 600) ? { why: str(r.why, 600) } : {}),
+      ...(kind !== 'people' && typeof r.delayDays === 'number' && r.delayDays > 0 ? { delayDays: Math.round(r.delayDays) } : {}),
+      ...(kind !== 'people' && r.repeat && typeof r.repeat === 'object' && Number((r.repeat as { times?: unknown }).times) > 1
+        ? { repeat: { everyDays: Math.round(Number((r.repeat as { everyDays?: unknown }).everyDays)), times: Math.round(Number((r.repeat as { times?: unknown }).times)) } }
+        : {}),
+    } as ProcessStage;
+  });
+}
+
+/// Processes: define them, put items in, decide and steer. Intake is a
+/// trigger that hands each event to the process instead of a worker.
+function processRoutes(processes: ProcessService, triggers: TriggerService | undefined, org: OrgService, draftProcess?: ControlPlaneDeps['draftProcess']): Array<{ method: string; path: RegExp; handle: Handler }> {
+  // One picture at a time per person: each is a minute of the model's time.
+  const drafting = new Set<string>();
+  const intakeOf = (id: string) =>
+    (triggers?.list() ?? [])
+      .filter((t) => t.hand?.kind === 'process' && t.hand.processId === id)
+      .map((t) => ({
+        id: t.id,
+        kind: t.kind,
+        name: t.name,
+        enabled: t.enabled,
+        ...(t.slack ? { channel: t.slack.channel } : {}),
+        ...(t.watch ? { watch: { server: t.watch.server, tool: t.watch.tool, everyMinutes: t.watch.everyMinutes } } : {}),
+        ...(t.lastFiredAt ? { lastFiredAt: t.lastFiredAt } : {}),
+        ...(t.lastError ? { lastError: t.lastError } : {}),
+      }));
+  // Where a process's code lives, by a connected repo's or workspace's name.
+  const codeIn = (c: OrgCaller, raw: unknown): { name: string; path: string } | null | undefined | string => {
+    if (raw === undefined) return undefined;
+    if (raw === null || raw === '') return null;
+    const name = typeof raw === 'string' ? raw : typeof (raw as { name?: unknown })?.name === 'string' ? (raw as { name: string }).name : '';
+    const places = org.repoList(c);
+    if (!places.ok) return places.error;
+    const repo = places.repos.find((r) => r.name === name);
+    const ws = places.workspaces.find((w) => w.name === name);
+    return repo ? { name: repo.name, path: repo.path } : ws ? { name: ws.name, path: ws.rootPath } : `No connected repo or workspace called ${name}.`;
+  };
+  const save = (c: OrgCaller, b: Record<string, unknown>, id?: string) => {
+    const code = codeIn(c, b.codeIn);
+    if (typeof code === 'string') return { ok: false as const, error: code };
+    return processes.save(c, {
+      ...(code !== undefined ? { codeIn: code } : {}),
+      ...(id ? { id } : {}),
+      name: typeof b.name === 'string' ? b.name.slice(0, 120) : '',
+      ...(typeof b.purpose === 'string' ? { purpose: b.purpose.slice(0, 1000) } : {}),
+      ...(typeof b.about === 'string' ? { about: b.about.slice(0, 3000) } : {}),
+      ...(typeof b.templateId === 'string' && libraryProcess(b.templateId) ? { templateId: b.templateId } : {}),
+      ...(personInput(b.owner) ? { owner: personInput(b.owner)! } : {}),
+      stages: stagesInput(b.stages),
+    });
+  };
+  return [
+    { method: 'GET', path: /^\/api\/processes$/, handle: (c) => ({ ok: true, processes: processes.list(c) }) },
+    // Everything in flight for the Inbox: worker runs, team tasks and process
+    // items in one list, and the process decisions waiting on this person.
+    {
+      method: 'GET',
+      path: /^\/api\/inflight$/,
+      handle: (c) => {
+        const runs = org.runningNow(c).map((x) => ({
+          kind: 'worker',
+          id: x.run.runId,
+          workerId: x.workerId,
+          title: x.run.title,
+          who: x.workerName,
+          total: x.run.step.total,
+          at: x.run.step.index - 1,
+          now: x.run.state === 'working' ? `Step ${x.run.step.index} of ${x.run.step.total} · ${x.run.step.name.replace(/[-_]/g, ' ')}` : x.run.state === 'question' ? 'Has a question for you' : x.run.state === 'approval' ? 'Waiting for your OK' : 'Paused',
+          since: x.run.startedAt,
+          needsYou: x.run.state === 'question' || x.run.state === 'approval',
+        }));
+        const tasks = org
+          .teamTasks(c)
+          .filter((t) => !['done', 'failed', 'cancelled'].includes(t.status))
+          .map((t) => {
+            const at = Math.max(0, t.stages.findIndex((s) => s.state === 'now' || s.state === 'failed'));
+            const cur = t.stages[at];
+            return {
+              kind: 'team',
+              id: t.id,
+              title: t.title,
+              who: t.teamName,
+              total: t.stages.length || 1,
+              at: t.stages.length ? (t.stages.every((s) => s.state === 'done') ? t.stages.length : at) : 0,
+              now: t.waitingOnYou ? 'Waiting on you' : t.status === 'planning' ? 'Planning' : t.status === 'queued' ? 'Next in line' : t.status === 'review' ? 'Pack ready to review' : cur ? `${cur.label}${cur.who.length ? ` · ${cur.who.join(', ')}` : ''}` : 'Working',
+              since: t.updatedAt,
+              needsYou: t.waitingOnYou,
+              stuck: t.status === 'failed' || cur?.state === 'failed',
+            };
+          });
+        const items = processes.inFlight(c).map((x) => ({
+          kind: 'process',
+          id: x.item.id,
+          processId: x.processId,
+          title: x.item.title,
+          who: x.process,
+          total: x.stages,
+          at: x.item.stageIndex,
+          now: `${x.item.stageName}${x.item.blocked ? ': stuck' : x.item.stageNote ? ` · ${x.item.stageNote}` : ''}`,
+          since: x.item.createdAt,
+          needsYou: x.decide,
+          stuck: !!x.item.blocked,
+        }));
+        return { ok: true, items: [...runs, ...tasks, ...items] };
+      },
+    },
+    // Who can be picked to lead a stage or decide at one.
+    { method: 'GET', path: /^\/api\/directory$/, handle: () => ({ ok: true, ...org.directory() }) },
+    // The library: ways SaaS teams commonly run work, to start from.
+    { method: 'GET', path: /^\/api\/process-library$/, handle: () => ({ ok: true, library: PROCESS_LIBRARY }) },
+    {
+      method: 'GET',
+      path: /^\/api\/process-library\/([^/]+)$/,
+      handle: (c, _b, [rawId]) => {
+        const p = libraryProcess(decodeURIComponent(rawId));
+        if (!p) return { ok: false, error: 'No such process in the library.' };
+        // For each team stage: a team of yours that fits, or the crew to make one.
+        const teams = org.teams(c).filter((t) => t.canBrief);
+        const fits = p.stages.map((s) => {
+          if (s.kind !== 'team') return { key: s.key, reviewers: s.who };
+          const hit = suggestTeamFor(s, teams);
+          return hit
+            ? { key: s.key, team: { id: hit.team.id, name: hit.team.name }, lead: s.who }
+            : { key: s.key, makeTeam: { name: s.name, purpose: s.ask, crew: s.crew ?? [] }, lead: s.who };
+        });
+        return { ok: true, process: p, fits };
+      },
+    },
+    // From someone's overcli app: its stages name teams by their ids there,
+    // so each must have been published first.
+    {
+      method: 'POST',
+      path: /^\/api\/publish\/process$/,
+      handle: (c, b) => {
+        const localId = typeof b.localId === 'string' ? b.localId.slice(0, 80) : '';
+        if (!localId) return { ok: false, error: 'Which process is this?' };
+        const stages = stagesInput(b.stages);
+        const raw = Array.isArray(b.stages) ? (b.stages as Array<Record<string, unknown>>) : [];
+        const missing: string[] = [];
+        stages.forEach((st, i) => {
+          if (st.kind === 'worker') {
+            const local = typeof raw[i]?.localWorkerId === 'string' ? (raw[i].localWorkerId as string) : st.workerId ?? '';
+            const id = org.publishedWorkerId(local);
+            if (id) st.workerId = id;
+            else missing.push(typeof raw[i]?.workerName === 'string' ? (raw[i].workerName as string) : st.name);
+            return;
+          }
+          if (st.kind !== 'team') return;
+          const local = typeof raw[i]?.localTeamId === 'string' ? (raw[i].localTeamId as string) : st.teamId ?? '';
+          const id = org.publishedTeamId(local);
+          if (id) st.teamId = id;
+          else missing.push(typeof raw[i]?.teamName === 'string' ? (raw[i].teamName as string) : st.name);
+        });
+        if (missing.length) return { ok: false, error: `Publish ${missing.join(', ')} to your org first: the process uses ${missing.length === 1 ? 'it' : 'them'}.` };
+        return processes.save(c, {
+          localId,
+          name: typeof b.name === 'string' ? b.name.slice(0, 120) : '',
+          ...(typeof b.purpose === 'string' ? { purpose: b.purpose.slice(0, 1000) } : {}),
+          ...(personInput(b.owner) ? { owner: personInput(b.owner)! } : {}),
+          stages,
+        });
+      },
+    },
+    { method: 'POST', path: /^\/api\/processes$/, handle: (c, b) => save(c, b) },
+    // A process drafted from a picture of one, not saved: the editor opens
+    // with it. Anyone who may make a process may draft one.
+    {
+      method: 'POST',
+      path: /^\/api\/processes\/draft-from-image$/,
+      handle: async (c, b) => {
+        if (!draftProcess) return { ok: false, error: 'Drafting from a picture isn’t set up on this server.' };
+        const image = imageFromDataUrl(b.image);
+        if (!image.ok) return image;
+        const who = c.slackUserId ?? c.name;
+        if (drafting.has(who)) return { ok: false, error: 'You’re already drafting one. Wait for it to finish.' };
+        drafting.add(who);
+        try {
+          const dir = org.directory();
+          return await draftProcess({
+            image: image.image,
+            ...(typeof b.note === 'string' && b.note.trim() ? { note: b.note.slice(0, 1000) } : {}),
+            teams: org.teams(c).filter((t) => t.canBrief).map((t) => ({ id: t.id, name: t.name, ...(t.purpose ? { purpose: t.purpose } : {}), members: t.members.map((m) => ({ role: m.role })) })),
+            workers: org.listWorkers(c).filter((w) => w.enabled).map((w) => ({ id: w.id, name: w.name, tagline: w.tagline })),
+            people: dir.people,
+          });
+        } finally {
+          drafting.delete(who);
+        }
+      },
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/processes\/([^/]+)$/,
+      handle: (c, _b, [id]) => {
+        const res = processes.get(c, decodeURIComponent(id));
+        if (!res.ok) return res;
+        const schedules = (res.process.schedules ?? []).map((s) => ({ ...s, nextAt: processes.nextAt(s), when: processScheduleText(s.cadence) }));
+        return { ...res, intake: intakeOf(res.process.id), schedules };
+      },
+    },
+    { method: 'POST', path: /^\/api\/processes\/([^/]+)$/, handle: (c, b, [id]) => save(c, b, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/processes\/([^/]+)\/archive$/, handle: (c, _b, [id]) => processes.archive(c, decodeURIComponent(id)) },
+    {
+      method: 'POST',
+      path: /^\/api\/processes\/([^/]+)\/items$/,
+      handle: (c, b, [id]) =>
+        processes.submit({ name: c.name, ...(c.slackUserId ? { slackUserId: c.slackUserId } : {}) }, decodeURIComponent(id), {
+          ...(typeof b.title === 'string' ? { title: b.title.slice(0, 200) } : {}),
+          brief: typeof b.brief === 'string' ? b.brief.slice(0, 20_000) : '',
+          source: b.source === 'desktop' ? 'desktop' : 'console',
+        }),
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/process-items\/([^/]+)\/file$/,
+      handle: (c, _b, [id], url) => processes.artifactFile(c, decodeURIComponent(id), url.searchParams.get('task') ?? '', url.searchParams.get('name') ?? ''),
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/process-items\/([^/]+)\/act$/,
+      handle: (c, b, [id]) => {
+        const action = typeof b.action === 'string' ? b.action : '';
+        if (!['approve', 'sendBack', 'stop', 'retry', 'move', 'note', 'startNow'].includes(action)) return { ok: false, error: 'Unknown action.' };
+        return processes.act(c, decodeURIComponent(id), action as ItemAction, {
+          ...(typeof b.note === 'string' ? { note: b.note.slice(0, 2000) } : {}),
+          ...(typeof b.stageIndex === 'number' ? { stageIndex: b.stageIndex } : {}),
+        });
+      },
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/processes\/([^/]+)\/intake$/,
+      handle: (c, b, [rawId]) => {
+        const id = decodeURIComponent(rawId);
+        if (!triggers) return { ok: false, error: 'Intake runs on the org server.' };
+        if (!processes.canSteer(c, id)) return { ok: false, error: 'Only the process owner or an admin can change how work comes in.' };
+        const proc = processes.find(id)!;
+        const channel = typeof b.channel === 'string' ? b.channel.trim() : '';
+        const base = { workerId: '', hand: { kind: 'process' as const, processId: id }, instructions: '', deliver: [], maxPerDay: 50, enabled: true, createdBy: c.name };
+        const watch = b.kind === 'watch' ? triggerInput({ kind: 'watch', watch: b.watch }).watch : undefined;
+        const res =
+          b.kind === 'webhook'
+            ? triggers.create({ ...base, name: `${proc.name}: posted events`, kind: 'webhook' })
+            : b.kind === 'watch'
+              ? watch
+                ? triggers.create({ ...base, name: `${proc.name}: new items in ${watch.server}`, kind: 'watch', watch, instructions: typeof b.instructions === 'string' ? b.instructions.slice(0, 2000) : '' })
+                : { ok: false as const, error: 'Pick the tool to watch and what to ask it.' }
+              : triggers.create({ ...base, name: `${proc.name}: messages in a channel`, kind: 'slack', slack: { channel, on: 'message' } });
+        if (!res.ok) return res;
+        return { ok: true, intake: intakeOf(id), ...(res.token ? { webhookPath: `/hooks/${res.trigger.id}/${res.token}` } : {}) };
+      },
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/processes\/([^/]+)\/schedules$/,
+      handle: (c, b, [id]) => {
+        // Monthly and quarterly are cron ("0 9 1 1,4,7,10 *"); the rest as a worker's.
+        const raw = b.cadence as { kind?: unknown; expr?: unknown } | null;
+        const cadence = raw?.kind === 'cron' && typeof raw.expr === 'string' && parseCron(raw.expr).ok ? { kind: 'cron' as const, expr: raw.expr } : parseCadence(b.cadence);
+        if (!cadence) return { ok: false, error: 'Pick when it starts.' };
+        return processes.addSchedule(c, decodeURIComponent(id), { cadence, title: typeof b.title === 'string' ? b.title.slice(0, 200) : '', brief: typeof b.brief === 'string' ? b.brief.slice(0, 10_000) : '' });
+      },
+    },
+    { method: 'POST', path: /^\/api\/processes\/([^/]+)\/schedules\/([^/]+)\/remove$/, handle: (c, _b, [id, sid]) => processes.removeSchedule(c, decodeURIComponent(id), decodeURIComponent(sid)) },
+    {
+      method: 'POST',
+      path: /^\/api\/process-intake\/([^/]+)\/remove$/,
+      handle: (c, _b, [rawId]) => {
+        const t = triggers?.get(decodeURIComponent(rawId));
+        if (!t || t.hand?.kind !== 'process') return { ok: false, error: 'No such intake.' };
+        if (!processes.canSteer(c, t.hand.processId)) return { ok: false, error: 'Only the process owner or an admin can change how work comes in.' };
+        triggers!.remove(t.id);
+        return { ok: true, intake: intakeOf(t.hand.processId) };
+      },
+    },
+  ];
+}
+
 function connectionRoutes(connections: ConnectionsService): Array<{ method: string; path: RegExp; handle: Handler }> {
   return [
     { method: 'GET', path: /^\/api\/connections$/, handle: async (c, _b, _p, _u, base) => ({ ok: true, connections: await connections.list(c, base) }) },
@@ -745,6 +1084,32 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'GET', path: /^\/api\/team-tasks$/, handle: (c) => org.teamTasks(c) },
     { method: 'POST', path: /^\/api\/teams\/brief$/, handle: (c, b) => org.briefTeam(c, str(b.team), str(b.text)) },
+    // A finished task's team: ask it something, another round, or the pack
+    // rewritten with what it said (only the picked changes, when given).
+    { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/room$/, handle: (c, b, [id]) => org.teamRoom(c, decodeURIComponent(id), { kind: 'ask', text: str(b.text).slice(0, 8000) }) },
+    { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/room\/continue$/, handle: (c, _b, [id]) => org.teamRoom(c, decodeURIComponent(id), { kind: 'continue' }) },
+    {
+      method: 'POST',
+      path: /^\/api\/team-tasks\/([^/]+)\/update-pack$/,
+      handle: (c, b, [id]) =>
+        org.teamRoom(c, decodeURIComponent(id), {
+          kind: 'updatePack',
+          ...(Array.isArray(b.changes) ? { changes: b.changes.filter((x): x is string => typeof x === 'string' && !!x.trim()).map((x) => x.slice(0, 600)).slice(0, 20) } : {}),
+        }),
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/team-tasks\/([^/]+)\/comment$/,
+      handle: (c, b, [id]) =>
+        org.commentOnTeamTask(c, decodeURIComponent(id), {
+          text: str(b.text),
+          ...(str(b.file) ? { file: str(b.file) } : {}),
+          ...(str(b.quote) ? { quote: str(b.quote) } : {}),
+          ...(b.about === 'questions' || b.about === 'plan' || b.about === 'coordinator' ? { about: b.about } : {}),
+          ...(str(b.workerId) ? { workerId: str(b.workerId) } : {}),
+          ...(b.redo === true ? { redo: true } : {}),
+        }),
+    },
     {
       method: 'POST',
       path: /^\/api\/team-tasks\/([^/]+)$/,
@@ -939,7 +1304,11 @@ async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse, or
 export function createControlPlane(deps: ControlPlaneDeps): http.Server {
   const authenticate = deps.authenticate ?? ((token) => callerForToken(token, loadOrgPolicy().policy));
   const links = new FileLinks();
-  const routes = [...apiRoutes(deps.org, deps.access, deps.slackPeople, links), ...(deps.connections ? connectionRoutes(deps.connections) : [])];
+  const routes = [
+    ...apiRoutes(deps.org, deps.access, deps.slackPeople, links),
+    ...(deps.connections ? connectionRoutes(deps.connections) : []),
+    ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess) : []),
+  ];
   const open = [
     ...(deps.access ? publicRoutes(deps.access) : []),
     // Whether to show "Sign in with …", and the console's swap of its
@@ -1122,7 +1491,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           let body: Record<string, unknown> = {};
           if (req.method === 'POST') {
             try {
-              const parsed = await readBody(req, path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : MAX_BODY_BYTES);
+              const parsed = await readBody(req, path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : MAX_BODY_BYTES);
               body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
             } catch {
               return send(res, 400, { ok: false, error: 'Send a JSON object.' });

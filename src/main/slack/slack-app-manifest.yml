@@ -35,6 +35,10 @@ features:
       description: Hire an AI worker
       usage_hint: "<what it should do, for whom, from which sources>"
       should_escape: false
+    - command: /idea
+      description: Put an idea into a process, or see where yours are
+      usage_hint: "[process name:] <the idea>"
+      should_escape: false
   app_home:
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false

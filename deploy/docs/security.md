@@ -32,7 +32,7 @@ A worker's own limits always win. `--permissions auto-approve` can't grant a wor
 - **Workers run no git.** The model plans, edits files in its worktree and writes the pull request. It has read-only git for planning, and no command that commits, pushes or opens anything.
 - **The server pushes,** once the run finishes: it commits each changed worktree and pushes an `overcli/<change>` branch.
 - **On probation, nothing is pushed without a yes.** The pull request step waits for the manager's approval.
-- **Every push passes the tests.** Each clone has a pre-push hook that refuses pushes to the default branch and runs the repo's test command, holding back a failing push.
+- **Every push passes the tests.** Each clone has a pre-push hook that refuses pushes to the default branch. The server runs the repo's test command before it pushes, without secrets in its environment, and holds back a failing push. It won't run tests as its own user, which can read its secrets: until an operator names a separate user (`OVERCLI_TEST_UID`) or accepts the risk (`OVERCLI_TEST_AS_SERVER=1`), a repo with a test command pushes nothing.
 - **People open pull requests.** Workers never open, approve or merge one, and never call the git host's API.
 - **Every change runs in its own worktree,** separate from the clone's checkout and from other work.
 - **Protect the default branch on your git host:** required reviews, no force pushes, no bypass for the bot account. Git can be told to skip hooks, so the host's protection is the real guard.
@@ -45,6 +45,9 @@ A worker's own limits always win. `--permissions auto-approve` can't grant a wor
 - **Git tokens** are read from the server's environment by a credential helper scoped to each clone, and never written into the repo or its config.
 - **Restricted names.** Only known names and credential-shaped names (`…_TOKEN`, `…_API_KEY`) can be set, so a console session can't redirect the model, git or Node through the environment.
 - **Logged by name.** Every change goes in the decision log by name, never by value.
+- **Workers never hold a tool's credentials.** A remote tool's address and token (pasted, or from Sign in for everyone) are sealed in the server. Workers reach the tool through a gateway on loopback, with a key bound to their run that is useless anywhere else. The gateway adds the real token, refuses calls outside the worker's scope a second time, and logs every call by worker. It's on in the Docker image (`OVERCLI_TOOL_GATEWAY=1`); turning it off puts the tools back as they were on the next start.
+- **Credential files are kept from Claude's file tools.** Claude's Read and Edit tools are denied the CLIs' config, their sign-ins, git and ssh credentials, other processes' environments, and the server's own state (people's tokens, the audit log, sealed secrets and keys), in every permission mode.
+- **That is not a sandbox.** The deny rules don't reach shell commands, and Codex and Gemini workers get none. On Linux and in Docker there is no OS sandbox yet, and workers run as the server's user, so a worker that runs shell commands can read those files and the server's environment. Until workers run as a separate user, treat the server's volume and environment as readable by any worker that runs shell commands, and give each worker only the repos, tools and trust level it needs.
 
 ## People and sign-in
 

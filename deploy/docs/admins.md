@@ -33,7 +33,7 @@ Many remote MCP servers ask you to sign in on their own page instead of pasting 
    - **Wants a token:** paste it as a header, such as `Authorization: Bearer …`.
    - **Signs in with** the service's name: the button becomes **Sign in and install**.
 2. **Sign in** on the service's page and approve. You come back to Setup → Tools, and the tool is installed.
-3. **Give it to workers** with **Manage**, as with any tool.
+3. **Give it to workers:** click the tool's row, as with any tool.
 
 > [!IMPORTANT]
 > Every worker you give the tool acts as the account you signed in with. Use a service or bot account where the service has one, rather than your own.
@@ -45,11 +45,11 @@ Many remote MCP servers ask you to sign in on their own page instead of pasting 
 - Workers only ever see a short-lived access token.
 - Removing the tool ends the sign-in at the service, where the service allows it.
 
-**Signing in again.** **Manage → Sign in again** replaces the account. Do it when the tool shows **Signed out**: the service ended the sign-in, or the account lost access.
+**Signing in again.** Open the tool, then **Sign in again**. It replaces the account. Do it when the tool shows **Signed out**: the service ended the sign-in, or the account lost access.
 
 **When the service won't register apps.** Some services only accept apps made by hand. The form says so, and shows the redirect address (the console address followed by `/oauth/tools/callback`). Make an OAuth app on the service with that address, then paste its client ID and secret into the form.
 
-**A tool you already installed with a token.** **Manage → Sign in for everyone** switches it to a sign-in. The pasted token is replaced.
+**A tool you already installed with a token.** Open the tool, then **Sign in for everyone**. It switches it to a sign-in. The pasted token is replaced.
 
 > [!NOTE]
 > The redirect address uses the server's public address (`publicUrl`) when it's set. Set it before signing tools in, or a service may send you back to an address it can't reach.
@@ -67,7 +67,7 @@ Workers that ask first still ask before any step that changes something, whateve
 Code repos workers may change. See also [Security model](security.md#code).
 
 1. **Give the server a way to push.** Set the host's token on **Setup → Secrets**: `GH_TOKEN` (GitHub), `BITBUCKET_TOKEN` (Bitbucket Cloud) or `GIT_TOKEN` + `GIT_USER` (any other host). Or connect with a `git@` address and an ssh key on the server.
-2. **Connect** the repo: its address, and the test command to run before every push.
+2. **Connect** the repo: its address, and the test command to run before every push. Repo tests are off until the server's operator turns them on (`OVERCLI_TEST_UID` or `OVERCLI_TEST_AS_SERVER`, see the [deploy README](../README.md)); until then a repo with a test command pushes nothing, and the Repos tab says so on that repo.
 3. **Let a worker change it:** pick the worker and press **Let it change this repo**.
 
 Protect the default branch on your git host as well (required reviews, no force pushes). The server refuses pushes to it, but the host is the real guard.

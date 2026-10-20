@@ -55,10 +55,12 @@ import { PopMenu, type MenuItemDef } from "../SidebarPlaces";
 import { fundingFor } from "@shared/flows/treasury";
 import { searchWork } from "./workSearch";
 import { awayLine, morningAfter, nextMondayMorning } from "./awayMode";
-import { NewTeamButton, TeamRailSection } from "./teams/TeamRail";
+import { NewTeamButton, ProcessesButton, TeamRailSection } from "./teams/TeamRail";
 import { useTeamsStore } from "../../teamsStore";
 import { foldSummary, groupByProject, teamOnlyIds, type ProjectGroup } from "./workerBoard";
 import { projectName, useProjectOptions } from "./teams/ProjectChoice";
+import { otherNeedsCount } from "./todayBoard";
+import { useTodayProcesses } from "./todayProcesses";
 
 export const RAIL_COLLAPSED_WIDTH = 64;
 export const RAIL_EXPANDED_WIDTH = 212;
@@ -147,7 +149,16 @@ export function WorkersRail({
     });
   // Nobody hired, as opposed to nobody matching a search.
   const noCrew = previewEmpty || Object.keys(workers).length === 0;
-  const needsYou = board.groups.needsYou.length;
+  // Team tasks and process items waiting on you are Today's too. Processes
+  // are as fresh as Today's last look at them.
+  const teamTasks = useTeamsStore((s) => s.tasks);
+  const processBoards = useTodayProcesses((s) => s.boards);
+  const processesLab = labOn(labs, "processes");
+  const otherNeeds = useMemo(
+    () => otherNeedsCount(teamTasks, processesLab ? processBoards : []),
+    [teamTasks, processBoards, processesLab],
+  );
+  const needsYou = board.groups.needsYou.length + otherNeeds;
 
   const queueRunning = useMemo(
     () =>
@@ -295,6 +306,7 @@ export function WorkersRail({
           <HireButton expanded={expanded} first />
           {/* A team hires its own members, so it is a door with nobody hired. */}
           <NewTeamButton expanded={expanded} />
+          <ProcessesButton expanded={expanded} />
         </div>
         <div className="flex-1" />
         <div className="flex flex-col gap-0.5 px-2">{toggle}</div>
@@ -447,6 +459,7 @@ export function WorkersRail({
       <div className={"mt-2 flex flex-col gap-0.5 " + (expanded ? "px-2" : "px-1")}>
         <HireButton expanded={expanded} />
         <NewTeamButton expanded={expanded} />
+        <ProcessesButton expanded={expanded} />
         <div className="mx-1 my-1.5 h-px bg-card" />
         <RailFooter expanded={expanded} onToggleExpanded={onToggleExpanded} />
       </div>
@@ -465,7 +478,7 @@ function readFolded(): Record<string, boolean> {
   }
 }
 
-const FOLD_TONE = { waiting: "text-violet-400", stopped: "text-amber-400", running: "text-emerald-400" } as const;
+const FOLD_TONE = { waiting: "text-violet-600 dark:text-violet-400", stopped: "text-amber-700 dark:text-amber-400", running: "text-emerald-700 dark:text-emerald-400" } as const;
 
 /// One project's workers. Collapsed, a rule between groups (its name in the
 /// tooltip). Expanded, a header that folds — by your click only — and, when
@@ -610,11 +623,11 @@ function RailFace({
     .join(" · ");
   const lineTone =
     mark === "waiting"
-      ? "text-violet-400"
+      ? "text-violet-600 dark:text-violet-400"
       : mark === "stopped"
-        ? "text-amber-400"
+        ? "text-amber-700 dark:text-amber-400"
         : mark === "running"
-          ? "text-emerald-400"
+          ? "text-emerald-700 dark:text-emerald-400"
           : "text-ink-faint";
   const isAfter = (e: React.DragEvent) => {
     const box = e.currentTarget.getBoundingClientRect();
@@ -817,7 +830,7 @@ function RailButton({
       {expanded && (
         <span className="flex min-w-0 flex-col">
           <span className="truncate text-xs">{label}</span>
-          {detail && <span className="truncate text-[10.5px] text-violet-400">{detail}</span>}
+          {detail && <span className="truncate text-[10.5px] text-violet-600 dark:text-violet-400">{detail}</span>}
         </span>
       )}
     </button>

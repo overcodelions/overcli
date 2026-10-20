@@ -82,7 +82,7 @@ import { recordOllamaUsage } from './ollamaUsageLog';
 import { claudeSupportsEffort, ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
-import { ClaudeSdkClient } from './claude-sdk-client';
+import { ClaudeSdkClient, type ClaudeSdkStartOptions } from './claude-sdk-client';
 import { claudeSdkExecutablePath } from './claudeSdkExecutable';
 import { claudeArtifactEnv } from '../shared/claudeArtifacts';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
@@ -115,12 +115,14 @@ import {
   sandboxSupported,
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
-import { blockedMcpServerTools, buildClaudeMcpConfigArg } from './mcpConfig';
+import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers } from './mcpConfig';
 import { knownMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
 import { isSafeIdSegment } from '../shared/flows/safeId';
 import { stripSecrets } from './org/secrets';
+import { credentialDenyRules } from './org/credentialGuard';
+import { bindToolGateway, boundGatewayTools } from './org/toolGateway';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -630,17 +632,23 @@ export function mcpBlockedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' 
   return blockedMcpServerTools(args.mcpAllowlist, args.cwd, undefined, seen);
 }
 
-/// Servers kept off the turn, plus calls its worker's scope refuses.
+/// Servers kept off the turn, plus calls its worker's scope refuses, plus the
+/// credential files an org server keeps from every process (credentialGuard.ts).
 function deniedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'mcpDeniedTools'>): string[] | undefined {
-  const all = [...(mcpBlockedTools(args) ?? []), ...(args.backend === 'claude' ? (args.mcpDeniedTools ?? []) : [])];
+  const all = [...(mcpBlockedTools(args) ?? []), ...(args.backend === 'claude' ? [...(args.mcpDeniedTools ?? []), ...credentialDenyRules()] : [])];
   return all.length ? [...new Set(all)] : undefined;
 }
 
-function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string {
+/// A run's own tools, each gateway one carrying a key bound to the run
+/// (toolGateway.ts), so the gateway knows whose call it is. A run on the
+/// whole config gets just its gateway tools here, on top of that config.
+function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'conversationId' | 'skipGlobalMcp' | 'turbo'>): string {
+  if (args.backend !== 'claude') return '';
   const allowlist = effectiveMcpAllowlist(args.mcpAllowlist);
-  return args.backend === 'claude' && allowlist
-    ? buildClaudeMcpConfigArg(allowlist, args.cwd) ?? ''
-    : '';
+  if (allowlist) return bindToolGateway(buildClaudeMcpConfigArg(allowlist, args.cwd) ?? '', args.conversationId);
+  if (args.skipGlobalMcp || args.turbo) return '';
+  const bound = boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId);
+  return Object.keys(bound).length ? JSON.stringify({ mcpServers: bound }) : '';
 }
 
 export function claudeMcpLaunchFingerprint(
@@ -2011,6 +2019,9 @@ export class RunnerManager {
       // or Claude in Chrome works on one transport and not the other.
       chrome: this.chromeFor(args),
       appendSystemPrompt: claudeSystemPromptAppend(narrateFor(args)),
+      // This transport loads the whole config, so its gateway tools get the
+      // conversation's own key, as the cli transport's do.
+      mcpServers: boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId) as ClaudeSdkStartOptions['mcpServers'],
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.

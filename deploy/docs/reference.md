@@ -112,6 +112,7 @@ Connect Claude Code, Claude Desktop or Codex to `<server>/mcp` with your key. Wh
 | `/team <name>: <task>` | Give a team a task (it waits as Up next if the team is busy) |
 | `/team new <what it's for>` | Make a team from your workers: a suggested crew comes by DM |
 | `/hire <the job>` | Hire a worker |
+| `/idea [process:] <the idea>` | Put an idea into a process, or see where yours are |
 | `/overcli join` | Ask to be let in |
 
 The app's scopes and events are in `src/main/slack/slack-app-manifest.yml`. Reinstall the app when the manifest changes.

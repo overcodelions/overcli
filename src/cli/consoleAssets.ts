@@ -244,7 +244,7 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .dear { color: var(--need); font-weight: 600; }
 .serif, .ask-name, .item .t, .who-name, .card-name, .person-name, .role h3, .offer-name, .dialog h2, .solo h1, .big, .brand-name, .place b { letter-spacing: -0.02em; font-weight: 500; }
 .label { margin: 0; font-size: 12.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
-.main { padding: 32px clamp(20px, 3vw, 56px) 64px; }
+.main { padding: 24px clamp(16px, 2vw, 32px) 40px; }
 .page-sub { margin-top: 6px; color: var(--muted); max-width: 66ch; }
 .section-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--need); flex: none; }
@@ -514,6 +514,10 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
 .tmgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
 .tmcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .tmcard.add { background: none; border-style: dashed; border-color: var(--line-2); }
+.tmcard.clickable { cursor: pointer; transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s; }
+.tmcard.clickable:hover { transform: translateY(-2px); border-color: var(--line-2); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16); }
+.tmcard.clickable:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .tmcard.clickable { transition: none; } .tmcard.clickable:hover { transform: none; } }
 .tmname { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--ink); text-align: left; }
 .tmpurpose { margin: 2px 0 0; font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tmmeta { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; font-size: 12.5px; }
@@ -531,18 +535,6 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
 .tsegs li { height: 5px; border-radius: 3px; background: var(--line); }
 .tsegs .done { background: var(--ok); } .tsegs .part { background: #e9a23b; } .tsegs .failed { background: var(--bad); } .tsegs .need { background: var(--need); }
 .tsegs .now { background: linear-gradient(90deg, var(--go) 0 40%, var(--go-soft) 40% 100%); background-size: 200% 100%; animation: segrun 1.6s linear infinite; }
-.tpage { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
-.trail { flex: 0 0 300px; max-width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; position: sticky; top: 76px; }
-.tmain { flex: 999 1 560px; min-width: 0; }
-.trow { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 10px 14px; border: 0; border-left: 2px solid transparent; background: none; text-align: left; font: inherit; color: var(--ink); cursor: pointer; }
-.trow:hover { background: var(--panel-2); }
-.trow.on { background: var(--panel-2); border-left-color: var(--go); }
-.trow b { font-weight: 600; font-size: 13.5px; }
-.tdot { width: 22px; height: 22px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: var(--line); color: var(--muted); }
-.tdot.done { background: var(--ok-soft); color: var(--ok); } .tdot.part { background: var(--need-soft); color: var(--need); } .tdot.failed { background: var(--bad-soft); color: var(--bad); }
-.tdot.now { background: var(--go); color: var(--go-ink); } .tdot.need { background: var(--need); color: var(--need-ink); }
-.stage-head { padding: 16px 18px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
-.stage-title { margin: 0; font-family: var(--serif); font-size: 19px; font-weight: 600; }
 .prows > .prow + .prow { border-top: 1px solid var(--line); }
 .prow { padding: 12px 18px; display: flex; flex-direction: column; gap: 8px; }
 .prow.slow { background: var(--need-soft); }
@@ -1045,6 +1037,550 @@ section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
   .people-grid, .solo, .places { grid-template-columns: minmax(0, 1fr); }
   .solo-right { border-left: 0; border-top: 1px solid var(--line); }
 }
+
+/* Processes: a board of stages, an item's story beside it, the editor. */
+.prc-strip { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.prc-strip li { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--muted); max-width: 100%; }
+.prc-strip li.people { border-style: dashed; }
+.prc-strip li.busy { border-color: var(--go); color: var(--ink); background: var(--go-soft); }
+.prc-sn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.prc-ic { display: inline-flex; color: var(--faint); }
+.prc-n { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--go); color: var(--go-ink); font-size: 11px; font-weight: 700; }
+.prc-empty { margin: 6px 2px; font-size: 12.5px; }
+.prc-rail { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.prc-rail li { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--faint); padding: 4px 0; }
+.prc-rail li .dot { width: 16px; height: 16px; border-radius: 999px; border: 2px solid var(--line-2); display: inline-flex; align-items: center; justify-content: center; flex: none; background: var(--panel); box-sizing: border-box; }
+.prc-rail li.done { color: var(--muted); }
+.prc-rail li.done .dot { background: var(--ok); border-color: var(--ok); color: #fff; }
+.prc-rail li.now { color: var(--ink); font-weight: 600; }
+.prc-rail li.now .dot { border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
+.prc-rail li.stuck { color: var(--bad); font-weight: 600; }
+.prc-rail li.stuck .dot { border-color: var(--bad); }
+.prc-art { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.pp { position: relative; min-width: 200px; }
+.pp-list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 5; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); box-shadow: var(--shadow); }
+.pp-list:empty { display: none; }
+.pp-opt { appearance: none; border: 0; background: none; text-align: left; font: inherit; color: inherit; padding: 8px 10px; cursor: pointer; font-size: 13px; }
+.pp-opt:hover, .pp-opt:focus-visible { background: var(--panel-2); }
+.pp-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 4px; border-radius: 999px; border: 1px solid var(--line); font-size: 13px; }
+.sticky-foot { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0; border-top: 1px solid var(--line); z-index: 2; }
+/* The process editor: a map that wraps to fit, then the stage you picked. */
+.pm-head { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 18px; }
+.pm-title { display: block; width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 6px; margin: 4px 0 2px -7px; font-family: var(--serif); font-size: 30px; font-weight: 500; letter-spacing: -0.02em; color: var(--ink); border-radius: var(--r-sm); }
+.pm-purpose { display: block; width: 100%; border: 1px solid transparent; background: transparent; padding: 2px 6px; margin-left: -7px; color: var(--muted); font-size: 14px; border-radius: var(--r-sm); }
+.pm-title:hover, .pm-purpose:hover { border-color: var(--line); }
+.pm-title:focus, .pm-purpose:focus { border-color: var(--go); outline: none; background: var(--panel); }
+.pm-mapcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; margin-bottom: 18px; }
+.pm-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.pm-key { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.pm-key::before { content: ""; width: 10px; height: 10px; border-radius: 3px; }
+.pm-key.team::before { background: var(--go); }
+.pm-key.people::before { border: 1.5px dashed var(--need); }
+.pm-key.warn::before { border-radius: 999px; background: var(--bad); }
+.pm-map { display: flex; flex-wrap: wrap; align-items: flex-start; row-gap: 14px; }
+.pm-step { display: flex; align-items: flex-start; flex: 1 1 150px; min-width: 0; max-width: 240px; }
+.pm-stack { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.pm-arrow { flex: none; width: 22px; height: 2px; margin-top: 44px; background: var(--line-2); position: relative; }
+.pm-arrow::after { content: ""; position: absolute; right: -1px; top: -4px; border: 5px solid transparent; border-left: 6px solid var(--line-2); border-right: 0; }
+.pm-end { flex: none; width: 64px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 24px; font-size: 12px; text-align: center; }
+.pm-step:last-child { flex: none; max-width: none; }
+.pm-dot { width: 40px; height: 40px; border-radius: 999px; border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
+.pm-dot.done { border: 0; background: var(--ok-soft); color: var(--ok); }
+.pm-node { appearance: none; font: inherit; text-align: left; color: inherit; width: 100%; min-height: 92px; box-sizing: border-box; padding: 10px 12px; border-radius: 12px; display: flex; flex-direction: column; gap: 3px; cursor: pointer; background: var(--bg); border: 1.5px solid var(--line); }
+.pm-node.people { border-style: dashed; border-color: var(--need); }
+.pm-node:hover { border-color: var(--go); }
+.pm-node.people:hover { border-color: var(--need); background: var(--need-soft); }
+.pm-node.on { border-color: var(--go); background: var(--go-soft); box-shadow: 0 0 0 3px var(--go-soft); }
+.pm-node.people.on { border-color: var(--need); background: var(--need-soft); box-shadow: 0 0 0 3px var(--need-soft); }
+.pm-node:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.pm-nodehead { display: flex; align-items: center; gap: 7px; }
+.pm-num { width: 22px; height: 22px; flex: none; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 700; background: var(--panel-2); color: var(--muted); }
+.pm-node.on .pm-num, .pm-num.big.team { background: var(--go); color: var(--go-ink); }
+.pm-node.people.on .pm-num, .pm-num.big.people { background: var(--need); color: var(--need-ink); }
+.pm-num.big { width: 28px; height: 28px; font-size: 13px; }
+.pm-kind { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--go); }
+.pm-node.people .pm-kind { color: var(--need); }
+.pm-warn { margin-left: auto; width: 8px; height: 8px; border-radius: 999px; background: var(--bad); flex: none; }
+.pm-name { font-size: 13.5px; font-weight: 600; line-height: 1.3; color: var(--ink); overflow-wrap: anywhere; }
+.pm-who { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pm-who.missing { color: var(--bad); }
+.pm-back { font-size: 11.5px; color: var(--need); padding-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pm-body { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; padding-bottom: 24px; }
+.pm-stage { flex: 999 1 560px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.pm-stagehead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.pm-sname { flex: 1 1 220px; min-width: 0; font-size: 16px; font-weight: 600; border-color: transparent; background: transparent; }
+.pm-sname:hover { border-color: var(--line); }
+.pm-hint { font-size: 12.5px; font-weight: 400; }
+.pm-empty { padding: 28px 18px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.pm-empty p { margin: 0; }
+.pm-side { flex: 1 1 280px; max-width: 400px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.pm-todo { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.pm-todo li { display: flex; gap: 8px; align-items: center; }
+.pm-todo li::before { content: ""; width: 7px; height: 7px; border-radius: 999px; background: var(--bad); flex: none; }
+.pm-todo .linkish { text-align: left; color: var(--ink); }
+.pm-rules { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.pm-footnote { margin-left: auto; font-size: 12.5px; }
+@media (max-width: 640px) { .pm-step { flex-basis: 100%; max-width: none; } .pm-arrow { display: none; } .pm-end { display: none; } }
+
+/* The process library. */
+.lib-stages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.lib-stage { display: flex; gap: 14px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; }
+.lib-stage.people { border-style: dashed; border-color: var(--need); }
+.lib-fit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); padding: 8px 10px; border-radius: var(--r); background: var(--panel-2); }
+.lib-fit.ok { color: var(--ink); background: var(--ok-soft); }
+.lib-fit.gap { color: var(--ink); background: var(--need-soft); }
+.pm-kind.people { color: var(--need); }
+.pm-why { margin: 0; font-size: 13px; }
+
+/* The editor, tidied: borderless title fields, labelled rows, worker stages. */
+.pm-head input.pm-title { width: 100%; min-height: 0; border: 1px solid transparent; background: transparent; box-shadow: none; padding: 2px 6px; margin: 4px 0 2px -7px; font-family: var(--serif); font-size: 30px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.2; }
+.pm-head input.pm-purpose { width: 100%; min-height: 0; border: 1px solid transparent; background: transparent; box-shadow: none; padding: 2px 6px; margin-left: -7px; color: var(--muted); font-size: 14px; }
+.pm-head input.pm-title:hover, .pm-head input.pm-purpose:hover { border-color: var(--line); }
+.pm-head input.pm-title:focus, .pm-head input.pm-purpose:focus { border-color: var(--go); background: var(--panel); box-shadow: none; }
+.pm-owner { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.pm-person { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 32px; }
+.pm-person .linkish { font-size: 12.5px; }
+.pm-stagehead input.pm-sname { width: auto; min-height: 0; border: 1px solid transparent; background: transparent; box-shadow: none; font-size: 16px; font-weight: 600; padding: 4px 8px; }
+.pm-stagehead input.pm-sname:hover { border-color: var(--line); }
+.pm-stagehead input.pm-sname:focus { border-color: var(--go); background: var(--bg); box-shadow: none; }
+.pm-why { margin: 0; padding: 12px 18px; font-size: 13px; color: var(--muted); background: var(--panel-2); border-bottom: 1px solid var(--line); }
+.pm-why b { color: var(--ink); font-weight: 600; }
+.pm-rows { display: flex; flex-direction: column; padding: 6px 18px 12px; }
+.pm-row { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); align-items: start; }
+.pm-row:first-child { border-top: 0; }
+.pm-rl { font-size: 13px; font-weight: 600; color: var(--muted); padding-top: 8px; }
+.pm-rc { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pm-rc > select { max-width: 420px; }
+.pm-rc .lib-fit { margin: 0; }
+
+/* A process from a picture: the drop zone, the banner on the draft and the
+   picture kept open beside the editor. */
+.pi-drop { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 26px 18px; border: 1.5px dashed var(--line-2); border-radius: 12px; background: var(--panel-2); color: var(--ink); cursor: pointer; }
+.pi-drop:hover, .pi-drop.on { border-color: var(--go); background: var(--go-soft); }
+.pi-drop .faint { font-size: 12.5px; }
+.pi-dropic { display: inline-flex; color: var(--muted); }
+.pi-thumb { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.pi-thumb img { max-width: 100%; max-height: 220px; border-radius: var(--r); border: 1px solid var(--line); object-fit: contain; background: #fff; }
+.pi-working { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.pi-banner { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; background: var(--info-soft); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; }
+.pi-mini { flex: none; width: 96px; height: 72px; padding: 0; border: 1px solid var(--line); border-radius: var(--r); background: #fff; cursor: zoom-in; overflow: hidden; }
+.pi-mini img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pi-notes { margin: 0; padding-left: 18px; font-size: 13px; color: var(--ink); display: flex; flex-direction: column; gap: 2px; }
+.pi-viewer { position: fixed; top: 72px; right: 16px; bottom: 16px; width: min(40vw, 520px); z-index: 6; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.5); }
+.pi-viewbody { flex: 1; min-height: 0; overflow: auto; }
+.pi-viewbody img { width: 100%; height: auto; display: block; border-radius: var(--r); background: #fff; }
+body.pi-open .main { padding-right: calc(min(40vw, 520px) + 32px); }
+@media (max-width: 900px) { .pi-viewer { left: 16px; width: auto; } body.pi-open .main { padding-right: 16px; } }
+.pm-node.worker { border-color: var(--line-2); }
+.pm-node.worker .pm-kind { color: var(--info); }
+.pm-node.worker:hover { border-color: var(--info); }
+.pm-node.worker.on { border-color: var(--info); background: var(--info-soft); box-shadow: 0 0 0 3px var(--info-soft); }
+.pm-node.worker.on .pm-num, .pm-num.big.worker { background: var(--info); color: #fff; }
+.pm-key.worker::before { background: var(--info); }
+@media (max-width: 640px) { .pm-row { grid-template-columns: minmax(0, 1fr); gap: 6px; } .pm-rl { padding-top: 0; } }
+
+/* The people picker: a dropdown with groups and people. */
+.pp-list { max-height: 320px; overflow-y: auto; padding: 4px; }
+.pp-head { padding: 8px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.pp-opt { display: flex; align-items: center; gap: 6px; border-radius: var(--r-sm); width: 100%; box-sizing: border-box; }
+.pp-opt:focus-visible { outline: 2px solid var(--go); outline-offset: -2px; }
+.pp-chip.group { background: var(--info-soft); border-color: transparent; padding-left: 6px; }
+.pp-gi { display: inline-flex; color: var(--info); }
+
+.pp { min-width: 260px; max-width: 360px; }
+.pp > input { width: 100%; }
+.pp-list { right: auto; width: max(100%, 340px); }
+.pp-opt { padding: 8px 10px; align-items: flex-start; }
+.pp-main { display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%; }
+.pp-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pp-text b { font-weight: 600; }
+.pp-sub { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-gi { width: 26px; height: 26px; flex: none; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: var(--info-soft); color: var(--info); }
+.pp-chip.group .pp-gi { width: auto; height: auto; background: none; }
+
+/* Picking who does a stage: what each one does, best fits first. */
+.dp { position: relative; max-width: 520px; }
+.dp-btn { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; font: inherit; color: inherit; padding: 8px 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--panel); cursor: pointer; min-height: 52px; }
+.dp-btn:hover { border-color: var(--go); }
+.dp-btn:focus-visible { outline: 2px solid var(--go); outline-offset: 1px; }
+.dp-none { width: 32px; height: 32px; flex: none; border-radius: 999px; border: 1px dashed var(--line-2); display: inline-flex; align-items: center; justify-content: center; color: var(--faint); }
+.dp-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.dp-text b { font-weight: 600; color: var(--ink); }
+.dp-about { font-size: 12.5px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.dp-chev { color: var(--faint); display: inline-flex; transform: rotate(-90deg); }
+.dp-panel { position: absolute; left: 0; top: calc(100% + 6px); z-index: 6; width: max(100%, 460px); max-width: calc(100vw - 40px); background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.dp-search { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); color: var(--faint); }
+.dp-search input { border: 0; background: transparent; box-shadow: none; min-height: 0; padding: 4px 0; }
+.dp-search input:focus { box-shadow: none; }
+.dp-list { max-height: 380px; overflow-y: auto; padding: 4px; }
+.dp-opt { display: flex; align-items: flex-start; gap: 12px; width: 100%; text-align: left; font: inherit; color: inherit; padding: 9px 10px; border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; }
+.dp-opt:hover, .dp-opt:focus-visible { background: var(--panel-2); outline: none; }
+.dp-opt.on { background: var(--go-soft); }
+.dp-why { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--ok); }
+.dp-on { color: var(--go); display: inline-flex; margin-top: 2px; }
+
+/* How work comes in. */
+.in-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.in-row:first-child { border-top: 0; }
+.in-ic { width: 32px; height: 32px; flex: none; border-radius: var(--r); background: var(--panel-2); color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+.in-foot { border-top: 1px solid var(--line); padding-top: 12px; }
+.in-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.in-form { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg); }
+
+.pm-time { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--info); padding-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* A process's page: the summary, how it works drawn, the board, what came out. */
+.pv-track { display: grid; gap: 4px; }
+.pv-track > span { height: 5px; border-radius: 3px; background: var(--line-2); }
+.pv-track > span.done { background: var(--ok); }
+.pv-track > span.now { background: var(--go); }
+.pv-track > span.now.worker { background: var(--info); }
+.pv-track > span.now.people { background: var(--need); }
+.pv-track > span.stuck { background: var(--bad); }
+.pf-sum { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 0; font-size: 13px; color: var(--faint); }
+.pf-sum.big { gap: 6px 22px; align-items: baseline; margin: 0; color: var(--muted); }
+.pf-sum.big b { font-size: 18px; font-weight: 650; color: var(--ink); margin-right: 5px; font-variant-numeric: tabular-nums; }
+.pf-sum.big b.need { color: var(--need); }
+.pf-sum.big b.bad { color: var(--bad); }
+.pf-sum.big b.ok { color: var(--ok); }
+.pf-panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.pf-head { display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; }
+.pf-panel.pf-how { display: block; }
+.pf-how > * + * { margin-top: 12px; }
+.pf-how > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; }
+.pf-how > summary::-webkit-details-marker { display: none; }
+.pf-how > summary .label { display: inline-flex; align-items: center; gap: 6px; }
+.pf-how > summary .label svg { transform: rotate(180deg); transition: transform 0.15s; }
+.pf-how[open] > summary .label svg { transform: rotate(-90deg); }
+.pf-how > summary:focus-visible { outline: 2px solid var(--go); outline-offset: 3px; border-radius: 4px; }
+.pf-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--faint); }
+.pf-legend > span::before { content: ""; display: inline-block; width: 18px; border-top: 2px solid var(--line-2); vertical-align: middle; margin-right: 6px; }
+.pf-legend > span.loop::before { border-top-style: dashed; border-top-color: var(--need); }
+.pf-scroll { overflow-x: auto; min-width: 0; }
+.pf-host { position: relative; box-sizing: border-box; }
+.pf-grid, .pf-board { display: grid; align-items: stretch; }
+.pf-card { position: relative; z-index: 1; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; min-height: 96px; box-sizing: border-box; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--bg); color: var(--muted); font-size: 12px; line-height: 1.45; text-align: left; }
+button.pf-card { appearance: none; font-family: inherit; cursor: pointer; }
+button.pf-card:hover { border-color: var(--go); }
+button.pf-card:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.pf-card b { font-size: 14px; font-weight: 600; color: var(--ink); line-height: 1.3; overflow-wrap: anywhere; }
+.pf-card.people { border-style: dashed; border-color: var(--need); background: color-mix(in srgb, var(--need) 6%, var(--bg)); }
+.pf-card.start { border-color: color-mix(in srgb, var(--go) 45%, var(--line)); background: color-mix(in srgb, var(--go) 8%, var(--bg)); }
+.pf-card.end { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: color-mix(in srgb, var(--ok) 8%, var(--bg)); }
+.pf-sub { overflow-wrap: anywhere; }
+.pf-sub .pf-who { font: inherit; color: var(--ink); text-decoration: underline; text-decoration-color: var(--line-2); text-underline-offset: 3px; }
+.pf-sub .pf-who:hover { color: var(--go); text-decoration-color: currentColor; }
+.pf-tag { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.pf-tag.team { color: var(--violet); }
+.pf-tag.worker { color: var(--info); }
+.pf-tag.people { color: var(--need); }
+.pf-tag.start { color: var(--go); }
+.pf-tag.end { color: var(--ok); }
+.pf-lines { position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; overflow: visible; }
+.pf-solid { fill: none; stroke: var(--line-2); stroke-width: 2; }
+.pf-loop { fill: none; stroke: var(--need); stroke-width: 1.6; stroke-dasharray: 5 5; stroke-linejoin: round; }
+.pf-headfill { fill: var(--line-2); }
+.pf-headfill.loop { fill: var(--need); }
+.pf-labels { position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 2; pointer-events: none; }
+.pf-note { position: absolute; transform: translate(-50%, -50%); padding: 0 6px; background: var(--panel); color: var(--need); font-size: 11.5px; line-height: 16px; white-space: nowrap; }
+.pf-wait { position: absolute; transform: translate(-50%, -100%); width: 56px; text-align: center; color: var(--faint); font-size: 11px; line-height: 1.25; }
+.pf-steps { list-style: none; margin: 0; padding: 12px 0 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 14px; }
+.pf-steps li { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 13px; color: var(--muted); }
+.pf-steps li b { color: var(--ink); font-weight: 600; }
+.pf-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 16px; align-items: start; }
+.pf-accent { color: var(--go); }
+.pf-small { font-size: 12.5px; color: var(--muted); }
+.pf-split { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.pf-way { display: flex; align-items: center; gap: 10px; font-size: 13px; min-width: 0; flex-wrap: wrap; }
+.pf-what { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.pf-dot { width: 8px; height: 8px; flex: none; border-radius: 99px; background: var(--go); }
+.pf-dot.ok { background: var(--ok); }
+.pf-dot.info { background: var(--info); }
+.pf-dot.violet { background: var(--violet); }
+.pf-dot.need { background: var(--need); }
+.pf-dot.bad { background: var(--bad); }
+.linkish.pf-link { align-self: flex-start; color: var(--go); font-size: 12.5px; font-weight: 600; text-align: left; }
+.pf-done { appearance: none; font: inherit; color: inherit; text-align: left; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg); cursor: pointer; }
+.pf-done:hover { border-color: var(--go); }
+.pf-done:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.pf-done b { font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.pf-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pf-out { font-size: 12.5px; color: var(--muted); }
+.pf-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 8px; }
+.pf-bars { display: grid; grid-template-columns: minmax(0, max-content) minmax(60px, 1fr) auto; gap: 6px 10px; align-items: center; font-size: 12.5px; }
+.pf-barname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.pf-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--go); }
+.pf-bar > span.worker { background: var(--info); }
+.pf-bar > span.team { background: var(--violet); }
+.pf-bar > span.people { background: var(--need); }
+.pf-boardwrap { padding: 0 17px 4px; }
+.pf-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 220px; box-sizing: border-box; padding: 12px; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--line); }
+.pf-col.people { border-style: dashed; border-color: color-mix(in srgb, var(--need) 55%, var(--line)); }
+.pf-colhead { display: flex; flex-direction: column; gap: 3px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.pf-colhead b { font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.pf-coltop { display: flex; align-items: center; gap: 8px; }
+.pf-count { margin-left: auto; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.pf-item { appearance: none; font: inherit; color: inherit; text-align: left; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--line); cursor: pointer; }
+.pf-item:hover { border-color: var(--go); }
+.pf-item:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.pf-item b { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.pf-now { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.pf-item.yours { background: var(--need-soft); border-color: color-mix(in srgb, var(--need) 45%, var(--line)); }
+.pf-item.yours .pf-now { color: var(--need); }
+.pf-item.stuck { background: var(--bad-soft); border-color: var(--bad-line); }
+.pf-item.stuck .pf-now { color: var(--bad); }
+.pf-none { font-size: 12px; color: var(--faint); padding: 8px 2px; }
+/* A process item, the page's whole width: its stages across the top, the
+   call waiting on you, tabs, and who does what beside them. */
+.pi-page { display: flex; flex-direction: column; gap: 18px; width: 100%; }
+.pi-head { display: flex; flex-direction: column; gap: 14px; }
+.pi-top { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.pi-titles { flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pi-crumb { font-size: 12px; color: var(--faint); }
+.pi-crumb .linkish { font-size: 12px; color: var(--go); }
+.pi-title { margin: 0; font-family: var(--serif); font-size: 23px; font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
+.pi-brief { font-size: 13px; color: var(--muted); }
+.pi-owner { font-size: 12px; color: var(--muted); padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; white-space: nowrap; }
+.pi-menu { width: 230px; }
+.pi-menu .menu-sec { padding: 6px 16px; }
+.pi-menu .menu-item.pi-danger { color: var(--bad); }
+.pi-note, .pi-move { display: flex; gap: 8px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); }
+.pi-note { flex-direction: column; }
+.pi-note[hidden], .pi-move[hidden], .pi-send[hidden] { display: none; }
+.pi-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr)); gap: 8px; }
+.pi-stage { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px 12px; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--line); }
+.pi-sname { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pi-sname b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-num { width: 20px; height: 20px; flex: none; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line-2); box-sizing: border-box; }
+.pi-swho { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-sstate { font-size: 11.5px; color: var(--faint); }
+.pi-stage.done .pi-num { background: var(--ok); border-color: var(--ok); color: var(--bg); }
+.pi-stage.done .pi-sstate { color: var(--ok); }
+.pi-stage.now { border-color: var(--go); background: color-mix(in srgb, var(--go) 6%, var(--panel)); }
+.pi-stage.now .pi-num { background: var(--go); border-color: var(--go); color: var(--go-ink); }
+.pi-stage.now .pi-sstate { color: var(--go); }
+.pi-stage.need { border-color: color-mix(in srgb, var(--need) 45%, var(--line)); background: color-mix(in srgb, var(--need) 8%, var(--panel)); }
+.pi-stage.need .pi-num { background: var(--need); border-color: var(--need); color: var(--need-ink); }
+.pi-stage.need .pi-sstate { color: var(--need); font-weight: 600; }
+.pi-stage.stuck { border-color: var(--bad-line); background: var(--bad-soft); }
+.pi-stage.stuck .pi-num { background: var(--bad); border-color: var(--bad); color: var(--bad-ink); }
+.pi-stage.stuck .pi-sstate { color: var(--bad); font-weight: 600; }
+.pi-band { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
+.pi-band.need { background: color-mix(in srgb, var(--need) 8%, var(--panel)); border-color: color-mix(in srgb, var(--need) 40%, var(--line)); }
+.pi-band.bad { background: var(--bad-soft); border-color: var(--bad-line); }
+.pi-band.wait { border-color: color-mix(in srgb, var(--go) 35%, var(--line)); }
+.pi-band.wait .pi-bandic { background: var(--go-soft); color: var(--go); }
+.pi-band.ok { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.pi-bandrow { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.pi-bandic { width: 36px; height: 36px; flex: none; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: var(--panel-2); color: var(--muted); }
+.pi-band.need .pi-bandic { background: var(--need-soft); color: var(--need); }
+.pi-band.bad .pi-bandic { background: var(--bad-soft); color: var(--bad); }
+.pi-band.ok .pi-bandic { background: var(--ok-soft); color: var(--ok); }
+.pi-bandtext { flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pi-bandtext b { font-size: 14.5px; font-weight: 650; }
+.pi-bandsub { font-size: 12.5px; color: var(--muted); }
+.pi-send { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--need) 30%, var(--line)); }
+.pi-send textarea { resize: vertical; }
+.pi-pick { border: 1px solid var(--line-2); border-radius: var(--r); padding: 6px 12px; font: 600 12.5px var(--sans); cursor: pointer; background: transparent; color: var(--muted); }
+.pi-pick[aria-pressed="true"] { border-color: var(--need); background: var(--need-soft); color: var(--need); }
+.pi-cols { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+.pi-main { flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.pi-aside { flex: 1 1 300px; min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 14px; }
+.pi-tabs { display: flex; gap: 4px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); flex-wrap: wrap; align-self: flex-start; max-width: 100%; }
+.pi-tabs button { border: 0; border-radius: 7px; padding: 7px 14px; display: inline-flex; gap: 7px; align-items: center; font: 600 13px var(--sans); cursor: pointer; background: transparent; color: var(--muted); }
+.pi-tabs button:hover { color: var(--ink); }
+.pi-tabs button[aria-selected="true"] { background: var(--panel-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line-2); }
+.pi-count { font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--panel-2); color: var(--muted); line-height: 17px; }
+.pi-tabs button[aria-selected="true"] .pi-count { background: var(--go); color: var(--go-ink); }
+.pi-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.pi-stand { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+.pi-lead { font-size: 15.5px; line-height: 1.55; color: var(--ink); }
+.pi-lead p { margin: 0 0 8px; }
+.pi-sum { font-size: 13.5px; color: var(--muted); }
+.pi-sum p { margin: 0 0 6px; }
+.pi-sum.clamp { max-height: 18.6em; overflow: hidden; -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent); mask-image: linear-gradient(180deg, #000 70%, transparent); }
+.pi-showall { align-self: flex-start; color: var(--go); }
+.pi-flist { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.pi-frow + .pi-frow { border-top: 1px solid var(--line); }
+.pi-fline { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; }
+.pi-fopen { appearance: none; flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 4px 0; font: 600 13px var(--sans); color: var(--ink); cursor: pointer; text-align: left; }
+.pi-fopen span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-fopen svg { flex: none; color: var(--faint); }
+.pi-fopen:hover span { text-decoration: underline; }
+.pi-fview { padding: 10px 14px; border-top: 1px solid var(--line); background: var(--bg); max-height: 520px; overflow: auto; font-size: 13.5px; }
+.pi-fview[hidden] { display: none; }
+.pi-fview pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
+.pi-art { display: flex; flex-direction: column; gap: 10px; }
+.pi-arthead { display: flex; align-items: flex-start; gap: 10px; }
+.pi-earlier { display: flex; flex-direction: column; gap: 4px; }
+.pi-step { border-top: 1px solid var(--line); padding: 8px 0 2px; }
+.pi-earlier .label + .pi-step { border-top: 0; }
+.pi-step summary { cursor: pointer; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 13.5px; padding: 2px 0 6px; }
+.pi-stepbody { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 10px; }
+.pi-jbody .pi-flist { margin-top: 6px; }
+.pi-lead.clamp { max-height: 18.6em; overflow: hidden; -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent); mask-image: linear-gradient(180deg, #000 70%, transparent); }
+.pi-chip { font: inherit; font-size: 12.5px; text-decoration: none; padding: 5px 10px; border: 1px solid var(--line-2); border-radius: var(--r); color: var(--muted); background: none; cursor: pointer; }
+.pi-chip:hover { color: var(--ink); border-color: var(--faint); }
+span.pi-chip { cursor: default; }
+.pi-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.pi-mini { display: flex; flex-direction: column; gap: 10px; min-width: 0; font-size: 13px; }
+.pi-mini .label, .pi-side .label { font-size: 11px; letter-spacing: 0.08em; }
+.pi-mini .label.pi-need { color: var(--need); }
+.pi-mini .label.pi-go { color: var(--go); }
+.pi-voter, .pi-crew { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pi-vname { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pi-vname > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-vname .faint { font-size: 11.5px; }
+.pi-tag { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+.pi-tag.ok { background: var(--ok-soft); color: var(--ok); }
+.pi-tag.need { background: var(--need-soft); color: var(--need); }
+.pi-tag.redo { background: var(--bad-soft); color: var(--bad); }
+.pi-tag.now { background: var(--go-soft); color: var(--go); }
+.pi-handed { display: flex; flex-direction: column; gap: 2px; }
+.pi-handed b { font-size: 13px; font-weight: 600; }
+.pi-handed .muted { font-size: 12px; }
+.pi-nextrow { display: flex; gap: 10px; align-items: flex-start; }
+.pi-ndot { width: 8px; height: 8px; border-radius: 999px; background: var(--go); flex: none; margin-top: 6px; }
+.pi-journey { list-style: none; margin: 0; padding: 18px 20px; display: flex; flex-direction: column; }
+.pi-journey li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 14px; position: relative; }
+.pi-journey li:not(:last-child)::before { content: ""; position: absolute; left: 6px; top: 18px; bottom: 0; width: 2px; background: var(--line-2); }
+.pi-jdot { width: 12px; height: 12px; border-radius: 999px; margin-top: 4px; background: var(--ok); position: relative; z-index: 1; }
+.pi-journey li.start .pi-jdot { background: var(--faint); }
+.pi-journey li.note .pi-jdot { background: var(--info); }
+.pi-journey li.redo .pi-jdot { background: var(--bad); }
+.pi-journey li.need .pi-jdot { background: var(--need); box-shadow: 0 0 0 3px var(--need-soft); }
+.pi-journey li.now .pi-jdot { background: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
+.pi-jbody { min-width: 0; padding-bottom: 18px; display: flex; flex-direction: column; gap: 2px; }
+.pi-journey li:last-child .pi-jbody { padding-bottom: 0; }
+.pi-jhead { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.pi-jhead b { font-size: 13.5px; font-weight: 600; }
+.pi-jdetail { font-size: 12.5px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pi-files { padding: 0; overflow: hidden; }
+.pi-file { appearance: none; font: inherit; color: inherit; text-align: left; text-decoration: none; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 11px 16px; border: 0; border-top: 1px solid var(--line); background: none; }
+.pi-file:first-child { border-top: 0; }
+button.pi-file, a.pi-file { cursor: pointer; }
+button.pi-file:hover, a.pi-file:hover { background: var(--panel-2); }
+.pi-fic { display: inline-flex; color: var(--faint); flex: none; }
+.pi-fname { flex: 0 1 240px; min-width: 0; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-ffrom { flex: 1 1 200px; min-width: 0; color: var(--muted); font-size: 12.5px; }
+.pi-req { margin: 0; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pi-side { display: flex; flex-direction: column; gap: 12px; }
+.pi-crew.on .pi-cstage { font-weight: 600; }
+.pi-cstage { font-size: 13px; }
+.pi-took { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.pi-badge { width: 26px; height: 26px; flex: none; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 700; }
+.pi-badge.W { color: var(--info); background: var(--info-soft); }
+.pi-badge.T { color: var(--violet); background: var(--violet-soft); }
+.pi-badge.P { color: var(--need); background: var(--need-soft); }
+.pi-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; gap: 2px; }
+.pi-bar > span { min-width: 4px; }
+.pi-bar > .W { background: var(--info); }
+.pi-bar > .T { background: var(--violet); }
+.pi-bar > .P { background: var(--need); }
+/* A team task, the page's whole width (the process item page's pieces, plus these). */
+.tt-spend { flex: none; }
+.tt-spend .t-spend { font-size: 11.5px; gap: 8px; white-space: nowrap; }
+.tt-spend .t-spend .meter { width: 80px; }
+.tt-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr)); gap: 4px; }
+.tt-track li { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.tt-bar { height: 5px; border-radius: 3px; background: var(--line-2); }
+.tt-sname { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tt-track .done .tt-bar { background: var(--ok); }
+.tt-track .part .tt-bar { background: var(--need); }
+.tt-track .failed .tt-bar { background: var(--bad); }
+.tt-track .now .tt-bar { background: var(--go); }
+.tt-track .need .tt-bar { background: var(--need); }
+.tt-track .now .tt-sname { color: var(--go); font-weight: 600; }
+.tt-track .need .tt-sname { color: var(--need); font-weight: 600; }
+.tt-track .failed .tt-sname { color: var(--bad); }
+.tt-bandbody { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--need) 30%, var(--line)); }
+.tt-c { width: 26px; height: 26px; border-radius: 999px; font-size: 11px; color: var(--muted); background: var(--panel-2); }
+.pi-mini .label.tt-ok { color: var(--ok); }
+.tt-item { display: flex; gap: 9px; align-items: flex-start; }
+.tt-tick { display: inline-flex; color: var(--ok); flex: none; margin-top: 2px; }
+.tt-pick { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.tt-pick input[type=checkbox] { margin-top: 3px; width: 15px; height: 15px; flex: none; accent-color: var(--go); }
+.tt-asked { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); padding: 4px 2px; }
+.tt-asked b { color: var(--ink); font-weight: 600; }
+.tt-reply { display: flex; gap: 12px; }
+.tt-reply.wrap { border-color: color-mix(in srgb, var(--go) 35%, var(--line)); }
+.tt-rbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.tt-gist { margin: 0; font-size: 14px; color: var(--ink); }
+.tt-detail { font-size: 13.5px; color: var(--muted); border-left: 2px solid var(--line-2); padding-left: 12px; }
+.tt-detail[hidden] { display: none; }
+.tt-link { appearance: none; border: 0; background: none; padding: 4px 0; font: 600 12px var(--sans); color: var(--go); cursor: pointer; }
+.tt-ask { background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.tt-ask textarea.tt-askin { flex: 1; min-width: 0; min-height: 0; height: auto; resize: none; border: 0; background: transparent; outline: none; padding: 4px 0; font: inherit; font-size: 14px; line-height: 1.5; box-shadow: none; }
+.tt-try { appearance: none; font: inherit; font-size: 12px; color: var(--muted); padding: 4px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: none; cursor: pointer; }
+.tt-try:hover { color: var(--ink); border-color: var(--faint); }
+.tt-fileline { appearance: none; border: 0; background: none; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.tt-fileline b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tt-fileline:hover b { text-decoration: underline; }
+.tt-crew { appearance: none; border: 0; background: none; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; width: 100%; }
+.tt-crew .avatar.s { width: 24px; height: 24px; font-size: 10px; }
+.tt-n { width: 22px; height: 22px; border-radius: 6px; }
+.pi-num.tt-n.done { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.pi-num.tt-n.now { background: var(--go); color: var(--go-ink); border-color: var(--go); }
+.pi-num.tt-n.need, .pi-num.tt-n.part { background: var(--need); color: var(--need-ink); border-color: var(--need); }
+.pi-num.tt-n.failed { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+.tt-stage { padding: 0; }
+.tt-stage > summary { cursor: pointer; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 16px; font-size: 13.5px; }
+.tt-stage.now, .tt-stage.need { border-color: color-mix(in srgb, var(--go) 35%, var(--line)); }
+.tt-stagebody { display: flex; flex-direction: column; gap: 10px; padding: 0 16px 14px; }
+@media (max-width: 760px) { .pi-track, .tt-track { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Comments on a team task's work: the floating button by a selection, the
+   small box it opens, and the lists of what's been said. */
+.cm-float { position: fixed; z-index: 61; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--go); background: var(--go); color: var(--go-ink); font: 600 12.5px var(--sans); cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22); }
+.cm-pop { position: fixed; z-index: 60; width: min(380px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28); }
+.cm-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 14px; }
+.cm-pop textarea { min-height: 76px; resize: vertical; }
+.cm-notes { margin: 0; padding-left: 18px; color: var(--faint); font-size: 12.5px; display: flex; flex-direction: column; gap: 3px; }
+.cm-quote { margin: 0; padding: 6px 10px; border-left: 3px solid var(--line-2); background: var(--panel-2); border-radius: 0 var(--r-sm) var(--r-sm) 0; color: var(--muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow: auto; }
+.cm-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; font-size: 12.5px; }
+.cm-bar .btn { margin-left: -10px; }
+.cm-host ::selection { background: var(--go-soft); }
+.cm-file { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.cm-file:empty { display: none; }
+.cm-list { display: flex; flex-direction: column; }
+.cm-list .cm-row + .cm-row { border-top: 1px solid var(--line); }
+.cm-list .cm-row { padding: 10px 0; }
+.cm-list .cm-row:first-child { padding-top: 0; }
+.cm-row { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.cm-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }
+.cm-meta b { font-weight: 600; color: var(--ink); }
+.cm-link { color: var(--ink); font-weight: 600; font-size: 12.5px; overflow-wrap: anywhere; }
+.cm-link:hover { color: var(--go); }
+.cm-text { margin: 0; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cm-about { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+
+/* The Inbox: what needs you, everything in flight in one list, what finished. */
+.if-sum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; font-size: 13px; color: var(--muted); margin: -4px 0 6px; }
+.if-next { font-size: 12.5px; text-align: right; min-width: 0; }
+.if-sum b { font-size: 16px; color: var(--ink); margin-right: 2px; }
+.if-sum b.need { color: var(--need); }
+.if-sum b.ok { color: var(--ok); }
+.if-needlabel { color: var(--need); }
+.if-need { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--need); background: var(--need-soft); border-radius: var(--r-lg); }
+.if-rows { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.if-row { appearance: none; font: inherit; color: inherit; text-align: left; width: 100%; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 16px; border: 0; border-top: 1px solid var(--line); background: none; cursor: pointer; }
+.if-row:first-child { border-top: 0; }
+.if-row:hover { background: var(--panel-2); }
+.if-row:focus-visible { outline: 2px solid var(--go); outline-offset: -2px; }
+.if-mark { width: 32px; height: 32px; flex: none; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.if-mark.worker, .if-kind.worker { color: var(--info); background: var(--info-soft); }
+.if-mark.team, .if-kind.team { color: var(--violet); background: var(--violet-soft); }
+.if-mark.process, .if-kind.process { color: var(--ok); background: var(--ok-soft); }
+.if-kind.need { color: var(--need); background: var(--panel); }
+.if-kind { flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; }
+.if-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 280px; }
+.if-main .faint { font-size: 12.5px; }
+.if-title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.if-where { display: flex; flex-direction: column; gap: 6px; flex: 0 1 320px; min-width: 200px; }
+.if-now { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.if-now.bad { color: var(--bad); }
+.if-age { width: 64px; text-align: right; font-size: 12.5px; flex: none; }
+.if-done { padding: 4px 0; }
 `;
 
 export const CONSOLE_JS = String.raw`
@@ -1061,6 +1597,9 @@ export const CONSOLE_JS = String.raw`
   function hashFor() {
     if (state.tab === 'worker' && state.workerId) return 'worker/' + encodeURIComponent(state.workerId) + '/' + (state.workerTab || 'talk');
     if (state.tab === 'team' && state.teamId) return 'team/' + encodeURIComponent(state.teamId);
+    if (state.tab === 'process' && state.processId) return 'process/' + encodeURIComponent(state.processId) + (state.processItem ? '/' + encodeURIComponent(state.processItem) : '');
+    if (state.tab === 'proclib') return 'proclib' + (state.libId ? '/' + encodeURIComponent(state.libId) : '');
+    if (state.tab === 'processedit') return 'processedit' + (state.processId ? '/' + encodeURIComponent(state.processId) : '');
     if ((state.tab === 'teamtask' || state.tab === 'teamfiles') && state.taskId) return state.tab + '/' + encodeURIComponent(state.taskId);
     if (state.tab === 'read' && state.readId) return 'read/' + encodeURIComponent(state.readId);
     if (state.tab === 'file' && state.fileLink) return 'file/' + state.fileLink + '/' + encodeURIComponent(state.fileName || '');
@@ -1078,6 +1617,9 @@ export const CONSOLE_JS = String.raw`
     if (parts[0] === 'read') { state.readId = decodeURIComponent(parts[1] || ''); if (!state.readId) state.tab = 'library'; }
     if (parts[0] === 'file') { state.fileLink = parts[1] || ''; state.fileName = decodeURIComponent(parts[2] || ''); if (!state.fileLink) state.tab = 'library'; }
     if (parts[0] === 'team') { state.teamId = decodeURIComponent(parts[1] || ''); if (!state.teamId) state.tab = 'teams'; }
+    if (parts[0] === 'process') { state.processId = decodeURIComponent(parts[1] || ''); state.processItem = parts[2] ? decodeURIComponent(parts[2]) : null; if (!state.processId) state.tab = 'processes'; }
+    if (parts[0] === 'proclib') state.libId = parts[1] ? decodeURIComponent(parts[1]) : null;
+    if (parts[0] === 'processedit') state.processId = parts[1] ? decodeURIComponent(parts[1]) : null;
     if (parts[0] === 'teamtask' || parts[0] === 'teamfiles') { state.taskId = decodeURIComponent(parts[1] || ''); if (!state.taskId) state.tab = 'teams'; }
     if (parts[0] === 'setup' && parts[1]) state.setupTab = parts[1];
   }
@@ -1145,6 +1687,7 @@ export const CONSOLE_JS = String.raw`
     inbox: [['path', 'M3 13l3-8h12l3 8v6H3z'], ['path', 'M3 13h5l1.5 2.5h5L16 13h5']],
     list: [['path', 'M4 7h16M4 12h16M4 17h10']],
     check: [['circle', 12, 12, 9], ['path', 'M8 12l3 3 5-6']],
+    dots: [['circle', 5, 12, 1.2], ['circle', 12, 12, 1.2], ['circle', 19, 12, 1.2]],
     alert: [['circle', 12, 12, 9], ['path', 'M12 7v6M12 16.5v.5']],
     arrow: [['path', 'M4 12h12M12 6l6 6-6 6']],
     library: [['path', 'M5 4h4v16H5zM10 4h4v16h-4z'], ['path', 'M15.5 5.2l3.8-1 3.2 15.6-3.8 1z']],
@@ -1154,7 +1697,8 @@ export const CONSOLE_JS = String.raw`
     lock: [['path', 'M6 11h12v9H6z'], ['path', 'M9 11V8a3 3 0 0 1 6 0v3']],
     search: [['circle', 11, 11, 7], ['path', 'M20 20l-3.5-3.5']],
     bell: [['path', 'M6 9a6 6 0 1 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9'], ['path', 'M10 20.5h4']],
-    slack: [['path', 'M4 6h16v10H9l-5 4z']]
+    slack: [['path', 'M4 6h16v10H9l-5 4z']],
+    image: [['rect', 3, 5, 18, 14], ['circle', 9, 10, 1.6], ['path', 'M21 16l-5-5-9 8']]
   };
   function icon(name, size) {
     var s = document.createElementNS(SVG, 'svg');
@@ -1340,6 +1884,16 @@ export const CONSOLE_JS = String.raw`
       h('div', { class: 'sec-head' }, h('h2', { id: id, class: 'label', text: title }), action || null),
       h('div', { class: 'sec-body' + (flush ? ' flush' : '') }, body));
   }
+  /// A card that opens something: a click anywhere on it, or Enter or Space
+  /// when it has focus. Buttons and links inside keep their own clicks.
+  function openCard(cls, label, open) {
+    var el = h('article', { class: cls + ' clickable', role: 'link', tabindex: '0', 'aria-label': label });
+    var inner = 'button, a, input, select, textarea, summary, label';
+    el.onclick = function (e) { var hit = e.target && e.target.closest ? e.target.closest(inner) : null; if (hit && hit !== el && el.contains(hit)) return; open(); };
+    el.onkeydown = function (e) { if (e.target === el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); open(); } };
+    for (var i = 3; i < arguments.length; i++) append(el, arguments[i]);
+    return el;
+  }
   function kpiIcon(name, tone) { return h('span', { class: 'kpi-ic' + (tone ? ' ' + tone : ''), 'aria-hidden': 'true' }, icon(name, 19)); }
   function emptyState(title, sub, action) {
     return h('div', { class: 'panel empty' }, h('div', { class: 'quote', text: title }), sub ? h('p', { text: sub }) : null,
@@ -1419,6 +1973,7 @@ export const CONSOLE_JS = String.raw`
       { id: 'library', label: 'Library', icon: 'library' },
       { id: 'workers', label: 'Workers', icon: 'people' },
       { id: 'teams', label: 'Teams', icon: 'team' },
+      { id: 'processes', label: 'Processes', icon: 'arrow' },
       { id: 'reports', label: 'Reports', icon: 'bars' }
     ];
     if (state.me && state.me.admin) {
@@ -1432,7 +1987,7 @@ export const CONSOLE_JS = String.raw`
 
   /// Which nav item a page belongs under.
   function navFor(tab) {
-    return { worker: 'workers', team: 'teams', newteam: 'teams', teamtask: 'teams', teamfiles: 'teams', read: 'library', chart: 'workers', work: 'today', tools: 'setup', rules: 'setup', log: 'admin' }[tab] || tab;
+    return { process: 'processes', processedit: 'processes', proclib: 'processes', worker: 'workers', team: 'teams', newteam: 'teams', teamtask: 'teams', teamfiles: 'teams', read: 'library', chart: 'workers', work: 'today', tools: 'setup', rules: 'setup', log: 'admin' }[tab] || tab;
   }
 
   function refreshCounts() {
@@ -1609,6 +2164,8 @@ export const CONSOLE_JS = String.raw`
 
   function render() {
     app.textContent = '';
+    // The picture a draft came from, open beside the editor, closes with it.
+    document.body.classList.remove('pi-open');
     // The invite and pairing pages are reached by link and stand alone.
     var joinMatch = /^\/join\/([A-Za-z0-9_-]{10,100})$/.exec(location.pathname);
     if (joinMatch) { renderJoin(joinMatch[1]); return; }
@@ -1655,7 +2212,7 @@ export const CONSOLE_JS = String.raw`
       h('main', { class: 'main' }, main)));
     refreshCounts();
     if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
-    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports }[state.tab] || viewToday;
+    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports }[state.tab] || viewToday;
     view().then(function (node) { main.textContent = ''; append(main, node); })
       .catch(function (e) { main.textContent = ''; main.appendChild(h('div', { class: 'msg err', text: String(e.message || e) })); });
   }
@@ -2060,7 +2617,7 @@ export const CONSOLE_JS = String.raw`
   }
 
   function viewToday() {
-    return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; }), api('GET', '/api/workers'), api('GET', '/api/library').catch(function () { return []; })]).then(function (r) {
+    return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; }), api('GET', '/api/workers'), api('GET', '/api/library').catch(function () { return []; }), api('GET', '/api/inflight').catch(function () { return { ok: false }; })]).then(function (r) {
       var t = r[0], tl = r[1], workers = r[2].filter(function (w) { return w.enabled; });
       // Came in: what triggers delivered in the last day, then finished work.
       var dayAgo = Date.now() - 86400000;
@@ -2084,32 +2641,73 @@ export const CONSOLE_JS = String.raw`
         h('div', null, h('div', { class: 'eyebrow', text: date }), h('h1', { class: 'page-title', text: title }), h('p', { class: 'page-sub', text: sub })),
         quickAsk(workers))];
       var upcoming = t.crew.filter(function (w) { return w.nextShiftAt; }).sort(function (a, b) { return a.nextShiftAt - b.nextShiftAt; }).slice(0, 4);
-      nodes.push(h('div', { class: 'split' },
-        h('div', { class: 'wide stack', style: 'gap:16px' },
-          (function () {
-            var box = h('div', { hidden: true });
-            onNow(box, function (items) {
-              box.textContent = '';
-              box.hidden = !items.length;
-              if (!items.length) return;
-              append(box, card('working', 'Working now', h('span', { class: 'faint', text: plural(items.length, 'thing', 'things') }), h('div', null, items.map(workingRow)), true));
-            });
-            return box;
-          })(),
-          card('needs', 'Needs you', needs ? h('span', { class: 'tag need', text: String(needs) }) : null,
-            needs ? [fixes.map(fixCard), t.waiting.map(waitingCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), mineTasks.map(teamTaskCard)]
-              : h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'You’re all caught up.' }),
-                  h('p', { text: t.crew.length ? 'Questions, approvals and proposed work from your workers land here.' : 'Hire a worker and what it needs from you lands here.' }),
-                  !t.crew.length && state.me.canHire ? h('div', { style: 'margin-top:14px' }, h('button', { class: 'btn go', text: 'Hire your first worker', onclick: function () { go('hire'); } })) : null), true)),
-        h('aside', { class: 'narrow' },
-          card('came', 'Came in', h('button', { class: 'linkish', text: 'Library →', onclick: function () { go('library'); } }),
-            cameIn.length ? cameIn.slice(0, 6).map(cameInRow).concat(cameIn.length > 6 ? [h('button', { class: 'linkish camemore', text: '+ ' + (cameIn.length - 6) + ' more in the Library', onclick: function () { go('library'); } })] : []) : h('p', { class: 'muted', text: 'Nothing since yesterday.' }), true),
-          card('month', 'Your workers this month', null, [
-            h('div', { class: 'row', style: 'align-items:baseline' }, h('span', { class: 'big', text: money(t.spend.spentUSD) }),
-              h('span', { class: 'muted', text: (t.spend.allowanceUSD != null ? 'of ' + money(t.spend.allowanceUSD) + ' · ' : '') + 'on track for ' + money(t.spend.projectedUSD) })),
-            t.spend.allowanceUSD ? h('div', { class: 'meter' + (pct >= 85 ? ' high' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })) : null]),
-          upcoming.length ? card('next', 'Coming up', null,
-            h('div', { class: 'sched' }, upcoming.map(function (w) { return [h('span', { class: 'faint', text: when(w.nextShiftAt) }), h('button', { class: 'linkish', style: 'color:var(--ink);font-size:13.5px', text: w.name, onclick: function () { openWorker(w.id); } })]; }))) : null)));
+      // Everything in flight, from workers, teams and processes, in one list;
+      // what waits on you is in Needs you instead.
+      var flight = r[4] && r[4].ok !== false ? r[4].items || [] : [];
+      var decisions = flight.filter(function (x) { return x.kind === 'process' && x.needsYou; });
+      var moving = flight.filter(function (x) { return !x.needsYou; }).sort(function (a, b) { return (b.stuck ? 1 : 0) - (a.stuck ? 1 : 0) || b.since - a.since; });
+      needs += decisions.length;
+      var KIND = { worker: ['W', 'Worker'], team: ['T', 'Team'], process: ['P', 'Process'] };
+      var openFlight = function (x) {
+        if (x.kind === 'worker') return go('worker', { workerId: x.workerId, workerTab: 'talk' });
+        if (x.kind === 'team') return openTask(x.id);
+        go('process', { processId: x.processId, processItem: x.id });
+      };
+      var flightTab = state.flightTab || 'all';
+      var flightBody = h('div', { class: 'if-rows' });
+      var drawFlight = function () {
+        var shown = moving.filter(function (x) { return flightTab === 'all' || x.kind === flightTab; });
+        fill(flightBody, shown.length ? shown.map(function (x) {
+          return h('button', { type: 'button', class: 'if-row' + (x.stuck ? ' stuck' : ''), onclick: function () { openFlight(x); } },
+            h('span', { class: 'if-mark ' + x.kind, 'aria-hidden': 'true', text: KIND[x.kind][0] }),
+            h('span', { class: 'if-main' },
+              h('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0' }, h('span', { class: 'if-kind ' + x.kind, text: KIND[x.kind][1] }), h('b', { class: 'if-title', text: x.title })),
+              h('span', { class: 'faint', text: x.who })),
+            h('span', { class: 'if-where' },
+              h('span', { class: 'pv-track', style: 'grid-template-columns:repeat(' + Math.max(1, x.total) + ',minmax(0,1fr))' }, Array.apply(null, Array(Math.max(1, x.total))).map(function (_, i) {
+                return h('span', { class: i < x.at ? 'done' : i === x.at ? (x.stuck ? 'stuck' : 'now') : '' });
+              })),
+              h('span', { class: 'if-now' + (x.stuck ? ' bad' : ''), text: x.now })),
+            h('span', { class: 'faint if-age', text: ago(x.since) }));
+        }) : [h('p', { class: 'muted', style: 'margin:0;padding:16px', text: moving.length ? 'Nothing of this kind in flight.' : 'Nothing running right now.' })]);
+      };
+      drawFlight();
+      var flightTabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'Show' }, [['all', 'All'], ['worker', 'Workers'], ['team', 'Teams'], ['process', 'Processes']].map(function (o) {
+        return h('button', { type: 'button', 'aria-pressed': flightTab === o[0] ? 'true' : 'false', onclick: function () { state.flightTab = o[0]; render(); } }, o[1]);
+      }));
+      var decisionCard = function (x) {
+        return h('div', { class: 'if-need' },
+          h('span', { class: 'if-kind need', text: 'Decision' }),
+          h('div', { class: 'stack', style: 'gap:2px;min-width:0;flex:1 1 300px' }, h('b', { text: x.title }), h('span', { class: 'faint', text: x.who + ' · ' + x.now })),
+          h('button', { class: 'btn small go', text: 'Decide', onclick: function () { openFlight(x); } }));
+      };
+      var finished = cameIn.slice().sort(function (a, b) { return b.at - a.at; });
+      // The title's count now includes process decisions.
+      nodes[0].querySelector('.page-title').textContent = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 || needs === 0 ? ' needs you' : ' need you');
+      nodes.push(h('div', { class: 'if-sum' },
+        h('span', null, h('b', { class: needs ? 'need' : '', text: String(needs) }), ' need you'),
+        h('span', null, h('b', { text: String(moving.length) }), ' in flight'),
+        h('span', null, h('b', { class: 'ok', text: String(finished.length) }), ' finished since yesterday'),
+        h('span', { class: 'faint' }, money(t.spend.spentUSD) + ' this month' + (t.spend.allowanceUSD != null ? ' of ' + money(t.spend.allowanceUSD) : ''))));
+      nodes.push(h('div', { class: 'stack', style: 'gap:22px' },
+        // Needs you shows only when something does: the title already says
+        // when nothing does. A crew of nobody gets the way to hire one.
+        needs ? h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Needs you' },
+          h('span', { class: 'label if-needlabel', text: 'Needs you · ' + needs }),
+          h('div', { class: 'stack', style: 'gap:8px' }, fixes.map(fixCard), t.waiting.map(waitingCard), decisions.map(decisionCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), mineTasks.map(teamTaskCard)))
+          : !t.crew.length ? h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'Nobody to hear from yet.' }),
+              h('p', { text: 'Hire a worker and what it needs from you lands here.' }),
+              state.me.canHire ? h('div', { style: 'margin-top:14px' }, h('button', { class: 'btn go', text: 'Hire your first worker', onclick: function () { go('hire'); } })) : null) : null,
+        h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'In flight' },
+          h('div', { class: 'row', style: 'gap:12px' }, h('span', { class: 'label', style: 'flex:1', text: 'In flight · ' + moving.length }),
+            upcoming.length ? h('span', { class: 'faint if-next' }, 'Up next: ', upcoming.map(function (w, i) {
+              return [i ? ' · ' : '', h('button', { class: 'linkish', style: 'font-size:12.5px', text: w.name, onclick: function () { openWorker(w.id); } }), ' ' + when(w.nextShiftAt)];
+            })) : null,
+            moving.length ? flightTabs : null),
+          flightBody),
+        h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Finished since yesterday' },
+          h('div', { class: 'row', style: 'gap:12px' }, h('span', { class: 'label', style: 'flex:1', text: 'Finished since yesterday · ' + finished.length }), h('button', { class: 'linkish', text: 'Library →', onclick: function () { go('library'); } })),
+          finished.length ? h('div', { class: 'panel if-done' }, finished.slice(0, 8).map(cameInRow)) : h('p', { class: 'muted', style: 'margin:0', text: 'Nothing finished since yesterday.' }))));
       return nodes;
     });
   }
@@ -2649,7 +3247,24 @@ export const CONSOLE_JS = String.raw`
         threadComposer(t, w, follow.length ? follow[follow.length - 1] : own)));
   }
 
+  /// A brief, short enough for a line under a title. A process stage's brief
+  /// carries everything earlier stages produced: its original request and
+  /// which stage it is are what a person wants there.
+  function briefShort(brief) {
+    var b = String(brief || '');
+    var m = /\nThe original request, from [^:\n]+:\n([\s\S]*?)(?=\n\nIt was sent back|\n\nThe code so far|\n\nThis is run|\n\nWhat earlier stages produced|$)/.exec(b);
+    var text = (m ? m[1] : b).replace(/\s+/g, ' ').trim();
+    var st = /^This is stage[ ](\d+)[ ]of[ ](\d+),[ ]"([^"]+)",[ ]in[ ]the[ ](.+?)[ ]process/.exec(b);
+    return { text: text.length > 220 ? text.slice(0, 219).trim() + '…' : text, stage: st ? 'Stage ' + st[1] + ' of ' + st[2] + ' (' + st[3] + ') of ' + st[4] : '', long: b.length > 260 };
+  }
+
   /// Slack's link markup, as text: older requests were kept with it.
+  /// A worker's place, as a person would say it.
+  function placeText(p) {
+    if (!p) return 'No repo: it can’t change code';
+    if (p.kind === 'workspace') return p.name + (p.repos && p.repos.length ? ' (' + p.repos.join(', ') + ')' : '');
+    return (p.kind === 'repo' ? 'Repo ' : 'Folder ') + p.name;
+  }
   function plainSlack(s) { return String(s || '').replace(/<((?:https?|mailto):[^|>]+)\|([^>]+)>/g, '$2').replace(/<((?:https?|mailto):[^>]+)>/g, '$1'); }
 
   /// Set by the bar above the tabs: hides it while the thread it tells of is
@@ -2923,8 +3538,8 @@ export const CONSOLE_JS = String.raw`
 
   function viewWorker() {
     return Promise.all([api('GET', '/api/workers/' + encodeURIComponent(state.workerId) + '/detail'), api('GET', '/api/workers'),
-      state.me.admin ? api('GET', '/api/admin/people') : Promise.resolve({ ok: false })]).then(function (r) {
-      var d = r[0], all = r[1], ppl = r[2];
+      state.me.admin ? api('GET', '/api/admin/people') : Promise.resolve({ ok: false }), api('GET', '/api/repos').catch(function () { return { ok: false }; })]).then(function (r) {
+      var d = r[0], all = r[1], ppl = r[2], places = r[3] && r[3].ok !== false ? r[3] : { repos: [], workspaces: [] };
       if (d.ok === false) return [msg(d)];
       var w = d.worker;
       var out = h('div');
@@ -2965,6 +3580,13 @@ export const CONSOLE_JS = String.raw`
         var budget = h('input', { type: 'number', min: '1', step: '1', value: String(w.budgetUSDPerMonth), 'aria-label': 'Monthly budget' });
         var sched = scheduleEditor(w.cadence);
         var saved = h('div');
+        // Where it works: one repo or one workspace of repos. Moving it swaps
+        // the flow that ends in pushed branches for the new place's.
+        var here = w.place && w.place.kind !== 'folder' ? w.place.name : '';
+        var where = places.repos.length || places.workspaces.length ? h('select', { 'aria-label': 'Where it works' },
+          !here ? h('option', { value: '', text: w.place ? 'Folder: ' + w.place.name : 'Nowhere yet: it can’t change code', selected: true }) : null,
+          places.workspaces.map(function (x) { return h('option', { value: x.name, text: 'Workspace: ' + x.name + ' (' + x.repos.join(', ') + ')', selected: x.name === here }); }),
+          places.repos.map(function (x) { return h('option', { value: x.name, text: 'Repo: ' + x.name, selected: x.name === here }); })) : null;
         // Handing a worker to someone else is an admin's call.
         var mgr = null;
         if (state.me.admin && ppl.ok !== false) {
@@ -3004,8 +3626,14 @@ export const CONSOLE_JS = String.raw`
             patch.manager = who ? { name: who.name, slackUserId: who.slackUserId } : null;
           }
           var restore = busy(saveAll, 'Saving…');
-          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch })
-            .then(function (x) { restore(); saved.textContent = ''; saved.appendChild(msg(x, 'Saved. It applies from its next run.')); });
+          var move = where && where.value && where.value !== here
+            ? api('POST', '/api/repos/' + encodeURIComponent(where.value) + '/workers', { worker: w.id })
+            : Promise.resolve({ ok: true });
+          move.then(function (m) {
+            if (m.ok === false) { restore(); saved.textContent = ''; saved.appendChild(msg(m)); return; }
+            return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch })
+              .then(function (x) { restore(); saved.textContent = ''; saved.appendChild(msg(x, 'Saved. It applies from its next run.')); if (x.ok !== false && where && where.value !== here) setTimeout(render, 800); });
+          });
         };
         settings = h('div', { class: 'stack', style: 'gap:16px' },
           group('Picture', 'Its face here and on what it posts in Slack. Pick one, or use a link to your own image.', [picturePicker(w, function (url) { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { avatarUrl: url } }); },
@@ -3015,6 +3643,9 @@ export const CONSOLE_JS = String.raw`
             h('div', { class: 'grid2' }, mgr ? h('label', { class: 'field' }, 'Manager', mgr) : h('div', { class: 'field' }, h('span', { text: 'Manager' }), h('span', { style: 'color:var(--ink)', text: w.manager || 'Nobody yet' })),
               h('label', { class: 'field' }, 'Reports to (another worker)', reports))]),
           group('Who can ask it', 'Anyone who can ask it can learn what its tools can reach.', [h('div', { style: 'max-width:360px' }, vis)]),
+          group('Where it works', 'The repo, or workspace of repos, it reads and changes. Its changes arrive as branches to open pull requests from.', [
+            where ? h('div', { style: 'max-width:480px' }, where)
+              : h('p', { class: 'faint', text: (w.place ? placeText(w.place) + '. ' : '') + (state.me.admin ? 'Connect a repo under Setup → Repos to let it change code there.' : 'An admin connects repos under Setup → Repos.') })]),
           group('Budget', 'At its budget it stops until the month turns.', [h('label', { class: 'field', style: 'max-width:240px' }, 'Monthly budget (USD)', budget),
             h('span', { class: 'faint', text: money(w.spentThisMonthUSD) + ' spent so far this month.' })]),
           h('div', { class: 'foot' }, saveAll, saved),
@@ -3089,6 +3720,7 @@ export const CONSOLE_JS = String.raw`
           row('Answers to', (w.manager || 'Nobody yet') + (w.managerInherited ? ' (through its boss)' : '')),
           w.reportsTo ? row('Reports to', w.reportsTo.name) : null,
           row('Who can ask it', VIS[w.visibility]),
+          row('Works in', placeText(w.place)),
           h('div', { class: 'setup-row', style: 'flex-direction:column;align-items:stretch;gap:8px' },
             h('div', { class: 'row', style: 'flex-wrap:nowrap' }, h('span', { style: 'flex:1' }, h('span', { class: 'k', text: 'Budget' }), h('span', { class: 'v', text: money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) + ' this month' })),
               change ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Change', onclick: change }) : null),
@@ -3163,6 +3795,1772 @@ export const CONSOLE_JS = String.raw`
 
   // ---- teams -----------------------------------------------------------
 
+  // ---- processes -------------------------------------------------------
+
+  /// A process: one item moving through teams and people's decisions. The
+  /// list, one process's board, an item's story, and the editor.
+
+  function viewProcesses() {
+    return api('GET', '/api/processes').then(function (r) {
+      if (r.ok === false) return [msg(r)];
+      var list = r.processes || [];
+      var intro = 'Work that moves between teams and people: an idea becomes a PR/FAQ, a prototype, a decision, a build, a launch. Each stage is a team or people who decide, and each item carries what earlier stages produced.';
+      var action = h('div', { class: 'row' },
+        h('button', { class: 'btn', onclick: function () { go('proclib', { libId: null }); } }, icon('library', 16), 'Process library'),
+        h('button', { class: 'btn', onclick: fromImageDialog }, icon('image', 16), 'From an image'),
+        h('button', { class: 'btn go', onclick: function () { go('processedit', { processId: null }); } }, icon('plus', 16), 'New process'));
+      if (!list.length) return [head('Processes', intro, action), emptyState('No processes yet.', 'Start from the library: eleven ways SaaS teams commonly run work across teams, from idea to launch to incident postmortems. Each suggests which of your teams fits each stage.', h('button', { class: 'btn go', text: 'Browse the process library', onclick: function () { go('proclib', { libId: null }); } }))];
+      var cards = list.map(function (p) {
+        return openCard('tmcard prc', 'Open ' + p.name, function () { go('process', { processId: p.id, processItem: null }); },
+          h('div', { style: 'min-width:0' },
+            h('span', { class: 'tmname', text: p.name }),
+            p.purpose ? h('p', { class: 'tmpurpose', text: p.purpose }) : null),
+          h('ol', { class: 'prc-strip', 'aria-label': 'Stages' }, p.stages.map(function (s, i) {
+            return h('li', { class: s.kind + (p.byStage[i] ? ' busy' : ''), title: s.name + (p.byStage[i] ? ': ' + p.byStage[i] + ' here' : '') },
+              h('span', { class: 'prc-ic', 'aria-hidden': 'true' }, icon(s.kind === 'people' ? 'person' : 'team', 13)),
+              h('span', { class: 'prc-sn', text: s.name }),
+              p.byStage[i] ? h('span', { class: 'prc-n', text: String(p.byStage[i]) }) : null);
+          })),
+          h('div', { class: 'tmmeta' }, h('span', { class: 'faint tmstats', text: ['Owned by ' + p.owner.name, plural(p.stages.length, 'stage', 'stages'), plural(p.active, 'item', 'items') + ' in flight'].join(' · ') })),
+          h('div', { class: 'tmfoot' },
+            h('button', { class: 'btn small go', text: 'Put something in', onclick: function (e) { e.stopPropagation(); submitToProcess(p, function (item) { go('process', { processId: p.id, processItem: item.id }); }); } })));
+      });
+      return [head('Processes', intro, action), h('div', { class: 'tmgrid' }, cards)];
+    });
+  }
+
+  /// "Put something in": a title and what it is.
+  function submitToProcess(p, done) {
+    var title = h('input', { type: 'text', maxlength: '200', placeholder: 'e.g. Let customers export reports to CSV', 'aria-label': 'Title' });
+    var brief = h('textarea', { rows: '6', placeholder: 'What it is, who wants it and why. Links help.', 'aria-label': 'What it is' });
+    var out = h('div');
+    var scrim = h('div', { class: 'scrim' });
+    var close = function () { scrim.remove(); document.removeEventListener('keydown', onKey); };
+    var onKey = function (e) { if (e.key === 'Escape') close(); };
+    scrim.onclick = function (e) { if (e.target === scrim) close(); };
+    document.addEventListener('keydown', onKey);
+    var send = h('button', { class: 'btn go', text: 'Put it in' });
+    send.onclick = function () {
+      var restore = busy(send, 'Putting it in…');
+      api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/items', { title: title.value, brief: brief.value }).then(function (x) {
+        restore();
+        if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); return; }
+        close(); done(x.item);
+      });
+    };
+    append(scrim, h('div', { class: 'dialog small', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'ps-title' },
+      h('div', null, h('h2', { id: 'ps-title', text: 'Put something into ' + p.name }), h('p', { class: 'muted', style: 'margin-top:4px', text: 'It starts at ' + p.stages[0].name + '. You hear as it moves, here and in Slack.' })),
+      h('label', { class: 'field' }, 'Title', title), h('label', { class: 'field' }, 'What it is', brief), out,
+      h('div', { class: 'row', style: 'justify-content:flex-end' }, h('button', { class: 'btn quiet', text: 'Cancel', onclick: close }), send)));
+    document.body.appendChild(scrim);
+    setTimeout(function () { title.focus(); }, 0);
+  }
+
+  /// "From an image": a picture of a process someone found (a flowchart, a
+  /// swimlane, a slide) drafted into one. Drop it, pick it or paste it, say
+  /// what to change, and the editor opens with the draft, unsaved.
+  var PI_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  function fromImageDialog() {
+    var picked = null, closed = false, working = false;
+    var out = h('div', { 'aria-live': 'polite' });
+    var file = h('input', { type: 'file', accept: PI_TYPES.join(','), style: 'display:none' });
+    var drop = h('button', { type: 'button', class: 'pi-drop', 'aria-label': 'Pick a picture of the process' },
+      h('span', { class: 'pi-dropic' }, icon('image', 22)),
+      h('b', { text: 'Drop a picture of the process here' }),
+      h('span', { class: 'faint', text: 'Or click to pick one, or paste it with ⌘V. PNG, JPEG, WebP or GIF, under 5 MB.' }));
+    var thumb = h('div', { class: 'pi-thumb', hidden: true });
+    var note = h('textarea', { rows: '2', maxlength: '1000', 'aria-label': 'What to change', placeholder: 'What to change, e.g. use our Product Team for design' });
+    var draftBtn = h('button', { class: 'btn go', text: 'Draft it', disabled: true });
+    var scrim = h('div', { class: 'scrim' });
+    var close = function () { closed = true; scrim.remove(); document.removeEventListener('keydown', onKey); document.removeEventListener('paste', onPaste); };
+    var onKey = function (e) { if (e.key === 'Escape') close(); };
+    var take = function (f) {
+      if (!f || working) return;
+      if (PI_TYPES.indexOf(f.type) < 0) { fill(out, [msg({ ok: false, error: 'Use a PNG, JPEG, WebP or GIF picture.' })]); return; }
+      if (f.size > 5 * 1024 * 1024) { fill(out, [msg({ ok: false, error: 'That picture is over 5 MB. A screenshot of the diagram is plenty.' })]); return; }
+      var reader = new FileReader();
+      reader.onload = function () {
+        picked = String(reader.result);
+        fill(thumb, [h('img', { src: picked, alt: 'The picture you picked' }),
+          h('button', { type: 'button', class: 'linkish', text: 'Use another picture', onclick: function () { file.click(); } })]);
+        thumb.hidden = false; drop.hidden = true; draftBtn.disabled = false; fill(out, []);
+      };
+      reader.onerror = function () { fill(out, [msg({ ok: false, error: 'Couldn’t read that file.' })]); };
+      reader.readAsDataURL(f);
+    };
+    var onPaste = function (e) {
+      var items = (e.clipboardData && e.clipboardData.items) || [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].kind === 'file' && items[i].type.indexOf('image/') === 0) { e.preventDefault(); take(items[i].getAsFile()); return; }
+      }
+    };
+    drop.onclick = function () { file.click(); };
+    file.onchange = function () { take(file.files && file.files[0]); file.value = ''; };
+    drop.ondragover = function (e) { e.preventDefault(); drop.classList.add('on'); };
+    drop.ondragleave = function () { drop.classList.remove('on'); };
+    drop.ondrop = function (e) { e.preventDefault(); drop.classList.remove('on'); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); };
+    scrim.ondragover = function (e) { e.preventDefault(); };
+    scrim.ondrop = function (e) { e.preventDefault(); take(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); };
+    scrim.onclick = function (e) { if (e.target === scrim && !working) close(); };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('paste', onPaste);
+    draftBtn.onclick = function () {
+      if (!picked) return;
+      working = true;
+      var restore = busy(draftBtn, 'Reading the diagram…');
+      fill(out, [h('div', { class: 'pi-working', role: 'status' }, h('span', { class: 'livedot' }), 'Reading the diagram… This can take 30 to 60 seconds.')]);
+      var done = function (x) {
+        working = false; restore();
+        if (closed) return;
+        if (x.ok === false) { fill(out, [msg(x)]); return; }
+        close();
+        state.processDraft = { draft: x.draft, notes: x.notes || [], image: picked };
+        go('processedit', { processId: null, processFrom: null });
+      };
+      api('POST', '/api/processes/draft-from-image', { image: picked, note: note.value.trim() || undefined }).then(done, function (e) { done({ ok: false, error: String((e && e.message) || e) }); });
+    };
+    append(scrim, h('div', { class: 'dialog small pi-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'pi-title' },
+      h('div', null, h('h2', { id: 'pi-title', text: 'Make a process from a picture' }),
+        h('p', { class: 'muted', style: 'margin-top:4px', text: 'A flowchart, a swimlane or a slide you found. Each box becomes a stage, decisions become people deciding, and rework arrows say where work goes back. Nothing is saved until you check it.' })),
+      drop, thumb, file,
+      h('label', { class: 'field' }, 'What to change (optional)', note), out,
+      h('div', { class: 'row', style: 'justify-content:flex-end' }, h('button', { class: 'btn quiet', text: 'Cancel', onclick: close }), draftBtn)));
+    document.body.appendChild(scrim);
+    setTimeout(function () { drop.focus(); }, 0);
+  }
+
+  /// A length of time in words: "4 min", "6 h", "1.4 days".
+  function spanWords(ms) {
+    var m = Math.round(ms / 60000);
+    if (m < 60) return Math.max(1, m) + ' min';
+    var hr = m / 60;
+    if (hr < 36) return Math.round(hr) + ' h';
+    var d = hr / 24, v = d < 10 ? Math.round(d * 10) / 10 : Math.round(d);
+    return v + (v === 1 ? ' day' : ' days');
+  }
+  function median(xs) {
+    var s = xs.slice().sort(function (a, b) { return a - b; }), n = s.length;
+    return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : null;
+  }
+  /// "a, b and c".
+  function listWords(xs) { return xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1]; }
+  /// Where "send it back" from a stage lands: its chosen stage, else the
+  /// nearest team or worker stage before it, else the start. As the server has it.
+  function sendBackIndex(p, from) {
+    var chosen = (p.stages[from] || {}).sendBackTo;
+    if (chosen) for (var i = 0; i < p.stages.length; i++) if (p.stages[i].id === chosen) return i;
+    for (var j = from - 1; j >= 0; j--) if (p.stages[j].kind !== 'people') return j;
+    return 0;
+  }
+  /// Time an item spent in each stage, from its history: an "entered" runs
+  /// to that stage's "finished", the next "entered", or the end. Open is
+  /// the stage it's in now and since when.
+  function itemSpans(it) {
+    var closed = [], cur = null, from = 0;
+    var shut = function (at) { if (cur) closed.push({ stageId: cur, ms: Math.max(0, at - from), at: at }); cur = null; };
+    (it.history || []).forEach(function (e) {
+      if (e.kind === 'entered' && e.stageId) { shut(e.at); cur = e.stageId; from = e.at; }
+      else if ((e.kind === 'finished' && e.stageId === cur) || e.kind === 'done' || e.kind === 'stopped') shut(e.at);
+    });
+    return { closed: closed, open: it.status === 'active' && cur ? { stageId: cur, since: from } : null };
+  }
+  /// How long each stage takes, from every item's history: the usual time
+  /// once three items went through it, else the last one's; end to end and
+  /// the slowest stage once three items finished.
+  function processTimes(p, items) {
+    var per = {}, perDone = {}, last = {};
+    items.forEach(function (it) {
+      var tot = {}, at = {};
+      itemSpans(it).closed.forEach(function (c) { tot[c.stageId] = (tot[c.stageId] || 0) + c.ms; at[c.stageId] = c.at; });
+      Object.keys(tot).forEach(function (id) {
+        (per[id] = per[id] || []).push(tot[id]);
+        if (it.status === 'done') (perDone[id] = perDone[id] || []).push(tot[id]);
+        if (!last[id] || at[id] > last[id].at) last[id] = { ms: tot[id], at: at[id] };
+      });
+    });
+    var done = items.filter(function (i) { return i.status === 'done' && i.finishedAt; });
+    var enough = done.length >= 3;
+    var usual = function (s) { var xs = per[s.id] || []; return xs.length >= 3 ? median(xs) : null; };
+    var inStage = enough ? p.stages.map(function (s) { var xs = perDone[s.id] || []; return xs.length ? median(xs) : null; }) : null;
+    var slowest = null;
+    if (inStage) inStage.forEach(function (ms, i) { if (ms != null && (slowest == null || ms > inStage[slowest])) slowest = i; });
+    return {
+      usual: usual,
+      text: function (s) {
+        var u = usual(s);
+        return u != null ? 'usually ' + spanWords(u) : last[s.id] ? 'took ' + spanWords(last[s.id].ms) + ' last time' : '';
+      },
+      endToEnd: enough ? median(done.map(function (i) { return i.finishedAt - i.createdAt; })) : null,
+      inStage: inStage,
+      slowest: slowest == null ? null : p.stages[slowest]
+    };
+  }
+  /// The ways work comes into a process: by hand, /idea, its schedules and intakes.
+  function waysIn(p, r) {
+    var out = [
+      { short: 'page', long: 'this page', what: 'This page', detail: 'anyone who can see it', tone: 'go' },
+      { short: 'Slack', long: '/idea in Slack', what: '/idea in Slack, starting with “' + p.name + ':”', detail: 'anyone in the org', tone: 'violet' }
+    ];
+    (r.schedules || []).forEach(function (s) {
+      out.push({ short: 'schedule', long: 'a schedule', what: s.title, detail: s.when + (Number.isFinite(s.nextAt) ? ' · next ' + when(s.nextAt) : ''), tone: 'info' });
+    });
+    (r.intake || []).forEach(function (t) {
+      var last = t.lastFiredAt ? 'last one ' + ago(t.lastFiredAt) : 'nothing yet';
+      if (t.kind === 'watch') out.push({ short: t.watch.server, long: 'a watch on ' + t.watch.server, what: 'Watch on ' + t.watch.server + ': ' + t.watch.tool, detail: t.lastError || 'every ' + t.watch.everyMinutes + ' min · ' + last, tone: t.lastError ? 'bad' : 'ok' });
+      else if (t.kind === 'webhook') out.push({ short: 'events', long: 'posted events', what: 'Posted events', detail: t.lastError || last, tone: t.lastError ? 'bad' : 'need' });
+      else out.push({ short: 'a channel', long: 'a Slack channel', what: 'Every new message in ' + (t.channel || 'a channel'), detail: t.lastError || last, tone: t.lastError ? 'bad' : 'violet' });
+    });
+    return out;
+  }
+  /// What an item came to, in a line: the last thing handed on, or why it stopped.
+  function procOutcome(p, it) {
+    if (it.status === 'stopped') {
+      var ev = (it.history || []).filter(function (e) { return e.kind === 'stopped'; }).pop();
+      var at = (p.stages[it.stageIndex] || {}).name;
+      return 'Stopped' + (ev && ev.by ? ' by ' + ev.by : '') + (at ? ' at ' + at : '') + (ev && ev.note ? ': “' + ev.note + '”' : '.');
+    }
+    var a = (it.artifacts || []).slice(-1)[0];
+    var line = a ? (String(a.summary || '').split('\n').filter(function (l) { return l.trim(); })[0] || '').replace(/^[#>*\-\s]+/, '').replace(/\*\*/g, '') : '';
+    var first = (/^.*?[.!?](?=\s|$)/.exec(line) || [line])[0];
+    return first ? (first.length > 200 ? first.slice(0, 199).trim() + '…' : first) : 'Made it through every stage.';
+  }
+  function itemSource(it) {
+    var me = (state.me && state.me.name) || '';
+    var by = me && it.initiator && it.initiator.name.toLowerCase() === me.toLowerCase() ? 'you' : (it.initiator || {}).name;
+    var from = { console: 'from this page', slack: 'from Slack', trigger: 'came in by itself', schedule: 'on its schedule', api: 'from the API', desktop: 'from the desktop app' }[it.source] || 'put in';
+    return from + (by ? ', ' + by : '');
+  }
+
+  /// The column grid a process is drawn on: a start, one column per stage, an
+  /// end. The board uses it too, so each stage's items sit under its card.
+  var PF_GAP = 56, PF_LANE = 26, pfSeq = 0;
+  function procGrid(n) {
+    return { cols: 'minmax(128px, 0.7fr) repeat(' + n + ', minmax(176px, 1fr)) minmax(100px, 0.5fr)', min: 128 + n * 176 + 100 + (n + 1) * PF_GAP };
+  }
+  /// How a process runs, drawn: a card to start, one per stage, one to end;
+  /// solid arrows from each to the next, and dashed loops round the outside
+  /// for what goes back round (a send back, a repeat). The lines are drawn
+  /// from where the cards actually are, and again when the layout changes.
+  function procDiagram(p, who, times, ways, onStart) {
+    var grid = procGrid(p.stages.length);
+    var loops = [];
+    p.stages.forEach(function (s, i) {
+      if (s.repeat && s.kind !== 'people') loops.push({ from: i, to: i, label: 'every ' + plural(s.repeat.everyDays, 'day', 'days') + ' × ' + s.repeat.times, prefer: 'above' });
+    });
+    p.stages.forEach(function (s, i) {
+      if (s.kind === 'people') loops.push({ from: i, to: sendBackIndex(p, i), label: 'sent back with what to change', prefer: 'below' });
+    });
+    loops.forEach(function (l) { l.lo = Math.min(l.from, l.to); l.hi = Math.max(l.from, l.to); });
+    // Repeats first, then the shortest loops nearest the cards. A loop takes
+    // the first lane (below, then above, then further out) it meets nothing on.
+    loops.sort(function (a, b) { return (a.from === a.to ? 0 : 1) - (b.from === b.to ? 0 : 1) || (a.hi - a.lo) - (b.hi - b.lo); });
+    var lanes = { below: [], above: [] };
+    loops.forEach(function (l) {
+      var order = l.prefer === 'above' ? ['above', 'below'] : ['below', 'above'];
+      for (var k = 0; k < 80; k++) {
+        var side = order[k % 2], n = Math.floor(k / 2);
+        var lane = lanes[side][n] || (lanes[side][n] = []);
+        if (lane.every(function (o) { return o.hi < l.lo || l.hi < o.lo; })) { lane.push(l); l.side = side; l.lane = n + 1; break; }
+      }
+    });
+    // Where each loop leaves and lands on its cards: inner lanes nearest the
+    // middle, so an outer loop's line never crosses an inner one's.
+    var outs = {}, ins = {};
+    loops.slice().sort(function (a, b) { return a.lane - b.lane; }).forEach(function (l) {
+      if (l.from === l.to) return;
+      var ko = l.side + l.from, ki = l.side + l.to;
+      l.outN = outs[ko] = (outs[ko] || 0) + 1;
+      l.inN = ins[ki] = (ins[ki] || 0) + 1;
+    });
+
+    var tag = function (text, cls) { return h('span', { class: 'pf-tag ' + cls, text: text }); };
+    var shortWays = [];
+    ways.forEach(function (w) { if (shortWays.indexOf(w.short) < 0) shortWays.push(w.short); });
+    var cards = [h(onStart ? 'button' : 'div', { type: onStart ? 'button' : null, class: 'pf-card start', onclick: onStart || null, 'aria-label': onStart ? 'Comes in from ' + listWords(ways.map(function (w) { return w.long; })) + '. Show how work comes in.' : null },
+      tag('Start', 'start'), h('b', { text: 'Comes in' }), h('span', { class: 'pf-sub', text: shortWays.join(' · ') }))]
+      .concat(p.stages.map(function (s, i) {
+        var t = times.text(s);
+        return h('div', { class: 'pf-card ' + s.kind }, tag((i + 1) + ' · ' + KIND_WORD[s.kind], s.kind), h('b', { text: s.name }), h('span', { class: 'pf-sub' }, who.node ? who.node(s) : who(s), t ? ' · ' + t : ''));
+      }))
+      .concat([h('div', { class: 'pf-card end' }, tag('End', 'end'), h('b', { text: 'Done' }), h('span', { class: 'pf-sub', text: 'whoever put it in hears' }))]);
+    var svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('class', 'pf-lines');
+    svg.setAttribute('aria-hidden', 'true');
+    var labels = h('div', { class: 'pf-labels', 'aria-hidden': 'true' });
+    var host = h('div', { class: 'pf-host', style: 'min-width:' + grid.min + 'px;padding-top:' + (12 + lanes.above.length * PF_LANE) + 'px;padding-bottom:' + (12 + lanes.below.length * PF_LANE) + 'px' },
+      h('div', { class: 'pf-grid', style: 'grid-template-columns:' + grid.cols + ';column-gap:' + PF_GAP + 'px' }, cards), svg, labels);
+    var seq = ++pfSeq;
+    var el = function (tag_, attrs) { var n = document.createElementNS(SVG, tag_); for (var k in attrs) n.setAttribute(k, attrs[k]); return n; };
+    var marker = function (id, cls) {
+      var m = el('marker', { id: id, viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '8', markerHeight: '8', markerUnits: 'userSpaceOnUse', orient: 'auto' });
+      m.appendChild(el('path', { d: 'M0 0L10 5L0 10z', class: cls }));
+      return m;
+    };
+    var note = function (cls, text, x, y) { var n = h('span', { class: cls, text: text }); n.style.left = Math.round(x) + 'px'; n.style.top = Math.round(y) + 'px'; labels.appendChild(n); };
+    var draw = function () {
+      if (!host.isConnected) return;
+      var base = host.getBoundingClientRect();
+      var R = cards.map(function (c) {
+        var r = c.getBoundingClientRect();
+        return { l: r.left - base.left, r: r.right - base.left, t: r.top - base.top, b: r.bottom - base.top, cx: (r.left + r.right) / 2 - base.left };
+      });
+      var W = host.offsetWidth, H = host.offsetHeight;
+      svg.setAttribute('width', String(W)); svg.setAttribute('height', String(H)); svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+      svg.textContent = ''; labels.textContent = '';
+      var defs = el('defs', {});
+      defs.appendChild(marker('pf-a' + seq, 'pf-headfill'));
+      defs.appendChild(marker('pf-l' + seq, 'pf-headfill loop'));
+      svg.appendChild(defs);
+      var line = function (d, loop) { svg.appendChild(el('path', { d: d, class: loop ? 'pf-loop' : 'pf-solid', 'marker-end': 'url(#' + (loop ? 'pf-l' : 'pf-a') + seq + ')' })); };
+      var top = R[0].t, bottom = R[0].b, mid = Math.round((top + bottom) / 2);
+      for (var k = 0; k + 1 < R.length; k++) {
+        line('M' + (R[k].r + 2) + ' ' + mid + 'H' + (R[k + 1].l - 2), false);
+        var s = p.stages[k];
+        if (s && s.delayDays) note('pf-wait', 'waits ' + (s.delayDays % 7 === 0 ? plural(s.delayDays / 7, 'week', 'weeks') : plural(s.delayDays, 'day', 'days')), (R[k].r + R[k + 1].l) / 2, mid - 6);
+      }
+      loops.forEach(function (l) {
+        var below = l.side === 'below', edge = below ? bottom : top, dir = below ? 1 : -1;
+        var y = edge + dir * l.lane * PF_LANE, end = edge + dir * 2;
+        var a = R[l.from + 1], b = R[l.to + 1], x1, x2;
+        if (l.from === l.to) { x1 = a.r - 18; x2 = x1 - 64; }
+        else {
+          var sign = l.to < l.from ? 1 : -1;
+          x1 = a.cx + sign * (2 + 12 * l.outN);
+          x2 = b.cx - sign * (2 + 12 * l.inN);
+        }
+        line('M' + x1 + ' ' + edge + 'V' + y + 'H' + x2 + 'V' + end, true);
+        note('pf-note', l.label, (x1 + x2) / 2, y);
+      });
+    };
+    var queued = false;
+    var redraw = function () { if (queued) return; queued = true; requestAnimationFrame(function () { queued = false; draw(); }); };
+    if (typeof ResizeObserver === 'function') {
+      var ro = new ResizeObserver(function () { if (!host.isConnected) { ro.disconnect(); return; } redraw(); });
+      ro.observe(host);
+    } else {
+      var onResize = function () { if (!host.isConnected) { window.removeEventListener('resize', onResize); return; } redraw(); };
+      window.addEventListener('resize', onResize);
+    }
+    setTimeout(redraw, 0);
+    return { node: h('div', { class: 'pf-scroll' }, host), redraw: redraw, grid: grid };
+  }
+  function pfLegend() {
+    return h('span', { class: 'pf-legend' }, h('span', { class: 'on', text: 'moves on' }), h('span', { class: 'loop', text: 'goes back round' }));
+  }
+
+  /// One process. Nothing in flight: how it works, a way to put something
+  /// in and what came out lately. Busy: the counts, how it works, and a board
+  /// with each item under the stage it's at, then what finished lately.
+  var KIND_WORD = { team: 'Team', worker: 'Worker', people: 'Decision' };
+  function viewProcess() {
+    return api('GET', '/api/processes/' + encodeURIComponent(state.processId)).then(function (r) {
+      if (r.ok === false) return [msg(r)];
+      var p = r.process, items = r.items || [], who = procWho(r);
+      // One item open: it takes the page.
+      var picked = state.processItem ? items.filter(function (i) { return i.id === state.processItem; })[0] : null;
+      if (picked) return [itemPage(p, picked, who)];
+      var me = ((state.me && state.me.name) || '').toLowerCase();
+      var isMe = function (name) { return !!me && String(name || '').toLowerCase() === me; };
+      var live = items.filter(function (i) { return i.status === 'active'; });
+      var month = Date.now() - 30 * 86400000;
+      var ended = items.filter(function (i) { return i.status !== 'active'; }).sort(function (a, b) { return (b.finishedAt || b.updatedAt) - (a.finishedAt || a.updatedAt); });
+      var lately = ended.filter(function (i) { return (i.finishedAt || i.updatedAt) > month; });
+      var yours = live.filter(function (i) { return i.yourTurn; });
+      var stuck = live.filter(function (i) { return i.blocked; });
+      var mine = live.filter(function (i) { return isMe(i.initiator && i.initiator.name); });
+      var times = processTimes(p, items);
+      var ways = waysIn(p, r);
+      var busyMode = live.length > 0;
+      var openItem = function (it) { return function () { go('process', { processId: p.id, processItem: it.id }); }; };
+      var first = p.stages[0];
+
+      var summary;
+      if (busyMode) {
+        var num = function (n, words, tone) { return h('span', null, h('b', { class: tone, text: String(n) }), words); };
+        summary = h('div', { class: 'pf-sum big' },
+          num(live.length, 'in flight', ''), num(yours.length, 'waiting on you', yours.length ? 'need' : ''), num(stuck.length, 'stuck', stuck.length ? 'bad' : ''),
+          num(lately.filter(function (i) { return i.status === 'done'; }).length, 'done in 30 days', 'ok'),
+          times.endToEnd != null ? h('span', { class: 'faint', text: 'usually ' + spanWords(times.endToEnd) + ' end to end' + (times.slowest ? ' · most of it waiting at ' + times.slowest.name : '') }) : null);
+      } else {
+        var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+        var thisMonth = function (status) { return ended.filter(function (i) { return i.status === status && (i.finishedAt || i.updatedAt) >= monthStart.getTime(); }).length; };
+        var doneN = thisMonth('done'), stoppedN = thisMonth('stopped');
+        summary = h('p', { class: 'pf-sum' }, [
+          'Owned by ' + (isMe(p.owner.name) ? 'you' : p.owner.name), 'Nothing in flight',
+          doneN ? doneN + ' done this month' : null, stoppedN ? stoppedN + ' stopped this month' : null,
+          p.codeIn ? 'Code in ' + p.codeIn.name : null,
+          'Comes in from ' + listWords(ways.map(function (w) { return w.long; }))
+        ].filter(Boolean).map(function (t) { return h('span', { text: t }); }));
+      }
+
+      var header = h('header', { class: 'page-head' },
+        h('div', { style: 'min-width:0;flex:1 1 520px' },
+          h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Processes', onclick: function () { go('processes'); } })),
+          h('h1', { class: 'page-title', text: p.name }),
+          p.purpose ? h('p', { class: 'page-sub', text: p.purpose }) : null,
+          busyMode ? null : summary),
+        h('div', { class: 'row' },
+          p.canSteer ? h('button', { class: 'btn', text: 'Edit', onclick: function () { go('processedit', { processId: p.id }); } }) : null,
+          busyMode ? h('button', { class: 'btn go', onclick: function () { submitToProcess(p, function (item) { go('process', { processId: p.id, processItem: item.id }); }); } }, icon('plus', 16), 'Put something in') : null));
+
+      // How work comes in, the owner's panel to add and remove ways.
+      var waysOpen = !!state.processWays;
+      var toggleWays = function () { state.processWays = !waysOpen; render(); };
+      var waysPanel = function () {
+        return h('div', { class: 'stack', style: 'gap:8px' },
+          intakePanel(p, r.intake || [], r.schedules || []),
+          h('button', { class: 'linkish pf-link', text: 'Close', onclick: toggleWays }));
+      };
+
+      var diagram = procDiagram(p, who, times, ways, busyMode ? toggleWays : null);
+      var howHead = h('div', { class: 'pf-head' }, h('span', { class: 'label', style: 'flex:1', text: 'How it works · ' + plural(p.stages.length, 'stage', 'stages') }), pfLegend());
+
+      if (!busyMode) {
+        var steps = h('ol', { class: 'pf-steps' }, p.stages.map(function (s, i) {
+          var does = s.why || s.ask || (s.kind === 'people' ? who(s) + (/,/.test(who(s)) ? ' decide' : ' decides') + ': approve it, send it back or stop it.' : who(s) + ' does this stage.');
+          return h('li', null, h('b', { text: (i + 1) + ' · ' + s.name }), h('span', { text: does }));
+        }));
+        var how = h('section', { class: 'pf-panel', 'aria-label': 'How it works' }, howHead, diagram.node, steps);
+
+        var title = h('input', { type: 'text', id: 'pf-title', maxlength: '200', placeholder: 'e.g. Let customers export reports to CSV' });
+        var brief = h('textarea', { id: 'pf-brief', rows: '3', placeholder: 'What it is, who wants it and why. Links help.' });
+        var out = h('div', { 'aria-live': 'polite' });
+        var send = h('button', { class: 'btn go', text: 'Start at ' + first.name });
+        send.onclick = function () {
+          var restore = busy(send, 'Putting it in…');
+          api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/items', { title: title.value, brief: brief.value }).then(function (x) {
+            restore();
+            if (x.ok === false) { fill(out, msg(x)); return; }
+            go('process', { processId: p.id, processItem: x.item.id });
+          });
+        };
+        var waysList = h('div', { class: 'pf-split' }, h('span', { class: 'pf-small', text: 'Other ways in' }),
+          ways.slice(1).map(function (w) {
+            return h('div', { class: 'pf-way' }, h('span', { class: 'pf-dot ' + w.tone, 'aria-hidden': 'true' }), h('span', { class: 'pf-what', text: w.what }), h('span', { class: 'faint', text: w.detail }));
+          }),
+          p.canSteer ? h('button', { class: 'linkish pf-link', text: 'Add a way in: Slack channel, schedule, tool watch, webhook', onclick: toggleWays }) : null);
+        var put = h('section', { class: 'pf-panel', 'aria-labelledby': 'pf-put' },
+          h('h2', { class: 'label pf-accent', id: 'pf-put', text: 'Put something in' }),
+          h('label', { class: 'field' }, 'What is it?', title),
+          h('label', { class: 'field' }, 'Details, steps, a link', brief),
+          out,
+          h('div', { class: 'row', style: 'gap:10px' }, send, h('span', { class: 'faint', text: first.kind === 'people' ? who(first) + (/,/.test(who(first)) ? ' decide' : ' decides') + ' first.' : who(first) + ' picks it up within a minute.' })),
+          waysOpen && p.canSteer ? h('div', { class: 'pf-split' }, waysPanel()) : waysList);
+
+        var track = function (it) {
+          return h('span', { class: 'pv-track', style: 'grid-template-columns:repeat(' + p.stages.length + ',minmax(0,1fr))', 'aria-label': it.status === 'done' ? 'Made it through' : 'Stopped at stage ' + (it.stageIndex + 1) + ' of ' + p.stages.length },
+            p.stages.map(function (s, i) { return h('span', { class: it.status === 'done' || i < it.stageIndex ? 'done' : i === it.stageIndex ? 'stuck' : '' }); }));
+        };
+        var recentRows = lately.slice(0, 8).map(function (it) {
+          return h('button', { type: 'button', class: 'pf-done', onclick: openItem(it) },
+            h('span', { class: 'pf-top' }, h('b', { text: it.title }), h('span', { class: 'badge' + (it.status === 'done' ? ' ok' : ''), text: it.status === 'done' ? 'Done' : 'Stopped' }), h('span', { class: 'faint', text: when(it.finishedAt || it.updatedAt) })),
+            track(it), h('span', { class: 'pf-out', text: procOutcome(p, it) }));
+        });
+        var maxIn = times.inStage ? Math.max.apply(null, times.inStage.map(function (x) { return x || 0; }).concat([1])) : 1;
+        var spend = h('div', { class: 'pf-split' }, h('span', { class: 'pf-small', text: 'Where items spend their time' }),
+          times.inStage ? [
+            h('div', { class: 'pf-bars' }, p.stages.map(function (s, i) {
+              var ms = times.inStage[i];
+              return [h('span', { class: 'pf-barname', text: s.name }),
+                h('span', { class: 'pf-bar', 'aria-hidden': 'true' }, h('span', { class: s.kind, style: 'width:' + (ms ? Math.max(2, Math.round(ms / maxIn * 100)) : 0) + '%' })),
+                h('span', { class: 'faint', text: ms != null ? spanWords(ms) : 'not reached' })];
+            })),
+            h('span', { class: 'faint', text: 'Middle of the items that finished. ' + (times.endToEnd != null ? 'Usually ' + spanWords(times.endToEnd) + ' end to end.' : '') })]
+            : h('span', { class: 'faint', text: 'After a few items finish, this shows which stage they wait in longest and how long the whole thing usually takes.' }));
+        var recent = h('section', { class: 'pf-panel', 'aria-labelledby': 'pf-recent' },
+          h('h2', { class: 'label', id: 'pf-recent', text: 'Recent · last 30 days' }),
+          recentRows.length ? recentRows : h('span', { class: 'faint', text: ended.length ? 'Nothing finished or stopped in the last 30 days.' : 'Nothing has been through it yet.' }),
+          spend);
+        return [header, h('div', { class: 'stack', style: 'gap:18px;min-width:0' }, how, h('div', { class: 'pf-two' }, put, recent))];
+      }
+
+      // Busy: what to show, the diagram (it folds away), the board.
+      var tab = state.processTab || 'all';
+      var fits = { all: function () { return true; }, you: function (i) { return !!i.yourTurn; }, stuck: function (i) { return !!i.blocked; }, mine: function (i) { return isMe(i.initiator && i.initiator.name); } };
+      if (!fits[tab]) tab = 'all';
+      var shown = live.filter(fits[tab]);
+      var filters = h('div', { class: 'seg', role: 'group', 'aria-label': 'Show' }, [['all', 'All', live.length], ['you', 'Waiting on you', yours.length], ['stuck', 'Stuck', stuck.length], ['mine', 'Mine', mine.length]].map(function (t) {
+        return h('button', { type: 'button', 'aria-pressed': tab === t[0] ? 'true' : 'false', onclick: function () { state.processTab = t[0]; render(); } }, t[1] + ' ' + t[2]);
+      }));
+      var how2 = h('details', { class: 'pf-panel pf-how', open: state.processHow !== false },
+        h('summary', null, h('span', { class: 'label', style: 'flex:1' }, icon('back', 12), 'How it works · ' + plural(p.stages.length, 'stage', 'stages')), pfLegend()),
+        diagram.node,
+        waysOpen ? waysPanel() : null);
+      how2.ontoggle = function () { state.processHow = how2.open; if (how2.open) diagram.redraw(); };
+
+      var board = h('div', { class: 'pf-scroll pf-boardwrap' }, h('div', { class: 'pf-board', role: 'list', 'aria-label': 'Items by stage', style: 'grid-template-columns:' + diagram.grid.cols + ';column-gap:' + PF_GAP + 'px;min-width:' + diagram.grid.min + 'px' },
+        p.stages.map(function (s, i) {
+          var here = shown.filter(function (it) { return it.stageIndex === i; })
+            .sort(function (a, b) { return (b.yourTurn ? 1 : 0) - (a.yourTurn ? 1 : 0) || (b.blocked ? 1 : 0) - (a.blocked ? 1 : 0) || b.updatedAt - a.updatedAt; });
+          var t = times.text(s);
+          return h('section', { class: 'pf-col ' + s.kind, role: 'listitem', style: 'grid-column:' + (i + 2), 'aria-label': s.name + ': ' + plural(here.length, 'item', 'items') },
+            h('div', { class: 'pf-colhead' },
+              h('span', { class: 'pf-coltop' }, h('span', { class: 'pf-tag ' + s.kind, text: (i + 1) + ' · ' + KIND_WORD[s.kind] }), h('span', { class: 'pf-count', text: String(here.length) })),
+              h('b', { text: s.name }),
+              h('span', { class: 'faint', text: who(s) + (t ? ' · ' + t : '') })),
+            here.length ? here.map(function (it) {
+              var open = itemSpans(it).open;
+              var since = open ? open.since : it.updatedAt;
+              var now = it.blocked ? 'Stuck: ' + it.blocked
+                : it.yourTurn ? 'Waiting on you · ' + spanWords(Date.now() - since)
+                  : it.stageNote || (it.waitsOn ? 'Waiting on ' + it.waitsOn + ' · ' + spanWords(Date.now() - since) : who(s) + (s.kind === 'people' ? ' deciding' : ' is on it'));
+              return h('button', { type: 'button', class: 'pf-item' + (it.blocked ? ' stuck' : it.yourTurn ? ' yours' : ''), onclick: openItem(it) },
+                h('b', { text: it.title }), h('span', { class: 'pf-now', text: now }),
+                h('span', { class: 'faint', text: itemSource(it) + ' · ' + spanWords(Date.now() - it.createdAt) }));
+            }) : h('span', { class: 'pf-none', text: 'Nothing here' }));
+        })));
+
+      var allDone = !!state.processAllDone;
+      var doneList = (allDone ? ended.slice(0, 60) : lately.slice(0, 6));
+      var finished = ended.length ? h('section', { class: 'stack', style: 'gap:8px', 'aria-labelledby': 'pf-fin' },
+        h('div', { class: 'row' }, h('h2', { class: 'label', id: 'pf-fin', style: 'flex:1', text: allDone ? 'Finished and stopped' : 'Finished recently' }),
+          ended.length > doneList.length || allDone ? h('button', { class: 'linkish pf-link', text: allDone ? 'Recent only' : 'All ' + ended.length, onclick: function () { state.processAllDone = !allDone; render(); } }) : null),
+        doneList.length ? h('div', { class: 'pf-cards' }, doneList.map(function (it) {
+          return h('button', { type: 'button', class: 'pf-done', onclick: openItem(it) },
+            h('span', { class: 'pf-top' }, h('span', { class: 'badge' + (it.status === 'done' ? ' ok' : ''), text: it.status === 'done' ? 'Done' : 'Stopped' }), h('span', { class: 'faint', text: when(it.finishedAt || it.updatedAt) })),
+            h('b', { text: it.title }), h('span', { class: 'pf-out', text: procOutcome(p, it) }));
+        })) : h('span', { class: 'faint', text: 'Nothing finished in the last 30 days.' })) : null;
+
+      return [header, h('div', { class: 'stack', style: 'gap:16px;min-width:0' }, summary, how2,
+        h('div', { class: 'stack', style: 'gap:10px;min-width:0' },
+          h('div', { class: 'pf-head' }, h('h2', { class: 'label', style: 'flex:1', text: 'The board · each item sits under the stage it’s at' }), filters),
+          board),
+        finished)];
+    });
+  }
+
+  /// Who does a stage, by name: its team, its worker, or the people and groups deciding.
+  function procWho(r) {
+    var teams = {}, workersById = {};
+    (r.teams || []).forEach(function (t) { teams[t.id] = t.name; });
+    (r.workers || []).forEach(function (w) { workersById[w.id] = w.name; });
+    var who = function (s) {
+      return s.kind === 'team' ? (teams[s.teamId] || 'A team') : s.kind === 'worker' ? (workersById[s.workerId] || 'A worker')
+        : (s.approverGroups || []).map(function (g) { return g.name; }).concat((s.approvers || []).map(function (a) { return a.name; })).join(', ') || 'Nobody yet';
+    };
+    // The team or worker as a link to its own page; people stay names.
+    who.node = function (s) {
+      var name = who(s);
+      if (s.kind === 'team' && teams[s.teamId]) return h('button', { type: 'button', class: 'linkish pf-who', text: name, title: 'Open ' + name, onclick: function () { go('team', { teamId: s.teamId }); } });
+      if (s.kind === 'worker' && workersById[s.workerId]) return h('button', { type: 'button', class: 'linkish pf-who', text: name, title: 'Open ' + name, onclick: function () { openWorker(s.workerId); } });
+      return name;
+    };
+    return who;
+  }
+
+  /// How work comes in: by hand and from Slack, a schedule, a watch on a
+  /// tool, a channel or posted events. Each way is a row; its owner adds
+  /// more from the choices underneath.
+  function intakePanel(p, intake, schedules) {
+    var out = h('div', { 'aria-live': 'polite' });
+    var remove = function (path) {
+      return function () { api('POST', path, {}).then(function (x) { if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else render(); }); };
+    };
+    var way = function (ic, title, sub, action) {
+      return h('div', { class: 'in-row' }, h('span', { class: 'in-ic', 'aria-hidden': 'true' }, icon(ic, 16)),
+        h('div', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' }, h('b', { text: title }), sub), action || null);
+    };
+    var rows = [
+      way('slack', 'Slack, by anyone', h('span', { class: 'faint' }, h('code', { text: '/idea ' + p.name + ': …' }), ' or ', h('code', { text: '@overcli idea: …' }), '. ', h('code', { text: '/idea' }), ' alone shows where theirs are.')),
+    ].concat((schedules || []).map(function (s) {
+      return way('clock', s.title, h('span', { class: 'faint', text: s.when + '. Next: ' + (Number.isFinite(s.nextAt) ? new Date(s.nextAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never') + '.' }),
+        p.canSteer ? h('button', { class: 'btn small quiet', text: 'Remove', onclick: remove('/api/processes/' + encodeURIComponent(p.id) + '/schedules/' + encodeURIComponent(s.id) + '/remove') }) : null);
+    })).concat(intake.map(function (t) {
+      var title = t.kind === 'watch' ? 'New items in ' + t.watch.server : t.kind === 'webhook' ? 'Posted events' : 'Every new message in ' + (t.channel || 'a channel');
+      var sub = t.kind === 'watch' ? t.watch.tool + ', checked every ' + t.watch.everyMinutes + ' min. ' : t.kind === 'webhook' ? 'Its secret URL was shown once. ' : 'Invite the bot to the channel. ';
+      return way(t.kind === 'watch' ? 'search' : t.kind === 'webhook' ? 'bolt' : 'slack', title,
+        h('span', { class: t.lastError ? 'msg err' : 'faint', text: t.lastError ? t.lastError : sub + (t.lastFiredAt ? 'Last one ' + ago(t.lastFiredAt) + '.' : 'Nothing yet.') }),
+        p.canSteer ? h('button', { class: 'btn small quiet', text: 'Remove', onclick: remove('/api/process-intake/' + encodeURIComponent(t.id) + '/remove') }) : null);
+    }));
+    if (!p.canSteer) return card('pd-in', 'How work comes in', null, h('div', { class: 'stack', style: 'gap:0' }, rows, out));
+
+    var slot = h('div');
+    var adders = h('div', { class: 'in-add' });
+    var choose = function (form) { fill(slot, [form]); adders.hidden = true; };
+    var done = function () { slot.textContent = ''; adders.hidden = false; };
+    append(adders, [
+      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Add a way in:' }),
+      h('button', { class: 'btn small', onclick: function () { choose(scheduleForm(p, done, out)); } }, icon('clock', 14), 'On a schedule'),
+      h('button', { class: 'btn small', onclick: function () { choose(watchForm(p, done, out)); } }, icon('search', 14), 'Watch a tool'),
+      h('button', { class: 'btn small quiet', onclick: function () { choose(channelForm(p, done, out)); } }, icon('slack', 14), 'A Slack channel'),
+      h('button', { class: 'btn small quiet', onclick: function () {
+        api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/intake', { kind: 'webhook' }).then(function (x) {
+          out.textContent = '';
+          if (x.ok === false) { out.appendChild(msg(x)); return; }
+          out.appendChild(h('div', { class: 'msg ok', role: 'status' }, 'Post events to this URL. It is shown once, so copy it now: ', h('code', { text: location.origin + x.webhookPath })));
+        });
+      } }, icon('bolt', 14), 'Posted events')
+    ]);
+    return card('pd-in', 'How work comes in', null, h('div', { class: 'stack', style: 'gap:0' }, rows, h('div', { class: 'in-foot' }, adders, slot), out));
+  }
+
+  /// "Every quarter, plan the roadmap": when, and the item each one puts in.
+  function scheduleForm(p, done, out) {
+    var when = h('select', { 'aria-label': 'When' },
+      [['weekly', 'Every week'], ['weekdays', 'Every weekday'], ['monthly', 'On the 1st of each month'], ['quarterly', 'On the first day of each quarter']].map(function (o) { return h('option', { value: o[0], text: o[1] }); }));
+    var day = h('select', { 'aria-label': 'On', style: 'width:auto' }, DAY_NAMES.map(function (n, i) { return h('option', { value: String(i), text: n, selected: i === 1 }); }));
+    var time = h('input', { type: 'time', value: '09:00', 'aria-label': 'At', style: 'width:130px' });
+    var dayWrap = h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, h('span', { class: 'faint', text: 'on' }), day);
+    when.onchange = function () { dayWrap.hidden = when.value !== 'weekly'; };
+    var title = h('input', { type: 'text', maxlength: '100', placeholder: 'e.g. Quarterly roadmap', 'aria-label': 'Title' });
+    var brief = h('textarea', { rows: '3', 'aria-label': 'What each one is about', placeholder: 'What the first stage should do each time, e.g. Plan next quarter’s roadmap from this quarter’s requests, usage and churn.' });
+    var save = h('button', { class: 'btn go small', text: 'Add the schedule' });
+    save.onclick = function () {
+      var hm = (time.value || '09:00').split(':');
+      var cadence = when.value === 'weekly' ? { kind: 'daily', time: time.value || '09:00', days: [Number(day.value)] }
+        : when.value === 'weekdays' ? { kind: 'daily', time: time.value || '09:00', days: [1, 2, 3, 4, 5] }
+          : { kind: 'cron', expr: Number(hm[1]) + ' ' + Number(hm[0]) + ' 1 ' + (when.value === 'quarterly' ? '1,4,7,10' : '*') + ' *' };
+      var restore = busy(save, 'Adding…');
+      api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/schedules', { cadence: cadence, title: title.value, brief: brief.value }).then(function (x) {
+        restore();
+        out.textContent = '';
+        if (x.ok === false) { out.appendChild(msg(x)); return; }
+        render();
+      });
+    };
+    return h('div', { class: 'in-form' },
+      h('b', { text: 'Start an item on a schedule' }),
+      h('div', { class: 'row', style: 'gap:8px' }, when, dayWrap, h('span', { class: 'faint', text: 'at' }), time),
+      h('label', { class: 'field' }, 'Each one is called', title, h('span', { class: 'faint pm-hint', text: 'The date is added: “Quarterly roadmap · Jan 1, 2027”.' })),
+      h('label', { class: 'field' }, 'What each one is about', brief),
+      h('div', { class: 'row' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: done })));
+  }
+
+  /// Each new item a tool returns (a ticket in a view, a row) goes in: the
+  /// same watch a worker's trigger uses, tried before it's saved.
+  function watchForm(p, done, out) {
+    var server = h('select', { 'aria-label': 'Tool' }, h('option', { value: '', text: 'Loading tools…' }));
+    var call = h('select', { 'aria-label': 'What to ask it' }, h('option', { value: '', text: 'Pick a tool first' }));
+    var args = h('textarea', { 'aria-label': 'With (JSON)', placeholder: '{ "jql": "project = ACME AND type = Bug AND created >= -1d" }', style: 'min-height:64px;font-family:var(--mono);font-size:12.5px' });
+    var every = h('select', { 'aria-label': 'How often' }, [5, 10, 15, 30, 60].map(function (n) { return h('option', { value: String(n), text: 'every ' + n + ' min', selected: n === 15 }); }));
+    var itemsPath = h('input', { type: 'text', placeholder: 'e.g. issues', 'aria-label': 'Where the list is' });
+    var idPath = h('input', { type: 'text', placeholder: 'e.g. key', 'aria-label': 'What identifies an item' });
+    var note = h('textarea', { rows: '2', 'aria-label': 'Add to each brief', placeholder: 'Optional: what the first stage should know about every item from here.' });
+    var tried = h('div', { 'aria-live': 'polite' });
+    var parse = function () { if (!args.value.trim()) return {}; try { return JSON.parse(args.value); } catch (e) { return null; } };
+    var watch = function () {
+      var a = parse();
+      return a === null ? null : { server: server.value, tool: call.value, args: a, everyMinutes: Number(every.value), itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() };
+    };
+    api('GET', '/api/tools').then(function (r) {
+      server.textContent = '';
+      var tools = r.ok === false ? [] : r.tools;
+      if (!tools.length) { server.appendChild(h('option', { value: '', text: 'No tools installed: add one under Setup → Tools' })); return; }
+      server.appendChild(h('option', { value: '', text: 'Pick a tool' }));
+      tools.forEach(function (t) { server.appendChild(h('option', { value: t.name, text: t.name })); });
+    });
+    // A tool that can list alarms in ALARM state (AWS's CloudWatch MCP
+    // server) gets a one-click setup: each alarm that goes off is a new item,
+    // and one that recovers and goes off again is a new item again.
+    var preset = h('div', { class: 'msg', hidden: true });
+    var alarmPreset = function () {
+      call.value = 'get_active_alarms';
+      args.value = '{}';
+      every.value = '5';
+      fireOn.value = 'new';
+      itemsPath.value = ''; idPath.value = '';
+      if (!name.value.trim()) name.value = 'CloudWatch alarms';
+      if (!instructions.value.trim()) instructions.value = 'An alarm went off. Pull the logs around the time it changed state with a Logs Insights query, find the likely cause, and post a short summary: what broke, since when, how bad, and what to check first.';
+      syncFire();
+    };
+    server.onchange = function () {
+      call.textContent = ''; call.appendChild(h('option', { value: '', text: 'Loading…' }));
+      preset.hidden = true;
+      if (!server.value) return;
+      api('GET', '/api/tools/' + encodeURIComponent(server.value) + '/calls').then(function (r) {
+        call.textContent = '';
+        if (r.ok === false) { call.appendChild(h('option', { value: '', text: r.error })); return; }
+        r.tools.forEach(function (t) { call.appendChild(h('option', { value: t.name, text: t.name, title: t.description || '' })); });
+        if (!r.tools.some(function (t) { return t.name === 'get_active_alarms'; })) return;
+        preset.textContent = '';
+        append(preset, [h('span', { text: 'This tool lists CloudWatch alarms. ' }), h('button', { type: 'button', class: 'btn small', text: 'Set it up for CloudWatch alarms', onclick: alarmPreset })]);
+        preset.hidden = false;
+      });
+    };
+    var test = h('button', { class: 'btn small', text: 'Try it now' });
+    test.onclick = function () {
+      var w = watch();
+      tried.textContent = '';
+      if (!w) { tried.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
+      var restore = busy(test, 'Asking the tool…');
+      api('POST', '/api/triggers/test', { watch: w }).then(function (x) {
+        restore();
+        if (x.ok === false) { tried.appendChild(msg(x)); return; }
+        append(tried, [h('p', { class: 'faint', style: 'margin:0', text: 'It sees ' + plural(x.items.length, 'item', 'items') + ' now. These are skipped; each new one after goes in.' }),
+          h('ul', { style: 'margin:6px 0 0;padding-left:18px;font-size:13px' }, x.items.slice(0, 6).map(function (i) { return h('li', { text: i.title }); }))]);
+      });
+    };
+    var save = h('button', { class: 'btn go small', text: 'Start watching' });
+    save.onclick = function () {
+      var w = watch();
+      if (!w) { tried.textContent = ''; tried.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
+      var restore = busy(save, 'Saving…');
+      api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/intake', { kind: 'watch', watch: w, instructions: note.value }).then(function (x) {
+        restore();
+        out.textContent = '';
+        if (x.ok === false) { out.appendChild(msg(x)); return; }
+        render();
+      });
+    };
+    return h('div', { class: 'in-form' },
+      h('b', { text: 'Each new item in a tool goes in' }),
+      h('p', { class: 'faint', style: 'margin:0', text: 'A new ticket in a view, a new deal, a new row: checked every few minutes, from inside your network too. What is there now is skipped.' }),
+      h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Tool', server), h('label', { class: 'field' }, 'What to ask it', call)),
+      h('label', { class: 'field' }, 'With (JSON)', args),
+      h('div', { class: 'row', style: 'gap:10px;align-items:flex-end' }, h('label', { class: 'field', style: 'width:180px' }, 'How often', every), test),
+      tried,
+      h('label', { class: 'field' }, 'Add to each brief', note),
+      h('details', null, h('summary', { text: 'If it can’t tell items apart' }), h('div', { class: 'grid2', style: 'margin-top:10px' }, h('label', { class: 'field' }, 'Where the list is', itemsPath), h('label', { class: 'field' }, 'What identifies an item', idPath))),
+      h('div', { class: 'row' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: done })));
+  }
+
+  function channelForm(p, done, out) {
+    var channel = h('input', { type: 'text', placeholder: 'C012AB3CD', 'aria-label': 'Slack channel ID', style: 'max-width:240px' });
+    var save = h('button', { class: 'btn go small', text: 'Take in the channel' });
+    save.onclick = function () {
+      var restore = busy(save, 'Adding…');
+      api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/intake', { kind: 'slack', channel: channel.value }).then(function (x) { restore(); out.textContent = ''; if (x.ok === false) out.appendChild(msg(x)); else render(); });
+    };
+    return h('div', { class: 'in-form' },
+      h('b', { text: 'Every new message in a channel goes in' }),
+      h('label', { class: 'field' }, 'Channel ID (channel details, at the bottom)', channel),
+      h('p', { class: 'faint', style: 'margin:0', text: 'Invite the bot to the channel first: /invite @overcli.' }),
+      h('div', { class: 'row' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: done })));
+  }
+
+  /// One item, the whole width of the page: where it is across every stage,
+  /// the call waiting on you (or why it's stuck), then what it stands on,
+  /// its journey, what it handed on and the request; who does each stage
+  /// and the time each took beside it. It refreshes itself while you read.
+  function itemPage(p, it, who) {
+    var me = (state.me && state.me.name) || '';
+    var stage = p.stages[it.stageIndex] || {};
+    var active = it.status === 'active';
+    var now_ = Date.now();
+    var KIND_LETTER = { team: 'T', worker: 'W', people: 'P' };
+    var dur = function (ms) {
+      var m = Math.round(ms / 60000);
+      if (m < 60) return Math.max(1, m) + ' min';
+      var hr = Math.round(m / 60);
+      return hr < 48 ? hr + ' h' : Math.round(hr / 24) + ' d';
+    };
+    var clock = function (ms) { return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); };
+    var stamp = function (ms) { var d = dayLabel(ms); return (d === 'Today' ? '' : d + ' ') + clock(ms); };
+    var clip = function (t, n) { t = String(t || ''); return t.length > n ? t.slice(0, n - 1).trim() + '…' : t; };
+    var firstLine = function (t) { return (String(t || '').split('\n').filter(function (l) { return l.trim(); })[0] || '').replace(/^[#>*\-\s]+/, ''); };
+    var stageById = function (id) { return p.stages.filter(function (s) { return s.id === id; })[0]; };
+    var stageName = function (id) { var s = stageById(id); return s ? s.name : 'a stage'; };
+    var isMe = function (name) { return !!me && String(name).toLowerCase() === me.toLowerCase(); };
+    // How many must approve at a people stage, and the rule in words.
+    var needOf = function (s) { var n = (s.approvers || []).length; return s.needs === 'all' ? Math.max(1, n) : typeof s.needs === 'number' ? s.needs : 1; };
+    var ruleText = function (s) {
+      var n = (s.approvers || []).length, groups = (s.approverGroups || []).length;
+      if (s.needs === 'all') return 'all of them';
+      if (typeof s.needs === 'number' && s.needs > 1) return 'any ' + s.needs + (groups ? '' : ' of ' + n);
+      return n + groups > 1 ? 'any one' : '';
+    };
+    var whoLine = function (s) {
+      if (s.kind === 'people') { var r = ruleText(s); return who(s) + (r ? ' · ' + r : ''); }
+      return who(s) + ' · ' + (s.kind === 'team' ? 'team' : 'worker');
+    };
+    // Where "send it back" lands by default: its chosen stage, else the
+    // nearest team or worker stage before it, else the start.
+    var backIndex = function (from) {
+      var s = p.stages[from] || {};
+      if (s.sendBackTo) { for (var i = 0; i < p.stages.length; i++) if (p.stages[i].id === s.sendBackTo) return i; }
+      for (var j = from - 1; j >= 0; j--) if (p.stages[j].kind !== 'people') return j;
+      return 0;
+    };
+
+    // Time in each stage, from its history: each "entered" runs to the next.
+    var spans = {}, redoCount = {}, cur = null, from = it.createdAt, enteredAt = it.createdAt;
+    var close = function (at) { if (cur) spans[cur] = (spans[cur] || 0) + Math.max(0, at - from); cur = null; };
+    it.history.forEach(function (e) {
+      // A redo: sent back to a stage, or a stage started again.
+      if (e.kind === 'sentBack' && e.stageId) redoCount[e.stageId] = (redoCount[e.stageId] || 0) + 1;
+      if (e.kind === 'retried' && cur) redoCount[cur] = (redoCount[cur] || 0) + 1;
+      if (e.kind === 'entered' && e.stageId) { close(e.at); cur = e.stageId; from = e.at; if (cur === stage.id) enteredAt = e.at; }
+      else if (e.kind === 'done' || e.kind === 'stopped') close(e.at);
+    });
+    if (active) close(now_);
+    var redos = function (s) { return redoCount[s.id] || 0; };
+    var phase = function (i) {
+      if (it.status === 'done' || i < it.stageIndex) return 'done';
+      if (i === it.stageIndex) return it.status === 'stopped' || it.blocked ? 'stuck' : it.canDecide || it.yourTurn ? 'need' : 'now';
+      return 'next';
+    };
+
+    // A team or worker stage stopped for its owner: what they're asked to do.
+    var TURN = { questions: ['answer the questions', 'answers the questions'], plan: ['approve the plan', 'approves the plan'], pack: ['sign off the pack', 'signs off the pack'], paused: ['unblock the run', 'unblocks the run'] };
+    var turn = active && !it.blocked && it.ownerTurn && TURN[it.ownerTurn] ? TURN[it.ownerTurn] : null;
+    var waitsOn = it.waitsOn || who(stage);
+    var mineNow = !!(it.canDecide || it.yourTurn);
+    var openStage = function () { if (stage.kind === 'worker' && stage.workerId) openWorker(stage.workerId); else if (it.taskId) openTask(it.taskId); };
+    var flash = state.procFlash && state.procFlash.id === it.id ? state.procFlash.text : '';
+    state.procFlash = null;
+    var out = h('div', { 'aria-live': 'polite' }, flash ? h('div', { class: 'msg ok', role: 'status', text: flash }) : null);
+    var act = function (action, extra, label, button, after) {
+      var restore = button ? busy(button, label) : function () {};
+      api('POST', '/api/process-items/' + encodeURIComponent(it.id) + '/act', Object.assign({ action: action }, extra || {})).then(function (x) {
+        restore();
+        if (x.ok === false) { fill(out, msg(x)); return; }
+        if (after) after(x);
+        render();
+      });
+    };
+    // What a stage handed on: its files, read through the item, so anyone
+    // who can see the item can read them, team or not.
+    var fileCache = {};
+    var loadFile = function (a, name) {
+      var key = a.taskId + '/' + name;
+      if (fileCache[key]) return Promise.resolve(fileCache[key]);
+      return api('GET', '/api/process-items/' + encodeURIComponent(it.id) + '/file?task=' + encodeURIComponent(a.taskId) + '&name=' + encodeURIComponent(name)).then(function (x) {
+        if (x && x.ok !== false) fileCache[key] = x;
+        return x;
+      });
+    };
+    var saveText = function (name, body) {
+      var l = h('a', { href: URL.createObjectURL(new Blob([body], { type: 'text/plain' })), download: name.replace(/^.*\//, '') });
+      document.body.appendChild(l); l.click(); l.remove();
+    };
+    var fileList = function (a) {
+      if (!a.files || !a.files.length) return null;
+      if (!a.taskId) return h('span', { class: 'faint', text: plural(a.files.length, 'file', 'files') + ': ' + a.files.join(', ') });
+      return h('div', { class: 'pi-flist' }, a.files.map(function (name) {
+        var view = h('div', { class: 'pi-fview', hidden: true });
+        var shown = false;
+        var openBtn = h('button', { type: 'button', class: 'pi-fopen', 'aria-expanded': 'false', title: 'Read it here' }, icon('doc', 15), h('span', { text: name }));
+        openBtn.onclick = function () {
+          shown = !shown; view.hidden = !shown; openBtn.setAttribute('aria-expanded', shown ? 'true' : 'false');
+          if (!shown || view.firstChild) return;
+          append(view, h('span', { class: 'faint', text: 'Loading…' }));
+          loadFile(a, name).then(function (x) { fill(view, x.ok === false ? msg(x) : /\.(md|markdown)$/i.test(name) ? md(x.body) : h('pre', { text: x.body })); });
+        };
+        var dl = h('button', { type: 'button', class: 'btn small quiet', text: 'Download' });
+        dl.onclick = function () { var restore = busy(dl, 'Getting…'); loadFile(a, name).then(function (x) { restore(); if (x.ok === false) { fill(out, msg(x)); return; } saveText(name, x.body); }); };
+        return h('div', { class: 'pi-frow' }, h('div', { class: 'pi-fline' }, openBtn, dl), view);
+      }));
+    };
+    var longText = function (t) { t = String(t || ''); return t.split('\n').length > 12 || t.length > 1200; };
+    var mdBlock = function (t, big) {
+      var long_ = longText(t);
+      var box = h('div', { class: (big ? 'pi-lead' : 'pi-sum') + (long_ ? ' clamp' : '') }, md(t));
+      return [box, long_ ? h('button', { class: 'linkish pi-showall', text: 'Show all', onclick: function (e) { box.classList.remove('clamp'); e.target.remove(); } }) : null];
+    };
+    var allFiles = [];
+    (it.artifacts || []).forEach(function (a) { if (a.taskId) (a.files || []).forEach(function (f) { allFiles.push([a, f]); }); });
+    var downloadAll = function (e) {
+      var btn = e.target, restore = busy(btn, 'Downloading…'), n = 0;
+      var next = function () {
+        if (n >= allFiles.length) { restore(); return; }
+        var pair = allFiles[n++];
+        loadFile(pair[0], pair[1]).then(function (x) { if (x.ok === false) { restore(); fill(out, msg(x)); return; } saveText(pair[1], x.body); setTimeout(next, 300); });
+      };
+      next();
+    };
+    var teamArt = function (a) { var s = stageById(a.stageId); return !!(a.taskId && (!s || s.kind === 'team')); };
+    var arts = it.artifacts || [];
+    var last = arts[arts.length - 1];
+    var prUrl = '';
+    arts.forEach(function (a) { var m = /https?:\/\/[^\s)<>]+\/(?:pull|merge_requests)\/\d+/.exec(a.summary || ''); if (m) prUrl = m[0]; });
+    var prLabel = prUrl ? 'Open PR #' + prUrl.replace(/.*\//, '') : '';
+    var branch = it.branch || (last && last.branch) || '';
+
+    // ---- Header: the process, the item, what it is, and what you can do.
+    var src = it.source === 'slack' ? 'via Slack' : it.source === 'trigger' ? 'came in automatically' : it.source === 'schedule' ? 'on its schedule' : '';
+    var day = dayLabel(it.createdAt);
+    var started = 'started ' + (day === 'Today' ? 'today ' : day === 'Yesterday' ? 'yesterday ' : day + ', ') + clock(it.createdAt);
+    var noteOpen = false, sendOpen = false;
+    var noteBox = h('div', { class: 'pi-note', hidden: true });
+    var noteText = h('textarea', { rows: '2', placeholder: 'A note everyone on this item sees in its journey', 'aria-label': 'Note' });
+    var noteSave = h('button', { class: 'btn small go', text: 'Add the note' });
+    noteSave.onclick = function () { act('note', { note: noteText.value }, 'Adding…', noteSave); };
+    append(noteBox, [noteText, h('div', { class: 'row', style: 'gap:6px' }, noteSave, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: function () { toggleNote(false); } }))]);
+    var toggleNote = function (open) { noteOpen = open; noteBox.hidden = !open; if (open) noteText.focus(); };
+
+    var moveRow = null;
+    var menuItems = [];
+    if (active && it.canSteer && it.startsAt) menuItems.push(['Start now', function () { act('startNow', {}, 'Starting…'); }]);
+    if (it.taskId && stage.kind === 'team') menuItems.push(['Open the task', function () { openTask(it.taskId); }]);
+    if (active && it.canSteer && stage.kind !== 'people' && !it.blocked) menuItems.push(['Start this stage again', function () { act('retry', {}, 'Starting…'); }]);
+    if (active && it.canSteer) {
+      var to = h('select', { 'aria-label': 'Move to stage', style: 'width:auto' }, p.stages.map(function (s, i) { return h('option', { value: String(i), text: (i + 1) + '. ' + s.name, selected: i === it.stageIndex }); }));
+      var moveBtn = h('button', { class: 'btn small', text: 'Move it' });
+      moveBtn.onclick = function () { act('move', { stageIndex: Number(to.value) }, 'Moving…', moveBtn); };
+      moveRow = h('div', { class: 'pi-move row', hidden: true }, h('span', { class: 'muted', style: 'font-size:13px', text: 'Move it to' }), to, moveBtn,
+        h('button', { class: 'btn small quiet', text: 'Cancel', onclick: function () { moveRow.hidden = true; } }));
+      menuItems.push(['Move to another stage…', function () { moveRow.hidden = false; to.focus(); }]);
+    }
+    if (active && (it.canSteer || it.canDecide)) menuItems.push(['Stop it', function () { if (confirm('Stop "' + it.title + '"? Work in progress is cancelled; what it produced stays.')) act('stop', {}, 'Stopping…'); }, true]);
+    var more = moreMenu(menuItems);
+    var brief1 = clip(firstLine(it.brief), 220);
+    var header = h('header', { class: 'pi-head' },
+      h('div', { class: 'pi-top' },
+        h('div', { class: 'pi-titles' },
+          h('span', { class: 'pi-crumb' },
+            h('button', { class: 'linkish', text: p.name, onclick: function () { go('process', { processId: p.id, processItem: null }); } }),
+            ' · ' + ['from ' + it.initiator.name + (src ? ' ' + src : ''), started, p.codeIn ? 'code in ' + p.codeIn.name : null].filter(Boolean).join(' · ')),
+          h('h1', { class: 'pi-title', text: it.title }),
+          brief1 && brief1 !== it.title ? h('span', { class: 'pi-brief', text: brief1 }) : null),
+        h('div', { class: 'row', style: 'gap:10px' },
+          h('span', { class: 'pi-owner', text: 'Owner · ' + p.owner.name }),
+          h('button', { class: 'btn', text: 'Add a note', onclick: function () { toggleNote(!noteOpen); } }),
+          more)),
+      noteBox, moveRow,
+      h('ol', { class: 'pi-track', 'aria-label': 'Stages', style: '--n:' + Math.min(p.stages.length, 6) }, p.stages.map(function (s, i) {
+        var ph = phase(i), r = redos(s);
+        var said = ph === 'done' ? 'Done' + (spans[s.id] ? ' · ' + dur(spans[s.id]) : '') + (r ? ', ' + plural(r, 'redo', 'redos') : '')
+          : ph === 'stuck' ? (it.status === 'stopped' ? 'Stopped here' : 'Stuck')
+            : ph === 'need' ? 'Waiting on you'
+              : ph === 'now' ? (turn ? 'Waiting on ' + waitsOn : it.startsAt ? 'Starts ' + new Date(it.startsAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : it.stageNote || (s.kind === 'people' ? 'Waiting on ' + who(s) : 'Working'))
+                : timingText(s) || (i === it.stageIndex + 1 && active ? 'Next' : 'Later');
+        return h('li', { class: 'pi-stage ' + ph, 'aria-current': i === it.stageIndex && active ? 'step' : null },
+          h('span', { class: 'pi-sname' }, h('span', { class: 'pi-num', 'aria-hidden': 'true' }, ph === 'done' ? icon('tick', 11) : String(i + 1)), h('b', { text: s.name })),
+          h('span', { class: 'pi-swho', text: whoLine(s) }),
+          h('span', { class: 'pi-sstate', text: said }));
+      })));
+
+    // ---- The band: your call, or why it's stuck, or how it ended.
+    var band = null;
+    var votes = it.votes || [];
+    var need = stage.kind === 'people' ? needOf(stage) : 1;
+    var left = Math.max(1, need - votes.length);
+    var nextStage = p.stages[it.stageIndex + 1];
+    if (active && it.canDecide && stage.kind === 'people') {
+      var rule = ruleText(stage);
+      var sub = [who(stage) + (rule ? ', ' + rule : '') + '.'];
+      if (votes.length) sub.push(votes.map(function (v) { return v.by + ' approved at ' + clock(v.at); }).join('; ') + (left === 1 ? ', so yours would settle it.' : '.'));
+      sub.push('Waiting ' + dur(now_ - enteredAt) + '.');
+      var earlier = p.stages.slice(0, it.stageIndex);
+      var pick = backIndex(it.stageIndex);
+      var why = h('textarea', { rows: '2', id: 'pi-why', placeholder: 'What needs to change, so the stage it goes back to knows' });
+      var sendGo = h('button', { class: 'btn go' });
+      var picks = h('div', { class: 'row', role: 'group', 'aria-label': 'Send back to', style: 'gap:6px' });
+      var paintPicks = function () {
+        fill(picks, earlier.map(function (s, i) {
+          return h('button', { type: 'button', class: 'pi-pick', 'aria-pressed': i === pick ? 'true' : 'false', text: s.name, onclick: function () { pick = i; paintPicks(); } });
+        }));
+        sendGo.textContent = 'Send back to ' + (p.stages[pick] || {}).name;
+      };
+      paintPicks();
+      sendGo.onclick = function () {
+        if (!why.value.trim()) { fill(out, msg({ ok: false, error: 'Say what needs to change, so the stage it goes back to knows.' })); why.focus(); return; }
+        var wanted = pick;
+        act('sendBack', { note: why.value, stageIndex: wanted }, 'Sending back…', sendGo, function (x) {
+          var landed = x.item && typeof x.item.stageIndex === 'number' ? x.item.stageIndex : wanted;
+          state.procFlash = { id: it.id, text: landed === wanted ? 'Sent back to ' + p.stages[wanted].name + '.' : 'Sent back to ' + (p.stages[landed] || {}).name + ', where this stage sends things back.' };
+        });
+      };
+      var sendBox = h('div', { class: 'pi-send', hidden: true },
+        earlier.length > 1 ? [h('span', { class: 'pi-bandsub', text: 'Send it back to' }), picks] : null,
+        h('label', { for: 'pi-why', class: 'pi-bandsub', text: 'What needs to change' }), why,
+        h('div', { class: 'row', style: 'gap:8px' }, sendGo, h('button', { class: 'btn', text: 'Cancel', onclick: function () { toggleSend(false); } })));
+      var sendBtn = h('button', { class: 'btn', text: 'Send back…', 'aria-expanded': 'false' });
+      var toggleSend = function (open) { sendOpen = open; sendBox.hidden = !open; sendBtn.setAttribute('aria-expanded', open ? 'true' : 'false'); if (open) why.focus(); };
+      sendBtn.onclick = function () { toggleSend(!sendOpen); };
+      var approve = h('button', { class: 'btn go', text: 'Approve' });
+      approve.onclick = function () { act('approve', {}, 'Approving…', approve); };
+      band = h('section', { class: 'pi-band need', 'aria-label': 'Your call' },
+        h('div', { class: 'pi-bandrow' },
+          h('span', { class: 'pi-bandic' }, icon('check', 18)),
+          h('div', { class: 'pi-bandtext' }, h('b', { text: 'Your call: ' + stage.name.charAt(0).toLowerCase() + stage.name.slice(1) }), h('span', { class: 'pi-bandsub', text: sub.join(' ') })),
+          h('div', { class: 'row', style: 'gap:8px' }, approve, earlier.length ? sendBtn : null,
+            prUrl ? h('a', { class: 'btn', href: prUrl, target: '_blank', rel: 'noopener', text: prLabel }) : null)),
+        earlier.length ? sendBox : null);
+    } else if (turn) {
+      var primary = stage.kind === 'worker' ? (stage.workerId ? 'Open ' + who(stage) : null) : it.taskId ? (it.ownerTurn === 'pack' ? 'Review the pack' : 'Open the task') : null;
+      band = h('section', { class: 'pi-band ' + (it.yourTurn ? 'need' : 'wait'), 'aria-label': it.yourTurn ? 'Your turn' : 'Waiting' },
+        h('div', { class: 'pi-bandrow' },
+          h('span', { class: 'pi-bandic' }, icon(it.yourTurn ? 'check' : 'clock', 18)),
+          h('div', { class: 'pi-bandtext' },
+            h('b', { text: it.yourTurn ? 'Your turn: ' + turn[0] : 'Waiting on ' + waitsOn + ': ' + turn[0] }),
+            h('span', { class: 'pi-bandsub', text: stage.name + ' · ' + who(stage) + (it.yourTurn ? ' stopped for you' : ' stopped for ' + waitsOn) + '. Waiting ' + dur(now_ - enteredAt) + '.' })),
+          h('div', { class: 'row', style: 'gap:8px' },
+            primary ? h('button', { class: 'btn' + (it.yourTurn ? ' go' : ''), text: primary, onclick: openStage }) : null,
+            prUrl ? h('a', { class: 'btn', href: prUrl, target: '_blank', rel: 'noopener', text: prLabel }) : null)));
+    } else if (active && it.blocked) {
+      band = h('section', { class: 'pi-band bad', 'aria-label': 'Stuck' },
+        h('div', { class: 'pi-bandrow' },
+          h('span', { class: 'pi-bandic' }, icon('alert', 18)),
+          h('div', { class: 'pi-bandtext' }, h('b', { text: 'Stuck at ' + stage.name }), h('span', { class: 'pi-bandsub', text: it.blocked })),
+          h('div', { class: 'row', style: 'gap:8px' },
+            it.canSteer && stage.kind !== 'people' ? h('button', { class: 'btn go', text: 'Start it again', onclick: function (e) { act('retry', {}, 'Starting…', e.target); } }) : null,
+            it.taskId && stage.kind === 'team' ? h('button', { class: 'btn', text: 'Open the task', onclick: function () { openTask(it.taskId); } }) : null,
+            moveRow ? h('button', { class: 'btn', text: 'Move it…', onclick: function () { moveRow.hidden = false; } }) : null)));
+    } else if (!active) {
+      var stopEv = it.history.filter(function (e) { return e.kind === 'stopped'; }).slice(-1)[0];
+      band = h('section', { class: 'pi-band ' + (it.status === 'done' ? 'ok' : 'off') },
+        h('div', { class: 'pi-bandrow' },
+          h('span', { class: 'pi-bandic' }, icon(it.status === 'done' ? 'tick' : 'x', 18)),
+          h('div', { class: 'pi-bandtext' }, h('b', { text: it.status === 'done' ? 'Made it through ' + p.name : 'Stopped at ' + stage.name }),
+            h('span', { class: 'pi-bandsub', text: (it.status === 'stopped' && stopEv ? 'Stopped by ' + (isMe(stopEv.by) ? 'you' : stopEv.by) + (stopEv.note ? ': ' + stopEv.note : '') + ' · ' : '') + (it.finishedAt ? stamp(it.finishedAt) + ' · ' : '') + dur((it.finishedAt || it.updatedAt) - it.createdAt) + ' end to end' })),
+          prUrl ? h('a', { class: 'btn', href: prUrl, target: '_blank', rel: 'noopener', text: prLabel }) : null));
+    }
+
+    // ---- What happens next, in sentences.
+    var nextSteps = [];
+    if (!active) nextSteps.push(it.status === 'done' ? 'Nothing: it made it through.' : 'Nothing: it was stopped.');
+    else {
+      if (it.blocked) nextSteps.push('It waits until someone starts ' + stage.name + ' again, moves it or stops it.');
+      else if (stage.kind === 'people') {
+        if (it.canDecide) nextSteps.push((left === 1 ? 'Your approval settles it' : 'It needs ' + left + ' more approvals, yours included') + (left === 1 ? (nextStage ? ', and it moves to ' + nextStage.name + '.' : ', and it is done.') : '.'));
+        else nextSteps.push('Waiting on ' + who(stage) + (need > 1 ? ': ' + left + ' more to approve.' : ' to decide.'));
+        if (it.stageIndex > 0) nextSteps.push('Sent back, it returns to ' + p.stages[backIndex(it.stageIndex)].name + ' with what they said.');
+      } else if (it.startsAt) nextSteps.push(stage.name + ' starts ' + new Date(it.startsAt).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' }) + '.');
+      else if (turn) nextSteps.push(stage.name + ' goes on once ' + (it.yourTurn ? 'you ' + turn[0] : waitsOn + ' ' + turn[1]) + '.');
+      else nextSteps.push(who(stage) + ' finishes ' + stage.name + (stage.kind === 'team' ? ', and its owner signs off the pack.' : '.'));
+      p.stages.slice(it.stageIndex + 1, it.stageIndex + 3).forEach(function (s) {
+        var t = timingText(s);
+        nextSteps.push(s.name + (s.kind === 'people' ? ': ' + who(s) + ' decide' : ': ' + who(s)) + (t ? ', ' + t : '') + '.');
+      });
+      if (it.stageIndex + 3 >= p.stages.length) nextSteps.push('Then it is done, and ' + (isMe(it.initiator.name) ? 'you are' : it.initiator.name + ' is') + ' told.');
+    }
+
+    // ---- Tabs.
+    var journeyRows = [];
+    var at_ = null;
+    it.history.forEach(function (e, n) {
+      var prev = it.history[n - 1];
+      var row = { when: stamp(e.at), k: 'done', title: '', detail: e.note || '' };
+      if (e.kind === 'submitted') { row.title = 'Put in by ' + (e.by || it.initiator.name); row.k = 'start'; row.detail = src ? 'Came in ' + src + '.' : brief1; }
+      else if (e.kind === 'entered') {
+        var s = stageById(e.stageId) || {};
+        at_ = e.stageId;
+        var again = prev && (prev.kind === 'sentBack' || prev.kind === 'moved' || prev.kind === 'retried');
+        if (again) return;
+        row.title = (s.name || 'A stage') + ' started';
+        row.detail = s.kind ? whoLine(s) : '';
+      } else if (e.kind === 'finished') {
+        row.title = stageName(e.stageId) + ' handed on';
+        row.art = arts.filter(function (a) { return a.stageId === e.stageId && Math.abs(a.at - e.at) < 5000; })[0] || null;
+      }
+      else if (e.kind === 'approved') { row.title = (isMe(e.by) ? 'You' : e.by) + ' approved' + (at_ ? ' ' + stageName(at_) : ''); }
+      else if (e.kind === 'sentBack') { row.title = 'Sent back to ' + stageName(e.stageId) + ' by ' + (isMe(e.by) ? 'you' : e.by); row.k = 'redo'; row.tag = 'Redo'; row.detail = e.note ? '“' + e.note + '”' : ''; }
+      else if (e.kind === 'retried') { row.title = stageName(at_) + ' started again by ' + e.by; row.k = 'redo'; row.tag = 'Redo'; }
+      else if (e.kind === 'moved') { row.title = 'Moved to ' + stageName(e.stageId) + (e.by ? ' by ' + e.by : ''); row.k = 'note'; }
+      else if (e.kind === 'blocked') { row.title = 'Stuck at ' + stageName(e.stageId || at_); row.k = 'redo'; }
+      else if (e.kind === 'note') { row.title = 'Note from ' + (isMe(e.by) ? 'you' : e.by); row.k = 'note'; }
+      else if (e.kind === 'stopped') { row.title = 'Stopped by ' + e.by; row.k = 'redo'; }
+      else if (e.kind === 'done') { row.title = 'Made it through ' + p.name; }
+      else row.title = e.kind;
+      journeyRows.push(row);
+    });
+    if (active) journeyRows.push({ when: 'now', k: mineNow ? 'need' : it.blocked ? 'redo' : 'now', tag: 'Now', detail: nextSteps[0],
+      title: it.blocked ? 'Stuck at ' + stage.name : turn ? (it.yourTurn ? 'Your turn: ' + turn[0] : 'Waiting on ' + waitsOn + ': ' + turn[0]) : it.canDecide ? 'Waiting on you' : stage.name + (it.stageNote ? ': ' + it.stageNote : '') });
+
+    var nHanded = arts.reduce(function (n, a) { return n + 1 + (a.files || []).length; }, 0);
+    var stageWho = function (a) { var s = stageById(a.stageId); return s ? who(s) : ''; };
+
+    if (state.procItemFor !== it.id) { state.procItemTab = 'where'; state.procItemFor = it.id; }
+    var tab = state.procItemTab || 'where';
+    var TABS = [['where', it.status === 'done' ? 'Outcome' : 'Where it stands', 0], ['journey', 'Journey', journeyRows.length], ['files', 'Handed on', nHanded], ['brief', 'The request', 0]];
+    var tabs = h('div', { class: 'pi-tabs', role: 'tablist', 'aria-label': 'Item views' }, TABS.map(function (t) {
+      return h('button', { type: 'button', role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', onclick: function () { state.procItemTab = t[0]; render(); } },
+        t[1], t[2] ? h('span', { class: 'pi-count', text: String(t[2]) }) : null);
+    }));
+
+    var body;
+    if (tab === 'journey') {
+      body = h('ol', { class: 'pi-card pi-journey' }, journeyRows.map(function (j) {
+        return h('li', { class: j.k },
+          h('span', { class: 'pi-jdot', 'aria-hidden': 'true' }),
+          h('div', { class: 'pi-jbody' },
+            h('span', { class: 'pi-jhead' }, h('b', { text: j.title }), h('span', { class: 'faint', text: j.when }), j.tag ? h('span', { class: 'pi-tag ' + j.k, text: j.tag }) : null),
+            j.detail ? h('span', { class: 'pi-jdetail', text: clip(j.detail, 400) }) : null,
+            j.art ? fileList(j.art) : null));
+      }));
+    } else if (tab === 'files') {
+      body = arts.length ? h('div', { class: 'stack', style: 'gap:12px' },
+        allFiles.length > 1 ? h('div', { class: 'row' }, h('button', { class: 'btn small', text: 'Download all ' + allFiles.length + ' files', onclick: downloadAll })) : null,
+        arts.slice().reverse().map(function (a) {
+          return h('section', { class: 'pi-card pi-art' },
+            h('div', { class: 'pi-arthead' },
+              h('div', { class: 'pi-vname' }, h('b', { text: a.title }), h('span', { class: 'faint', text: [a.stageName, stageWho(a), stamp(a.at)].filter(Boolean).join(' · ') })),
+              teamArt(a) ? h('button', { class: 'btn small quiet', text: 'Open the task', onclick: function () { openTask(a.taskId); } }) : null),
+            mdBlock(a.summary), fileList(a),
+            a.branch ? h('span', { class: 'faint' }, 'Code on ', h('code', { text: a.branch })) : null);
+        })) : h('div', { class: 'pi-card muted', text: 'Nothing handed on yet. Each stage’s pack shows here when it finishes.' });
+    } else if (tab === 'brief') {
+      body = h('div', { class: 'pi-card stack', style: 'gap:8px' },
+        h('span', { class: 'label', text: 'The request · from ' + it.initiator.name }),
+        h('p', { class: 'pi-req', text: it.brief }),
+        it.sourceUrl ? h('a', { href: it.sourceUrl, target: '_blank', rel: 'noopener', text: 'Where it came from' }) : null,
+        it.fromItemId ? h('span', { class: 'faint', text: 'Reopened from an earlier item.' }) : null);
+    } else {
+      var lead = last ? [mdBlock(last.summary, true), fileList(last)]
+        : h('div', { class: 'pi-lead' }, h('p', { text: it.blocked || (active ? (stage.kind === 'people' ? 'Nothing handed on yet: ' + who(stage) + ' decide at ' + stage.name + ' on the request itself.' : 'Nothing handed on yet. ' + who(stage) + ' is on ' + stage.name + '.') : 'It ended before any stage handed anything on.') }));
+      var chips = [];
+      if (prUrl) chips.push(h('a', { class: 'pi-chip', href: prUrl, target: '_blank', rel: 'noopener', text: prLabel.replace(/^Open /, '') }));
+      if (branch) chips.push(h('span', { class: 'pi-chip' }, 'Branch ', h('code', { text: branch })));
+      if (last && teamArt(last)) chips.push(h('button', { type: 'button', class: 'pi-chip', text: 'Open ' + last.stageName + '’s task', onclick: function () { openTask(last.taskId); } }));
+      if (!active && allFiles.length > 1) chips.push(h('button', { type: 'button', class: 'pi-chip', text: 'Download everything · ' + plural(allFiles.length, 'file', 'files'), onclick: downloadAll }));
+      var cards = [];
+      if (active && stage.kind === 'people') {
+        var rows = [];
+        var seen = {};
+        votes.forEach(function (v) { seen[v.by.toLowerCase()] = 1; rows.push({ name: v.by, note: clock(v.at) + (v.note ? ' · “' + v.note + '”' : ''), st: 'ok', said: 'Approved' }); });
+        (stage.approvers || []).forEach(function (a) {
+          if (seen[a.name.toLowerCase()]) return;
+          var you = isMe(a.name);
+          rows.push({ name: a.name, note: you && it.canDecide ? 'Asked in Slack and here' : '', st: votes.length >= need ? 'off' : 'need', said: votes.length >= need ? 'Not needed' : 'Waiting' });
+        });
+        (stage.approverGroups || []).forEach(function (g) { rows.push({ name: 'Anyone in ' + g.name, note: '', st: 'need', said: 'Waiting', group: true }); });
+        cards.push(h('div', { class: 'pi-card pi-mini' },
+          h('span', { class: 'label pi-need', text: need > 1 ? 'The vote · ' + votes.length + ' of ' + need + ' needed' : 'The decision · ' + (ruleText(stage) || 'theirs') }),
+          rows.map(function (r) {
+            return h('div', { class: 'pi-voter' }, r.group ? h('span', { class: 'pi-badge P', text: 'G', 'aria-hidden': 'true' }) : avatar('', r.name, 's'),
+              h('span', { class: 'pi-vname' }, h('span', { text: isMe(r.name) ? 'You' : r.name }), r.note ? h('span', { class: 'faint', text: r.note }) : null),
+              h('span', { class: 'pi-tag ' + r.st, text: r.said }));
+          })));
+      } else if (active) {
+        cards.push(h('div', { class: 'pi-card pi-mini' },
+          h('span', { class: 'label', text: 'Now · ' + stage.name }),
+          h('span', { text: turn ? 'Waiting on ' + (it.yourTurn ? 'you' : waitsOn) + ' to ' + turn[0] + '.' : it.startsAt ? it.stageNote || 'Waiting to start.' : who(stage) + (stage.kind === 'people' ? ' decide' : !it.stageNote || it.stageNote === 'Working' ? ' is on it' : ': ' + it.stageNote) + '.' }),
+          h('span', { class: 'faint', text: 'At this stage ' + dur(now_ - enteredAt) + (redos(stage) ? ' · ' + plural(redos(stage), 'redo', 'redos') : '') }),
+          it.taskId && stage.kind === 'team' ? h('button', { class: 'btn small', style: 'align-self:flex-start', text: 'Open the task', onclick: function () { openTask(it.taskId); } }) : null));
+      }
+      cards.push(h('div', { class: 'pi-card pi-mini' }, h('span', { class: 'label', text: 'Handed on so far' }),
+        arts.length ? arts.map(function (a) { return h('div', { class: 'pi-handed' }, h('b', { text: a.stageName }), h('span', { class: 'muted', text: clip(firstLine(a.summary), 160) })); })
+          : h('span', { class: 'muted', text: 'Nothing yet.' })));
+      cards.push(h('div', { class: 'pi-card pi-mini' }, h('span', { class: 'label pi-go', text: 'What happens next' }),
+        nextSteps.map(function (x) { return h('div', { class: 'pi-nextrow' }, h('span', { class: 'pi-ndot', 'aria-hidden': 'true' }), h('span', { text: x })); })));
+      var standLabel = it.status === 'done' ? 'The outcome' : it.status === 'stopped' ? 'Where it stopped' : 'Where it stands';
+      var stand = h('div', { class: 'pi-card pi-stand' },
+        h('span', { class: 'label', text: standLabel + (last ? ' · from ' + last.stageName : '') }),
+        lead,
+        chips.length ? h('div', { class: 'row', style: 'gap:8px' }, chips) : null);
+      // Finished: the outcome, then a line per earlier stage that opens to what it handed on.
+      body = active ? h('div', { class: 'stack', style: 'gap:14px' }, stand, h('div', { class: 'pi-cards' }, cards))
+        : h('div', { class: 'stack', style: 'gap:14px' }, stand,
+          arts.length > 1 ? h('div', { class: 'pi-card pi-earlier' },
+            h('span', { class: 'label', text: 'Along the way' }),
+            arts.slice(0, -1).map(function (a) {
+              var n = (a.files || []).length;
+              return h('details', { class: 'pi-step' },
+                h('summary', null, h('b', { text: a.stageName }), h('span', { class: 'faint', text: [stageWho(a), n ? plural(n, 'file', 'files') : null, stamp(a.at)].filter(Boolean).join(' · ') })),
+                h('div', { class: 'pi-stepbody' }, a.title !== a.stageName ? h('b', { text: a.title }) : null, mdBlock(a.summary), fileList(a),
+                  teamArt(a) ? h('button', { class: 'btn small quiet', style: 'align-self:flex-start', text: 'Open the task', onclick: function () { openTask(a.taskId); } }) : null));
+            })) : null);
+    }
+
+    // ---- Beside it: who does each stage, and where the time went.
+    var crew = h('div', { class: 'pi-card pi-side' }, h('span', { class: 'label', text: 'Who does what' }), p.stages.map(function (s, i) {
+      var ph = phase(i), t = spans[s.id];
+      var took = ph === 'done' ? (t ? dur(t) : 'done') : ph === 'next' ? (i === it.stageIndex + 1 && active ? 'next' : '') : t ? dur(t) + (active ? ' so far' : '') : '';
+      return h('div', { class: 'pi-crew' + (i === it.stageIndex && active ? ' on' : '') },
+        h('span', { class: 'pi-badge ' + KIND_LETTER[s.kind], text: KIND_LETTER[s.kind], title: KIND_WORD[s.kind] }),
+        h('span', { class: 'pi-vname' }, h('span', { class: 'pi-cstage', text: s.name }), h('span', { class: 'faint', text: whoLine(s) })),
+        h('span', { class: 'pi-took', text: took }));
+    }));
+    var total = Math.max(0, (it.finishedAt || (active ? now_ : it.updatedAt)) - it.createdAt);
+    var timed = p.stages.filter(function (s) { return spans[s.id] > 0; });
+    var timeCard = h('div', { class: 'pi-card pi-side' }, h('span', { class: 'label', text: 'Time so far' }),
+      timed.length ? h('div', { class: 'pi-bar', role: 'img', 'aria-label': 'Time in each stage' }, timed.map(function (s) {
+        return h('span', { class: KIND_LETTER[s.kind], style: 'flex:' + Math.max(1, Math.round(spans[s.id] / 60000)), title: s.name + ' · ' + dur(spans[s.id]) });
+      })) : null,
+      h('span', { class: 'faint', text: [dur(total) + ' in all'].concat(timed.map(function (s) {
+        var r = redos(s);
+        return s.name + ' ' + dur(spans[s.id]) + (active && s.id === stage.id ? ' so far' : '') + (r ? ', including ' + (r === 1 ? 'one redo' : r + ' redos') : '');
+      })).join(' · ') }));
+
+    var page = h('div', { class: 'pi-page' }, header, out, band,
+      h('div', { class: 'pi-cols' },
+        h('div', { class: 'pi-main' }, tabs, body),
+        h('aside', { class: 'pi-aside', 'aria-label': 'Who does each stage' }, crew, timeCard)));
+
+    // Keep it current while it's open, unless you're in the middle of something.
+    var editing = function () {
+      var el = document.activeElement;
+      if (el && page.contains(el) && (el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.tagName === 'INPUT')) return true;
+      if (noteOpen || (moveRow && !moveRow.hidden) || sendOpen) return true;
+      return !!page.querySelector('.pi-menu:not([hidden])');
+    };
+    var painted = Date.now();
+    var tick = function () {
+      setTimeout(function () {
+        if (!page.isConnected || !active) return;
+        if (editing()) { tick(); return; }
+        api('GET', '/api/processes/' + encodeURIComponent(p.id)).then(function (r) {
+          if (!page.isConnected) return;
+          var fresh = r && r.ok !== false ? (r.items || []).filter(function (x) { return x.id === it.id; })[0] : null;
+          if (!fresh || editing() || (fresh.updatedAt === it.updatedAt && Date.now() - painted < 60000)) { tick(); return; }
+          page.replaceWith(itemPage(r.process, fresh, procWho(r)));
+        }, function () { tick(); });
+      }, 10000);
+    };
+    tick();
+    return page;
+  }
+
+  /// A stage's timing in words: "2 weeks after the stage before · weekly, 4 times".
+  function timingText(s) {
+    var span = function (d) { return d % 7 === 0 ? plural(d / 7, 'week', 'weeks') : plural(d, 'day', 'days'); };
+    var parts = [];
+    if (s.delayDays) parts.push(span(s.delayDays) + ' after the stage before');
+    if (s.repeat) parts.push((s.repeat.everyDays === 7 ? 'weekly' : 'every ' + span(s.repeat.everyDays)) + ', ' + s.repeat.times + ' times');
+    return parts.join(' · ');
+  }
+
+  /// Who the org knows: its people and its groups, fetched once a page.
+  var directoryCache = null;
+  function directory() {
+    if (!directoryCache) directoryCache = api('GET', '/api/directory').then(function (x) { return x && x.ok !== false ? x : { people: [], groups: [] }; }, function () { return { people: [], groups: [] }; });
+    return directoryCache;
+  }
+
+  /// A dropdown of people (and groups, when onGroup is given) that opens on
+  /// click and narrows as you type: groups first, then the people the org
+  /// knows, then anyone else in Slack. Calls pick with { name, slackUserId }
+  /// and onGroup with { id, name }.
+  function personPicker(label, pick, opts) {
+    opts = opts || {};
+    var q = h('input', { type: 'text', placeholder: opts.onGroup ? 'Pick a person or a group' : 'Pick a person', 'aria-label': label, autocomplete: 'off', role: 'combobox', 'aria-expanded': 'false' });
+    var list = h('div', { class: 'pp-list', role: 'listbox' });
+    var box = h('div', { class: 'pp' }, q, list);
+    var timer = null, seq = 0;
+    var close = function () { list.textContent = ''; q.setAttribute('aria-expanded', 'false'); };
+    var choose = function (fn, v) { close(); q.value = ''; fn(v); };
+    var option = function (main, sub, fn) { return h('button', { type: 'button', role: 'option', class: 'pp-opt', onmousedown: function (e) { e.preventDefault(); }, onclick: fn }, main, sub ? h('span', { class: 'pp-sub', text: sub }) : null); };
+    var draw = function () {
+      var term = q.value.trim().toLowerCase();
+      var mine = ++seq;
+      directory().then(function (d) {
+        if (mine !== seq) return;
+        var has = function (n) { return !term || n.toLowerCase().indexOf(term) >= 0; };
+        var groups = opts.onGroup ? d.groups.filter(function (g) { return has(g.name); }) : [];
+        var people = d.people.filter(function (p) { return has(p.name); }).slice(0, 8);
+        var items = [];
+        if (groups.length) items.push(h('div', { class: 'pp-head', text: 'Groups' }));
+        groups.forEach(function (g) {
+          items.push(option(h('span', { class: 'pp-main' }, h('span', { class: 'pp-gi', 'aria-hidden': 'true' }, icon('team', 14)), h('span', { class: 'pp-text' }, h('b', { text: g.name }),
+            h('span', { class: 'pp-sub', text: plural(g.members.length, 'person', 'people') + ' · ' + g.members.slice(0, 4).map(function (m) { return m.name; }).join(', ') + (g.members.length > 4 ? '…' : '') }))), null,
+            function () { choose(opts.onGroup, { id: g.id, name: g.name }); }));
+        });
+        if (people.length) items.push(h('div', { class: 'pp-head', text: 'People' }));
+        people.forEach(function (p) { items.push(option(h('span', { class: 'pp-main' }, avatar(p.slackUserId, p.name, 's'), h('span', { class: 'pp-text' }, h('b', { text: p.name }))), null, function () { choose(pick, p); })); });
+        var shown = function (extra) {
+          var all = items.concat(extra);
+          if (term.length >= 2) all.push(option(h('span', { class: 'pp-main' }, h('span', { class: 'pp-text' }, h('b', { text: 'Use “' + q.value.trim() + '”' }), h('span', { class: 'pp-sub', text: 'Not in Slack, so no DMs' }))), null, function () { choose(pick, { name: q.value.trim() }); }));
+          if (!all.length) all.push(h('div', { class: 'pp-head', text: 'Type a name to search Slack' }));
+          fill(list, all);
+          q.setAttribute('aria-expanded', 'true');
+        };
+        shown([]);
+        // Anyone else in the workspace, once there's something to search for.
+        if (term.length < 2) return;
+        clearTimeout(timer);
+        timer = setTimeout(function () {
+          api('GET', '/api/slack-people?q=' + encodeURIComponent(term)).then(function (x) {
+            if (mine !== seq) return;
+            var known = {};
+            d.people.forEach(function (p) { known[p.slackUserId] = true; });
+            var more = ((x && x.people) || []).filter(function (p) { return !known[p.id]; });
+            if (!more.length) return;
+            shown([h('div', { class: 'pp-head', text: 'Others in Slack' })].concat(more.map(function (p) {
+              return option(h('span', { class: 'pp-main' }, avatar(p.id, p.name, 's'), h('span', { class: 'pp-text' }, h('b', { text: p.name }), h('span', { class: 'pp-sub', text: '@' + p.handle }))), null, function () { choose(pick, { name: p.name, slackUserId: p.id }); });
+            })));
+          });
+        }, 200);
+      });
+    };
+    q.onfocus = draw;
+    q.oninput = draw;
+    q.onblur = function () { setTimeout(close, 150); };
+    q.onkeydown = function (e) {
+      if (e.key === 'Escape') { close(); q.blur(); }
+      if (e.key === 'ArrowDown') { var first = list.querySelector('.pp-opt'); if (first) { e.preventDefault(); first.focus(); } }
+    };
+    list.onkeydown = function (e) {
+      var opts_ = [].slice.call(list.querySelectorAll('.pp-opt'));
+      var at = opts_.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown' && at < opts_.length - 1) { e.preventDefault(); opts_[at + 1].focus(); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); if (at > 0) opts_[at - 1].focus(); else q.focus(); }
+      if (e.key === 'Escape') { close(); q.focus(); }
+    };
+    return box;
+  }
+
+  /// Words that say what something is about, for matching a stage to who
+  /// could do it: lower case, four letters or more, minus the filler.
+  var MATCH_NOISE = { with: 1, that: 1, this: 1, from: 1, what: 1, when: 1, them: 1, they: 1, each: 1, into: 1, your: 1, their: 1, have: 1, will: 1, more: 1, says: 1, writer: 1, analyst: 1, reviewer: 1, manager: 1, lead: 1, specialist: 1, engineer: 1, builder: 1, turns: 1, makes: 1, write: 1, writes: 1, stage: 1, team: 1, work: 1, needs: 1, needed: 1, about: 1, should: 1 };
+  function matchWords(text) {
+    var out = {};
+    String(text || '').toLowerCase().split(/[^a-z0-9/]+/).forEach(function (w) {
+      if (w.length < 4 || MATCH_NOISE[w]) return;
+      out[w.replace(/(ing|ers|er|es|s)$/, '')] = w;
+    });
+    return out;
+  }
+
+  /// Pick who does a stage: each option says what it does, the best fits for
+  /// this stage come first with the words they share, and a box narrows it.
+  /// items: { id, name, about, text }; current: an id; onPick(id).
+  /// roleHint: who does the stage, as the picture it was drafted from
+  /// says, shown while nobody is picked.
+  function doerPicker(label, items, current, stageText, onPick, roleHint) {
+    var want = matchWords(stageText);
+    var ranked = items.map(function (it) {
+      var have = matchWords(it.text);
+      var hits = Object.keys(want).filter(function (k) { return have[k]; }).map(function (k) { return want[k]; });
+      return { it: it, hits: hits };
+    });
+    var good = ranked.filter(function (r) { return r.hits.length >= 2; }).sort(function (a, b) { return b.hits.length - a.hits.length; }).slice(0, 3);
+    var chosen = items.filter(function (x) { return x.id === current; })[0];
+    var wrap = h('div', { class: 'dp' });
+    var panel = null;
+    var close = function () { if (panel) { panel.remove(); panel = null; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('mousedown', outside); } };
+    var outside = function (e) { if (!wrap.contains(e.target)) close(); };
+    var face = function (it) { return avatar(it.id, it.name, 'm'); };
+    var btn = h('button', { type: 'button', class: 'dp-btn', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': label },
+      chosen ? face(chosen) : h('span', { class: 'dp-none', 'aria-hidden': 'true' }, icon('plus', 16)),
+      h('span', { class: 'dp-text' }, h('b', { text: chosen ? chosen.name : label }), h('span', { class: 'dp-about', text: chosen ? chosen.about || '' : (roleHint ? 'The picture says: ' + roleHint + '. ' : '') + (good.length ? plural(good.length, 'good match', 'good matches') + ' for this stage' : 'See what each one does') })),
+      h('span', { class: 'dp-chev', 'aria-hidden': 'true' }, icon('back', 14)));
+    var open = function () {
+      if (panel) { close(); return; }
+      var q = h('input', { type: 'text', placeholder: 'Search by name or what it does', 'aria-label': 'Search', autocomplete: 'off' });
+      var list = h('div', { class: 'dp-list', role: 'listbox' });
+      var option = function (r, why) {
+        return h('button', { type: 'button', role: 'option', class: 'dp-opt' + (r.it.id === current ? ' on' : ''), 'aria-selected': r.it.id === current ? 'true' : 'false', onclick: function () { close(); onPick(r.it.id); } },
+          face(r.it),
+          h('span', { class: 'dp-text' }, h('b', { text: r.it.name }), r.it.about ? h('span', { class: 'dp-about', text: r.it.about }) : null,
+            why && r.hits.length ? h('span', { class: 'dp-why' }, icon('tick', 11), 'Fits: ' + r.hits.slice(0, 4).join(', ')) : null),
+          r.it.id === current ? h('span', { class: 'dp-on', 'aria-hidden': 'true' }, icon('tick', 14)) : null);
+      };
+      var drawList = function () {
+        var term = q.value.trim().toLowerCase();
+        var has = function (r) { return !term || (r.it.name + ' ' + (r.it.text || '')).toLowerCase().indexOf(term) >= 0; };
+        var out = [];
+        var top = term ? [] : good;
+        if (top.length) out.push(h('div', { class: 'pp-head', text: 'Good matches for this stage' }), top.map(function (r) { return option(r, true); }));
+        var rest = ranked.filter(function (r) { return has(r) && top.indexOf(r) < 0; }).sort(function (a, b) { return a.it.name.localeCompare(b.it.name); });
+        if (rest.length) out.push(h('div', { class: 'pp-head', text: top.length ? 'Everyone else' : 'All' }), rest.map(function (r) { return option(r, !!term); }));
+        if (!out.length) out.push(h('p', { class: 'faint', style: 'margin:10px', text: 'Nothing matches “' + q.value.trim() + '”.' }));
+        fill(list, out);
+      };
+      q.oninput = drawList;
+      q.onkeydown = function (e) { if (e.key === 'Escape') { close(); btn.focus(); } if (e.key === 'ArrowDown') { var f = list.querySelector('.dp-opt'); if (f) { e.preventDefault(); f.focus(); } } };
+      list.onkeydown = function (e) {
+        var all = [].slice.call(list.querySelectorAll('.dp-opt')), at = all.indexOf(document.activeElement);
+        if (e.key === 'ArrowDown' && at < all.length - 1) { e.preventDefault(); all[at + 1].focus(); }
+        if (e.key === 'ArrowUp') { e.preventDefault(); if (at > 0) all[at - 1].focus(); else q.focus(); }
+        if (e.key === 'Escape') { close(); btn.focus(); }
+      };
+      drawList();
+      panel = h('div', { class: 'dp-panel' }, h('div', { class: 'dp-search' }, icon('search', 14), q), list);
+      wrap.appendChild(panel);
+      btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('mousedown', outside);
+      setTimeout(function () { q.focus(); }, 0);
+    };
+    btn.onclick = open;
+    append(wrap, btn);
+    return wrap;
+  }
+
+  function groupChip(g, remove) {
+    return h('span', { class: 'pp-chip group' }, h('span', { class: 'pp-gi', 'aria-hidden': 'true' }, icon('team', 12)), g.name, remove ? h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Remove ' + g.name, onclick: remove }, icon('x', 12)) : null);
+  }
+
+  function personChip(p, remove) {
+    return h('span', { class: 'pp-chip' }, avatar(p.slackUserId || p.name, p.name, 's'), p.name, remove ? h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Remove ' + p.name, onclick: remove }, icon('x', 12)) : null);
+  }
+
+  /// The editor: the process as a map you can see (where work comes in,
+  /// each stage, done), and below it the one stage you picked. The map
+  /// wraps rather than scrolling sideways.
+  /// The process library: how SaaS teams commonly run work across teams, to
+  /// start from. A card per process by category; one opened says when to use
+  /// it, why each stage is there, and which of your teams fits each stage.
+  function viewProcLibrary() {
+    if (state.libId) return viewLibraryProcess();
+    return api('GET', '/api/process-library').then(function (r) {
+      if (r.ok === false) return [msg(r)];
+      var cats = [];
+      r.library.forEach(function (p) { if (cats.indexOf(p.category) < 0) cats.push(p.category); });
+      return [
+        head('Process library', 'Ways SaaS teams commonly run work that crosses teams. Each one says when to use it and why each stage is there, and suggests which of your teams fits each stage.',
+          h('button', { class: 'btn', onclick: fromImageDialog }, icon('image', 16), 'From an image'), 'Processes'),
+        h('div', { class: 'stack', style: 'gap:26px' }, cats.map(function (c) {
+          return h('section', { class: 'stack', style: 'gap:10px', 'aria-label': c },
+            h('h2', { class: 'section-title', text: c }),
+            h('div', { class: 'tmgrid' }, r.library.filter(function (p) { return p.category === c; }).map(function (p) {
+              var open_ = function () { go('proclib', { libId: p.id }); };
+              return openCard('tmcard prc', 'Look closer at ' + p.name, open_,
+                h('div', { style: 'min-width:0' }, h('span', { class: 'tmname', text: p.name }), h('p', { class: 'tmpurpose', text: p.summary })),
+                h('ol', { class: 'prc-strip', 'aria-label': 'Stages' }, p.stages.map(function (s) {
+                  return h('li', { class: s.kind }, h('span', { class: 'prc-ic', 'aria-hidden': 'true' }, icon(s.kind === 'people' ? 'person' : 'team', 13)), h('span', { class: 'prc-sn', text: s.name }));
+                })),
+                h('div', { class: 'tmfoot' },
+                  h('button', { class: 'btn small go', text: 'Use this', onclick: function (e) { e.stopPropagation(); go('processedit', { processId: null, processFrom: p.id }); } })));
+            })));
+        }))
+      ];
+    });
+  }
+
+  function viewLibraryProcess() {
+    return api('GET', '/api/process-library/' + encodeURIComponent(state.libId)).then(function (r) {
+      if (r.ok === false) return [msg(r)];
+      var p = r.process, fits = {};
+      (r.fits || []).forEach(function (f) { fits[f.key] = f; });
+      var use = h('button', { class: 'btn go', text: 'Use this process', onclick: function () { go('processedit', { processId: null, processFrom: p.id }); } });
+      var stages = h('ol', { class: 'lib-stages' }, p.stages.map(function (s, i) {
+        var f = fits[s.key] || {};
+        var suggest = s.kind === 'people'
+          ? h('div', { class: 'lib-fit' }, icon('person', 14), h('span', null, 'Usually decided by ', h('b', { text: s.who })))
+          : f.team
+            ? h('div', { class: 'lib-fit ok' }, icon('team', 14), h('span', null, h('b', { text: f.team.name }), ' fits. Led by your ', s.who.toLowerCase(), '.'))
+            : h('div', { class: 'lib-fit gap' }, icon('team', 14),
+              h('span', { style: 'flex:1;min-width:0' }, 'No team of yours fits yet. It needs: ', (s.crew || []).join(', '), '.'),
+              h('button', { class: 'btn small', text: 'Make this team', onclick: function () { go('newteam', { teamRunId: null, newTeamPrefill: { name: s.name, purpose: s.ask } }); } }));
+        return h('li', { class: 'lib-stage ' + s.kind },
+          h('span', { class: 'pm-num big ' + s.kind, text: String(i + 1) }),
+          h('div', { class: 'stack', style: 'gap:6px;min-width:0;flex:1' },
+            h('div', { class: 'row', style: 'gap:8px' }, h('b', { style: 'font-size:15px', text: s.name }), h('span', { class: 'pm-kind ' + s.kind, text: s.kind === 'team' ? 'Team' : 'Decision' })),
+            h('p', { style: 'margin:0', text: s.ask }),
+            h('p', { class: 'muted', style: 'margin:0;font-size:13px' }, h('i', { text: 'Why: ' }), s.why),
+            timingText(s) ? h('span', { class: 'pm-time' }, icon('clock', 12), timingText(s)) : null,
+            suggest));
+      }));
+      return [
+        h('header', { class: 'page-head' },
+          h('div', { style: 'min-width:0' },
+            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Processes', onclick: function () { go('processes'); } }), ' / ',
+              h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Library', onclick: function () { go('proclib', { libId: null }); } }), ' / ' + p.category),
+            h('h1', { class: 'page-title', text: p.name }),
+            h('p', { class: 'page-sub', text: p.summary })),
+          use),
+        h('div', { class: 'pm-body' },
+          h('div', { class: 'stack', style: 'gap:14px;flex:999 1 560px;min-width:0' }, stages),
+          h('aside', { class: 'pm-side' },
+            h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'label', text: 'When to use it' }), h('p', { style: 'margin:0;font-size:13.5px', text: p.about })),
+            h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'label', text: 'What goes in' }), h('p', { class: 'muted', style: 'margin:0;font-size:13.5px', text: p.intake })),
+            h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'label', text: 'What comes out' }), h('p', { class: 'muted', style: 'margin:0;font-size:13.5px', text: p.outcome }))))
+      ];
+    });
+  }
+
+  function viewProcessEdit() {
+    directoryCache = null;
+    var editing = !!state.processId;
+    if (state.processTemplate) { state.processFrom = 'idea-to-launch'; state.processTemplate = false; }
+    var from = editing ? null : state.processFrom;
+    state.processFrom = null;
+    // A draft read from a picture (fromImageDialog), unsaved: the editor
+    // opens with it once.
+    var fromPicture = editing ? null : state.processDraft;
+    state.processDraft = null;
+    return Promise.all([editing ? api('GET', '/api/processes/' + encodeURIComponent(state.processId)) : Promise.resolve(null), api('GET', '/api/teams'),
+      api('GET', '/api/process-library').catch(function () { return {}; }), from ? api('GET', '/api/process-library/' + encodeURIComponent(from)) : Promise.resolve(null),
+      api('GET', '/api/workers').catch(function () { return []; }), api('GET', '/api/repos').catch(function () { return { ok: false }; })]).then(function (r) {
+      if (r[0] && r[0].ok === false) return [msg(r[0])];
+      var places = r[5] && r[5].ok !== false ? r[5] : { repos: [], workspaces: [] };
+      var teams = Array.isArray(r[1]) ? r[1] : [];
+      var library = r[2] && r[2].library ? r[2].library : [];
+      var picked = r[3] && r[3].ok !== false ? r[3] : null;
+      var workers = (Array.isArray(r[4]) ? r[4] : []).filter(function (w) { return w.enabled; });
+      var teamName = {}, workerName = {};
+      teams.forEach(function (t) { teamName[t.id] = t.name; });
+      workers.forEach(function (w) { workerName[w.id] = w.name; });
+      var p = r[0] ? r[0].process : null;
+      var me = state.me || { name: 'You' };
+      var model;
+      /// Who does each stage in the picture, by stage id, when none of
+      /// yours clearly fit: shown in its doer picker.
+      var roleHint = {};
+      if (p) model = JSON.parse(JSON.stringify({ name: p.name, purpose: p.purpose || '', about: p.about, templateId: p.templateId, owner: p.owner, stages: p.stages }));
+      if (p) model.codeIn = p.codeIn ? p.codeIn.name : '';
+      else if (picked) {
+        var fit = {};
+        (picked.fits || []).forEach(function (f) { fit[f.key] = f; });
+        model = { name: picked.process.name, purpose: picked.process.summary, about: picked.process.about, templateId: picked.process.id, owner: { name: me.name, slackUserId: me.slackUserId },
+          stages: picked.process.stages.map(function (s) {
+            var st = { id: s.key, name: s.name, kind: s.kind, ask: s.ask, why: s.why };
+            if (s.delayDays) st.delayDays = s.delayDays;
+            if (s.repeat) st.repeat = s.repeat;
+            if (s.kind === 'people') st.approvers = [];
+            else if (fit[s.key] && fit[s.key].team) st.teamId = fit[s.key].team.id;
+            return st;
+          }) };
+      } else if (fromPicture) {
+        model = { name: fromPicture.draft.name || '', purpose: fromPicture.draft.about || '', owner: { name: me.name, slackUserId: me.slackUserId },
+          stages: (fromPicture.draft.stages || []).map(function (s) {
+            var st = JSON.parse(JSON.stringify(s));
+            if (st.suggestedRole) roleHint[st.id] = st.suggestedRole;
+            delete st.suggestedRole;
+            if (st.kind === 'people' && !st.approvers) st.approvers = [];
+            return st;
+          }) };
+      } else model = { name: '', purpose: '', owner: { name: me.name, slackUserId: me.slackUserId }, stages: [] };
+      // What the library says each stage needs: the crew for a team, who decides.
+      var tmpl = library.filter(function (x) { return x.id === model.templateId; })[0];
+      var hints = {};
+      if (tmpl) tmpl.stages.forEach(function (s) { hints[s.key] = s; });
+      var sel = 0;
+      var seq = model.stages.length;
+      var KIND = { team: 'Team', worker: 'Worker', people: 'Decision' };
+      var ready = function (s) { return s.kind === 'team' ? !!teamName[s.teamId] : s.kind === 'worker' ? !!workerName[s.workerId] : (s.approvers || []).length + (s.approverGroups || []).length > 0; };
+      var doer = function (s) {
+        if (s.kind === 'team') return teamName[s.teamId] || 'Pick a team';
+        if (s.kind === 'worker') return workerName[s.workerId] || 'Pick a worker';
+        var names = (s.approverGroups || []).map(function (g) { return g.name; }).concat((s.approvers || []).map(function (a) { return a.name; }));
+        return names.length ? names.join(', ') : 'Who decides?';
+      };
+      var backTo = function (i) {
+        var s = model.stages[i];
+        if (s.sendBackTo) { var hit = model.stages.filter(function (x) { return x.id === s.sendBackTo; })[0]; if (hit) return hit.name || 'an unnamed stage'; }
+        for (var j = i - 1; j >= 0; j--) if (model.stages[j].kind !== 'people') return model.stages[j].name || 'the stage before';
+        return 'the start';
+      };
+
+      var name = h('input', { type: 'text', class: 'pm-title', value: model.name, maxlength: '120', placeholder: 'Name the process', 'aria-label': 'Name', oninput: function () { model.name = name.value; } });
+      var purpose = h('input', { type: 'text', class: 'pm-purpose', value: model.purpose, maxlength: '300', placeholder: 'What it takes in and what comes out', 'aria-label': 'What it is for', oninput: function () { model.purpose = purpose.value; } });
+      // A person shown as a chip, with Change to pick someone else.
+      var personSlot = function (label, get, set, fallback) {
+        var slot = h('div', { class: 'pm-person' });
+        var changing = false;
+        var draw_ = function () {
+          var who = get();
+          fill(slot, changing
+            ? [personPicker(label, function (x) { changing = false; set(x); draw_(); }), h('button', { type: 'button', class: 'linkish', text: 'Cancel', onclick: function () { changing = false; draw_(); } })]
+            : [who ? personChip(who) : h('span', { class: 'muted', text: fallback }), h('button', { type: 'button', class: 'linkish', text: 'Change', onclick: function () { changing = true; draw_(); var q = slot.querySelector('input'); if (q) q.focus(); } }),
+              who && fallback ? h('button', { type: 'button', class: 'linkish', text: 'Reset', onclick: function () { set(null); draw_(); } }) : null]);
+        };
+        draw_();
+        return slot;
+      };
+
+      // Where its code lives: every team stage works there, each on the branch
+      // the one before left. Library processes that change code ask for it.
+      var codeRow = function () {
+        var any = places.repos.length || places.workspaces.length;
+        if (!any) return tmpl && tmpl.changesCode ? h('span', { class: 'faint', style: 'font-size:12.5px', text: 'This process changes code. Connect a repo under Setup → Repos so its stages share one branch.' }) : null;
+        var sel = h('select', { 'aria-label': 'Code lives in', style: 'width:auto;max-width:280px', onchange: function () { model.codeIn = sel.value; } },
+          h('option', { value: '', text: 'Each stage in its own place' }),
+          (places.workspaces || []).map(function (w) { return h('option', { value: w.name, text: 'Workspace: ' + w.name, selected: model.codeIn === w.name }); }),
+          places.repos.map(function (x) { return h('option', { value: x.name, text: 'Repo: ' + x.name, selected: model.codeIn === x.name }); }));
+        return h('div', { class: 'pm-owner', title: 'Every team stage works here, starting from the branch the stage before it left, so a build, its tests and its release are one change.' },
+          h('span', { class: 'faint', text: 'Code lives in' }), sel,
+          tmpl && tmpl.changesCode && !model.codeIn ? h('span', { class: 'badge waiting', text: 'Pick one' }) : null);
+      };
+      if (model.codeIn === undefined) model.codeIn = '';
+      var mapEl = h('div', { class: 'pm-map', role: 'list', 'aria-label': 'Stages in order' });
+      var inspector = h('section', { class: 'pm-stage', 'aria-label': 'The stage you picked' });
+      var readiness = h('section', { class: 'pm-side' });
+      var footNote = h('span', { class: 'faint pm-footnote' });
+      var draw = function () { drawMap(); drawStage(); drawReady(); };
+
+      var addStage = function (k) {
+        seq += 1;
+        model.stages.push({ id: 's' + seq + '-' + Date.now().toString(36), name: k === 'people' ? 'New decision' : 'New stage', kind: k, approvers: k === 'people' ? [] : undefined });
+        sel = model.stages.length - 1;
+        draw();
+      };
+      var drawMap = function () {
+        var nodes = model.stages.map(function (s, i) {
+          return h('div', { class: 'pm-step', role: 'listitem' },
+            h('span', { class: 'pm-arrow', 'aria-hidden': 'true' }),
+            h('div', { class: 'pm-stack' },
+              h('button', { type: 'button', class: 'pm-node ' + s.kind + (i === sel ? ' on' : ''), 'aria-pressed': i === sel ? 'true' : 'false', onclick: function () { sel = i; draw(); } },
+                h('span', { class: 'pm-nodehead' },
+                  h('span', { class: 'pm-num', text: String(i + 1) }),
+                  h('span', { class: 'pm-kind', text: KIND[s.kind] }),
+                  ready(s) ? null : h('span', { class: 'pm-warn', title: 'Needs setting up', 'aria-label': 'Needs setting up' })),
+                h('span', { class: 'pm-name', text: s.name || 'Unnamed stage' }),
+                h('span', { class: 'pm-who' + (ready(s) ? '' : ' missing'), text: doer(s) })),
+              s.kind === 'people' ? h('span', { class: 'pm-back' }, h('span', { 'aria-hidden': 'true', text: '↩ ' }), 'Back to ' + backTo(i))
+                : timingText(s) ? h('span', { class: 'pm-time' }, icon('clock', 11), timingText(s)) : null));
+        });
+        fill(mapEl, [h('div', { class: 'pm-end' }, h('span', { class: 'pm-dot' }, icon('inbox', 16)), h('span', { class: 'faint', text: 'Comes in' }))]
+          .concat(nodes)
+          .concat([h('div', { class: 'pm-step' }, h('span', { class: 'pm-arrow', 'aria-hidden': 'true' }), h('div', { class: 'pm-end' }, h('span', { class: 'pm-dot done' }, icon('tick', 16)), h('span', { class: 'faint', text: 'Done' })))]));
+      };
+
+      // One labelled row of the stage form: the label on the left, the
+      // control and its one-line note on the right.
+      var row = function (label, control, note) {
+        return h('div', { class: 'pm-row' }, h('span', { class: 'pm-rl', text: label }),
+          h('div', { class: 'pm-rc' }, control, note ? h('span', { class: 'faint pm-hint', text: note }) : null));
+      };
+      var drawStage = function () {
+        if (!model.stages.length) {
+          fill(inspector, [h('div', { class: 'pm-empty' }, h('b', { text: 'No stages yet' }), h('p', { class: 'muted', text: 'Add a stage above, or start from a process in the library.' }),
+            h('button', { class: 'btn small', text: 'Browse the process library', onclick: function () { go('proclib', { libId: null }); } }))]);
+          return;
+        }
+        sel = Math.max(0, Math.min(sel, model.stages.length - 1));
+        var s = model.stages[sel], i = sel;
+        var hint = hints[s.id];
+        var setKind = function (k) { s.kind = k; if (k === 'people' && !s.approvers) s.approvers = []; draw(); };
+        var move = function (d) { var j = i + d; if (j < 0 || j >= model.stages.length) return; model.stages[i] = model.stages[j]; model.stages[j] = s; sel = j; draw(); };
+        var sname = h('input', { type: 'text', class: 'pm-sname', value: s.name || '', placeholder: 'Stage name', 'aria-label': 'Stage name', oninput: function () { s.name = sname.value; drawMap(); drawReady(); } });
+        var kind = h('div', { class: 'seg', role: 'group', 'aria-label': 'Who does this stage' }, ['team', 'worker', 'people'].map(function (k) {
+          return h('button', { type: 'button', 'aria-pressed': s.kind === k ? 'true' : 'false', onclick: function () { setKind(k); } }, k === 'team' ? 'A team' : k === 'worker' ? 'A worker' : 'People decide');
+        }));
+        var tools = h('span', { class: 'row', style: 'gap:2px;flex-wrap:nowrap' },
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move earlier', disabled: i === 0, onclick: function () { move(-1); } }, icon('back', 15)),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Move later', disabled: i === model.stages.length - 1, onclick: function () { move(1); } }, h('span', { style: 'display:inline-flex;transform:scaleX(-1)' }, icon('back', 15))),
+          h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Remove this stage', onclick: function () { model.stages.splice(i, 1); draw(); } }, icon('x', 15)));
+        var ask = h('textarea', { rows: '3', 'aria-label': 'This stage’s job', placeholder: s.kind === 'people' ? 'What the deciders should look for.' : 'What this stage should produce.', oninput: function () { s.ask = ask.value; } });
+        ask.value = s.ask || '';
+        var rows = [];
+        if (s.kind === 'team' || s.kind === 'worker') {
+          var isTeam = s.kind === 'team';
+          // What the stage is about, for ranking who fits: its name and job,
+          // and what the library says it needs.
+          var about = [s.name, s.ask || '', roleHint[s.id] || '', hint ? (hint.words || []).join(' ') + ' ' + (hint.crew || []).join(' ') : ''].join(' ');
+          var options = isTeam
+            ? teams.map(function (t) {
+                var roles = (t.members || []).map(function (m) { return m.role; }).filter(Boolean);
+                return { id: t.id, name: t.name, about: t.purpose || (t.members || []).map(function (m) { return m.name; }).join(', '), text: [t.name, t.purpose || ''].concat(roles).join(' ') };
+              })
+            : workers.map(function (w) { return { id: w.id, name: w.name, about: w.tagline || '', text: w.name + ' ' + (w.tagline || '') }; });
+          var pick = options.length
+            ? doerPicker(isTeam ? 'Pick a team' : 'Pick a worker', options, isTeam ? s.teamId : s.workerId, about, function (id) { if (isTeam) s.teamId = id; else s.workerId = id; drawMap(); drawReady(); drawStage(); }, roleHint[s.id])
+            : h('p', { class: 'muted', style: 'margin:6px 0 0', text: isTeam ? 'No teams yet.' : 'No workers yet.' });
+          rows.push(row(isTeam ? 'Team' : 'Worker', pick, isTeam ? 'Briefed with this stage’s job and everything earlier stages produced.' : 'Asked to do this stage on its own: for a step one worker can handle.'));
+          if (isTeam && hint && !s.teamId && (hint.crew || []).length) {
+            rows.push(row('', h('div', { class: 'lib-fit gap' }, h('span', { style: 'flex:1;min-width:0' }, 'None of your teams fits yet. It needs: ' + hint.crew.join(', ') + '.'),
+              h('button', { class: 'btn small', text: 'Make this team', onclick: function () { go('newteam', { teamRunId: null, newTeamPrefill: { name: s.name, purpose: s.ask || '' } }); } }))));
+          }
+          var waitSel = h('select', { 'aria-label': 'When it starts', onchange: function () { var d = Number(waitSel.value); if (d) s.delayDays = d; else delete s.delayDays; drawMap(); } },
+            [[0, 'Right away'], [1, '1 day after the stage before'], [3, '3 days after'], [7, '1 week after'], [14, '2 weeks after'], [30, '30 days after'], [60, '60 days after'], [90, '90 days after']]
+              .concat(s.delayDays && [0, 1, 3, 7, 14, 30, 60, 90].indexOf(s.delayDays) < 0 ? [[s.delayDays, s.delayDays + ' days after']] : [])
+              .map(function (o) { return h('option', { value: String(o[0]), text: o[1], selected: (s.delayDays || 0) === o[0] }); }));
+          var REPEATS = [['', 'Once'], ['7x2', 'Weekly, 2 times'], ['7x3', 'Weekly, 3 times'], ['7x4', 'Weekly, 4 times'], ['7x6', 'Weekly, 6 times'], ['7x8', 'Weekly, 8 times'], ['14x3', 'Every 2 weeks, 3 times'], ['14x6', 'Every 2 weeks, 6 times'], ['30x3', 'Monthly, 3 times'], ['30x6', 'Monthly, 6 times']];
+          var cur = s.repeat ? s.repeat.everyDays + 'x' + s.repeat.times : '';
+          if (cur && !REPEATS.some(function (o) { return o[0] === cur; })) REPEATS.push([cur, 'Every ' + s.repeat.everyDays + ' days, ' + s.repeat.times + ' times']);
+          var repSel = h('select', { 'aria-label': 'How many times it runs', onchange: function () {
+            if (!repSel.value) delete s.repeat; else { var pr = repSel.value.split('x'); s.repeat = { everyDays: Number(pr[0]), times: Number(pr[1]) }; }
+            drawMap();
+          } }, REPEATS.map(function (o) { return h('option', { value: o[0], text: o[1], selected: o[0] === cur }); }));
+          rows.push(row('Timing', h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'width:auto' }, waitSel), h('span', { style: 'width:auto' }, repSel)),
+            'Wait for there to be something to look at, or run it several times, each run building on the last, before the item moves on.'));
+          rows.push(row('Lead', personSlot('Who leads this stage', function () { return s.owner || null; }, function (x) { if (x) s.owner = x; else delete s.owner; }, isTeam ? 'The team’s manager' : 'The worker’s manager'),
+            (isTeam ? 'Answers the team’s questions, approves its plan and signs off its pack.' : 'Answers the worker’s questions and approves what it does.') + (hint ? ' Usually the ' + hint.who.toLowerCase() + '.' : '')));
+        } else {
+          var chips = h('div', { class: 'row', style: 'gap:6px' });
+          var changed = function () { drawApprovers(); drawMap(); drawReady(); };
+          var drawApprovers = function () {
+            s.approverGroups = s.approverGroups || [];
+            fill(chips, s.approverGroups.map(function (g, n) { return groupChip(g, function () { s.approverGroups.splice(n, 1); changed(); }); })
+              .concat(s.approvers.map(function (a, n) { return personChip(a, function () { s.approvers.splice(n, 1); changed(); }); }))
+              .concat([personPicker('Add someone or a group who decides', function (x) {
+                if (!s.approvers.some(function (a) { return a.slackUserId ? a.slackUserId === x.slackUserId : a.name === x.name; })) s.approvers.push(x);
+                changed();
+              }, { onGroup: function (g) { if (!s.approverGroups.some(function (x) { return x.id === g.id; })) s.approverGroups.push(g); changed(); } })]));
+          };
+          drawApprovers();
+          var back = h('select', { 'aria-label': 'Send back goes to', onchange: function () { if (back.value) s.sendBackTo = back.value; else delete s.sendBackTo; drawMap(); } },
+            h('option', { value: '', text: 'The stage before' }),
+            model.stages.slice(0, i).filter(function (x) { return x.kind !== 'people'; }).map(function (x) { return h('option', { value: x.id, text: x.name || 'Unnamed stage', selected: s.sendBackTo === x.id }); }));
+          rows.push(row('Who decides', chips, (hint ? 'Usually: ' + hint.who + '. ' : '') + (roleHint[s.id] ? 'The picture says: ' + roleHint[s.id] + '. ' : '') + 'Everyone here, and everyone in a group, gets a Slack DM with Approve, Send back and Stop. Groups are set under Setup → Rules.'));
+          var needs = h('select', { 'aria-label': 'How many must approve', onchange: function () {
+            if (needs.value === 'any') delete s.needs; else s.needs = needs.value === 'all' ? 'all' : Number(needs.value);
+            drawReady();
+          } },
+            h('option', { value: 'any', text: 'Any one of them', selected: !s.needs || s.needs === 'any' }),
+            h('option', { value: 'all', text: 'All of them', selected: s.needs === 'all' }),
+            [2, 3, 4, 5].map(function (n) { return h('option', { value: String(n), text: 'At least ' + n, selected: s.needs === n }); }));
+          rows.push(row('Approvals', needs, 'A send back or a stop from any one of them acts at once. Everyone’s approval is recorded on the item.'));
+          rows.push(row('Send back to', back, 'Briefed with what the decider says needs to change.'));
+        }
+        rows.push(row(s.kind === 'people' ? 'Look for' : 'The job', ask, s.kind === 'people' ? null : 'Goes in the brief.'));
+        fill(inspector, [
+          h('div', { class: 'pm-stagehead' }, h('span', { class: 'pm-num big ' + s.kind, text: String(i + 1) }), sname, kind, tools),
+          s.why ? h('p', { class: 'pm-why' }, h('b', { text: 'Why this stage. ' }), s.why) : null,
+          h('div', { class: 'pm-rows' }, rows)
+        ]);
+      };
+      var drawReady = function () {
+        var missing = model.stages.map(function (s, i) { return { s: s, i: i }; }).filter(function (x) { return !ready(x.s); });
+        var total = model.stages.length;
+        var done = total - missing.length;
+        footNote.textContent = !total ? 'Add a stage to start.' : missing.length ? plural(missing.length, 'stage needs', 'stages need') + ' setting up before items can run.' : 'Every stage is set.';
+        fill(readiness, [
+          h('div', { class: 'stack', style: 'gap:10px' },
+            h('span', { class: 'label', text: 'Ready to make?' }),
+            h('div', { class: 'row', style: 'gap:10px;flex-wrap:nowrap' },
+              h('div', { class: 'meter', style: 'flex:1' }, h('span', { style: 'width:' + (total ? Math.round(done / total * 100) : 0) + '%' })),
+              h('span', { class: 'faint', style: 'font-size:12.5px;white-space:nowrap', text: done + ' of ' + total + ' set' })),
+            missing.length ? h('ul', { class: 'pm-todo' }, missing.slice(0, 6).map(function (x) {
+              return h('li', null, h('button', { type: 'button', class: 'linkish', onclick: function () { sel = x.i; draw(); }, text: (x.i + 1) + '. ' + (x.s.name || 'Unnamed stage') + ': ' + (x.s.kind === 'team' ? 'pick a team' : x.s.kind === 'worker' ? 'pick a worker' : 'say who decides') }));
+            })) : null),
+          model.about ? h('div', { class: 'stack', style: 'gap:6px;border-top:1px solid var(--line);padding-top:14px' },
+            h('span', { class: 'label', text: 'When to use it' }), h('p', { style: 'margin:0;font-size:13px', text: model.about })) : null,
+          h('div', { class: 'stack', style: 'gap:8px;border-top:1px solid var(--line);padding-top:14px' },
+            h('span', { class: 'label', text: 'How an item moves' }),
+            h('ol', { class: 'pm-rules' },
+              h('li', { text: 'A team stage ends when its lead signs off the pack.' }),
+              h('li', { text: 'A worker stage ends when the worker answers and any work it started is done.' }),
+              h('li', { text: 'A decision ends when anyone deciding approves it.' }),
+              h('li', { text: 'The owner can move, restart or stop any item, and hears when one is stuck.' })))
+        ]);
+      };
+      draw();
+
+      // A draft from a picture says so above the map, with what the reading
+      // was unsure of, and keeps the picture to hand beside the editor.
+      var pictureBanner = function () {
+        if (!fromPicture) return null;
+        var notes = fromPicture.notes || [];
+        var viewer = h('aside', { class: 'pi-viewer', hidden: true, 'aria-label': 'Your picture' },
+          h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, h('span', { class: 'label', style: 'flex:1', text: 'Your picture' }),
+            h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close the picture', onclick: function () { show(false); } }, icon('x', 15))),
+          h('div', { class: 'pi-viewbody' }, h('img', { src: fromPicture.image, alt: 'The picture this process was drafted from' })));
+        var show = function (open) { viewer.hidden = !open; document.body.classList.toggle('pi-open', open); };
+        return [h('div', { class: 'pi-banner', role: 'status' },
+          h('button', { type: 'button', class: 'pi-mini', title: 'Show it beside the editor', 'aria-label': 'Show your picture beside the editor', onclick: function () { show(viewer.hidden); } }, h('img', { src: fromPicture.image, alt: '' })),
+          h('div', { class: 'stack', style: 'gap:6px;min-width:0;flex:1 1 300px' },
+            h('b', { text: 'Drafted from your image — check each stage, who does it and where it sends work back' }),
+            notes.length ? h('ul', { class: 'pi-notes' }, notes.map(function (n) { return h('li', { text: n }); })) : null,
+            h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Nothing is saved until you make the process. Click the picture to keep it open beside the editor.' }))),
+          viewer];
+      };
+
+      var out = h('div');
+      var save = h('button', { class: 'btn go', text: editing ? 'Save changes' : 'Make the process' });
+      save.onclick = function () {
+        var restore = busy(save, 'Saving…');
+        api('POST', editing ? '/api/processes/' + encodeURIComponent(state.processId) : '/api/processes', model).then(function (x) {
+          restore();
+          if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); return; }
+          go('process', { processId: x.process.id, processItem: null });
+        });
+      };
+      var cancel = h('button', { class: 'btn quiet', text: 'Cancel', onclick: function () { if (editing) go('process', { processId: state.processId, processItem: null }); else go('processes'); } });
+      var retire = editing ? h('button', { class: 'btn quiet danger', text: 'Retire it', onclick: function () {
+        if (!confirm('Retire ' + p.name + '? It takes nothing new; what went through it stays.')) return;
+        api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/archive', {}).then(function (x) { if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else go('processes'); });
+      } }) : null;
+      return [
+        h('header', { class: 'pm-head' },
+          h('div', { style: 'flex:1 1 420px;min-width:0' },
+            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Processes', onclick: function () { go('processes'); } }), editing ? ' / ' + p.name : fromPicture ? ' / New, from a picture' : ' / New'),
+            name, purpose),
+          h('div', { class: 'stack', style: 'gap:8px;align-items:flex-end' },
+            h('div', { class: 'pm-owner' }, h('span', { class: 'faint', text: 'Owner' }),
+              personSlot('Change the owner', function () { return model.owner; }, function (x) { if (x) model.owner = x; }, '')),
+            codeRow())),
+        pictureBanner(),
+        h('section', { class: 'pm-mapcard', 'aria-label': 'The process map' },
+          h('div', { class: 'pm-legend' },
+            h('span', { class: 'label', style: 'flex:1', text: 'The flow' }),
+            h('span', { class: 'pm-key team', text: 'A team' }),
+            h('span', { class: 'pm-key worker', text: 'A worker' }),
+            h('span', { class: 'pm-key people', text: 'People decide' }),
+            h('span', { class: 'pm-key warn', text: 'Needs setting up' })),
+          mapEl,
+          h('div', { class: 'row', style: 'gap:8px' },
+            h('button', { class: 'btn small', onclick: function () { addStage('team'); } }, icon('plus', 14), 'Team stage'),
+            h('button', { class: 'btn small', onclick: function () { addStage('worker'); } }, icon('plus', 14), 'Worker stage'),
+            h('button', { class: 'btn small', onclick: function () { addStage('people'); } }, icon('plus', 14), 'Decision'))),
+        h('div', { class: 'pm-body' }, inspector, readiness),
+        h('div', { class: 'foot sticky-foot' }, save, cancel, retire, out, footNote)
+      ];
+    });
+  }
+
   function viewTeams() {
     return Promise.all([api('GET', '/api/teams'), api('GET', '/api/team-tasks'), api('GET', '/api/workers'), api('GET', '/api/repos'), api('GET', '/api/teams/runs').catch(function () { return {}; })]).then(function (r) {
       var teams = r[0], tasks = r[1], workers = r[2], places = r[3] && r[3].ok !== false ? r[3] : { repos: [], workspaces: [] };
@@ -3172,11 +5570,10 @@ export const CONSOLE_JS = String.raw`
       // Teams still being made: how far their hiring has got.
       var makingCards = making.map(function (run) {
         var done = run.hires.filter(function (g) { return g.state !== 'drafting'; }).length;
-        return h('article', { class: 'tmcard' },
+        return openCard('tmcard', 'Open ' + run.name, function () { go('newteam', { teamRunId: run.id }); },
           h('div', { style: 'min-width:0' }, h('span', { class: 'tmname', text: run.name }),
             h('p', { class: 'tmpurpose', text: run.status === 'needsYou' ? 'A hire didn’t go through: retry it or skip it.' : 'Being made: ' + done + ' of ' + plural(run.hires.length, 'new member', 'new members') + ' hired.' })),
-          h('div', { class: 'tmmeta' }, h('span', { class: 'tmlive' }, h('span', { class: 'livedot' }), run.status === 'needsYou' ? 'Needs you' : 'Hiring')),
-          h('div', { class: 'tmfoot' }, h('button', { class: 'btn small', text: 'Open', onclick: function () { go('newteam', { teamRunId: run.id }); } })));
+          h('div', { class: 'tmmeta' }, h('span', { class: 'tmlive' }, h('span', { class: 'livedot' }), run.status === 'needsYou' ? 'Needs you' : 'Hiring')));
       });
       var action = state.me && state.me.canHire && workers.length >= 2
         ? h('button', { class: 'btn go', onclick: openMaker }, icon('plus', 16), 'Make a team')
@@ -3193,18 +5590,17 @@ export const CONSOLE_JS = String.raw`
         var spent = mine.reduce(function (n, k) { return n + (k.spentUSD || 0); }, 0);
         var finished = mine.filter(function (k) { return k.status === 'done' || k.status === 'review'; }).map(function (k) { return k.updatedAt; });
         var last = finished.length ? Math.max.apply(null, finished) : null;
-        return h('article', { class: 'tmcard' },
+        return openCard('tmcard', 'Open ' + t.name, function () { go('team', { teamId: t.id }); },
           h('div', { style: 'min-width:0' },
             h('span', { class: 'row', style: 'gap:10px;flex-wrap:nowrap' }, PICTURES[t.id] ? avatar(t.id, t.name, 'm') : null,
-              h('button', { class: 'linkish tmname', text: t.name, onclick: function () { go('team', { teamId: t.id }); } })),
+              h('span', { class: 'tmname', text: t.name })),
             t.purpose ? h('p', { class: 'tmpurpose', text: t.purpose }) : null),
           h('div', { class: 'tmmeta' },
             h('span', { class: 'faces', title: t.members.map(function (m) { return m.name; }).join(', ') }, t.members.slice(0, 6).map(function (m) { return avatar(m.name, m.name, 's'); })),
             h('span', { class: 'faint tmstats', text: [plural(t.members.length, 'member', 'members'), plural(mine.length, 'task', 'tasks'), money(spent) + ' spent'].concat(last ? ['delivered ' + ago(last)] : []).join(' · ') }),
             running ? h('span', { class: 'tmlive' }, h('span', { class: 'livedot' }), running + ' running') : null),
-          h('div', { class: 'tmfoot' },
-            t.canBrief ? h('button', { class: 'btn small go', text: 'Give it a task', onclick: function () { go('team', { teamId: t.id, teamFocusBrief: true }); } }) : null,
-            h('button', { class: 'btn small', text: 'Open', onclick: function () { go('team', { teamId: t.id }); } })));
+          t.canBrief ? h('div', { class: 'tmfoot' },
+            h('button', { class: 'btn small go', text: 'Give it a task', onclick: function (e) { e.stopPropagation(); go('team', { teamId: t.id, teamFocusBrief: true }); } })) : null);
       });
       cards = makingCards.concat(cards);
       if (action) cards.push(h('article', { class: 'tmcard add' },
@@ -3367,6 +5763,8 @@ export const CONSOLE_JS = String.raw`
       var checks = { askFirst: true, reviewBeforeChallenge: false, finalReview: true, approveRoomWork: true };
       var name = h('input', { type: 'text', placeholder: 'Product', 'aria-label': 'Team name', maxlength: '80' });
       var purpose = h('input', { type: 'text', placeholder: 'What the team produces, and for whom', 'aria-label': 'What the team does', maxlength: '500' });
+      // From a process stage that needs a team: its name and job to start from.
+      if (state.newTeamPrefill) { name.value = state.newTeamPrefill.name || ''; purpose.value = state.newTeamPrefill.purpose || ''; state.newTeamPrefill = null; }
       var budget = h('input', { type: 'number', min: '1', step: '1', value: '50', 'aria-label': 'Budget per task in dollars', style: 'width:110px' });
       var workIn = places.repos.length ? h('select', { 'aria-label': 'Where the team works' },
         [h('option', { value: '', text: 'Where each member usually works' })]
@@ -3566,15 +5964,256 @@ export const CONSOLE_JS = String.raw`
   /// Team files already read, so a redraw shows them at once.
   var teamFileCache = {};
 
+  // ---- comments on a team task's work ----------------------------------
+
+  /// Each task's comments as the console last saw them, and what to redraw
+  /// once one is sent. The task page and the shared folder fill it as they
+  /// draw, so a file opened anywhere shows what was said about it.
+  var taskTalk = {};
+  function noteTaskComments(task, after) {
+    taskTalk[task.id] = { task: task, comments: (task.comments || []).slice(), after: after || null };
+  }
+  function commentsOn(taskId, file) {
+    var t = taskTalk[taskId];
+    return t ? t.comments.filter(function (c) { return c.file === file; }) : [];
+  }
+  /// What came of a comment, in words.
+  function commentOutcome(c) {
+    return { replanned: 'Re-planned with it', steered: 'Sent to ' + (c.workerName || 'the member') + ' while working', asked: 'In the team conversation', queued: 'Briefs the next stages', redo: (c.workerName || 'The member') + ' is redoing it', waiting: 'Goes to the team when it finishes answering' }[c.outcome] || '';
+  }
+  /// What a comment is about, in words.
+  function commentAbout(c) {
+    var on = c.file ? 'On ' + c.file : c.about === 'questions' ? 'On the questions' : c.about === 'plan' ? 'On the plan' : c.about === 'coordinator' ? 'To the coordinator' : '';
+    return [c.workerName ? 'To ' + c.workerName : '', on].filter(Boolean).join(' · ') || 'On the task';
+  }
+  /// What a comment sent now does, for the line under a box: re-plans a
+  /// plan that waits on you, goes to the team once the pack is written,
+  /// reaches a member mid-piece, and otherwise briefs what's still to come.
+  function commentGoes(task, working, name) {
+    if (task.status === 'proposed') return 'The plan is waiting for your OK, so the coordinator re-plans with it.';
+    if (task.status === 'review' || task.status === 'done') return 'The pack is written, so it goes to the team conversation.';
+    if (working && name) return name + ' reads it at the next step of the piece they are on.';
+    if (task.status === 'questions') return 'It goes into the plan, with your answers.';
+    return 'It briefs ' + (name ? name + '’s later pieces' : 'every later piece') + ' and the pack.';
+  }
+
+  /// One comment: what it's about, the passage it quotes, what was said,
+  /// when, and what came of it. Given open, one about a file opens it.
+  function commentRow(c, open, inFile) {
+    var out = commentOutcome(c);
+    var about = inFile ? (c.workerName ? 'To ' + c.workerName : '') : commentAbout(c);
+    return h('div', { class: 'cm-row' },
+      h('div', { class: 'cm-meta' },
+        about ? (open && c.file ? h('button', { class: 'linkish cm-link', text: about, onclick: function () { open(c.file); } }) : h('b', { text: about })) : null,
+        h('span', { class: 'faint', text: ago(c.at) }),
+        out ? h('span', { class: 'badge' + (c.outcome === 'steered' || c.outcome === 'redo' ? ' working' : c.outcome === 'replanned' || c.outcome === 'asked' ? ' ok' : ''), text: out }) : null),
+      c.quote ? h('blockquote', { class: 'cm-quote', text: c.quote.length > 300 ? c.quote.slice(0, 299) + '…' : c.quote }) : null,
+      h('p', { class: 'cm-text', text: c.text }));
+  }
+
+  /// The comments on one file, under it, kept current as more are sent.
+  function fileCommentList(taskId, file) {
+    var box = h('div', { class: 'cm-file' });
+    box.cmTask = taskId; box.cmFile = file;
+    drawFileComments(box);
+    return box;
+  }
+  function drawFileComments(box) {
+    var list = commentsOn(box.cmTask, box.cmFile).slice().reverse();
+    fill(box, list.length ? [h('div', { class: 'label', text: 'Comments on this file · ' + list.length }), list.map(function (c) { return commentRow(c, null, true); })] : null);
+  }
+  function redrawFileComments(taskId) {
+    [].forEach.call(document.querySelectorAll('.cm-file'), function (b) { if (b.cmTask === taskId) drawFileComments(b); });
+  }
+
+  /// A file's text, marked so a passage selected in it can be commented on.
+  function commentable(taskId, file, node) {
+    var wrap = h('div', { class: 'cm-host', 'data-cm-file': file }, node);
+    wrap.cmTask = taskId; wrap.cmFile = file;
+    return wrap;
+  }
+  /// The line over a file: comment on the whole of it, or select a passage.
+  function fileCommentBar(taskId, file) {
+    return h('div', { class: 'cm-bar' },
+      h('button', { class: 'btn small quiet', onclick: function (e) { fileCommentBox(taskId, file, null, e.currentTarget.getBoundingClientRect()); } }, icon('slack', 14), 'Comment on this file'),
+      h('span', { class: 'faint', text: 'or select a passage to comment on it' }));
+  }
+  function fileCommentBox(taskId, file, quote, at) {
+    var task = taskTalk[taskId] && taskTalk[taskId].task;
+    commentBox({ taskId: taskId, file: file, quote: quote, at: at, title: quote ? 'Comment on this passage' : 'Comment on ' + file.split('/').pop(),
+      notes: [task ? commentGoes(task, false, null) : 'It briefs the work still to come; while the plan waits for your OK, it re-plans it.'] });
+  }
+
+  /// The one comment box open at a time, and the floating Comment button.
+  var cmPop = null, cmFloat = null;
+  function closeCommentBox() {
+    if (cmPop) { cmPop.remove(); cmPop = null; }
+    document.removeEventListener('mousedown', cmOutside, true);
+    document.removeEventListener('keydown', cmEsc);
+  }
+  function cmOutside(e) { if (cmPop && !cmPop.contains(e.target)) closeCommentBox(); }
+  function cmEsc(e) { if (e.key === 'Escape' && cmPop) { e.stopPropagation(); closeCommentBox(); } }
+  /// Put a floating box by a spot on screen: under it, or over it when
+  /// there's no room below, and never off the edge.
+  function placeBy(el, at) {
+    var w = el.offsetWidth, ht = el.offsetHeight;
+    var left = Math.min(Math.max(12, at.left), window.innerWidth - w - 12);
+    var top = at.bottom + 8;
+    if (top + ht > window.innerHeight - 12) top = Math.max(12, at.top - ht - 8);
+    el.style.setProperty('left', Math.max(12, left) + 'px');
+    el.style.setProperty('top', top + 'px');
+  }
+
+  /// A small box to say something about a task's work: what it's about on
+  /// top (the passage, when one was picked), the text, and Send. With redo,
+  /// a second button starts that member's piece again with the note. Under
+  /// it, in plain words, what each button does.
+  function commentBox(o) {
+    closeCommentBox(); hideFloat();
+    var ta = h('textarea', { 'aria-label': o.title, placeholder: o.placeholder || 'Say what you think', rows: '3' });
+    var said = h('div', { 'aria-live': 'polite' });
+    var sendBtn = h('button', { class: 'btn go small', text: 'Send' });
+    var redoBtn = o.redo ? h('button', { class: 'btn small', text: 'Redo with this' }) : null;
+    var send = function (redo, btn) {
+      var text = ta.value.trim();
+      if (!text) { ta.focus(); return; }
+      var body = { text: text };
+      if (o.file) body.file = o.file;
+      if (o.quote) body.quote = o.quote;
+      if (o.about) body.about = o.about;
+      if (o.workerId) body.workerId = o.workerId;
+      if (redo) body.redo = true;
+      var restore = busy(btn, redo ? 'Starting…' : 'Sending…');
+      api('POST', '/api/team-tasks/' + encodeURIComponent(o.taskId) + '/comment', body).then(function (r) {
+        restore();
+        if (r.ok === false) { said.replaceChildren(msg(r)); return; }
+        var t = taskTalk[o.taskId];
+        var c = r.comment || (redo ? { id: 'local', at: Date.now(), text: text, workerId: o.workerId, workerName: o.workerName, outcome: 'redo' } : null);
+        if (c && t && !t.comments.some(function (x) { return x.id === c.id; })) t.comments.push(c);
+        redrawFileComments(o.taskId);
+        var okText = redo ? (o.workerName || 'The member') + ' is starting the piece again with your note.' : c && commentOutcome(c) ? commentOutcome(c) + '.' : 'Sent.';
+        ta.disabled = true; sendBtn.disabled = true; if (redoBtn) redoBtn.disabled = true;
+        said.replaceChildren(msg({}, okText));
+        var mine = pop;
+        setTimeout(function () { if (cmPop === mine) closeCommentBox(); }, 1800);
+        var after = o.after || (t && t.after);
+        if (after) after();
+      }, function (err) { restore(); said.replaceChildren(h('div', { class: 'msg err', role: 'alert', text: err.message })); });
+    };
+    sendBtn.onclick = function () { send(false, sendBtn); };
+    if (redoBtn) redoBtn.onclick = function () { send(true, redoBtn); };
+    ta.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(false, sendBtn); } };
+    var pop = h('div', { class: 'cm-pop', role: 'dialog', 'aria-label': o.title },
+      h('div', { class: 'cm-pop-head' }, h('b', { text: o.title }), h('button', { class: 'btn small quiet icon', 'aria-label': 'Close', title: 'Close (Esc)', onclick: closeCommentBox }, '✕')),
+      o.quote ? h('blockquote', { class: 'cm-quote', text: o.quote.length > 400 ? o.quote.slice(0, 399) + '…' : o.quote }) : null,
+      ta,
+      h('div', { class: 'row', style: 'gap:8px;align-items:center;flex-wrap:nowrap' }, sendBtn, redoBtn, h('span', { class: 'faint', style: 'margin-left:auto;font-size:12px', text: '⌘↵ sends' })),
+      o.notes && o.notes.length ? h('ul', { class: 'cm-notes' }, o.notes.map(function (n) { return h('li', { text: n }); })) : null,
+      o.extra || null,
+      said);
+    document.body.appendChild(pop);
+    cmPop = pop;
+    placeBy(pop, o.at || { left: window.innerWidth / 2 - 180, top: 120, bottom: 120 });
+    document.addEventListener('mousedown', cmOutside, true);
+    document.addEventListener('keydown', cmEsc);
+    setTimeout(function () { ta.focus(); }, 0);
+  }
+
+  /// Select a passage of a file the team wrote and a small Comment button
+  /// appears by it; it opens the box with the passage quoted.
+  function selectionInFile() {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    var text = sel.toString().replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    var range = sel.getRangeAt(0);
+    var node = range.commonAncestorContainer;
+    var el = node.nodeType === 1 ? node : node.parentElement;
+    var host = el && el.closest('[data-cm-file]');
+    if (!host || !host.cmTask) return null;
+    var rects = range.getClientRects();
+    var r = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+    return { taskId: host.cmTask, file: host.cmFile, quote: text.slice(0, 1000), rect: r };
+  }
+  function hideFloat() { if (cmFloat) { cmFloat.remove(); cmFloat = null; } }
+  function showFloat() {
+    var s = selectionInFile();
+    hideFloat();
+    if (!s || cmPop) return;
+    cmFloat = h('button', { class: 'cm-float', type: 'button' }, icon('slack', 14), 'Comment');
+    // Pressing it must not clear the selection it is about.
+    cmFloat.onmousedown = function (e) { e.preventDefault(); };
+    cmFloat.onclick = function () {
+      var at = s.rect;
+      hideFloat();
+      try { window.getSelection().removeAllRanges(); } catch (e) {}
+      fileCommentBox(s.taskId, s.file, s.quote, at);
+    };
+    document.body.appendChild(cmFloat);
+    placeBy(cmFloat, { left: s.rect.right - cmFloat.offsetWidth / 2, top: s.rect.top, bottom: s.rect.bottom });
+  }
+  document.addEventListener('mouseup', function (e) {
+    if ((cmFloat && cmFloat.contains(e.target)) || (cmPop && cmPop.contains(e.target))) return;
+    setTimeout(showFloat, 0);
+  });
+  document.addEventListener('keyup', function (e) { if (e.shiftKey || e.key === 'Shift') setTimeout(showFloat, 0); });
+  window.addEventListener('scroll', hideFloat, true);
+
+  /// Say something to one member of a task's team: Send, and for the stage
+  /// running now, Redo with this, each explained under the box.
+  function memberBox(task, p, current, at, after) {
+    var working = p.status === 'running' || p.status === 'paused';
+    var redo = current && (task.status === 'running' || task.status === 'waiting') && p.status !== 'pending';
+    commentBox({ taskId: task.id, workerId: p.workerId, workerName: p.workerName, at: at, after: after, redo: redo,
+      title: 'Say something to ' + p.workerName, placeholder: 'What should ' + p.workerName + ' know or change?',
+      notes: ['Send: ' + commentGoes(task, working, p.workerName)].concat(redo ? ['Redo with this: ' + p.workerName + '’s piece of this stage starts again, with your note.'] : []),
+      extra: h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Open ' + p.workerName + '’s page →', onclick: function () { closeCommentBox(); openWorker(p.workerId); } }) });
+  }
+
+  /// Comment on the coordinator's questions or its plan, with what that does.
+  function aboutRow(task) {
+    var plan = task.status === 'proposed' || !!task.planNote;
+    var asks = task.status === 'questions';
+    if (!plan && !asks) return null;
+    var open = function (about, title) {
+      return function (e) { commentBox({ taskId: task.id, about: about, at: e.currentTarget.getBoundingClientRect(), title: title, notes: [commentGoes(task, false, null)] }); };
+    };
+    return h('div', { class: 'cm-about' },
+      asks ? h('button', { class: 'btn small quiet', onclick: open('questions', 'Comment on the questions') }, icon('slack', 14), 'Comment on the questions') : null,
+      plan ? h('button', { class: 'btn small quiet', onclick: open('plan', 'Comment on the plan') }, icon('slack', 14), 'Comment on the plan') : null,
+      h('span', { class: 'faint', text: task.status === 'proposed' ? 'Commenting while the plan waits for your OK re-plans it.' : asks ? 'A comment goes into the plan, with your answers.' : 'A comment on the plan now briefs the stages still to come.' }));
+  }
+
+  /// Every comment on a task, newest first; one on a file opens it.
+  function commentsCard(task) {
+    var list = (task.comments || []).slice().reverse();
+    var open = function (file) { go('teamfiles', { taskId: task.id, teamFilePick: file }); };
+    var add = h('span', { class: 'row', style: 'gap:14px' },
+      h('button', { class: 'linkish', text: 'Tell the coordinator', title: 'A note it reads at its next stage, e.g. a member redid a piece and the new version should be used', onclick: function (e) {
+        commentBox({ taskId: task.id, at: e.currentTarget.getBoundingClientRect(), title: 'Say something to the coordinator', about: 'coordinator',
+          notes: [task.status === 'proposed' ? 'The coordinator re-plans with it.' : 'The coordinator reads it at its next stage, and every member after it does too.'] });
+      } }),
+      h('button', { class: 'linkish', text: 'Comment on the task', onclick: function (e) {
+        commentBox({ taskId: task.id, at: e.currentTarget.getBoundingClientRect(), title: 'Comment on the task', notes: [commentGoes(task, false, null)] });
+      } }));
+    return card('taskcomments', 'Comments · ' + list.length, add,
+      list.length ? h('div', { class: 'cm-list' }, list.map(function (c) { return commentRow(c, open, false); }))
+        : h('p', { class: 'muted', style: 'margin:0;font-size:13.5px', text: 'Nothing said yet. Select a passage in a file to comment on it, or pick a member to say something to them.' }));
+  }
+
   // ---- one team --------------------------------------------------------
 
   /// A shared file of a team task, read when opened.
   function teamFile(taskId, name, label) {
     var body = h('div', { class: 'wc-out' }, h('span', { class: 'faint', text: 'Loading…' }));
-    var d = h('details', { class: 't-report' }, h('summary', null, label || 'Read ', h('code', { text: name })), body);
+    var said = commentsOn(taskId, name).length;
+    var d = h('details', { class: 't-report' }, h('summary', null, label || 'Read ', h('code', { text: name }), said ? h('span', { class: 'faint', text: ' · ' + plural(said, 'comment', 'comments') }) : null), body);
     var loaded = false;
     var key = taskId + '/' + name;
-    var show = function (text) { body.textContent = ''; body.appendChild(/\.(md|markdown|txt)$/i.test(name) ? md(text) : h('pre', { text: text })); };
+    // Over the text, a way to comment on it; under it, what's been said.
+    var show = function (text) {
+      fill(body, [fileCommentBar(taskId, name), commentable(taskId, name, /\.(md|markdown|txt)$/i.test(name) ? md(text) : h('pre', { text: text })), fileCommentList(taskId, name)]);
+    };
     d.ontoggle = function () {
       if (!d.open || loaded) return;
       loaded = true;
@@ -3608,7 +6247,7 @@ export const CONSOLE_JS = String.raw`
       avatar(p.workerId, p.workerName, 's'),
       h('div', { class: 'stack', style: 'gap:6px;min-width:0;flex:1' },
         h('div', { class: 't-top' },
-          h('span', null, h('button', { class: 'linkish', style: 'color:var(--ink);font-weight:600', text: p.workerName, onclick: function () { openWorker(p.workerId); } }),
+          h('span', null, h('button', { class: 'linkish', style: 'color:var(--ink);font-weight:600', text: p.workerName, title: 'Say something to ' + p.workerName, onclick: function (e) { memberBox(task, p, current, e.currentTarget.getBoundingClientRect(), after); } }),
             p.step && p.status === 'running' ? h('span', { class: 'faint', text: ' · step ' + p.step.index + ' of ' + p.step.total + ', ' + p.step.name.replace(/[-_]/g, ' ') }) : null),
           h('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' },
             p.runId ? h('button', { class: 'btn small', text: p.status === 'running' ? 'Watch' : 'See what it did', onclick: function () { watchRun(p.runId, p.workerName + ' · ' + task.title); } }) : null,
@@ -3625,6 +6264,7 @@ export const CONSOLE_JS = String.raw`
   /// A team task as a thread: what you asked, where it stands in a sentence,
   /// its stages, what it needs from you, the members' pieces, and the pack.
   function teamTaskThread(task, after) {
+    noteTaskComments(task, after);
     var b = task.waitingOnYou || task.piecesNeedYou ? ['waiting', 'Needs you'] : { queued: ['', 'Up next'], planning: ['working', 'Planning'], running: ['working', 'Running'], done: ['ok', 'Done'], failed: ['bad', 'Failed'], cancelled: ['', 'Cancelled'], waiting: ['waiting', 'Waiting'], questions: ['waiting', 'Has questions'], proposed: ['waiting', 'Plan ready'] }[task.status] || ['', task.status];
     var cls = task.waitingOnYou || task.piecesNeedYou ? ' need' : task.status === 'running' || task.status === 'planning' ? ' live' : task.status === 'failed' ? ' bad' : '';
     var cur = task.stagesDetail.filter(function (s) { return s.current; })[0];
@@ -3643,7 +6283,7 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 't-top', style: 'align-items:flex-start' },
           h('div', { style: 'min-width:0;flex:1 1 320px' },
             h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, cls === ' live' ? h('span', { class: 'livedot' }) : null, h('b', { class: 't-title', text: task.title || task.brief })),
-            h('div', { class: 'faint', style: 'margin-top:2px', text: (task.requestedBy && task.requestedBy !== me ? task.requestedBy : 'You') + ' asked' + (task.title && task.title !== task.brief ? ' “' + task.brief + '”' : '') + ' · ' + when(task.createdAt) })),
+            h('div', { class: 'faint', style: 'margin-top:2px', text: (task.requestedBy && task.requestedBy !== me ? task.requestedBy : 'You') + ' asked' + (task.title && task.title !== task.brief ? ' “' + briefShort(task.brief).text + '”' : '') + ' · ' + when(task.createdAt) })),
           h('span', { class: 'badge ' + b[0], text: b[1] + (cur && !done && (task.status === 'running' || task.status === 'waiting') ? ' · stage ' + (task.stagesDetail.indexOf(cur) + 1) + ' of ' + task.stagesDetail.length : '') })),
         !done && !(cur && cur.pieces.length && task.status !== 'proposed') ? h('p', { class: 't-head', text: task.nowSentence }) : null,
         task.status === 'planning' ? thinking('The coordinator is reading the brief and its members’ jobs, then writing questions or a plan.') : null,
@@ -3744,102 +6384,487 @@ export const CONSOLE_JS = String.raw`
       })());
   }
 
-  /// One team task, on its own page: its stages down the side, the chosen
-  /// stage's members and what each wrote, and the folder it is building.
+  /// A "…" button opening a short menu: items are [label, onclick, danger].
+  /// Null when there is nothing to put in it.
+  function moreMenu(items) {
+    items = items.filter(Boolean);
+    if (!items.length) return null;
+    var wrap, btn, pop;
+    var outside = function (e) { if (!wrap.contains(e.target)) close(); };
+    var esc = function (e) { if (e.key === 'Escape') { close(); btn.focus(); } };
+    var close = function () { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('mousedown', outside); document.removeEventListener('keydown', esc); };
+    pop = h('div', { class: 'menu pi-menu', role: 'menu', hidden: true }, h('div', { class: 'menu-sec' }, items.map(function (m) {
+      return h('button', { class: 'menu-item' + (m[2] ? ' pi-danger' : ''), role: 'menuitem', text: m[0], onclick: function (e) { close(); m[1](e); } });
+    })));
+    btn = h('button', { class: 'btn icon', 'aria-label': 'More actions', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, icon('dots', 16));
+    btn.onclick = function () {
+      if (!pop.hidden) { close(); return; }
+      pop.hidden = false; btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('mousedown', outside); document.addEventListener('keydown', esc);
+    };
+    wrap = h('div', { class: 'menu-wrap' }, btn, pop);
+    return wrap;
+  }
+
+  // ---- a team's talk about its pack -------------------------------------
+  // The coordinator's wrap-up read into its parts, and each reply folded to
+  // its point: ported from shared/flows/teamWrapUp.ts and the desk's
+  // landedView.ts, which the console can't import.
+
+  var WRAP_LABELS = [['changes', 'worth changing in the pack|changes? (?:to|in|for) the pack|worth changing|pack changes?'], ['open', 'still open|open questions?|unresolved|open'], ['agreed', 'agreed|agreement|consensus'], ['bottom', 'bottom line|in short|tl;?dr|summary']];
+  var WRAP_ALT = WRAP_LABELS.map(function (l) { return l[1]; }).join('|');
+  var WRAP_NOTHING = new RegExp('^(?:none|nothing|n\\/?a|no(?:ne)? (?:yet|so far)|—|-|–|…|\\.\\.\\.)\\.?$', 'i');
+  var LIST_MARK = new RegExp('^\\s*(?:[-*•+]|\\d+[.)])\\s+');
+  function wrapSection(label) {
+    var l = label.toLowerCase();
+    for (var i = 0; i < WRAP_LABELS.length; i++) if (new RegExp('^(?:' + WRAP_LABELS[i][1] + ')$', 'i').test(l)) return WRAP_LABELS[i][0];
+    return 'bottom';
+  }
+  function wrapClean(text) {
+    return text.replace(LIST_MARK, '').replace(/\*\*|__/g, '').replace(new RegExp('(^|\\s)[*_](\\S[^*_]*\\S|\\S)[*_](?=\\s|[.,;:!?]|$)', 'g'), '$1$2').replace(/\s+/g, ' ').trim();
+  }
+  function wrapItems(body) {
+    var out = [], lines = body.split('\n');
+    var anyBullet = lines.some(function (l) { return LIST_MARK.test(l); });
+    var current = null;
+    var flush = function () { if (current === null) return; var c = wrapClean(current); if (c && !WRAP_NOTHING.test(c)) out.push(c); current = null; };
+    lines.forEach(function (line) {
+      if (!line.trim()) { if (!anyBullet) flush(); return; }
+      if (LIST_MARK.test(line)) { flush(); current = line; } else if (current === null) current = line; else current += ' ' + line.trim();
+    });
+    flush();
+    return out;
+  }
+  /// { bottomLine, agreed, open, changes }, or null when it has none of the labels.
+  function parseWrapUp(text) {
+    var src = String(text || '').replace(/\r\n?/g, '\n');
+    var bold = new RegExp('(?:\\*\\*|__)\\s*(' + WRAP_ALT + ')\\s*(?::\\s*(?:\\*\\*|__)|(?:\\*\\*|__)\\s*:)', 'gi');
+    var line = new RegExp('^[ \\t]*(?:#{1,6}[ \\t]*)?(?:[-*•][ \\t]+)?(?:\\*\\*|__)?(' + WRAP_ALT + ')(?:\\*\\*|__)?[ \\t]*(?::|$)', 'gim');
+    var marks = [];
+    [bold, line].forEach(function (re) {
+      re.lastIndex = 0;
+      for (var m = re.exec(src); m; m = re.exec(src)) {
+        var at = m.index, end = at + m[0].length;
+        if (marks.some(function (k) { return at < k.end && end > k.at; })) continue;
+        marks.push({ at: at, end: end, section: wrapSection(m[1]) });
+      }
+    });
+    if (!marks.some(function (m) { return m.section !== 'bottom'; })) return null;
+    marks.sort(function (a, b) { return a.at - b.at; });
+    var out = { bottomLine: '', agreed: [], open: [], changes: [] }, bottom = [];
+    var lead = src.slice(0, marks[0].at).trim();
+    if (lead) bottom.push(lead);
+    marks.forEach(function (mark, i) {
+      var body = src.slice(mark.end, marks[i + 1] ? marks[i + 1].at : src.length).replace(/^[ \t]*(?:\*\*|__)?[ \t]*/, '');
+      if (mark.section === 'bottom') { if (body.trim()) bottom.push(body.trim()); return; }
+      out[mark.section] = out[mark.section].concat(wrapItems(body));
+    });
+    out.bottomLine = wrapClean(bottom.join(' ').replace(/^#{1,6}\s+.*$/gm, ''));
+    if (WRAP_NOTHING.test(out.bottomLine)) out.bottomLine = '';
+    return out;
+  }
+  /// An open item's question, and who answers it by when: "Q? — finance, by Friday".
+  function splitOwner(item) {
+    var dash = item.match(/^(.*\S)\s+(?:—|–|--|-)\s+(\S.*)$/);
+    if (dash && dash[1].length >= 8) return { text: dash[1], who: dash[2] };
+    var paren = item.match(/^(.*\S)\s*\(([^()]+)\)\.?$/);
+    if (paren && paren[1].length >= 8) return { text: paren[1], who: paren[2] };
+    return { text: item };
+  }
+  function plainLine(text) {
+    return String(text || '').replace(/\x60{3}[\s\S]*?\x60{3}/g, ' ').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_\x60#>]/g, '').replace(/\s+/g, ' ').trim();
+  }
+  /// A reply folded to its point: its bold lead, else its first sentence;
+  /// "more" is how much "Show detail" opens to.
+  function replyGist(text) {
+    var src = String(text || '').trim(), flat = plainLine(src);
+    var lm = src.match(/^(?:\*\*|__)([^*_\n]{8,200}?)(?:\*\*|__)/);
+    var lead = lm ? lm[1].trim().replace(/[:\s]+$/, '') : '';
+    var sm = flat.match(/^.{20,}?[.!?](?=\s|$)/);
+    var gist = lead || (sm ? sm[0] : '') || flat;
+    if (gist.length > 240) { var cut = gist.slice(0, 240), sp = cut.lastIndexOf(' '); gist = (sp > 160 ? cut.slice(0, sp) : cut).replace(/[,;:.\s]+$/, '') + '…'; }
+    if (flat.length - plainLine(gist.replace(/…$/, '')).length <= 8) return { gist: gist, more: 0 };
+    var bullets = src.split('\n').filter(function (l) { return LIST_MARK.test(l); }).length;
+    if (bullets > 0) return { gist: gist, more: bullets };
+    var sentences = (flat.match(/[^.!?]+[.!?]+(?=\s|$)/g) || [flat]).length;
+    return { gist: gist, more: Math.max(1, sentences - 1) };
+  }
+  /// Who a reply answers: teammates it names who spoke before it in the
+  /// exchange; you, when it's the first answer; everyone, for a wrap-up.
+  function repliesTo(messages, index) {
+    var m = messages[index];
+    if (!m || m.speaker.kind === 'you') return [];
+    if (m.wrapUp) return ['everyone'];
+    var self = m.speaker.kind === 'member' ? m.speaker.name : 'Coordinator';
+    var before = messages.slice(0, index).filter(function (x) { return x.exchange === m.exchange; });
+    var earlier = [];
+    before.forEach(function (x) { if (x.speaker.kind === 'member' && x.speaker.name !== self && earlier.indexOf(x.speaker.name) < 0) earlier.push(x.speaker.name); });
+    var text = m.text.toLowerCase();
+    var named = earlier.filter(function (name) {
+      var n = name.toLowerCase().replace(/[.*+?^$\x7b}()|[\]\\]/g, '\\$&');
+      return new RegExp('(^|[^a-z0-9_])@?' + n + '(?![a-z0-9_])').test(text);
+    });
+    if (named.length) return named;
+    var asked = before.some(function (x) { return x.speaker.kind === 'you'; });
+    var answered = before.some(function (x) { return x.speaker.kind !== 'you' && !x.failed; });
+    return asked && !answered ? ['you'] : [];
+  }
+  /// The coordinator's latest wrap-up that reads as one, and whether the pack has it.
+  function latestWrapUp(task) {
+    var ms = (task.room && task.room.messages) || [];
+    for (var i = ms.length - 1; i >= 0; i--) {
+      if (!ms[i].wrapUp || ms[i].failed) continue;
+      var wrap = parseWrapUp(ms[i].text);
+      if (wrap) return { message: ms[i], index: i, wrap: wrap, folded: i < ((task.room && task.room.foldedThrough) || 0) };
+    }
+    return null;
+  }
+  function teamReplies(ms) { return ms.filter(function (m) { return m.speaker.kind !== 'you' && !m.failed; }).length; }
+  /// Exchanges since the pack was written, with a reply in them.
+  function unfoldedExchanges(task) {
+    var ms = (task.room && task.room.messages) || [], seen = {};
+    ms.slice((task.room && task.room.foldedThrough) || 0).forEach(function (m) { if (m.speaker.kind !== 'you' && !m.failed) seen[m.exchange] = 1; });
+    return Object.keys(seen).length;
+  }
+  function canKeepDebating(task) {
+    var ms = (task.room && task.room.messages) || [];
+    if (!ms.length || (task.room && task.room.busy)) return false;
+    var last = ms[ms.length - 1].exchange;
+    return ms.some(function (m) { return m.exchange === last && m.speaker.kind === 'member' && !m.failed; });
+  }
+
+  /// One team task on its own page, the whole width: its stages across the
+  /// top, what it needs from you, then where the team landed, its debate,
+  /// the pack and the brief; what changed and who did what beside them.
   function viewTeamTask() {
     var id = state.taskId;
-    return Promise.all([api('GET', '/api/team-tasks/' + encodeURIComponent(id) + '/page'), api('GET', '/api/team-tasks/' + encodeURIComponent(id) + '/files').catch(function () { return { ok: false }; })]).then(function (r) {
-      var x = r[0], fx = r[1];
+    var load = function () {
+      return Promise.all([api('GET', '/api/team-tasks/' + encodeURIComponent(id) + '/page'), api('GET', '/api/team-tasks/' + encodeURIComponent(id) + '/files').catch(function () { return { ok: false }; })]);
+    };
+    return load().then(function (r) {
+      var x = r[0];
       if (x.ok === false) return [msg(x)];
       var team = x.team;
-      var head_ = h('div'), rail = h('nav', { class: 'trail', 'aria-label': 'Stages' }), stage = h('div', { class: 'stack', style: 'gap:16px' });
-      var timer = null;
+      var host = h('div', { class: 'pi-page tt-page' });
+      var timer = null, fastUntil = 0, lastKey = '';
+      var seenBy = state.taskSeen || (state.taskSeen = {});
+      var offBy = state.taskOff || (state.taskOff = {});
+      var drafts = state.taskDraft || (state.taskDraft = {});
+
       var draw = function (task, files) {
-        var cur = task.stagesDetail.filter(function (s) { return s.current; })[0];
-        var pick = state.taskStage != null ? state.taskStage : cur ? task.stagesDetail.indexOf(cur) : Math.max(0, task.stagesDetail.length - 1);
-        var done = task.status === 'done';
-        // The pack is written and held for you: read it, then accept it.
-        var review = task.status === 'review';
-        var stopOut = h('span');
-        var accept = function (e) {
-          var restore = busy(e.target, 'Accepting…');
-          api('POST', '/api/team-tasks/' + encodeURIComponent(task.id), { kind: 'accept' }).then(function (y) { restore(); stopOut.replaceChildren(msg(y, 'Accepted. The task is done.')); refresh(); });
+        noteTaskComments(task, refresh);
+        var me = state.me && state.me.name;
+        var room = task.room || { messages: [] };
+        var ms = room.messages || [];
+        var pack = task.pack;
+        var version = pack ? pack.version || 1 : 0;
+        var done = task.status === 'done', review = task.status === 'review';
+        var active = ['queued', 'planning', 'questions', 'proposed', 'running', 'waiting'].indexOf(task.status) >= 0;
+        var talkable = !!pack && (review || done) && task.canSteer;
+        var landed = latestWrapUp(task);
+        var pending = landed && !landed.folded ? landed.wrap.changes : [];
+        var talked = unfoldedExchanges(task);
+        var out = h('div', { 'aria-live': 'polite' });
+        var post = function (path, body, okText, button, label) {
+          var restore = button ? busy(button, label || 'Sending…') : function () {};
+          return api('POST', '/api/team-tasks/' + encodeURIComponent(task.id) + path, body || {}).then(function (y) {
+            restore();
+            fill(out, y.ok === false ? msg(y) : okText ? msg(y, okText) : null);
+            if (y.ok !== false) { fastUntil = Date.now() + 120000; setTimeout(refresh, 800); }
+            return y;
+          });
         };
-        var stop = review ? h('button', { class: 'btn go', text: 'Accept the pack', onclick: accept })
-          : !done && task.status !== 'failed' && task.status !== 'cancelled' ? h('button', { class: 'btn danger', text: 'Stop the task', onclick: function (e) {
-          if (!confirm('Stop this task? Work already written stays in its folder.')) return;
-          var restore = busy(e.target, 'Stopping…');
-          api('POST', '/api/team-tasks/' + encodeURIComponent(task.id), { kind: 'cancel' }).then(function (y) { restore(); stopOut.replaceChildren(msg(y, 'Stopped.')); refresh(); });
-        } }) : null;
-        var nFiles = files && files.ok !== false ? files.files.length : null;
-        head_.replaceChildren(h('header', { class: 'page-head' },
-          h('div', { style: 'min-width:0;max-width:860px' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Teams', onclick: function () { go('teams'); } }), ' / ',
-              h('button', { class: 'linkish', style: 'font-size:12.5px', text: team.name, onclick: function () { go('team', { teamId: team.id }); } }), ' / Task'),
-            h('div', { class: 'row', style: 'gap:12px' }, h('h1', { class: 'page-title', text: task.title || task.brief }), taskBadge(task)),
-            h('p', { class: 'page-sub', text: (task.requestedBy && task.requestedBy !== (state.me && state.me.name) ? task.requestedBy : 'You') + ' asked “' + task.brief + '” · ' + when(task.createdAt) })),
-          h('div', { class: 'page-actions' }, spendBar(task),
-            h('button', { class: 'btn', onclick: function () { go('teamfiles', { taskId: task.id }); } }, icon('doc', 16), 'Shared folder' + (nFiles != null ? ' · ' + nFiles : '')),
-            stop, stopOut)));
-        var needs = teamTaskControls(task, h('div'), refresh);
-        fill(rail, [h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'Stages' }), h('span', { class: 'faint', text: task.stagesDetail.filter(function (s) { return s.status === 'done'; }).length + ' of ' + task.stagesDetail.length + ' done' })),
-          task.stagesDetail.length ? task.stagesDetail.map(function (s, i) {
+        var decide = function (body, okText) { return function (e) { post('', body, okText, e && e.target); }; };
+        var setTab = function (t) { state.taskTab = t; if (t === 'debate') seenBy[task.id] = ms.length; draw(task, files); };
+
+        // ---- Header: the team, the task, the crew, the spend.
+        var bs = briefShort(task.brief);
+        var asker = task.requestedBy && task.requestedBy !== me ? task.requestedBy : 'You';
+        var crumbs = [task.code ? 'code on ' + task.code.branch : null, asker + ' asked ' + when(task.createdAt).replace(/^Today /, 'today ')].filter(Boolean).join(' · ');
+        var menu = moreMenu([
+          review && task.canSteer ? ['Accept the pack', function (e) { post('', { kind: 'accept' }, 'Accepted. The task is done.'); }] : null,
+          ['Open the shared folder', function () { go('teamfiles', { taskId: task.id }); }],
+          bs.long ? ['Read the whole brief', function () { openReader('The brief', task.title || '', function (put) { put([md(task.brief)]); }); }] : null,
+          active && task.canSteer ? ['Stop the task', function () { if (confirm('Stop this task? Work already written stays in its folder.')) post('', { kind: 'cancel' }, 'Stopped.'); }, true] : null,
+        ]);
+        var cur = task.stagesDetail.filter(function (s) { return s.current; })[0];
+        var faces = (team.members || []).slice(0, 6);
+        var header = h('header', { class: 'pi-head' },
+          h('div', { class: 'pi-top' },
+            h('div', { class: 'pi-titles' },
+              h('span', { class: 'pi-crumb' }, h('button', { class: 'linkish', text: 'Teams', onclick: function () { go('teams'); } }), ' / ',
+                h('button', { class: 'linkish', text: team.name, onclick: function () { go('team', { teamId: team.id }); } }), ' · ' + crumbs),
+              h('div', { class: 'row', style: 'gap:10px' }, h('h1', { class: 'pi-title', text: task.title || bs.text }), room.busy ? h('span', { class: 'badge working', text: room.busy.speaker + ' is answering' }) : taskBadge(task)),
+              task.title && bs.text !== task.title ? h('span', { class: 'pi-brief', text: bs.text }) : null),
+            h('div', { class: 'row', style: 'gap:14px' },
+              faces.length ? h('span', { class: 'faces', 'aria-label': 'The team: ' + faces.map(function (m) { return m.name; }).join(', ') }, faces.map(function (m) { var a = avatar(m.workerId, m.name, 's'); a.setAttribute('title', m.name + (m.role ? ' · ' + m.role : '')); return a; })) : null,
+              h('div', { class: 'tt-spend' }, spendBar(task)),
+              menu)),
+          task.stagesDetail.length ? h('ol', { class: 'tt-track', 'aria-label': 'Stages', style: '--n:' + Math.min(task.stagesDetail.length, 8) }, task.stagesDetail.map(function (s, i) {
             var c = stageClass(task, s);
-            var took = s.finishedAt && s.startedAt ? secs(s.finishedAt - s.startedAt) : s.startedAt && (c === 'now' || c === 'need') ? secs(Date.now() - s.startedAt) : '';
-            return h('button', { class: 'trow' + (i === pick ? ' on' : ''), 'aria-current': i === pick ? 'step' : null, onclick: function () { state.taskStage = i; draw(task, files); } },
-              h('span', { class: 'tdot ' + c, text: c === 'done' ? '✓' : c === 'failed' ? '✕' : c === 'part' ? '!' : c === 'now' || c === 'need' ? '' : String(i + 1) }),
-              h('span', { class: 'stack', style: 'gap:0;min-width:0;flex:1' }, h('b', { text: (i + 1) + '. ' + (s.title || s.label) }), h('span', { class: 'faint', text: s.pieces.length ? s.pieces.map(function (p) { return p.workerName; }).join(', ') : 'Coordinator' })),
-              h('span', { class: 'faint', text: took }));
-          }) : h('p', { class: 'muted', style: 'padding:14px 16px', text: task.status === 'planning' ? 'The coordinator is planning the stages.' : 'No stages yet.' })]);
-        var s = task.stagesDetail[pick];
-        var limit = slowAfter(task);
-        // Redrawn while you read: what you opened stays open and scrolled,
-        // and the page stays where you were (keepPlace; the scroll below).
+            return h('li', { class: c, title: (i + 1) + '. ' + (s.title || s.label) + ' · ' + s.status }, h('span', { class: 'tt-bar' }), h('span', { class: 'tt-sname', text: s.title || s.label }));
+          })) : null);
+
+        // ---- Your turn: what it needs from you, plainly, with what answers it.
+        var band = null;
+        var bandRow = function (tone, ic, title, detail, actions, below) {
+          return h('section', { class: 'pi-band ' + tone, 'aria-label': 'Your turn' },
+            h('div', { class: 'pi-bandrow' }, h('span', { class: 'pi-bandic' }, icon(ic, 18)),
+              h('div', { class: 'pi-bandtext' }, h('b', { text: title }), detail ? h('span', { class: 'pi-bandsub', text: detail }) : null),
+              actions && actions.length ? h('div', { class: 'row', style: 'gap:8px' }, actions) : null),
+            below || null);
+        };
+        // In review the band below is the whole of it; the controls are for questions, a plan or a checkpoint.
+        var controls = review ? null : teamTaskControls(task, out, refresh);
+        if (!room.busy && review && task.canSteer) {
+          var head = 'Version ' + version + ', ' + plural(pack.files.length, 'file', 'files') + '.';
+          var keep = canKeepDebating(task) ? h('button', { class: 'btn', text: 'Keep debating', onclick: function (e) { post('/room/continue', {}, 'Another round: the team is weighing in.', e.target); setTab('debate'); } }) : null;
+          if (pending.length) {
+            band = bandRow('need', 'check', 'Your turn: the pack is ready to review', head + ' The team debated after it was built, and ' + (pending.length === 1 ? '1 change they agreed on isn’t' : pending.length + ' changes they agreed on aren’t') + ' in it yet.', [
+              h('button', { class: 'btn go', text: 'Add the ' + plural(pending.length, 'change', 'changes') + ', then review', onclick: function (e) { post('/update-pack', { changes: pending }, 'The coordinator is folding them into the pack.', e.target, 'Asking…'); } }),
+              h('button', { class: 'btn', text: 'Review v' + version + ' as it is', onclick: function () { setTab('pack'); } }), keep]);
+          } else if (talked) {
+            band = bandRow('need', 'check', 'Your turn: the pack is ready to review', head + ' The team talked after it was built: ' + plural(talked, 'exchange isn’t', 'exchanges aren’t') + ' in it.', [
+              h('button', { class: 'btn go', text: 'Review v' + version, onclick: function () { setTab('pack'); } }),
+              h('button', { class: 'btn', text: 'Update the pack first', onclick: function (e) { post('/update-pack', {}, 'The coordinator is folding the talk into the pack.', e.target, 'Asking…'); } }), keep]);
+          } else {
+            band = bandRow('need', 'check', 'Your turn: the pack is ready to review', head, [h('button', { class: 'btn go', text: 'Review v' + version, onclick: function () { setTab('pack'); } })]);
+          }
+        } else if (!room.busy && task.waitingOnYou && task.needs === 'answers') {
+          var nq = (task.questions || []).length;
+          band = bandRow('need', 'check', 'Your turn: the coordinator has ' + plural(nq, 'question', 'questions'), 'Answer what you can before it plans. Leave one blank and the coordinator decides.', null, h('div', { class: 'tt-bandbody' }, controls, aboutRow(task)));
+        } else if (!room.busy && task.waitingOnYou && task.needs === 'plan') {
+          var crew = {};
+          task.stagesDetail.forEach(function (s) { s.pieces.forEach(function (p) { crew[p.workerId] = 1; }); });
+          band = bandRow('need', 'check', 'Your turn: approve the plan', plural(task.stagesDetail.length, 'stage', 'stages') + ' with ' + plural(Object.keys(crew).length, 'member', 'members') + '. Nothing runs until you approve.', [
+            h('button', { class: 'btn go', text: 'Approve and start', onclick: decide({ kind: 'approve' }, 'Approved. The team is on it.') }),
+            h('button', { class: 'btn', text: 'Read the plan first', onclick: function () { setTab('plan'); } })]);
+        } else if (!room.busy && task.waitingOnYou) {
+          band = bandRow('need', 'check', task.needs === 'budget' ? 'Your turn: the task reached its budget' : task.needs === 'checkpoint' ? 'Your turn: a checkpoint' : 'Your turn: a stage needs you', '', null, controls ? h('div', { class: 'tt-bandbody' }, controls) : null);
+        } else if (!room.busy && task.piecesNeedYou) {
+          band = bandRow('need', 'check', 'Your turn: ' + plural(task.piecesNeedYou, 'step waits', 'steps wait') + ' for your OK', cur ? 'At ' + (cur.title || cur.label) + '.' : '', [h('button', { class: 'btn go', text: 'See what they need', onclick: function () { setTab('plan'); } })]);
+        }
+
+        // ---- Tabs.
+        var replies = teamReplies(ms);
+        var landedFresh = landed && teamReplies(ms.slice(landed.index + 1)) === 0;
+        var roomWork = (task.status === 'running' || task.status === 'waiting') && cur && cur.fromRoom;
+        var TABS = [landed ? ['landed', 'Where it landed', 0] : null, ms.length || talkable ? ['debate', 'Debate', replies] : null, pack ? ['pack', 'Pack', 'v' + version] : null, ['plan', 'Brief & plan', 0]].filter(Boolean);
+        if (state.taskTabFor !== task.id) {
+          state.taskTabFor = task.id;
+          var seen = seenBy[task.id] || 0;
+          var fresh = teamReplies(ms.slice(seen)) > 0 || (ms.length && pack && (ms[ms.length - 1].at || 0) > (pack.updatedAt || 0));
+          state.taskTab = !pack ? 'plan' : room.busy || roomWork ? 'debate' : landed && landedFresh ? 'landed' : ms.length && fresh ? 'debate' : 'pack';
+        }
+        var tab = TABS.some(function (t) { return t[0] === state.taskTab; }) ? state.taskTab : TABS[0][0];
+        if (tab === 'debate') seenBy[task.id] = ms.length;
+        var tabs = h('div', { class: 'pi-tabs', role: 'tablist', 'aria-label': 'Task views' }, TABS.map(function (t) {
+          return h('button', { type: 'button', role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', onclick: function () { setTab(t[0]); } }, t[1], t[2] ? h('span', { class: 'pi-count', text: String(t[2]) }) : null);
+        }));
+
+        // The box to talk to the team, under every tab once there is a pack.
+        var ask = null, askBox = null;
+        if (talkable) {
+          askBox = h('textarea', { rows: '1', class: 'tt-askin', placeholder: 'e.g. @' + ((team.members || [])[0] ? team.members[0].name : 'Name') + ' redo this with the new numbers', 'aria-label': 'Ask the team, or one person, to change something', value: drafts[task.id] || '' });
+          // It grows with what you type, up to a few lines.
+          var fit = function () { askBox.style.height = 'auto'; askBox.style.height = Math.min(askBox.scrollHeight, 160) + 'px'; };
+          askBox.oninput = function () { drafts[task.id] = askBox.value; fit(); };
+          var send = function (e) {
+            var text = askBox.value.trim();
+            if (!text) { askBox.focus(); return; }
+            post('/room', { text: text }, null, e && e.target && e.target.tagName === 'BUTTON' ? e.target : null).then(function (y) { if (y.ok !== false) { drafts[task.id] = ''; state.taskTab = 'debate'; } });
+          };
+          // Enter or ⌘↵ sends; Shift+Enter starts a new line.
+          askBox.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(e); } };
+          var tries = [talked ? ['Fold in the debate', function (e) { post('/update-pack', {}, 'The coordinator is folding the talk into the pack.', e.target, 'Asking…'); }] : null]
+            .concat((team.members || []).slice(0, 3).map(function (m) { return ['@' + m.name, function () { askBox.value = '@' + m.name + ' ' + askBox.value.replace(/^@\S+\s*/, ''); drafts[task.id] = askBox.value; askBox.focus(); }]; })).filter(Boolean);
+          ask = h('div', { class: 'tt-ask' },
+            h('label', { class: 'faint', text: 'Ask the team, or one person, to change something' }),
+            h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, askBox, h('button', { class: 'btn small go', text: 'Send', onclick: send })),
+            tries.length ? h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Try' }), tries.map(function (t) { return h('button', { type: 'button', class: 'tt-try', text: t[0], onclick: t[1] }); })) : null);
+        }
+        var replyTo = function (name) {
+          if (!askBox) return;
+          askBox.value = '@' + name + ' ' + askBox.value.replace(/^@\S+\s*/, '');
+          drafts[task.id] = askBox.value;
+          askBox.focus();
+          askBox.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        };
+
+        var body;
+        if (tab === 'landed') {
+          var w = landed.wrap;
+          var off = offBy[task.id + ':' + landed.message.id] || (offBy[task.id + ':' + landed.message.id] = {});
+          var picked = w.changes.filter(function (c, i) { return !off[i]; });
+          var sendBtn = h('button', { class: 'btn go', style: 'align-self:flex-start', text: 'Send ' + picked.length + ' to the pack', disabled: !picked.length || !talkable || !!room.busy });
+          sendBtn.onclick = function () { post('/update-pack', { changes: w.changes.filter(function (c, i) { return !off[i]; }) }, 'The coordinator is folding them into the pack.', sendBtn, 'Asking…'); };
+          var pickCount = h('span', { text: picked.length + ' picked' });
+          var cardsL = [];
+          if (w.agreed.length) cardsL.push(h('div', { class: 'pi-card pi-mini' }, h('span', { class: 'label tt-ok', text: 'Agreed · ' + w.agreed.length }),
+            w.agreed.map(function (a) { return h('div', { class: 'tt-item' }, h('span', { class: 'tt-tick' }, icon('tick', 14)), h('span', { text: a })); })));
+          if (w.open.length) cardsL.push(h('div', { class: 'pi-card pi-mini' }, h('span', { class: 'label pi-need', text: 'Still open · ' + w.open.length }),
+            w.open.map(function (o) { var s = splitOwner(o); return h('div', { class: 'pi-handed' }, h('span', { text: s.text }), s.who ? h('span', { class: 'faint', text: s.who }) : null); })));
+          if (w.changes.length) cardsL.push(h('div', { class: 'pi-card pi-mini' },
+            landed.folded ? h('span', { class: 'label pi-go', text: 'In the pack · ' + w.changes.length }) : h('span', { class: 'label pi-go' }, 'Change in the pack · ', pickCount),
+            w.changes.map(function (c, i) {
+              if (landed.folded) return h('div', { class: 'tt-item' }, h('span', { class: 'tt-tick' }, icon('tick', 14)), h('span', { text: c }));
+              var box = h('input', { type: 'checkbox', checked: !off[i] });
+              box.onchange = function () { off[i] = !box.checked; var n = w.changes.filter(function (_c, j) { return !off[j]; }).length; pickCount.textContent = n + ' picked'; sendBtn.textContent = 'Send ' + n + ' to the pack'; sendBtn.disabled = !n || !talkable || !!room.busy; };
+              return h('label', { class: 'tt-pick' }, box, h('span', { text: c }));
+            }),
+            landed.folded ? h('span', { class: 'faint', text: 'Already folded into v' + version + '.' }) : talkable ? sendBtn : null));
+          body = h('div', { class: 'stack', style: 'gap:14px' },
+            h('div', { class: 'pi-card pi-stand' },
+              h('div', { class: 'row', style: 'gap:10px' }, h('span', { class: 'pi-badge P tt-c', text: 'C', 'aria-hidden': 'true' }), h('span', { class: 'label', text: 'The bottom line · from the coordinator · ' + when(landed.message.at) })),
+              h('p', { class: 'pi-lead', style: 'margin:0', text: w.bottomLine || 'The coordinator went straight to the lists.' })),
+            cardsL.length ? h('div', { class: 'pi-cards' }, cardsL) : null);
+        } else if (tab === 'debate') {
+          var rows = [];
+          var openKey = state.taskOpenReply || (state.taskOpenReply = {});
+          ms.forEach(function (m, i) {
+            if (m.speaker.kind === 'you') { rows.push(h('div', { class: 'tt-asked' }, h('b', { text: 'You asked' }), h('span', { text: plainLine(m.text) }), h('span', { class: 'faint', text: clock(m.at) }))); return; }
+            var name = m.speaker.kind === 'member' ? m.speaker.name : 'Coordinator';
+            if (m.failed) { rows.push(h('div', { class: 'tt-asked faint', text: name + ' couldn’t answer: ' + m.text })); return; }
+            var to = repliesTo(ms, i);
+            var g = m.wrapUp && landed && landed.message.id === m.id ? { gist: 'Wrote up where this landed: ' + [plural(landed.wrap.agreed.length, 'agreed', 'agreed'), landed.wrap.open.length + ' open', plural(landed.wrap.changes.length, 'change', 'changes') + ' for the pack'].join(', ') + '.', more: 1 } : replyGist(m.text);
+            var isOpen = !!openKey[m.id];
+            var detail = h('div', { class: 'tt-detail', hidden: !isOpen }, isOpen ? md(m.text) : null);
+            var toggle = h('button', { type: 'button', class: 'tt-link', text: isOpen ? 'Hide detail' : 'Show detail (' + g.more + ')' });
+            toggle.onclick = function () {
+              var now = !openKey[m.id]; openKey[m.id] = now; detail.hidden = !now;
+              if (now && !detail.firstChild) append(detail, md(m.text));
+              toggle.textContent = now ? 'Hide detail' : 'Show detail (' + g.more + ')';
+            };
+            rows.push(h('article', { class: 'pi-card tt-reply' + (m.wrapUp ? ' wrap' : '') },
+              m.speaker.kind === 'member' ? avatar(m.speaker.workerId || name, name, 's') : h('span', { class: 'pi-badge P tt-c', text: 'C', 'aria-hidden': 'true' }),
+              h('div', { class: 'tt-rbody' },
+                h('div', { class: 'row', style: 'gap:8px' }, h('b', { text: name }), m.wrapUp ? h('span', { class: 'pi-tag now', text: 'Summed up' }) : null,
+                  h('span', { class: 'faint', text: (to.length ? 'to ' + to.join(', ') + ' · ' : '') + clock(m.at) })),
+                h('p', { class: 'tt-gist', text: g.gist }),
+                detail,
+                h('div', { class: 'row', style: 'gap:6px' },
+                  g.more ? toggle : null,
+                  m.wrapUp ? h('button', { type: 'button', class: 'tt-link', text: 'See where it landed', onclick: function () { setTab('landed'); } }) : null,
+                  m.speaker.kind === 'member' && askBox ? [g.more || m.wrapUp ? h('span', { class: 'faint', text: '·' }) : null, h('button', { type: 'button', class: 'tt-link', text: 'Reply to ' + name, onclick: function () { replyTo(name); } })] : null))));
+          });
+          body = h('div', { class: 'stack', style: 'gap:10px' },
+            h('div', { class: 'row', style: 'gap:10px' },
+              h('span', { class: 'faint', style: 'flex:1', text: ms.length ? plural(replies, 'reply', 'replies') + (talked ? ' · ' + plural(talked, 'exchange', 'exchanges') + ' since the pack was written' : '') + ' · each folded to its point' : 'Nobody has said anything yet. Ask the team about the pack below.' }),
+              canKeepDebating(task) && talkable ? h('button', { class: 'btn small', text: 'Keep debating', onclick: function (e) { post('/room/continue', {}, null, e.target); } }) : null),
+            rows,
+            room.busy ? thinking(room.busy.speaker + ' is answering…') : null,
+            room.queued ? h('span', { class: 'faint', text: plural(room.queued, 'question waits', 'questions wait') + ' its turn.' }) : null);
+        } else if (tab === 'pack') {
+          var changedSet = pack.changed || pack.files;
+          body = h('div', { class: 'stack', style: 'gap:14px' },
+            h('div', { class: 'pi-card pi-stand' },
+              h('div', { class: 'row', style: 'gap:10px' }, h('span', { class: 'label', style: 'flex:1', text: 'Pack v' + version + (pack.updatedAt ? ' · ' + when(pack.updatedAt) : '') }),
+                review && task.canSteer ? h('button', { class: 'btn small go', text: 'Accept the pack', title: 'Read it first. Accepting marks the task done.', onclick: function (e) { post('', { kind: 'accept' }, 'Accepted. The task is done.', e.target, 'Accepting…'); } }) : null),
+              h('div', { class: 'pi-lead' }, md(pack.summary))),
+            pack.files.length ? h('div', { class: 'stack', style: 'gap:6px' }, pack.files.map(function (f) {
+              var d = teamFile(task.id, f, 'Read ');
+              if (changedSet.indexOf(f) >= 0 && version > 1) d.querySelector('summary').appendChild(h('span', { class: 'pi-tag now', style: 'margin-left:8px', text: 'changed in v' + version }));
+              return d;
+            })) : null,
+            task.code ? card('taskcode', 'Code', null, teamCode(task)) : null);
+        } else {
+          // The brief, your answers, the plan, and every stage with its members' pieces.
+          var limit = slowAfter(task);
+          var qa = (task.questions || []).map(function (q, i) { return task.answers && task.answers[i] ? [q, task.answers[i]] : null; }).filter(Boolean);
+          var stagesList = task.stagesDetail.length ? h('div', { class: 'stack', style: 'gap:10px' }, task.stagesDetail.map(function (s, i) {
+            var c = stageClass(task, s);
+            var took = s.finishedAt && s.startedAt ? secs(s.finishedAt - s.startedAt) : s.startedAt && (c === 'now' || c === 'need') ? secs(Date.now() - s.startedAt) + ' so far' : '';
+            var d = h('details', { class: 'pi-card tt-stage ' + c, open: s.current || (state.taskStage === i) },
+              h('summary', null, h('span', { class: 'pi-num tt-n ' + c, text: c === 'done' ? '✓' : c === 'failed' ? '✕' : String(i + 1) }),
+                h('b', { text: s.title || s.label }), h('span', { class: 'faint', text: [s.label, s.pieces.length ? s.pieces.map(function (p) { return p.workerName; }).join(', ') : 'Coordinator', took].filter(Boolean).join(' · ') })),
+              h('div', { class: 'tt-stagebody' },
+                s.error ? h('div', { class: 'msg err', text: s.error }) : null,
+                s.file ? teamFile(task.id, s.file, 'Read the coordinator’s ') : null,
+                s.pieces.length ? h('div', { class: 'prows' }, s.pieces.map(function (p) { return pieceRow(task, p, limit, refresh); })) : h('p', { class: 'muted', style: 'margin:0', text: 'The coordinator does this stage itself.' })));
+            return d;
+          })) : h('p', { class: 'muted', text: task.status === 'planning' ? 'The coordinator is reading the brief and writing questions or a plan.' : 'No stages yet.' });
+          body = h('div', { class: 'stack', style: 'gap:14px' },
+            task.status === 'planning' ? thinking('The coordinator is planning.') : null,
+            !done && task.nowSentence ? h('p', { class: 'muted', style: 'margin:0', text: task.nowSentence }) : null,
+            task.waitingOnYou && task.needs === 'plan' && controls ? h('div', { class: 'pi-card' }, h('span', { class: 'label pi-need', text: 'The plan, waiting on you' }), controls, aboutRow(task)) : null,
+            stagesList,
+            h('div', { class: 'pi-card stack', style: 'gap:8px' },
+              h('span', { class: 'label', text: 'What ' + (asker === 'You' ? 'you' : asker) + ' asked for · ' + when(task.createdAt) }),
+              h('div', { class: 'pi-sum', style: 'color:var(--ink)' }, md(task.brief)),
+              qa.length ? h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'label', text: 'Your answers' }), qa.map(function (p) { return h('div', { class: 'pi-handed' }, h('b', { text: p[0] }), h('span', { class: 'muted', text: p[1] })); })) : null),
+            task.planNote && !(task.waitingOnYou && task.needs === 'plan') ? h('div', { class: 'pi-card stack', style: 'gap:8px' }, h('span', { class: 'label', text: 'The plan' }), md(task.planNote), aboutRow(task)) : null);
+        }
+
+        // ---- Beside it: what changed in the pack, and who did what.
+        var aside = [];
+        var fileRows = files && files.ok !== false ? files.files : [];
+        var authorOf = function (name) { var f = (task.files || []).filter(function (x) { return x.name === name; })[0]; return f ? f.author + ' · ' + ago(f.at) : ''; };
+        var openFolder = h('button', { class: 'linkish', style: 'color:var(--go)', text: 'Open folder', onclick: function () { go('teamfiles', { taskId: task.id }); } });
+        if (pack) {
+          var changed = pack.changed || pack.files;
+          aside.push(h('div', { class: 'pi-card pi-side' },
+            h('div', { class: 'row' }, h('span', { class: 'label', style: 'flex:1', text: (version > 1 ? 'Changed in v' + version : 'In the pack') + (pack.updatedAt ? ' · ' + clock(pack.updatedAt) : '') }), openFolder),
+            changed.length ? changed.slice(0, 4).map(function (f) {
+              return h('button', { type: 'button', class: 'tt-fileline', onclick: function () { go('teamfiles', { taskId: task.id, teamFilePick: f }); } }, h('b', { text: f }), h('span', { class: 'faint', text: authorOf(f) }));
+            }) : h('span', { class: 'muted', text: 'No files changed.' }),
+            pack.files.length > Math.min(4, changed.length) ? h('button', { type: 'button', class: 'tt-link', style: 'align-self:flex-start', text: plural(pack.files.length - Math.min(4, changed.length), 'more file', 'more files') + ' in the pack', onclick: function () { setTab('pack'); } }) : null));
+        } else if (fileRows.length) {
+          aside.push(h('div', { class: 'pi-card pi-side' },
+            h('div', { class: 'row' }, h('span', { class: 'label', style: 'flex:1', text: 'Written so far · ' + fileRows.length }), openFolder),
+            fileRows.slice(0, 5).map(function (f) { return h('button', { type: 'button', class: 'tt-fileline', onclick: function () { go('teamfiles', { taskId: task.id, teamFilePick: f.name }); } }, h('b', { text: f.name }), h('span', { class: 'faint', text: authorOf(f.name) })); }),
+            fileRows.length > 5 ? h('span', { class: 'faint', text: '+ ' + (fileRows.length - 5) + ' more' }) : null));
+        }
+        var worked = task.stagesDetail.filter(function (s) { return s.status !== 'pending' || s.startedAt; });
+        var nPieces = worked.reduce(function (n, s) { return n + Math.max(1, s.pieces.length); }, 0);
+        if (worked.length) aside.push(h('div', { class: 'pi-card pi-side' },
+          h('span', { class: 'label', text: 'Who did what · ' + plural(nPieces, 'piece', 'pieces') }),
+          worked.map(function (s) {
+            var i = task.stagesDetail.indexOf(s);
+            var span = s.startedAt ? clock(s.startedAt) + (s.finishedAt && clock(s.finishedAt) !== clock(s.startedAt) ? '–' + clock(s.finishedAt) : '') : '';
+            var fin = s.pieces.filter(function (p) { return p.status === 'done'; }).length;
+            return h('button', { type: 'button', class: 'pi-crew tt-crew', onclick: function () { state.taskStage = i; setTab('plan'); } },
+              h('span', { class: 'pi-num tt-n ' + stageClass(task, s), text: String(i + 1) }),
+              h('span', { class: 'pi-vname' }, h('span', { class: 'pi-cstage', text: s.title || s.label }), h('span', { class: 'faint', text: ['Stage ' + (i + 1), s.pieces.length > 1 ? fin + ' of ' + s.pieces.length + ' done' : null, span].filter(Boolean).join(' · ') })),
+              h('span', { class: 'faces' }, s.pieces.length ? s.pieces.slice(0, 4).map(function (p) { var a = avatar(p.workerId, p.workerName, 's'); a.setAttribute('title', p.workerName); return a; }) : h('span', { class: 'pi-badge P tt-c', text: 'C', title: 'Coordinator' })));
+          })));
+        if (task.code && tab !== 'pack') aside.push(h('div', { class: 'pi-card pi-side' }, h('span', { class: 'label', text: 'Code' }), teamCode(task)));
+
         var y = window.scrollY;
-        var was = h('div');
-        while (stage.firstChild) was.appendChild(stage.firstChild);
-        fill(stage, [
-          needs ? card('taskneeds', 'Needs you', null, needs) : null,
-          (done || review) && task.pack ? card('delivered', review ? 'Ready for your review' : 'What the team delivered', null, [md(task.pack.summary), task.pack.files.map(function (f) { return teamFile(task.id, f, 'Read '); }),
-            review ? h('div', { class: 'row', style: 'gap:10px;margin-top:6px' }, h('button', { class: 'btn go', text: 'Accept the pack', onclick: accept }), h('span', { class: 'faint', text: 'Read it first. Accepting marks the task done.' })) : null]) : null,
-          task.error ? h('div', { class: 'msg err', text: task.error }) : null,
-          s ? h('section', { class: 'sec', 'aria-labelledby': 'stagehead' },
-            h('div', { class: 'stage-head' },
-              h('div', { class: 'row', style: 'justify-content:space-between;gap:12px' }, h('h2', { id: 'stagehead', class: 'stage-title', text: (pick + 1) + '. ' + (s.title || s.label) }),
-                h('span', { class: 'faint', text: s.label + (s.finishedAt && s.startedAt ? ' · took ' + secs(s.finishedAt - s.startedAt) : '') })),
-              s.file ? teamFile(task.id, s.file, 'Read the coordinator’s ') : null),
-            s.pieces.length ? h('div', { class: 'prows' }, s.pieces.map(function (p) { return pieceRow(task, p, limit, refresh); }))
-              : h('p', { class: 'muted', style: 'padding:14px 18px;margin:0', text: 'The coordinator does this stage itself.' })) : null,
-          task.code ? card('taskcode', 'Code', null, teamCode(task)) : null,
-          files && files.ok !== false && files.files.length ? card('taskfiles', 'What it has written', h('button', { class: 'linkish', text: 'Open the folder →', onclick: function () { go('teamfiles', { taskId: task.id }); } }),
-            h('div', { class: 'fgrid' }, files.files.slice(0, 8).map(function (f) {
-              return h('button', { class: 'linkish fname', text: f.name, onclick: function () { go('teamfiles', { taskId: task.id, teamFilePick: f.name }); } });
-            }), files.files.length > 8 ? h('span', { class: 'faint', text: '+ ' + (files.files.length - 8) + ' more' }) : null)) : null]);
-        if (was.firstChild) { keepPlace(was, stage); requestAnimationFrame(function () { window.scrollTo(0, y); }); }
+        var was = host.firstChild ? host.cloneNode(false) : null;
+        if (was) while (host.firstChild) was.appendChild(host.firstChild);
+        fill(host, [header, band, out, task.error ? h('div', { class: 'msg err', text: task.error }) : null,
+          h('div', { class: 'pi-cols' },
+            h('div', { class: 'pi-main' }, tabs, body, ask, commentsCard(task)),
+            aside.length ? h('aside', { class: 'pi-aside', 'aria-label': 'Files and pieces' }, aside) : null)]);
+        if (was) { keepPlace(was, host); requestAnimationFrame(function () { window.scrollTo(0, y); }); }
         lastKey = taskKey(task, files);
         clearTimeout(timer);
-        if (task.status === 'running' || task.status === 'planning' || task.status === 'waiting') timer = setTimeout(refresh, 5000);
+        if (active || room.busy || Date.now() < fastUntil) timer = setTimeout(refresh, room.busy ? 3000 : 5000);
       };
       // What the page shows, in short: a refresh that changes none of it
       // draws nothing, so the page stays still under the reader.
-      var lastKey = '';
       var taskKey = function (task, files) {
+        var room = task.room || {};
         return JSON.stringify([task.status, task.stageIndex, task.waitingOnYou, task.piecesNeedYou, task.error || '',
           task.stagesDetail.map(function (s) { return [s.status, s.file || '', s.pieces.map(function (p) { return [p.status, !!p.waiting, p.step ? p.step.index : 0, p.file || '']; })]; }),
-          files && files.ok !== false ? files.files.length : -1]);
+          files && files.ok !== false ? files.files.length : -1,
+          (task.comments || []).map(function (c) { return c.id + (c.outcome || ''); }).join(),
+          (room.messages || []).length, room.busy ? room.busy.speaker : '', room.foldedThrough || 0, room.queued || 0,
+          task.pack ? [task.pack.version || 1, task.pack.updatedAt || 0] : 0]);
       };
+      // Typing in the page holds a redraw back until you're done.
+      var typing = function () { var el = document.activeElement; return !!(el && host.contains(el) && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text'))); };
       var refresh = function () {
         clearTimeout(timer);
-        if (!stage.isConnected || state.tab !== 'teamtask' || state.taskId !== id) return;
-        Promise.all([api('GET', '/api/team-tasks/' + encodeURIComponent(id) + '/page'), api('GET', '/api/team-tasks/' + encodeURIComponent(id) + '/files').catch(function () { return { ok: false }; })])
-          .then(function (y) {
-            if (y[0].ok === false || !stage.isConnected) return;
-            if (taskKey(y[0].task, y[1]) === lastKey) { timer = setTimeout(refresh, 5000); return; }
-            draw(y[0].task, y[1]);
-          }, function () { timer = setTimeout(refresh, 10000); });
+        if (!host.isConnected || state.tab !== 'teamtask' || state.taskId !== id) return;
+        load().then(function (y) {
+          if (y[0].ok === false || !host.isConnected) return;
+          if (taskKey(y[0].task, y[1]) === lastKey || typing()) { timer = setTimeout(refresh, 5000); return; }
+          draw(y[0].task, y[1]);
+        }, function () { timer = setTimeout(refresh, 10000); });
       };
-      draw(x.task, fx);
-      return [head_, h('div', { class: 'tpage' }, rail, h('div', { class: 'tmain' }, stage))];
+      draw(x.task, r[1]);
+      return [host];
     });
   }
 
@@ -3855,15 +6880,20 @@ export const CONSOLE_JS = String.raw`
       api('POST', '/api/team-tasks/' + encodeURIComponent(task.id), { kind: 'retryPiece', workerId: p.workerId }).then(function (x) { restore(); slot.replaceChildren(msg(x, p.workerName + ' is on it again.')); if (x.ok !== false && after) after(); });
     } }) : null;
     var meta = [p.startedAt && p.status === 'running' ? secs(Date.now() - p.startedAt) + ' in' : p.startedAt && p.finishedAt ? secs(p.finishedAt - p.startedAt) : '', p.costUSD ? money(p.costUSD) : ''].filter(Boolean).join(' · ');
+    // The member's name, or the speech mark by their badge, opens a box to
+    // say something to them: sent as they work, or their piece done again.
+    var current = task.stagesDetail.some(function (s) { return s.current && s.pieces.indexOf(p) >= 0; });
+    var talk = function (e) { memberBox(task, p, current, e.currentTarget.getBoundingClientRect(), after); };
     return h('div', { class: 'prow' + (slow ? ' slow' : '') },
       h('div', { class: 'prow-main' },
         avatar(p.workerId, p.workerName, 's'),
         h('div', { style: 'flex:1;min-width:0' },
-          h('button', { class: 'linkish', style: 'color:var(--ink);font-weight:600', text: p.workerName, onclick: function () { openWorker(p.workerId); } }),
+          h('button', { class: 'linkish', style: 'color:var(--ink);font-weight:600', text: p.workerName, title: 'Say something to ' + p.workerName, onclick: talk }),
           h('details', { class: 'pask' }, h('summary', { text: p.ask.split(/(?<=[.!?])\s/)[0].slice(0, 160) }), h('p', { text: p.ask }))),
         h('div', { class: 'prow-acts' },
           meta ? h('span', { class: 'faint', text: meta }) : null,
           h('span', { class: 'badge ' + b[0], text: b[1] }),
+          h('button', { class: 'btn small quiet icon', 'aria-label': 'Say something to ' + p.workerName, title: 'Say something to ' + p.workerName, onclick: talk }, icon('slack', 15)),
           retry,
           p.runId ? h('button', { class: 'btn small', text: p.status === 'running' ? 'Watch' : 'See what it did', onclick: function () { watchRun(p.runId, p.workerName + ' · ' + task.title); } }) : null)),
       p.error ? h('div', { class: 'msg err', text: p.error === 'Interrupted by app restart.' ? 'Stopped by a server restart before it got going.' : p.error }) : null,
@@ -3881,6 +6911,7 @@ export const CONSOLE_JS = String.raw`
       if (x.ok === false) return [msg(x)];
       if (fx.ok === false) return [msg(fx)];
       var task = x.task;
+      noteTaskComments(task, null);
       var picked = {};
       var view = state.teamFilePick || null;
       var bar = h('div', { class: 'fbar' }), body = h('tbody'), out = h('div', { 'aria-live': 'polite' });
@@ -3975,9 +7006,10 @@ export const CONSOLE_JS = String.raw`
               return h('button', { class: 'btn small', disabled: !d.ready, title: d.ready ? '' : d.why || '', onclick: keepOne(d.id, d.label) }, 'Save to ' + d.label);
             }),
             h('button', { class: 'btn small quiet', text: 'Download', onclick: function () { download(f); } }),
+            h('button', { class: 'btn small quiet', onclick: function (e) { fileCommentBox(id, f.name, null, e.currentTarget.getBoundingClientRect()); } }, icon('slack', 14), 'Comment on this file'),
             html && f.url ? h('a', { class: 'btn small quiet', href: f.url, target: '_blank', rel: 'noopener', text: 'Open in a new tab ↗' }) : null,
             KEPT(f)),
-          said, box);
+          said, html || img ? fileCommentList(id, f.name) : null, box);
         if (drawer) drawer.replaceWith(panel); else { document.body.appendChild(panel); document.addEventListener('keydown', onKey); }
         drawer = panel;
         // An HTML report is shown as the page it is, from its own link, in a
@@ -3986,7 +7018,11 @@ export const CONSOLE_JS = String.raw`
         if (img && f.url) { box.replaceChildren(h('img', { src: f.url, alt: f.name, style: 'max-width:100%;border-radius:8px' })); return; }
         api('GET', '/api/team-tasks/' + encodeURIComponent(id) + '/file?name=' + encodeURIComponent(f.name)).then(function (y) {
           if (drawer !== panel) return;
-          box.replaceChildren(y.ok === false ? msg(y) : /\.(md|markdown|txt)$/i.test(f.name) ? md(y.body) : /\.json$/i.test(f.name) ? h('pre', { text: (function () { try { return JSON.stringify(JSON.parse(y.body), null, 2); } catch (e) { return y.body; } })() }) : h('pre', { text: y.body }));
+          if (y.ok === false) { box.replaceChildren(msg(y)); return; }
+          // The text can be commented on a passage at a time; what's been
+          // said about the file follows it.
+          fill(box, [commentable(id, f.name, /\.(md|markdown|txt)$/i.test(f.name) ? md(y.body) : /\.json$/i.test(f.name) ? h('pre', { text: (function () { try { return JSON.stringify(JSON.parse(y.body), null, 2); } catch (e) { return y.body; } })() }) : h('pre', { text: y.body })),
+            fileCommentList(id, f.name)]);
         });
       };
       var drawRows = function () {
@@ -6638,6 +9674,7 @@ export const CONSOLE_JS = String.raw`
     };
     parts.watch = h('div', { class: 'stack' },
       h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Tool', server), h('label', { class: 'field' }, 'What to ask it', call)),
+      preset,
       h('label', { class: 'field' }, 'With (JSON)', args),
       h('div', { class: 'row', style: 'align-items:flex-end;gap:12px' }, h('label', { class: 'field', style: 'width:200px' }, 'How often to check', every), h('label', { class: 'field', style: 'width:200px' }, 'Set off by', fireOn), test),
       changeBox,
@@ -6900,10 +9937,12 @@ export const CONSOLE_JS = String.raw`
         h('p', { class: 'faint', text: 'GitHub, Bitbucket or any git host. Over https the server needs the host’s token, set on the Secrets tab (GH_TOKEN, BITBUCKET_TOKEN or GIT_TOKEN); a git@ address uses the server’s ssh key.' }),
         h('label', { class: 'field' }, 'Address', url),
         h('label', { class: 'field' }, 'Test command (optional, run before every push)', test),
+        data.testsOff ? h('p', { class: 'faint', text: 'Repo tests are turned off on this server, so a repo with a test command pushes nothing until they’re on. ' + data.testsOff }) : null,
         h('div', null, h('button', { class: 'btn go', text: 'Connect', onclick: function (e) {
           var restore = busy(e.target, 'Cloning…');
           api('POST', '/api/repos', { url: url.value, testCommand: test.value }).then(function (x) {
             restore(); out.textContent = ''; out.appendChild(msg(x, (x.repo ? x.repo.name : 'The repo') + ' is connected. Point a worker at it below.'));
+            if (x.warning) out.appendChild(h('div', { class: 'msg err', role: 'alert', text: x.warning }));
             if (x.ok !== false) setTimeout(render, 1200);
           });
         } })), out) : null;
@@ -6915,6 +9954,7 @@ export const CONSOLE_JS = String.raw`
             api('POST', '/api/repos/' + encodeURIComponent(repo.name) + '/remove', {}).then(function (x) { said.textContent = ''; said.appendChild(msg(x, 'Disconnected.')); if (x.ok !== false) setTimeout(render, 800); });
           } }) : null),
           h('p', { class: 'muted', text: repo.url + ' · branches against ' + repo.defaultBranch + (repo.testCommand ? ' · tests: ' + repo.testCommand : ' · no test command') }),
+          repo.testCommand && data.testsOff ? h('div', { class: 'msg err', text: 'Nothing is pushed from here yet: repo tests are turned off on this server. ' + data.testsOff }) : null,
           repo.canPush ? null : repo.tokenEnv && admin ? h('div', { class: 'stack', style: 'gap:8px' }, h('p', { class: 'faint', text: 'The server can’t push here yet. Paste ' + repo.tokenEnv + '. It’s kept in the server’s secrets and never shown again.' }), secretField(repo.tokenEnv)) : h('div', { class: 'msg err', text: 'The server can’t push here yet: an admin adds ' + (repo.tokenEnv || 'the host’s token') + ' on Setup → Secrets, or reconnects it with its git@ address.' }),
           h('p', { class: 'faint', text: repo.workers.length ? 'Works here: ' + repo.workers.join(', ') : 'No worker works here yet.' }),
           h('div', { class: 'row', style: 'gap:8px' }, pick, h('button', { class: 'btn', text: 'Let it change this repo', onclick: function (e) {
@@ -7235,7 +10275,7 @@ export const CONSOLE_JS = String.raw`
   }
 
   /// Setup → Tools: what needs you first, then one row per tool with who has
-  /// it. Manage opens a side panel to give or take it, worker by worker or a
+  /// it. A row opens a side panel to give or take it, worker by worker or a
   /// whole team at once — built to stay readable with many workers.
   function viewTools() {
     return Promise.all([api('GET', '/api/tools'), api('GET', '/api/workers').catch(function () { return []; }), api('GET', '/api/teams').catch(function () { return []; })]).then(function (rr) {
@@ -7282,12 +10322,12 @@ export const CONSOLE_JS = String.raw`
               has.length > 3 ? h('span', { class: 'faint', style: 'font-size:13px', text: '+' + (has.length - 3) + ' more' }) : null,
               h('span', { class: 'faint', style: 'font-size:12px', text: '· ' + has.length + ' of ' + workers.length }))
           : h('span', { class: 'faint', style: 'font-size:13px', text: 'Nobody yet' });
-        return h('tr', { class: has.length || t.access === 'everyone' ? '' : 'dim' },
+        var open_ = function () { manage(t); };
+        return h('tr', { class: 'link' + (has.length || t.access === 'everyone' ? '' : ' dim'), tabindex: '0', 'aria-label': 'Manage ' + t.name, onclick: open_, onkeydown: function (e) { if (e.key === 'Enter') open_(); } },
           h('td', null, h('div', { class: 'stack', style: 'gap:2px' }, h('b', { text: t.name }), h('span', { class: 'faint', style: 'font-size:12px', text: (t.kind === 'http' ? 'Remote' : 'Command') + (t.signIn ? ' · signed in by ' + t.signIn.by : '') + (onThisMac(t) ? ' · runs a file on a Mac' : '') }))),
           h('td', null, h('span', { class: 'tstate ' + st.tone }, h('span', { class: 'light' + (st.tone === 'ok' ? ' ok' : st.tone ? ' bad' : '') }), st.text)),
           h('td', null, h('span', { class: 'tag' + (t.access === 'everyone' ? ' go' : ''), text: LEVEL[t.access] || t.access })),
-          h('td', null, who),
-          h('td', { style: 'text-align:right' }, h('button', { class: 'btn small', text: 'Manage', onclick: function () { manage(t); } })));
+          h('td', null, who));
       };
       var draw = function () {
         chips.textContent = '';
@@ -7435,10 +10475,10 @@ export const CONSOLE_JS = String.raw`
         return items.length ? h('div', { class: 'need-card ' + tone }, h('span', { class: 't-kind', text: title + ' · ' + items.length }), h('span', { style: 'font-size:13.5px' }, h('b', { text: items.map(function (t) { return t.name; }).join(', ') }), ' ' + text)) : null;
       };
       var ended = r.tools.filter(function (t) { return t.signIn && t.signIn.ended; });
-      var cards = [needCard('need', 'Signed out', ended, '— open it with Manage and sign in again.'),
-        needCard('need', 'Needs a sign-in', auth, r.signIn ? '— open it with Manage and sign it in for everyone.' : '— run “claude mcp” on this Mac and sign in.'),
+      var cards = [needCard('need', 'Signed out', ended, '— open it and sign in again.'),
+        needCard('need', 'Needs a sign-in', auth, r.signIn ? '— open it and sign it in for everyone.' : '— run “claude mcp” on this Mac and sign in.'),
         needCard('need', 'Only works on this Mac', mac, '— fine here; reinstall from a package for a real server.'),
-        needCard('', 'Nobody has it', nobody, '— give it to a worker with Manage, or remove it.')].filter(Boolean);
+        needCard('', 'Nobody has it', nobody, '— open it to give it to a worker, or remove it.')].filter(Boolean);
       var missing = r.missing.length ? h('section', { class: 'panel pad stack', 'aria-labelledby': 'miss' },
         h('h2', { id: 'miss', class: 'section-title', text: 'Workers are missing these' }),
         h('p', { class: 'muted', style: 'font-size:13.5px', text: 'A worker brought from someone’s desktop names the tools it had there. Until one is installed here under the same name, the worker runs without it.' }),
@@ -7451,7 +10491,7 @@ export const CONSOLE_JS = String.raw`
             slot);
         }))) : null;
       var hq = state.hashQuery;
-      var flash = hq && hq.get('signedin') ? msg({}, 'Signed in. ' + hq.get('signedin') + ' is installed; give it to workers with Manage.')
+      var flash = hq && hq.get('signedin') ? msg({}, 'Signed in. ' + hq.get('signedin') + ' is installed; open it below to give it to workers.')
         : hq && hq.get('signin-error') ? msg({ ok: false, error: (hq.get('tool') ? hq.get('tool') + ': ' : '') + (TOOL_SIGNIN_ERR[hq.get('signin-error')] || 'The sign-in didn’t finish.') }) : null;
       return [head('Tools', 'The MCP servers workers here can use, and which workers have each.'),
         flash,
@@ -7462,9 +10502,9 @@ export const CONSOLE_JS = String.raw`
             h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, q, r.canEdit ? check : null, r.canEdit ? h('button', { class: 'btn go small', onclick: function () { addPanel.hidden = false; addPanel.scrollIntoView({ behavior: 'smooth' }); } }, icon('plus', 14), 'Install a tool') : null)),
           checkOut,
           h('div', { style: 'overflow-x:auto' }, h('table', { class: 'data tools-table' },
-            h('thead', null, h('tr', null, h('th', { text: 'Tool' }), h('th', { text: 'State' }), h('th', { text: 'Who can use it' }), h('th', { text: 'Who has it' }), h('th'))),
+            h('thead', null, h('tr', null, h('th', { text: 'Tool' }), h('th', { text: 'State' }), h('th', { text: 'Who can use it' }), h('th', { text: 'Who has it' }))),
             body)),
-          h('p', { class: 'faint', style: 'margin:0;padding:12px 18px;border-top:1px solid var(--line);font-size:13px', text: 'Manage opens a tool: give or take it worker by worker, or a whole team at once. Type a worker’s name above to see just its tools. A worker on Asks first still asks before any step that changes something.' })),
+          h('p', { class: 'faint', style: 'margin:0;padding:12px 18px;border-top:1px solid var(--line);font-size:13px', text: 'Click a tool to give or take it worker by worker, or a whole team at once. Type a worker’s name above to see just its tools. A worker on Asks first still asks before any step that changes something.' })),
         addPanel];
     });
   }

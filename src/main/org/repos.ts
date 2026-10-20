@@ -131,6 +131,29 @@ export function parseRepoUrl(raw: string, opts: { allowLocal?: boolean } = {}): 
   }
 }
 
+/// Why the server won't run a repo's test command, or undefined when it will.
+/// By default it won't: tests would run as the server's own user, which can
+/// read its secrets. An operator either names a user that can't
+/// (OVERCLI_TEST_UID, a number, not root) or accepts the risk on purpose
+/// (OVERCLI_TEST_AS_SERVER=1). Without either, a repo with a test command
+/// pushes nothing.
+export function testUserRefusal(env: NodeJS.ProcessEnv): string | undefined {
+  const uid = env.OVERCLI_TEST_UID?.trim();
+  const gid = env.OVERCLI_TEST_GID?.trim();
+  if (uid) {
+    if (!/^\d+$/.test(uid)) return `OVERCLI_TEST_UID is "${uid.slice(0, 40)}", not a number. Set it to the numeric id of a user that cannot read the server's data directory.`;
+    if (Number(uid) === 0) return 'OVERCLI_TEST_UID is 0, which is root. Set it to a user that cannot read the server\'s data directory.';
+    if (gid && !/^\d+$/.test(gid)) return `OVERCLI_TEST_GID is "${gid.slice(0, 40)}", not a number. Set it to a numeric group id, or leave it out to use the user's id.`;
+    return undefined;
+  }
+  if (env.OVERCLI_TEST_AS_SERVER === '1') return undefined;
+  return (
+    'The server would run them as its own user, which can read its secrets. ' +
+    'Set OVERCLI_TEST_UID (and OVERCLI_TEST_GID) to a user that cannot read the data directory, ' +
+    'or OVERCLI_TEST_AS_SERVER=1 to run them as the server. See deploy/README.md.'
+  );
+}
+
 /// A test command a worker may run: one line, no shell plumbing. It becomes
 /// a narrowed grant, `Bash(<command>:*)`, so it must not smuggle in a second
 /// command.
@@ -186,6 +209,13 @@ export class RepoService {
 
   get(name: string): ConnectedRepo | undefined {
     return this.list().find((r) => r.name === name);
+  }
+
+  /// Why this server won't run repo tests (so a repo with a test command
+  /// pushes nothing), or undefined when it will.
+  testsOff(): string | undefined {
+    const env = (name: string) => this.deps.env(name);
+    return testUserRefusal({ OVERCLI_TEST_UID: env('OVERCLI_TEST_UID'), OVERCLI_TEST_GID: env('OVERCLI_TEST_GID'), OVERCLI_TEST_AS_SERVER: env('OVERCLI_TEST_AS_SERVER') });
   }
 
   /// Whether the server can push to this repo: over ssh with its own key, or

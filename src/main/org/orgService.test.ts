@@ -49,7 +49,7 @@ function drafted(over: Partial<DraftedHire['contract']> = {}): DraftedHire {
   } as DraftedHire;
 }
 
-function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<OrgPolicy>; draft?: DraftedHire | string[]; teams?: boolean; overlap?: string } = {}) {
+function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<OrgPolicy>; draft?: DraftedHire | string[]; teams?: boolean; overlap?: string; launches?: number; hold?: Promise<void> } = {}) {
   const roster = new Map((opts.roster ?? []).map((w) => [w.id, w]));
   const teams = new Map<string, Team>();
   const teamTasks: TeamTask[] = [];
@@ -75,9 +75,11 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
         roster.delete(id);
         return { ok: true };
       },
-      runErrand: async (id, text) => {
-        calls.push(`errand:${id}:${text}`);
-        return { ok: true, result: { orchestrationId: 'o', count: 0, queued: 0, launchedNothing: true, reply: 'Done.' } };
+      runErrand: async (id, text, _attachments, _conversation, untrusted) => {
+        calls.push(`errand:${id}:${text}${untrusted ? ':untrusted' : ''}`);
+        if (opts.hold) await opts.hold;
+        const n = opts.launches ?? 0;
+        return { ok: true, result: { orchestrationId: 'o', count: n, queued: n, launchedNothing: !n, reply: 'Done.' } };
       },
       journalFor: () => [],
       spentThisMonth: () => new Map(),
@@ -101,6 +103,10 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
     },
     stopRun: (id) => {
       calls.push(`stop:${id}`);
+      return { ok: true };
+    },
+    stopBatch: (id) => {
+      calls.push(`stopBatch:${id}`);
       return { ok: true };
     },
     policy: () => policy,
@@ -193,6 +199,38 @@ describe('OrgService visibility', () => {
     expect(svc.askStatus(pat, started.askId)).toMatchObject({ ok: true, ask: { status: 'answered', reply: 'Done.' } });
     expect(svc.askStatus(sam, started.askId).ok).toBe(true);
     expect(svc.workerDetail(pat, 'Open')).toMatchObject({ ok: true, asks: [{ id: started.askId, status: 'answered' }] });
+  });
+});
+
+describe('asks for a process stage', () => {
+  const roster = [worker('chief', { manager: { name: 'Pat', slackUserId: PAT } })];
+
+  it('takes a proposal as one even from the manager', async () => {
+    const { svc, calls } = harness({ roster });
+    const started = svc.startAsk(pat, 'chief', 'draft the notes', 'console', undefined, undefined, undefined, undefined, true);
+    if (!started.ok) throw new Error(started.error);
+    await started.done;
+    expect(calls[0]).toContain('who is not your manager');
+    expect(calls[0]).toMatch(/:untrusted$/);
+  });
+
+  it('stops what a called-off ask started, whether it had answered or not', async () => {
+    const answered = harness({ roster, launches: 2 });
+    const first = answered.svc.startAsk(pat, 'chief', 'draft the notes');
+    if (!first.ok) throw new Error(first.error);
+    await first.done;
+    expect(answered.svc.cancelAsk(first.askId).ok).toBe(true);
+    expect(answered.calls).toContain('stopBatch:o');
+
+    let release = () => {};
+    const thinking = harness({ roster, launches: 2, hold: new Promise<void>((r) => (release = r)) });
+    const second = thinking.svc.startAsk(pat, 'chief', 'draft the notes');
+    if (!second.ok) throw new Error(second.error);
+    expect(thinking.svc.cancelAsk(second.askId).ok).toBe(true);
+    expect(thinking.calls).not.toContain('stopBatch:o');
+    release();
+    await second.done;
+    expect(thinking.calls).toContain('stopBatch:o');
   });
 });
 

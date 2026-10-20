@@ -148,6 +148,11 @@ export interface FlowStep {
   /// any changes made via conversation propagate forward. The first step
   /// ignores this (no prior conversation to converse with).
   pauseBefore?: boolean;
+  /// Skip this step when the run has changed nothing in its repo but notes
+  /// (Markdown, plain text) — a check of code that was never written. Runs
+  /// it whenever the change can't be measured. YAML `only_if_changed`; set
+  /// on a team piece's check (see `teamPieceFlow`).
+  onlyIfChanged?: boolean;
   /// Colleagues this step may hand work to, by name. On a worker-owned run,
   /// `<handoff to="Name">` blocks in THIS step's output are sent to them as
   /// errands when the run finishes. Opt-in and named, because a step's

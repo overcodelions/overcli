@@ -26,6 +26,9 @@ import type { MainToRendererEvent } from '../../shared/types';
 import { escapeMrkdwn, fetchMessage, openIm, openView, postMessage, updateMessage, uploadFile, userName, type FetchLike } from './slackApi';
 import { HIRE_EDIT_VIEW, TEAM_EDIT_VIEW, hireEditView, readHireEdit, readTeamEdit, teamEditView, type EditMeta, type TeamDraftForm } from './editForms';
 import { DEFAULT_TEAM_CHECKPOINTS } from '../../shared/flows/team';
+import type { ProcessPerson } from '../../shared/org/process';
+import type { ProcessService } from '../org/processes';
+import { PROC_ACTIONS, PROC_APPROVE_ACTION, PROC_SENDBACK_ACTION, PROC_SENDBACK_VIEW, PROC_STOP_ACTION, decisionBlocks, parseIdea, readDecisionValue, readSendBack, sendBackView, type SendBackMeta } from './processSlack';
 import { deliverResults, finishedText, slackMarkup, type PostAs } from './deliver';
 import { TEAM_ACCEPT_ACTION, TEAM_CONTINUE_ACTION, TEAM_PIECE_APPROVE_ACTION, TEAM_PIECE_RETRY_ACTION, stageNote, stagesDone, teamCard, type PieceLook } from './teamCard';
 
@@ -84,6 +87,11 @@ export interface SlackCommandsDeps {
   teamThreads?: { load(): Record<string, string>; save(all: Record<string, string>): void };
   /// Where a new hire may work: the server's repos and workspaces.
   places?(): Array<{ name: string; path: string }>;
+  /// Processes: `/idea`, and the decisions their people stages ask for.
+  processes?(): ProcessService | null;
+  /// The decision DMs sent for each item's stage (`itemId:stageId`), so they
+  /// all say how it was decided. Absent: kept in memory.
+  processDms?: { load(): Record<string, Array<{ channel: string; ts: string }>>; save(all: Record<string, Array<{ channel: string; ts: string }>>): void };
 }
 
 /// A team task's card in Slack, and what the thread under it was last told.
@@ -241,6 +249,65 @@ export class SlackCommands {
     if (p.command === '/worker') return this.worker(caller, text, p.response_url);
     if (p.command === '/team') return this.team(caller, text, p.response_url);
     if (p.command === '/overcli') return this.overcli(caller, text, p.response_url);
+    if (p.command === '/idea') return this.idea(caller, text, p.response_url);
+  }
+
+  /// `/idea [process:] what it is` puts it into a process; bare `/idea` says
+  /// where yours are.
+  private async idea(caller: OrgCaller, text: string, responseUrl?: string): Promise<void> {
+    const procs = this.deps.processes?.();
+    if (!procs) return this.respond(responseUrl, 'Processes are not running on this server.');
+    const me: ProcessPerson = { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) };
+    const parsed = parseIdea(text, procs.list(caller));
+    if (!parsed) {
+      const mine = procs.mine(me);
+      if (!mine.length) return this.respond(responseUrl, 'You haven’t put any ideas in yet. `/idea what it is` starts one.');
+      return this.respond(responseUrl, 'Your ideas', [
+        section(mine.map((m) => `• *${escapeMrkdwn(clip(m.item.title, 80))}* — ${escapeMrkdwn(m.process)} · ${m.item.status === 'active' ? `at *${escapeMrkdwn(m.stage)}*${m.item.stageNote ? ` (${escapeMrkdwn(m.item.stageNote)})` : ''}` : m.stage}`).join('\n')),
+      ]);
+    }
+    if ('error' in parsed) return this.respond(responseUrl, parsed.error);
+    const res = procs.submit(me, parsed.processId, { brief: parsed.brief, source: 'slack' });
+    if (!res.ok) return this.respond(responseUrl, res.error);
+    return this.respond(responseUrl, `In: _${escapeMrkdwn(res.item.title)}_ starts at *${escapeMrkdwn(res.process.stages[0].name)}* in ${escapeMrkdwn(res.process.name)}. I’ll tell you as it moves. \`/idea\` shows where it is.`);
+  }
+
+  /// A process telling someone something, with the decision buttons when a
+  /// people stage is waiting on them.
+  async processNotify(to: ProcessPerson, text: string, decide?: { itemId: string; stageId: string }): Promise<void> {
+    if (!to.slackUserId) return;
+    const posted = await this.dm(to.slackUserId, text, decide ? { blocks: decisionBlocks(text, decide.itemId, decide.stageId) } : {});
+    if (!posted || !decide) return;
+    const all = this.decisionDms();
+    const key = `${decide.itemId}:${decide.stageId}`;
+    all[key] = [...(all[key] ?? []), { channel: posted.channel, ts: posted.ts }].slice(-50);
+    // Only the newest few hundred decisions are kept.
+    const keys = Object.keys(all);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 300))) delete all[k];
+    this.saveDecisionDms(all);
+  }
+
+  private dmMemory: Record<string, Array<{ channel: string; ts: string }>> = {};
+  private decisionDms(): Record<string, Array<{ channel: string; ts: string }>> {
+    return this.deps.processDms?.load() ?? this.dmMemory;
+  }
+  private saveDecisionDms(all: Record<string, Array<{ channel: string; ts: string }>>): void {
+    if (this.deps.processDms) this.deps.processDms.save(all);
+    else this.dmMemory = all;
+  }
+
+  /// A decision made: every DM that asked for it says how, without buttons.
+  async processDecided(itemId: string, stageId: string, text: string, final: boolean): Promise<void> {
+    if (!final) return;
+    const bot = this.deps.botToken();
+    const all = this.decisionDms();
+    const key = `${itemId}:${stageId}`;
+    const sent = all[key] ?? [];
+    if (!bot || !sent.length) return;
+    delete all[key];
+    this.saveDecisionDms(all);
+    const title = this.processItemTitle(itemId);
+    for (const m of sent) await updateMessage(bot, { channel: m.channel, ts: m.ts, text, blocks: [section(`${escapeMrkdwn(text)}\n_${escapeMrkdwn(title)}_`)] }, this.deps.fetchImpl);
   }
 
   /// A person's real name, for invites and requests. Falls back to the handle.
@@ -539,7 +606,24 @@ export class SlackCommands {
 
   /// Which hire, and what its offer is now, for the Change it form.
   handlesView(callbackId: string | undefined): boolean {
-    return callbackId === HIRE_EDIT_VIEW || callbackId === TEAM_EDIT_VIEW;
+    return callbackId === HIRE_EDIT_VIEW || callbackId === TEAM_EDIT_VIEW || callbackId === PROC_SENDBACK_VIEW;
+  }
+
+  private processItemTitle(itemId: string): string {
+    return this.deps.processes?.()?.item(itemId)?.title ?? 'This item';
+  }
+
+  /// "Send back…" answered: send it back with the note, settle the DM.
+  private async onSendBack(caller: OrgCaller, meta: SendBackMeta, note: string): Promise<void> {
+    const procs = this.deps.processes?.();
+    if (!procs) return;
+    const res = procs.act(caller, meta.itemId, 'sendBack', { note, stageId: meta.stageId ?? '' });
+    const bot = this.deps.botToken();
+    if (!res.ok) {
+      await this.reply(meta.channel, meta.ts, res.error);
+      return;
+    }
+    if (bot) await updateMessage(bot, { channel: meta.channel, ts: meta.ts, text: `Sent back by ${caller.name}`, blocks: [section(`Sent back by ${escapeMrkdwn(caller.name)}: “${escapeMrkdwn(res.item.title)}”\n> ${escapeMrkdwn(clip(note, 500))}`)] }, this.deps.fetchImpl);
   }
 
   /// A Change it form was saved: apply it and redraw the message it came from.
@@ -554,6 +638,10 @@ export class SlackCommands {
     }
     const caller = this.caller(p.user.id, p.user.name ?? p.user.username);
     const values = p.view.state?.values ?? {};
+    if (p.view.callback_id === PROC_SENDBACK_VIEW) {
+      await this.onSendBack(caller, meta as unknown as SendBackMeta, readSendBack(values as Record<string, Record<string, { value?: string }>>));
+      return;
+    }
     const bot = this.deps.botToken();
     if (!bot) return;
     if (p.view.callback_id === HIRE_EDIT_VIEW) {
@@ -649,7 +737,8 @@ export class SlackCommands {
       actionId === TEAM_ACCEPT_ACTION ||
       actionId === TEAM_PIECE_RETRY_ACTION ||
       actionId === PROPOSALS_APPROVE_ACTION ||
-      actionId === PROPOSALS_SKIP_ACTION
+      actionId === PROPOSALS_SKIP_ACTION ||
+      PROC_ACTIONS.has(actionId ?? '')
     );
   }
 
@@ -677,6 +766,36 @@ export class SlackCommands {
     switch (action.action_id) {
       case OPEN_LINK_ACTION:
         return;
+      case PROC_APPROVE_ACTION:
+      case PROC_STOP_ACTION: {
+        const procs = this.deps.processes?.();
+        if (!procs) return;
+        const approve = action.action_id === PROC_APPROVE_ACTION;
+        const { itemId, stageId } = readDecisionValue(action.value);
+        const res = procs.act(caller, itemId, approve ? 'approve' : 'stop', { stageId: stageId ?? '' });
+        if (!res.ok) {
+          if (channel && threadTs) await this.reply(channel, threadTs, res.error);
+          return;
+        }
+        // A vote short of what's needed: say where it stands, and keep the
+        // others' buttons; a decision updates every DM (processDecided).
+        if (approve && res.item.votes?.length && res.item.status === 'active') {
+          const still = res.item.votes.some((v) => v.slackUserId === p.user?.id) && res.item.stageNote;
+          if (still) await settle(`You approved “${res.item.title}”: ${res.item.stageNote}.`);
+          return;
+        }
+        await settle(approve ? `Approved by ${caller.name}: “${res.item.title}” moves on.` : `Stopped by ${caller.name}: “${res.item.title}”.`);
+        return;
+      }
+      case PROC_SENDBACK_ACTION: {
+        const procs = this.deps.processes?.();
+        const bot = this.deps.botToken();
+        if (!procs || !bot || !p.trigger_id || !channel || !ts) return;
+        const { itemId, stageId } = readDecisionValue(action.value);
+        const meta: SendBackMeta = { itemId, ...(stageId ? { stageId } : {}), channel, ts };
+        await openView(bot, p.trigger_id, sendBackView(this.processItemTitle(itemId), meta), this.deps.fetchImpl);
+        return;
+      }
       case BUDGET_RAISE_ACTION: {
         const [workerId, amount] = action.value.split(':');
         const res = org.update(caller, workerId, { budgetUSDPerMonth: Number(amount) });

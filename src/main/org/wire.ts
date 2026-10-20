@@ -238,7 +238,12 @@ export function createOrgService(
       continueTask: (taskId) => engines.teams?.()?.continueTask(taskId) ?? { ok: false, error: 'Teams are not running.' },
       cancel: (taskId) => engines.teams?.()?.cancel(taskId) ?? { ok: false, error: 'Teams are not running.' },
       retryPiece: (taskId, workerId) => engines.teams?.()?.retryPiece(taskId, workerId) ?? { ok: false, error: 'Teams are not running.' },
+      comment: (taskId, input) => engines.teams?.()?.comment(taskId, input) ?? { ok: false, error: 'Teams are not running.' },
+      redoPiece: (taskId, workerId, note) => engines.teams?.()?.redoPiece(taskId, workerId, note) ?? { ok: false, error: 'Teams are not running.' },
       accept: (taskId) => engines.teams?.()?.accept(taskId) ?? { ok: false, error: 'Teams are not running.' },
+      roomAsk: (taskId, text) => engines.teams?.()?.roomAsk(taskId, text) ?? { ok: false, error: 'Teams are not running.' },
+      roomContinue: (taskId) => engines.teams?.()?.roomContinue(taskId) ?? { ok: false, error: 'Teams are not running.' },
+      updatePack: (taskId, opts) => engines.teams?.()?.updatePack(taskId, opts) ?? { ok: false, error: 'Teams are not running.' },
       learn: (teamId, opts) => engines.teams?.()?.learn(teamId, opts) ?? { ok: false, error: 'Teams are not running.' },
       planAsTask: (taskId) => engines.teams?.()?.planAsTask(taskId) ?? { ok: false, error: 'Teams are not running.' },
       setKnowledgeRefresh: (teamId, mode) => engines.teams?.()?.setKnowledgeRefresh(teamId, mode) ?? { ok: false, error: 'Teams are not running.' },
@@ -275,6 +280,7 @@ export function createOrgService(
       createWorkspace: (input, by) => repos.createWorkspace(input, by),
       updateWorkspace: (id, patch) => repos.updateWorkspace(id, patch),
       removeWorkspace: (id) => repos.removeWorkspace(id),
+      testsOff: () => repos.testsOff(),
       changed: () => applyRepoGrants(repos),
     },
     saveFlow: (id, yaml) => {
@@ -284,6 +290,10 @@ export function createOrgService(
       return saved.ok ? { ok: true } : saved;
     },
     orchestration: (id) => engines.orchestrator.get(id) ?? null,
+    stopBatch: (id) => {
+      const abort = (engines.orchestrator as Partial<Pick<OrchestratorImpl, 'abort'>>).abort;
+      return abort ? abort.call(engines.orchestrator, { id }) : { ok: false, error: 'Batches can’t be stopped from here.' };
+    },
     runDeliverables: runDeliverablesFor((id) => engines.flowRuntime.getRun(id)),
     workerFiles: {
       list: (id) => listWorkerFiles(id),
