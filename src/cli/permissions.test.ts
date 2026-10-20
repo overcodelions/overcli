@@ -248,6 +248,8 @@ describe('a worker looking at its own files', () => {
     expect(readsOnlyUnder('Bash', bash('rm /data/worker-files/w1/notes.md'), [root])).toBe(false);
     expect(readsOnlyUnder('Bash', bash('ls'), [root])).toBe(false);
     expect(readsOnlyUnder('Read', bash('ls /data/worker-files'), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash("rg --p''re=/bin/sh -e /data/worker-files /data/worker-files/w1/f"), [root])).toBe(false);
+    expect(readsOnlyUnder('Bash', bash('sort -uo /data/worker-files/w1/a /data/worker-files/w1/b'), [root])).toBe(false);
   });
 
   it('answers yes under an allow-list that would refuse Bash, and says why', () => {

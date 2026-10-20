@@ -18,7 +18,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import fs from 'node:fs';
 import path from 'node:path';
 import type { McpServerConfig } from '../mcpConfig';
-import { itemsFrom, type ToolCall, type WatchItem } from './mcpDirect';
+import { at, itemsFrom, type ToolCall, type WatchItem } from './mcpDirect';
 
 export type TriggerKind = 'watch' | 'webhook' | 'slack';
 
@@ -29,7 +29,9 @@ export type Destination =
   | { kind: 'thread' }
   /// The worker delivers it itself with its own tools — "comment on the
   /// ticket", "open a PR". Becomes part of its instructions.
-  | { kind: 'worker'; text: string };
+  | { kind: 'worker'; text: string }
+  /// A Slack DM to one person: "message me when it moves".
+  | { kind: 'dm'; slackUserId: string };
 
 export interface WorkerTrigger {
   id: string;
@@ -42,7 +44,23 @@ export interface WorkerTrigger {
   deliver: Destination[];
   /// Cost guard: at most this many events handled a day.
   maxPerDay: number;
-  watch?: { server: string; tool: string; args: Record<string, unknown>; everyMinutes: number; itemsPath?: string; idPath?: string };
+  watch?: {
+    server: string;
+    tool: string;
+    args: Record<string, unknown>;
+    everyMinutes: number;
+    itemsPath?: string;
+    idPath?: string;
+    /// Fire when this field of an item changes (`fields.status.name`), not
+    /// when a new item shows up.
+    changes?: string;
+    /// Only these items, by id: "track this ticket". `{{ids}}` in the tool's
+    /// arguments is replaced with them, comma-separated.
+    tracked?: string[];
+  };
+  /// Just say what changed, with a link: no worker turn, so nothing to pay
+  /// for while it's quiet. The worker only runs when asked to do more.
+  notifyOnly?: boolean;
   webhook?: { tokenHash: string; idPath?: string };
   slack?: { channel: string; on: 'message' | 'mention' | 'reaction'; reaction?: string; contains?: string };
   createdBy: string;
@@ -51,6 +69,8 @@ export interface WorkerTrigger {
   /// switching a trigger on never floods a worker with the backlog.
   seen?: string[];
   seeded?: boolean;
+  /// Changes: the field's last value, by item id.
+  states?: Record<string, string>;
   lastPolledAt?: number;
   lastFiredAt?: number;
   lastError?: string;
@@ -89,6 +109,8 @@ export interface TriggerDeps {
   slack?: {
     post(channel: string, text: string, threadTs?: string): Promise<boolean>;
     message(channel: string, ts: string): Promise<{ text: string; user?: string } | null>;
+    /// A DM to one person. Absent: DM destinations are skipped.
+    dm?(slackUserId: string, text: string): Promise<boolean>;
   };
   log(message: string): void;
   now?(): number;
@@ -124,10 +146,12 @@ export class TriggerService {
   /// Checked shape for a new or changed trigger. Returns the error, or null.
   validate(t: Partial<WorkerTrigger>): string | null {
     if (!t.name?.trim()) return 'Give the trigger a name, e.g. "New bugs in Support Backlog".';
-    if (!t.instructions || t.instructions.trim().length < 10) return 'Say what the worker should do with each one.';
+    if (!t.notifyOnly && (!t.instructions || t.instructions.trim().length < 10)) return 'Say what the worker should do with each one.';
     if (t.kind === 'watch') {
       const w = t.watch;
       if (!w?.server || !w.tool) return 'Pick the tool to check, and what to call.';
+      if (w.changes !== undefined && !/^[A-Za-z0-9_.-]{1,120}$/.test(w.changes)) return 'Name the field to watch as a path, e.g. fields.status.name.';
+      if (t.notifyOnly && !w.changes) return 'A plain notice is for changes: pick the field to watch.';
       if (!Number.isFinite(w.everyMinutes) || w.everyMinutes < MIN_WATCH_MINUTES) return `Check at most every ${MIN_WATCH_MINUTES} minutes.`;
     } else if (t.kind === 'slack') {
       const s = t.slack;
@@ -139,6 +163,7 @@ export class TriggerService {
     for (const d of t.deliver ?? []) {
       if (d.kind === 'slack' && !/^[CG][A-Z0-9]{6,}$/.test(d.channel)) return 'A Slack destination needs a channel ID (C012AB3CD).';
       if (d.kind === 'thread' && t.kind !== 'slack') return 'Replying in the thread only works for a Slack trigger.';
+      if (d.kind === 'dm' && !/^[UW][A-Z0-9]{6,}$/.test(d.slackUserId)) return 'A DM needs a Slack member ID (U012AB3CD).';
     }
     return null;
   }
@@ -153,7 +178,7 @@ export class TriggerService {
       ...rest,
       id: randomUUID().slice(0, 12),
       name: input.name.trim(),
-      instructions: input.instructions.trim(),
+      instructions: (input.instructions ?? '').trim(),
       maxPerDay: Math.min(500, Math.max(1, Math.round(input.maxPerDay || 50))),
       createdAt: this.now(),
       ...(token ? { webhook: { tokenHash: sha(token), ...(hook?.idPath ? { idPath: hook.idPath } : {}) } } : {}),
@@ -162,15 +187,18 @@ export class TriggerService {
     return { ok: true, trigger, ...(token ? { token } : {}) };
   }
 
-  update(id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack'>>): { ok: true; trigger: WorkerTrigger } | { ok: false; error: string } {
+  update(id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly'>>): { ok: true; trigger: WorkerTrigger } | { ok: false; error: string } {
     const all = this.deps.store.list();
     const i = all.findIndex((t) => t.id === id);
     if (i < 0) return { ok: false, error: 'No such trigger.' };
     const next: WorkerTrigger = { ...all[i], ...patch };
-    // A changed watch query is a new question: start over on what's been seen.
-    if (patch.watch && JSON.stringify(patch.watch) !== JSON.stringify(all[i].watch)) {
+    // A changed watch query is a new question: start over on what's been
+    // seen. Tracking one more item is not: what is known of the rest stays.
+    const query = (w?: WorkerTrigger['watch']) => (w ? JSON.stringify({ ...w, tracked: undefined }) : '');
+    if (patch.watch && query(patch.watch) !== query(all[i].watch)) {
       next.seen = [];
       next.seeded = false;
+      next.states = {};
     }
     const invalid = this.validate(next);
     if (invalid) return { ok: false, error: invalid };
@@ -192,7 +220,7 @@ export class TriggerService {
   async test(watch: NonNullable<WorkerTrigger['watch']>): Promise<{ ok: true; items: WatchItem[] } | { ok: false; error: string }> {
     const config = this.deps.toolConfig(watch.server);
     if (!config) return { ok: false, error: `${watch.server} isn't installed on this server. Install it on Setup → Tools.` };
-    const res = await this.deps.callTool(config, watch.tool, watch.args ?? {});
+    const res = await this.deps.callTool(config, watch.tool, argsFor(watch));
     if (!res.ok) return res;
     return { ok: true, items: itemsFrom(res, watch) };
   }
@@ -230,7 +258,12 @@ export class TriggerService {
         this.patchState(id, { lastPolledAt: this.now(), lastError: `${t.watch.server} isn't installed on this server.` });
         return;
       }
-      const res = await this.deps.callTool(config, t.watch.tool, t.watch.args ?? {});
+      // Tracking a list that is empty: nothing to ask about yet.
+      if (t.watch.tracked && !t.watch.tracked.length) {
+        this.patchState(id, { lastPolledAt: this.now(), lastError: undefined });
+        return;
+      }
+      const res = await this.deps.callTool(config, t.watch.tool, argsFor(t.watch));
       if (!res.ok) {
         this.patchState(id, { lastPolledAt: this.now(), lastError: res.error });
         return;
@@ -238,6 +271,7 @@ export class TriggerService {
       const items = itemsFrom(res, t.watch);
       const fresh = this.get(id);
       if (!fresh) return;
+      if (fresh.watch?.changes) return this.changed(fresh, items);
       const seen = new Set(fresh.seen ?? []);
       if (!fresh.seeded) {
         this.patchState(id, { seen: items.map((x) => x.id).slice(-MAX_SEEN), seeded: true, lastPolledAt: this.now(), lastError: undefined });
@@ -253,6 +287,75 @@ export class TriggerService {
     } finally {
       this.polling.delete(id);
     }
+  }
+
+  /// Changes: compare each item's field with what it was last time. An item
+  /// seen for the first time is only recorded, so tracking one more ticket
+  /// doesn't announce where it already stands.
+  private changed(t: WorkerTrigger, items: WatchItem[]): void {
+    const field = t.watch!.changes!;
+    const states = { ...(t.states ?? {}) };
+    const moves: Array<{ item: WatchItem; from: string; to: string }> = [];
+    for (const item of items) {
+      const raw = at(item.data, field);
+      if (raw === undefined || raw === null || typeof raw === 'object') continue;
+      const to = String(raw);
+      const from = states[item.id];
+      if (from !== undefined && from !== to && t.seeded) moves.push({ item, from, to });
+      states[item.id] = to;
+    }
+    // Keep only what is still asked about (and a cap), so the record doesn't grow forever.
+    const tracked = t.watch!.tracked ? new Set(t.watch!.tracked) : null;
+    const keep = Object.fromEntries(Object.entries(states).filter(([k]) => !tracked || tracked.has(k)).slice(-MAX_SEEN));
+    this.patchState(t.id, { states: keep, seeded: true, lastPolledAt: this.now(), lastError: undefined });
+    for (const m of moves.slice(0, MAX_PER_POLL)) {
+      const item = { ...m.item, title: `${m.item.title} moved from ${m.from} to ${m.to}`, data: { change: { field, from: m.from, to: m.to }, item: m.item.data } };
+      if (t.notifyOnly) void this.notice(t, m.item, m.from, m.to);
+      else this.fire(t, item);
+    }
+  }
+
+  /// A change said plainly, to every destination: no worker turn.
+  private async notice(t: WorkerTrigger, item: WatchItem, from: string, to: string): Promise<void> {
+    const d: Deliverable = {
+      id: randomUUID(),
+      workerId: t.workerId,
+      workerName: this.deps.worker(t.workerId)?.name ?? 'A worker',
+      at: this.now(),
+      status: 'delivered',
+      title: `${item.title}: ${from} → ${to}`,
+      source: { kind: t.kind, triggerId: t.id, triggerName: t.name, ...(item.url ? { url: item.url } : {}) },
+      links: item.url ? [item.url] : [],
+      deliveredTo: [],
+    };
+    if (this.firedToday(t.id) >= t.maxPerDay) {
+      this.putDeliverable({ ...d, status: 'skipped', error: `Over today's limit of ${t.maxPerDay}.`, doneAt: this.now() });
+      return;
+    }
+    const text = `*${item.title}* moved from _${from}_ to *${to}*${item.url ? ` · <${item.url}|open it>` : ''}`;
+    for (const dest of t.deliver) {
+      if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, text))) d.deliveredTo.push(`Slack #${dest.channel}`);
+      if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, text))) d.deliveredTo.push('a DM');
+    }
+    this.putDeliverable({ ...d, result: text, doneAt: this.now() });
+    this.patchState(t.id, { lastFiredAt: this.now() });
+  }
+
+  /// Track one more item, or stop: the list a "changes" watch asks about.
+  track(id: string, itemId: string, on: boolean): { ok: true; tracked: string[] } | { ok: false; error: string } {
+    const t = this.get(id);
+    if (!t?.watch) return { ok: false, error: 'No such watch.' };
+    const key = itemId.trim();
+    if (!/^[A-Za-z0-9_.:#/-]{1,80}$/.test(key)) return { ok: false, error: 'That doesn’t look like a ticket id.' };
+    const now = new Set(t.watch.tracked ?? []);
+    if (on) now.add(key);
+    else now.delete(key);
+    if (now.size > 200) return { ok: false, error: 'It already tracks 200; stop tracking some first.' };
+    const tracked = [...now];
+    const states = { ...(t.states ?? {}) };
+    if (!on) delete states[key];
+    this.patchState(id, { watch: { ...t.watch, tracked }, states });
+    return { ok: true, tracked };
   }
 
   // ---- WEBHOOK ---------------------------------------------------------------
@@ -359,6 +462,7 @@ export class TriggerService {
         if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, summary))) deliveredTo.push(`Slack #${dest.channel}`);
         if (dest.kind === 'thread' && thread && this.deps.slack && (await this.deps.slack.post(thread.channel, res.reply.slice(0, 2800), thread.ts))) deliveredTo.push('the Slack thread');
         if (dest.kind === 'worker') deliveredTo.push(dest.text);
+        if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, summary))) deliveredTo.push('a DM');
       }
       this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, deliveredTo, doneAt: this.now() });
     });
@@ -426,8 +530,16 @@ export function eventItem(body: unknown, idPath?: string): WatchItem {
   return { id: `${b.webhookEvent ?? b.action ?? ''}:${id ?? Date.now()}`, title: String(title).slice(0, 160), ...(url ? { url } : {}), data: body };
 }
 
+/// The tool's arguments, with `{{ids}}` in any string replaced by the tracked ids.
+export function argsFor(watch: NonNullable<WorkerTrigger['watch']>): Record<string, unknown> {
+  const ids = (watch.tracked ?? []).join(', ');
+  const swap = (v: unknown): unknown =>
+    typeof v === 'string' ? v.replace(/\{\{ids\}\}/g, ids) : Array.isArray(v) ? v.map(swap) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, swap(x)])) : v;
+  return swap(watch.args ?? {}) as Record<string, unknown>;
+}
+
 function eventPrompt(t: WorkerTrigger, item: WatchItem): string {
-  const source = t.kind === 'watch' ? `a new item from ${t.watch?.server}` : t.kind === 'webhook' ? 'an event posted to your webhook' : 'a Slack message';
+  const source = t.kind === 'watch' ? (t.watch?.changes ? `a change to an item you track in ${t.watch.server}` : `a new item from ${t.watch?.server}`) : t.kind === 'webhook' ? 'an event posted to your webhook' : 'a Slack message';
   const details = JSON.stringify(item.data, null, 2);
   const yourself = t.deliver.filter((d): d is Extract<Destination, { kind: 'worker' }> => d.kind === 'worker').map((d) => d.text);
   return [

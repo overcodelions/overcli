@@ -9,6 +9,7 @@
 // itself, never your checkout, which this never switches or touches. At the
 // end the task branch merges into each repo's base like any agent branch.
 
+import { credentialGitEnv } from '../org/repos';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -227,7 +228,7 @@ export function pushTaskBranch(
   repo: TaskRepo,
   subject: string,
 ): Result<{ message: string; compareUrl?: string }> {
-  return pushBranch({ worktreePath: repo.worktreePath, branchName: code.branch, commitSubject: subject });
+  return pushBranch({ worktreePath: repo.worktreePath, branchName: code.branch, commitSubject: subject, env: credentialGitEnv(), noHooks: true });
 }
 
 /// Take the task's worktrees down. The branch goes too once landed; one with

@@ -40,23 +40,47 @@ const READ_ONLY_TOOLS = new Set([
   'Agent',
 ]);
 
-/// Shell commands that only read, whatever their arguments — except the
-/// flags in `UNSAFE_FLAGS`, which turn a few of them into writers.
+/// Shell commands that only read, with only the flags in `SAFE_FLAGS`.
 const READ_ONLY_COMMANDS = new Set([
   'ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg',
-  'find', 'tree', 'file', 'stat', 'du', 'df', 'which', 'type', 'sort', 'uniq', 'cut', 'diff',
-  'basename', 'dirname', 'realpath', 'readlink', 'date', 'whoami', 'jq', 'nl', 'true',
+  'find', 'stat', 'du', 'df', 'which', 'type', 'sort', 'cut', 'diff',
+  'basename', 'dirname', 'realpath', 'readlink', 'date', 'whoami', 'nl', 'true',
   'uname', 'column', 'tac', 'rev', 'cmp',
 ]);
 
-const UNSAFE_FLAGS: Record<string, RegExp> = {
-  find: /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/,
-  sort: /^(-o|--output|--compress-program)/,
-  // `--pre` runs a program on every file searched; `-z` runs decompressors.
-  rg: /^(--pre|--pre-glob|-z$|--search-zip)/,
-  // `env FOO=1 cmd` runs cmd; bare `env` only prints.
-  env: /./,
+/// The flags each read-only command may take. Anything else — an unknown
+/// flag, a GNU abbreviation (`--out`), a combined short flag carrying a
+/// writer (`-uo`) — is not read-only. A command missing here takes none.
+const SAFE_FLAGS: Record<string, RegExp> = {
+  ls: /^(-[aAlhRtrSd1FGiks]+|--all|--color(=\w+)?)$/,
+  cat: /^-[nbAsvetTE]+$/,
+  head: /^(-[nc]\d*|-\d+|-[qv]|--lines=\d+|--bytes=\d+)$/,
+  tail: /^(-[nc]\d*|-\d+|-[qvf]|--lines=\d+|--bytes=\d+)$/,
+  wc: /^-[lwcmL]+$/,
+  echo: /^-[neE]+$/,
+  grep: /^(-[iwvcnlLhHrRsoqEFxz]+|-[ABCm]\d*|-e|-f|--include=.*|--exclude=.*|--exclude-dir=.*|--color(=\w+)?)$/,
+  rg: /^(-[inlwvcFSsuHNo]+|-[ABCm]\d*|-[gteT]|--hidden|--files|--no-ignore|--line-number|--ignore-case|--fixed-strings|--count|--files-with-matches|--glob=.*|--type=.*|--context=\d+)$/,
+  find: /^-(name|iname|type|path|ipath|maxdepth|mindepth|size|mtime|newer|print|print0|not|o|a|empty|regex|L)$/,
+  stat: /^(-[Lt]+|-c|--format=.*|--printf=.*)$/,
+  du: /^(-[shacdkmx]+|-d\d*|--max-depth=\d+)$/,
+  df: /^-[hikTPl]+$/,
+  which: /^-a$/,
+  type: /^-a$/,
+  sort: /^(-[bdfghiMnrRsuVz]+|-[kt]|--reverse|--numeric-sort|--unique|--human-numeric-sort|--ignore-case|--version-sort|--key=.*|--field-separator=.*)$/,
+  cut: /^(-d.*|-f[\d,-]*|-c[\d,-]*|-b[\d,-]*|-s|--delimiter=.*|--fields=.*)$/,
+  diff: /^(-[uNqrwBbiay]+|-U\d*|--unified(=\d+)?|--brief|--recursive|--ignore-all-space|--color(=\w+)?)$/,
+  basename: /^-[as]$/,
+  realpath: /^-[esqmz]+$/,
+  readlink: /^-[fmenqz]+$/,
+  date: /^(-[uRI]\w*|-d|--date=.*|--iso-8601(=\w+)?)$/,
+  uname: /^-[asnrvmpio]+$/,
+  nl: /^(-b\S*|-n\S*|-w\d*)$/,
+  column: /^(-[tnex]+|-s\S*)$/,
+  tac: /^-b$/,
+  cmp: /^(-[lsb]+|-n\d*)$/,
 };
+SAFE_FLAGS.egrep = SAFE_FLAGS.grep;
+SAFE_FLAGS.fgrep = SAFE_FLAGS.grep;
 
 /// git subcommands that only read. `branch`, `tag`, `remote` and `stash`
 /// read only in their listing forms — see `gitReadsOnly`.
@@ -189,6 +213,14 @@ function gitArgs(w: string[]): string[] {
 }
 
 function gitReadsOnly(w: string[]): boolean {
+  // Only `-C dir` and `--no-pager` before the subcommand: `-c k=v`,
+  // `--config-env` and `--exec-path` can make any read run a program.
+  for (let i = 1; i < w.length && w[i].startsWith('-'); i++) {
+    if (w[i] === '-C') { i++; continue; }
+    if (w[i] !== '--no-pager') return false;
+  }
+  // Flags that write a file or run a program from a read-only subcommand.
+  if (w.some((a) => /^(--output(=.*)?|-O.*|--open-files-in-pager(=.*)?|--ext-diff|--textconv)$/.test(a))) return false;
   const args = gitArgs(w);
   const sub = args[0];
   if (!sub) return false;
@@ -203,14 +235,30 @@ function gitReadsOnly(w: string[]): boolean {
   return READ_ONLY_GIT.has(sub);
 }
 
+/// True when a word would read differently to bash than to `words()`:
+/// quotes or backslashes inside it (`--p''re`), or a `$` expansion outside
+/// single quotes. Such a line is never read-only.
+function hasTrickyWord(command: string): boolean {
+  const re = /"(?:\\.|[^"\\])*"|'[^']*'|\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(command))) {
+    const t = m[0];
+    if (/^'[^']*'$/.test(t)) continue;
+    if (/^"[^"\\$`]*"$/.test(t)) continue;
+    if (/["'\\$`]/.test(t)) return true;
+  }
+  return false;
+}
+
 function commandReadsOnly(command: string): boolean {
+  if (hasTrickyWord(command)) return false;
   const w = words(command);
   const cmd = w[0];
   if (!cmd) return true;
   if (cmd === 'git') return gitReadsOnly(w);
   if (!READ_ONLY_COMMANDS.has(cmd)) return false;
-  const unsafe = UNSAFE_FLAGS[cmd];
-  if (unsafe && w.slice(1).some((a) => unsafe.test(a))) return false;
+  const safe = SAFE_FLAGS[cmd];
+  if (w.slice(1).some((a) => a.startsWith('-') && !(safe && safe.test(a)))) return false;
   return true;
 }
 

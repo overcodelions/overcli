@@ -48,10 +48,12 @@ On the worker's page:
 - **Schedule:** "weekdays at 9", "every 4 hours". The next run is shown, and **Run now** runs it immediately.
 - **Triggers** (the Triggers tab): work that starts when something happens.
   - **Watch:** checks a tool every 5–60 minutes, such as a Jira search or a CRM view, and acts once on each new item. The first check only notes what's already there. **Try it now** shows what it sees before you save.
+    - **Or a change to an item:** set it off by a change to one field, such as a ticket's status, rather than a new item. Turn on **Only items I track**, and put `{{ids}}` in the tool's arguments, for example `"jql": "key in ({{ids}})"`. Add tickets on the Triggers tab, or in Slack with `@overcli Watcher, track ACME-412`, `stop tracking ACME-412`, or `/worker Watcher track ACME-412`. With **Just tell me what changed**, you get "ACME-412 moved from In review to Done" and a link, with no worker turn, so a quiet day costs nothing.
+    - **Inside a VPC:** a watch checks outward, so nothing needs to reach the server. It only needs outbound access to the tool's API.
   - **Webhook:** a secret address for GitHub, Jira automation or Zapier to post to.
   - **Slack:** a new message, a mention, or an emoji reaction (🐛) in a channel.
 
-  Each trigger has instructions (what to do with each item), a destination (a channel, the thread it came from, or "comment on the ticket"), and a daily limit.
+  Each trigger has instructions (what to do with each item), a destination (a channel, a DM to you, the thread it came from, or "comment on the ticket"), and a daily limit.
 - **The value strip** on the Triggers tab shows items handled this month, typical time, cost per item, and the share people rated useful.
 
 ## Code

@@ -57,6 +57,8 @@ export interface FrontDoorTeam {
 }
 
 const TEAM_ID = 'team:';
+/// "track ACME-412", "also track ACME-412", "stop tracking ACME-412".
+const TRACK = /^(?:also\s+)?(stop\s+)?(?:track(?:ing)?|watch(?:ing)?)\s+([A-Za-z][A-Za-z0-9_]*-\d+|#?\d+)(?:\s+(?:too|also))?[.!]?$/i;
 
 /// A team, as a candidate beside the workers: named for what it's for, and
 /// described so a router only picks it for a real piece of work.
@@ -149,6 +151,9 @@ export interface FrontDoorDeps {
   /// run's output is posted as it is.
   handBack?(askId: string): { done: Promise<Answered> } | null;
   progress(orchestrationId: string): ErrandProgress | null;
+  /// "Track ACME-412" to a named worker: onto its change watch's list, with
+  /// no model turn. A string is why it couldn't. Absent: it's an ordinary ask.
+  track?(caller: OrgCaller, workerId: string, itemId: string, on: boolean): string | { worker: string; tracked: number };
   /// The teams this person may give work to. Absent: requests go to workers only.
   teams?(caller: OrgCaller): FrontDoorTeam[];
   /// Give a team a task. Its questions, plan and progress go to the person in a DM.
@@ -321,6 +326,13 @@ export class FrontDoor {
       return;
     }
     const named = namedWorker(text, workers);
+    const tracking = named && this.deps.track && !named.worker.id.startsWith(TEAM_ID) ? TRACK.exec(named.rest) : null;
+    if (named && tracking) {
+      const on = !tracking[1];
+      const got = this.deps.track!(caller, named.worker.id, tracking[2], on);
+      await say(typeof got === 'string' ? got : `${on ? 'Tracking' : 'Stopped tracking'} ${tracking[2]}. ${got.worker} tracks ${got.tracked} and messages you when one changes.`);
+      return;
+    }
     if (named) return this.hand(req, key, caller, named.worker, named.rest, req.files ?? [], '');
     const ranked = rankByWords(text, workers);
     const [first, second] = ranked;

@@ -10,9 +10,10 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const TRIAGE: FrontDoorWorker = { id: 'w-triage', name: 'Triage', tagline: 'Fixes product bugs', job: 'Reproduce bugs in the web app, fix them, and open a pull request with tests.' };
 const VANTAGE: FrontDoorWorker = { id: 'w-vantage', name: 'Vantage', tagline: 'Competitive analyst', job: 'Research competitors and write competitive analysis reports on features, pricing and positioning.' };
 
-function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; recent?: SlackMessage[]; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null } = {}) {
+function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; recent?: SlackMessage[]; track?: boolean; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null } = {}) {
   const posts: string[] = [];
   const briefs: Array<{ teamId: string; brief: string }> = [];
+  const tracks: string[] = [];
   const uploads: string[] = [];
   const edits: Array<{ ts: string; text: string }> = [];
   let statusN = 0;
@@ -24,6 +25,14 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
     ...(opts.owner ? { mayAsk: (id: string) => (id === opts.owner ? (true as const) : 'Only my owner can ask.') } : {}),
     caller: async (id) => ({ slackUserId: id, name: 'Pat', admin: false }),
     workers: () => opts.workers ?? [TRIAGE, VANTAGE],
+    ...(opts.track
+      ? {
+          track: (_c: unknown, workerId: string, itemId: string, on: boolean) => {
+            tracks.push(`${workerId}:${itemId}:${on}`);
+            return { worker: 'Triage', tracked: 3 };
+          },
+        }
+      : {}),
     ...(opts.teams
       ? {
           teams: () => opts.teams!,
@@ -70,7 +79,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
     store: { load: () => structuredClone(state), save: (s) => (state = structuredClone(s)) },
     log: () => {},
   });
-  return { door, posts, uploads, edits, asks, briefs, routed: () => routed, setProgress: (p: ErrandProgress) => (progress = p), state: () => state };
+  return { door, posts, uploads, edits, asks, briefs, tracks, routed: () => routed, setProgress: (p: ErrandProgress) => (progress = p), state: () => state };
 }
 
 describe('the front door', () => {
@@ -411,5 +420,17 @@ describe('a mention in a channel', () => {
     expect(prompt).toContain('Tools: acme-tracker');
     expect(prompt).toContain('Tools: none beyond files and the web');
     expect(rankByWords('what does the acme tracker say', [TALKER, TRACKER])[0].worker.id).toBe('w-desk');
+  });
+});
+
+describe('tracking a ticket from Slack', () => {
+  it('puts it on a named worker’s list with no model turn, and takes it off again', async () => {
+    const h = harness({ track: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U1', text: 'Triage, track ACME-412 too', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '2.0', user: 'U1', text: 'Triage, stop tracking ACME-412', dm: true });
+    expect(h.tracks).toEqual(['w-triage:ACME-412:true', 'w-triage:ACME-412:false']);
+    expect(h.asks).toHaveLength(0);
+    expect(h.routed()).toBe(0);
+    expect(h.posts[0]).toContain('Tracking ACME-412. Triage tracks 3');
   });
 });

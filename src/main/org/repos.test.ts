@@ -181,6 +181,29 @@ describe('workspaces', () => {
 });
 
 describe('the server pushing a finished run', () => {
+  it('commits and pushes without running hooks', async () => {
+    const calls: string[][] = [];
+    const lander = new BranchLander({
+      git: async (args) => {
+        calls.push(args);
+        return { ok: true, stdout: args[0] === 'status' ? ' M a\n' : args[0] === 'rev-list' ? '1\n' : '' };
+      },
+      repos: () => [{ name: 'app', url: 'https://github.com/acme/app.git', path: '/x', defaultBranch: 'main', addedBy: 'Bo', at: 0 }],
+      attach: () => {},
+      log: () => {},
+    });
+    await lander.land({
+      id: 'abcdef123',
+      flowId: 'org-pr-app',
+      projectPath: '/x',
+      userPrompt: 'x',
+      artifacts: {},
+      workspaceWorktrees: [{ name: 'app', projectPath: '/x', worktreePath: '/x-wt', branchName: 'agent/x' }],
+    } as never);
+    expect(calls.find((c) => c[0] === 'commit')).toContain('--no-verify');
+    expect(calls.find((c) => c[0] === 'push')).toContain('--no-verify');
+  });
+
   it('commits each changed worktree, pushes it past the tests, and attaches the links', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-land-'));
     dirs.push(root);

@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripSecrets } from './secrets';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 export type RepoHost = 'github' | 'bitbucket' | 'other';
@@ -503,4 +504,14 @@ export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): str
 
 export function workspaceFlowId(ws: Pick<OrgWorkspace, 'id'>): string {
   return `org-pr-${ws.id}`;
+}
+
+/// The environment the server gives git: no stored secrets, only the host
+/// tokens git needs to push.
+export function credentialGitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...stripSecrets(process.env), GIT_TERMINAL_PROMPT: '0' };
+  for (const c of Object.values(HOST_CREDENTIALS)) {
+    for (const k of [c.tokenEnv, c.userEnv]) if (process.env[k]) env[k] = process.env[k];
+  }
+  return env;
 }

@@ -402,7 +402,16 @@ function triggerInput(raw: unknown): Parameters<OrgService['createTrigger']>[2] 
   const deliver = (Array.isArray(t.deliver) ? t.deliver : [])
     .slice(0, 6)
     .map((d: any) =>
-      d?.kind === 'slack' ? { kind: 'slack' as const, channel: text(d.channel, 20) } : d?.kind === 'thread' ? { kind: 'thread' as const } : d?.kind === 'worker' ? { kind: 'worker' as const, text: text(d.text, 1000) } : null,
+      d?.kind === 'slack'
+        ? { kind: 'slack' as const, channel: text(d.channel, 20) }
+        : d?.kind === 'thread'
+          ? { kind: 'thread' as const }
+          : d?.kind === 'worker'
+            ? { kind: 'worker' as const, text: text(d.text, 1000) }
+            : // A DM always goes to whoever sets the trigger up; the server fills it in.
+              d?.kind === 'dm'
+              ? { kind: 'dm' as const, slackUserId: '' }
+              : null,
     )
     .filter(Boolean);
   const w = (t.watch ?? {}) as Record<string, any>;
@@ -413,6 +422,7 @@ function triggerInput(raw: unknown): Parameters<OrgService['createTrigger']>[2] 
     instructions: text(t.instructions),
     deliver,
     maxPerDay: Number(t.maxPerDay) || 50,
+    ...(t.notifyOnly === true ? { notifyOnly: true } : {}),
     ...(kind === 'watch'
       ? {
           watch: {
@@ -422,6 +432,8 @@ function triggerInput(raw: unknown): Parameters<OrgService['createTrigger']>[2] 
             everyMinutes: Number(w.everyMinutes) || 15,
             ...(text(w.itemsPath, 120) ? { itemsPath: text(w.itemsPath, 120) } : {}),
             ...(text(w.idPath, 120) ? { idPath: text(w.idPath, 120) } : {}),
+            ...(text(w.changes, 120) ? { changes: text(w.changes, 120) } : {}),
+            ...(Array.isArray(w.tracked) ? { tracked: (w.tracked as unknown[]).filter((x): x is string => typeof x === 'string').map((x) => x.trim().slice(0, 80)).filter(Boolean).slice(0, 200) } : {}),
           },
         }
       : {}),
@@ -442,6 +454,7 @@ function triggerPatch(raw: unknown): Parameters<OrgService['updateTrigger']>[2] 
     ...(Array.isArray(p.deliver) ? { deliver: full.deliver } : {}),
     ...(p.maxPerDay !== undefined ? { maxPerDay: full.maxPerDay } : {}),
     ...(p.watch ? { watch: full.watch } : {}),
+    ...(typeof p.notifyOnly === 'boolean' ? { notifyOnly: p.notifyOnly } : {}),
     ...(p.slack ? { slack: triggerInput({ kind: 'slack', slack: p.slack }).slack } : {}),
   };
 }
@@ -866,6 +879,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/picture\/pick$/, handle: (c, _b, [id]) => org.pickWorkerPicture(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/runs\/([^/]+)\/stop$/, handle: (c, _b, [id]) => org.stopRun(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/track$/, handle: (c, b, [id]) => org.trackItem(c, decodeURIComponent(id), str(b.item), b.on !== false) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/retire$/, handle: (c, _b, [id]) => org.retire(c, decodeURIComponent(id)) },
     {
       method: 'POST',

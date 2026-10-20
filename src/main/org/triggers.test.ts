@@ -9,6 +9,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
   let deliverables: Deliverable[] = [];
   const asked: string[] = [];
   const posts: string[] = [];
+  const calls: unknown[] = [];
   let toolResult: unknown = opts.items ?? { issues: [{ key: 'ACME-1', fields: { summary: 'Export fails' } }] };
   let now = new Date(2026, 9, 20, 12).getTime();
   const svc = new TriggerService({
@@ -24,13 +25,20 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
       };
     },
     toolConfig: (name) => (name === 'jira' ? { command: 'npx' } : null),
-    callTool: async () => ({ ok: true, text: JSON.stringify(toolResult), json: toolResult }),
+    callTool: async (_c, _t, args) => {
+      calls.push(args);
+      return { ok: true, text: JSON.stringify(toolResult), json: toolResult };
+    },
     slack: {
       post: async (channel, text, threadTs) => {
         posts.push(`${channel}${threadTs ? '@' + threadTs : ''}:${text.split('\n')[0]}`);
         return true;
       },
       message: async () => ({ text: 'The export button does nothing', user: 'U0ACMEPAT' }),
+      dm: async (user, text) => {
+        posts.push(`dm:${user}:${text}`);
+        return true;
+      },
     },
     log: () => {},
     now: () => now,
@@ -39,6 +47,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
     svc,
     asked,
     posts,
+    calls,
     deliverables: () => deliverables,
     triggers: () => triggers,
     setItems: (v: unknown) => (toolResult = v),
@@ -174,5 +183,60 @@ describe('reading a tool’s answer', () => {
   it('names posted events from GitHub and Jira', () => {
     expect(eventItem({ action: 'opened', pull_request: { number: 12, title: 'Fix export', html_url: 'https://github.com/acme/app/pull/12' } })).toMatchObject({ title: 'PR #12: Fix export', url: 'https://github.com/acme/app/pull/12' });
     expect(eventItem({ webhookEvent: 'jira:issue_created', issue: { key: 'ACME-3', fields: { summary: 'Slow' } } })).toMatchObject({ id: 'jira:issue_created:ACME-3', title: 'ACME-3: Slow' });
+  });
+});
+
+describe('watching tracked tickets for a change', () => {
+  const issues = (a: string, b: string) => ({ issues: [{ key: 'ACME-1', fields: { summary: 'Export fails', status: { name: a } } }, { key: 'ACME-2', fields: { summary: 'Slow login', status: { name: b } } }] });
+  const tracker = (over: Partial<WorkerTrigger> = {}) =>
+    watch({
+      name: 'My tickets',
+      instructions: '',
+      notifyOnly: true,
+      deliver: [{ kind: 'dm', slackUserId: 'U0ACMEPAT' }],
+      watch: { server: 'jira', tool: 'search', args: { jql: 'key in ({{ids}})' }, everyMinutes: 15, changes: 'fields.status.name', tracked: ['ACME-1', 'ACME-2'] },
+      ...over,
+    });
+
+  it('says plainly when a tracked ticket changes, with no worker turn, and nothing on the first look', async () => {
+    const h = harness({ items: issues('To do', 'In review') });
+    const made = h.svc.create(tracker());
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.poll(made.trigger.id);
+    expect(h.calls[0]).toEqual({ jql: 'key in (ACME-1, ACME-2)' });
+    expect(h.posts).toEqual([]);
+    h.setItems(issues('To do', 'Done'));
+    await h.svc.poll(made.trigger.id);
+    await tick();
+    expect(h.asked).toEqual([]);
+    expect(h.posts).toEqual(['dm:U0ACMEPAT:*ACME-2: Slow login* moved from _In review_ to *Done*']);
+    // Unchanged since: quiet.
+    await h.svc.poll(made.trigger.id);
+    await tick();
+    expect(h.posts).toHaveLength(1);
+  });
+
+  it('hands a change to the worker when it should do more than say so', async () => {
+    const h = harness({ items: issues('To do', 'In review') });
+    const made = h.svc.create(tracker({ notifyOnly: false, instructions: 'Summarise what changed in the comments.' }));
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.poll(made.trigger.id);
+    h.setItems(issues('In progress', 'In review'));
+    await h.svc.poll(made.trigger.id);
+    expect(h.asked).toHaveLength(1);
+    expect(h.asked[0]).toContain('a change to an item you track');
+    expect(h.asked[0]).toContain('moved from To do to In progress');
+  });
+
+  it('tracks one more ticket without announcing where it already stands', async () => {
+    const h = harness({ items: issues('To do', 'In review') });
+    const made = h.svc.create(tracker({ watch: { server: 'jira', tool: 'search', args: { jql: 'key in ({{ids}})' }, everyMinutes: 15, changes: 'fields.status.name', tracked: ['ACME-1'] } }));
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.poll(made.trigger.id);
+    expect(h.svc.track(made.trigger.id, 'ACME-2', true)).toEqual({ ok: true, tracked: ['ACME-1', 'ACME-2'] });
+    await h.svc.poll(made.trigger.id);
+    await tick();
+    expect(h.posts).toEqual([]);
+    expect(h.svc.track(made.trigger.id, 'not a ticket id!', true)).toMatchObject({ ok: false });
   });
 });

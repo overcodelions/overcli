@@ -4,7 +4,14 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Security
+- Read-only shell auto-approval now uses a per-command flag allowlist, refuses inner quoting, `$` expansion, `git -c` and `--output`/`--ext-diff`, and no longer treats `uniq`, `tree`, `file` or `jq` as read-only.
+- Team-task and lander pushes run git with hooks disabled and without stored secrets. Auto-approved reads are limited to the running worker's own files. `OVERCLI_TEST_UID` runs repo tests as a separate user.
+
 ### Added
+- **Track tickets, and hear when they move.** A watch trigger can fire on a change to one field, such as a ticket's status, instead of on new items. It can follow only the items you track. Add them on the Triggers tab, or from Slack (`@overcli Watcher, track ACME-412`, `stop tracking …`, `/worker Watcher track …`) with no model turn. **Just tell me what changed** sends "ACME-412 moved from In review to Done" with a link and no worker turn, so a quiet day costs nothing. Triggers can also DM you. Watches poll outward, so they work from inside a VPC.
+- **A Hire page that shows what workers are for.** Beside the brief, **What workers are good at** has four colour-coded ways a worker runs: on a schedule, asked in Slack, when something happens, and as a team. Each comes with examples that say when it runs and what lands, and **Use this** fills in the brief. Under the box, "A good brief says" ticks off what it does, for whom, how often and where the information lives as you type. The page also names the workers you already manage.
+- **A request's progress, as one timeline.** Opened on a worker's page, a request reads top to bottom: how far along it is ("Step 3 of 5 · Crawl · 8 min so far" over one honest bar), then each step with a status dot, its time in a fixed column, and what belongs to it inside it: the worker's plan under its decision, the buttons under the OK it waits for, the reason under a step that failed. The running step is tinted and leads with the last thing the worker said, its actions folded behind *Show activity*. It replaces two progress bars and a separate activity feed.
 - **Stop a worker's run from the console.** A running run has **Stop** next to **Watch live**, for its manager or an admin. What it wrote stays, and nothing queued behind it starts.
 - **A worker's run reads once, in plain words.** A run opened in a worker's Conversation shows:
   - the work's own title, with what was asked quoted under it;
@@ -213,6 +220,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **A team's finished answer reached Slack as raw Markdown.** It now shows as Slack formatting (headings, bold, links), and a table becomes a bold header with one bullet per row.
 - **A worker's page scrolled away while a run was live.** Its activity feed kept the whole pane pinned to the newest line, pushing the question, the reply and the run's steps off screen. The feed now scrolls in a box of its own, and its status line, the same as the run's card above it, is gone.
 - **The Library drew everything at once and dropped what was past the newest 200.** It now shows 50 at a time with *Show more*, loads the newest 500, and past that a search asks the server, which looks through everything.
+- **A failed request read wrong in its timeline.** Its run showed as one step called "Ran in 22 min", the answer it never gave was marked failed, and the reason sat below the timeline. Now the run's own steps show up to the one it stopped on, with the reason and its files there, the rest as not reached, and the bar counts only what finished.
 - **A link typed in Slack showed as `<http://…|…>` in a question's title.** Slack's link markup is turned back into what was typed, for questions asked before this too.
 - **A worker finishing up handed-off work showed as a new request titled with its whole internal prompt.** Its turn is now found by what it was handed and hangs under the question it finishes, and a title is never more than a line or two.
 - **A question in a Slack thread took the work a later reply started.** A reply in a thread carries the thread so far, so the next request contained the first one's words, and the first question showed as running with the wrong work while its own showed again titled with the raw prompt. Work another question names is never matched by words, and work no question covers is titled by what was asked.

@@ -15,7 +15,7 @@
 
 import path from 'node:path';
 import { RunActivity } from '../main/flows/runActivity';
-import { workerFilesRoot } from '../main/flows/workerFiles';
+import { workerFilesDir } from '../main/flows/workerFiles';
 import { randomUUID } from 'node:crypto';
 import { projectIdFor } from '../main/projectIds';
 import { loadAllFlows, saveFlow } from '../main/flows/storage';
@@ -51,7 +51,7 @@ import { createTeamEngine, runDeliverablesFor } from '../main/flows/teamWire';
 import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraft';
 import { bindAllowList } from '../main/org/repoGrants';
 import { BranchLander } from '../main/org/landBranches';
-import { HOST_CREDENTIALS, type ConnectedRepo } from '../main/org/repos';
+import { credentialGitEnv, type ConnectedRepo } from '../main/org/repos';
 import { stripSecrets } from '../main/org/secrets';
 import { execFile } from 'node:child_process';
 import { setWebReadsTrusted } from '../main/flows/trustedCommands';
@@ -182,7 +182,10 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     denyCodexApprovals: options.denyCodexApprovals,
     // A worker looking at its own files with ls and cat, which the allow-list
     // would otherwise refuse.
-    readOnlyRoots: () => [workerFilesRoot()],
+    readOnlyRoots: (conversationId) => {
+      const workerId = flowRuntime?.listRuns().find((r) => Object.values(r.conversationIds).includes(conversationId))?.workerId;
+      return workerId ? [workerFilesDir(workerId)] : [];
+    },
     ...(options.allowToolReads ? { allowToolReads: true } : {}),
   });
 
@@ -431,23 +434,19 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // A finished repo or workspace run's change, committed and pushed by the
   // server (landBranches.ts).
   // Git gets the host tokens and nothing else secret; the tests get no secrets at all.
-  const gitEnv = (): NodeJS.ProcessEnv => {
-    const env: NodeJS.ProcessEnv = { ...stripSecrets(process.env), GIT_TERMINAL_PROMPT: '0' };
-    for (const c of Object.values(HOST_CREDENTIALS)) {
-      for (const k of [c.tokenEnv, c.userEnv]) if (process.env[k]) env[k] = process.env[k];
-    }
-    return env;
-  };
+  const gitEnv = credentialGitEnv;
   const lander = new BranchLander({
     test: (command, cwd) =>
       new Promise((resolve) => {
-        execFile('/bin/sh', ['-c', command], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: stripSecrets(process.env) }, (err, stdout, stderr) =>
+        execFile('/bin/sh', ['-c', command], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: stripSecrets(process.env),
+          // Set OVERCLI_TEST_UID to run repo tests as a user that cannot read the data directory (secrets.key).
+          ...(process.env.OVERCLI_TEST_UID ? { uid: Number(process.env.OVERCLI_TEST_UID), gid: Number(process.env.OVERCLI_TEST_GID ?? process.env.OVERCLI_TEST_UID) } : {}) }, (err, stdout, stderr) =>
           resolve(err ? { ok: false, error: `${stdout}${stderr}`.trim() || err.message } : { ok: true }),
         );
       }),
     git: (args, cwd) =>
       new Promise((resolve) => {
-        execFile('git', args, { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: gitEnv() }, (err, stdout, stderr) =>
+        execFile('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: gitEnv() }, (err, stdout, stderr) =>
           resolve(err ? { ok: false, error: `${stderr}${stdout}`.trim() || err.message } : { ok: true, stdout: `${stdout}${stderr}` }),
         );
       }),

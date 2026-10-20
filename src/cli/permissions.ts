@@ -171,7 +171,7 @@ export function permissionTap(args: {
   denyCodexApprovals?: boolean;
   /// Directories a read-only shell command may look inside even when the
   /// policy would refuse Bash: workers' own files.
-  readOnlyRoots?: () => string[];
+  readOnlyRoots?: (conversationId: string) => string[];
   /// Let a tool call that only reads through, under the allow-list: a worker
   /// asked a question reads its tracker while it works out the answer, and
   /// nobody is there to approve a lookup. Its turn loads only its own tools,
@@ -194,7 +194,7 @@ export function permissionTap(args: {
         const key = `p:${event.conversationId}:${kind.info.requestId}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const own = args.policy !== 'auto-approve' && !allow.has(kind.info.toolName) && readsOnlyUnder(kind.info.toolName, kind.info.toolInput, args.readOnlyRoots?.() ?? []);
+        const own = args.policy !== 'auto-approve' && !allow.has(kind.info.toolName) && readsOnlyUnder(kind.info.toolName, kind.info.toolInput, args.readOnlyRoots?.(event.conversationId) ?? []);
         const toolRead = args.policy === 'allow-list' && !!args.allowToolReads && !allow.has(kind.info.toolName) && kind.info.toolName.startsWith('mcp__') && isReadOnlyMcpTool(kind.info.toolName);
         const { approved, reason } = own
           ? { approved: true, reason: `allowed ${kind.info.toolName}: a read-only look at a worker's own files` }

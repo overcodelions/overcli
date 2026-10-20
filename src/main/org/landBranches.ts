@@ -4,8 +4,8 @@
 // A worker's flow on a connected repo ends with a step that writes the pull
 // request (a title and a description). That step is external, so it waits for
 // the manager's yes. When the run then finishes, this commits each worktree
-// that changed and pushes it to `overcli/<change>`; the clone's pre-push hook
-// runs the repo's tests first and refuses a failing push. The links to open
+// that changed and pushes it to `overcli/<change>`; the repo's test
+// command runs first, without secrets, and a failing run is not pushed. The links to open
 // each pull request are attached to the run, where Slack, the Library and the
 // worker's page find them.
 //
@@ -105,7 +105,7 @@ export class BranchLander {
     if (status.stdout.trim()) {
       const added = await git(['add', '-A']);
       if (!added.ok) return { repo: place.name, error: added.error };
-      const committed = await git(['commit', '-m', title, ...(body ? ['-m', body] : [])]);
+      const committed = await git(['commit', '--no-verify', '-m', title, ...(body ? ['-m', body] : [])]);
       if (!committed.ok) return { repo: place.name, error: committed.error };
     }
     const base = repo?.defaultBranch ?? 'main';
@@ -116,10 +116,7 @@ export class BranchLander {
       if (!tested.ok) return { repo: place.name, skipped: `its tests failed, so nothing was pushed:\n${tested.error.slice(-1500)}` };
     }
     const pushed = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${branch}`]);
-    if (!pushed.ok) {
-      const tests = /the tests failed/.test(pushed.error);
-      return { repo: place.name, ...(tests ? { skipped: `its tests failed, so nothing was pushed:\n${pushed.error.slice(-1500)}` } : { error: pushed.error.slice(-800) }) };
-    }
+    if (!pushed.ok) return { repo: place.name, error: pushed.error.slice(-800) };
     const url = (repo && newPullRequestLink(repo, branch)) ?? /https?:\/\/\S+(?:pull\/new|compare|pull-requests\/new|merge_requests\/new)\S*/.exec(pushed.stdout)?.[0];
     return { repo: place.name, branch, ...(url ? { url } : {}) };
   }

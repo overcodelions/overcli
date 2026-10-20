@@ -20,7 +20,7 @@ import { SsoService, SSO_CLIENT_SECRET_ENV } from '../org/sso';
 import { ConnectionsService } from '../org/connections';
 import { ToolSignIn } from '../org/toolSignIn';
 import { installTool } from '../org/tools';
-import { downloadFile, fetchMessage, fetchRecent, fetchThread, lookupByEmail, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
+import { downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, lookupByEmail, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
 import { routeRequest } from './frontDoorRoute';
 import { drafterDepsFor } from '../org/hireDraft';
@@ -266,6 +266,15 @@ export function createOrgControl(
         const res = await fetchMessage(bot, channel, ts);
         return res.ok ? res.data : null;
       },
+      dm: async (slackUserId, text) => {
+        const bot = configuredSlackToken('bot');
+        if (!bot) return false;
+        const im = await openIm(bot, slackUserId);
+        if (!im.ok) return false;
+        const res = await postMessage(bot, { channel: im.data, text });
+        if (!res.ok) log('warn', 'slack', `A trigger could not DM ${slackUserId}: ${res.error}`);
+        return res.ok;
+      },
     },
     log: (message) => log('info', 'org', message),
   });
@@ -318,6 +327,10 @@ export function createOrgControl(
         .teams(caller)
         .filter((t) => t.canBrief)
         .map((t) => ({ id: t.id, name: t.name, ...(t.purpose ? { purpose: t.purpose } : {}), members: t.members.map((m) => m.name) })),
+    track: (caller, workerId, itemId, on) => {
+      const res = org.trackItem(caller, workerId, itemId, on);
+      return res.ok ? { worker: res.worker, tracked: res.tracked } : res.error;
+    },
     briefTeam: (caller, teamId, brief) => {
       const res = org.briefTeam(caller, teamId, brief);
       return res.ok ? { ok: true, queued: res.task.status === 'queued' } : res;

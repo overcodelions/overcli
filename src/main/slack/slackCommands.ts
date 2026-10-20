@@ -414,6 +414,11 @@ export class SlackCommands {
     }
     let verb = words[used]?.toLowerCase();
     let rest = words.slice(used + 1).join(' ');
+    // "/worker Watcher track ACME-412": onto its change watch's list, no model.
+    if ((verb === 'track' || verb === 'untrack') && rest.trim()) {
+      const res = org.trackItem(caller, worker.id, rest.trim().split(/\s+/)[0], verb === 'track');
+      return this.respond(responseUrl, res.ok ? `${verb === 'track' ? 'Tracking' : 'Stopped tracking'} ${rest.trim().split(/\s+/)[0]}. ${res.worker} tracks ${res.tracked} on “${res.trigger}”.` : res.error);
+    }
     // "/worker Vantage what do you know about …" is an ask without the word.
     if (verb && verb !== 'pause' && verb !== 'resume' && verb !== 'ask') {
       verb = 'ask';
@@ -1282,6 +1287,7 @@ const HELP = [
   '`/worker <name>` — one worker',
   '`/worker <name> <text>` — ask it to do something',
   '`/worker <name> pause` / `resume`',
+  '`/worker <name> track <ticket>` / `untrack <ticket>` — what its change watch follows',
   '`/hire <job description>` — hire a worker',
   '`/team` — the teams you can see, and what each is on',
   '`/team <name>: <task>` — give a team a task',

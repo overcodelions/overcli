@@ -112,7 +112,8 @@ code, pre { font-family: var(--mono); font-size: 12.5px; }
 .top-bell { position: relative; }
 .top-bell .count { position: absolute; top: 2px; right: 0; min-width: 16px; padding: 0 4px; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; background: var(--need); color: var(--need-ink); }
 .side { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; position: sticky; top: 56px; height: calc(100vh - 56px); overflow-y: auto; }
-.side-hire { width: 100%; margin-bottom: 12px; }
+.side-hire { width: 100%; margin-top: auto; flex: none; justify-content: center; min-height: 40px; background: var(--panel); }
+.side-hire[aria-current="page"] { border-color: var(--go); color: var(--go); }
 .menu-wrap { position: relative; }
 .menu { position: absolute; right: 0; top: calc(100% + 6px); width: 280px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28); z-index: 20; overflow: hidden; }
 .menu-who { display: flex; gap: 12px; align-items: center; padding: 14px 16px; }
@@ -326,6 +327,39 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .checklist li { display: flex; gap: 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
 .checklist li > span { flex: 1; display: flex; flex-direction: column; }
 .checklist .ck-ok { color: var(--go); } .checklist .ck-bad { color: var(--bad); } .checklist .ck-off { color: var(--faint); }
+.hirelay { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
+.hire-main { flex: 999 1 560px; max-width: 780px; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+.hire-main > .page-head { margin: 0; }
+.hire-crew { margin-top: -6px; font-size: 13px; }
+.hire-brief { border-color: var(--line-2); box-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.35); }
+.hire-brief:focus-within { border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft), 0 10px 30px -18px rgba(0, 0, 0, 0.35); }
+.brief-hints { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; }
+.bh { display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 99px; background: var(--panel-2); color: var(--muted); font-size: 12px; transition: background .2s, color .2s; }
+.bh.on { background: var(--ok-soft); color: var(--ok); font-weight: 600; }
+.hire-ideas { flex: 1 1 340px; max-width: 460px; display: flex; flex-direction: column; gap: 12px; position: sticky; top: 72px; }
+.hk-schedule { --hk: var(--info); --hk-soft: var(--info-soft); }
+.hk-slack { --hk: var(--violet); --hk-soft: var(--violet-soft); }
+.hk-event { --hk: var(--need); --hk-soft: var(--need-soft); }
+.hk-team { --hk: var(--ok); --hk-soft: var(--ok-soft); }
+.hk-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.hk-tab { display: flex; align-items: center; gap: 10px; padding: 10px 12px; min-height: 52px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); color: var(--ink); font: inherit; font-size: 13.5px; font-weight: 600; text-align: left; cursor: pointer; }
+.hk-tab:hover { border-color: var(--line-2); }
+.hk-tab[aria-selected="true"] { border-color: var(--hk); background: var(--hk-soft); }
+.hk-ic { width: 32px; height: 32px; flex: none; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; background: var(--hk-soft); color: var(--hk); }
+.hk-tab[aria-selected="true"] .hk-ic { background: var(--hk); color: var(--panel); }
+.hk-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.hk-card-top { display: flex; gap: 12px; align-items: flex-start; }
+.hk-card-top b { font-size: 14.5px; font-weight: 600; }
+.hk-when { align-self: flex-start; font-size: 11.5px; font-weight: 600; color: var(--hk); background: var(--hk-soft); padding: 1px 8px; border-radius: 99px; }
+.hk-lands { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); font-size: 12.5px; color: var(--muted); }
+.hk-lands-k { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.hk-fit { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.hk-fit ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.hk-fit li { display: flex; gap: 8px; align-items: flex-start; }
+.hk-fit li b { font-weight: 600; }
+.hk-tick { width: 18px; height: 18px; flex: none; border-radius: 99px; display: inline-flex; align-items: center; justify-content: center; background: var(--ok-soft); color: var(--ok); margin-top: 1px; }
+.hk-fit p { margin: 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12.5px; }
+@media (max-width: 960px) { .hire-ideas { position: static; max-width: none; } }
 .hiresteps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .hiresteps li { display: flex; flex-direction: column; gap: 4px; padding: 14px 4px 0; border-top: 2px solid var(--line-2); }
 .hiresteps li.on { border-top-color: var(--ink); }
@@ -381,6 +415,41 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
 @keyframes livepulse { 0% { box-shadow: 0 0 0 0 var(--go-soft); } 70% { box-shadow: 0 0 0 9px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 @media (prefers-reduced-motion: reduce) { .livedot { animation: none; } }
 .segs { list-style: none; margin: 0; padding: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+/* A thread opened in full: one vertical timeline, how far along on top. */
+.vprog { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+.vprog .vp-line { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--muted); }
+.vprog .vp-line b { color: var(--ink); font-weight: 600; }
+.vprog .vp-bar { height: 6px; border-radius: 999px; background: var(--line); display: flex; overflow: hidden; }
+.vprog .vp-bar span { display: block; height: 100%; }
+.vsteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.vstep { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 14px; border-radius: 10px; }
+.vstep.now { background: var(--go-soft); margin: 0 -10px; padding: 0 10px; }
+.vstep.need { background: var(--need-soft); margin: 0 -10px; padding: 0 10px; }
+.vstep .vs-rail { display: flex; flex-direction: column; align-items: center; padding-top: 10px; }
+.vstep .vs-dot { width: 20px; height: 20px; border-radius: 50%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; flex: none; background: var(--panel); border: 2px solid var(--line); }
+.vstep.done .vs-dot { background: var(--ok); border-color: var(--ok); color: #fff; }
+.vstep.now .vs-dot { border-color: var(--go); }
+.vstep.now .vs-dot::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--go); }
+.vstep.need .vs-dot { border-color: var(--need); }
+.vstep.need .vs-dot::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--need); }
+.vstep.failed .vs-dot { background: var(--bad); border-color: var(--bad); color: #fff; }
+.vstep.skipped .vs-dot, .vstep.last .vs-dot { border-style: dashed; }
+.vstep .vs-link { flex: 1; width: 2px; min-height: 10px; margin-top: 4px; background: var(--line); }
+.vstep.done .vs-link { background: var(--ok); }
+/* Done up to the step in hand: the link into it is green too. */
+.vstep.done + .vstep.now .vs-rail, .vstep.done + .vstep.need .vs-rail { background: linear-gradient(var(--ok), var(--ok)) center top / 2px 10px no-repeat; }
+.vstep:last-child .vs-body { padding-bottom: 20px; }
+.vs-live { display: flex; align-items: flex-start; gap: 10px; color: var(--ink); line-height: 1.45; }
+.vs-spin { width: 13px; height: 13px; margin-top: 3px; flex: none; border-radius: 50%; border: 2px solid var(--go-soft); border-top-color: var(--go); animation: ntspin 0.9s linear infinite; }
+.vstep:last-child .vs-link { display: none; }
+.vstep .vs-body { padding: 10px 0 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.vstep .vs-name { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.vstep .vs-name b { font-weight: 600; }
+.vstep.next .vs-name b, .vstep.last .vs-name b, .vstep.skipped .vs-name b { font-weight: 500; color: var(--muted); }
+.vstep .vs-tag { font-size: 12.5px; font-weight: 500; }
+.vstep.now .vs-tag { color: var(--go); } .vstep.need .vs-tag { color: var(--need); } .vstep.failed .vs-tag { color: var(--bad); }
+.vstep .vs-sub { font-size: 12.5px; color: var(--faint); }
+.vstep .vs-time { padding-top: 11px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 .segs > li { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .segs .bar { height: 5px; border-radius: 3px; background: var(--line); }
 .segs .done .bar { background: var(--ok); } .segs .now .bar { background: var(--go); } .segs .need .bar { background: var(--need); } .segs .failed .bar { background: var(--bad); } .segs .skipped .bar { background: var(--line-2); }
@@ -1566,12 +1635,13 @@ export const CONSOLE_JS = String.raw`
     // without going through go(): keep the address in step either way.
     try { if (location.hash !== '#' + hashFor()) history.replaceState(null, '', '#' + hashFor()); } catch (e) {}
     document.title = me.org + ' — overcli';
-    var main = h('div', { class: 'page' + ({ hire: 1, connect: 1 }[state.tab] ? ' narrow' : '') }, thinking('Loading…'));
+    // Hiring is narrow once it's questions or an offer; the brief has the
+    // ideas beside it.
+    var main = h('div', { class: 'page' + (state.tab === 'connect' || (state.tab === 'hire' && state.hire) ? ' narrow' : '') }, thinking('Loading…'));
     var activeTab = navFor(state.tab);
     app.appendChild(h('div', { class: 'frame' },
       topBar(me),
       h('aside', { class: 'side' },
-        me.canHire ? h('button', { class: 'btn go side-hire', 'aria-current': state.tab === 'hire' ? 'page' : null, onclick: function () { go('hire'); } }, icon('plus', 16), 'Hire a worker') : null,
         h('nav', { class: 'nav', 'aria-label': 'Sections' }, tabs().map(function (t) {
           if (t === 'sep') return h('div', { class: 'sep', 'aria-hidden': 'true' });
           if (t.group) return h('div', { class: 'group', text: t.group });
@@ -1579,7 +1649,9 @@ export const CONSOLE_JS = String.raw`
             icon(t.icon), t.label,
             t.count ? h('span', { class: 'count', 'data-count': t.count, hidden: !state.counts[t.count], text: state.counts[t.count] ? String(state.counts[t.count]) : '' }) : null,
             t.issue ? h('span', { class: 'issue', 'data-issue': t.issue, hidden: !state.counts[t.issue], text: state.counts[t.issue] ? plural(state.counts[t.issue], 'issue', 'issues') : '' }) : null);
-        }))),
+        })),
+        // At the foot of the menu: always to hand, never louder than the page.
+        me.canHire ? h('button', { class: 'btn side-hire', 'aria-current': state.tab === 'hire' ? 'page' : null, onclick: function () { go('hire'); } }, icon('plus', 16), 'Hire a worker') : null),
       h('main', { class: 'main' }, main)));
     refreshCounts();
     if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
@@ -2353,6 +2425,81 @@ export const CONSOLE_JS = String.raw`
     }));
   }
 
+  /// Keeps an element saying how long since \x60from\x60, every second, while
+  /// it's on the page.
+  function ticking(el, from, suffix) {
+    var put = function () { el.textContent = secs(Date.now() - from) + (suffix || ''); };
+    put();
+    var id = setInterval(function () { if (!el.isConnected) clearInterval(id); else put(); }, 1000);
+    return el;
+  }
+
+  /// A thread opened in full: its steps as one timeline, top to bottom, with
+  /// what belongs to each inside it (the worker's plan under its decision,
+  /// the buttons under the OK it waits for, the live activity under the step
+  /// running, a failure's reason under the step that failed), and how far
+  /// along it is above. The rail in one place, not a bar and a feed apart.
+  function threadTimeline(t, w, ctx) {
+    var steps = mergedRail(t);
+    // A run that failed or was stopped: its own steps, to the one it stopped
+    // on, in place of "Ran in 22 min"; the answer it never gave isn't a failure.
+    var broke = t.runs.length === 1 && (t.runs[0].state === 'failed' || t.runs[0].state === 'stopped') ? t.runs[0] : null;
+    if (broke && broke.steps && broke.steps.length) {
+      var lastRun = -1;
+      steps.forEach(function (s, i) { if (s.state === 'failed' && i < steps.length - 1) lastRun = i; });
+      if (lastRun >= 0) steps = steps.slice(0, lastRun).concat(broke.steps.map(function (s) {
+        return { label: s.label, state: s.state === 'next' ? 'skipped' : s.state, detail: s.state === 'done' && s.tookMs ? secs(s.tookMs) : '' };
+      }), steps.slice(lastRun + 1));
+    }
+    steps = steps.map(function (s, i) { return i === steps.length - 1 && s.state === 'failed' ? { label: s.label, state: 'skipped', detail: '' } : s; });
+    var live = t.runs.filter(function (r) { return r.state === 'working' || r.state === 'paused'; })[0];
+    var asking = t.runs.filter(function (r) { return r.state === 'question' || r.state === 'approval'; })[0];
+    var cur = steps.findIndex(function (s) { return s.state === 'now' || s.state === 'need'; });
+    var failedAt = steps.findIndex(function (s) { return s.state === 'failed'; });
+    var ended = t.stage === 'done' || t.stage === 'answered' || t.stage === 'declined' || t.stage === 'nothing';
+    // Not reached, after a failure, isn't done.
+    var doneN = steps.filter(function (s) { return s.state === 'done' || (s.state === 'skipped' && failedAt < 0); }).length;
+    // How far along: done steps whole, the one in hand a sliver, nothing invented.
+    var bar = h('div', { class: 'vp-bar', role: 'img', 'aria-label': doneN + ' of ' + steps.length + ' steps done' },
+      h('span', { style: 'width:' + (100 * doneN / steps.length) + '%;background:var(--ok)' }),
+      cur >= 0 ? h('span', { style: 'width:' + (40 / steps.length) + '%;background:' + (steps[cur].state === 'need' ? 'var(--need)' : 'var(--go)') }) : null,
+      failedAt >= 0 ? h('span', { style: 'width:' + (100 / steps.length) + '%;background:var(--bad)' }) : null);
+    var lastAt = Math.max.apply(null, [t.at].concat(t.runs.map(function (r) { return r.endedAt || 0; }), t.reply ? [t.reply.at] : []));
+    var line = h('div', { class: 'vp-line' },
+      cur >= 0 ? h('span', null, h('b', { text: 'Step ' + (cur + 1) + ' of ' + steps.length }), ' · ' + steps[cur].label)
+        : failedAt >= 0 ? h('span', null, h('b', { text: 'Stopped at step ' + (failedAt + 1) + ' of ' + steps.length }), ' · ' + steps[failedAt].label)
+          : h('span', null, h('b', { text: ended ? 'Finished' : steps.length + ' steps' })),
+      cur >= 0 ? ticking(h('span'), t.at, ' so far') : h('span', { text: ended && lastAt > t.at ? 'took ' + secs(lastAt - t.at) : '' }));
+    var rows = steps.map(function (s, i) {
+      var inside = [];
+      if (i === 0 && t.reply) inside.push(threadReply(t, w));
+      if (i === 0 && t.stage === 'deciding') inside.push(thinking(t.source === 'ask' ? w.name + ' is working out how to answer' : w.name + ' is reading its job, its journal and what changed'));
+      if (s.state === 'need') {
+        inside.push(threadProposal(t, w, ctx));
+        if (asking) {
+          var it = (ctx.waiting || []).filter(function (x) { return x.runId === asking.runId; })[0];
+          inside.push(it ? waitingCard(it) : h('p', { class: 'muted', style: 'margin:0', text: 'Waiting on ' + (w.manager || 'its manager') + '.' }));
+        }
+      }
+      if (s.state === 'now' && i > 0 && live) inside.push(liveRunView(live.runId, 'step'));
+      if (i === failedAt) {
+        var why = t.error || (broke && (broke.error || (broke.state === 'stopped' ? 'It was stopped before it finished.' : '')));
+        if (why) inside.push(h('div', { class: 'msg err', text: why }));
+        if (broke && broke.runId) inside.push(runFiles(broke.runId, w.name + ' · ' + broke.title));
+      }
+      var cls = s.state + (i === steps.length - 1 && s.state === 'next' ? ' last' : '');
+      var tag = s.state === 'now' ? (i === 0 ? 'Working it out' : 'Running') : s.state === 'need' ? 'Needs you' : s.state === 'failed' ? (broke && broke.state === 'stopped' ? 'Stopped' : 'Failed') : s.state === 'skipped' && failedAt < 0 ? 'Skipped' : '';
+      var sub = s.state === 'next' ? (i === steps.length - 1 ? 'Arrives here when it’s done' + (t.via === 'slack' ? ', and in Slack' : '') : 'Up next')
+        : s.state === 'skipped' && failedAt >= 0 ? (i === steps.length - 1 ? 'Not produced' : 'Not reached') : '';
+      var time = s.state === 'now' && i > 0 && live ? ticking(h('span'), live.startedAt) : s.state === 'done' ? (s.detail && !/^now/.test(s.detail) ? s.detail : s.at ? clock(s.at) : '') : '';
+      return h('li', { class: 'vstep ' + cls },
+        h('div', { class: 'vs-rail' }, h('span', { class: 'vs-dot', 'aria-hidden': 'true' }, s.state === 'done' ? icon('check', 12) : s.state === 'failed' ? '×' : null), h('span', { class: 'vs-link' })),
+        h('div', { class: 'vs-body' }, h('div', { class: 'vs-name' }, h('b', { text: s.label }), tag ? h('span', { class: 'vs-tag', text: tag }) : null, sub ? h('span', { class: 'vs-sub', text: sub }) : null), inside),
+        h('span', { class: 'vs-time' }, time));
+    });
+    return h('div', { class: 'stack', style: 'gap:0' }, h('div', { class: 'vprog' }, line, bar), h('ol', { class: 'vsteps', 'aria-label': 'Steps' }, rows));
+  }
+
   /// Stop a run that's going, after a yes: what it wrote stays.
   function stopRunButton(runId, w) {
     var b = h('button', { class: 'btn small quiet', text: 'Stop' });
@@ -2416,6 +2563,16 @@ export const CONSOLE_JS = String.raw`
     var asked = t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague';
     var ended = t.stage === 'done' || t.stage === 'answered';
     var hasWork = (t.proposal && t.proposal.items.length) || t.runs.length;
+    // Opened in full: one timeline holds the steps and what belongs to each;
+    // what finished runs found follows it.
+    if (ctx.merge && t.progress && t.progress.length > 1 && (!isReply || hasWork)) {
+      return [
+        threadTimeline(t, w, ctx),
+        // A broken run's reason and files are in its step already.
+        t.runs.filter(function (r) { return r.state === 'done' || r.state === 'interrupted' || ((r.state === 'failed' || r.state === 'stopped') && t.runs.length > 1); }).map(function (r) { return threadRun(r, t, w, ctx); }),
+        t.stage === 'nothing' && t.note && t.note !== t.headline ? h('p', { class: 'muted', text: t.note }) : null
+      ];
+    }
     return [
       asked && !ended && t.stage !== 'deciding' && !(isReply && t.stage === 'nothing') && !(ctx.merge && mergedRail(t) !== t.progress) ? h('p', { class: 't-head', text: t.headline }) : null,
       t.progress && t.progress.length > 1 && (!isReply || hasWork) ? segs(ctx.merge ? mergedRail(t) : t.progress) : null,
@@ -2717,8 +2874,9 @@ export const CONSOLE_JS = String.raw`
             liveRun ? h('button', { class: 'btn small', text: 'Watch live', onclick: function () { watchRun(liveRun.runId, w.name + ' · ' + liveRun.title); } }) : null),
           h('h2', { class: 'wl-detail-title', text: heading }),
           ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null),
+        // The live activity sits inside the timeline's running step.
         h('div', { class: 'wl-detail-body' }, threadCard(t, w, ctx),
-          liveRun ? h('section', { class: 'stack', style: 'gap:8px;margin-top:14px' }, h('div', { class: 't-kind', text: 'What it’s doing' }), liveRunView(liveRun.runId, true)) : null),
+          liveRun && !(t.progress && t.progress.length > 1) ? h('section', { class: 'stack', style: 'gap:8px;margin-top:14px' }, h('div', { class: 't-kind', text: 'What it’s doing' }), liveRunView(liveRun.runId, true)) : null),
         h('div', { class: 'wl-detail-foot' },
           t.team ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Open the team task', onclick: function () { go('team', { teamId: t.team.id }); } }) : null));
       detail.replaceChildren(keepPlace(detail.firstChild, fresh));
@@ -4360,12 +4518,18 @@ export const CONSOLE_JS = String.raw`
       if (state.hire && state.hire.contract) { wrap.appendChild(offer(state.hire, ctx)); return [head('Hire a worker'), wrap]; }
       if (state.hire && state.hire.questions) { wrap.appendChild(questions(state.hire, ctx)); return [head('Hire a worker'), wrap]; }
       wrap.appendChild(describe(ctx));
-      var nodes = [head('What do you need done?', 'Describe the job the way you’d brief a new colleague: what it does, for whom, how often, and where the information lives. You review the worker before anything runs.'),
+      var crew = (r[0] || []).filter(function (w) { return w.youManage; });
+      var faces = crew.length ? h('div', { class: 'row hire-crew', style: 'gap:10px' },
+        h('span', { class: 'faces' }, crew.slice(0, 5).map(function (w) { return avatar(w.id, w.name, 's'); })),
+        h('span', { class: 'faint', text: 'Joins ' + (crew.length <= 2 ? crew.map(function (w) { return w.name; }).join(' and ') : crew.slice(0, 2).map(function (w) { return w.name; }).join(', ') + ' and ' + plural(crew.length - 2, 'other', 'others')) + ' you manage.' })) : null;
+      var main = [head('What do you need done?', 'Describe the job the way you’d brief a new colleague. You review the worker before anything runs.'),
+        faces,
         wrap,
         h('ol', { class: 'hiresteps', 'aria-label': 'How hiring works' },
-          h('li', { class: 'on' }, h('span', { class: 'faint', text: '1' }), h('b', { style: 'font-weight:600', text: 'You describe the job' }), h('span', { class: 'muted', style: 'font-size:13px', text: 'It may ask a question or two.' })),
+          h('li', { class: 'on' }, h('span', { class: 'faint', text: '1' }), h('b', { style: 'font-weight:600', text: 'You describe the job' }), h('span', { class: 'muted', style: 'font-size:13px', text: 'It may ask a question or two, and says if someone already does it.' })),
           h('li', null, h('span', { class: 'faint', text: '2' }), h('b', { style: 'font-weight:600', text: 'You read its offer' }), h('span', { class: 'muted', style: 'font-size:13px', text: 'Its routine, schedule, tools and budget, in plain words. Change anything.' })),
           h('li', null, h('span', { class: 'faint', text: '3' }), h('b', { style: 'font-weight:600', text: 'It starts carefully' }), h('span', { class: 'muted', style: 'font-size:13px', text: 'It asks you before each run and before anything leaves the server, until it earns more trust.' })))];
+      var nodes = main;
       if (roles.length) {
         nodes.push(h('section', { class: 'stack' }, h('h2', { class: 'label', text: 'Or start from a role ' + state.me.org + ' has approved' }),
           h('div', { class: 'roles' }, roles.map(function (role) {
@@ -4385,22 +4549,79 @@ export const CONSOLE_JS = String.raw`
           }))));
       }
       nodes.push(publishPanel());
-      return nodes;
+      return [h('div', { class: 'hirelay' }, h('div', { class: 'hire-main' }, nodes), hireIdeas(ctx))];
     });
   }
 
   function show(ctx, r) {
     ctx.wrap.textContent = '';
     if (r.ok === false) { state.hire = null; ctx.wrap.appendChild(describe(ctx, r.error)); return; }
+    // Questions and the offer are their own narrow page, without the ideas.
     state.hire = r.hire;
-    ctx.wrap.appendChild(r.hire.contract ? offer(r.hire, ctx) : questions(r.hire, ctx));
+    render();
+    window.scrollTo(0, 0);
   }
 
-  var IDEAS = [
-    { label: 'Competitor watcher', text: 'Watch our competitors’ websites and tell me each week what changed in pricing and positioning, with links.' },
-    { label: 'Feedback sorter', text: 'Read new customer feedback each morning and group it into themes, with a quote for each.' },
-    { label: 'PRFAQ writer', text: 'Turn a feature idea and its evidence into a one-page PRFAQ, working backwards from the customer.' }
+  /// What workers are good at, by how they run, each with a brief written
+  /// the way the drafter likes, when it would run, and a taste of what lands.
+  var HIRE_KINDS = [
+    { id: 'schedule', label: 'On a schedule', icon: 'clock', help: 'It checks something on a cadence and tells you what changed.', ex: [
+      { title: 'Competitor watch', when: 'Mondays 8:00', lands: '3 changes worth a look: one competitor cut its Pro price 10%…', text: 'Every Monday morning, check our competitors’ pricing pages and changelogs, and tell me what changed and which changes matter for us, with links.' },
+      { title: 'Site audit', when: 'Weekly', lands: '12 fixes ranked by payoff; 4 new since last week…', text: 'Every week, crawl our website, rank the SEO fixes worth making by payoff against effort, and compare with last week’s audit.' },
+      { title: 'Metrics digest', when: 'Fridays 4:00', lands: 'Sign-ups up 8%, driven by the new onboarding flow…', text: 'Every Friday afternoon, pull the week’s product usage numbers and explain what moved, and why it might matter, in a short summary.' }] },
+    { id: 'slack', label: 'Asked in Slack', icon: 'slack', help: 'People mention @overcli in any channel or DM it, and it answers in the thread.', ex: [
+      { title: 'Ticket status', when: 'When asked', lands: 'In review since Tuesday, owned by Sam, blocked on the API change…', text: 'When someone asks about a ticket in Slack, look it up in our tracker and answer with its status, owner, blockers and what happens next.' },
+      { title: 'Account briefing', when: 'When asked', lands: 'Renewal in 6 weeks, 2 open tickets, usage down 15%…', text: 'When someone asks about a customer, gather our notes, open tickets and product usage into a short briefing with what to watch.' },
+      { title: 'Bug triage', when: 'When asked', lands: 'Reproduced; the cause is a null date. Pull request with a fix and a test…', text: 'When someone asks you to look at a bug, reproduce it, find the cause, and open a pull request with a fix and a test.' }] },
+    { id: 'event', label: 'When something happens', icon: 'bolt', help: 'A webhook, a Slack message or a change in a tool starts it.', ex: [
+      { title: 'New support ticket', when: 'On each ticket', lands: 'Billing question; draft reply ready; 2 similar tickets linked…', text: 'When a support ticket arrives, classify it, draft a reply, and link similar past tickets for the agent who picks it up.' },
+      { title: 'Ready for QA', when: 'On a status change', lands: '14 test cases written; smoke suite passed…', text: 'When a ticket moves to Ready for QA, write the test cases for it and run the smoke suite, then post the results on the ticket.' },
+      { title: 'New lead', when: 'On each form', lands: 'Mid-size company, 3 seats today, likely fit…', text: 'When the sign-up form sends a new lead, research the company and post a short summary to the lead’s owner.' }] },
+    { id: 'team', label: 'As a team', icon: 'team', help: 'Several workers on one deliverable, with a coordinator and your review.', team: true, ex: [
+      { title: 'PR/FAQ', when: 'Per idea', lands: 'Press release, customer FAQ and internal FAQ, challenged before it’s final', text: '' },
+      { title: 'Quarterly review', when: 'Each quarter', lands: 'One reviewed pack from many sources', text: '' },
+      { title: 'Design critique', when: 'Per design', lands: 'A UX review, a challenge, and the changes to make', text: '' }] }
   ];
+
+  /// The right side of the Hire page: what workers are good at, by how they
+  /// run, each example one tap from a brief in the box.
+  function hireIdeas(ctx) {
+    var pick = state.hireKind || 'schedule';
+    var tabs = h('div', { class: 'hk-tabs', role: 'tablist', 'aria-label': 'How it runs' });
+    var body = h('div', { class: 'stack', style: 'gap:10px' });
+    var draw = function () {
+      var k = HIRE_KINDS.filter(function (x) { return x.id === pick; })[0];
+      fill(tabs, HIRE_KINDS.map(function (x) {
+        return h('button', { type: 'button', role: 'tab', class: 'hk-tab hk-' + x.id, 'aria-selected': x.id === pick ? 'true' : 'false', onclick: function () { pick = x.id; state.hireKind = pick; draw(); } },
+          h('span', { class: 'hk-ic', 'aria-hidden': 'true' }, icon(x.icon, 17)), h('span', { text: x.label }));
+      }));
+      fill(body, [h('p', { class: 'muted', style: 'margin:0;font-size:13px', text: k.help })].concat(k.ex.map(function (e) {
+        var use = h('button', { type: 'button', class: 'btn small', text: k.team ? 'Make a team' : 'Use this' });
+        use.onclick = function () {
+          if (k.team) { go('newteam', { teamRunId: null }); return; }
+          ctx.job.value = e.text;
+          ctx.job.dispatchEvent(new Event('input'));
+          ctx.job.focus();
+          ctx.job.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        };
+        return h('article', { class: 'hk-card hk-' + k.id },
+          h('div', { class: 'hk-card-top' },
+            h('span', { class: 'stack', style: 'gap:4px;flex:1;min-width:0' }, h('b', { text: e.title }), h('span', { class: 'hk-when', text: e.when })),
+            use),
+          h('div', { class: 'hk-lands' }, h('span', { class: 'hk-lands-k', text: 'What lands' }), h('span', { text: e.lands })));
+      })));
+    };
+    draw();
+    return h('aside', { class: 'hire-ideas', 'aria-label': 'What workers are good at' },
+      h('span', { class: 'label', text: 'What workers are good at' }), tabs, body,
+      h('section', { class: 'hk-fit' },
+        h('b', { text: 'Works best when it’s' }),
+        h('ul', null,
+          h('li', null, h('span', { class: 'hk-tick', 'aria-hidden': 'true' }, icon('tick', 12)), h('span', null, h('b', { text: 'Recurring or triggered: ' }), 'a schedule or an event starts it.')),
+          h('li', null, h('span', { class: 'hk-tick', 'aria-hidden': 'true' }, icon('tick', 12)), h('span', null, h('b', { text: 'Something you read: ' }), 'a report, a summary, a pull request.')),
+          h('li', null, h('span', { class: 'hk-tick', 'aria-hidden': 'true' }, icon('tick', 12)), h('span', null, h('b', { text: 'Cheap to approve: ' }), 'a quick yes before it changes anything.'))),
+        h('p', { class: 'faint', text: 'Not a fit: decisions with no review step, or hours of live back-and-forth. Several angles on one document? Make a team instead.' })));
+  }
 
   function describe(ctx, error) {
     var job = h('textarea', { placeholder: 'e.g. Every weekday morning, find the open bugs in our sprint, fix the small well-specified ones, and open a pull request for each.', 'aria-label': 'Describe the job', style: 'min-height:120px;border:0;background:transparent;box-shadow:none;padding:0;font-size:17px' });
@@ -4414,14 +4635,28 @@ export const CONSOLE_JS = String.raw`
       api('POST', '/api/hires/draft', { jobDescription: job.value }).then(function (r) { show(ctx, r); });
     };
     var left = state.me.allowanceUSD != null ? state.me.allowanceUSD - (state.me.committedUSD || 0) : null;
-    return h('div', { class: 'stack' }, h('div', { class: 'panel pad stack', style: 'border-color:var(--line-2)' },
-      job,
+    ctx.job = job;
+    // What a good brief covers, ticked off as it's typed: word checks, no model.
+    var hints = h('div', { class: 'brief-hints', 'aria-live': 'polite' });
+    var HINTS = [['what it does', function (t) { return t.length > 24; }],
+      ['for whom', function (t) { return /\b(for|me|us|our|team|customers?|owner|someone|manager)\b/.test(t); }],
+      ['how often', function (t) { return /\b(every|each|weekly|daily|monthly|morning|monday|tuesday|wednesday|thursday|friday|when|whenever)\b/.test(t); }],
+      ['where the information lives', function (t) { return /\b(tracker|site|website|pages?|notes|tickets?|usage|form|changelog|slack|repo|docs?|crm|sheet|dashboard|inbox|calendar)\b/.test(t); }]];
+    var drawHints = function () {
+      var t = job.value.toLowerCase();
+      fill(hints, [h('span', { class: 'faint', text: 'A good brief says' })].concat(HINTS.map(function (x) {
+        var on = x[1](t);
+        return h('span', { class: 'bh' + (on ? ' on' : '') }, on ? icon('tick', 11) : null, x[0]);
+      })));
+    };
+    job.addEventListener('input', drawHints);
+    drawHints();
+    return h('div', { class: 'stack' }, h('div', { class: 'panel pad stack hire-brief' },
+      job, hints,
       h('div', { class: 'spread', style: 'align-items:center;border-top:1px solid var(--line);padding-top:12px' },
         h('span', { class: 'status' }, h('span', { class: 'sdot ok' }), left != null ? (left > 0 ? 'Within your allowance: ' + money(left) + ' left this month' : 'Over your allowance: an approver will be asked') : 'You’ll be its manager. Its questions come to you.'),
         draft),
-      out),
-      h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'faint', text: 'Try:' }),
-        IDEAS.map(function (idea) { return h('button', { class: 'chip', style: 'min-height:34px;font-size:13px', text: idea.label, title: idea.text, onclick: function () { job.value = idea.text; job.focus(); } }); })));
+      out));
   }
 
   function questions(hire, ctx) {
@@ -5289,9 +5524,16 @@ export const CONSOLE_JS = String.raw`
     });
   }
 
+  /// \x60boxed\x60 'step': inside a timeline's running step, it leads with the
+  /// last thing the worker said and keeps the list folded behind one line.
   function liveRunView(runId, boxed) {
+    var compact = boxed === 'step';
+    var opened = false;
     var head_ = h('div', { class: 'watch-head' }, thinking('Connecting…'));
     var list = h('ol', { class: 'watch-list' + (boxed ? ' boxed' : '') });
+    var lead = h('div', { class: 'vs-live' }, h('span', { class: 'vs-spin', 'aria-hidden': 'true' }), h('span', { text: 'Getting started…' }));
+    var count = h('span', { class: 'faint' });
+    var fold = h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px', text: 'Show activity' });
     var empty = h('p', { class: 'muted', text: 'Nothing yet. Its steps show up here as it takes them.' });
     var raw = h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px' });
     var items = [];
@@ -5310,9 +5552,24 @@ export const CONSOLE_JS = String.raw`
       empty.hidden = !!items.length;
       raw.hidden = !items.length;
       if (near && boxed) list.scrollTop = list.scrollHeight;
+      if (compact) {
+        // The worker's own words when it has said any; else what it's doing.
+        var said = items.filter(function (a) { return a.kind === 'said'; }).pop();
+        var latest = said ? said.text : groups.length ? groups[groups.length - 1].text : '';
+        lead.lastChild.textContent = latest ? (latest.length > 220 ? latest.slice(0, 219).trim() + '…' : latest) : 'Getting started…';
+        lead.firstChild.hidden = ended;
+        count.textContent = plural(items.length, 'action', 'actions') + (ended ? '' : ' so far');
+        fold.textContent = opened ? 'Hide activity' : 'Show activity';
+        fold.hidden = !items.length;
+        list.hidden = empty.hidden = !opened;
+        raw.hidden = !opened || !items.length;
+      }
     };
     raw.onclick = function () { state.showCommands = !state.showCommands; draw(); };
-    var box = h('div', null, head_, h('div', { class: 'row', style: 'justify-content:flex-end;margin-bottom:6px' }, raw), list, empty);
+    fold.onclick = function () { opened = !opened; draw(); };
+    var box = compact
+      ? h('div', { class: 'stack', style: 'gap:6px' }, lead, h('div', { class: 'row', style: 'gap:12px;font-size:12.5px' }, count, fold, h('span', { style: 'margin-left:auto' }, raw)), list, empty)
+      : h('div', null, head_, h('div', { class: 'row', style: 'justify-content:flex-end;margin-bottom:6px' }, raw), list, empty);
     var last = 0;
     var tick = function () {
       if (!box.isConnected && last) return;
@@ -6277,6 +6534,7 @@ export const CONSOLE_JS = String.raw`
 
   /// A trigger in one plain sentence: what sets it off.
   function triggerWhen(t) {
+    if (t.kind === 'watch' && t.watch && t.watch.changes) return 'Checks ' + (t.watch.tracked ? plural(t.watch.tracked.length, 'tracked item', 'tracked items') + ' in ' : '') + t.watch.server + ' every ' + t.watch.everyMinutes + ' min for a change to ' + t.watch.changes;
     if (t.kind === 'watch' && t.watch) return 'Checks ' + t.watch.server + ' (' + t.watch.tool + ') every ' + t.watch.everyMinutes + ' min for new items';
     if (t.kind === 'webhook') return 'When another system posts to its webhook';
     if (t.kind === 'slack' && t.slack) return (t.slack.on === 'reaction' ? 'When someone reacts :' + t.slack.reaction + ': to a message' : t.slack.on === 'mention' ? 'When someone mentions the bot' : 'On each new message') + ' in #' + t.slack.channel + (t.slack.contains ? ' containing “' + t.slack.contains + '”' : '');
@@ -6286,7 +6544,23 @@ export const CONSOLE_JS = String.raw`
   function triggerRow(t, canEdit) {
     var out = h('div', { 'aria-live': 'polite' });
     var act = function (path, body, ok) { return function () { api('POST', path, body).then(function (x) { if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else if (ok) { out.textContent = ''; out.appendChild(msg({}, ok)); setTimeout(render, 1200); } else render(); }); }; };
-    var deliver = (t.deliver || []).map(function (d) { return d.kind === 'slack' ? 'posts in #' + d.channel : d.kind === 'thread' ? 'replies in the thread' : d.text; });
+    var deliver = (t.deliver || []).map(function (d) { return d.kind === 'slack' ? 'posts in #' + d.channel : d.kind === 'thread' ? 'replies in the thread' : d.kind === 'dm' ? 'DMs you' : d.text; });
+    // The tickets a change watch follows: add one, or take one off.
+    var tracked = t.watch && t.watch.tracked ? (function () {
+      var box = h('div', { class: 'row', style: 'gap:6px' });
+      var add = h('input', { type: 'text', placeholder: 'ACME-412', 'aria-label': 'Track another', style: 'width:130px;min-height:30px;font-size:13px' });
+      var track = function (item, on) {
+        api('POST', '/api/workers/' + encodeURIComponent(t.workerId) + '/track', { item: item, on: on }).then(function (x) {
+          if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); return; }
+          render();
+        });
+      };
+      add.onkeydown = function (e) { if (e.key === 'Enter' && add.value.trim()) track(add.value.trim(), true); };
+      append(box, [h('span', { class: 'faint', style: 'font-size:12.5px', text: t.watch.tracked.length ? 'Tracking' : 'Tracking nothing yet' })].concat(t.watch.tracked.map(function (k) {
+        return h('span', { class: 'tag' }, k, canEdit ? h('button', { class: 'linkish', style: 'margin-left:4px;color:inherit', 'aria-label': 'Stop tracking ' + k, onclick: function () { track(k, false); } }, icon('x', 11)) : null);
+      }), canEdit ? [add, h('button', { class: 'btn small', text: 'Track', onclick: function () { if (add.value.trim()) track(add.value.trim(), true); } })] : []));
+      return box;
+    })() : null;
     return h('article', { class: 'panel', style: 'padding:16px 18px;display:flex;flex-direction:column;gap:8px' + (t.enabled ? '' : ';opacity:.7') },
       h('div', { class: 'spread', style: 'align-items:center' },
         h('div', { class: 'row', style: 'gap:10px' }, h('span', { style: 'color:var(--go);display:inline-flex' }, icon('bolt', 17)), h('b', { style: 'font-weight:600', text: t.name }), h('span', { class: 'tag' + (t.enabled ? ' go' : ''), text: t.enabled ? 'On' : 'Off' })),
@@ -6294,7 +6568,8 @@ export const CONSOLE_JS = String.raw`
           t.kind === 'watch' && t.enabled ? h('button', { class: 'btn small', text: 'Check now', onclick: act('/api/triggers/' + encodeURIComponent(t.id) + '/check', {}, 'Checked.') }) : null,
           h('button', { class: 'btn small', text: t.enabled ? 'Pause' : 'Turn on', onclick: act('/api/triggers/' + encodeURIComponent(t.id), { patch: { enabled: !t.enabled } }) }),
           h('button', { class: 'btn small quiet', text: 'Remove', onclick: function () { if (window.confirm('Remove “' + t.name + '”? What it already delivered stays in the Library.')) act('/api/triggers/' + encodeURIComponent(t.id) + '/remove', {})(); } })) : null),
-      h('span', { class: 'muted', style: 'font-size:13.5px', text: triggerWhen(t) + ' → ' + t.instructions.split('\n')[0].slice(0, 140) + (deliver.length ? ' → ' + deliver.join(', ') : '') }),
+      h('span', { class: 'muted', style: 'font-size:13.5px', text: triggerWhen(t) + ' → ' + (t.notifyOnly ? 'says what changed' : t.instructions.split('\n')[0].slice(0, 140)) + (deliver.length ? ' → ' + deliver.join(', ') : '') }),
+      tracked,
       h('span', { class: 'faint', text: [t.handledTotal + ' handled', t.handledToday + ' today of ' + t.maxPerDay, t.lastFiredAt ? 'last ' + ago(t.lastFiredAt) : 'not set off yet', t.kind === 'watch' && t.lastPolledAt ? 'checked ' + ago(t.lastPolledAt) : null].filter(Boolean).join(' · ') }),
       t.lastError ? h('div', { class: 'msg err', text: t.lastError }) : null,
       out);
@@ -6314,6 +6589,23 @@ export const CONSOLE_JS = String.raw`
     var every = h('select', { 'aria-label': 'How often' }, [5, 10, 15, 30, 60].map(function (n) { return h('option', { value: String(n), text: 'every ' + n + ' min', selected: n === 15 }); }));
     var itemsPath = h('input', { type: 'text', placeholder: 'e.g. issues', 'aria-label': 'Where the list is' });
     var idPath = h('input', { type: 'text', placeholder: 'e.g. key', 'aria-label': 'What identifies an item' });
+    // New items, or a change to one field of the items it sees.
+    var fireOn = h('select', { 'aria-label': 'Set off by' }, h('option', { value: 'new', text: 'a new item' }), h('option', { value: 'change', text: 'a change to a field' }));
+    var field = h('input', { type: 'text', placeholder: 'e.g. fields.status.name', 'aria-label': 'Which field' });
+    var onlyTracked = h('input', { type: 'checkbox' });
+    var trackList = h('input', { type: 'text', placeholder: 'ACME-412, ACME-415 (add more later from Slack)', 'aria-label': 'Items to track' });
+    var plain = h('input', { type: 'checkbox', checked: true });
+    var changeBox = h('div', { class: 'stack', style: 'gap:10px' },
+      h('label', { class: 'field', style: 'max-width:360px' }, 'Which field', field),
+      h('label', { class: 'toggle' }, onlyTracked, h('span', null, h('b', { text: 'Only items I track' }), h('span', { class: 'faint', style: 'display:block;font-size:12.5px', text: 'Put {{ids}} in the arguments, e.g. "jql": "key in ({{ids}})". Add or remove items here, or in Slack: “@overcli ' + w.name + ', track ACME-412”.' }))),
+      h('label', { class: 'field', style: 'max-width:440px' }, 'Start with', trackList),
+      h('label', { class: 'toggle' }, plain, h('span', null, h('b', { text: 'Just tell me what changed' }), h('span', { class: 'faint', style: 'display:block;font-size:12.5px', text: '“ACME-412 moved from In review to Done”, with a link. No worker turn, so nothing to pay while it’s quiet. Off: the worker gets each change to act on.' }))));
+    var syncFire = function () {
+      changeBox.hidden = fireOn.value !== 'change';
+      trackList.closest('label').hidden = !onlyTracked.checked;
+      instrStep.hidden = fireOn.value === 'change' && plain.checked;
+    };
+    fireOn.onchange = syncFire; onlyTracked.onchange = syncFire; plain.onchange = syncFire;
     var testOut = h('div', { 'aria-live': 'polite' });
     var parseArgs = function () { if (!args.value.trim()) return {}; try { return JSON.parse(args.value); } catch (e) { return null; } };
     var test = h('button', { class: 'btn', text: 'Try it now' });
@@ -6347,7 +6639,8 @@ export const CONSOLE_JS = String.raw`
     parts.watch = h('div', { class: 'stack' },
       h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Tool', server), h('label', { class: 'field' }, 'What to ask it', call)),
       h('label', { class: 'field' }, 'With (JSON)', args),
-      h('div', { class: 'row', style: 'align-items:flex-end;gap:12px' }, h('label', { class: 'field', style: 'width:200px' }, 'How often to check', every), test),
+      h('div', { class: 'row', style: 'align-items:flex-end;gap:12px' }, h('label', { class: 'field', style: 'width:200px' }, 'How often to check', every), h('label', { class: 'field', style: 'width:200px' }, 'Set off by', fireOn), test),
+      changeBox,
       testOut,
       h('details', null, h('summary', { text: 'If it can’t tell items apart' }), h('div', { class: 'grid2', style: 'margin-top:10px' }, h('label', { class: 'field' }, 'Where the list is', itemsPath), h('label', { class: 'field' }, 'What identifies an item', idPath))));
     // Webhook
@@ -6364,7 +6657,7 @@ export const CONSOLE_JS = String.raw`
     on.onchange();
     parts.slack = h('div', { class: 'stack' }, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)),
       h('p', { class: 'faint', text: 'Invite the overcli bot to the channel first (/invite @overcli).' }));
-    var KINDS = [['watch', 'Something new shows up in a tool', 'A new ticket, deal, row or message, checked every few minutes. Works anywhere.'],
+    var KINDS = [['watch', 'Something new or changed in a tool', 'A new ticket, deal or row, or one whose status changes, checked every few minutes. Works anywhere, inside a VPC too.'],
       ['webhook', 'Another system tells us', 'Jira, GitHub, a CRM or Zapier posts each event to a secret address.'],
       ['slack', 'Something happens in Slack', 'A new message, a mention, or an emoji reaction in a channel.']];
     var drawKinds = function () {
@@ -6380,9 +6673,13 @@ export const CONSOLE_JS = String.raw`
     var sync = function () { kindBody.textContent = ''; kindBody.appendChild(parts[kind]); threadRow.style.display = kind === 'slack' ? '' : 'none'; };
     drawKinds(); sync();
     var instructions = h('textarea', { 'aria-label': 'What to do with each one', placeholder: 'e.g. Triage the ticket: reproduce it if you can, label it, and say who owns it. If it’s small and clear, fix it and open a PR.', style: 'min-height:90px' });
+    var instrStep = h('div', { class: 'fstep' }, h('span', { class: 'label', text: '2 · What it does with each one' }), instructions,
+      h('p', { class: 'hint', text: 'It gets the event’s details with this. ' + (w.trust === 'probation' ? 'On probation, it proposes what it would do and waits for you.' : 'Trusted, it goes ahead.') }));
+    syncFire();
     var postTo = h('input', { type: 'text', placeholder: 'Channel ID, e.g. C012AB3CD (optional)', 'aria-label': 'Post each result in this Slack channel' });
     var itself = h('input', { type: 'text', placeholder: 'e.g. Comment your triage on the ticket (optional)', 'aria-label': 'The worker delivers it itself' });
     var perDay = h('input', { type: 'number', min: '1', max: '500', value: '50', 'aria-label': 'At most per day' });
+    var dmMe = h('input', { type: 'checkbox' });
     var out = h('div', { 'aria-live': 'polite' });
     var save = h('button', { class: 'btn go', text: 'Save trigger' });
     save.onclick = function () {
@@ -6392,8 +6689,12 @@ export const CONSOLE_JS = String.raw`
       if (postTo.value.trim()) deliver.push({ kind: 'slack', channel: postTo.value.trim() });
       if (kind === 'slack' && thread.checked) deliver.push({ kind: 'thread' });
       if (itself.value.trim()) deliver.push({ kind: 'worker', text: itself.value.trim() });
-      var trigger = { name: name.value.trim(), kind: kind, instructions: instructions.value.trim(), deliver: deliver, maxPerDay: Number(perDay.value) || 50,
-        watch: { server: server.value, tool: call.value, args: a, everyMinutes: Number(every.value), itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() },
+      if (dmMe.checked) deliver.push({ kind: 'dm' });
+      var changes = kind === 'watch' && fireOn.value === 'change';
+      var trigger = { name: name.value.trim(), kind: kind, instructions: instructions.value.trim(), deliver: deliver, maxPerDay: Number(perDay.value) || 50, notifyOnly: changes && plain.checked,
+        watch: Object.assign({ server: server.value, tool: call.value, args: a, everyMinutes: Number(every.value), itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() },
+          changes ? { changes: field.value.trim() } : {},
+          changes && onlyTracked.checked ? { tracked: trackList.value.split(/[\s,]+/).map(function (x) { return x.trim(); }).filter(Boolean) } : {}),
         slack: { channel: channel.value.trim(), on: on.value, reaction: emoji.value.trim(), contains: contains.value.trim() },
         webhook: { idPath: hookId.value.trim() } };
       var restore = busy(save, 'Saving…');
@@ -6413,10 +6714,10 @@ export const CONSOLE_JS = String.raw`
     return card('newtrig', 'New trigger for ' + w.name, h('button', { class: 'linkish', text: 'Cancel', onclick: done }), h('div', { class: 'form' },
       h('div', { class: 'fstep' }, h('label', { class: 'field', style: 'max-width:440px' }, 'Name', name)),
       h('div', { class: 'fstep' }, h('span', { class: 'label', text: '1 · What sets it off' }), kinds, kindBody),
-      h('div', { class: 'fstep' }, h('span', { class: 'label', text: '2 · What it does with each one' }), instructions,
-        h('p', { class: 'hint', text: 'It gets the event’s details with this. ' + (w.trust === 'probation' ? 'On probation, it proposes what it would do and waits for you.' : 'Trusted, it goes ahead.') })),
+      instrStep,
       h('div', { class: 'fstep' }, h('span', { class: 'label', text: '3 · Where the result goes' }),
         h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Post each result in a Slack channel', postTo), h('label', { class: 'field' }, 'Or the worker delivers it itself', itself)),
+        h('label', { class: 'toggle' }, dmMe, h('span', { text: 'DM me in Slack' })),
         threadRow, h('p', { class: 'hint', text: 'Everything it delivers is also kept in the Library.' })),
       h('div', { class: 'fstep' }, h('span', { class: 'label', text: '4 · Limit' }),
         h('div', { class: 'row', style: 'align-items:flex-end;gap:12px' }, h('label', { class: 'field', style: 'width:200px' }, 'Most it handles a day', perDay), h('span', { class: 'hint', style: 'padding-bottom:9px', text: 'Keeps cost in check if a tool floods it.' }))),

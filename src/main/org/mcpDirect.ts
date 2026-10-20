@@ -116,7 +116,8 @@ export interface WatchItem {
   data: unknown;
 }
 
-function at(obj: unknown, dotted: string): unknown {
+/// A value inside an item by a dotted path: `fields.status.name`.
+export function at(obj: unknown, dotted: string): unknown {
   return dotted.split('.').filter(Boolean).reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), obj);
 }
 

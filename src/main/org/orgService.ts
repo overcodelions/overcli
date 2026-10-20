@@ -1798,7 +1798,7 @@ export class OrgService {
 
   /// A trigger as people see it: never its webhook secret or the ids it has seen.
   private showTrigger(t: WorkerTrigger, s: TriggerService): TriggerView {
-    const { webhook, seen, ...rest } = t;
+    const { webhook, seen, states, ...rest } = t;
     const start = new Date(this.now());
     start.setHours(0, 0, 0, 0);
     const mine = s.deliverables().filter((d) => d.source.triggerId === t.id);
@@ -1826,13 +1826,15 @@ export class OrgService {
   createTrigger(
     caller: OrgCaller,
     idOrName: string,
-    input: Pick<WorkerTrigger, 'name' | 'kind' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack'> & { webhook?: { idPath?: string } },
+    input: Pick<WorkerTrigger, 'name' | 'kind' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly'> & { webhook?: { idPath?: string } },
   ): Result<{ trigger: TriggerView; webhookPath?: string }> {
     const s = this.triggerSvc();
     if (!s) return { ok: false, error: 'Triggers run on the org server.' };
     const found = this.managed(caller, idOrName);
     if (!found.ok) return found;
-    const res = s.create({ ...input, workerId: found.worker.id, enabled: true, createdBy: caller.name });
+    const deliver = this.ownDms(caller, input.deliver);
+    if (!deliver.ok) return deliver;
+    const res = s.create({ ...input, deliver: deliver.deliver, workerId: found.worker.id, enabled: true, createdBy: caller.name });
     if (!res.ok) return res;
     this.record(caller, `Gave ${found.worker.name} a trigger: ${res.trigger.name}.`);
     return { ok: true, trigger: this.showTrigger(res.trigger, s), ...(res.token ? { webhookPath: `/hooks/${res.trigger.id}/${res.token}` } : {}) };
@@ -1847,13 +1849,47 @@ export class OrgService {
     return { ok: true, trigger: t, s };
   }
 
-  updateTrigger(caller: OrgCaller, id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack'>>): Result<{ trigger: TriggerView }> {
+  updateTrigger(caller: OrgCaller, id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly'>>): Result<{ trigger: TriggerView }> {
     const found = this.managedTrigger(caller, id);
     if (!found.ok) return found;
+    if (patch.deliver) {
+      const deliver = this.ownDms(caller, patch.deliver, found.trigger.deliver);
+      if (!deliver.ok) return deliver;
+      patch = { ...patch, deliver: deliver.deliver };
+    }
     const res = found.s.update(id, patch);
     if (!res.ok) return res;
     this.record(caller, `${patch.enabled === false ? 'Paused' : patch.enabled === true ? 'Resumed' : 'Changed'} the trigger ${res.trigger.name}.`);
     return { ok: true, trigger: this.showTrigger(res.trigger, found.s) };
+  }
+
+  /// A DM goes to the person setting it up, never someone they name: a DM
+  /// already there for someone else stays theirs.
+  private ownDms(caller: OrgCaller, deliver: Destination[], before: Destination[] = []): Result<{ deliver: Destination[] }> {
+    const kept = new Set(before.filter((d) => d.kind === 'dm').map((d) => (d as { slackUserId: string }).slackUserId));
+    const out: Destination[] = [];
+    for (const d of deliver) {
+      if (d.kind !== 'dm') { out.push(d); continue; }
+      if (d.slackUserId && kept.has(d.slackUserId)) { out.push(d); continue; }
+      if (!caller.slackUserId) return { ok: false, error: 'A DM needs your Slack account linked: sign in from Slack once, or link it on People.' };
+      if (!out.some((x) => x.kind === 'dm' && x.slackUserId === caller.slackUserId)) out.push({ kind: 'dm', slackUserId: caller.slackUserId });
+    }
+    return { ok: true, deliver: out };
+  }
+
+  /// "Track ACME-412": add it to the list a worker's change watch asks about,
+  /// or stop. For its manager; the watch must already be set up.
+  trackItem(caller: OrgCaller, idOrName: string, itemId: string, on: boolean): Result<{ worker: string; trigger: string; tracked: number }> {
+    const s = this.triggerSvc();
+    if (!s) return { ok: false, error: 'Triggers run on the org server.' };
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const watch = s.list(found.worker.id).find((t) => t.kind === 'watch' && t.watch?.changes && t.watch.tracked);
+    if (!watch) return { ok: false, error: `${found.worker.name} has no list to track yet. Give it a change watch on its Triggers tab, with “Only items I track” on.` };
+    const res = s.track(watch.id, itemId, on);
+    if (!res.ok) return res;
+    this.record(caller, `${on ? 'Tracking' : 'Stopped tracking'} ${itemId} on ${found.worker.name}'s ${watch.name}.`);
+    return { ok: true, worker: found.worker.name, trigger: watch.name, tracked: res.tracked.length };
   }
 
   removeTrigger(caller: OrgCaller, id: string): Result {
@@ -4789,8 +4825,7 @@ export class OrgService {
     if (!teams?.pushCode) return { ok: false, error: 'Teams can’t push code on this server.' };
     const task = teams.list().tasks.find((t) => t.id === taskId);
     if (!task) return { ok: false, error: 'No team task with that id.' };
-    const own = !!caller.slackUserId && task.requestedBy?.slackUserId === caller.slackUserId;
-    if (!own && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can push its code.' };
+    if (!this.askedForTask(task, caller)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can push its code.' };
     if (!task.code) return { ok: false, error: 'This task changed no code.' };
     const pushed: Array<{ repo: string; url?: string }> = [];
     const failed: Array<{ repo: string; error: string }> = [];

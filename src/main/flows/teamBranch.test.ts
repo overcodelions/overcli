@@ -222,6 +222,21 @@ describe('a team task branch across a workspace', () => {
     expect(git(remote, ['rev-parse', code.branch])).toBe(git(overcli, ['rev-parse', code.branch]));
   });
 
+  it('does not run a hook planted in the repo when it pushes', () => {
+    const remote = path.join(sandbox, 'remote-hook.git');
+    git(sandbox, ['init', '--bare', remote]);
+    git(overcli, ['remote', 'add', 'origin', remote]);
+    const res = openTaskBranch({ taskId: 't-hook', title: 'Hook', repos: [{ name: 'overcli', projectPath: overcli }] });
+    if (!res.ok || !res.code) throw new Error('no code');
+    const repo = res.code.repos[0];
+    const common = path.resolve(repo.worktreePath, git(repo.worktreePath, ['rev-parse', '--git-common-dir']));
+    fs.mkdirSync(path.join(common, 'hooks'), { recursive: true });
+    const hook = path.join(common, 'hooks', 'pre-push');
+    fs.writeFileSync(hook, '#!/bin/sh\ntouch "$0.ran"\n', { mode: 0o755 });
+    expect(pushTaskBranch(res.code, repo, 'Hook').ok).toBe(true);
+    expect(fs.existsSync(`${hook}.ran`)).toBe(false);
+  });
+
   it('stops on a conflict without leaving the task branch half-merged', () => {
     const res = openTaskBranch({ taskId: 't3', title: 'Clash', repos: [{ name: 'overcli', projectPath: overcli }] });
     if (!res.ok || !res.code) throw new Error('no code');
