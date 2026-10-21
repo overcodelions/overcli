@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { createControlPlane, listenControlPlane, parseCadence } from './controlPlane';
+import { bearer, createControlPlane, listenControlPlane, parseCadence } from './controlPlane';
 import { parseArgs, parseControlAddress } from './args';
 import type { OrgService } from '../main/org/orgService';
 import type { OrgCaller } from '../shared/org/policy';
@@ -528,5 +528,26 @@ describe('process from a picture', () => {
 
   it('has no such route on a host without processes', async () => {
     expect(await (await fetch(`${base}/api/processes/draft-from-image`, { method: 'POST', headers: { Authorization: 'Bearer ocli_good' }, body: '{}' })).status).toBe(404);
+  });
+});
+
+describe('bearer', () => {
+  const of = (authorization?: string) => bearer({ headers: authorization === undefined ? {} : { authorization } });
+
+  it('reads the token after Bearer, however it is spaced or cased', () => {
+    expect(of('Bearer ocli_abc')).toBe('ocli_abc');
+    expect(of('  bearer \t ocli_abc  ')).toBe('ocli_abc');
+    expect(of(undefined)).toBeUndefined();
+    expect(of('Bearer')).toBeUndefined();
+    expect(of('Bearer    ')).toBeUndefined();
+    expect(of('Bearerocli_abc')).toBeUndefined();
+    expect(of('Basic ocli_abc')).toBeUndefined();
+  });
+
+  it('answers at once for a header of nothing but spaces', () => {
+    const started = Date.now();
+    of(`Bearer${' '.repeat(100_000)}\n`);
+    of(`Bearer${' \t'.repeat(50_000)}x\u2028`);
+    expect(Date.now() - started).toBeLessThan(200);
   });
 });

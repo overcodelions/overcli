@@ -120,11 +120,14 @@ function readBody(req: http.IncomingMessage, limit = MAX_BODY_BYTES): Promise<un
   });
 }
 
-function bearer(req: http.IncomingMessage): string | undefined {
+export function bearer(req: Pick<http.IncomingMessage, 'headers'>): string | undefined {
   const h = req.headers.authorization;
   if (!h) return undefined;
-  const m = /^Bearer\s+(.+)$/i.exec(h.trim());
-  return m?.[1].trim();
+  // A prefix check, not a regex: `\s+(.+)` both take spaces, which a long
+  // header of them makes slow.
+  const value = h.trim();
+  if (value.length <= 7 || value.slice(0, 6).toLowerCase() !== 'bearer' || !/\s/.test(value[6])) return undefined;
+  return value.slice(7).trim() || undefined;
 }
 
 const ASSET_HEADERS = {

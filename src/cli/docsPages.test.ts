@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DOCS_JS, docsHref, renderDocsPage } from './docsPages';
+import { DOCS_JS, docsHref, plainText, renderDocsPage } from './docsPages';
 
 describe('the docs at /docs', () => {
   it('maps links between the docs to /docs addresses', () => {
@@ -55,5 +55,11 @@ describe('the docs at /docs', () => {
     expect(overview).not.toContain('language-flow');
     // Section titles come escaped from marked once, not twice.
     expect(overview).not.toContain('&amp;quot;');
+  });
+
+  it('leaves no markup in the text of a heading, even a tag inside a tag', () => {
+    expect(plainText('Run <code>npm test</code> first')).toBe('Run npm test first');
+    expect(plainText('<<b>script>alert(1)<</b>/script>')).not.toMatch(/[<>]/);
+    expect(plainText('a &amp; b')).toBe('a &amp; b');
   });
 });

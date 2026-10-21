@@ -16,7 +16,7 @@
 // and People can list and revoke each one. Codes are random and stored as
 // hashes; pairing secrets live in memory for ten minutes and no longer.
 
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isAdmin, parseOrgPolicy, type OrgCaller, type OrgPolicy, type OrgRole, type OrgSso } from '../../shared/org/policy';
 import { isSlackUserId } from '../../shared/flows/worker';
 
@@ -159,8 +159,8 @@ function sameHash(a: string, b: string): boolean {
 /// 1/I/L to confuse.
 function userCode(): string {
   const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  const bytes = randomBytes(6);
-  const chars = [...bytes].map((b) => alphabet[b % alphabet.length]);
+  // randomInt, not a byte mod 31: that favours the first few letters.
+  const chars = Array.from({ length: 6 }, () => alphabet[randomInt(alphabet.length)]);
   return `${chars.slice(0, 3).join('')}-${chars.slice(3).join('')}`;
 }
 

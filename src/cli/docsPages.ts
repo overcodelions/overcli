@@ -70,7 +70,10 @@ function readPage(dir: string, p: (typeof PAGES)[number]): string | null {
   }
 }
 
-const slugify = (text: string) => text.replace(/<[^>]+>/g, '').toLowerCase().replace(/&[a-z]+;/g, '').replace(/[^\w\s-]/g, '').trim().replace(/\s/g, '-');
+/// Rendered HTML's text: tags out, and any `<` or `>` left by a tag inside a
+/// tag (`<<b>i>`) with them, so nothing that reads as markup survives.
+export const plainText = (html: string): string => html.replace(/<[^>]*>/g, '').replace(/[<>]/g, '');
+const slugify = (text: string) => plainText(text).toLowerCase().replace(/&[a-z]+;/g, '').replace(/[^\w\s-]/g, '').trim().replace(/\s/g, '-');
 const href = (p: (typeof PAGES)[number]) => `/docs${p.slug ? `/${p.slug}` : ''}`;
 
 // GitHub's alert syntax (> [!NOTE], > [!WARNING]…), so the same Markdown
@@ -96,7 +99,7 @@ export function renderDocsPage(urlPath: string): string | null {
     // the h2s become the page's own contents.
     .replace(/<h([23])>(.+?)<\/h\1>/g, (_m, level: string, text: string) => {
       const id = slugify(text);
-      if (level === '2') sections.push({ id, text: text.replace(/<[^>]+>/g, '') });
+      if (level === '2') sections.push({ id, text: plainText(text) });
       return `<h${level} id="${id}">${text}</h${level}>`;
     })
     .replace(/<blockquote>\s*<p>\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/g, (_m, kind: string) =>
