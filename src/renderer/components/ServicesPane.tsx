@@ -1557,6 +1557,16 @@ function Trouble({
       </span>
     );
   }
+  if (runtime.status === 'stopped' && runtime.stopping) {
+    return (
+      <span
+        className="flex-shrink-0 truncate text-[10px] text-ink-faint"
+        title="Waiting for it to let go of its port"
+      >
+        stopping…
+      </span>
+    );
+  }
   if (runtime.status === 'starting') {
     return (
       <span

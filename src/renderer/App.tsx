@@ -40,6 +40,7 @@ import { SubagentDrawer } from './components/SubagentDrawer';
 import { ServiceLogDrawer } from './components/ServiceLogDrawer';
 import { TerminalDrawer } from './components/TerminalDrawer';
 import { useTerminalStore } from './terminalStore';
+import { useExplorerPopoutStore } from './explorerPopout';
 import { useServicesStore } from './servicesStore';
 import { FileEditorPane } from './components/FileEditorPane';
 import { CompareView } from './components/CompareView';
@@ -196,6 +197,9 @@ export function App() {
 
   // Shells left running in the terminal drawer, picked back up after a reload.
   useEffect(() => useTerminalStore.getState().init(), []);
+
+  // Explorers in windows of their own, and their tabs coming back on close.
+  useEffect(() => useExplorerPopoutStore.getState().init(), []);
 
   // Re-check which finished runs still have unreviewed work when the window
   // regains focus — reviewing means leaving this app, so coming back is when

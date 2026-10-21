@@ -39,6 +39,8 @@ import { quoteForQuestion, seedActiveComposer } from '../composerTarget';
 import { isEverydayProject, isProseDocumentPath } from '@shared/everydayProjects';
 import { isPathAtOrUnder, isPathUnder } from '@shared/pathScope';
 import { flowRunPaneIsOnScreen } from '../fileEditorRoot';
+import { useExplorerPopoutStore } from '../explorerPopout';
+import { isPopoutWindow } from '../popoutWindow';
 
 // Feature flag: route the editable file view through CodeMirror 6.
 // The old layered textarea+pre `Editor` lower in this file has a known
@@ -921,6 +923,12 @@ export const FileEditorPane = memo(function FileEditorPane({
   // Dismiss the file menu on an outside click or Escape, matching the tab
   // strip's overflow menu below.
   const closeFileMenu = useCallback(() => setFileMenuOpen(false), []);
+  // Beside a conversation (no override), the editor can move into a window
+  // of its own as an explorer on the conversation's folder. The explorer and
+  // the flow/worker panes pass an override and have their own way out.
+  const popOutExplorer = useExplorerPopoutStore((s) => s.popOut);
+  const fileScopeKey = useStore((s) => s.fileScopeKey);
+  const canPopOut = !rootPathOverride && !!rootPath && !isPopoutWindow;
   useMenuDismiss(fileMenuOpen, closeFileMenu, fileMenuRef);
 
   // A new file closes the menu: it names the file it was opened on.
@@ -1040,6 +1048,16 @@ export const FileEditorPane = memo(function FileEditorPane({
                     }}
                     onError={setError}
                   />
+                  {canPopOut && (
+                    <FileMenuItem
+                      label="Open in its own window"
+                      hint="these tabs, with the folder's tree"
+                      onClick={() => {
+                        setFileMenuOpen(false);
+                        if (rootPath) void popOutExplorer(rootPath, fileScopeKey);
+                      }}
+                    />
+                  )}
                   {canRevert && (
                     <>
                       <div className="h-px bg-card my-1 mx-1.5" />
@@ -1376,8 +1394,8 @@ function AskToEditBar({
   const streamed = useStore((s) => (requestId ? s.documentRevisions[requestId] : undefined));
   const askAboutDocument = useStore((s) => s.askAboutDocument);
   // With no project at all there is no chat to open, so the door is hidden
-  // rather than offered and ignored.
-  const canAskAbout = useStore((s) => s.projects.length > 0);
+  // rather than offered and ignored. Nor is there one in a popped-out window.
+  const canAskAbout = useStore((s) => s.projects.length > 0) && !isPopoutWindow;
   const clearRevision = useStore((s) => s.clearDocumentRevision);
 
   useEffect(() => {

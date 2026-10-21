@@ -6,6 +6,7 @@ import { FileEditorPane } from './FileEditorPane';
 import { CompareView } from './CompareView';
 import { nextComparePick } from '../comparePick';
 import { ResizableDivider } from './ResizableDivider';
+import { useExplorerPopoutStore } from '../explorerPopout';
 
 const TREE_MIN = 200;
 const TREE_MAX = 520;
@@ -22,8 +23,18 @@ interface BranchInfo {
 /// editor on the right, rooted at the project or workspace the user picked
 /// from the sidebar. Lets the user read and edit without needing to open
 /// a conversation first.
-export function ExplorerPane() {
+///
+/// `popout` is the explorer drawn by its own window (ExplorerWindow): there is
+/// nothing to close back to, no sheet host for a new document, and the tree
+/// width it's dragged to stays with that window.
+export function ExplorerPane({ popout = false }: { popout?: boolean } = {}) {
   const rootPath = useStore((s) => s.explorerRootPath);
+  // This root's explorer is in its own window; drawn here too, the same
+  // file would be open for editing twice.
+  const poppedOut = useExplorerPopoutStore((s) => !popout && !!rootPath && rootPath in s.out);
+  const popOutExplorer = useExplorerPopoutStore((s) => s.popOut);
+  const showPopout = useExplorerPopoutStore((s) => s.show);
+  const popIn = useExplorerPopoutStore((s) => s.popIn);
   const openFilePath = useStore((s) => s.openFilePath);
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
@@ -114,11 +125,32 @@ export function ExplorerPane() {
     };
   }, [rootPath, openFilePath]);
 
+  const onClose = popout ? undefined : closeExplorer;
+
   if (!rootPath) {
     return (
       <div className="h-full flex flex-col">
-        <ExplorerHeader onClose={closeExplorer} />
+        <ExplorerHeader actions={{ onClose }} />
         <ExplorerLanding />
+      </div>
+    );
+  }
+
+  if (poppedOut) {
+    return (
+      <div className="flex flex-col flex-1 h-full min-h-0 min-w-0">
+        <ExplorerHeader actions={{ onClose }} />
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-[12px] text-ink-faint">
+          <span>This explorer is open in its own window.</span>
+          <div className="flex gap-2">
+            <button className="svc-btn" onClick={() => showPopout(rootPath)}>
+              Show window
+            </button>
+            <button className="svc-btn" onClick={() => popIn(rootPath)}>
+              Bring back here
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -131,6 +163,9 @@ export function ExplorerPane() {
   const newDocument = () => {
     if (rootPath) openSheet({ type: 'newDocument', dirPath: rootPath });
   };
+  const actions: HeaderActionsProps = popout
+    ? {}
+    : { onClose, onNewDocument: newDocument, onPopOut: () => void popOutExplorer(rootPath) };
 
   return (
     // h-full + flex-1 covers both mount sites: in App.tsx's <main
@@ -138,11 +173,11 @@ export function ExplorerPane() {
     // fixed-width right pane we get sized by h-full / h:100%.
     <div className="flex flex-col flex-1 h-full min-h-0 min-w-0">
       {branch?.isRepo && branch.currentBranch ? (
-        <BranchBanner info={branch} onClose={closeExplorer} onNewDocument={newDocument} />
+        <BranchBanner info={branch} actions={actions} />
       ) : branch ? (
-        <FolderBanner onClose={closeExplorer} onNewDocument={newDocument} />
+        <FolderBanner actions={actions} />
       ) : (
-        <ExplorerHeader onClose={closeExplorer} onNewDocument={newDocument} />
+        <ExplorerHeader actions={actions} />
       )}
       <div className="flex flex-1 min-h-0 min-w-0">
       <div
@@ -159,7 +194,11 @@ export function ExplorerPane() {
       <ResizableDivider
         width={treeWidth}
         onChange={setTreeWidth}
-        onCommit={(w) => void saveSettings({ ...settings, explorerTreeWidth: w })}
+        onCommit={(w) => {
+          // A popped-out window's settings are a copy from when it opened;
+          // saving them would undo whatever changed in the main window since.
+          if (!popout) void saveSettings({ ...settings, explorerTreeWidth: w });
+        }}
         minWidth={TREE_MIN}
         maxWidth={TREE_MAX}
         side="left"
@@ -194,15 +233,7 @@ export function ExplorerPane() {
 /// Thin read-only strip at the top of the explorer showing the current
 /// git branch and dirty-file stats. Matches the `⎇ branch` treatment used
 /// in the conversation header so the two views feel consistent.
-function BranchBanner({
-  info,
-  onClose,
-  onNewDocument,
-}: {
-  info: BranchInfo;
-  onClose: () => void;
-  onNewDocument?: () => void;
-}) {
+function BranchBanner({ info, actions }: { info: BranchInfo; actions: HeaderActionsProps }) {
   const dirty = info.changeCount > 0;
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
@@ -223,60 +254,73 @@ function BranchBanner({
       ) : (
         <span className="text-ink-faint">clean</span>
       )}
-      {onNewDocument && <NewDocumentButton onClick={onNewDocument} />}
-      <CloseButton onClose={onClose} />
+      <HeaderActions {...actions} />
     </div>
   );
 }
 
-function FolderBanner({ onClose, onNewDocument }: { onClose: () => void; onNewDocument?: () => void }) {
+function FolderBanner({ actions }: { actions: HeaderActionsProps }) {
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
       <span className="text-ink-muted">Folder</span>
       <span className="text-ink-faint">Not a git repo. Overcli will preview safe files and open blocked files externally.</span>
-      {onNewDocument && <NewDocumentButton onClick={onNewDocument} />}
-      <CloseButton onClose={onClose} />
+      <HeaderActions {...actions} />
     </div>
   );
 }
 
-function ExplorerHeader({ onClose, onNewDocument }: { onClose: () => void; onNewDocument?: () => void }) {
+function ExplorerHeader({ actions }: { actions: HeaderActionsProps }) {
   return (
     <div className="flex items-center px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
       <span className="text-ink-muted">Explorer</span>
-      {onNewDocument && <NewDocumentButton onClick={onNewDocument} />}
-      <CloseButton onClose={onClose} />
+      <HeaderActions {...actions} />
     </div>
   );
 }
 
-/// `ml-auto` here rather than on `CloseButton`: the first auto-margin in a
-/// flex row absorbs the free space, so this pins the pair to the right and
-/// the close button sits flush beside it.
-function NewDocumentButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title="Write a document from a description, or start a blank one"
-      className="ml-auto rounded px-2 py-0.5 text-[11px] text-ink-muted hover:text-ink hover:bg-card"
-    >
-      + Document
-    </button>
-  );
+interface HeaderActionsProps {
+  onClose?: () => void;
+  onNewDocument?: () => void;
+  onPopOut?: () => void;
 }
 
-function CloseButton({ onClose }: { onClose: () => void }) {
+/// The header's right-hand run, pinned there as one group by its `ml-auto`.
+/// Each button is optional — a popped-out explorer shows none of them.
+function HeaderActions({ onClose, onNewDocument, onPopOut }: HeaderActionsProps) {
   return (
-    <button
-      type="button"
-      onClick={onClose}
-      title="Close explorer"
-      aria-label="Close explorer"
-      className="ml-auto flex h-5 w-5 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card"
-    >
-      ×
-    </button>
+    <div className="ml-auto flex items-center gap-1">
+      {onNewDocument && (
+        <button
+          type="button"
+          onClick={onNewDocument}
+          title="Write a document from a description, or start a blank one"
+          className="rounded px-2 py-0.5 text-[11px] text-ink-muted hover:text-ink hover:bg-card"
+        >
+          + Document
+        </button>
+      )}
+      {onPopOut && (
+        <button
+          type="button"
+          onClick={onPopOut}
+          title="Move this explorer and its open files into a window of its own"
+          className="rounded px-2 py-0.5 text-[11px] text-ink-muted hover:text-ink hover:bg-card"
+        >
+          Pop out ↗
+        </button>
+      )}
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          title="Close explorer"
+          aria-label="Close explorer"
+          className="flex h-5 w-5 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card"
+        >
+          ×
+        </button>
+      )}
+    </div>
   );
 }
 

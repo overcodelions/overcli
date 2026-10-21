@@ -296,6 +296,9 @@ export interface ServiceRuntime {
   /// is not polled forever — each attempt is a request the app logs, and a
   /// secured app logs a stack trace for every 401.
   probeGaveUp?: boolean;
+  /// While `stopped`: the process was signalled but it, or its ports, have
+  /// not let go yet. A start pressed now waits for them.
+  stopping?: boolean;
 }
 
 /// A port held by something, and by whom — for the sentence shown when two

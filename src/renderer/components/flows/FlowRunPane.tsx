@@ -100,6 +100,9 @@ export function FlowRunPane({
   const removeRun = useFlowsStore((s) => s.removeRun);
   const openSheet = useStore((s) => s.openSheet);
   const newConversationInWorktree = useStore((s) => s.newConversationInWorktree);
+  const newConversationInWorkspaceWorktrees = useStore(
+    (s) => s.newConversationInWorkspaceWorktrees,
+  );
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -206,8 +209,30 @@ export function FlowRunPane({
   // Attach a brand-new conversation to this run's worktree and jump to
   // it. `selectConversation` flips detailMode back to 'conversation', so
   // the run stays the active one and Flows returns here.
+  const workspaceTrees = run.workspaceWorktrees ?? [];
+  const canChatHere =
+    !!run.sourceProjectPath && (!!run.worktreePath || workspaceTrees.length > 0);
   const newChatHere = async () => {
-    if (!run.worktreePath || !run.sourceProjectPath) return;
+    if (!run.sourceProjectPath) return;
+    if (!run.worktreePath && workspaceTrees.length > 0) {
+      // A workspace run: one tree per repo, fronted by the run's coordinator
+      // root (its `projectPath`), which is where the chat works too.
+      const conv = await newConversationInWorkspaceWorktrees({
+        workspaceRootPath: run.sourceProjectPath,
+        coordinatorRootPath: run.projectPath,
+        worktrees: workspaceTrees.map((t) => ({ name: t.name, worktreePath: t.worktreePath })),
+        branchName: workspaceTrees[0]?.branchName,
+        baseBranch: run.baseBranch,
+        name: flowRunTitle(run).slice(0, 60),
+      });
+      if (!conv) {
+        window.alert(
+          `Couldn't find the workspace this run came from (${run.sourceProjectPath}). Open it as a workspace to chat in its worktrees.`,
+        );
+      }
+      return;
+    }
+    if (!run.worktreePath) return;
     const conv = await newConversationInWorktree({
       projectPath: run.sourceProjectPath,
       worktreePath: run.worktreePath,
@@ -286,9 +311,9 @@ export function FlowRunPane({
             {/* Keep working in this run's worktree from a fresh chat —
                 the escape hatch for when the run's own context is spent
                 but the tree still has work left in it. Single-project
-                worktree runs only: a workspace run has one worktree per
-                member, with no single cwd to hand a conversation. */}
-            {run.worktreePath && run.sourceProjectPath && (
+                worktree runs chat in that tree; a workspace run's chat works
+                in the run's coordinator root, across every member's tree. */}
+            {canChatHere && (
               <button
                 onClick={newChatHere}
                 className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50 whitespace-nowrap"

@@ -256,6 +256,7 @@ import {
   Backend,
   MainToRendererEvent,
   SlackStatus,
+  PersistedScopeTabs,
   MenuCommand,
   ProjectPreviewCommand,
   ProjectPreviewHintsResult,
@@ -1474,7 +1475,8 @@ export function registerIpc(): void {
       // The walk's own cache would otherwise hand the renderer the same
       // stale listing it already has.
       fileListCache.delete(key);
-      emitToRenderer({ type: 'fileTreeChanged', root: key });
+      // Every window: an explorer popped out into its own window watches too.
+      emitToAllWindows({ type: 'fileTreeChanged', root: key });
     });
   });
   ipcMain.handle('fs:unwatchTree', (_e, root: string) => {
@@ -2413,6 +2415,19 @@ export function registerIpc(): void {
     const win = terminalWindows.get(id);
     if (win && !win.isDestroyed()) win.close();
   });
+  ipcMain.handle('explorer:popOut', (_e, { root, tabs }: { root: string; tabs?: PersistedScopeTabs }) =>
+    popOutExplorer(root, tabs),
+  );
+  ipcMain.handle('explorer:popIn', (_e, { root }: { root: string }) => {
+    const entry = explorerWindows.get(root);
+    if (entry && !entry.win.isDestroyed()) entry.win.close();
+  });
+  ipcMain.handle('explorer:initialTabs', (_e, { root }: { root: string }) => explorerWindows.get(root)?.tabs ?? null);
+  ipcMain.handle('explorer:reportTabs', (_e, { root, tabs }: { root: string; tabs: PersistedScopeTabs }) => {
+    const entry = explorerWindows.get(root);
+    if (entry) entry.tabs = tabs;
+  });
+  ipcMain.handle('explorer:list', () => [...explorerWindows.keys()]);
 
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
@@ -4436,12 +4451,24 @@ function popOutTerminal(id: string): { ok: true } | { ok: false; error: string }
   if (!ptyManager?.list().some((t) => t.id === id)) {
     return { ok: false, error: 'That terminal has already closed.' };
   }
+  const win = createPopoutWindow({ terminal: id }, { width: 960, height: 600, minWidth: 420, minHeight: 240, title: 'Terminal' });
+  terminalWindows.set(id, win);
+  win.on('closed', () => {
+    terminalWindows.delete(id);
+    emitToAllWindows({ type: 'terminalPoppedOut', id, out: false });
+  });
+  emitToAllWindows({ type: 'terminalPoppedOut', id, out: true });
+  return { ok: true };
+}
+
+/// A second overcli window: the same renderer bundle, told by its query
+/// string which one thing to show (see the renderer's main.tsx).
+function createPopoutWindow(
+  query: Record<string, string>,
+  size: { width: number; height: number; minWidth: number; minHeight: number; title: string },
+): BrowserWindow {
   const win = new BrowserWindow({
-    width: 960,
-    height: 600,
-    minWidth: 420,
-    minHeight: 240,
-    title: 'Terminal',
+    ...size,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#1c1c21',
     webPreferences: {
@@ -4451,22 +4478,59 @@ function popOutTerminal(id: string): { ok: true } | { ok: false; error: string }
       sandbox: true,
     },
   });
-  terminalWindows.set(id, win);
   if (isDev && DEV_URL) {
     const url = new URL(DEV_URL);
-    url.searchParams.set('terminal', id);
+    for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
     void win.loadURL(url.toString());
   } else {
-    void win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), { query: { terminal: id } });
+    void win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'), { query });
   }
   win.webContents.on('did-finish-load', () => {
     if (!win.isDestroyed()) win.webContents.setZoomFactor(Store.load().settings.uiScale);
   });
-  win.on('closed', () => {
-    terminalWindows.delete(id);
-    emitToAllWindows({ type: 'terminalPoppedOut', id, out: false });
+  return win;
+}
+
+/// Explorers moved into windows of their own, by root path. `tabs` starts as
+/// what the main window handed over and follows the window's own tabs after,
+/// so closing it gives back what was open at the end.
+const explorerWindows = new Map<string, { win: BrowserWindow; tabs: PersistedScopeTabs | null }>();
+
+/// A folder's tree and editor in their own overcli window — code on one
+/// screen, the conversation on another. One window per root; asking again
+/// just brings it forward.
+function popOutExplorer(root: string, tabs?: PersistedScopeTabs): { ok: true } | { ok: false; error: string } {
+  const existing = explorerWindows.get(root);
+  if (existing && !existing.win.isDestroyed()) {
+    existing.win.show();
+    existing.win.focus();
+    return { ok: true };
+  }
+  if (!isPathUnderRegisteredRoot(root)) return { ok: false, error: 'That folder is not in a project.' };
+  const win = createPopoutWindow(
+    { explorer: root },
+    { width: 1200, height: 800, minWidth: 560, minHeight: 320, title: path.basename(root) },
+  );
+  explorerWindows.set(root, { win, tabs: tabs ?? null });
+  // The window blocks its own unload while a file has unsaved edits; the
+  // question belongs here, since a renderer can't ask during unload.
+  win.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Discard changes', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: 'Close with unsaved changes?',
+      detail: 'Edits that have not been saved in this window will be lost.',
+    });
+    if (choice === 0) event.preventDefault();
   });
-  emitToAllWindows({ type: 'terminalPoppedOut', id, out: true });
+  win.on('closed', () => {
+    const last = explorerWindows.get(root)?.tabs ?? undefined;
+    explorerWindows.delete(root);
+    emitToAllWindows({ type: 'explorerPoppedOut', root, out: false, tabs: last });
+  });
+  emitToAllWindows({ type: 'explorerPoppedOut', root, out: true });
   return { ok: true };
 }
 
