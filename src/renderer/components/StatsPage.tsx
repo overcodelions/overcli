@@ -822,8 +822,8 @@ function ToolPanel({ recent, totalCost }: { recent: RecentUsage; totalCost: numb
   );
 }
 
-/// The few changes worth making, each with what it's about and a button that
-/// does it where overcli can.
+/// The few changes worth making, grouped by kind so each piece of advice is
+/// said once, with a row per session and a button where overcli can act.
 function Recommendations({
   recs,
   nameFor,
@@ -838,82 +838,136 @@ function Recommendations({
   turbo: (convId: string) => void;
 }) {
   if (recs.length === 0) return null;
+  const kinds = REC_KINDS.filter((k) => recs.some((r) => r.kind === k));
+  const total = recs.reduce((sum, r) => sum + r.impactUSD, 0);
   return (
-    <div className="mb-3 rounded-lg bg-card border border-card divide-y divide-card">
-      {recs.map((r) => {
-        const conv = convFor(r.sessionId);
-        const name = nameFor(r.sessionId);
-        const { title, body, impact } = describeRecommendation(r, name);
-        const offerTurbo = r.kind === 'mcp-overhead' && r.suggestTurbo && conv && conv.responseMode !== 'turbo';
-        return (
-          <div key={`${r.kind}-${r.sessionId}`} className="flex items-start gap-4 px-4 py-3">
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-medium">{title}</div>
-              <div className="text-[11px] leading-relaxed text-ink-muted mt-0.5">{body}</div>
+    <Panel
+      title="Recommendations"
+      aside={<span className="text-ink-faint tabular-nums">worth ~{fmtUSD(total)} · rough estimates</span>}
+    >
+      <div className="space-y-2">
+        {kinds.map((kind) => (
+          <div key={kind} className="rounded-lg bg-card border border-card border-l-2 border-l-accent/70 overflow-hidden">
+            <div className="px-4 pt-3 pb-2">
+              <div className="text-xs font-medium">{REC_COPY[kind].title}</div>
+              <div className="text-[11px] text-ink-muted mt-0.5">{REC_COPY[kind].advice}</div>
             </div>
-            <div className="shrink-0 text-right">
-              <div className="text-xs font-medium tabular-nums">~{fmtUSD(r.impactUSD)}</div>
-              <div className="text-[10px] text-ink-faint">{impact}</div>
-            </div>
-            {conv && (
-              <div className="shrink-0 flex items-center gap-1.5">
-                {offerTurbo && (
-                  <button
-                    className="text-[11px] px-2 py-1 rounded bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
-                    onClick={() => turbo(conv.id)}
-                    title="Low effort, no MCP — from the next reply on"
-                  >
-                    Switch to Turbo
-                  </button>
-                )}
-                <button
-                  className="text-[11px] px-2 py-1 rounded border border-card hover:bg-card-strong/60 transition-colors"
-                  onClick={() => open(conv.id)}
-                >
-                  Open
-                </button>
-              </div>
-            )}
+            {recs
+              .filter((r) => r.kind === kind)
+              .map((r) => (
+                <RecommendationRow
+                  key={`${r.kind}-${r.sessionId}-${r.kind === 'chatty-tool' ? r.tool : ''}`}
+                  rec={r}
+                  sessionName={nameFor(r.sessionId)}
+                  conv={convFor(r.sessionId)}
+                  open={open}
+                  turbo={turbo}
+                />
+              ))}
           </div>
-        );
-      })}
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+const REC_KINDS: RecentRecommendation['kind'][] = ['long-session', 'mcp-overhead', 'chatty-tool'];
+
+const REC_COPY: Record<RecentRecommendation['kind'], { title: string; advice: string; impact: string }> = {
+  'long-session': {
+    title: 'Long conversations, never compacted',
+    advice: 'Every reply re-reads the whole conversation. Compact, or start a fresh session once a task is done.',
+    impact: 'could save',
+  },
+  'mcp-overhead': {
+    title: 'Tool definitions nobody used',
+    advice: "Every reply re-sends MCP tool definitions these sessions barely called. Turbo drops MCP; or disconnect servers the work doesn't need.",
+    impact: 'could save',
+  },
+  'chatty-tool': {
+    title: 'Heavy tool results',
+    advice: 'Results stay in context and get re-read every reply. Fetch through a subagent that hands back a summary, or ask for narrower results.',
+    impact: 'spent carrying',
+  },
+};
+
+function RecommendationRow({
+  rec: r,
+  sessionName,
+  conv,
+  open,
+  turbo,
+}: {
+  rec: RecentRecommendation;
+  sessionName: string;
+  conv: { id: string; responseMode?: ResponseMode } | undefined;
+  open: (convId: string) => void;
+  turbo: (convId: string) => void;
+}) {
+  const offerTurbo = r.kind === 'mcp-overhead' && r.suggestTurbo && conv && conv.responseMode !== 'turbo';
+  return (
+    <div className="flex items-center gap-4 px-4 py-2 border-t border-card">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs truncate">
+          {r.kind === 'chatty-tool' ? (
+            <>
+              {r.tool}
+              {r.mcp && <span className="ml-2 text-[10px] uppercase tracking-wider text-ink-faint">mcp</span>}
+            </>
+          ) : (
+            sessionName
+          )}
+        </div>
+        <div className="text-[11px] text-ink-faint tabular-nums truncate">{recommendationMetric(r, sessionName)}</div>
+      </div>
+      <div className="w-20 shrink-0 text-right">
+        <div className="text-xs font-medium tabular-nums">~{fmtUSD(r.impactUSD)}</div>
+        <div className="text-[10px] text-ink-faint">{REC_COPY[r.kind].impact}</div>
+      </div>
+      <div className="w-[136px] shrink-0 flex items-center justify-end gap-1.5">
+        {conv ? (
+          <>
+            {offerTurbo && (
+              <button
+                className="text-[11px] px-2 py-1 rounded bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+                onClick={() => turbo(conv.id)}
+                title="Low effort, no MCP — from the next reply on"
+              >
+                Turbo
+              </button>
+            )}
+            <button
+              className="text-[11px] px-2 py-1 rounded border border-card hover:bg-card-strong/60 transition-colors"
+              onClick={() => open(conv.id)}
+            >
+              Open
+            </button>
+          </>
+        ) : (
+          <span className="text-[11px] text-ink-faint" title="Ran as a worker, a flow, or outside overcli — no chat to open">
+            worker or CLI
+          </span>
+        )}
+      </div>
     </div>
   );
 }
 
-function describeRecommendation(
-  r: RecentRecommendation,
-  name: string,
-): { title: string; body: string; impact: string } {
+/// The numbers that make the case, on one scannable line.
+function recommendationMetric(r: RecentRecommendation, sessionName: string): string {
   switch (r.kind) {
-    case 'mcp-overhead':
-      return {
-        title: 'Tool definitions this session never used',
-        body:
-          `${name}: every reply carried ~${fmtCompact(r.baselineTokens)} of system prompt and tool definitions, ` +
-          `but MCP was called ${r.mcpCalls === 0 ? 'not once' : `${r.mcpCalls} time${r.mcpCalls === 1 ? '' : 's'}`} in ${r.turns} replies. ` +
-          (r.suggestTurbo
-            ? 'Turbo drops MCP for this conversation.'
-            : "Disconnecting MCP servers it doesn't need would shrink it. Turbo would too, but it also lowers effort, and this session is making real edits."),
-        impact: 'could save',
-      };
     case 'long-session':
-      return {
-        title: 'Long conversation, never compacted',
-        body:
-          `${name} re-read ~${fmtCompact(r.avgContextTokens)} on each of ${r.turns} replies. ` +
-          `Compacted it would carry ~${fmtCompact(r.compactedTokens)}; once a task is done, a fresh session does the same.`,
-        impact: 'could save',
-      };
+      return `${fmtCompact(r.avgContextTokens)} → ~${fmtCompact(r.compactedTokens)} per reply · ${r.turns} replies`;
+    case 'mcp-overhead':
+      return (
+        `base ${fmtCompact(r.baselineTokens)} · ${r.mcpCalls} MCP call${r.mcpCalls === 1 ? '' : 's'} in ${r.turns} replies` +
+        (r.suggestTurbo ? '' : ' · making edits, so disconnect rather than Turbo')
+      );
     case 'chatty-tool':
-      return {
-        title: `${r.tool}${r.mcp ? ' (MCP)' : ''} results are heavy`,
-        body:
-          `${r.calls} calls put ${fmtCompact(r.resultTokens)} tokens into context (largest ${fmtCompact(r.largestResult)}), ` +
-          `and every later reply re-read them — mostly in ${name}. Have a subagent fetch these and hand back a summary, ` +
-          'or ask for narrower results.',
-        impact: 'spent carrying',
-      };
+      return (
+        `${r.calls} call${r.calls === 1 ? '' : 's'} · ${fmtCompact(r.resultTokens)} added · ` +
+        `largest ${fmtCompact(r.largestResult)} · mostly in ${sessionName}`
+      );
   }
 }
 
