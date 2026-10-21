@@ -70,9 +70,19 @@ function readPage(dir: string, p: (typeof PAGES)[number]): string | null {
   }
 }
 
-/// Rendered HTML's text: tags out, and any `<` or `>` left by a tag inside a
-/// tag (`<<b>i>`) with them, so nothing that reads as markup survives.
-export const plainText = (html: string): string => html.replace(/<[^>]*>/g, '').replace(/[<>]/g, '');
+/// Rendered HTML's text: everything between `<` and `>` dropped, counting
+/// nesting, so a tag inside a tag (`<<b>i>`) leaves nothing that reads as
+/// markup. A scan rather than a regex, which a single pass can't make safe.
+export function plainText(html: string): string {
+  let out = '';
+  let depth = 0;
+  for (const ch of html) {
+    if (ch === '<') depth++;
+    else if (ch === '>') depth = Math.max(0, depth - 1);
+    else if (depth === 0) out += ch;
+  }
+  return out;
+}
 const slugify = (text: string) => plainText(text).toLowerCase().replace(/&[a-z]+;/g, '').replace(/[^\w\s-]/g, '').trim().replace(/\s/g, '-');
 const href = (p: (typeof PAGES)[number]) => `/docs${p.slug ? `/${p.slug}` : ''}`;
 
