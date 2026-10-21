@@ -80,6 +80,8 @@ You can give a team work if you manage one of its members.
 
 **A team takes one task at a time.** Give it another while it's busy and the new task waits as **Up next**, starting when the current one ends. Tasks start in the order they were given. Take a waiting task out of the line from the team's page.
 
+**A member's check is skipped when there's no code to check.** The check after a member's piece is a step marked `only_if_changed: true`, and any flow step can be. It's skipped, with any approval it would have asked for, when the run has changed nothing in its repo (or in any repo of its workspace) since it started but notes. Notes are Markdown (`.md`, `.markdown`) and `.txt` files, except a `.txt` a build, test or server reads: `requirements*.txt`, anything under a `requirements/` folder, `constraints*.txt`, `CMakeLists.txt`, `runtime.txt`, `apt.txt`, `packages.txt`, `version.txt`, `robots.txt`, `ads.txt`, `app-ads.txt`, `security.txt`, and anything under a `testdata/`, `test_data/`, `fixtures/`, `__snapshots__/`, `snapshots/`, `golden/` or `resources/` folder count as code. Edits, commits and new files count; files your `.gitignore` covers don't. Renames and deletions count by every path they touch, so `auth.ts` renamed to `auth.md`, or deleted, is a code change. When the change can't be measured (the run has no git baseline, or git fails), the step runs.
+
 **Making a team.** There are three ways:
 
 - **On the console:** **Teams → Make a team**. Say what the team does, then pick its members from the workers you manage, or press **Suggest a crew** and let overcli pick them and write what each does. If the team needs a job none of your workers covers, the suggestion adds a new member. That member is hired when you make the team: hired straight away if it fits your allowance, or sent to an approver and added to the team once approved. **Skip** drops it. Choose where it checks in with you:
@@ -112,13 +114,22 @@ Who owns what:
 - **Each stage's lead** answers its team's questions, approves its plan and signs off what leaves it.
 - **The person who put an item in** hears in Slack each time it moves, and when it finishes or stops.
 
+**Who can see and start it.** Set under **Owner** in the editor:
+
+- **Private**: only its owner, whoever made it, and admins. This is where every new process starts.
+- **A team**: the members of the teams you pick (the org's teams on **Rules, spending and sign-in**), as they are at the time. Someone who joins the team can start it; someone who leaves can't.
+- **Certain people**: the people you name, and anyone in a group you add.
+- **Everyone**: anyone in the org. Processes made before this setting existed start here, as they worked before.
+
+The person who made a process always keeps access, even after it's handed to another owner. People in its stages see the work that reaches them, but can only start items if they're in its audience. Anyone else doesn't see the process at all: it's not on the Processes page, `/idea` doesn't know it, and `@overcli` never routes a request into it. Schedules, watches and posted events keep putting work in whatever the setting, because they were set up by someone who steers the process. Someone who put an item in before the process was narrowed still follows that item.
+
 Work comes in from `/idea` in Slack (`/idea Idea to launch: CSV export for reports`; `/idea` alone shows where yours are), from `@overcli` (`@overcli idea: CSV export`, `@overcli Bug report to fix: the export button is greyed out`, or a request the router judges to be a new item for a process), from **Put something in** on the console, from every new message in a Slack channel, or from events posted to a secret URL. It can also start items **on a schedule** (every week, every weekday, the 1st of each month, the first day of each quarter: "Quarterly roadmap · Jan 1, 2027"), or **watch a tool**: each new ticket, deal or row a tool call returns goes in, checked every few minutes from inside your network. Set these up under **How work comes in** on the process's page.
 
 A team or worker stage can **wait** (start two weeks after the stage before, when there's adoption to read) and **repeat** (weekly, four times, each run building on the last) before the item moves on. The board says when a waiting stage starts; its owner can **Start now**.
 
 On the board, a card marked **Your call** is waiting on your decision and **Stuck** means a team stage failed or was cancelled. "How are we doing?" to @overcli lists the decisions waiting on you.
 
-In the desktop app you can build a process from your own teams and try it on your own, then **Publish to your org**. Publish its teams first.
+In the desktop app you can build a process from your own teams and try it on your own, then **Publish to your org**. Publish its teams first. A process published for the first time is private in the org until its owner opens it up.
 
 ## Handing over
 

@@ -1,4 +1,5 @@
-// The server's door to remote tools: workers never hold a tool's credentials.
+// The server's door to remote tools: a tool's credentials stay out of the
+// workers' tools and config.
 //
 // Without it, a remote MCP server is installed in the CLIs' config with its
 // real address and its bearer token (a pasted one, or a sign-in's access
@@ -15,6 +16,10 @@
 //
 // Turned on for a hosted server (OVERCLI_TOOL_GATEWAY=1). Turning it off
 // puts the real entries back on the next start (`restoreToolsFromVault`).
+//
+// Not a wall: the vault and its key are files the server's user can read, and
+// so can a worker running shell commands as that user until workers run as a
+// user of their own (deploy/docs/security.md).
 
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
@@ -32,6 +37,10 @@ const FORWARD_UP = ['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-ve
 const FORWARD_DOWN = ['content-type', 'mcp-session-id', 'mcp-protocol-version', 'cache-control'];
 /// Why a call on the shared config's key is refused.
 const BOX_REFUSAL = 'Refused: this tool is called through the server, and this call came on the shared key rather than a run of its own.';
+/// Why a call on a run key this server never handed out is refused.
+const UNKNOWN_REFUSAL = 'Refused: this call came on a key for a run this server did not start.';
+/// How many runs' keys are remembered as handed out; the oldest go first.
+const MAX_ISSUED = 10_000;
 
 export interface VaultedTool {
   url: string;
@@ -201,6 +210,9 @@ export class ToolGateway {
   private doc: Doc;
   /// Workers seen behind run keys, kept after the runtime lets the run go.
   private readonly known = new Map<string, GatewayCaller>();
+  /// Runs this start handed a key to. A key that checks out for any other
+  /// run was made by something holding the key file, not by this server.
+  private readonly issued = new Set<string>();
 
   constructor(private readonly deps: ToolGatewayDeps) {
     const k = keys(deps.dir());
@@ -241,6 +253,10 @@ export class ToolGateway {
 
   /// A conversation's key, or the box key for configs no run owns.
   keyFor(conversationId?: string): string {
+    if (conversationId && !this.issued.has(conversationId)) {
+      this.issued.add(conversationId);
+      if (this.issued.size > MAX_ISSUED) this.issued.delete(this.issued.values().next().value!);
+    }
     const subject = conversationId ? `c.${conversationId}` : 'b';
     return `${subject}.${createHmac('sha256', this.mac).update(subject).digest('base64url')}`;
   }
@@ -306,7 +322,10 @@ export class ToolGateway {
       const who = this.verify(req.headers.authorization);
       if (!who) return reply(401, { error: 'Not a key this server issued.' });
       const caller = who.conversationId ? this.callerOf(who.conversationId) : undefined;
-      const label = caller?.workerName ?? (who.conversationId ? `run ${who.conversationId.slice(0, 8)}` : 'unattributed');
+      // A run key with no worker behind it and never handed out here: it
+      // may list tools, like the shared key, but never call one.
+      const unknown = !!who.conversationId && !caller && !this.issued.has(who.conversationId);
+      const label = caller?.workerName ?? (who.conversationId ? `${unknown ? 'unknown run' : 'run'} ${who.conversationId.slice(0, 8)}` : 'unattributed');
 
       const chunks: Buffer[] = [];
       let size = 0;
@@ -317,7 +336,7 @@ export class ToolGateway {
       }
       const body = Buffer.concat(chunks);
 
-      const refused = this.checkCalls(name, body, caller, label, !who.conversationId);
+      const refused = this.checkCalls(name, body, caller, label, !who.conversationId ? BOX_REFUSAL : unknown ? UNKNOWN_REFUSAL : null);
       if (refused) return reply(200, refused);
 
       const headers: Record<string, string> = {};
@@ -360,9 +379,10 @@ export class ToolGateway {
 
   /// Every `tools/call` in the body, judged against the caller's scope. The
   /// box key names no run, so it may list tools but never call one: any
-  /// process that can read the config holds it. A refusal is answered as a
-  /// tool error, so the model reads why.
-  private checkCalls(name: string, body: Buffer, caller: GatewayCaller | undefined, label: string, box: boolean): unknown | null {
+  /// process that can read the config holds it. Nor may a run key this
+  /// server never handed out (`refuseAll` says why). A refusal is answered
+  /// as a tool error, so the model reads why.
+  private checkCalls(name: string, body: Buffer, caller: GatewayCaller | undefined, label: string, refuseAll: string | null): unknown | null {
     if (!body.length) return null;
     let parsed: unknown;
     try {
@@ -377,9 +397,9 @@ export class ToolGateway {
       if (m?.method !== 'tools/call' || typeof m.params?.name !== 'string') continue;
       const call = m.params.name;
       const full = `mcp__${mcpServerKey(name)}__${call}`;
-      const allowed = !box && inToolScope(caller?.scopes, full);
+      const allowed = !refuseAll && inToolScope(caller?.scopes, full);
       this.deps.onCall?.({ tool: name, call, who: label, allowed });
-      if (!allowed && !why) why = box ? BOX_REFUSAL : scopeRefusal(caller?.scopes, full, caller?.workerName ?? 'This worker');
+      if (!allowed && !why) why = refuseAll ?? scopeRefusal(caller?.scopes, full, caller?.workerName ?? 'This worker');
     }
     if (!why) return null;
     if (!Array.isArray(parsed)) {

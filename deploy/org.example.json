@@ -23,10 +23,10 @@
   "sso": {
     "issuer": "https://acme.okta.example",
     "clientId": "0oaACMEOVERCLI",
-    "allowedDomains": ["acme.com"],
+    "allowedDomains": ["acme.example"],
     "required": false
   },
-  "people": { "contractor@acme-partner.com": "U0CONTRCT1" },
+  "people": { "contractor@acme-partner.example": "U0CONTRCT1" },
   "fleet": [{ "name": "Sales", "url": "https://overcli-sales.acme.internal" }],
 
   "roles": [

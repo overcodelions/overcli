@@ -2702,8 +2702,10 @@ export function registerIpc(): void {
   ipcMain.handle('processes:save', (_e, { id, name, purpose, about, templateId, codeIn, stages }) => {
     if (!processService) return noProcesses;
     const me = desktopCaller();
-    // A new process is yours; a changed one keeps its owner.
-    return processService.save(me, { ...(id ? { id } : { owner: { name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) } }), name, purpose, about, templateId, ...(codeIn !== undefined ? { codeIn } : {}), stages });
+    // A new process is yours; a changed one keeps its owner. The app has no
+    // audience to pick, so one made here is open to whoever reaches it, as
+    // before; published to an org, it starts private there.
+    return processService.save(me, { ...(id ? { id } : { owner: { name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, access: { who: 'everyone' } }), name, purpose, about, templateId, ...(codeIn !== undefined ? { codeIn } : {}), stages });
   });
   // A process drafted from a picture of one (a data URL, or a file the
   // picker chose), matched against this app's teams and workers. Not saved:
@@ -2721,7 +2723,7 @@ export function registerIpc(): void {
   ipcMain.handle('processes:submit', (_e, { processId, title, brief }) => {
     if (!processService) return noProcesses;
     const me = desktopCaller();
-    const res = processService.submit({ name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, processId, { title, brief, source: 'desktop' });
+    const res = processService.submit({ name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, processId, { title, brief, source: 'desktop', byAdmin: me.admin });
     return res.ok ? { ok: true as const, item: res.item } : res;
   });
   ipcMain.handle('processes:act', (_e, { itemId, action, note, stageIndex }) =>

@@ -1138,6 +1138,40 @@ section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
 .pm-head input.pm-title:hover, .pm-head input.pm-purpose:hover { border-color: var(--line); }
 .pm-head input.pm-title:focus, .pm-head input.pm-purpose:focus { border-color: var(--go); background: var(--panel); box-shadow: none; }
 .pm-owner { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+.acc-btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; margin-left: 6px; padding: 0 12px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); color: var(--ink); font-size: 13px; cursor: pointer; }
+.acc-btn:hover, .acc-btn[aria-expanded="true"] { border-color: var(--go); background: var(--go-soft); }
+.acc-btn > svg:first-child { color: var(--go); }
+.acc-btn > svg:last-child { color: var(--faint); }
+.acc-what { font-weight: 600; }
+.acc-faces { display: inline-flex; }
+.acc-faces > * + * { margin-left: -6px; }
+.acc-faces > * { box-shadow: 0 0 0 2px var(--panel); border-radius: 999px; }
+.acc-pop { position: absolute; right: 0; top: calc(100% + 8px); width: 460px; max-width: calc(100vw - 32px); z-index: 20; display: flex; flex-direction: column; text-align: left; background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32); }
+.acc-pop[hidden] { display: none; }
+.acc-head { padding: 18px 20px 6px; }
+.acc-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.acc-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+.acc-opts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px 20px; }
+.acc-opt { display: flex; flex-direction: column; gap: 4px; padding: 12px; text-align: left; border: 1.5px solid var(--line); border-radius: var(--r-lg); background: var(--bg); color: var(--ink); cursor: pointer; }
+.acc-opt:hover { border-color: var(--line-2); }
+.acc-opt.on { border-color: var(--go); background: var(--go-soft); }
+.acc-opt:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.acc-optname { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
+.acc-opt.on .acc-optname svg { color: var(--go); }
+.acc-opthint { font-size: 12px; line-height: 1.4; color: var(--muted); }
+.acc-list { display: flex; flex-direction: column; gap: 8px; padding: 2px 20px 14px; }
+.acc-label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.acc-field { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 42px; padding: 6px 8px; border: 1px solid var(--line-2); border-radius: var(--r-lg); background: var(--bg); }
+.acc-field:focus-within { border-color: var(--go); }
+.acc-field .pp { position: static; flex: 1 1 140px; min-width: 140px; max-width: none; }
+.acc-field .pp-list { left: -1px; right: -1px; width: auto; max-height: 240px; }
+.acc-field .pp input { min-height: 28px; height: 28px; padding: 0 4px; border: 0; background: transparent; box-shadow: none; }
+.acc-need { font-size: 12px; color: var(--need); }
+.acc-always { display: flex; flex-direction: column; gap: 8px; margin: 0 20px; padding: 12px 0 16px; border-top: 1px solid var(--line); }
+.acc-who { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--muted); }
+.acc-who b { color: var(--ink); font-weight: 600; }
+.acc-foot { display: flex; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--line); }
+@media (max-width: 560px) { .acc-opts { grid-template-columns: minmax(0, 1fr); } }
 .pm-person { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 32px; }
 .pm-person .linkish { font-size: 12.5px; }
 .pm-stagehead input.pm-sname { width: auto; min-height: 0; border: 1px solid transparent; background: transparent; box-shadow: none; font-size: 16px; font-weight: 600; padding: 4px 8px; }
@@ -1695,6 +1729,8 @@ export const CONSOLE_JS = String.raw`
     bars: [['path', 'M4 20h16M7 16v-5M12 16V6M17 16v-8']],
     clock: [['circle', 12, 12, 9], ['path', 'M12 7v5l3 2']],
     lock: [['path', 'M6 11h12v9H6z'], ['path', 'M9 11V8a3 3 0 0 1 6 0v3']],
+    chevron: [['path', 'M6 9l6 6 6-6']],
+    globe: [['circle', 12, 12, 8.5], ['path', 'M3.5 12h17'], ['path', 'M12 3.5c2.4 2.4 3.5 5.3 3.5 8.5s-1.1 6.1-3.5 8.5c-2.4-2.4-3.5-5.3-3.5-8.5s1.1-6.1 3.5-8.5z']],
     search: [['circle', 11, 11, 7], ['path', 'M20 20l-3.5-3.5']],
     bell: [['path', 'M6 9a6 6 0 1 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9'], ['path', 'M10 20.5h4']],
     slack: [['path', 'M4 6h16v10H9l-5 4z']],
@@ -3821,8 +3857,8 @@ export const CONSOLE_JS = String.raw`
               h('span', { class: 'prc-sn', text: s.name }),
               p.byStage[i] ? h('span', { class: 'prc-n', text: String(p.byStage[i]) }) : null);
           })),
-          h('div', { class: 'tmmeta' }, h('span', { class: 'faint tmstats', text: ['Owned by ' + p.owner.name, plural(p.stages.length, 'stage', 'stages'), plural(p.active, 'item', 'items') + ' in flight'].join(' · ') })),
-          h('div', { class: 'tmfoot' },
+          h('div', { class: 'tmmeta' }, h('span', { class: 'faint tmstats', text: ['Owned by ' + p.owner.name, plural(p.stages.length, 'stage', 'stages'), plural(p.active, 'item', 'items') + ' in flight'].concat(p.canSteer ? [accessText(p.access)] : []).join(' · ') })),
+          p.canStart === false ? null : h('div', { class: 'tmfoot' },
             h('button', { class: 'btn small go', text: 'Put something in', onclick: function (e) { e.stopPropagation(); submitToProcess(p, function (item) { go('process', { processId: p.id, processItem: item.id }); }); } })));
       });
       return [head('Processes', intro, action), h('div', { class: 'tmgrid' }, cards)];
@@ -4201,7 +4237,7 @@ export const CONSOLE_JS = String.raw`
           busyMode ? null : summary),
         h('div', { class: 'row' },
           p.canSteer ? h('button', { class: 'btn', text: 'Edit', onclick: function () { go('processedit', { processId: p.id }); } }) : null,
-          busyMode ? h('button', { class: 'btn go', onclick: function () { submitToProcess(p, function (item) { go('process', { processId: p.id, processItem: item.id }); }); } }, icon('plus', 16), 'Put something in') : null));
+          busyMode && p.canStart !== false ? h('button', { class: 'btn go', onclick: function () { submitToProcess(p, function (item) { go('process', { processId: p.id, processItem: item.id }); }); } }, icon('plus', 16), 'Put something in') : null));
 
       // How work comes in, the owner's panel to add and remove ways.
       var waysOpen = !!state.processWays;
@@ -4246,6 +4282,10 @@ export const CONSOLE_JS = String.raw`
           out,
           h('div', { class: 'row', style: 'gap:10px' }, send, h('span', { class: 'faint', text: first.kind === 'people' ? who(first) + (/,/.test(who(first)) ? ' decide' : ' decides') + ' first.' : who(first) + ' picks it up within a minute.' })),
           waysOpen && p.canSteer ? h('div', { class: 'pf-split' }, waysPanel()) : waysList);
+        // Someone who sees it through a stage they're in, but isn't in its audience.
+        if (p.canStart === false) put = h('section', { class: 'pf-panel', 'aria-labelledby': 'pf-put' },
+          h('h2', { class: 'label pf-accent', id: 'pf-put', text: 'Put something in' }),
+          h('p', { class: 'muted', text: 'Only some people can start ' + p.name + '. Ask ' + p.owner.name + ', who owns it.' }));
 
         var track = function (it) {
           return h('span', { class: 'pv-track', style: 'grid-template-columns:repeat(' + p.stages.length + ',minmax(0,1fr))', 'aria-label': it.status === 'done' ? 'Made it through' : 'Stopped at stage ' + (it.stageIndex + 1) + ' of ' + p.stages.length },
@@ -5063,7 +5103,8 @@ export const CONSOLE_JS = String.raw`
         }, 200);
       });
     };
-    q.onfocus = draw;
+    // quiet: open on a click or typing, not on focus alone.
+    if (opts.quiet) q.onclick = draw; else q.onfocus = draw;
     q.oninput = draw;
     q.onblur = function () { setTimeout(close, 150); };
     q.onkeydown = function (e) {
@@ -5155,6 +5196,14 @@ export const CONSOLE_JS = String.raw`
     btn.onclick = open;
     append(wrap, btn);
     return wrap;
+  }
+
+  /// Who can see and start a process, in a few words.
+  function accessText(a) {
+    if (!a || a.who === 'everyone') return 'Open to everyone';
+    if (a.who === 'private') return 'Private';
+    var names = (a.groups || []).map(function (g) { return g.name; }).concat((a.people || []).map(function (x) { return x.name; }));
+    return 'Open to ' + (names.length > 3 ? names.slice(0, 2).join(', ') + ' and ' + (names.length - 2) + ' others' : names.join(', '));
   }
 
   function groupChip(g, remove) {
@@ -5270,6 +5319,8 @@ export const CONSOLE_JS = String.raw`
       var roleHint = {};
       if (p) model = JSON.parse(JSON.stringify({ name: p.name, purpose: p.purpose || '', about: p.about, templateId: p.templateId, owner: p.owner, stages: p.stages }));
       if (p) model.codeIn = p.codeIn ? p.codeIn.name : '';
+      // Made before processes had an audience: open to everyone, as it was.
+      if (p) model.access = p.access ? JSON.parse(JSON.stringify(p.access)) : { who: 'everyone' };
       else if (picked) {
         var fit = {};
         (picked.fits || []).forEach(function (f) { fit[f.key] = f; });
@@ -5292,6 +5343,8 @@ export const CONSOLE_JS = String.raw`
             return st;
           }) };
       } else model = { name: '', purpose: '', owner: { name: me.name, slackUserId: me.slackUserId }, stages: [] };
+      // A new process is its owner's alone until they open it up.
+      if (!model.access) model.access = { who: 'private' };
       // What the library says each stage needs: the crew for a team, who decides.
       var tmpl = library.filter(function (x) { return x.id === model.templateId; })[0];
       var hints = {};
@@ -5518,6 +5571,79 @@ export const CONSOLE_JS = String.raw`
           viewer];
       };
 
+      // Who can see the process and start items in it, from Slack or here: a
+      // button beside Owner that says what it is now, opening a panel to change it.
+      var ACCESS = [
+        ['private', 'Private', 'Only the owner, whoever made it and admins.', 'lock'],
+        ['team', 'A team', 'Everyone on the teams you pick, as they change.', 'team'],
+        ['people', 'Certain people', 'The people and groups you name.', 'people'],
+        ['everyone', 'Everyone', 'Anyone in the org.', 'globe']
+      ];
+      var accessOpt = function (who) { return ACCESS.filter(function (o) { return o[0] === who; })[0] || ACCESS[0]; };
+      var creator = (p && p.creator) || (p ? null : { name: me.name, slackUserId: me.slackUserId });
+      var accBtn = h('button', { type: 'button', class: 'acc-btn', 'aria-haspopup': 'dialog', 'aria-expanded': 'false' });
+      var accPop = h('section', { class: 'acc-pop', role: 'dialog', 'aria-labelledby': 'acc-title', hidden: true });
+      var accWrap = h('div', { class: 'menu-wrap' }, accBtn, accPop);
+      var accOutside = function (e) { if (!accWrap.contains(e.target)) accClose(); };
+      var accEsc = function (e) { if (e.key === 'Escape') { accClose(); accBtn.focus(); } };
+      var accClose = function () {
+        accPop.hidden = true; accBtn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('mousedown', accOutside); document.removeEventListener('keydown', accEsc);
+      };
+      accBtn.onclick = function () {
+        if (!accPop.hidden) { accClose(); return; }
+        accPop.hidden = false; accBtn.setAttribute('aria-expanded', 'true');
+        document.addEventListener('mousedown', accOutside); document.addEventListener('keydown', accEsc);
+        var first = accPop.querySelector('[aria-checked="true"]'); if (first) first.focus();
+      };
+      var drawAccess = function () {
+        var a = model.access;
+        a.groups = a.groups || []; a.people = a.people || [];
+        var opt = accessOpt(a.who), listed = a.who === 'team' || a.who === 'people';
+        var names = listed ? a.groups.map(function (g) { return g.name; }).concat(a.people.map(function (x) { return x.name; })) : [];
+        fill(accBtn, [icon(opt[3], 15),
+          h('span', { class: 'acc-what', text: a.who === 'team' && a.groups.length === 1 && !a.people.length ? a.groups[0].name : opt[1] }),
+          names.length ? h('span', { class: 'acc-faces', 'aria-label': names.join(', ') }, names.slice(0, 3).map(function (n) { return avatar(n, n, 's'); })) : null,
+          icon('chevron', 13)]);
+        accBtn.setAttribute('aria-label', 'Who can see and start it: ' + opt[1] + (names.length ? ', ' + names.join(', ') : ''));
+        var group = h('div', { class: 'acc-opts', role: 'radiogroup', 'aria-label': 'Who can see and start it' }, ACCESS.map(function (o) {
+          var on = o[0] === a.who;
+          return h('button', { type: 'button', role: 'radio', 'aria-checked': on ? 'true' : 'false', tabindex: on ? '0' : '-1', class: 'acc-opt' + (on ? ' on' : ''),
+            onclick: function () { a.who = o[0]; drawAccess(); var q = accPop.querySelector('.acc-opt.on'); if (q) q.focus(); },
+            onkeydown: function (e) {
+              var step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+              if (!step) return;
+              e.preventDefault();
+              var i = (ACCESS.indexOf(o) + step + ACCESS.length) % ACCESS.length;
+              a.who = ACCESS[i][0]; drawAccess();
+              var q = accPop.querySelector('.acc-opt.on'); if (q) q.focus();
+            } },
+            h('span', { class: 'acc-optname' }, icon(o[3], 14), o[1]), h('span', { class: 'acc-opthint', text: o[2] }));
+        }));
+        var field = listed ? h('div', { class: 'acc-list' },
+          h('span', { class: 'acc-label', text: a.who === 'team' ? 'Teams' : 'People and groups' }),
+          h('div', { class: 'acc-field' },
+            a.groups.map(function (g, n) { return groupChip(g, function () { a.groups.splice(n, 1); drawAccess(); }); })
+              .concat(a.people.map(function (x, n) { return personChip(x, function () { a.people.splice(n, 1); drawAccess(); }); }))
+              .concat([personPicker(a.who === 'team' ? 'Add a team' : 'Add a person or a group', function (x) {
+                if (!a.people.some(function (y) { return y.slackUserId ? y.slackUserId === x.slackUserId : y.name === x.name; })) a.people.push(x);
+                drawAccess(); var q = accPop.querySelector('.acc-field input'); if (q) q.focus();
+              }, { quiet: true, onGroup: function (g) { if (!a.groups.some(function (y) { return y.id === g.id; })) a.groups.push(g); drawAccess(); var q = accPop.querySelector('.acc-field input'); if (q) q.focus(); } })])),
+          a.who === 'team' && !a.groups.length ? h('span', { class: 'acc-need', text: 'Pick at least one team.' }) : null) : null;
+        var always = [h('span', null, h('b', { text: model.owner ? model.owner.name : me.name }), ' · owner')];
+        if (creator && !(model.owner && (creator.slackUserId ? creator.slackUserId === model.owner.slackUserId : creator.name === model.owner.name))) always.push(h('span', null, h('b', { text: creator.name }), ' · made it'));
+        always.push(h('span', null, h('b', { text: 'Admins' })));
+        fill(accPop, [
+          h('div', { class: 'acc-head' }, h('h2', { id: 'acc-title', text: 'Who can see and start it' }),
+            h('p', { text: 'In Slack (/idea, @overcli) and here. Everyone else won’t see it.' })),
+          group,
+          field,
+          h('div', { class: 'acc-always' }, h('span', { class: 'acc-label', text: 'Always' }),
+            h('div', { class: 'acc-who' }, always, h('span', { class: 'faint', text: 'People in its stages see the work that reaches them.' }))),
+          h('div', { class: 'acc-foot' }, h('button', { type: 'button', class: 'btn go small', text: 'Done', onclick: function () { accClose(); accBtn.focus(); } }))]);
+      };
+      drawAccess();
+
       var out = h('div');
       var save = h('button', { class: 'btn go', text: editing ? 'Save changes' : 'Make the process' });
       save.onclick = function () {
@@ -5540,7 +5666,8 @@ export const CONSOLE_JS = String.raw`
             name, purpose),
           h('div', { class: 'stack', style: 'gap:8px;align-items:flex-end' },
             h('div', { class: 'pm-owner' }, h('span', { class: 'faint', text: 'Owner' }),
-              personSlot('Change the owner', function () { return model.owner; }, function (x) { if (x) model.owner = x; }, '')),
+              personSlot('Change the owner', function () { return model.owner; }, function (x) { if (x) { model.owner = x; drawAccess(); } }, ''),
+              accWrap),
             codeRow())),
         pictureBanner(),
         h('section', { class: 'pm-mapcard', 'aria-label': 'The process map' },

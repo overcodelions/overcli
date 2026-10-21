@@ -56,7 +56,7 @@ function harness() {
     now: () => clock.at + n,
   });
   const make = () =>
-    svc.save(owner, {
+    svc.save(owner, { access: { who: 'everyone' },
       name: 'Idea to launch',
       stages: [
         { id: 'prfaq', name: 'PRFAQ', kind: 'team', teamId: 't-product', ask: 'Write the PR/FAQ and define the MLP.' },
@@ -159,18 +159,18 @@ describe('processes', () => {
 
   it('only lets the owner or an admin change a process, and checks its stages', () => {
     const h = harness();
-    expect(h.svc.save(owner, { name: 'X', stages: [{ id: 'a', name: 'Build', kind: 'team', teamId: 'nope' }] })).toMatchObject({ ok: false, error: expect.stringContaining('gone') });
-    expect(h.svc.save(owner, { name: 'X', stages: [{ id: 'a', name: 'Decide', kind: 'people', approvers: [] }] })).toMatchObject({ ok: false, error: expect.stringContaining('who decides') });
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'X', stages: [{ id: 'a', name: 'Build', kind: 'team', teamId: 'nope' }] })).toMatchObject({ ok: false, error: expect.stringContaining('gone') });
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'X', stages: [{ id: 'a', name: 'Decide', kind: 'people', approvers: [] }] })).toMatchObject({ ok: false, error: expect.stringContaining('who decides') });
     const made = h.make();
     if (!made.ok) throw new Error(made.error);
-    expect(h.svc.save(someone, { id: made.process.id, name: 'Mine now', stages: made.process.stages }).ok).toBe(false);
-    expect(h.svc.save({ name: 'Admin', admin: true }, { id: made.process.id, name: 'Renamed', stages: made.process.stages }).ok).toBe(true);
+    expect(h.svc.save(someone, { access: { who: 'everyone' }, id: made.process.id, name: 'Mine now', stages: made.process.stages }).ok).toBe(false);
+    expect(h.svc.save({ name: 'Admin', admin: true }, { access: { who: 'everyone' }, id: made.process.id, name: 'Renamed', stages: made.process.stages }).ok).toBe(true);
   });
 
   it('lets one worker take a stage, handing its answer on', () => {
     const h = harness();
-    expect(h.svc.save(owner, { name: 'Notes', stages: [{ id: 'w', name: 'Write notes', kind: 'worker' }] })).toMatchObject({ ok: false, error: 'Pick the worker for Write notes.' });
-    const made = h.svc.save(owner, {
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'Notes', stages: [{ id: 'w', name: 'Write notes', kind: 'worker' }] })).toMatchObject({ ok: false, error: 'Pick the worker for Write notes.' });
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
       name: 'Release notes',
       stages: [
         { id: 'w', name: 'Write notes', kind: 'worker', workerId: 'w-scribe', ask: 'Draft the release notes.' },
@@ -180,8 +180,8 @@ describe('processes', () => {
     if (!made.ok) throw new Error(made.error);
     const sub = h.svc.submit({ name: 'Riley' }, made.process.id, { brief: 'Notes for 4.2', source: 'console' });
     if (!sub.ok) throw new Error(sub.error);
-    // Pat doesn't manage the Scribe: it's asked as a proposal, from Pat.
-    expect(h.asked[0]).toMatchObject({ workerId: 'w-scribe', by: 'Pat', trusted: false });
+    // Nobody here manages the Scribe: it's asked as a proposal, from Riley.
+    expect(h.asked[0]).toMatchObject({ workerId: 'w-scribe', by: 'Riley', trusted: false });
     expect(h.asked[0].text).toContain('Do this stage yourself.');
     h.tasks.set(h.asked[0].askId, { status: 'done', title: 'Scribe', pack: { summary: 'Here are the notes.', files: [] } });
     h.svc.poll();
@@ -191,7 +191,7 @@ describe('processes', () => {
 
   it('lets a group decide: everyone in it is asked, and any one of them can approve', () => {
     const h = harness();
-    const made = h.svc.save(owner, {
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
       name: 'Approvals',
       stages: [
         { id: 'p', name: 'Plan', kind: 'team', teamId: 't-product' },
@@ -211,8 +211,8 @@ describe('processes', () => {
 
   it('waits for enough approvals when a decision needs more than one, and lets anyone send it back at once', () => {
     const h = harness();
-    expect(h.svc.save(owner, { name: 'X', stages: [{ id: 'ok', name: 'Approve', kind: 'people', approvers: [{ name: 'Sam' }], needs: 2 }] })).toMatchObject({ ok: false, error: expect.stringContaining('needs 2 approvals but only 1') });
-    const made = h.svc.save(owner, {
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'X', stages: [{ id: 'ok', name: 'Approve', kind: 'people', approvers: [{ name: 'Sam' }], needs: 2 }] })).toMatchObject({ ok: false, error: expect.stringContaining('needs 2 approvals but only 1') });
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
       name: 'Two keys',
       stages: [
         { id: 'p', name: 'Plan', kind: 'team', teamId: 't-product' },
@@ -267,7 +267,7 @@ describe('processes', () => {
     const h = harness();
     const DAY = 24 * 3_600_000;
     h.clock.at = new Date(2026, 9, 1, 9, 0).getTime();
-    const made = h.svc.save(owner, {
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
       name: 'Launch',
       stages: [
         { id: 'ship', name: 'Ship', kind: 'team', teamId: 't-build' },
@@ -302,7 +302,7 @@ describe('processes', () => {
 
   it('works where its code lives, each team stage starting from the branch the last one left', () => {
     const h = harness();
-    const made = h.svc.save(owner, {
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
       name: 'Ship it',
       codeIn: { name: 'acme-web', path: '/repos/acme-web' },
       stages: [
@@ -326,43 +326,49 @@ describe('processes', () => {
     const lee: OrgCaller = { name: 'Lee', slackUserId: 'U0LEE', admin: false };
     const stages = [{ id: 'w', name: 'Write notes', kind: 'worker' as const, workerId: 'w-scribe' }];
     // A private worker can't be put in by someone who can't see it.
-    expect(h.svc.save(owner, { name: 'Ledger', stages: [{ id: 'w', name: 'Books', kind: 'worker', workerId: 'w-ledger' }] })).toMatchObject({ ok: false, error: expect.stringContaining("can't use that worker") });
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'Ledger', stages: [{ id: 'w', name: 'Books', kind: 'worker', workerId: 'w-ledger' }] })).toMatchObject({ ok: false, error: expect.stringContaining("can't use that worker") });
     // A form can't claim the trust for itself.
-    const claimed = h.svc.save(owner, { name: 'Notes', stages: [{ ...stages[0], trusted: true }] });
+    const claimed = h.svc.save(owner, { access: { who: 'everyone' }, name: 'Notes', stages: [{ ...stages[0], trusted: true }] });
     if (!claimed.ok) throw new Error(claimed.error);
     expect(claimed.process.stages[0].trusted).toBeUndefined();
 
     // Pat saving it again doesn't vouch for it; an admin saving it does.
-    const again = h.svc.save(owner, { id: claimed.process.id, name: 'Notes', stages: claimed.process.stages });
+    const again = h.svc.save(owner, { access: { who: 'everyone' }, id: claimed.process.id, name: 'Notes', stages: claimed.process.stages });
     if (!again.ok) throw new Error(again.error);
     expect(again.process.stages[0].trusted).toBeUndefined();
-    const vouched = h.svc.save({ name: 'Admin', admin: true }, { id: claimed.process.id, name: 'Notes', stages: again.process.stages });
+    const vouched = h.svc.save({ name: 'Admin', admin: true }, { access: { who: 'everyone' }, id: claimed.process.id, name: 'Notes', stages: again.process.stages });
     if (!vouched.ok) throw new Error(vouched.error);
     expect(vouched.process.stages[0].trusted).toBe(true);
 
-    const made = h.svc.save(lee, { name: 'Lee notes', stages });
+    const made = h.svc.save(lee, { access: { who: 'everyone' }, name: 'Lee notes', stages });
     if (!made.ok) throw new Error(made.error);
     expect(made.process.stages[0].trusted).toBe(true);
     // Kept when the stage is unchanged, whoever saves it next.
-    const renamed = h.svc.save({ name: 'Admin', admin: true }, { id: made.process.id, name: 'Lee notes v2', stages: made.process.stages });
+    const renamed = h.svc.save({ name: 'Admin', admin: true }, { access: { who: 'everyone' }, id: made.process.id, name: 'Lee notes v2', stages: made.process.stages });
     if (!renamed.ok) throw new Error(renamed.error);
     expect(renamed.process.stages[0].trusted).toBe(true);
-    h.svc.submit({ name: 'Riley', slackUserId: 'U0RILEY' }, made.process.id, { brief: 'Notes for 4.3', source: 'console' });
+    // Lee's own item, and an admin's, run as from Lee; anyone else's is a
+    // proposal from them, though Lee trusted the stage.
+    h.svc.submit({ name: 'Lee', slackUserId: 'U0LEE' }, made.process.id, { brief: 'Notes for 4.3', source: 'console' });
     expect(h.asked.at(-1)).toMatchObject({ by: 'Lee', trusted: true });
+    h.svc.submit({ name: 'Admin' }, made.process.id, { brief: 'Notes for 4.4', source: 'console', byAdmin: true });
+    expect(h.asked.at(-1)).toMatchObject({ by: 'Lee', trusted: true });
+    h.svc.submit({ name: 'Riley', slackUserId: 'U0RILEY' }, made.process.id, { brief: 'Notes for 4.5', source: 'console' });
+    expect(h.asked.at(-1)).toMatchObject({ by: 'Riley', trusted: false });
   });
 
   it('only lets an admin or the real lead name someone else to lead a stage', () => {
     const h = harness();
     const lee: OrgCaller = { name: 'Lee', slackUserId: 'U0LEE', admin: false };
     const build = (who: ProcessPerson) => [{ id: 'b', name: 'Build', kind: 'team' as const, teamId: 't-build', owner: who }];
-    expect(h.svc.save(someone, { name: 'Mine', stages: build({ name: 'Riley', slackUserId: 'U0RILEY' }) })).toMatchObject({ ok: false, error: expect.stringContaining('Only an admin or Lee') });
-    expect(h.svc.save(someone, { name: 'Lee leads', stages: build({ name: 'Lee', slackUserId: 'U0LEE' }) }).ok).toBe(true);
-    expect(h.svc.save(lee, { name: 'Lee hands off', stages: build({ name: 'Riley', slackUserId: 'U0RILEY' }) }).ok).toBe(true);
-    const byAdmin = h.svc.save({ name: 'Admin', admin: true }, { name: 'Picked', stages: build({ name: 'Riley', slackUserId: 'U0RILEY' }) });
+    expect(h.svc.save(someone, { access: { who: 'everyone' }, name: 'Mine', stages: build({ name: 'Riley', slackUserId: 'U0RILEY' }) })).toMatchObject({ ok: false, error: expect.stringContaining('Only an admin or Lee') });
+    expect(h.svc.save(someone, { access: { who: 'everyone' }, name: 'Lee leads', stages: build({ name: 'Lee', slackUserId: 'U0LEE' }) }).ok).toBe(true);
+    expect(h.svc.save(lee, { access: { who: 'everyone' }, name: 'Lee hands off', stages: build({ name: 'Riley', slackUserId: 'U0RILEY' }) }).ok).toBe(true);
+    const byAdmin = h.svc.save({ name: 'Admin', admin: true }, { access: { who: 'everyone' }, name: 'Picked', stages: build({ name: 'Riley', slackUserId: 'U0RILEY' }) });
     if (!byAdmin.ok) throw new Error(byAdmin.error);
     // The admin's pick survives the owner saving it again unchanged.
-    expect(h.svc.save({ name: 'Admin', admin: true }, { id: byAdmin.process.id, name: 'Picked', owner: { name: 'Riley', slackUserId: 'U0RILEY' }, stages: byAdmin.process.stages }).ok).toBe(true);
-    expect(h.svc.save(someone, { id: byAdmin.process.id, name: 'Picked again', stages: byAdmin.process.stages }).ok).toBe(true);
+    expect(h.svc.save({ name: 'Admin', admin: true }, { access: { who: 'everyone' }, id: byAdmin.process.id, name: 'Picked', owner: { name: 'Riley', slackUserId: 'U0RILEY' }, stages: byAdmin.process.stages }).ok).toBe(true);
+    expect(h.svc.save(someone, { access: { who: 'everyone' }, id: byAdmin.process.id, name: 'Picked again', stages: byAdmin.process.stages }).ok).toBe(true);
   });
 
   it('shows an item and its files only to the people in it', () => {
@@ -413,7 +419,7 @@ describe('processes', () => {
 
   it('stops a worker stage’s ask when the item is stopped, retried, moved or its stage removed', () => {
     const h = harness();
-    const made = h.svc.save(owner, {
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
       name: 'Notes',
       stages: [
         { id: 'w', name: 'Write notes', kind: 'worker', workerId: 'w-scribe' },
@@ -431,7 +437,7 @@ describe('processes', () => {
     expect(h.svc.act(owner, one.item.id, 'stop').ok).toBe(true);
     expect(h.cancelledAsks).toEqual([h.asked[0].askId, h.asked[2].askId, h.asked[3].askId]);
     // The worker stage goes: the ask it started stops with it.
-    expect(h.svc.save(owner, { id: made.process.id, name: 'Notes', stages: [made.process.stages[1]] }).ok).toBe(true);
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, id: made.process.id, name: 'Notes', stages: [made.process.stages[1]] }).ok).toBe(true);
     expect(h.cancelledAsks).toContain(h.asked[1].askId);
     expect(h.cancelled).toEqual([]);
   });
@@ -447,5 +453,126 @@ describe('processes', () => {
       h.svc.poll();
     }
     expect(h.loads()).toBe(before);
+  });
+
+  it('only lets an admin give a process to someone else', () => {
+    const h = harness();
+    const stages = [{ id: 'b', name: 'Build', kind: 'team' as const, teamId: 't-build' }];
+    const cto = { name: 'CTO', slackUserId: 'U0CTO123' };
+    expect(h.svc.save(someone, { access: { who: 'everyone' }, name: 'Theirs', owner: cto, stages })).toMatchObject({ ok: false, error: expect.stringContaining('is yours') });
+    const mine = h.svc.save(someone, { access: { who: 'everyone' }, name: 'Mine', owner: { name: 'Riley', slackUserId: 'U0RILEY' }, stages });
+    if (!mine.ok) throw new Error(mine.error);
+    expect(h.svc.save(someone, { access: { who: 'everyone' }, id: mine.process.id, name: 'Mine', owner: cto, stages })).toMatchObject({ ok: false, error: expect.stringContaining('hand a process') });
+    const handed = h.svc.save({ name: 'Admin', admin: true }, { access: { who: 'everyone' }, id: mine.process.id, name: 'Mine', owner: cto, stages });
+    if (!handed.ok) throw new Error(handed.error);
+    // The CTO's process, saved unchanged by an admin who isn't the CTO.
+    expect(h.svc.save({ name: 'Admin', admin: true }, { access: { who: 'everyone' }, id: mine.process.id, name: 'Mine v2', stages }).ok).toBe(true);
+  });
+
+  it('shows a process to people outside it as an outline', () => {
+    const h = harness();
+    const made = h.svc.save(owner, { access: { who: 'everyone' },
+      name: 'Idea to launch',
+      about: 'Internal notes on how we run this.',
+      codeIn: { name: 'acme-web', path: '/repos/acme-web' },
+      stages: [
+        { id: 'p', name: 'PRFAQ', kind: 'team', teamId: 't-product', ask: 'Write the PR/FAQ.' },
+        { id: 'w', name: 'Notes', kind: 'worker', workerId: 'w-scribe' },
+        { id: 'ok', name: 'Validate', kind: 'people', approvers: [{ name: 'Sam', slackUserId: 'U0SAM' }] },
+      ],
+    });
+    if (!made.ok) throw new Error(made.error);
+    const outsider: OrgCaller = { name: 'Kim', slackUserId: 'U0KIM', admin: false };
+    const seen = h.svc.list(outsider)[0];
+    expect(seen).toMatchObject({ name: 'Idea to launch', owner: { name: 'Pat' }, canSteer: false });
+    const text = JSON.stringify(seen);
+    for (const hidden of ['U0PAT', 'U0SAM', 'Sam', 't-product', 'w-scribe', '/repos/acme-web', 'Internal notes', 'Write the PR/FAQ']) expect(text).not.toContain(hidden);
+    const got = h.svc.get(outsider, made.process.id);
+    if (!got.ok) throw new Error(got.error);
+    expect(got.teams).toEqual([]);
+    expect(got.workers).toEqual([]);
+    expect(JSON.stringify(got.process)).not.toContain('U0PAT');
+    // In it but not steering: everything but the code's path.
+    const sam = h.svc.get(judge, made.process.id);
+    if (!sam.ok) throw new Error(sam.error);
+    expect(sam.process.stages[0]).toMatchObject({ teamId: 't-product' });
+    expect(sam.process.codeIn).toEqual({ name: 'acme-web', path: '' });
+    const pat = h.svc.get(owner, made.process.id);
+    expect(pat.ok && pat.process.codeIn?.path).toBe('/repos/acme-web');
+  });
+});
+
+describe('who can see and start a process', () => {
+  const stages = [
+    { id: 'prfaq', name: 'PRFAQ', kind: 'team' as const, teamId: 't-product' },
+    { id: 'validate', name: 'Validate', kind: 'people' as const, approvers: [{ name: 'Sam', slackUserId: 'U0SAM' }] },
+  ];
+  const ana: OrgCaller = { name: 'Ana', slackUserId: 'U0ANA', admin: false };
+  const admin: OrgCaller = { name: 'Admin', admin: true };
+  const from = (c: OrgCaller) => ({ name: c.name, ...(c.slackUserId ? { slackUserId: c.slackUserId } : {}) });
+
+  it('keeps a new process to its owner until they open it up', () => {
+    const h = harness();
+    const made = h.svc.save(owner, { name: 'Roadmap', stages });
+    if (!made.ok) throw new Error(made.error);
+    const id = made.process.id;
+    expect(made.process.access).toEqual({ who: 'private' });
+
+    expect(h.svc.list(someone)).toEqual([]);
+    expect(h.svc.get(someone, id)).toMatchObject({ ok: false, error: 'No such process.' });
+    expect(h.svc.submit(from(someone), id, { brief: 'Plan next quarter', source: 'slack' })).toMatchObject({ ok: false, error: 'No such process.' });
+
+    // Sam decides at a stage: sees it, but isn't in its audience.
+    expect(h.svc.list(judge).map((p) => [p.name, p.canStart])).toEqual([['Roadmap', false]]);
+    expect(h.svc.submit(from(judge), id, { brief: 'Plan next quarter', source: 'slack' })).toMatchObject({ ok: false, error: expect.stringContaining('Ask Pat') });
+
+    expect(h.svc.submit(from(owner), id, { brief: 'Plan next quarter', source: 'slack' }).ok).toBe(true);
+    expect(h.svc.submit({ name: 'Admin' }, id, { brief: 'Plan next quarter', source: 'console', byAdmin: true }).ok).toBe(true);
+    // A trigger or schedule was set up by someone who steers it.
+    expect(h.svc.submit({ name: 'New bugs' }, id, { brief: 'Crash on export', source: 'trigger' }).ok).toBe(true);
+  });
+
+  it('opens a process to a team, read as the team is now', () => {
+    const h = harness();
+    const made = h.svc.save(owner, { name: 'Roadmap', stages, access: { who: 'team', groups: [{ id: 'team:Product leads', name: 'Product leads' }] } });
+    if (!made.ok) throw new Error(made.error);
+    expect(h.svc.list(ana).map((p) => [p.name, p.canStart])).toEqual([['Roadmap', true]]);
+    expect(h.svc.submit(from(ana), made.process.id, { brief: 'Plan next quarter', source: 'slack' }).ok).toBe(true);
+    expect(h.svc.list(someone)).toEqual([]);
+    expect(h.svc.submit(from(someone), made.process.id, { brief: 'Plan next quarter', source: 'slack' }).ok).toBe(false);
+  });
+
+  it('opens a process to named people, and to everyone', () => {
+    const h = harness();
+    const made = h.svc.save(owner, { name: 'Roadmap', stages, access: { who: 'people', people: [{ name: 'Riley', slackUserId: 'U0RILEY' }] } });
+    if (!made.ok) throw new Error(made.error);
+    expect(h.svc.submit(from(someone), made.process.id, { brief: 'Plan next quarter', source: 'slack' }).ok).toBe(true);
+    expect(h.svc.list(ana)).toEqual([]);
+
+    const open = h.svc.save(owner, { id: made.process.id, name: 'Roadmap', stages, access: { who: 'everyone' } });
+    expect(open.ok && open.process.access).toEqual({ who: 'everyone' });
+    expect(h.svc.submit(from(ana), made.process.id, { brief: 'Plan next quarter', source: 'slack' }).ok).toBe(true);
+  });
+
+  it('keeps its access when a change says nothing about it, and refuses an empty audience', () => {
+    const h = harness();
+    const made = h.svc.save(owner, { name: 'Roadmap', stages, access: { who: 'people', people: [{ name: 'Riley', slackUserId: 'U0RILEY' }] } });
+    if (!made.ok) throw new Error(made.error);
+    const renamed = h.svc.save(owner, { id: made.process.id, name: 'Quarterly roadmap', stages });
+    expect(renamed.ok && renamed.process.access).toEqual({ who: 'people', people: [{ name: 'Riley', slackUserId: 'U0RILEY' }] });
+    expect(h.svc.save(owner, { id: made.process.id, name: 'Roadmap', stages, access: { who: 'team', groups: [] } })).toMatchObject({ ok: false, error: 'Pick the team that can see and start it.' });
+  });
+
+  it('lets whoever made it see and start it after it is handed to someone else', () => {
+    const h = harness();
+    const made = h.svc.save(owner, { name: 'Roadmap', stages });
+    if (!made.ok) throw new Error(made.error);
+    const handed = h.svc.save(admin, { id: made.process.id, name: 'Roadmap', stages, owner: { name: 'Lee', slackUserId: 'U0LEE' } });
+    if (!handed.ok) throw new Error(handed.error);
+    expect(handed.process.creator).toEqual({ name: 'Pat', slackUserId: 'U0PAT' });
+
+    expect(h.svc.list(owner).map((p) => [p.name, p.canSteer, p.canStart])).toEqual([['Roadmap', false, true]]);
+    expect(h.svc.submit(from(owner), made.process.id, { brief: 'Plan next quarter', source: 'slack' }).ok).toBe(true);
+    expect(h.svc.save(owner, { id: made.process.id, name: 'Mine now', stages }).ok).toBe(false);
   });
 });

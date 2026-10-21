@@ -586,6 +586,7 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
       ...(typeof b.templateId === 'string' && libraryProcess(b.templateId) ? { templateId: b.templateId } : {}),
       ...(personInput(b.owner) ? { owner: personInput(b.owner)! } : {}),
       stages: stagesInput(b.stages),
+      ...(b.access !== undefined ? { access: b.access } : {}),
     });
   };
   return [
@@ -697,6 +698,7 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
           ...(typeof b.purpose === 'string' ? { purpose: b.purpose.slice(0, 1000) } : {}),
           ...(personInput(b.owner) ? { owner: personInput(b.owner)! } : {}),
           stages,
+          ...(b.access !== undefined ? { access: b.access } : {}),
         });
       },
     },
@@ -734,7 +736,8 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
         const res = processes.get(c, decodeURIComponent(id));
         if (!res.ok) return res;
         const schedules = (res.process.schedules ?? []).map((s) => ({ ...s, nextAt: processes.nextAt(s), when: processScheduleText(s.cadence) }));
-        return { ...res, intake: intakeOf(res.process.id), schedules };
+        // How work comes in names channels and tools: for whoever steers it.
+        return { ...res, intake: res.process.canSteer ? intakeOf(res.process.id) : [], schedules };
       },
     },
     { method: 'POST', path: /^\/api\/processes\/([^/]+)$/, handle: (c, b, [id]) => save(c, b, decodeURIComponent(id)) },
@@ -747,6 +750,7 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
           ...(typeof b.title === 'string' ? { title: b.title.slice(0, 200) } : {}),
           brief: typeof b.brief === 'string' ? b.brief.slice(0, 20_000) : '',
           source: b.source === 'desktop' ? 'desktop' : 'console',
+          ...(c.admin ? { byAdmin: true } : {}),
         }),
     },
     {

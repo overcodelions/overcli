@@ -393,8 +393,9 @@ export function createOrgControl(
   const bot = () => (slack.teamId() ? configuredSlackToken('bot') : undefined);
   const owner = options.frontDoorOwner;
   const frontDoor = new FrontDoor({
-    processes: () =>
-      processes.list({ name: 'overcli', admin: true }).filter((p) => p.stages.length).map((p) => ({ id: p.id, name: p.name, ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),
+    // Only those the person may start: the router never offers one they can't.
+    processes: (caller) =>
+      processes.list(caller).filter((p) => p.stages.length && p.canStart).map((p) => ({ id: p.id, name: p.name, ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),
     submitProcess: (caller, processId, brief) => {
       const res = processes.submit({ name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) }, processId, { brief, source: 'slack' });
       return res.ok ? { ok: true, title: res.item.title, process: res.process.name, stage: res.process.stages[0].name } : res;

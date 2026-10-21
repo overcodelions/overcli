@@ -100,6 +100,30 @@ describe('tool gateway', () => {
     expect(tool.seen).toHaveLength(0);
   });
 
+  it('refuses calls on a run key it never handed out, even one signed with its own key file', async () => {
+    const dir = tmpDir();
+    const tool = await upstream();
+    const file = configFile({ crm: { type: 'http', url: tool.url, headers: { Authorization: `Bearer ${TOKEN}` } } });
+    const calls: Array<{ allowed: boolean; who: string }> = [];
+    const first = await open(dir, file);
+    // Signed with the same key file, but for a run the next start never saw:
+    // what someone who read the key file could make.
+    const minted = `Bearer ${first.keyFor('not-a-run')}`;
+    first.stop();
+    const gw = await open(dir, file, {}, calls);
+    const url = String(file.servers.crm.url);
+
+    const refused = await post(url, minted, call('create_record'));
+    expect(refused.json.result).toMatchObject({ isError: true });
+    expect(refused.json.result.content[0].text).toContain('did not start');
+    expect(calls).toEqual([expect.objectContaining({ allowed: false, who: 'unknown run not-a-ru' })]);
+    // Listing is still answered.
+    expect((await post(url, minted, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }))).status).toBe(200);
+    // A run this start handed a key to, worker or not, still calls.
+    expect((await post(url, `Bearer ${gw.keyFor('a-run')}`, call('search_records'))).json.result.content[0].text).toBe('from the tool');
+    expect(tool.seen.filter((x) => x.body.includes('tools/call'))).toHaveLength(1);
+  });
+
   it('binds a run to its own key and refuses calls outside its worker scope', async () => {
     const tool = await upstream();
     const file = configFile({ crm: { type: 'http', url: tool.url, headers: { Authorization: `Bearer ${TOKEN}` } } });

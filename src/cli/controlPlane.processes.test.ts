@@ -69,7 +69,7 @@ describe('process routes', () => {
   });
 
   it('makes a process, takes an item in, and lets the owner but not others change it', async () => {
-    const made = await call(PAT, 'POST', '/api/processes', {
+    const made = await call(PAT, 'POST', '/api/processes', { access: { who: 'everyone' },
       name: 'Idea to launch',
       stages: [
         { id: 'prfaq', name: 'PRFAQ', kind: 'team', teamId: 't-product' },

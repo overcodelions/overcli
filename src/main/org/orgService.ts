@@ -864,6 +864,11 @@ export function scheduleText(cadence: ScheduleTrigger | null | undefined): strin
 const NOT_FOUND = 'No worker by that name or id that you can see.';
 /// How long a page further back in a worker's threads reuses the first page's build.
 const THREAD_REUSE_MS = 60_000;
+/// How long a first page reuses the last one's build, when nothing went
+/// through here since. Over the console's 3 s poll, so one viewer's every
+/// other poll reuses it; a run moving on outside this service shows up no
+/// more than this late (anything asked or decided here shows at once).
+const FIRST_PAGE_REUSE_MS = 5_000;
 /// The caller's own Google Drive, through the account they connected.
 const GOOGLE_ME = 'google:me';
 const YOUR_DRIVE = 'Your Google Drive';
@@ -1007,39 +1012,59 @@ export class OrgService {
   private summaries(caller: OrgCaller, onlyId?: UUID): WorkerSummary[] {
     const roster = this.deps.workers.roster();
     const policy = this.policy();
+    const shown = roster.filter((w) => (!onlyId || w.id === onlyId) && canSee(policy, roster, w.id, caller));
+    if (!shown.length) return [];
     const spent = this.deps.workers.spentThisMonth();
-    const waiting = this.waitingCounts();
-    const next = new Map((this.deps.snapshots?.() ?? []).map((x) => [x.worker.id, x.nextShiftAt]));
-    const runs = this.deps.runs.listRuns();
+    // Runs by worker, read once: one worker's summary keeps only its own.
+    const scoped: FlowRun[] = [];
+    const runsBy = new Map<UUID, FlowRun[]>();
+    for (const r of this.deps.runs.listRuns()) {
+      if (!r.workerId || (onlyId && r.workerId !== onlyId)) continue;
+      scoped.push(r);
+      const list = runsBy.get(r.workerId);
+      if (list) list.push(r);
+      else runsBy.set(r.workerId, [r]);
+    }
+    const waiting = this.waitingCounts(scoped, onlyId);
+    // The rest is read on first use, so a summary that doesn't need it
+    // (a paused worker's next shift, a worker with no tools) skips it.
+    let next: Map<UUID, number | null> | undefined;
+    const nextShift = (id: UUID) => (next ??= new Map((this.deps.snapshots?.() ?? []).map((x) => [x.worker.id, x.nextShiftAt]))).get(id);
     // What this server has installed, by name. Unknown (no tools hook): say nothing is missing.
-    const installed = this.deps.tools ? new Set(this.deps.tools.list([]).tools.map((t) => t.name)) : null;
-    const repos = this.deps.repos?.list() ?? [];
-    const spaces = this.deps.repos?.workspaces() ?? [];
+    let installed: Set<string> | undefined;
+    const isInstalled = (name: string) => !this.deps.tools || (installed ??= new Set(this.deps.tools.list([]).tools.map((t) => t.name))).has(name);
+    let places: { repos: ConnectedRepo[]; spaces: OrgWorkspace[] } | undefined;
     // A manager saved before their name was known is stored under their
     // Slack id: show the name anyone else has for them.
-    const named = new Map<string, string>();
-    for (const t of this.deps.people?.() ?? []) if (t.slackUserId && !SLACK_ID.test(t.name)) named.set(t.slackUserId, t.name);
-    for (const x of roster) if (x.manager?.slackUserId && !SLACK_ID.test(x.manager.name)) named.set(x.manager.slackUserId, x.manager.name);
-    const display = (m: { name: string; slackUserId?: string }) => (SLACK_ID.test(m.name) && m.slackUserId ? named.get(m.slackUserId) ?? m.name : m.name);
+    let named: Map<string, string> | undefined;
+    const knownNames = () => {
+      if (named) return named;
+      named = new Map<string, string>();
+      for (const t of this.deps.people?.() ?? []) if (t.slackUserId && !SLACK_ID.test(t.name)) named.set(t.slackUserId, t.name);
+      for (const x of roster) if (x.manager?.slackUserId && !SLACK_ID.test(x.manager.name)) named.set(x.manager.slackUserId, x.manager.name);
+      return named;
+    };
+    const display = (m: { name: string; slackUserId?: string }) => (SLACK_ID.test(m.name) && m.slackUserId ? knownNames().get(m.slackUserId) ?? m.name : m.name);
     const placeOf = (dir?: string): WorkerSummary['place'] => {
       if (!dir) return undefined;
-      const repo = repos.find((r) => r.path === dir);
+      places ??= { repos: this.deps.repos?.list() ?? [], spaces: this.deps.repos?.workspaces() ?? [] };
+      const repo = places.repos.find((r) => r.path === dir);
       if (repo) return { kind: 'repo', name: repo.name };
-      const ws = spaces.find((x) => x.rootPath === dir);
+      const ws = places.spaces.find((x) => x.rootPath === dir);
       if (ws) return { kind: 'workspace', name: ws.name, repos: ws.repos };
       return { kind: 'folder', name: dir.split(/[\\/]/).filter(Boolean).pop() ?? dir };
     };
-    return roster
-      .filter((w) => (!onlyId || w.id === onlyId) && canSee(policy, roster, w.id, caller))
+    return shown
       .map((w) => {
         const manager = managerFor(roster, w.id);
-        const shared = (this.policy().sharedMcpServers ?? []).filter((n) => !(w.mcpServers ?? []).includes(n));
+        const shared = (policy.sharedMcpServers ?? []).filter((n) => !(w.mcpServers ?? []).includes(n));
         const tools = [
-          ...(w.mcpServers ?? []).map((name) => ({ name, ok: !installed || installed.has(name), ...this.scopeOf(w, name) })),
+          ...(w.mcpServers ?? []).map((name) => ({ name, ok: isInstalled(name), ...this.scopeOf(w, name) })),
           // The org's shared tools, which it gets without anyone giving them.
-          ...shared.map((name) => ({ name, ok: !installed || installed.has(name), shared: true, ...this.scopeOf(w, name) })),
+          ...shared.map((name) => ({ name, ok: isInstalled(name), shared: true, ...this.scopeOf(w, name) })),
         ];
         const boss = w.reportsTo ? roster.find((x) => x.id === w.reportsTo) : undefined;
+        const state = workerState(w, runsBy.get(w.id) ?? []);
         return {
           id: w.id,
           name: w.name,
@@ -1058,8 +1083,8 @@ export class OrgService {
           youManage: canManage(policy, roster, w.id, caller),
           schedule: scheduleText(w.cadence),
           cadence: w.cadence,
-          nextRunAt: w.enabled ? next.get(w.id) ?? null : null,
-          state: this.deps.planning?.(w.id) && workerState(w, runs) === 'idle' ? 'working' : workerState(w, runs),
+          nextRunAt: w.enabled ? nextShift(w.id) ?? null : null,
+          state: this.deps.planning?.(w.id) && state === 'idle' ? 'working' : state,
           tools,
           ...(w.projectPath ? { place: placeOf(w.projectPath) } : {}),
         };
@@ -1198,21 +1223,24 @@ export class OrgService {
     };
   }
 
-  private waitingCounts(): Map<UUID, number> {
+  /// What waits on each worker's manager, from these runs and its proposals:
+  /// `onlyId` counts that worker's alone.
+  private waitingCounts(runs: readonly FlowRun[], onlyId?: UUID): Map<UUID, number> {
     const out = new Map<UUID, number>();
-    for (const run of this.deps.runs.listRuns()) {
-      if (pauseKind(run) && run.workerId) out.set(run.workerId, (out.get(run.workerId) ?? 0) + 1);
+    for (const run of runs) {
+      if (pauseKind(run) && run.workerId && (!onlyId || run.workerId === onlyId)) out.set(run.workerId, (out.get(run.workerId) ?? 0) + 1);
     }
-    for (const b of this.proposalBatches()) out.set(b.workerId, (out.get(b.workerId) ?? 0) + 1);
+    for (const b of this.proposalBatches(onlyId)) out.set(b.workerId, (out.get(b.workerId) ?? 0) + 1);
     return out;
   }
 
   // ---- PROPOSALS --------------------------------------------------------
 
-  private proposalBatches(): ProposalBatch[] {
+  /// `onlyId`: that worker's proposals alone.
+  private proposalBatches(onlyId?: UUID): ProposalBatch[] {
     const out: ProposalBatch[] = [];
     for (const o of this.deps.batches?.list() ?? []) {
-      if (o.origin?.kind !== 'worker') continue;
+      if (o.origin?.kind !== 'worker' || (onlyId && o.origin.workerId !== onlyId)) continue;
       const items = o.items.filter((i) => i.status === 'proposed');
       if (!items.length) continue;
       out.push({
@@ -1681,6 +1709,7 @@ export class OrgService {
   }
 
   private putAsk(record: AskRecord): void {
+    this.changes++;
     const all = this.allAsks().filter((a) => a.id !== record.id);
     all.push(record);
     if (this.deps.asks) this.deps.asks.save(all);
@@ -2866,6 +2895,7 @@ export class OrgService {
   // ---- AUDIT ------------------------------------------------------------
 
   private record(caller: OrgCaller, what: string): void {
+    this.changes++;
     const entry: AuditEntry = {
       at: this.now(),
       by: caller.name,
@@ -2979,6 +3009,7 @@ export class OrgService {
   /// Useful or not, on one piece of finished work. It lands in the worker's
   /// journal as a note, so the next run it plans leans toward what was useful.
   rate(caller: OrgCaller, args: { entryId: string; useful: boolean; note?: string }): Result {
+    this.changes++;
     if (args.entryId.startsWith('file:')) {
       // A team file kept in the Library: whoever can see the team may rate it.
       const kept = this.keptFiles().find((k) => `file:${k.id}` === args.entryId);
@@ -3436,13 +3467,16 @@ export class OrgService {
     };
   }
 
-  /// Every thread of one worker, as this caller sees them. The first page
-  /// builds them fresh; a page further back, asked for soon after, reuses
-  /// that build instead of walking the whole history again.
+  /// Every thread of one worker, as this caller sees them. A page further
+  /// back, asked for soon after, reuses the last build instead of walking the
+  /// whole history again. So does a first page asked for again within a
+  /// moment, unless something changed through here since (an ask, a
+  /// decision, a rating), so what someone just did shows at once.
   private threadsFor(caller: OrgCaller, w: Worker, paging: boolean): WorkThread[] {
     const key = `${w.id}|${caller.slackUserId ?? ''}|${caller.name}|${caller.admin ? 1 : 0}`;
     const hit = this.threadBuilds.get(key);
-    if (paging && hit && this.now() - hit.at < THREAD_REUSE_MS) return hit.all;
+    const age = hit ? this.now() - hit.at : Infinity;
+    if (hit && (paging ? age < THREAD_REUSE_MS : age < FIRST_PAGE_REUSE_MS && hit.changes === this.changes)) return hit.all;
     const filed = new Map<string, { entryId: string; title: string; rating?: WorkItem['rating'] }>();
     for (const it of this.workItems([w], 0, 1000)) {
       if (it.runId && !filed.has(it.runId)) filed.set(it.runId, { entryId: it.entryId, title: it.title, ...(it.rating ? { rating: it.rating } : {}) });
@@ -3459,12 +3493,15 @@ export class OrgService {
       now: this.now(),
     });
     this.threadBuilds.delete(key);
-    this.threadBuilds.set(key, { at: this.now(), all });
+    this.threadBuilds.set(key, { at: this.now(), all, changes: this.changes });
     if (this.threadBuilds.size > 50) this.threadBuilds.delete(this.threadBuilds.keys().next().value as string);
     return all;
   }
 
-  private threadBuilds = new Map<string, { at: number; all: WorkThread[] }>();
+  private threadBuilds = new Map<string, { at: number; all: WorkThread[]; changes: number }>();
+  /// Counts what changed through here (asks, the decision log, ratings), so a
+  /// reused build is never older than the last of them.
+  private changes = 0;
 
   /// Runs of this worker still under way, newest first.
   /// Every run going now on the workers this person can see, newest first:

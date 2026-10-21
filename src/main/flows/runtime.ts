@@ -5545,9 +5545,27 @@ async function computeRunDiffForRun(run: FlowRun): Promise<string | null> {
 /// wrote down, not what it built.
 const NOTE_FILE = /\.(?:md|markdown|txt)$/i;
 
+/// `.txt` files that a build, installer, test or web server reads, so changing
+/// one is a change to what the project does: dependency lists
+/// (`requirements*.txt`, anything under a `requirements/` folder,
+/// `constraints*.txt`), `CMakeLists.txt`, platform pins (`runtime.txt`,
+/// `apt.txt`, `packages.txt`, `version.txt`), served files (`robots.txt`,
+/// `ads.txt`, `app-ads.txt`, `security.txt`), and anything under a folder of
+/// test data or resources (`testdata/`, `fixtures/`, `__snapshots__/`,
+/// `resources/` and the like), where tests compare against it.
+const NOT_NOTE_TXT =
+  /(?:^|\/)(?:(?:requirements|test-?data|test_data|fixtures?|__snapshots__|snapshots|golden|resources)\/.*|[^/]*(?:requirements|constraints)[^/]*|cmakelists|runtime|apt|packages|version|robots|ads|app-ads|security)\.txt$/i;
+
+/// Whether a changed path is only a note.
+export function isNoteFile(path: string): boolean {
+  return NOTE_FILE.test(path) && !NOT_NOTE_TXT.test(path);
+}
+
 /// Whether the run changed anything in its repo(s) since its baseline —
-/// edits, commits, new files — beyond notes. True when it can't be measured,
-/// so a step gated on it runs rather than being skipped on a guess.
+/// edits, commits, new files, deletions — beyond notes. True when it can't be
+/// measured, so a step gated on it runs rather than being skipped on a guess.
+/// Rename detection is off: a rename lists both its old and new path, so
+/// `auth.ts` renamed to `auth.md` still counts as a code change.
 export async function runChangedBeyondNotes(run: Pick<FlowRun, 'projectPath' | 'baselineCommit' | 'baselineCommitsByMember'>): Promise<boolean> {
   const repos = run.baselineCommitsByMember
     ? Object.values(run.baselineCommitsByMember).map((m) => ({ cwd: m.path, commit: m.commit }))
@@ -5557,12 +5575,12 @@ export async function runChangedBeyondNotes(run: Pick<FlowRun, 'projectPath' | '
   if (repos.length === 0) return true;
   for (const { cwd, commit } of repos) {
     const [tracked, untracked] = await Promise.all([
-      runGitAsync(['diff', '--name-only', commit], cwd),
+      runGitAsync(['diff', '--name-only', '--no-renames', commit], cwd),
       runGitAsync(['ls-files', '--others', '--exclude-standard'], cwd),
     ]);
     if (tracked.exitCode !== 0 || untracked.exitCode !== 0) return true;
     const paths = `${tracked.stdout}\n${untracked.stdout}`.split('\n').map((p) => p.trim()).filter(Boolean);
-    if (paths.some((p) => !NOTE_FILE.test(p))) return true;
+    if (paths.some((p) => !isNoteFile(p))) return true;
   }
   return false;
 }

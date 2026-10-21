@@ -428,9 +428,9 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
 
   // Connected repos add their PR commands to this list as they come and go.
   if (options.policy === 'allow-list') bindAllowList(options.allowTools);
-  // No process this server spawns may read or change credential files
-  // (credentialGuard.ts), and with the gateway on, none holds a remote
-  // tool's credentials at all (toolGateway.ts).
+  // Claude's file tools may not read or change credential files
+  // (credentialGuard.ts), and with the gateway on, a remote tool's token is
+  // in no worker's config (toolGateway.ts). Neither stops a shell command.
   guardCredentials(host().dataDir());
   const toolFile = { read: () => readClaudeMcpServers(), write: (name: string, c: McpServerConfig) => writeMcpServer('claude', name, c) };
   let gateway: ToolGateway | null = null;

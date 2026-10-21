@@ -18,6 +18,48 @@ export interface ProcessPerson {
 
 export type ProcessStageKind = 'team' | 'worker' | 'people';
 
+/// Who may see a process and put work into it, from Slack, the console or
+/// the app. Its owner, whoever made it, admins and the people in its stages
+/// always see it; only its owner, whoever made it, admins and its audience
+/// start items in it.
+///   private   no one else
+///   team      the members of these teams (the org's people teams), and
+///             anyone named beside them
+///   people    these people, and the members of any group named
+///   everyone  anyone in the org
+export type ProcessAudience = 'private' | 'team' | 'people' | 'everyone';
+
+export interface ProcessAccess {
+  who: ProcessAudience;
+  groups?: Array<{ id: string; name: string }>;
+  people?: ProcessPerson[];
+}
+
+/// A process's access as stored; absent is everyone, as processes made
+/// before access existed were.
+export function accessOf(def: Pick<ProcessDef, 'access'>): ProcessAccess {
+  return def.access ?? { who: 'everyone' };
+}
+
+/// An access setting from untrusted input, or a reason it isn't one.
+export function parseProcessAccess(raw: unknown): ProcessAccess | string {
+  const r = (raw ?? {}) as { who?: unknown; groups?: unknown; people?: unknown };
+  const who = r.who;
+  if (who !== 'private' && who !== 'team' && who !== 'people' && who !== 'everyone') return 'Say who can see and start it: only you, a team, certain people or everyone.';
+  if (who === 'private' || who === 'everyone') return { who };
+  const groups = (Array.isArray(r.groups) ? r.groups : [])
+    .filter((g): g is { id: string; name: string } => !!g && typeof g.id === 'string' && typeof g.name === 'string' && !!g.id.trim())
+    .slice(0, 50)
+    .map((g) => ({ id: g.id.trim(), name: g.name.trim() }));
+  const people = (Array.isArray(r.people) ? r.people : [])
+    .filter((p): p is ProcessPerson => !!p && typeof p.name === 'string' && !!p.name.trim())
+    .slice(0, 200)
+    .map((p) => ({ name: p.name.trim(), ...(typeof p.slackUserId === 'string' && p.slackUserId ? { slackUserId: p.slackUserId } : {}) }));
+  if (who === 'team' && !groups.length) return 'Pick the team that can see and start it.';
+  if (who === 'people' && !groups.length && !people.length) return 'Pick the people who can see and start it.';
+  return { who, ...(groups.length ? { groups } : {}), ...(people.length ? { people } : {}) };
+}
+
 export interface ProcessStage {
   id: string;
   name: string;
@@ -69,6 +111,8 @@ export interface ProcessDef {
   owner: ProcessPerson;
   stages: ProcessStage[];
   createdBy: string;
+  /// Who made it: they always see it and can start it, whoever owns it now.
+  creator?: ProcessPerson;
   createdAt: number;
   updatedAt: number;
   archived?: boolean;
@@ -80,6 +124,8 @@ export interface ProcessDef {
   codeIn?: { name: string; path: string };
   /// Items it starts by itself on a schedule: "every quarter, plan the roadmap".
   schedules?: ProcessSchedule[];
+  /// Who may see it and start items in it. Absent: everyone.
+  access?: ProcessAccess;
 }
 
 /// A recurring item: on each occurrence of `cadence`, an item with this
@@ -125,6 +171,9 @@ export interface ProcessItem {
   title: string;
   brief: string;
   initiator: ProcessPerson;
+  /// The person who put it in was an admin then (a token's own admin right,
+  /// which a stored person can't carry).
+  byAdmin?: boolean;
   source: 'console' | 'slack' | 'trigger' | 'api' | 'desktop' | 'schedule';
   sourceUrl?: string;
   /// Reopened from a finished item: "Verify found a problem with this".

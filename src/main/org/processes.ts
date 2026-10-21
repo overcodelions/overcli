@@ -11,6 +11,8 @@ import { randomUUID } from 'node:crypto';
 import type { OrgCaller } from '../../shared/org/policy';
 import {
   sendBackIndex,
+  accessOf,
+  parseProcessAccess,
   stageBrief,
   validateProcess,
   type ProcessArtifact,
@@ -105,6 +107,34 @@ function clip(text: string, max: number): string {
   return one.length > max ? `${one.slice(0, max - 1).trimEnd()}…` : one;
 }
 
+/// A process as someone outside it sees it: what it's for and its stages by
+/// name, enough to put an idea in. Not who leads, does or decides each
+/// stage, anyone's Slack id, where its code lives, how work comes in or its
+/// schedules.
+function outline(def: ProcessDef): ProcessDef {
+  const person = (p: ProcessPerson): ProcessPerson => ({ name: p.name });
+  return {
+    id: def.id,
+    name: def.name,
+    ...(def.purpose ? { purpose: def.purpose } : {}),
+    owner: person(def.owner),
+    stages: def.stages.map((st) => ({
+      id: st.id,
+      name: st.name,
+      kind: st.kind,
+      ...(st.kind === 'people' ? { approvers: [] } : {}),
+      ...(st.needs !== undefined ? { needs: st.needs } : {}),
+      ...(st.why ? { why: st.why } : {}),
+      ...(st.delayDays ? { delayDays: st.delayDays } : {}),
+      ...(st.repeat ? { repeat: st.repeat } : {}),
+    })),
+    createdBy: def.createdBy,
+    createdAt: def.createdAt,
+    updatedAt: def.updatedAt,
+    ...(def.archived ? { archived: def.archived } : {}),
+  };
+}
+
 export class ProcessService {
   private timer: ReturnType<typeof setInterval> | null = null;
   /// The store as last read or written. The poll, the board and Slack all
@@ -173,8 +203,45 @@ export class ProcessService {
     return def.stages.some((st) => (st.kind === 'people' ? this.deciders(st).some((p) => samePerson(p, caller)) : samePerson(this.stageOwner(def, st), caller)));
   }
 
+  /// Whether the caller is in the process's audience (ProcessAccess).
+  private inAudience(caller: { name: string; slackUserId?: string }, def: ProcessDef): boolean {
+    const access = accessOf(def);
+    if (access.who === 'everyone') return true;
+    if (access.who === 'private') return false;
+    // Groups are read now, so someone who joins or leaves a team gains or
+    // loses the process with it.
+    return (access.people ?? []).some((p) => samePerson(p, caller)) || (access.groups ?? []).some((g) => (this.deps.groupMembers?.(g.id) ?? []).some((p) => samePerson(p, caller)));
+  }
+
+  /// Whether the caller made the process. One made before creators were kept
+  /// matches by name only for callers with no Slack id, as samePerson does.
+  private made(caller: { name: string; slackUserId?: string }, def: ProcessDef): boolean {
+    return samePerson(def.creator ?? { name: def.createdBy }, caller);
+  }
+
+  /// Whether the caller sees the process at all: those in it, whoever made
+  /// it, and its audience.
+  private seesProcess(caller: OrgCaller, def: ProcessDef): boolean {
+    return this.seesAll(caller, def) || this.made(caller, def) || this.inAudience(caller, def);
+  }
+
+  /// Whether the caller may put work in: its owner, whoever made it, admins
+  /// and its audience.
+  private mayStart(caller: OrgCaller, def: ProcessDef): boolean {
+    return this.steers(caller, def) || this.made(caller, def) || this.inAudience(caller, def);
+  }
+
   private seesItem(caller: OrgCaller, def: ProcessDef, item: ProcessItem, all = this.seesAll(caller, def)): boolean {
     return all || samePerson(item.initiator, caller);
+  }
+
+  /// A process as this caller may see it: whole to its owner and admins;
+  /// without the code's path to the others in it; as an outline to everyone
+  /// else.
+  private shownTo(caller: OrgCaller, def: ProcessDef, all = this.seesAll(caller, def)): ProcessDef {
+    if (!all) return outline(def);
+    if (this.steers(caller, def) || !def.codeIn) return def;
+    return { ...def, codeIn: { name: def.codeIn.name, path: '' } };
   }
 
   private stageOwner(def: ProcessDef, stage: ProcessStage): ProcessPerson {
@@ -241,17 +308,18 @@ export class ProcessService {
 
   // ---- PROCESSES --------------------------------------------------------
 
-  list(caller: OrgCaller): Array<ProcessDef & { active: number; byStage: number[]; canSteer: boolean }> {
+  list(caller: OrgCaller): Array<ProcessDef & { active: number; byStage: number[]; canSteer: boolean; canStart: boolean }> {
     const s = this.peek();
     return s.processes
-      .filter((p) => !p.archived)
+      .filter((p) => !p.archived && this.seesProcess(caller, p))
       .map((p) => {
         const live = s.items.filter((i) => i.processId === p.id && i.status === 'active');
         return {
-          ...p,
+          ...this.shownTo(caller, p),
           active: live.length,
           byStage: p.stages.map((_, n) => live.filter((i) => i.stageIndex === n).length),
           canSteer: this.steers(caller, p),
+          canStart: this.mayStart(caller, p),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -261,14 +329,16 @@ export class ProcessService {
     caller: OrgCaller,
     id: string,
   ): Result<{
-    process: ProcessDef & { canSteer: boolean };
+    process: ProcessDef & { canSteer: boolean; canStart: boolean };
     items: ProcessItemView[];
     teams: Array<{ id: string; name: string }>;
     workers: Array<{ id: string; name: string }>;
   }> {
     const s = this.peek();
     const def = s.processes.find((p) => p.id === id && !p.archived);
-    if (!def) return { ok: false, error: 'No such process.' };
+    // A process the caller can't see is one that isn't there. Someone who put
+    // an item in before it was narrowed still reaches it through that item.
+    if (!def || (!this.seesProcess(caller, def) && !s.items.some((i) => i.processId === id && samePerson(i.initiator, caller)))) return { ok: false, error: 'No such process.' };
     const all = this.seesAll(caller, def);
     const items = s.items
       .filter((i) => i.processId === id && this.seesItem(caller, def, i, all))
@@ -279,10 +349,10 @@ export class ProcessService {
     const used = new Set(def.stages.map((st) => st.workerId).filter(Boolean));
     return {
       ok: true,
-      process: { ...def, canSteer: this.steers(caller, def) },
+      process: { ...this.shownTo(caller, def, all), canSteer: this.steers(caller, def), canStart: this.mayStart(caller, def) },
       items,
-      teams: this.deps.teams().map((t) => ({ id: t.id, name: t.name })),
-      workers: (this.deps.workers?.() ?? [])
+      teams: all ? this.deps.teams().map((t) => ({ id: t.id, name: t.name })) : [],
+      workers: (all ? (this.deps.workers?.() ?? []) : [])
         .filter((w) => used.has(w.id) || (this.deps.workerAccess?.(caller, w.id) ?? 'see'))
         .map((w) => ({
           id: w.id,
@@ -327,6 +397,8 @@ export class ProcessService {
       codeIn?: { name: string; path: string } | null;
       owner?: ProcessPerson;
       stages: ProcessStage[];
+      /// Absent: kept as it was; a new process is its owner's alone.
+      access?: unknown;
     },
   ): Result<{ process: ProcessDef; updated: boolean }> {
     const s = this.load();
@@ -343,6 +415,11 @@ export class ProcessService {
           name: caller.name,
           ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}),
         });
+    // A process speaks for its owner (it tells them things, and its items
+    // are theirs to steer), so only an admin gives one to someone else.
+    if (!this.deps.isAdmin(caller) && !samePerson(owner, caller) && !(existing && samePerson(existing.owner, owner))) {
+      return { ok: false, error: existing ? 'Only an admin can hand a process to someone else.' : 'A process you make is yours. An admin can hand it to someone else.' };
+    }
     const stages: ProcessStage[] = (input.stages ?? []).map(({ trusted: _never, ...st }) => ({
       ...st,
       id: st.id?.trim() || randomUUID().slice(0, 8),
@@ -351,6 +428,8 @@ export class ProcessService {
     }));
     const refused = this.checkStages(caller, existing, owner, stages);
     if (refused) return { ok: false, error: refused };
+    const access = input.access === undefined ? (existing ? existing.access : { who: 'private' as const }) : parseProcessAccess(input.access);
+    if (typeof access === 'string') return { ok: false, error: access };
     const def: ProcessDef = {
       id: existing?.id ?? randomUUID().slice(0, 12),
       name: input.name?.trim() ?? '',
@@ -361,10 +440,12 @@ export class ProcessService {
       owner,
       stages,
       createdBy: existing?.createdBy ?? caller.name,
+      ...(existing ? (existing.creator ? { creator: existing.creator } : {}) : { creator: { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) } }),
       createdAt: existing?.createdAt ?? this.now(),
       updatedAt: this.now(),
       ...(existing?.schedules?.length ? { schedules: existing.schedules } : {}),
       ...((input.localId ?? existing?.localId) ? { localId: input.localId ?? existing?.localId } : {}),
+      ...(access ? { access } : {}),
     };
     const invalid = validateProcess(def, new Set(this.deps.teams().map((t) => t.id)), this.deps.workers ? new Set(this.deps.workers().map((w) => w.id)) : undefined);
     if (invalid) return { ok: false, error: invalid };
@@ -559,11 +640,21 @@ export class ProcessService {
       source: ProcessItem['source'];
       sourceUrl?: string;
       fromItemId?: string;
+      /// The person putting it in is an admin.
+      byAdmin?: boolean;
     },
   ): Result<{ item: ProcessItem; process: ProcessDef }> {
     const s = this.load();
     const def = s.processes.find((p) => p.id === processId && !p.archived);
     if (!def) return { ok: false, error: 'No such process.' };
+    // People are held to its audience. A trigger or a schedule was set up by
+    // someone who could already steer it, so it goes in as they would.
+    const fromPerson = input.source !== 'trigger' && input.source !== 'schedule';
+    if (fromPerson && !this.mayStart({ ...from, admin: !!input.byAdmin }, def)) {
+      return this.seesProcess({ ...from, admin: false }, def)
+        ? { ok: false, error: `Only some people can start ${def.name}. Ask ${def.owner.name}, who owns it.` }
+        : { ok: false, error: 'No such process.' };
+    }
     const brief = input.brief?.trim() ?? '';
     if (brief.length < 3) return { ok: false, error: 'Say what the idea or request is.' };
     const title = clip(input.title?.trim() || brief.split('\n')[0], 100);
@@ -573,6 +664,7 @@ export class ProcessService {
       title,
       brief,
       initiator: from,
+      ...(input.byAdmin ? { byAdmin: true } : {}),
       source: input.source,
       ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       ...(input.fromItemId ? { fromItemId: input.fromItemId } : {}),
@@ -915,11 +1007,12 @@ export class ProcessService {
     delete item.startsAt;
     if (stage.kind === 'worker') {
       const owner = this.stageOwner(def, stage);
-      // As its lead when its manager put it in the process; else from the
-      // process's owner, which the worker takes as a proposal.
-      const trusted = stage.trusted === true;
+      // As from its manager only when its manager put the stage in the
+      // process and the item comes from them (or an admin). Anyone else's
+      // item reaches the worker as a proposal from them.
+      const trusted = stage.trusted === true && this.mayDirect(item, stage.workerId!);
       const res = this.deps.askWorker
-        ? this.deps.askWorker(stage.workerId!, stageBrief(def, item, index, this.artifactFiles(item)), trusted ? owner : def.owner, trusted)
+        ? this.deps.askWorker(stage.workerId!, stageBrief(def, item, index, this.artifactFiles(item)), trusted ? owner : item.initiator, trusted)
         : { ok: false as const, error: 'Worker stages are not running here.' };
       if (!res.ok) {
         item.stageNote = 'Not started';
@@ -967,6 +1060,14 @@ export class ProcessService {
       for (const p of who) this.deps.notify?.(p, text, { itemId: item.id, stageId: stage.id });
       this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}, waiting on ${this.decidersText(stage)} to decide.`);
     }
+  }
+
+  /// Whether whoever put an item in may direct this worker: its manager, or
+  /// an admin.
+  private mayDirect(item: ProcessItem, workerId: string): boolean {
+    if (item.byAdmin) return true;
+    const asker: OrgCaller = { name: item.initiator.name, ...(item.initiator.slackUserId ? { slackUserId: item.initiator.slackUserId } : {}), admin: false };
+    return this.deps.workerAccess?.(asker, workerId) === 'manage';
   }
 
   /// Earlier stages' pack files, by `taskId/name`, for the next brief.

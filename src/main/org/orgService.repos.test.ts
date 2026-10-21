@@ -193,14 +193,52 @@ describe("a worker's work as threads", () => {
 
   it('builds the threads once for a first page and the pages behind it', () => {
     const h = harness([run('r1', { kind: 'done', success: true } as FlowRun['state'], 3_000), run('r2', { kind: 'done', success: true } as FlowRun['state'], 1_000)]);
+    let clock = 10_000;
+    const deps = (h.svc as unknown as { deps: { now?: () => number; runs: { listRuns: () => FlowRun[] } } }).deps;
+    deps.now = () => clock;
     const first = h.svc.workerThreads(pat, 'Triage', { limit: 1 });
     if (!first.ok) throw new Error(first.error);
-    // The runs go; a page behind still reads the first page's build, a new first page does not.
-    (h.svc as unknown as { deps: { runs: { listRuns: () => FlowRun[] } } }).deps.runs.listRuns = () => [];
+    // The runs go; a page behind still reads the first page's build, a new first page a few seconds on does not.
+    deps.runs.listRuns = () => [];
     const rest = h.svc.workerThreads(pat, 'Triage', { before: first.nextBefore! });
     expect(rest.ok && rest.threads.map((t) => t.id)).toEqual(['run:r2']);
+    clock += 5_500;
     const fresh = h.svc.workerThreads(pat, 'Triage', { limit: 1 });
     expect(fresh.ok && fresh.threads).toEqual([]);
+  });
+
+  it('reuses a first page asked for again within a moment, then builds it afresh', () => {
+    const runs = [run('r1', { kind: 'running', currentStepId: 'compare' } as FlowRun['state'], 3_000)];
+    const h = harness(runs);
+    let clock = 10_000;
+    (h.svc as unknown as { deps: { now?: () => number } }).deps.now = () => clock;
+    const ids = () => {
+      const t = h.svc.workerThreads(pat, 'Triage');
+      if (!t.ok) throw new Error(t.error);
+      return t.threads.map((x) => x.id);
+    };
+    expect(ids()).toEqual(['run:r1']);
+    // A run starts outside this service: a poll a moment later still reads the last build,
+    runs.push(run('r2', { kind: 'running', currentStepId: 'capture' } as FlowRun['state'], 4_000));
+    clock += 3_200;
+    expect(ids()).toEqual(['run:r1']);
+    // while another caller's first look builds their own.
+    expect(h.svc.workerThreads(admin, 'Triage')).toMatchObject({ ok: true, total: 2 });
+    // Past the moment, it shows.
+    clock += 2_000;
+    expect(ids()).toEqual(['run:r2', 'run:r1']);
+  });
+
+  it('shows an ask made through here at once, however soon after the last page', async () => {
+    const h = harness();
+    (h.svc as unknown as { deps: { now?: () => number } }).deps.now = () => 10_000;
+    const before = h.svc.workerThreads(pat, 'Triage');
+    expect(before.ok && before.threads).toEqual([]);
+    const asked = h.svc.startAsk(pat, 'Triage', 'how are acme signups this week', 'console');
+    if (!asked.ok) throw new Error(asked.error);
+    await asked.done;
+    const after = h.svc.workerThreads(pat, 'Triage');
+    expect(after.ok && after.threads.map((t) => t.prompt)).toEqual(['how are acme signups this week']);
   });
 });
 
