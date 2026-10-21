@@ -48,6 +48,8 @@ import type { PersonalizationQuestion, UserProfile } from './flows/personalize';
 import type { WorkerReport } from './flows/workerReport';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { Team, TeamHireRequest, TeamMember, TeamRosterDraft, TeamTask } from './flows/team';
+import type { ProcessDef, ProcessItem, ProcessSchedule, ProcessStage } from './org/process';
+import type { ScheduleTrigger } from './flows/schedule';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 import type { InboundHandoff } from './handoff';
@@ -1182,6 +1184,10 @@ export interface AppSettings {
   /// for everyone it does not apply to. Turning it on is the one decision
   /// needed before anything else in that pane means something.
   servicesEnabled?: boolean;
+  /// Org workers (alpha): Slack, signing in to an org's server, publishing
+  /// workers to it, and the guide to running one. Off until asked for —
+  /// it is early, and a person running workers on their own needs none of it.
+  orgAlpha?: boolean;
   /// Stop every running service when overcli quits. On by default, because a
   /// service left behind is a port held by a process the user has no way to
   /// find. Turn it off to keep a database or a backend up between sessions.
@@ -1226,6 +1232,20 @@ export interface AppSettings {
   /// every finished shift gets muted, and a muted channel is the same as no
   /// webhook — see `src/main/webhookNotify.ts`.
   notificationWebhookFilter?: 'all' | 'failures';
+  /// Connect to Slack so workers' questions and approval requests reach their
+  /// managers as DMs, and the replies come back. The bot and app tokens live
+  /// in `host().secrets` (or `$OVERCLI_SLACK_BOT_TOKEN` /
+  /// `$OVERCLI_SLACK_APP_TOKEN` headless), never here. See
+  /// `src/main/slack/slackBridge.ts`.
+  slackEnabled?: boolean;
+  /// Your own Slack member ID. On the desktop the Slack front door (a DM or
+  /// an @mention asking for work) takes requests from this person only — it
+  /// is your laptop and your model account. Unset: it takes none.
+  slackOwnerId?: string;
+  /// Your org's overcli control plane (`overcli serve --control`), for
+  /// publishing workers you build here to the org. The token lives in
+  /// `host().secrets`, never here.
+  orgServerUrl?: string;
   /// Hard USD ceiling for a SINGLE flow run. When a run's accumulated spend
   /// (`FlowRun.costUSD`) crosses this, the runtime aborts it mid-execution
   /// and fires a notification naming the flow, the cost and the ceiling.
@@ -1470,6 +1490,54 @@ export interface IPCInvokeMap {
   /// environment is the store — so the UI can say where to put it instead of
   /// reporting a save that did not happen.
   'notify:setWebhookToken': (token: string | null) => { ok: boolean };
+  /// The Slack bridge: whether it is on, connected, and which tokens exist.
+  /// Like the webhook token, the tokens themselves never come back.
+  'slack:status': () => SlackStatus;
+  /// Store a Slack token, or clear it with null. `ok: false` with an error
+  /// for a token of the wrong shape, or a host that cannot persist secrets.
+  'slack:setToken': (args: { kind: 'bot' | 'app'; token: string | null }) => { ok: boolean; error?: string };
+  /// Reconnect with the stored tokens — after changing one, say. The on/off
+  /// switch is `AppSettings.slackEnabled`, applied when settings are saved.
+  'slack:reconnect': () => { ok: boolean; error?: string };
+  /// Check the bot token against Slack without starting anything.
+  'slack:test': () => { ok: boolean; team?: string; error?: string };
+  /// Your org server: whether a token is stored, and who it says you are.
+  'org:status': (args?: { url?: string }) => { tokenConfigured: boolean; fromEnv: boolean; who?: { org: string; name: string; canHire: boolean }; error?: string };
+  'org:setToken': (token: string | null) => { ok: boolean; error?: string };
+  /// Sign this app in to an org: an invite link signs in at once; a server
+  /// address starts pairing — the browser opens on the org's page to confirm
+  /// the code, and an `orgSignIn` event says how it ended.
+  'org:signIn': (args: { url: string }) =>
+    | { ok: true; signedIn: true; org: string; name: string }
+    | { ok: true; signedIn: false; userCode: string; verifyUrl: string }
+    | { ok: false; error: string };
+  'org:cancelSignIn': () => { ok: true };
+  'org:signOut': () => { ok: boolean };
+  /// Publish one of your workers to the org server, under the org's rules.
+  /// `signIn` on a failure that signing in fixes, so the card links to it.
+  'org:publishWorker': (args: { id: UUID; visibility?: 'private' | 'team' | 'org' }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  /// A team, its members published first (or reused), onto the org.
+  'org:publishTeam': (args: { id: UUID }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  /// A local process onto the org. Its teams have to be published first:
+  /// the server finds each by the id it had here.
+  'org:publishProcess': (args: { id: string }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
+  /// What "Publish my setup" would send: tools (key names only), workspaces
+  /// and projects. Nothing secret crosses to the renderer.
+  'org:setupPreview': () =>
+    | {
+        ok: true;
+        server: string;
+        /// The server is this machine: it already reads your own config.
+        sameMachine: boolean;
+        admin: boolean;
+        tools: Array<{ name: string; kind: 'command' | 'http'; target: string; keys: string[] }>;
+        workspaces: Array<{ id: UUID; name: string; projectIds: UUID[] }>;
+        projects: Array<{ id: UUID; name: string; url?: string }>;
+      }
+    | { ok: false; error: string; signIn?: true };
+  /// Publish the picked parts. Key values are read in main, for the tools in
+  /// `sendKeysFor` only.
+  'org:publishSetup': (args: { tools: string[]; sendKeysFor: string[]; workspaceIds: UUID[]; projectIds: UUID[] }) => { ok: true; message: string } | { ok: false; error: string; signIn?: true };
   /// The last outbound webhook attempt, so Settings can say the webhook is
   /// configured but not arriving. Null when nothing has been sent since the
   /// app started. In-memory and desktop-only: a headless run's failures go to
@@ -2265,6 +2333,8 @@ export interface IPCInvokeMap {
   /// Roots whose explorer is in its own window, for a reloaded main window.
   'explorer:list': () => string[];
   'app:openExternal': (url: string) => void;
+  /// The org server the app runs on this Mac, to try the org setup.
+  'org:localServer': (action: 'start' | 'stop' | 'status' | 'linkUsed') => LocalOrgServerStatus;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
   /// Shell out to `claude -p "/usage"` for Claude's real limit percentages —
@@ -2722,21 +2792,73 @@ export interface IPCInvokeMap {
     | { ok: true }
     | { ok: false; error: string };
   'teams:accept': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// A comment on the work: a passage of a file, the questions or plan, or
+  /// to one member. Kept for every later piece; acted on now where it can be.
+  'teams:comment': (args: { taskId: UUID; text: string; file?: string; quote?: string; about?: 'questions' | 'plan' | 'coordinator'; workerId?: UUID }) =>
+    | { ok: true; comment: import('./flows/team').TeamComment }
+    | { ok: false; error: string };
+  /// Start a member's piece of the current stage again, with a note to it.
+  'teams:redoPiece': (args: { taskId: UUID; workerId: UUID; note?: string }) => { ok: true } | { ok: false; error: string };
   'teams:deleteTask': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Reveal a task's shared folder in Finder. By task id, not path: the
   /// folder lives under userData, outside what `fs:openPath` may open.
   'teams:openFolder': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Open one task file in its default app (a design page in the browser).
   'teams:openFile': (args: { taskId: UUID; name: string }) => { ok: true } | { ok: false; error: string };
-  'teams:roomAsk': (args: { taskId: UUID; text: string; attachments?: Attachment[] }) => { ok: true } | { ok: false; error: string };
+  /// `queued`: someone was answering, so it goes in when they finish.
+  'teams:roomAsk': (args: { taskId: UUID; text: string; attachments?: Attachment[] }) => { ok: true; queued?: boolean } | { ok: false; error: string };
   'teams:roomContinue': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
   'teams:roomStop': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
-  'teams:updatePack': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// `changes`: the wrap-up's "worth changing in the pack" items you picked;
+  /// the rewrite makes those and leaves the rest of the wrap-up's out.
+  'teams:updatePack': (args: { taskId: UUID; changes?: string[] }) => { ok: true } | { ok: false; error: string };
   'teams:roomStartWork': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:roomDismissWork': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:roomHandOff': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:readFile': (args: { taskId: UUID; name: string }) =>
     | { ok: true; body: string }
+    | { ok: false; error: string };
+  // Processes: one piece of work moving through teams and people's
+  // decisions, stage by stage. See shared/org/process.ts. On the desktop the
+  // caller is always this app's owner.
+  'processes:list': () => ProcessSummary[];
+  'processes:get': (args: { id: string }) =>
+    | { ok: true; process: ProcessDef & { canSteer: boolean }; items: ProcessItemView[]; teams: Array<{ id: string; name: string }>; workers?: Array<{ id: string; name: string }> }
+    | { ok: false; error: string };
+  /// How work comes in besides by hand: its schedules and its tool watches.
+  'processes:intake': (args: { id: string }) => {
+    schedules: Array<ProcessSchedule & { nextAt: number; when: string }>;
+    watches: Array<{ id: string; server: string; tool: string; everyMinutes: number; lastFiredAt?: number; lastError?: string }>;
+  };
+  'processes:addSchedule': (args: { id: string; cadence: ScheduleTrigger; title: string; brief: string }) => { ok: true } | { ok: false; error: string };
+  'processes:removeSchedule': (args: { id: string; scheduleId: string }) => { ok: true } | { ok: false; error: string };
+  /// The tools a watch can ask, the calls one offers, and what a watch sees now.
+  'processes:tools': () => string[];
+  'processes:toolCalls': (args: { server: string }) => { ok: true; tools: Array<{ name: string; description?: string }> } | { ok: false; error: string };
+  'processes:testWatch': (args: { server: string; tool: string; args: Record<string, unknown> }) =>
+    | { ok: true; items: Array<{ id: string; title: string; url?: string }> }
+    | { ok: false; error: string };
+  'processes:addWatch': (args: { id: string; server: string; tool: string; args: Record<string, unknown>; everyMinutes: number; instructions?: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  'processes:removeWatch': (args: { triggerId: string }) => { ok: true } | { ok: false; error: string };
+  /// Create (no `id`) or change one. Checked with `validateProcess`.
+  /// Where a process's code can live: this app's workspaces and projects.
+  'processes:places': () => Array<{ name: string; path: string; kind: 'workspace' | 'project' }>;
+  'processes:save': (args: { id?: string; name: string; purpose?: string; about?: string; templateId?: string; codeIn?: { name: string; path: string } | null; stages: ProcessStage[] }) =>
+    | { ok: true; process: ProcessDef; updated: boolean }
+    | { ok: false; error: string };
+  'processes:archive': (args: { id: string }) => { ok: true } | { ok: false; error: string };
+  /// A process drafted from a picture of one: `image` is a data URL or a
+  /// file path. Not saved. See main/org/processDraft.ts.
+  'processes:draftFromImage': (args: { image: string; note?: string }) =>
+    | { ok: true; draft: { name: string; about?: string; stages: Array<ProcessStage & { suggestedRole?: string }> }; notes: string[] }
+    | { ok: false; error: string };
+  'processes:submit': (args: { processId: string; title?: string; brief: string }) =>
+    | { ok: true; item: ProcessItem }
+    | { ok: false; error: string };
+  'processes:act': (args: { itemId: string; action: ProcessItemAction; note?: string; stageIndex?: number }) =>
+    | { ok: true; item: ProcessItem }
     | { ok: false; error: string };
   'workers:list': () => Array<{
     worker: Worker;
@@ -3873,7 +3995,26 @@ export interface TerminalSession {
   poppedOut?: boolean;
 }
 
+/// What Settings shows about the Slack bridge. Never carries a token.
+export interface SlackStatus {
+  enabled: boolean;
+  connected: boolean;
+  team?: string;
+  error?: string;
+  /// Questions and approvals DMed and still waiting on a manager.
+  openThreads: number;
+  botConfigured: boolean;
+  appConfigured: boolean;
+  /// Set from the environment, so the UI cannot change it.
+  botFromEnv: boolean;
+  appFromEnv: boolean;
+}
+
 export type MainToRendererEvent =
+  | { type: 'slackStatus'; status: SlackStatus }
+  /// How a pairing sign-in to the org server ended.
+  /// `orgServerUrl` on success: main saved it, the renderer's copy follows.
+  | { type: 'orgSignIn'; outcome: 'signedIn' | 'denied' | 'expired' | 'failed'; org?: string; name?: string; error?: string; orgServerUrl?: string }
   | { type: 'terminalData'; id: string; data: string }
   | { type: 'terminalExit'; id: string; exitCode: number }
   /// Main started a drawer shell on its own (a login, an install): show it.
@@ -4242,3 +4383,35 @@ export const DEFAULT_SETTINGS: AppSettings = {
   updateChannel: 'stable',
   idleSessionTimeoutMinutes: 30,
 };
+
+/// An org server the desktop app started on this Mac ("Try it on this Mac").
+export interface LocalOrgServerStatus {
+  running: boolean;
+  starting: boolean;
+  /// Its console, e.g. http://127.0.0.1:7420.
+  url: string | null;
+  /// The one-time link that signs in the first admin, until it has been used.
+  firstAdminLink: string | null;
+  stateDir: string;
+  error: string | null;
+  log: string[];
+}
+
+/// A process on the list: how many items are live, and at which stage.
+export type ProcessSummary = ProcessDef & { active: number; byStage: number[]; canSteer: boolean };
+
+/// An item as the board shows it to one person (see ProcessService.view).
+export interface ProcessItemView extends ProcessItem {
+  stageName: string;
+  /// The viewer may approve, send back or stop it here.
+  canDecide: boolean;
+  /// The viewer owns the process: stop, move, start again.
+  canSteer: boolean;
+  /// It waits on the viewer: a decision, or their team's or worker's
+  /// questions, plan, pack or paused run.
+  yourTurn: boolean;
+  /// Who it waits on, when it waits on someone.
+  waitsOn?: string;
+}
+
+export type ProcessItemAction = 'approve' | 'sendBack' | 'stop' | 'retry' | 'move' | 'note' | 'startNow';

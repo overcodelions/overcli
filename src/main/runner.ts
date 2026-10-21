@@ -82,7 +82,7 @@ import { recordOllamaUsage } from './ollamaUsageLog';
 import { claudeSupportsEffort, ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
-import { ClaudeSdkClient } from './claude-sdk-client';
+import { ClaudeSdkClient, type ClaudeSdkStartOptions } from './claude-sdk-client';
 import { claudeSdkExecutablePath } from './claudeSdkExecutable';
 import { claudeArtifactEnv } from '../shared/claudeArtifacts';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
@@ -115,11 +115,14 @@ import {
   sandboxSupported,
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
-import { blockedMcpServerTools, buildClaudeMcpConfigArg } from './mcpConfig';
+import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers } from './mcpConfig';
 import { knownMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
 import { isSafeIdSegment } from '../shared/flows/safeId';
+import { stripSecrets } from './org/secrets';
+import { credentialDenyRules } from './org/credentialGuard';
+import { bindToolGateway, boundGatewayTools } from './org/toolGateway';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -629,11 +632,23 @@ export function mcpBlockedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' 
   return blockedMcpServerTools(args.mcpAllowlist, args.cwd, undefined, seen);
 }
 
-function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string {
+/// Servers kept off the turn, plus calls its worker's scope refuses, plus the
+/// credential files an org server keeps from every process (credentialGuard.ts).
+function deniedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'mcpDeniedTools'>): string[] | undefined {
+  const all = [...(mcpBlockedTools(args) ?? []), ...(args.backend === 'claude' ? [...(args.mcpDeniedTools ?? []), ...credentialDenyRules()] : [])];
+  return all.length ? [...new Set(all)] : undefined;
+}
+
+/// A run's own tools, each gateway one carrying a key bound to the run
+/// (toolGateway.ts), so the gateway knows whose call it is. A run on the
+/// whole config gets just its gateway tools here, on top of that config.
+function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'conversationId' | 'skipGlobalMcp' | 'turbo'>): string {
+  if (args.backend !== 'claude') return '';
   const allowlist = effectiveMcpAllowlist(args.mcpAllowlist);
-  return args.backend === 'claude' && allowlist
-    ? buildClaudeMcpConfigArg(allowlist, args.cwd) ?? ''
-    : '';
+  if (allowlist) return bindToolGateway(buildClaudeMcpConfigArg(allowlist, args.cwd) ?? '', args.conversationId);
+  if (args.skipGlobalMcp || args.turbo) return '';
+  const bound = boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId);
+  return Object.keys(bound).length ? JSON.stringify({ mcpServers: bound }) : '';
 }
 
 export function claudeMcpLaunchFingerprint(
@@ -765,6 +780,9 @@ interface SendArgs {
   skipGlobalMcp?: boolean;
   /// See the note on `oneShot`'s `mcpAllowlist`.
   mcpAllowlist?: string[];
+  /// MCP calls this turn may not make (a worker's tool scope), refused by the
+  /// CLI itself whatever the permission mode. claude only.
+  mcpDeniedTools?: string[];
   codexRolloutPaths?: string[];
   attachments?: Attachment[];
   reviewBackend?: string | null;
@@ -1115,6 +1133,8 @@ export class RunnerManager {
       /// caller can resume the same thread next time.
       sessionId?: string;
       finish: (r: OneShotResult) => void;
+      /// Approval requests this turn may grant itself (see `oneShot`'s `permit`).
+      permit?: (toolName: string) => boolean;
       /// Live progress plumbing — populated only when the caller passed an
       /// `onProgress` hook (the orchestrator producer, which streams its
       /// investigation into the UI). `partial` is the cumulative snapshot of
@@ -1511,6 +1531,11 @@ export class RunnerManager {
     /// every one of their tool schemas on every shift and every desk message.
     /// Undefined inherits everything, as before; `[]` loads none.
     mcpAllowlist?: string[];
+    /// See SendArgs.mcpDeniedTools.
+    mcpDeniedTools?: string[];
+    /// Which approval requests this hidden turn grants itself. Nobody can
+    /// answer one, so every other request is refused at once. Absent: all are.
+    permit?: (toolName: string) => boolean;
     /// Pin this turn to a conversation the caller owns, instead of a
     /// throwaway. Paired with `resumeSessionId` it makes consecutive
     /// one-shots a single thread — see `OneShotResult.sessionId`.
@@ -1585,6 +1610,7 @@ export class RunnerManager {
         seenToolIds: new Set(),
         onProgress: args.onProgress,
         bump: idle.bump,
+        ...(args.permit ? { permit: args.permit } : {}),
       });
       const sent = this.send({
         conversationId,
@@ -1595,6 +1621,7 @@ export class RunnerManager {
         model: args.model,
         skipGlobalMcp: args.skipGlobalMcp,
         mcpAllowlist: args.mcpAllowlist,
+        ...(args.mcpDeniedTools?.length ? { mcpDeniedTools: args.mcpDeniedTools } : {}),
         sessionId: args.resumeSessionId,
         // Default: pure generation with no edits, prompts off so the hidden
         // conversation can't stall on an unanswerable approval. Callers that
@@ -1636,8 +1663,11 @@ export class RunnerManager {
         // model carries on and ends its reply. (A coordinator in plan mode
         // wrote its whole plan, then called ExitPlanMode — which asks — and
         // sat there.)
+        // The one exception is what the caller said this turn may do: a
+        // worker reading its own tools while it works out an answer.
         if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
-          this.respondPermission(cid, ev.kind.info.requestId, false, undefined, 'once', ev.kind.info.toolName);
+          const ok = !!waiter.permit?.(ev.kind.info.toolName);
+          this.respondPermission(cid, ev.kind.info.requestId, ok, undefined, 'once', ev.kind.info.toolName);
           continue;
         }
         if (ev.kind.type !== 'assistant' || ev.reviewer) continue;
@@ -1696,7 +1726,7 @@ export class RunnerManager {
       attachments: args.attachments,
       allowedDirs: args.allowedDirs,
       allowedTools: args.backend === 'ollama' ? undefined : args.enabledTools,
-      disallowedTools: mcpBlockedTools(args),
+      disallowedTools: deniedTools(args),
       askRules: chatAskRules(args),
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
       chrome: this.chromeFor(args),
@@ -1989,10 +2019,13 @@ export class RunnerManager {
       // or Claude in Chrome works on one transport and not the other.
       chrome: this.chromeFor(args),
       appendSystemPrompt: claudeSystemPromptAppend(narrateFor(args)),
+      // This transport loads the whole config, so its gateway tools get the
+      // conversation's own key, as the cli transport's do.
+      mcpServers: boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId) as ClaudeSdkStartOptions['mcpServers'],
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.
-      env: { ...process.env, ...claudeArtifactEnv(this.artifactsFor('claude')) },
+      env: { ...stripSecrets(process.env), ...claudeArtifactEnv(this.artifactsFor('claude')) },
       // We don't ship the SDK's bundled binary; point it at the user's
       // installed `claude` (the same one the cli transport spawns).
       pathToClaudeCodeExecutable: claudeSdkExecutablePath(
@@ -4937,7 +4970,7 @@ export class RunnerManager {
   /// codex/gemini call sites only want PATH resolution; naming it opts the
   /// spawn into Claude-specific env (today: the artifact gate).
   private buildEnv(binary: string, backend?: Backend): NodeJS.ProcessEnv {
-    const base = buildBackendEnv(process.env, binary);
+    const base = buildBackendEnv(stripSecrets(process.env), binary);
     if (backend !== 'claude') return base;
     return { ...base, ...claudeArtifactEnv(this.artifactsFor(backend)) };
   }

@@ -95,7 +95,7 @@ export function CheckpointReview({
                 >
                   <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink">{f.path}</span>
                   <span className="shrink-0 text-[11px] tabular-nums text-emerald-500">+{f.additions}</span>
-                  <span className="shrink-0 text-[11px] tabular-nums text-red-400">−{f.deletions}</span>
+                  <span className="shrink-0 text-[11px] tabular-nums text-red-600 dark:text-red-400">−{f.deletions}</span>
                 </li>
               ))}
               {changes.files.length > 12 && (
@@ -357,7 +357,7 @@ function StatePill({ row, waiting }: { row: QueueRow; waiting: boolean }) {
     <span
       className={
         'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ' +
-        (waiting ? 'bg-amber-400 text-amber-950' : 'text-emerald-400')
+        (waiting ? 'bg-amber-400 text-amber-950' : 'text-emerald-700 dark:text-emerald-400')
       }
       style={waiting ? undefined : { background: 'color-mix(in srgb, #34d399 12%, transparent)' }}
     >

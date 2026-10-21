@@ -86,6 +86,8 @@ function makeHarness(
     runHandoffOutputs?: WorkerEngineDeps['runHandoffOutputs'];
     runIdForConversation?: WorkerEngineDeps['runIdForConversation'];
     flowsFor?: WorkerEngineDeps['flowsFor'];
+    sharedMcpServers?: WorkerEngineDeps['sharedMcpServers'];
+    activeRuns?: WorkerEngineDeps['activeRuns'];
     pieceFlow?: WorkerEngineDeps['pieceFlow'];
     away?: WorkersAway;
   } = {},
@@ -234,6 +236,8 @@ function makeHarness(
     },
     generatedFlow: opts.generatedFlow,
     flowsFor: opts.flowsFor,
+    sharedMcpServers: opts.sharedMcpServers,
+    activeRuns: opts.activeRuns,
     pieceFlow: opts.pieceFlow,
     clearActivity: opts.clearActivity,
     deleteActivity: opts.deleteActivity,
@@ -373,6 +377,142 @@ describe('WorkerEngine flow supervision', () => {
       kind: 'escalate',
       reason: 'I need the private recipient list.',
     });
+  });
+});
+
+describe('WorkerEngine reporting chain', () => {
+  const question = {
+    workerId: 'analyst',
+    workerName: 'Ana',
+    flowName: 'Weekly summary',
+    projectPath: '/repo',
+    userPrompt: 'Summarize the week.',
+    step: { id: 'write', role: 'custom' as const, inputs: [], output: 'summary.md' },
+    question: 'Which segment counts as enterprise?',
+    artifacts: [],
+  };
+
+  it('climbs to the boss when the owner escalates, and says who answered', async () => {
+    const asked: Array<{ worker: string; prompt: string }> = [];
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'chief', name: 'Clara' }),
+        seedWorker({ id: 'analyst', name: 'Ana', reportsTo: 'chief' }),
+      ],
+      supervisorTurn: async (args) => {
+        asked.push({ worker: args.worker.id, prompt: args.prompt });
+        return args.worker.id === 'analyst'
+          ? { ok: true, text: '<escalate>No segment definition in my notes.</escalate>' }
+          : { ok: true, text: '<worker_answer>Over 500 seats.</worker_answer>' };
+      },
+    });
+    h.engine.start();
+    const result = await h.engine.answerFlowQuestion(question);
+    expect(result).toEqual({
+      kind: 'answer',
+      answer: 'Over 500 seats.',
+      answeredBy: { workerId: 'chief', workerName: 'Clara' },
+    });
+    expect(asked.map((a) => a.worker)).toEqual(['analyst', 'chief']);
+    expect(asked[1].prompt).toContain('ESCALATED TO YOU');
+    expect(asked[1].prompt).toContain('Ana: No segment definition in my notes.');
+  });
+
+  it('pauses for a person with every reason when the whole chain escalates', async () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'chief', name: 'Clara' }),
+        seedWorker({ id: 'analyst', name: 'Ana', reportsTo: 'chief' }),
+      ],
+      supervisorTurn: async (args) => ({
+        ok: true,
+        text: `<escalate>${args.worker.name} does not know.</escalate>`,
+      }),
+    });
+    h.engine.start();
+    const result = await h.engine.answerFlowQuestion(question);
+    expect(result).toEqual({
+      kind: 'escalate',
+      reason: 'Ana: Ana does not know.\nClara: Clara does not know.',
+    });
+  });
+
+  it('skips a paused boss and asks the one above it', async () => {
+    const asked: string[] = [];
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'top', name: 'Top' }),
+        seedWorker({ id: 'mid', name: 'Mid', reportsTo: 'top', enabled: false }),
+        seedWorker({ id: 'analyst', name: 'Ana', reportsTo: 'mid' }),
+      ],
+      supervisorTurn: async (args) => {
+        asked.push(args.worker.id);
+        return args.worker.id === 'top'
+          ? { ok: true, text: '<worker_answer>Yes.</worker_answer>' }
+          : { ok: true, text: '<escalate>Not mine.</escalate>' };
+      },
+    });
+    h.engine.start();
+    const result = await h.engine.answerFlowQuestion(question);
+    expect(asked).toEqual(['analyst', 'top']);
+    expect(result.kind).toBe('answer');
+  });
+
+  it('keeps the original escalation when nobody is above', async () => {
+    const h = makeHarness({
+      seed: [seedWorker({ id: 'analyst', name: 'Ana' })],
+      supervisorTurn: async () => ({ ok: true, text: '<escalate>Need a person.</escalate>' }),
+    });
+    h.engine.start();
+    expect(await h.engine.answerFlowQuestion(question)).toEqual({ kind: 'escalate', reason: 'Need a person.' });
+  });
+});
+
+describe('WorkerEngine org fields', () => {
+  it('refuses a boss that would make a loop', () => {
+    const h = makeHarness({
+      seed: [seedWorker({ id: 'a', name: 'A' }), seedWorker({ id: 'b', name: 'B', reportsTo: 'a' })],
+    });
+    h.engine.start();
+    const a = h.engine.get('a')!;
+    const res = h.engine.save({ ...a, reportsTo: 'b' });
+    expect(res).toMatchObject({ ok: false });
+    if (!res.ok) expect(res.error).toMatch(/loop/);
+  });
+
+  it('clears a manager the editor removed', () => {
+    const h = makeHarness({
+      seed: [seedWorker({ id: 'a', name: 'A', manager: { name: 'Pat', slackUserId: 'U0ACME01' }, visibility: 'org' })],
+    });
+    h.engine.start();
+    const { manager: _m, visibility: _v, ...rest } = h.engine.get('a')!;
+    const res = h.engine.save(rest);
+    expect(res.ok).toBe(true);
+    expect(h.engine.get('a')!.manager).toBeUndefined();
+    expect(h.engine.get('a')!.visibility).toBeUndefined();
+  });
+
+  it('moves reports up to their grand-boss when their boss is let go', () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'top', name: 'Top' }),
+        seedWorker({ id: 'mid', name: 'Mid', reportsTo: 'top' }),
+        seedWorker({ id: 'low', name: 'Low', reportsTo: 'mid' }),
+      ],
+    });
+    h.engine.start();
+    h.engine.remove('mid');
+    expect(h.engine.get('low')!.reportsTo).toBe('top');
+  });
+});
+
+describe('WorkerEngine.remember', () => {
+  it('writes a note into the journal without needing the turn it is about', () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    expect(h.engine.remember('worker-1', 'Pat found "Weekly sweep" not useful: lead with the numbers.')).toEqual({ ok: true });
+    expect(h.journal.at(-1)).toMatchObject({ kind: 'note', note: 'Pat found "Weekly sweep" not useful: lead with the numbers.' });
+    expect(h.engine.remember('nobody', 'x').ok).toBe(false);
   });
 });
 
@@ -1068,6 +1208,25 @@ describe('WorkerEngine errands', () => {
     expect(h.parked[1].priorTurns).toBeUndefined();
   });
 
+  it('holds one conversation per Slack thread, apart from the desk and from each other, across days', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'Summarize acme', undefined, { conversation: 'slack:D1:1.0' });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 0, queued: 0, excluded: 0, sessionId: 'sess-b' });
+    await h.engine.runErrand('worker-1', 'Something else', undefined, { conversation: 'slack:D1:2.0' });
+    expect(h.parked[1].conversationId).not.toBe(h.parked[0].conversationId);
+    expect(h.parked[1].resumeSessionId).toBeUndefined();
+    // Its own history arrives in the message: no replay of today's desk.
+    expect(h.parked[1].priorTurns).toBeUndefined();
+
+    h.setNow(local(2026, 3, 3, 8, 0));
+    h.setParkResult({ ok: true, orchestrationId: 'orch-3', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    await h.engine.runErrand('worker-1', 'And their pricing?', undefined, { conversation: 'slack:D1:1.0' });
+    // The next day, the first thread picks up where it was.
+    expect(h.parked[2]).toMatchObject({ conversationId: h.parked[0].conversationId, resumeSessionId: 'sess-a' });
+  });
+
   it('starts a new desk conversation the next day', async () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
@@ -1206,6 +1365,17 @@ describe('WorkerEngine errands', () => {
     // Absent stays absent: a worker hired before the field existed inherits
     // everything, exactly as it did.
     const legacy = makeHarness({ seed: [seedWorker()] });
+    legacy.engine.start();
+    await legacy.engine.workShiftNow('worker-1');
+    expect(legacy.parked[0].mcpAllowlist).toBeUndefined();
+  });
+
+  it('adds the org\'s shared tools to a worker\'s own, and leaves a worker with no list at everything', async () => {
+    const h = makeHarness({ seed: [seedWorker({ mcpServers: ['atlassian'] })], sharedMcpServers: () => ['docs-search', 'atlassian'] });
+    h.engine.start();
+    await h.engine.workShiftNow('worker-1');
+    expect(h.parked[0].mcpAllowlist).toEqual(['atlassian', 'docs-search']);
+    const legacy = makeHarness({ seed: [seedWorker()], sharedMcpServers: () => ['docs-search'] });
     legacy.engine.start();
     await legacy.engine.workShiftNow('worker-1');
     expect(legacy.parked[0].mcpAllowlist).toBeUndefined();
@@ -3151,6 +3321,60 @@ describe('multi-flow routing', () => {
   });
 });
 
+describe('standing changes told in an errand', () => {
+  it('go into its journal as notes, out of its reply, and it is told not to start work for them', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    h.orchestrations.set('orch-1', workerBatch({
+      origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Scout', task: 'errand', errand: 'Add Introw to the weekly check too' } as Orchestration['origin'],
+      producer: { prompt: 'p', reply: '<subject>Track Introw weekly</subject>\nDone: Introw is on my weekly check.\n<remember>Each weekly check also covers Introw, against its own snapshot.</remember>\n<candidates>[]</candidates>' },
+    }));
+    const res = await h.engine.runErrand('worker-1', 'Add Introw to the weekly check too');
+    expect(h.parked[0].prompt).toContain('STANDING CHANGES');
+    expect(h.parked[0].prompt).toContain('Changing an instruction is not work');
+    if (!res.ok) throw new Error(res.error);
+    expect(res.result.reply).toBe('Done: Introw is on my weekly check.');
+    expect(h.journal.filter((e) => e.kind === 'note').map((e) => e.note)).toEqual(['Each weekly check also covers Introw, against its own snapshot.']);
+  });
+});
+
+describe('one-tap answers', () => {
+  it('reads the replies a worker offered, and keeps them out of its prose', async () => {
+    const { errandChoices } = await import('./workerEngine');
+    expect(errandChoices('Track it?\n<replies><reply>Yes, track it</reply>\n<reply> No </reply></replies>')).toEqual(['Yes, track it', 'No']);
+    expect(errandChoices('No block here.')).toEqual([]);
+  });
+});
+
+describe('work already under way', () => {
+  const activeRuns: WorkerEngineDeps['activeRuns'] = () =>
+    [{ id: 'r1', workerId: 'worker-1', flowSnapshot: { name: 'Pricing check', steps: [{ id: 'capture' }, { id: 'compare' }] }, userPrompt: 'Acme pricing snapshot', state: { kind: 'running', currentStepId: 'compare' }, createdAt: 0 }] as never;
+
+  it('tells shifts and errands what is running, so they do not propose it again', async () => {
+    const h = makeHarness({ seed: [seedWorker()], activeRuns });
+    h.engine.start();
+    await h.engine.workShiftNow('worker-1');
+    await h.engine.runErrand('worker-1', 'What does Acme charge?');
+    expect(h.parked.length).toBeGreaterThan(0);
+    for (const call of h.parked) {
+      expect(call.prompt).toContain('UNDER WAY RIGHT NOW');
+      expect(call.prompt).toContain('step 2 of 2 (compare)');
+    }
+  });
+
+  it('says nothing when nothing is running, and reports a planning turn while it lasts', async () => {
+    const h = makeHarness({ seed: [seedWorker()], activeRuns: () => [] });
+    h.engine.start();
+    expect(h.engine.planning('worker-1')).toBeNull();
+    const shift = h.engine.workShiftNow('worker-1');
+    await Promise.resolve();
+    expect(h.engine.planning('worker-1')).toMatchObject({ task: 'shift' });
+    await shift;
+    expect(h.engine.planning('worker-1')).toBeNull();
+    expect(h.parked[0].prompt).not.toContain('UNDER WAY');
+  });
+});
+
 describe('shift wrap-up', () => {
   const item = (id: string, status: OrchestrationItem['status'], extra: Partial<OrchestrationItem> = {}) => ({
     candidate: { id, title: `Item ${id}`, prompt: 'p' },
@@ -3397,6 +3621,14 @@ describe('WorkerEngine.commission', () => {
     expect(res.ok).toBe(true);
     expect(asked).toEqual(['fix-it']);
     expect(h.direct[0].flowId).toBe('team-piece-fix-it');
+  });
+
+  it("does not let a member's own allowExternalActions carry onto a team piece", async () => {
+    const h = makeHarness({ seed: [seedWorker({ cadence: null, caps: { maxItemsPerShift: 3, runIn: 'worktree', allowExternalActions: true } })] });
+    h.engine.start();
+    await h.engine.commission('worker-1', { title: 'x', prompt: 'y', team });
+    const origin = h.direct[0]?.origin;
+    expect(origin && origin.kind === 'worker' ? origin.allowExternalActions : undefined).toBeUndefined();
   });
 
   it('refuses the piece rather than run the whole pipeline when the piece flow cannot be made', async () => {

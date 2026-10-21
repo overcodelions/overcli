@@ -1481,7 +1481,9 @@ function WorkerExchangeBubble({
     exchange.status === 'asking'
       ? `${workerName} is deciding…`
       : exchange.status === 'answered'
-        ? 'Answered automatically · flow resumed'
+        ? exchange.answeredBy
+          ? `Escalated to ${exchange.answeredBy.workerName}, who answered · flow resumed`
+          : 'Answered automatically · flow resumed'
         : exchange.status === 'escalated'
           ? 'Escalated — needs your input'
           : 'Could not get an answer';
@@ -1489,7 +1491,7 @@ function WorkerExchangeBubble({
     <div className="mt-2 flex justify-end">
       <div className="max-w-[78%] rounded-xl rounded-br-sm border border-lime-500/30 bg-lime-500/10 px-3 py-2 text-xs shadow-sm">
         <div className="mb-1 text-right text-[10px] font-semibold uppercase tracking-wide text-lime-700 dark:text-lime-300">
-          {workerName}
+          {exchange.answeredBy?.workerName ?? workerName}
         </div>
         {exchange.answer && <div className="whitespace-pre-wrap text-ink">{exchange.answer}</div>}
         {exchange.note && (

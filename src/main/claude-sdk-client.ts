@@ -57,6 +57,10 @@ export interface ClaudeSdkStartOptions {
   /// cli transport passes as `--append-system-prompt` (see
   /// `claudeSystemPromptAppend`).
   appendSystemPrompt?: string;
+  /// Servers added over the user's config, as the cli transport's
+  /// `--mcp-config` adds them: the tool gateway's, each on a key bound to
+  /// the conversation (toolGateway.ts).
+  mcpServers?: Options['mcpServers'];
 }
 
 export interface ClaudeSdkTurnInput {
@@ -121,6 +125,7 @@ export class ClaudeSdkClient extends EventEmitter {
       ...(o.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(o.env ? { env: o.env } : {}),
       ...(o.chrome ? { extraArgs: { chrome: null } } : {}),
+      ...(o.mcpServers && Object.keys(o.mcpServers).length ? { mcpServers: o.mcpServers } : {}),
       ...(o.appendSystemPrompt
         ? { systemPrompt: { type: 'preset', preset: 'claude_code', append: o.appendSystemPrompt } }
         : {}),

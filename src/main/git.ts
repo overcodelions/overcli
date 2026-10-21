@@ -529,6 +529,12 @@ async function resolveBaseBranchStartPointAsync(
   return null;
 }
 
+function runGitWithEnv(args: string[], cwd: string, env: NodeJS.ProcessEnv): GitResult {
+  const res = spawnSync(resolveGitBinary(), args, { cwd, encoding: 'utf-8', env: { ...env, GIT_TERMINAL_PROMPT: '0' } });
+  if (res.error) return { stdout: '', stderr: res.error.message, exitCode: -1 };
+  return { stdout: res.stdout ?? '', stderr: res.stderr ?? '', exitCode: res.status ?? -1 };
+}
+
 function runGitNoPrompt(args: string[], cwd: string): GitResult {
   const bin = resolveGitBinary();
   const res = spawnSync(bin, args, {
@@ -1482,19 +1488,23 @@ export function autoCommitIfDirty(
   worktreePath: string,
   subject: string,
   body?: string,
+  opts?: { env?: NodeJS.ProcessEnv; noHooks?: boolean },
 ): { ok: true; committed: boolean } | { ok: false; error: string } {
-  const status = runGit(['status', '--porcelain'], worktreePath);
+  const pre = opts?.noHooks ? ['-c', 'core.hooksPath=/dev/null'] : [];
+  const g = (a: string[]) => opts?.env ? runGitWithEnv([...pre, ...a], worktreePath, opts.env) : runGit([...pre, ...a], worktreePath);
+  const status = g(['status', '--porcelain']);
   if (status.exitCode !== 0) {
     return { ok: false, error: `git status failed: ${status.stderr || status.stdout}` };
   }
   if (!status.stdout.trim()) return { ok: true, committed: false };
-  const add = runGit(['add', '-A'], worktreePath);
+  const add = g(['add', '-A']);
   if (add.exitCode !== 0) {
     return { ok: false, error: `git add failed: ${add.stderr || add.stdout}` };
   }
   const args = ['commit', '-m', subject];
   if (body) args.push('-m', body);
-  const commit = runGit(args, worktreePath);
+  if (opts?.noHooks) args.push('--no-verify');
+  const commit = g(args);
   if (commit.exitCode !== 0) {
     return { ok: false, error: `git commit failed: ${commit.stderr || commit.stdout}` };
   }
@@ -1630,10 +1640,13 @@ export function pushBranch(args: {
   branchName: string;
   commitSubject: string;
   commitBody?: string;
+  env?: NodeJS.ProcessEnv;
+  noHooks?: boolean;
 }): { ok: true; message: string; compareUrl?: string } | { ok: false; error: string } {
-  const commit = autoCommitIfDirty(args.worktreePath, args.commitSubject, args.commitBody);
+  const commit = autoCommitIfDirty(args.worktreePath, args.commitSubject, args.commitBody, { env: args.env, noHooks: args.noHooks });
   if (!commit.ok) return commit;
-  const res = runGitNoPrompt(['push', '-u', 'origin', args.branchName], args.worktreePath);
+  const pushArgs = [...(args.noHooks ? ['-c', 'core.hooksPath=/dev/null'] : []), 'push', ...(args.noHooks ? ['--no-verify'] : []), '-u', 'origin', args.branchName];
+  const res = args.env ? runGitWithEnv(pushArgs, args.worktreePath, args.env) : runGitNoPrompt(pushArgs, args.worktreePath);
   const stdout = res.stdout;
   const stderr = res.stderr;
   if (res.exitCode !== 0) {

@@ -97,6 +97,28 @@ describe('a team task branch across a workspace', () => {
     expect(git(res.code.repos[0].worktreePath, ['branch', '--show-current'])).toBe(res.code.branch);
   });
 
+  it('starts from an earlier stage\'s branch where a repo has it, still landing on the base', () => {
+    git(overcli, ['checkout', '-q', '-b', 'team/develop-csv-export']);
+    fs.writeFileSync(path.join(overcli, 'export.txt'), 'csv\n');
+    git(overcli, ['add', '.']);
+    git(overcli, ['commit', '-q', '-m', 'Export to CSV']);
+    git(overcli, ['checkout', '-q', 'main']);
+    const res = openTaskBranch({
+      taskId: 't-from',
+      title: 'Test the export',
+      repos: [
+        { name: 'overcli', projectPath: overcli },
+        { name: 'overgit', projectPath: overgit },
+      ],
+      from: 'team/develop-csv-export',
+    });
+    if (!res.ok || !res.code) throw new Error('no code');
+    expect(res.code.repos.map((r) => r.base)).toEqual(['main', 'master']);
+    expect(fs.existsSync(path.join(res.code.repos[0].worktreePath, 'export.txt'))).toBe(true);
+    // A repo without that branch starts from its own base.
+    expect(git(res.code.repos[1].worktreePath, ['log', '-1', '--format=%s'])).not.toBe('Export to CSV');
+  });
+
   it('gives repos whose names slug alike a checkout each', () => {
     fs.mkdirSync(path.join(sandbox, 'acme'));
     const api = repo(path.join('acme', 'Api'), 'main');
@@ -220,6 +242,35 @@ describe('a team task branch across a workspace', () => {
 
     expect(pushTaskBranch(code, code.repos[0], 'Push').ok).toBe(true);
     expect(git(remote, ['rev-parse', code.branch])).toBe(git(overcli, ['rev-parse', code.branch]));
+  });
+
+  it('does not run a hook planted in the repo when it merges a piece', () => {
+    const res = openTaskBranch({ taskId: 't-hook-merge', title: 'Hook merge', repos: [{ name: 'overcli', projectPath: overcli }] });
+    if (!res.ok || !res.code) throw new Error('no code');
+    const code = res.code;
+    const p = piece(overcli, code, 'hooked', 'h.txt', 'h\n');
+    fs.writeFileSync(path.join(p.worktreePath, 'dirty.txt'), 'dirty\n');
+    const common = path.resolve(p.worktreePath, git(p.worktreePath, ['rev-parse', '--git-common-dir']));
+    fs.mkdirSync(path.join(common, 'hooks'), { recursive: true });
+    const hooks = ['pre-commit', 'pre-merge-commit', 'post-merge'].map((name) => path.join(common, 'hooks', name));
+    for (const hook of hooks) fs.writeFileSync(hook, '#!/bin/sh\ntouch "$0.ran"\n', { mode: 0o755 });
+    expect(absorbPiece({ code, piece: [p], message: 'Hooked' })).toEqual({ ok: true, merged: ['overcli'] });
+    for (const hook of hooks) expect(fs.existsSync(`${hook}.ran`)).toBe(false);
+  });
+
+  it('does not run a hook planted in the repo when it pushes', () => {
+    const remote = path.join(sandbox, 'remote-hook.git');
+    git(sandbox, ['init', '--bare', remote]);
+    git(overcli, ['remote', 'add', 'origin', remote]);
+    const res = openTaskBranch({ taskId: 't-hook', title: 'Hook', repos: [{ name: 'overcli', projectPath: overcli }] });
+    if (!res.ok || !res.code) throw new Error('no code');
+    const repo = res.code.repos[0];
+    const common = path.resolve(repo.worktreePath, git(repo.worktreePath, ['rev-parse', '--git-common-dir']));
+    fs.mkdirSync(path.join(common, 'hooks'), { recursive: true });
+    const hook = path.join(common, 'hooks', 'pre-push');
+    fs.writeFileSync(hook, '#!/bin/sh\ntouch "$0.ran"\n', { mode: 0o755 });
+    expect(pushTaskBranch(res.code, repo, 'Hook').ok).toBe(true);
+    expect(fs.existsSync(`${hook}.ran`)).toBe(false);
   });
 
   it('stops on a conflict without leaving the task branch half-merged', () => {

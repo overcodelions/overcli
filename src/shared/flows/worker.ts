@@ -6,6 +6,7 @@
 // meter. The engine lives in src/main/flows/workerEngine.ts; this module is
 // the shared contract both main and renderer validate against.
 
+import type { ToolScopes } from './toolScope';
 import type { Backend, UUID } from '../types';
 import type { FlowRun } from './schema';
 import type { ScheduleTrigger } from './schedule';
@@ -175,6 +176,9 @@ export interface Worker {
   /// a worker pinned to a server the user has since removed keeps working,
   /// just without it. See `buildClaudeMcpConfigArg`.
   mcpServers?: string[];
+  /// How much of each tool it may use, by server name: read only, or only
+  /// some calls. A tool with no entry is the whole tool. See toolScope.ts.
+  toolScopes?: ToolScopes;
   /// The job needs to read or operate web pages. Its planning turns (desk
   /// errands and shift planning) and every run it launches start with the
   /// browser switch on — Claude in Chrome on
@@ -205,6 +209,11 @@ export interface Worker {
   /// thread that ran for a week would carry Monday's tangent into Friday, and
   /// the day boundary is the natural place to hand off a summary and start
   /// clean (see `priorDayHandoff`).
+  /// One conversation per Slack thread, by the thread's key: a thread is a
+  /// conversation of its own, so two people talking to the worker in two
+  /// threads don't share one session, and a thread picked up days later
+  /// resumes where it was. Newest kept; old ones expire (`THREAD_SESSION_*`).
+  threadSessions?: Record<string, { conversationId: string; sessionId?: string; at: number }>;
   deskSession?: {
     /// Local midnight of the day this thread belongs to.
     day: number;
@@ -266,6 +275,79 @@ export interface Worker {
   /// clicks charged for the thing the worker exists to do. Absent means
   /// `'newest'`. See `WORKER_AUTO_RENDER_*` and `isRenderableOutput`.
   autoRender?: string;
+  /// The person this worker answers to: who hired it, who its questions go
+  /// to when no worker above it can answer, and who approves its external
+  /// actions. With a Slack user id, those questions and approvals arrive as
+  /// Slack DMs instead of waiting for someone to open the app.
+  ///
+  /// Employment, not job: it never travels in a shared worker file.
+  manager?: WorkerManager;
+  /// The worker this one reports to, for an org chart and for questions. A
+  /// question the worker's own supervisor turn cannot answer walks up this
+  /// chain before it reaches a person (see `reportsChain`). Absent means the
+  /// worker sits at the top of its branch. A human boss is `manager`, not
+  /// this: one graph of workers keeps the cycle check simple.
+  reportsTo?: UUID;
+  /// Who in the org may ask this worker things. Absent means `'private'`:
+  /// only its manager. Visibility never widens what the worker can reach,
+  /// only who can ask — so a worker holding sensitive tools should stay
+  /// narrow.
+  visibility?: WorkerVisibility;
+  /// An https image for the worker's face where initials won't do — the
+  /// Slack messages it posts, chiefly. The app itself still draws initials.
+  avatarUrl?: string;
+}
+
+export type WorkerVisibility = 'private' | 'team' | 'org';
+
+export const WORKER_VISIBILITIES: readonly WorkerVisibility[] = ['private', 'team', 'org'];
+
+export const WORKER_VISIBILITY_LABEL: Record<WorkerVisibility, string> = {
+  private: 'Only its manager',
+  team: 'Its team',
+  org: 'Everyone in the org',
+};
+
+export interface WorkerManager {
+  name: string;
+  /// The manager's Slack member id (`U…`/`W…`), from their Slack profile's
+  /// "Copy member ID". Absent: questions wait in the app as they always have.
+  slackUserId?: string;
+}
+
+/// Slack member ids: `U` for a workspace member, `W` for an Enterprise Grid one.
+const SLACK_USER_ID = /^[UW][A-Z0-9]{6,}$/;
+
+export function isSlackUserId(raw: string): boolean {
+  return SLACK_USER_ID.test(raw);
+}
+
+/// Shape checks for the org fields. Whether `reportsTo` would form a loop
+/// needs the whole roster, so that check lives with the roster (`wouldCycle`).
+export function validateOrgFields(
+  w: Pick<Partial<Worker>, 'id' | 'manager' | 'reportsTo' | 'visibility' | 'avatarUrl'>,
+): string | null {
+  if (w.manager) {
+    const name = w.manager.name?.trim() ?? '';
+    if (!name) return 'Give the manager a name, or clear the manager.';
+    if (name.length > 80) return 'Keep the manager\'s name under 80 characters.';
+    const slack = w.manager.slackUserId?.trim();
+    if (slack && !isSlackUserId(slack))
+      return 'A Slack member ID looks like U012AB3CD — copy it from their Slack profile.';
+  }
+  if (w.reportsTo && w.id && w.reportsTo === w.id) return 'A worker cannot report to itself.';
+  if (w.visibility !== undefined && !WORKER_VISIBILITIES.includes(w.visibility))
+    return 'Pick who may ask this worker things.';
+  if (w.avatarUrl) {
+    let url: URL | null = null;
+    try {
+      url = new URL(w.avatarUrl);
+    } catch {
+      url = null;
+    }
+    if (!url || url.protocol !== 'https:') return 'The avatar must be an https:// image link.';
+  }
+  return null;
 }
 
 /// Show the most recent renderable file this worker has filed. The default,
@@ -439,6 +521,8 @@ export interface WorkerJournalEntry {
   runId?: string;
   orchestrationId?: string;
   costUSD?: number;
+  /// On a shift: started by hand (Run now) rather than by its schedule.
+  manual?: boolean;
 }
 
 // ---- Caps and trust -----------------------------------------------------
@@ -528,6 +612,8 @@ export interface WorkerErrandResult {
   launchedNothing: boolean;
   /// Planning prose with the machine candidate payload removed and bounded.
   reply: string;
+  /// One-tap answers the worker offered its manager, when it asked them to decide.
+  choices?: string[];
 }
 
 export function computeWorkerScorecard(
@@ -584,6 +670,8 @@ export function validateWorker(w: Partial<Worker>, now: number = Date.now()): st
   if (w.mcpServers && !Array.isArray(w.mcpServers)) return 'MCP servers must be a list of names.';
   if (w.mcpServers?.some((n) => typeof n !== 'string' || !n.trim()))
     return 'Every MCP server needs a name.';
+  const orgError = validateOrgFields(w);
+  if (orgError) return orgError;
 
   const cadence = w.cadence;
   // Explicit null is a deliberate answer to "when does this work" — on

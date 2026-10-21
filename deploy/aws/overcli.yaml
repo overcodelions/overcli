@@ -1,0 +1,742 @@
+AWSTemplateFormatVersion: '2010-09-09'
+# overcli for an org on AWS, in one stack: deploy/aws.md's recommended setup.
+# One EC2 instance in a private subnet runs the container; /data lives on its
+# own EBS volume with daily snapshots; an internal load balancer puts the
+# console in front. See deploy/aws/README.md.
+Description: >-
+  overcli org server (alpha): one EC2 instance in a private subnet, its data on
+  a snapshotted EBS volume, Bedrock for the model, Secrets Manager for secrets,
+  and an internal load balancer in front of the console.
+
+# ---- What the stack asks ----------------------------------------------------
+
+Parameters:
+  OrgName:
+    Type: String
+    Description: >-
+      A short lowercase name for the org, e.g. acme. It names the org on the
+      console and the Secrets Manager prefix (overcli/<OrgName>/).
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}$'
+    ConstraintDescription: 2-31 lowercase letters, digits and dashes.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC to run in.
+
+  PrivateSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: >-
+      A private subnet for the instance (and the load balancer). It needs a
+      route out through a NAT gateway: packages, the image, Slack, your git host.
+
+  SecondPrivateSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: >-
+      A second private subnet in a different Availability Zone. A load
+      balancer needs two.
+
+  AllowedCidr:
+    Type: String
+    Default: 10.0.0.0/8
+    Description: Who may reach the console, e.g. your VPN or office range.
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    ConstraintDescription: A CIDR block like 10.0.0.0/8.
+
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional. An ACM certificate for the console's name. With one, the load
+      balancer serves HTTPS on 443 (and redirects 80). Without, plain HTTP on
+      80, reachable only inside the VPC.
+
+  DomainName:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional. The name people will use for the console (e.g.
+      overcli.acme.internal), matching the certificate. Point a DNS record at
+      the load balancer yourself. Blank uses the load balancer's own name.
+
+  ImageUri:
+    Type: String
+    Default: ghcr.io/overcodelions/overcli-server:latest
+    Description: >-
+      The overcli container image, published to ghcr.io by each release. Or
+      build deploy/Dockerfile and push it to ECR
+      (<account>.dkr.ecr.<region>.amazonaws.com/overcli-org:<version>).
+      Change it and update the stack to upgrade.
+
+  InstanceType:
+    Type: String
+    Default: t3.large
+    Description: An x86 instance type. Workers' runs and git worktrees want 8 GB of memory or so.
+    AllowedValues: [t3.medium, t3.large, t3.xlarge, t3.2xlarge, m6i.large, m6i.xlarge, m7i.large, m7i.xlarge]
+
+  DiskSizeGiB:
+    Type: Number
+    Default: 50
+    MinValue: 20
+    MaxValue: 2000
+    Description: The data volume's size in GiB. Worktrees add up; it can grow later.
+
+  BedrockRegion:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional. Where to call Bedrock (and keep the secrets: overcli reads both
+      from AWS_REGION). Blank uses this stack's region.
+
+  AmiId:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional. Blank uses the latest Amazon Linux 2023 when the stack is made.
+      Set an AMI ID to pin it.
+
+  CloudWatchLogGroups:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional. Log groups workers may read through the CloudWatch tool, comma
+      separated. A name may end in * for every group under it (e.g.
+      /acme/api,/ecs/acme-*); * alone is every group. Also lets them list
+      alarms and read metrics. Blank gives no CloudWatch access. See
+      deploy/aws.md, "CloudWatch logs for workers".
+    AllowedPattern: '^[A-Za-z0-9_./#,*-]*$'
+    ConstraintDescription: Log group names or prefixes ending in *, comma separated, no spaces.
+
+  CloudWatchEndpoints:
+    Type: String
+    Default: 'no'
+    AllowedValues: ['no', 'yes']
+    Description: >-
+      Optional. yes adds VPC endpoints for CloudWatch Logs and CloudWatch, so
+      those calls stay inside the VPC instead of going out through the NAT.
+      Leave no if the VPC already has them: two with private DNS conflict.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: The org }
+        Parameters: [OrgName]
+      - Label: { default: Where it runs }
+        Parameters: [VpcId, PrivateSubnetId, SecondPrivateSubnetId, AllowedCidr]
+      - Label: { default: HTTPS (optional) }
+        Parameters: [CertificateArn, DomainName]
+      - Label: { default: CloudWatch for workers (optional) }
+        Parameters: [CloudWatchLogGroups, CloudWatchEndpoints]
+      - Label: { default: Advanced }
+        Parameters: [ImageUri, InstanceType, DiskSizeGiB, BedrockRegion, AmiId]
+    ParameterLabels:
+      OrgName: { default: Org name }
+      PrivateSubnetId: { default: Private subnet }
+      SecondPrivateSubnetId: { default: Second private subnet (another AZ) }
+      AllowedCidr: { default: Who may reach the console }
+      ImageUri: { default: Container image }
+      DiskSizeGiB: { default: Data volume size (GiB) }
+      CloudWatchLogGroups: { default: Log groups workers may read }
+      CloudWatchEndpoints: { default: Private CloudWatch endpoints }
+
+Conditions:
+  HasCert: !Not [!Equals [!Ref CertificateArn, '']]
+  HasDomain: !Not [!Equals [!Ref DomainName, '']]
+  HasBedrockRegion: !Not [!Equals [!Ref BedrockRegion, '']]
+  HasAmi: !Not [!Equals [!Ref AmiId, '']]
+  HasLogGroups: !Not [!Equals [!Ref CloudWatchLogGroups, '']]
+  WantsCloudWatchEndpoints: !Equals [!Ref CloudWatchEndpoints, 'yes']
+
+Resources:
+
+  # ---- Network: who may talk to whom --------------------------------------
+
+  # The load balancer: open to AllowedCidr, and it may only talk to the instance.
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: overcli load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !Ref AllowedCidr, Description: console (HTTP) }
+        - !If
+          - HasCert
+          - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref AllowedCidr, Description: console (HTTPS) }
+          - !Ref AWS::NoValue
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 7420, ToPort: 7420, DestinationSecurityGroupId: !Ref InstanceSecurityGroup, Description: to overcli }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-alb' }]
+
+  # The instance: nothing comes in but the load balancer, on 7420. Out is open
+  # (through the subnet's NAT) for Slack, git, Bedrock and the image registry.
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: overcli instance
+      VpcId: !Ref VpcId
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-instance' }]
+
+  InstanceFromLoadBalancer:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref InstanceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 7420
+      ToPort: 7420
+      SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      Description: the console and /mcp, from the load balancer only
+
+  # CloudWatch endpoints: reachable from the instance only, on 443.
+  CloudWatchEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: WantsCloudWatchEndpoints
+    Properties:
+      GroupDescription: overcli CloudWatch endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: !Ref InstanceSecurityGroup, Description: from overcli }
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-cloudwatch-endpoints' }]
+
+  LogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: WantsCloudWatchEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnetId, !Ref SecondPrivateSubnetId]
+      SecurityGroupIds: [!Ref CloudWatchEndpointSecurityGroup]
+
+  MonitoringEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: WantsCloudWatchEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnetId, !Ref SecondPrivateSubnetId]
+      SecurityGroupIds: [!Ref CloudWatchEndpointSecurityGroup]
+
+  # ---- What the instance may do --------------------------------------------
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Session Manager: a shell without SSH keys or an open port.
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+        # Pulling the image when it lives in ECR.
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies:
+        - PolicyName: overcli
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # The model, through Bedrock: no API key on the box.
+              - Sid: Bedrock
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/*
+                  - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*
+                  - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*
+              # Secrets set on Setup → Secrets, under overcli/<OrgName>/ only
+              # (deploy/aws.md, "Secrets policy").
+              - Sid: SecretsList
+                Effect: Allow
+                Action: secretsmanager:ListSecrets
+                Resource: '*'
+              - Sid: SecretsUnderPrefix
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:UpdateSecret
+                  - secretsmanager:DeleteSecret
+                  - secretsmanager:RestoreSecret
+                  - secretsmanager:TagResource
+                Resource: !Sub
+                  - arn:${AWS::Partition}:secretsmanager:${Region}:${AWS::AccountId}:secret:overcli/${OrgName}/*
+                  - Region: !If [HasBedrockRegion, !Ref BedrockRegion, !Ref AWS::Region]
+              # The CloudWatch tool: read the named log groups, list alarms and
+              # read metrics. Nothing that changes anything. Workers who are
+              # trusted to act can reach this role,
+              # so it names the groups rather than allowing every one.
+              - !If
+                - HasLogGroups
+                # Neither can be held to a log group. StopQuery only stops a
+                # query this role started on the groups below.
+                - Sid: CloudWatchLogsList
+                  Effect: Allow
+                  Action:
+                    - logs:DescribeLogGroups
+                    - logs:StopQuery
+                  Resource: '*'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLogGroups
+                - Sid: CloudWatchLogsRead
+                  Effect: Allow
+                  Action:
+                    - logs:DescribeLogStreams
+                    - logs:GetLogEvents
+                    - logs:FilterLogEvents
+                    - logs:StartQuery
+                    - logs:GetQueryResults
+                    - logs:GetLogGroupFields
+                    - logs:GetLogRecord
+                  # One ARN per named group. A Join's delimiter can't hold a
+                  # function, so the ARNs name the groups in any region and
+                  # account; another account's groups still need its say-so.
+                  Resource: !Split
+                    - ','
+                    - !Join
+                      - ''
+                      - - 'arn:aws:logs:*:*:log-group:'
+                        - !Join [':*,arn:aws:logs:*:*:log-group:', !Split [',', !Ref CloudWatchLogGroups]]
+                        - ':*'
+                - !Ref AWS::NoValue
+              - !If
+                - HasLogGroups
+                - Sid: CloudWatchAlarmsAndMetrics
+                  Effect: Allow
+                  Action:
+                    - cloudwatch:DescribeAlarms
+                    - cloudwatch:DescribeAlarmHistory
+                    - cloudwatch:GetMetricData
+                    - cloudwatch:ListMetrics
+                  Resource: '*'
+                - !Ref AWS::NoValue
+              # The one place the first admin's sign-in link is written.
+              - Sid: FirstAdminLink
+                Effect: Allow
+                Action: ssm:PutParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/overcli/${AWS::StackName}/first-admin-link
+              # cfn-init reads this stack's setup; cfn-signal says it's done.
+              - Sid: ThisStack
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:SignalResource
+                Resource: !Ref AWS::StackId
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  # IMDSv2 only, one hop: a token is required, and it can't be fetched from a
+  # bridged container. The container runs on the host network, so it can: the
+  # server reads Secrets Manager and Bedrock through the instance role. That
+  # also means code a worker runs in the container can reach the role (an
+  # accepted risk; see deploy/aws.md).
+  InstanceLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+
+  # ---- The instance ---------------------------------------------------------
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      # The files the server runs from. cfn-hup watches this block: change
+      # ImageUri (or anything here), update the stack, and the instance
+      # rewrites these files and restarts the container on the same /data.
+      AWS::CloudFormation::Init:
+        configSets:
+          app: [files]
+        files:
+          files:
+            # Host side: which image, and where /data lives on this box.
+            /etc/overcli/unit.env:
+              mode: '000644'
+              owner: root
+              group: root
+              content: !Sub |
+                OVERCLI_IMAGE=${ImageUri}
+                OVERCLI_DATA=/srv/overcli-data
+            # The container's environment. No secrets: those live in Secrets
+            # Manager under overcli/<OrgName>/, set from the console.
+            /etc/overcli/overcli.env:
+              mode: '000600'
+              owner: root
+              group: root
+              content: !Sub
+                - |
+                  CLAUDE_CODE_USE_BEDROCK=1
+                  AWS_REGION=${Region}
+                  OVERCLI_SECRETS=aws:overcli/${OrgName}/
+                  OVERCLI_CONTROL=0.0.0.0:7420
+                  OVERCLI_TRUST_PROXY=1
+                  OVERCLI_SLACK_ENABLED=1
+                - Region: !If [HasBedrockRegion, !Ref BedrockRegion, !Ref AWS::Region]
+            # Pull the image, signing in to ECR first when it lives there.
+            /usr/local/bin/overcli-pull:
+              mode: '000755'
+              owner: root
+              group: root
+              content: |
+                #!/bin/bash
+                set -euo pipefail
+                . /etc/overcli/unit.env
+                case "$OVERCLI_IMAGE" in
+                  *.dkr.ecr.*.amazonaws.com/*)
+                    registry="${OVERCLI_IMAGE%%/*}"
+                    region="$(echo "$registry" | cut -d. -f4)"
+                    aws ecr get-login-password --region "$region" \
+                      | docker login --username AWS --password-stdin "$registry" ;;
+                esac
+                docker pull "$OVERCLI_IMAGE"
+            # One container, always. The same allow-list as docker-compose.yml.
+            /etc/systemd/system/overcli.service:
+              mode: '000644'
+              owner: root
+              group: root
+              content: |
+                [Unit]
+                Description=overcli org server
+                Requires=docker.service
+                After=docker.service network-online.target
+                Wants=network-online.target
+                RequiresMountsFor=/srv/overcli-data
+
+                [Service]
+                EnvironmentFile=/etc/overcli/unit.env
+                # A failed pull keeps the image already here.
+                ExecStartPre=-/usr/local/bin/overcli-pull
+                ExecStartPre=-/usr/bin/docker rm -f overcli
+                ExecStart=/usr/bin/docker run --rm --name overcli --network host \
+                  --env-file /etc/overcli/overcli.env \
+                  -v ${OVERCLI_DATA}:/data \
+                  ${OVERCLI_IMAGE} \
+                  serve --permissions allow-list --allow-tool Read,Glob,Grep,Edit,Write,WebSearch,WebFetch
+                ExecStop=/usr/bin/docker stop -t 30 overcli
+                Restart=always
+                RestartSec=5
+                TimeoutStartSec=600
+
+                [Install]
+                WantedBy=multi-user.target
+            # cfn-hup: notice a stack update and apply it.
+            /etc/cfn/cfn-hup.conf:
+              mode: '000400'
+              owner: root
+              group: root
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=5
+            /etc/cfn/hooks.d/overcli.conf:
+              mode: '000400'
+              owner: root
+              group: root
+              content: !Sub |
+                [overcli-update]
+                triggers=post.update
+                path=Resources.Instance.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource Instance --configsets app --region ${AWS::Region} && systemctl daemon-reload && systemctl restart overcli
+                runas=root
+            /etc/systemd/system/cfn-hup.service:
+              mode: '000644'
+              owner: root
+              group: root
+              content: |
+                [Unit]
+                Description=cfn-hup: apply stack updates
+                After=network-online.target
+
+                [Service]
+                ExecStart=/opt/aws/bin/cfn-hup
+                Restart=always
+
+                [Install]
+                WantedBy=multi-user.target
+    Properties:
+      ImageId: !If
+        - HasAmi
+        - !Ref AmiId
+        - '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      LaunchTemplate:
+        LaunchTemplateId: !Ref InstanceLaunchTemplate
+        Version: !GetAtt InstanceLaunchTemplate.LatestVersionNumber
+      # No SSH key: Session Manager is the way in. No public IP.
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !Ref PrivateSubnetId
+          GroupSet: [!Ref InstanceSecurityGroup]
+          AssociatePublicIpAddress: false
+      # The root disk is disposable; /data is on DataVolume below.
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeType: gp3, VolumeSize: 30, Encrypted: true, DeleteOnTermination: true }
+      Tags: [{ Key: Name, Value: !Sub 'overcli-${OrgName}' }]
+      # First boot only. Each step that can fail tells CloudFormation why.
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -uo pipefail
+            exec > >(tee -a /var/log/overcli-setup.log) 2>&1
+
+            STACK='${AWS::StackName}'
+            REGION='${AWS::Region}'
+            PARAM='/overcli/${AWS::StackName}/first-admin-link'
+            ORG='${OrgName}'
+            URL='${ConsoleUrl}'
+            MOUNT=/srv/overcli-data
+
+            signal() { /opt/aws/bin/cfn-signal -e "$1" --stack "$STACK" --resource FirstAdminReady --region "$REGION" --reason "$2" || true; }
+            fail() { echo "overcli setup failed: $1"; signal 1 "$1"; exit 1; }
+
+            # 1. Docker, and the CloudFormation helpers.
+            dnf install -y docker aws-cfn-bootstrap \
+              || fail "could not install docker (does the subnet reach the internet through a NAT?)"
+            systemctl enable --now docker || fail "docker did not start"
+
+            # 2. The data volume. It's attached just after the instance starts,
+            # so wait for it. Format it only if it has nothing on it: a volume
+            # restored from a snapshot keeps its data.
+            ROOT_DISK=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
+            DEV=""
+            for i in $(seq 1 120); do
+              if [ -e /dev/sdf ]; then DEV=$(readlink -f /dev/sdf); break; fi
+              for d in $(lsblk -dno NAME,TYPE | awk '$2 == "disk" { print $1 }'); do
+                [ "$d" != "$ROOT_DISK" ] && DEV=/dev/$d
+              done
+              [ -n "$DEV" ] && break
+              sleep 5
+            done
+            [ -n "$DEV" ] || fail "the data volume never showed up"
+            if [ -n "$(blkid -o value -s PTTYPE "$DEV")" ]; then
+              fail "$DEV has a partition table; not touching it"
+            fi
+            if [ -z "$(blkid -o value -s TYPE "$DEV")" ]; then
+              mkfs.xfs -L overcli-data "$DEV" || fail "could not format $DEV"
+            fi
+            UUID=$(blkid -o value -s UUID "$DEV")
+            mkdir -p "$MOUNT"
+            grep -q "UUID=$UUID" /etc/fstab || echo "UUID=$UUID $MOUNT xfs defaults,nofail 0 2" >> /etc/fstab
+            mountpoint -q "$MOUNT" || mount "$MOUNT" || fail "could not mount $DEV at $MOUNT"
+            mkdir -p "$MOUNT/home"
+            chown 1000:1000 "$MOUNT" "$MOUNT/home"
+
+            # 3. The server's files, from the Metadata above, and cfn-hup to
+            # apply stack updates later.
+            /opt/aws/bin/cfn-init -v --stack "$STACK" --resource Instance --configsets app --region "$REGION" \
+              || fail "cfn-init failed"
+            systemctl daemon-reload
+            systemctl enable --now cfn-hup
+
+            # 4. The image, and the org's name and address, the first time only.
+            . /etc/overcli/unit.env
+            /usr/local/bin/overcli-pull || fail "could not pull $OVERCLI_IMAGE"
+            if [ ! -f "$MOUNT/org.json" ]; then
+              docker run --rm --network host -v "$MOUNT:/data" "$OVERCLI_IMAGE" org init --name "$ORG" --url "$URL" \
+                || fail "overcli org init failed"
+            fi
+
+            # 5. Start it. systemd keeps it running and starts it on boot.
+            systemctl enable --now overcli || fail "the overcli service did not start"
+
+            # 6. On first run, serve prints a one-time link that signs in the
+            # first admin. Keep it in SSM, encrypted. A server that's up for a
+            # minute with no link already has someone signed in.
+            LINK=""
+            UP_AT=0
+            for i in $(seq 1 120); do
+              LOGS=$(docker logs overcli 2>&1 || true)
+              LINK=$(printf '%s\n' "$LOGS" | sed -n 's/.*sign in as the first admin: //p' | tail -n 1)
+              [ -n "$LINK" ] && break
+              if [ "$UP_AT" = 0 ] && printf '%s\n' "$LOGS" | grep -q '^control: http'; then UP_AT=$i; fi
+              if [ "$UP_AT" != 0 ] && [ $((i - UP_AT)) -ge 12 ]; then break; fi
+              sleep 5
+            done
+            if [ -n "$LINK" ]; then
+              VALUE="$LINK"
+            elif [ "$UP_AT" != 0 ]; then
+              VALUE="No link: someone has already signed in on this data. Ask an admin for an invite."
+            else
+              fail "overcli did not start within 10 minutes (sudo docker logs overcli)"
+            fi
+            aws ssm put-parameter --region "$REGION" --name "$PARAM" --type SecureString --overwrite \
+              --description "overcli: the first admin's one-time sign-in link" --value "$VALUE" >/dev/null \
+              || fail "could not write $PARAM"
+
+            curl -fsS http://127.0.0.1:7420/healthz >/dev/null || fail "overcli is not answering on 7420"
+            signal 0 "overcli is up"
+          - ConsoleUrl: !Join
+              - ''
+              - - !If [HasCert, 'https://', 'http://']
+                - !If [HasDomain, !Ref DomainName, !GetAtt LoadBalancer.DNSName]
+
+  # ---- /data: the only thing that has to survive ---------------------------
+
+  # Kept (as a snapshot) when the stack is deleted or the volume replaced.
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !GetAtt Instance.AvailabilityZone
+      Size: !Ref DiskSizeGiB
+      VolumeType: gp3
+      Encrypted: true
+      Tags:
+        - { Key: Name, Value: !Sub 'overcli-${OrgName}-data' }
+        # What the snapshot policy below looks for.
+        - { Key: overcli-backup, Value: !Ref AWS::StackName }
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref Instance
+      VolumeId: !Ref DataVolume
+      Device: /dev/sdf
+
+  # Daily snapshots of the data volume, keep 14.
+  SnapshotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: dlm.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole
+
+  SnapshotPolicy:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description: !Sub 'overcli ${AWS::StackName} daily data snapshots keep 14'
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt SnapshotRole.Arn
+      PolicyDetails:
+        PolicyType: EBS_SNAPSHOT_MANAGEMENT
+        ResourceTypes: [VOLUME]
+        TargetTags:
+          - { Key: overcli-backup, Value: !Ref AWS::StackName }
+        Schedules:
+          - Name: daily
+            CopyTags: true
+            CreateRule: { Interval: 24, IntervalUnit: HOURS, Times: ['05:00'] }
+            RetainRule: { Count: 14 }
+
+  # The stack finishes only once the container is up and the sign-in link is
+  # stored (the instance's setup signals this). Ten minutes for the volume,
+  # ten for the server, and some slack for packages and the image.
+  FirstAdminReady:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: DataVolumeAttachment
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT30M
+
+  # ---- The load balancer ----------------------------------------------------
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internal
+      Subnets: [!Ref PrivateSubnetId, !Ref SecondPrivateSubnetId]
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+      LoadBalancerAttributes:
+        # Long enough for an MCP or console request that streams.
+        - { Key: idle_timeout.timeout_seconds, Value: '300' }
+        - { Key: routing.http.drop_invalid_header_fields.enabled, Value: 'true' }
+
+  # /healthz answers 200 with no token (src/cli/controlPlane.ts).
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      Protocol: HTTP
+      Port: 7420
+      TargetType: instance
+      Targets: [{ Id: !Ref Instance, Port: 7420 }]
+      HealthCheckPath: /healthz
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: '200' }
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: '10' }
+
+  # With a certificate: HTTPS on 443, and 80 redirects there.
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCert
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTPS
+      Port: 443
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      DefaultActions: [{ Type: forward, TargetGroupArn: !Ref TargetGroup }]
+
+  # Without one: plain HTTP on 80, inside the VPC only.
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - !If
+          - HasCert
+          - Type: redirect
+            RedirectConfig: { Protocol: HTTPS, Port: '443', StatusCode: HTTP_301 }
+          - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+
+# ---- What you get back --------------------------------------------------------
+
+Outputs:
+  ConsoleUrl:
+    Description: The console, from inside the VPC (or over your VPN).
+    Value: !Join
+      - ''
+      - - !If [HasCert, 'https://', 'http://']
+        - !If [HasDomain, !Ref DomainName, !GetAtt LoadBalancer.DNSName]
+        - /
+
+  LoadBalancerDnsName:
+    Description: Point your DNS record (DomainName) at this.
+    Value: !GetAtt LoadBalancer.DNSName
+
+  FirstAdminLinkParameter:
+    Description: The SSM parameter (SecureString) holding the first admin's one-time sign-in link.
+    Value: !Sub /overcli/${AWS::StackName}/first-admin-link
+
+  GetFirstAdminLinkCommand:
+    Description: Run this, open the link it prints once, and you're the first admin.
+    Value: !Sub aws ssm get-parameter --with-decryption --region ${AWS::Region} --name /overcli/${AWS::StackName}/first-admin-link --query Parameter.Value --output text
+
+  SessionManagerCommand:
+    Description: A shell on the instance (then sudo docker logs overcli). Needs the Session Manager plugin.
+    Value: !Sub aws ssm start-session --region ${AWS::Region} --target ${Instance}
+
+  DataVolumeId:
+    Description: The EBS volume holding /data. Snapshots are tagged overcli-backup.
+    Value: !Ref DataVolume

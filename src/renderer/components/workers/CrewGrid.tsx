@@ -186,7 +186,7 @@ function CrewTile({
               </span>
             </button>
             {reasons && (
-              <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-600 dark:text-amber-300">
+              <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] text-amber-700 dark:text-amber-300">
                 {reasons}
               </span>
             )}

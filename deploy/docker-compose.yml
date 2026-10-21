@@ -1,0 +1,35 @@
+# One overcli for the org. `docker compose -f deploy/docker-compose.yml up -d`
+# after filling in deploy/.env (see deploy/README.md).
+services:
+  overcli:
+    # The published image; pin a minor version (OVERCLI_VERSION=0.22 in .env)
+    # to take fixes without surprises. Upgrade: change it, then
+    # `docker compose pull && docker compose up -d`. To run your own build
+    # instead, replace `image:` with
+    #   build: { context: .., dockerfile: deploy/Dockerfile }
+    image: ghcr.io/overcodelions/overcli-server:${OVERCLI_VERSION:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      OVERCLI_SLACK_ENABLED: "1"
+    # What a worker's run may do without a person. Widen deliberately; external
+    # actions (push, send, publish) still stop for the manager's approval in
+    # Slack unless the worker is trusted with them.
+    command:
+      - serve
+      - --permissions
+      - allow-list
+      - --allow-tool
+      - Read,Glob,Grep,Edit,Write,WebSearch,WebFetch
+    # Everything that matters lives in /data. Leave OVERCLI_DATA unset for a
+    # Docker volume, or set it to a path on a durable disk (an EBS volume, a
+    # GCE persistent disk) owned by uid 1000. See deploy/aws.md, deploy/gcp.md.
+    volumes:
+      - ${OVERCLI_DATA:-overcli-data}:/data
+    # Loopback only: reach the console over an SSH tunnel or the VPN host's
+    # reverse proxy. Change to "7420:7420" only behind a firewall.
+    ports:
+      - "127.0.0.1:7420:7420"
+
+volumes:
+  overcli-data:

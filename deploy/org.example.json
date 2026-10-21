@@ -1,0 +1,52 @@
+{
+  "name": "Acme",
+  "slackTeamId": "T0ACME001",
+  "timezone": "America/New_York",
+  "publicUrl": "https://overcli.acme.internal",
+
+  "admins": ["U0ADMIN01"],
+  "hirers": "*",
+  "budgetAllowanceUSD": 100,
+  "allowances": { "U0LEAD001": 500 },
+  "approvers": ["U0FINANCE"],
+  "teams": {
+    "product": ["U0LEAD001", "U0PM00001", "U0DESIGN1"],
+    "sales": ["U0SALES01", "U0SALES02"]
+  },
+  "allowedMcpServers": ["acme-feedback"],
+  "orgVisibilityNeedsAdmin": true,
+
+  "orgBudgetUSD": 2000,
+  "alertAtPercent": 80,
+  "retentionDays": 365,
+
+  "sso": {
+    "issuer": "https://acme.okta.example",
+    "clientId": "0oaACMEOVERCLI",
+    "allowedDomains": ["acme.example"],
+    "required": false
+  },
+  "people": { "contractor@acme-partner.example": "U0CONTRCT1" },
+  "fleet": [{ "name": "Sales", "url": "https://overcli-sales.acme.internal" }],
+
+  "roles": [
+    {
+      "name": "Competitive analyst",
+      "job": "Watch our competitors' websites and report each week what changed in their pricing and positioning, with before and after and a link to each change.",
+      "tools": [],
+      "budgetUSDPerMonth": 30
+    },
+    {
+      "name": "Customer advisor",
+      "job": "Read new customer feedback each morning, group it into themes with a representative quote for each, and file feature requests against the ideas they support.",
+      "tools": ["acme-feedback"],
+      "budgetUSDPerMonth": 25
+    },
+    {
+      "name": "PRFAQ writer",
+      "job": "Turn a feature idea and the evidence behind it into a one-page PRFAQ, working backwards from the customer, with the open questions listed at the end.",
+      "tools": [],
+      "budgetUSDPerMonth": 20
+    }
+  ]
+}

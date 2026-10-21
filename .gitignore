@@ -3,6 +3,8 @@ dist/
 coverage/
 release/
 docs/
+# The org docs ship in the repo and the image; only scratch docs/ stays out.
+!deploy/docs/
 .mender/
 
 *.log
@@ -26,3 +28,6 @@ example-registry/
 
 # Design canvas working files (seeded into the published canvas, not app source)
 .design-*/
+
+# Deployment secrets
+deploy/.env

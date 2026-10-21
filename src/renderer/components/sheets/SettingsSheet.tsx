@@ -7,6 +7,8 @@ import {
   AppSettings,
   ThemePreference,
   BackendHealth,
+  SlackStatus,
+  IPCInvokeMap,
 } from '@shared/types';
 import {
   PREMIUM_MODELS,
@@ -16,12 +18,13 @@ import {
 } from '@shared/modelCatalog';
 import { EFFORT_BACKENDS } from '@shared/effort';
 import type { UserProfile } from '@shared/flows/personalize';
-import { Group, SheetActionButton } from './settingsChrome';
+import { Group, Row, SheetActionButton } from './settingsChrome';
 import { LABS, labOn, type LabKey } from '@shared/labs';
 import { UI_SCALE_STEPS } from '@shared/uiScale';
 import { defaultTranscriptLevel, TRANSCRIPT_LEVELS, type TranscriptLevel } from '@shared/transcriptLevel';
 import { ConversationsPane } from './ConversationsPane';
 import { AutoTidyPane } from './AutoTidyPane';
+import { OrgSetupGuide } from './OrgSetupGuide';
 
 // Re-exported so the several sheets that already import it from here keep
 // working now that the definition lives in ./settingsChrome.
@@ -29,7 +32,7 @@ export { SheetActionButton };
 
 const SECTIONS = [
   'general', 'backends', 'models', 'local', 'agents', 'flows',
-  'services', 'conversations', 'autoTidy', 'labs', 'advanced',
+  'services', 'conversations', 'autoTidy', 'org', 'labs', 'advanced',
 ] as const;
 type Section = (typeof SECTIONS)[number];
 
@@ -87,6 +90,7 @@ export function SettingsSheet({ initialSection }: { initialSection?: string } = 
           <NavItem label="Services" active={section === 'services'} onClick={() => setSection('services')} />
           <NavItem label="Conversations" active={section === 'conversations'} onClick={() => setSection('conversations')} />
           <NavItem label="Auto-tidy" active={section === 'autoTidy'} onClick={() => setSection('autoTidy')} />
+          <NavItem label="Your org" active={section === 'org'} onClick={() => setSection('org')} />
           <NavItem label="Labs" active={section === 'labs'} onClick={() => setSection('labs')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
         </nav>
@@ -107,6 +111,7 @@ export function SettingsSheet({ initialSection }: { initialSection?: string } = 
           {section === 'services' && <ServicesSettingsPane local={local} patch={patch} />}
           {section === 'conversations' && <ConversationsPane />}
           {section === 'autoTidy' && <AutoTidyPane />}
+          {section === 'org' && (local.orgAlpha ? <OrgPane local={local} patch={patch} /> : <OrgIntro patch={patch} />)}
           {section === 'labs' && <LabsPane local={local} patch={patch} />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}
         </div>
@@ -153,27 +158,6 @@ function NavItem({ label, active, onClick }: { label: string; active: boolean; o
   );
 }
 
-function Row({ label, children, help }: { label: string; children: React.ReactNode; help?: string }) {
-  return (
-    // Help sits in its own grid row rather than inside the control column.
-    // Inside it, the label could only ever be wrong: `items-center` centred it
-    // against control-plus-help, so a long help line pushed it down, and
-    // `items-start` left it a few pixels ABOVE the control — visibly so next
-    // to a native select, which renders taller than a text input. As its own
-    // row the label centres against the control alone, and the help still
-    // lines up under the control, with no per-control padding to re-tune.
-    <div className="grid grid-cols-[168px_1fr] items-center gap-x-4 gap-y-1">
-      <div className="text-xs text-ink-muted">{label}</div>
-      <div className="min-w-0">{children}</div>
-      {help && (
-        <>
-          <div />
-          <div className="text-[11px] text-ink-faint">{help}</div>
-        </>
-      )}
-    </div>
-  );
-}
 
 function Toggle({
   label,
@@ -733,6 +717,333 @@ function describeAgo(at: number): string {
 /// into the keychain. The consequence is that it never comes BACK either — the
 /// renderer is told only WHETHER one is configured, so the field shows a
 /// placeholder and an explicit Clear button rather than a prefilled value.
+/// The Slack bridge. Tokens save on blur through their own channel, like the
+/// webhook token — they are credentials and never enter `AppSettings`. The
+/// on/off switch is an ordinary setting and applies on Save.
+function SlackField({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const [status, setStatus] = useState<SlackStatus | null>(null);
+  const [typed, setTyped] = useState<{ bot: string; app: string }>({ bot: '', app: '' });
+  const [errors, setErrors] = useState<{ bot?: string; app?: string }>({});
+  const [check, setCheck] = useState<{ ok: boolean; team?: string; error?: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void window.overcli.invoke('slack:status').then(setStatus).catch(() => setStatus(null));
+    return window.overcli.onMainEvent((event) => {
+      if (event.type === 'slackStatus') setStatus(event.status);
+    });
+  }, []);
+
+  const saveToken = (kind: 'bot' | 'app', value: string | null) => {
+    setErrors((e) => ({ ...e, [kind]: undefined }));
+    setCheck(null);
+    void window.overcli.invoke('slack:setToken', { kind, token: value }).then((res) => {
+      if (!res.ok) {
+        setErrors((e) => ({ ...e, [kind]: res.error ?? 'Could not store the token.' }));
+        return;
+      }
+      setTyped((t) => ({ ...t, [kind]: '' }));
+      return window.overcli.invoke('slack:status').then(setStatus);
+    });
+  };
+
+  const tokenRow = (kind: 'bot' | 'app') => {
+    const configured = kind === 'bot' ? status?.botConfigured : status?.appConfigured;
+    const fromEnv = kind === 'bot' ? status?.botFromEnv : status?.appFromEnv;
+    const env = kind === 'bot' ? 'OVERCLI_SLACK_BOT_TOKEN' : 'OVERCLI_SLACK_APP_TOKEN';
+    return (
+      <Row
+        label={kind === 'bot' ? 'Bot token' : 'App-level token'}
+        help={
+          kind === 'bot'
+            ? 'xoxb-… from OAuth & Permissions. Scopes: chat:write, chat:write.customize, im:write, im:history. Stored in the OS keychain.'
+            : 'xapp-… from Basic Information → App-Level Tokens, with connections:write. Turn on Socket Mode and Interactivity, and subscribe to the message.im bot event.'
+        }
+      >
+        <div className="flex gap-2">
+          <input
+            type="password"
+            placeholder={fromEnv ? `set by $${env}` : configured ? 'configured — type to replace' : 'none'}
+            value={typed[kind]}
+            disabled={fromEnv === true}
+            onChange={(e) => setTyped((t) => ({ ...t, [kind]: e.target.value }))}
+            onBlur={() => {
+              if (typed[kind].trim()) saveToken(kind, typed[kind].trim());
+            }}
+            className="field flex-1 px-2 py-1 text-xs font-mono disabled:opacity-40"
+          />
+          <button
+            disabled={fromEnv === true || (!configured && !typed[kind].trim())}
+            onClick={() => saveToken(kind, null)}
+            className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            Clear
+          </button>
+        </div>
+        {errors[kind] && <div className="text-[10px] text-red-300">{errors[kind]}</div>}
+      </Row>
+    );
+  };
+
+  const saved = status?.enabled === true;
+  return (
+    <>
+      <Toggle
+        label="Send questions and approvals to managers in Slack"
+        value={!!local.slackEnabled}
+        onChange={(v) => patch({ slackEnabled: v })}
+        help="Only for workers with a manager whose Slack member ID is set (in the worker's settings, or on a worker it reports to). Run one overcli per Slack app — a second one on the same tokens would take replies meant for this one."
+      />
+      {tokenRow('bot')}
+      {tokenRow('app')}
+      <Row
+        label="Your Slack member ID"
+        help="DM the bot, or @mention it, to ask this laptop's workers for something from anywhere. Only you: requests from anyone else are turned down. In Slack: your profile → ⋯ → Copy member ID."
+      >
+        <input
+          type="text"
+          placeholder="U012AB3CD"
+          value={local.slackOwnerId ?? ''}
+          onChange={(e) => patch({ slackOwnerId: e.target.value.trim() || undefined })}
+          className="field w-40 px-2 py-1 text-xs font-mono"
+        />
+        {local.slackOwnerId && !/^[UW][A-Z0-9]{6,}$/.test(local.slackOwnerId) && (
+          <div className="text-[10px] text-red-300">That doesn't look like a member ID. It starts with U and looks like U012AB3CD.</div>
+        )}
+      </Row>
+      <Row label="Connection">
+        <div className="flex items-center gap-2">
+          <span className={'text-xs ' + (status?.connected ? 'text-emerald-300' : 'text-ink-muted')}>
+            {status?.connected
+              ? `Connected to ${status.team ?? 'Slack'}${status.openThreads ? ` · ${status.openThreads} waiting on a manager` : ''}`
+              : saved
+                ? 'Not connected'
+                : 'Off'}
+          </span>
+          <button
+            disabled={busy || !status?.botConfigured}
+            onClick={() => {
+              setBusy(true);
+              setCheck(null);
+              void window.overcli
+                .invoke(saved ? 'slack:reconnect' : 'slack:test')
+                .then((res) => setCheck(res as { ok: boolean; team?: string; error?: string }))
+                .finally(() => setBusy(false));
+            }}
+            className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            {saved ? 'Reconnect' : 'Test bot token'}
+          </button>
+        </div>
+        {status?.error && !status.connected && <div className="text-[10px] text-red-300">{status.error}</div>}
+        {check && (
+          <div className={'text-[10px] ' + (check.ok ? 'text-ink-muted' : 'text-red-300')}>
+            {check.ok ? (check.team ? `Bot token works for ${check.team}.` : 'Reconnected.') : check.error}
+          </div>
+        )}
+      </Row>
+    </>
+  );
+}
+
+/// Your org's overcli server. Signing in pairs this app with it: an invite
+/// link signs in at once; a server address opens the org's page in the
+/// browser to confirm a code. Either way the token goes to the keychain and
+/// nobody copies it. Pasting a token stays, folded away, for scripts.
+function OrgServerField({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const [address, setAddress] = useState(local.orgServerUrl ?? '');
+  const [status, setStatus] = useState<ReturnType<IPCInvokeMap['org:status']> | null>(null);
+  const [pairing, setPairing] = useState<{ userCode: string; verifyUrl: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [token, setToken] = useState('');
+  const refresh = () => {
+    void window.overcli.invoke('org:status').then(setStatus);
+  };
+  useEffect(() => {
+    refresh();
+    return window.overcli.onMainEvent((event) => {
+      if (event.type !== 'orgSignIn') return;
+      setPairing(null);
+      setBusy(false);
+      if (event.outcome === 'signedIn') refresh();
+      else
+        setError(
+          event.outcome === 'denied'
+            ? 'The sign-in was refused in the browser.'
+            : event.outcome === 'expired'
+              ? 'The code expired before it was confirmed. Try again.'
+              : event.error ?? 'Sign-in failed.',
+        );
+    });
+  }, []);
+
+  const signIn = () => {
+    const url = address.trim();
+    if (!url) return;
+    setBusy(true);
+    setError(null);
+    void window.overcli.invoke('org:signIn', { url }).then((res) => {
+      if (!res.ok) {
+        setBusy(false);
+        setError(res.error);
+        return;
+      }
+      try {
+        patch({ orgServerUrl: new URL(url).origin });
+      } catch {
+        // validated in main
+      }
+      if (res.signedIn) {
+        setBusy(false);
+        refresh();
+      } else {
+        setPairing({ userCode: res.userCode, verifyUrl: res.verifyUrl });
+      }
+    }, (err: unknown) => {
+      setBusy(false);
+      setError(String(err));
+    });
+  };
+
+  const who = status?.who;
+  if (who && !pairing) {
+    return (
+      <Row label="Your org" help="Workers you build here can join the org from their Share card: Publish to your org.">
+        <div className="flex items-center gap-3">
+          <div className="min-w-0">
+            <div className="text-sm text-ink">{who.org}</div>
+            <div className="text-[11px] text-ink-muted">
+              Signed in as {who.name}
+              {who.canHire ? '. You can publish workers.' : '. You cannot hire yet; ask an admin.'}
+            </div>
+          </div>
+          <button
+            disabled={status?.fromEnv === true}
+            onClick={() => {
+              void window.overcli.invoke('org:signOut').then(() => {
+                setStatus(null);
+                refresh();
+              });
+            }}
+            className="ml-auto text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0 disabled:opacity-40"
+          >
+            Sign out
+          </button>
+        </div>
+        <div className="text-[10px] text-ink-faint font-mono">{local.orgServerUrl}</div>
+      </Row>
+    );
+  }
+
+  return (
+    <>
+      <Row
+        label="Your org"
+        help="Paste the invite link you were sent, or your org’s address. With an address, your browser opens to confirm it’s you; the app signs in when you do."
+      >
+        {pairing ? (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-lg tracking-widest text-ink" title="Pairing code">
+                {pairing.userCode}
+              </span>
+              <span className="text-[11px] text-ink-muted" aria-live="polite">
+                Check your browser shows this code, then press Allow. Waiting…
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <a href={pairing.verifyUrl} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
+                Open the page again
+              </a>
+              <button
+                onClick={() => {
+                  void window.overcli.invoke('org:cancelSignIn');
+                  setPairing(null);
+                  setBusy(false);
+                }}
+                className="text-xs text-ink-muted hover:text-ink"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <input
+              type="text"
+              placeholder="https://overcli.acme.example or an invite link"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') signIn();
+              }}
+              className="field flex-1 px-2 py-1 text-xs font-mono"
+            />
+            <button
+              disabled={busy || !address.trim()}
+              onClick={signIn}
+              className="text-xs px-3 py-1 rounded bg-accent text-white flex-shrink-0 disabled:opacity-40"
+            >
+              {busy ? 'Signing in…' : 'Sign in'}
+            </button>
+          </div>
+        )}
+        {error && (
+          <div role="alert" className="text-[10px] text-red-300">
+            {error}
+          </div>
+        )}
+        {status?.error && !pairing && <div className="text-[10px] text-red-300">{status.error}</div>}
+      </Row>
+      <details className="text-[11px] text-ink-faint">
+        <summary className="cursor-pointer">Use a token instead</summary>
+        <div className="mt-2 flex gap-2">
+          <input
+            type="password"
+            placeholder={status?.fromEnv ? 'set by $OVERCLI_ORG_TOKEN' : status?.tokenConfigured ? 'configured — type to replace' : 'ocli_…'}
+            value={token}
+            disabled={status?.fromEnv === true}
+            onChange={(e) => setToken(e.target.value)}
+            onBlur={() => {
+              if (!token.trim()) return;
+              if (address.trim()) {
+                try {
+                  patch({ orgServerUrl: new URL(address.trim()).origin });
+                } catch {
+                  setError('That address is not a URL.');
+                  return;
+                }
+              }
+              void window.overcli.invoke('org:setToken', token.trim()).then((res) => {
+                if (!res.ok) {
+                  setError(res.error ?? 'Could not save the token.');
+                  return;
+                }
+                setToken('');
+                void window.overcli.invoke('org:status', address.trim() ? { url: address.trim() } : undefined).then(setStatus);
+              });
+            }}
+            className="field flex-1 px-2 py-1 text-xs font-mono disabled:opacity-40"
+          />
+        </div>
+      </details>
+    </>
+  );
+}
+
 function WebhookField({
   local,
   patch,
@@ -920,6 +1231,208 @@ function WebhookField({
       </select>
     </Row>
     </>
+  );
+}
+
+/// What an org server is, for someone who hasn't turned it on: what changes,
+/// what it takes, and the switch. Shown in Settings → Your org whether or
+/// not the alpha is on, so it can be found without reading Labs.
+function OrgIntro({ patch }: { patch: (p: Partial<AppSettings>) => void }) {
+  const guide = 'https://github.com/overcodelions/overcli/blob/master/deploy/docs/getting-started.md';
+  return (
+    <div>
+      <Group title="Your org · alpha" description="Run your workers for your whole team, not just on this Mac.">
+        <div className="flex flex-col gap-4 text-sm text-ink">
+          <ul className="flex flex-col gap-2 text-[13px] text-ink-muted list-disc pl-5">
+            <li><span className="text-ink">Always on.</span> Workers keep their schedules when this Mac is asleep or closed.</li>
+            <li><span className="text-ink">Your team can ask them</span> in Slack, from Claude, or on a web console, and give teams tasks.</li>
+            <li><span className="text-ink">Managers stay in charge.</span> Each worker answers to someone, who approves its work in Slack or the console.</li>
+            <li><span className="text-ink">Set up once for everyone:</span> keys, repos, tools and budgets live on the server.</li>
+          </ul>
+          <div className="text-[13px] text-ink-muted">
+            <span className="text-ink">What it takes:</span> a server, which is Docker on any machine, AWS Fargate or Google Cloud Run. About ten minutes. The workers and teams you built here move over with Publish, and so does the rest of your setup.
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button onClick={() => patch({ orgAlpha: true })} className="text-xs px-3 py-1.5 rounded bg-accent text-white">
+              Turn it on
+            </button>
+            <a href={guide} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
+              Read how to run one
+            </a>
+            <span className="text-[11px] text-ink-faint">Already have one? Turn it on, then sign in with the link you were sent.</span>
+          </div>
+        </div>
+      </Group>
+    </div>
+  );
+}
+
+/// Publish my setup: this desktop's workspaces, projects and tools, picked
+/// one by one, onto the org server. Nothing is ticked to start with. A
+/// tool's keys only go when you tick "send its keys" for that tool, and the
+/// server only takes them from an admin over https or on this machine.
+function OrgSetupPublish() {
+  type Preview = Extract<ReturnType<IPCInvokeMap['org:setupPreview']>, { ok: true }>;
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [spaces, setSpaces] = useState<Set<string>>(new Set());
+  const [projects, setProjects] = useState<Set<string>>(new Set());
+  const [tools, setTools] = useState<Set<string>>(new Set());
+  const [keys, setKeys] = useState<Set<string>>(new Set());
+  const toggle = (set: Set<string>, put: (s: Set<string>) => void, id: string) => {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    put(next);
+  };
+  const open = () => {
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    void window.overcli.invoke('org:setupPreview').then((res) => {
+      setBusy(false);
+      if (!res.ok) setError(res.error);
+      else setPreview(res);
+    });
+  };
+  const publish = () => {
+    setBusy(true);
+    setError(null);
+    void window.overcli
+      .invoke('org:publishSetup', { tools: [...tools], sendKeysFor: [...keys].filter((k) => tools.has(k)), workspaceIds: [...spaces], projectIds: [...projects] })
+      .then((res) => {
+        setBusy(false);
+        if (!res.ok) setError(res.error);
+        else {
+          setDone(res.message);
+          setPreview(null);
+        }
+      });
+  };
+  if (!preview) {
+    return (
+      <Row label="Publish my setup" help="Send the org server the workspaces, repos and tools you pick from this app, for its admin to install. Keys stay here unless you choose to send them.">
+        <div className="flex flex-col gap-2">
+          <button onClick={open} disabled={busy} className="self-start text-xs px-3 py-1.5 rounded border border-card text-ink hover:bg-card-strong disabled:opacity-50">
+            {busy ? 'Reading your setup…' : 'Choose what to publish…'}
+          </button>
+          {done && <div className="text-[11px] text-ink-muted" role="status">{done}</div>}
+          {error && <div className="text-[11px] text-red-400" role="alert">{error}</div>}
+        </div>
+      </Row>
+    );
+  }
+  const inSpace = new Set(preview.workspaces.flatMap((w) => w.projectIds));
+  const byId = new Map(preview.projects.map((p) => [p.id, p]));
+  const loose = preview.projects.filter((p) => !inSpace.has(p.id));
+  const chosen = spaces.size + projects.size + tools.size;
+  const box = 'mt-0.5 flex-shrink-0';
+  return (
+    <div className="flex flex-col gap-4 rounded border border-card p-4">
+      <div className="text-xs text-ink-muted">
+        Publishing to <span className="font-mono">{preview.server}</span>. Pick what it should have; nothing is picked yet.
+        {preview.sameMachine && ' That server runs on this Mac and already uses your tools and logins, so publishing there only tries the flow out.'}
+      </div>
+      {preview.workspaces.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <div className="text-[11px] uppercase tracking-wide text-ink-faint">Workspaces</div>
+          {preview.workspaces.map((w) => (
+            <label key={w.id} className="flex gap-2 text-sm text-ink">
+              <input type="checkbox" className={box} checked={spaces.has(w.id)} onChange={() => toggle(spaces, setSpaces, w.id)} />
+              <span className="min-w-0">
+                {w.name}
+                <span className="block text-[11px] text-ink-muted">
+                  {w.projectIds.map((id) => byId.get(id)).filter(Boolean).map((p) => `${p!.name}${p!.url ? '' : ' (no remote)'}`).join(', ') || 'No projects'}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+      {loose.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <div className="text-[11px] uppercase tracking-wide text-ink-faint">{preview.workspaces.length ? 'Other projects' : 'Projects'}</div>
+          {loose.map((p) => (
+            <label key={p.id} className="flex gap-2 text-sm text-ink">
+              <input type="checkbox" className={box} checked={projects.has(p.id)} onChange={() => toggle(projects, setProjects, p.id)} />
+              <span className="min-w-0">
+                {p.name}
+                <span className="block text-[11px] text-ink-muted font-mono truncate">{p.url ?? 'No git remote: only a server on this Mac can use it'}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+      {preview.tools.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <div className="text-[11px] uppercase tracking-wide text-ink-faint">Tools (MCP servers)</div>
+          {preview.tools.map((t) => (
+            <div key={t.name} className="flex flex-col gap-1">
+              <label className="flex gap-2 text-sm text-ink">
+                <input type="checkbox" className={box} checked={tools.has(t.name)} onChange={() => toggle(tools, setTools, t.name)} />
+                <span className="min-w-0">
+                  {t.name}
+                  <span className="block text-[11px] text-ink-muted font-mono truncate">{t.target}</span>
+                </span>
+              </label>
+              {t.keys.length > 0 && tools.has(t.name) && (
+                <div className="ml-6 flex flex-col gap-1">
+                  <label className={`flex gap-2 text-[12px] ${preview.admin ? 'text-ink' : 'text-ink-faint'}`}>
+                    <input type="checkbox" className={box} disabled={!preview.admin} checked={keys.has(t.name)} onChange={() => toggle(keys, setKeys, t.name)} />
+                    <span>
+                      Send its keys too <span className="font-mono text-ink-muted">({t.keys.join(', ')})</span>
+                      {!preview.admin && <span className="block text-[11px]">Only an admin can send keys. Without them, an admin adds them on the server.</span>}
+                    </span>
+                  </label>
+                  {keys.has(t.name) && (
+                    <div className="text-[11px] text-amber-400" role="note">
+                      These keys will act as you for every worker on that server that uses {t.name}: whatever you can reach, they can. For a real deployment, make a service account or bot token for the org instead.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <button onClick={publish} disabled={busy || chosen === 0} className="text-xs px-3 py-1.5 rounded bg-accent text-white disabled:opacity-40">
+          {busy ? 'Publishing…' : 'Publish'}
+        </button>
+        <button onClick={() => setPreview(null)} className="text-xs px-2 py-1.5 rounded text-ink-muted hover:text-ink">
+          Cancel
+        </button>
+        <span className="text-[11px] text-ink-faint">
+          {chosen === 0 ? 'Tick what to send.' : `${spaces.size} workspace${spaces.size === 1 ? '' : 's'}, ${projects.size} project${projects.size === 1 ? '' : 's'}, ${tools.size} tool${tools.size === 1 ? '' : 's'}${keys.size ? `, keys for ${[...keys].filter((k) => tools.has(k)).length}` : ''}`}
+        </span>
+      </div>
+      {error && <div className="text-[11px] text-red-400" role="alert">{error}</div>}
+    </div>
+  );
+}
+
+/// Everything for the org alpha in one place, shown only while it's on:
+/// the server this app publishes to, and the desktop's own Slack bridge.
+function OrgPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
+  return (
+    <div>
+      <Group
+        title="Your org · alpha"
+        description="Your org's overcli server, where shared workers run for the whole team. Publish a worker you built here to it from the worker's Share card."
+      >
+        <OrgServerField local={local} patch={patch} />
+        <OrgSetupPublish />
+        <OrgSetupGuide local={local} patch={patch} />
+      </Group>
+      <Group
+        title="Slack · alpha"
+        description="Workers on this machine DM their manager in Slack when they need an answer or an approval. Leave it off when your org's server runs the same Slack app: two bridges on one app take each other's replies."
+      >
+        <SlackField local={local} patch={patch} />
+      </Group>
+    </div>
   );
 }
 
@@ -1122,6 +1635,12 @@ function LabsPane({
         {/* Services keeps its own long-standing setting — off for everyone
             until asked for, unlike the labs above — but is switched here so
             every "off until you want it" surface lives in one place. */}
+        <Toggle
+          label="Org workers · alpha"
+          help="Very early. Workers for a whole team: a server that runs them, managers asked in Slack, a web console, and publishing workers you build here to it. Adds a Your org section to Settings, and Manager and Who may ask it to each worker. Expect rough edges and changes."
+          value={local.orgAlpha ?? false}
+          onChange={(v) => patch({ orgAlpha: v })}
+        />
         <Toggle
           label="Services"
           help="Lets overcli start and stop the things your projects run — a server, a web app, a database — and point them at whichever branch you are working on. Overcli also suggests it on a project that has something to run."

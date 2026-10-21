@@ -66,6 +66,12 @@ function workersRoot(): string {
   }
 }
 
+/// Where every worker's own directory lives — the one place a worker may look
+/// around with read-only shell commands on a server that otherwise refuses them.
+export function workerFilesRoot(): string {
+  return workersRoot();
+}
+
 /// The absolute path a worker owns. Handed to the worker in its own prompt, so
 /// its flow steps can read and write it with ordinary tools — no mounting into
 /// the worktree, no runtime change. The id is a UUID, so it is already safe as
@@ -155,6 +161,20 @@ function realOrSelf(target: string): string {
 
 /// Read one file back, refusing anything that resolves outside the worker's
 /// own directory.
+/// A worker's file as bytes, for sending as itself (an HTML report, an
+/// image), contained the same way as `readWorkerFile`. Null: outside, gone,
+/// not a file, or bigger than `maxBytes`.
+export function readWorkerFileBytes(workerId: string, name: string, maxBytes: number): Buffer | null {
+  const full = containedPath(workerFilesDir(workerId), name);
+  if (!full) return null;
+  try {
+    const stat = fs.statSync(full);
+    return stat.isFile() && stat.size <= maxBytes ? fs.readFileSync(full) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function readWorkerFile(
   workerId: string,
   name: string,

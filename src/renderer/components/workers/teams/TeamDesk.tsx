@@ -5,6 +5,7 @@
 // requests, and the task re-renders when main says it moved.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { OrgNudge } from "../OrgNudge";
 
 import { Markdown } from "../../Markdown";
 import { Composer } from "../../Composer";
@@ -35,14 +36,51 @@ import {
   type TeamStageKind,
   type TeamMessage,
   type TeamTask,
+  type TeamComment,
 } from "@shared/flows/team";
 import { WorkerAvatar } from "../WorkerAvatar";
 import { workerTagline } from "@shared/flows/worker";
 import { currentTeamTask } from "./TeamRail";
-import { folderSections, type FolderItem } from "./folderView";
+import { folderSections, packChangeCard, pieceGroups, type FolderItem, type PieceGroup } from "./folderView";
 import { ProjectSelect, projectName, useProjectOptions } from "./ProjectChoice";
 import { exchangeOutcome, groupExchanges, plainLine, type Exchange } from "./roomView";
-import { COORDINATOR_LANE, pieceIn, planLayout, roleTitle, shortDuration } from "./planView";
+import {
+  COORDINATOR_LANE,
+  briefOpening,
+  cellLabel,
+  chipState,
+  defaultCell,
+  nextTab,
+  pieceIn,
+  planLayout,
+  planStatus,
+  roleTitle,
+  shortDuration,
+  stageMs,
+  stageWhen,
+  taskStatusPill,
+  type ChipState,
+  type PlanCell,
+  type PlanColumn,
+} from "./planView";
+import { CommentButton, CommentGlyph, CommentPopover, CommentsPanel, FileComments } from "./TaskComments";
+import { parseWrapUp, splitOwner } from "@shared/flows/teamWrapUp";
+import {
+  canKeepDebating,
+  canUpdatePack,
+  defaultTaskTab,
+  latestWrapUp,
+  replyCount,
+  replyGist,
+  repliesTo,
+  unfoldedExchanges,
+  yourTurn,
+  type LandedWrapUp,
+  type TaskTabId,
+  type TurnAction,
+  type TurnBand,
+} from "./landedView";
+import { canRedoPiece, commentsByPiece, pieceKey } from "./commentView";
 
 const primaryBtn = "text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40";
 const secondaryBtn =
@@ -65,6 +103,10 @@ export function TeamDesk({
   const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
   const workers = useWorkersStore((s) => s.workers);
   const projectOptions = useProjectOptions();
+  const orgAlpha = useStore((s) => s.settings.orgAlpha ?? false);
+  const openSheet = useStore((s) => s.openSheet);
+  const [publishing, setPublishing] = useState(false);
+  const [published, setPublished] = useState<{ ok: boolean; text: string; signIn?: boolean } | null>(null);
   const current = team ? currentTeamTask(tasks, team.id) : undefined;
   const past = useMemo(
     () =>
@@ -78,8 +120,13 @@ export function TeamDesk({
   const home = taskId ?? null;
   const [pickedTaskId, setPickedTaskId] = useState<string | null>(home);
   const [viewing, setViewing] = useState<string | null>(null);
+  /// A passage to bring into view in the open file: a comment opened from
+  /// the list. `n` changes on every open, so the same one scrolls again.
+  const [focusQuote, setFocusQuote] = useState<{ quote: string; n: number } | null>(null);
   /// Writing a new brief while another task is still on the desk.
   const [composing, setComposing] = useState(false);
+  /// The members' stack in the header, opened to who they are.
+  const [crewOpen, setCrewOpen] = useState(false);
   // A new current task (you just briefed one) takes the desk back.
   useEffect(() => {
     setPickedTaskId(home);
@@ -108,65 +155,158 @@ export function TeamDesk({
       }));
       return;
     }
+    setFocusQuote(null);
     if (isReadableInDesk(name)) setViewing(name);
     else void useTeamsStore.getState().openFile(shown.id, name);
+  };
+  // The org's server: members it doesn't have go up first, then the team;
+  // published again, it's updated there.
+  const publish = () => {
+    setPublishing(true);
+    setPublished(null);
+    void window.overcli
+      .invoke("org:publishTeam", { id: team.id })
+      .then((res) => setPublished(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error, signIn: res.signIn }))
+      .finally(() => setPublishing(false));
+  };
+  const openComment = (c: TeamComment) => {
+    if (!c.file) return;
+    openFile(c.file);
+    if (c.quote && isReadableInDesk(c.file)) setFocusQuote({ quote: c.quote, n: Date.now() });
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 flex-wrap items-start justify-between gap-4 border-b border-card px-6 pb-4 pt-6">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h1 className="truncate text-2xl font-semibold tracking-tight text-ink">{team.name}</h1>
-          {team.purpose && <div className="text-sm text-ink-muted">{team.purpose}</div>}
-          {team.projectPath && (
-            <div className="text-xs text-ink-faint">
-              Works in <span className="text-ink-muted">{projectName(projectOptions, team.projectPath)}</span>
+      <header className="flex shrink-0 flex-col gap-2.5 border-b border-card px-6 pb-3 pt-5">
+        <div className="flex flex-wrap items-center gap-3.5">
+          <div className="flex min-w-0 flex-[1_1_420px] flex-col gap-0.5">
+            <div className="flex min-w-0 items-baseline gap-2.5">
+              <h1 className="truncate text-[19px] font-semibold tracking-tight text-ink">{team.name}</h1>
+              <span className="shrink-0 text-xs text-ink-faint">
+                team{team.projectPath ? ` · works in ${projectName(projectOptions, team.projectPath)}` : ""}
+              </span>
             </div>
-          )}
+            {team.purpose && (
+              <div className="truncate text-[12.5px] text-ink-muted" title={team.purpose}>
+                {team.purpose}
+              </div>
+            )}
+          </div>
           {/* While briefing, the members get cards of their own below; on a
-              task they shrink to a line so the task has the room. */}
-          {!briefing && (
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {team.members.map((m) => {
-                const w = workers[m.workerId];
-                return (
-                  <span
-                    key={m.workerId}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-card bg-card px-2 py-0.5 text-[11px] text-ink-muted"
-                  >
-                    {w ? <WorkerAvatar worker={w} size="xs" /> : null}
-                    <span className="text-ink">{w?.name ?? "Gone"}</span>
-                    {m.role && <span>· {m.role}</span>}
-                  </span>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {!briefing && (
+              task they fold into a stack that opens to the same. */}
+          {!briefing && team.members.length > 0 && (
             <button
-              className={primaryBtn + " shrink-0"}
-              disabled={!!busyWith}
-              title={
-                busyWith
-                  ? `The team is still on "${busyWith.title ?? busyWith.brief}". Finish or cancel it first.`
-                  : "Brief the team on something new. This task stays in the list."
-              }
-              onClick={() => {
-                setComposing(true);
-                setPickedTaskId(null);
-                setViewing(null);
-              }}
+              className="inline-flex shrink-0 items-center gap-2 rounded-full border border-card py-1 pl-1 pr-2.5 hover:bg-card-strong"
+              aria-expanded={crewOpen}
+              aria-controls="team-crew"
+              onClick={() => setCrewOpen((v) => !v)}
             >
-              New task
+              <span className="flex">
+                {team.members.slice(0, 6).map((m, i) => {
+                  const w = workers[m.workerId];
+                  return (
+                    <span key={m.workerId} className={"flex rounded-full ring-2 ring-surface " + (i ? "-ml-1.5" : "")}>
+                      {w ? <WorkerAvatar worker={w} size="sm" untitled /> : <span className="h-6 w-6 rounded-full bg-card-strong" />}
+                    </span>
+                  );
+                })}
+              </span>
+              <span className="text-xs text-ink-muted">
+                {team.members.length} member{team.members.length === 1 ? "" : "s"}
+              </span>
+              <svg aria-hidden width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-ink-faint">
+                <path d={crewOpen ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+              </svg>
             </button>
           )}
-          <button className="review-btn shrink-0" onClick={() => openTeamEditor(team.id)}>
-            Edit team
+          <div className="flex shrink-0 items-center gap-1.5">
+            {!briefing && (
+              <button
+                className={primaryBtn}
+                disabled={!!busyWith}
+                title={
+                  busyWith
+                    ? `The team is still on "${busyWith.title ?? busyWith.brief}". Finish or cancel it first.`
+                    : "Brief the team on something new. This task stays in the list."
+                }
+                onClick={() => {
+                  setComposing(true);
+                  setPickedTaskId(null);
+                  setViewing(null);
+                }}
+              >
+                New task
+              </button>
+            )}
+            <TeamMenu
+              items={[
+                { label: "Edit team", onSelect: () => openTeamEditor(team.id) },
+                ...(orgAlpha
+                  ? [
+                      {
+                        label: publishing ? "Publishing…" : "Publish to your org",
+                        title: "Put this team and its members on your org's server, where people can give it work from the console, Slack or Claude.",
+                        disabled: publishing,
+                        onSelect: publish,
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          </div>
+        </div>
+        {crewOpen && !briefing && (
+          <div id="team-crew" className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2 rounded-xl border border-card bg-surface-elevated p-2.5">
+            {team.members.map((m) => {
+              const w = workers[m.workerId];
+              const does = m.role?.trim() || (w ? workerTagline(w) : "");
+              return (
+                <div key={m.workerId} className="flex min-w-0 items-start gap-2.5 px-1 py-0.5">
+                  {w ? <WorkerAvatar worker={w} size="sm" /> : <span className="h-6 w-6 shrink-0 rounded-full bg-card-strong" />}
+                  <span className="flex min-w-0 flex-col">
+                    <b className="truncate text-[13px] font-semibold text-ink">{w?.name ?? "Gone"}</b>
+                    {does && (
+                      <span className="truncate text-xs text-ink-faint" title={does}>
+                        {does}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+            <span className="col-span-full flex gap-4 px-1 text-xs">
+              <button className="text-accent hover:underline" onClick={() => openTeamEditor(team.id)}>
+                Edit team
+              </button>
+              {orgAlpha && (
+                <button className="text-accent hover:underline disabled:opacity-40" disabled={publishing} onClick={publish}>
+                  {publishing ? "Publishing…" : "Publish to your org"}
+                </button>
+              )}
+            </span>
+          </div>
+        )}
+      </header>
+      {!orgAlpha && (
+        <div className="px-6">
+          <OrgNudge id="share-team">
+            Want people across your company to give {team.name} work? Put it on your org&apos;s server, and they can from Slack, Claude or the web.
+          </OrgNudge>
+        </div>
+      )}
+      {published && (
+        <div role="status" className={"flex items-center gap-2 px-6 pb-3 text-[11.5px] " + (published.ok ? "text-emerald-700 dark:text-emerald-300" : "text-red-700 dark:text-red-300")}>
+          <span>{published.text}</span>
+          {published.signIn && (
+            <button className="text-accent hover:underline" onClick={() => openSheet({ type: "settings", section: "org" })}>
+              Open Settings
+            </button>
+          )}
+          <button className="ml-auto text-ink-faint hover:text-ink" aria-label="Dismiss" onClick={() => setPublished(null)}>
+            ×
           </button>
         </div>
-      </header>
+      )}
 
       {/* Two columns that scroll on their own when there is room for both,
           so the shared folder stays beside a long conversation. On a narrow
@@ -205,7 +345,7 @@ export function TeamDesk({
             <div className="h-0" />
           )}
           {viewing && shown ? (
-            <FileViewer task={shown} name={viewing} onOpenFile={openFile} />
+            <FileViewer task={shown} name={viewing} onOpenFile={openFile} focus={focusQuote} />
           ) : shown && tabbed ? (
             <PackTabs
               key={shown.id}
@@ -255,6 +395,7 @@ export function TeamDesk({
         {shown && (
           <aside className="flex min-w-0 shrink-0 flex-col gap-4 border-t border-card px-5 py-5 lg:min-h-0 lg:w-[300px] lg:overflow-y-auto lg:border-l lg:border-t-0">
             <FolderPanel task={shown} viewing={viewing} onOpen={openFile} />
+            <CommentsPanel task={shown} onOpenComment={openComment} />
             {/* While a task is open, the others stay one click away. With none
                 open they are the main column's list instead. */}
             {past.length > 0 && (
@@ -288,6 +429,82 @@ export function TeamDesk({
   );
 }
 
+/// The header's ⋯: what you do to the team rather than to a task.
+function TeamMenu({ items }: { items: Array<{ label: string; title?: string; disabled?: boolean; onSelect: () => void }> }) {
+  const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    menu.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!menu.current?.contains(t) && !btn.current?.contains(t)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        btn.current?.focus();
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const all = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+        const at = all.indexOf(document.activeElement as HTMLButtonElement);
+        const next = all[(at + (e.key === "ArrowDown" ? 1 : all.length - 1)) % all.length];
+        if (next) {
+          e.preventDefault();
+          next.focus();
+        }
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return (
+    <div className="relative">
+      <button
+        ref={btn}
+        className={secondaryBtn + " px-2"}
+        aria-label="More team actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <svg aria-hidden width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="5" cy="12" r="1.8" />
+          <circle cx="12" cy="12" r="1.8" />
+          <circle cx="19" cy="12" r="1.8" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          ref={menu}
+          role="menu"
+          className="absolute right-0 top-full z-30 mt-1 flex min-w-[180px] flex-col rounded-lg border border-card bg-surface-elevated p-1 shadow-xl"
+        >
+          {items.map((it) => (
+            <button
+              key={it.label}
+              role="menuitem"
+              title={it.title}
+              disabled={it.disabled}
+              className="rounded-md px-2.5 py-1.5 text-left text-xs text-ink hover:bg-card-strong focus:bg-card-strong focus:outline-none disabled:opacity-40"
+              onClick={() => {
+                setOpen(false);
+                it.onSelect();
+              }}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /// The team's finished work, as the main column's list when no task is open.
 /// Each row says what came of it — the verdict, the pack, the cost — so you
 /// can tell tasks apart without opening each one. The title opens the task;
@@ -314,7 +531,7 @@ function PastTasks({
               <div className="flex min-w-0 flex-[999_1_420px] flex-col gap-1.5">
                 <span className="flex items-center gap-2 text-[11px] text-ink-faint">
                   <TaskStatusDot status={t.status} />
-                  <span className={t.status === "review" ? "text-violet-400" : ""}>{describeTeamTaskStatus(t)}</span>
+                  <span className={t.status === "review" ? "text-violet-600 dark:text-violet-400" : ""}>{describeTeamTaskStatus(t)}</span>
                   <span>· {relativeDay(t.finishedAt ?? t.createdAt)}</span>
                   {t.pack?.version && t.pack.version > 1 && <span>· pack v{t.pack.version}</span>}
                 </span>
@@ -480,7 +697,23 @@ function BriefComposer({ team, first, onEditTeam }: { team: Team; first: boolean
 
 function TaskView({ task, team, onOpenFile }: { task: TeamTask; team: Team; onOpenFile: (name: string) => void }) {
   const error = useTeamsStore((s) => s.errors[task.id]);
+  const approve = useTeamsStore((s) => s.approve);
+  const sending = useTeamsStore((s) => !!s.busy[task.id]);
   const projectOptions = useProjectOptions();
+  const band = yourTurn(task);
+  const onTurn = (id: TurnAction) => {
+    if (id === "approvePlan") void approve(task.id);
+    else if (id === "answerQuestions") scrollToId(`task-questions-${task.id}`, true);
+    else if (id === "readPlan") scrollToId(`task-plan-${task.id}`);
+    else if (id === "seeWaiting") scrollToId(`task-waiting-${task.id}`);
+    else if (id === "openRun") openPausedRun(band?.run);
+  };
+  const underWay =
+    task.status === "running" ||
+    task.status === "waiting" ||
+    task.status === "review" ||
+    task.status === "done" ||
+    (task.status === "cancelled" && task.stages.length > 0);
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-1">
@@ -489,17 +722,32 @@ function TaskView({ task, team, onOpenFile }: { task: TeamTask; team: Team; onOp
           {task.projectPath && ` · in ${projectName(projectOptions, task.projectPath)}`}
         </span>
         <h2 className="text-xl font-semibold tracking-tight text-ink">{task.title ?? "New task"}</h2>
+        {task.stages.length > 0 && (
+          <div className="mt-2">
+            <StageTrack task={task} />
+          </div>
+        )}
       </div>
+      {band && <TurnBandView band={band} busy={sending} onAction={onTurn} />}
 
-      <div className="flex max-w-xl flex-col items-end gap-1.5 self-end">
-        <div className="whitespace-pre-wrap rounded-2xl rounded-br-sm bg-accent px-4 py-2.5 text-sm text-white">
-          {task.brief}
+      {/* Once the plan is under way the brief has been read: it folds to a
+          line, so the plan is what you see. */}
+      {underWay ? (
+        <BriefFold task={task} onOpenFile={onOpenFile} />
+      ) : (
+        <div className="flex max-w-xl flex-col items-end gap-1.5 self-end">
+          <div className="whitespace-pre-wrap rounded-2xl rounded-br-sm bg-accent px-4 py-2.5 text-sm text-white">
+            {task.brief}
+          </div>
+          <AttachmentChips names={task.attachments} onOpenFile={onOpenFile} />
         </div>
-        <AttachmentChips names={task.attachments} onOpenFile={onOpenFile} />
-      </div>
+      )}
 
-      {task.answers && task.questions && (
-        <CoordinatorSays label="asked, and you answered">
+      {!underWay && task.answers && task.questions && (
+        <CoordinatorSays
+          label="asked, and you answered"
+          action={<CommentButton task={task} target={{ kind: "questions" }} onOpenFile={onOpenFile} />}
+        >
           <div className="flex flex-col divide-y divide-card rounded-lg border border-card bg-surface-elevated">
             {task.questions.map((q, i) => (
               <div key={i} className="flex flex-col gap-0.5 px-3 py-2">
@@ -516,9 +764,17 @@ function TaskView({ task, team, onOpenFile }: { task: TeamTask; team: Team; onOp
           <CoordinatorActivity taskId={task.id} stage={null} since={task.updatedAt} reading="the brief and the team" />
         </CoordinatorSays>
       )}
-      {task.status === "questions" && <QuestionsForm task={task} />}
-      {task.status === "proposed" && <PlanCard task={task} />}
-      {(task.status === "running" || task.status === "waiting" || task.status === "review" || task.status === "done" || (task.status === "cancelled" && task.stages.length > 0)) && (
+      {task.status === "questions" && (
+        <div id={`task-questions-${task.id}`}>
+          <QuestionsForm task={task} />
+        </div>
+      )}
+      {task.status === "proposed" && (
+        <div id={`task-plan-${task.id}`}>
+          <PlanCard task={task} />
+        </div>
+      )}
+      {underWay && (
         <RunView task={task} team={team} onOpenFile={onOpenFile} />
       )}
       {task.status === "failed" && <FailedCard task={task} />}
@@ -533,7 +789,7 @@ function TaskView({ task, team, onOpenFile }: { task: TeamTask; team: Team; onOp
   );
 }
 
-function CoordinatorSays({ label, children }: { label: string; children: React.ReactNode }) {
+function CoordinatorSays({ label, action, children }: { label: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3">
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent" aria-hidden>
@@ -545,12 +801,61 @@ function CoordinatorSays({ label, children }: { label: string; children: React.R
         </svg>
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <span className="text-xs font-semibold text-ink">
-          Coordinator <span className="font-normal text-ink-faint">· {label}</span>
+        <span className="flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-ink">
+            Coordinator <span className="font-normal text-ink-faint">· {label}</span>
+          </span>
+          {action}
         </span>
         {children}
       </div>
     </div>
+  );
+}
+
+/// The brief, folded to its opening line once the plan is under way. Opened,
+/// it is the whole ask, what you attached, and the questions you answered.
+function BriefFold({ task, onOpenFile }: { task: TeamTask; onOpenFile: (name: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const answered = task.answers && task.questions ? task.questions.length : 0;
+  return (
+    <section aria-label="The brief" className="flex flex-col rounded-xl border border-card bg-surface-elevated">
+      <button
+        className="flex min-w-0 items-center gap-3 px-4 py-2.5 text-left"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="shrink-0 text-[10.5px] font-bold uppercase tracking-wider text-ink-faint">The brief</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-ink-muted">“{briefOpening(task.brief)}”</span>
+        <span className="shrink-0 text-xs text-ink-faint">
+          {answered > 0 && `${answered} question${answered === 1 ? "" : "s"} answered · `}
+          <span className="text-accent">{open ? "hide" : "show"}</span>
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-4 border-t border-card px-4 py-3">
+          <div className="flex flex-col gap-1.5">
+            <p className="max-w-3xl whitespace-pre-wrap text-sm leading-relaxed text-ink">{task.brief}</p>
+            <AttachmentChips names={task.attachments} onOpenFile={onOpenFile} />
+          </div>
+          {task.answers && task.questions && (
+            <CoordinatorSays
+              label="asked, and you answered"
+              action={<CommentButton task={task} target={{ kind: "questions" }} onOpenFile={onOpenFile} />}
+            >
+              <div className="flex flex-col divide-y divide-card rounded-lg bg-card">
+                {task.questions.map((q, i) => (
+                  <div key={i} className="flex flex-col gap-0.5 px-3 py-2">
+                    <span className="text-xs text-ink-muted">{q}</span>
+                    <span className="text-sm text-ink">{task.answers?.[i] || "—"}</span>
+                  </div>
+                ))}
+              </div>
+            </CoordinatorSays>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -602,7 +907,10 @@ function PlanCard({ task }: { task: TeamTask }) {
       <article className="overflow-hidden rounded-xl border-2 border-accent/70 bg-surface-elevated">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-card px-4 py-3">
           <div className="flex min-w-0 flex-col gap-1">
-            <h3 className="text-base font-semibold text-ink">Plan · {task.stages.length} stages</h3>
+            <span className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-semibold text-ink">Plan · {task.stages.length} stages</h3>
+              <CommentButton task={task} target={{ kind: "plan" }} label="Comment · re-plans" />
+            </span>
             {task.deliverables && task.deliverables.length > 0 && (
               <span className="text-xs text-ink-muted">You'll get: {task.deliverables.join(" · ")}</span>
             )}
@@ -744,25 +1052,22 @@ function KindChip({ stage }: { stage: Pick<TeamStage, "kind"> }) {
 }
 
 function RunView({ task, team, onOpenFile }: { task: TeamTask; team: Team; onOpenFile: (name: string) => void }) {
-  const { done, total } = teamTaskProgress(task);
   return (
     <div className="flex flex-col gap-4">
-      <PlanStrip task={task} done={done} total={total} onOpenFile={onOpenFile} />
+      <PlanLanes task={task} onOpenFile={onOpenFile} />
 
       {task.status === "running" && unhired(task).length > 0 && <HiringCard task={task} />}
-      {task.status === "waiting" && task.waiting && <WaitingCard task={task} team={team} />}
+      {task.status === "waiting" && task.waiting && (
+        <div id={`task-waiting-${task.id}`}>
+          <WaitingCard task={task} team={team} />
+        </div>
+      )}
       {task.code && <CodeCard task={task} landable={false} />}
       {task.codeError && (
         <p className="text-xs text-amber-500">
           No shared branch for this task — each piece works on its own branch. {task.codeError}
         </p>
       )}
-
-      <ol className="flex flex-col overflow-hidden rounded-xl border border-card bg-surface-elevated">
-        {task.stages.map((s, i) => (
-          <StageRow key={i} task={task} stage={s} index={i} current={i === task.stageIndex} onOpenFile={onOpenFile} />
-        ))}
-      </ol>
     </div>
   );
 }
@@ -775,7 +1080,7 @@ function packIsOut(task: TeamTask): boolean {
   return (task.status === "running" || task.status === "waiting") && !!task.stages[task.stageIndex]?.fromRoom;
 }
 
-type TaskTab = "pack" | "conversation" | "plan";
+type TaskTab = TaskTabId;
 
 /// How far into a task's room you have read, on this machine. A reading
 /// position, not data: lost storage only means nothing is marked new.
@@ -805,9 +1110,10 @@ function repliesAfter(messages: TeamMessage[], from: number): number {
   return messages.slice(from).filter((m) => m.speaker.kind !== "you").length;
 }
 
-/// A task whose pack is written, in three tabs. The conversation is the one
-/// that grows, so it gets a panel of its own whose composer never scrolls
-/// away; the pack and how it was made stop sitting between you and it.
+/// A task whose pack is written, in tabs: where the debate landed (once the
+/// coordinator has wrapped one up), the debate itself, the pack, and the
+/// brief and plan. The debate is the one that grows, so it gets a panel of
+/// its own whose composer never scrolls away.
 function PackTabs({
   task,
   team,
@@ -820,323 +1126,528 @@ function PackTabs({
   back?: { label: string; onClick: () => void };
 }) {
   const error = useTeamsStore((s) => s.errors[task.id]);
+  const updatePack = useTeamsStore((s) => s.updatePack);
+  const roomContinue = useTeamsStore((s) => s.roomContinue);
+  const sending = useTeamsStore((s) => !!s.busy[task.id]);
   const projectOptions = useProjectOptions();
   const messages = task.room?.messages ?? [];
-  const { done, total } = teamTaskProgress(task);
-  const roomWork = (task.status === "running" || task.status === "waiting") && !!task.stages[task.stageIndex]?.fromRoom;
+  const landed = useMemo(() => latestWrapUp(task), [task]);
   // The first time a task is opened here, everything in it counts as read.
   const [seen, setSeen] = useState(() => readSeen(task.id) ?? messages.length);
-  const opensOnConversation =
-    messages.length > 0 &&
-    (repliesAfter(messages, seen) > 0 ||
-      !!task.room?.busy ||
-      roomWork ||
-      (messages.at(-1)?.at ?? 0) > (task.pack?.updatedAt ?? 0));
-  const [tab, setTab] = useState<TaskTab>(opensOnConversation ? "conversation" : "pack");
+  const [tab, setTab] = useState<TaskTab>(() => defaultTaskTab(task, seen));
   /// Where "new since you were here" goes, fixed when you open the tab.
   const [newFrom, setNewFrom] = useState<number | null>(() =>
-    opensOnConversation && seen < messages.length ? seen : null,
+    tab === "conversation" && seen < messages.length ? seen : null,
   );
+  // A wrap-up arriving while you read gives the task its first tab; one
+  // going away (it can't, today) would not leave you on an empty tab.
+  const shownTab: TaskTab = tab === "landed" && !landed ? "conversation" : tab;
   // Reading the conversation reads what lands in it.
   useEffect(() => {
-    if (tab !== "conversation" || seen === messages.length) return;
+    if (shownTab !== "conversation" || seen === messages.length) return;
     writeSeen(task.id, messages.length);
     setSeen(messages.length);
-  }, [tab, messages.length, seen, task.id]);
-  const unread = tab === "conversation" ? 0 : repliesAfter(messages, seen);
+  }, [shownTab, messages.length, seen, task.id]);
+  const unread = shownTab === "conversation" ? 0 : repliesAfter(messages, seen);
   const rootRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<Partial<Record<TaskTab, HTMLButtonElement | null>>>({});
+  const pill = taskStatusPill(task);
+  const band = yourTurn(task);
   const open = (next: TaskTab) => {
-    if (next === tab) return;
+    if (next === shownTab) return;
     if (next === "conversation") setNewFrom(seen < messages.length ? seen : null);
-    // The pack and the plan read from the top; the conversation places
-    // itself (at what's new, or its end).
+    // The other tabs read from the top; the conversation places itself (at
+    // what's new, or its end).
     else scrollerOf(rootRef.current)?.scrollTo({ top: 0 });
     setTab(next);
   };
+  /// Fold changes into the pack, then watch it being rewritten in the debate.
+  const sendChanges = (changes?: string[]) =>
+    void updatePack(task.id, changes).then((res) => {
+      if (res.ok) open("conversation");
+    });
+  const onTurn = (id: TurnAction) => {
+    if (id === "addChanges") sendChanges(band?.changes);
+    else if (id === "updatePack") sendChanges();
+    else if (id === "reviewPack") open("pack");
+    else if (id === "seeWaiting") scrollToId(`task-waiting-${task.id}`);
+    else if (id === "openRun") openPausedRun(band?.run);
+    else if (id === "keepDebating") {
+      if (canKeepDebating(task)) void roomContinue(task.id);
+      open("conversation");
+    }
+  };
+  const replies = replyCount(messages);
   const tabs: Array<{ id: TaskTab; label: string; count?: string }> = [
+    ...(landed ? [{ id: "landed" as const, label: "Where it landed" }] : []),
+    { id: "conversation", label: "Debate", count: replies > 0 ? String(replies) : undefined },
     { id: "pack", label: "Pack", count: `v${task.pack?.version ?? 1}` },
-    { id: "conversation", label: "Conversation", count: messages.length > 0 ? String(new Set(messages.map((m) => m.exchange)).size) : undefined },
     { id: "plan", label: "Brief & plan" },
   ];
 
   return (
-    <div ref={rootRef} className="flex flex-1 flex-col gap-4">
-      <div className="flex flex-col gap-1 pt-4">
-        <span className="text-[11px] text-ink-faint">
-          {describeTeamTaskStatus(task)}
-          {task.pack?.updatedAt ? ` · pack updated ${relativeDay(task.pack.updatedAt)}` : ""}
-          {task.projectPath && ` · in ${projectName(projectOptions, task.projectPath)}`}
-        </span>
-        <h2 className="text-xl font-semibold tracking-tight text-ink">{task.title ?? "Team task"}</h2>
-      </div>
-
-      <div className="sticky top-0 z-10 -mx-6 flex flex-col border-b border-card bg-surface/95 px-6 backdrop-blur">
-        {back && (
-          <div className="flex min-w-0 items-center gap-2 pt-2">
-            <button className={quietBtn + " shrink-0"} onClick={back.onClick}>
-              ← {back.label}
-            </button>
+    <div ref={rootRef} className="flex w-full flex-1 flex-col gap-4">
+      {back && (
+        <div className="flex min-w-0 items-center gap-2 pt-2">
+          <button className={quietBtn + " shrink-0"} onClick={back.onClick}>
+            ← {back.label}
+          </button>
+        </div>
+      )}
+      <header className={"flex flex-col gap-3 " + (back ? "" : "pt-4")}>
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
+          <div className="flex min-w-0 flex-[1_1_420px] flex-col gap-0.5">
+            <span className="truncate text-xs text-ink-faint">
+              Task{task.pack?.updatedAt ? ` · pack updated ${relativeDay(task.pack.updatedAt)}` : ""}
+              {task.projectPath && ` · in ${projectName(projectOptions, task.projectPath)}`}
+            </span>
+            <h2 className="truncate text-lg font-semibold tracking-tight text-ink" title={task.brief}>
+              {task.title ?? "Team task"}
+            </h2>
           </div>
-        )}
-        <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
-          <nav className="flex gap-1" aria-label="Task views">
-            {tabs.map((t) => (
+          <div className="flex flex-wrap items-center gap-3 text-[11px] text-ink-faint">
+            <span
+              role="status"
+              className={
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11.5px] font-medium " +
+                (pill.tone === "working"
+                  ? "bg-accent/15 text-accent"
+                  : pill.tone === "accent"
+                    ? "bg-accent text-white"
+                    : pill.tone === "waiting"
+                      ? "bg-violet-400/15 text-violet-700 dark:text-violet-300"
+                      : pill.tone === "done"
+                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        : pill.tone === "failed"
+                          ? "bg-amber-500/15 text-amber-500"
+                          : "bg-card-strong text-ink-muted")
+              }
+            >
+              {pill.tone === "working" && <span aria-hidden className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />}
+              {pill.text}
+            </span>
+            <span className="tabular-nums">
+              {money(task.spentUSD)} of {money(task.budgetUSD)}
+            </span>
+          </div>
+        </div>
+        <StageTrack task={task} />
+      </header>
+
+      {band && <TurnBandView band={band} busy={sending} onAction={onTurn} />}
+
+      {/* The tabs stay at the top of the task column however far you read:
+          the way between where it landed, the debate, the pack and the plan. */}
+      <div className="sticky top-0 z-10 -mx-6 flex border-b border-card bg-surface/95 px-6 py-2 backdrop-blur">
+        <div role="tablist" aria-label="Task views" className="flex flex-wrap gap-1 rounded-[10px] border border-card bg-surface-elevated p-1">
+          {tabs.map((t) => {
+            const on = shownTab === t.id;
+            return (
               <button
                 key={t.id}
+                id={`task-tab-${t.id}`}
+                ref={(el) => {
+                  tabRefs.current[t.id] = el;
+                }}
+                role="tab"
+                aria-selected={on}
+                aria-controls={`task-panel-${t.id}`}
+                tabIndex={on ? 0 : -1}
                 onClick={() => open(t.id)}
-                aria-current={tab === t.id ? "page" : undefined}
+                onKeyDown={(e) => {
+                  const to = nextTab(tabs.map((x) => x.id), shownTab, e.key);
+                  if (!to) return;
+                  e.preventDefault();
+                  open(to);
+                  tabRefs.current[to]?.focus();
+                }}
                 className={
-                  "flex items-center gap-1.5 px-3 py-2.5 text-[13px] " +
-                  (tab === t.id ? "text-ink shadow-[inset_0_-2px_0_var(--c-accent)]" : "text-ink-muted hover:text-ink")
+                  "flex items-center gap-2 rounded-[7px] px-3.5 py-1.5 text-[13px] font-semibold outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/60 " +
+                  (on ? "bg-card-strong text-ink shadow-sm" : "text-ink-muted hover:bg-card hover:text-ink")
                 }
               >
                 {t.label}
-                {t.count && <span className="rounded-full bg-card-strong px-1.5 text-[10.5px] text-ink-muted">{t.count}</span>}
+                {t.count && (
+                  <span
+                    className={
+                      "rounded-full px-1.5 py-px text-[11px] font-medium tabular-nums " +
+                      (on ? "bg-accent text-white" : "bg-card-strong text-ink-muted")
+                    }
+                  >
+                    {t.count}
+                  </span>
+                )}
                 {t.id === "conversation" && unread > 0 && (
-                  <span className="rounded-full bg-accent px-1.5 text-[10.5px] text-white">{unread} new</span>
+                  <span className="rounded-full bg-accent px-1.5 py-px text-[11px] font-normal text-white">{unread} new</span>
                 )}
               </button>
-            ))}
-          </nav>
-          <span className="flex items-center gap-2 pb-2.5 text-[11px] text-ink-faint" title={`${done} of ${total} stages done`}>
-            <span className="flex gap-0.5" aria-hidden>
-              {task.stages.map((st, i) => (
-                <span
-                  key={i}
-                  className={
-                    "h-1 w-3.5 rounded-sm " +
-                    (st.status === "done"
-                      ? "bg-emerald-500"
-                      : st.status === "running"
-                        ? "bg-accent"
-                        : st.status === "failed"
-                          ? "bg-amber-500"
-                          : "bg-card-strong")
-                  }
-                />
-              ))}
-            </span>
-            {total} stages · {money(task.spentUSD)} of {money(task.budgetUSD)}
-          </span>
+            );
+          })}
         </div>
       </div>
 
-      {task.status === "waiting" && task.waiting && <WaitingCard task={task} team={team} />}
+      {task.status === "waiting" && task.waiting && (
+        <div id={`task-waiting-${task.id}`}>
+          <WaitingCard task={task} team={team} />
+        </div>
+      )}
       {error && <div className="text-xs text-red-500">{error}</div>}
 
-      {tab === "pack" && (
-        <div className="pb-6">
+      {shownTab === "landed" && landed && (
+        <div role="tabpanel" id="task-panel-landed" aria-labelledby="task-tab-landed" className="pb-6">
+          <LandedView
+            task={task}
+            landed={landed}
+            sending={sending}
+            onSend={(changes) => sendChanges(changes)}
+            onOpenDebate={() => open("conversation")}
+          />
+        </div>
+      )}
+      {shownTab === "pack" && (
+        <div role="tabpanel" id="task-panel-pack" aria-labelledby="task-tab-pack" className="pb-6">
           <PackView task={task} onOpenFile={onOpenFile} />
         </div>
       )}
-      {tab === "conversation" && <TeamRoom task={task} team={team} onOpenFile={onOpenFile} newFrom={newFrom} />}
-      {tab === "plan" && (
-        <div className="flex flex-col gap-5 pb-6">
-          <div className="flex max-w-xl flex-col items-end gap-1.5 self-end">
-            <div className="whitespace-pre-wrap rounded-2xl rounded-br-sm bg-accent px-4 py-2.5 text-sm text-white">
-              {task.brief}
-            </div>
-            <AttachmentChips names={task.attachments} onOpenFile={onOpenFile} />
-          </div>
-          {task.answers && task.questions && (
-            <CoordinatorSays label="asked, and you answered">
-              <div className="flex flex-col divide-y divide-card rounded-lg border border-card bg-surface-elevated">
-                {task.questions.map((q, i) => (
-                  <div key={i} className="flex flex-col gap-0.5 px-3 py-2">
-                    <span className="text-xs text-ink-muted">{q}</span>
-                    <span className="text-sm text-ink">{task.answers?.[i] || "—"}</span>
-                  </div>
-                ))}
-              </div>
-            </CoordinatorSays>
-          )}
-          <PlanStrip task={task} done={done} total={total} onOpenFile={onOpenFile} />
-          <ol className="flex flex-col overflow-hidden rounded-xl border border-card bg-surface-elevated">
-            {task.stages.map((st, i) => (
-              <StageRow key={i} task={task} stage={st} index={i} current={i === task.stageIndex} onOpenFile={onOpenFile} />
-            ))}
-          </ol>
+      {shownTab === "conversation" && (
+        <div role="tabpanel" id="task-panel-conversation" aria-labelledby="task-tab-conversation" className="flex flex-1 flex-col">
+          <TeamRoom task={task} team={team} onOpenFile={onOpenFile} newFrom={newFrom} />
+        </div>
+      )}
+      {shownTab === "plan" && (
+        <div role="tabpanel" id="task-panel-plan" aria-labelledby="task-tab-plan" className="flex flex-col gap-5 pb-6">
+          <BriefFold task={task} onOpenFile={onOpenFile} />
+          <PlanLanes task={task} onOpenFile={onOpenFile} />
         </div>
       )}
     </div>
   );
 }
 
-/// This task's plan as swimlanes: the coordinator and each member get a lane,
-/// each stage a column, so who works when — and who works at the same time —
-/// reads at a glance. Work handed off from the room after the pack sits past a
-/// line, apart from the plan you approved.
-function PlanStrip({
+/// The header's stage track: one bar per stage, its name under it.
+function StageTrack({ task }: { task: TeamTask }) {
+  const { done, total } = teamTaskProgress(task);
+  if (total === 0) return null;
+  return (
+    <ol
+      aria-label={`Stages · ${done} of ${total} done`}
+      className="grid gap-1"
+      style={{ gridTemplateColumns: `repeat(${total}, minmax(0, 1fr))` }}
+    >
+      {task.stages.map((st, i) => {
+        const tone =
+          st.status === "done"
+            ? "bg-emerald-500"
+            : st.status === "running"
+              ? "bg-accent"
+              : st.status === "failed"
+                ? "bg-amber-500"
+                : st.status === "skipped"
+                  ? "bg-ink-faint/40"
+                  : "bg-card-strong";
+        const ink =
+          st.status === "running" ? "text-accent" : st.status === "failed" ? "text-amber-500" : st.status === "done" ? "text-ink-muted" : "text-ink-faint";
+        return (
+          <li key={i} className="flex min-w-0 flex-col gap-1" title={`${st.fromRoom ? "After the pack" : `Stage ${i + 1}`} · ${st.title} · ${st.status}`}>
+            <span aria-hidden className={"h-[5px] rounded-full " + tone} />
+            <span className={"truncate text-[11.5px] " + ink + (st.status === "skipped" ? " line-through" : "")}>{st.title}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/// A paused piece's run, where its approval or question is answered.
+function openPausedRun(run: TurnBand["run"]): void {
+  if (!run) return;
+  useWorkersStore.getState().selectWorker(run.workerId);
+  useFlowsStore.getState().setActiveRun(run.runId);
+}
+
+/// "Your turn": what the task is waiting on you for, and what answers it.
+function TurnBandView({ band, busy, onAction }: { band: TurnBand; busy: boolean; onAction: (id: TurnAction) => void }) {
+  return (
+    <section aria-label="Your turn" className="flex flex-wrap items-center gap-4 rounded-xl border border-amber-500/40 bg-amber-500/[0.08] px-4 py-3.5">
+      <span aria-hidden className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-amber-500/20 text-amber-700 dark:text-amber-400">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 11l3 3 8-8" />
+          <path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9" />
+        </svg>
+      </span>
+      <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-0.5">
+        <b className="text-[14.5px] font-semibold text-ink">{band.title}</b>
+        {band.detail && <span className="text-[12.5px] leading-relaxed text-ink-muted">{band.detail}</span>}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {band.actions.map((a) => (
+          <button key={a.id} className={a.primary ? primaryBtn : secondaryBtn} disabled={busy} onClick={() => onAction(a.id)}>
+            {a.label}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/// "Where it landed": the coordinator's latest wrap-up in its parts — the
+/// bottom line, what was agreed, what is still open and who answers it, and
+/// the changes worth making to the pack, ticked to send.
+function LandedView({
   task,
-  done,
-  total,
-  onOpenFile,
+  landed,
+  sending,
+  onSend,
+  onOpenDebate,
 }: {
   task: TeamTask;
-  done: number;
-  total: number;
-  onOpenFile: (name: string) => void;
+  landed: LandedWrapUp;
+  sending: boolean;
+  onSend: (changes: string[]) => void;
+  onOpenDebate: () => void;
 }) {
+  const { wrap, folded, message } = landed;
+  /// Unticked changes, by text: a wrap-up rewritten under you keeps the
+  /// ones you left ticked.
+  const [off, setOff] = useState<Set<string>>(() => new Set());
+  const picked = wrap.changes.filter((c) => !off.has(c));
+  const canSend = canUpdatePack(task) && !folded && picked.length > 0;
+  const card = "flex flex-col gap-2.5 rounded-xl border border-card bg-surface-elevated px-4 py-3.5";
+  const label = "text-[10.5px] font-bold uppercase tracking-wider";
+  const nothing = <span className="text-xs text-ink-faint">Nothing noted.</span>;
+  return (
+    <div className="flex w-full flex-col gap-3.5">
+      <div className="flex flex-col gap-3 rounded-xl border border-card bg-surface-elevated px-5 py-4">
+        <span className="flex flex-wrap items-center gap-2.5">
+          <span aria-hidden className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-card-strong text-[11px] font-bold text-ink-muted">
+            C
+          </span>
+          <span className={label + " text-ink-faint"}>The bottom line · from the coordinator · {clockOrDay(message.at)}</span>
+          <button className="ml-auto text-xs text-accent hover:underline" onClick={onOpenDebate}>
+            Read the debate
+          </button>
+        </span>
+        <p className="text-base font-medium leading-relaxed text-ink">
+          {wrap.bottomLine || "The coordinator went straight to the lists below."}
+        </p>
+      </div>
+
+      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+        <section className={card} aria-label="Agreed">
+          <span className={label + " text-emerald-700 dark:text-emerald-400"}>Agreed · {wrap.agreed.length}</span>
+          {wrap.agreed.length === 0
+            ? nothing
+            : wrap.agreed.map((a, i) => (
+                <div key={i} className="flex items-start gap-2.5">
+                  <svg aria-hidden width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="mt-[3px] shrink-0 text-emerald-700 dark:text-emerald-400">
+                    <path d="M5 12l5 5L20 7" />
+                  </svg>
+                  <span className="text-[13px] leading-relaxed text-ink">{a}</span>
+                </div>
+              ))}
+        </section>
+        <section className={card} aria-label="Still open">
+          <span className={label + " text-amber-700 dark:text-amber-400"}>Still open · {wrap.open.length}</span>
+          {wrap.open.length === 0
+            ? nothing
+            : wrap.open.map((o, i) => {
+                const { text, who } = splitOwner(o);
+                return (
+                  <div key={i} className="flex flex-col gap-0.5">
+                    <span className="text-[13px] leading-relaxed text-ink">{text}</span>
+                    {who && <span className="text-[11.5px] text-ink-faint">{who}</span>}
+                  </div>
+                );
+              })}
+        </section>
+        <section className={card} aria-label="Change in the pack">
+          <span className={label + " text-accent"}>
+            Change in the pack ·{" "}
+            {folded ? `in v${task.pack?.version ?? 1}` : `${picked.length} of ${wrap.changes.length} picked`}
+          </span>
+          {wrap.changes.length === 0
+            ? nothing
+            : folded
+              ? wrap.changes.map((c, i) => (
+                  <span key={i} className="text-[13px] leading-relaxed text-ink-muted">
+                    {c}
+                  </span>
+                ))
+              : wrap.changes.map((c, i) => (
+                  <label key={i} className="flex cursor-pointer items-start gap-2.5">
+                    <input
+                      type="checkbox"
+                      className="tl-check mt-[3px] h-[15px] w-[15px] shrink-0"
+                      checked={!off.has(c)}
+                      onChange={() =>
+                        setOff((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(c)) next.delete(c);
+                          else next.add(c);
+                          return next;
+                        })
+                      }
+                    />
+                    <span className="text-[13px] leading-relaxed text-ink">{c}</span>
+                  </label>
+                ))}
+          {folded ? (
+            wrap.changes.length > 0 && <span className="text-[11.5px] text-ink-faint">A pack update since this wrap-up took these in.</span>
+          ) : (
+            wrap.changes.length > 0 && (
+              <button
+                className={primaryBtn + " mt-0.5 self-start"}
+                disabled={!canSend || sending}
+                title={
+                  canUpdatePack(task)
+                    ? "The coordinator rewrites the pack with these changes. The current version is kept."
+                    : "Once the team has finished answering"
+                }
+                onClick={() => onSend(picked)}
+              >
+                Send {picked.length} to the pack
+              </button>
+            )
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/// This task's plan as swimlanes: the coordinator's lane first, then one per
+/// member, one column per stage. A cell holds a chip only where that member
+/// has a piece. Work handed off from the conversation after the pack sits in
+/// its own tinted columns past a divider. Picking a cell shows it in full in
+/// the strip under the grid.
+function PlanLanes({ task, onOpenFile }: { task: TeamTask; onOpenFile: (name: string) => void }) {
   const [why, setWhy] = useState(false);
   const workers = useWorkersStore((s) => s.workers);
   const team = useTeamsStore((s) => s.teams[task.teamId]);
   const live = task.stages.some((s) => s.status === "running");
   const now = useTickingNow(live ? 30_000 : 3_600_000);
-  const { lanes, columns, packAt } = planLayout(task, now);
+  const { lanes, columns, packAt } = planLayout(task);
+  const counts = useMemo(() => commentsByPiece(task), [task]);
+  /// Until you pick a cell, the strip follows the work.
+  const [picked, setPicked] = useState<PlanCell | null>(null);
+  const hasCell = (c: PlanCell | null) => !!c && !!columns[c.stage]?.lanes.includes(c.lane);
+  const selected = hasCell(picked) ? picked : defaultCell(task);
+
   const zone = packAt !== undefined;
-  // Grid lines: the lane labels, then one per stage, with a thin gutter for
-  // the pack line where the room's work begins.
   const colOf = (i: number) => 2 + i + (zone && i >= packAt ? 1 : 0);
-  const packCol = zone ? colOf(packAt) - 1 : 0;
-  const stageCol = "minmax(112px,1fr)";
-  const template = ["128px", ...columns.flatMap((c) => (zone && c.index === packAt ? ["20px", stageCol] : [stageCol]))].join(" ");
-  const top = zone ? 2 : 1;
-  const laneRow = (lane: number) => top + 1 + lane;
-  const footRow = laneRow(lanes.length);
+  const divider = zone ? colOf(packAt) - 1 : 0;
+  const template = [
+    "150px",
+    ...columns.flatMap((c) => (zone && c.index === packAt ? ["14px"] : []).concat(c.afterPack ? "minmax(140px,1.2fr)" : "minmax(110px,1fr)")),
+  ].join(" ");
+  const minWidth = 150 + columns.reduce((n, c) => n + (c.afterPack ? 140 : 110), 0) + (zone ? 14 : 0);
+  const rowOf = (lane: number) => 2 + lane;
+  const tint = (c: PlanColumn, lane: number) => (c.afterPack ? "bg-emerald-500/[0.06]" : lane === 0 ? "bg-surface/60" : "");
 
   return (
-    <section aria-label={`${done} of ${total} stages done`} className="flex flex-col gap-2.5">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
-          This task's plan · {total} {total === 1 ? "stage" : "stages"}
+    <section aria-label="The plan" className="flex flex-col overflow-hidden rounded-xl border border-card bg-surface-elevated">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-card px-4 py-2.5">
+        <h3 className="flex-1 text-[10.5px] font-bold uppercase tracking-wider text-ink-faint">
+          The plan · {task.stages.length} {task.stages.length === 1 ? "stage" : "stages"}, {planStatus(task)}
         </h3>
-        <span className="flex items-center gap-4 text-[11px] text-ink-faint">
-          <span className="flex items-center gap-1.5">
-            <span aria-hidden className="h-2 w-2 rounded-full bg-ink-faint" />
-            Members
+        {task.planNote && (
+          <button className="text-xs text-accent hover:underline" aria-expanded={why} onClick={() => setWhy((v) => !v)}>
+            {why ? "Hide why" : "Why this plan"}
+          </button>
+        )}
+        <CommentButton task={task} target={{ kind: "plan" }} onOpenFile={onOpenFile} />
+        <span className="flex items-center gap-2 text-[11px] tabular-nums text-ink-faint" title="Spent of the task's budget; runs pause at the cap">
+          <span className="h-1 w-20 overflow-hidden rounded-full bg-card-strong">
+            <span
+              className="block h-full rounded-full bg-accent"
+              style={{ width: `${Math.min(100, task.budgetUSD > 0 ? (task.spentUSD / task.budgetUSD) * 100 : 0)}%` }}
+            />
           </span>
-          <span className="flex items-center gap-1.5">
-            <span aria-hidden className="h-2 w-2 rounded-[2px] bg-ink-faint" />
-            Coordinator
+          <span>
+            <b className="font-medium text-ink">{money(task.spentUSD)}</b> of {money(task.budgetUSD)}
           </span>
-          {task.planNote && (
-            <button className="text-accent hover:underline" aria-expanded={why} onClick={() => setWhy((v) => !v)}>
-              {why ? "Hide why" : "Why this plan"}
-            </button>
-          )}
         </span>
       </div>
-      {why && task.planNote && <p className="text-xs leading-relaxed text-ink-muted">{task.planNote}</p>}
+      {why && task.planNote && <p className="border-b border-card px-4 py-2.5 text-xs leading-relaxed text-ink-muted">{task.planNote}</p>}
 
-      <div className="overflow-x-auto pb-1">
-        <div className="grid" style={{ gridTemplateColumns: template }}>
-          {lanes.map((l, i) =>
-            i % 2 === 1 ? (
-              <div key={`band-${l.id}`} className="rounded-md bg-surface-elevated" style={{ gridColumn: "1 / -1", gridRow: laneRow(i) }} />
-            ) : null,
-          )}
+      {/* Scrolls sideways only inside this box, and only when the stages
+          truly can't fit. */}
+      <div className="overflow-x-auto">
+        <div className="grid" style={{ gridTemplateColumns: template, minWidth }}>
+          <div className="border-b border-card" style={{ gridColumn: 1, gridRow: 1 }} />
           {zone && (
-            <>
-              <div
-                className="rounded-lg border border-dashed border-accent/35 bg-accent/5"
-                style={{ gridColumn: `${packCol + 1} / -1`, gridRow: `1 / ${footRow + 1}` }}
-              />
-              <div className="relative" style={{ gridColumn: packCol, gridRow: `1 / ${footRow + 1}` }}>
-                <span className="absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-emerald-500/70" />
-              </div>
-              <span
-                className="relative flex items-center gap-2 px-2 pt-1.5 text-[11px] text-accent"
-                style={{ gridColumn: `${packCol + 1} / -1`, gridRow: 1 }}
-              >
-                <span className="rounded-full bg-emerald-500/15 px-2 py-px font-semibold text-emerald-400">
-                  Pack v{task.pack?.version ?? 1}
-                </span>
-                After the pack · asked for in the conversation
-              </span>
-            </>
+            <div aria-hidden className="relative" style={{ gridColumn: divider, gridRow: `1 / ${rowOf(lanes.length)}` }}>
+              <span className="absolute inset-y-0 left-1/2 w-px bg-card-strong" />
+            </div>
           )}
-          {columns.map((c) =>
-            c.span ? (
-              <div
-                key={`span-${c.index}`}
-                aria-hidden
-                className="relative"
-                style={{ gridColumn: colOf(c.index), gridRow: `${laneRow(c.span[0])} / ${laneRow(c.span[1]) + 1}` }}
-              >
-                <span
-                  className={
-                    "absolute bottom-6 left-1/2 top-6 -translate-x-1/2 " +
-                    (c.stage.status === "running" ? "border-l-2 border-dashed border-accent" : "w-0.5 bg-card-strong")
-                  }
-                />
-              </div>
-            ) : null,
-          )}
-
           {columns.map((c) => (
-            <PlanColumnHead key={`head-${c.index}`} stage={c.stage} index={c.index} style={{ gridColumn: colOf(c.index), gridRow: top }} />
+            <LaneHead
+              key={`head-${c.index}`}
+              column={c}
+              when={stageWhen(c.stage, now, clock)}
+              style={{ gridColumn: colOf(c.index), gridRow: 1 }}
+            />
           ))}
 
           {lanes.map((l, i) => {
             const w = l.workerId ? workers[l.workerId] : undefined;
             const role = team?.members.find((m) => m.workerId === l.workerId)?.role;
-            const title = roleTitle(role);
+            const sub = l.id === COORDINATOR_LANE ? "plans and writes the pack" : roleTitle(role) || (w ? workerTagline(w) : "");
             return (
-              <span
+              <div
                 key={`lane-${l.id}`}
-                className="relative flex h-12 min-w-0 items-center gap-2 px-3 text-xs text-ink"
-                style={{ gridColumn: 1, gridRow: laneRow(i) }}
+                className={"flex min-w-0 items-center gap-2.5 border-b border-card px-4 py-2 " + (i === 0 ? "bg-surface/60" : "")}
+                style={{ gridColumn: 1, gridRow: rowOf(i) }}
               >
-                {l.id === COORDINATOR_LANE ? (
-                  <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-[3px] bg-ink-faint" />
-                ) : w ? (
-                  <WorkerAvatar worker={w} size="sm" />
-                ) : null}
+                {l.id === COORDINATOR_LANE ? <CoordinatorFace /> : w ? <WorkerAvatar worker={w} size="sm" /> : <GoneFace name={l.name} />}
                 <span className="flex min-w-0 flex-col">
-                  <span className={"truncate " + (l.id === COORDINATOR_LANE ? "text-ink-muted" : "")}>{l.name}</span>
-                  {title && (
-                    <span className="truncate text-[10px] leading-tight text-ink-faint" title={role}>
-                      {title}
+                  <span className="truncate text-[12.5px] font-semibold text-ink">{l.name}</span>
+                  {sub && (
+                    <span className="truncate text-[11px] text-ink-faint" title={role ?? sub}>
+                      {sub}
                     </span>
                   )}
                 </span>
-              </span>
+              </div>
             );
           })}
 
           {columns.flatMap((c) =>
-            c.lanes.map((id) => {
-              const lane = lanes.findIndex((l) => l.id === id);
-              const style = { gridColumn: colOf(c.index), gridRow: laneRow(lane) };
-              const a = id === COORDINATOR_LANE ? undefined : pieceIn(c.stage, id);
-              return a ? (
-                <PieceCell key={`cell-${c.index}-${id}`} a={a} style={style} onOpenFile={onOpenFile} />
-              ) : (
-                <CoordinatorCell key={`cell-${c.index}-${id}`} task={task} stage={c.stage} style={style} onOpenFile={onOpenFile} />
+            lanes.map((l, i) => {
+              const style = { gridColumn: colOf(c.index), gridRow: rowOf(i) };
+              const key = `cell-${c.index}-${l.id}`;
+              const wrap = "flex min-w-0 items-center border-b border-card px-1.5 py-1.5 " + tint(c, i);
+              if (!c.lanes.includes(l.id)) return <div key={key} className={wrap} style={style} />;
+              const isSel = selected?.stage === c.index && selected.lane === l.id;
+              const pick = () => setPicked({ stage: c.index, lane: l.id });
+              const a = l.id === COORDINATOR_LANE ? undefined : pieceIn(c.stage, l.id);
+              return (
+                <div key={key} className={wrap} style={style}>
+                  {a ? (
+                    <PieceChip a={a} stage={c.stage} now={now} selected={isSel} count={counts.get(pieceKey(c.index, l.id)) ?? 0} onPick={pick} />
+                  ) : (
+                    <DocChip
+                      task={task}
+                      stage={c.stage}
+                      now={now}
+                      selected={isSel}
+                      onPick={pick}
+                      onOpen={c.stage.status === "done" && c.stage.file ? () => {
+                        pick();
+                        onOpenFile(c.stage.file!);
+                      } : undefined}
+                    />
+                  )}
+                </div>
               );
             }),
           )}
-
-          {columns.map((c) => (
-            <span
-              key={`foot-${c.index}`}
-              className={
-                "relative truncate px-2 pb-1.5 pt-2 text-center text-[11px] tabular-nums " +
-                (c.stage.status === "running" ? "text-accent" : c.stage.kind === "synthesize" ? "text-emerald-400" : "text-ink-faint")
-              }
-              style={{ gridColumn: colOf(c.index), gridRow: footRow }}
-            >
-              {c.ms === undefined
-                ? ""
-                : `${c.stage.status === "running" ? "now" : c.stage.finishedAt ? clock(c.stage.finishedAt) : ""}${
-                    c.stage.status === "running" || c.stage.finishedAt ? " · " : ""
-                  }${shortDuration(c.ms)}`}
-            </span>
-          ))}
         </div>
       </div>
 
-      <div className="flex items-center gap-3 text-[11px] text-ink-faint">
-        <div className="h-1 flex-1 overflow-hidden rounded-full bg-card-strong">
-          <div
-            className="h-full rounded-full bg-accent"
-            style={{ width: `${Math.min(100, task.budgetUSD > 0 ? (task.spentUSD / task.budgetUSD) * 100 : 0)}%` }}
-          />
-        </div>
-        <span className="tabular-nums">
-          <b className="font-medium text-ink">{money(task.spentUSD)}</b> of {money(task.budgetUSD)}
-        </span>
-      </div>
+      {selected && task.stages[selected.stage] && (
+        <CellDetail key={`${selected.stage}-${selected.lane}`} task={task} cell={selected} now={now} counts={counts} onOpenFile={onOpenFile} />
+      )}
     </section>
   );
 }
@@ -1145,129 +1656,333 @@ function clock(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-function PlanColumnHead({ stage, index, style }: { stage: TeamStage; index: number; style: React.CSSProperties }) {
-  const live = stage.status === "running";
+/// Each stage kind's colour, as text: the same family as `KindMark`.
+const KIND_INK: Record<TeamStageKind, string> = {
+  contribute: "text-blue-600 dark:text-blue-400",
+  draft: "text-ink-muted",
+  challenge: "text-orange-600 dark:text-orange-400",
+  respond: "text-amber-800 dark:text-amber-200",
+  synthesize: "text-emerald-700 dark:text-emerald-400",
+};
+
+function LaneHead({ column, when, style }: { column: PlanColumn; when: string; style: React.CSSProperties }) {
+  const { stage, index, afterPack } = column;
   return (
     <div
       className={
-        "relative mx-1 mb-2 mt-1 flex min-w-0 flex-col gap-1 border-t-2 px-2 pt-2 " +
-        (stage.status === "done"
-          ? "border-emerald-500"
-          : stage.status === "failed"
-            ? "border-amber-500"
-            : live
-              ? "border-accent"
-              : stage.status === "skipped"
-                ? "border-card opacity-60"
-                : "border-card-strong")
+        "flex min-w-0 flex-col gap-0.5 border-b px-2.5 py-2.5 " +
+        (stage.status === "running" ? "border-accent " : "border-card ") +
+        (afterPack ? "bg-emerald-500/[0.06]" : "")
       }
       style={style}
     >
-      <span className={"flex items-center gap-1.5 text-[10.5px] " + (live ? "text-accent" : "text-ink-faint")}>
-        <KindMark kind={stage.kind} />
-        {index + 1} · {TEAM_STAGE_LABEL[stage.kind]}
+      <span className={"truncate text-[10.5px] font-bold uppercase tracking-wider " + KIND_INK[stage.kind]}>
+        {afterPack ? "After the pack" : index + 1} · {TEAM_STAGE_LABEL[stage.kind]}
       </span>
       <span
-        className={"line-clamp-2 text-xs font-semibold leading-snug " + (stage.status === "skipped" ? "text-ink-faint line-through" : "text-ink")}
+        className={"line-clamp-2 text-[12.5px] font-semibold leading-tight " + (stage.status === "skipped" ? "text-ink-faint line-through" : "text-ink")}
         title={stage.title}
       >
         {stage.title}
       </span>
+      {when && <span className={"text-[11px] tabular-nums " + (stage.status === "running" ? "text-accent" : "text-ink-faint")}>{when}</span>}
     </div>
   );
 }
 
-const cellBtn =
-  "relative mx-1 my-1.5 flex h-9 min-w-0 items-center gap-1.5 rounded-lg border px-2.5 text-left text-xs disabled:cursor-default";
+const DOT: Record<ChipState, string> = {
+  done: "bg-emerald-500",
+  working: "bg-accent animate-pulse",
+  waiting: "bg-violet-400",
+  failed: "bg-red-500",
+  skipped: "bg-ink-faint/50",
+  pending: "bg-ink-faint/50",
+};
 
-/// A member's piece in its lane. Opens what they wrote, or their run while
-/// there is nothing to read yet.
-function PieceCell({ a, style, onOpenFile }: { a: TeamAssignment; style: React.CSSProperties; onOpenFile: (name: string) => void }) {
+/// A member's piece in its cell: a quiet chip, its dot saying where it
+/// stands. One not started yet is just its words, with no box.
+function PieceChip({
+  a,
+  stage,
+  now,
+  selected,
+  count,
+  onPick,
+}: {
+  a: TeamAssignment;
+  stage: TeamStage;
+  now: number;
+  selected: boolean;
+  count: number;
+  onPick: () => void;
+}) {
+  const state = chipState(a);
+  const label = cellLabel(a, stage, now);
+  const quiet = state === "pending" || state === "skipped";
+  return (
+    <button
+      aria-pressed={selected}
+      aria-label={`${a.workerName}, ${TEAM_STAGE_LABEL[stage.kind]} "${stage.title}": ${label}${count ? `, ${count} comment${count === 1 ? "" : "s"}` : ""}`}
+      title={`${a.workerName}: ${a.ask}${a.error ? `\n\n${a.error}` : ""}`}
+      onClick={onPick}
+      className={
+        "flex w-full min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-xs transition-colors " +
+        (selected
+          ? "border-accent bg-accent/15 text-ink"
+          : quiet
+            ? "border-transparent text-ink-faint hover:text-ink-muted"
+            : state === "failed"
+              ? "border-transparent bg-red-500/10 text-red-700 dark:text-red-300 hover:bg-red-500/15"
+              : state === "waiting"
+                ? "border-transparent bg-violet-400/10 text-violet-700 dark:text-violet-300 hover:bg-violet-400/15"
+                : "border-transparent bg-card text-ink hover:bg-card-strong")
+      }
+    >
+      <span aria-hidden className={"h-1.5 w-1.5 shrink-0 rounded-full " + DOT[state]} />
+      <span className={"min-w-0 flex-1 truncate " + (state === "skipped" ? "line-through" : "")}>{label}</span>
+      {count > 0 && <span className="shrink-0 rounded-full bg-amber-400/20 px-1.5 text-[10.5px] font-bold text-amber-700 dark:text-amber-400">{count}</span>}
+    </button>
+  );
+}
+
+/// The coordinator's draft or pack in its lane: opens the file once written.
+function DocChip({
+  task,
+  stage,
+  now,
+  selected,
+  onPick,
+  onOpen,
+}: {
+  task: TeamTask;
+  stage: TeamStage;
+  now: number;
+  selected: boolean;
+  onPick: () => void;
+  onOpen?: () => void;
+}) {
+  const pack = stage.kind === "synthesize";
+  const ms = stageMs(stage, now);
+  const label = onOpen
+    ? pack
+      ? `Pack v${task.pack?.version ?? 1}`
+      : fileStem(stage.file!)
+    : stage.status === "running"
+      ? `Writing${ms !== undefined ? ` · ${shortDuration(ms)}` : ""}`
+      : stage.status === "failed"
+        ? "Failed"
+        : stage.status === "skipped"
+          ? "Skipped"
+          : stage.status === "done"
+            ? "Done"
+            : "Up next";
+  const quiet = !onOpen && stage.status !== "running" && stage.status !== "failed";
+  return (
+    <button
+      aria-pressed={selected}
+      title={onOpen ? `Open ${stage.file}` : stage.ask ?? stage.title}
+      onClick={onOpen ?? onPick}
+      className={
+        "flex w-full min-w-0 items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-xs transition-colors " +
+        (selected
+          ? "border-accent bg-accent/15 text-ink"
+          : onOpen
+            ? pack
+              ? "border-emerald-600/50 bg-emerald-500/10 font-semibold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20"
+              : "border-card-strong bg-card text-ink hover:border-accent/60"
+            : quiet
+              ? "border-transparent text-ink-faint"
+              : stage.status === "failed"
+                ? "border-transparent bg-red-500/10 text-red-700 dark:text-red-300"
+                : "border-transparent bg-card text-ink")
+      }
+    >
+      {onOpen ? (
+        <DocGlyph />
+      ) : (
+        <span aria-hidden className={"h-1.5 w-1.5 shrink-0 rounded-full " + (stage.status === "running" ? "animate-pulse bg-accent" : stage.status === "failed" ? "bg-red-500" : "bg-ink-faint/50")} />
+      )}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+    </button>
+  );
+}
+
+function CoordinatorFace() {
+  return (
+    <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-card-strong text-[11px] text-ink-muted">
+      ◆
+    </span>
+  );
+}
+
+function GoneFace({ name }: { name: string }) {
+  return (
+    <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-card-strong text-[10px] text-ink-muted">
+      {name.slice(0, 2).toUpperCase()}
+    </span>
+  );
+}
+
+const linkBtn = "text-xs text-accent hover:underline disabled:opacity-40 disabled:no-underline";
+
+/// The selected cell, in full: who, which stage and where it stands, what
+/// they were asked, and what you can do — read it, watch the run, say
+/// something, redo it, retry or skip it.
+function CellDetail({
+  task,
+  cell,
+  now,
+  counts,
+  onOpenFile,
+}: {
+  task: TeamTask;
+  cell: PlanCell;
+  now: number;
+  counts: Map<string, number>;
+  onOpenFile: (name: string) => void;
+}) {
+  const stage = task.stages[cell.stage];
+  const a = cell.lane === COORDINATOR_LANE ? undefined : pieceIn(stage, cell.lane);
+  const worker = useWorkersStore((s) => (a ? s.workers[a.workerId] : undefined));
+  const redoPiece = useTeamsStore((s) => s.redoPiece);
+  const [talk, setTalk] = useState<{ anchor: DOMRect; el: HTMLElement } | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const when = stageWhen(stage, now, clock);
+  const where = `${stage.fromRoom ? "After the pack" : `Stage ${cell.stage + 1}`} · ${stage.title}`;
+  const skippable = canSkipStage(task, cell.stage);
+
+  if (!a) {
+    const pack = stage.kind === "synthesize";
+    const status =
+      stage.status === "done" ? `done ${when}` : stage.status === "running" ? `writing · ${when.replace(/^now · /, "")}` : stage.status === "pending" ? "up next" : stage.status;
+    return (
+      <div className="flex items-start gap-3 border-t border-card bg-surface/40 px-4 py-3">
+        <CoordinatorFace />
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <span className="flex flex-wrap items-baseline gap-x-2">
+            <b className="text-[13.5px] font-semibold text-ink">Coordinator</b>
+            <span className="text-xs text-ink-faint">
+              {where} · {status}
+            </span>
+          </span>
+          {stage.ask && <span className="text-[12.5px] leading-relaxed text-ink-muted">{stage.ask}</span>}
+          {stage.status === "running" && (
+            <span className="text-xs text-ink-muted">
+              <CoordinatorActivity
+                taskId={task.id}
+                stage={cell.stage}
+                since={stage.startedAt ?? task.updatedAt}
+                reading={`${task.files.filter((f) => !f.name.startsWith("pack/")).length} files in the shared folder`}
+              />
+            </span>
+          )}
+          {stage.error && <span className="whitespace-pre-wrap text-xs text-amber-600">{stage.error}</span>}
+          <span className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+            {stage.status === "done" && stage.file && (
+              <button className={linkBtn} onClick={() => onOpenFile(stage.file!)}>
+                Open {pack ? `Pack v${task.pack?.version ?? 1}` : fileStem(stage.file)}
+              </button>
+            )}
+            {skippable && <SkipButton taskId={task.id} stage={cell.stage} label="Skip this stage" confirm={stage.status === "running"} />}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  const state = chipState(a);
+  const redo = canRedoPiece(task, cell.stage, a.workerId);
+  const live = a.status === "pending" || a.status === "running" || a.status === "paused";
+  const count = counts.get(pieceKey(cell.stage, a.workerId)) ?? 0;
+  const status = state === "done" ? `done ${when}` : cellLabel(a, stage, now).toLowerCase();
   const viewRun = () => {
     if (!a.runId) return;
     useWorkersStore.getState().selectWorker(a.workerId);
     useFlowsStore.getState().setActiveRun(a.runId);
   };
-  const open = a.file ? () => onOpenFile(a.file!) : a.runId ? viewRun : undefined;
-  const [label, tone, mark] =
-    a.status === "done"
-      ? ["Done", "border-card-strong bg-card text-ink", <Tick key="m" />]
-      : a.status === "running"
-        ? ["Working…", "border-accent bg-accent/10 text-ink", <span key="m" className="h-2 w-2 animate-pulse rounded-full bg-accent" />]
-        : a.status === "paused"
-          ? ["Waiting on you", "border-violet-400/60 bg-violet-400/10 text-violet-300", null]
-          : a.status === "failed"
-            ? ["Failed", "border-amber-500/60 bg-amber-500/10 text-amber-500", null]
-            : a.status === "skipped"
-              ? ["Skipped", "border-card text-ink-faint opacity-60", null]
-              : ["Up next", "border-dashed border-card-strong text-ink-faint", null];
+  const openTalk = (el: HTMLElement) => setTalk((t) => (t?.el === el ? null : { el, anchor: el.getBoundingClientRect() }));
   return (
-    <button
-      className={cellBtn + " justify-between " + tone + (open ? " hover:border-accent/60" : "")}
-      style={style}
-      disabled={!open}
-      onClick={open}
-      title={`${a.workerName}: ${a.ask}${a.error ? `\n\n${a.error}` : ""}`}
-    >
-      <span className="truncate">{label}</span>
-      {mark}
-    </button>
-  );
-}
-
-/// The coordinator's draft or pack in its lane.
-function CoordinatorCell({
-  task,
-  stage,
-  style,
-  onOpenFile,
-}: {
-  task: TeamTask;
-  stage: TeamStage;
-  style: React.CSSProperties;
-  onOpenFile: (name: string) => void;
-}) {
-  const pack = stage.kind === "synthesize";
-  const done = stage.status === "done";
-  const label = done
-    ? pack
-      ? `Pack v${task.pack?.version ?? 1}`
-      : stage.file
-        ? fileStem(stage.file)
-        : "Done"
-    : stage.status === "running"
-      ? "Writing…"
-      : stage.status === "failed"
-        ? "Failed"
-        : stage.status === "skipped"
-          ? "Skipped"
-          : "Up next";
-  const tone =
-    done && pack
-      ? "border-emerald-600/60 bg-emerald-500/15 font-semibold text-emerald-300"
-      : done
-        ? "border-card-strong bg-card text-ink"
-        : stage.status === "running"
-          ? "border-accent bg-accent/10 text-ink"
-          : stage.status === "failed"
-            ? "border-amber-500/60 bg-amber-500/10 text-amber-500"
-            : "border-dashed border-card-strong text-ink-faint";
-  const open = done && stage.file ? () => onOpenFile(stage.file!) : undefined;
-  return (
-    <button
-      className={cellBtn + " rounded-md " + tone + (open ? " hover:border-accent/60" : "")}
-      style={style}
-      disabled={!open}
-      onClick={open}
-      title={stage.file ?? stage.ask ?? stage.title}
-    >
-      {stage.status === "running" ? (
-        <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent" />
-      ) : done ? (
-        <DocGlyph />
-      ) : null}
-      <span className="truncate">{label}</span>
-    </button>
+    <div className="flex items-start gap-3 border-t border-card bg-surface/40 px-4 py-3">
+      {worker ? <WorkerAvatar worker={worker} size="md" live={a.status === "running"} /> : <GoneFace name={a.workerName} />}
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="flex flex-wrap items-baseline gap-x-2">
+          <b className="text-[13.5px] font-semibold text-ink">{a.workerName}</b>
+          <span className={"text-xs " + (state === "failed" ? "text-red-700 dark:text-red-300" : state === "waiting" ? "text-violet-700 dark:text-violet-300" : "text-ink-faint")}>
+            {where} · {status}
+          </span>
+          {count > 0 && (
+            <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-400">
+              <CommentGlyph /> {count} comment{count === 1 ? "" : "s"}
+            </span>
+          )}
+        </span>
+        <span className="text-[12.5px] leading-relaxed text-ink-muted">{a.ask}</span>
+        {a.status === "paused" && a.waitingFor && <span className="text-xs text-violet-700 dark:text-violet-300">{a.workerName} {a.waitingFor}.</span>}
+        {a.error && <span className="whitespace-pre-wrap text-xs text-amber-600">{a.error}</span>}
+        {stage.error && <span className="whitespace-pre-wrap text-xs text-amber-600">{stage.error}</span>}
+        {error && (
+          <span role="alert" className="text-xs text-red-600 dark:text-red-400">
+            {error}
+          </span>
+        )}
+        <span className="mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+          {a.file && (
+            <button className={linkBtn} onClick={() => onOpenFile(a.file!)}>
+              Read the piece
+            </button>
+          )}
+          {a.runId && (
+            <button className={linkBtn} onClick={viewRun}>
+              {a.status === "paused" ? (a.waitingFor?.startsWith("wants your OK") ? "Approve it in the run" : "Open the run") : "View the run"}
+            </button>
+          )}
+          <button className={linkBtn} aria-haspopup="dialog" onClick={(e) => openTalk(e.currentTarget)}>
+            Say something…
+          </button>
+          {redo && state !== "failed" && (
+            <button className={linkBtn} aria-haspopup="dialog" onClick={(e) => openTalk(e.currentTarget)}>
+              Redo with a note
+            </button>
+          )}
+          {redo && state === "failed" && (
+            <button
+              className={linkBtn}
+              disabled={retrying}
+              onClick={() => {
+                setRetrying(true);
+                setError(null);
+                void redoPiece(task.id, a.workerId).then((res) => {
+                  setRetrying(false);
+                  if (!res.ok) setError(res.error);
+                });
+              }}
+            >
+              {retrying ? "Starting…" : "Retry"}
+            </button>
+          )}
+          {skippable && live && (
+            <SkipButton
+              taskId={task.id}
+              stage={cell.stage}
+              workerId={stage.assignments.length > 1 ? a.workerId : undefined}
+              label={stage.assignments.length > 1 ? "Skip this piece" : "Skip this stage"}
+              confirm={a.status !== "pending"}
+            />
+          )}
+        </span>
+      </div>
+      {talk && (
+        <CommentPopover
+          task={task}
+          target={{ kind: "member", workerId: a.workerId, workerName: a.workerName, stageIndex: cell.stage, piece: a }}
+          anchor={talk.anchor}
+          opener={talk.el}
+          onOpenFile={onOpenFile}
+          onClose={() => setTalk(null)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -1276,94 +1991,11 @@ function fileStem(path: string): string {
   return (path.split("/").pop() ?? path).replace(/\.[^.]+$/, "").replace(/^\d+-/, "");
 }
 
-function Tick() {
-  return (
-    <svg aria-hidden width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-emerald-400">
-      <path d="M2.5 6.2l2.3 2.3 4.7-5" />
-    </svg>
-  );
-}
-
 function DocGlyph() {
   return (
     <svg aria-hidden width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" className="shrink-0 opacity-70">
       <path d="M3 1.5h4l2.5 2.5v6.5H3z" />
     </svg>
-  );
-}
-
-function StageRow({
-  task,
-  stage,
-  index,
-  current,
-  onOpenFile,
-}: {
-  task: TeamTask;
-  stage: TeamStage;
-  index: number;
-  current: boolean;
-  onOpenFile: (name: string) => void;
-}) {
-  const skippable = canSkipStage(task, index);
-  // Stopping a run throws away what it has done so far, so a skip that
-  // stops something asks once more; skipping work that has not started
-  // does not.
-  const stopsWork =
-    stage.status === "running" &&
-    (!isMemberStage(stage.kind) || stage.assignments.some((a) => a.status === "running" || a.status === "paused"));
-  return (
-    <li className={"flex items-start gap-3 border-b border-card px-4 py-3 last:border-b-0 " + (current && stage.status !== "done" ? "bg-accent/5" : "")}>
-      <StatusDot status={stage.status} />
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="flex flex-wrap items-baseline gap-2">
-          <span className={"text-sm font-medium " + (stage.status === "skipped" ? "text-ink-faint line-through" : "text-ink")}>
-            {index + 1}. {stage.title}
-          </span>
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-            {TEAM_STAGE_LABEL[stage.kind]}
-          </span>
-          {skippable && (
-            <span className="ml-auto">
-              <SkipButton taskId={task.id} stage={index} label="Skip stage" confirm={stopsWork} />
-            </span>
-          )}
-        </span>
-        {!isMemberStage(stage.kind) && (
-          <span className="text-xs text-ink-muted">
-            {stage.status === "running"
-              ? (
-                  <CoordinatorActivity
-                    taskId={task.id}
-                    stage={index}
-                    since={stage.startedAt ?? task.updatedAt}
-                    reading={`${task.files.filter((f) => !f.name.startsWith("pack/")).length} files in the shared folder`}
-                  />
-                )
-              : stage.status === "done" && stage.file
-                ? (
-                    <button className="text-accent hover:underline" onClick={() => onOpenFile(stage.file!)}>
-                      {stage.file}
-                    </button>
-                  )
-                : stage.status === "pending"
-                  ? "Coordinator"
-                  : stage.status === "skipped"
-                    ? "Skipped"
-                    : ""}
-          </span>
-        )}
-        {stage.assignments.map((a) => (
-          <AssignmentLine
-            key={a.workerId}
-            a={a}
-            onOpenFile={onOpenFile}
-            skip={skippable && stage.assignments.length > 1 ? { taskId: task.id, stage: index } : undefined}
-          />
-        ))}
-        {stage.error && <span className="whitespace-pre-wrap text-xs text-amber-600">{stage.error}</span>}
-      </div>
-    </li>
   );
 }
 
@@ -1392,7 +2024,7 @@ function AssignmentLine({
         : a.status === "failed"
         ? `Failed${a.error ? `: ${a.error}` : ""}`
         : a.status === "paused"
-          ? "Waiting on you — it asked a question"
+          ? `Waiting on you${a.waitingFor ? ` — ${a.waitingFor}` : ""}`
           : a.status === "running"
             ? "Working…"
             : "Up next";
@@ -1401,7 +2033,7 @@ function AssignmentLine({
     <div className="flex flex-wrap items-center gap-2 rounded-md bg-card px-2.5 py-1.5 text-xs">
       {worker && <WorkerAvatar worker={worker} size="xs" live={a.status === "running"} />}
       <b className="font-medium text-ink">{a.workerName}</b>
-      <span className={a.status === "failed" ? "text-amber-600" : a.status === "paused" ? "text-violet-400" : "text-ink-muted"}>
+      <span className={a.status === "failed" ? "text-amber-600" : a.status === "paused" ? "text-violet-600 dark:text-violet-400" : "text-ink-muted"}>
         {state}
       </span>
       <span className="ml-auto flex gap-1">
@@ -1412,7 +2044,7 @@ function AssignmentLine({
         )}
         {a.runId && (
           <button className={quietBtn} onClick={viewRun}>
-            {a.status === "paused" ? "Answer" : "View run"}
+            {a.status === "paused" ? "Open run" : "View run"}
           </button>
         )}
         {skip && live && (
@@ -1427,38 +2059,6 @@ function AssignmentLine({
       </span>
     </div>
   );
-}
-
-function StatusDot({ status }: { status: TeamStage["status"] }) {
-  if (status === "done") {
-    return (
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-ink text-surface">
-        <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 7.5l2.5 2.5L11 4" />
-        </svg>
-      </span>
-    );
-  }
-  if (status === "running") {
-    return (
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 border-accent">
-        <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
-      </span>
-    );
-  }
-  if (status === "failed") {
-    return <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-500 text-[11px] font-bold text-white">!</span>;
-  }
-  if (status === "skipped") {
-    return (
-      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-[1.5px] border-card-strong text-ink-faint">
-        <svg width="10" height="10" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-          <path d="M3 7h8" />
-        </svg>
-      </span>
-    );
-  }
-  return <span className="mt-0.5 h-5 w-5 shrink-0 rounded-full border-[1.5px] border-dashed border-ink-faint" />;
 }
 
 /// Skip a stage, or one member's piece of it. When that would stop a run
@@ -1755,6 +2355,10 @@ function DeleteTaskButton({ task }: { task: TeamTask }) {
 
 function FolderPanel({ task, viewing, onOpen }: { task: TeamTask; viewing: string | null; onOpen: (name: string) => void }) {
   const sections = useMemo(() => folderSections(task), [task]);
+  // Past the first pack, the pack is read as what its latest version
+  // changed; the pieces, as one row per stage.
+  const changes = useMemo(() => packChangeCard(task), [task]);
+  const groups = useMemo(() => pieceGroups(task), [task]);
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -1774,7 +2378,12 @@ function FolderPanel({ task, viewing, onOpen }: { task: TeamTask; viewing: strin
           Empty for now. Each member's work lands here as it finishes, and every later stage reads it.
         </p>
       ) : (
-        sections.map((section) => (
+        sections.map((section) =>
+          section.id === "pack" && changes ? (
+            <PackChanges key="pack" card={changes} viewing={viewing} onOpen={onOpen} />
+          ) : section.id === "pieces" ? (
+            <PieceStages key="pieces" groups={groups} count={section.items.length} viewing={viewing} onOpen={onOpen} />
+          ) : (
           <details key={section.id} open={!section.collapsed} className="group/section flex flex-col">
             <summary className="flex cursor-pointer select-none list-none items-center gap-1.5 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint hover:text-ink-muted [&::-webkit-details-marker]:hidden">
               <svg aria-hidden width="8" height="8" viewBox="0 0 8 8" className="transition-transform group-open/section:rotate-90">
@@ -1794,9 +2403,128 @@ function FolderPanel({ task, viewing, onOpen }: { task: TeamTask; viewing: strin
               ))}
             </div>
           </details>
-        ))
+          ),
+        )
       )}
     </div>
+  );
+}
+
+/// "Changed in vN": the files the latest pack update changed, the first few
+/// shown and the rest of the pack a click away.
+function PackChanges({
+  card,
+  viewing,
+  onOpen,
+}: {
+  card: NonNullable<ReturnType<typeof packChangeCard>>;
+  viewing: string | null;
+  onOpen: (name: string) => void;
+}) {
+  const [all, setAll] = useState(false);
+  const rows = all ? [...card.shown, ...card.more] : card.shown;
+  return (
+    <section aria-label={`Changed in v${card.version}`} className="flex flex-col gap-1 rounded-xl border border-card bg-surface-elevated p-2.5">
+      <span className="flex items-center gap-1.5 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+        {card.changedCount === 0 ? `The pack · v${card.version}` : `Changed in v${card.version}`}
+        <span className="ml-auto font-normal normal-case tracking-normal" title="When this version was written">
+          {card.note}
+        </span>
+      </span>
+      {card.changedCount === 0 && !all && (
+        <span className="px-1 text-[11px] text-ink-faint">No file changed in this version.</span>
+      )}
+      {rows.map((item) => (
+        <FolderEntry key={item.name} item={item} active={viewing === item.name} onOpen={() => onOpen(item.name)} />
+      ))}
+      {card.more.length > 0 && (
+        <button className="self-start px-1 pt-0.5 text-xs font-semibold text-accent hover:underline" aria-expanded={all} onClick={() => setAll((v) => !v)}>
+          {all ? "Show only what changed" : `${card.more.length} more file${card.more.length === 1 ? "" : "s"} in the pack`}
+        </button>
+      )}
+    </section>
+  );
+}
+
+/// Who did what: one row per stage, with everyone who worked it and when.
+/// A stage with one file opens it; one with more opens to its files.
+function PieceStages({
+  groups,
+  count,
+  viewing,
+  onOpen,
+}: {
+  groups: PieceGroup[];
+  count: number;
+  viewing: string | null;
+  onOpen: (name: string) => void;
+}) {
+  const [opened, setOpened] = useState<string | null>(null);
+  return (
+    <section aria-label="Who did what" className="flex flex-col">
+      <span className="flex items-center gap-1.5 px-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+        Who did what
+        <span className="font-normal normal-case tracking-normal">
+          {count} piece{count === 1 ? "" : "s"}
+        </span>
+      </span>
+      <div className="flex flex-col gap-0.5">
+        {groups.map((g) => {
+          const one = g.files.length === 1;
+          const isOpen = opened === g.key;
+          const active = g.files.some((f) => f.name === viewing);
+          return (
+            <div key={g.key} className="flex flex-col">
+              <button
+                onClick={() => (one ? onOpen(g.files[0].name) : setOpened(isOpen ? null : g.key))}
+                aria-expanded={one ? undefined : isOpen}
+                title={one ? g.files[0].name : `${g.files.length} pieces: ${g.authors.join(", ")}`}
+                className={
+                  "flex min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors " +
+                  (active && one ? "bg-accent/10 ring-1 ring-accent/30" : "hover:bg-card-strong")
+                }
+              >
+                <span aria-hidden className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md bg-card text-[11px] font-bold text-ink-muted">
+                  {g.stage ?? "·"}
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-xs text-ink">{g.title}</span>
+                  <span className="truncate text-[10.5px] text-ink-faint">{g.when}</span>
+                </span>
+                <AuthorStack names={g.authors} />
+              </button>
+              {isOpen && (
+                <div className="ml-7 flex flex-col gap-0.5 border-l border-card pl-1.5">
+                  {g.files.map((item) => (
+                    <FolderEntry key={item.name} item={item} active={viewing === item.name} onOpen={() => onOpen(item.name)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/// Faces of the people who wrote something, overlapped; the coordinator as
+/// its mark.
+function AuthorStack({ names }: { names: string[] }) {
+  const workers = useWorkersStore((s) => s.workers);
+  const shown = names.slice(0, 4);
+  return (
+    <span className="flex shrink-0" aria-label={names.join(", ")}>
+      {shown.map((name, i) => {
+        const w = Object.values(workers).find((x) => x.name === name);
+        return (
+          <span key={name} title={name} className={"flex rounded-full ring-2 ring-surface " + (i ? "-ml-1.5" : "")}>
+            {name === "Coordinator" ? <CoordinatorFace /> : w ? <WorkerAvatar worker={w} size="xs" untitled /> : <GoneFace name={name} />}
+          </span>
+        );
+      })}
+      {names.length > shown.length && <span className="ml-1 text-[10.5px] text-ink-faint">+{names.length - shown.length}</span>}
+    </span>
   );
 }
 
@@ -1842,7 +2570,7 @@ function FolderEntry({ item, active, onOpen }: { item: FolderItem; active: boole
 /// differently from a document you read here.
 function FileGlyph({ kind }: { kind: FolderItem["kind"] }) {
   const tone =
-    kind === "page" ? "text-sky-400" : kind === "image" ? "text-emerald-400" : kind === "data" ? "text-amber-400" : "text-ink-faint";
+    kind === "page" ? "text-sky-600 dark:text-sky-400" : kind === "image" ? "text-emerald-700 dark:text-emerald-400" : kind === "data" ? "text-amber-700 dark:text-amber-400" : "text-ink-faint";
   return (
     <span className={`flex h-7 w-6 shrink-0 items-center justify-center rounded border border-card bg-card ${tone}`} aria-hidden>
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round">
@@ -1933,12 +2661,16 @@ function FileViewer({
   task,
   name,
   onOpenFile,
+  focus,
 }: {
   task: TeamTask;
   name: string;
   onOpenFile: (name: string) => void;
+  /// A commented passage to bring into view.
+  focus?: { quote: string; n: number } | null;
 }) {
   const readFile = useTeamsStore((s) => s.readFile);
+  const content = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<{ body?: string; error?: string }>({});
   useEffect(() => {
     let live = true;
@@ -1952,12 +2684,13 @@ function FileViewer({
   }, [task.id, name, readFile, task.updatedAt]);
   return (
     <div className="flex flex-col gap-3">
+      <FileComments task={task} file={name} content={content} ready={state.body !== undefined} focus={focus} />
       {state.error ? (
         <div className="text-xs text-red-500">{state.error}</div>
       ) : state.body === undefined ? (
         <div className="text-xs text-ink-faint">Loading…</div>
       ) : (
-        <div className="rounded-xl border border-card bg-surface-elevated px-5 py-4">
+        <div ref={content} tabIndex={-1} className="rounded-xl border border-card bg-surface-elevated px-5 py-4 outline-none">
           <Markdown source={state.body} onOpenPath={onOpenFile} />
         </div>
       )}
@@ -2045,14 +2778,20 @@ function TeamRoom({
   const draftKey = `team-room:${task.id}`;
   const messages = task.room?.messages ?? [];
   const busy = task.room?.busy ?? null;
-  const folded = task.room?.foldedThrough ?? 0;
-  const unfoldedExchanges = new Set(
-    messages.slice(folded).filter((m) => m.speaker.kind !== "you" && !m.failed).map((m) => m.exchange),
-  ).size;
-  const lastExchange = messages.at(-1)?.exchange;
-  const canDebate =
-    !busy && messages.some((m) => m.exchange === lastExchange && m.speaker.kind === "member" && !m.failed);
+  const queue = task.room?.queue ?? [];
+  const unfolded = unfoldedExchanges(task);
+  const canDebate = canKeepDebating(task);
   const names = team.members.map((m) => workers[m.workerId]?.name).filter(Boolean);
+  const setDraft = useStore((s) => s.setDraft);
+  const draft = useStore((s) => s.conversationDrafts[draftKey] ?? "");
+  /// Bumped to put the caret in the composer: "Reply to <name>".
+  const [focusSignal, setFocusSignal] = useState(0);
+  const replyTo = (name: string) => {
+    const tag = `@${name}`;
+    const rest = draft.trim();
+    setDraft(draftKey, rest.toLowerCase().startsWith(tag.toLowerCase()) ? `${rest} ` : `${tag} ${rest}${rest ? " " : ""}`);
+    setFocusSignal((n) => n + 1);
+  };
   const send = useComposerSend(draftKey, (text, attachments) => {
     stickToEnd.current = true;
     return roomAsk(task.id, text, attachments);
@@ -2141,7 +2880,14 @@ function TeamRoom({
     list.map((m) => (
       <div key={m.id} className="flex flex-col gap-3">
         {newFrom !== null && indexOf.get(m.id) === newFrom && <NewSinceLine innerRef={newRef} />}
-        <RoomMessage message={m} task={task} canHandOff={idle} onOpenFile={onOpenFile} />
+        <RoomMessage
+          message={m}
+          task={task}
+          canHandOff={idle}
+          onOpenFile={onOpenFile}
+          to={repliesTo(messages, indexOf.get(m.id) ?? -1)}
+          onReply={replyTo}
+        />
       </div>
     ));
 
@@ -2197,6 +2943,23 @@ function TeamRoom({
           </button>
         </div>
       )}
+      {/* What you sent while someone was answering: each goes in by itself
+          once the room is free, and leaves this list when it's taken. */}
+      {queue.length > 0 && (
+        <ul className="flex flex-col items-end gap-1.5" aria-label="Queued questions">
+          {queue.map((q, i) => (
+            <li key={`${q.at}-${i}`} className="flex max-w-xl flex-col items-end gap-1">
+              <span className="whitespace-pre-wrap rounded-2xl rounded-br-sm border border-dashed border-accent/50 bg-accent/10 px-3.5 py-2 text-sm text-ink">
+                {q.text}
+              </span>
+              <span className="flex items-center gap-1.5 text-[10.5px] text-ink-faint">
+                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-ink-faint" />
+                Queued · goes in when the coordinator finishes
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       {/* Pinned to the bottom of the column: however long the conversation,
           what you type next is where you are. */}
       <div className="sticky bottom-0 z-10 -mx-6 mt-auto flex flex-col gap-2 border-t border-card bg-surface px-6 pb-4 pt-3">
@@ -2212,21 +2975,21 @@ function TeamRoom({
             {arrived} new · jump to latest
           </button>
         )}
-        {(canDebate || unfoldedExchanges > 0) && !workingOn && (
+        {(canDebate || unfolded > 0) && !workingOn && (
           <div className="flex flex-wrap gap-2">
             {canDebate && (
               <button className={secondaryBtn} disabled={!!busy || sending} onClick={() => void roomContinue(task.id)}>
                 Keep debating
               </button>
             )}
-            {unfoldedExchanges > 0 && (
+            {unfolded > 0 && (
               <button
                 className={secondaryBtn}
                 disabled={!!busy || sending}
                 title="Have the coordinator revise the pack with what this conversation settled. The current version is kept."
                 onClick={() => void updatePack(task.id)}
               >
-                Update the pack · {unfoldedExchanges} exchange{unfoldedExchanges === 1 ? "" : "s"} not in it
+                Update the pack · {unfolded} exchange{unfolded === 1 ? "" : "s"} not in it
               </button>
             )}
           </div>
@@ -2236,13 +2999,16 @@ function TeamRoom({
           variant="compact"
           strongBorder
           rootPath={rootPath}
-          isRunning={!!busy}
-          onStop={() => void roomStop(task.id)}
+          autoFocus={focusSignal > 0}
+          focusSignal={focusSignal}
+          // Stays a normal input while someone answers: what you send waits
+          // its turn. The answer and its Stop live in the conversation above.
           disabled={sending}
           disabledPlaceholder="Sending…"
+          attachDisabled={busy ? `Attach files once ${busy.speaker} finishes answering — a question with files can't wait in line.` : undefined}
           placeholder={
             busy
-              ? `${busy.speaker} is answering…`
+              ? `${busy.speaker} is answering — write anyway; it goes in when they finish.`
               : (workingOn ??
                 "Ask the team, or ask someone to make or change something… e.g. @Lena redo the settings mockup against the real billing screen.")
           }
@@ -2267,8 +3033,18 @@ function scrollerOf(el: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
+/// Bring an element of the task column into view by scrolling the column
+/// itself (see `scrollerOf`); `focus` puts the caret in its first field.
+function scrollToId(id: string, focus = false): void {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const box = scrollerOf(el);
+  if (box) box.scrollTo({ top: box.scrollTop + el.getBoundingClientRect().top - box.getBoundingClientRect().top - 16, behavior: "smooth" });
+  if (focus) el.querySelector<HTMLElement>("textarea, input, button")?.focus({ preventScroll: true });
+}
+
 /// Room for the sticky tabs above something scrolled to the top.
-const STICKY_TOP_PX = 96;
+const STICKY_TOP_PX = 64;
 
 /// Earlier exchanges shown as lines before "Show N earlier".
 const EARLIER_SHOWN = 3;
@@ -2342,12 +3118,18 @@ function RoomMessage({
   task,
   canHandOff,
   onOpenFile,
+  to,
+  onReply,
 }: {
   message: TeamMessage;
   task: TeamTask;
   canHandOff: boolean;
   onOpenFile: (name: string) => void;
+  /// Who it answers, when that can be told: see `repliesTo`.
+  to: string[];
+  onReply: (name: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const worker = useWorkersStore((s) => (message.speaker.kind === "member" ? s.workers[message.speaker.workerId] : undefined));
   const roomHandOff = useTeamsStore((s) => s.roomHandOff);
   const sending = useTeamsStore((s) => !!s.busy[task.id]);
@@ -2364,6 +3146,12 @@ function RoomMessage({
     );
   }
   const name = message.speaker.kind === "member" ? message.speaker.name : "Coordinator";
+  // A member's reply, or a wrap-up, folds to its point; the coordinator's
+  // plain answers and work cards stay whole.
+  const foldable = !message.failed && !message.handoff && (message.speaker.kind === "member" || !!message.wrapUp);
+  const wrap = message.wrapUp ? parseWrapUp(message.text) : null;
+  const folded = foldable ? (wrap?.bottomLine ? { gist: wrap.bottomLine, more: wrap.agreed.length + wrap.open.length + wrap.changes.length } : replyGist(message.text)) : null;
+  const whole = !folded || folded.more === 0 || expanded;
   return (
     <div className="group/msg flex items-start gap-2.5">
       {worker ? (
@@ -2385,6 +3173,10 @@ function RoomMessage({
             {worker?.heartbeatBackend && <span className="font-normal text-ink-faint"> · {worker.heartbeatBackend}</span>}
             {message.wrapUp && <span className="font-normal text-ink-faint"> · where this landed</span>}
             {message.workReport && <span className="font-normal text-emerald-500"> · reporting back on the work</span>}
+            {to.length > 0 && !message.wrapUp && (
+              <span className="font-normal text-ink-faint"> · to {to.join(", ")}</span>
+            )}
+            <span className="font-normal text-ink-faint"> · {clockOrDay(message.at)}</span>
           </span>
           {offerHandOff && (
             <button
@@ -2399,10 +3191,31 @@ function RoomMessage({
         </span>
         {message.failed ? (
           <span className="text-xs text-amber-600">{message.text}</span>
-        ) : (
+        ) : whole ? (
           <div className="text-sm">
             <Markdown source={message.text} onOpenPath={onOpenFile} />
           </div>
+        ) : (
+          <p className="text-sm leading-relaxed text-ink">{folded!.gist}</p>
+        )}
+        {foldable && (
+          <span className="flex flex-wrap items-center gap-x-1.5 text-xs">
+            {folded && folded.more > 0 && (
+              <button className="py-0.5 font-semibold text-accent hover:underline" aria-expanded={expanded} onClick={() => setExpanded((v) => !v)}>
+                {expanded ? "Hide detail" : `Show detail (${folded.more})`}
+              </button>
+            )}
+            {folded && folded.more > 0 && message.speaker.kind === "member" && (
+              <span aria-hidden className="text-ink-faint">
+                ·
+              </span>
+            )}
+            {message.speaker.kind === "member" && (
+              <button className="py-0.5 font-semibold text-accent hover:underline" onClick={() => onReply(name)}>
+                Reply to {name}
+              </button>
+            )}
+          </span>
         )}
         {message.handoff && <HandoffCard message={message} task={task} onOpenFile={onOpenFile} />}
       </div>

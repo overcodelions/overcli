@@ -43,9 +43,16 @@ describe('settleItemOnLoad', () => {
     expect(never.finishedAt).toBe(WEEK_AGO);
   });
 
-  it('fails a running item — its subprocess died with the app', () => {
-    const it_ = item({ status: 'running' });
+  it('parks a running item whose run survived, so it finishes with its run', () => {
+    const it_ = item({ status: 'running', runId: 'r1' });
     expect(settleItemOnLoad(it_, ALIVE, NOW)).toBe(true);
+    expect(it_.status).toBe('paused');
+    expect(it_.finishedAt).toBeUndefined();
+  });
+
+  it('fails a running item whose run is gone — nothing will finish it', () => {
+    const it_ = item({ status: 'running', runId: 'r1' });
+    expect(settleItemOnLoad(it_, GONE, NOW)).toBe(true);
     expect(it_.status).toBe('failed');
     expect(it_.note).toBe('Interrupted by app restart.');
     expect(it_.finishedAt).toBe(NOW);

@@ -7,6 +7,7 @@ import type { MainToRendererEvent } from '../../shared/types';
 import type { Orchestration, OrchestrationItemStatus } from '../../shared/flows/orchestration';
 import type { Worker } from '../../shared/flows/worker';
 import type { Team, TeamHireRequest, TeamTask } from '../../shared/flows/team';
+import { piecesWaiting } from '../../shared/flows/team';
 
 const worker = (id: string, name: string, enabled = true): Worker =>
   ({
@@ -35,7 +36,10 @@ function makeHarness(opts: {
   code?: { absorbs: Array<'ok' | 'conflict'> };
   /// Whether the crew is away, asked each time a stage would start.
   crewAway?: () => boolean;
+  /// What a paused run waits on you for (FlowRuntime via describeRunPause).
+  pauseOf?: (runId: string) => string | null;
 } = {}) {
+  const notified: Array<{ title: string; body: string }> = [];
   const codeCalls: string[] = [];
   const absorbs = [...(opts.code?.absorbs ?? [])];
   const crew = [worker('maya', 'Maya'), worker('ade', 'Ade'), worker('rook', 'Rook')];
@@ -107,8 +111,9 @@ function makeHarness(opts: {
 
   engine = new TeamEngine({
     emit: (e) => emitted.push(e),
-    notify: () => {},
+    notify: (n) => void notified.push(n),
     workers: () => crew,
+    ...(opts.pauseOf ? { pauseOf: opts.pauseOf } : {}),
     ...(opts.code
       ? {
           code: {
@@ -210,6 +215,7 @@ function makeHarness(opts: {
 
   return {
     engine,
+    notified,
     emitted,
     files,
     tasks,
@@ -343,6 +349,47 @@ describe('TeamEngine', () => {
     expect(h.engine.filePath(t.id, '../../etc/passwd')).toBeNull();
   });
 
+  it('puts a member’s own document in the pack as it is, and only one the folder lists', async () => {
+    const pack = '<summary>Ship it.</summary><include name="designs.html" from="files/maya/designs/00-index.html"/><include name="secrets" from="../../etc/passwd"/><file name="designs.html">a retyped copy</file><file name="notes.md"># Notes</file>';
+    const h = makeHarness({ seedTeams: [team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } })], turns: [PLAN, pack] });
+    h.engine.start();
+    h.engine.brief('team-1', 'x');
+    await flush();
+    h.engine.approve(task(h).id);
+    await flush();
+    h.settle(h.commissions[0].id, 'done', 'Designs', [{ name: 'designs/00-index.html', sourcePath: '/run/designs/00-index.html' }]);
+    h.settle(h.commissions[1].id, 'done', 'Ade too');
+    await flush();
+    h.settle(h.commissions[2].id, 'done', 'No objections');
+    await flush();
+    const t = task(h);
+    expect(t.pack?.files).toEqual(['pack/designs.html', 'pack/notes.md']);
+    expect(h.files.get(`${t.id}/pack/designs.html`)).toBe('copied from /run/designs/00-index.html');
+    expect([...h.files.keys()].some((k) => k.includes('passwd') || k.endsWith('pack/secrets.md'))).toBe(false);
+  });
+
+  it('puts a deliverable a member made in the pack as they made it, whatever the coordinator retyped', async () => {
+    // The plan asks for PROPOSAL.md; Maya's run writes one.
+    const pack = '<summary>Ship it.</summary><file name="PROPOSAL.md"># a shorter retyped proposal</file>';
+    const h = makeHarness({ seedTeams: [team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } })], turns: [PLAN, pack] });
+    h.engine.start();
+    h.engine.brief('team-1', 'x');
+    await flush();
+    h.engine.approve(task(h).id);
+    await flush();
+    h.settle(h.commissions[0].id, 'done', 'Wrote it', [{ name: 'out/PROPOSAL.md', sourcePath: '/run/out/PROPOSAL.md' }]);
+    h.settle(h.commissions[1].id, 'done', 'Ade too');
+    await flush();
+    h.settle(h.commissions[2].id, 'done', 'No objections');
+    await flush();
+    const t = task(h);
+    expect(t.pack?.files).toEqual(['pack/PROPOSAL.md']);
+    expect(h.files.get(`${t.id}/pack/PROPOSAL.md`)).toBe('copied from /run/out/PROPOSAL.md');
+    expect(t.files.find((f) => f.name === 'pack/PROPOSAL.md')?.author).toBe('Maya');
+    // And the coordinator was told so.
+    expect(h.turnMessages.at(-1)).toContain('- PROPOSAL.md: by Maya, files/maya/out/PROPOSAL.md');
+  });
+
   it('matches a batch update that arrives before the launch call returns', async () => {
     const h = makeHarness({ seedTeams: [team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: false } })], turns: [PLAN, PACK], commissionEmitsFirst: true });
     h.engine.start();
@@ -353,6 +400,79 @@ describe('TeamEngine', () => {
     const a = task(h).stages[0].assignments;
     expect(a.map((x) => x.orchestrationId)).toEqual([h.commissions[0].id, h.commissions[1].id]);
     expect(a.every((x) => x.status === 'running')).toBe(true);
+  });
+
+  it('says when a piece stops for you, once, and forgets it when the piece goes on', async () => {
+    const h = makeHarness({
+      seedTeams: [team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } })],
+      turns: [PLAN],
+      pauseOf: (runId) => (runId.endsWith(h.commissions[0].id) ? 'wants your OK to use bash for "check"' : null),
+    });
+    h.engine.start();
+    h.engine.brief('team-1', 'x');
+    await flush();
+    h.engine.approve(task(h).id);
+    await flush();
+    h.settle(h.commissions[0].id, 'paused');
+    h.settle(h.commissions[0].id, 'paused');
+    // Held by you (no reason): marked paused, but nobody is pinged.
+    h.settle(h.commissions[1].id, 'paused');
+    await flush();
+    const [maya, ade] = task(h).stages[0].assignments;
+    expect(maya).toMatchObject({ status: 'paused', waitingFor: 'wants your OK to use bash for "check"' });
+    expect(ade.status).toBe('paused');
+    expect(ade.waitingFor).toBeUndefined();
+    expect(h.notified.filter((n) => n.title === 'Discovery needs you')).toEqual([{ title: 'Discovery needs you', body: 'Maya wants your OK to use bash for "check".' }]);
+    expect(piecesWaiting(task(h)).map((a) => a.workerName)).toEqual(['Maya']);
+    h.settle(h.commissions[0].id, 'running');
+    await flush();
+    expect(task(h).stages[0].assignments[0].waitingFor).toBeUndefined();
+    expect(piecesWaiting(task(h))).toEqual([]);
+  });
+
+  it('retries one failed piece while the rest of the stage is still working', async () => {
+    const h = makeHarness({ seedTeams: [team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } })], turns: [PLAN] });
+    h.engine.start();
+    h.engine.brief('team-1', 'x');
+    await flush();
+    h.engine.approve(task(h).id);
+    await flush();
+    // Ade's piece fails; Maya's is still running.
+    h.settle(h.commissions[1].id, 'failed');
+    await flush();
+    expect(task(h).status).toBe('running');
+    expect(h.engine.retryPiece(task(h).id, 'maya').ok).toBe(false);
+    expect(h.engine.retryPiece(task(h).id, 'ade').ok).toBe(true);
+    await flush();
+    expect(h.commissions).toHaveLength(3);
+    expect(h.commissions[2].workerId).toBe('ade');
+    expect(task(h).stages[0].assignments.map((x) => x.status)).toEqual(['running', 'running']);
+  });
+
+  it('takes your comments: re-plans on one about the plan, briefs later pieces with one on a file, and redoes a piece with a note', async () => {
+    const h = makeHarness({ seedTeams: [team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } })], turns: [PLAN, PLAN] });
+    h.engine.start();
+    h.engine.brief('team-1', 'A proposal for teams');
+    await flush();
+    expect(task(h).status).toBe('proposed');
+    const planned = h.engine.comment(task(h).id, { text: 'Cover pricing too.', about: 'plan' });
+    expect(planned).toMatchObject({ ok: true, comment: { outcome: 'replanned' } });
+    await flush();
+    expect(h.turnMessages[1]).toContain('Cover pricing too.');
+
+    h.engine.approve(task(h).id);
+    await flush();
+    h.settle(h.commissions[0].id, 'done', 'Maya says hi');
+    // A comment on Maya's piece while Ade still works; then Maya's piece again, with a note.
+    expect(h.engine.comment(task(h).id, { text: 'This number looks too high.', file: 'pieces/01-maya.md', quote: '$1.2M' }).ok).toBe(true);
+    expect(h.engine.redoPiece(task(h).id, 'maya', 'Use list prices, not guesses.').ok).toBe(true);
+    await flush();
+    const redo = h.commissions[h.commissions.length - 1];
+    expect(redo.workerId).toBe('maya');
+    expect(redo.prompt).toContain('WHAT THE USER SAID ABOUT THE WORK SO FAR');
+    expect(redo.prompt).toContain('the passage "$1.2M"');
+    expect(redo.prompt).toContain('was done again, so use the new version. What was asked: Use list prices, not guesses.');
+    expect(h.engine.comment(task(h).id, { text: 'x', workerId: 'nobody' }).ok).toBe(false);
   });
 
   it('waits when a piece fails, and a retry relaunches only that piece', async () => {
@@ -500,6 +620,39 @@ describe('TeamEngine', () => {
     expect(h.commissions[2].workerId).toBe('rook');
   });
 
+  it('keeps a team\'s guidance through an edit that leaves it out, and clears it when emptied', () => {
+    const h = makeHarness({ seedTeams: [team({ guidance: 'Ade checks the numbers last.' })] });
+    h.engine.start();
+    const t = team();
+    h.engine.save({ id: t.id, name: t.name, members: t.members, budgetUSDPerTask: 20, checkpoints: t.checkpoints });
+    expect(h.engine.list().teams[0].guidance).toBe('Ade checks the numbers last.');
+    h.engine.save({ id: t.id, name: t.name, members: t.members, budgetUSDPerTask: 20, checkpoints: t.checkpoints, guidance: '' });
+    expect(h.engine.list().teams[0].guidance).toBeUndefined();
+  });
+
+  it('plans by the team\'s guidance', async () => {
+    const h = makeHarness({ seedTeams: [team({ guidance: 'Maya always drafts.' })], turns: [PLAN] });
+    h.engine.start();
+    h.engine.brief('team-1', 'x');
+    await flush();
+    expect(h.turnMessages[0]).toContain('HOW THIS TEAM WORKS');
+    expect(h.turnMessages[0]).toContain('Maya always drafts.');
+  });
+
+  it('disbands a team: cancels its open task, keeps it and its tasks, and takes no more work', async () => {
+    const h = makeHarness({ seedTeams: [team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } })], turns: [PLAN] });
+    h.engine.start();
+    h.engine.brief('team-1', 'x');
+    await flush();
+    expect(h.engine.disband('team-1', 'Pat')).toEqual({ ok: true, cancelled: 1 });
+    expect(task(h).status).toBe('cancelled');
+    expect(h.engine.list().teams[0].disbanded).toMatchObject({ by: 'Pat' });
+    expect(h.engine.list().tasks).toHaveLength(1);
+    expect(h.engine.brief('team-1', 'more')).toMatchObject({ ok: false, error: expect.stringMatching(/disbanded/) });
+    expect(h.engine.learn('team-1')).toMatchObject({ ok: false });
+    expect(h.engine.disband('team-1', 'Pat')).toMatchObject({ ok: false });
+  });
+
   it('lifts a task to its team\'s raised budget', async () => {
     const h = makeHarness({ seedTeams: [team({ checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } })], turns: [PLAN] });
     h.engine.start();
@@ -556,11 +709,24 @@ describe('TeamEngine', () => {
     expect(task(h).status).toBe('proposed');
   });
 
-  it('refuses a second task while one is active', async () => {
+  it('queues a second task while one is active, and starts it when the first ends', async () => {
     const h = makeHarness({ seedTeams: [team()], turns: [] });
     h.engine.start();
-    expect(h.engine.brief('team-1', 'one').ok).toBe(true);
-    expect(h.engine.brief('team-1', 'two')).toMatchObject({ ok: false });
+    const one = h.engine.brief('team-1', 'one');
+    const two = h.engine.brief('team-1', 'two');
+    const three = h.engine.brief('team-1', 'three');
+    if (!one.ok || !two.ok || !three.ok) throw new Error('brief failed');
+    expect(one.task.status).toBe('planning');
+    expect(two.task.status).toBe('queued');
+    expect(three.task.status).toBe('queued');
+    // A queued task can be dropped before it starts.
+    expect(h.engine.cancel(three.task.id)).toEqual({ ok: true });
+    expect(h.engine.cancel(one.task.id)).toEqual({ ok: true });
+    await flush();
+    const tasks = h.engine.list().tasks;
+    // Started: the harness has no coordinator reply, so its planning ends at once.
+    expect(tasks.find((t) => t.id === two.task.id)!.status).not.toBe('queued');
+    expect(tasks.find((t) => t.id === three.task.id)!.status).toBe('cancelled');
   });
 
   it('re-runs a coordinator stage that a restart interrupted', async () => {
@@ -707,15 +873,35 @@ describe('TeamEngine room', () => {
     expect(t.pack).toMatchObject({ summary: 'Now with OCR.', version: 2 });
     expect(t.files.map((f) => f.name)).toContain('pack-v1/PROPOSAL.md');
     expect(t.status).toBe('review');
+    // Only the file whose text moved counts as changed in this version.
+    expect(t.pack?.changed).toEqual(['pack/PROPOSAL.md']);
     expect(h.engine.updatePack('task-r')).toMatchObject({ ok: false });
   });
 
-  it('refuses while the team is still working, or while someone is answering', async () => {
+  it('updates the pack with only the wrap-up changes you picked, even when nothing new was said', async () => {
+    const h = room({
+      status: 'done',
+      turns: ['<summary>As before.</summary><file name="PROPOSAL.md"># Proposal v1</file>'],
+    });
+    expect(h.engine.updatePack('task-r', { changes: ['  Add the risk table. ', 42, ''] })).toEqual({ ok: true });
+    await flush();
+    expect(h.turnMessages.at(-1)).toContain("THE CHANGES THE USER PICKED FROM THE TEAM'S WRAP-UP\n- Add the risk table.\n");
+    // Rewritten word for word: nothing in this version changed.
+    expect(task(h).pack).toMatchObject({ version: 2, changed: [] });
+  });
+
+  it('refuses while the team is still working, and queues what you say while someone is answering', async () => {
     const h = room({ status: 'proposed', turns: [] });
     expect(h.engine.roomAsk('task-r', 'hi')).toMatchObject({ ok: false });
-    const h2 = room({ turns: ['<route>["Maya"]</route>'] });
+    const h2 = room({ turns: ['<route>["Maya"]</route>', '<route>["Maya"]</route>'] });
     h2.engine.roomAsk('task-r', 'one');
-    expect(h2.engine.roomAsk('task-r', 'two')).toMatchObject({ ok: false });
+    expect(h2.engine.roomAsk('task-r', 'two')).toEqual({ ok: true, queued: true });
+    expect(task(h2).room!.queue).toMatchObject([{ text: 'two' }]);
+    await flush();
+    await flush();
+    // Once the first answer is in, the queued question goes in by itself.
+    expect(task(h2).room!.queue ?? []).toHaveLength(0);
+    expect(task(h2).room!.messages.filter((m) => m.speaker.kind === 'you').map((m) => m.text)).toEqual(['one', 'two']);
   });
 
   describe('handing off work', () => {
@@ -802,7 +988,8 @@ describe('TeamEngine room', () => {
       await flush();
       const res = h.engine.brief('team-1', 'Next idea');
       expect(res).toMatchObject({ ok: true });
-      expect(h.engine.brief('team-1', 'And another')).toMatchObject({ ok: false, error: expect.stringContaining('still on') });
+      const another = h.engine.brief('team-1', 'And another');
+      expect(another.ok && another.task.status).toBe('queued');
     });
 
     it('can set a proposal aside', async () => {
@@ -1349,5 +1536,77 @@ describe('TeamEngine task branch', () => {
     await flush();
     expect(task(h).code).toBeUndefined();
     expect(h.commissions[0].baseBranch).toBeUndefined();
+  });
+});
+
+describe('what a team knows', () => {
+  const KNOWN = '<summary>Roadmap and owners.</summary><file name="TEAM_KNOWLEDGE.md"># Roadmap\nQ1: acme exports (ACME-12, owner Maya).</file>';
+
+  it('learns from every member, then the coordinator writes it up, with nothing to approve or review', async () => {
+    const h = makeHarness({ seedTeams: [team()], turns: [KNOWN] });
+    h.engine.start();
+    expect(h.engine.learn('team-1').ok).toBe(true);
+    await flush();
+    const t = task(h);
+    expect(t).toMatchObject({ kind: 'learn', status: 'running', title: 'What Discovery knows', budgetUSD: 10 });
+    expect(h.commissions.map((c) => c.workerId)).toEqual(['maya', 'ade', 'rook']);
+    expect(h.engine.list().teams[0].knowledge?.status).toBe('learning');
+    // A second pass while one runs is refused.
+    expect(h.engine.learn('team-1').ok).toBe(false);
+    for (const c of h.commissions) h.settle(c.id, 'done', 'What I found');
+    await flush();
+    expect(task(h).status).toBe('done');
+    expect(h.engine.list().teams[0].knowledge).toMatchObject({ status: 'ready', body: '# Roadmap\nQ1: acme exports (ACME-12, owner Maya).' });
+  });
+
+  it('answers straight from what it knows, files the answer, and can ask it again as work', async () => {
+    const knows = { status: 'ready' as const, body: 'Q1: acme exports.', updatedAt: 1 };
+    const h = makeHarness({ seedTeams: [team({ knowledge: knows })], turns: ['<team_answer>Next is **acme exports** (Q1).</team_answer>', PLAN] });
+    h.engine.start();
+    h.engine.brief('team-1', 'what is next on the roadmap');
+    await flush();
+    const t = task(h);
+    expect(t).toMatchObject({ status: 'done', answered: true, pack: { summary: 'Next is **acme exports** (Q1).', files: ['pack/answer.md'] } });
+    // It started from what the team knows, and the folder has a copy.
+    expect(h.turnMessages[0]).toContain('WHAT THE TEAM KNOWS');
+    expect(h.turnMessages[0]).toContain('Q1: acme exports.');
+    expect(h.files.get(`${t.id}/team-knowledge.md`)).toContain('Q1: acme exports.');
+    expect(h.engine.planAsTask(t.id).ok).toBe(true);
+    await flush();
+    const again = h.engine.list().tasks.find((x) => x.id !== t.id)!;
+    expect(again).toMatchObject({ forcePlan: true, status: 'proposed' });
+    expect(h.turnMessages[1]).not.toContain('<team_answer>');
+  });
+
+  it('keeps what it knows when the team is edited, and when a refresh is stopped', async () => {
+    const knows = { status: 'ready' as const, body: 'Q1: acme exports.', updatedAt: 1 };
+    const h = makeHarness({ seedTeams: [team({ knowledge: knows })] });
+    h.engine.start();
+    const t0 = h.engine.list().teams[0];
+    expect(h.engine.save({ ...t0, name: "Discovery Two" } as never).ok).toBe(true);
+    expect(h.engine.list().teams[0].knowledge?.body).toBe('Q1: acme exports.');
+    const res = h.engine.learn('team-1');
+    expect(res.ok).toBe(true);
+    await flush();
+    h.engine.cancel(task(h).id);
+    expect(h.engine.list().teams[0].knowledge).toMatchObject({ status: 'ready', body: 'Q1: acme exports.', error: "The last refresh didn't finish: You stopped it." });
+  });
+
+  it('refreshes a week-old brief when the team is idle, unless set to only when asked, and not twice a day', async () => {
+    const week = 7 * 24 * 60 * 60 * 1000;
+    const stale = { status: 'ready' as const, body: 'Q1: acme exports.', updatedAt: 1 };
+    const h = makeHarness({ seedTeams: [team({ knowledge: stale }), team({ id: 'team-2', name: 'Quiet', knowledge: stale, knowledgeRefresh: 'off' })] });
+    h.engine.start();
+    expect(h.engine.refreshDue(1 + week - 1)).toEqual([]);
+    expect(h.engine.refreshDue(1 + week)).toEqual(['team-1']);
+    // Busy learning now: not again.
+    expect(h.engine.refreshDue(1 + week + 1)).toEqual([]);
+    await flush();
+    h.engine.cancel(h.engine.list().tasks[0].id);
+    // Stopped, so it still knows the old brief; tried today, so not until tomorrow.
+    expect(h.engine.refreshDue(1 + week + 60_000)).toEqual([]);
+    expect(h.engine.refreshDue(1 + week + 24 * 60 * 60 * 1000 + 1)).toEqual(['team-1']);
+    expect(h.engine.setKnowledgeRefresh('team-1', 'off').ok).toBe(true);
+    expect(h.engine.list().teams.find((t) => t.id === 'team-1')?.knowledgeRefresh).toBe('off');
   });
 });

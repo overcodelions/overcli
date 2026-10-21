@@ -6,11 +6,11 @@ import type { Orchestration } from '@shared/flows/orchestration';
 import type { WorkerTrustLevel } from '@shared/flows/worker';
 
 export const TRUST_LABEL: Record<WorkerTrustLevel, { text: string; cls: string }> = {
-  probation: { text: 'probation', cls: 'text-amber-600 dark:text-amber-400 border-amber-400/40' },
+  probation: { text: 'probation', cls: 'text-amber-700 dark:text-amber-400 border-amber-400/40' },
   trusted: { text: 'trusted', cls: 'text-sky-600 dark:text-sky-400 border-sky-400/40' },
   autonomous: {
     text: 'autonomous',
-    cls: 'text-emerald-600 dark:text-emerald-400 border-emerald-400/40',
+    cls: 'text-emerald-700 dark:text-emerald-400 border-emerald-400/40',
   },
 };
 
@@ -77,7 +77,7 @@ export function WorkerPendingProposal({ orchestration }: { orchestration: Orches
         <button
           disabled={busy}
           onClick={() => void discard()}
-          className="text-[11px] px-2 py-0.5 rounded text-ink-faint hover:text-red-400"
+          className="text-[11px] px-2 py-0.5 rounded text-ink-faint hover:text-red-600 dark:hover:text-red-400"
         >
           Reject all
         </button>

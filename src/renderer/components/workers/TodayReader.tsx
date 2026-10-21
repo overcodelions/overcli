@@ -371,11 +371,11 @@ function ProposalReview({ row }: { row: QueueRow }) {
         <button
           disabled={!!busy}
           onClick={() => void act('reject')}
-          className="rounded-md border border-card-strong px-3 py-1.5 text-[12.5px] text-ink-muted hover:border-red-400/60 hover:text-red-400 disabled:opacity-50"
+          className="rounded-md border border-card-strong px-3 py-1.5 text-[12.5px] text-ink-muted hover:border-red-400/60 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
         >
           {busy === 'reject' ? 'Rejecting…' : 'Reject'}
         </button>
-        {error && <span className="text-[12px] text-red-400">{error}</span>}
+        {error && <span className="text-[12px] text-red-600 dark:text-red-400">{error}</span>}
       </div>
     </>
   );
@@ -646,7 +646,7 @@ function Result({
           <p className="max-w-[980px] text-[13.5px] leading-relaxed text-ink-muted">{digest.summary}</p>
         )}
         {row.steps.length > 0 && <StepBar row={row} />}
-        {failed && row.note && <p className="text-[13.5px] text-red-400">{row.note}</p>}
+        {failed && row.note && <p className="text-[13.5px] text-red-600 dark:text-red-400">{row.note}</p>}
         {live && <p className="text-[13.5px] text-ink-muted">Still working — its result lands here when it finishes.</p>}
         {run && <WorkerDecisions run={run} workerName={row.workerName} />}
         {answers.length === 0 && !live && <HandedOnBubbles row={row} openBatch={openBatch} />}
@@ -898,7 +898,7 @@ function HandoffNotes({
         const ok = /^(Handed to|Will hand to)/.test(note);
         if (!ok) {
           return (
-            <div key={e.id ?? i} className="flex items-start gap-1.5 text-[11.5px] text-red-400">
+            <div key={e.id ?? i} className="flex items-start gap-1.5 text-[11.5px] text-red-600 dark:text-red-400">
               <span aria-hidden>→</span>
               <span>{note}</span>
             </div>
@@ -997,7 +997,7 @@ function HandedOnBubbles({ row, openBatch }: { row: QueueRow; openBatch?: OpenBa
                 →
               </span>
               {to && <WorkerAvatar worker={to} size="xs" />}
-              <span className={ok ? '' : 'text-red-400'}>{head}</span>
+              <span className={ok ? '' : 'text-red-600 dark:text-red-400'}>{head}</span>
               {landed &&
                 (open ? (
                   <button onClick={open} className="ml-auto shrink-0 text-accent hover:underline">
@@ -1052,7 +1052,7 @@ function WorkerDecisions({ run, workerName }: { run: FlowRun; workerName: string
               <span className="text-ink-faint">{d.stepId} asked:</span>{' '}
               <span className="text-ink-muted">{d.question.length > 240 ? `${d.question.slice(0, 239)}…` : d.question}</span>
               <span className="mt-0.5 block text-ink">
-                <span className="text-ink-faint">{workerName}:</span> {d.answer}
+                <span className="text-ink-faint">{d.answeredBy?.workerName ?? workerName}:</span> {d.answer}
               </span>
             </li>
           ))}

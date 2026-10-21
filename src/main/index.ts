@@ -5,6 +5,7 @@
 // lives here — the Store, the RunnerManager, health probes, stats.
 
 // First, before anything can read the userData path. See devProfile.ts.
+import { effectiveScopes } from '../shared/flows/toolScope';
 import './devProfile';
 import { randomUUID } from 'node:crypto';
 
@@ -63,7 +64,7 @@ import {
 } from './git';
 import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
 import { inspectFolder } from './childRepos';
-import { isDocumentLikePath, isEverydayProject } from '../shared/everydayProjects';
+import { isDocumentLikePath } from '../shared/everydayProjects';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
 import {
   checkpointProject,
@@ -79,7 +80,7 @@ import { scanOrphanTranscripts, removeOrphanTranscripts } from './transcriptSwee
 import { computeStatsOffThread, stopStatsWorker } from './statsService';
 import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
-import { recordMcpSeenFromEvent, seenMcpTools } from './flows/mcpToolCache';
+import { recordMcpSeenFromEvent } from './flows/mcpToolCache';
 import { ensureMcpSeen } from './flows/mcpProbe';
 import { routeErrand } from './flows/workerRouter';
 import { findBrowser, openInBrowser } from './openInBrowser';
@@ -147,7 +148,7 @@ import {
   WEBHOOK_TOKEN_KEY,
 } from './webhookNotify';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
-import { renameIfTaken, teamHireJobDescription, teamPieceFlow, type TeamHireRequest } from '../shared/flows/team';
+import { teamHireJobDescription, teamPieceFlow, type TeamHireRequest } from '../shared/flows/team';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
 import { buildCiDeploy, buildFlowCiDeploy, type CiWorkspace } from '../shared/flows/ciDeploy';
 import { serializeFlow } from '../shared/flows/yaml';
@@ -162,22 +163,52 @@ import {
 import { filedByWorker, recentlyFiled } from './flows/workerPublish';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
+import type { SlackBridge } from './slack/slackBridge';
+import type { SlackCommands } from './slack/slackCommands';
+import { processScheduleText, type ProcessService } from './org/processes';
+import { draftProcessFromImage, imageFromDataUrl, imageFromFile } from './org/processDraft';
+import { workerTagline } from '../shared/flows/worker';
+import type { TriggerService } from './org/triggers';
+import type { OrgService } from './org/orgService';
+import type { OrgCaller } from '../shared/org/policy';
+import { testSlackTokens } from './slack/slackBridge';
+import {
+  configuredSlackToken,
+  slackEnabled,
+  slackTokenFromEnv,
+  storeSlackToken,
+  validateSlackToken,
+} from './slack/slackSettings';
+import { createOrgControl, createSlackBridge } from './slack/wire';
+import {
+  ORG_TOKEN_ENV,
+  ORG_TOKEN_KEY,
+  configuredOrgToken,
+  normalizeOrgUrl,
+  parseInviteLink,
+  pollPairing,
+  processPublishPayload,
+  publishProcessToOrg,
+  publishTeamToOrg,
+  publishSetupToOrg,
+  publishToOrg,
+  redeemInvite,
+  signOutAt,
+  startPairing,
+  whoamiAt,
+} from './org/orgClient';
+import { shareForOrg, teamForOrg } from './org/orgShare';
+import { gatherSetup, keyValuesFor } from './org/setupShare';
+import { readClaudeMcpServers } from './mcpConfig';
+import { draftHire, drafterDepsFor, hireDraftContext, saveDraftedHire } from './org/hireDraft';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { auditWorkerLandings } from './flows/strandedLandings';
 import { discardLandingUpdate, finishLandingUpdate, startLandingUpdate } from './flows/landingUpdate';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
-import { TeamEngine } from './flows/teamEngine';
+import type { TeamEngine } from './flows/teamEngine';
+import { createTeamEngine, runDeliverablesFor } from './flows/teamWire';
 import { flushTeamTasks } from './flows/teamsStore';
-import {
-  absorbPiece,
-  closeTaskBranch,
-  landTaskBranch,
-  openTaskBranch,
-  pushTaskBranch,
-  taskBranchAhead,
-  taskRepos,
-} from './flows/teamBranch';
 import { runHandoffOutputs, workerOrigin, type Worker } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
@@ -194,7 +225,6 @@ import {
 } from './flows/userProfileStore';
 import { flushRuns } from './flows/runsStore';
 import { loadRunSummaries } from './flows/runSummaryLog';
-import { renderProvenFlowsSection } from './flows/provenFlows';
 import { emptyWorkerReportTotals } from '../shared/flows/workerReport';
 import { flowDeletionBlocker } from './flows/flowGuards';
 import { listRecentPrompts, recordRecentPrompt, deleteRecentPrompt } from './flows/recentPromptsStore';
@@ -208,23 +238,24 @@ import {
   previewRegistryFlow,
 } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
-import { draftFlowFromPrompt, oneShotDraftText, reviseFlowFromPrompt, type DraftDeps } from './flows/drafter';
+import { draftFlowFromPrompt, reviseFlowFromPrompt, type DraftDeps } from './flows/drafter';
 import {
   ensureWorkspaceSymlinkRoot,
   removeWorkspaceSymlinkRoot,
   ensureCoordinatorSymlinkRoot,
   rebindCoordinatorRootToProjects,
   removeCoordinatorSymlinkRoot,
-  looseSyntheticRootFiles,
 } from './workspace';
 import { openTerminalAt, openTerminalIn, runInTerminal, setEmbeddedTerminal } from './terminal';
 import { PtyManager, type PtySpawn } from './ptyManager';
 import { convertImageToJpeg } from './attachmentImages';
+import { LocalOrgServer } from './org/localServer';
 import { DEFAULT_UI_SCALE, stepUiScale } from '../shared/uiScale';
 import {
   ArtifactPreviewResult,
   Backend,
   MainToRendererEvent,
+  SlackStatus,
   PersistedScopeTabs,
   MenuCommand,
   ProjectPreviewCommand,
@@ -257,6 +288,14 @@ let orchestrator: OrchestratorImpl | null = null;
 let scheduler: SchedulerEngine | null = null;
 let workerEngine: WorkerEngine | null = null;
 let teamEngine: TeamEngine | null = null;
+
+let slackBridge: SlackBridge | null = null;
+let slackCommands: SlackCommands | null = null;
+/// Processes on this desktop, through its own team engine. Built with the
+/// org control (it moves items on its own poll timer), kept for the IPC.
+let processService: ProcessService | null = null;
+let orgTriggers: TriggerService | null = null;
+let orgService: OrgService | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
 let handoffInbox: HandoffInbox | null = null;
 /// Long-lived service processes, one supervisor per workspace. Built lazily
@@ -265,6 +304,17 @@ let handoffInbox: HandoffInbox | null = null;
 let servicesManager: ServicesManager | null = null;
 const pendingServiceLines = new Map<string, { workspaceId: string; serviceId: string; lines: string[] }>();
 let serviceLinesFlush: NodeJS.Immediate | undefined;
+
+/// Whoever is at this desktop, as the org layer knows people: the app's owner,
+/// with every right. Named after the manager on their crew who carries their
+/// Slack id, when there is one; else just "You".
+function desktopCaller(): OrgCaller {
+  const slackUserId = Store.load().settings.slackOwnerId?.trim() || undefined;
+  const named = slackUserId
+    ? workerEngine?.list().map((row) => row.worker.manager).find((m) => m?.slackUserId === slackUserId && m.name.trim())?.name.trim()
+    : undefined;
+  return { name: named ?? 'You', ...(slackUserId ? { slackUserId } : {}), admin: true };
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -356,6 +406,18 @@ function setUiScale(next: number): void {
   Store.saveSettings({ ...settings, uiScale: next });
   applyUiScale();
   emitToRenderer({ type: 'uiScaleChanged', uiScale: Store.load().settings.uiScale });
+}
+
+function slackStatus(): SlackStatus {
+  const bridge = slackBridge?.getStatus() ?? { enabled: false, connected: false, openThreads: 0 };
+  return {
+    ...bridge,
+    enabled: slackEnabled(),
+    botConfigured: configuredSlackToken('bot') !== null,
+    appConfigured: configuredSlackToken('app') !== null,
+    botFromEnv: slackTokenFromEnv('bot'),
+    appFromEnv: slackTokenFromEnv('app'),
+  };
 }
 
 function emitToRenderer(event: MainToRendererEvent): void {
@@ -470,68 +532,7 @@ installElectronHost(focusMainWindow);
 /// draft copies the shape of what already works here instead of inventing a
 /// deeper one.
 function drafterDeps(): DraftDeps {
-  const store = Store.load();
-  return {
-    settings: store.settings,
-    runner: runner!,
-    mcpTools: seenMcpTools(),
-    provenFlows: renderProvenFlowsSection(
-      loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }),
-      loadRunSummaries(),
-    ),
-  };
-}
-
-/// What the hire drafter is shown about this install: the flows it can
-/// route to, the projects a job can land in, the MCP servers it can grant,
-/// and the crew's names so a new one never collides.
-async function hireDraftContext() {
-  const store = Store.load();
-  // The drafter's own turns run strict and report no servers, so a user who
-  // comes straight here may have none recorded. Ask Claude once — it costs
-  // no model call (see mcpProbe) and only happens while the record is empty.
-  await ensureMcpSeen(resolveBackendPath('claude', store.settings.backendPaths.claude));
-  // The same servers the editor's picker offers. A failed scan means the
-  // drafter is not asked to choose, and the worker loads everything.
-  let mcpServers: string[] | undefined;
-  try {
-    const report = scanCapabilities();
-    mcpServers = Array.from(
-      new Set([
-        ...report.entries.filter((e) => e.kind === 'mcp' && e.clis.includes('claude')).map((e) => e.name),
-        ...(report.accountConnectors ?? []),
-      ]),
-    ).sort((a, b) => a.localeCompare(b));
-  } catch (err) {
-    log('warn', 'workers.hire', 'MCP scan for the hire drafter failed', err);
-  }
-  return {
-    mcpServers,
-    // Names only — `list()` would build a scorecard per worker, which is
-    // two whole-file log reads each for a prompt line.
-    crew: workerEngine ? workerEngine.workerNames() : [],
-    flows: loadAllFlows({
-      projectPaths: store.projects.map((p) => p.path),
-    }).map((f) => ({
-      id: f.id,
-      name: f.name,
-      description: f.description,
-    })),
-    // Workspaces first: a job that names one should land on the whole
-    // workspace, not one member repo that happens to share the name.
-    projects: [
-      ...store.workspaces.map((w) => ({
-        name: w.name,
-        path: w.rootPath,
-        kind: 'workspace' as const,
-      })),
-      ...store.projects.map((p) => ({
-        name: p.name,
-        path: p.path,
-        kind: 'project' as const,
-      })),
-    ],
-  };
+  return drafterDepsFor(runner!);
 }
 
 /// Hire a worker for a team, start to finish, with nobody at the review
@@ -543,58 +544,19 @@ async function hireDraftContext() {
 /// connectors or the browser: those are yours to grant, not the drafter's.
 async function hireForTeam(req: TeamHireRequest): Promise<{ ok: true; worker: Worker } | { ok: false; error: string }> {
   if (!workerEngine) return { ok: false, error: 'Workers are not running.' };
-  const drafted = await draftWorkerFromPrompt(
-    { ...(await hireDraftContext()), jobDescription: teamHireJobDescription(req), interview: false, polish: false },
-    drafterDeps(),
-  );
+  const drafted = await draftHire({
+    runner: runner!,
+    crew: workerEngine.workerNames(),
+    jobDescription: teamHireJobDescription(req),
+    interview: false,
+  });
   if (!drafted.ok) return drafted;
-  if (!('contract' in drafted)) return { ok: false, error: 'The hire drafter asked a question instead of drafting.' };
-  const { flowPlan } = drafted;
-  // Checked against the crew as it is NOW, not as the drafter saw it: a hire
-  // drafted alongside this one may have just taken the same name. Nothing
-  // below awaits before the save, so no other hire can land in between.
-  const contract = renameIfTaken(drafted.contract, workerEngine.workerNames());
-  const flows = flowPlan.filter((p) => p.flowId);
-  if (flows.length === 0) {
-    return { ok: false, error: `No flow for ${contract.name}: ${drafted.flowError ?? 'the drafter named none.'}` };
-  }
-  // A drafted flow is new; it saves where the hire screen saves one. The
-  // wrap-up is left out: it combines a shift's items, and this worker has
-  // no shifts.
-  for (const p of flows) {
-    if (!p.flow) continue;
-    const saved = saveFlow({ flow: p.flow, target: 'user' });
-    if (!saved.ok) return { ok: false, error: `Could not save ${contract.name}'s flow: ${saved.error}` };
-  }
-  const store = Store.load();
+  if (drafted.kind !== 'drafted') return { ok: false, error: 'The hire drafter asked a question instead of drafting.' };
   // The team's project when it has one: a hire for an overcli release team
   // works in overcli, whatever the drafter guessed from the job.
-  const projectPath = req.projectPath ?? contract.projectPath ?? store.workspaces[0]?.rootPath ?? store.projects[0]?.path;
-  if (!projectPath) return { ok: false, error: 'Add a project first — every worker needs one to work in.' };
-  const everyday = store.projects.find((p) => p.path === projectPath)?.everyday;
-  const saved = workerEngine.save({
-    name: contract.name,
-    ...(contract.tagline?.trim() ? { tagline: contract.tagline.trim() } : {}),
-    ...(contract.errandStarters?.length ? { errandStarters: contract.errandStarters } : {}),
-    jobDescription: contract.jobDescription,
-    projectPath,
-    cadence: null,
-    caps: {
-      maxItemsPerShift: contract.maxItemsPerShift,
-      runIn: 'worktree',
-      allowExternalActions: false,
-      canDelegate: false,
-      fileIntoProject: isEverydayProject({ path: projectPath, everyday }),
-    },
-    budgetUSDPerMonth: contract.budgetUSDPerMonth,
-    heartbeatModel: contract.heartbeatModel,
-    heartbeatBackend: contract.heartbeatBackend,
-    flowIds: flows.map((p) => p.flowId),
-    // No connectors and no browser, whatever the drafter picked: nobody
-    // reviewed this hire, and both reach past the worktree with your
-    // sign-ins. You tick them on the worker yourself if the job needs them.
-    hiredFor: { teamName: req.teamName.trim() || 'New team', ...(req.teamId ? { teamId: req.teamId } : {}) },
-    enabled: true,
+  const saved = saveDraftedHire(workerEngine, drafted.drafted, {
+    projectPath: req.projectPath,
+    extra: { hiredFor: { teamName: req.teamName.trim() || 'New team', ...(req.teamId ? { teamId: req.teamId } : {}) } },
   });
   if (saved.ok) log('info', 'teams', `Hired ${saved.worker.name} for ${req.teamName}`);
   return saved;
@@ -620,6 +582,7 @@ export function registerIpc(): void {
     // Teams watch the batches they commissioned to know when a stage's
     // pieces are in. Ignores every batch without `origin.team`.
     if (teamEngine) teamEngine.observeEvent(event);
+    slackCommands?.onEvent(event);
     emitToRenderer(event);
   };
   runner = new RunnerManager(flowAwareEmit, () => Store.load().settings);
@@ -669,9 +632,12 @@ export function registerIpc(): void {
   // One observer slot on the runtime, two consumers. The orchestrator pumps
   // its queue on a terminal child run; the scheduler clears its overlap guard
   // and notifies. Each ignores runs it didn't launch, so the fan-out is free.
+  // A worker's tool scopes, enforced on its runs (toolScope.ts).
+  flowRuntime.setToolScopes((id) => effectiveScopes(workerEngine?.get(id)?.toolScopes, undefined));
   flowRuntime.setRunObserver((run) => {
     orchestrator?.onRunUpdate(run);
     scheduler?.onRunUpdate(run);
+    void slackBridge?.onRunUpdate(run);
   });
   scheduler.start();
   // Workers park their shifts through the orchestrator exactly like scheduled
@@ -680,33 +646,7 @@ export function registerIpc(): void {
   // A run's deliverables: its step artifacts in step order (the answer last),
   // plus the files it wrote into a synthetic root. Shared by workers, which
   // file them into a cabinet, and teams, which file them into a task folder.
-  const workerDeliverablesFor = (runId: string): Array<{ name: string; body?: string; sourcePath?: string }> => {
-    const run = flowRuntime?.getRun(runId);
-    if (!run) return [];
-    // Step order, so the answer is last and its supporting material reads in
-    // the order it was produced.
-    const seen = new Set<string>();
-    const out: Array<{ name: string; body?: string; sourcePath?: string }> = [];
-    for (const step of run.flowSnapshot?.steps ?? []) {
-      const art = run.artifacts?.[step.output];
-      if (!art || seen.has(art.name)) continue;
-      seen.add(art.name);
-      out.push({ name: art.name, body: art.body });
-    }
-    // Plus whatever the run WROTE rather than recorded. A step told to
-    // render a dashboard or a chart writes a real file into its working
-    // root and hands back a receipt — the receipt is the artifact, so
-    // filing artifacts alone kept the note and dropped the thing it
-    // described, which then died with the run's coordinator root.
-    for (const file of looseSyntheticRootFiles(run.projectPath, {
-      since: run.createdAt,
-    })) {
-      if (seen.has(file.name)) continue;
-      seen.add(file.name);
-      out.push({ name: file.name, sourcePath: file.path });
-    }
-    return out;
-  };
+  const workerDeliverablesFor = runDeliverablesFor((id) => flowRuntime?.getRun(id) ?? null);
   workerEngine = new WorkerEngine({
     parker: orchestrator,
     isGitRepo: (projectPath) =>
@@ -812,6 +752,8 @@ export function registerIpc(): void {
         })
         .catch((err) => log('warn', 'versions.checkpoint', `checkpoint threw for ${projectPath}`, err));
     },
+    activeRuns: (workerId) =>
+      (flowRuntime?.listRuns() ?? []).filter((r) => r.workerId === workerId && (r.state.kind === 'running' || r.state.kind === 'paused')),
     flowsFor: (ids) => {
       const byId = new Map(
         loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).map((f) => [f.id, f]),
@@ -880,130 +822,40 @@ export function registerIpc(): void {
     },
   });
   flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
+  // Questions and approvals that reach a person go to their manager in Slack
+  // when the bridge is on. Built here, after every engine it reads.
+  slackBridge = createSlackBridge({
+    flowRuntime,
+    orchestrator,
+    workerEngine,
+    onStatus: () => emitToRenderer({ type: 'slackStatus', status: slackStatus() }),
+  });
+  // `/worker`, `/hire` and hire approvals in Slack, through the same org
+  // rules `overcli serve`'s control plane enforces.
+  const orgControl = createOrgControl({ runner: runner!, flowRuntime, orchestrator, workerEngine, teams: () => teamEngine }, slackBridge, {
+    frontDoorOwner: () => Store.load().settings.slackOwnerId?.trim() || undefined,
+  });
+  slackCommands = orgControl.commands;
+  processService = orgControl.processes;
+  orgTriggers = orgControl.triggers;
+  orgService = orgControl.org;
+  // Watches that feed processes poll from here, like the org server's.
+  orgControl.triggers.start();
+  if (slackEnabled()) void slackBridge.start();
   // Away mode holds worker batches queued before you left (see pump).
   orchestrator.setCrewAwaySince(() => workerEngine?.awayState()?.since);
   workerEngine.start();
   // Teams commission their members through the worker engine, so they are
   // built after it and only ever reach a worker through `commission`.
-  teamEngine = new TeamEngine({
+  teamEngine = createTeamEngine({
     emit: flowAwareEmit,
     notify: showDesktopNotification,
-    workers: () => workerEngine?.list().map((entry) => entry.worker) ?? [],
-    commission: (workerId, args) =>
-      workerEngine
-        ? workerEngine.commission(workerId, args)
-        : Promise.resolve({ ok: false as const, error: 'Worker engine not initialized.' }),
-    batch: (id) => orchestrator?.get(id) ?? null,
-    coordinatorTurn: async ({ system, message, cancelKey, onProgress, attachments }) => {
-      const res = await oneShotDraftText(drafterDeps(), {
-        buildSystemPrompt: () => system,
-        userMessage: message,
-        ...(attachments?.length ? { attachments } : {}),
-        verb: 'coordinate the team',
-        cancelKey,
-        onProgress,
-        // A coordinator turn reads every member's piece before it writes a
-        // word, on the strongest model, so minutes of silence is normal. The
-        // ceilings are only a backstop against a turn that has truly hung.
-        timeouts: { timeoutMs: 45 * 60_000, idleTimeoutMs: 15 * 60_000 },
-        // It is told it has no tools, but if it reaches for one anyway a
-        // hidden turn must never sit on a permission prompt nobody can see.
-        permissionMode: 'plan',
-      });
-      return res.ok ? { ok: true, text: res.text } : res;
-    },
-    cancelTurn: (cancelKey) => {
-      runner?.cancelOneShot(cancelKey);
-    },
-    cancelBatch: (id) => {
-      orchestrator?.abort({ id });
-    },
-    // Away mode holds team stages too; coming back reaches the engine as
-    // the `workersAway` event through `flowAwareEmit`.
-    crewAway: () => !!workerEngine?.awayState(),
-    // A member speaking in the room runs on ITS OWN backend and model — the
-    // point of a Codex challenger is that Codex is the one answering. Same
-    // backend resolution as the worker supervisor; plan mode so a stray tool
-    // call reads or is refused rather than waiting on a prompt nobody sees.
-    memberTurn: async ({ worker, prompt, cancelKey, onProgress, attachments }) => {
-      const settings = Store.load().settings;
-      const healthy = await healthyBackends(settings.backendPaths);
-      const backend = pickDrafterBackend({
-        preferred: worker.heartbeatBackend ?? settings.preferredBackend,
-        isHealthy: (candidate) => healthy.has(candidate),
-        isEnabled: (candidate) => settings.disabledBackends[candidate] !== true,
-      });
-      if (!backend) return { ok: false, error: `No signed-in model is available for ${worker.name}.` };
-      const res = await runner!.oneShot({
-        backend,
-        model: resolveProducerModel(backend, worker.heartbeatModel, settings.flowModelDefaults),
-        prompt,
-        ...(attachments?.length ? { attachments } : {}),
-        cwd: os.homedir(),
-        permissionMode: 'plan',
-        skipGlobalMcp: true,
-        cancelKey,
-        ...(onProgress ? { onProgress: (snap: { text: string }) => onProgress(snap.text) } : {}),
-        timeoutMs: 20 * 60_000,
-        idleTimeoutMs: 10 * 60_000,
-      });
-      return res.ok ? { ok: true, text: res.text } : res;
-    },
-    deliverablesFor: (runId) => workerDeliverablesFor(runId),
+    runner: runner!,
+    flowRuntime,
+    orchestrator,
+    workerEngine,
+    drafterDeps,
     hire: hireForTeam,
-    // One branch per team task across the repos it works in; see teamBranch.
-    code: {
-      open: ({ taskId, title, projectPath }) => {
-        const store = Store.load();
-        const byId = new Map(store.projects.map((p) => [p.id, p.path]));
-        const workspaces = store.workspaces.map((w) => ({
-          rootPath: w.rootPath,
-          memberPaths: w.projectIds.flatMap((id) => (byId.get(id) ? [byId.get(id)!] : [])),
-        }));
-        return openTaskBranch({ taskId, title, repos: taskRepos(projectPath, workspaces) });
-      },
-      pieceRepos: (runId) => {
-        const run = flowRuntime?.getRun(runId);
-        if (!run) return [];
-        if (run.workspaceWorktrees?.length) {
-          return run.workspaceWorktrees.map((m) => ({
-            projectPath: m.projectPath,
-            worktreePath: m.worktreePath,
-            branchName: m.branchName,
-            startedAt: run.createdAt,
-          }));
-        }
-        return run.worktreePath && run.branchName
-          ? [
-              {
-                projectPath: run.sourceProjectPath ?? run.projectPath,
-                worktreePath: run.worktreePath,
-                branchName: run.branchName,
-                startedAt: run.createdAt,
-              },
-            ]
-          : [];
-      },
-      absorb: (args) => absorbPiece(args),
-      land: (code, repo, subject) => landTaskBranch(code, repo, subject),
-      push: (code, repo, subject) => pushTaskBranch(code, repo, subject),
-      ahead: (code) => taskBranchAhead(code),
-      close: (code) => closeTaskBranch(code),
-    },
-    projects: () => {
-      const store = Store.load();
-      // Workspaces first, as the hire drafter lists them.
-      return [
-        ...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath })),
-        ...store.projects.map((p) => ({ name: p.name, path: p.path })),
-      ];
-    },
-    spendForRuns: (runIds) => {
-      const wanted = new Set(runIds);
-      let total = 0;
-      for (const s of loadRunSummaries()) if (wanted.has(s.id)) total += s.costUSD;
-      return total;
-    },
   });
   teamEngine.start();
   // A sleeping Mac runs no timers. Both engines arm a `setTimeout` for the
@@ -1053,9 +905,18 @@ export function registerIpc(): void {
   ipcMain.handle('store:patchConversation', (_e, { id, patch }) => Store.patchConversation(id, patch));
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
+    const wasSlack = slackEnabled();
     Store.saveSettings(settings);
     refreshUpdateChannel();
     applyUiScale();
+    // The Slack switch rides the sheet's Save like every other setting, so
+    // the bridge follows it here rather than through a call of its own that
+    // the sheet's next Save would overwrite.
+    const isSlack = slackEnabled();
+    if (slackBridge && isSlack !== wasSlack) {
+      if (isSlack) void slackBridge.start();
+      else slackBridge.stop();
+    }
   });
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
   ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
@@ -1094,6 +955,257 @@ export function registerIpc(): void {
       log('warn', 'webhook.notify', `Could not store the webhook auth token: ${String(err)}`);
       return { ok: false };
     }
+  });
+  ipcMain.handle('slack:status', () => slackStatus());
+  ipcMain.handle('slack:setToken', (_e, { kind, token }) => {
+    const invalid = validateSlackToken(kind, token ?? '');
+    if (invalid) return { ok: false, error: invalid };
+    try {
+      const ok = storeSlackToken(kind, token);
+      // A running bridge holds the old token: reconnect so the new one is used.
+      if (ok && slackBridge?.running && slackEnabled()) void slackBridge.start();
+      emitToRenderer({ type: 'slackStatus', status: slackStatus() });
+      return ok ? { ok } : { ok, error: 'This build cannot store secrets — set the environment variable instead.' };
+    } catch (err) {
+      log('warn', 'slack', `Could not store the Slack ${kind} token: ${String(err)}`);
+      return { ok: false, error: 'Could not store the token.' };
+    }
+  });
+  ipcMain.handle('slack:reconnect', async () => {
+    if (!slackBridge) return { ok: false, error: 'Workers are not running yet.' };
+    if (!slackEnabled()) return { ok: false, error: 'Turn Slack on and save first.' };
+    return await slackBridge.start();
+  });
+  ipcMain.handle('slack:test', () => testSlackTokens(configuredSlackToken('bot')));
+  ipcMain.handle('org:status', async (_e, args) => {
+    const token = configuredOrgToken();
+    const status = { tokenConfigured: !!token, fromEnv: !!process.env[ORG_TOKEN_ENV]?.trim() };
+    const raw = args?.url ?? Store.load().settings.orgServerUrl;
+    if (!raw || !token) return status;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...status, error: url.error };
+    const who = await whoamiAt(url.url, token);
+    return who.ok ? { ...status, who: who.data } : { ...status, error: who.error };
+  });
+  ipcMain.handle('org:setToken', (_e, token) => {
+    try {
+      const ok = host().secrets.set(ORG_TOKEN_KEY, token?.trim() || null);
+      return ok ? { ok } : { ok, error: 'This build cannot store secrets — set $OVERCLI_ORG_TOKEN instead.' };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+  // Signing this app in to the org. One sign-in at a time: each one takes a
+  // number, and a newer sign-in, Cancel or Sign out bumps it, so anything an
+  // older one was still waiting on lands nowhere.
+  let signInGen = 0;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  const stopSignIn = () => {
+    signInGen++;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+  };
+  const deviceName = `overcli app on ${os.hostname().replace(/\.local$/, '')}`;
+  const keepOrg = (base: string, token: string): string | null => {
+    try {
+      if (!host().secrets.set(ORG_TOKEN_KEY, token)) return 'This build cannot store the sign-in — set $OVERCLI_ORG_TOKEN instead.';
+      Store.saveSettings({ ...Store.load().settings, orgServerUrl: base });
+      return null;
+    } catch (err) {
+      return `Could not save the sign-in: ${String(err)}`;
+    }
+  };
+  ipcMain.handle('org:signIn', async (_e, { url }) => {
+    stopSignIn();
+    const gen = signInGen;
+    const invite = parseInviteLink(url);
+    if (invite) {
+      const base = normalizeOrgUrl(invite.base);
+      if (!base.ok) return base;
+      const res = await redeemInvite(base.url, invite.code, deviceName);
+      if (!res.ok) return res;
+      const failed = keepOrg(base.url, res.data.token);
+      if (failed) return { ok: false, error: failed };
+      emitToRenderer({ type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url });
+      return { ok: true, signedIn: true, org: res.data.org, name: res.data.name };
+    }
+    const base = normalizeOrgUrl(url);
+    if (!base.ok) return base;
+    const started = await startPairing(base.url, deviceName);
+    if (!started.ok) return started;
+    if (gen !== signInGen) return { ok: false, error: 'Cancelled.' };
+    const { pairId, pollSecret, userCode, verifyUrl, expiresAt } = started.data;
+    // The server is only an address someone pasted: open its page only when
+    // it is a web page on that same server.
+    const sameServer = (() => {
+      try {
+        return new URL(verifyUrl).origin === new URL(base.url).origin;
+      } catch {
+        return false;
+      }
+    })();
+    if (!isSafeExternalUrl(verifyUrl) || !sameServer) return { ok: false, error: 'The org server sent back a sign-in page on another address. Check the address and try again.' };
+    void shell.openExternal(verifyUrl);
+    // One poll at a time, two seconds apart. A blip is retried; only a run of
+    // failures ends the sign-in.
+    let misses = 0;
+    const poll = async (): Promise<void> => {
+      if (gen !== signInGen) return;
+      if (Date.now() > expiresAt + 5_000) {
+        stopSignIn();
+        emitToRenderer({ type: 'orgSignIn', outcome: 'expired' });
+        return;
+      }
+      const res = await pollPairing(base.url, pairId, pollSecret);
+      if (gen !== signInGen) return;
+      if (!res.ok) {
+        if (++misses < 5) {
+          pollTimer = setTimeout(() => void poll(), 2_000);
+          return;
+        }
+        stopSignIn();
+        emitToRenderer({ type: 'orgSignIn', outcome: 'failed', error: res.error });
+        return;
+      }
+      misses = 0;
+      if (res.data.status === 'waiting') {
+        pollTimer = setTimeout(() => void poll(), 2_000);
+        return;
+      }
+      stopSignIn();
+      if (res.data.status === 'signedIn') {
+        const failed = keepOrg(base.url, res.data.token);
+        emitToRenderer(
+          failed
+            ? { type: 'orgSignIn', outcome: 'failed', error: failed }
+            : { type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url },
+        );
+      } else {
+        emitToRenderer({ type: 'orgSignIn', outcome: res.data.status });
+      }
+    };
+    pollTimer = setTimeout(() => void poll(), 2_000);
+    return { ok: true, signedIn: false, userCode, verifyUrl };
+  });
+  ipcMain.handle('org:cancelSignIn', () => {
+    stopSignIn();
+    return { ok: true };
+  });
+  ipcMain.handle('org:signOut', async () => {
+    stopSignIn();
+    // Signed out on the server first, so the token stops working there too;
+    // the local copy goes whatever the server says.
+    const token = host().secrets.get(ORG_TOKEN_KEY);
+    const raw = Store.load().settings.orgServerUrl;
+    const url = raw ? normalizeOrgUrl(raw) : null;
+    if (token && url?.ok) await signOutAt(url.url, token);
+    try {
+      return { ok: host().secrets.set(ORG_TOKEN_KEY, null) };
+    } catch {
+      return { ok: false };
+    }
+  });
+  ipcMain.handle('org:publishWorker', async (_e, { id, visibility }) => {
+    const raw = Store.load().settings.orgServerUrl;
+    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
+    if (!raw) return signIn;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...url, signIn: true as const };
+    const token = configuredOrgToken();
+    if (!token) return signIn;
+    const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
+    if (!worker) return { ok: false, error: 'No such worker.' };
+    const { yaml, tools } = shareForOrg(worker);
+    return publishToOrg(url.url, token, yaml, visibility ? { visibility } : {}, tools, worker.id);
+  });
+  ipcMain.handle('org:publishTeam', async (_e, { id }) => {
+    const raw = Store.load().settings.orgServerUrl;
+    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
+    if (!raw) return signIn;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...url, signIn: true as const };
+    const token = configuredOrgToken();
+    if (!token) return signIn;
+    const team = teamEngine?.list().teams.find((t) => t.id === id);
+    if (!team) return { ok: false, error: 'No such team.' };
+    const built = teamForOrg(team, (workerEngine?.list() ?? []).map((row) => row.worker));
+    if (!built.ok) return built;
+    return publishTeamToOrg(url.url, token, built.payload);
+  });
+  ipcMain.handle('org:publishProcess', async (_e, { id }) => {
+    const raw = Store.load().settings.orgServerUrl;
+    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org. No org server yet? The guide there shows how to run one.', signIn: true as const };
+    if (!raw) return signIn;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...url, signIn: true as const };
+    const token = configuredOrgToken();
+    if (!token) return signIn;
+    const got = processService?.get(desktopCaller(), id);
+    if (!got?.ok) return { ok: false, error: got?.error ?? 'Processes are not running here.' };
+    // "You" on this desktop is whoever the org knows this token as.
+    const who = await whoamiAt(url.url, token);
+    const slackUserId = Store.load().settings.slackOwnerId?.trim();
+    const me = who.ok ? { name: who.data.name, ...(slackUserId ? { slackUserId } : {}) } : undefined;
+    const built = processPublishPayload(got.process, got.teams, me);
+    if (!built.ok) return built;
+    return publishProcessToOrg(url.url, token, built.payload);
+  });
+  // Publish my setup: what this desktop has, for the org server's admin to
+  // install and connect. The renderer only ever sees key NAMES; values are
+  // read here, for the tools the person ticked, when they press Publish.
+  const orgSignedIn = () => {
+    const raw = Store.load().settings.orgServerUrl;
+    const signIn = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org.', signIn: true as const };
+    if (!raw) return signIn;
+    const url = normalizeOrgUrl(raw);
+    if (!url.ok) return { ...url, signIn: true as const };
+    const token = configuredOrgToken();
+    if (!token) return signIn;
+    return { ok: true as const, url: url.url, token };
+  };
+  const desktopSetup = () => {
+    const store = Store.load();
+    return gatherSetup(readClaudeMcpServers(), store.projects.map((p) => ({ id: p.id, name: p.name, path: p.path })));
+  };
+  ipcMain.handle('org:setupPreview', async () => {
+    const at = orgSignedIn();
+    if (!at.ok) return at;
+    const [setup, who] = await Promise.all([desktopSetup(), whoamiAt(at.url, at.token)]);
+    const host_ = new URL(at.url).hostname;
+    return {
+      ok: true as const,
+      server: at.url,
+      sameMachine: ['localhost', '127.0.0.1', '[::1]', '::1'].includes(host_),
+      admin: who.ok ? who.data.admin : false,
+      tools: setup.tools.map((t) => ({ name: t.name, kind: t.kind, target: t.target, keys: t.keys })),
+      workspaces: Store.load().workspaces.map((w) => ({ id: w.id, name: w.name, projectIds: w.projectIds })),
+      projects: setup.repos.map((r) => ({ id: r.projectId, name: r.name, ...(r.url ? { url: r.url } : {}) })),
+    };
+  });
+  ipcMain.handle('org:publishSetup', async (_e, args: { tools: string[]; sendKeysFor: string[]; workspaceIds: string[]; projectIds: string[] }) => {
+    const at = orgSignedIn();
+    if (!at.ok) return at;
+    const setup = await desktopSetup();
+    const store = Store.load();
+    const spaces = store.workspaces.filter((w) => args.workspaceIds.includes(w.id));
+    const wanted = new Set([...args.projectIds, ...spaces.flatMap((w) => w.projectIds)]);
+    const repos = setup.repos.filter((r) => wanted.has(r.projectId));
+    const nameOf = new Map(repos.map((r) => [r.projectId, r.name]));
+    const tools = setup.tools.filter((t) => args.tools.includes(t.name));
+    const servers = readClaudeMcpServers();
+    const keys = Object.fromEntries(
+      tools.filter((t) => args.sendKeysFor.includes(t.name) && servers[t.name]).map((t) => [t.name, keyValuesFor(servers[t.name], t.template)]),
+    );
+    return publishSetupToOrg(at.url, at.token, {
+      tools: tools.map((t) => t.template),
+      repos: repos.map((r) => ({ name: r.name, ...(r.url ? { url: r.url } : {}), localPath: r.localPath })),
+      workspaces: spaces.map((w) => ({
+        name: w.name,
+        repos: w.projectIds.map((id) => nameOf.get(id)).filter((n): n is string => !!n),
+        ...(w.instructions ? { instructions: w.instructions } : {}),
+      })),
+      ...(Object.keys(keys).length ? { keys } : {}),
+    });
   });
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
   ipcMain.handle('app:whatsNew', () => getWhatsNew());
@@ -2148,6 +2260,13 @@ export function registerIpc(): void {
     services().resolvedOptions(workspaceId, serviceId),
   );
 
+  ipcMain.handle('org:localServer', async (_e, action: 'start' | 'stop' | 'status' | 'linkUsed') => {
+    localOrgServer ??= new LocalOrgServer();
+    if (action === 'start') return localOrgServer.start();
+    if (action === 'stop') return localOrgServer.stop();
+    if (action === 'linkUsed') localOrgServer.forgetFirstAdminLink();
+    return localOrgServer.status();
+  });
   ipcMain.handle('app:openExternal', (_e, url: string) => {
     if (!isSafeExternalUrl(url)) return;
     return shell.openExternal(url);
@@ -2579,6 +2698,99 @@ export function registerIpc(): void {
     scheduler ? scheduler.runNow(id) : ({ ok: false, error: 'Scheduler not initialized.' } as const),
   );
 
+  // Processes: work moving through teams and your decisions, stage by stage.
+  // The board asks often, so each read first catches up with the team tasks
+  // rather than waiting for the service's own poll.
+  const noProcesses = { ok: false, error: 'Processes are not running yet.' } as const;
+  ipcMain.handle('processes:list', () => {
+    processService?.poll();
+    return processService ? processService.list(desktopCaller()) : [];
+  });
+  ipcMain.handle('processes:get', (_e, { id }) => {
+    processService?.poll();
+    return processService ? processService.get(desktopCaller(), id) : noProcesses;
+  });
+  ipcMain.handle('processes:places', () => {
+    const store = Store.load();
+    return [...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath, kind: 'workspace' as const })), ...store.projects.map((p) => ({ name: p.name, path: p.path, kind: 'project' as const }))];
+  });
+  ipcMain.handle('processes:save', (_e, { id, name, purpose, about, templateId, codeIn, stages }) => {
+    if (!processService) return noProcesses;
+    const me = desktopCaller();
+    // A new process is yours; a changed one keeps its owner. The app has no
+    // audience to pick, so one made here is open to whoever reaches it, as
+    // before; published to an org, it starts private there.
+    return processService.save(me, { ...(id ? { id } : { owner: { name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, access: { who: 'everyone' } }), name, purpose, about, templateId, ...(codeIn !== undefined ? { codeIn } : {}), stages });
+  });
+  // A process drafted from a picture of one (a data URL, or a file the
+  // picker chose), matched against this app's teams and workers. Not saved:
+  // the editor opens with it.
+  ipcMain.handle('processes:draftFromImage', async (_e, { image, note }) => {
+    if (!processService) return noProcesses;
+    const raw = typeof image === 'string' ? image : '';
+    const picture = raw.startsWith('data:') ? imageFromDataUrl(raw) : raw ? imageFromFile(raw) : imageFromDataUrl(raw);
+    if (!picture.ok) return picture;
+    const teams = (teamEngine?.list().teams ?? []).filter((t) => !t.disbanded).map((t) => ({ id: t.id, name: t.name, ...(t.purpose ? { purpose: t.purpose } : {}), members: t.members.map((m) => ({ role: m.role })) }));
+    const workers = (workerEngine?.roster() ?? []).filter((w) => w.enabled).map((w) => ({ id: w.id, name: w.name, tagline: workerTagline(w) }));
+    return draftProcessFromImage(drafterDeps(), { image: picture.image, ...(typeof note === 'string' && note.trim() ? { note: note.slice(0, 1000) } : {}), teams, workers });
+  });
+  ipcMain.handle('processes:archive', (_e, { id }) => (processService ? processService.archive(desktopCaller(), id) : noProcesses));
+  ipcMain.handle('processes:submit', (_e, { processId, title, brief }) => {
+    if (!processService) return noProcesses;
+    const me = desktopCaller();
+    const res = processService.submit({ name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, processId, { title, brief, source: 'desktop', byAdmin: me.admin });
+    return res.ok ? { ok: true as const, item: res.item } : res;
+  });
+  ipcMain.handle('processes:act', (_e, { itemId, action, note, stageIndex }) =>
+    processService ? processService.act(desktopCaller(), itemId, action, { note, stageIndex }) : noProcesses,
+  );
+  ipcMain.handle('processes:intake', (_e, { id }) => {
+    const def = processService?.get(desktopCaller(), id);
+    const schedules = def?.ok ? (def.process.schedules ?? []).map((s) => ({ ...s, nextAt: processService!.nextAt(s), when: processScheduleText(s.cadence) })) : [];
+    const watches = (orgTriggers?.list() ?? [])
+      .filter((t) => t.hand?.kind === 'process' && t.hand.processId === id && t.watch)
+      .map((t) => ({ id: t.id, server: t.watch!.server, tool: t.watch!.tool, everyMinutes: t.watch!.everyMinutes, ...(t.lastFiredAt ? { lastFiredAt: t.lastFiredAt } : {}), ...(t.lastError ? { lastError: t.lastError } : {}) }));
+    return { schedules, watches };
+  });
+  ipcMain.handle('processes:addSchedule', (_e, { id, cadence, title, brief }) => {
+    if (!processService) return noProcesses;
+    const res = processService.addSchedule(desktopCaller(), id, { cadence, title, brief });
+    return res.ok ? { ok: true as const } : res;
+  });
+  ipcMain.handle('processes:removeSchedule', (_e, { id, scheduleId }) => (processService ? processService.removeSchedule(desktopCaller(), id, scheduleId) : noProcesses));
+  ipcMain.handle('processes:tools', () => {
+    const res = orgService?.tools(desktopCaller());
+    return res?.ok ? res.tools.map((t) => t.name) : [];
+  });
+  ipcMain.handle('processes:toolCalls', async (_e, { server }) => (orgService ? orgService.serverTools(desktopCaller(), server) : noProcesses));
+  ipcMain.handle('processes:testWatch', async (_e, { server, tool, args }) =>
+    orgService ? orgService.testWatch(desktopCaller(), { server, tool, args, everyMinutes: 15 }) : noProcesses,
+  );
+  ipcMain.handle('processes:addWatch', (_e, { id, server, tool, args, everyMinutes, instructions }) => {
+    if (!orgTriggers || !processService) return noProcesses;
+    if (!processService.canSteer(desktopCaller(), id)) return { ok: false, error: 'No such process.' };
+    const name = processService.find(id)?.name ?? 'A process';
+    const res = orgTriggers.create({
+      workerId: '',
+      hand: { kind: 'process', processId: id },
+      name: `${name}: new items in ${server}`,
+      kind: 'watch',
+      watch: { server, tool, args, everyMinutes: Math.max(5, Math.round(everyMinutes || 15)) },
+      instructions: instructions ?? '',
+      deliver: [],
+      maxPerDay: 50,
+      enabled: true,
+      createdBy: desktopCaller().name,
+    });
+    return res.ok ? { ok: true as const } : res;
+  });
+  ipcMain.handle('processes:removeWatch', (_e, { triggerId }) => {
+    const t = orgTriggers?.get(triggerId);
+    if (!t || t.hand?.kind !== 'process') return { ok: false, error: 'No such watch.' };
+    orgTriggers!.remove(triggerId);
+    return { ok: true as const };
+  });
+
   // Teams: groups of workers that take on one task at a time.
   const noTeams = { ok: false, error: 'Team engine not initialized.' } as const;
   ipcMain.handle('teams:list', () => (teamEngine ? teamEngine.list() : { teams: [], tasks: [] }));
@@ -2622,6 +2834,10 @@ export function registerIpc(): void {
   );
   ipcMain.handle('teams:cancel', (_e, { taskId }) => (teamEngine ? teamEngine.cancel(taskId) : noTeams));
   ipcMain.handle('teams:accept', (_e, { taskId }) => (teamEngine ? teamEngine.accept(taskId) : noTeams));
+  ipcMain.handle('teams:comment', (_e, { taskId, text, file, quote, about, workerId }) =>
+    teamEngine ? teamEngine.comment(taskId, { text, ...(file ? { file } : {}), ...(quote ? { quote } : {}), ...(about ? { about } : {}), ...(workerId ? { workerId } : {}) }) : noTeams,
+  );
+  ipcMain.handle('teams:redoPiece', (_e, { taskId, workerId, note }) => (teamEngine ? teamEngine.redoPiece(taskId, workerId, note) : noTeams));
   ipcMain.handle('teams:deleteTask', (_e, { taskId }) => (teamEngine ? teamEngine.deleteTask(taskId) : noTeams));
   ipcMain.handle('teams:readFile', (_e, { taskId, name }) => (teamEngine ? teamEngine.readFile(taskId, name) : noTeams));
   ipcMain.handle('teams:openFolder', async (_e, { taskId }) => {
@@ -2642,7 +2858,7 @@ export function registerIpc(): void {
   );
   ipcMain.handle('teams:roomContinue', (_e, { taskId }) => (teamEngine ? teamEngine.roomContinue(taskId) : noTeams));
   ipcMain.handle('teams:roomStop', (_e, { taskId }) => (teamEngine ? teamEngine.roomStop(taskId) : noTeams));
-  ipcMain.handle('teams:updatePack', (_e, { taskId }) => (teamEngine ? teamEngine.updatePack(taskId) : noTeams));
+  ipcMain.handle('teams:updatePack', (_e, { taskId, changes }) => (teamEngine ? teamEngine.updatePack(taskId, { changes }) : noTeams));
   ipcMain.handle('teams:roomStartWork', (_e, { taskId, messageId }) =>
     teamEngine ? teamEngine.roomStartWork(taskId, messageId) : noTeams,
   );
@@ -3141,7 +3357,7 @@ export function registerIpc(): void {
     'workers:draftFromPrompt',
     async (_e, { jobDescription, attachments, conversation, interview }) => {
     return draftWorkerFromPrompt(
-      { ...(await hireDraftContext()), jobDescription, attachments, conversation, interview, polish: true },
+      { ...(await hireDraftContext(workerEngine ? workerEngine.workerNames() : [])), jobDescription, attachments, conversation, interview, polish: true },
       drafterDeps(),
     );
     },
@@ -4357,8 +4573,12 @@ setEmbeddedTerminal((cwd, command) => {
 });
 
 let flushedRuns = false;
+// "Try it on this Mac": an org server the app started, which lives only as
+// long as the app does.
+let localOrgServer: LocalOrgServer | null = null;
 app.on('before-quit', (event) => {
   runner?.killAll();
+  localOrgServer?.stop();
   ptyManager?.closeAll();
   // A service left running after the window closes is a port held by a
   // process the user has no way to find — so stopping them is the default.
@@ -4372,6 +4592,8 @@ app.on('before-quit', (event) => {
   // shift into a runtime that's already tearing its subprocesses down.
   scheduler?.dispose();
   workerEngine?.dispose();
+  slackBridge?.stop();
+  processService?.stop();
   ollamaServer.stop();
   stopStatsWorker();
   // Store writes are debounced now (see store.save). Take the freshest

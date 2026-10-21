@@ -157,6 +157,37 @@ function fillDays(ledger: DayLedger, axis: string[]): WorkerReportDay[] {
   return axis.map((day) => ledger.get(day) ?? emptyDay(day));
 }
 
+/// The roster-wide totals and day-by-day for a set of rows, on the given day
+/// axis (every row's `daily` must already be on it). Shared by the report
+/// builder and by anything that narrows a report to fewer rows — a console
+/// that may only show some workers has to re-add the rest from what is left,
+/// or the hidden ones' cost would still be in the totals.
+export function rollUpWorkerReport(
+  rows: readonly WorkerReportRow[],
+  axis: readonly string[],
+): { totals: WorkerReportTotals; daily: WorkerReportDay[] } {
+  const totals = emptyWorkerReportTotals();
+  for (const row of rows) {
+    for (const key of Object.keys(totals) as Array<keyof WorkerReportTotals>) {
+      totals[key] += row[key];
+    }
+  }
+  const daily = axis.map((day, i) => {
+    const bucket = emptyDay(day);
+    for (const row of rows) {
+      const d = row.daily[i];
+      if (!d) continue;
+      bucket.shifts += d.shifts;
+      bucket.itemsDone += d.itemsDone;
+      bucket.costUSD += d.costUSD;
+      bucket.workedMs += d.workedMs;
+      bucket.tokens += d.tokens;
+    }
+    return bucket;
+  });
+  return { totals, daily };
+}
+
 export function buildWorkerReport(input: WorkerReportInput): WorkerReport {
   const { workers, journal, orchestrations, runs, sinceMs, generatedAt } = input;
 
@@ -282,26 +313,7 @@ export function buildWorkerReport(input: WorkerReportInput): WorkerReport {
     row.daily = fillDays(ledgers.get(row.workerId) ?? new Map(), axis);
   }
 
-  const totals = emptyWorkerReportTotals();
-  for (const row of byWorker) {
-    for (const key of Object.keys(totals) as Array<keyof WorkerReportTotals>) {
-      totals[key] += row[key];
-    }
-  }
-
-  const daily = axis.map((day, i) => {
-    const bucket = emptyDay(day);
-    for (const row of byWorker) {
-      const d = row.daily[i];
-      bucket.shifts += d.shifts;
-      bucket.itemsDone += d.itemsDone;
-      bucket.costUSD += d.costUSD;
-      bucket.workedMs += d.workedMs;
-      bucket.tokens += d.tokens;
-    }
-    return bucket;
-  });
-
+  const { totals, daily } = rollUpWorkerReport(byWorker, axis);
   return { generatedAt, sinceMs, byWorker, totals, daily };
 }
 

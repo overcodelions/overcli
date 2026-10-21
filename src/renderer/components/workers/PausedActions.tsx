@@ -135,7 +135,7 @@ export function PausedActions({
           disabled={inFlight}
           title={REJECT_HINT}
           className={
-            'shrink-0 rounded-md border border-card-strong px-3.5 py-1.5 text-[12.5px] text-ink-muted hover:border-red-400/60 hover:text-red-400 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 disabled:opacity-50'
+            'shrink-0 rounded-md border border-card-strong px-3.5 py-1.5 text-[12.5px] text-ink-muted hover:border-red-400/60 hover:text-red-600 dark:hover:text-red-400 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 disabled:opacity-50'
           }
         >
           Reject

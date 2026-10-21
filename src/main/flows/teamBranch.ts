@@ -9,6 +9,7 @@
 // itself, never your checkout, which this never switches or touches. At the
 // end the task branch merges into each repo's base like any agent branch.
 
+import { credentialGitEnv } from '../org/repos';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -105,16 +106,20 @@ export function openTaskBranch(args: {
   taskId: string;
   title: string;
   repos: Array<{ name: string; projectPath: string }>;
+  /// Fork off this branch where a repo has it (an earlier stage's work), not
+  /// the base. It still lands on the base.
+  from?: string;
 }): Result<{ code: TaskCode | null }> {
   if (args.repos.length === 0) return { ok: true, code: null };
-  const base = `team/${slug(args.title)}`;
-  let branch = base;
-  for (let n = 2; args.repos.some((r) => branchExists(r.projectPath, branch)); n++) branch = `${base}-${n}`;
+  const stem = `team/${slug(args.title)}`;
+  let branch = stem;
+  for (let n = 2; args.repos.some((r) => branchExists(r.projectPath, branch)); n++) branch = `${stem}-${n}`;
   const root = path.join(os.homedir(), '.overcli', 'team-worktrees', args.taskId);
   const opened: TaskRepo[] = [];
   const taken = new Set<string>();
   for (const repo of args.repos) {
-    const from = detectBaseBranch(repo.projectPath);
+    const base = detectBaseBranch(repo.projectPath);
+    const from = args.from && branchExists(repo.projectPath, args.from) ? args.from : base;
     // Unique per repo: two workspace members named `api` (or `My App` and
     // `my-app`) slug alike, and must not share the task's checkout.
     let dir = slug(repo.name);
@@ -127,7 +132,7 @@ export function openTaskBranch(args: {
       for (const done of opened) removeWorktree({ projectPath: done.projectPath, worktreePath: done.worktreePath, branchName: branch });
       return { ok: false, error: `Could not start the task branch in ${repo.name}: ${(res.stderr || res.stdout).trim()}` };
     }
-    opened.push({ name: repo.name, projectPath: repo.projectPath, base: from, worktreePath });
+    opened.push({ name: repo.name, projectPath: repo.projectPath, base, worktreePath });
   }
   return { ok: true, code: { branch, repos: opened } };
 }
@@ -173,7 +178,8 @@ export function absorbPiece(args: {
         };
       }
     }
-    const commit = autoCommitIfDirty(p.worktreePath, args.message);
+    // The piece's repo may carry hooks a worker wrote; neither the commit nor the merge runs them.
+    const commit = autoCommitIfDirty(p.worktreePath, args.message, undefined, { env: credentialGitEnv(), noHooks: true });
     if (!commit.ok) {
       return {
         ok: false,
@@ -182,7 +188,7 @@ export function absorbPiece(args: {
     }
     const ahead = runGit(['rev-list', '--count', `${args.code.branch}..${p.branchName}`], repo.projectPath);
     if (ahead.exitCode === 0 && Number(ahead.stdout.trim()) === 0) continue;
-    const merge = runGit(['merge', '--no-ff', '-m', args.message, p.branchName], repo.worktreePath);
+    const merge = runGit(['-c', 'core.hooksPath=/dev/null', 'merge', '--no-ff', '--no-verify', '-m', args.message, p.branchName], repo.worktreePath);
     if (merge.exitCode !== 0) {
       runGit(['merge', '--abort'], repo.worktreePath);
       return {
@@ -227,7 +233,7 @@ export function pushTaskBranch(
   repo: TaskRepo,
   subject: string,
 ): Result<{ message: string; compareUrl?: string }> {
-  return pushBranch({ worktreePath: repo.worktreePath, branchName: code.branch, commitSubject: subject });
+  return pushBranch({ worktreePath: repo.worktreePath, branchName: code.branch, commitSubject: subject, env: credentialGitEnv(), noHooks: true });
 }
 
 /// Take the task's worktrees down. The branch goes too once landed; one with

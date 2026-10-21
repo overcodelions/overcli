@@ -32,6 +32,9 @@
 //     mutate a service belongs to this install and must be granted locally.
 //   - projectPath. It is a path on the sender's disk. The importer picks
 //     their own in the hire editor, which is also the confirmation step.
+//   - manager / reportsTo / visibility / avatarUrl. Who a worker answers to
+//     and who may ask it things are facts about the sender's org: a Slack
+//     member id from their workspace, a boss on their roster.
 
 import { Scalar, parse as yamlParse, stringify as yamlStringify } from 'yaml';
 

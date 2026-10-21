@@ -22,6 +22,8 @@ import { invalidateHealthCache, probeBackendHealth } from './health';
 
 const HEALTH_ENV_NAMES = [
   'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
   'GEMINI_API_KEY',
   'GOOGLE_API_KEY',
   'COPILOT_GITHUB_TOKEN',
@@ -97,6 +99,14 @@ describe('backend health', () => {
     const result = probeBackendHealth('claude');
     await vi.advanceTimersByTimeAsync(10_000);
     await expect(result).resolves.toMatchObject({ kind: 'ready' });
+  });
+
+  it('counts Claude on Bedrock or Vertex as ready, though auth status says signed out', async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    mockSpawn
+      .mockImplementationOnce(() => processFor())
+      .mockImplementationOnce(() => processFor({ stdout: '{"loggedIn":false}' }));
+    await expect(probeBackendHealth('claude')).resolves.toMatchObject({ kind: 'ready' });
   });
 
   it('uses Claude loggedIn rather than credential-file presence', async () => {

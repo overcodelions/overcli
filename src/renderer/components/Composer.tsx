@@ -71,6 +71,9 @@ export interface ComposerProps {
   /// draft key (`flow-hijack:…`) while their messages live under the
   /// participant's conversation id, so they pass that id here explicitly.
   historyConvId?: string;
+  /// Why files can't be attached right now; set, the + button is off and a
+  /// dropped or pasted file is turned away with this reason.
+  attachDisabled?: string;
 }
 
 export interface SlashCommandEntry {
@@ -143,6 +146,7 @@ export function Composer({
   disabled,
   historyConvId,
   onModEnter,
+  attachDisabled,
 }: ComposerProps) {
   const draft = useStore((s) => s.conversationDrafts[draftKey] ?? '');
   const setDraft = useStore((s) => s.setDraft);
@@ -405,12 +409,16 @@ export function Composer({
 
   const handleFiles = useCallback(
     async (files: FileList | File[]) => {
+      if (attachDisabled) {
+        setRejection(attachDisabled);
+        return;
+      }
       setRejection(null);
       const { attachments: picked, rejections } = await intakeAttachments(files);
       for (const a of picked) addAttachment(draftKey, a);
       setRejection(rejections.at(-1) ?? null);
     },
-    [addAttachment, draftKey],
+    [addAttachment, draftKey, attachDisabled],
   );
 
   const commit = () => {
@@ -757,8 +765,10 @@ export function Composer({
       >
         <button
           onClick={() => fileInputRef.current?.click()}
-          className="w-8 h-8 flex items-center justify-center text-ink-muted hover:text-ink rounded-full hover:bg-card"
-          title="Attach image or text file"
+          disabled={!!attachDisabled}
+          className="w-8 h-8 flex items-center justify-center text-ink-muted hover:text-ink rounded-full hover:bg-card disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink-muted"
+          title={attachDisabled ?? 'Attach image or text file'}
+          aria-label={attachDisabled ? `Attach a file — ${attachDisabled}` : 'Attach image or text file'}
         >
           +
         </button>

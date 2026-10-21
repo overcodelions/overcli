@@ -148,6 +148,12 @@ export interface FlowStep {
   /// any changes made via conversation propagate forward. The first step
   /// ignores this (no prior conversation to converse with).
   pauseBefore?: boolean;
+  /// Skip this step when the run has changed nothing in its repo but notes
+  /// (Markdown, plain text other than files a build reads, see `isNoteFile`)
+  /// — a check of code that was never written. Runs it whenever the change
+  /// can't be measured. YAML `only_if_changed`; set on a team piece's check
+  /// (see `teamPieceFlow`).
+  onlyIfChanged?: boolean;
   /// Colleagues this step may hand work to, by name. On a worker-owned run,
   /// `<handoff to="Name">` blocks in THIS step's output are sent to them as
   /// errands when the run finishes. Opt-in and named, because a step's
@@ -609,6 +615,12 @@ export interface FlowRun {
   /// cleared by `onStepFinished` once that step completes so it can never
   /// carry into a later step nobody approved.
   externalActionApprovedStepId?: string;
+  /// A standing grant for the rest of THIS run, given by approving a step
+  /// "for this run": the outside tools that step needed (the shell, say),
+  /// lowercased. A later step whose only reason to ask is tools all on this
+  /// list goes ahead; one that needs anything else, or reads as pushing,
+  /// sending or editing a service, still asks. See `runGrantCovers`.
+  externalActionRunGrant?: string[];
   /// When the user last typed AT this run: a hijack turn sent to one of its
   /// participants, or a correction held for the next step. Persisted, and
   /// deliberately distinct from `attempts` — those are the runtime's own
@@ -633,6 +645,9 @@ export interface FlowWorkerExchange {
   question: string;
   answeredAt?: number;
   answer?: string;
+  /// The worker up the owner's reporting chain that answered, when the owner
+  /// itself escalated. Absent when the owner answered.
+  answeredBy?: { workerId: UUID; workerName: string };
   status: 'asking' | 'answered' | 'escalated' | 'failed';
   note?: string;
 }

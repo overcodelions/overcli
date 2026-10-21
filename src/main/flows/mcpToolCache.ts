@@ -120,6 +120,12 @@ export function knownMcpServers(): string[] {
   return Object.keys(load().servers).sort((a, b) => a.localeCompare(b));
 }
 
+/// Every `mcp__<server>__<tool>` Claude has EVER reported: the deny side of
+/// a worker's tool scope, for the same reason as `knownMcpServers`.
+export function knownMcpTools(): string[] {
+  return Object.keys(load().tools).sort((a, b) => a.localeCompare(b));
+}
+
 /// Every `mcp__<server>__<tool>` Claude has reported recently.
 export function seenMcpTools(now = Date.now()): string[] {
   return fresh(load().tools, now);

@@ -23,15 +23,28 @@ import { clockStamp, type TodaySpine } from './todaySpine';
 import { hourBuckets } from './todayLayout';
 import { workerNow, type WorkerNow } from './workerBoard';
 import { workerTagline } from '@shared/flows/worker';
+import { describeFundingBlock, fundingFor } from '@shared/flows/treasury';
 import type { DigestSummary } from './digestSummary';
 import type { QueueRow } from './workQueue';
 import { baseName } from './workQueue';
 import type { WorkerFile } from './workerDeskSelectors';
 import { TodayBatches } from './TodayBatches';
+import { InFlightSection, OtherNeedLine } from './TodayFlight';
+import { mergeNeeds, upNextLine, type FlightRow, type TodayBoard } from './todayBoard';
+import type { UpcomingRow } from './workQueue';
 
 /// `team`: a team task on the crew's list, keyed by the task id — its
 /// members' pieces fold under it, and the reader shows the task itself.
-export type OpenItem = { kind: 'needs' | 'done' | 'team'; key: string } | null;
+/// What the reader beside the list shows. A process item's key is
+/// `processId|itemId` (see processKey).
+export type OpenItem = { kind: 'needs' | 'done' | 'team' | 'process'; key: string } | null;
+
+export const processKey = (processId: string, itemId: string) => `${processId}|${itemId}`;
+
+export function processOf(key: string): { processId: string; itemId: string } {
+  const [processId = '', itemId = ''] = key.split('|');
+  return { processId, itemId };
+}
 
 export interface DigestModel {
   spine: TodaySpine;
@@ -72,6 +85,7 @@ export function defaultItem(
 
 export function findRow(model: DigestModel, item: NonNullable<OpenItem>): QueueRow | undefined {
   if (item.kind === 'needs') return model.needs.find((r) => r.key === item.key);
+  if (item.kind === 'process') return undefined;
   const rows = [...model.working, ...model.done, ...model.quiet, ...model.earlier.flatMap((g) => g.rows)];
   // A lone answer folds into its worker's group once a second one lands — a
   // follow-up sent from the reader does exactly that — so the conversation
@@ -83,22 +97,32 @@ function TodayHeader({
   model,
   unread,
   workerId,
+  needsCount,
+  inFlight,
 }: {
   model: DigestModel;
   unread: number;
   workerId: string | null;
+  /// Every decision waiting, of every kind.
+  needsCount: number;
+  /// Everything moving, of every kind.
+  inFlight: number;
 }) {
-  const { spine, now, needs } = model;
+  const { spine, now } = model;
   const worker = useWorkersStore((s) => (workerId ? s.workers[workerId] : undefined));
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const openWorkerSettings = useWorkersStore((s) => s.openWorkerSettings);
   const showToday = useWorkersStore((s) => s.showToday);
   const progress = useWorkersStore((s) => (workerId ? s.shiftProgress[workerId] : undefined));
   const nextShiftAt = useWorkersStore((s) => (workerId ? s.nextShiftAt[workerId] : undefined));
+  const starting = useWorkersStore((s) => (workerId ? !!s.shiftStarting[workerId] : false));
+  const workShiftNow = useWorkersStore((s) => s.workShiftNow);
+  const allocation = useWorkersStore((s) => s.allocation);
   const soonest = spine.upcoming[spine.upcoming.length - 1];
   const title = [
     spine.done > 0 ? `${spine.done} done` : 'Nothing done yet',
-    needs.length > 0 ? `${needs.length} need${needs.length === 1 ? 's' : ''} you` : null,
+    needsCount > 0 ? `${needsCount} need${needsCount === 1 ? 's' : ''} you` : null,
+    inFlight > 0 ? `${inFlight} in flight` : null,
     // Only once you have started clearing: before that, "15 done · 15 left
     // to read" says the same number twice.
     spine.done > 0 && unread < model.done.length ? (unread === 0 ? 'all read' : `${unread} left to read`) : null,
@@ -109,6 +133,15 @@ function TodayHeader({
   // counts drop to the second line, and the desk — the worker itself, its
   // settings and its conversation — is one click from its name.
   if (worker) {
+    // Same gate as the desk's "Run shift now": the engine refuses an unfunded
+    // shift after the click, into an error nothing here draws.
+    const funding = fundingFor(allocation, worker.id);
+    const shiftBlocked = !worker.enabled
+      ? `${worker.name} is paused.`
+      : allocation && funding && !funding.funded
+        ? describeFundingBlock(funding, allocation)
+        : null;
+    const shiftBusy = !!progress || starting;
     return (
       <header className="flex flex-col gap-2">
         <div className="flex items-center gap-3">
@@ -125,6 +158,26 @@ function TodayHeader({
               </span>
               <span className="block truncate text-[11.5px] text-ink-muted">{title}</span>
             </span>
+          </button>
+          <button
+            type="button"
+            disabled={shiftBusy || !!shiftBlocked}
+            onClick={() => void workShiftNow(worker.id)}
+            title={
+              shiftBusy
+                ? 'Shift running…'
+                : (shiftBlocked ?? 'Run shift now — one shift, out of band. Does not change the schedule.')
+            }
+            aria-label={shiftBusy ? 'Shift running' : 'Run shift now'}
+            className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-emerald-500 hover:bg-emerald-500/15 disabled:text-ink-faint disabled:hover:bg-transparent"
+          >
+            {shiftBusy ? (
+              <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" aria-hidden />
+            ) : (
+              <svg width="11" height="11" viewBox="0 0 10 10" aria-hidden>
+                <path d="M2.5 1.5v7l6-3.5-6-3.5Z" fill="currentColor" />
+              </svg>
+            )}
           </button>
           <button
             type="button"
@@ -212,7 +265,7 @@ function WorkerNowLine({ now, tagline }: { now: WorkerNow; tagline: string }) {
     <div className="flex flex-col gap-1 rounded-lg border border-card bg-card px-3 py-2">
       <div className="flex min-w-0 items-baseline gap-2 text-[12.5px]">
         <span className={`relative top-[-1px] h-1.5 w-1.5 shrink-0 self-center rounded-full ${dot}`} aria-hidden />
-        <span className={`shrink-0 font-medium ${now.tone === 'running' ? 'text-emerald-600 dark:text-emerald-300' : 'text-ink'}`}>
+        <span className={`shrink-0 font-medium ${now.tone === 'running' ? 'text-emerald-700 dark:text-emerald-300' : 'text-ink'}`}>
           {now.label}
         </span>
         {now.detail && (
@@ -255,18 +308,39 @@ function DayChart({ spine, now }: { spine: TodaySpine; now: number }) {
   );
 }
 
+const NO_BOARD: TodayBoard = { needs: [], flight: [], pinnedTasks: new Set() };
+
 export function InboxList({
   model,
   open,
   onOpen,
   workerId = null,
+  board = NO_BOARD,
+  upcoming = [],
 }: {
   model: DigestModel;
   open: OpenItem;
   onOpen: (item: OpenItem) => void;
   /// Set when the list is one worker's inbox rather than the whole crew's.
   workerId?: string | null;
+  /// Every kind's decisions and moving work — see todayBoard.ts.
+  board?: TodayBoard;
+  /// Every pending shift, soonest first, for the Up next line.
+  upcoming?: UpcomingRow[];
 }) {
+  // Every row opens beside the list, so the inbox stays where it is.
+  const openTarget = (target: FlightRow['target']) => {
+    if (target.kind === 'run') onOpen({ kind: 'done', key: target.rowKey });
+    else if (target.kind === 'team') onOpen({ kind: 'team', key: target.taskId });
+    else onOpen({ kind: 'process', key: processKey(target.processId, target.itemId) });
+  };
+  const targetOpen = (target: FlightRow['target']) =>
+    target.kind === 'run'
+      ? open?.kind === 'done' && open.key === target.rowKey
+      : target.kind === 'team'
+        ? open?.kind === 'team' && open.key === target.taskId
+        : open?.kind === 'process' && open.key === processKey(target.processId, target.itemId);
+  const needsList = mergeNeeds(model.needs, board.needs);
   const isOpen = (kind: 'needs' | 'done' | 'team', key: string) => open?.kind === kind && open.key === key;
   const cleared = useTodayCleared((s) => s.cleared);
   const clear = useTodayCleared((s) => s.clear);
@@ -295,10 +369,14 @@ export function InboxList({
   // it. It sits in the first section any of its pieces is in, so a task
   // still working is under Working however many of its pieces are done. One
   // worker's own inbox keeps them as that worker's rows.
-  const groups = [{ label: 'Working', rows: model.working }, { label: 'Today', rows: model.done }, ...model.earlier];
+  // What is moving is under In flight, so the day's lists hold what is
+  // done — and leave out a team task already drawn above, in Needs you or
+  // In flight.
+  const groups = [{ label: 'Today', rows: model.done }, ...model.earlier];
+  const pinned = (row: QueueRow) => !workerId && !!row.team && board.pinnedTasks.has(row.team.taskId);
   const visibleIn = (group: { label: string; rows: QueueRow[] }) =>
     group.rows
-      .filter((row) => !nested(row))
+      .filter((row) => !nested(row) && !pinned(row))
       .filter((row) => group.label === 'Working' || clearStateOf(cleared, row.key, row.at) !== 'cleared');
   const teamPieces = new Map<string, QueueRow[]>();
   const teamHome = new Map<string, string>();
@@ -330,13 +408,15 @@ export function InboxList({
     });
   };
   const nothing =
-    model.needs.length + model.working.length + model.done.length + model.quiet.length + model.earlier.length === 0;
+    model.needs.length + board.needs.length + board.flight.length + model.working.length + model.done.length + model.quiet.length + model.earlier.length === 0;
   return (
     <div className="flex flex-col gap-5">
       <TodayHeader
         model={model}
         unread={model.done.filter((r) => clearStateOf(cleared, r.key, r.at) !== 'cleared').length}
         workerId={workerId}
+        needsCount={needsList.length}
+        inFlight={board.flight.length}
       />
       <AskCrew
         onOpenBatch={(orchestrationId) => {
@@ -353,7 +433,7 @@ export function InboxList({
           {workerId ? 'Nothing from this worker yet — its work lands here as it happens.' : "Nothing yet — the crew's work lands here as it happens."}
         </p>
       )}
-      {model.needs.length > 0 && (
+      {needsList.length > 0 && (
         <section className="flex flex-col gap-1.5">
           <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
             <h3 className="shrink-0 whitespace-nowrap text-[10.5px] font-semibold uppercase tracking-[0.08em] text-amber-500">
@@ -365,24 +445,41 @@ export function InboxList({
             className="overflow-hidden rounded-lg border"
             style={{ borderColor: 'color-mix(in srgb, #fbbf24 30%, var(--c-card-border))' }}
           >
-            {model.needs.map((row) => (
-              <NeedsLine
-                key={row.key}
-                row={row}
-                now={model.now}
-                selected={isOpen('needs', row.key)}
-                onOpen={() => onOpen({ kind: 'needs', key: row.key })}
-              />
-            ))}
+            {needsList.map((entry) =>
+              entry.type === 'worker' ? (
+                <NeedsLine
+                  key={entry.row.key}
+                  row={entry.row}
+                  now={model.now}
+                  selected={isOpen('needs', entry.row.key)}
+                  onOpen={() => onOpen({ kind: 'needs', key: entry.row.key })}
+                />
+              ) : (
+                <OtherNeedLine
+                  key={entry.need.key}
+                  need={entry.need}
+                  now={model.now}
+                  selected={targetOpen(entry.need.target)}
+                  onOpen={() => openTarget(entry.need.target)}
+                />
+              ),
+            )}
           </div>
         </section>
       )}
+      <InFlightSection
+        rows={board.flight}
+        now={model.now}
+        upNext={upNextLine(upcoming)}
+        isSelected={(row) => targetOpen(row.target)}
+        onOpen={(row) => openTarget(row.target)}
+      />
       <HandedOn now={model.now} />
       {groups.map(
         (group) =>
           // A heading over rows that all moved under a wrap-up, or into a
           // team task listed further up, is a heading over nothing.
-          group.rows.some((row) => !nested(row) && !homedElsewhere(row, group.label)) && (
+          group.rows.some((row) => !nested(row) && !pinned(row) && !homedElsewhere(row, group.label)) && (
             <section key={group.label} className="flex flex-col gap-0.5">
               <SectionLabel>{group.label}</SectionLabel>
               <div className="mt-1 flex flex-col">
@@ -530,7 +627,7 @@ function HandedOn({ now }: { now: number }) {
                   <button onClick={() => void sendNow(h.id)} className="text-accent hover:underline">
                     Send now
                   </button>
-                  <button onClick={() => void cancel(h.id)} className="text-ink-muted hover:text-red-400 hover:underline">
+                  <button onClick={() => void cancel(h.id)} className="text-ink-muted hover:text-red-600 dark:hover:text-red-400 hover:underline">
                     Call it off
                   </button>
                 </span>
@@ -586,8 +683,8 @@ function ShiftItems({
           <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
         </svg>
         {rows.length} {label}
-        {live > 0 && <span className="text-emerald-600 dark:text-emerald-300">· {live} working</span>}
-        {failed > 0 && <span className="text-red-400">· {failed} failed</span>}
+        {live > 0 && <span className="text-emerald-700 dark:text-emerald-300">· {live} working</span>}
+        {failed > 0 && <span className="text-red-600 dark:text-red-400">· {failed} failed</span>}
       </button>
       {open && <div className="flex flex-col">{rows.map(renderRow)}</div>}
     </div>
@@ -724,7 +821,7 @@ function ApproveAll({ rows }: { rows: QueueRow[] }) {
 
   if (note) {
     return (
-      <span className="text-[11px] text-red-400">
+      <span className="text-[11px] text-red-600 dark:text-red-400">
         {note}{' '}
         <button onClick={() => setNote(null)} className="underline">
           ok
@@ -800,7 +897,7 @@ function NeedsLine({ row, now, onOpen, selected }: { row: QueueRow; now: number;
       {worker && <WorkerAvatar worker={worker} size="xs" />}
       <span className="min-w-0 flex-1">
         <span className={'block truncate text-[13px] text-ink ' + (selected ? 'font-semibold' : '')}>{row.title}</span>
-        <span className="block truncate text-[11.5px] text-amber-600 dark:text-amber-300/90">
+        <span className="block truncate text-[11.5px] text-amber-700 dark:text-amber-300/90">
           {row.workerName} · {escalated ? 'Escalated a question to you' : askOf(row)}
         </span>
       </span>
@@ -969,7 +1066,7 @@ function ListEntry({
         {worker && <WorkerAvatar worker={worker} size="xs" live={live} />}
       </span>
       <span className="min-w-0 flex-1">
-        <span className={'line-clamp-2 text-[13px] font-medium leading-snug ' + (failed ? 'text-red-400' : 'text-ink')}>
+        <span className={'line-clamp-2 text-[13px] font-medium leading-snug ' + (failed ? 'text-red-600 dark:text-red-400' : 'text-ink')}>
           {failed ? `Failed: ${row.title}` : headline}
         </span>
         {detail && <span className="mt-0.5 line-clamp-1 text-[12px] text-ink-muted">{detail}</span>}
@@ -979,7 +1076,7 @@ function ListEntry({
             .join(' · ')}
         </span>
         {back && (
-          <span className="mt-0.5 block text-[11px] text-amber-600 dark:text-amber-300">
+          <span className="mt-0.5 block text-[11px] text-amber-700 dark:text-amber-300">
             Something new since you cleared it
           </span>
         )}

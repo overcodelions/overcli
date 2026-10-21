@@ -23,17 +23,22 @@ type SpawnFn = (command: string, args: string[]) => ChildProcess;
 const defaultSpawn: SpawnFn = (command, args) =>
   spawn(command, args, { cwd: os.homedir(), env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
 
-/// Run one probe. Resolves true when an init event was read and recorded.
-/// Concurrent callers share the probe already running.
-export function probeClaudeMcp(
+/// What Claude reports at start-up, before any model call: each MCP server
+/// with its status, and every tool. Null if it never got that far.
+export interface McpInit {
+  servers: Array<{ name: string; status: string }>;
+  tools: string[];
+}
+
+/// Start Claude, read its init event, stop it. No model call is made.
+export function readClaudeInit(
   binary: string,
   opts: { timeoutMs?: number; spawnFn?: SpawnFn } = {},
-): Promise<boolean> {
-  if (inFlight) return inFlight;
-  inFlight = new Promise<boolean>((resolve) => {
+): Promise<McpInit | null> {
+  return new Promise<McpInit | null>((resolve) => {
     let settled = false;
     let proc: ChildProcess;
-    const finish = (ok: boolean) => {
+    const finish = (init: McpInit | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -42,11 +47,11 @@ export function probeClaudeMcp(
       } catch {
         // Already gone.
       }
-      resolve(ok);
+      resolve(init);
     };
     const timer = setTimeout(() => {
       log('info', 'mcp.probe', 'Claude did not report its MCP servers in time; skipping');
-      finish(false);
+      finish(null);
     }, opts.timeoutMs ?? PROBE_TIMEOUT_MS);
     try {
       // The prompt is never answered: the process is stopped on init, which
@@ -62,7 +67,7 @@ export function probeClaudeMcp(
       ]);
     } catch (err) {
       log('warn', 'mcp.probe', 'could not start Claude to list MCP servers', err);
-      finish(false);
+      finish(null);
       return;
     }
     let buffer = '';
@@ -76,11 +81,10 @@ export function probeClaudeMcp(
         try {
           const json = JSON.parse(line);
           if (json?.type === 'system' && json?.subtype === 'init') {
-            recordMcpSeen(
-              Array.isArray(json.mcp_servers) ? json.mcp_servers : [],
-              Array.isArray(json.tools) ? json.tools : [],
-            );
-            finish(true);
+            finish({
+              servers: Array.isArray(json.mcp_servers) ? json.mcp_servers : [],
+              tools: Array.isArray(json.tools) ? json.tools : [],
+            });
             return;
           }
         } catch {
@@ -90,12 +94,28 @@ export function probeClaudeMcp(
     });
     proc.on('error', (err) => {
       log('warn', 'mcp.probe', 'Claude MCP probe failed', err);
-      finish(false);
+      finish(null);
     });
-    proc.on('exit', () => finish(false));
-  }).finally(() => {
-    inFlight = null;
+    proc.on('exit', () => finish(null));
   });
+}
+
+/// Run one probe. Resolves true when an init event was read and recorded.
+/// Concurrent callers share the probe already running.
+export function probeClaudeMcp(
+  binary: string,
+  opts: { timeoutMs?: number; spawnFn?: SpawnFn } = {},
+): Promise<boolean> {
+  if (inFlight) return inFlight;
+  inFlight = readClaudeInit(binary, opts)
+    .then((init) => {
+      if (!init) return false;
+      recordMcpSeen(init.servers, init.tools);
+      return true;
+    })
+    .finally(() => {
+      inFlight = null;
+    });
   return inFlight;
 }
 

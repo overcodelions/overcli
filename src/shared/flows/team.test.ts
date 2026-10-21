@@ -128,6 +128,12 @@ describe('parsePackReply', () => {
     expect(pack.summary).toBe('The verdict is yes.');
   });
 
+  it('reads includes of files members made, and drops a retyped copy of the same name', () => {
+    const pack = parsePackReply('<summary>S</summary><include name="Report.html" from="files/hugo/roadmap/report.html"/><file name="Report.html">retyped</file><file name="log.md">x</file>');
+    expect(pack.includes).toEqual([{ name: 'Report.html', from: 'files/hugo/roadmap/report.html' }]);
+    expect(pack.files.map((f) => f.name)).toEqual(['log.md']);
+  });
+
   it('does not let two files share a name', () => {
     const pack = parsePackReply('<file name="a.md">x</file><file name="a.md">y</file>');
     expect(pack.files.map((f) => f.name)).toEqual(['a.md', 'a-2.md']);
@@ -186,10 +192,28 @@ describe('validateTeam', () => {
 });
 
 describe('prompts', () => {
+  it('hands the coordinator how the team works, above its own habits', () => {
+    const args = { teamName: 'T', roster: [], brief: 'Write the PRFAQ', budgetUSD: 10, allowQuestions: false };
+    expect(buildTeamPlanMessage(args)).not.toContain('HOW THIS TEAM WORKS');
+    const msg = buildTeamPlanMessage({ ...args, guidance: '  When the ask is a PRFAQ, Hugo goes first.  ' });
+    expect(msg).toContain('HOW THIS TEAM WORKS (from the people who run it: follow it over your own habits.');
+    expect(msg).toContain('\nWhen the ask is a PRFAQ, Hugo goes first.\n');
+    expect(msg.indexOf('HOW THIS TEAM WORKS')).toBeLessThan(msg.indexOf('THE BRIEF'));
+  });
   it('offers questions only on the first pass', () => {
     const args = { teamName: 'T', roster: [], brief: 'Do it', budgetUSD: 10 };
-    expect(buildTeamPlanMessage({ ...args, allowQuestions: true })).toContain('You may ask up to');
+    expect(buildTeamPlanMessage({ ...args, allowQuestions: true })).toContain('If there is any, ask now');
     expect(buildTeamPlanMessage({ ...args, allowQuestions: false })).toContain('Do not ask questions now');
+  });
+
+  it('keeps a question’s default when it went unanswered', () => {
+    const piece = { teamName: 'T', stageNumber: 1, stageCount: 2, stage: { kind: 'contribute' as const, title: 'Draft' }, role: 'Writer', ask: 'Draft it', teammates: [], folder: '/tmp/f', files: [], budget: 5 };
+    const task = { brief: 'Write a PR/FAQ', questions: ['Who is it for? (I’ll assume enterprise buyers.)', 'Launch date?'], answers: ['', 'March'] } as TeamTask;
+    const prompt = buildMemberStagePrompt({ ...piece, task });
+    expect(prompt).toContain('Who is it for? (I’ll assume enterprise buyers.) → (no answer: the default in the question stands)');
+    expect(prompt).toContain('Launch date? → March');
+    // Before anyone answers, nothing is claimed as clarified.
+    expect(buildMemberStagePrompt({ ...piece, task: { ...task, answers: undefined } })).not.toContain('WHAT THE USER CLARIFIED');
   });
 
   it('gives a challenger the challenge brief and the folder', () => {
@@ -302,6 +326,16 @@ describe('buildPackUpdateMessage', () => {
     const msg = buildPackUpdateMessage({ teamName: 'T', taskTitle: 'X', brief: 'b', pack: [], conversation: [], version: 5 });
     expect(msg).toContain('VERSION 5 of the pack');
     expect(msg).toContain('Do not state stage numbers');
+    expect(msg).not.toContain('PICKED FROM THE TEAM');
+  });
+
+  it('lists the wrap-up changes you picked, and says to leave the others out', () => {
+    const msg = buildPackUpdateMessage({
+      teamName: 'T', taskTitle: 'X', brief: 'b', pack: [], conversation: [], version: 2,
+      changes: ['Show the saving as a range.', 'Split cash timing out.'],
+    });
+    expect(msg).toContain("THE CHANGES THE USER PICKED FROM THE TEAM'S WRAP-UP\n- Show the saving as a range.\n- Split cash timing out.");
+    expect(msg).toMatch(/not on this\nlist, the user chose not to make it/);
   });
 });
 
@@ -422,6 +456,9 @@ describe('checked team pieces', () => {
     ]);
     expect(piece.steps[1].inputs).toEqual(['user_prompt', 'piece.md']);
     expect(piece.steps[1].tools).toContain('Bash');
+    // Skipped when the piece only wrote notes: nothing to test, nothing to approve.
+    expect(piece.steps[1].onlyIfChanged).toBe(true);
+    expect(piece.steps[0].onlyIfChanged).toBeUndefined();
     expect(validateFlow(piece).errors).toEqual([]);
     // Not asked, or nothing to keep: one step, as before.
     expect(teamPieceFlow(flow).steps).toHaveLength(1);
@@ -470,5 +507,15 @@ describe('a piece from a flow that acts outside the machine', () => {
   it('stays local when nothing in the flow is external', () => {
     const local = { ...base, steps: base.steps.map((s) => ({ ...s, effect: 'local' as const, tools: ['Read', 'Write'] })) };
     expect(teamPieceFlow(local).steps[0].effect).toBe('local');
+  });
+});
+
+describe('a direct answer from the coordinator', () => {
+  it('is read when allowed, and refused when a plan was required', async () => {
+    const { parsePlanReply } = await import('./team');
+    expect(parsePlanReply('<team_answer>Next is acme exports.</team_answer>', [], { allowQuestions: true, allowAnswer: true })).toEqual({ kind: 'answer', answer: 'Next is acme exports.' });
+    expect(parsePlanReply('<team_answer>x</team_answer>', [], { allowQuestions: true }).kind).toBe('error');
+    const q = parsePlanReply('<team_questions>["a?","b?","c?"]</team_questions>', [], { allowQuestions: true, maxQuestions: 2 });
+    expect(q.kind === 'questions' && q.questions).toEqual(['a?', 'b?']);
   });
 });

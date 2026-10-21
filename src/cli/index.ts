@@ -8,7 +8,7 @@
 // because of an explicit decision — the permission policy, the ignored
 // cadence, the state directory — not because the code path is different.
 //
-// Nothing on this file's import graph may reach `electron`. `cli.noElectron.test.ts`
+// Nothing on this file's import graph may reach `electron`. `noElectron.test.ts`
 // enforces that; the packaged CLI runs under plain node, where importing it
 // throws at require time and would take every command down with it.
 
@@ -17,6 +17,8 @@ import path from 'node:path';
 
 import { HELP, parseArgs } from './args';
 import { EXIT, makeReporter, runFile, writeArtifacts } from './run';
+import { mcpCommand } from './mcpServer';
+import { orgCommand, projectsCommand, teamsPushCommand, tokensCommand, workersPushCommand } from './setup';
 import { serveCommand } from './serve';
 import { workersAuditCommand } from './workers';
 
@@ -36,7 +38,7 @@ export async function main(argv: string[]): Promise<number> {
     process.stderr.write(`${parsed.error}\n\nTry: overcli --help\n`);
     return EXIT.BAD_INPUT;
   }
-  const { command, run: opts, serve: serveOpts, workers: workersOpts, warnings } = parsed.args;
+  const { command, run: opts, serve: serveOpts, mcp: mcpOpts, workers: workersOpts, tokens: tokensOpts, projects: projectsOpts, org: orgOpts, workersPush: pushOpts, teamsPush: teamsPushOpts, warnings } = parsed.args;
 
   if (command === 'help') {
     process.stdout.write(HELP);
@@ -54,6 +56,47 @@ export async function main(argv: string[]): Promise<number> {
     // time this resolves both engines are disposed and the exit is the last
     // thing left to do.
     return serveCommand(serveOpts, { out: (line) => process.stdout.write(`${line}\n`) });
+  }
+  if (command === 'mcp') {
+    if (!mcpOpts) return EXIT.BAD_INPUT;
+    // stderr, not stdout: from here on stdout is the MCP protocol stream.
+    for (const w of warnings) process.stderr.write(`! ${w}\n`);
+    return mcpCommand(mcpOpts, { err: (line) => process.stderr.write(`${line}\n`) });
+  }
+  if (command === 'tokens') {
+    if (!tokensOpts) return EXIT.BAD_INPUT;
+    return tokensCommand(tokensOpts, {
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => process.stderr.write(`${line}\n`),
+    });
+  }
+  if (command === 'workersPush') {
+    if (!pushOpts) return EXIT.BAD_INPUT;
+    return workersPushCommand(pushOpts, {
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => process.stderr.write(`${line}\n`),
+    });
+  }
+  if (command === 'teamsPush') {
+    if (!teamsPushOpts) return EXIT.BAD_INPUT;
+    return teamsPushCommand(teamsPushOpts, {
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => process.stderr.write(`${line}\n`),
+    });
+  }
+  if (command === 'org') {
+    if (!orgOpts) return EXIT.BAD_INPUT;
+    return orgCommand(orgOpts, {
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => process.stderr.write(`${line}\n`),
+    });
+  }
+  if (command === 'projects') {
+    if (!projectsOpts) return EXIT.BAD_INPUT;
+    return projectsCommand(projectsOpts, {
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => process.stderr.write(`${line}\n`),
+    });
   }
   if (command === 'workers') {
     if (!workersOpts) return EXIT.BAD_INPUT;
