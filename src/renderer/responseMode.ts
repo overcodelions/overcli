@@ -73,18 +73,19 @@ export function buildResponseModePrompt(
   priorEvents: readonly StreamEvent[],
   mode?: ResponseMode,
 ): string {
-  if (!style || style === 'normal') return prompt;
+  // The measured nudge rides on every style, Full included: like the batching
+  // directive in the system prompt, asking for consolidation costs nothing in
+  // answer quality, so it isn't something to opt into.
+  const opportunity = detectConsolidationOpportunity(priorEvents);
+  const nudge =
+    opportunity && TOOL_NAME_SHAPE.test(opportunity.toolName)
+      ? `The previous turn used ${opportunity.toolName} in ${opportunity.rounds} separate model rounds ` +
+        `(${opportunity.calls} calls). Consolidate independent ${opportunity.toolName} work this turn.`
+      : null;
+  if (!style || style === 'normal') return nudge ? `${nudge}\n\n${prompt}` : prompt;
   const directives = [CONCISE_RESPONSE_DIRECTIVE];
-  if (style === 'efficient') {
-    directives.push(EFFICIENT_TOOL_DIRECTIVE);
-    const opportunity = detectConsolidationOpportunity(priorEvents);
-    if (opportunity && TOOL_NAME_SHAPE.test(opportunity.toolName)) {
-      directives.push(
-        `The previous turn used ${opportunity.toolName} in ${opportunity.rounds} separate model rounds ` +
-          `(${opportunity.calls} calls). Consolidate independent ${opportunity.toolName} work this turn.`,
-      );
-    }
-  }
+  if (style === 'efficient') directives.push(EFFICIENT_TOOL_DIRECTIVE);
+  if (nudge) directives.push(nudge);
   if (mode === 'turbo' || mode === 'warp') directives.push(SPEED_FIRST_DIRECTIVE);
   return `${directives.join('\n\n')}\n\n${prompt}`;
 }

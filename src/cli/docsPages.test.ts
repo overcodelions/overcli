@@ -12,7 +12,7 @@ describe('the docs at /docs', () => {
 
   it('renders each page with its sections anchored, and nothing else', () => {
     const admins = renderDocsPage('/docs/admins')!;
-    expect(admins).toContain('<title>For admins · overcli docs</title>');
+    expect(admins).toContain('<title>For admins · overgo docs</title>');
     expect(admins).toContain('id="setup--secrets"');
     expect(admins).toContain('aria-current="page"');
     expect(renderDocsPage('/docs/security')).toContain('href="/docs/admins#setup--secrets"');

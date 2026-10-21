@@ -8,8 +8,12 @@ import {
   describeTeamCheckpoints,
   describeTeamTaskStatus,
   folderForPrompt,
+  handoffSteps,
+  orderHandoffByPlan,
   shareBudget,
   parsePackReply,
+  parsePackUpdate,
+  applyPackUpdate,
   resolveTaskFileRef,
   parsePlanReply,
   renameIfTaken,
@@ -18,9 +22,15 @@ import {
   safeTeamFileName,
   stageFileName,
   validateTeam,
+  type TeamStage,
   type TeamTask,
   teamPieceFlow,
   teamPieceFlowId,
+  sourceFlowIdOfPiece,
+  withStepTools,
+  rolloverReason,
+  continuationLines,
+  TEAM_ROLLOVER_AGE_MS,
 } from './team';
 
 const roster = [
@@ -107,6 +117,65 @@ describe('resolveMember', () => {
   it('matches a decorated name', () => {
     expect(resolveMember('Maya (market analyst)', roster)).toBe('w-maya');
     expect(resolveMember('nobody', roster)).toBeNull();
+  });
+});
+
+describe('pack updates', () => {
+  const pack = [
+    { name: 'PLAN.md', body: '# Plan\n\n| Lever | Saving |\n| A | $1k |\n| B | $2k |\n' },
+    { name: 'REPORT.html', body: '<h1>Report</h1><p>Old verdict.</p>' },
+    { name: 'NOTES.md', body: 'notes\n' },
+  ];
+
+  it('reads edits, whole files and drops, and turns no stray text into a document', () => {
+    const u = parsePackUpdate(
+      '<summary>Swapped the director.</summary>\n<edit name="PLAN.md"><find>| A | $1k |</find><replace>| A | $3k |</replace></edit>\n<drop name="NOTES.md"/>\n<file name="NEW.md">new</file>',
+    );
+    expect(u).toEqual({
+      summary: 'Swapped the director.',
+      edits: [{ name: 'PLAN.md', find: '| A | $1k |', replace: '| A | $3k |' }],
+      drops: ['NOTES.md'],
+      files: [{ name: 'NEW.md', body: 'new\n' }],
+      includes: [],
+    });
+    expect(parsePackUpdate('<summary>S</summary><include name="Report.html" from="files/eli/report.html"/>').includes).toEqual([
+      { name: 'Report.html', from: 'files/eli/report.html' },
+    ]);
+    expect(parsePackUpdate('<summary>Nothing moved.</summary>\nAll good otherwise.').files).toEqual([]);
+  });
+
+  it('carries over what it does not name, and changes only what it does', () => {
+    const next = applyPackUpdate(pack, {
+      files: [{ name: 'NEW.md', body: 'new\n' }],
+      edits: [
+        { name: 'PLAN.md', find: '| A | $1k |', replace: '| A | $3k |' },
+        { name: 'report.html', find: '\n<p>Old verdict.</p>\n', replace: '\n<p>New verdict.</p>\n' },
+      ],
+      drops: ['NOTES.md'],
+    });
+    expect(next.files.map((f) => f.name)).toEqual(['PLAN.md', 'REPORT.html', 'NEW.md']);
+    expect(next.files[0].body).toContain('| A | $3k |\n| B | $2k |');
+    expect(next.files[1].body).toBe('<h1>Report</h1><p>New verdict.</p>');
+    expect(next.changed).toEqual(['PLAN.md', 'REPORT.html', 'NEW.md']);
+    expect(next.failed).toEqual([]);
+  });
+
+  it('does not guess at an edit it cannot place', () => {
+    const next = applyPackUpdate(pack, {
+      files: [],
+      edits: [
+        { name: 'PLAN.md', find: '| C | $9k |', replace: 'x' },
+        { name: 'PLAN.md', find: '|', replace: 'x' },
+        { name: 'GONE.md', find: 'a', replace: 'b' },
+      ],
+      drops: [],
+    });
+    expect(next.changed).toEqual([]);
+    expect(next.failed.map((f) => f.why)).toEqual([
+      'the text it replaces was not found',
+      'the text it replaces appears more than once',
+      'no document by that name',
+    ]);
   });
 });
 
@@ -298,10 +367,82 @@ describe('parseRouteReply', () => {
     expect(reply).toEqual({ kind: 'work', work: { title: 'Redo D-01', assign: [{ workerId: 'lena', name: 'Lena', ask: 'Redraw it' }] } });
   });
 
+  it('reads who builds on whom, among members on the work only', () => {
+    const reply = parseRouteReply(
+      `<work>${JSON.stringify({
+        title: 'x',
+        assign: [
+          { name: 'Mira', ask: 'Compile', after: ['lena', 'Zed', 'Mira'] },
+          { name: 'Lena', ask: 'Research', after: [] },
+        ],
+      })}</work>`,
+      members,
+    );
+    expect(reply).toEqual({
+      kind: 'work',
+      work: {
+        title: 'x',
+        assign: [
+          { workerId: 'mira', name: 'Mira', ask: 'Compile', after: ['lena'] },
+          { workerId: 'lena', name: 'Lena', ask: 'Research', after: [] },
+        ],
+      },
+    });
+  });
+
+  it('reads a request to change the pack as the coordinator\'s to do', () => {
+    expect(parseRouteReply('<pack>Put Eli\'s report and action page in the pack.</pack>', members)).toEqual({
+      kind: 'pack',
+      ask: "Put Eli's report and action page in the pack.",
+    });
+  });
+
   it('falls back to routing when there is no usable work block', () => {
     expect(parseRouteReply('<route>["Mira"]</route>', members)).toEqual({ kind: 'route', workerIds: ['mira'] });
     expect(parseRouteReply('<work>{not json</work><route>[]</route>', members)).toEqual({ kind: 'route', workerIds: [] });
     expect(parseRouteReply(`<work>${JSON.stringify({ title: 'x', assign: [{ name: 'Zed', ask: 'y' }] })}</work>`, members)).toMatchObject({ kind: 'route' });
+  });
+});
+
+describe('handoffSteps', () => {
+  const ids = (steps: Array<Array<{ workerId: string }>>) => steps.map((st) => st.map((a) => a.workerId));
+
+  it('runs members side by side unless one builds on another', () => {
+    expect(ids(handoffSteps([{ workerId: 'a' }, { workerId: 'b' }]))).toEqual([['a', 'b']]);
+    expect(
+      ids(handoffSteps([{ workerId: 'c', after: ['a', 'b'] }, { workerId: 'a' }, { workerId: 'b' }, { workerId: 'd', after: ['c'] }])),
+    ).toEqual([['a', 'b'], ['c'], ['d']]);
+  });
+
+  it('ignores names not on the work, and runs a loop together rather than never', () => {
+    expect(ids(handoffSteps([{ workerId: 'a', after: ['gone'] }]))).toEqual([['a']]);
+    expect(ids(handoffSteps([{ workerId: 'x' }, { workerId: 'a', after: ['b'] }, { workerId: 'b', after: ['a'] }]))).toEqual([['x'], ['a', 'b']]);
+  });
+});
+
+describe('orderHandoffByPlan', () => {
+  const stage = (kind: TeamStage['kind'], ...workerIds: string[]): Pick<TeamStage, 'kind' | 'assignments' | 'fromRoom'> => ({
+    kind,
+    assignments: workerIds.map((workerId) => ({ workerId, workerName: workerId, ask: '', status: 'done' as const })),
+  });
+  const plan = [stage('contribute', 'r1', 'r2'), stage('synthesize'), stage('contribute', 'comp'), stage('challenge', 'r1')];
+
+  it('puts the one the plan ran later after those it ran earlier', () => {
+    expect(orderHandoffByPlan(plan, [{ workerId: 'comp' }, { workerId: 'r1' }])).toEqual([
+      { workerId: 'comp', after: ['r1'] },
+      { workerId: 'r1' },
+    ]);
+    // Researchers from the same stage stay side by side; someone not in the plan is not ordered.
+    expect(orderHandoffByPlan(plan, [{ workerId: 'r1' }, { workerId: 'r2' }, { workerId: 'new' }])).toEqual([
+      { workerId: 'r1' },
+      { workerId: 'r2' },
+      { workerId: 'new' },
+    ]);
+  });
+
+  it('keeps any order the coordinator gave, even "independent"', () => {
+    const given = [{ workerId: 'comp', after: [] }, { workerId: 'r1' }];
+    expect(orderHandoffByPlan(plan, given)).toBe(given);
   });
 });
 
@@ -336,6 +477,21 @@ describe('buildPackUpdateMessage', () => {
     });
     expect(msg).toContain("THE CHANGES THE USER PICKED FROM THE TEAM'S WRAP-UP\n- Show the saving as a range.\n- Split cash timing out.");
     expect(msg).toMatch(/not on this\nlist, the user chose not to make it/);
+  });
+});
+
+describe('sourceFlowIdOfPiece / withStepTools', () => {
+  it('finds the member flow a piece came from', () => {
+    expect(sourceFlowIdOfPiece(teamPieceFlowId('budget'))).toBe('budget');
+    expect(sourceFlowIdOfPiece(teamPieceFlowId('budget', { check: true }))).toBe('budget');
+    expect(sourceFlowIdOfPiece('budget')).toBe('budget');
+  });
+
+  it('adds only missing tools, to the first step', () => {
+    const f = { id: 'f', steps: [{ id: 'a', tools: ['Read'] }, { id: 'b', tools: ['Grep'] }] } as unknown as Parameters<typeof withStepTools>[0];
+    const next = withStepTools(f, ['Read', 'Bash'])!;
+    expect(next.steps.map((st) => st.tools)).toEqual([['Read', 'Bash'], ['Grep']]);
+    expect(withStepTools(next, ['Bash'])).toBeNull();
   });
 });
 
@@ -517,5 +673,60 @@ describe('a direct answer from the coordinator', () => {
     expect(parsePlanReply('<team_answer>x</team_answer>', [], { allowQuestions: true }).kind).toBe('error');
     const q = parsePlanReply('<team_questions>["a?","b?","c?"]</team_questions>', [], { allowQuestions: true, maxQuestions: 2 });
     expect(q.kind === 'questions' && q.questions).toEqual(['a?', 'b?']);
+  });
+});
+
+describe('rolloverReason', () => {
+  const follow = (title: string, at = 0) => ({
+    kind: 'contribute' as const,
+    title,
+    assignments: [],
+    status: 'done' as const,
+    startedAt: at,
+    fromRoom: { messageId: 'm', exchange: 0 },
+  });
+  const base = {
+    status: 'done' as const,
+    pack: { summary: '', files: [], version: 6 },
+    stages: [{ kind: 'synthesize' as const, title: 'Pack', assignments: [], status: 'done' as const, startedAt: 0 }],
+  };
+
+  it('stays quiet for a short task', () => {
+    expect(rolloverReason({ ...base, stages: [...base.stages, follow('A'), follow('B')] }, 1000)).toBeNull();
+  });
+
+  it('speaks up after many follow-ups', () => {
+    const stages = [...base.stages, ...'ABCDEFGH'.split('').map((t) => follow(t))];
+    expect(rolloverReason({ ...base, stages }, 1000)).toEqual({
+      title: 'This task has had 8 follow-ups since the plan',
+      detail: 'Each new stage rereads a longer history. Starting fresh from Pack v6 keeps the next ask quick and its plan readable.',
+    });
+  });
+
+  it('speaks up when the same follow-up runs three times in a row', () => {
+    const stages = [...base.stages, follow('Re-review the workbook'), follow('re-review the workbook '), follow('Re-review the workbook')];
+    expect(rolloverReason({ ...base, stages }, 1000)?.detail).toMatch(/^“Re-review the workbook” has run 3 times in a row\./);
+  });
+
+  it('speaks up after a day', () => {
+    expect(rolloverReason({ ...base, stages: [...base.stages, follow('A')] }, TEAM_ROLLOVER_AGE_MS)?.detail).toMatch(/over a day/);
+  });
+
+  it('never while work runs, before a pack, or once continued', () => {
+    const stages = [...base.stages, ...'ABCDEFGH'.split('').map((t) => follow(t))];
+    expect(rolloverReason({ ...base, stages, status: 'running' }, 0)).toBeNull();
+    expect(rolloverReason({ ...base, stages, pack: undefined }, 0)).toBeNull();
+    expect(rolloverReason({ ...base, stages, continuedAs: { taskId: 't2', at: 0 } }, 0)).toBeNull();
+    expect(rolloverReason({ ...base, stages, room: { messages: [], busy: { speaker: 'Maya', since: 0 } } }, 0)).toBeNull();
+  });
+});
+
+describe('continuationLines', () => {
+  it('points the planner at the earlier pack and what it left open', () => {
+    expect(continuationLines(undefined)).toEqual([]);
+    const lines = continuationLines({ taskId: 't1', title: 'Plan', packVersion: 3, stages: 9, open: ['Rank QA'], conversation: false });
+    expect(lines.join('\n')).toContain('THIS CONTINUES AN EARLIER TASK: "Plan" (9 stages, pack v3).');
+    expect(lines).toContain('- Rank QA');
+    expect(lines.join('\n')).not.toContain('conversation.md');
   });
 });

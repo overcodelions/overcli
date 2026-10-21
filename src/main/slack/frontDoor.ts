@@ -1,4 +1,4 @@
-// The front door: "@overcli add an export button to the reports page", or the
+// The front door: "@overgo add an export button to the reports page", or the
 // same in a DM, and the right worker takes it.
 //
 // Nobody has to know which worker does what. A request that names a worker
@@ -14,7 +14,7 @@
 // Work outlives the request, and a restart, so what is being followed is kept
 // on disk.
 
-import { GREETING, GREETING_REPLY, STATUS_ASK } from './statusReply';
+import { GREETING, GREETING_REPLY, SELF_ASK, STATUS_ASK, selfReply, withoutHello } from './statusReply';
 import type { Attachment } from '../../shared/types';
 import type { OrgCaller } from '../../shared/org/policy';
 import type { ErrandProgress } from '../org/orgService';
@@ -203,6 +203,10 @@ export interface FrontDoorDeps {
   /// "How are we doing?": what's waiting on them, who's working, what landed,
   /// said by the door itself. Absent: it's routed like any request.
   status?(caller: OrgCaller): string;
+  /// "Which worker is spending the most?", "who's stuck?": an administrative
+  /// question about the crew, answered by the door itself. Null, or absent:
+  /// it's routed like any request.
+  admin?(caller: OrgCaller, text: string): string | null;
   /// The processes this person can put work into. Absent: none offered.
   processes?(caller: OrgCaller): FrontDoorProcess[];
   /// Put the request into a process as a new item.
@@ -473,6 +477,11 @@ export class FrontDoor {
       return this.hand(req, key, caller, worker, text, req.files ?? [], '', true);
     }
     if (!text && !req.files?.length) return;
+    // About the door itself: answered here, even with no one to route to.
+    if (!known && SELF_ASK.test(withoutHello(text))) {
+      await say(selfReply(workers));
+      return;
+    }
     if (!workers.length) {
       await say('There are no workers you can ask yet. Someone can hire one with `/hire`, or share one with you.');
       return;
@@ -481,8 +490,13 @@ export class FrontDoor {
       await say(GREETING_REPLY);
       return;
     }
-    if (this.deps.status && !known && STATUS_ASK.test(text)) {
+    if (this.deps.status && !known && STATUS_ASK.test(withoutHello(text))) {
       await say(this.deps.status(caller));
+      return;
+    }
+    const admin = this.deps.admin && !known ? this.deps.admin(caller, text) : null;
+    if (admin) {
+      await say(admin);
       return;
     }
     // "idea: …" goes into a process: the one there is, or the person picks.

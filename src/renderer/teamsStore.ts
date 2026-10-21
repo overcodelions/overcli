@@ -44,6 +44,7 @@ interface TeamsActions {
   roomStartWork(taskId: string, messageId: string): Promise<Result>;
   roomDismissWork(taskId: string, messageId: string): Promise<Result>;
   roomHandOff(taskId: string, messageId: string): Promise<Result>;
+  roomAllowTools(taskId: string, messageId: string): Promise<Result>;
   openFolder(taskId: string): Promise<Result>;
   openFile(taskId: string, name: string): Promise<Result>;
   openEditor(teamId: string | null, brief?: string): void;
@@ -70,6 +71,7 @@ interface TeamsActions {
   revise(taskId: string, feedback: string): Promise<Result>;
   approve(taskId: string): Promise<Result>;
   continueTask(taskId: string, extraBudgetUSD?: number): Promise<Result>;
+  continueAsNew(taskId: string, brief: string, conversation: boolean): Promise<{ ok: true; task: TeamTask } | { ok: false; error: string }>;
   retry(taskId: string): Promise<Result>;
   cancel(taskId: string): Promise<Result>;
   skip(taskId: string, stage: number, workerId?: string): Promise<Result>;
@@ -193,6 +195,18 @@ export const useTeamsStore = create<TeamsState & TeamsActions>((set, get) => {
       });
     },
 
+    async continueAsNew(taskId, brief, conversation) {
+      let task: TeamTask | undefined;
+      const res = await act(taskId, async () => {
+        const r = await window.overcli.invoke('teams:continueAsNew', { taskId, brief, conversation });
+        if (!r.ok) return r;
+        task = r.task;
+        get().applyTask(r.task);
+        return { ok: true };
+      });
+      return res.ok && task ? { ok: true, task } : { ok: false, error: res.ok ? 'The new run did not start.' : res.error };
+    },
+
     answer: (taskId, answers) => act(taskId, () => window.overcli.invoke('teams:answer', { taskId, answers })),
     revise: (taskId, feedback) => act(taskId, () => window.overcli.invoke('teams:revise', { taskId, feedback })),
     approve: (taskId) => act(taskId, () => window.overcli.invoke('teams:approve', { taskId })),
@@ -239,6 +253,8 @@ export const useTeamsStore = create<TeamsState & TeamsActions>((set, get) => {
       act(taskId, () => window.overcli.invoke('teams:roomDismissWork', { taskId, messageId })),
     roomHandOff: (taskId, messageId) =>
       act(taskId, () => window.overcli.invoke('teams:roomHandOff', { taskId, messageId })),
+    roomAllowTools: (taskId, messageId) =>
+      act(taskId, () => window.overcli.invoke('teams:roomAllowTools', { taskId, messageId })),
     openFile: async (taskId, name) => {
       const res = await window.overcli.invoke('teams:openFile', { taskId, name });
       if (!res.ok) set((s) => ({ errors: { ...s.errors, [taskId]: res.error } }));

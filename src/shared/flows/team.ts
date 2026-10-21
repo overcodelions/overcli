@@ -229,6 +229,9 @@ export interface TeamAssignment {
   /// Paused: what its run is waiting on you for ("wants your OK to use
   /// bash"). Absent while it isn't, or when you held it yourself.
   waitingFor?: string;
+  /// Outside tools you already approved for this piece's run: you gave the
+  /// member a tool it was refused, so its re-run doesn't ask again.
+  grant?: string[];
 }
 
 /// The current stage's pieces whose runs are stopped for you: the task
@@ -264,8 +267,9 @@ export interface TeamStage {
   finishedAt?: number;
   error?: string;
   /// Work handed off from the room after the pack was written, rather than
-  /// part of the approved plan: the room message that proposed it.
-  fromRoom?: { messageId: string; exchange: number };
+  /// part of the approved plan: the room message that proposed it, and
+  /// which step of it this is when it runs in steps.
+  fromRoom?: { messageId: string; exchange: number; step?: { index: number; of: number } };
 }
 
 export interface TeamTaskFile {
@@ -397,7 +401,27 @@ export interface TeamTask {
   /// approve the plan, before the first stage runs; until then their
   /// assignments carry the hire's `key` in place of a worker id.
   hires?: TeamPlanHire[];
+  /// A fresh run started from an earlier task's pack once that one had
+  /// sprawled: its files are under `earlier/`, its pack under `earlier/pack/`.
+  continuesFrom?: TeamContinuation;
+  /// The fresh run this task was continued in.
+  continuedAs?: { taskId: UUID; title?: string; at: number };
 }
+
+export interface TeamContinuation {
+  taskId: UUID;
+  title?: string;
+  packVersion: number;
+  /// Stages the earlier task ran, plan and follow-ups together.
+  stages: number;
+  /// Stages it left failed: the new plan starts by picking them up.
+  open: string[];
+  /// Whether its conversation came along, as `earlier/conversation.md`.
+  conversation: boolean;
+}
+
+/// Where an earlier task's files land in the one that continues it.
+export const TEAM_EARLIER_DIR = 'earlier';
 
 export interface TeamTaskCode {
   branch: string;
@@ -473,22 +497,91 @@ export interface TeamMessage {
   /// A member reporting back on work handed off from the room: the stage it
   /// ran as.
   workReport?: { stage: number };
+  /// Tools the member's run was refused because its flow doesn't list them,
+  /// and the flow to add them to. `allowed` once you have.
+  refused?: { tools: string[]; flowId: string; allowed?: boolean };
+  /// A turn that died with the app: what to run again — the pack update, or
+  /// the question that started the exchange.
+  retry?: 'pack' | 'ask';
+}
+
+export interface TeamHandoffAssignment {
+  workerId: UUID;
+  workerName: string;
+  ask: string;
+  grant?: string[];
+  /// Members on this hand-off whose work this one builds on: it starts once
+  /// theirs reports back (the compiler after the researchers).
+  after?: UUID[];
 }
 
 export interface TeamHandoff {
   title: string;
-  assignments: Array<{ workerId: UUID; workerName: string; ask: string }>;
+  assignments: TeamHandoffAssignment[];
   /// `proposed`: waiting for you to start it. `queued`: starts when the work
   /// running now reports back.
   status: 'proposed' | 'queued' | 'started' | 'dismissed';
-  /// Once started, the stage it runs as.
+  /// Once started, the stage it runs as: the first, when it runs in steps.
   stage?: number;
+  /// Once started in steps, every stage it runs as, in order.
+  stages?: number[];
+  /// Running a stage again for members you just gave the tools it was
+  /// refused: each one you allow joins this proposal.
+  rerunOf?: number;
+}
+
+/// A hand-off's members in the order they run: each step starts once the
+/// one before it reports back, and members in a step run side by side. A
+/// member waits for everyone it names in `after`; names that are not on the
+/// hand-off, and loops, are ignored rather than held forever.
+export function handoffSteps<A extends Pick<TeamHandoffAssignment, 'workerId' | 'after'>>(assignments: A[]): A[][] {
+  const on = new Set(assignments.map((a) => a.workerId));
+  const placed = new Set<string>();
+  const steps: A[][] = [];
+  let left = assignments;
+  while (left.length > 0) {
+    let ready = left.filter((a) => (a.after ?? []).every((id) => !on.has(id) || id === a.workerId || placed.has(id)));
+    // A loop: run what is left together.
+    if (ready.length === 0) ready = left;
+    steps.push(ready);
+    for (const a of ready) placed.add(a.workerId);
+    left = left.filter((a) => !ready.includes(a));
+  }
+  return steps;
+}
+
+/// Order follow-up work the way the approved plan ordered the same people,
+/// when the coordinator said nothing about order: a member whose first part
+/// in the plan came later builds on those whose part came earlier — the
+/// compiler after the researchers. An `after` the coordinator gave, even an
+/// empty one ("these are independent"), is kept as it is.
+export function orderHandoffByPlan<A extends Pick<TeamHandoffAssignment, 'workerId' | 'after'>>(
+  stages: Array<Pick<TeamStage, 'kind' | 'assignments' | 'fromRoom'>>,
+  assignments: A[],
+): A[] {
+  if (assignments.length < 2 || assignments.some((a) => a.after !== undefined)) return assignments;
+  const first = new Map<string, number>();
+  stages.forEach((st, i) => {
+    if (st.fromRoom || !isMemberStage(st.kind)) return;
+    for (const a of st.assignments) if (!first.has(a.workerId)) first.set(a.workerId, i);
+  });
+  return assignments.map((a) => {
+    const mine = first.get(a.workerId);
+    if (mine === undefined) return a;
+    const before = assignments.filter((b) => {
+      const theirs = first.get(b.workerId);
+      return theirs !== undefined && theirs < mine;
+    });
+    return before.length > 0 ? { ...a, after: before.map((b) => b.workerId) } : a;
+  });
 }
 
 export interface TeamRoom {
   messages: TeamMessage[];
   /// Set while a turn is in flight: who is speaking, since when.
-  busy?: { speaker: string; since: number } | null;
+  /// `doing`: `pack` while the coordinator rewrites the pack, so a turn cut
+  /// short can be offered again as what it was.
+  busy?: { speaker: string; since: number; doing?: 'pack' } | null;
   /// What you said while someone was answering, oldest first: each goes in
   /// as its own question once the room is free.
   queue?: Array<{ text: string; at: number }>;
@@ -519,6 +612,72 @@ export function blocksNewTask(task: Pick<TeamTask, 'status' | 'stages' | 'stageI
   if (!isTaskActive(task.status) || task.status === 'queued') return false;
   const roomWork = (task.status === 'running' || task.status === 'waiting') && !!task.stages[task.stageIndex]?.fromRoom;
   return !roomWork;
+}
+
+/// When a task's follow-ups are long enough that a fresh run serves better.
+export const TEAM_ROLLOVER_FOLLOWUPS = 8;
+export const TEAM_ROLLOVER_REPEATS = 3;
+export const TEAM_ROLLOVER_AGE_MS = 24 * 60 * 60 * 1000;
+
+/// Why this task would be better continued as a fresh run from its pack, or
+/// null: many follow-ups since the plan, the same follow-up run again and
+/// again, or a day since the plan started. Only once the pack is written and
+/// nothing is running, and never twice.
+export function rolloverReason(
+  task: Pick<TeamTask, 'status' | 'stages' | 'pack' | 'continuedAs' | 'room'>,
+  now: number,
+): { title: string; detail: string } | null {
+  if (task.continuedAs || !task.pack) return null;
+  if (task.status !== 'review' && task.status !== 'done') return null;
+  if (task.room?.busy || task.stages.some((s) => s.status === 'running')) return null;
+  // A hand-off run in steps is one follow-up.
+  const followUps = task.stages.filter((s) => s.fromRoom && !s.fromRoom.step?.index);
+  if (followUps.length === 0) return null;
+  const n = followUps.length;
+  const title = `This task has had ${n} follow-up${n === 1 ? '' : 's'} since the plan`;
+  const fresh = `Starting fresh from Pack v${task.pack.version ?? 1} keeps the next ask quick and its plan readable.`;
+  let run = 1;
+  for (let i = 1; i < followUps.length; i++) {
+    run = followUps[i].title.trim().toLowerCase() === followUps[i - 1].title.trim().toLowerCase() ? run + 1 : 1;
+    if (run >= TEAM_ROLLOVER_REPEATS) {
+      return { title, detail: `“${followUps[i].title}” has run ${run} times in a row. ${fresh}` };
+    }
+  }
+  if (n >= TEAM_ROLLOVER_FOLLOWUPS) return { title, detail: `Each new stage rereads a longer history. ${fresh}` };
+  const started = task.stages.find((s) => s.startedAt !== undefined)?.startedAt;
+  if (started !== undefined && now - started >= TEAM_ROLLOVER_AGE_MS) {
+    return { title, detail: `It has been going for over a day. ${fresh}` };
+  }
+  return null;
+}
+
+/// What a fresh run carries from the task it continues.
+export function continuationOf(task: Pick<TeamTask, 'id' | 'title' | 'pack' | 'stages'>, conversation: boolean): TeamContinuation {
+  return {
+    taskId: task.id,
+    ...(task.title ? { title: task.title } : {}),
+    packVersion: task.pack?.version ?? 1,
+    stages: task.stages.length,
+    open: task.stages.filter((s) => s.status === 'failed').map((s) => s.title),
+    conversation,
+  };
+}
+
+/// The continuation as a prompt section, for planning the fresh run.
+export function continuationLines(c: TeamContinuation | undefined): string[] {
+  if (!c) return [];
+  const lines = [
+    '',
+    `THIS CONTINUES AN EARLIER TASK${c.title ? `: "${c.title}"` : ''} (${c.stages} stages, pack v${c.packVersion}).`,
+    `Its pack is in ${TEAM_EARLIER_DIR}/pack/ and its other files under ${TEAM_EARLIER_DIR}/. Start from that pack: plan only what`,
+    'the brief asks beyond it, and do not redo work it already settled.',
+  ];
+  if (c.conversation) lines.push(`The conversation about it is in ${TEAM_EARLIER_DIR}/conversation.md.`);
+  if (c.open.length > 0) {
+    lines.push('It left these stages failed; pick them up first unless the brief says otherwise:');
+    for (const t of c.open) lines.push(`- ${t}`);
+  }
+  return lines;
 }
 
 /// Stages finished, out of how many.
@@ -726,6 +885,8 @@ export function buildTeamPlanMessage(args: {
   knowledge?: { body: string; updatedAt?: number };
   /// Whether this may be answered straight from what the team knows.
   allowAnswer?: boolean;
+  /// The earlier task this one continues.
+  continuesFrom?: TeamContinuation;
 }): string {
   const lines: string[] = [];
   lines.push(`THE TEAM: ${args.teamName}${args.purpose?.trim() ? ` — ${args.purpose.trim()}` : ''}`);
@@ -758,6 +919,7 @@ export function buildTeamPlanMessage(args: {
   lines.push('');
   lines.push('THE BRIEF');
   lines.push(args.brief.trim());
+  lines.push(...continuationLines(args.continuesFrom));
   const answered = (args.questions ?? []).map((q, i) => ({ q, a: args.answers?.[i]?.trim() ?? '' }));
   if (answered.length > 0) {
     lines.push('');
@@ -1353,6 +1515,16 @@ const STAGE_GUIDANCE: Record<TeamStageKind, string> = {
 };
 
 /// The prompt a member's run receives for its piece of a stage.
+/// Where one step of follow-up work run in steps stands.
+export interface FollowUpSteps {
+  index: number;
+  of: number;
+  /// What each member in the steps before made in this run.
+  before: Array<{ name: string; files: string[] }>;
+  /// Who builds on this step next.
+  next: string[];
+}
+
 export function buildMemberStagePrompt(args: {
   teamName: string;
   task: Pick<TeamTask, 'brief' | 'title' | 'questions' | 'answers' | 'deliverables' | 'comments'>;
@@ -1379,6 +1551,9 @@ export function buildMemberStagePrompt(args: {
     madeFiles: string[];
     /// Where this member's own earlier files sit (`files/lena/`).
     ownFilesDir: string;
+    /// When the work runs in steps: what the steps before this one just
+    /// made, and who builds on this one next.
+    steps?: FollowUpSteps;
   };
 }): string {
   const lines: string[] = [];
@@ -1448,6 +1623,7 @@ export function buildMemberStagePrompt(args: {
       for (const f of args.followUp.madeFiles.slice(0, 60)) lines.push(`- ${args.folder}/${f}`);
       if (args.followUp.madeFiles.length > 60) lines.push(`- … and ${args.followUp.madeFiles.length - 60} more`);
     }
+    lines.push(...followUpStepLines(args.followUp.steps, args.folder));
     lines.push('');
     lines.push('Everything you write in your working folder is copied into the shared folder when you finish.');
     lines.push(`Your own earlier files are under ${args.folder}/${args.followUp.ownFilesDir}. To revise one, start from`);
@@ -1477,6 +1653,32 @@ export function buildMemberStagePrompt(args: {
     lines.push('establish; never invent figures, quotes or sources. Use placeholders like [MARKET SIZE] instead.');
   }
   return lines.join('\n');
+}
+
+/// Where a member stands in follow-up work run in steps: build on what the
+/// step before just made, not last round's copies; and know who builds on
+/// yours.
+function followUpStepLines(steps: FollowUpSteps | undefined, folder: string): string[] {
+  if (!steps || steps.of < 2) return [];
+  const lines = ['', `THIS WORK RUNS IN STEPS: you are step ${steps.index + 1} of ${steps.of}.`];
+  if (steps.before.length > 0) {
+    lines.push('It builds on what was done just before you, in this same piece of work. Start from these');
+    lines.push('files: they are newer than anything else in the folder, including the pack.');
+    for (const b of steps.before) {
+      if (b.files.length === 0) {
+        lines.push(`- ${b.name}: made no files (read their report in the folder).`);
+        continue;
+      }
+      lines.push(`- ${b.name}:`);
+      for (const f of b.files.slice(0, 30)) lines.push(`  - ${folder}/${f}`);
+      if (b.files.length > 30) lines.push(`  - … and ${b.files.length - 30} more`);
+    }
+  }
+  if (steps.next.length > 0) {
+    lines.push(`${steps.next.join(' and ')} build${steps.next.length === 1 ? 's' : ''} on your work next: put what you find or change in`);
+    lines.push('files, and say in your report where it is.');
+  }
+  return lines;
 }
 
 export const TEAM_COORDINATOR_SYSTEM_PROMPT = [
@@ -1614,6 +1816,90 @@ export function parsePackReply(text: string): { summary: string; files: Array<{ 
   return { summary: summary || firstParagraph(text), files, includes };
 }
 
+/// A pack update: only what changes. Documents it does not name stay as
+/// they are, so a one-line correction does not retype a whole pack.
+export interface PackUpdate {
+  summary: string;
+  /// Documents rewritten whole, or new ones.
+  files: Array<{ name: string; body: string }>;
+  /// Passages replaced in place: `find` must appear exactly once.
+  edits: Array<{ name: string; find: string; replace: string }>;
+  /// Documents taken out of the pack.
+  drops: string[];
+  /// Files members made, put in the pack as they are: `from` is the
+  /// shared-folder name, copied byte for byte by the engine.
+  includes: Array<{ name: string; from: string }>;
+}
+
+export function parsePackUpdate(text: string): PackUpdate {
+  const edits: PackUpdate['edits'] = [];
+  const editRe =
+    /<edit\s+name\s*=\s*["']([^"']+)["']\s*>\s*<find>([\s\S]*?)<\/find>\s*<replace>([\s\S]*?)<\/replace>\s*<\/edit>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = editRe.exec(text))) {
+    if (!m[2].trim()) continue;
+    edits.push({ name: safeTeamFileName(m[1]), find: m[2], replace: m[3] });
+  }
+  const drops: string[] = [];
+  const dropRe = /<drop\s+name\s*=\s*["']([^"']+)["']\s*\/?>(?:\s*<\/drop>)?/gi;
+  while ((m = dropRe.exec(text))) drops.push(safeTeamFileName(m[1]));
+  // Edits out first: a <file> tag quoted inside a passage is not a document.
+  const rest = text.replace(editRe, '').replace(dropRe, '');
+  const whole = parsePackReply(rest);
+  // No stray reply text turned into a document: an update that names no
+  // file changes none.
+  const files = /<file\s/i.test(rest) ? whole.files : [];
+  const summary = (text.match(/<summary>([\s\S]*?)<\/summary>/i)?.[1] ?? '').trim() || whole.summary;
+  return { summary, files, edits, drops, includes: whole.includes };
+}
+
+/// The pack after an update: every document, by name, and which ones
+/// changed. An edit whose passage is missing or ambiguous is not guessed
+/// at: it is listed in `failed` and that document keeps its text.
+export function applyPackUpdate(
+  current: Array<{ name: string; body: string }>,
+  update: Pick<PackUpdate, 'files' | 'edits' | 'drops'>,
+): { files: Array<{ name: string; body: string }>; changed: string[]; failed: Array<{ name: string; why: string }> } {
+  const key = (n: string) => n.toLowerCase();
+  const out = new Map<string, { name: string; body: string }>();
+  for (const f of current) out.set(key(f.name), { ...f });
+  const dropped = new Set(update.drops.map(key));
+  for (const k of dropped) out.delete(k);
+  const rewritten = new Set<string>();
+  for (const f of update.files) {
+    const was = out.get(key(f.name));
+    out.set(key(f.name), { name: was?.name ?? f.name, body: f.body });
+    rewritten.add(key(f.name));
+  }
+  const failed: Array<{ name: string; why: string }> = [];
+  for (const e of update.edits) {
+    // A document rewritten whole already carries its changes.
+    if (rewritten.has(key(e.name))) continue;
+    const doc = out.get(key(e.name));
+    if (!doc) {
+      if (!dropped.has(key(e.name))) failed.push({ name: e.name, why: 'no document by that name' });
+      continue;
+    }
+    // Exact first; then without the blank lines models put round a passage.
+    const find = doc.body.includes(e.find) ? e.find : e.find.replace(/^\n+|\n+$/g, '');
+    const replace = find === e.find ? e.replace : e.replace.replace(/^\n+|\n+$/g, '');
+    const at = doc.body.indexOf(find);
+    if (!find || at < 0) {
+      failed.push({ name: doc.name, why: 'the text it replaces was not found' });
+      continue;
+    }
+    if (doc.body.indexOf(find, at + 1) >= 0) {
+      failed.push({ name: doc.name, why: 'the text it replaces appears more than once' });
+      continue;
+    }
+    doc.body = doc.body.slice(0, at) + replace + doc.body.slice(at + find.length);
+  }
+  const before = new Map(current.map((f) => [key(f.name), f.body]));
+  const files = [...out.values()];
+  const changed = files.filter((f) => before.get(key(f.name))?.trim() !== f.body.trim()).map((f) => f.name);
+  return { files, changed, failed };
+}
+
 function firstParagraph(text: string): string {
   // Tags out, then any angle bracket left over: one pass of a tag pattern can
   // leave a tag behind in crafted text ("<scr<x>ipt>"), and this summary is
@@ -1682,6 +1968,21 @@ export function stageFileName(stageIndex: number, stageTitle: string, author: st
 /// rewritten on every commission so it follows edits to the original.
 export function teamPieceFlowId(flowId: string, opts: { check?: boolean } = {}): string {
   return `team-piece-${opts.check ? 'checked-' : ''}${flowId}`;
+}
+
+/// The member's own flow a team piece was made from: the inverse of
+/// `teamPieceFlowId`. Any other id is already the member's own.
+export function sourceFlowIdOfPiece(flowId: string): string {
+  return flowId.replace(/^team-piece-(?:checked-)?/, '');
+}
+
+/// The flow with `tools` added to its first step. A piece takes every step's
+/// tools (`teamPieceFlow`), so the first is enough; null when nothing changes.
+export function withStepTools(flow: Flow, tools: string[]): Flow | null {
+  const first = flow.steps[0];
+  const missing = tools.filter((t) => !first?.tools.includes(t));
+  if (!first || missing.length === 0) return null;
+  return { ...flow, steps: [{ ...first, tools: [...first.tools, ...missing] }, ...flow.steps.slice(1)] };
 }
 
 /// Roles whose step checks work rather than doing it.

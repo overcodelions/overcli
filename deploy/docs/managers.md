@@ -48,9 +48,10 @@ On the worker's page:
 - **Schedule:** "weekdays at 9", "every 4 hours". The next run is shown, and **Run now** runs it immediately.
 - **Triggers** (the Triggers tab): work that starts when something happens.
   - **Watch:** checks a tool every 5–60 minutes, such as a Jira search or a CRM view, and acts once on each new item. The first check only notes what's already there. **Try it now** shows what it sees before you save.
-    - **Or a change to an item:** set it off by a change to one field, such as a ticket's status, rather than a new item. Turn on **Only items I track**, and put `{{ids}}` in the tool's arguments, for example `"jql": "key in ({{ids}})"`. Add tickets on the Triggers tab, or in Slack with `@overcli Watcher, track ACME-412`, `stop tracking ACME-412`, or `/worker Watcher track ACME-412`. With **Just tell me what changed**, you get "ACME-412 moved from In review to Done" and a link, with no worker turn, so a quiet day costs nothing.
+    - **Or a change to an item:** set it off by a change to one field, such as a ticket's status, rather than a new item. Turn on **Only items I track**, and put `{{ids}}` in the tool's arguments, for example `"jql": "key in ({{ids}})"`. Add tickets on the Triggers tab, or in Slack with `@overgo Watcher, track ACME-412`, `stop tracking ACME-412`, or `/worker Watcher track ACME-412`. With **Just tell me what changed**, you get "ACME-412 moved from In review to Done" and a link, with no worker turn, so a quiet day costs nothing.
     - **Inside a VPC:** a watch checks outward, so nothing needs to reach the server. It only needs outbound access to the tool's API.
   - **Webhook:** a secret address for GitHub, Jira automation or Zapier to post to.
+    The sender posts from the internet, so it can't reach a console that only answers inside your network, even on an https address. When the console's address only resolves to private addresses, the form says so and offers a watch instead, which only calls out.
   - **Slack:** a new message, a mention, or an emoji reaction (🐛) in a channel.
 
   Each trigger has instructions (what to do with each item), a destination (a channel, a DM to you, the thread it came from, or "comment on the ticket"), and a daily limit.
@@ -84,13 +85,13 @@ You can give a team work if you manage one of its members.
 
 **Making a team.** There are three ways:
 
-- **On the console:** **Teams → Make a team**. Say what the team does, then pick its members from the workers you manage, or press **Suggest a crew** and let overcli pick them and write what each does. If the team needs a job none of your workers covers, the suggestion adds a new member. That member is hired when you make the team: hired straight away if it fits your allowance, or sent to an approver and added to the team once approved. **Skip** drops it. Choose where it checks in with you:
+- **On the console:** **Teams → Make a team**. Say what the team does, then pick its members from the workers you manage, or press **Suggest a crew** and let overgo pick them and write what each does. If the team needs a job none of your workers covers, the suggestion adds a new member. That member is hired when you make the team: hired straight away if it fits your allowance, or sent to an approver and added to the team once approved. **Skip** drops it. Choose where it checks in with you:
   - asking questions first
   - approving the plan (always on)
   - reading the draft before it's challenged
   - reviewing the result
   - approving follow-up work
-- **In Slack:** `/team new writes PR/FAQs for new features`. overcli DMs you a suggested crew, with **Make the team**, **Change it** and **Cancel** buttons. **Change it** opens a form for the name, what the team does, its budget per task, where it checks in with you, and who can ask its new hires.
+- **In Slack:** `/team new writes PR/FAQs for new features`. overgo DMs you a suggested crew, with **Make the team**, **Change it** and **Cancel** buttons. **Change it** opens a form for the name, what the team does, its budget per task, where it checks in with you, and who can ask its new hires.
 
 A `/hire` offer in Slack has **Change it** too. It opens a form for the worker's name, budget, who can ask it, its tools, the repo it works in, and who it reports to.
 - **In the desktop app:** build it, then **Publish to your org**.
@@ -121,13 +122,13 @@ Who owns what:
 - **Certain people**: the people you name, and anyone in a group you add.
 - **Everyone**: anyone in the org. Processes made before this setting existed start here, as they worked before.
 
-The person who made a process always keeps access, even after it's handed to another owner. People in its stages see the work that reaches them, but can only start items if they're in its audience. Anyone else doesn't see the process at all: it's not on the Processes page, `/idea` doesn't know it, and `@overcli` never routes a request into it. Schedules, watches and posted events keep putting work in whatever the setting, because they were set up by someone who steers the process. Someone who put an item in before the process was narrowed still follows that item.
+The person who made a process always keeps access, even after it's handed to another owner. People in its stages see the work that reaches them, but can only start items if they're in its audience. Anyone else doesn't see the process at all: it's not on the Processes page, `/idea` doesn't know it, and `@overgo` never routes a request into it. Schedules, watches and posted events keep putting work in whatever the setting, because they were set up by someone who steers the process. Someone who put an item in before the process was narrowed still follows that item.
 
-Work comes in from `/idea` in Slack (`/idea Idea to launch: CSV export for reports`; `/idea` alone shows where yours are), from `@overcli` (`@overcli idea: CSV export`, `@overcli Bug report to fix: the export button is greyed out`, or a request the router judges to be a new item for a process), from **Put something in** on the console, from every new message in a Slack channel, or from events posted to a secret URL. It can also start items **on a schedule** (every week, every weekday, the 1st of each month, the first day of each quarter: "Quarterly roadmap · Jan 1, 2027"), or **watch a tool**: each new ticket, deal or row a tool call returns goes in, checked every few minutes from inside your network. Set these up under **How work comes in** on the process's page.
+Work comes in from `/idea` in Slack (`/idea Idea to launch: CSV export for reports`; `/idea` alone shows where yours are), from `@overgo` (`@overgo idea: CSV export`, `@overgo Bug report to fix: the export button is greyed out`, or a request the router judges to be a new item for a process), from **Put something in** on the console, from every new message in a Slack channel, or from events posted to a secret URL. It can also start items **on a schedule** (every week, every weekday, the 1st of each month, the first day of each quarter: "Quarterly roadmap · Jan 1, 2027"), or **watch a tool**: each new ticket, deal or row a tool call returns goes in, checked every few minutes from inside your network. Set these up under **How work comes in** on the process's page.
 
 A team or worker stage can **wait** (start two weeks after the stage before, when there's adoption to read) and **repeat** (weekly, four times, each run building on the last) before the item moves on. The board says when a waiting stage starts; its owner can **Start now**.
 
-On the board, a card marked **Your call** is waiting on your decision and **Stuck** means a team stage failed or was cancelled. "How are we doing?" to @overcli lists the decisions waiting on you.
+On the board, a card marked **Your call** is waiting on your decision and **Stuck** means a team stage failed or was cancelled. "How are we doing?" to @overgo lists the decisions waiting on you.
 
 In the desktop app you can build a process from your own teams and try it on your own, then **Publish to your org**. Publish its teams first. A process published for the first time is private in the org until its owner opens it up.
 

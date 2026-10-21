@@ -207,6 +207,19 @@ describe('FlowRuntimeImpl.startRun', () => {
     expect(pauseReasonBeforeStep(once.getRun(b)!, tally(once, b))).toBe('externalAction');
   });
 
+  it('starts a step whose outside tools you already approved at launch, and still stops one needing more', async () => {
+    const make = () => new FlowRuntimeImpl({ send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never, () => {}, () => [], () => ({ backends: {} }) as never);
+    const granted = make();
+    const r = await granted.startRun({ flowId: 'shell-flow', projectPath: '/tmp/project', userPrompt: 'Tally my tickets.', workerId: 'worker-1', workerName: 'Ruby', externalActionGrant: ['bash'] });
+    if (!r.ok) throw new Error(r.error);
+    expect(granted.getRun(r.runId)?.state).toMatchObject({ kind: 'running', currentStepId: 'gather' });
+
+    const other = make();
+    const o = await other.startRun({ flowId: 'shell-flow', projectPath: '/tmp/project', userPrompt: 'Tally my tickets.', workerId: 'worker-1', workerName: 'Ruby', externalActionGrant: ['webfetch'] });
+    if (!o.ok) throw new Error(o.error);
+    expect(other.getRun(o.runId)?.state).toMatchObject({ kind: 'paused', reason: 'externalAction' });
+  });
+
   it('starts an external first step when the worker explicitly allows external actions', async () => {
     const send = vi.fn(() => ({ ok: true as const }));
     const runtime = new FlowRuntimeImpl(

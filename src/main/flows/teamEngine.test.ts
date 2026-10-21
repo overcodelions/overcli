@@ -38,6 +38,9 @@ function makeHarness(opts: {
   crewAway?: () => boolean;
   /// What a paused run waits on you for (FlowRuntime via describeRunPause).
   pauseOf?: (runId: string) => string | null;
+  /// What a run was refused (FlowRuntime's refusedTools).
+  refusedOf?: (runId: string) => { tools: string[]; flowId: string } | null;
+  allowTools?: (flowId: string, tools: string[]) => { ok: true } | { ok: false; error: string };
 } = {}) {
   const notified: Array<{ title: string; body: string }> = [];
   const codeCalls: string[] = [];
@@ -56,6 +59,7 @@ function makeHarness(opts: {
     id: string;
     projectPath?: string;
     allowExternalActions?: boolean;
+    externalActionGrant?: string[];
     baseBranch?: string;
     adoptWorktrees?: { branch: string; repos: Array<{ worktreePath: string }> };
   }> = [];
@@ -114,6 +118,8 @@ function makeHarness(opts: {
     notify: (n) => void notified.push(n),
     workers: () => crew,
     ...(opts.pauseOf ? { pauseOf: opts.pauseOf } : {}),
+    ...(opts.refusedOf ? { refusedOf: opts.refusedOf } : {}),
+    ...(opts.allowTools ? { allowTools: opts.allowTools } : {}),
     ...(opts.code
       ? {
           code: {
@@ -168,6 +174,7 @@ function makeHarness(opts: {
         id,
         projectPath: args.projectPath,
         allowExternalActions: args.allowExternalActions,
+        externalActionGrant: args.externalActionGrant,
         baseBranch: args.baseBranch,
         adoptWorktrees: args.adoptWorktrees,
       });
@@ -793,10 +800,26 @@ describe('TeamEngine room', () => {
     ],
     pack: { summary: 'Build it.', files: ['pack/PROPOSAL.md'] },
   });
-  const room = (opts: { turns?: string[]; memberReplies?: string[]; status?: TeamTask['status']; autoStart?: boolean }) => {
+  const room = (opts: {
+    turns?: string[];
+    memberReplies?: string[];
+    status?: TeamTask['status'];
+    autoStart?: boolean;
+    refusedOf?: (runId: string) => { tools: string[]; flowId: string } | null;
+    allowTools?: (flowId: string, tools: string[]) => { ok: true } | { ok: false; error: string };
+    /// The approved plan's stages, for tests that read its order.
+    stages?: TeamTask['stages'];
+  }) => {
     // Most room tests hold hand-offs for you, so each step can be seen.
     const checkpoints = { askFirst: true, reviewBeforeChallenge: false, finalReview: true, approveRoomWork: !opts.autoStart };
-    const h = makeHarness({ seedTeams: [team({ checkpoints })], seedTasks: [reviewTask(opts.status)], turns: opts.turns, memberReplies: opts.memberReplies });
+    const h = makeHarness({
+      seedTeams: [team({ checkpoints })],
+      seedTasks: [{ ...reviewTask(opts.status), ...(opts.stages ? { stages: opts.stages, stageIndex: opts.stages.length } : {}) }],
+      turns: opts.turns,
+      memberReplies: opts.memberReplies,
+      refusedOf: opts.refusedOf,
+      allowTools: opts.allowTools,
+    });
     h.files.set('task-r/01-market-maya.md', 'Maya market notes');
     h.files.set('task-r/01-tech-ade.md', 'Ade tech notes');
     h.files.set('task-r/pack/PROPOSAL.md', '# Proposal v1');
@@ -890,6 +913,49 @@ describe('TeamEngine room', () => {
     expect(task(h).pack).toMatchObject({ version: 2, changed: [] });
   });
 
+  it('puts files members made into the pack itself when you ask, rather than handing it off', async () => {
+    const h = room({
+      turns: [
+        '<pack>Put Eli\'s restyled page in the pack.</pack>',
+        '<summary>Now with the new page.</summary><include name="REPORT.html" from="maya/page.html"/><include name="GONE.html" from="files/x.html"/>',
+      ],
+    });
+    h.files.set('task-r/files/maya/page.html', '<h1>New</h1>');
+    task(h).files.push({ name: 'files/maya/page.html', author: 'Maya', at: 5 });
+    h.engine.roomAsk('task-r', 'copy them into the pack');
+    await flush();
+    await flush();
+    const t = task(h);
+    expect(t.room!.messages.some((m) => m.handoff)).toBe(false);
+    expect(h.commissions).toHaveLength(0);
+    expect(h.turnMessages.at(-1)).toContain("WHAT THE USER JUST ASKED YOU TO DO TO THE PACK\nPut Eli's restyled page in the pack.");
+    expect(h.turnMessages.at(-1)).toContain('- files/maya/page.html (Maya)');
+    expect(h.files.get('task-r/pack/REPORT.html')).toBe('<h1>New</h1>');
+    expect(t.pack).toMatchObject({ version: 2, files: ['pack/PROPOSAL.md', 'pack/REPORT.html'], changed: ['pack/REPORT.html'] });
+    expect(t.files.find((f) => f.name === 'pack/REPORT.html')?.author).toBe('Maya');
+    expect(t.room!.messages.at(-1)!.text).toContain('GONE.html (no file files/x.html in the shared folder)');
+  });
+
+  it('updates the pack in place from edits, keeping what it does not mention', async () => {
+    const h = room({
+      turns: [
+        '<summary>Spain first.</summary><edit name="PROPOSAL.md"><find>v1</find><replace>v2, Spain first</replace></edit><edit name="PROPOSAL.md"><find>missing</find><replace>x</replace></edit>',
+      ],
+    });
+    h.files.set('task-r/pack/RISKS.md', '# Risks');
+    task(h).pack!.files.push('pack/RISKS.md');
+    expect(h.engine.updatePack('task-r', { changes: ['Say Spain first.'] })).toEqual({ ok: true });
+    await flush();
+    const t = task(h);
+    expect(h.turnMessages.at(-1)).toContain('Send ONLY what changes');
+    expect(h.files.get('task-r/pack/PROPOSAL.md')).toBe('# Proposal v2, Spain first');
+    expect(h.files.get('task-r/pack/RISKS.md')).toBe('# Risks');
+    expect(t.pack).toMatchObject({ version: 2, files: ['pack/PROPOSAL.md', 'pack/RISKS.md'], changed: ['pack/PROPOSAL.md'] });
+    expect(t.room!.messages.at(-1)!.text).toBe(
+      "Updated the pack (version 2). Spain first. Couldn't make one change: PROPOSAL.md (the text it replaces was not found). Ask again to retry it.",
+    );
+  });
+
   it('refuses while the team is still working, and queues what you say while someone is answering', async () => {
     const h = room({ status: 'proposed', turns: [] });
     expect(h.engine.roomAsk('task-r', 'hi')).toMatchObject({ ok: false });
@@ -951,6 +1017,191 @@ describe('TeamEngine room', () => {
       await flush();
       expect(h.turnMessages.at(-1)).toContain('WORK MEMBERS DID SINCE');
       expect(h.turnMessages.at(-1)).toContain('Redrew D-01 with the credit banner.');
+    });
+
+    it('says when a member was refused a tool, and lets you allow it and run its part again', async () => {
+      const both = `<work>${JSON.stringify({
+        title: 'Read the workbooks',
+        assign: [
+          { name: 'Maya', ask: 'Read the budget workbook.' },
+          { name: 'Ade', ask: 'Read the cost workbook.' },
+        ],
+      })}</work>`;
+      const allowed: Array<[string, string[]]> = [];
+      const h = room({
+        turns: [both],
+        refusedOf: () => ({ tools: ['Bash'], flowId: 'budget-plan' }),
+        allowTools: (flowId, tools) => {
+          allowed.push([flowId, tools]);
+          return { ok: true };
+        },
+      });
+      h.engine.roomAsk('task-r', 'everyone read the workbooks');
+      await flush();
+      h.engine.roomStartWork('task-r', task(h).room!.messages[1].id);
+      await flush();
+      for (const c of [...h.commissions]) h.settle(c.id, 'done', 'Could not open the workbook.');
+      await flush();
+      const reports = task(h).room!.messages.filter((m) => m.workReport);
+      expect(reports).toHaveLength(2);
+      // The coordinator reads the room as text: the reason is in it.
+      expect(reports[0].text).toContain('Refused Bash');
+      expect(reports[0].text).toContain('not a file-access problem');
+      expect(reports[0].refused).toEqual({ tools: ['Bash'], flowId: 'budget-plan' });
+
+      expect(h.engine.roomAllowTools('task-r', reports[0].id)).toEqual({ ok: true });
+      expect(h.engine.roomAllowTools('task-r', reports[1].id)).toEqual({ ok: true });
+      expect(allowed).toEqual([['budget-plan', ['Bash']], ['budget-plan', ['Bash']]]);
+      const msgs = task(h).room!.messages;
+      expect(msgs.filter((m) => m.refused?.allowed)).toHaveLength(2);
+      // Both join one proposal to run that stage again, with their own asks.
+      const rerun = msgs.filter((m) => m.handoff?.rerunOf !== undefined);
+      expect(rerun).toHaveLength(1);
+      expect(rerun[0].handoff).toMatchObject({ status: 'proposed', title: 'Read the workbooks' });
+      expect(rerun[0].handoff!.assignments.map((a) => a.ask)).toEqual(['Read the budget workbook.', 'Read the cost workbook.']);
+    });
+
+    it('adds a member you allow to the re-run already going, instead of proposing it behind', async () => {
+      const both = `<work>${JSON.stringify({
+        title: 'Read the workbooks',
+        assign: [
+          { name: 'Maya', ask: 'Read the budget workbook.' },
+          { name: 'Ade', ask: 'Read the cost workbook.' },
+        ],
+      })}</work>`;
+      const h = room({ turns: [both], refusedOf: () => ({ tools: ['Bash'], flowId: 'budget-plan' }), allowTools: () => ({ ok: true }) });
+      h.engine.roomAsk('task-r', 'everyone read the workbooks');
+      await flush();
+      h.engine.roomStartWork('task-r', task(h).room!.messages[1].id);
+      await flush();
+      for (const c of [...h.commissions]) h.settle(c.id, 'done', 'Could not open the workbook.');
+      await flush();
+      const [maya, ade] = task(h).room!.messages.filter((m) => m.workReport);
+
+      h.engine.roomAllowTools('task-r', maya.id);
+      const rerun = task(h).room!.messages.find((m) => m.handoff?.rerunOf !== undefined)!;
+      expect(h.engine.roomStartWork('task-r', rerun.id)).toEqual({ ok: true });
+      await flush();
+      const before = h.commissions.length;
+
+      expect(h.engine.roomAllowTools('task-r', ade.id)).toEqual({ ok: true });
+      await flush();
+      const t = task(h);
+      expect(t.room!.messages.filter((m) => m.handoff?.rerunOf !== undefined)).toHaveLength(1);
+      expect(t.stages[t.stageIndex].assignments.map((a) => a.workerName)).toEqual(['Maya', 'Ade']);
+      expect(h.commissions).toHaveLength(before + 1);
+      expect(h.commissions.at(-1)!.prompt).toContain('Read the cost workbook.');
+      // Allowing the tool was the OK: both re-runs start with it approved.
+      expect(h.commissions.slice(before - 1).map((c) => c.externalActionGrant)).toEqual([['bash'], ['bash']]);
+    });
+
+    describe('in steps', () => {
+      const STEPPED = `<work>${JSON.stringify({
+        title: 'Re-cost and rebuild the report',
+        assign: [
+          { name: 'Maya', ask: 'Rebuild the report from the new figures.', after: ['Ade'] },
+          { name: 'Ade', ask: 'Re-cost the director swap.' },
+        ],
+      })}</work>`;
+      const start = async (h: ReturnType<typeof room>) => {
+        h.engine.roomAsk('task-r', 'swap the director and rebuild the report');
+        await flush();
+        const proposal = task(h).room!.messages[1];
+        expect(h.engine.roomStartWork('task-r', proposal.id)).toEqual({ ok: true });
+        await flush();
+        return proposal;
+      };
+
+      it('runs a member after the one whose work it builds on, with their new files in hand', async () => {
+        const h = room({ turns: [STEPPED] });
+        const proposal = await start(h);
+        let t = task(h);
+        expect(proposal.text).toContain('Ade, then Maya');
+        expect(t.stages.map((st) => [st.title, st.assignments.map((a) => a.workerName)])).toEqual([
+          ['Re-cost and rebuild the report (1/2)', ['Ade']],
+          ['Re-cost and rebuild the report (2/2)', ['Maya']],
+        ]);
+        expect(t.room!.messages[1].handoff).toMatchObject({ status: 'started', stage: 0, stages: [0, 1] });
+        // Only the first step runs; it is told who builds on it.
+        expect(h.commissions).toHaveLength(1);
+        expect(h.commissions[0].prompt).toContain('step 1 of 2');
+        expect(h.commissions[0].prompt).toContain('Maya builds on your work next');
+
+        h.settle(h.commissions[0].id, 'done', 'Re-costed.', [{ name: 'costs.md', sourcePath: '/run/costs.md' }]);
+        await flush();
+        t = task(h);
+        expect(t.status).toBe('running');
+        expect(t.room!.messages.at(-1)).toMatchObject({ speaker: { name: 'Ade' }, workReport: { stage: 0 } });
+        expect(h.commissions).toHaveLength(2);
+        const second = h.commissions[1].prompt;
+        expect(second).toContain('step 2 of 2');
+        expect(second).toContain('/data/team-files/task-r/files/ade/costs.md');
+
+        h.settle(h.commissions[1].id, 'done', 'Rebuilt.');
+        await flush();
+        t = task(h);
+        expect(t.status).toBe('review');
+        expect(t.room!.messages.filter((m) => m.workReport).map((m) => m.speaker.kind === 'member' && m.speaker.name)).toEqual(['Ade', 'Maya']);
+      });
+
+      it('follows the plan\'s order for the same people when the coordinator gave none', async () => {
+        const planned = (title: string, workerId: string, workerName: string): TeamTask['stages'][number] => ({
+          kind: 'contribute',
+          title,
+          assignments: [{ workerId, workerName, ask: 'x', status: 'done' }],
+          status: 'done',
+        });
+        const flat = `<work>${JSON.stringify({
+          title: 'Again',
+          assign: [
+            { name: 'Maya', ask: 'Compile.' },
+            { name: 'Ade', ask: 'Research.' },
+          ],
+        })}</work>`;
+        const h = room({ turns: [flat], stages: [planned('Research', 'ade', 'Ade'), planned('Compile', 'maya', 'Maya')] });
+        h.engine.roomAsk('task-r', 'do it again');
+        await flush();
+        const handoff = task(h).room!.messages[1].handoff!;
+        expect(handoff.assignments).toMatchObject([
+          { workerName: 'Maya', after: ['ade'] },
+          { workerName: 'Ade' },
+        ]);
+        expect(handoff.assignments[1].after).toBeUndefined();
+
+        // "after": [] says they are independent: side by side.
+        const apart = `<work>${JSON.stringify({
+          title: 'Apart',
+          assign: [
+            { name: 'Maya', ask: 'Compile.', after: [] },
+            { name: 'Ade', ask: 'Research.', after: [] },
+          ],
+        })}</work>`;
+        const h2 = room({ turns: [apart], stages: [planned('Research', 'ade', 'Ade'), planned('Compile', 'maya', 'Maya')] });
+        h2.engine.roomAsk('task-r', 'do it again');
+        await flush();
+        expect(task(h2).room!.messages[1].handoff!.assignments.every((a) => !a.after?.length)).toBe(true);
+      });
+
+      it('stops every step when you stop it, and skips steps with nothing to build on', async () => {
+        const h = room({ turns: [STEPPED] });
+        await start(h);
+        expect(h.engine.cancel('task-r')).toEqual({ ok: true });
+        let t = task(h);
+        expect(t.status).toBe('review');
+        expect(t.stages[1]).toMatchObject({ status: 'skipped' });
+        expect(t.room!.messages.at(-1)!.text).toBe('Maya did not start their part: you stopped the work.');
+        expect(h.commissions).toHaveLength(1);
+
+        const h2 = room({ turns: [STEPPED] });
+        await start(h2);
+        h2.settle(h2.commissions[0].id, 'failed');
+        await flush();
+        t = task(h2);
+        expect(t.status).toBe('review');
+        expect(t.stages[1]).toMatchObject({ status: 'skipped' });
+        expect(t.room!.messages.at(-1)!.text).toBe('Maya did not start their part: nothing came of the step before.');
+        expect(h2.commissions).toHaveLength(1);
+      });
     });
 
     it('keeps talking while the work runs, but holds new work until it reports back', async () => {
@@ -1608,5 +1859,127 @@ describe('what a team knows', () => {
     expect(h.engine.refreshDue(1 + week + 24 * 60 * 60 * 1000 + 1)).toEqual(['team-1']);
     expect(h.engine.setKnowledgeRefresh('team-1', 'off').ok).toBe(true);
     expect(h.engine.list().teams.find((t) => t.id === 'team-1')?.knowledgeRefresh).toBe('off');
+  });
+});
+
+describe('TeamEngine continueAsNew', () => {
+  const sprawled = (status: TeamTask['status'] = 'done'): TeamTask => ({
+    id: 'task-old',
+    teamId: 'team-1',
+    teamName: 'Discovery',
+    brief: 'Plan the year',
+    title: 'Break-even plan',
+    status,
+    createdAt: 0,
+    updatedAt: 0,
+    stages: [
+      { kind: 'synthesize', title: 'Pack', assignments: [], status: 'done' },
+      {
+        kind: 'contribute',
+        title: 'Rebuild the plan',
+        assignments: [{ workerId: 'ade', workerName: 'Ade', ask: 'Rebuild', status: 'failed' }],
+        status: 'failed',
+        fromRoom: { messageId: 'm1', exchange: 0 },
+      },
+    ],
+    stageIndex: 2,
+    spentUSD: 0,
+    budgetUSD: 12,
+    folder: '/data/team-files/task-old',
+    files: [
+      { name: 'brief.md', author: 'You', at: 0 },
+      { name: 'findings.md', author: 'Maya', at: 0 },
+      { name: 'pack/PROPOSAL.md', author: 'Coordinator', at: 0 },
+    ],
+    pack: { summary: 'Cut costs.', files: ['pack/PROPOSAL.md'], version: 6 },
+    room: { messages: [{ id: 'm0', speaker: { kind: 'you' }, text: 'Rebuild it', at: 0, exchange: 0 }] },
+  });
+
+  it('starts a fresh run with the pack and folder under earlier/, and links the two', async () => {
+    const h = makeHarness({ seedTeams: [team()], seedTasks: [sprawled()], turns: [PLAN] });
+    h.files.set('task-old/brief.md', '# Brief');
+    h.files.set('task-old/findings.md', 'Maya found savings');
+    h.files.set('task-old/pack/PROPOSAL.md', '# Proposal v6');
+    h.engine.start();
+
+    const res = h.engine.continueAsNew('task-old', 'Now the hiring plan', { conversation: true });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    await flush();
+
+    const fresh = h.engine.list().tasks.find((t) => t.id === res.task.id)!;
+    expect(fresh.continuesFrom).toEqual({
+      taskId: 'task-old',
+      title: 'Break-even plan',
+      packVersion: 6,
+      stages: 2,
+      open: ['Rebuild the plan'],
+      conversation: true,
+    });
+    expect(h.files.get(`${fresh.id}/earlier/pack/PROPOSAL.md`)).toBe('# Proposal v6');
+    expect(h.files.get(`${fresh.id}/earlier/findings.md`)).toBe('Maya found savings');
+    expect(h.files.get(`${fresh.id}/earlier/conversation.md`)).toContain('Rebuild it');
+    expect(h.files.get(`${fresh.id}/brief.md`)).toContain('## Continues');
+    expect(h.turnMessages[0]).toContain('THIS CONTINUES AN EARLIER TASK: "Break-even plan"');
+    expect(h.turnMessages[0]).toContain('- Rebuild the plan');
+
+    const old = h.engine.list().tasks.find((t) => t.id === 'task-old')!;
+    expect(old.continuedAs?.taskId).toBe(fresh.id);
+    expect(h.engine.continueAsNew('task-old', 'again')).toEqual({ ok: false, error: 'This task was already continued in a new run.' });
+  });
+
+  it('leaves the conversation behind unless asked', async () => {
+    const h = makeHarness({ seedTeams: [team()], seedTasks: [sprawled()], turns: [PLAN] });
+    h.engine.start();
+    const res = h.engine.continueAsNew('task-old', '');
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    await flush();
+    expect(res.task.brief).toBe('Carry on from Pack v6.');
+    expect(res.task.continuesFrom?.conversation).toBe(false);
+    expect(h.files.has(`${res.task.id}/earlier/conversation.md`)).toBe(false);
+  });
+
+  it('refuses a task with no pack yet', () => {
+    const h = makeHarness({ seedTeams: [team()], seedTasks: [{ ...sprawled(), pack: undefined }] });
+    h.engine.start();
+    expect(h.engine.continueAsNew('task-old', 'next')).toEqual({ ok: false, error: 'Only a task with a pack can be continued.' });
+  });
+});
+
+describe('TeamEngine room interrupted by a restart', () => {
+  const busyTask = (doing?: 'pack'): TeamTask => ({
+    id: 'task-i',
+    teamId: 'team-1',
+    teamName: 'Discovery',
+    brief: 'b',
+    status: 'review',
+    createdAt: 0,
+    updatedAt: 0,
+    stages: [],
+    stageIndex: 0,
+    spentUSD: 0,
+    budgetUSD: 12,
+    folder: '/data/team-files/task-i',
+    files: [],
+    pack: { summary: 's', files: [] },
+    room: {
+      messages: [{ id: 'q', speaker: { kind: 'you' }, text: 'Fold it in', at: 0, exchange: 0 }],
+      busy: { speaker: 'Coordinator', since: 0, ...(doing ? { doing } : {}) },
+    },
+  });
+
+  it('says a pack update was cut short, and offers it again', () => {
+    const h = makeHarness({ seedTeams: [team()], seedTasks: [busyTask('pack')] });
+    h.engine.start();
+    const last = task(h).room!.messages.at(-1)!;
+    expect(last).toMatchObject({ text: 'Updating the pack was interrupted when Overcli closed.', failed: true, retry: 'pack' });
+    expect(task(h).room!.busy).toBeNull();
+  });
+
+  it('offers a cut-short answer as the question again', () => {
+    const h = makeHarness({ seedTeams: [team()], seedTasks: [busyTask()] });
+    h.engine.start();
+    expect(task(h).room!.messages.at(-1)).toMatchObject({ text: 'Interrupted when Overcli closed — ask again.', retry: 'ask' });
   });
 });

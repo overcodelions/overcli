@@ -63,7 +63,7 @@ The org's identity and rules, on the data volume. Write it with `overcli org ini
 |---|---|
 | `name`, `slackTeamId`, `timezone`, `publicUrl` | Who the org is, and the address people use |
 | `admins`, `hirers`, `approvers` | Slack member IDs for each role (`hirers` may be `"*"`) |
-| `openJoin` | Let anyone in the Slack workspace in with `/overcli join` |
+| `openJoin` | Let anyone in the Slack workspace in with `/overgo join` |
 | `budgetAllowanceUSD`, `allowances` | Per-person monthly allowance, and overrides |
 | `orgBudgetUSD`, `alertAtPercent` | The org's monthly cap, and when to warn |
 | `allowedMcpServers` | Tools any manager may give their workers without an admin |
@@ -107,13 +107,13 @@ Connect Claude Code, Claude Desktop or Codex to `<server>/mcp` with your key. Wh
 
 | You type | Does |
 |---|---|
-| `@overcli <request>` or a DM | Whoever fits takes it; answers in the thread |
+| `@overgo <request>` or a DM | Whoever fits takes it; answers in the thread |
 | `/worker`, `/worker <name> ask <text>`, `/worker waiting` | List, ask, what's waiting on you |
 | `/team <name>: <task>` | Give a team a task (it waits as Up next if the team is busy) |
 | `/team new <what it's for>` | Make a team from your workers: a suggested crew comes by DM |
 | `/hire <the job>` | Hire a worker |
 | `/idea [process:] <the idea>` | Put an idea into a process, or see where yours are |
-| `/overcli join` | Ask to be let in |
+| `/overgo join` | Ask to be let in |
 
 The app's scopes and events are in `src/main/slack/slack-app-manifest.yml`. Reinstall the app when the manifest changes.
 

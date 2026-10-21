@@ -55,7 +55,7 @@ import { PopMenu, type MenuItemDef } from "../SidebarPlaces";
 import { fundingFor } from "@shared/flows/treasury";
 import { searchWork } from "./workSearch";
 import { awayLine, morningAfter, nextMondayMorning } from "./awayMode";
-import { NewTeamButton, ProcessesButton, TeamRailSection } from "./teams/TeamRail";
+import { TeamRailSection } from "./teams/TeamRail";
 import { useTeamsStore } from "../../teamsStore";
 import { foldSummary, groupByProject, teamOnlyIds, type ProjectGroup } from "./workerBoard";
 import { projectName, useProjectOptions } from "./teams/ProjectChoice";
@@ -91,6 +91,7 @@ export function WorkersRail({
   const view = useWorkersStore((s) => s.view);
   const showToday = useWorkersStore((s) => s.showToday);
   const showQueue = useWorkersStore((s) => s.showQueue);
+  const showProcesses = useWorkersStore((s) => s.showProcesses);
   const runs = useFlowsStore((s) => s.runs);
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
   const runners = useRunningMap();
@@ -232,6 +233,19 @@ export function WorkersRail({
     />
   );
 
+  // Processes is a place, like Today and Queue, so it sits with them rather
+  // than down among the create actions. A lab, off until asked for.
+  const processesButton = processesLab && (
+    <RailButton
+      label="Processes"
+      title="Processes · work that moves through several teams and your decisions, stage by stage"
+      expanded={expanded}
+      active={onWorkers && view === "processes"}
+      onClick={() => showProcesses(null)}
+      icon={<ProcessesIcon />}
+    />
+  );
+
   const toggle = (
     <RailButton
       label="Collapse"
@@ -303,10 +317,9 @@ export function WorkersRail({
       >
         <div className="flex flex-col gap-0.5 px-2">
           {orchestratorButton && <div data-orchestrator-button>{orchestratorButton}</div>}
-          <HireButton expanded={expanded} first />
-          {/* A team hires its own members, so it is a door with nobody hired. */}
-          <NewTeamButton expanded={expanded} />
-          <ProcessesButton expanded={expanded} />
+          {/* A team hires its own members, so New offers one with nobody hired. */}
+          <NewButton expanded={expanded} first />
+          {processesButton}
         </div>
         <div className="flex-1" />
         <div className="flex flex-col gap-0.5 px-2">{toggle}</div>
@@ -356,6 +369,7 @@ export function WorkersRail({
           onClick={showQueue}
           icon={<QueueIcon />}
         />
+        {processesButton}
         {expanded ? (
           <input
             ref={searchInput}
@@ -457,9 +471,7 @@ export function WorkersRail({
       </div>
 
       <div className={"mt-2 flex flex-col gap-0.5 " + (expanded ? "px-2" : "px-1")}>
-        <HireButton expanded={expanded} />
-        <NewTeamButton expanded={expanded} />
-        <ProcessesButton expanded={expanded} />
+        <NewButton expanded={expanded} />
         <div className="mx-1 my-1.5 h-px bg-card" />
         <RailFooter expanded={expanded} onToggleExpanded={onToggleExpanded} />
       </div>
@@ -837,11 +849,11 @@ function RailButton({
   );
 }
 
-/// The tab's one create action, always the rail's last slot above the
-/// occasional views — a dashed empty face, the chair you haven't filled yet.
-/// `first` is the empty rail's version: it sits at the top, where the first
-/// face will go, so its menu opens downward.
-function HireButton({ expanded, first = false }: { expanded: boolean; first?: boolean }) {
+/// The tab's one create button: hiring and teams behind one menu, so the
+/// rail ends in a single quiet control rather than rows that look like more
+/// crew. `first` is the empty rail's version: a dashed empty face at the top,
+/// the chair the first worker will take, so its menu opens downward.
+function NewButton({ expanded, first = false }: { expanded: boolean; first?: boolean }) {
   const openHire = useWorkersStore((s) => s.openHire);
   const openEditor = useWorkersStore((s) => s.openEditor);
   const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
@@ -860,78 +872,95 @@ function HireButton({ expanded, first = false }: { expanded: boolean; first?: bo
     window.addEventListener("mousedown", close);
     return () => window.removeEventListener("mousedown", close);
   }, [menuOpen]);
-  // A worker is hired onto a project, so with none there is nothing to
-  // hire into. The chair stays, greyed, and says why — aria-disabled rather
-  // than disabled, because a disabled button shows no tooltip.
+  // A worker is hired onto a project, so with none there is nothing to hire
+  // into. The hiring items stay, greyed, and say why — aria-disabled rather
+  // than disabled, because a disabled button shows no tooltip. A team needs
+  // no project, so New team is always there.
   const blocked = hirePath === "";
-  const label = first ? "Hire your first worker" : "Hire a worker";
-  const item = "w-full px-3 py-1.5 text-left text-xs hover:bg-card-strong";
+  const blockedTitle = "Add a project or workspace first — a worker is hired onto one";
+  const label = first ? "Hire your first worker" : "New";
+  const item = "w-full px-3 py-1.5 text-left text-xs ";
+  const hireItem = item + (blocked ? "cursor-not-allowed text-ink-faint opacity-50" : "hover:bg-card-strong ");
+  const hire = (run: () => void) => () => {
+    if (blocked) return;
+    setMenuOpen(false);
+    run();
+  };
+  const plus = (
+    <svg viewBox="0 0 14 14" aria-hidden className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+      <path d="M7 2.5v9M2.5 7h9" />
+    </svg>
+  );
   return (
     <div ref={menu} className="relative">
       <button
         type="button"
-        onClick={() => {
-          if (!blocked) setMenuOpen((o) => !o);
-        }}
-        title={blocked ? "Add a project or workspace first — a worker is hired onto one" : label}
+        onClick={() => setMenuOpen((o) => !o)}
+        title={first ? label : "Hire a worker or make a team"}
         aria-label={expanded ? undefined : label}
-        aria-disabled={blocked || undefined}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         className={
-          "flex min-h-[44px] w-full items-center gap-2.5 rounded-md py-1.5 text-left " +
+          "flex w-full items-center gap-2.5 rounded-md text-left " +
           "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
-          (blocked
-            ? "cursor-not-allowed text-ink-faint opacity-50 "
-            : "text-ink-muted hover:bg-card-strong hover:text-ink ") +
+          (first
+            ? "min-h-[44px] py-1.5 text-ink-muted hover:bg-card-strong hover:text-ink "
+            : "min-h-[36px] border border-card-strong bg-card text-ink hover:bg-card-strong ") +
           (expanded ? "px-2" : "justify-center px-0")
         }
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed border-card-strong">
-          <svg viewBox="0 0 14 14" aria-hidden className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <path d="M7 2.5v9M2.5 7h9" />
+        {first ? (
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed border-card-strong">
+            {plus}
+          </span>
+        ) : (
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center">{plus}</span>
+        )}
+        {expanded && <span className={"text-xs " + (first ? "" : "font-medium")}>{label}</span>}
+        {expanded && !first && (
+          <svg viewBox="0 0 12 12" aria-hidden className="ml-auto h-3 w-3 text-ink-faint" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <path d="M3 7.5 6 4.5l3 3" />
           </svg>
-        </span>
-        {expanded && <span className="text-xs">{label}</span>}
+        )}
       </button>
       {menuOpen && (
         <div
           role="menu"
           className={
-            "absolute left-full z-40 ml-2 w-40 " + (first ? "top-0 " : "bottom-0 ") +
-            "overflow-hidden rounded-md border border-card-strong bg-surface-elevated py-1 shadow-xl"
+            "absolute z-40 overflow-hidden rounded-md border border-card-strong bg-surface-elevated py-1 shadow-xl " +
+            (first ? "left-full top-0 ml-2 w-44" : expanded ? "bottom-full left-0 right-0 mb-1" : "bottom-0 left-full ml-2 w-44")
           }
         >
           <button
             role="menuitem"
-            onClick={() => {
-              setMenuOpen(false);
-              openHire(hirePath);
-            }}
-            className={item + " text-ink"}
+            onClick={hire(() => openHire(hirePath))}
+            title={blocked ? blockedTitle : undefined}
+            aria-disabled={blocked || undefined}
+            className={hireItem + (blocked ? "" : "text-ink")}
           >
             ✨ Hire with AI
           </button>
           <button
             role="menuitem"
-            onClick={() => {
-              setMenuOpen(false);
-              openEditor(newWorkerDraft(hirePath, hireEveryday));
-            }}
-            className={item + " text-ink-muted hover:text-ink"}
+            onClick={hire(() => openEditor(newWorkerDraft(hirePath, hireEveryday)))}
+            title={blocked ? blockedTitle : undefined}
+            aria-disabled={blocked || undefined}
+            className={hireItem + (blocked ? "" : "text-ink-muted hover:text-ink")}
           >
             Add by hand
           </button>
           <button
             role="menuitem"
-            onClick={() => {
-              setMenuOpen(false);
-              void importFromFile({
-                projectPath: hirePath,
-                projectPaths: projects.map((project) => project.path),
-              });
-            }}
-            className={item + " text-ink-muted hover:text-ink"}
+            onClick={hire(
+              () =>
+                void importFromFile({
+                  projectPath: hirePath,
+                  projectPaths: projects.map((project) => project.path),
+                }),
+            )}
+            title={blocked ? blockedTitle : undefined}
+            aria-disabled={blocked || undefined}
+            className={hireItem + (blocked ? "" : "text-ink-muted hover:text-ink")}
           >
             Import…
           </button>
@@ -943,7 +972,8 @@ function HireButton({ expanded, first = false }: { expanded: boolean; first?: bo
               setMenuOpen(false);
               openTeamEditor(null);
             }}
-            className={item + " text-ink-muted hover:text-ink"}
+            title="Make a team — from your crew, new hires, or both — and give it a task to finish together"
+            className={item + "text-ink-muted hover:bg-card-strong hover:text-ink"}
           >
             New team…
           </button>
@@ -1273,6 +1303,18 @@ function TodayIcon() {
     <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
       <circle cx="7" cy="7" r="5.2" />
       <path d="M7 4.1V7l2 1.5" />
+    </svg>
+  );
+}
+
+/// A pipeline: one stage feeding the next, then forking to two.
+function ProcessesIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="3" cy="8" r="1.75" />
+      <circle cx="13" cy="3.75" r="1.75" />
+      <circle cx="13" cy="12.25" r="1.75" />
+      <path d="M4.75 8H7c1.6 0 2-4.25 4.25-4.25M7 8c1.6 0 2 4.25 4.25 4.25" />
     </svg>
   );
 }

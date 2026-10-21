@@ -150,7 +150,7 @@ describe('today', () => {
     expect(t.waiting).toHaveLength(1);
     expect(t.waiting[0].options).toEqual(['Price cut', 'Repackaging']);
     expect(t.delivered.map((d) => d.title)).toEqual(['Report 2', 'Report 1', 'Report 0']);
-    expect(t.crew).toEqual([{ id: 'luke', name: 'Luke', state: 'waiting', nextShiftAt: NOW + 3_600_000 }]);
+    expect(t.crew).toEqual([{ id: 'luke', name: 'Luke', state: 'waiting', nextShiftAt: NOW + 3_600_000, spentUSD: 5, budgetUSDPerMonth: 20 }]);
     expect(t.spend).toMatchObject({ spentUSD: 5, allowanceUSD: 100, committedUSD: 20 });
   });
 

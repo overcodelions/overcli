@@ -12,6 +12,7 @@ import { ResizableDivider } from './ResizableDivider';
 import { ChangesBar } from './ChangesBar';
 import { RunOnBranchButton } from './RunOnBranchButton';
 import { serviceWorkspaceIdsForConversation } from '../conversationLookup';
+import { splitOwnChanges, touchedPaths } from '../conversationTouchedFiles';
 import { isEverydayProject } from '@shared/everydayProjects';
 import { RunningIndicator } from './RunningIndicator';
 import { ManualCommand } from './ManualCommand';
@@ -76,6 +77,18 @@ export function ConversationPane() {
     }
     return conv?.worktreePath ? [{ path: conv.worktreePath }] : [];
   }, [projects, memberIds, adoptedTrees, conv?.worktreePath]);
+  // Plain conversations share the project's checkout with every other
+  // plain conversation in it, so git's list is everyone's edits. Show only
+  // the files this one touched; the rest collapse into a count.
+  const sharedCheckout = changedCheckouts.length === 0;
+  const touched = useMemo(() => touchedPaths(events), [events]);
+  const { own: ownChanges, others: otherChanges } = useMemo(
+    () =>
+      sharedCheckout
+        ? splitOwnChanges(gitStatus?.changes ?? [], touched)
+        : { own: gitStatus?.changes ?? [], others: 0 },
+    [sharedCheckout, gitStatus?.changes, touched],
+  );
   // Count of file-modifying tool uses in this conversation. When it
   // changes we re-probe git — that keeps the ChangesBar and the
   // header +/- badge in lockstep with the working tree.
@@ -164,7 +177,8 @@ export function ConversationPane() {
         <div className="px-4 pb-3 pt-1 flex flex-col gap-1.5">
           <RunningIndicator conversationId={convId} />
           <ChangesBar
-            files={gitStatus?.changes ?? []}
+            files={ownChanges}
+            otherChanges={otherChanges}
             branch={gitStatus?.currentBranch}
             // Same test as `isAgentConversation`: a worktree of its own
             // (borrowed or minted), or a workspace agent's member worktrees —

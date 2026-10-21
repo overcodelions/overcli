@@ -1,4 +1,4 @@
-# overcli for an org on AWS (alpha)
+# overgo for your org on AWS (alpha)
 
 > **Alpha.** The org layer is early: expect changes, and back up `/data`.
 
@@ -17,7 +17,7 @@ Replace the container whenever you like (an upgrade, a crash, a new instance). A
 
 So on AWS the job is to put `/data` on a durable disk, snapshot it, and run exactly one container against it.
 
-**Run only one at a time.** overcli takes a lock on `/data`, and Slack's Socket Mode would split events between two copies. Never run two copies against the same data or the same Slack app.
+**Run only one at a time.** overgo takes a lock on `/data`, and Slack's Socket Mode would split events between two copies. Never run two copies against the same data or the same Slack app.
 
 ## Recommended: one EC2 instance in a private subnet
 
@@ -53,7 +53,7 @@ So on AWS the job is to put `/data` on a durable disk, snapshot it, and run exac
    docker compose -f deploy/docker-compose.yml up -d
    ```
    Change the compose port mapping to `"7420:7420"` so the load balancer can reach it. The instance's security group should allow 7420 only from the ALB.
-8. **HTTPS.** Put an internal ALB in front with an ACM certificate, a target group on 7420, and the health check on `/healthz`. Set `OVERCLI_TRUST_PROXY=1` in `.env`, and `publicUrl` in `org.json` to the ALB's name (e.g. `https://overcli.acme.internal`).
+8. **HTTPS.** Put an internal ALB in front with an ACM certificate, a target group on 7420, and the health check on `/healthz`. Set `OVERCLI_TRUST_PROXY=1` in `.env`, and `publicUrl` in `org.json` to the ALB's name (e.g. `https://overgo.acme.internal`).
 9. **Egress.** Through a NAT gateway: `slack.com`, `wss-primary.slack.com`, `wss-backup.slack.com`, your git host, and package registries if your tools use `npx` or `uvx`. `uvx` also fetches its Python from `github.com` the first time.
 
 ### Upgrading
@@ -84,7 +84,7 @@ ECS works, with care:
 
 ## Secrets policy
 
-The role overcli runs as (instance role or task role) needs this on its prefix. Drop the write actions and set `OVERCLI_SECRETS_READONLY=1` if Terraform manages the secrets instead; the console then lists them and points there.
+The role overgo runs as (instance role or task role) needs this on its prefix. Drop the write actions and set `OVERCLI_SECRETS_READONLY=1` if Terraform manages the secrets instead; the console then lists them and points there.
 
 ```json
 {
@@ -112,11 +112,11 @@ The role overcli runs as (instance role or task role) needs this on its prefix. 
 }
 ```
 
-With a customer-managed KMS key, add `kms:Decrypt` and `kms:GenerateDataKey` on it. overcli reads the secrets at start and every five minutes, so one rotated in Secrets Manager applies without a redeploy.
+With a customer-managed KMS key, add `kms:Decrypt` and `kms:GenerateDataKey` on it. overgo reads the secrets at start and every five minutes, so one rotated in Secrets Manager applies without a redeploy.
 
 ## CloudWatch logs for workers
 
-Workers can read CloudWatch logs through AWS's CloudWatch MCP server, using the role overcli already runs as. There is no key to paste and nothing to renew: the instance or task role's credentials rotate on their own, and the tool starts fresh for each run.
+Workers can read CloudWatch logs through AWS's CloudWatch MCP server, using the role overgo already runs as. There is no key to paste and nothing to renew: the instance or task role's credentials rotate on their own, and the tool starts fresh for each run.
 
 1. **Give the role read access to the log groups workers may see.** Name them, or end a name with `*` for every group under a prefix (`/ecs/acme-*`). A bare `*` gives every group, which is rarely what you want.
 
@@ -157,7 +157,7 @@ Workers can read CloudWatch logs through AWS's CloudWatch MCP server, using the 
     - Environment: `AWS_REGION=<region>`
 
     The image includes `uv`. The first run downloads the server and its Python into the volume, so it takes a minute; later runs start at once.
-3. **Give it only to the workers that need it,** and leave its scope as the whole tool. The role is what keeps it read-only, and overcli's "Read only" scope judges calls by name, so it would refuse queries like `execute_log_insights_query`.
+3. **Give it only to the workers that need it,** and leave its scope as the whole tool. The role is what keeps it read-only, and overgo's "Read only" scope judges calls by name, so it would refuse queries like `execute_log_insights_query`.
 
 **Treat it as confidential.** Logs often carry customer data, and a worker that's trusted to act and has a shell can use whatever the role can. Keep the role's log access to the groups above, and make the tool admin-only on Setup → Tools.
 
@@ -182,4 +182,4 @@ An alarm can take up to the watch's interval (5 minutes) to reach the worker. A 
 
 ## Not a fit
 
-**Lambda and App Runner.** overcli is one long-lived process: it holds Slack's connection, fires schedules and keeps worktrees on disk.
+**Lambda and App Runner.** overgo is one long-lived process: it holds Slack's connection, fires schedules and keeps worktrees on disk.

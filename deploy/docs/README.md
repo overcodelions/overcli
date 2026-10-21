@@ -1,4 +1,6 @@
-# overcli for your org (alpha)
+# overgo for your org (alpha)
+
+overgo is the org server for overcli: one container that runs `overcli serve`.
 
 overcli workers are AI colleagues that each own a job, such as triaging bugs, writing the weekly competitive brief, or answering questions about the billing code. On a laptop, one person builds and runs them. Hosted for an org, anyone can ask them for things from Slack, managers approve what they do, and the results are kept where people can find them.
 

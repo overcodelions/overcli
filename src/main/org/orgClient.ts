@@ -36,7 +36,7 @@ export function normalizeOrgUrl(raw: string): { ok: true; url: string } | { ok: 
   try {
     u = new URL(raw.trim());
   } catch {
-    return { ok: false, error: 'That is not a URL. It looks like https://overcli.acme.internal:7420' };
+    return { ok: false, error: 'That is not a URL. It looks like https://overgo.acme.internal:7420' };
   }
   const local = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(u.hostname);
   if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) {

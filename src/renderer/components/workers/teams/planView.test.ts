@@ -5,11 +5,16 @@ import {
   cellLabel,
   chipState,
   defaultCell,
+  foldedLaneLabel,
   nextTab,
+  openRound,
   pieceIn,
   planLayout,
+  planRounds,
   planStatus,
   roleTitle,
+  roundName,
+  roundOf,
   shortDuration,
   stageMs,
   stageWhen,
@@ -198,5 +203,54 @@ describe('briefOpening', () => {
     expect(out.endsWith('…')).toBe(true);
     expect(out.length).toBeLessThanOrEqual(41);
     expect(out).toBe('Review everything you can find about…');
+  });
+});
+
+describe('planRounds', () => {
+  const room = (exchange: number, at = exchange) => ({ fromRoom: { messageId: `m${exchange}`, exchange }, startedAt: at * 10, finishedAt: at * 10 + 5 });
+  const task = {
+    stages: [
+      stage('contribute', [piece('maya')], { startedAt: 0, finishedAt: 4 }),
+      stage('synthesize', [], { startedAt: 4, finishedAt: 6 }),
+      stage('contribute', [piece('ade')], room(1)),
+      stage('contribute', [piece('ade', { status: 'failed' })], { ...room(2), status: 'failed' }),
+      stage('contribute', [piece('maya', { status: 'running' })], { ...room(2, 3), status: 'running', finishedAt: undefined }),
+    ],
+    room: {
+      messages: [
+        { id: 'a', speaker: { kind: 'you' as const }, text: 'Add the AWS numbers', at: 0, exchange: 1 },
+        { id: 'b', speaker: { kind: 'coordinator' as const }, text: 'On it', at: 0, exchange: 1 },
+        { id: 'c', speaker: { kind: 'you' as const }, text: ' Read the workbooks ', at: 0, exchange: 2 },
+      ],
+    },
+  };
+
+  it('groups the plan, then one round per question that handed work off', () => {
+    const rounds = planRounds(task);
+    expect(rounds.map((r) => ({ index: r.index, stages: r.stages, ask: r.ask, done: r.done, failed: r.failed, live: r.live }))).toEqual([
+      { index: 0, stages: [0, 1], ask: undefined, done: 2, failed: 0, live: false },
+      { index: 1, stages: [2], ask: 'Add the AWS numbers', done: 1, failed: 0, live: false },
+      { index: 2, stages: [3, 4], ask: 'Read the workbooks', done: 0, failed: 1, live: true },
+    ]);
+    expect(rounds[2]).toMatchObject({ from: 20, to: 30 });
+    expect(roundName(rounds[0])).toBe('The plan');
+    expect(roundName(rounds[2])).toBe('Round 3');
+    expect(roundOf(rounds, 4)?.index).toBe(2);
+  });
+
+  it('opens the round at work, else the latest', () => {
+    expect(openRound(planRounds(task))).toBe(2);
+    const settled = { ...task, stages: task.stages.slice(0, 3) };
+    expect(openRound(planRounds(settled))).toBe(1);
+    expect(openRound([])).toBe(0);
+  });
+
+  it('sums a lane across a folded round', () => {
+    const rounds = planRounds(task);
+    expect(foldedLaneLabel(task, rounds[0], 'maya')).toEqual({ label: '1 done', state: 'done' });
+    expect(foldedLaneLabel(task, rounds[0], COORDINATOR_LANE)).toEqual({ label: '1 done', state: 'done' });
+    expect(foldedLaneLabel(task, rounds[2], 'ade')).toEqual({ label: '1 failed', state: 'failed' });
+    expect(foldedLaneLabel(task, rounds[2], 'maya')).toEqual({ label: 'working', state: 'working' });
+    expect(foldedLaneLabel(task, rounds[1], 'maya')).toBeNull();
   });
 });

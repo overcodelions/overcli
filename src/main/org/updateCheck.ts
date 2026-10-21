@@ -39,6 +39,11 @@ export function isNewer(latest: string, current: string): boolean {
 
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
+export interface ServerVersion {
+  version: string;
+  newer?: { version: string; url: string };
+}
+
 export class UpdateCheck {
   private latest: { version: string; url: string } | null = null;
   private failed = false;
@@ -75,6 +80,15 @@ export class UpdateCheck {
       this.failed = true;
       this.deps.log?.(`update check: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /// What runs here and, once a check has seen one, the newer release: for
+  /// the console's footer.
+  status(): ServerVersion {
+    return {
+      version: this.deps.current,
+      ...(this.latest && isNewer(this.latest.version, this.deps.current) ? { newer: this.latest } : {}),
+    };
   }
 
   /// The Readiness line: what runs here, and whether something newer is out.

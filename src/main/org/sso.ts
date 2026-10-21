@@ -169,7 +169,7 @@ export class SsoService {
     if (sso.allowedDomains.length && !sso.allowedDomains.includes(domain)) return { ok: false, error: `${domain} addresses cannot sign in here.` };
     const person = await this.deps.resolvePerson(email);
     if (!person) {
-      return { ok: false, error: `Signed in as ${email}, but overcli doesn't know who that is in Slack yet. Ask an admin to add you on Admin → Rules → Sign-in.` };
+      return { ok: false, error: `Signed in as ${email}, but overgo doesn't know who that is in Slack yet. Ask an admin to add you on Admin → Rules → Sign-in.` };
     }
     const name = (typeof claims.name === 'string' && claims.name.trim()) || person.name || email.split('@')[0];
     const { token } = this.deps.signIn({ slackUserId: person.slackUserId, name, email });

@@ -15,16 +15,15 @@
 // unless the person picks one. No web fonts — the CSP allows nothing off the
 // box — so the serif is whichever good one the OS has.
 
-/// overcli's mark for small places — the tab, the sidebar — served at
-/// /icon.svg: the app icon's overline and chevron, flat on an ink tile, the
-/// chevron in the console's teal. The Dock icon's white plate and shadow read
-/// as a sticker at 30 px. The sidebar draws the same shape inline so the tile
-/// can follow the theme.
+/// overgo's mark for small places — the tab, the sidebar — served at
+/// /icon.svg: overcli's overline with an arrow under it in place of the
+/// chevron, so the org product reads as one family with the app. The sidebar
+/// draws the same shape inline.
 export const CONSOLE_ICON = `<svg width="64" height="64" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
 <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#efefeb"/></linearGradient></defs>
 <rect x="0.5" y="0.5" width="31" height="31" rx="7" fill="url(#g)" stroke="#000" stroke-opacity="0.14"/>
 <path d="M10 9.5h12" stroke="#111113" stroke-width="3" stroke-linecap="round"/>
-<path d="M10 14l11.5 5L10 24" fill="none" stroke="#111113" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M10 19h11.5M17 14.5l4.5 4.5-4.5 4.5" fill="none" stroke="#111113" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 `;
 
@@ -34,7 +33,7 @@ export const CONSOLE_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>overcli</title>
+<title>overgo</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/console.css">
 </head>
@@ -101,19 +100,29 @@ code, pre { font-family: var(--mono); font-size: 12.5px; }
 .frame { display: grid; grid-template-columns: 232px minmax(0, 1fr); grid-template-rows: 56px minmax(0, 1fr); min-height: 100vh; }
 .topbar { grid-column: 1 / -1; position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 16px; padding: 0 16px; background: var(--side); border-bottom: 1px solid var(--line); }
 .topbar .brand { width: 200px; padding: 0; flex: none; }
-.topbar .org { font-weight: 600; font-size: 13.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar .brand-slash { flex: none; margin: 0 -2px; font-size: 20px; font-weight: 400; line-height: 1; color: var(--faint); }
+.topbar .org { min-width: 0; font-weight: 600; font-size: 16px; letter-spacing: -0.01em; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .search { flex: 1 1 auto; max-width: 520px; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--line); color: var(--faint); }
 .search:focus-within { border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
 .search input { border: 0 !important; background: transparent !important; box-shadow: none !important; padding: 0; min-height: 0; font-size: 13.5px; }
 .search kbd { font: 600 11px var(--sans); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 6px; color: var(--faint); }
 .top-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-.top-link { background: none; border: 0; color: var(--muted); font-size: 13px; padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.top-link { background: none; border: 0; text-decoration: none; color: var(--muted); font-size: 13px; padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 .top-link:hover { background: var(--panel); color: var(--ink); }
 .top-bell { position: relative; }
 .top-bell .count { position: absolute; top: 2px; right: 0; min-width: 16px; padding: 0 4px; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; background: var(--need); color: var(--need-ink); }
 .side { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; position: sticky; top: 56px; height: calc(100vh - 56px); overflow-y: auto; }
 .side-hire { width: 100%; margin-top: auto; flex: none; justify-content: center; min-height: 40px; background: var(--panel); }
 .side-hire[aria-current="page"] { border-color: var(--go); color: var(--go); }
+.side-by { margin-top: auto; flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 14px 8px 2px; font-size: 12px; line-height: 1.3; color: var(--faint); }
+.side-by a { color: var(--faint); text-decoration: none; }
+.side-by a:hover, .side-by a:hover code { color: var(--ink); }
+.side-by-name { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink); }
+.side-by-ver { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.side-by-ver a { color: var(--need); }
+.side-by-name b { font-weight: 600; }
+.side-hire + .side-by { margin-top: 10px; }
+.side-by code { font-size: 12px; color: var(--muted); }
 .menu-wrap { position: relative; }
 .menu { position: absolute; right: 0; top: calc(100% + 6px); width: 280px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28); z-index: 20; overflow: hidden; }
 .menu-who { display: flex; gap: 12px; align-items: center; padding: 14px 16px; }
@@ -281,6 +290,7 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .timeline .dayhead::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .more-row { display: flex; justify-content: center; padding: 4px 0 8px; }
 .bubble-me { align-self: flex-end; max-width: 80%; background: var(--solid); color: var(--solid-ink); border-radius: 14px 14px 4px 14px; padding: 10px 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble-me.queued { background: transparent; color: var(--muted); border: 1px dashed var(--line-2); }
 .bubble { background: var(--panel); border: 1px solid var(--line); border-radius: 4px 14px 14px 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .turn { display: flex; gap: 10px; align-items: flex-start; }
 .turn > .bubble { flex: 1; }
@@ -649,6 +659,16 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .need-card.need { border-color: var(--need); }
 .need-card.need .t-kind { color: var(--need); }
 .tools-table td { vertical-align: middle; }
+.cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.cat-card { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; cursor: pointer; font: inherit; color: inherit; }
+.cat-card:hover, .cat-card:focus-visible { border-color: var(--go); }
+.cat-card.done { border-color: var(--ok); background: var(--ok-soft); }
+.cat-done { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 12px; font-weight: 600; color: var(--ok); }
+.cat-done .tick { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 999px; background: var(--ok); color: var(--panel); }
+.cat-card .cat-blurb { font-size: 13px; color: var(--muted); }
+.cat-card .cat-meta { font-size: 12px; color: var(--faint); }
+.cat-card.other { border: 1px dashed var(--go); background: color-mix(in srgb, var(--go) 7%, var(--panel)); justify-content: center; }
+.cat-card.other b { color: var(--go); display: inline-flex; gap: 6px; align-items: center; }
 .tools-table tr.dim td { background: var(--panel-2); }
 .tstate { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .tstate.ok { color: var(--ok); } .tstate.need { color: var(--need); } .tstate.bad { color: var(--bad); }
@@ -1019,7 +1039,7 @@ section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
   .side-hire { display: none; }
   .side { min-width: 0; position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; }
   .brand { padding: 0 8px 0 0; }
-  .brand-sub, .nav .sep { display: none; }
+  .brand-sub, .nav .sep, .side-by { display: none; }
   .nav { flex-direction: row; overflow-x: auto; width: 100%; min-width: 0; order: 3; scrollbar-width: none; }
   .nav button { white-space: nowrap; width: auto; }
   .nav button[aria-current="page"] { box-shadow: inset 0 -2px 0 var(--go); }
@@ -1197,8 +1217,8 @@ section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
 .pi-thumb img { max-width: 100%; max-height: 220px; border-radius: var(--r); border: 1px solid var(--line); object-fit: contain; background: #fff; }
 .pi-working { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
 .pi-banner { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; background: var(--info-soft); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; margin-bottom: 14px; }
-.pi-mini { flex: none; width: 96px; height: 72px; padding: 0; border: 1px solid var(--line); border-radius: var(--r); background: #fff; cursor: zoom-in; overflow: hidden; }
-.pi-mini img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pi-pic { flex: none; width: 96px; height: 72px; padding: 0; border: 1px solid var(--line); border-radius: var(--r); background: #fff; cursor: zoom-in; overflow: hidden; }
+.pi-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .pi-notes { margin: 0; padding-left: 18px; font-size: 13px; color: var(--ink); display: flex; flex-direction: column; gap: 2px; }
 .pi-viewer { position: fixed; top: 72px; right: 16px; bottom: 16px; width: min(40vw, 520px); z-index: 6; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.5); }
 .pi-viewbody { flex: 1; min-height: 0; overflow: auto; }
@@ -1516,7 +1536,7 @@ button.pi-file:hover, a.pi-file:hover { background: var(--panel-2); }
 .tt-spend { flex: none; }
 .tt-spend .t-spend { font-size: 11.5px; gap: 8px; white-space: nowrap; }
 .tt-spend .t-spend .meter { width: 80px; }
-.tt-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(var(--n, 4), minmax(0, 1fr)); gap: 4px; }
+.tt-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: var(--cols, repeat(var(--n, 4), minmax(0, 1fr))); gap: 4px; }
 .tt-track li { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .tt-bar { height: 5px; border-radius: 3px; background: var(--line-2); }
 .tt-sname { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1528,6 +1548,12 @@ button.pi-file:hover, a.pi-file:hover { background: var(--panel-2); }
 .tt-track .now .tt-sname { color: var(--go); font-weight: 600; }
 .tt-track .need .tt-sname { color: var(--need); font-weight: 600; }
 .tt-track .failed .tt-sname { color: var(--bad); }
+.tt-fbars { display: flex; gap: 2px; }
+.tt-fbars > .tt-bar { flex: 1; min-width: 3px; }
+.tt-fbars > .done { background: var(--ok); }
+.tt-fbars > .part, .tt-fbars > .need { background: var(--need); }
+.tt-fbars > .failed { background: var(--bad); }
+.tt-fbars > .now { background: var(--go); }
 .tt-bandbody { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--need) 30%, var(--line)); }
 .tt-c { width: 26px; height: 26px; border-radius: 999px; font-size: 11px; color: var(--muted); background: var(--panel-2); }
 .pi-mini .label.tt-ok { color: var(--ok); }
@@ -1548,6 +1574,7 @@ button.pi-file:hover, a.pi-file:hover { background: var(--panel-2); }
 .tt-ask textarea.tt-askin { flex: 1; min-width: 0; min-height: 0; height: auto; resize: none; border: 0; background: transparent; outline: none; padding: 4px 0; font: inherit; font-size: 14px; line-height: 1.5; box-shadow: none; }
 .tt-try { appearance: none; font: inherit; font-size: 12px; color: var(--muted); padding: 4px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: none; cursor: pointer; }
 .tt-try:hover { color: var(--ink); border-color: var(--faint); }
+.tt-try:disabled { opacity: .55; cursor: default; color: var(--faint); border-color: var(--line-2); }
 .tt-fileline { appearance: none; border: 0; background: none; padding: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .tt-fileline b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tt-fileline:hover b { text-decoration: underline; }
@@ -1705,6 +1732,7 @@ export const CONSOLE_JS = String.raw`
   var ICONS = {
     sun: [['circle', 12, 12, 4], ['path', 'M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4']],
     doc: [['path', 'M6 3h9l4 4v14H6z'], ['path', 'M14 3v5h5M9 13h7M9 17h5']],
+    help: [['circle', 12, 12, 9], ['path', 'M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7M12 17h.01']],
     people: [['circle', 9, 8, 3.2], ['path', 'M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5'], ['circle', 17, 9, 2.4], ['path', 'M16 14.2c2.4.2 4 1.8 4.5 4.8']],
     team: [['circle', 12, 7, 3], ['circle', 5.5, 10, 2.3], ['circle', 18.5, 10, 2.3], ['path', 'M7 20c.5-3.4 2.4-5.4 5-5.4s4.5 2 5 5.4M2.5 18c.3-2 1.4-3.3 3-3.6M21.5 18c-.3-2-1.4-3.3-3-3.6']],
     chart: [['rect', 9, 3, 6, 5], ['rect', 3, 16, 6, 5], ['rect', 15, 16, 6, 5], ['path', 'M12 8v4M6 16v-4h12v4']],
@@ -1768,7 +1796,7 @@ export const CONSOLE_JS = String.raw`
     s.appendChild(defs);
     s.appendChild(el('rect', { x: '0.5', y: '0.5', width: '31', height: '31', rx: '7', fill: 'url(#' + id + ')', stroke: '#000', 'stroke-opacity': '0.14' }));
     s.appendChild(el('path', { d: 'M10 9.5h12', stroke: '#111113', 'stroke-width': '3', 'stroke-linecap': 'round' }));
-    s.appendChild(el('path', { d: 'M10 14l11.5 5L10 24', fill: 'none', stroke: '#111113', 'stroke-width': '3', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    s.appendChild(el('path', { d: 'M10 19h11.5M17 14.5l4.5 4.5-4.5 4.5', fill: 'none', stroke: '#111113', 'stroke-width': '3', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
     return s;
   }
 
@@ -1957,7 +1985,7 @@ export const CONSOLE_JS = String.raw`
     }
     input.onkeydown = function (e) { if (e.key === 'Enter') submit(); };
     setTimeout(function () { input.focus(); }, 0);
-    var lead = h('p', { class: 'muted', text: 'Open the sign-in link overcli sent you in Slack. Lost it, or in a new browser? Type /overcli join in Slack for a fresh one, or ask your admin to invite you again.' });
+    var lead = h('p', { class: 'muted', text: 'Open the sign-in link overgo sent you in Slack. Lost it, or in a new browser? Type /overgo join in Slack for a fresh one, or ask your admin to invite you again.' });
     var ssoSlot = h('div');
     var tokenBox = h('details', null, h('summary', { class: 'faint', text: 'Sign in with an access token instead' }),
       h('div', { class: 'stack', style: 'margin-top:10px' }, input, err, h('button', { class: 'btn go', onclick: submit, text: 'Sign in' })));
@@ -1965,7 +1993,7 @@ export const CONSOLE_JS = String.raw`
     fetch('/api/sso').then(function (r) { return r.json(); }).then(function (st) {
       if (!st.enabled) return;
       ssoSlot.appendChild(ssoButton(st, '/'));
-      lead.textContent = st.required ? 'Sign in with your company account.' : 'Sign in with your company account, or open the sign-in link overcli sent you in Slack.';
+      lead.textContent = st.required ? 'Sign in with your company account.' : 'Sign in with your company account, or open the sign-in link overgo sent you in Slack.';
     }).catch(function () {});
     return h('div', { class: 'login-wrap' }, h('div', { class: 'login panel stack' },
       brandMark(48, 'mark'),
@@ -2060,12 +2088,13 @@ export const CONSOLE_JS = String.raw`
     };
     var mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
     return h('header', { class: 'topbar' },
-      h('div', { class: 'brand' }, brandMark(28),
-        h('div', { style: 'min-width:0' }, h('div', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, h('span', { class: 'brand-name', text: 'overcli' }), h('span', { class: 'alpha', title: 'Org workers are an early alpha: expect rough edges and changes.', text: 'alpha' })),
-          h('div', { class: 'brand-sub org', text: me.org }))),
+      // The org is the name here; overgo is the mark beside it and the foot
+      // of the menu.
+      h('div', { class: 'brand' }, brandMark(28), h('span', { class: 'brand-slash', 'aria-hidden': 'true', text: '/' }), h('span', { class: 'org', text: me.org })),
       h('label', { class: 'search' }, icon('search', 15), find, h('kbd', { text: mac ? '⌘K' : 'Ctrl K' })),
       h('div', { class: 'top-right' },
         workingPill(),
+        h('a', { class: 'top-link', href: '/docs', target: '_blank', rel: 'noopener', 'aria-label': 'Docs' }, icon('help', 16), h('span', { class: 'lbl', text: 'Docs' })),
         h('button', { class: 'top-link', onclick: function () { go('connect'); } }, icon('slack', 16), h('span', { class: 'lbl', text: 'Slack & Claude' })),
         h('button', { class: 'top-link top-bell', 'aria-label': 'Inbox', onclick: function () { go('today'); } }, icon('bell', 17),
           h('span', { class: 'count', 'data-count': 'today', hidden: !state.counts.today, text: state.counts.today ? String(state.counts.today) : '' })),
@@ -2098,7 +2127,11 @@ export const CONSOLE_JS = String.raw`
   function openWorking(x) {
     if ((x.kind === 'run' || x.kind === 'waiting') && x.id.indexOf('run:') === 0) { watchRun(x.id.slice(4), x.workerName + ' · ' + x.title); return; }
     if (x.teamId && x.kind === 'team') go('team', { teamId: x.teamId });
-    else if (x.workerId) openWorker(x.workerId);
+    else if (x.workerId) {
+      // Land on the work that's moving, not whatever was open there last.
+      if (x.kind === 'deciding' || x.kind === 'run') { state.wlLive = x.workerId; if (state.wlSel) delete state.wlSel[x.workerId]; }
+      openWorker(x.workerId);
+    }
   }
   var NOW_KIND = { run: ['working', 'Running'], deciding: ['working', 'Deciding'], waiting: ['waiting', 'Waiting'], team: ['working', 'Team'] };
   function workingRow(x) {
@@ -2149,6 +2182,7 @@ export const CONSOLE_JS = String.raw`
       h('div', { class: 'menu-sec' },
         h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { close(); go('connections'); } }, icon('plug', 16), 'Your connections'),
         h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { close(); go('connect'); } }, icon('slack', 16), 'Use from Slack or Claude'),
+        h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { close(); window.open('/docs', '_blank', 'noopener'); } }, icon('help', 16), 'Help & docs'),
         h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { var done = function () { store(TOKEN_KEY, null); state.me = null; render(); }; api('POST', '/api/signout').then(done, done); } }, icon('back', 16), 'Sign out')));
     var btn = h('button', { class: 'top-link', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, avatar('', me.name, 's'), h('span', { class: 'lbl', text: me.name }));
     function outside(e) { if (!wrap.contains(e.target)) close(); }
@@ -2227,7 +2261,7 @@ export const CONSOLE_JS = String.raw`
     // Tabs inside a page (a worker's, Setup's) change state and re-render
     // without going through go(): keep the address in step either way.
     try { if (location.hash !== '#' + hashFor()) history.replaceState(null, '', '#' + hashFor()); } catch (e) {}
-    document.title = me.org + ' — overcli';
+    document.title = me.org + ' — overgo';
     // Hiring is narrow once it's questions or an offer; the brief has the
     // ideas beside it.
     var main = h('div', { class: 'page' + (state.tab === 'connect' || (state.tab === 'hire' && state.hire) ? ' narrow' : '') }, thinking('Loading…'));
@@ -2244,7 +2278,12 @@ export const CONSOLE_JS = String.raw`
             t.issue ? h('span', { class: 'issue', 'data-issue': t.issue, hidden: !state.counts[t.issue], text: state.counts[t.issue] ? plural(state.counts[t.issue], 'issue', 'issues') : '' }) : null);
         })),
         // At the foot of the menu: always to hand, never louder than the page.
-        me.canHire ? h('button', { class: 'btn side-hire', 'aria-current': state.tab === 'hire' ? 'page' : null, onclick: function () { go('hire'); } }, icon('plus', 16), 'Hire a worker') : null),
+        me.canHire ? h('button', { class: 'btn side-hire', 'aria-current': state.tab === 'hire' ? 'page' : null, onclick: function () { go('hire'); } }, icon('plus', 16), 'Hire a worker') : null,
+        h('div', { class: 'side-by' },
+          h('span', { class: 'side-by-name' }, h('b', { text: 'overgo' }), h('span', { class: 'alpha', title: 'Org workers are an early alpha: expect rough edges and changes.', text: 'alpha' })),
+          h('a', { href: 'https://github.com/overcodelions/overcli', target: '_blank', rel: 'noopener' }, 'powered by ', h('code', { text: 'overcli' })),
+          me.version ? h('span', { class: 'side-by-ver' }, 'v' + me.version,
+            me.newer ? h('a', { href: me.newer.url, target: '_blank', rel: 'noopener', title: 'A newer release is out. Setup → Readiness says how to upgrade.', text: ' · ' + me.newer.version + ' is out' }) : null) : null)),
       h('main', { class: 'main' }, main)));
     refreshCounts();
     if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
@@ -2297,7 +2336,7 @@ export const CONSOLE_JS = String.raw`
       var covers = later ? ' Approving for this run also covers ' + (later === 1 ? 'the 1 later step that uses' : 'the ' + later + ' later steps that use') + ' the same tools; anything new still asks.' : ' Approving covers this one step.';
       body = [h('p', { class: 'muted', text: it.reaches && it.reaches.length
           ? 'Its next step ' + it.reaches.join(', ') + ', so it asks first.' + covers
-          : 'Its next step reaches outside overcli: it may push code, send a message, publish, or change a service.' + covers }),
+          : 'Its next step reaches outside overgo: it may push code, send a message, publish, or change a service.' + covers }),
         it.instructions ? h('div', { class: 'stack', style: 'gap:6px' }, h('div', { class: 'faint', text: 'What the step is told to do' }), h('div', { class: 'preview' }, h('pre', { text: it.instructions }))) : null,
         (it.inputs || []).map(function (inp) {
           return h('details', null, h('summary', { text: 'What it will use: ' + inp.name }), h('div', { class: 'preview', style: 'margin-top:8px' }, h('pre', { text: inp.preview })));
@@ -3225,8 +3264,11 @@ export const CONSOLE_JS = String.raw`
   var drafts = {};
 
   /// Reply in the thread: the worker's one-tap answers, and a box for your own.
+  /// While the worker is still answering, a reply waits behind that answer
+  /// (the worker takes its asks in order), as it does on the desktop.
   function threadComposer(t, w, last) {
-    if (!w.enabled || last.stage === 'deciding') return null;
+    if (!w.enabled) return null;
+    var deciding = last.stage === 'deciding';
     var out = h('div', { 'aria-live': 'polite' });
     var send = function (text, button) {
       text = (text || '').trim();
@@ -3236,19 +3278,21 @@ export const CONSOLE_JS = String.raw`
         restore();
         if (r.ok === false) { out.textContent = ''; out.appendChild(msg(r)); return; }
         delete drafts[t.id];
+        box.value = ''; form.hidden = true; open.hidden = false;
+        out.textContent = ''; out.appendChild(msg(r, deciding ? 'Queued: ' + w.name + ' takes it once this answer is in.' : 'Sent.'));
         livePoke(w.id, 150);
       }, function () { restore(); });
     };
-    var box = h('textarea', { rows: '2', placeholder: 'Reply to ' + w.name + '…', 'aria-label': 'Reply in this thread' });
+    var box = h('textarea', { rows: '2', placeholder: deciding ? 'Add to it — ' + w.name + ' takes this once it has answered…' : 'Reply to ' + w.name + '…', 'aria-label': 'Reply in this thread' });
     box.value = drafts[t.id] || '';
     box.oninput = function () { drafts[t.id] = box.value; };
     var go_ = h('button', { class: 'btn go small', text: 'Send' });
     go_.onclick = function () { send(box.value, go_); };
-    box.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(box.value, go_); };
+    box.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!go_.disabled) send(box.value, go_); } };
     var form = h('div', { class: 't-compose', hidden: !drafts[t.id] }, box, h('div', { class: 'row', style: 'justify-content:flex-end' }, go_));
     var open = h('button', { class: 'linkish', style: 'color:var(--go);font-size:13.5px', text: 'Reply', onclick: function () { form.hidden = false; open.hidden = true; box.focus(); } });
     if (drafts[t.id]) open.hidden = true;
-    var choices = (last.choices || []).map(function (c) {
+    var choices = (deciding ? [] : last.choices || []).map(function (c) {
       var b = h('button', { class: 'chip', style: 'min-height:34px;font-size:13px', text: c });
       b.onclick = function () { send(c, b); };
       return b;
@@ -3273,13 +3317,20 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 't-src' }, h('span', { class: 't-kind', text: threadSource(t) }), h('span', { class: 't-prompt', text: title })),
           h('span', { class: 'row', style: 'gap:10px;flex-wrap:nowrap' }, h('span', { class: 'badge ' + badge[0], text: badge[1] }), h('span', { class: 'faint', text: clock(t.at) + (t.costUSD ? ' · ' + money(t.costUSD) : '') }))),
         threadBody(own, w, ctx, false),
-        follow.map(function (f) {
-          return h('div', { class: 't-turn', id: 'thread-' + f.id },
-            h('div', { class: 'stack', style: 'gap:4px;align-items:flex-end' },
-              h('div', { class: 'bubble-me', text: f.prompt }),
-              h('span', { class: 'faint', text: (f.by && f.by !== me ? f.by : 'You') + ' · ' + clock(f.at) })),
-            threadBody(f, w, ctx, true));
-        }),
+        (function () {
+          // The worker answers one at a time: only the first message still
+          // waiting is being worked out; any after it are queued behind it.
+          var ahead = own.stage === 'deciding';
+          return follow.map(function (f) {
+            var queued = f.stage === 'deciding' && ahead;
+            if (f.stage === 'deciding') ahead = true;
+            return h('div', { class: 't-turn', id: 'thread-' + f.id },
+              h('div', { class: 'stack', style: 'gap:4px;align-items:flex-end' },
+                h('div', { class: 'bubble-me' + (queued ? ' queued' : ''), text: f.prompt }),
+                h('span', { class: 'faint', text: (f.by && f.by !== me ? f.by : 'You') + ' · ' + clock(f.at) + (queued ? ' · Queued · after the answer above' : '') })),
+              queued ? null : threadBody(f, w, ctx, true));
+          });
+        })(),
         threadComposer(t, w, follow.length ? follow[follow.length - 1] : own)));
   }
 
@@ -3534,7 +3585,22 @@ export const CONSOLE_JS = String.raw`
       if (nowBarSync) nowBarSync();
     };
     q.oninput = drawList;
-    liveSubscribe(w.id, Object.assign(function (x) { data = x; drawList(); drawDetail(false); }, { alive: function () { return list.isConnected; } }));
+    // Until the first load, say so in both panes, so the page doesn't jump
+    // from empty to full.
+    if (!liveFor(w.id).data) {
+      list.replaceChildren(h('p', { class: 'muted', style: 'padding:24px 16px;text-align:center', text: 'Loading…' }));
+      detail.replaceChildren(h('div', { class: 'wl-empty muted', text: 'Loading ' + w.name + '’s work…' }));
+    }
+    liveSubscribe(w.id, Object.assign(function (x) {
+      data = x;
+      // Opened from "working now": the live thread, once it's in the list.
+      if (state.wlLive === w.id) {
+        var moving = x.threads.filter(function (t) { return t.stage === 'deciding' || t.stage === 'running'; })[0];
+        if (moving) { sel = moving.id; state.wlSel[w.id] = sel; }
+        state.wlLive = null;
+      }
+      drawList(); drawDetail(false);
+    }, { alive: function () { return list.isConnected; } }));
     return h('section', { class: 'stack', style: 'gap:12px', 'aria-label': w.name + '’s work' },
       w.enabled ? h('div', { class: 'stack', style: 'gap:6px' }, h('div', { class: 'wl-ask' }, input, send), out)
         : h('p', { class: 'muted', text: w.name + ' is paused. Resume it to ask it things.' }),
@@ -3562,7 +3628,7 @@ export const CONSOLE_JS = String.raw`
         ? (who ? who + ' can ask ' + name + ' things.' : 'Anyone who can see ' + name + ' can ask it things.') + ' However you ask, the answer and any work it starts land on its Conversation tab too.'
         : 'Anyone who manages someone on ' + name + ' can give it a task. Its questions and its plan come back to whoever asked, here and in Slack.' }),
       way('In Slack', 'If your admin connected Slack. Mention the app anywhere, DM it, or use the slash command.', isWorker
-        ? ['@overcli ' + name + ', what changed on the competitor’s pricing page this week?', '/worker ' + lower + ' ask what changed on the competitor’s pricing page this week?']
+        ? ['@overgo ' + name + ', what changed on the competitor’s pricing page this week?', '/worker ' + lower + ' ask what changed on the competitor’s pricing page this week?']
         : ['/team ' + name + ': what is the best thing on our roadmap?'],
         h('p', { class: 'faint', style: 'font-size:13px', text: isWorker ? 'Name it and it takes the request; screenshots and the thread come along. Without a name, whoever fits best picks it up.' : 'The coordinator answers in the thread with its questions, then its plan for you to approve.' })),
       way('From Claude', 'Claude Code, Claude Desktop or Codex, once connected to your org on the Slack & Claude page. Then just say it:', [isWorker ? 'Ask ' + name + ' what changed on the competitor’s pricing page this week.' : 'Give ' + name + ' the task: what is the best thing on our roadmap?'],
@@ -4401,7 +4467,7 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' }, h('b', { text: title }), sub), action || null);
     };
     var rows = [
-      way('slack', 'Slack, by anyone', h('span', { class: 'faint' }, h('code', { text: '/idea ' + p.name + ': …' }), ' or ', h('code', { text: '@overcli idea: …' }), '. ', h('code', { text: '/idea' }), ' alone shows where theirs are.')),
+      way('slack', 'Slack, by anyone', h('span', { class: 'faint' }, h('code', { text: '/idea ' + p.name + ': …' }), ' or ', h('code', { text: '@overgo idea: …' }), '. ', h('code', { text: '/idea' }), ' alone shows where theirs are.')),
     ].concat((schedules || []).map(function (s) {
       return way('clock', s.title, h('span', { class: 'faint', text: s.when + '. Next: ' + (Number.isFinite(s.nextAt) ? new Date(s.nextAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never') + '.' }),
         p.canSteer ? h('button', { class: 'btn small quiet', text: 'Remove', onclick: remove('/api/processes/' + encodeURIComponent(p.id) + '/schedules/' + encodeURIComponent(s.id) + '/remove') }) : null);
@@ -4423,15 +4489,46 @@ export const CONSOLE_JS = String.raw`
       h('button', { class: 'btn small', onclick: function () { choose(scheduleForm(p, done, out)); } }, icon('clock', 14), 'On a schedule'),
       h('button', { class: 'btn small', onclick: function () { choose(watchForm(p, done, out)); } }, icon('search', 14), 'Watch a tool'),
       h('button', { class: 'btn small quiet', onclick: function () { choose(channelForm(p, done, out)); } }, icon('slack', 14), 'A Slack channel'),
-      h('button', { class: 'btn small quiet', onclick: function () {
-        api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/intake', { kind: 'webhook' }).then(function (x) {
-          out.textContent = '';
-          if (x.ok === false) { out.appendChild(msg(x)); return; }
-          out.appendChild(h('div', { class: 'msg ok', role: 'status' }, 'Post events to this URL. It is shown once, so copy it now: ', h('code', { text: location.origin + x.webhookPath })));
+      h('button', { class: 'btn small quiet', onclick: function (e) {
+        var button = e.currentTarget;
+        var make = function () {
+          done();
+          api('POST', '/api/processes/' + encodeURIComponent(p.id) + '/intake', { kind: 'webhook' }).then(function (x) {
+            out.textContent = '';
+            if (x.ok === false) { out.appendChild(msg(x)); return; }
+            out.appendChild(h('div', { class: 'msg ok', role: 'status' }, 'Post events to this URL. It is shown once, so copy it now: ', h('code', { text: location.origin + x.webhookPath })));
+          });
+        };
+        // Ask first when nobody outside could post to it.
+        var restore = busy(button, 'Checking…');
+        api('GET', '/api/hooks/reach').then(function (r) {
+          restore();
+          if (!r || !r.private) { make(); return; }
+          choose(h('div', { class: 'stack', style: 'gap:8px' },
+            h('b', { text: r.host + ' looks private' }), h('span', { class: 'muted', style: 'font-size:13.5px', text: VPC_HOOK }),
+            h('div', { class: 'row', style: 'gap:8px' },
+              h('button', { class: 'btn small go', onclick: function () { choose(watchForm(p, done, out)); } }, icon('search', 14), 'Watch a tool instead'),
+              h('button', { class: 'btn small', text: 'Make the address anyway', onclick: make }),
+              h('button', { class: 'linkish', text: 'Cancel', onclick: done }))));
         });
       } }, icon('bolt', 14), 'Posted events')
     ]);
     return card('pd-in', 'How work comes in', null, h('div', { class: 'stack', style: 'gap:0' }, rows, h('div', { class: 'in-foot' }, adders, slot), out));
+  }
+
+  /// A webhook's sender posts from the internet. When this console's address
+  /// only resolves inside a private network, say so before handing one out,
+  /// and offer a watch, which only calls out.
+  var VPC_HOOK = 'Jira, GitHub or a CRM post from the internet, and this console only answers inside your network, so they can’t reach it. Watch the tool instead (overgo checks it every few minutes, which only needs a way out), or put the /hooks/ path behind something the internet can reach.';
+  function hookReachNote(onWatch) {
+    var box = h('div', { 'aria-live': 'polite' });
+    api('GET', '/api/hooks/reach').then(function (r) {
+      if (!r || !r.private) return;
+      fill(box, [h('div', { class: 'msg', role: 'status', style: 'border-color:var(--need)' },
+        h('div', { class: 'stack', style: 'gap:6px' }, h('b', { text: r.host + ' looks private' }), h('span', { text: VPC_HOOK }),
+          onWatch ? h('div', null, h('button', { class: 'btn small', type: 'button', onclick: onWatch }, icon('search', 14), 'Watch a tool instead')) : null))]);
+    });
+    return box;
   }
 
   /// "Every quarter, plan the roadmap": when, and the item each one puts in.
@@ -4564,7 +4661,7 @@ export const CONSOLE_JS = String.raw`
     return h('div', { class: 'in-form' },
       h('b', { text: 'Every new message in a channel goes in' }),
       h('label', { class: 'field' }, 'Channel ID (channel details, at the bottom)', channel),
-      h('p', { class: 'faint', style: 'margin:0', text: 'Invite the bot to the channel first: /invite @overcli.' }),
+      h('p', { class: 'faint', style: 'margin:0', text: 'Invite the bot to the channel first: /invite @overgo.' }),
       h('div', { class: 'row' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: done })));
   }
 
@@ -5563,7 +5660,7 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'pi-viewbody' }, h('img', { src: fromPicture.image, alt: 'The picture this process was drafted from' })));
         var show = function (open) { viewer.hidden = !open; document.body.classList.toggle('pi-open', open); };
         return [h('div', { class: 'pi-banner', role: 'status' },
-          h('button', { type: 'button', class: 'pi-mini', title: 'Show it beside the editor', 'aria-label': 'Show your picture beside the editor', onclick: function () { show(viewer.hidden); } }, h('img', { src: fromPicture.image, alt: '' })),
+          h('button', { type: 'button', class: 'pi-pic', title: 'Show it beside the editor', 'aria-label': 'Show your picture beside the editor', onclick: function () { show(viewer.hidden); } }, h('img', { src: fromPicture.image, alt: '' })),
           h('div', { class: 'stack', style: 'gap:6px;min-width:0;flex:1 1 300px' },
             h('b', { text: 'Drafted from your image — check each stage, who does it and where it sends work back' }),
             notes.length ? h('ul', { class: 'pi-notes' }, notes.map(function (n) { return h('li', { text: n }); })) : null,
@@ -5635,7 +5732,7 @@ export const CONSOLE_JS = String.raw`
         always.push(h('span', null, h('b', { text: 'Admins' })));
         fill(accPop, [
           h('div', { class: 'acc-head' }, h('h2', { id: 'acc-title', text: 'Who can see and start it' }),
-            h('p', { text: 'In Slack (/idea, @overcli) and here. Everyone else won’t see it.' })),
+            h('p', { text: 'In Slack (/idea, @overgo) and here. Everyone else won’t see it.' })),
           group,
           field,
           h('div', { class: 'acc-always' }, h('span', { class: 'acc-label', text: 'Always' }),
@@ -5926,7 +6023,7 @@ export const CONSOLE_JS = String.raw`
         var hires = state.me.canHire ? gaps : [];
         if (!order.length && !hires.length) {
           fill(roleList, [h('span', { class: 'label', text: 'The crew, and what each does' }),
-            h('div', { class: 'ntempty', text: 'Nobody yet. Pick from your workers below, or let overcli suggest a crew.' })]);
+            h('div', { class: 'ntempty', text: 'Nobody yet. Pick from your workers below, or let overgo suggest a crew.' })]);
           return;
         }
         fill(roleList, [h('span', { class: 'label', text: 'The crew, and what each does' }),
@@ -5970,7 +6067,7 @@ export const CONSOLE_JS = String.raw`
               return h('li', null, h('span', { class: 'ntnum' + (st[2] ? ' you' : ''), text: String(i + 1) }), h('span', { class: 'stack', style: 'gap:1px' }, h('b', { text: st[0] }), h('span', { class: 'faint', text: st[1] })));
             }))),
           h('section', { class: 'sec' }, h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'Give it work from Slack' })),
-            h('div', { class: 'sec-body stack', style: 'gap:6px' }, codeBlock('@overcli ' + (n || 'Product') + ', write a …'),
+            h('div', { class: 'sec-body stack', style: 'gap:6px' }, codeBlock('@overgo ' + (n || 'Product') + ', write a …'),
               h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Or don’t name it: requests that fit what it’s for come to it. /team ' + (n || 'Product') + ': … works too.' })))]);
       };
       var draw = function () {
@@ -6041,7 +6138,7 @@ export const CONSOLE_JS = String.raw`
               h('div', { class: 'ntrow' }, h('label', { class: 'field', style: 'flex:1 1 180px' }, 'Name', name), h('label', { class: 'field', style: 'flex:3 1 320px' }, 'What it does, in a line or two', purpose)),
               workIn ? h('label', { class: 'field' }, 'Works in (code changes get a branch in each repo)', workIn) : null,
               h('div', { class: 'ntsuggest' }, h('span', { style: 'color:var(--go);display:flex;flex:none' }, icon('bolt', 18)),
-                h('span', { class: 'muted', style: 'flex:1 1 260px;font-size:13.5px', text: 'Let overcli pick the crew from your workers, from what the team does, and write what each does on it. You can change all of it.' }), suggest),
+                h('span', { class: 'muted', style: 'flex:1 1 260px;font-size:13.5px', text: 'Let overgo pick the crew from your workers, from what the team does, and write what each does on it. You can change all of it.' }), suggest),
               suggestOut]),
             section(2, 'Who’s on it', count, [
               roleList,
@@ -6455,6 +6552,37 @@ export const CONSOLE_JS = String.raw`
       return h('li', { class: stageClass(task, s), title: (i + 1) + '. ' + (s.title || s.label) });
     }));
   }
+  /// A team task's stage track: one slot per stage of the approved plan, and
+  /// the follow-ups handed off from the debate sharing one slot at the end, a
+  /// small bar each, so the track stays one row however many there are.
+  function stageTrack(task) {
+    var plan = [], follow = [];
+    task.stagesDetail.forEach(function (s, i) { (s.fromRoom ? follow : plan).push({ s: s, i: i }); });
+    var slot = function (x) {
+      return h('li', { class: stageClass(task, x.s), title: (x.i + 1) + '. ' + (x.s.title || x.s.label) + ' · ' + x.s.status }, h('span', { class: 'tt-bar' }), h('span', { class: 'tt-sname', text: x.s.title || x.s.label }));
+    };
+    var items = plan.map(slot);
+    if (follow.length) {
+      var cls = follow.map(function (x) { return stageClass(task, x.s); });
+      var failed = cls.filter(function (c) { return c === 'failed'; }).length;
+      var live = cls.indexOf('need') >= 0 ? 'need' : cls.indexOf('now') >= 0 ? 'now' : '';
+      var latest = follow[follow.length - 1].s;
+      var name = 'Follow-ups · ' + follow.length + (failed ? ' · ' + failed + ' failed' : '');
+      items.push(h('li', { class: live || (cls[cls.length - 1] === 'failed' ? 'failed' : 'done'), title: follow.map(function (x, k) { return (x.i + 1) + '. ' + (x.s.title || x.s.label) + ' · ' + x.s.status; }).join('\n') },
+        h('span', { class: 'tt-fbars', 'aria-hidden': 'true' }, cls.map(function (c) { return h('span', { class: 'tt-bar ' + c }); })),
+        h('span', { class: 'tt-sname', text: live ? name + ' · ' + (latest.title || latest.label) : name })));
+    }
+    var cols = 'repeat(' + Math.max(plan.length, 1) + ', minmax(0, 1fr))' + (follow.length ? ' minmax(0, ' + (follow.length > 1 ? 1.6 : 1) + 'fr)' : '');
+    return h('ol', { class: 'tt-track', 'aria-label': 'Stages · ' + plan.length + ' in the plan' + (follow.length ? ', ' + follow.length + ' follow-ups' : ''), style: '--cols:' + cols }, items);
+  }
+  /// Where work handed off from the debate stands, as the reply's tail.
+  var HANDOFF_STATE = { proposed: 'waiting for you to start it', queued: 'starts when the work running now reports back', started: 'running as a stage', dismissed: 'not started' };
+  // Work run in steps reads in order: "Eli, then Zara".
+  function handoffWho(hf) {
+    return hf.steps && hf.steps.length > 1
+      ? hf.steps.map(function (st) { return st.join(' & '); }).join(', then ')
+      : hf.who.join(' & ');
+  }
   function stageClass(task, s) {
     if (s.status === 'done') return s.pieces.some(function (p) { return p.status === 'failed'; }) ? 'part' : 'done';
     if (s.status === 'failed') return 'failed';
@@ -6677,6 +6805,9 @@ export const CONSOLE_JS = String.raw`
       var seenBy = state.taskSeen || (state.taskSeen = {});
       var offBy = state.taskOff || (state.taskOff = {});
       var drafts = state.taskDraft || (state.taskDraft = {});
+      // The last thing said under the ask box, kept through the redraws that
+      // follow it for a little while.
+      var askSaid = null;
 
       var draw = function (task, files) {
         noteTaskComments(task, refresh);
@@ -6727,10 +6858,7 @@ export const CONSOLE_JS = String.raw`
               faces.length ? h('span', { class: 'faces', 'aria-label': 'The team: ' + faces.map(function (m) { return m.name; }).join(', ') }, faces.map(function (m) { var a = avatar(m.workerId, m.name, 's'); a.setAttribute('title', m.name + (m.role ? ' · ' + m.role : '')); return a; })) : null,
               h('div', { class: 'tt-spend' }, spendBar(task)),
               menu)),
-          task.stagesDetail.length ? h('ol', { class: 'tt-track', 'aria-label': 'Stages', style: '--n:' + Math.min(task.stagesDetail.length, 8) }, task.stagesDetail.map(function (s, i) {
-            var c = stageClass(task, s);
-            return h('li', { class: c, title: (i + 1) + '. ' + (s.title || s.label) + ' · ' + s.status }, h('span', { class: 'tt-bar' }), h('span', { class: 'tt-sname', text: s.title || s.label }));
-          })) : null);
+          task.stagesDetail.length ? stageTrack(task) : null);
 
         // ---- Your turn: what it needs from you, plainly, with what answers it.
         var band = null;
@@ -6796,19 +6924,54 @@ export const CONSOLE_JS = String.raw`
           // It grows with what you type, up to a few lines.
           var fit = function () { askBox.style.height = 'auto'; askBox.style.height = Math.min(askBox.scrollHeight, 160) + 'px'; };
           askBox.oninput = function () { drafts[task.id] = askBox.value; fit(); };
-          var send = function (e) {
+          var askSend = h('button', { class: 'btn small go', text: 'Send' });
+          // What just happened to something sent from here, said here: the
+          // page's own status line is out of sight this far down.
+          var askNote = h('div', { 'aria-live': 'polite' });
+          var noteAsk = function (el) { askSaid = { el: el, at: Date.now() }; fill(askNote, el); };
+          if (askSaid && Date.now() - askSaid.at < 20000) fill(askNote, askSaid.el);
+          // Sent from the keyboard or the button alike: the button says
+          // "Sending…" and the box is held, so a second Enter can't ask
+          // twice; once taken, the box empties and says where it went.
+          var send = function () {
             var text = askBox.value.trim();
             if (!text) { askBox.focus(); return; }
-            post('/room', { text: text }, null, e && e.target && e.target.tagName === 'BUTTON' ? e.target : null).then(function (y) { if (y.ok !== false) { drafts[task.id] = ''; state.taskTab = 'debate'; } });
+            if (askSend.disabled) return;
+            askBox.readOnly = true;
+            post('/room', { text: text }, null, askSend).then(function (y) {
+              askBox.readOnly = false;
+              if (y.ok === false) return;
+              askBox.value = ''; drafts[task.id] = ''; fit(); state.taskTab = 'debate';
+              noteAsk(msg(y, room.busy ? 'Sent. It waits its turn: ' + (room.busy.speaker || 'someone') + ' is answering.' : 'Sent to the team.'));
+            }, function () { askBox.readOnly = false; });
           };
+          askSend.onclick = send;
           // Enter or ⌘↵ sends; Shift+Enter starts a new line.
-          askBox.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(e); } };
-          var tries = [talked ? ['Fold in the debate', function (e) { post('/update-pack', {}, 'The coordinator is folding the talk into the pack.', e.target, 'Asking…'); }] : null]
+          askBox.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
+          // Folding takes the coordinator a while after the request returns:
+          // the button stays off and says so until the page redraws with the
+          // room busy, which keeps it off from then on.
+          var foldIn = function (e) {
+            var b = e.target;
+            if (b.disabled) return;
+            b.disabled = true; b.textContent = 'Folding in…';
+            api('POST', '/api/team-tasks/' + encodeURIComponent(task.id) + '/update-pack', {}).then(function (y) {
+              if (y.ok === false) { b.disabled = false; b.textContent = 'Fold in the debate'; noteAsk(msg(y)); return; }
+              noteAsk(msg(y, 'The coordinator is folding the debate into the pack. It becomes Pack v' + (version + 1) + '.'));
+              fastUntil = Date.now() + 120000; setTimeout(refresh, 800);
+            }, function () { b.disabled = false; b.textContent = 'Fold in the debate'; });
+          };
+          var tries = [talked ? ['Fold in the debate', foldIn, true] : null]
             .concat((team.members || []).slice(0, 3).map(function (m) { return ['@' + m.name, function () { askBox.value = '@' + m.name + ' ' + askBox.value.replace(/^@\S+\s*/, ''); drafts[task.id] = askBox.value; askBox.focus(); }]; })).filter(Boolean);
           ask = h('div', { class: 'tt-ask' },
             h('label', { class: 'faint', text: 'Ask the team, or one person, to change something' }),
-            h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, askBox, h('button', { class: 'btn small go', text: 'Send', onclick: send })),
-            tries.length ? h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Try' }), tries.map(function (t) { return h('button', { type: 'button', class: 'tt-try', text: t[0], onclick: t[1] }); })) : null);
+            h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, askBox, askSend),
+            tries.length ? h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Try' }), tries.map(function (t) {
+              // Folding waits for the room: someone answering can't be folded mid-sentence.
+              var held = t[2] && !!room.busy;
+              return h('button', { type: 'button', class: 'tt-try', text: t[0], onclick: t[1], disabled: held, title: held ? 'Once ' + (room.busy.speaker || 'the team') + ' has finished' : null });
+            })) : null,
+            askNote);
         }
         var replyTo = function (name) {
           if (!askBox) return;
@@ -6851,9 +7014,23 @@ export const CONSOLE_JS = String.raw`
           ms.forEach(function (m, i) {
             if (m.speaker.kind === 'you') { rows.push(h('div', { class: 'tt-asked' }, h('b', { text: 'You asked' }), h('span', { text: plainLine(m.text) }), h('span', { class: 'faint', text: clock(m.at) }))); return; }
             var name = m.speaker.kind === 'member' ? m.speaker.name : 'Coordinator';
-            if (m.failed) { rows.push(h('div', { class: 'tt-asked faint', text: name + ' couldn’t answer: ' + m.text })); return; }
+            // Work handed off that stopped is not an answer that failed.
+            if (m.failed && m.workReport) { rows.push(h('div', { class: 'tt-asked faint' }, h('b', { text: name + ' stopped' }), h('span', { text: m.text.replace(/^Couldn't finish /, '') }), h('span', { class: 'faint', text: clock(m.at) }))); return; }
+            if (m.failed) {
+              var again = null;
+              if (m.retry && talkable && !room.busy && i === ms.length - 1) {
+                var asked = ms.filter(function (x) { return x.exchange === m.exchange && x.speaker.kind === 'you'; }).pop();
+                again = m.retry === 'pack'
+                  ? h('button', { type: 'button', class: 'tt-link', text: 'Update the pack again', onclick: function (e) { post('/update-pack', {}, null, e.target, 'Asking…').then(function (y) { if (y.ok !== false) noteAsk(msg(y, 'The coordinator is folding the debate into the pack again.')); }); } })
+                  : asked ? h('button', { type: 'button', class: 'tt-link', text: 'Ask it again', onclick: function (e) { post('/room', { text: asked.text }, null, e.target, 'Asking…').then(function (y) { if (y.ok !== false) noteAsk(msg(y, 'Asked again.')); }); } }) : null;
+              }
+              rows.push(h('div', { class: 'tt-asked faint' }, h('span', { text: name + ' couldn’t answer: ' + m.text }), again));
+              return;
+            }
             var to = repliesTo(ms, i);
-            var g = m.wrapUp && landed && landed.message.id === m.id ? { gist: 'Wrote up where this landed: ' + [plural(landed.wrap.agreed.length, 'agreed', 'agreed'), landed.wrap.open.length + ' open', plural(landed.wrap.changes.length, 'change', 'changes') + ' for the pack'].join(', ') + '.', more: 1 } : replyGist(m.text);
+            var g = m.wrapUp && landed && landed.message.id === m.id ? { gist: 'Wrote up where this landed: ' + [plural(landed.wrap.agreed.length, 'agreed', 'agreed'), landed.wrap.open.length + ' open', plural(landed.wrap.changes.length, 'change', 'changes') + ' for the pack'].join(', ') + '.', more: 1 }
+              : m.handoff ? { gist: 'Handed to ' + handoffWho(m.handoff) + ': ' + m.handoff.title + (HANDOFF_STATE[m.handoff.status] ? ' · ' + HANDOFF_STATE[m.handoff.status] : ''), more: 1 }
+              : replyGist(m.text);
             var isOpen = !!openKey[m.id];
             var detail = h('div', { class: 'tt-detail', hidden: !isOpen }, isOpen ? md(m.text) : null);
             var toggle = h('button', { type: 'button', class: 'tt-link', text: isOpen ? 'Hide detail' : 'Show detail (' + g.more + ')' });
@@ -6958,15 +7135,17 @@ export const CONSOLE_JS = String.raw`
 
         var y = window.scrollY;
         var was = host.firstChild ? host.cloneNode(false) : null;
+        var inAsk = !!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('tt-askin'));
         if (was) while (host.firstChild) was.appendChild(host.firstChild);
         fill(host, [header, band, out, task.error ? h('div', { class: 'msg err', text: task.error }) : null,
           h('div', { class: 'pi-cols' },
             h('div', { class: 'pi-main' }, tabs, body, ask, commentsCard(task)),
             aside.length ? h('aside', { class: 'pi-aside', 'aria-label': 'Files and pieces' }, aside) : null)]);
         if (was) { keepPlace(was, host); requestAnimationFrame(function () { window.scrollTo(0, y); }); }
+        if (inAsk && askBox) askBox.focus({ preventScroll: true });
         lastKey = taskKey(task, files);
         clearTimeout(timer);
-        if (active || room.busy || Date.now() < fastUntil) timer = setTimeout(refresh, room.busy ? 3000 : 5000);
+        if (active || room.busy || Date.now() < fastUntil) timer = setTimeout(refresh, room.busy || Date.now() < fastUntil ? 2500 : 5000);
       };
       // What the page shows, in short: a refresh that changes none of it
       // draws nothing, so the page stays still under the reader.
@@ -6979,14 +7158,16 @@ export const CONSOLE_JS = String.raw`
           (room.messages || []).length, room.busy ? room.busy.speaker : '', room.foldedThrough || 0, room.queued || 0,
           task.pack ? [task.pack.version || 1, task.pack.updatedAt || 0] : 0]);
       };
-      // Typing in the page holds a redraw back until you're done.
-      var typing = function () { var el = document.activeElement; return !!(el && host.contains(el) && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text'))); };
+      // Typing in the page holds a redraw back until you're done. An empty
+      // box doesn't: after you send, the cursor stays in it, and the replies
+      // must still come in.
+      var typing = function () { var el = document.activeElement; return !!(el && host.contains(el) && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && el.type === 'text')) && el.value.trim() !== ''); };
       var refresh = function () {
         clearTimeout(timer);
         if (!host.isConnected || state.tab !== 'teamtask' || state.taskId !== id) return;
         load().then(function (y) {
           if (y[0].ok === false || !host.isConnected) return;
-          if (taskKey(y[0].task, y[1]) === lastKey || typing()) { timer = setTimeout(refresh, 5000); return; }
+          if (taskKey(y[0].task, y[1]) === lastKey || typing()) { timer = setTimeout(refresh, (y[0].task.room && y[0].task.room.busy) || Date.now() < fastUntil ? 2500 : 5000); return; }
           draw(y[0].task, y[1]);
         }, function () { timer = setTimeout(refresh, 10000); });
       };
@@ -7191,10 +7372,10 @@ export const CONSOLE_JS = String.raw`
       var explain = function (d) {
         var drive = d.kind === 'drive';
         if (d.id === 'google:me') {
-          smallDialog('Connect your Google Drive', 'Files you save go into your own Drive, as you. overcli never sees your password.', [
+          smallDialog('Connect your Google Drive', 'Files you save go into your own Drive, as you. overgo never sees your password.', [
             h('div', { class: 'msg', style: 'background:var(--need-soft);color:var(--ink)' },
               h('b', { text: 'Google sign-in isn’t turned on for this server yet. ' }),
-              state.me.admin ? 'You can turn it on once for everyone: register overcli with Google, then add its two secrets.' : 'An admin turns it on once for everyone. Until then, files stay here and in the Library.'),
+              state.me.admin ? 'You can turn it on once for everyone: register overgo with Google, then add its two secrets.' : 'An admin turns it on once for everyone. Until then, files stay here and in the Library.'),
             state.me.admin && d.why ? h('p', { class: 'faint', style: 'font-size:12.5px', text: d.why }) : null
           ], state.me.admin ? [h('button', { class: 'btn go', text: 'Show me how', onclick: function () { go('connections'); } })] : []);
           return;
@@ -7257,13 +7438,41 @@ export const CONSOLE_JS = String.raw`
 
   var CONNECT_ERR = { denied: 'You said no on Google’s page, so nothing was connected.', expired: 'That took too long. Try again.', browser: 'Google sent you back to a different browser or address than the one you started in. Start again from this page.',
     'not-configured': 'Google sign-in isn’t set up on this server yet.', exchange: 'Google didn’t accept the connection. Try again.', 'no-email': 'Google didn’t say which account this is.',
-    'no-refresh-token': 'Google didn’t give lasting access. Remove overcli from your Google account’s third-party access, then connect again.', scope: 'Drive access was unticked on Google’s page, so files can’t be saved. Connect again and leave it ticked.', server: 'Something went wrong on the server. Try again.' };
+    'no-refresh-token': 'Google didn’t give lasting access. Remove overgo from your Google account’s third-party access, then connect again.', scope: 'Drive access was unticked on Google’s page, so files can’t be saved. Connect again and leave it ticked.', server: 'Something went wrong on the server. Try again.' };
 
-  /// The accounts a person has connected for overcli to act as them: today
+  /// The accounts a person has connected for overgo to act as them: today
   /// their Google Drive, so team files save into it.
   /// What an admin needs to know to turn on Google Drive for everyone: who does
-  /// what, the steps in Google Cloud in order, what overcli can and can't
+  /// what, the steps in Google Cloud in order, what overgo can and can't
   /// reach, and what each failure means.
+  /// Connect → Slack, for admins: whether Slack is connected and, until it
+  /// is, the four steps to make and install the app, with its manifest.
+  function slackSetup() {
+    var box = h('section', { class: 'stack', style: 'gap:10px' }, thinking('Checking Slack…'));
+    Promise.all([api('GET', '/api/admin/health'), api('GET', '/api/admin/slack-manifest')]).then(function (r) {
+      var hl = r[0], mf = r[1];
+      var slack = hl.ok === false ? null : hl.items.filter(function (i) { return i.name === 'Slack'; })[0];
+      var connected = !!(slack && slack.ok);
+      var step = function (n, title, body) { return h('li', { class: 'gstep' }, h('span', { class: 'gnum', text: String(n) }), h('div', { class: 'stack', style: 'gap:6px;min-width:0' }, h('b', { text: title }), body)); };
+      var p = function (t) { return h('p', { class: 'muted', text: t }); };
+      var manifest = mf.ok === false ? msg(mf) : h('details', { class: 'gmore' }, h('summary', { text: 'Or paste the manifest yourself' }),
+        p('api.slack.com/apps → Create New App → From a manifest → pick your workspace → paste this.'), codeBlock(mf.yaml));
+      var guide = h('ol', { class: 'gsteps' },
+        step(1, 'Make the app', [p('This opens Slack with overgo’s manifest filled in. Pick your workspace and press Create.'),
+          mf.ok === false ? null : h('div', null, h('a', { class: 'btn go', href: mf.createUrl, target: '_blank', rel: 'noopener', text: 'Create the app in Slack ↗' })), manifest]),
+        step(2, 'Install it', [p('In the app: OAuth & Permissions → Install to Workspace. Copy the Bot User OAuth Token (xoxb-…).')]),
+        step(3, 'Let it connect', [p('Basic Information → App-Level Tokens → Generate Token and Scopes, with the connections:write scope. Copy it (xapp-…). Slack then reaches this server over a connection the server opens, so no inbound port is needed.')]),
+        step(4, 'Give overgo both tokens', [p('Paste them on Setup → Secrets. Slack connects within a few seconds; no restart. The server also needs OVERCLI_SLACK_ENABLED=1, which the Docker compose file sets.'),
+          h('div', null, h('button', { class: 'btn small', text: 'Open Setup → Secrets', onclick: function () { go('setup', { setupTab: 'secrets' }); } }))]));
+      box.textContent = '';
+      append(box, connected
+        ? [h('div', { class: 'msg ok', text: 'Slack is connected. ' + (slack.detail || '') }), h('details', { class: 'gmore' }, h('summary', { text: 'Make the Slack app again' }), guide)]
+        : [h('h3', { style: 'margin:0', text: 'Connect Slack for your org' }), p(slack && slack.detail ? slack.detail : 'Not connected yet. Only an admin does this, once.'), guide,
+           h('h3', { style: 'margin:12px 0 0', text: 'Once it’s connected, everyone can' })]);
+    });
+    return box;
+  }
+
   function googleSetupGuide(c) {
     var uri = c.redirectUri || '';
     var local = /^http:\/\/(localhost|127\.0\.0\.1)/.test(uri);
@@ -7271,47 +7480,47 @@ export const CONSOLE_JS = String.raw`
     var p = function (t) { return h('p', { text: t }); };
     return h('div', { class: 'gsetup' },
       h('div', { class: 'gwho' },
-        h('div', null, h('span', { class: 'label', text: 'You, once' }), p('Register overcli with Google for the whole org. This connects nobody’s Drive: it only lets overcli ask Google.')),
+        h('div', null, h('span', { class: 'label', text: 'You, once' }), p('Register overgo with Google for the whole org. This connects nobody’s Drive: it only lets overgo ask Google.')),
         h('div', null, h('span', { class: 'label', text: 'Each person, for themselves' }), p('Connects their own Google account from Your connections, and approves it on Google’s own page. Their files save into their Drive, as them.'))),
       local ? h('div', { class: 'msg', style: 'background:var(--need-soft);color:var(--ink)' },
         h('b', { text: 'This server’s address is localhost. ' }), 'That works for trying it on this machine. For your team, set the console address first (Setup → Rules, “Console address”, or publicUrl in org.json), then come back: the address below changes to match, and that is the one to give Google.') : null,
       h('ol', { class: 'gsteps' },
-        step(1, 'Pick a Google Cloud project', [p('In console.cloud.google.com, choose or create a project for overcli. Any project in your company’s Google Workspace is fine.')]),
+        step(1, 'Pick a Google Cloud project', [p('In console.cloud.google.com, choose or create a project for overgo. Any project in your company’s Google Workspace is fine.')]),
         step(2, 'Turn on the Google Drive API', [p('APIs & Services → Library → search “Google Drive API” → Enable.')]),
         step(3, 'Set up the consent screen', [
           p('APIs & Services → OAuth consent screen (in newer consoles: Google Auth Platform → Branding and Audience).'),
           h('ul', { class: 'gbul' },
             h('li', null, h('b', { text: 'Audience: Internal' }), ' if everyone uses your company’s Google Workspace. Only your company’s accounts can connect, and Google needs no review.'),
             h('li', null, h('b', { text: 'External' }), ' only if people use personal Gmail. While it’s in “Testing”, add each person as a test user; their access then lasts 7 days at a time.'),
-            h('li', null, 'App name “overcli”, your support email, and under Data access add the scope ', h('code', { text: '…/auth/drive.file' }), '. Nothing broader is needed.'))]),
+            h('li', null, 'App name “overgo”, your support email, and under Data access add the scope ', h('code', { text: '…/auth/drive.file' }), '. Nothing broader is needed.'))]),
         step(4, 'Create the OAuth client', [
           p('APIs & Services → Credentials → Create credentials → OAuth client ID → Application type “Web application”.'),
           p('Under Authorized redirect URIs, add exactly this address:'),
           codeBlock(uri),
           h('p', { class: 'faint', text: 'Leave Authorized JavaScript origins empty. Google shows the client ID and secret once you save.' })]),
-        step(5, 'Give overcli the client ID and secret', [
+        step(5, 'Give overgo the client ID and secret', [
           p('On Setup → Secrets, add GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET with the values Google showed. They apply at once, with no restart.'),
           h('div', { class: 'row' }, h('button', { class: 'btn small', text: 'Open Setup → Secrets', onclick: function () { go('setup', { setupTab: 'secrets' }); } }))]),
         step(6, 'Check it', [p('Come back to this page: Google Drive shows “Not connected” with a Connect button. Connect your own account first to try it, then tell your team it’s on.')])),
-      h('details', { class: 'gmore' }, h('summary', { text: 'What overcli can reach, and where it’s kept' }),
+      h('details', { class: 'gmore' }, h('summary', { text: 'What overgo can reach, and where it’s kept' }),
         h('ul', { class: 'gbul' },
-          h('li', { text: 'Only files overcli creates, in a folder called “overcli” in each person’s Drive (the drive.file permission). It can’t list, open or change anything else in their Drive.' }),
+          h('li', { text: 'Only files overgo creates, in a folder called “overcli” in each person’s Drive (the drive.file permission). It can’t list, open or change anything else in their Drive.' }),
           h('li', { text: 'Each person’s Google access is stored on this server, encrypted, under a key kept in the secrets store. It never goes to workers, and never appears in the console or a URL.' }),
           h('li', { text: 'A connection can only be started by a signed-in person, in their own browser, and lasts ten minutes; a link to Google’s page sent to someone else won’t attach their Drive to your account.' }),
-          h('li', { text: 'Disconnecting on Your connections revokes the access at Google. People can also remove “overcli” from their Google account’s third-party access at any time.' }),
+          h('li', { text: 'Disconnecting on Your connections revokes the access at Google. People can also remove “overgo” from their Google account’s third-party access at any time.' }),
           h('li', { text: 'Removing the client secret from Setup → Secrets turns saving off for everyone; existing connections stop working until it’s back.' }))),
       h('details', { class: 'gmore' }, h('summary', { text: 'If connecting fails' }),
         h('ul', { class: 'gbul' },
           h('li', null, h('b', { text: 'redirect_uri_mismatch on Google’s page: ' }), 'the address in step 4 doesn’t match this server’s exactly. Copy it again from here, including http or https and the port.'),
           h('li', null, h('b', { text: '“access blocked” or “app not verified”: ' }), 'the consent screen is External and the person isn’t a test user, or it needs Internal for your Workspace.'),
           h('li', null, h('b', { text: '“came back to a different browser or address”: ' }), 'start from the same address as the console address. Using localhost while the console address is something else fails on purpose.'),
-          h('li', null, h('b', { text: '“didn’t give lasting access”: ' }), 'the person had connected before. They remove overcli from their Google account’s third-party access, then connect again.'))),
+          h('li', null, h('b', { text: '“didn’t give lasting access”: ' }), 'the person had connected before. They remove overgo from their Google account’s third-party access, then connect again.'))),
       h('a', { class: 'faint', href: '/docs/admins#google-drive-for-everyone', target: '_blank', rel: 'noopener', text: 'The same steps in the admin docs ↗' }));
   }
 
   function viewConnections() {
     return api('GET', '/api/connections').then(function (r) {
-      var nodes = [head('Your connections', 'Accounts overcli may use as you. Each is yours alone: nobody else’s files go through it, and you can disconnect any time.', null, 'You')];
+      var nodes = [head('Your connections', 'Accounts overgo may use as you. Each is yours alone: nobody else’s files go through it, and you can disconnect any time.', null, 'You')];
       var hq = state.hashQuery;
       var err = location.hash.indexOf('google-error') >= 0 ? (hq && hq.get('reason')) || 'server' : null;
       if (hq && hq.get('connected') === 'google') nodes.push(msg({}, 'Google Drive is connected.'));
@@ -7321,7 +7530,7 @@ export const CONSOLE_JS = String.raw`
         var out = h('div', { 'aria-live': 'polite' });
         var status = c.connected ? h('span', { class: 'badge ok', text: 'Connected' }) : c.ready ? h('span', { class: 'badge', text: 'Not connected' }) : h('span', { class: 'badge waiting', text: 'Not set up' });
         var body = [
-          h('p', { class: 'muted', text: c.provider === 'google' ? 'Save a team’s files into your own Drive, into a folder called “overcli”. overcli can only see files it made there, never the rest of your Drive.' : '' }),
+          h('p', { class: 'muted', text: c.provider === 'google' ? 'Save a team’s files into your own Drive, into a folder called “overcli”. overgo can only see files it made there, never the rest of your Drive.' : '' }),
           c.connected ? h('p', { text: 'Connected as ' + (c.account || 'your account') + (c.connectedAt ? ' · ' + ago(c.connectedAt) : '') + '.' }) : null,
           !c.connected && c.account && c.why ? h('div', { class: 'msg err', text: c.why }) : null,
           h('div', { class: 'row' },
@@ -7732,7 +7941,7 @@ export const CONSOLE_JS = String.raw`
       { title: 'Competitor watch', when: 'Mondays 8:00', lands: '3 changes worth a look: one competitor cut its Pro price 10%…', text: 'Every Monday morning, check our competitors’ pricing pages and changelogs, and tell me what changed and which changes matter for us, with links.' },
       { title: 'Site audit', when: 'Weekly', lands: '12 fixes ranked by payoff; 4 new since last week…', text: 'Every week, crawl our website, rank the SEO fixes worth making by payoff against effort, and compare with last week’s audit.' },
       { title: 'Metrics digest', when: 'Fridays 4:00', lands: 'Sign-ups up 8%, driven by the new onboarding flow…', text: 'Every Friday afternoon, pull the week’s product usage numbers and explain what moved, and why it might matter, in a short summary.' }] },
-    { id: 'slack', label: 'Asked in Slack', icon: 'slack', help: 'People mention @overcli in any channel or DM it, and it answers in the thread.', ex: [
+    { id: 'slack', label: 'Asked in Slack', icon: 'slack', help: 'People mention @overgo in any channel or DM it, and it answers in the thread.', ex: [
       { title: 'Ticket status', when: 'When asked', lands: 'In review since Tuesday, owned by Sam, blocked on the API change…', text: 'When someone asks about a ticket in Slack, look it up in our tracker and answer with its status, owner, blockers and what happens next.' },
       { title: 'Account briefing', when: 'When asked', lands: 'Renewal in 6 weeks, 2 open tickets, usage down 15%…', text: 'When someone asks about a customer, gather our notes, open tickets and product usage into a short briefing with what to watch.' },
       { title: 'Bug triage', when: 'When asked', lands: 'Reproduced; the cause is a null date. Pull request with a fix and a test…', text: 'When someone asks you to look at a bug, reproduce it, find the cause, and open a pull request with a fix and a test.' }] },
@@ -7939,17 +8148,17 @@ export const CONSOLE_JS = String.raw`
     var buildClients = function () { return [
       { id: 'claude-code', label: 'Claude Code', steps: [
         'Run this once on your machine. It adds your org as an MCP server for every project:',
-        'claude mcp add --transport http --scope user overcli ' + mcp + ' \\\n  --header "Authorization: Bearer ' + tok + '"',
-        'Then ask Claude Code: “what’s waiting on me in overcli?”, “hire me a competitive analyst” or “what did Luke deliver this week?”'] },
+        'claude mcp add --transport http --scope user overgo ' + mcp + ' \\\n  --header "Authorization: Bearer ' + tok + '"',
+        'Then ask Claude Code: “what’s waiting on me in overgo?”, “hire me a competitive analyst” or “what did Luke deliver this week?”'] },
       { id: 'claude-desktop', label: 'Claude Desktop', steps: [
         'Add this to claude_desktop_config.json (Settings, Developer, Edit Config), then restart Claude:',
-        JSON.stringify({ mcpServers: { overcli: { command: 'npx', args: ['-y', 'mcp-remote', mcp, '--header', 'Authorization:Bearer ' + tok] } } }, null, 2),
+        JSON.stringify({ mcpServers: { overgo: { command: 'npx', args: ['-y', 'mcp-remote', mcp, '--header', 'Authorization:Bearer ' + tok] } } }, null, 2),
         'mcp-remote connects Claude Desktop to this server and needs Node.js on your machine.'] },
       { id: 'codex', label: 'Codex', steps: [
         'Put your token in your shell profile:',
         'export OVERCLI_ORG_TOKEN=' + tok,
         'Then add this to ~/.codex/config.toml:',
-        '[mcp_servers.overcli]\nurl = "' + mcp + '"\nbearer_token_env_var = "OVERCLI_ORG_TOKEN"'] },
+        '[mcp_servers.overgo]\nurl = "' + mcp + '"\nbearer_token_env_var = "OVERCLI_ORG_TOKEN"'] },
       { id: 'app', label: 'overcli app', steps: [
         'In the overcli app, open Settings, Your org, paste this address and press Sign in. Your browser opens here to confirm it\u2019s you; there is nothing to copy.',
         base,
@@ -7957,11 +8166,12 @@ export const CONSOLE_JS = String.raw`
         'export OVERCLI_ORG_URL=' + base + '\nexport OVERCLI_ORG_TOKEN=' + tok + '\novercli workers push "Worker name"'] },
       { id: 'slack', label: 'Slack', steps: [
         'Nothing to set up: if your admin connected Slack, these work in any channel or DM:',
-        '/worker                     your workers\n/worker waiting             what’s waiting on you\n/worker <name> ask <text>   ask a worker to do something\n/team <name>: <task>        give a team a task\n/hire <job>                 hire a worker\n/overcli join               ask to join, or get a new sign-in link',
+        '/worker                     your workers\n/worker waiting             what’s waiting on you\n/worker <name> ask <text>   ask a worker to do something\n/team <name>: <task>        give a team a task\n/hire <job>                 hire a worker\n/overgo join                ask to join, or get a new sign-in link',
         'Questions, approvals and the work your workers propose arrive as DMs. Reply in the thread to answer, or press a button.'] }
     ]; };
     var CLIENTS = buildClients();
-    var current = CLIENTS[0].id;
+    var current = state.connectTab || CLIENTS[0].id;
+    state.connectTab = null;
     var NEEDS_KEY = { 'claude-code': 'Claude Code', 'claude-desktop': 'Claude Desktop', codex: 'Codex', app: 'Terminal' };
     var body = h('div', { class: 'stack' });
     var tablist = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Where to connect' });
@@ -7989,6 +8199,7 @@ export const CONSOLE_JS = String.raw`
         body.appendChild(i % 2 === 1 ? codeBlock(s) : h('p', { class: 'muted', text: s }));
       });
       if (device) body.appendChild(h('p', { class: 'faint', text: 'This key is shown once. Treat it like a password.' }));
+      if (current === 'slack' && state.me.admin) body.insertBefore(slackSetup(), body.firstChild);
     };
     draw();
     return Promise.resolve([head('Connect', 'Use your org’s workers from Claude, Codex, the overcli app or Slack.'),
@@ -8064,7 +8275,7 @@ export const CONSOLE_JS = String.raw`
             return h('div', { class: 'stack', style: 'gap:8px;padding-top:12px;border-top:1px solid var(--line)' },
               h('div', { class: 'row', style: 'gap:12px' }, avatar(q.slackUserId, q.name, 'm'),
                 h('div', { style: 'flex:1 1 220px;min-width:0' }, h('div', null, h('b', { style: 'font-weight:600', text: q.name + ' ' }), h('span', { class: 'faint', text: q.slackUserId })),
-                  h('div', { class: 'faint', text: 'Asked with /overcli join, ' + ago(q.at) + '.' })),
+                  h('div', { class: 'faint', text: 'Asked with /overgo join, ' + ago(q.at) + '.' })),
                 h('div', { class: 'row' }, h('span', { class: 'faint', text: 'as' }), role,
                   h('button', { class: 'btn go small', text: 'Let in', onclick: decide(true) }),
                   h('button', { class: 'btn danger small', text: 'Decline', onclick: decide(false) }))),
@@ -8097,7 +8308,7 @@ export const CONSOLE_JS = String.raw`
             inv.ok === false ? msg(inv) : inv.invites.length ? inv.invites.map(inviteRow) : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'None waiting.' })),
           h('section', { class: 'panel pad stack', style: 'gap:10px', 'aria-labelledby': 'ways' },
             h('h2', { id: 'ways', class: 'section-title', text: 'Other ways people get in' }),
-            h('p', { class: 'muted', style: 'font-size:13.5px' }, 'Anyone in your Slack can type ', h('code', { text: '/overcli join' }), '. Slack has already said who they are, so they land in Asking to join for you to let in.'),
+            h('p', { class: 'muted', style: 'font-size:13.5px' }, 'Anyone in your Slack can type ', h('code', { text: '/overgo join' }), '. Slack has already said who they are, so they land in Asking to join for you to let in.'),
             h('p', { class: 'muted', style: 'font-size:13.5px', text: 'In the overcli app, Settings, Your org, Sign in pairs the app with this server: the person confirms a code here, and nobody copies a token.' }),
             h('label', { class: 'toggle' }, openToggle, h('span', { text: 'Let anyone in our Slack in without asking. They can ask workers things; make them hirers here.' })), openNote,
             hl.ok !== false && !hl.rules.publicUrl ? h('p', { class: 'faint', text: 'Links sent from Slack use the address you last opened this console at. Set publicUrl in org.json to pin it.' }) : null))));
@@ -8274,7 +8485,7 @@ export const CONSOLE_JS = String.raw`
   // ---- join (an invite link) ---------------------------------------------
 
   function renderJoin(code) {
-    var left = h('section', { class: 'solo-left' }, h('div', { class: 'row', style: 'gap:12px' }, brandMark(44), h('span', { class: 'serif', style: 'font-size:20px', text: 'overcli' })), thinking('Opening your invite…'));
+    var left = h('section', { class: 'solo-left' }, h('div', { class: 'row', style: 'gap:12px' }, brandMark(44), h('span', { class: 'serif', style: 'font-size:20px', text: 'overgo' })), thinking('Opening your invite…'));
     var right = h('section', { class: 'solo-right', 'aria-label': 'Where you’ll use it' });
     app.appendChild(h('div', { class: 'solo' }, left, right));
     fetch('/api/join/' + encodeURIComponent(code)).then(function (r) { return r.json(); }).then(function (info) {
@@ -8282,10 +8493,10 @@ export const CONSOLE_JS = String.raw`
       if (info.ok === false) {
         append(left, [h('h1', { text: 'This invite can’t be used' }), h('p', { class: 'lead', text: info.error }),
           token() ? h('div', null, h('a', { class: 'btn go', href: '/', text: 'Go to the console' })) : null]);
-        right.appendChild(h('p', { class: 'muted', text: 'Invites work once and for a week. Whoever invited you can send a new one from People, or you can type /overcli join in Slack.' }));
+        right.appendChild(h('p', { class: 'muted', text: 'Invites work once and for a week. Whoever invited you can send a new one from People, or you can type /overgo join in Slack.' }));
         return;
       }
-      document.title = 'Join ' + info.org + ' — overcli';
+      document.title = 'Join ' + info.org + ' — overgo';
       var out = h('div');
       if (info.ssoRequired && !info.setup) {
         append(left, [h('h1', { text: info.invitedBy + ' invited you to ' + info.org + '\u2019s workers' }),
@@ -8311,7 +8522,7 @@ export const CONSOLE_JS = String.raw`
       append(left, [
         h('h1', { text: info.setup ? 'You\u2019re setting up ' + info.org + '\u2019s workers' : info.invitedBy + ' invited you to ' + info.org + '\u2019s workers' }),
         h('p', { class: 'lead', text: info.setup
-          ? 'This link makes you the first admin. Next, invite your team from People: overcli sends each person a link like this one in Slack.'
+          ? 'This link makes you the first admin. Next, invite your team from People: overgo sends each person a link like this one in Slack.'
           : 'AI workers that research, write and keep an eye on things for the team. You\u2019ll be able to ' + info.roleText + (info.allowanceUSD ? ', up to $' + info.allowanceUSD + ' a month' : '') + '.' }),
         h('div', { class: 'stack', style: 'max-width:440px;gap:10px' }, join,
           h('span', { class: 'faint', text: (info.setup ? 'This link' : 'This invite is for ' + info.name + ' and') + ' works once, until ' + new Date(info.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long' }) + '.' })),
@@ -8347,7 +8558,7 @@ export const CONSOLE_JS = String.raw`
   // ---- pair (the overcli app asks to sign in) ---------------------------
 
   function renderPair(code) {
-    var left = h('section', { class: 'solo-left' }, h('div', { class: 'row', style: 'gap:12px' }, brandMark(44), h('span', { class: 'serif', style: 'font-size:20px', text: 'overcli' })));
+    var left = h('section', { class: 'solo-left' }, h('div', { class: 'row', style: 'gap:12px' }, brandMark(44), h('span', { class: 'serif', style: 'font-size:20px', text: 'overgo' })));
     var right = h('section', { class: 'solo-right' });
     app.appendChild(h('div', { class: 'solo' }, left, right));
     if (!token()) {
@@ -8467,7 +8678,7 @@ export const CONSOLE_JS = String.raw`
 
       // Who the org is.
       var name = h('input', { type: 'text', value: R.name, placeholder: 'Acme' });
-      var url = h('input', { type: 'text', value: R.publicUrl, placeholder: 'https://overcli.acme.internal' });
+      var url = h('input', { type: 'text', value: R.publicUrl, placeholder: 'https://overgo.acme.internal' });
       var tz = h('input', { type: 'text', value: R.timezone, placeholder: 'America/New_York' });
       var identity = ruleSection('The org', 'Its name, the address people use, and the time zone schedules run in.',
         h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Name', name), h('label', { class: 'field' }, 'Console address', url), h('label', { class: 'field' }, 'Time zone', tz)),
@@ -9760,7 +9971,7 @@ export const CONSOLE_JS = String.raw`
     var plain = h('input', { type: 'checkbox', checked: true });
     var changeBox = h('div', { class: 'stack', style: 'gap:10px' },
       h('label', { class: 'field', style: 'max-width:360px' }, 'Which field', field),
-      h('label', { class: 'toggle' }, onlyTracked, h('span', null, h('b', { text: 'Only items I track' }), h('span', { class: 'faint', style: 'display:block;font-size:12.5px', text: 'Put {{ids}} in the arguments, e.g. "jql": "key in ({{ids}})". Add or remove items here, or in Slack: “@overcli ' + w.name + ', track ACME-412”.' }))),
+      h('label', { class: 'toggle' }, onlyTracked, h('span', null, h('b', { text: 'Only items I track' }), h('span', { class: 'faint', style: 'display:block;font-size:12.5px', text: 'Put {{ids}} in the arguments, e.g. "jql": "key in ({{ids}})". Add or remove items here, or in Slack: “@overgo ' + w.name + ', track ACME-412”.' }))),
       h('label', { class: 'field', style: 'max-width:440px' }, 'Start with', trackList),
       h('label', { class: 'toggle' }, plain, h('span', null, h('b', { text: 'Just tell me what changed' }), h('span', { class: 'faint', style: 'display:block;font-size:12.5px', text: '“ACME-412 moved from In review to Done”, with a link. No worker turn, so nothing to pay while it’s quiet. Off: the worker gets each change to act on.' }))));
     var syncFire = function () {
@@ -9810,7 +10021,8 @@ export const CONSOLE_JS = String.raw`
     // Webhook
     var hookId = h('input', { type: 'text', placeholder: 'optional, e.g. issue.key', 'aria-label': 'What identifies an event' });
     parts.webhook = h('div', { class: 'stack' }, h('p', { class: 'muted', text: 'You get a secret address when you save. Paste it into Jira automation, a GitHub webhook, your CRM or Zapier. Each post is one event; repeats of the same event are handled once.' }),
-      h('label', { class: 'field', style: 'max-width:360px' }, 'What identifies an event', hookId));
+      h('label', { class: 'field', style: 'max-width:360px' }, 'What identifies an event', hookId),
+      hookReachNote(function () { kind = 'watch'; drawKinds(); sync(); }));
     // Slack
     var channel = h('input', { type: 'text', placeholder: 'C012AB3CD', 'aria-label': 'Channel ID' });
     var on = h('select', { 'aria-label': 'On' }, h('option', { value: 'message', text: 'each new message' }), h('option', { value: 'reaction', text: 'an emoji reaction' }), h('option', { value: 'mention', text: 'a mention of the bot' }));
@@ -9820,7 +10032,7 @@ export const CONSOLE_JS = String.raw`
     on.onchange = function () { emojiField.style.display = on.value === 'reaction' ? '' : 'none'; };
     on.onchange();
     parts.slack = h('div', { class: 'stack' }, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)),
-      h('p', { class: 'faint', text: 'Invite the overcli bot to the channel first (/invite @overcli).' }));
+      h('p', { class: 'faint', text: 'Invite the overgo bot to the channel first (/invite @overgo).' }));
     var KINDS = [['watch', 'Something new or changed in a tool', 'A new ticket, deal or row, or one whose status changes, checked every few minutes. Works anywhere, inside a VPC too.'],
       ['webhook', 'Another system tells us', 'Jira, GitHub, a CRM or Zapier posts each event to a secret address.'],
       ['slack', 'Something happens in Slack', 'A new message, a mention, or an emoji reaction in a channel.']];
@@ -10248,7 +10460,7 @@ export const CONSOLE_JS = String.raw`
       var checks = [
         { ok: !!(model && model.ok), title: 'A model to think with', detail: model ? model.detail : 'Checking…', optional: false },
         { ok: !!(slack && slack.ok), title: 'Slack, for questions and approvals', detail: slack ? slack.detail : 'Not connected.', optional: false,
-          action: slack && slack.ok ? null : ['How to connect it', function () { go('connect'); }] },
+          action: slack && slack.ok ? null : ['How to connect it', function () { go('connect', { connectTab: 'slack' }); }] },
         { ok: places.length > 0, title: 'A place to work', detail: places.length ? places.map(function (p) { return p.name; }).join(', ') : 'No repo or folder yet. Connect a repo on the Repos tab, or an operator adds a folder with: overcli projects add <folder>', optional: false,
           action: places.length ? null : ['Connect a repo', function () { state.setupTab = 'repos'; render(); }] },
         { ok: !missing.length, title: 'The tools workers need', detail: missing.length ? missing.map(function (m) { return m.name + ' is missing — ' + m.workers.join(', ') + (m.workers.length === 1 ? ' needs' : ' need') + ' it'; }).join('; ') : 'Every tool a worker lists is installed.', optional: false,
@@ -10345,15 +10557,27 @@ export const CONSOLE_JS = String.raw`
       if (how.ok === false) { fill(signBox, [h('span', { class: 'faint', text: how.error })]); return; }
       if (how.signIn === 'none') { fill(signBox, [h('span', { class: 'faint', text: 'It answers without a sign-in. Install it as it is.' })]); return; }
       if (how.signIn === 'token') { fill(signBox, [h('span', { class: 'faint', text: 'It wants a token, not a sign-in page. Paste it as a header below, e.g. Authorization: Bearer …' })]); return; }
+      // The service sends your browser back to this address. Services refuse
+      // plain http unless it's localhost — the usual case for a console
+      // inside a private network, so the key way comes first there.
+      var back = (function () { try { return new URL(how.redirectUri); } catch (e) { return null; } })();
+      var refused = back && back.protocol === 'http:' && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(back.hostname);
+      var keyWay = tpl && tpl.withToken ? h('button', { class: 'btn small', type: 'button', text: 'Use a key instead', onclick: useToken }) : null;
       fill(signBox, [
+        refused ? h('div', { class: 'stack', style: 'gap:6px;margin-bottom:10px' },
+          h('b', { style: 'color:var(--need)', text: 'This sign-in will likely be refused' }),
+          h('span', { class: 'muted', style: 'font-size:13px', text: 'The service sends your browser back to ' + back.origin + ', and services only accept https:// or localhost. ' +
+            (keyWay ? 'Install it with a key instead, or give the console an https address (publicUrl in org.json) and come back.' : 'Give the console an https address (publicUrl in org.json), or reach it through a tunnel on localhost while you sign in, or install the service’s command version with an API key.') }),
+          keyWay) : null,
         h('div', { class: 'row', style: 'gap:8px;align-items:flex-start;flex-wrap:nowrap' }, h('span', { style: 'color:var(--go);flex:none;display:flex;margin-top:2px' }, icon('lock', 16)),
           h('div', { class: 'stack', style: 'gap:4px' },
             h('b', { text: 'Signs in with ' + how.issuer }),
-            h('span', { class: 'muted', style: 'font-size:13px', text: 'You approve it once on their page, for the whole org. Every worker you give this tool acts as the account you sign in with, so a service or bot account is best. overcli renews the sign-in itself.' }))),
+            h('span', { class: 'muted', style: 'font-size:13px', text: 'You approve it once on their page, for the whole org. Every worker you give this tool acts as the account you sign in with, so a service or bot account is best. overgo renews the sign-in itself.' }))),
         how.registers ? null : h('div', { class: 'stack', style: 'gap:8px' },
           h('span', { class: 'muted', style: 'font-size:13px', text: how.issuer + ' doesn’t let apps register themselves. Make an OAuth app there with this redirect address, then paste its client ID and secret:' }),
           codeBlock(how.redirectUri),
-          h('div', { class: 'grid2' }, clientId, clientSecret))
+          h('div', { class: 'grid2' }, clientId, clientSecret)),
+        !refused && keyWay ? h('div', { class: 'row', style: 'gap:8px;margin-top:8px' }, h('span', { class: 'faint', text: 'No browser sign-in from this server?' }), keyWay) : null
       ]);
     };
     var probeTimer = null, probed = '';
@@ -10393,12 +10617,71 @@ export const CONSOLE_JS = String.raw`
         if (onDone) setTimeout(onDone, 1200);
       });
     };
-    return h('div', { class: 'stack' },
-      tpl ? h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Filled in from how it was set up where the worker was built. Add the values for each setting: secrets never travel with a published worker.' }) : null,
+    // The same tool with a key in place of a browser sign-in.
+    var useToken = function () {
+      var alt = Object.assign({}, tpl, tpl.withToken, { name: name.value.trim() || tpl.name, withToken: null, viaToken: true });
+      root.replaceWith(toolForm(alt, onDone));
+    };
+    // A catalog entry says what each setting is and where to get it.
+    var hints = tpl && tpl.settings ? Object.keys(tpl.settings) : [];
+    var intro = !tpl ? null
+      : tpl.title ? h('div', { class: 'stack', style: 'gap:6px;font-size:13.5px' },
+          h('p', { class: 'muted', style: 'margin:0' }, tpl.blurb + ' ', h('a', { href: tpl.docs, target: '_blank', rel: 'noopener noreferrer', text: 'How it’s set up ↗' })),
+          hints.length ? h('ul', { class: 'muted', style: 'margin:0;padding-left:18px' }, hints.map(function (k) { return h('li', null, h('code', { text: k }), ' — ' + tpl.settings[k]); })) : null,
+          tpl.viaToken ? h('p', { class: 'faint', style: 'margin:0', text: 'With a key: nothing comes back to this server from the service, so it works from inside a private network. Use a service or bot account’s key where you can.' })
+            : tpl.kind === 'http' && !tpl.headerKeys.length && !tpl.open ? h('p', { class: 'faint', style: 'margin:0', text: 'It signs in on its own page: the form checks the address and turns the button into Sign in and install.' }) : null)
+      : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Filled in from how it was set up where the worker was built. Add the values for each setting: secrets never travel with a published worker.' });
+    var root = h('div', { class: 'stack' },
+      intro,
       h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Name (what workers list)', name), h('label', { class: 'field' }, 'How it runs', kind)),
       cmdPart, httpPart,
-      h('p', { class: 'faint', text: 'Secrets are written to the server’s own config on its volume and never shown again. A remote server that signs in through a browser is signed in once by you, for everyone; overcli keeps the sign-in encrypted and renews it.' }),
+      h('p', { class: 'faint', text: 'Secrets are written to the server’s own config on its volume and never shown again. A remote server that signs in through a browser is signed in once by you, for everyone; overgo keeps the sign-in encrypted and renews it.' }),
       h('div', { class: 'foot' }, save, out));
+    return root;
+  }
+
+  /// The common tools, to install in a click: a card fills in the install
+  /// form, and "Something else" opens it empty.
+  function toolCatalog(catalog, installed, onDone) {
+    var box = h('div', { class: 'stack' });
+    var cat = 'All';
+    var q = h('input', { type: 'search', placeholder: 'Find a tool', 'aria-label': 'Find a tool in the catalog', style: 'width:220px' });
+    var cats = ['All'].concat(catalog.map(function (t) { return t.category; }).filter(function (c, i, a) { return a.indexOf(c) === i; }));
+    var chips = h('div', { class: 'row', role: 'group', 'aria-label': 'Kind of tool', style: 'gap:6px' });
+    var grid = h('div', { class: 'cat-grid' });
+    var open_ = function (tpl) {
+      fill(box, [h('div', null, h('button', { class: 'btn small', onclick: show }, '← All tools')),
+        tpl ? h('h3', { style: 'margin:0', text: tpl.title }) : null,
+        toolForm(tpl || '', onDone)]);
+    };
+    var draw = function () {
+      fill(chips, cats.map(function (c) { return h('button', { class: 'chip', 'aria-pressed': cat === c ? 'true' : 'false', text: c, onclick: function () { cat = c; draw(); } }); }));
+      var words = q.value.trim().toLowerCase();
+      var shown = catalog.filter(function (t) {
+        if (cat !== 'All' && t.category !== cat) return false;
+        return !words || (t.title + ' ' + t.name + ' ' + t.blurb).toLowerCase().indexOf(words) >= 0;
+      });
+      // Anything not listed is always first, whatever the filter.
+      fill(grid, [h('button', { class: 'cat-card other', onclick: function () { open_(null); } },
+        h('b', null, icon('plus', 14), 'Something else'),
+        h('span', { class: 'cat-blurb', text: 'Any MCP server, by its command or its URL.' }))].concat(shown.map(function (t) {
+        var done = installed.indexOf(t.name) >= 0;
+        var setup = t.kind === 'http' ? (t.open ? 'Remote · no sign-in' : t.headerKeys.length ? 'Remote · a token' : t.withToken ? 'Remote · sign in, or a key' : 'Remote · sign in only') : 'Command' + (t.envKeys.length ? ' · ' + plural(t.envKeys.length, 'setting', 'settings') : '');
+        return h('button', { class: 'cat-card' + (done ? ' done' : ''), onclick: function () { open_(t); } },
+          h('div', { class: 'spread', style: 'align-items:center' }, h('b', { text: t.title }), done ? h('span', { class: 'cat-done' }, h('span', { class: 'tick', 'aria-hidden': 'true' }, icon('check', 12)), 'Installed') : null),
+          h('span', { class: 'cat-blurb', text: t.blurb }),
+          h('span', { class: 'cat-meta', text: setup + ' · lists as ' + t.name }));
+      })));
+    };
+    var show = function () {
+      fill(box, [h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: 'Connectors in your Claude app (claude.ai Atlassian, Slack, Drive…) stay on your own account and don’t carry over to this server. Install a tool here once and every worker you give it uses it.' }),
+        h('div', { class: 'spread', style: 'flex-wrap:wrap;gap:10px' }, chips,
+        h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, q, h('button', { class: 'btn small', onclick: function () { open_(null); } }, icon('plus', 14), 'Something else'))), grid]);
+      draw();
+    };
+    q.addEventListener('input', draw);
+    show();
+    return box;
   }
 
   /// Setup → Tools: what needs you first, then one row per tool with who has
@@ -10440,7 +10723,8 @@ export const CONSOLE_JS = String.raw`
         var restore = busy(check, 'Checking… up to a minute');
         api('POST', '/api/admin/tools/check').then(function (x) { restore(); if (x.ok === false) { checkOut.textContent = ''; checkOut.appendChild(msg(x)); return; } render(); });
       };
-      var addPanel = h('section', { class: 'panel pad stack', hidden: true }, h('h2', { class: 'section-title', text: 'Install a tool' }), toolForm('', render));
+      var addPanel = h('section', { class: 'panel pad stack', hidden: true }, h('h2', { class: 'section-title', text: 'Install a tool' }),
+        r.catalog && r.catalog.length ? toolCatalog(r.catalog, r.tools.map(function (t) { return t.name; }), render) : toolForm('', render));
       var row = function (t) {
         var st = stateOf(t);
         var has = holders(t);
@@ -10611,10 +10895,21 @@ export const CONSOLE_JS = String.raw`
         h('p', { class: 'muted', style: 'font-size:13.5px', text: 'A worker brought from someone’s desktop names the tools it had there. Until one is installed here under the same name, the worker runs without it.' }),
         h('div', { class: 'listed' }, r.missing.map(function (m) {
           var slot = h('div');
+          var c = m.connector;
+          // A connector on someone's Claude account: the server installs its
+          // own, and the workers are pointed at it.
+          var action = !r.canEdit ? null
+            : c && c.installed ? h('button', { class: 'btn small go', text: 'Use the installed ' + c.tool, onclick: function (e) {
+                var restore = busy(e.target, 'Switching…');
+                api('POST', '/api/admin/tools/adopt', { name: c.tool }).then(function (x) { restore(); if (x.ok === false) { slot.textContent = ''; slot.appendChild(msg(x)); return; } render(); });
+              } })
+            : h('button', { class: 'btn small', text: 'Install ' + (c ? c.tool : m.name), onclick: function (e) { e.target.remove(); slot.appendChild(toolForm(m.template || m.name, render)); } });
           return h('div', { class: 'panel stack', style: 'gap:8px' },
             h('div', { class: 'spread', style: 'align-items:center' },
               h('div', null, h('b', { text: m.name }), h('span', { class: 'faint', text: '  needed by ' + m.workers.join(', ') })),
-              r.canEdit ? h('button', { class: 'btn small', text: 'Install ' + m.name, onclick: function (e) { e.target.remove(); slot.appendChild(toolForm(m.template || m.name, render)); } }) : null),
+              action),
+            c ? h('p', { class: 'muted', style: 'margin:0;font-size:13px', text: 'On the desktop this came from a Claude account (the ' + c.title + ' connector), which stays with that person. ' +
+              (c.installed ? c.tool + ' is installed here: switch the workers over to it.' : 'The server needs its own: install ' + c.tool + ' once and these workers switch to it.') }) : null,
             slot);
         }))) : null;
       var hq = state.hashQuery;
@@ -10657,7 +10952,7 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Issuer', issuer), h('label', { class: 'field' }, 'Client ID', clientId), h('label', { class: 'field' }, 'Only these email domains (optional)', domains)),
         h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'In the provider, register this as the redirect (sign-in callback) address. A confidential client’s secret goes in OVERCLI_SSO_CLIENT_SECRET on the server, never here.' }), codeBlock(callback)),
         h('label', { class: 'toggle' }, required, h('span', { text: 'Everyone signs in this way. Invite links still give people their role, but no longer sign them in.' })),
-        h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Who is who. overcli asks Slack for each email (the bot needs users:read.email); list anyone Slack can’t match here.' }),
+        h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Who is who. overgo asks Slack for each email (the bot needs users:read.email); list anyone Slack can’t match here.' }),
           peopleRows, h('div', null, h('button', { class: 'btn small', text: 'Add a person', onclick: function () { addPerson('', ''); } })))),
       function () {
         var people = {};

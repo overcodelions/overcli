@@ -60,7 +60,7 @@ export const ASK_DM_AFTER_MS = 30_000;
 
 export interface SlackCommandsDeps {
   org: OrgService;
-  /// Invites and `/overcli join`. Absent: the access commands are not offered.
+  /// Invites and `/overgo join`. Absent: the access commands are not offered.
   access?: AccessService;
   policy(): OrgPolicy;
   botToken(): string | null;
@@ -248,7 +248,8 @@ export class SlackCommands {
     if (p.command === '/hire') return this.hire(caller, text, p.response_url);
     if (p.command === '/worker') return this.worker(caller, text, p.response_url);
     if (p.command === '/team') return this.team(caller, text, p.response_url);
-    if (p.command === '/overcli') return this.overcli(caller, text, p.response_url);
+    // `/overcli` is the command Slack apps installed before the rename have.
+    if (p.command === '/overgo' || p.command === '/overcli') return this.join(caller, text, p.response_url);
     if (p.command === '/idea') return this.idea(caller, text, p.response_url);
   }
 
@@ -318,12 +319,12 @@ export class SlackCommands {
     return (res.ok && (res.data.user?.profile?.real_name || res.data.user?.real_name)) || fallback;
   }
 
-  /// `/overcli join`: ask to use the org's workers. Slack has already said
+  /// `/overgo join`: ask to use the org's workers. Slack has already said
   /// who is asking.
-  private async overcli(caller: OrgCaller, text: string, responseUrl?: string): Promise<void> {
+  private async join(caller: OrgCaller, text: string, responseUrl?: string): Promise<void> {
     const access = this.deps.access;
     if (text.toLowerCase() !== 'join' || !access) {
-      return this.respond(responseUrl, '`/overcli join` asks to use this org’s AI workers. Once you’re in: `/worker`, `/team`, `/hire`.');
+      return this.respond(responseUrl, '`/overgo join` asks to use this org’s AI workers. Once you’re in: `/worker`, `/team`, `/hire`.');
     }
     const name = await this.realName(caller.slackUserId!, caller.name);
     const base = access.baseUrl();
@@ -577,7 +578,7 @@ export class SlackCommands {
     const a = hire.alreadyDoes;
     if (!a) return [];
     return [
-      section(`*${escapeMrkdwn(a.name)}* may already do this${a.why ? `: ${escapeMrkdwn(a.why)}` : a.tagline ? ` (${escapeMrkdwn(a.tagline)})` : ''}. Ask ${escapeMrkdwn(a.name)} instead with \`@overcli ${escapeMrkdwn(a.name)}, …\`, or carry on to hire.`),
+      section(`*${escapeMrkdwn(a.name)}* may already do this${a.why ? `: ${escapeMrkdwn(a.why)}` : a.tagline ? ` (${escapeMrkdwn(a.tagline)})` : ''}. Ask ${escapeMrkdwn(a.name)} instead with \`@overgo ${escapeMrkdwn(a.name)}, …\`, or carry on to hire.`),
       { type: 'divider' },
     ];
   }
@@ -954,7 +955,7 @@ export class SlackCommands {
           ...res.waiting.map((m) => `${m.name} is waiting on an approver and joins once approved.`),
           ...res.failed.map((f) => `Couldn't hire for "${f.role}": ${f.error}`),
         ].join(' ');
-        await settle(`${res.team.name} is made: ${on.join(', ')}.${after ? ` ${after}` : ''} Give it work with \`/team ${res.team.name}: …\` or \`@overcli ${res.team.name}, …\`.`);
+        await settle(`${res.team.name} is made: ${on.join(', ')}.${after ? ` ${after}` : ''} Give it work with \`/team ${res.team.name}: …\` or \`@overgo ${res.team.name}, …\`.`);
         return;
       }
       case TEAM_APPROVE_ACTION:
@@ -1411,7 +1412,7 @@ const HELP = [
   '`/team` — the teams you can see, and what each is on',
   '`/team <name>: <task>` — give a team a task',
   '`/team new <what it’s for>` — make a team from your workers',
-  '`/overcli join` — ask to join, or get a new sign-in link',
+  '`/overgo join` — ask to join, or get a new sign-in link',
 ].join('\n');
 
 function section(text: string) {
@@ -1450,6 +1451,6 @@ function workerLine(w: WorkerSummary): string {
 }
 
 function waitingLine(it: WaitingItem): string {
-  const what = it.kind === 'question' ? escapeMrkdwn(clip(it.question ?? 'a question', 160)) : 'wants your approval for a step that reaches outside overcli';
+  const what = it.kind === 'question' ? escapeMrkdwn(clip(it.question ?? 'a question', 160)) : 'wants your approval for a step that reaches outside overgo';
   return `• *${escapeMrkdwn(it.workerName)}* (${escapeMrkdwn(clip(it.title, 60))}): ${what}`;
 }

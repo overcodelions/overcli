@@ -32,6 +32,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { callerForToken, loadOrgPolicy, revokeOwnToken } from '../main/org/orgStores';
 import { auditCsv } from '../main/org/retention';
 import { parseTemplates } from '../main/org/tools';
+import { reachOf } from '../main/org/reach';
 import { DOCS_CSS, DOCS_JS, renderDocsPage } from './docsPages';
 import type { SsoService } from '../main/org/sso';
 import { CONNECT_COOKIE, type ConnectionsService } from '../main/org/connections';
@@ -45,6 +46,7 @@ import { PICTURE_TONES, avatarChoices, searchPictures } from '../shared/flows/av
 import { FLUENT_EMOJI } from '../shared/flows/fluentEmoji';
 import type { AccessService, PersonRole } from '../main/org/accessService';
 import type { SlackPerson } from '../main/slack/slackApi';
+import { slackManifestForConsole } from '../main/slack/slackManifest';
 import type { OrgService, SetupPublishInput, TeamPublishInput } from '../main/org/orgService';
 import { isAdmin, type OrgCaller } from '../shared/org/policy';
 import { CONSOLE_CSS, CONSOLE_HTML, CONSOLE_ICON, CONSOLE_JS } from './consoleAssets';
@@ -1131,6 +1133,12 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'GET', path: /^\/api\/admin\/people$/, handle: (c) => org.people(c) },
     { method: 'GET', path: /^\/api\/admin\/health$/, handle: (c) => org.health(c) },
+    {
+      // The Slack app to create, for Connect → Slack.
+      method: 'GET',
+      path: /^\/api\/admin\/slack-manifest$/,
+      handle: (c) => (isAdmin(loadOrgPolicy().policy, c) ? { ok: true, ...slackManifestForConsole() } : { ok: false, error: 'Only admins can set up Slack.' }),
+    },
     { method: 'GET', path: /^\/api\/admin\/audit$/, handle: (c, _b, _p, url) => org.auditLog(c, auditQuery(url, 60)) },
     {
       // The same search, as a spreadsheet to download.
@@ -1164,6 +1172,9 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'GET', path: /^\/api\/asks\/([^/]+)$/, handle: (c, _b, [id]) => org.askStatus(c, decodeURIComponent(id)) },
     { method: 'GET', path: /^\/api\/tools$/, handle: (c) => org.tools(c) },
+    { method: 'POST', path: /^\/api\/admin\/tools\/adopt$/, handle: (c, b) => org.useToolForConnectors(c, str(b.name)) },
+    // Whether a webhook's sender could reach this console at all.
+    { method: 'GET', path: /^\/api\/hooks\/reach$/, handle: async (_c, _b, _p, _u, base) => ({ ok: true, ...(await reachOf(base)) }) },
     { method: 'GET', path: /^\/api\/admin\/tools\/([^/]+)\/scope$/, handle: (c, _b, [name]) => org.toolScopePage(c, decodeURIComponent(name)) },
     { method: 'POST', path: /^\/api\/admin\/tools\/([^/]+)\/scope$/, handle: (c, b, [name]) => org.setToolDefault(c, decodeURIComponent(name), b.default ?? null) },
     { method: 'GET', path: /^\/api\/tools\/([^/]+)\/calls$/, handle: (c, _b, [name]) => org.serverTools(c, decodeURIComponent(name)) },
@@ -1489,7 +1500,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
         }
 
         if (path.startsWith('/api/')) {
-          if (!caller) return send(res, 401, { ok: false, error: 'You are signed out. Open your sign-in link again, or type /overcli join in Slack.' });
+          if (!caller) return send(res, 401, { ok: false, error: 'You are signed out. Open your sign-in link again, or type /overgo join in Slack.' });
           // This browser's or app's own sign-out: the token stops working
           // here, not just on the device.
           if (req.method === 'POST' && path === '/api/signout') return send(res, 200, { ok: revokeOwnToken(bearer(req)!) });

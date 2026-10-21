@@ -889,7 +889,8 @@ interface ActiveProcess {
   /// Pending permission/approval handlers indexed by requestId / callId.
   /// We look them up on response so the renderer's allow/deny decisions
   /// reach the live subprocess.
-  pendingPermissions: Map<string, (approved: boolean) => void>;
+  /// `message`: what a refusal tells the model; absent, "denied by user".
+  pendingPermissions: Map<string, (approved: boolean, message?: string) => void>;
   pendingCodexApprovals: Map<string, (approved: boolean) => void>;
   pendingUserInputs: Map<string, (answers: Record<string, UserInputAnswer>) => void>;
   /// Accumulated context for the current turn so we can feed the
@@ -1787,13 +1788,13 @@ export class RunnerManager {
     // Do NOT auto-allow — fall through to the pending-permission path so
     // the plan card's Approve/Deny drives the decision (allow → implement,
     // deny → keep planning). Auto-allowing here silently defeated plan mode.
-    active.pendingPermissions.set(req.requestId, (approved: boolean) => {
+    active.pendingPermissions.set(req.requestId, (approved: boolean, message?: string) => {
       this.claudeBroker.resolve(
         req.conversationId,
         req.requestId,
         approved
           ? { behavior: 'allow', updatedInput: req.toolInput }
-          : { behavior: 'deny', message: 'denied by user' },
+          : { behavior: 'deny', message: message ?? 'denied by user' },
       );
     });
     const toolInputStr =
@@ -2100,8 +2101,12 @@ export class RunnerManager {
       // permission path so the plan card drives the decision; auto-allowing
       // defeated plan mode (the model proceeded straight into coding).
       const requestId = randomUUID();
+      let refusal: string | undefined;
       const approved = await new Promise<boolean>((resolve) => {
-        active.pendingPermissions.set(requestId, resolve);
+        active.pendingPermissions.set(requestId, (ok, message) => {
+          refusal = message;
+          resolve(ok);
+        });
         const toolInputStr = JSON.stringify(input, null, 2);
         const requestedPath = extractRequestedPath(toolName, input);
         const outsideAllowedDirs =
@@ -2134,7 +2139,7 @@ export class RunnerManager {
       });
       return approved
         ? { behavior: 'allow', updatedInput: input }
-        : { behavior: 'deny', message: 'denied by user' };
+        : { behavior: 'deny', message: refusal ?? 'denied by user' };
     };
   }
 
@@ -2390,6 +2395,10 @@ export class RunnerManager {
     addDir?: string,
     scope?: 'once' | 'always',
     rule?: string,
+    /// What a refusal tells the model instead of "denied by user": a policy
+    /// that refuses should say why, or the model reports a permissions
+    /// problem that isn't one. Claude only.
+    denyMessage?: string,
   ): void {
     const gemini = this.geminiAcpSessions.get(conversationId);
     if (gemini) {
@@ -2419,7 +2428,7 @@ export class RunnerManager {
     }
     const cb = active.pendingPermissions.get(requestId);
     if (cb) {
-      cb(approved);
+      cb(approved, approved ? undefined : denyMessage);
       active.pendingPermissions.delete(requestId);
     }
     // When the user granted a new session directory, Claude's directory

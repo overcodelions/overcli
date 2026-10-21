@@ -101,6 +101,31 @@ describe('parseClaudeFileCached', () => {
     expect(claudeTranscriptTitle(file)).toBe('Fix the parser');
   });
 
+  it('credits tool results to the tool that produced them, on the next reply, and marks compaction', () => {
+    const reply = (id: string, content: unknown[]) =>
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: 1700000000000,
+        message: { id, model: 'claude-opus-5', usage: { input_tokens: 1, output_tokens: 1 }, content },
+      });
+    const result = (id: string, content: unknown) =>
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content }] } });
+    const file = path.join(tmp, 'sess.jsonl');
+    fs.writeFileSync(
+      file,
+      [
+        reply('m1', [{ type: 'tool_use', id: 'tu1', name: 'mcp__acme__fetch', input: {} }]),
+        result('tu1', 'x'.repeat(4000)),
+        reply('m2', []),
+        JSON.stringify({ type: 'system', subtype: 'compact_boundary' }),
+        reply('m3', []),
+      ].join('\n') + '\n',
+    );
+    const events = parseClaudeFileCached(file);
+    expect(events.map((e) => e.toolResults)).toEqual([[], [{ name: 'mcp__acme__fetch', tokens: 1000 }], []]);
+    expect(events.map((e) => e.afterCompact)).toEqual([false, false, true]);
+  });
+
   it('returns empty for a missing file (and caches nothing fatal)', () => {
     expect(parseClaudeFileCached(path.join(tmp, 'does-not-exist.jsonl'))).toEqual([]);
   });

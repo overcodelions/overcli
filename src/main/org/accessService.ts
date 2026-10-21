@@ -5,7 +5,7 @@
 //
 //   Invites       an admin picks someone; overcli DMs them a one-time link
 //                 (or the admin copies it). Opening the link signs them in.
-//   Join requests anyone in the org's Slack types `/overcli join`. Slack has
+//   Join requests anyone in the org's Slack types `/overgo join`. Slack has
 //                 proved who they are, so an admin only says yes — or, with
 //                 `openJoin`, nobody has to.
 //   Pairing       the overcli app shows a short code and opens the browser;
@@ -572,13 +572,13 @@ export class AccessService {
 
   // ---- JOIN REQUESTS ----------------------------------------------------
 
-  /// `/overcli join` in Slack. Slack has already said who this is.
+  /// `/overgo join` in Slack. Slack has already said who this is.
   async requestJoin(person: { slackUserId: string; name: string }, baseUrl: string): Promise<Result<{ outcome: 'invited' | 'asked' | 'already' }>> {
     if (!isSlackUserId(person.slackUserId)) return { ok: false, error: 'Not a Slack member.' };
     const policy = this.deps.policy();
     const known = this.deps.tokens.list().some((t) => t.slackUserId === person.slackUserId) || personRole(policy, person.slackUserId) !== 'member';
     if ((policy.openJoin || known) && !baseUrl) {
-      return { ok: false, error: 'This org hasn’t told overcli its web address yet, so there’s no link to send. Ask an admin to set it (publicUrl in org.json).' };
+      return { ok: false, error: 'This org hasn’t told overgo its web address yet, so there’s no link to send. Ask an admin to set it (publicUrl in org.json).' };
     }
     if (policy.openJoin) {
       const role: PersonRole = personRole(policy, person.slackUserId);

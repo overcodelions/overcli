@@ -40,13 +40,14 @@ import { stepsARunGrantCovers } from '../flows/stepEffect';
 import { initialsPicture } from '../../shared/flows/avatars';
 import { describeScope, mcpServerKey, parseToolScope, withinScope, type ToolScope, type ToolScopes } from '../../shared/flows/toolScope';
 import { answerOptions, projectMonthEnd, trustReadiness, workerState, type TrustReadiness, type WorkerState } from '../../shared/org/insights';
-import type { Team, TeamCheckpoints, TeamComment, TeamRosterDraft, TeamStageKind, TeamTask } from '../../shared/flows/team';
-import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, isMemberStage, isTaskActive } from '../../shared/flows/team';
+import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, TeamStageKind, TeamTask } from '../../shared/flows/team';
+import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive } from '../../shared/flows/team';
 import { parseWorkerYaml } from '../../shared/flows/workerYaml';
 import type { Attachment, UUID } from '../../shared/types';
 import type { DraftedHire, HireDraftResult } from './hireDraft';
 import type { ToolInput, ToolSummary, ToolTemplate } from './tools';
 import { TOOL_NAME } from './tools';
+import { catalogFor, connectorTitle, connectorTool, TOOL_CATALOG, type CatalogTool } from './toolCatalog';
 import type { Discovery, SignInSummary } from './toolSignIn';
 import type { Deliverable, Destination, TriggerService, WorkerTrigger } from './triggers';
 import { newPullRequestLink, prFlowId as prFlowIdFor, prFlowYaml as prFlowFor, workspaceFlowId, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
@@ -56,6 +57,7 @@ import type { ToolCall } from './mcpDirect';
 import { classifyServer, fileTitle, isText, listFolder, linkFrom, mimeFor, pickUploadTool, readInFolder, slugFor, uploadArgs, type DestinationKind } from './teamFiles';
 import { buildZip, type ZipEntry } from './zip';
 import { personKey } from './connections';
+import type { ServerVersion } from './updateCheck';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -296,8 +298,23 @@ export interface TeamTaskDetail extends TeamTaskSummary {
   /// The team talking about its pack: who said what, the coordinator's
   /// wrap-ups, and how much of it the pack has taken in.
   room?: {
-    messages: Array<{ id: string; speaker: { kind: 'you' | 'coordinator' | 'member'; name?: string; workerId?: UUID }; text: string; at: number; exchange: number; wrapUp?: boolean; failed?: boolean }>;
-    busy?: { speaker: string; since: number };
+    messages: Array<{
+      id: string;
+      speaker: { kind: 'you' | 'coordinator' | 'member'; name?: string; workerId?: UUID };
+      text: string;
+      at: number;
+      exchange: number;
+      wrapUp?: boolean;
+      failed?: boolean;
+      /// A turn that died with the app: what to run again.
+      retry?: 'pack' | 'ask';
+      /// A member's report on work handed off from the room: the stage it ran as.
+      workReport?: { stage: number; title: string };
+      /// Work the coordinator handed off, and to whom. `steps` when it runs in
+      /// order: who goes first, who builds on them.
+      handoff?: { title: string; status: string; who: string[]; steps?: string[][] };
+    }>;
+    busy?: { speaker: string; since: number; doing?: 'pack' };
     foldedThrough?: number;
     queued?: number;
   };
@@ -386,7 +403,7 @@ export interface TodayView {
   teamTasks: TeamTaskSummary[];
   proposals: ProposalBatch[];
   delivered: WorkItem[];
-  crew: Array<{ id: UUID; name: string; state: WorkerState; nextShiftAt?: number | null }>;
+  crew: Array<{ id: UUID; name: string; state: WorkerState; nextShiftAt?: number | null; spentUSD?: number; budgetUSDPerMonth?: number }>;
   spend: { spentUSD: number; projectedUSD: number; allowanceUSD?: number; committedUSD?: number };
 }
 
@@ -761,6 +778,8 @@ export interface OrgServiceDeps {
   /// An answer that took long enough that the asker has likely moved on.
   onAskDone?(ask: AskRecord): void;
   health?(): HealthItem[];
+  /// The server's version and any newer release, for the console's footer.
+  version?(): ServerVersion;
   /// Everyone holding access, from the token list.
   people?(): Array<{ id?: string; name: string; slackUserId?: string; admin: boolean; device?: string; lastUsedAt?: number }>;
   /// Tell the approvers a hire is waiting on them (a Slack DM, usually).
@@ -1723,7 +1742,7 @@ export class OrgService {
   /// What MCP servers workers here can use, who uses each, and what a worker
   /// names that is not installed. Admins see it all; a manager sees whether
   /// their workers' tools are here.
-  tools(caller: OrgCaller): Result<{ tools: Array<ToolSummary & { access: 'picked' | 'managers' | 'everyone'; signIn?: SignInSummary }>; missing: Array<{ name: string; workers: string[]; template?: ToolTemplate }>; checkedAt?: number; canEdit: boolean; signIn: boolean }> {
+  tools(caller: OrgCaller): Result<{ tools: Array<ToolSummary & { access: 'picked' | 'managers' | 'everyone'; signIn?: SignInSummary }>; missing: Array<{ name: string; workers: string[]; template?: ToolTemplate; connector?: { title: string; tool: string; installed: boolean } }>; catalog?: CatalogTool[]; checkedAt?: number; canEdit: boolean; signIn: boolean }> {
     if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
     const roster = this.deps.workers.roster();
     const admin = isAdmin(this.policy(), caller);
@@ -1743,7 +1762,22 @@ export class OrgService {
     return {
       ok: true,
       tools: admin ? withAccess : withAccess.filter((t) => t.usedBy.length || t.access === 'everyone'),
-      missing: listed.missing,
+      // A tool nobody published the setup of still fills in when it is a
+      // common one.
+      // A connector from someone's Claude account is installed here under
+      // a tool name of its own.
+      missing: listed.missing.map((m) => {
+        const title = connectorTitle(m.name);
+        const tool = connectorTool(m.name);
+        if (title && tool) {
+          const known = catalogFor(tool);
+          return { ...m, template: known ?? { name: tool, kind: 'http' as const, url: '', envKeys: [], headerKeys: [] }, connector: { title, tool, installed: listed.tools.some((t) => t.name === tool) } };
+        }
+        if (m.template) return m;
+        const known = catalogFor(m.name);
+        return known ? { ...m, template: { ...known, name: m.name } } : m;
+      }),
+      ...(admin ? { catalog: TOOL_CATALOG } : {}),
       ...(this.toolStatuses ? { checkedAt: this.toolStatuses.at } : {}),
       canEdit: admin,
       signIn: !!this.deps.toolSignIn,
@@ -1850,8 +1884,32 @@ export class OrgService {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can install tools on the server.' };
     if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
     const res = this.deps.tools.install(input);
-    if (res.ok) this.record(caller, `Installed the ${input.name} tool (${input.kind === 'http' ? input.url : input.command}).`);
+    if (res.ok) {
+      this.record(caller, `Installed the ${input.name} tool (${input.kind === 'http' ? input.url : input.command}).`);
+      this.adoptConnectors(input.name);
+    }
     return res;
+  }
+
+  /// Point workers that list a Claude-account connector at the tool
+  /// installed for it, so "claude.ai Atlassian" becomes atlassian.
+  useToolForConnectors(caller: OrgCaller, name: string): Result<{ workers: string[] }> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can set up the server\'s tools.' };
+    const moved = this.adoptConnectors(name);
+    if (moved.length) this.record(caller, `Gave ${moved.join(', ')} the ${name} tool in place of their Claude connector.`);
+    return { ok: true, workers: moved };
+  }
+
+  private adoptConnectors(tool: string): string[] {
+    const moved: string[] = [];
+    for (const w of this.deps.workers.roster()) {
+      const list = w.mcpServers ?? [];
+      if (!list.some((n) => connectorTool(n) === tool)) continue;
+      const next = [...new Set(list.map((n) => (connectorTool(n) === tool ? tool : n)))];
+      const scopes = w.toolScopes ? Object.fromEntries(Object.entries(w.toolScopes).map(([k, v]) => [connectorTool(k) === tool ? tool : k, v])) : undefined;
+      if (this.deps.workers.save({ ...structuredClone(w), mcpServers: next, ...(scopes ? { toolScopes: scopes } : {}) }).ok) moved.push(w.name);
+    }
+    return moved;
   }
 
   uninstallTool(caller: OrgCaller, name: string): Result {
@@ -1889,7 +1947,10 @@ export class OrgService {
   async finishToolSignIn(query: URLSearchParams, browserKey: string | undefined): Promise<{ location: string; ok: boolean; reason?: string }> {
     if (!this.deps.toolSignIn) return { ok: false, reason: 'server', location: '/#setup/tools' };
     const back = await this.deps.toolSignIn.callback(query, browserKey);
-    if (back.ok && back.name) this.record({ name: back.by ?? 'An admin', admin: true }, `Signed the ${back.name} tool in for the org.`);
+    if (back.ok && back.name) {
+      this.record({ name: back.by ?? 'An admin', admin: true }, `Signed the ${back.name} tool in for the org.`);
+      this.adoptConnectors(back.name);
+    }
     return back;
   }
 
@@ -3600,7 +3661,14 @@ export class OrgService {
       proposals: this.proposals(caller),
       delivered: this.workItems(crewSource, this.now() - 36 * 3_600_000, 12),
       crew: crewSource
-        .map((w) => ({ id: w.id, name: w.name, state: workerState(w, runs), nextShiftAt: snapshots.get(w.id) ?? null }))
+        .map((w) => ({
+          id: w.id,
+          name: w.name,
+          state: workerState(w, runs),
+          nextShiftAt: snapshots.get(w.id) ?? null,
+          spentUSD: spent.get(w.id) ?? 0,
+          ...(Number.isFinite(w.budgetUSDPerMonth) && w.budgetUSDPerMonth > 0 ? { budgetUSDPerMonth: w.budgetUSDPerMonth } : {}),
+        }))
         .sort((a, b) => a.name.localeCompare(b.name)),
       spend: {
         spentUSD,
@@ -4510,6 +4578,11 @@ export class OrgService {
                 exchange: m.exchange,
                 ...(m.wrapUp ? { wrapUp: true } : {}),
                 ...(m.failed ? { failed: true } : {}),
+                ...(m.retry ? { retry: m.retry } : {}),
+                ...(m.workReport ? { workReport: { stage: m.workReport.stage, title: task.stages[m.workReport.stage]?.title ?? '' } } : {}),
+                ...(m.handoff
+                  ? { handoff: roomHandoffView(m.handoff) }
+                  : {}),
               })),
               ...(task.room.busy ? { busy: task.room.busy } : {}),
               ...(task.room.foldedThrough ? { foldedThrough: task.room.foldedThrough } : {}),
@@ -5257,19 +5330,35 @@ export class OrgService {
   }
 
   /// What the caller is allowed, for a console header or a `whoami` tool.
-  whoami(caller: OrgCaller): { org: string; name: string; slackUserId?: string; admin: boolean; canHire: boolean; timezone?: string; allowanceUSD?: number; committedUSD?: number } {
+  whoami(caller: OrgCaller): { org: string; name: string; slackUserId?: string; admin: boolean; canHire: boolean; timezone?: string; allowanceUSD?: number; committedUSD?: number; version?: string; newer?: { version: string; url: string } } {
     const policy = this.policy();
     const roster = this.deps.workers.roster();
+    const admin = isAdmin(policy, caller);
+    const v = this.deps.version?.();
     return {
       org: policy.name ?? 'Your org',
       name: caller.name,
       ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}),
-      admin: isAdmin(policy, caller),
+      admin,
       canHire: canHire(policy, caller),
       ...(policy.timezone ? { timezone: policy.timezone } : {}),
+      ...(v ? { version: v.version } : {}),
+      // Upgrading is an operator's job, so only admins hear a release is out.
+      ...(v?.newer && admin ? { newer: v.newer } : {}),
       ...(caller.slackUserId
         ? { allowanceUSD: allowanceFor(policy, caller.slackUserId), committedUSD: committedBudget(roster, caller.slackUserId) }
         : {}),
     };
   }
+}
+
+/// A room hand-off as the console shows it.
+function roomHandoffView(h: TeamHandoff): { title: string; status: string; who: string[]; steps?: string[][] } {
+  const steps = handoffSteps(h.assignments).map((step) => step.map((a) => a.workerName));
+  return {
+    title: h.title,
+    status: h.status,
+    who: h.assignments.map((a) => a.workerName),
+    ...(steps.length > 1 ? { steps } : {}),
+  };
 }

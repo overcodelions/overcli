@@ -354,9 +354,9 @@ export class ToolSignIn {
     const known = doc.clients.find((c) => c.issuer === as.issuer && c.redirectUri === redirectUri);
     if (known) return { ok: true, client: known };
     if (!as.registrationEndpoint) return { ok: false, error: `${new URL(as.issuer).host} doesn't let apps register themselves. Make an OAuth app there with the redirect address below, then paste its client ID (and secret).` };
-    let host = 'overcli';
+    let host = 'overgo';
     try {
-      host = `overcli (${new URL(redirectUri).host})`;
+      host = `overgo (${new URL(redirectUri).host})`;
     } catch {
       // keep the plain name
     }
@@ -366,7 +366,7 @@ export class ToolSignIn {
       body: JSON.stringify({ client_name: host, redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }),
     });
     const clientId = typeof reg?.client_id === 'string' ? reg.client_id : '';
-    if (!clientId) return { ok: false, error: `${new URL(as.issuer).host} would not register overcli as an app. Make an OAuth app there and paste its client ID instead.` };
+    if (!clientId) return { ok: false, error: `${new URL(as.issuer).host} would not register overgo as an app. Make an OAuth app there and paste its client ID instead.` };
     const secret = typeof reg?.client_secret === 'string' ? reg.client_secret : undefined;
     const said = typeof reg?.token_endpoint_auth_method === 'string' ? reg.token_endpoint_auth_method : secret ? 'client_secret_basic' : 'none';
     const client: Client = { issuer: as.issuer, redirectUri, clientId, ...(secret ? { clientSecret: secret } : {}), authMethod: said === 'client_secret_post' ? 'post' : said === 'none' || !secret ? 'none' : 'basic' };

@@ -1503,6 +1503,9 @@ export class WorkerEngine {
       /// setting — a team that lets its pieces work without asking. Absent:
       /// the worker's own setting.
       allowExternalActions?: boolean;
+      /// Outside tools you already approved for this run (see
+      /// FlowRuntimeStartArgs.externalActionGrant). Narrower than the grant.
+      externalActionGrant?: string[];
       /// Fork off this branch: a team task's shared branch, so the piece
       /// starts from what earlier pieces did. Always in a worktree then —
       /// the branch is merged into, never your checkout.
@@ -1539,7 +1542,12 @@ export class WorkerEngine {
     const res = await this.deps.parker.parkDirect({
       origin: (() => {
         const { allowExternalActions: _member, ...base } = workerOrigin(w, 'errand', label);
-        return { ...base, team: args.team, ...(args.allowExternalActions === true ? { allowExternalActions: true } : {}) };
+        return {
+          ...base,
+          team: args.team,
+          ...(args.allowExternalActions === true ? { allowExternalActions: true } : {}),
+          ...(args.externalActionGrant?.length ? { externalActionGrant: args.externalActionGrant } : {}),
+        };
       })(),
       projectPath: args.projectPath ?? w.projectPath,
       // No "YOUR FILES" block: its cursor is a shift's bookmark, and a team

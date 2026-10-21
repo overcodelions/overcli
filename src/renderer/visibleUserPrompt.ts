@@ -1,5 +1,11 @@
 import { BATCHING_DIRECTIVE } from '@shared/turbo';
 
+/// The consolidation nudge buildResponseModePrompt puts in front of a Full
+/// mode prompt. Replayed transcripts carry it, so it's stripped like the
+/// batching directive.
+const LEADING_CONSOLIDATION_NUDGE =
+  /^The previous turn used [A-Za-z0-9_.-]+ in \d+ separate model rounds \(\d+ calls\)\. Consolidate independent [A-Za-z0-9_.-]+ work this turn\.\s*/;
+
 const LEADING_IMAGE_TAG = /^\s*<image\s+name=\[([^\]]+)\]\s+path="[^"]*"\s*>\s*<\/image>/i;
 
 /// Remove transport-only scaffolding from a normal user bubble. The raw event
@@ -18,6 +24,7 @@ export function visibleUserPrompt(text: string, attachmentsRendered = false): st
   // change carry it in front, so both ends stay strippable. The trailing form
   // arrives behind a `---` rule; drop that too, or every codex bubble ends in
   // a stray horizontal line.
+  rest = rest.replace(LEADING_CONSOLIDATION_NUDGE, '');
   if (rest.startsWith(BATCHING_DIRECTIVE)) {
     rest = rest.slice(BATCHING_DIRECTIVE.length).trimStart();
   }

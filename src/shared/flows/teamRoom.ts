@@ -18,6 +18,9 @@ import type { FolderFile, TeamMessage, TeamSpeaker } from './team';
 import { folderForPrompt } from './team';
 
 export const ROOM_MAX_RESPONDERS = 3;
+/// Members one piece of work handed off from the room may go to: room for a
+/// few researchers and the one who compiles what they find.
+export const ROOM_MAX_WORKERS = 4;
 /// Rounds per exchange: answers, then one round of responses to each other.
 export const ROOM_ROUNDS = 2;
 /// How much of the conversation so far each turn re-reads.
@@ -122,7 +125,11 @@ export function buildRouteMessage(args: {
 }): string {
   return [
     ...underwayLines(args.underway),
-    'FIRST, decide whether the user is asking the team to DO something rather than to talk about it:',
+    'FIRST, if the user asks to update the pack, or to put files the team already made into it (copy,',
+    'add, include, swap a pack document for a member\'s file), that is yours to do, not a member\'s run.',
+    'Reply with only: <pack>what to change in the pack, in one or two sentences</pack>',
+    '',
+    'NEXT, decide whether the user is asking the team to DO something rather than to talk about it:',
     'make or change files, designs, documents or code, or work in a codebase. That includes agreeing',
     'to an offer a member made in the conversation ("yes, go ahead", "do it"). Members cannot do work',
     'in this conversation; work is handed to them as real runs with their tools. If it is work, reply',
@@ -130,6 +137,11 @@ export function buildRouteMessage(args: {
     '<work>{"title": "Short title", "assign": [{"name": "Name", "ask": "…"}]}</work>',
     'Give it to the members whose part it is (usually one). Each "ask" must stand on its own: what to',
     'do, on what, and what the conversation already settled — they do not see this message.',
+    'When one member\'s part builds on another\'s — someone compiles or reports what others find or',
+    'change — give it "after": ["Name"] and it starts once theirs reports back, with their new files',
+    'in hand: {"name": "Zara", "ask": "…", "after": ["Eli"]}. Members with no "after" run side by',
+    'side. If the parts are independent even though the team\'s plan ran these people in order, give',
+    'each "after": [].',
     '',
     'OTHERWISE, it is a question to answer.',
     ...(args.addressed?.length
@@ -161,30 +173,50 @@ export function buildRouteMessage(args: {
 
 export interface RoomWork {
   title: string;
-  assign: Array<{ workerId: string; name: string; ask: string }>;
+  /// `after`: the members on this work it builds on, by worker id. Left out
+  /// when the coordinator said nothing about order.
+  assign: Array<{ workerId: string; name: string; ask: string; after?: string[] }>;
 }
 
 /// The coordinator's routing reply: work to hand off, or who answers.
 export function parseRouteReply(
   text: string,
   members: Array<Pick<RoomMember, 'workerId' | 'name'>>,
-): { kind: 'work'; work: RoomWork } | { kind: 'route'; workerIds: string[] } {
+): { kind: 'work'; work: RoomWork } | { kind: 'pack'; ask: string } | { kind: 'route'; workerIds: string[] } {
+  const pack = text.match(/<pack>([\s\S]*?)<\/pack>/i)?.[1]?.trim();
+  if (pack) return { kind: 'pack', ask: pack.slice(0, 1_000) };
   const raw = text.match(/<work>([\s\S]*?)<\/work>/i)?.[1];
   if (raw) {
     try {
       const parsed = JSON.parse(raw.trim()) as { title?: unknown; assign?: unknown };
       const assign: RoomWork['assign'] = [];
+      const afterNames = new Map<string, unknown[]>();
+      const byName = (name: string) => members.find((m) => m.name.trim().toLowerCase() === name.trim().toLowerCase());
       for (const a of Array.isArray(parsed.assign) ? parsed.assign : []) {
         if (!a || typeof a !== 'object') continue;
-        const { name, ask } = a as { name?: unknown; ask?: unknown };
+        const { name, ask, after } = a as { name?: unknown; ask?: unknown; after?: unknown };
         if (typeof name !== 'string' || typeof ask !== 'string' || !ask.trim()) continue;
-        const hit = members.find((m) => m.name.trim().toLowerCase() === name.trim().toLowerCase());
+        const hit = byName(name);
         if (hit && !assign.some((x) => x.workerId === hit.workerId)) {
           assign.push({ workerId: hit.workerId, name: hit.name, ask: ask.trim() });
+          if (Array.isArray(after)) afterNames.set(hit.workerId, after);
         }
       }
+      const kept = assign.slice(0, ROOM_MAX_WORKERS);
+      // Order is only among members on this work.
+      for (const a of kept) {
+        const names = afterNames.get(a.workerId);
+        if (!names) continue;
+        a.after = [
+          ...new Set(
+            names
+              .map((n) => (typeof n === 'string' ? byName(n)?.workerId : undefined))
+              .filter((id): id is string => !!id && id !== a.workerId && kept.some((k) => k.workerId === id)),
+          ),
+        ];
+      }
       const title = typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim().slice(0, 80) : 'Follow-up work';
-      if (assign.length > 0) return { kind: 'work', work: { title, assign: assign.slice(0, ROOM_MAX_RESPONDERS) } };
+      if (kept.length > 0) return { kind: 'work', work: { title, assign: kept } };
     } catch {
       // Unreadable work block: treat the turn as a question.
     }
@@ -360,6 +392,12 @@ export function buildPackUpdateMessage(args: {
   /// The version this rewrite becomes. The app numbers the pack; the model is
   /// told the number rather than left to count revisions from the text.
   version: number;
+  /// Files members made in the shared folder, newest first: what an
+  /// <include> can put in the pack.
+  madeFiles?: Array<{ name: string; author: string }>;
+  /// What the user just asked of the pack in the conversation, when that is
+  /// what started this update.
+  asked?: string;
 }): string {
   return [
     `TEAM: ${args.teamName} · TASK: ${args.taskTitle}`,
@@ -379,6 +417,15 @@ export function buildPackUpdateMessage(args: {
     'WHAT THE USER AND THE TEAM DISCUSSED SINCE IT WAS WRITTEN',
     renderConversation(args.conversation, 60_000),
     '',
+    ...(args.madeFiles?.length
+      ? [
+          'FILES MEMBERS MADE (in the shared folder; any of these can go in the pack with <include>)',
+          ...args.madeFiles.slice(0, 80).map((f) => `- ${f.name} (${f.author})`),
+          ...(args.madeFiles.length > 80 ? [`- … and ${args.madeFiles.length - 80} more`] : []),
+          '',
+        ]
+      : []),
+    ...(args.asked ? ['WHAT THE USER JUST ASKED YOU TO DO TO THE PACK', args.asked.trim(), ''] : []),
     ...(args.changes?.length
       ? [
           'THE CHANGES THE USER PICKED FROM THE TEAM\'S WRAP-UP',
@@ -395,11 +442,25 @@ export function buildPackUpdateMessage(args: {
     `revision, it must say version ${args.version}. Do not state stage numbers or a stage count: the plan`,
     'grows as work is handed off from the conversation, so any count you give goes stale.',
     '',
-    'Reply in exactly this shape, with EVERY document of the pack, revised or not:',
+    'Send ONLY what changes. A document you do not mention stays exactly as it is, so never retype',
+    'one to leave it alone. For each change pick the smallest form:',
+    '- A passage changed: an edit. <find> is text copied EXACTLY from the current document, long',
+    '  enough to appear only once there (a whole row, line or paragraph); <replace> is what it becomes.',
+    '  Use one edit per passage, as many as you need. Edits are the right form for most revisions,',
+    '  and for HTML documents nearly always.',
+    '- A document mostly rewritten, or a new one: the full document in a <file>.',
+    '- A document that no longer belongs in the pack: <drop name="NAME.md"/>.',
+    '- A file a member made that belongs in the pack (a page, a report, a plan), new or replacing a',
+    '  pack document of that name: <include name="NAME.html" from="files/eli/report.html"/>. It is',
+    '  copied byte for byte. Never write that a member\'s file "still needs copying" into the pack:',
+    '  include it.',
+    '',
+    'Reply in exactly this shape:',
     '<summary>',
     'One short paragraph: the verdict, and what changed in this revision.',
     '</summary>',
-    '<file name="NAME.md">',
+    '<edit name="NAME.md"><find>…exact current text…</find><replace>…new text…</replace></edit>',
+    '<file name="NEW.md">',
     '…the full document…',
     '</file>',
   ].join('\n');

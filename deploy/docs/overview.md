@@ -27,7 +27,7 @@ People build workers in the app and publish them to the org's server when they'r
 ## How a request flows
 
 ```flow
-ask: Someone in Slack | "@overcli add an export button to the reports page", with the thread and any screenshots
+ask: Someone in Slack | "@overgo add an export button to the reports page", with the thread and any screenshots
 step: Who should take it? | The worker they named, else one whose job fits, else a model picks, else it asks the person | "Triage has this."
 step: The worker plans | From its job, its journal and the thread | Its answer
 step: If it starts work | Plan, change, test; the manager approves the push; then it pushes a branch | The manager is asked in Slack
@@ -43,7 +43,7 @@ Every result lands in the **Library**, the record of everything workers delivere
 
 ## Where people meet it
 
-- **Slack:** mention `@overcli` anywhere or DM it. Managers get their workers' questions and approvals as DMs. `/worker`, `/team` and `/hire` work too.
+- **Slack:** mention `@overgo` anywhere or DM it. Managers get their workers' questions and approvals as DMs. `/worker`, `/team` and `/hire` work too.
 - **The web console** at your server's address: Inbox (what needs you), Library, Workers, Teams, Hire, and the admin pages.
 - **Claude** (Claude Code, Claude Desktop, Codex) through MCP: "what's waiting on me?", "ask the analyst about pricing", "hire someone to watch our competitors".
 

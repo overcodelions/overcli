@@ -6,7 +6,9 @@ import {
   FlowImpactRow,
   ModelTier,
   ProjectGroupStats,
+  ResponseMode,
   QuotaWindow,
+  RecentRecommendation,
   RecentSession,
   RecentUsage,
   StatsReport,
@@ -384,16 +386,14 @@ function RecentUsagePanel({ recent }: { recent: RecentUsage }) {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const selectConversation = useStore((s) => s.selectConversation);
+  const setResponseMode = useStore((s) => s.setResponseMode);
 
   /// Claude session id → the overcli conversation that owns it, for the
   /// row name and click-through.
   const convBySession = useMemo(() => {
-    const m = new Map<string, { id: string; name: string }>();
-    for (const p of projects) {
-      for (const c of p.conversations) if (c.sessionId) m.set(c.sessionId, { id: c.id, name: c.name });
-    }
-    for (const w of workspaces) {
-      for (const c of w.conversations ?? []) if (c.sessionId) m.set(c.sessionId, { id: c.id, name: c.name });
+    const m = new Map<string, { id: string; name: string; responseMode?: ResponseMode }>();
+    for (const c of [...projects.flatMap((p) => p.conversations), ...workspaces.flatMap((w) => w.conversations ?? [])]) {
+      if (c.sessionId) m.set(c.sessionId, { id: c.id, name: c.name, responseMode: c.responseMode });
     }
     return m;
   }, [projects, workspaces]);
@@ -446,6 +446,14 @@ function RecentUsagePanel({ recent }: { recent: RecentUsage }) {
         />
       </div>
 
+      <Recommendations
+        recs={recent.recommendations}
+        nameFor={(id) => nameFor(sessionById.get(id), id)}
+        convFor={(id) => convBySession.get(id)}
+        open={selectConversation}
+        turbo={(convId) => void setResponseMode(convId, 'claude', 'turbo')}
+      />
+
       <RecentChart recent={recent} top={top} colorFor={colorFor} nameFor={nameFor} sessionById={sessionById} />
 
       <div className="h-6" />
@@ -492,6 +500,14 @@ function RecentUsagePanel({ recent }: { recent: RecentUsage }) {
                   <span className={s.avgContextTokens >= 150_000 ? 'text-amber-500 dark:text-amber-400' : ''}>
                     {s.turns ? fmtCompact(s.avgContextTokens) : '—'}
                   </span>
+                  {s.turns > 0 && s.baselineTokens > 0 && (
+                    <div
+                      className="text-[11px] text-ink-faint"
+                      title="Smallest prompt this session sent — system prompt and tool definitions, re-sent every reply"
+                    >
+                      base {fmtCompact(s.baselineTokens)}
+                    </div>
+                  )}
                 </Td>
                 <Td right>{fmtCompact(s.outputTokens)}</Td>
                 <Td right>{fmtCompact(s.cacheReadTokens)}</Td>
@@ -503,6 +519,8 @@ function RecentUsagePanel({ recent }: { recent: RecentUsage }) {
           })}
         </DataTable>
       </Panel>
+
+      <ToolPanel recent={recent} totalCost={totalCost} />
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-6">
         <TokenTypePanel recent={recent} totalCost={totalCost} totalTokens={totalTokens} />
@@ -691,6 +709,212 @@ function RecentChart({
       </div>
     </div>
   );
+}
+
+const TOOL_ROWS = 8;
+
+function ToolPanel({ recent, totalCost }: { recent: RecentUsage; totalCost: number }) {
+  const rows = recent.byTool.slice(0, TOOL_ROWS);
+  const { overhead } = recent;
+  if (rows.length === 0 && overhead.costUSD === 0) return null;
+  const otherTools = recent.byTool.slice(TOOL_ROWS);
+  const otherCost = otherTools.reduce((s, t) => s + t.costUSD, 0);
+  const toolsCost = recent.byTool.reduce((s, t) => s + t.costUSD, 0);
+  const outputCost = recent.byType.output.costUSD;
+  // Whatever the fixed prompt, tool results and fresh output don't explain:
+  // the user's messages and Claude's own earlier replies and edits, re-read.
+  const conversationCost = Math.max(0, totalCost - overhead.costUSD - toolsCost - outputCost);
+  const maxCost = Math.max(overhead.costUSD, outputCost, conversationCost, ...rows.map((r) => r.costUSD));
+  const pct = (n: number) => (totalCost > 0 ? Math.round((n / totalCost) * 100) : 0);
+  const share = (cost: number) => (
+    <div className="flex items-center gap-2">
+      <div className="h-1.5 w-24 rounded bg-card-strong overflow-hidden">
+        <div className="h-full bg-accent" style={{ width: `${maxCost > 0 ? (cost / maxCost) * 100 : 0}%` }} />
+      </div>
+      <span className="text-[11px] text-ink-muted tabular-nums">{pct(cost)}%</span>
+    </div>
+  );
+
+  return (
+    <Panel
+      title="What filled the context"
+      aside={<span className="text-ink-faint">what each reply carried, by estimated cost · tool sizes are approximate</span>}
+    >
+      <DataTable
+        head={['Source', 'Calls', 'Added to context', 'Largest result', 'Share', 'Est. cost']}
+        align="lrrrlr"
+      >
+        <tr className="border-t border-card">
+          <Td>
+            <div>System prompt &amp; tool definitions</div>
+            <div className="text-[11px] text-ink-faint">re-sent with every reply, before any tool runs</div>
+          </Td>
+          <Td right faint>every reply</Td>
+          <Td right>~{fmtCompact(overhead.tokensPerReply)} / reply</Td>
+          <Td right faint>—</Td>
+          <Td>{share(overhead.costUSD)}</Td>
+          <Td right>
+            <span className="font-medium">{fmtUSD(overhead.costUSD)}</span>
+          </Td>
+        </tr>
+        {rows.map((r) => (
+          <tr key={`${r.mcp ? 'mcp:' : ''}${r.name}`} className="border-t border-card">
+            <Td>
+              <div className="flex items-center gap-2">
+                <span>{r.name}</span>
+                {r.mcp && <span className="text-[10px] uppercase tracking-wider text-ink-faint">mcp</span>}
+              </div>
+              {r.tools && r.tools.length > 0 && (
+                <div className="text-[11px] text-ink-faint truncate max-w-[340px]">{r.tools.join(', ')}</div>
+              )}
+            </Td>
+            <Td right>{r.calls.toLocaleString()}</Td>
+            <Td right>{fmtCompact(r.resultTokens)}</Td>
+            <Td right>
+              <span className={r.largestResult >= 20_000 ? 'text-amber-500 dark:text-amber-400' : ''}>
+                {fmtCompact(r.largestResult)}
+              </span>
+            </Td>
+            <Td>{share(r.costUSD)}</Td>
+            <Td right>
+              <span className="font-medium">{fmtUSD(r.costUSD)}</span>
+            </Td>
+          </tr>
+        ))}
+        {otherTools.length > 0 && (
+          <tr className="border-t border-card">
+            <Td faint>{otherTools.length} other tools</Td>
+            <Td right>{otherTools.reduce((s, t) => s + t.calls, 0).toLocaleString()}</Td>
+            <Td right>{fmtCompact(otherTools.reduce((s, t) => s + t.resultTokens, 0))}</Td>
+            <Td right faint>—</Td>
+            <Td>{share(otherCost)}</Td>
+            <Td right>{fmtUSD(otherCost)}</Td>
+          </tr>
+        )}
+        <tr className="border-t border-card">
+          <Td>
+            <div>The conversation itself</div>
+            <div className="text-[11px] text-ink-faint">your messages and Claude's earlier replies and edits, re-read</div>
+          </Td>
+          <Td right faint>—</Td>
+          <Td right faint>—</Td>
+          <Td right faint>—</Td>
+          <Td>{share(conversationCost)}</Td>
+          <Td right>
+            <span className="font-medium">{fmtUSD(conversationCost)}</span>
+          </Td>
+        </tr>
+        <tr className="border-t border-card">
+          <Td>
+            <div>Claude's replies</div>
+            <div className="text-[11px] text-ink-faint">output written, thinking included</div>
+          </Td>
+          <Td right faint>—</Td>
+          <Td right faint>—</Td>
+          <Td right faint>—</Td>
+          <Td>{share(outputCost)}</Td>
+          <Td right>
+            <span className="font-medium">{fmtUSD(outputCost)}</span>
+          </Td>
+        </tr>
+      </DataTable>
+    </Panel>
+  );
+}
+
+/// The few changes worth making, each with what it's about and a button that
+/// does it where overcli can.
+function Recommendations({
+  recs,
+  nameFor,
+  convFor,
+  open,
+  turbo,
+}: {
+  recs: RecentRecommendation[];
+  nameFor: (sessionId: string) => string;
+  convFor: (sessionId: string) => { id: string; responseMode?: ResponseMode } | undefined;
+  open: (convId: string) => void;
+  turbo: (convId: string) => void;
+}) {
+  if (recs.length === 0) return null;
+  return (
+    <div className="mb-3 rounded-lg bg-card border border-card divide-y divide-card">
+      {recs.map((r) => {
+        const conv = convFor(r.sessionId);
+        const name = nameFor(r.sessionId);
+        const { title, body, impact } = describeRecommendation(r, name);
+        const offerTurbo = r.kind === 'mcp-overhead' && r.suggestTurbo && conv && conv.responseMode !== 'turbo';
+        return (
+          <div key={`${r.kind}-${r.sessionId}`} className="flex items-start gap-4 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium">{title}</div>
+              <div className="text-[11px] leading-relaxed text-ink-muted mt-0.5">{body}</div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className="text-xs font-medium tabular-nums">~{fmtUSD(r.impactUSD)}</div>
+              <div className="text-[10px] text-ink-faint">{impact}</div>
+            </div>
+            {conv && (
+              <div className="shrink-0 flex items-center gap-1.5">
+                {offerTurbo && (
+                  <button
+                    className="text-[11px] px-2 py-1 rounded bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+                    onClick={() => turbo(conv.id)}
+                    title="Low effort, no MCP — from the next reply on"
+                  >
+                    Switch to Turbo
+                  </button>
+                )}
+                <button
+                  className="text-[11px] px-2 py-1 rounded border border-card hover:bg-card-strong/60 transition-colors"
+                  onClick={() => open(conv.id)}
+                >
+                  Open
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function describeRecommendation(
+  r: RecentRecommendation,
+  name: string,
+): { title: string; body: string; impact: string } {
+  switch (r.kind) {
+    case 'mcp-overhead':
+      return {
+        title: 'Tool definitions this session never used',
+        body:
+          `${name}: every reply carried ~${fmtCompact(r.baselineTokens)} of system prompt and tool definitions, ` +
+          `but MCP was called ${r.mcpCalls === 0 ? 'not once' : `${r.mcpCalls} time${r.mcpCalls === 1 ? '' : 's'}`} in ${r.turns} replies. ` +
+          (r.suggestTurbo
+            ? 'Turbo drops MCP for this conversation.'
+            : "Disconnecting MCP servers it doesn't need would shrink it. Turbo would too, but it also lowers effort, and this session is making real edits."),
+        impact: 'could save',
+      };
+    case 'long-session':
+      return {
+        title: 'Long conversation, never compacted',
+        body:
+          `${name} re-read ~${fmtCompact(r.avgContextTokens)} on each of ${r.turns} replies. ` +
+          `Compacted it would carry ~${fmtCompact(r.compactedTokens)}; once a task is done, a fresh session does the same.`,
+        impact: 'could save',
+      };
+    case 'chatty-tool':
+      return {
+        title: `${r.tool}${r.mcp ? ' (MCP)' : ''} results are heavy`,
+        body:
+          `${r.calls} calls put ${fmtCompact(r.resultTokens)} tokens into context (largest ${fmtCompact(r.largestResult)}), ` +
+          `and every later reply re-read them — mostly in ${name}. Have a subagent fetch these and hand back a summary, ` +
+          'or ask for narrower results.',
+        impact: 'spent carrying',
+      };
+  }
 }
 
 const TOKEN_TYPES: Array<{ key: keyof RecentUsage['byType']; label: string; fill: string }> = [

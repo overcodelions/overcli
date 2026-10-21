@@ -48,6 +48,18 @@ describe('buildResponseModePrompt', () => {
     expect(buildResponseModePrompt('Do the work', 'normal', [])).toBe('Do the work');
   });
 
+  it('nudges consolidation in Full mode too, and nothing else', () => {
+    const prior = [
+      event('u', { type: 'localUser', text: 'inspect' }),
+      assistant('a', [tool('1', 'Grep')]),
+      assistant('b', [tool('2', 'Grep')]),
+      assistant('c', [tool('3', 'Grep')]),
+    ];
+    expect(buildResponseModePrompt('Continue', 'normal', prior)).toBe(
+      'The previous turn used Grep in 3 separate model rounds (3 calls). Consolidate independent Grep work this turn.\n\nContinue',
+    );
+  });
+
   it('makes concise output explicit without lowering reasoning', () => {
     const prompt = buildResponseModePrompt('Do the work', 'concise', []);
     expect(prompt).toContain('Preserve full reasoning quality');

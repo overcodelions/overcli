@@ -462,7 +462,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   const updates = new UpdateCheck({ current: serverVersion(), enabled: () => process.env.OVERCLI_UPDATE_CHECK !== '0' });
   updates.start();
   const { org, commands, access, sso, triggers, connections, processes } = createOrgControl(
-    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, health: () => [updates.health()], ...(options.secrets ? { secrets: options.secrets } : {}) },
+    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, health: () => [updates.health()], version: () => updates.status(), ...(options.secrets ? { secrets: options.secrets } : {}) },
     slack,
   );
   slackCommands = commands;
