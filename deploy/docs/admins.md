@@ -20,8 +20,10 @@ People publish their setup from the overcli app: **Settings → Your org → Pub
 
 The MCP servers workers use, such as Jira, a CRM or a search API. Installed here, they're available to every worker that lists them.
 
-- **Install** with a command (`npx -y @acme/jira-mcp`) or a URL (a remote MCP server), plus its settings.
+- **Install from the catalog.** **Install a tool** opens on the common ones: GitHub, Bitbucket, Atlassian Rovo, Linear, Notion, Slack, Salesforce, HubSpot, Attio, Sentry, Stripe, AWS, a headless browser and more. Pick one and the form is filled in; it says what each setting is and links to where you get the key. A worker that lists a catalog tool you haven't installed gets the same filled-in form.
+- **Install anything else** with **Something else**: a command (`npx -y @acme/jira-mcp`) or a URL (a remote MCP server), plus its settings.
 - **Workers published from the desktop app** bring their tools' setup with the secret values removed. Installing them here is then pre-filled.
+- **Connectors from someone's Claude app** ("claude.ai Atlassian") stay on that person's Claude account, so they never come to the server. A worker that used one shows under **Workers are missing these** as the tool to install instead (`atlassian`). Install it once, and those workers switch to it with their scope kept. If it's already installed, **Use the installed atlassian** switches them.
 - **Tools that sign in through a browser** are signed in once, by you, for the whole org. See [Remote tools that sign in](#remote-tools-that-sign-in) below.
 
 ### Remote tools that sign in
@@ -40,10 +42,18 @@ Many remote MCP servers ask you to sign in on their own page instead of pasting 
 
 **Behind the scenes:**
 
-- overcli registers itself as an app with the service the first time.
+- overgo registers itself as an app with the service the first time.
 - It signs in with PKCE, keeps the refresh token encrypted in `org/tool-signins.json`, and renews the sign-in itself. Every run starts with at least half an hour left on it.
 - Workers only ever see a short-lived access token.
 - Removing the tool ends the sign-in at the service, where the service allows it.
+
+**On a server inside a private network.** The service never calls the server: it sends *your browser* back to the console, so a console you reach over a VPN still gets the sign-in. What stops it is the address. Services only send people back to `https://` or `localhost`, and most refuse a plain `http://` internal address. The form warns when that's the case. Your options:
+
+- **Use a key instead.** Catalog tools that sign in also have a key way (the **Use a key instead** button): an API token or service-account key, pasted once. Nothing comes back from the service, so it works anywhere the server can reach the service.
+- **Give the console an https address** (`publicUrl` in `org.json`), even an internal one with your own certificate, then sign in.
+- **Sign in through a tunnel.** `ssh -L 7420:localhost:7420 <server>` and open `http://localhost:7420`, with `publicUrl` unset while you sign in. Services accept `localhost`.
+
+Either way the server needs outbound access to the service; a network with no way out can't use remote tools at all.
 
 **Signing in again.** Open the tool, then **Sign in again**. It replaces the account. Do it when the tool shows **Signed out**: the service ended the sign-in, or the account lost access.
 
@@ -96,7 +106,7 @@ Every secret the server uses, with why it's needed and how to get one. Values go
 
 People can save a team's files into their own Google Drive, as themselves. There are two steps, done by different people:
 
-- **An admin, once:** register overcli with Google for the whole org. This connects nobody's Drive; it only lets overcli ask Google.
+- **An admin, once:** register overgo with Google for the whole org. This connects nobody's Drive; it only lets overgo ask Google.
 - **Each person, for themselves:** connects their own Google account from their menu (**Your connections**) and approves it on Google's own page. Their files then save into their Drive, in a folder called `overcli`.
 
 > [!NOTE]
@@ -104,22 +114,22 @@ People can save a team's files into their own Google Drive, as themselves. There
 
 ### Turning it on
 
-1. **Pick a Google Cloud project.** In console.cloud.google.com, choose or create one for overcli.
+1. **Pick a Google Cloud project.** In console.cloud.google.com, choose or create one for overgo.
 2. **Turn on the Google Drive API.** APIs & Services → Library → *Google Drive API* → Enable.
 3. **Set up the consent screen.** APIs & Services → OAuth consent screen (or Google Auth Platform → Branding and Audience).
    - **Internal** if everyone uses your company's Google Workspace: only your accounts can connect, and Google needs no review.
    - **External** only for personal Gmail. While it's in *Testing*, add each person as a test user; their access lasts 7 days at a time.
-   - App name *overcli*, your support email, and the scope `…/auth/drive.file`. Nothing broader.
+   - App name *overgo*, your support email, and the scope `…/auth/drive.file`. Nothing broader.
 4. **Create the OAuth client.** Credentials → Create credentials → OAuth client ID → *Web application*. Under **Authorized redirect URIs** add the console address followed by `/oauth/google/callback`. **Your connections** shows the exact address with a Copy button. Leave JavaScript origins empty.
-5. **Give overcli the client.** On **Setup → Secrets**, add `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`. They apply at once.
+5. **Give overgo the client.** On **Setup → Secrets**, add `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`. They apply at once.
 6. **Check it.** **Your connections** now shows *Connect Google Drive*. Connect your own account first to try it.
 
-### What overcli can reach
+### What overgo can reach
 
 - Only files it creates, in each person's `overcli` folder (the `drive.file` permission). It can't list, open or change anything else in their Drive.
 - Each person's Google access is stored on the server, encrypted, under a key kept in the secrets store. It never reaches workers, the console or a URL.
 - A connection can only be started by a signed-in person, in their own browser, within ten minutes, so a forwarded Google link can't attach someone else's Drive to your account.
-- Disconnecting revokes the access at Google. People can also remove *overcli* from their Google account's third-party access.
+- Disconnecting revokes the access at Google. People can also remove *overgo* from their Google account's third-party access.
 
 ### If connecting fails
 
@@ -128,7 +138,7 @@ People can save a team's files into their own Google Drive, as themselves. There
 | `redirect_uri_mismatch` on Google's page | The redirect address in step 4 doesn't exactly match the server's, including `http`/`https` and the port. |
 | "Access blocked" or "app not verified" | The consent screen is External and the person isn't a test user, or it should be Internal. |
 | "Came back to a different browser or address" | The connection was started from an address other than the console address. |
-| "Didn't give lasting access" | The person connected before. They remove *overcli* from their Google account's third-party access, then connect again. |
+| "Didn't give lasting access" | The person connected before. They remove *overgo* from their Google account's third-party access, then connect again. |
 
 ## Setup → Rules, spending and sign-in
 
@@ -146,7 +156,7 @@ The org's rules, kept in `org.json` on the volume and editable here (or by Claud
 ## People
 
 - **Invite:** pick someone from Slack. They get a one-time link by DM, or you copy it.
-- **Join requests:** `/overcli join` in Slack lands here for you to let in, or lets people straight in with `openJoin`.
+- **Join requests:** `/overgo join` in Slack lands here for you to let in, or lets people straight in with `openJoin`. `/overcli join` still works for Slack apps installed before the rename.
 - **Roles:** member, hirer, approver, admin.
 - **Offboard:** hand all of someone's workers to another manager and sign them out everywhere, in one step.
 - **Keys:** each person's sign-ins (browsers, the desktop app, Claude) are listed and can be signed out one by one.

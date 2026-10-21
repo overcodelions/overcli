@@ -1,4 +1,5 @@
-# A Slack app for the overcli Slack bridge (src/main/slack/slackBridge.ts).
+# A Slack app for overgo, the org server, through the overcli Slack bridge
+# (src/main/slack/slackBridge.ts).
 #
 # api.slack.com/apps → Create New App → From a manifest → paste this. Then:
 #   1. Install to Workspace, and copy the Bot User OAuth Token (xoxb-…).
@@ -12,14 +13,14 @@
 # connection, so a second process on these tokens would take replies meant
 # for the first.
 display_information:
-  name: overcli
-  description: Ask your org's AI workers for anything — mention @overcli or DM it. Workers ask their managers here too.
+  name: overgo
+  description: Ask your org's AI workers for anything — mention @overgo or DM it. Workers ask their managers here too.
 features:
   bot_user:
-    display_name: overcli
+    display_name: overgo
     always_online: true
   slash_commands:
-    - command: /overcli
+    - command: /overgo
       description: Join your org's AI workers
       usage_hint: "join"
       should_escape: false

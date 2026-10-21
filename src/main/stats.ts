@@ -34,7 +34,9 @@ import {
   LimitWindow,
   RECENT_BUCKET_MS,
   RECENT_RANGE_MS,
+  RecentToolResult,
   RecentTranscript,
+  estimateResultTokens,
 } from './recentUsage';
 import { modelTier } from '../shared/modelCatalog';
 import { loadAllRuns } from './flows/runsStore';
@@ -252,6 +254,11 @@ interface ClaudeAssistantEvent {
   msgDeleted: number;
   /// tool_use names in the reply, repeats kept.
   tools: string[];
+  /// Tool results that came back since the previous reply — new context this
+  /// reply's prompt carries for the first time.
+  toolResults: RecentToolResult[];
+  /// The conversation was compacted just before this reply.
+  afterCompact: boolean;
 }
 
 /// Mtime-keyed cache so repeat stats requests skip the line-by-line
@@ -290,6 +297,10 @@ export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] 
   // Counting lines double- or quadruple-counts tokens and turns, so lines are
   // merged by message id.
   const byMessageId = new Map<string, ClaudeAssistantEvent>();
+  // tool_use id → tool name, so a result can be credited to what produced it.
+  const toolNames = new Map<string, string>();
+  let pendingResults: RecentToolResult[] = [];
+  let pendingCompact = false;
   let title: string | undefined;
   for (const line of raw.split('\n')) {
     if (!line) continue;
@@ -302,6 +313,21 @@ export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] 
     // Rewritten as the conversation drifts; the last one is current.
     if (json?.type === 'ai-title' && typeof json.aiTitle === 'string' && json.aiTitle) {
       title = json.aiTitle;
+      continue;
+    }
+    if (json?.type === 'system' && json.subtype === 'compact_boundary') {
+      pendingCompact = true;
+      pendingResults = [];
+      continue;
+    }
+    if (json?.type === 'user' && Array.isArray(json.message?.content)) {
+      for (const block of json.message.content) {
+        if (block?.type !== 'tool_result') continue;
+        pendingResults.push({
+          name: toolNames.get(block.tool_use_id) ?? 'unknown',
+          tokens: estimateResultTokens(block.content),
+        });
+      }
       continue;
     }
     if (json?.type !== 'assistant') continue;
@@ -324,7 +350,10 @@ export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] 
     if (Array.isArray(message.content)) {
       for (const block of message.content) {
         if (block?.type !== 'tool_use') continue;
-        if (typeof block.name === 'string') tools.push(block.name);
+        if (typeof block.name === 'string') {
+          tools.push(block.name);
+          if (typeof block.id === 'string') toolNames.set(block.id, block.name);
+        }
         const { added, deleted } = countToolUseLines(block.name, block.input);
         msgAdded += added;
         msgDeleted += deleted;
@@ -346,7 +375,22 @@ export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] 
       prev.tools.push(...tools);
       continue;
     }
-    const event = { inT, outT, cacheR, cacheC, cacheC1h, model, ts, msgAdded, msgDeleted, tools };
+    const event = {
+      inT,
+      outT,
+      cacheR,
+      cacheC,
+      cacheC1h,
+      model,
+      ts,
+      msgAdded,
+      msgDeleted,
+      tools,
+      toolResults: pendingResults,
+      afterCompact: pendingCompact,
+    };
+    pendingResults = [];
+    pendingCompact = false;
     events.push(event);
     if (messageId) byMessageId.set(messageId, event);
   }

@@ -195,6 +195,17 @@ describe('the front door', () => {
     expect(none.posts[0]).toContain('Who should take this?');
   });
 
+  it('answers "what is overgo?" itself instead of routing it', async () => {
+    const h = harness({ route: { workerId: 'w-vantage', why: 'can research an unfamiliar product' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '5.0', user: 'U1', text: 'what is overgo', dm: true });
+    await tick();
+    expect(h.posts).toHaveLength(1);
+    expect(h.posts[0]).toContain("I'm overgo");
+    expect(h.posts[0]).toContain('*Vantage* — Competitive analyst');
+    expect(h.asks).toHaveLength(0);
+    expect(h.routed()).toBe(0);
+  });
+
   it('gives a request that names a worker to it, and answers in the thread', async () => {
     const h = harness({ reply: 'Done — the button is in.' });
     await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U0ACMEPAT', text: 'Triage, add an export button to the reports page', dm: true });

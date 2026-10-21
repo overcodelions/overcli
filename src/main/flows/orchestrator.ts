@@ -83,6 +83,7 @@ export interface FlowLauncher {
     workerName?: string;
     team?: FlowRunTeam;
     allowExternalActions?: boolean;
+    externalActionGrant?: string[];
     /// Start with the browser switch on — see FlowRuntimeStartArgs.chrome.
     chrome?: boolean;
     unattended?: boolean;
@@ -917,6 +918,7 @@ export class OrchestratorImpl {
                 workerId: o.origin.workerId,
                 workerName: o.origin.workerName,
                 allowExternalActions: o.origin.allowExternalActions,
+                ...(o.origin.externalActionGrant?.length ? { externalActionGrant: o.origin.externalActionGrant } : {}),
                 ...(o.origin.browser ? { chrome: true } : {}),
                 ...(o.origin.team
                   ? { team: { teamId: o.origin.team.teamId, teamName: o.origin.team.teamName, taskId: o.origin.team.taskId } }
@@ -944,8 +946,11 @@ export class OrchestratorImpl {
         // synchronously (e.g. an immediate abort inside executeStep) before
         // we recorded its runId, its terminal update would have found no
         // matching item and been dropped. Re-check now that runId is set.
+        // A pause is lost the same way: a worker run whose first step needs
+        // your OK stops inside startRun, and its item read "running" with
+        // nobody told it was waiting on them.
         const cur = this.launcher.getRun(res.runId);
-        if (cur && (cur.state.kind === 'done' || cur.state.kind === 'aborted')) {
+        if (cur && (cur.state.kind === 'done' || cur.state.kind === 'aborted' || cur.state.kind === 'paused')) {
           this.onRunUpdate(cur);
         }
       } else {

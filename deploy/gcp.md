@@ -1,4 +1,4 @@
-# overcli for an org on Google Cloud (alpha)
+# overgo for your org on Google Cloud (alpha)
 
 > **Alpha.** The org layer is early: expect changes, and back up `/data`.
 
@@ -57,4 +57,4 @@ Use a `StatefulSet` with `replicas: 1`, a `PersistentVolumeClaim` on `/data` (`f
 
 ## Not a fit
 
-**Cloud Run and Cloud Functions.** overcli needs one long-lived process with a real disk.
+**Cloud Run and Cloud Functions.** overgo needs one long-lived process with a real disk.

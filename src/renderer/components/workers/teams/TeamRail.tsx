@@ -6,7 +6,6 @@ import { useMemo, useState } from "react";
 import { useStore } from "../../../store";
 import { useTeamsStore } from "../../../teamsStore";
 import { useWorkersStore } from "../../../workersStore";
-import { labOn } from "@shared/labs";
 import { describeTeamTaskStatus, isTaskActive, teamTaskProgress, type Team, type TeamTask } from "@shared/flows/team";
 import type { Worker } from "@shared/flows/worker";
 import { useWorkerColors } from "../WorkerAvatar";
@@ -212,73 +211,5 @@ export function TeamRailSection({
       })}
       <div className="mx-1 my-1.5 h-px shrink-0 bg-card" />
     </>
-  );
-}
-
-/// The rail's own way in to a new team, under "Hire a worker". Always there:
-/// a team can hire its own members, so it needs nobody hired first.
-export function NewTeamButton({ expanded }: { expanded: boolean }) {
-  const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
-  const editing = useTeamsStore((s) => s.editor?.teamId === null);
-  return (
-    <button
-      type="button"
-      onClick={() => openTeamEditor(null)}
-      title="Make a team — from your crew, new hires, or both — and give it a task to finish together"
-      aria-label={expanded ? undefined : "New team"}
-      aria-current={editing ? "page" : undefined}
-      className={
-        "flex min-h-[44px] w-full items-center gap-2.5 rounded-md py-1.5 text-left " +
-        "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
-        (editing ? "sidebar-row-selected text-ink " : "text-ink-muted hover:bg-card-strong hover:text-ink ") +
-        (expanded ? "px-2" : "justify-center px-0")
-      }
-    >
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed border-card-strong">
-        <svg viewBox="0 0 16 16" aria-hidden className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-          <circle cx="5.5" cy="6" r="2" />
-          <circle cx="10.5" cy="6" r="2" />
-          <path d="M2 12.5c.6-1.8 2-2.6 3.5-2.6s2.9.8 3.5 2.6M8.5 10.3c.5-.3 1.2-.4 2-.4 1.5 0 2.9.8 3.5 2.6" />
-        </svg>
-      </span>
-      {expanded && <span className="text-xs">New team</span>}
-    </button>
-  );
-}
-
-/// Processes, under "New team": work that moves through several teams and
-/// your decisions in order. Always there, like teams.
-export function ProcessesButton({ expanded }: { expanded: boolean }) {
-  const showProcesses = useWorkersStore((s) => s.showProcesses);
-  const onWorkers = useStore((s) => s.detailMode === "workers");
-  const active = useWorkersStore((s) => onWorkers && s.view === "processes");
-  // Processes is a lab, off until asked for in Settings → Labs.
-  const lab = useStore((s) => labOn(s.settings.labs, "processes"));
-  if (!lab) return null;
-  return (
-    <button
-      type="button"
-      onClick={() => showProcesses(null)}
-      title="Processes · work that moves through several teams and your decisions, stage by stage"
-      aria-label={expanded ? undefined : "Processes"}
-      aria-current={active ? "page" : undefined}
-      className={
-        "flex min-h-[44px] w-full items-center gap-2.5 rounded-md py-1.5 text-left " +
-        "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
-        (active ? "sidebar-row-selected text-ink " : "text-ink-muted hover:bg-card-strong hover:text-ink ") +
-        (expanded ? "px-2" : "justify-center px-0")
-      }
-    >
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border-[1.5px] border-card-strong">
-        <svg viewBox="0 0 16 16" aria-hidden className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-          {/* A pipeline: one stage feeding the next, then forking to two. */}
-          <circle cx="3" cy="8" r="1.75" />
-          <circle cx="13" cy="3.75" r="1.75" />
-          <circle cx="13" cy="12.25" r="1.75" />
-          <path d="M4.75 8H7c1.6 0 2-4.25 4.25-4.25M7 8c1.6 0 2 4.25 4.25 4.25" />
-        </svg>
-      </span>
-      {expanded && <span className="text-xs">Processes</span>}
-    </button>
   );
 }

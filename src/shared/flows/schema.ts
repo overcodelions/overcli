@@ -437,6 +437,10 @@ export interface FlowRun {
   /// Tools this unattended run may use, intersected with each step's own
   /// `tools:`. See FlowRuntimeStartArgs.unattendedAllowedTools.
   unattendedAllowedTools?: string[];
+  /// Tools a worker run asked for and was refused because its step does not
+  /// list them, in the order first asked. What the person adds to the
+  /// worker's flow for the work to go through next time.
+  refusedTools?: string[];
   state: FlowRunState;
   createdAt: number;
   /// Total USD this run has spent so far, accumulated live as each turn's

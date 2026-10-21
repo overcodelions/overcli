@@ -58,6 +58,95 @@ export function planLayout(task: Pick<TeamTask, 'stages'>): PlanLayout {
   return { lanes, columns, packAt: packAt >= 0 ? packAt : undefined };
 }
 
+/// A run of the plan: the approved plan itself, then one per question in the
+/// conversation that handed work off. A long task folds the rounds it has
+/// settled, so the plan stays readable however many follow-ups it grows.
+export interface PlanRound {
+  /// 0 for the approved plan, then 1, 2… in the order they started.
+  index: number;
+  /// The conversation exchange it came from; absent for the plan.
+  exchange?: number;
+  /// What you asked that started it, for a follow-up round.
+  ask?: string;
+  /// Stage indexes, in order.
+  stages: number[];
+  done: number;
+  failed: number;
+  /// A stage in it is running, or a piece is waiting on you.
+  live: boolean;
+  from?: number;
+  to?: number;
+}
+
+export function planRounds(task: Pick<TeamTask, 'stages' | 'room'>): PlanRound[] {
+  const rounds: PlanRound[] = [];
+  const byExchange = new Map<number | undefined, PlanRound>();
+  task.stages.forEach((s, i) => {
+    const exchange = s.fromRoom?.exchange;
+    let r = byExchange.get(exchange);
+    if (!r) {
+      const ask = exchange === undefined ? undefined : task.room?.messages.find((m) => m.exchange === exchange && m.speaker.kind === 'you')?.text;
+      r = { index: 0, ...(exchange === undefined ? {} : { exchange }), ...(ask?.trim() ? { ask: ask.trim() } : {}), stages: [], done: 0, failed: 0, live: false };
+      byExchange.set(exchange, r);
+      rounds.push(r);
+    }
+    r.stages.push(i);
+    if (s.status === 'done') r.done++;
+    if (s.status === 'failed') r.failed++;
+    if (s.status === 'running' || s.assignments.some((a) => a.status === 'running' || a.status === 'paused')) r.live = true;
+    if (s.startedAt !== undefined) r.from = Math.min(r.from ?? s.startedAt, s.startedAt);
+    const end = s.finishedAt ?? s.startedAt;
+    if (end !== undefined) r.to = Math.max(r.to ?? end, end);
+  });
+  // The plan first, then follow-ups in the order they started.
+  rounds.sort((a, b) => (a.exchange === undefined ? -1 : b.exchange === undefined ? 1 : a.stages[0] - b.stages[0]));
+  rounds.forEach((r, i) => (r.index = i));
+  return rounds;
+}
+
+/// The round open when the plan is first shown: the one at work, else the
+/// latest.
+export function openRound(rounds: readonly PlanRound[]): number {
+  return (rounds.find((r) => r.live) ?? rounds.at(-1))?.index ?? 0;
+}
+
+/// The round a stage belongs to.
+export function roundOf(rounds: readonly PlanRound[], stage: number): PlanRound | undefined {
+  return rounds.find((r) => r.stages.includes(stage));
+}
+
+/// A round's name: "The plan", or "Round 3".
+export function roundName(r: Pick<PlanRound, 'index'>): string {
+  return r.index === 0 ? 'The plan' : `Round ${r.index + 1}`;
+}
+
+/// One lane's work in a folded round: "3 done", "2 done · 1 failed", or
+/// nothing when the lane had no part in it.
+export function foldedLaneLabel(
+  task: Pick<TeamTask, 'stages'>,
+  round: Pick<PlanRound, 'stages'>,
+  lane: string,
+): { label: string; state: ChipState } | null {
+  let done = 0;
+  let failed = 0;
+  let live = false;
+  let any = false;
+  for (const i of round.stages) {
+    const s = task.stages[i];
+    const status =
+      lane === COORDINATOR_LANE ? (s.assignments.length === 0 ? s.status : undefined) : pieceIn(s, lane)?.status;
+    if (status === undefined) continue;
+    any = true;
+    if (status === 'done') done++;
+    else if (status === 'failed') failed++;
+    else if (status === 'running' || status === 'paused') live = true;
+  }
+  if (!any) return null;
+  const parts = [done > 0 && `${done} done`, failed > 0 && `${failed} failed`, live && 'working'].filter(Boolean) as string[];
+  const state: ChipState = live ? 'working' : failed > 0 ? 'failed' : done > 0 ? 'done' : 'pending';
+  return { label: parts.join(' · ') || 'Up next', state };
+}
+
 /// The title a member plays on the team, for a label too narrow for the whole
 /// role: "Customer advocate: reviews the feedback" reads "Customer advocate".
 /// A role with no colon is all title; a long one is cut at the first clause.

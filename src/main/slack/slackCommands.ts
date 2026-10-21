@@ -14,7 +14,7 @@
 // so Slack can do exactly what that person could do in the console or over
 // MCP — and no more.
 
-import type { OrgService, HireSummary, PendingHire, WaitingItem, WorkerSummary } from '../org/orgService';
+import type { OrgService, HireSummary, PendingHire, WaitingItem, WantedTool, WorkerSummary } from '../org/orgService';
 import type { AskRecord } from '../org/orgStores';
 import { ROLE_TEXT, type AccessService, type Invite, type JoinRequest } from '../org/accessService';
 import { slackCall } from './slackApi';
@@ -42,6 +42,7 @@ export const TEAM_CANCEL_ACTION = 'overcli_team_cancel';
 export const TEAM_MAKE_ACTION = 'overcli_team_make';
 export const TEAM_DROP_ACTION = 'overcli_team_drop';
 export const HIRE_EDIT_ACTION = 'overcli_hire_edit';
+export const HIRE_ASK_TOOLS_ACTION = 'overcli_hire_ask_tools';
 export const TEAM_EDIT_ACTION = 'overcli_team_edit';
 /// What a new team starts with per task, until someone changes it in the console.
 const NEW_TEAM_BUDGET_USD = 50;
@@ -60,7 +61,7 @@ export const ASK_DM_AFTER_MS = 30_000;
 
 export interface SlackCommandsDeps {
   org: OrgService;
-  /// Invites and `/overcli join`. Absent: the access commands are not offered.
+  /// Invites and `/overgo join`. Absent: the access commands are not offered.
   access?: AccessService;
   policy(): OrgPolicy;
   botToken(): string | null;
@@ -248,7 +249,8 @@ export class SlackCommands {
     if (p.command === '/hire') return this.hire(caller, text, p.response_url);
     if (p.command === '/worker') return this.worker(caller, text, p.response_url);
     if (p.command === '/team') return this.team(caller, text, p.response_url);
-    if (p.command === '/overcli') return this.overcli(caller, text, p.response_url);
+    // `/overcli` is the command Slack apps installed before the rename have.
+    if (p.command === '/overgo' || p.command === '/overcli') return this.join(caller, text, p.response_url);
     if (p.command === '/idea') return this.idea(caller, text, p.response_url);
   }
 
@@ -318,12 +320,12 @@ export class SlackCommands {
     return (res.ok && (res.data.user?.profile?.real_name || res.data.user?.real_name)) || fallback;
   }
 
-  /// `/overcli join`: ask to use the org's workers. Slack has already said
+  /// `/overgo join`: ask to use the org's workers. Slack has already said
   /// who is asking.
-  private async overcli(caller: OrgCaller, text: string, responseUrl?: string): Promise<void> {
+  private async join(caller: OrgCaller, text: string, responseUrl?: string): Promise<void> {
     const access = this.deps.access;
     if (text.toLowerCase() !== 'join' || !access) {
-      return this.respond(responseUrl, '`/overcli join` asks to use this org’s AI workers. Once you’re in: `/worker`, `/team`, `/hire`.');
+      return this.respond(responseUrl, '`/overgo join` asks to use this org’s AI workers. Once you’re in: `/worker`, `/team`, `/hire`.');
     }
     const name = await this.realName(caller.slackUserId!, caller.name);
     const base = access.baseUrl();
@@ -577,7 +579,7 @@ export class SlackCommands {
     const a = hire.alreadyDoes;
     if (!a) return [];
     return [
-      section(`*${escapeMrkdwn(a.name)}* may already do this${a.why ? `: ${escapeMrkdwn(a.why)}` : a.tagline ? ` (${escapeMrkdwn(a.tagline)})` : ''}. Ask ${escapeMrkdwn(a.name)} instead with \`@overcli ${escapeMrkdwn(a.name)}, …\`, or carry on to hire.`),
+      section(`*${escapeMrkdwn(a.name)}* may already do this${a.why ? `: ${escapeMrkdwn(a.why)}` : a.tagline ? ` (${escapeMrkdwn(a.tagline)})` : ''}. Ask ${escapeMrkdwn(a.name)} instead with \`@overgo ${escapeMrkdwn(a.name)}, …\`, or carry on to hire.`),
       { type: 'divider' },
     ];
   }
@@ -593,14 +595,27 @@ export class SlackCommands {
         `${dollars(c.budgetUSDPerMonth)}/month · ${escapeMrkdwn(c.schedule)} · tools: ${escapeMrkdwn(c.connectors.join(', ') || 'none')}${where ? ` · works in ${escapeMrkdwn(where)}` : ''}`,
       ),
       context(`Who can ask it: ${who}.${c.reportsTo ? ` Reports to ${escapeMrkdwn(c.reportsTo)}.` : ''} You become its manager. It starts on probation${c.cadence ? ', so you approve what it proposes at each run' : ''}.`),
+      ...this.wantedBlocks(c.wantedTools, c.toolsAsked),
       {
         type: 'actions',
         elements: [
           button(`Hire ${c.name}`, HIRE_CONFIRM_ACTION, hire.hireId, 'primary'),
           button('Change it', HIRE_EDIT_ACTION, hire.hireId),
+          ...(c.wantedTools?.length && !c.toolsAsked ? [button('Ask an admin to add them', HIRE_ASK_TOOLS_ACTION, hire.hireId)] : []),
           button('Cancel', HIRE_CANCEL_ACTION, hire.hireId),
         ],
       },
+    ];
+  }
+
+  /// The tools the job needs that this server doesn't have: said on the
+  /// offer, so the hirer knows it will work without them until an admin adds them.
+  private wantedBlocks(wanted: WantedTool[] | undefined, asked: boolean | undefined): unknown[] {
+    if (!wanted?.length) return [];
+    const list = wanted.map((t) => `• *${escapeMrkdwn(t.name)}*${t.why ? ` — ${escapeMrkdwn(t.why)}` : ''}`).join('\n');
+    return [
+      section(`*Would also use*, but this server doesn’t have yet:\n${list}`),
+      context(asked ? 'You asked an admin to set these up. You can hire now; it works without them until then.' : 'Only an admin can add tools. Ask one, and hire now if you like: it works without them until then.'),
     ];
   }
 
@@ -725,6 +740,7 @@ export class SlackCommands {
       actionId === TEAM_CANCEL_ACTION ||
       actionId === TEAM_MAKE_ACTION ||
       actionId === HIRE_EDIT_ACTION ||
+      actionId === HIRE_ASK_TOOLS_ACTION ||
       actionId === TEAM_EDIT_ACTION ||
       actionId === TEAM_DROP_ACTION ||
       actionId === JOIN_LETIN_ACTION ||
@@ -883,6 +899,20 @@ export class SlackCommands {
         );
         return;
       }
+      case HIRE_ASK_TOOLS_ACTION: {
+        const res = org.askForTools(caller, action.value);
+        if (!res.ok) {
+          if (channel && threadTs) await this.reply(channel, threadTs, res.error);
+          return;
+        }
+        const bot = this.deps.botToken();
+        if (bot && channel && ts) await updateMessage(bot, { channel, ts, text: `Ready to hire ${res.hire.contract!.name}`, blocks: [...this.alreadyDoes(res.hire), ...this.offerBlocks(res.hire)] }, this.deps.fetchImpl);
+        if (channel && threadTs) {
+          const names = (res.hire.contract?.wantedTools ?? []).map((t) => t.name).join(', ');
+          await this.reply(channel, threadTs, `Asked ${res.asked.map((a) => `<@${a}>`).join(', ')} to set up ${escapeMrkdwn(names)}.`);
+        }
+        return;
+      }
       case TEAM_ACCEPT_ACTION: {
         const res = org.decideTeamTask(caller, action.value, { kind: 'accept' });
         if (!res.ok && channel && threadTs) await this.reply(channel, threadTs, res.error);
@@ -954,7 +984,7 @@ export class SlackCommands {
           ...res.waiting.map((m) => `${m.name} is waiting on an approver and joins once approved.`),
           ...res.failed.map((f) => `Couldn't hire for "${f.role}": ${f.error}`),
         ].join(' ');
-        await settle(`${res.team.name} is made: ${on.join(', ')}.${after ? ` ${after}` : ''} Give it work with \`/team ${res.team.name}: …\` or \`@overcli ${res.team.name}, …\`.`);
+        await settle(`${res.team.name} is made: ${on.join(', ')}.${after ? ` ${after}` : ''} Give it work with \`/team ${res.team.name}: …\` or \`@overgo ${res.team.name}, …\`.`);
         return;
       }
       case TEAM_APPROVE_ACTION:
@@ -1387,6 +1417,23 @@ export class SlackCommands {
     }
   }
 
+  /// Ask each admin to set up the tools a hire wants.
+  notifyToolsWanted(hire: PendingHire, tools: WantedTool[], admins: string[]): void {
+    const c = this.deps.org.summarize(hire).contract;
+    const name = c?.name ?? 'a worker';
+    const who = hire.requestedBy.slackUserId ? `<@${hire.requestedBy.slackUserId}>` : escapeMrkdwn(hire.requestedBy.name);
+    const list = tools.map((t) => `• *${escapeMrkdwn(t.name)}*${t.why ? ` — ${escapeMrkdwn(t.why)}` : ''}${t.inCatalog ? ' _(in the tool catalog)_' : ''}`).join('\n');
+    for (const admin of admins) {
+      void this.dm(admin, `${hire.requestedBy.name} needs tools set up for ${name}`, {
+        blocks: [
+          section(`*Tool request* — ${who} is hiring *${escapeMrkdwn(name)}*, and the job needs tools this server doesn’t have:\n${list}`),
+          ...(c ? [section(quote(clip(c.jobDescription, 800)))] : []),
+          context(`Add them on Setup → Tools in the console, then give them to ${escapeMrkdwn(name)} (or clear them for every hire). Until then it works without them.`),
+        ],
+      });
+    }
+  }
+
   notifyDecided(hire: PendingHire, outcome: { approved: boolean; by: string; worker?: Worker; error?: string }): void {
     const to = hire.requestedBy.slackUserId;
     if (!to) return;
@@ -1411,7 +1458,7 @@ const HELP = [
   '`/team` — the teams you can see, and what each is on',
   '`/team <name>: <task>` — give a team a task',
   '`/team new <what it’s for>` — make a team from your workers',
-  '`/overcli join` — ask to join, or get a new sign-in link',
+  '`/overgo join` — ask to join, or get a new sign-in link',
 ].join('\n');
 
 function section(text: string) {
@@ -1450,6 +1497,6 @@ function workerLine(w: WorkerSummary): string {
 }
 
 function waitingLine(it: WaitingItem): string {
-  const what = it.kind === 'question' ? escapeMrkdwn(clip(it.question ?? 'a question', 160)) : 'wants your approval for a step that reaches outside overcli';
+  const what = it.kind === 'question' ? escapeMrkdwn(clip(it.question ?? 'a question', 160)) : 'wants your approval for a step that reaches outside overgo';
   return `• *${escapeMrkdwn(it.workerName)}* (${escapeMrkdwn(clip(it.title, 60))}): ${what}`;
 }

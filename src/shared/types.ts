@@ -2784,6 +2784,11 @@ export interface IPCInvokeMap {
   'teams:continue': (args: { taskId: UUID; extraBudgetUSD?: number }) =>
     | { ok: true }
     | { ok: false; error: string };
+  /// Pick a task whose follow-ups have sprawled up as a fresh run from its
+  /// pack. `conversation`: bring the conversation along too.
+  'teams:continueAsNew': (args: { taskId: UUID; brief: string; conversation?: boolean }) =>
+    | { ok: true; task: TeamTask }
+    | { ok: false; error: string };
   'teams:retry': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
   'teams:cancel': (args: { taskId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Skip a stage that has not finished, or — with `workerId` — one
@@ -2815,6 +2820,9 @@ export interface IPCInvokeMap {
   'teams:roomStartWork': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:roomDismissWork': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:roomHandOff': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
+  /// Give a member the tools its report says it was refused, and propose
+  /// running its part again.
+  'teams:roomAllowTools': (args: { taskId: UUID; messageId: string }) => { ok: true } | { ok: false; error: string };
   'teams:readFile': (args: { taskId: UUID; name: string }) =>
     | { ok: true; body: string }
     | { ok: false; error: string };
@@ -3797,6 +3805,66 @@ export interface RecentUsage {
   /// Claude's 5h session window, when `/usage` gave us a reset time that
   /// overlaps this range. Absent rather than guessed otherwise.
   limitWindow?: { start: number; resetsAt: number; usedPercent: number };
+  /// What tool results cost to carry in context, costliest first. MCP tools
+  /// are grouped by server.
+  byTool: RecentToolUse[];
+  /// At most a few changes worth making, biggest estimated saving first.
+  recommendations: RecentRecommendation[];
+  /// The prompt every reply re-sends before any tool runs — system prompt
+  /// plus tool definitions, MCP servers' included.
+  overhead: { tokensPerReply: number; costUSD: number };
+}
+
+/// `impactUSD` is a rough figure: what acting on it would have saved over
+/// the range, or for a chatty tool what carrying its results cost.
+export type RecentRecommendation =
+  | {
+      /// A large fixed prompt in a session that barely uses MCP.
+      kind: 'mcp-overhead';
+      sessionId: string;
+      impactUSD: number;
+      baselineTokens: number;
+      mcpCalls: number;
+      turns: number;
+      /// Light enough work that Turbo's lower effort won't cost anything.
+      suggestTurbo: boolean;
+    }
+  | {
+      /// A big, never-compacted conversation re-read on every reply.
+      kind: 'long-session';
+      sessionId: string;
+      impactUSD: number;
+      avgContextTokens: number;
+      /// Roughly what it would carry once compacted.
+      compactedTokens: number;
+      turns: number;
+    }
+  | {
+      /// One tool whose results took a big share, or came back huge.
+      kind: 'chatty-tool';
+      /// The session that paid most for it.
+      sessionId: string;
+      impactUSD: number;
+      tool: string;
+      mcp: boolean;
+      calls: number;
+      resultTokens: number;
+      largestResult: number;
+    };
+
+export interface RecentToolUse {
+  /// The tool, or for MCP the server ("Atlassian Rovo").
+  name: string;
+  mcp: boolean;
+  calls: number;
+  /// Estimated tokens the results put into context.
+  resultTokens: number;
+  largestResult: number;
+  /// Writing the results into the cache, plus re-reading them on every
+  /// later reply until the conversation compacts.
+  costUSD: number;
+  /// For an MCP server, its tools by calls, e.g. ["getConfluencePage ×4"].
+  tools?: string[];
 }
 
 export interface RecentBucket {
@@ -3832,6 +3900,9 @@ export interface RecentSession {
   costUSD: number;
   /// Mean prompt size per main-thread reply — what each reply re-sends.
   avgContextTokens: number;
+  /// Smallest prompt the main thread sent — the system prompt and tool
+  /// definitions every reply carries regardless of the conversation.
+  baselineTokens: number;
   firstTs: number;
   lastTs: number;
 }

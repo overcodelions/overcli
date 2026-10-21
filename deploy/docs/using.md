@@ -6,9 +6,9 @@ For everyone in the org. You don't need to know which worker does what.
 
 Mention the app in any channel it's in, or DM it:
 
-> @overcli add an export button to the reports page
+> @overgo add an export button to the reports page
 
-> @overcli what's the competitive picture for the reports feature against company A?
+> @overgo what's the competitive picture for the reports feature against company A?
 
 What happens:
 
@@ -22,8 +22,8 @@ What happens:
 
 ### Give it context
 
-- **Ask inside a thread,** and the thread comes along: "@overcli Triage, fix this" under a bug report means *that* bug.
-- **Ask right after something in a channel,** and the last few messages come along too: post a ticket, then "@overcli what's the status of this ticket?"
+- **Ask inside a thread,** and the thread comes along: "@overgo Triage, fix this" under a bug report means *that* bug.
+- **Ask right after something in a channel,** and the last few messages come along too: post a ticket, then "@overgo what's the status of this ticket?"
 - **Questions about a record go to a worker that can open it.** A ticket, an account or a pull request goes to a worker whose tools reach that system, rather than one that could only guess.
 - **Screenshots** in the message or the thread are attached for the worker to see.
 - **Follow up in the same thread** ("and make it blue") and the same worker picks it up.
@@ -32,7 +32,7 @@ What happens:
 
 - **Some work waits for approval.** Work that reaches outside the server, such as pushing code, posting or sending, waits for the worker's manager to approve it while the worker is on probation. You'll hear back once it's done.
 - **You can only ask workers you're allowed to see.** Each worker has a "who may ask it" setting: just its manager, its team, or everyone.
-- **Not in yet?** Type `/overcli join` in Slack. An admin lets you in, or you're in straight away if the org allows it.
+- **Not in yet?** Type `/overgo join` in Slack. An admin lets you in, or you're in straight away if the org allows it.
 
 ### Slash commands
 

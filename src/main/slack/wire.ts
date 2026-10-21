@@ -2,7 +2,7 @@
 // `overcli serve` (cli/engines.ts), so the two hosts cannot drift on how an
 // answer reaches a run or how a rejection settles its batch item.
 
-import { statusReply } from './statusReply';
+import { adminReply, statusReply } from './statusReply';
 import { initialsPicture } from '../../shared/flows/avatars';
 import { log } from '../diagnostics';
 import { collectKnownSecretValues, redactSecrets } from '../secretScrub';
@@ -163,6 +163,7 @@ export function createOrgControl(
   }, {
     onHireAwaitingApproval: (hire, approvers) => commands?.notifyApprovers(hire, approvers),
     onHireDecided: (hire, outcome) => commands?.notifyDecided(hire, outcome),
+    onToolsWanted: (hire, tools, admins) => commands?.notifyToolsWanted(hire, tools, admins),
     onAskDone: (ask) => commands?.askAnswered(ask),
   });
   commands = new SlackCommands({
@@ -388,7 +389,7 @@ export function createOrgControl(
     log: (message) => log('info', 'org', message),
   });
   slack.setEventTap((ev) => triggers?.slackEvent(ev) ?? false);
-  // "@overcli …" and DMs: whichever worker fits takes the request.
+  // "@overgo …" and DMs: whichever worker fits takes the request.
   const names = new Map<string, string>();
   const bot = () => (slack.teamId() ? configuredSlackToken('bot') : undefined);
   const owner = options.frontDoorOwner;
@@ -401,6 +402,14 @@ export function createOrgControl(
       return res.ok ? { ok: true, title: res.item.title, process: res.process.name, stage: res.process.stages[0].name } : res;
     },
     status: (caller) => statusReply(org.today(caller), loadOrgPolicy().policy.publicUrl, processes.waitingOn(caller)),
+    admin: (caller, text) =>
+      adminReply(text, {
+        today: () => org.today(caller),
+        work: () => {
+          const res = org.report(caller, 30);
+          return res.ok ? res.report.byWorker.map((r) => ({ name: r.name, itemsDone: r.itemsDone, runs: r.runs, workedMs: r.workedMs })) : null;
+        },
+      }, loadOrgPolicy().policy.publicUrl),
     // What the caller can see in the Library, and finished process items,
     // matched against the question: what already answers it is offered first.
     findExisting: (caller, text) => {

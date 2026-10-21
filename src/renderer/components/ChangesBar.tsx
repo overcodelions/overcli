@@ -75,6 +75,7 @@ export function ChangesBar({
   branch,
   worktree = false,
   plain = false,
+  otherChanges = 0,
   action,
 }: {
   files: FileChangeSummary[];
@@ -93,6 +94,10 @@ export function ChangesBar({
   /// at, and a global flag meant that trying one everyday project silently
   /// relabelled the changes bar in every repo the user owns.
   plain?: boolean;
+  /// Files dirty in the same checkout that this conversation didn't touch —
+  /// another chat's work, or the user's own edits. Counted, not listed, so
+  /// they aren't passed off as this conversation's changes.
+  otherChanges?: number;
   /// Rendered at the right of the header, outside the expand toggle — e.g.
   /// running the owning services on this branch.
   action?: ReactNode;
@@ -101,7 +106,24 @@ export function ChangesBar({
   const [expanded, setExpanded] = useState(false);
   // Everyday projects don't speak git, so the chip stays out of plain mode.
   const branchChip = plain ? null : branchLabel(branch, worktree);
+  const othersNote =
+    otherChanges > 0 ? (
+      <span
+        className="text-ink-faint"
+        title="Changed in this checkout, but not by this conversation"
+      >
+        +{otherChanges} other change{otherChanges === 1 ? '' : 's'} in this checkout
+      </span>
+    ) : null;
   if (files.length === 0) {
+    if (othersNote) {
+      return (
+        <div className="rounded-xl border border-card bg-card px-3 py-2 text-xs flex items-center gap-2">
+          {othersNote}
+          {branchChip && <BranchChip {...branchChip} />}
+        </div>
+      );
+    }
     if (!baseRef) return null;
     return (
       <div className="rounded-xl border border-card bg-card px-3 py-2 text-xs text-ink-faint flex items-center gap-2">
@@ -134,6 +156,7 @@ export function ChangesBar({
           <span className="diff-add-ink">+{totals.additions}</span>
           <span className="diff-remove-ink">-{totals.deletions}</span>
           {branchChip && <BranchChip {...branchChip} />}
+          {othersNote}
           {baseRef && <span className="ml-auto text-ink-faint">vs {baseRef}</span>}
         </button>
         {action && <div className="shrink-0 pr-2">{action}</div>}

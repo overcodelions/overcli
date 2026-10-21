@@ -41,6 +41,9 @@ function makeHarness(opts: {
   preferredBackend?: 'claude' | 'codex' | 'gemini' | 'copilot' | 'ollama';
   /// Make `forkBatchWorktrees` fail with this error.
   forkError?: string;
+  /// Child runs stop for your OK inside startRun, as a worker run whose
+  /// first step reaches outside does — reporting it before the id is back.
+  startPaused?: boolean;
 } = {}) {
   const runs = new Map<string, FlowRun>();
   let counter = 0;
@@ -79,12 +82,15 @@ function makeHarness(opts: {
         id: runId,
         flowId: args.flowId,
         userPrompt: args.userPrompt,
-        state: { kind: 'running', currentStepId: 's1' },
+        state: opts.startPaused
+          ? { kind: 'paused', nextStepId: 's1', reason: 'externalAction' }
+          : { kind: 'running', currentStepId: 's1' },
         branchName: `agent/${runId}`,
         projectPath: `/wt/${runId}`,
         parentOrchestrationId: args.parentOrchestrationId,
       } as unknown as FlowRun;
       runs.set(runId, run);
+      if (opts.startPaused) observer?.(run);
       started.push({
         runId,
         prompt: args.userPrompt,
@@ -232,6 +238,13 @@ function items(n: number) {
 }
 
 describe('OrchestratorImpl dispatch', () => {
+  it('parks an item whose run paused before its id came back', async () => {
+    const h = makeHarness({ startPaused: true });
+    const res = await h.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    await h.flush();
+    expect(h.engine.get((res as { orchestrationId: string }).orchestrationId)!.items[0].status).toBe('paused');
+  });
+
   it('passes deny and allow-list policy to worker child runs', async () => {
     const deny = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: [] } });
     await deny.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });

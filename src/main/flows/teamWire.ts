@@ -5,7 +5,8 @@
 import os from 'node:os';
 import type { MainToRendererEvent, UUID } from '../../shared/types';
 import type { Worker } from '../../shared/flows/worker';
-import type { TeamHireRequest } from '../../shared/flows/team';
+import { sourceFlowIdOfPiece, withStepTools, type TeamHireRequest } from '../../shared/flows/team';
+import { loadAllFlows, saveFlow } from './storage';
 import { pickDrafterBackend, resolveProducerModel } from '../../shared/flows/drafterBackend';
 import { healthyBackends } from '../health';
 import type { RunnerManager } from '../runner';
@@ -132,6 +133,21 @@ export function createTeamEngine(deps: {
     },
     steer: (runId, text) => flowRuntime.steerRun({ runId, text }),
     pauseOf: (runId) => describeRunPause(flowRuntime.getRun(runId)),
+    refusedOf: (runId) => {
+      const run = flowRuntime.getRun(runId);
+      return run?.refusedTools?.length ? { tools: run.refusedTools, flowId: sourceFlowIdOfPiece(run.flowId) } : null;
+    },
+    allowTools: (flowId, tools) => {
+      const flow = loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).find((f) => f.id === flowId);
+      if (!flow) return { ok: false, error: `The flow "${flowId}" is gone.` };
+      // A project flow lives in its repo; changing it is a commit, not a click.
+      if (flow.source === 'project') return { ok: false, error: `"${flow.name}" is a project flow. Add ${tools.join(', ')} to it in the flow editor.` };
+      const next = withStepTools(flow, tools);
+      if (!next) return { ok: true };
+      // A generated flow saved as yours shadows the original (loadAllFlows).
+      const saved = saveFlow({ flow: next, target: 'user' });
+      return saved.ok ? { ok: true } : saved;
+    },
     cancelBatch: (id) => {
       orchestrator.abort({ id });
     },

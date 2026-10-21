@@ -512,8 +512,10 @@ describe('resuming an externalAction pause', () => {
     (h.rt as never as { convIdToRun: Map<UUID, UUID> }).convIdToRun.set('conv-1' as UUID, RUN_ID);
 
     let denied = false;
-    h.runner.respondPermission = (_convId: string, _reqId: string, approved: boolean) => {
+    let told = '';
+    h.runner.respondPermission = (_convId: string, _reqId: string, approved: boolean, ...rest: unknown[]) => {
       denied = approved === false;
+      told = String(rest[3] ?? '');
     };
     (h.rt as never as { observeEvent: (e: MainToRendererEvent) => void }).observeEvent({
       type: 'stream',
@@ -530,6 +532,11 @@ describe('resuming an externalAction pause', () => {
     });
 
     expect(denied).toBe(true);
+    // Not "denied by user": the model is told it's the step's tool list, so
+    // it doesn't report a permissions problem that isn't one.
+    expect(told).toContain('Bash is not among the tools');
+    expect(told).toContain('not a file-permission or access problem');
+    expect(r.refusedTools).toEqual(['Bash']);
   });
 
   it('marks an auto-denied request on the event, so the card cannot offer Allow', () => {

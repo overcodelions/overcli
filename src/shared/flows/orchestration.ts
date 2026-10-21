@@ -191,6 +191,9 @@ export interface Orchestration {
         /// Snapshot of the worker's explicit external-effects capability.
         /// Absent on older batches means false.
         allowExternalActions?: boolean;
+        /// Outside tools you approved for this batch's runs: see
+        /// FlowRuntimeStartArgs.externalActionGrant.
+        externalActionGrant?: string[];
         /// Snapshot of `Worker.browser`: the batch's runs launch with the
         /// browser switch on. Absent means off.
         browser?: boolean;

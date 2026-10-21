@@ -152,6 +152,10 @@ export interface FlowRuntimeStartArgs {
   /// Explicit Worker capability. Missing is false for launches produced by
   /// older workers/orchestrations.
   allowExternalActions?: boolean;
+  /// Outside tools you already approved for this run (lower-cased, as
+  /// `stepOutsideTools` names them), seeding `FlowRun.externalActionRunGrant`:
+  /// you gave a member a tool it was refused, and that click is the OK.
+  externalActionGrant?: string[];
   /// Nobody is watching this run, and the launcher is enforcing its own
   /// permission policy over the event stream (see src/cli/permissions.ts).
   ///
@@ -190,6 +194,17 @@ export interface FlowRuntimeStartArgs {
   /// Only the scheduler uses it: a scheduled prompt never changes, so the
   /// prompt-derived title would be identical for every occurrence.
   title?: string;
+}
+
+/// What a policy refusal tells the model. Without the second half it retried
+/// the same call, then wrote up the work as blocked by file permissions.
+export function refusalForModel(why: string): string {
+  return (
+    `Refused by policy, not by a person: ${why} ` +
+    'This is not a file-permission or access problem, and asking again is refused the same way. ' +
+    'Do not retry it or work around it. Do what you can without it, and say plainly in your reply ' +
+    'which tool you were refused and what it would have let you do.'
+  );
 }
 
 export function enabledToolsFor(run: Pick<FlowRun, 'unattended' | 'unattendedAllowedTools'>, step: Pick<FlowStep, 'tools'>): string[] {
@@ -756,10 +771,11 @@ export class FlowRuntimeImpl {
           const allowed = inToolScope(scopes, tool);
           if (allowed && !run.allowExternalActions) continue;
           log('info', 'flows.permission', `${allowed ? 'allowed' : 'refused'} "${tool}" for worker run ${runId} (tool scope)`);
-          this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, allowed);
+          const note = allowed ? 'Allowed: within this worker’s tools.' : scopeRefusal(scopes, tool, run.workerName ?? 'This worker');
+          this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, allowed, undefined, undefined, undefined, allowed ? undefined : refusalForModel(note));
           ev.kind.info.decided = allowed ? 'allow' : 'deny';
           ev.kind.info.decidedBy = 'policy';
-          ev.kind.info.decisionNote = allowed ? 'Allowed: within this worker’s tools.' : scopeRefusal(scopes, tool, run.workerName ?? 'This worker');
+          ev.kind.info.decisionNote = note;
         }
       }
       if (run.workerId && !run.allowExternalActions) {
@@ -778,7 +794,19 @@ export class FlowRuntimeImpl {
               'flows.permission',
               `auto-${allow ? 'approved' : 'denied'} "${ev.kind.info.toolName}" for worker run ${runId} (${read && !approvedStep ? 'reads only' : 'no grant for external actions'})`,
             );
-            this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, allow);
+            const tool = ev.kind.info.toolName;
+            // Told "denied by user", a member reported the files it couldn't
+            // open as locked, and the room went looking for a permissions
+            // problem. Say what it is: the tool isn't on its list.
+            this.runner.respondPermission(
+              event.conversationId,
+              ev.kind.info.requestId,
+              allow,
+              undefined,
+              undefined,
+              undefined,
+              allow ? undefined : refusalForModel(`${tool} is not among the tools this work was given (the worker's flow does not list it).`),
+            );
             // Say so on the event itself before it reaches the renderer (this
             // tap runs first, on the same object). Otherwise the card offered
             // Allow for a call that was already refused, and clicking it
@@ -787,8 +815,9 @@ export class FlowRuntimeImpl {
             ev.kind.info.decidedBy = 'policy';
             ev.kind.info.decisionNote = allow
               ? approvedStep ? 'Allowed: you approved this step.' : 'Allowed: a tool call that only reads.'
-              : `Denied automatically: this worker has no grant for external actions, and the step does not list ${ev.kind.info.toolName} in its tools.`;
-            if (allow) this.checkpoint(run);
+              : `Denied automatically: this worker has no grant for external actions, and the step does not list ${tool} in its tools.`;
+            if (!allow && !(run.refusedTools ?? []).includes(tool)) run.refusedTools = [...(run.refusedTools ?? []), tool];
+            this.checkpoint(run);
           }
         }
       }
@@ -1168,7 +1197,7 @@ export class FlowRuntimeImpl {
     // the run has started.
     const firstPauseReason =
       pauseReasonBeforeStep(
-        { workerId: args.workerId, allowExternalActions: args.allowExternalActions },
+        { workerId: args.workerId, allowExternalActions: args.allowExternalActions, externalActionRunGrant: args.externalActionGrant },
         { ...firstStep, pauseBefore: false },
       ) ?? null;
     const run: FlowRun = {
@@ -1212,6 +1241,7 @@ export class FlowRuntimeImpl {
       workerName: args.workerName,
       ...(args.team ? { team: args.team } : {}),
       ...(args.allowExternalActions ? { allowExternalActions: true } : {}),
+      ...(args.externalActionGrant?.length ? { externalActionRunGrant: args.externalActionGrant } : {}),
       ...(args.chrome ? { chrome: true } : {}),
       ...(args.unattended ? { unattended: true } : {}),
       ...(args.unattendedAllowedTools ? { unattendedAllowedTools: args.unattendedAllowedTools } : {}),

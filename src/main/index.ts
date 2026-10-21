@@ -2824,6 +2824,9 @@ export function registerIpc(): void {
   ipcMain.handle('teams:continue', (_e, { taskId, extraBudgetUSD }) =>
     teamEngine ? teamEngine.continueTask(taskId, { extraBudgetUSD }) : noTeams,
   );
+  ipcMain.handle('teams:continueAsNew', (_e, { taskId, brief, conversation }) =>
+    teamEngine ? teamEngine.continueAsNew(taskId, String(brief ?? ''), { conversation: conversation === true }) : noTeams,
+  );
   ipcMain.handle('teams:retry', (_e, { taskId }) => (teamEngine ? teamEngine.retry(taskId) : noTeams));
   ipcMain.handle('teams:skip', (_e, { taskId, stage, workerId }) =>
     teamEngine
@@ -2867,6 +2870,9 @@ export function registerIpc(): void {
   );
   ipcMain.handle('teams:roomHandOff', (_e, { taskId, messageId }) =>
     teamEngine ? teamEngine.roomHandOff(taskId, messageId) : noTeams,
+  );
+  ipcMain.handle('teams:roomAllowTools', (_e, { taskId, messageId }) =>
+    teamEngine ? teamEngine.roomAllowTools(taskId, messageId) : noTeams,
   );
 
   // Workers: standing personas that plan their own shifts.

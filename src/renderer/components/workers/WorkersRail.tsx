@@ -55,7 +55,7 @@ import { PopMenu, type MenuItemDef } from "../SidebarPlaces";
 import { fundingFor } from "@shared/flows/treasury";
 import { searchWork } from "./workSearch";
 import { awayLine, morningAfter, nextMondayMorning } from "./awayMode";
-import { NewTeamButton, ProcessesButton, TeamRailSection } from "./teams/TeamRail";
+import { TeamRailSection } from "./teams/TeamRail";
 import { useTeamsStore } from "../../teamsStore";
 import { foldSummary, groupByProject, teamOnlyIds, type ProjectGroup } from "./workerBoard";
 import { projectName, useProjectOptions } from "./teams/ProjectChoice";
@@ -91,6 +91,7 @@ export function WorkersRail({
   const view = useWorkersStore((s) => s.view);
   const showToday = useWorkersStore((s) => s.showToday);
   const showQueue = useWorkersStore((s) => s.showQueue);
+  const showProcesses = useWorkersStore((s) => s.showProcesses);
   const runs = useFlowsStore((s) => s.runs);
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
   const runners = useRunningMap();
@@ -232,6 +233,19 @@ export function WorkersRail({
     />
   );
 
+  // Processes is a place, like Today and Queue, so it sits with them rather
+  // than down among the create actions. A lab, off until asked for.
+  const processesButton = processesLab && (
+    <RailButton
+      label="Processes"
+      title="Processes · work that moves through several teams and your decisions, stage by stage"
+      expanded={expanded}
+      active={onWorkers && view === "processes"}
+      onClick={() => showProcesses(null)}
+      icon={<ProcessesIcon />}
+    />
+  );
+
   const toggle = (
     <RailButton
       label="Collapse"
@@ -303,10 +317,9 @@ export function WorkersRail({
       >
         <div className="flex flex-col gap-0.5 px-2">
           {orchestratorButton && <div data-orchestrator-button>{orchestratorButton}</div>}
-          <HireButton expanded={expanded} first />
-          {/* A team hires its own members, so it is a door with nobody hired. */}
-          <NewTeamButton expanded={expanded} />
-          <ProcessesButton expanded={expanded} />
+          {/* A team hires its own members, so New offers one with nobody hired. */}
+          <NewButton expanded={expanded} first />
+          {processesButton}
         </div>
         <div className="flex-1" />
         <div className="flex flex-col gap-0.5 px-2">{toggle}</div>
@@ -356,6 +369,7 @@ export function WorkersRail({
           onClick={showQueue}
           icon={<QueueIcon />}
         />
+        {processesButton}
         {expanded ? (
           <input
             ref={searchInput}
@@ -457,9 +471,7 @@ export function WorkersRail({
       </div>
 
       <div className={"mt-2 flex flex-col gap-0.5 " + (expanded ? "px-2" : "px-1")}>
-        <HireButton expanded={expanded} />
-        <NewTeamButton expanded={expanded} />
-        <ProcessesButton expanded={expanded} />
+        <NewButton expanded={expanded} />
         <div className="mx-1 my-1.5 h-px bg-card" />
         <RailFooter expanded={expanded} onToggleExpanded={onToggleExpanded} />
       </div>
@@ -837,11 +849,11 @@ function RailButton({
   );
 }
 
-/// The tab's one create action, always the rail's last slot above the
-/// occasional views — a dashed empty face, the chair you haven't filled yet.
-/// `first` is the empty rail's version: it sits at the top, where the first
-/// face will go, so its menu opens downward.
-function HireButton({ expanded, first = false }: { expanded: boolean; first?: boolean }) {
+/// The tab's one create button: hiring and teams behind one menu, so the
+/// rail ends in a single quiet control rather than rows that look like more
+/// crew. `first` is the empty rail's version: a dashed empty face at the top,
+/// the chair the first worker will take, so its menu opens downward.
+function NewButton({ expanded, first = false }: { expanded: boolean; first?: boolean }) {
   const openHire = useWorkersStore((s) => s.openHire);
   const openEditor = useWorkersStore((s) => s.openEditor);
   const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
@@ -860,96 +872,157 @@ function HireButton({ expanded, first = false }: { expanded: boolean; first?: bo
     window.addEventListener("mousedown", close);
     return () => window.removeEventListener("mousedown", close);
   }, [menuOpen]);
-  // A worker is hired onto a project, so with none there is nothing to
-  // hire into. The chair stays, greyed, and says why — aria-disabled rather
-  // than disabled, because a disabled button shows no tooltip.
+  // A worker is hired onto a project, so with none there is nothing to hire
+  // into. The hiring items stay, greyed, and say why — aria-disabled rather
+  // than disabled, because a disabled button shows no tooltip. A team needs
+  // no project, so New team is always there.
   const blocked = hirePath === "";
-  const label = first ? "Hire your first worker" : "Hire a worker";
-  const item = "w-full px-3 py-1.5 text-left text-xs hover:bg-card-strong";
+  const blockedTitle = "Add a project or workspace first — a worker is hired onto one";
+  const label = first ? "Hire your first worker" : "New";
+  const hire = (run: () => void) => () => {
+    if (blocked) return;
+    setMenuOpen(false);
+    run();
+  };
+  const plus = (
+    <svg viewBox="0 0 14 14" aria-hidden className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+      <path d="M7 2.5v9M2.5 7h9" />
+    </svg>
+  );
   return (
     <div ref={menu} className="relative">
       <button
         type="button"
-        onClick={() => {
-          if (!blocked) setMenuOpen((o) => !o);
-        }}
-        title={blocked ? "Add a project or workspace first — a worker is hired onto one" : label}
+        onClick={() => setMenuOpen((o) => !o)}
+        title={first ? label : "Hire a worker or make a team"}
         aria-label={expanded ? undefined : label}
-        aria-disabled={blocked || undefined}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         className={
-          "flex min-h-[44px] w-full items-center gap-2.5 rounded-md py-1.5 text-left " +
+          "flex w-full items-center gap-2.5 rounded-md text-left " +
           "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
-          (blocked
-            ? "cursor-not-allowed text-ink-faint opacity-50 "
-            : "text-ink-muted hover:bg-card-strong hover:text-ink ") +
+          (first
+            ? "min-h-[44px] py-1.5 text-ink-muted hover:bg-card-strong hover:text-ink "
+            : "min-h-[36px] border border-card-strong text-ink hover:bg-card-strong " +
+              (menuOpen ? "bg-card-strong " : "bg-card ")) +
           (expanded ? "px-2" : "justify-center px-0")
         }
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed border-card-strong">
-          <svg viewBox="0 0 14 14" aria-hidden className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <path d="M7 2.5v9M2.5 7h9" />
+        {first ? (
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed border-card-strong">
+            {plus}
+          </span>
+        ) : (
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center">{plus}</span>
+        )}
+        {expanded && <span className={"text-xs " + (first ? "" : "font-medium")}>{label}</span>}
+        {expanded && !first && (
+          <svg
+            viewBox="0 0 12 12"
+            aria-hidden
+            className={"ml-auto h-3 w-3 text-ink-faint transition-transform " + (menuOpen ? "rotate-180" : "")}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          >
+            <path d="M3 7.5 6 4.5l3 3" />
           </svg>
-        </span>
-        {expanded && <span className="text-xs">{label}</span>}
+        )}
       </button>
       {menuOpen && (
         <div
           role="menu"
           className={
-            "absolute left-full z-40 ml-2 w-40 " + (first ? "top-0 " : "bottom-0 ") +
-            "overflow-hidden rounded-md border border-card-strong bg-surface-elevated py-1 shadow-xl"
+            "absolute z-40 flex flex-col overflow-hidden rounded-lg border border-card-strong bg-surface-elevated p-1 shadow-2xl " +
+            (first ? "left-full top-0 ml-2 w-60" : expanded ? "bottom-full left-0 mb-1.5 w-60" : "bottom-0 left-full ml-2 w-60")
           }
         >
-          <button
-            role="menuitem"
-            onClick={() => {
-              setMenuOpen(false);
-              openHire(hirePath);
-            }}
-            className={item + " text-ink"}
-          >
-            ✨ Hire with AI
-          </button>
-          <button
-            role="menuitem"
-            onClick={() => {
-              setMenuOpen(false);
-              openEditor(newWorkerDraft(hirePath, hireEveryday));
-            }}
-            className={item + " text-ink-muted hover:text-ink"}
-          >
-            Add by hand
-          </button>
-          <button
-            role="menuitem"
-            onClick={() => {
-              setMenuOpen(false);
-              void importFromFile({
-                projectPath: hirePath,
-                projectPaths: projects.map((project) => project.path),
-              });
-            }}
-            className={item + " text-ink-muted hover:text-ink"}
-          >
-            Import…
-          </button>
+          <div className="px-2.5 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-ink-faint">Hire a worker</div>
+          <NewMenuItem
+            label="Hire with AI"
+            hint="Describe the job, get a worker"
+            icon={<SparkIcon />}
+            blocked={blocked}
+            title={blocked ? blockedTitle : undefined}
+            onClick={hire(() => openHire(hirePath))}
+          />
+          <NewMenuItem
+            label="Add by hand"
+            hint="Fill in the worker yourself"
+            icon={<PencilIcon />}
+            blocked={blocked}
+            title={blocked ? blockedTitle : undefined}
+            onClick={hire(() => openEditor(newWorkerDraft(hirePath, hireEveryday)))}
+          />
+          <NewMenuItem
+            label="Import…"
+            hint="From a worker file"
+            icon={<ImportIcon />}
+            blocked={blocked}
+            title={blocked ? blockedTitle : undefined}
+            onClick={hire(
+              () =>
+                void importFromFile({
+                  projectPath: hirePath,
+                  projectPaths: projects.map((project) => project.path),
+                }),
+            )}
+          />
           {/* A team can hire its own members, so it needs nobody hired first. */}
-          <div className="my-1 h-px bg-card" />
-          <button
-            role="menuitem"
+          <div className="mx-1.5 my-1 h-px bg-card" />
+          <NewMenuItem
+            label="New team…"
+            hint="Workers who take on a task together"
+            icon={<TeamIcon />}
+            title="Make a team — from your crew, new hires, or both — and give it a task to finish together"
             onClick={() => {
               setMenuOpen(false);
               openTeamEditor(null);
             }}
-            className={item + " text-ink-muted hover:text-ink"}
-          >
-            New team…
-          </button>
+          />
         </div>
       )}
     </div>
+  );
+}
+
+/// One row of the New menu: an icon, the action, and a line on what it makes.
+/// `blocked` greys it but keeps the tooltip that says why.
+function NewMenuItem({
+  label,
+  hint,
+  icon,
+  title,
+  blocked = false,
+  onClick,
+}: {
+  label: string;
+  hint: string;
+  icon: React.ReactNode;
+  title?: string;
+  blocked?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      title={title}
+      aria-disabled={blocked || undefined}
+      className={
+        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left " +
+        "focus:outline-none focus-visible:bg-card-strong " +
+        (blocked ? "cursor-not-allowed opacity-50" : "hover:bg-card-strong")
+      }
+    >
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-card text-ink-muted">{icon}</span>
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate text-xs text-ink">{label}</span>
+        <span className="truncate text-[10.5px] text-ink-faint">{hint}</span>
+      </span>
+    </button>
   );
 }
 
@@ -1273,6 +1346,56 @@ function TodayIcon() {
     <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
       <circle cx="7" cy="7" r="5.2" />
       <path d="M7 4.1V7l2 1.5" />
+    </svg>
+  );
+}
+
+/// A four-point spark: the AI-assisted hire.
+function SparkIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round">
+      <path d="M7 1.8 8.2 5.8 12.2 7 8.2 8.2 7 12.2 5.8 8.2 1.8 7 5.8 5.8Z" />
+    </svg>
+  );
+}
+
+/// A pencil: a worker written by hand.
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9.6 2.4 11.6 4.4 5 11 2.4 11.6 3 9Z" />
+    </svg>
+  );
+}
+
+/// A tray with an arrow dropping in: a worker from a file.
+function ImportIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 1.8v6.6M4.4 5.8 7 8.4l2.6-2.6M2 9.2v1.6c0 .7.5 1.2 1.2 1.2h7.6c.7 0 1.2-.5 1.2-1.2V9.2" />
+    </svg>
+  );
+}
+
+/// Two people side by side.
+function TeamIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+      <circle cx="5.5" cy="6" r="2" />
+      <circle cx="10.5" cy="6" r="2" />
+      <path d="M2 12.5c.6-1.8 2-2.6 3.5-2.6s2.9.8 3.5 2.6M8.5 10.3c.5-.3 1.2-.4 2-.4 1.5 0 2.9.8 3.5 2.6" />
+    </svg>
+  );
+}
+
+/// A pipeline: one stage feeding the next, then forking to two.
+function ProcessesIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="3" cy="8" r="1.75" />
+      <circle cx="13" cy="3.75" r="1.75" />
+      <circle cx="13" cy="12.25" r="1.75" />
+      <path d="M4.75 8H7c1.6 0 2-4.25 4.25-4.25M7 8c1.6 0 2 4.25 4.25 4.25" />
     </svg>
   );
 }

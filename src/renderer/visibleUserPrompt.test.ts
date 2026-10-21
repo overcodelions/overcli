@@ -17,6 +17,15 @@ describe('visibleUserPrompt', () => {
     expect(visibleUserPrompt(`${BATCHING_DIRECTIVE}\n\nDo the work`)).toBe('Do the work');
   });
 
+  it('hides the consolidation nudge a Full mode prompt carries', () => {
+    expect(
+      visibleUserPrompt(
+        'The previous turn used mcp__acme__search in 4 separate model rounds (6 calls). ' +
+          'Consolidate independent mcp__acme__search work this turn.\n\nKeep going',
+      ),
+    ).toBe('Keep going');
+  });
+
   it('hides attachment paths and retains friendly labels', () => {
     const prompt =
       '<image name=[Image #1] path="/private/a.png"></image>' +

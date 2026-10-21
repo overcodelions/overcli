@@ -56,9 +56,9 @@ function navTitle(p: (typeof PAGES)[number], markdown: string | null): { title: 
   const alpha = /\(alpha\)/i.test(full);
   const title = full
     .replace(/\s*\(alpha\)\s*/i, '')
-    .replace(/^Running overcli for an org.*$/, 'Docker and compose')
-    .replace(/^overcli for an org on /, '')
-    .replace(/^overcli on /, '');
+    .replace(/^Running overgo for your org.*$/, 'Docker and compose')
+    .replace(/^overgo for your org on /, '')
+    .replace(/^overgo on /, '');
   return { title, alpha };
 }
 
@@ -142,11 +142,11 @@ export function renderDocsPage(urlPath: string): string | null {
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(titleOf(markdown))} · overcli docs</title>
+<title>${esc(titleOf(markdown))} · overgo docs</title>
 <link rel="stylesheet" href="/console.css"><link rel="stylesheet" href="/docs.css"></head>
 <body class="docs">
 <header class="docs-top">
-<a href="/docs" class="docs-brand">${MARK}<span>overcli <span class="docs-dim">docs</span></span><span class="alpha">alpha</span></a>
+<a href="/docs" class="docs-brand">${MARK}<span>overgo <span class="docs-dim">docs</span></span><span class="alpha">alpha</span></a>
 <div class="docs-search"><label class="search">${SEARCH_ICON}<input type="search" id="docs-q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off"><kbd>/</kbd></label><div class="docs-results" id="docs-results" role="listbox" hidden></div></div>
 <a href="/" class="btn small">Open the console</a>
 </header>
@@ -181,7 +181,7 @@ function flowDiagram(src: string): string {
     + `<div class="flow-body"><div class="flow-ask"><p>${ask}</p></div><ol class="flow-steps">${steps.join('')}</ol></div></figure>`;
 }
 
-const MARK = '<svg class="docs-mark" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><rect x="0.5" y="0.5" width="31" height="31" rx="7" fill="#fafaf8" stroke="#000" stroke-opacity="0.14"/><path d="M10 9.5h12" stroke="#111113" stroke-width="3" stroke-linecap="round"/><path d="M10 14l11.5 5L10 24" fill="none" stroke="#111113" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const MARK = '<svg class="docs-mark" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><rect x="0.5" y="0.5" width="31" height="31" rx="7" fill="#fafaf8" stroke="#000" stroke-opacity="0.14"/><path d="M10 9.5h12" stroke="#111113" stroke-width="3" stroke-linecap="round"/><path d="M10 19h11.5M17 14.5l4.5 4.5-4.5 4.5" fill="none" stroke="#111113" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const SEARCH_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>';
 
 /// Search over the page and section titles, and which section of the page

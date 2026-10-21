@@ -1,4 +1,6 @@
-# Running overcli for an org (alpha)
+# Running overgo for your org (alpha)
+
+overgo is the org server for overcli: one container that runs `overcli serve`.
 
 > **Alpha.** Org workers are early. Expect rough edges and changes between versions, and back up `/data`. In the desktop app, they're switched on under Settings → Labs → Org workers.
 
@@ -70,7 +72,7 @@ On first start it creates a **Workers** folder on the volume as the default plac
 
 ```sh
 docker compose -f deploy/docker-compose.yml exec overcli overcli org init --name "Acme" --admin U012AB3CD --slack-team T012AB3CD \
-  --url https://overcli.acme.internal:7420 --timezone America/New_York
+  --url https://overgo.acme.internal:7420 --timezone America/New_York
 docker compose -f deploy/docker-compose.yml exec overcli overcli org show
 ```
 
@@ -80,7 +82,7 @@ This writes `/data/org.json`. It names the org (in the console, Slack and MCP), 
 |---|---|
 | `name`, `slackTeamId`, `timezone` | Who the org is |
 | `publicUrl` | The address people use; links sent from Slack point here |
-| `openJoin` | Let anyone in your Slack in with `/overcli join`, without an admin |
+| `openJoin` | Let anyone in your Slack in with `/overgo join`, without an admin |
 | `admins` | Slack member IDs who can do anything |
 | `hirers` | `"*"`, or the list of people who may hire |
 | `budgetAllowanceUSD`, `allowances` | What one person's workers may cost per month before a hire needs an approver; per-person overrides |
@@ -94,7 +96,7 @@ This writes `/data/org.json`. It names the org (in the console, Slack and MCP), 
 | `retentionDays` | Keep the decision log and finished runs this long (7 or more). Absent: forever |
 | `sso` | Company sign-in: `issuer`, `clientId`, `allowedDomains`, `required` (see below) |
 | `people` | Work email → Slack member ID, for anyone company sign-in can't match through Slack |
-| `fleet` | The company's other overcli servers, watched from Admin |
+| `fleet` | The company's other overgo servers, watched from Admin |
 
 A new `org.json` starts narrow: only admins hire, until you change `hirers`.
 
@@ -156,7 +158,7 @@ docker compose -f deploy/docker-compose.yml exec overcli overcli projects add /d
 
 Anyone in your Slack can ask, with no names to learn:
 
-- **`@overcli add an export button to the reports page`** in any channel the app is in, or the same in a DM to the app.
+- **`@overgo add an export button to the reports page`** in any channel the app is in, or the same in a DM to the app.
 - **Who takes it:** a request that starts with a worker's name goes to that worker. Otherwise the server matches the request against each worker's job, and asks a model when the words alone don't decide it. When nobody fits clearly, it replies with a short list of names to pick from.
 - **What comes with it:** a request made inside a thread brings the thread along, and screenshots in it are attached for the worker to see.
 - **What comes back, all in the thread:**
@@ -187,8 +189,8 @@ Open it to sign in as the first admin (the Slack ID you gave `org init`). It wor
 
 After that, nobody copies a token. Every person is their Slack account, and there are three ways in:
 
-- **Invite**, from the console's **People** page. Pick people from your Slack (the bot needs the `users:read` scope) or type a name and Slack member ID, and choose what they can do: ask workers, hire within an allowance, approve hires, or admin. overcli DMs each a one-time link that signs them in. Without Slack, you get the link to send yourself.
-- **`/overcli join`** in Slack. Slack has already proved who's asking, so they appear under *Asking to join* for an admin to let in. With `"openJoin": true` in `org.json`, they're let in straight away, able to ask workers things.
+- **Invite**, from the console's **People** page. Pick people from your Slack (the bot needs the `users:read` scope) or type a name and Slack member ID, and choose what they can do: ask workers, hire within an allowance, approve hires, or admin. overgo DMs each a one-time link that signs them in. Without Slack, you get the link to send yourself.
+- **`/overgo join`** in Slack. Slack has already proved who's asking, so they appear under *Asking to join* for an admin to let in. With `"openJoin": true` in `org.json`, they're let in straight away, able to ask workers things.
 - **The overcli app**: Settings → Your org, paste the address, press **Sign in**. The browser opens on the org's page showing a code; the person confirms it, and the app gets its own sign-in in the keychain.
 
 People shows where each person is signed in (browser, app, token), lets an admin change their role or allowance, and signs out one device or a person everywhere. Their **Connect** page has copy-paste setup for Claude Code, Claude Desktop, Codex and the app.
@@ -223,7 +225,7 @@ People can sign in with the company account instead of a Slack link: Okta, Entra
 2. On **Admin → Change the rules → Sign-in**, enter the issuer (e.g. `https://acme.okta.example`) and the client ID. A confidential client's secret goes in `OVERCLI_SSO_CLIENT_SECRET` in `deploy/.env`, never in `org.json`. Public clients work without one (PKCE).
 3. `publicUrl` must be set: the provider sends people back to a fixed address.
 
-overcli knows people by their Slack account, so an email is matched to a Slack member by asking Slack (the bot needs `users:read.email`, which the manifest includes) or through the `people` list. **Everyone signs in this way** turns invite links into role grants only: the person's role applies the first time they sign in. Scripts' tokens keep working.
+overgo knows people by their Slack account, so an email is matched to a Slack member by asking Slack (the bot needs `users:read.email`, which the manifest includes) or through the `people` list. **Everyone signs in this way** turns invite links into role grants only: the person's role applies the first time they sign in. Scripts' tokens keep working.
 
 ## Spend, records and offboarding
 
@@ -240,7 +242,7 @@ One server serves one Slack app. A company that runs one per department lists th
 A schedule runs a worker at set times. A trigger runs it the moment work shows up: a bug filed, a deal moved, a message in a channel. Set triggers on a worker's **Triggers** tab, or from Claude with `create_trigger`. Each one says three things:
 
 1. **What sets it off.**
-   - **Watch:** every few minutes, overcli calls one of the server's tools directly, with no model and no cost per check (for example a Jira search). It acts once on each item it hasn't seen. The first check only records what's already there, so turning a trigger on never floods the worker with the backlog. It works inside a VPC, because nothing has to reach the server. **Try it now** shows what it would see before you save.
+   - **Watch:** every few minutes, overgo calls one of the server's tools directly, with no model and no cost per check (for example a Jira search). It acts once on each item it hasn't seen. The first check only records what's already there, so turning a trigger on never floods the worker with the backlog. It works inside a VPC, because nothing has to reach the server. **Try it now** shows what it would see before you save.
    - **Webhook:** Jira automation, GitHub, a CRM or Zapier posts each event to a secret address, `<publicUrl>/hooks/<id>/<secret>`, shown once when you save. The same event sent twice is handled once. This needs the control plane reachable from the sender.
    - **Slack:** a new message, a mention of the bot, or an emoji reaction (say 🐛) in a channel. Invite the bot to the channel. This needs the manifest's channel scopes, so reinstall the Slack app after upgrading.
 2. **What it does with each one,** in plain words. The worker gets the event itself (the ticket, the PR, the message) with your instructions. On probation it proposes what it would do and waits; once trusted, it acts.

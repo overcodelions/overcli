@@ -111,10 +111,17 @@ export function FlowEditor() {
       alert('YAML errors:\n' + result.errors.map((e) => `  ${e.path}: ${e.message}`).join('\n'));
       return;
     }
+    // Everything the YAML authors comes across; only where the flow lives
+    // (id, source, filePath) stays with the draft. Copying steps without
+    // participants left every step pointing at an id the draft didn't have.
     updateDraft({
       name: result.flow.name,
       description: result.flow.description,
+      input: result.flow.input,
+      defaultPrompt: result.flow.defaultPrompt,
+      participants: result.flow.participants,
       steps: result.flow.steps,
+      tags: result.flow.tags,
     });
     setYamlMode(false);
   }

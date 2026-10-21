@@ -38,6 +38,8 @@ import {
   buildMemberStagePrompt,
   buildTeamPlanMessage,
   isMemberStage,
+  handoffSteps,
+  orderHandoffByPlan,
   holdsRoomWork,
   isPieceSettled,
   canSkipStage,
@@ -50,6 +52,9 @@ import {
   TEAM_LEARN_BUDGET_USD,
   TEAM_MAX_QUESTIONS_KNOWING,
   parsePackReply,
+  parsePackUpdate,
+  resolveTaskFileRef,
+  applyPackUpdate,
   madeDeliverables,
   parsePlanReply,
   safeTeamFileName,
@@ -57,6 +62,7 @@ import {
   stageFileName,
   validateTeam,
   type FolderFile,
+  type FollowUpSteps,
   type Team,
   type TeamHireRequest,
   type TeamMember,
@@ -68,6 +74,8 @@ import {
   type TeamStage,
   type TeamTask,
   type TeamWaitReason,
+  TEAM_EARLIER_DIR,
+  continuationOf,
 } from '../../shared/flows/team';
 import {
   ROOM_COORDINATOR_SYSTEM,
@@ -82,6 +90,7 @@ import {
   parseRouteReply,
   renderConversation,
   type RoomMember,
+  type RoomWork,
 } from '../../shared/flows/teamRoom';
 import type { TeamHandoff, TeamMessage, TeamSpeaker } from '../../shared/flows/team';
 import * as teamsStore from './teamsStore';
@@ -142,6 +151,8 @@ export interface TeamEngineDeps {
       /// The grant for external actions on this piece's run, over the
       /// member's own setting (see `Team.piecesAskFirst`).
       allowExternalActions?: boolean;
+      /// Outside tools you already approved for this piece's run.
+      externalActionGrant?: string[];
       /// Fork the piece off the task branch rather than the project as it is.
       baseBranch?: string;
       /// Work in the task branch's own worktrees instead of forking off it.
@@ -170,6 +181,11 @@ export interface TeamEngineDeps {
   /// What a member's paused run is waiting on you for, said plainly ("wants
   /// your OK to use bash"); null when nobody needs to act (you held it).
   pauseOf?: (runId: UUID) => string | null;
+  /// Tools a member's run was refused because its flow doesn't list them,
+  /// and that flow's id; null when it was refused nothing.
+  refusedOf?: (runId: UUID) => { tools: string[]; flowId: string } | null;
+  /// Add tools to a member's own flow, so its next piece may use them.
+  allowTools?: (flowId: string, tools: string[]) => { ok: true } | { ok: false; error: string };
   /// Whether the whole crew is away (WorkerEngine.awayState). While it is,
   /// no stage starts on its own; coming back picks the tasks up again.
   crewAway?: () => boolean;
@@ -331,10 +347,15 @@ export class TeamEngine {
     if (task.room?.busy) {
       // The turn died with the app. Say so in the room rather than leave a
       // speaker "answering" forever.
+      const pack = task.room.busy.doing === 'pack';
       task.room.busy = null;
-      this.pushMessage(task, { kind: 'coordinator' }, 'Interrupted when Overcli closed — ask again.', {
-        failed: true,
-      });
+      const cut = this.pushMessage(
+        task,
+        { kind: 'coordinator' },
+        pack ? 'Updating the pack was interrupted when Overcli closed.' : 'Interrupted when Overcli closed — ask again.',
+        { failed: true },
+      );
+      cut.retry = pack ? 'pack' : 'ask';
       this.persist(task);
     }
     if (task.status === 'planning') {
@@ -485,7 +506,13 @@ export class TeamEngine {
     /// Where this task works, over the team's own project. `null`: each
     /// member in their own, whatever the team says.
     projectPath?: string | null,
-    opts: { requestedBy?: TeamTask['requestedBy']; forcePlan?: boolean; startFrom?: string } = {},
+    opts: {
+      requestedBy?: TeamTask['requestedBy'];
+      forcePlan?: boolean;
+      startFrom?: string;
+      /// An earlier task this one picks up from: its files come along.
+      continueFrom?: { task: TeamTask; conversation: boolean };
+    } = {},
   ): Result<{ task: TeamTask }> {
     const team = this.teams.get(teamId);
     if (!team) return { ok: false, error: 'That team no longer exists.' };
@@ -532,6 +559,7 @@ export class TeamEngine {
     this.tasks.set(id, task);
     const saved = this.saveAttachments(task, attachments);
     if (saved.length > 0) task.attachments = saved;
+    if (opts.continueFrom) this.carryOver(task, opts.continueFrom.task, opts.continueFrom.conversation);
     this.writeBrief(task);
     this.shareKnowledge(task, team);
     this.persist(task);
@@ -589,6 +617,56 @@ export class TeamEngine {
     this.persist(task);
     if (!active) this.advance(id);
     return { ok: true, task };
+  }
+
+  /// A task whose follow-ups have sprawled, picked up as a fresh run: the
+  /// pack and the shared folder come along under `earlier/`, failed stages
+  /// become the new plan's first ask, and the two tasks link to each other.
+  continueAsNew(taskId: UUID, text: string, opts: { conversation?: boolean } = {}): Result<{ task: TeamTask }> {
+    const from = this.tasks.get(taskId);
+    if (!from) return { ok: false, error: 'That task no longer exists.' };
+    if (from.continuedAs) return { ok: false, error: 'This task was already continued in a new run.' };
+    if (!from.pack) return { ok: false, error: 'Only a task with a pack can be continued.' };
+    if (from.status !== 'review' && from.status !== 'done') return { ok: false, error: 'Wait for the running work to finish first.' };
+    if (from.room?.busy || from.stages.some((s) => s.status === 'running')) {
+      return { ok: false, error: 'Wait for the running work to finish first.' };
+    }
+    const ask = text.trim() || `Carry on from Pack v${from.pack.version ?? 1}.`;
+    const res = this.brief(from.teamId, ask, [], from.projectPath ?? null, {
+      ...(from.requestedBy ? { requestedBy: from.requestedBy } : {}),
+      ...(from.code?.branch ? { startFrom: from.code.branch } : {}),
+      forcePlan: true,
+      continueFrom: { task: from, conversation: !!opts.conversation },
+    });
+    if (!res.ok) return res;
+    from.continuedAs = { taskId: res.task.id, ...(from.title ? { title: from.title } : {}), at: this.now() };
+    this.persist(from);
+    return res;
+  }
+
+  /// Copy an earlier task's files into this one under `earlier/`, and note
+  /// what it carries.
+  private carryOver(task: TeamTask, from: TeamTask, conversation: boolean): void {
+    const at = this.now();
+    for (const f of from.files) {
+      if (f.name === 'team-knowledge.md' || f.name.startsWith(`${TEAM_EARLIER_DIR}/`)) continue;
+      const bytes = this.store.readBytes(from.id, f.name);
+      if (!bytes) continue;
+      const name = `${TEAM_EARLIER_DIR}/${f.name}`;
+      try {
+        this.store.writeBytes(task.id, name, bytes);
+        this.recordFile(task, { name, author: f.author, at });
+      } catch (err) {
+        log('warn', 'teams', `Could not carry ${f.name} over from ${from.id}`, err);
+      }
+    }
+    const talk = conversation && (from.room?.messages.length ?? 0) > 0;
+    if (talk) {
+      const name = `${TEAM_EARLIER_DIR}/conversation.md`;
+      this.store.writeFile(task.id, name, conversationMarkdown(from.title ?? from.brief, from.room!.messages));
+      this.recordFile(task, { name, author: 'Team', at });
+    }
+    task.continuesFrom = continuationOf(from, talk);
   }
 
   /// A request the coordinator answered straight away, asked again as work.
@@ -715,6 +793,7 @@ export class TeamEngine {
           repair,
           ...(knowledge ? { knowledge } : {}),
           allowAnswer,
+          ...(task.continuesFrom ? { continuesFrom: task.continuesFrom } : {}),
         });
         const res = await this.deps.coordinatorTurn({
           system: TEAM_PLAN_SYSTEM_PROMPT,
@@ -1191,6 +1270,8 @@ export class TeamEngine {
       stage.status = stage.assignments.some((a) => a.status === 'done') ? 'done' : 'failed';
       stage.finishedAt = this.now();
       this.reportRoomWork(task, stage);
+      // Stop stops the whole hand-off, not just the step running now.
+      this.skipLaterSteps(task, stage, 'you stopped the work');
       // You stopped the work: what was queued behind it waits for you.
       for (const m of task.room?.messages ?? []) {
         if (m.handoff?.status === 'queued') m.handoff.status = 'proposed';
@@ -1350,10 +1431,12 @@ export class TeamEngine {
       // Work handed off from the room reads the pack too: it is what the
       // conversation was about.
       const files = stage.fromRoom ? [...this.packFiles(task), ...this.folderFiles(task)] : this.folderFiles(task);
+      const steps = this.followUpSteps(task, index);
       const followUp = stage.fromRoom
         ? {
             conversation: renderConversation(task.room?.messages ?? [], 20_000),
             madeFiles: task.files.filter((f) => f.name.startsWith('files/')).map((f) => f.name),
+            ...(steps ? { steps } : {}),
           }
         : undefined;
       const workers = this.deps.workers();
@@ -1400,6 +1483,7 @@ export class TeamEngine {
           // The grant only when you turned "ask first" off, and never for work
           // the room handed off: that started on the model's say-so.
           ...(piecesActFreely(team) && !stage.fromRoom ? { allowExternalActions: true } : {}),
+          ...(a.grant?.length ? { externalActionGrant: a.grant } : {}),
           // Code that merges into the task branch is checked first, by the
           // member's own check step, when its flow has one. A piece with the
           // stage to itself works on the task branch directly: nobody else is
@@ -1545,6 +1629,9 @@ export class TeamEngine {
       if (failed.length > 0) stage.error = failed.map((a) => `${a.workerName}: ${a.error ?? 'failed'}`).join('\n');
       stage.finishedAt = this.now();
       this.reportRoomWork(task, stage);
+      // Nothing came of this step: the steps that build on it have nothing
+      // to build on.
+      if (stage.status === 'failed') this.skipLaterSteps(task, stage, 'nothing came of the step before');
       task.stageIndex += 1;
       this.persist(task);
       this.advance(task.id);
@@ -2004,6 +2091,11 @@ export class TeamEngine {
     if (task.attachments?.length) {
       lines.push('', '## Attached', '', ...task.attachments.map((a) => `- \`${a}\``));
     }
+    const c = task.continuesFrom;
+    if (c) {
+      lines.push('', '## Continues', '', `${c.title ? `"${c.title}"` : 'An earlier task'}: ${c.stages} stages, pack v${c.packVersion}, in \`${TEAM_EARLIER_DIR}/\`.`);
+      if (c.open.length > 0) lines.push('', 'Left open:', '', ...c.open.map((t) => `- ${t}`));
+    }
     const qa = (task.questions ?? []).map((q, i) => ({ q, a: task.answers?.[i] ?? '' }));
     if (qa.length > 0 && task.answers) {
       lines.push('', '## Questions and answers', '');
@@ -2115,16 +2207,32 @@ export class TeamEngine {
       this.persist(task);
       return { ok: false, error: 'Nobody on that proposal is still on the team.' };
     }
+    // One stage per step: the stage machine runs them in order, so a step
+    // starts only once the one before has reported back.
     const index = task.stages.length;
-    task.stages.push({
-      kind: 'contribute',
-      title: handoff.title,
-      assignments: assignments.map((a) => ({ workerId: a.workerId, workerName: a.workerName, ask: a.ask, status: 'pending' })),
-      status: 'pending',
-      fromRoom: { messageId: message.id, exchange: message.exchange },
+    const steps = handoffSteps(assignments);
+    steps.forEach((step, i) => {
+      task.stages.push({
+        kind: 'contribute',
+        title: steps.length > 1 ? `${handoff.title} (${i + 1}/${steps.length})` : handoff.title,
+        assignments: step.map((a) => ({
+          workerId: a.workerId,
+          workerName: a.workerName,
+          ask: a.ask,
+          status: 'pending',
+          ...(a.grant?.length ? { grant: a.grant } : {}),
+        })),
+        status: 'pending',
+        fromRoom: {
+          messageId: message.id,
+          exchange: message.exchange,
+          ...(steps.length > 1 ? { step: { index: i, of: steps.length } } : {}),
+        },
+      });
     });
     handoff.status = 'started';
     handoff.stage = index;
+    if (steps.length > 1) handoff.stages = steps.map((_, i) => index + i);
     task.stageIndex = index;
     task.status = 'running';
     task.waiting = undefined;
@@ -2335,6 +2443,7 @@ export class TeamEngine {
     const byId = new Map(members.map((m) => [m.workerId, m]));
     const spoke = new Set<string>();
     const files = this.loadAttachments(task, args.attachments);
+    let packAsk: string | null = null;
     try {
       let responders = args.responders;
       if (args.route) {
@@ -2354,6 +2463,18 @@ export class TeamEngine {
         const reply = routed.ok ? parseRouteReply(routed.text, members) : { kind: 'route' as const, workerIds: [] };
         if (reply.kind === 'work') {
           this.proposeWork(task, args.exchange, reply.work);
+          return;
+        }
+        if (reply.kind === 'pack') {
+          const underway = this.roomWorkUnderway(task);
+          if (underway) {
+            this.pushMessage(task, { kind: 'coordinator' }, `I'll update the pack once "${underway.title}" reports back: ask again then.`, {
+              exchange: args.exchange,
+            });
+          } else {
+            // Started once this turn lets go of the room.
+            packAsk = reply.ask;
+          }
           return;
         }
         responders = responders ?? reply.workerIds;
@@ -2433,31 +2554,91 @@ export class TeamEngine {
       if (task.room) task.room.busy = null;
       this.fileConversation(task);
       this.persist(task);
+      if (packAsk) {
+        const room = task.room;
+        const fresh = (room?.messages ?? []).slice(room?.foldedThrough ?? 0).filter((m) => !m.failed);
+        void this.rewritePack(taskId, fresh, [], packAsk);
+      }
       queueMicrotask(() => this.drainRoomQueue(taskId));
     }
   }
 
-  private proposeWork(task: TeamTask, exchange: number, work: { title: string; assign: Array<{ workerId: string; name: string; ask: string }> }): void {
+  private proposeWork(task: TeamTask, exchange: number, work: RoomWork): void {
     // A newer proposal replaces one you never acted on. Queued work stays:
     // you asked for it.
     for (const m of task.room?.messages ?? []) {
       if (m.handoff?.status === 'proposed') m.handoff.status = 'dismissed';
     }
-    const who = joinNames(work.assign.map((a) => a.name));
+    // Nothing said about order: the plan's order for the same people holds,
+    // so the one who compiled what others found does so again.
+    const assign = orderHandoffByPlan(task.stages, work.assign);
     const handoff: TeamHandoff = {
       title: work.title,
       status: 'proposed',
-      assignments: work.assign.map((a) => ({ workerId: a.workerId, workerName: a.name, ask: a.ask })),
+      assignments: assign.map((a) => ({
+        workerId: a.workerId,
+        workerName: a.name,
+        ask: a.ask,
+        ...(a.after?.length ? { after: a.after } : {}),
+      })),
     };
+    const steps = handoffSteps(handoff.assignments).map((step) => joinNames(step.map((a) => a.workerName)));
+    const who = steps.length > 1 ? steps.join(', then ') : steps[0];
+    const many = handoff.assignments.length > 1;
     const held = holdsRoomWork(this.teams.get(task.teamId)?.checkpoints);
     const underway = this.roomWorkUnderway(task);
     const text = held
       ? `That's work, not a question. ${who} can do it as a real run, with their tools and the shared folder; what they make lands back in the folder and they'll report here.`
       : underway
         ? `That's work, not a question. ${who} will pick it up as a real run once "${underway.title}" reports back; what they make lands in the folder and they'll report here.`
-        : `That's work, not a question. ${who} ${work.assign.length === 1 ? 'is' : 'are'} on it as a real run, with their tools and the shared folder; what they make lands back in the folder and they'll report here.`;
+        : steps.length > 1
+          ? `That's work, not a question. ${who}: each step starts when the one before reports back, with their tools and the shared folder; what they make lands back in the folder and they'll report here.`
+          : `That's work, not a question. ${who} ${many ? 'are' : 'is'} on it as a real run, with their tools and the shared folder; what they make lands back in the folder and they'll report here.`;
     const message = this.pushMessage(task, { kind: 'coordinator' }, text, { exchange, handoff });
     this.placeHandoff(task, message);
+  }
+
+  /// For a step of work handed off in steps: what the steps before it made
+  /// in this run, and who builds on it next.
+  private followUpSteps(task: TeamTask, index: number): FollowUpSteps | undefined {
+    const from = task.stages[index]?.fromRoom;
+    if (!from?.step) return undefined;
+    const sameWork = task.stages
+      .map((st, i) => ({ st, i }))
+      .filter(({ st }) => st.fromRoom?.messageId === from.messageId && st.fromRoom.step);
+    const before = sameWork
+      .filter(({ i }) => i < index)
+      .flatMap(({ st }) =>
+        st.assignments
+          .filter((a) => a.status === 'done')
+          .map((a) => {
+            const dir = `files/${slugify(a.workerName, 20)}/`;
+            const since = st.startedAt ?? 0;
+            const made = task.files.filter((f) => f.name.startsWith(dir) && f.at >= since).map((f) => f.name);
+            return { name: a.workerName, files: a.file ? [...made, a.file] : made };
+          }),
+      );
+    const next = sameWork.filter(({ i }) => i > index).flatMap(({ st }) => st.assignments.map((a) => a.workerName));
+    return { index: from.step.index, of: from.step.of, before, next };
+  }
+
+  /// The steps of a hand-off after this one will not run: say so where the
+  /// work was asked for.
+  private skipLaterSteps(task: TeamTask, stage: TeamStage, why: string): void {
+    const from = stage.fromRoom;
+    if (!from?.step) return;
+    const at = task.stages.indexOf(stage);
+    const later = task.stages.filter(
+      (st, i) => i > at && st.fromRoom?.messageId === from.messageId && st.status === 'pending',
+    );
+    if (later.length === 0) return;
+    for (const st of later) {
+      st.status = 'skipped';
+      st.finishedAt = this.now();
+      for (const a of st.assignments) a.status = 'skipped';
+    }
+    const who = joinNames(later.flatMap((st) => st.assignments.map((a) => a.workerName)));
+    this.pushMessage(task, { kind: 'coordinator' }, `${who} did not start their part: ${why}.`, { exchange: from.exchange });
   }
 
   /// A member's report on work handed off from the room, posted where it
@@ -2467,11 +2648,21 @@ export class TeamEngine {
     const index = task.stages.indexOf(stage);
     for (const a of stage.assignments) {
       const speaker: TeamSpeaker = { kind: 'member', workerId: a.workerId, name: a.workerName };
+      const refused = a.runId ? (this.deps.refusedOf?.(a.runId) ?? null) : null;
+      // Said in the text too: the coordinator reads the room as text, and
+      // without it took a refused tool for files nobody could open.
+      const refusedLine = refused
+        ? `_Refused ${joinNames(refused.tools)}: not in ${a.workerName}'s tools, so this was not a file-access problem._`
+        : '';
       if (a.status !== 'done') {
-        this.pushMessage(task, speaker, `Couldn't finish "${stage.title}": ${a.error ?? 'the run failed.'}`, {
-          exchange: stage.fromRoom.exchange,
-          failed: true,
-        });
+        const failed = this.pushMessage(
+          task,
+          speaker,
+          [`Couldn't finish "${stage.title}": ${a.error ?? 'the run failed.'}`, refusedLine].filter(Boolean).join(' '),
+          { exchange: stage.fromRoom.exchange, failed: true },
+        );
+        failed.workReport = { stage: index };
+        if (refused) failed.refused = refused;
         continue;
       }
       const piece = a.file ? (this.store.readFile(task.id, a.file) ?? '') : '';
@@ -2483,6 +2674,7 @@ export class TeamEngine {
       const since = stage.startedAt ?? 0;
       const made = task.files.filter((f) => f.name.startsWith(dir) && f.at >= since).map((f) => f.name);
       const parts = [clip(report || `Finished "${stage.title}".`, 2_500)];
+      if (refusedLine) parts.push('', refusedLine);
       if (made.length > 0) parts.push('', '**Files I made or changed:**', ...made.map((n) => `- \`${n}\``));
       if (a.file) parts.push('', `Full report: \`${a.file}\``);
       task.room = task.room ?? { messages: [] };
@@ -2493,18 +2685,78 @@ export class TeamEngine {
         at: this.now(),
         exchange: stage.fromRoom.exchange,
         workReport: { stage: index },
+        ...(refused ? { refused } : {}),
       });
     }
     this.fileConversation(task);
   }
 
-  private async rewritePack(taskId: UUID, fresh: TeamMessage[], changes: string[] = []): Promise<void> {
+  /// Give a member the tools its report says it was refused, in its own
+  /// flow, and propose running its part of that work again. Each member you
+  /// allow joins the same proposal, so allowing two starts one stage.
+  roomAllowTools(taskId: UUID, messageId: string): Result {
+    const task = this.tasks.get(taskId);
+    const message = task?.room?.messages.find((m) => m.id === messageId);
+    const refused = message?.refused;
+    if (!task || !message || !refused || message.speaker.kind !== 'member') return { ok: false, error: 'That report is gone.' };
+    if (refused.allowed) return { ok: true };
+    if (!this.deps.allowTools) return { ok: false, error: 'Tools can’t be changed from here.' };
+    const saved = this.deps.allowTools(refused.flowId, refused.tools);
+    if (!saved.ok) return saved;
+    refused.allowed = true;
+    const { workerId, name } = message.speaker;
+    const stageIndex = message.workReport?.stage ?? task.stages.findIndex((st) => st.fromRoom?.exchange === message.exchange && st.assignments.some((a) => a.workerId === workerId));
+    const stage = task.stages[stageIndex];
+    const ask = stage?.assignments.find((a) => a.workerId === workerId)?.ask;
+    const tools = joinNames(refused.tools);
+    // Giving it the tool is the OK to use it: the re-run starts with that
+    // approved, rather than stopping to ask you for what you just allowed.
+    const grant = refused.tools.map((t) => t.toLowerCase().trim());
+    if (stage && ask) {
+      // A re-run of this stage you already started is joined while it runs,
+      // rather than proposed again behind it: a proposal can't start while
+      // work runs, so the second member you allowed waited on the first.
+      const rerun = task.room!.messages.find((m) => {
+        const h = m.handoff;
+        if (h?.rerunOf !== stageIndex) return false;
+        if (h.status === 'proposed' || h.status === 'queued') return true;
+        const running = h.stage !== undefined ? task.stages[h.stage] : undefined;
+        return h.status === 'started' && h.stage === task.stageIndex && running?.status === 'running' && isTaskActive(task.status);
+      });
+      const waiting = task.room!.messages.find((m) => m.handoff?.status === 'proposed');
+      if (rerun) {
+        const h = rerun.handoff!;
+        if (!h.assignments.some((a) => a.workerId === workerId)) {
+          h.assignments.push({ workerId, workerName: name, ask, grant });
+          rerun.text = `${joinNames(h.assignments.map((a) => a.workerName))} can now use what they were refused. Run "${stage.title}" again for them?`;
+          const running = h.status === 'started' && h.stage !== undefined ? task.stages[h.stage] : undefined;
+          if (running && !running.assignments.some((a) => a.workerId === workerId)) {
+            // The launch loop walks the live list, so a launch still in
+            // flight picks this up too; otherwise start it here.
+            running.assignments.push({ workerId, workerName: name, ask, status: 'pending', grant });
+            void this.launchMemberStage(taskId, h.stage!);
+          }
+        }
+      } else if (!waiting) {
+        this.pushMessage(task, { kind: 'coordinator' }, `${name} can now use ${tools}. Run "${stage.title}" again for them?`, {
+          exchange: message.exchange,
+          handoff: { title: stage.title, status: 'proposed', rerunOf: stageIndex, assignments: [{ workerId, workerName: name, ask, grant }] },
+        });
+      }
+    }
+    this.fileConversation(task);
+    this.persist(task);
+    return { ok: true };
+  }
+
+  private async rewritePack(taskId: UUID, fresh: TeamMessage[], changes: string[] = [], asked?: string): Promise<void> {
     const key = `room:${taskId}`;
     const task = this.tasks.get(taskId);
     if (!task?.pack || this.turning.has(key)) return;
     this.turning.add(key);
     try {
       const res = await this.coordinatorSays(task, 'Coordinator', {
+        doing: 'pack',
         system: TEAM_COORDINATOR_SYSTEM_PROMPT,
         message: buildPackUpdateMessage({
           teamName: task.teamName,
@@ -2515,6 +2767,11 @@ export class TeamEngine {
           newWork: this.roomWorkSincePack(task),
           version: (task.pack.version ?? 1) + 1,
           ...(changes.length ? { changes } : {}),
+          ...(asked ? { asked } : {}),
+          madeFiles: task.files
+            .filter((f) => f.name.startsWith('files/'))
+            .sort((a, b) => b.at - a.at)
+            .map((f) => ({ name: f.name, author: f.author })),
         }),
       });
       if (this.stopped(taskId)) return;
@@ -2523,36 +2780,72 @@ export class TeamEngine {
         this.pushMessage(task, { kind: 'coordinator' }, `Could not update the pack: ${res.error}`, { exchange, failed: true });
         return;
       }
-      const pack = parsePackReply(res.text);
+      const update = parsePackUpdate(res.text);
       const version = (task.pack.version ?? 1) + 1;
-      // What each file said before, so the desk can say which ones this
-      // version actually changed rather than badging every file.
-      const before = new Map<string, string>();
+      const current: Array<{ name: string; body: string }> = [];
       // Keep the version being replaced, beside the pack, so nothing the
       // conversation changed is lost.
       for (const name of task.pack.files) {
         const body = this.store.readFile(taskId, name);
         if (body === null) continue;
-        before.set(name, body);
+        current.push({ name: name.replace(/^pack\//, ''), body });
         const kept = name.replace(/^pack\//, `pack-v${version - 1}/`);
         this.store.writeFile(taskId, kept, body);
         const was = task.files.find((f) => f.name === name);
         this.recordFile(task, { name: kept, author: 'Coordinator', at: was?.at ?? task.pack.updatedAt ?? this.now() });
       }
+      // Only what changed comes back; the rest carries over as it was.
+      const next = applyPackUpdate(current, update);
       const at = this.now();
+      const changed = new Set(next.changed.map((n) => `pack/${safeTeamFileName(n)}`));
       const names: string[] = [];
-      const changed: string[] = [];
-      for (const f of pack.files) {
+      // A member's file goes in as they made it; whatever was typed under
+      // that name gives way to it.
+      const included = new Set(update.includes.map((i) => `pack/${i.name}`.toLowerCase()));
+      for (const f of next.files) {
         const name = `pack/${safeTeamFileName(f.name)}`;
-        const was = before.get(name);
-        if (was === undefined || was.trim() !== f.body.trim()) changed.push(name);
-        this.store.writeFile(taskId, name, f.body);
-        this.recordFile(task, { name, author: 'Coordinator', at });
+        if (changed.has(name) && !included.has(name.toLowerCase())) {
+          this.store.writeFile(taskId, name, f.body);
+          this.recordFile(task, { name, author: 'Coordinator', at });
+        }
         names.push(name);
       }
-      task.pack = { summary: pack.summary, files: names, version, updatedAt: at, changed };
+      const failed = [...next.failed];
+      const folder = task.files.map((f) => f.name).filter((n) => !n.startsWith('pack'));
+      for (const inc of update.includes) {
+        // Only a file the folder lists: `from` is the model's word.
+        const from = resolveTaskFileRef(folder, inc.from);
+        const listed = from ? task.files.find((f) => f.name === from) : undefined;
+        const bytes = listed ? this.store.readBytes(taskId, listed.name) : null;
+        if (!listed || !bytes) {
+          failed.push({ name: inc.name, why: `no file ${inc.from} in the shared folder` });
+          continue;
+        }
+        const name = names.find((n) => n.toLowerCase() === `pack/${inc.name}`.toLowerCase()) ?? `pack/${inc.name}`;
+        const was = this.store.readBytes(taskId, name);
+        this.store.writeBytes(taskId, name, bytes);
+        if (!was || !was.equals(bytes)) {
+          this.recordFile(task, { name, author: listed.author, at });
+          changed.add(name);
+        } else {
+          changed.delete(name);
+        }
+        if (!names.includes(name)) names.push(name);
+      }
+      task.pack = {
+        summary: update.summary || task.pack.summary,
+        files: names,
+        version,
+        updatedAt: at,
+        changed: names.filter((n) => changed.has(n)),
+      };
       if (task.room) task.room.foldedThrough = task.room.messages.length + 1;
-      this.pushMessage(task, { kind: 'coordinator' }, `Updated the pack (version ${version}). ${pack.summary}`, { exchange });
+      const missed = failed.length
+        ? ` Couldn't make ${failed.length === 1 ? 'one change' : `${failed.length} changes`}: ${failed
+            .map((f) => `${f.name} (${f.why})`)
+            .join('; ')}. Ask again to retry ${failed.length === 1 ? 'it' : 'them'}.`
+        : '';
+      this.pushMessage(task, { kind: 'coordinator' }, `Updated the pack (version ${version}). ${update.summary}${missed}`, { exchange });
       // A changed pack is a pack to read again.
       if (task.status === 'done') task.status = 'review';
     } catch (err) {
@@ -2574,11 +2867,12 @@ export class TeamEngine {
   private async coordinatorSays(
     task: TeamTask,
     label: string,
-    args: { system: string; message: string; attachments?: Attachment[] },
+    args: { system: string; message: string; attachments?: Attachment[]; doing?: 'pack' },
   ): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
     const cancelKey = `team:${task.id}:room:${this.newId()}`;
-    this.setSpeaking(task, label, cancelKey);
-    return this.deps.coordinatorTurn({ ...args, cancelKey, onProgress: this.progressFor(task.id, 'room') });
+    const { doing, ...turn } = args;
+    this.setSpeaking(task, label, cancelKey, doing);
+    return this.deps.coordinatorTurn({ ...turn, cancelKey, onProgress: this.progressFor(task.id, 'room') });
   }
 
   private async memberSays(
@@ -2598,9 +2892,9 @@ export class TeamEngine {
     });
   }
 
-  private setSpeaking(task: TeamTask, speaker: string, cancelKey: string): void {
+  private setSpeaking(task: TeamTask, speaker: string, cancelKey: string, doing?: 'pack'): void {
     task.room = task.room ?? { messages: [] };
-    task.room.busy = { speaker, since: this.now() };
+    task.room.busy = { speaker, since: this.now(), ...(doing ? { doing } : {}) };
     this.roomTurnKey.set(task.id, cancelKey);
     this.deps.emit({ type: 'teamTaskProgress', taskId: task.id, stage: 'room', tail: '', chars: 0 });
     this.persist(task);

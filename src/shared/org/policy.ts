@@ -77,7 +77,7 @@ export interface OrgPolicy {
   /// On for a server whose network can reach things the web must not (see
   /// docs/security.md).
   webNeedsApproval: boolean;
-  /// Anyone in the org's Slack who asks (`/overcli join`) gets in straight
+  /// Anyone in the org's Slack who asks (`/overgo join`) gets in straight
   /// away, as someone who can ask workers things. Off: an admin lets them in.
   openJoin: boolean;
   /// What every worker together may cost in a month. Past it, scheduled runs

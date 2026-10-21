@@ -2439,7 +2439,7 @@ function IntakePanel({
           slackOn ? "Slack" : "Slack (off)",
           slackOn ? (
             <>
-              <code>/idea {processName}: …</code> or <code>@overcli idea: …</code>. <code>/idea</code> alone shows where yours are.
+              <code>/idea {processName}: …</code> or <code>@overgo idea: …</code>. <code>/idea</code> alone shows where yours are.
             </>
           ) : (
             <>

@@ -111,7 +111,7 @@ function libraryFlows(extraProjectPath?: string): Flow[] {
 
 export function createMcpServer(ctx: McpServerContext): McpServer {
   const { engines, options } = ctx;
-  const server = new McpServer({ name: 'overcli', version: '1' });
+  const server = new McpServer({ name: 'overgo', version: '1' });
 
   server.registerTool(
     'list_flows',

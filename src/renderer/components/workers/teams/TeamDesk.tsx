@@ -27,6 +27,8 @@ import {
   isReadableInDesk,
   isTaskActive,
   resolveTaskFileRef,
+  handoffSteps,
+  rolloverReason,
   teamTaskProgress,
   unhired,
   type Team,
@@ -52,8 +54,13 @@ import {
   defaultCell,
   nextTab,
   pieceIn,
+  foldedLaneLabel,
+  openRound,
   planLayout,
+  planRounds,
   planStatus,
+  roundName,
+  roundOf,
   roleTitle,
   shortDuration,
   stageMs,
@@ -62,6 +69,7 @@ import {
   type ChipState,
   type PlanCell,
   type PlanColumn,
+  type PlanRound,
 } from "./planView";
 import { CommentButton, CommentGlyph, CommentPopover, CommentsPanel, FileComments } from "./TaskComments";
 import { parseWrapUp, splitOwner } from "@shared/flows/teamWrapUp";
@@ -176,7 +184,10 @@ export function TeamDesk({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    // min-w-0: it sits in a row beside Today's list, and a flex item would
+    // otherwise grow to its widest line (a long round's one-line ask) and push
+    // everything past the window's edge.
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex shrink-0 flex-col gap-2.5 border-b border-card px-6 pb-3 pt-5">
         <div className="flex flex-wrap items-center gap-3.5">
           <div className="flex min-w-0 flex-[1_1_420px] flex-col gap-0.5">
@@ -722,6 +733,7 @@ function TaskView({ task, team, onOpenFile }: { task: TeamTask; team: Team; onOp
           {task.projectPath && ` · in ${projectName(projectOptions, task.projectPath)}`}
         </span>
         <h2 className="text-xl font-semibold tracking-tight text-ink">{task.title ?? "New task"}</h2>
+        <ContinuationLinks task={task} />
         {task.stages.length > 0 && (
           <div className="mt-2">
             <StageTrack task={task} />
@@ -1232,9 +1244,10 @@ function PackTabs({
           </div>
         </div>
         <StageTrack task={task} />
+        <ContinuationLinks task={task} />
       </header>
 
-      {band && <TurnBandView band={band} busy={sending} onAction={onTurn} />}
+      {band ? <TurnBandView band={band} busy={sending} onAction={onTurn} /> : <RolloverBand task={task} />}
 
       {/* The tabs stay at the top of the task column however far you read:
           the way between where it landed, the debate, the pack and the plan. */}
@@ -1324,10 +1337,36 @@ function PackTabs({
   );
 }
 
-/// The header's stage track: one bar per stage, its name under it.
+/// The header's stage track: one bar per stage, its name under it. Once
+/// follow-ups have added rounds, each round is one group of bars under one
+/// name, so a long task's track stays readable.
 function StageTrack({ task }: { task: TeamTask }) {
   const { done, total } = teamTaskProgress(task);
+  const rounds = useMemo(() => planRounds(task), [task]);
   if (total === 0) return null;
+  const bar = (st: TeamStage, i: number) => (
+    <span
+      key={i}
+      aria-hidden
+      className={"h-[5px] min-w-0 flex-1 rounded-full " + STAGE_BAR[st.status]}
+      title={`${stageWhere(rounds, i)} · ${st.title} · ${st.status}`}
+    />
+  );
+  if (rounds.length > 1) {
+    return (
+      <ol aria-label={`Stages · ${done} of ${total} done, in ${rounds.length} rounds`} className="flex gap-3">
+        {rounds.map((r) => (
+          <li key={r.index} className="flex min-w-0 flex-col gap-1" style={{ flex: `${r.stages.length} 1 0` }}>
+            <span className="flex gap-[3px]">{r.stages.map((i) => bar(task.stages[i], i))}</span>
+            <span className={"truncate text-[11.5px] " + (r.live ? "text-accent" : r.failed > 0 ? "text-amber-500" : "text-ink-muted")} title={r.ask}>
+              {roundName(r)} · {r.stages.length}
+              {r.ask && <span className="text-ink-faint"> · {r.ask}</span>}
+            </span>
+          </li>
+        ))}
+      </ol>
+    );
+  }
   return (
     <ol
       aria-label={`Stages · ${done} of ${total} done`}
@@ -1335,26 +1374,163 @@ function StageTrack({ task }: { task: TeamTask }) {
       style={{ gridTemplateColumns: `repeat(${total}, minmax(0, 1fr))` }}
     >
       {task.stages.map((st, i) => {
-        const tone =
-          st.status === "done"
-            ? "bg-emerald-500"
-            : st.status === "running"
-              ? "bg-accent"
-              : st.status === "failed"
-                ? "bg-amber-500"
-                : st.status === "skipped"
-                  ? "bg-ink-faint/40"
-                  : "bg-card-strong";
         const ink =
           st.status === "running" ? "text-accent" : st.status === "failed" ? "text-amber-500" : st.status === "done" ? "text-ink-muted" : "text-ink-faint";
         return (
-          <li key={i} className="flex min-w-0 flex-col gap-1" title={`${st.fromRoom ? "After the pack" : `Stage ${i + 1}`} · ${st.title} · ${st.status}`}>
-            <span aria-hidden className={"h-[5px] rounded-full " + tone} />
+          <li key={i} className="flex min-w-0 flex-col gap-1" title={`${stageWhere(rounds, i)} · ${st.title} · ${st.status}`}>
+            <span aria-hidden className={"h-[5px] rounded-full " + STAGE_BAR[st.status]} />
             <span className={"truncate text-[11.5px] " + ink + (st.status === "skipped" ? " line-through" : "")}>{st.title}</span>
           </li>
         );
       })}
     </ol>
+  );
+}
+
+/// "Stage 9", or "Round 3 · stage 9" for a follow-up: the one way a stage is
+/// named in titles and the detail strip.
+function stageWhere(rounds: PlanRound[], stage: number): string {
+  const r = roundOf(rounds, stage);
+  return r && r.index > 0 ? `${roundName(r)} · stage ${stage + 1}` : `Stage ${stage + 1}`;
+}
+
+/// Where this task picks up from, and where it was picked up: the two ends
+/// of a task continued as a fresh run.
+function ContinuationLinks({ task }: { task: TeamTask }) {
+  const from = task.continuesFrom;
+  const next = task.continuedAs;
+  if (!from && !next) return null;
+  const go = (taskId: string) => useWorkersStore.getState().selectTeam(task.teamId, taskId);
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-faint">
+      {from && (
+        <span>
+          Continues{" "}
+          <button className={linkBtn} onClick={() => go(from.taskId)}>
+            ← {from.title ?? "the earlier task"}
+          </button>{" "}
+          · {from.stages} stages · Pack v{from.packVersion}
+        </span>
+      )}
+      {next && (
+        <span>
+          Continued in a new run{" "}
+          <button className={linkBtn} onClick={() => go(next.taskId)}>
+            open it →
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+const ROLLOVER_KEY = "overcli.teamRolloverDismissed";
+
+/// Follow-up stages since you last said "keep going here", so the band comes
+/// back only once the task has grown again.
+function readRolloverDismissed(taskId: string): number | null {
+  try {
+    const map = JSON.parse(localStorage.getItem(ROLLOVER_KEY) ?? "{}") as Record<string, number>;
+    return typeof map[taskId] === "number" ? map[taskId] : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRolloverDismissed(taskId: string, followUps: number): void {
+  try {
+    const map = JSON.parse(localStorage.getItem(ROLLOVER_KEY) ?? "{}") as Record<string, number>;
+    map[taskId] = followUps;
+    localStorage.setItem(ROLLOVER_KEY, JSON.stringify(map));
+  } catch {
+    // best-effort
+  }
+}
+
+/// A task whose follow-ups have sprawled: the offer to pick it up as a fresh
+/// run from its pack, and what comes along when you do.
+function RolloverBand({ task }: { task: TeamTask }) {
+  const now = useTickingNow(3_600_000);
+  const continueAsNew = useTeamsStore((s) => s.continueAsNew);
+  const busy = useTeamsStore((s) => !!s.busy[task.id]);
+  const followUps = task.stages.filter((s) => s.fromRoom).length;
+  const [dismissed, setDismissed] = useState(() => readRolloverDismissed(task.id));
+  const [form, setForm] = useState(false);
+  const [ask, setAsk] = useState("");
+  const [talk, setTalk] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const reason = rolloverReason(task, now);
+  if (!reason || (dismissed !== null && followUps < dismissed + 3)) return null;
+  const version = task.pack?.version ?? 1;
+  const open = task.stages.filter((s) => s.status === "failed");
+  const start = async () => {
+    setError(null);
+    const res = await continueAsNew(task.id, ask, talk);
+    if (!res.ok) setError(res.error);
+    else useWorkersStore.getState().selectTeam(task.teamId, res.task.id);
+  };
+  return (
+    <section aria-label="Start a new run" className="flex flex-col gap-3 rounded-xl border border-amber-500/40 bg-amber-500/[0.08] px-4 py-3.5">
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-0.5">
+          <b className="text-[14.5px] font-semibold text-ink">{reason.title}</b>
+          <span className="text-[12.5px] leading-relaxed text-ink-muted">{reason.detail}</span>
+        </div>
+        {!form && (
+          <div className="flex flex-wrap gap-2">
+            <button className={primaryBtn} onClick={() => setForm(true)}>
+              Start a new run from Pack v{version}
+            </button>
+            <button
+              className={secondaryBtn}
+              onClick={() => {
+                writeRolloverDismissed(task.id, followUps);
+                setDismissed(followUps);
+              }}
+            >
+              Keep going here
+            </button>
+          </div>
+        )}
+      </div>
+      {form && (
+        <div className="flex flex-col gap-2.5 border-t border-amber-500/25 pt-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-ink">What should the new run do?</span>
+            <textarea
+              value={ask}
+              onChange={(e) => setAsk(e.target.value)}
+              rows={3}
+              placeholder={`Leave it blank to carry on from Pack v${version}`}
+              className="resize-y rounded-md border border-card bg-surface px-2.5 py-2 text-[13px] text-ink outline-none focus:border-accent"
+            />
+          </label>
+          <ul className="flex flex-col gap-1 text-xs text-ink-muted">
+            <li>Pack v{version} and the shared folder come along, under <code>earlier/</code>.</li>
+            {open.length > 0 && (
+              <li>
+                {open.length === 1 ? "The failed stage" : `The ${open.length} failed stages`} ({open.map((s) => `“${s.title}”`).join(", ")}) start the new plan.
+              </li>
+            )}
+            {task.code?.branch && <li>Code starts from the {task.code.branch} branch.</li>}
+          </ul>
+          <label className="flex items-center gap-2 text-xs text-ink">
+            <input type="checkbox" checked={talk} onChange={(e) => setTalk(e.target.checked)} className="accent-accent" />
+            Bring the conversation too
+            <span className="text-ink-faint">· this task keeps it either way</span>
+          </label>
+          {error && <span className="text-xs text-red-500">{error}</span>}
+          <div className="flex gap-2">
+            <button className={primaryBtn} disabled={busy} onClick={() => void start()}>
+              Start the new run
+            </button>
+            <button className={quietBtn} onClick={() => setForm(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1526,30 +1702,65 @@ function PlanLanes({ task, onOpenFile }: { task: TeamTask; onOpenFile: (name: st
   const team = useTeamsStore((s) => s.teams[task.teamId]);
   const live = task.stages.some((s) => s.status === "running");
   const now = useTickingNow(live ? 30_000 : 3_600_000);
-  const { lanes, columns, packAt } = planLayout(task);
+  const { lanes, columns } = planLayout(task);
+  const rounds = useMemo(() => planRounds(task), [task]);
   const counts = useMemo(() => commentsByPiece(task), [task]);
   /// Until you pick a cell, the strip follows the work.
   const [picked, setPicked] = useState<PlanCell | null>(null);
   const hasCell = (c: PlanCell | null) => !!c && !!columns[c.stage]?.lanes.includes(c.lane);
   const selected = hasCell(picked) ? picked : defaultCell(task);
+  /// Until you pick a round, the one at work is open and the rest fold.
+  const [pickedRound, setPickedRound] = useState<number | null>(null);
+  const [all, setAll] = useState(false);
+  const folds = rounds.length > 1 && !all;
+  const shownRound = pickedRound !== null && pickedRound < rounds.length ? pickedRound : openRound(rounds);
+  const isOpen = (r: PlanRound) => !folds || r.index === shownRound;
 
-  const zone = packAt !== undefined;
-  const colOf = (i: number) => 2 + i + (zone && i >= packAt ? 1 : 0);
-  const divider = zone ? colOf(packAt) - 1 : 0;
-  const template = [
-    "150px",
-    ...columns.flatMap((c) => (zone && c.index === packAt ? ["14px"] : []).concat(c.afterPack ? "minmax(140px,1.2fr)" : "minmax(110px,1fr)")),
-  ].join(" ");
-  const minWidth = 150 + columns.reduce((n, c) => n + (c.afterPack ? 140 : 110), 0) + (zone ? 14 : 0);
+  // One slot per stage of an open round; settled rounds side by side fold
+  // into one column (the plan always on its own), so ten follow-ups still
+  // take at most three folded columns. A thin divider between groups.
+  type Slot = { kind: "stage"; column: PlanColumn; round: PlanRound } | { kind: "fold"; group: PlanRound[] } | { kind: "divider" };
+  const groups: Array<{ open: boolean; rounds: PlanRound[] }> = [];
+  for (const r of rounds) {
+    const last = groups.at(-1);
+    if (!isOpen(r) && last && !last.open && last.rounds[0].index > 0) last.rounds.push(r);
+    else groups.push({ open: isOpen(r), rounds: [r] });
+  }
+  const slots: Slot[] = groups.flatMap((g, i): Slot[] => [
+    ...(i > 0 ? [{ kind: "divider" as const }] : []),
+    ...(g.open
+      ? g.rounds[0].stages.map((s) => ({ kind: "stage" as const, column: columns[s], round: g.rounds[0] }))
+      : [{ kind: "fold" as const, group: g.rounds }]),
+  ]);
+  const merged = (g: PlanRound[]): PlanRound =>
+    g.length === 1
+      ? g[0]
+      : {
+          index: g.at(-1)!.index,
+          stages: g.flatMap((r) => r.stages),
+          done: g.reduce((n, r) => n + r.done, 0),
+          failed: g.reduce((n, r) => n + r.failed, 0),
+          live: g.some((r) => r.live),
+          from: g.find((r) => r.from !== undefined)?.from,
+          to: g.reduce<number | undefined>((t, r) => (r.to === undefined ? t : Math.max(t ?? r.to, r.to)), undefined),
+        };
+  const template = ["150px", ...slots.map((s) => (s.kind === "divider" ? "14px" : `minmax(${COLUMN_MIN}px,1fr)`))].join(" ");
+  const minWidth = 150 + slots.reduce((n, s) => n + (s.kind === "divider" ? 14 : COLUMN_MIN), 0);
   const rowOf = (lane: number) => 2 + lane;
-  const tint = (c: PlanColumn, lane: number) => (c.afterPack ? "bg-emerald-500/[0.06]" : lane === 0 ? "bg-surface/60" : "");
+  const tint = (r: PlanRound, lane: number) => (r.index > 0 ? "bg-emerald-500/[0.06]" : lane === 0 ? "bg-surface/60" : "");
 
   return (
     <section aria-label="The plan" className="flex flex-col overflow-hidden rounded-xl border border-card bg-surface-elevated">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-card px-4 py-2.5">
         <h3 className="flex-1 text-[10.5px] font-bold uppercase tracking-wider text-ink-faint">
-          The plan · {task.stages.length} {task.stages.length === 1 ? "stage" : "stages"}, {planStatus(task)}
+          The plan · {task.stages.length} {task.stages.length === 1 ? "stage" : "stages"}
+          {rounds.length > 1 && ` in ${rounds.length} rounds`}, {planStatus(task)}
         </h3>
+        {rounds.length > 1 && (
+          <button className="text-xs text-accent hover:underline" aria-pressed={all} onClick={() => setAll((v) => !v)}>
+            {all ? "Fold settled rounds" : `Show all ${task.stages.length} stages`}
+          </button>
+        )}
         {task.planNote && (
           <button className="text-xs text-accent hover:underline" aria-expanded={why} onClick={() => setWhy((v) => !v)}>
             {why ? "Hide why" : "Why this plan"}
@@ -1570,24 +1781,66 @@ function PlanLanes({ task, onOpenFile }: { task: TeamTask; onOpenFile: (name: st
       </div>
       {why && task.planNote && <p className="border-b border-card px-4 py-2.5 text-xs leading-relaxed text-ink-muted">{task.planNote}</p>}
 
-      {/* Scrolls sideways only inside this box, and only when the stages
-          truly can't fit. */}
-      <div className="overflow-x-auto">
+      {rounds.length > 1 && (
+        <RoundPicker
+          task={task}
+          rounds={rounds}
+          open={folds ? shownRound : null}
+          onPick={(i) => {
+            setAll(false);
+            setPickedRound(i);
+          }}
+        />
+      )}
+
+      {/* Scrolls sideways only inside this box, and only when the open
+          stages truly can't fit. Zero width, at least the box's: the grid's
+          own minimum never widens the task column around it. */}
+      <div className="w-0 min-w-full overflow-x-auto">
         <div className="grid" style={{ gridTemplateColumns: template, minWidth }}>
           <div className="border-b border-card" style={{ gridColumn: 1, gridRow: 1 }} />
-          {zone && (
-            <div aria-hidden className="relative" style={{ gridColumn: divider, gridRow: `1 / ${rowOf(lanes.length)}` }}>
-              <span className="absolute inset-y-0 left-1/2 w-px bg-card-strong" />
-            </div>
+          {slots.map((s, i) =>
+            s.kind === "divider" ? (
+              <div key={`div-${i}`} aria-hidden className="relative" style={{ gridColumn: 2 + i, gridRow: `1 / ${rowOf(lanes.length)}` }}>
+                <span className="absolute inset-y-0 left-1/2 w-px bg-card-strong" />
+              </div>
+            ) : s.kind === "stage" ? (
+              <ColumnHead
+                key={`head-${s.column.index}`}
+                kicker={`${s.column.index + 1} · ${TEAM_STAGE_LABEL[s.column.stage.kind]}`}
+                kickerInk={KIND_INK[s.column.stage.kind]}
+                title={s.column.stage.title}
+                meta={stageWhen(s.column.stage, now, clock) || (s.column.stage.status === "pending" ? "Not started" : "")}
+                running={s.column.stage.status === "running"}
+                struck={s.column.stage.status === "skipped"}
+                tinted={s.round.index > 0}
+                style={{ gridColumn: 2 + i, gridRow: 1 }}
+              />
+            ) : (
+              (() => {
+                const r = merged(s.group);
+                const first = s.group[0];
+                const several = s.group.length > 1;
+                return (
+                  <ColumnHead
+                    key={`fold-${first.index}`}
+                    kicker={`${several ? `${roundName(first)}–${r.index + 1}` : roundName(first)} · ${r.stages.length === 1 ? "1 stage" : `${r.stages.length} stages`}`}
+                    kickerInk="text-ink-faint"
+                    title={several ? `${s.group.length} follow-ups, folded` : (first.ask ?? (first.index === 0 ? briefOpening(task.brief, 80) : roundName(first)))}
+                    meta={roundWhen(r, now)}
+                    running={r.live}
+                    tinted={first.index > 0}
+                    onOpen={() => {
+                      setAll(false);
+                      setPickedRound(r.index);
+                    }}
+                    openLabel={`Open ${roundName(r).toLowerCase()}`}
+                    style={{ gridColumn: 2 + i, gridRow: 1 }}
+                  />
+                );
+              })()
+            ),
           )}
-          {columns.map((c) => (
-            <LaneHead
-              key={`head-${c.index}`}
-              column={c}
-              when={stageWhen(c.stage, now, clock)}
-              style={{ gridColumn: colOf(c.index), gridRow: 1 }}
-            />
-          ))}
 
           {lanes.map((l, i) => {
             const w = l.workerId ? workers[l.workerId] : undefined;
@@ -1612,11 +1865,35 @@ function PlanLanes({ task, onOpenFile }: { task: TeamTask; onOpenFile: (name: st
             );
           })}
 
-          {columns.flatMap((c) =>
-            lanes.map((l, i) => {
-              const style = { gridColumn: colOf(c.index), gridRow: rowOf(i) };
+          {slots.flatMap((s, si) => {
+            if (s.kind === "divider") return [];
+            return lanes.map((l, i) => {
+              const style = { gridColumn: 2 + si, gridRow: rowOf(i) };
+              const wrap = "flex min-w-0 items-center border-b border-card px-1.5 py-1.5 " + tint(s.kind === "fold" ? s.group[0] : s.round, i);
+              if (s.kind === "fold") {
+                const r = merged(s.group);
+                const key = `foldcell-${s.group[0].index}-${l.id}`;
+                const sum = foldedLaneLabel(task, r, l.id);
+                return (
+                  <div key={key} className={wrap} style={style}>
+                    {sum && (
+                      <button
+                        onClick={() => {
+                          setAll(false);
+                          setPickedRound(r.index);
+                        }}
+                        title={`Open ${roundName(r).toLowerCase()}`}
+                        className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-card-strong px-2 py-1.5 text-left text-xs text-ink-muted transition-colors hover:border-accent/60 hover:text-ink"
+                      >
+                        <span aria-hidden className={"h-1.5 w-1.5 shrink-0 rounded-full " + DOT[sum.state]} />
+                        <span className="min-w-0 flex-1 truncate">{sum.label}</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              }
+              const c = s.column;
               const key = `cell-${c.index}-${l.id}`;
-              const wrap = "flex min-w-0 items-center border-b border-card px-1.5 py-1.5 " + tint(c, i);
               if (!c.lanes.includes(l.id)) return <div key={key} className={wrap} style={style} />;
               const isSel = selected?.stage === c.index && selected.lane === l.id;
               const pick = () => setPicked({ stage: c.index, lane: l.id });
@@ -1640,8 +1917,8 @@ function PlanLanes({ task, onOpenFile }: { task: TeamTask; onOpenFile: (name: st
                   )}
                 </div>
               );
-            }),
-          )}
+            });
+          })}
         </div>
       </div>
 
@@ -1651,6 +1928,78 @@ function PlanLanes({ task, onOpenFile }: { task: TeamTask; onOpenFile: (name: st
     </section>
   );
 }
+
+/// Every column of the plan, a stage's or a folded round's, is this narrow.
+const COLUMN_MIN = 120;
+
+/// The rounds of a long task, one card each: what started it, a tick per
+/// stage, and when it ran. Picking one opens it in the grid and folds the rest.
+function RoundPicker({
+  task,
+  rounds,
+  open,
+  onPick,
+}: {
+  task: TeamTask;
+  rounds: PlanRound[];
+  open: number | null;
+  onPick: (index: number) => void;
+}) {
+  const now = useTickingNow(60_000);
+  return (
+    <div role="group" aria-label="Rounds" className="flex flex-wrap gap-2 border-b border-card px-4 py-3">
+      {rounds.map((r) => {
+        const on = open === r.index;
+        return (
+          <button
+            key={r.index}
+            aria-pressed={on}
+            onClick={() => onPick(r.index)}
+            className={
+              "flex min-w-[150px] max-w-[320px] flex-col gap-1.5 rounded-lg border px-3 py-2 text-left transition-colors " +
+              (on ? "border-accent bg-accent/10" : "border-card bg-surface hover:border-card-strong")
+            }
+            style={{ flex: `${Math.max(1, Math.min(r.stages.length, 3))} 1 150px` }}
+          >
+            <span className="flex items-baseline justify-between gap-3">
+              <span className="truncate text-[12.5px] font-semibold text-ink">{roundName(r)}</span>
+              <span className="shrink-0 text-[11px] tabular-nums text-ink-faint">
+                {r.stages.length === 1 ? "1 stage" : `${r.stages.length} stages`}
+                {r.failed > 0 && <span className="text-red-600 dark:text-red-400"> · {r.failed} failed</span>}
+              </span>
+            </span>
+            <span className="truncate text-xs text-ink-muted" title={r.ask}>
+              {r.ask ? `“${briefOpening(r.ask, 80)}”` : briefOpening(task.brief, 80)}
+            </span>
+            <span aria-hidden className="flex gap-[3px]">
+              {r.stages.map((i) => (
+                <span key={i} className={"h-1 flex-1 rounded-full " + STAGE_BAR[task.stages[i].status]} />
+              ))}
+            </span>
+            <span className="text-[11px] tabular-nums text-ink-faint">{roundWhen(r, now) || "Not started"}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/// When a round ran: "1:02 PM – 1:39 PM", with the day once it isn't today.
+function roundWhen(r: Pick<PlanRound, "from" | "to" | "live">, now: number): string {
+  if (r.from === undefined) return "";
+  const day = (at: number) => new Date(at).toDateString();
+  const date = day(r.from) === day(now) ? "" : `${new Date(r.from).toLocaleDateString(undefined, { month: "short", day: "numeric" })} · `;
+  const end = r.live ? "now" : r.to !== undefined && r.to !== r.from ? clock(r.to) : "";
+  return `${date}${clock(r.from)}${end ? ` – ${end}` : ""}`;
+}
+
+const STAGE_BAR: Record<TeamStage["status"], string> = {
+  done: "bg-emerald-500",
+  running: "bg-accent",
+  failed: "bg-amber-500",
+  skipped: "bg-ink-faint/40",
+  pending: "bg-card-strong",
+};
 
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -1665,27 +2014,57 @@ const KIND_INK: Record<TeamStageKind, string> = {
   synthesize: "text-emerald-700 dark:text-emerald-400",
 };
 
-function LaneHead({ column, when, style }: { column: PlanColumn; when: string; style: React.CSSProperties }) {
-  const { stage, index, afterPack } = column;
-  return (
-    <div
-      className={
-        "flex min-w-0 flex-col gap-0.5 border-b px-2.5 py-2.5 " +
-        (stage.status === "running" ? "border-accent " : "border-card ") +
-        (afterPack ? "bg-emerald-500/[0.06]" : "")
-      }
-      style={style}
-    >
-      <span className={"truncate text-[10.5px] font-bold uppercase tracking-wider " + KIND_INK[stage.kind]}>
-        {afterPack ? "After the pack" : index + 1} · {TEAM_STAGE_LABEL[stage.kind]}
+/// A plan column's head. Every column, a stage's or a folded round's, has
+/// the same three lines at the same heights — what it is, its title, and
+/// when — so the row of heads reads as one.
+function ColumnHead({
+  kicker,
+  kickerInk,
+  title,
+  meta,
+  running,
+  struck,
+  tinted,
+  onOpen,
+  openLabel,
+  style,
+}: {
+  kicker: string;
+  kickerInk: string;
+  title: string;
+  meta: string;
+  running?: boolean;
+  struck?: boolean;
+  tinted?: boolean;
+  onOpen?: () => void;
+  openLabel?: string;
+  style: React.CSSProperties;
+}) {
+  const body = (
+    <>
+      <span className={"truncate text-[10.5px] font-bold uppercase tracking-wider " + kickerInk} title={kicker}>
+        {kicker}
       </span>
       <span
-        className={"line-clamp-2 text-[12.5px] font-semibold leading-tight " + (stage.status === "skipped" ? "text-ink-faint line-through" : "text-ink")}
-        title={stage.title}
+        className={"line-clamp-2 min-h-[2lh] text-[12.5px] font-semibold leading-tight " + (struck ? "text-ink-faint line-through" : "text-ink")}
+        title={title}
       >
-        {stage.title}
+        {title}
       </span>
-      {when && <span className={"text-[11px] tabular-nums " + (stage.status === "running" ? "text-accent" : "text-ink-faint")}>{when}</span>}
+      <span className={"truncate text-[11px] tabular-nums " + (running ? "text-accent" : "text-ink-faint")}>{meta || "\u00a0"}</span>
+    </>
+  );
+  const cls =
+    "flex min-w-0 flex-col justify-end gap-0.5 border-b px-2.5 py-2.5 text-left " +
+    (running ? "border-accent " : "border-card ") +
+    (tinted ? "bg-emerald-500/[0.06]" : "");
+  return onOpen ? (
+    <button className={cls + " transition-colors hover:bg-card"} style={style} onClick={onOpen} aria-label={`${openLabel}: ${title}`}>
+      {body}
+    </button>
+  ) : (
+    <div className={cls} style={style}>
+      {body}
     </div>
   );
 }
@@ -1849,7 +2228,7 @@ function CellDetail({
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const when = stageWhen(stage, now, clock);
-  const where = `${stage.fromRoom ? "After the pack" : `Stage ${cell.stage + 1}`} · ${stage.title}`;
+  const where = `${stageWhere(planRounds(task), cell.stage)} · ${stage.title}`;
   const skippable = canSkipStage(task, cell.stage);
 
   if (!a) {
@@ -1932,9 +2311,10 @@ function CellDetail({
               Read the piece
             </button>
           )}
+          {a.status === "paused" && a.runId && <ApprovePieceButton a={a} />}
           {a.runId && (
             <button className={linkBtn} onClick={viewRun}>
-              {a.status === "paused" ? (a.waitingFor?.startsWith("wants your OK") ? "Approve it in the run" : "Open the run") : "View the run"}
+              {a.status === "paused" ? "Open the run" : "View the run"}
             </button>
           )}
           <button className={linkBtn} aria-haspopup="dialog" onClick={(e) => openTalk(e.currentTarget)}>
@@ -2030,7 +2410,12 @@ function AssignmentLine({
             : "Up next";
   const live = a.status === "pending" || a.status === "running" || a.status === "paused";
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-md bg-card px-2.5 py-1.5 text-xs">
+    <div
+      className={
+        "flex flex-wrap items-center gap-2 rounded-md px-2.5 py-1.5 text-xs " +
+        (a.status === "paused" ? "border border-violet-500/40 bg-violet-500/10" : "bg-card")
+      }
+    >
       {worker && <WorkerAvatar worker={worker} size="xs" live={a.status === "running"} />}
       <b className="font-medium text-ink">{a.workerName}</b>
       <span className={a.status === "failed" ? "text-amber-600" : a.status === "paused" ? "text-violet-600 dark:text-violet-400" : "text-ink-muted"}>
@@ -2042,6 +2427,7 @@ function AssignmentLine({
             Read
           </button>
         )}
+        {a.status === "paused" && a.runId && <ApprovePieceButton a={a} />}
         {a.runId && (
           <button className={quietBtn} onClick={viewRun}>
             {a.status === "paused" ? "Open run" : "View run"}
@@ -2058,6 +2444,31 @@ function AssignmentLine({
         )}
       </span>
     </div>
+  );
+}
+
+/// Approve a member's paused piece where you see it, rather than in its
+/// run: only for a pause that is asking your OK (an external action), since
+/// a question or a failure needs the run open to answer.
+function ApprovePieceButton({ a }: { a: TeamAssignment }) {
+  const [state, setState] = useState<"idle" | "busy" | string>("idle");
+  if (!a.runId || !a.waitingFor?.startsWith("wants your OK")) return null;
+  const approve = async () => {
+    setState("busy");
+    const res = await window.overcli.invoke("flows:resumeRun", { runId: a.runId! }).catch((err: unknown) => ({ ok: false as const, error: String(err) }));
+    setState(res.ok ? "busy" : res.error);
+  };
+  return (
+    <>
+      <button className={primaryBtn} disabled={state === "busy"} onClick={() => void approve()}>
+        {state === "busy" ? "Approving…" : "Approve"}
+      </button>
+      {state !== "idle" && state !== "busy" && (
+        <span role="alert" className="text-xs text-red-600 dark:text-red-400">
+          {state}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -3132,6 +3543,7 @@ function RoomMessage({
   const [expanded, setExpanded] = useState(false);
   const worker = useWorkersStore((s) => (message.speaker.kind === "member" ? s.workers[message.speaker.workerId] : undefined));
   const roomHandOff = useTeamsStore((s) => s.roomHandOff);
+  const roomAllowTools = useTeamsStore((s) => s.roomAllowTools);
   const sending = useTeamsStore((s) => !!s.busy[task.id]);
   const offerHandOff =
     canHandOff && message.speaker.kind === "member" && !message.failed && !message.workReport;
@@ -3217,6 +3629,29 @@ function RoomMessage({
             )}
           </span>
         )}
+        {message.refused && message.speaker.kind === "member" && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs">
+            {message.refused.allowed ? (
+              <span className="text-ink-muted">
+                {name} can now use {message.refused.tools.join(", ")}.
+              </span>
+            ) : (
+              <>
+                <span className="text-amber-600">
+                  {name} was refused {message.refused.tools.join(", ")}: it isn't in their flow, so nothing was locked.
+                </span>
+                <button
+                  className="ml-auto font-semibold text-accent hover:underline disabled:opacity-40"
+                  disabled={sending}
+                  title={`Adds ${message.refused.tools.join(", ")} to ${name}'s flow, then offers to run this again.`}
+                  onClick={() => void roomAllowTools(task.id, message.id)}
+                >
+                  Let {name} use {message.refused.tools.join(", ")} →
+                </button>
+              </>
+            )}
+          </div>
+        )}
         {message.handoff && <HandoffCard message={message} task={task} onOpenFile={onOpenFile} />}
       </div>
     </div>
@@ -3232,10 +3667,14 @@ function HandoffCard({ message, task, onOpenFile }: { message: TeamMessage; task
   const sending = useTeamsStore((s) => !!s.busy[task.id]);
   const roomBusy = !!task.room?.busy;
   const handoff = message.handoff!;
-  const stage = handoff.stage !== undefined ? task.stages[handoff.stage] : undefined;
+  // Started work runs as one stage, or one per step.
+  const stageIndexes = handoff.stages ?? (handoff.stage !== undefined ? [handoff.stage] : []);
+  const stages = stageIndexes.map((i) => task.stages[i]).filter((st): st is TeamStage => !!st);
+  const steps = stages.length > 0 ? stages.map((st) => st.assignments) : handoffSteps(handoff.assignments);
   const left = Math.max(0, task.budgetUSD - task.spentUSD);
   const busyNow = task.status === "running" || task.status === "waiting";
-  const runningNow = busyNow && handoff.stage === task.stageIndex && !!stage && !isPieceSettledStage(stage);
+  const runningNow =
+    busyNow && stageIndexes.includes(task.stageIndex) && !!task.stages[task.stageIndex] && !isPieceSettledStage(task.stages[task.stageIndex]);
   const current = busyNow ? task.stages[task.stageIndex] : undefined;
   return (
     <div className="mt-1 flex flex-col gap-2 rounded-lg border border-card-strong bg-surface-elevated px-3 py-2.5">
@@ -3251,15 +3690,19 @@ function HandoffCard({ message, task, onOpenFile }: { message: TeamMessage; task
           </button>
         )}
       </div>
-      {stage ? (
-        <div className="flex flex-col gap-1">
-          {stage.assignments.map((a) => (
-            <AssignmentLine key={a.workerId} a={a} onOpenFile={onOpenFile} />
-          ))}
+      {steps.map((step, i) => (
+        <div key={i} className="flex flex-col gap-1">
+          {steps.length > 1 && (
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+              Step {i + 1}
+              {i > 0 && ` · after ${steps[i - 1].map((a) => a.workerName).join(" and ")}`}
+            </span>
+          )}
+          {stages.length > 0
+            ? (step as TeamAssignment[]).map((a) => <AssignmentLine key={a.workerId} a={a} onOpenFile={onOpenFile} />)
+            : step.map((a) => <HandoffAsk key={a.workerId} assignment={a} />)}
         </div>
-      ) : (
-        handoff.assignments.map((a) => <HandoffAsk key={a.workerId} assignment={a} />)
-      )}
+      ))}
       {handoff.status === "queued" && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[11px] text-ink-faint">
@@ -3300,11 +3743,13 @@ function isPieceSettledStage(stage: TeamStage): boolean {
 function HandoffAsk({ assignment }: { assignment: { workerId: string; workerName: string; ask: string } }) {
   const worker = useWorkersStore((s) => s.workers[assignment.workerId]);
   return (
-    <details className="group/ask rounded-md bg-card px-2.5 py-1.5 text-xs">
+    <details className="group/ask min-w-0 rounded-md bg-card px-2.5 py-1.5 text-xs">
       <summary className="flex cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
         {worker && <WorkerAvatar worker={worker} size="xs" />}
         <b className="font-medium text-ink">{assignment.workerName}</b>
-        <span className="min-w-0 flex-1 truncate text-ink-muted group-open/ask:hidden">{assignment.ask.split("\n")[0]}</span>
+        {/* w-0, not min-w-0: a truncated line still counts its full width
+            when the desk sizes itself, and pushed the whole pane wide. */}
+        <span className="w-0 flex-1 truncate text-ink-muted group-open/ask:hidden">{assignment.ask.split("\n")[0]}</span>
         <span className="ml-auto shrink-0 text-ink-faint group-open/ask:hidden">What they'll do</span>
       </summary>
       <div className="mt-1.5 whitespace-pre-wrap text-ink-muted">{assignment.ask}</div>

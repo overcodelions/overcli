@@ -308,7 +308,7 @@ export class SlackBridge {
           text: {
             type: 'mrkdwn',
             text: earlier
-              ? `*Asking again.* overcli restarted while ${what} was running. It can change a service, so running it again could repeat what it already did, and it needs your OK again.`
+              ? `*Asking again.* I restarted while ${what} was running. It can change a service, so running it again could repeat what it already did, and it needs your OK again.`
               : `*Approval needed* for _${title}_\n` +
                 `I am about to run ${what}, which reaches outside my sandbox — it may push, send, publish or change a service.`,
           },
@@ -378,8 +378,8 @@ export class SlackBridge {
       t.resolution = 'elsewhere';
       this.persist();
       const done = !run || run.state.kind === 'done' || run.state.kind === 'aborted';
-      await this.reply(t, done ? 'This run has finished — nothing more needed here.' : 'Picked up in overcli — nothing more needed here.');
-      if (t.kind === 'approval') await this.clearButtons(t, 'Handled in overcli.');
+      await this.reply(t, done ? 'This run has finished — nothing more needed here.' : 'Answered outside Slack — nothing more needed here.');
+      if (t.kind === 'approval') await this.clearButtons(t, 'Handled outside Slack.');
     }
   }
 
@@ -437,7 +437,7 @@ export class SlackBridge {
     this.eventTap = tap;
   }
 
-  /// "@overcli …" and DMs that aren't answers to anything: requests for
+  /// "@overgo …" and DMs that aren't answers to anything: requests for
   /// whichever worker fits. See frontDoor.ts.
   private frontDoor: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice'> | null = null;
 

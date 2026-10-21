@@ -97,7 +97,7 @@ const CATALOG: CatalogEntry[] = [
     targets: ALL_CLIS,
     // Streamable-HTTP endpoint (not the /v1/sse one): works for Claude's
     // http transport and is required by Codex, which is streamable-HTTP only.
-    config: { type: 'http', url: 'https://mcp.atlassian.com/v1/mcp' },
+    config: { type: 'http', url: 'https://mcp.atlassian.com/v2/mcp' },
     authNote: OAUTH_NOTE,
     docsUrl: 'https://www.atlassian.com/platform/remote-mcp-server',
   },

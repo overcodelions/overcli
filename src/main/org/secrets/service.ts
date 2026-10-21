@@ -60,8 +60,8 @@ export const KNOWN_SECRETS: KnownSecret[] = [
   {
     name: 'OVERCLI_SLACK_BOT_TOKEN',
     label: 'Slack bot token (xoxb-…)',
-    why: 'Workers ask their managers questions and approvals in Slack, and people ask workers for things with @overcli or a DM.',
-    how: 'api.slack.com/apps → Create New App → From a manifest, and paste src/main/slack/slack-app-manifest.yml. Then OAuth & Permissions → Install to Workspace, and copy the Bot User OAuth Token. Add the app-level token too.',
+    why: 'Workers ask their managers questions and approvals in Slack, and people ask workers for things with @overgo or a DM.',
+    how: 'Connect → Slack in this console makes the app: it opens Slack with the manifest filled in. Then OAuth & Permissions → Install to Workspace, and copy the Bot User OAuth Token. Add the app-level token too.',
     link: 'https://api.slack.com/apps',
   },
   {

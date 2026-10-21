@@ -16,6 +16,7 @@ import { Store } from '../store';
 import { isEverydayProject } from '../../shared/everydayProjects';
 import type { Worker } from '../../shared/flows/worker';
 import { OrgService, type HealthItem, type OrgServiceDeps, type SetupOffer } from './orgService';
+import type { ServerVersion } from './updateCheck';
 import { draftHire, drafterDepsFor, saveDraftedHire } from './hireDraft';
 import { findOverlap } from './hireOverlap';
 import { pickPicture } from './pickPicture';
@@ -49,6 +50,8 @@ export interface OrgEngines {
   teams?: () => TeamEngine | null;
   /// Extra health lines from the host (the Slack bridge, chiefly).
   health?: () => HealthItem[];
+  /// The server's version and any newer release. `overcli serve` only.
+  version?: () => ServerVersion;
   /// A getter: triggers are built after the plane they act through.
   triggers?: () => TriggerService | null;
   /// Secrets admins manage from the console. `overcli serve` only.
@@ -148,7 +151,7 @@ export function rejectWorkerRun(
 
 export function createOrgService(
   engines: OrgEngines,
-  hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided' | 'onAskDone'> = {},
+  hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided' | 'onToolsWanted' | 'onAskDone'> = {},
 ): OrgService {
   const { runner, flowRuntime, workerEngine } = engines;
   const repos = createRepoService();
@@ -338,6 +341,7 @@ export function createOrgService(
       },
     },
     ratings: fileRatingStore,
+    ...(engines.version ? { version: engines.version } : {}),
     health: (() => {
       const models = backendProbe();
       return () => [...(engines.health?.() ?? []), models()];
