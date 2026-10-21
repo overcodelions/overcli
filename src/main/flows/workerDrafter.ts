@@ -99,7 +99,11 @@ function hireSystemPrompt(
     '    { "flowRequest": "Describe the flow needed for the worker\'s main work.", "when": "the kind of work that goes here" }',
     // The example has to stay valid JSON whichever field closes it.
     ...(connected
-      ? ['  ],', '  "mcpServers": ["the configured servers this job uses — names from the list below"]']
+      ? [
+          '  ],',
+          '  "mcpServers": ["the configured servers this job uses — names from the list below"],',
+          '  "wantedTools": [{ "name": "a system the job needs that is NOT in the list", "why": "what the job does with it" }]',
+        ]
       : ['  ]']),
     '}',
     '</worker>',
@@ -185,10 +189,12 @@ function hireSystemPrompt(
       ? [
           '  - mcpServers: name exactly the configured servers the job uses, spelled as listed;',
           '    [] when it uses none of them. Every server listed costs time on every shift, so',
-          '    leave out what the job does not touch. If the job depends on a system that is',
-          '    not in the list (a mailbox, a tracker, a chat workspace), draft it anyway and',
-          '    say plainly in the summary that it must be reachable — as a configured server',
-          '    or an account connector — before the first shift.',
+          '    leave out what the job does not touch.',
+          '  - wantedTools: when the job depends on a system that is NOT in the list (a mailbox,',
+          '    a tracker, a chat workspace), draft it anyway and name each such system here, by',
+          '    the name a person would recognise ("Jira", "Gmail"), with a few words on what the',
+          '    job does with it. [] when the list covers the job. Never repeat a listed server.',
+          '    An admin is asked to set these up; until then the worker works without them.',
         ]
       : []),
     '  - browser: true only when the job has to visit web pages (read a site, fill a form,',
@@ -550,6 +556,7 @@ function contractJson(c: WorkerContract): string {
       flows: c.flows,
       ...(c.wrapUp ? { wrapUp: c.wrapUp } : {}),
       ...(c.mcpServers ? { mcpServers: c.mcpServers } : {}),
+      ...(c.wantedTools ? { wantedTools: c.wantedTools } : {}),
       ...(c.browser ? { browser: true } : {}),
       ...(c.projectPath ? { projectPath: c.projectPath } : {}),
     },
@@ -620,6 +627,7 @@ async function polishContract(
       flows: contract.flows.length > 0 ? contract.flows : args.contract.flows,
       wrapUp: contract.wrapUp ?? args.contract.wrapUp,
       mcpServers: contract.mcpServers ?? args.contract.mcpServers,
+      wantedTools: contract.wantedTools ?? args.contract.wantedTools,
       projectPath: contract.projectPath ?? args.contract.projectPath,
       heartbeatBackend: args.contract.heartbeatBackend,
     },

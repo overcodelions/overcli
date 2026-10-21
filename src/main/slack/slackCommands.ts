@@ -14,7 +14,7 @@
 // so Slack can do exactly what that person could do in the console or over
 // MCP — and no more.
 
-import type { OrgService, HireSummary, PendingHire, WaitingItem, WorkerSummary } from '../org/orgService';
+import type { OrgService, HireSummary, PendingHire, WaitingItem, WantedTool, WorkerSummary } from '../org/orgService';
 import type { AskRecord } from '../org/orgStores';
 import { ROLE_TEXT, type AccessService, type Invite, type JoinRequest } from '../org/accessService';
 import { slackCall } from './slackApi';
@@ -42,6 +42,7 @@ export const TEAM_CANCEL_ACTION = 'overcli_team_cancel';
 export const TEAM_MAKE_ACTION = 'overcli_team_make';
 export const TEAM_DROP_ACTION = 'overcli_team_drop';
 export const HIRE_EDIT_ACTION = 'overcli_hire_edit';
+export const HIRE_ASK_TOOLS_ACTION = 'overcli_hire_ask_tools';
 export const TEAM_EDIT_ACTION = 'overcli_team_edit';
 /// What a new team starts with per task, until someone changes it in the console.
 const NEW_TEAM_BUDGET_USD = 50;
@@ -594,14 +595,27 @@ export class SlackCommands {
         `${dollars(c.budgetUSDPerMonth)}/month · ${escapeMrkdwn(c.schedule)} · tools: ${escapeMrkdwn(c.connectors.join(', ') || 'none')}${where ? ` · works in ${escapeMrkdwn(where)}` : ''}`,
       ),
       context(`Who can ask it: ${who}.${c.reportsTo ? ` Reports to ${escapeMrkdwn(c.reportsTo)}.` : ''} You become its manager. It starts on probation${c.cadence ? ', so you approve what it proposes at each run' : ''}.`),
+      ...this.wantedBlocks(c.wantedTools, c.toolsAsked),
       {
         type: 'actions',
         elements: [
           button(`Hire ${c.name}`, HIRE_CONFIRM_ACTION, hire.hireId, 'primary'),
           button('Change it', HIRE_EDIT_ACTION, hire.hireId),
+          ...(c.wantedTools?.length && !c.toolsAsked ? [button('Ask an admin to add them', HIRE_ASK_TOOLS_ACTION, hire.hireId)] : []),
           button('Cancel', HIRE_CANCEL_ACTION, hire.hireId),
         ],
       },
+    ];
+  }
+
+  /// The tools the job needs that this server doesn't have: said on the
+  /// offer, so the hirer knows it will work without them until an admin adds them.
+  private wantedBlocks(wanted: WantedTool[] | undefined, asked: boolean | undefined): unknown[] {
+    if (!wanted?.length) return [];
+    const list = wanted.map((t) => `• *${escapeMrkdwn(t.name)}*${t.why ? ` — ${escapeMrkdwn(t.why)}` : ''}`).join('\n');
+    return [
+      section(`*Would also use*, but this server doesn’t have yet:\n${list}`),
+      context(asked ? 'You asked an admin to set these up. You can hire now; it works without them until then.' : 'Only an admin can add tools. Ask one, and hire now if you like: it works without them until then.'),
     ];
   }
 
@@ -726,6 +740,7 @@ export class SlackCommands {
       actionId === TEAM_CANCEL_ACTION ||
       actionId === TEAM_MAKE_ACTION ||
       actionId === HIRE_EDIT_ACTION ||
+      actionId === HIRE_ASK_TOOLS_ACTION ||
       actionId === TEAM_EDIT_ACTION ||
       actionId === TEAM_DROP_ACTION ||
       actionId === JOIN_LETIN_ACTION ||
@@ -882,6 +897,20 @@ export class SlackCommands {
             ? `Hired ${res.hired.name}. You are its manager; it starts on probation.`
             : `Sent for approval — ${(res.hire.reasons ?? []).join(' ')}`,
         );
+        return;
+      }
+      case HIRE_ASK_TOOLS_ACTION: {
+        const res = org.askForTools(caller, action.value);
+        if (!res.ok) {
+          if (channel && threadTs) await this.reply(channel, threadTs, res.error);
+          return;
+        }
+        const bot = this.deps.botToken();
+        if (bot && channel && ts) await updateMessage(bot, { channel, ts, text: `Ready to hire ${res.hire.contract!.name}`, blocks: [...this.alreadyDoes(res.hire), ...this.offerBlocks(res.hire)] }, this.deps.fetchImpl);
+        if (channel && threadTs) {
+          const names = (res.hire.contract?.wantedTools ?? []).map((t) => t.name).join(', ');
+          await this.reply(channel, threadTs, `Asked ${res.asked.map((a) => `<@${a}>`).join(', ')} to set up ${escapeMrkdwn(names)}.`);
+        }
         return;
       }
       case TEAM_ACCEPT_ACTION: {
@@ -1383,6 +1412,23 @@ export class SlackCommands {
               button('Turn down', HIRE_REJECT_ACTION, hire.id, 'danger'),
             ],
           },
+        ],
+      });
+    }
+  }
+
+  /// Ask each admin to set up the tools a hire wants.
+  notifyToolsWanted(hire: PendingHire, tools: WantedTool[], admins: string[]): void {
+    const c = this.deps.org.summarize(hire).contract;
+    const name = c?.name ?? 'a worker';
+    const who = hire.requestedBy.slackUserId ? `<@${hire.requestedBy.slackUserId}>` : escapeMrkdwn(hire.requestedBy.name);
+    const list = tools.map((t) => `• *${escapeMrkdwn(t.name)}*${t.why ? ` — ${escapeMrkdwn(t.why)}` : ''}${t.inCatalog ? ' _(in the tool catalog)_' : ''}`).join('\n');
+    for (const admin of admins) {
+      void this.dm(admin, `${hire.requestedBy.name} needs tools set up for ${name}`, {
+        blocks: [
+          section(`*Tool request* — ${who} is hiring *${escapeMrkdwn(name)}*, and the job needs tools this server doesn’t have:\n${list}`),
+          ...(c ? [section(quote(clip(c.jobDescription, 800)))] : []),
+          context(`Add them on Setup → Tools in the console, then give them to ${escapeMrkdwn(name)} (or clear them for every hire). Until then it works without them.`),
         ],
       });
     }

@@ -163,6 +163,7 @@ export function createOrgControl(
   }, {
     onHireAwaitingApproval: (hire, approvers) => commands?.notifyApprovers(hire, approvers),
     onHireDecided: (hire, outcome) => commands?.notifyDecided(hire, outcome),
+    onToolsWanted: (hire, tools, admins) => commands?.notifyToolsWanted(hire, tools, admins),
     onAskDone: (ask) => commands?.askAnswered(ask),
   });
   commands = new SlackCommands({

@@ -151,7 +151,7 @@ export function rejectWorkerRun(
 
 export function createOrgService(
   engines: OrgEngines,
-  hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided' | 'onAskDone'> = {},
+  hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided' | 'onToolsWanted' | 'onAskDone'> = {},
 ): OrgService {
   const { runner, flowRuntime, workerEngine } = engines;
   const repos = createRepoService();

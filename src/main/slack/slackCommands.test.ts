@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ORG_POLICY } from '../../shared/org/policy';
 import type { OrgService, HireSummary } from '../org/orgService';
-import { HIRE_APPROVE_ACTION, HIRE_CONFIRM_ACTION, JOIN_LETIN_ACTION, PROPOSALS_APPROVE_ACTION, PROPOSALS_SKIP_ACTION, SlackCommands, TEAM_APPROVE_ACTION, TEAM_MAKE_ACTION, HIRE_EDIT_ACTION } from './slackCommands';
+import { HIRE_APPROVE_ACTION, HIRE_ASK_TOOLS_ACTION, HIRE_CONFIRM_ACTION, JOIN_LETIN_ACTION, PROPOSALS_APPROVE_ACTION, PROPOSALS_SKIP_ACTION, SlackCommands, TEAM_APPROVE_ACTION, TEAM_MAKE_ACTION, HIRE_EDIT_ACTION } from './slackCommands';
 import type { AccessService } from '../org/accessService';
 
 const TEAM = 'T0ACME';
@@ -151,6 +151,32 @@ describe('/hire', () => {
     });
     const update = posts.filter((p) => p.url.endsWith('chat.update'))[updatesBefore];
     expect(update.body.text).toMatch(/Hired Ana/);
+  });
+
+  it('says which tools the server lacks, and asks an admin with a button', async () => {
+    const offer = { hireId: 'h3', status: 'drafted', requestedBy: 'Pat', contract: { name: 'Ana', jobDescription: 'Reads the board.', budgetUSDPerMonth: 20, flows: [], connectors: [], cadence: null, schedule: 'When asked', wantedTools: [{ name: 'Acme Tracker', why: 'reads the sprint board', inCatalog: false }] } } as HireSummary;
+    const asked: string[] = [];
+    const { cmds, posts } = harness({
+      askForTools: (_c, id) => {
+        asked.push(id);
+        return { ok: true, asked: ['U0ACMEADMIN'], hire: { ...offer, contract: { ...offer.contract!, toolsAsked: true } } };
+      },
+      summarize: () => offer as never,
+    });
+    const blocks = JSON.stringify((cmds as any).offerBlocks(offer));
+    expect(blocks).toContain('Acme Tracker');
+    expect(blocks).toContain(HIRE_ASK_TOOLS_ACTION);
+    await cmds.onAction({ user: { id: PAT, name: 'pat' }, team: { id: TEAM }, actions: [{ action_id: HIRE_ASK_TOOLS_ACTION, value: 'h3' }], channel: { id: 'D0PAT' }, message: { ts: '1.1' } });
+    expect(asked).toEqual(['h3']);
+    const redrawn = posts.filter((p) => p.url.endsWith('chat.update')).pop()!;
+    expect(JSON.stringify(redrawn.body.blocks)).not.toContain(HIRE_ASK_TOOLS_ACTION);
+    expect(posts.filter((p) => p.url.endsWith('chat.postMessage')).pop()!.body.text).toContain('<@U0ACMEADMIN>');
+
+    cmds.notifyToolsWanted({ id: 'h3', status: 'drafted', createdAt: 0, requestedBy: { name: 'Pat', slackUserId: PAT }, jobDescription: 'x', conversation: [], options: {} }, offer.contract!.wantedTools!, ['U0ACMEADMIN']);
+    await new Promise((r) => setTimeout(r, 0));
+    const dm = JSON.stringify(posts.filter((p) => p.url.endsWith('chat.postMessage')).pop()!.body.blocks);
+    expect(dm).toContain('Tool request');
+    expect(dm).toContain('reads the sprint board');
   });
 
   it('leaves threads it did not start alone', async () => {

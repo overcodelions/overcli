@@ -828,6 +828,11 @@ export interface WorkerContract {
   /// Absent when the drafter did not say, which keeps the load-everything
   /// default; only names the drafter was shown survive the parse.
   mcpServers?: string[];
+  /// Systems the job needs that this install has no server for, as the
+  /// drafter names them ("Jira"). The worker is hired without them; the
+  /// hirer can ask an admin to set them up. Only read when the drafter was
+  /// shown the server list, and never a name on it.
+  wantedTools?: Array<{ name: string; why?: string }>;
   /// The job has to visit web pages — see `Worker.browser`.
   browser?: boolean;
   /// One of the project/workspace paths the drafter was shown — set only
@@ -1027,6 +1032,7 @@ export function parseWorkerContract(
           ),
         )
       : undefined;
+  const wantedTools = opts.knownMcpServers ? coerceWantedTools(e.wantedTools, opts.knownMcpServers) : [];
   const projectPath =
     typeof e.projectPath === 'string' && opts.knownProjectPaths?.includes(e.projectPath.trim())
       ? e.projectPath.trim()
@@ -1070,9 +1076,29 @@ export function parseWorkerContract(
     flows,
     ...(wrapUp ? { wrapUp } : {}),
     ...(mcpServers ? { mcpServers } : {}),
+    ...(wantedTools.length ? { wantedTools } : {}),
     ...(e.browser === true ? { browser: true } : {}),
     projectPath,
   };
+}
+
+const WANTED_TOOLS_MAX = 5;
+
+/// The drafter's `wantedTools`: a name and why, or a bare name. A name that
+/// IS configured belongs in `mcpServers`, so it is dropped here.
+function coerceWantedTools(raw: unknown, known: string[]): Array<{ name: string; why?: string }> {
+  if (!Array.isArray(raw)) return [];
+  const have = new Set(known.map((k) => k.toLowerCase()));
+  const out: Array<{ name: string; why?: string }> = [];
+  for (const t of raw) {
+    const o = (typeof t === 'string' ? { name: t } : t && typeof t === 'object' ? t : {}) as { name?: unknown; why?: unknown };
+    const name = typeof o.name === 'string' ? o.name.replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+    if (!name || have.has(name.toLowerCase()) || out.some((x) => x.name.toLowerCase() === name.toLowerCase())) continue;
+    const why = typeof o.why === 'string' ? o.why.replace(/\s+/g, ' ').trim().slice(0, 160) : '';
+    out.push({ name, ...(why ? { why } : {}) });
+    if (out.length === WANTED_TOOLS_MAX) break;
+  }
+  return out;
 }
 
 /// What an on-demand cadence is called on the wire — in a hire-drafter reply,

@@ -879,8 +879,6 @@ function NewButton({ expanded, first = false }: { expanded: boolean; first?: boo
   const blocked = hirePath === "";
   const blockedTitle = "Add a project or workspace first — a worker is hired onto one";
   const label = first ? "Hire your first worker" : "New";
-  const item = "w-full px-3 py-1.5 text-left text-xs ";
-  const hireItem = item + (blocked ? "cursor-not-allowed text-ink-faint opacity-50" : "hover:bg-card-strong ");
   const hire = (run: () => void) => () => {
     if (blocked) return;
     setMenuOpen(false);
@@ -905,7 +903,8 @@ function NewButton({ expanded, first = false }: { expanded: boolean; first?: boo
           "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
           (first
             ? "min-h-[44px] py-1.5 text-ink-muted hover:bg-card-strong hover:text-ink "
-            : "min-h-[36px] border border-card-strong bg-card text-ink hover:bg-card-strong ") +
+            : "min-h-[36px] border border-card-strong text-ink hover:bg-card-strong " +
+              (menuOpen ? "bg-card-strong " : "bg-card ")) +
           (expanded ? "px-2" : "justify-center px-0")
         }
       >
@@ -918,7 +917,15 @@ function NewButton({ expanded, first = false }: { expanded: boolean; first?: boo
         )}
         {expanded && <span className={"text-xs " + (first ? "" : "font-medium")}>{label}</span>}
         {expanded && !first && (
-          <svg viewBox="0 0 12 12" aria-hidden className="ml-auto h-3 w-3 text-ink-faint" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+          <svg
+            viewBox="0 0 12 12"
+            aria-hidden
+            className={"ml-auto h-3 w-3 text-ink-faint transition-transform " + (menuOpen ? "rotate-180" : "")}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          >
             <path d="M3 7.5 6 4.5l3 3" />
           </svg>
         )}
@@ -927,30 +934,33 @@ function NewButton({ expanded, first = false }: { expanded: boolean; first?: boo
         <div
           role="menu"
           className={
-            "absolute z-40 overflow-hidden rounded-md border border-card-strong bg-surface-elevated py-1 shadow-xl " +
-            (first ? "left-full top-0 ml-2 w-44" : expanded ? "bottom-full left-0 right-0 mb-1" : "bottom-0 left-full ml-2 w-44")
+            "absolute z-40 flex flex-col overflow-hidden rounded-lg border border-card-strong bg-surface-elevated p-1 shadow-2xl " +
+            (first ? "left-full top-0 ml-2 w-60" : expanded ? "bottom-full left-0 mb-1.5 w-60" : "bottom-0 left-full ml-2 w-60")
           }
         >
-          <button
-            role="menuitem"
+          <div className="px-2.5 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-ink-faint">Hire a worker</div>
+          <NewMenuItem
+            label="Hire with AI"
+            hint="Describe the job, get a worker"
+            icon={<SparkIcon />}
+            blocked={blocked}
+            title={blocked ? blockedTitle : undefined}
             onClick={hire(() => openHire(hirePath))}
+          />
+          <NewMenuItem
+            label="Add by hand"
+            hint="Fill in the worker yourself"
+            icon={<PencilIcon />}
+            blocked={blocked}
             title={blocked ? blockedTitle : undefined}
-            aria-disabled={blocked || undefined}
-            className={hireItem + (blocked ? "" : "text-ink")}
-          >
-            ✨ Hire with AI
-          </button>
-          <button
-            role="menuitem"
             onClick={hire(() => openEditor(newWorkerDraft(hirePath, hireEveryday)))}
+          />
+          <NewMenuItem
+            label="Import…"
+            hint="From a worker file"
+            icon={<ImportIcon />}
+            blocked={blocked}
             title={blocked ? blockedTitle : undefined}
-            aria-disabled={blocked || undefined}
-            className={hireItem + (blocked ? "" : "text-ink-muted hover:text-ink")}
-          >
-            Add by hand
-          </button>
-          <button
-            role="menuitem"
             onClick={hire(
               () =>
                 void importFromFile({
@@ -958,28 +968,61 @@ function NewButton({ expanded, first = false }: { expanded: boolean; first?: boo
                   projectPaths: projects.map((project) => project.path),
                 }),
             )}
-            title={blocked ? blockedTitle : undefined}
-            aria-disabled={blocked || undefined}
-            className={hireItem + (blocked ? "" : "text-ink-muted hover:text-ink")}
-          >
-            Import…
-          </button>
+          />
           {/* A team can hire its own members, so it needs nobody hired first. */}
-          <div className="my-1 h-px bg-card" />
-          <button
-            role="menuitem"
+          <div className="mx-1.5 my-1 h-px bg-card" />
+          <NewMenuItem
+            label="New team…"
+            hint="Workers who take on a task together"
+            icon={<TeamIcon />}
+            title="Make a team — from your crew, new hires, or both — and give it a task to finish together"
             onClick={() => {
               setMenuOpen(false);
               openTeamEditor(null);
             }}
-            title="Make a team — from your crew, new hires, or both — and give it a task to finish together"
-            className={item + "text-ink-muted hover:bg-card-strong hover:text-ink"}
-          >
-            New team…
-          </button>
+          />
         </div>
       )}
     </div>
+  );
+}
+
+/// One row of the New menu: an icon, the action, and a line on what it makes.
+/// `blocked` greys it but keeps the tooltip that says why.
+function NewMenuItem({
+  label,
+  hint,
+  icon,
+  title,
+  blocked = false,
+  onClick,
+}: {
+  label: string;
+  hint: string;
+  icon: React.ReactNode;
+  title?: string;
+  blocked?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      title={title}
+      aria-disabled={blocked || undefined}
+      className={
+        "flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left " +
+        "focus:outline-none focus-visible:bg-card-strong " +
+        (blocked ? "cursor-not-allowed opacity-50" : "hover:bg-card-strong")
+      }
+    >
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-card text-ink-muted">{icon}</span>
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate text-xs text-ink">{label}</span>
+        <span className="truncate text-[10.5px] text-ink-faint">{hint}</span>
+      </span>
+    </button>
   );
 }
 
@@ -1303,6 +1346,44 @@ function TodayIcon() {
     <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
       <circle cx="7" cy="7" r="5.2" />
       <path d="M7 4.1V7l2 1.5" />
+    </svg>
+  );
+}
+
+/// A four-point spark: the AI-assisted hire.
+function SparkIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round">
+      <path d="M7 1.8 8.2 5.8 12.2 7 8.2 8.2 7 12.2 5.8 8.2 1.8 7 5.8 5.8Z" />
+    </svg>
+  );
+}
+
+/// A pencil: a worker written by hand.
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9.6 2.4 11.6 4.4 5 11 2.4 11.6 3 9Z" />
+    </svg>
+  );
+}
+
+/// A tray with an arrow dropping in: a worker from a file.
+function ImportIcon() {
+  return (
+    <svg viewBox="0 0 14 14" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 1.8v6.6M4.4 5.8 7 8.4l2.6-2.6M2 9.2v1.6c0 .7.5 1.2 1.2 1.2h7.6c.7 0 1.2-.5 1.2-1.2V9.2" />
+    </svg>
+  );
+}
+
+/// Two people side by side.
+function TeamIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className={ICON} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+      <circle cx="5.5" cy="6" r="2" />
+      <circle cx="10.5" cy="6" r="2" />
+      <path d="M2 12.5c.6-1.8 2-2.6 3.5-2.6s2.9.8 3.5 2.6M8.5 10.3c.5-.3 1.2-.4 2-.4 1.5 0 2.9.8 3.5 2.6" />
     </svg>
   );
 }

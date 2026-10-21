@@ -993,6 +993,12 @@ describe('parseWorkerContract flows and servers', () => {
     expect(parse({}).mcpServers).toBeUndefined();
   });
 
+  it('keeps wanted tools the server lacks, dropping configured ones and repeats', () => {
+    const c = parse({ wantedTools: [{ name: 'Acme Tracker', why: 'reads the sprint board' }, 'acme tracker', 'linear', { why: 'no name' }, 'Acme Mail'] });
+    expect(c.wantedTools).toEqual([{ name: 'Acme Tracker', why: 'reads the sprint board' }, { name: 'Acme Mail' }]);
+    expect(parse({ wantedTools: [] }).wantedTools).toBeUndefined();
+  });
+
   it('ignores mcpServers when the drafter was never shown a list', () => {
     const c = parseWorkerContract(
       `<worker>${JSON.stringify({ name: 'Ada', jobDescription: 'Do it.', mcpServers: ['Linear'] })}</worker>`,

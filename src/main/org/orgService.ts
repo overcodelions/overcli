@@ -114,6 +114,8 @@ export interface PendingHire {
   options: HireOptions;
   /// Why it needs an approver.
   reasons?: string[];
+  /// When the hirer asked the admins to set up the tools it wants.
+  toolsAskedAt?: number;
   /// Hired from the org's role catalog: its tools are cleared by the role.
   role?: OrgRole;
   /// A worker the person can see that already does this job, found when the
@@ -529,6 +531,14 @@ export interface PersonRow {
   devices: Array<{ id: string; where: string; lastUsedAt?: number }>;
 }
 
+/// A tool a hire wants that this server has no install of.
+export interface WantedTool {
+  name: string;
+  why?: string;
+  /// In the tool catalog, so an admin adds it in a click.
+  inCatalog: boolean;
+}
+
 export interface HireSummary {
   hireId: string;
   status: PendingHire['status'];
@@ -548,6 +558,10 @@ export interface HireSummary {
     visibility?: WorkerVisibility;
     /// The worker it will report to, by name.
     reportsTo?: string;
+    /// Tools the job needs that this server doesn't have yet.
+    wantedTools?: WantedTool[];
+    /// The hirer already asked an admin for them.
+    toolsAsked?: boolean;
   };
   reasons?: string[];
   /// A worker the person can see that already does this job.
@@ -784,6 +798,8 @@ export interface OrgServiceDeps {
   people?(): Array<{ id?: string; name: string; slackUserId?: string; admin: boolean; device?: string; lastUsedAt?: number }>;
   /// Tell the approvers a hire is waiting on them (a Slack DM, usually).
   onHireAwaitingApproval?(hire: PendingHire, approvers: string[]): void;
+  /// Ask the admins to set up tools a hire wants (a Slack DM, usually).
+  onToolsWanted?(hire: PendingHire, tools: WantedTool[], admins: string[]): void;
   /// Tell the person who asked how it went.
   onHireDecided?(hire: PendingHire, outcome: { approved: boolean; by: string; worker?: Worker; error?: string }): void;
   now?(): number;
@@ -2634,12 +2650,45 @@ export class OrgService {
               ...(hire.options.projectPath ?? c.projectPath ? { projectPath: hire.options.projectPath ?? c.projectPath } : {}),
               visibility: hire.options.visibility ?? 'private',
               ...(hire.options.reportsTo ? { reportsTo: this.deps.workers.get(hire.options.reportsTo)?.name ?? hire.options.reportsTo } : {}),
+              ...this.wantedTools(hire),
             },
           }
         : {}),
       ...(hire.reasons ? { reasons: hire.reasons } : {}),
       ...this.alreadyDoes(hire),
     };
+  }
+
+  /// What the draft wants that is still not installed: one an admin has
+  /// set up since the draft drops off.
+  private wantedTools(hire: PendingHire): { wantedTools?: WantedTool[]; toolsAsked?: boolean } {
+    const wanted = hire.drafted?.contract.wantedTools ?? [];
+    if (!wanted.length) return {};
+    const installed = new Set((this.deps.tools?.list([]).tools ?? []).map((t) => t.name.toLowerCase()));
+    const still = wanted.filter((t) => !installed.has(t.name.toLowerCase())).map((t) => ({ ...t, inCatalog: !!catalogFor(t.name) }));
+    if (!still.length) return {};
+    return { wantedTools: still, ...(hire.toolsAskedAt ? { toolsAsked: true } : {}) };
+  }
+
+  /// Ask the admins to set up the tools a hire wants. Only admins install
+  /// tools, so a hirer who isn't one has no other way to get them.
+  askForTools(caller: OrgCaller, hireId: string): Result<{ hire: HireSummary; asked: string[] }> {
+    const hire = this.hire(hireId);
+    if (!hire) return { ok: false, error: 'No hire in progress with that id — drafts expire after a day.' };
+    if (!this.mayTouchHire(caller, hire)) return { ok: false, error: 'That hire belongs to someone else.' };
+    const { wantedTools } = this.wantedTools(hire);
+    if (!wantedTools) return { ok: false, error: 'Everything it needs is set up already.' };
+    const names = wantedTools.map((t) => t.name).join(', ');
+    const policy = this.policy();
+    if (isAdmin(policy, caller)) return { ok: false, error: `You’re an admin: add ${names} on Setup → Tools in the console.` };
+    if (hire.toolsAskedAt) return { ok: false, error: `You already asked for ${names}.` };
+    const admins = policy.admins.filter((a) => a !== caller.slackUserId);
+    if (!admins.length) return { ok: false, error: `Nobody is an admin on this org yet, so there is no one to set up ${names}.` };
+    hire.toolsAskedAt = this.now();
+    this.putHire(hire);
+    this.deps.onToolsWanted?.(hire, wantedTools, admins);
+    this.record(caller, `Asked the admins to set up ${names} for the hire of ${this.summarize(hire).contract?.name ?? 'a worker'}.`);
+    return { ok: true, hire: this.summarize(hire), asked: admins };
   }
 
   private alreadyDoes(hire: PendingHire): { alreadyDoes?: HireSummary['alreadyDoes'] } {

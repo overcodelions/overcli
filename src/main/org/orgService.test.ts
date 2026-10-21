@@ -58,6 +58,7 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
   const calls: string[] = [];
   const awaiting: Array<{ hire: PendingHire; approvers: string[] }> = [];
   const decided: Array<{ approved: boolean; by: string }> = [];
+  const wanted: Array<{ tools: string[]; admins: string[] }> = [];
   const policy: OrgPolicy = { ...DEFAULT_ORG_POLICY, ...opts.policy };
   const svc = new OrgService({
     workers: {
@@ -123,6 +124,7 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
     ...(opts.overlap ? { overlap: async () => ({ workerId: opts.overlap!, why: 'already writes these summaries' }) } : {}),
     onHireAwaitingApproval: (hire, approvers) => awaiting.push({ hire, approvers }),
     onHireDecided: (_h, o) => decided.push(o),
+    onToolsWanted: (_h, tools, admins) => wanted.push({ tools: tools.map((t) => t.name), admins }),
     ...(opts.teams
       ? {
           teams: {
@@ -151,7 +153,7 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
         }
       : {}),
   });
-  return { svc, roster, calls, awaiting, decided, teams, teamTasks, hires: () => hires };
+  return { svc, roster, calls, awaiting, decided, wanted, teams, teamTasks, hires: () => hires };
 }
 
 const paused = (reason: 'needsInput' | 'externalAction', workerId = 'chief'): FlowRun =>
@@ -474,6 +476,29 @@ describe('OrgService hiring', () => {
     expect(res).toMatchObject({ ok: true, hired: { name: 'Ana', manager: 'Pat' } });
     expect(h.roster.get('ana')!.mcpServers).toEqual(['acme-feedback']);
     expect(h.hires()).toEqual([]);
+  });
+
+  it('asks the admins, once, for the tools a hire wants that the server lacks', async () => {
+    const h = harness({
+      policy: { hirers: '*', budgetAllowanceUSD: 100, admins: [BOSS] },
+      draft: drafted({ wantedTools: [{ name: 'Acme Tracker', why: 'reads the sprint board' }] }),
+    });
+    const d = await h.svc.draftHire(pat, { jobDescription: 'Watch the sprint board and summarize it weekly.' });
+    if (!d.ok) throw new Error(d.error);
+    expect(d.hire.contract?.wantedTools).toEqual([{ name: 'Acme Tracker', why: 'reads the sprint board', inCatalog: false }]);
+    const res = h.svc.askForTools(pat, d.hire.hireId);
+    expect(res).toMatchObject({ ok: true, asked: [BOSS], hire: { contract: { toolsAsked: true } } });
+    expect(h.wanted).toEqual([{ tools: ['Acme Tracker'], admins: [BOSS] }]);
+    expect(h.svc.askForTools(pat, d.hire.hireId)).toMatchObject({ ok: false });
+    expect(h.svc.askForTools(sam, d.hire.hireId)).toMatchObject({ ok: false });
+    expect(h.wanted).toHaveLength(1);
+  });
+
+  it('has no one to ask for tools when the org has no admin', async () => {
+    const h = harness({ policy: { hirers: '*', budgetAllowanceUSD: 100 }, draft: drafted({ wantedTools: [{ name: 'Acme Tracker' }] }) });
+    const d = await h.svc.draftHire(pat, { jobDescription: 'Watch the sprint board and summarize it weekly.' });
+    if (!d.ok) throw new Error(d.error);
+    expect(h.svc.askForTools(pat, d.hire.hireId)).toMatchObject({ ok: false, error: expect.stringContaining('no one') });
   });
 
   it('routes a hire over the allowance to an approver, who cannot be the asker', async () => {
