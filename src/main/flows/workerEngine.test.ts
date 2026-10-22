@@ -3313,11 +3313,22 @@ describe('multi-flow routing', () => {
     }
   });
 
-  it('leaves a one-flow worker prompt untouched', async () => {
+  it('leaves a one-flow worker shift prompt untouched', async () => {
     const h = makeHarness({ seed: [seedWorker({ flowIds: ['triage'] })], flowsFor });
     h.engine.start();
     await h.engine.workShiftNow('worker-1');
-    expect(h.parked[0].prompt).not.toContain('YOUR FLOWS');
+    expect(h.parked[0].prompt).not.toContain('YOUR FLOW');
+  });
+
+  it('shows a one-flow worker its flow and steps on an errand, so it can tell the flow is too big', async () => {
+    const sized: WorkerEngineDeps['flowsFor'] = (ids) =>
+      ids.map((id) => ({ id, name: 'Weekly report', description: 'the weekly report', steps: ['scope', 'sweep', 'build', 'review'] }));
+    const h = makeHarness({ seed: [seedWorker({ flowIds: ['weekly'] })], flowsFor: sized });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'What does Acme charge for its add-on?');
+    expect(h.parked[0].prompt).toContain('YOUR FLOW — every candidate runs through it:');
+    expect(h.parked[0].prompt).toContain('4 steps: scope → sweep → build → review');
+    expect(h.parked[0].prompt).toContain('A flow fits only at its SIZE');
   });
 });
 

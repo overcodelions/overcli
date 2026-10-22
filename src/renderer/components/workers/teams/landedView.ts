@@ -65,20 +65,18 @@ export function canUpdatePack(task: Pick<TeamTask, 'status' | 'room' | 'pack'>):
 export type TaskTabId = 'landed' | 'conversation' | 'pack' | 'plan';
 
 /// The tab a task opens on. Live talk or work from the room is the
-/// conversation; a wrap-up nothing has been said after is where it landed;
-/// otherwise the conversation when there is something new there, else the
-/// pack.
+/// conversation; otherwise where it landed, unless the pack was rewritten
+/// after that wrap-up, and the pack when there is none. A question asked
+/// since (from Slack, often) doesn't open the debate: its answer went back
+/// where it was asked, and the Debate tab counts it.
 export function defaultTaskTab(
   task: Pick<TeamTask, 'room' | 'pack' | 'status' | 'stages' | 'stageIndex'>,
-  seen: number,
+  _seen: number,
 ): TaskTabId {
-  const messages = task.room?.messages ?? [];
   const roomWork = (task.status === 'running' || task.status === 'waiting') && !!task.stages[task.stageIndex]?.fromRoom;
   if (task.room?.busy || roomWork) return 'conversation';
   const landed = latestWrapUp(task);
-  if (landed && replyCount(messages.slice(landed.index + 1)) === 0) return 'landed';
-  const fresh = replyCount(messages.slice(seen)) > 0 || (messages.at(-1)?.at ?? 0) > (task.pack?.updatedAt ?? 0);
-  return messages.length > 0 && fresh ? 'conversation' : 'pack';
+  return landed && (task.pack?.updatedAt ?? 0) <= landed.message.at ? 'landed' : 'pack';
 }
 
 export type TurnAction =

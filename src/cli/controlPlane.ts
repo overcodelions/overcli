@@ -18,7 +18,7 @@
 import { parseCron } from '../shared/flows/cron';
 import { scheduleText } from '../main/org/orgService';
 import { PROCESS_LIBRARY, libraryProcess, suggestTeamFor } from '../shared/org/processLibrary';
-import type { ProcessPerson, ProcessStage } from '../shared/org/process';
+import type { ProcessField, ProcessPerson, ProcessStage } from '../shared/org/process';
 import { processScheduleText, type ItemAction, type ProcessService } from '../main/org/processes';
 import { imageFromDataUrl, type ProcessDraftResult, type ProcessImageInput } from '../main/org/processDraft';
 import { randomBytes } from 'node:crypto';
@@ -31,6 +31,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 
 import { callerForToken, loadOrgPolicy, revokeOwnToken } from '../main/org/orgStores';
 import { auditCsv } from '../main/org/retention';
+import type { SlackConversations } from '../main/slack/conversations';
 import { parseTemplates } from '../main/org/tools';
 import { reachOf } from '../main/org/reach';
 import { DOCS_CSS, DOCS_JS, renderDocsPage } from './docsPages';
@@ -76,6 +77,9 @@ export interface ControlPlaneDeps {
   connections?: ConnectionsService;
   /// Workers' triggers, for the public webhook endpoint.
   triggers?: TriggerService;
+  /// What people asked overgo in Slack, and each thread. Absent: the Slack
+  /// page says Slack isn't on this server.
+  slackConversations?: SlackConversations;
   /// Work moving between teams and people. Absent: no Processes page.
   processes?: ProcessService;
   /// Read a picture of a process into a draft (processDraft.ts). Absent:
@@ -516,6 +520,23 @@ function personInput(raw: unknown): ProcessPerson | undefined {
   return { name, ...(id ? { slackUserId: id } : {}) };
 }
 
+/// What a people stage asks for, as a form sends it.
+function fieldsInput(raw: unknown): ProcessField[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 12).map((x) => {
+    const r = (x ?? {}) as Record<string, unknown>;
+    const kind = r.kind === 'longText' || r.kind === 'choice' ? r.kind : 'text';
+    const options = kind === 'choice' && Array.isArray(r.options) ? r.options.filter((o): o is string => typeof o === 'string' && !!o.trim()).slice(0, 20).map((o) => o.trim().slice(0, 80)) : [];
+    return {
+      id: typeof r.id === 'string' ? r.id.trim().slice(0, 40) : '',
+      label: typeof r.label === 'string' ? r.label.trim().slice(0, 120) : '',
+      kind,
+      ...(options.length ? { options } : {}),
+      ...(r.required === true ? { required: true } : {}),
+    };
+  });
+}
+
 function stagesInput(raw: unknown): ProcessStage[] {
   if (!Array.isArray(raw)) return [];
   return raw.slice(0, 20).map((x) => {
@@ -530,6 +551,7 @@ function stagesInput(raw: unknown): ProcessStage[] {
           .slice(0, 10)
           .map((g) => ({ id: (g.id as string).slice(0, 120), name: (g.name as string).slice(0, 120) }))
       : [];
+    const fields = fieldsInput(r.fields);
     return {
       id: str(r.id, 40),
       name: str(r.name, 80),
@@ -538,6 +560,8 @@ function stagesInput(raw: unknown): ProcessStage[] {
       ...(kind === 'worker' && str(r.workerId, 80) ? { workerId: str(r.workerId, 80) } : {}),
       ...(owner ? { owner } : {}),
       ...(kind === 'people' ? { approvers, ...(groups.length ? { approverGroups: groups } : {}) } : {}),
+      ...(kind === 'people' && r.mode === 'input' ? { mode: 'input' } : {}),
+      ...(kind === 'people' && fields.length ? { fields } : {}),
       ...(kind === 'people' && (r.needs === 'all' || (typeof r.needs === 'number' && Number.isInteger(r.needs) && r.needs > 1)) ? { needs: r.needs } : {}),
       ...(str(r.ask, 2000) ? { ask: str(r.ask, 2000) } : {}),
       ...(str(r.sendBackTo, 40) ? { sendBackTo: str(r.sendBackTo, 40) } : {}),
@@ -772,6 +796,7 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
         return processes.act(c, decodeURIComponent(id), action as ItemAction, {
           ...(typeof b.note === 'string' ? { note: b.note.slice(0, 2000) } : {}),
           ...(typeof b.stageIndex === 'number' ? { stageIndex: b.stageIndex } : {}),
+          ...(b.answers && typeof b.answers === 'object' ? { answers: b.answers } : {}),
         });
       },
     },
@@ -887,6 +912,16 @@ function numParam(url: URL, key: string): number | undefined {
   if (raw == null || raw.trim() === '') return undefined;
   const n = Number(raw);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/// The Slack page: the conversations a person may see, and one thread read
+/// from Slack.
+function slackRoutes(convos?: SlackConversations): Array<{ method: string; path: RegExp; handle: Handler }> {
+  const off = { ok: false as const, error: 'Slack is not connected on this server.' };
+  return [
+    { method: 'GET', path: /^\/api\/slack\/conversations$/, handle: (c, _b, _p, url) => convos?.list(c, Number(url.searchParams.get('limit')) || undefined) ?? off },
+    { method: 'GET', path: /^\/api\/slack\/conversations\/([^/]+)$/, handle: (c, _b, p) => convos?.thread(c, decodeURIComponent(p[0])) ?? off },
+  ];
 }
 
 function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => Promise<SlackPerson[]>, links: FileLinks = new FileLinks()): Array<{ method: string; path: RegExp; handle: Handler }> {
@@ -1326,6 +1361,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
     ...apiRoutes(deps.org, deps.access, deps.slackPeople, links),
     ...(deps.connections ? connectionRoutes(deps.connections) : []),
     ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess) : []),
+    ...slackRoutes(deps.slackConversations),
   ];
   const open = [
     ...(deps.access ? publicRoutes(deps.access) : []),

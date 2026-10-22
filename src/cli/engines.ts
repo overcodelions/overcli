@@ -43,6 +43,9 @@ import type { PermissionPolicy } from './args';
 import { permissionTap, type PermissionDecision } from './permissions';
 import type { SlackBridge } from '../main/slack/slackBridge';
 import { createOrgControl, createSlackBridge } from '../main/slack/wire';
+import { isAdmin } from '../shared/org/policy';
+import { slackConversations, type SlackConversations } from '../main/slack/conversations';
+import { configuredSlackToken } from '../main/slack/slackSettings';
 import type { TeamEngine } from '../main/flows/teamEngine';
 import type { SlackCommands } from '../main/slack/slackCommands';
 import type { SsoService } from '../main/org/sso';
@@ -105,6 +108,8 @@ export interface DaemonEngines extends HeadlessEngines {
   /// Workers acting on business events. Started by `serve`.
   triggers: TriggerService;
   processes: ProcessService;
+  /// What people asked in Slack and what came of it, for the console.
+  slackConversations: SlackConversations;
 }
 
 /// A workspace root is not itself a git repo, but the runtime mints a worktree
@@ -270,7 +275,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
       const byId = new Map(loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).map((f) => [f.id, f]));
       return ids.flatMap((id) => {
         const f = byId.get(id);
-        return f ? [{ id: f.id, name: f.name, ...(f.description ? { description: f.description } : {}) }] : [];
+        return f ? [{ id: f.id, name: f.name, ...(f.description ? { description: f.description } : {}), steps: f.steps.map((s) => s.id) }] : [];
       });
     },
     // A team member's piece runs its flow cut down to the piece, as in the app.
@@ -461,7 +466,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // The server's version, and whether a newer release is out (Readiness).
   const updates = new UpdateCheck({ current: serverVersion(), enabled: () => process.env.OVERCLI_UPDATE_CHECK !== '0' });
   updates.start();
-  const { org, commands, access, sso, triggers, connections, processes } = createOrgControl(
+  const { org, commands, access, sso, triggers, connections, processes, frontDoor } = createOrgControl(
     { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, health: () => [updates.health()], version: () => updates.status(), ...(options.secrets ? { secrets: options.secrets } : {}) },
     slack,
   );
@@ -509,6 +514,11 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     connections,
     triggers,
     processes,
+    slackConversations: slackConversations({
+      log: () => frontDoor.conversations(),
+      botToken: () => configuredSlackToken('bot'),
+      admin: (caller) => isAdmin(loadOrgPolicy().policy, caller),
+    }),
     teams,
     // Ordered: stop the clocks before killing the children, so neither engine
     // can arm a fresh timer or launch a run on the way out. Each step is

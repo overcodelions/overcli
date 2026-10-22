@@ -101,11 +101,12 @@ const SYSTEM = [
   'ask: one or two sentences, what the stage should produce, or for people what they look for when deciding.',
   'team / worker: the number of one of the listed teams or workers only when it clearly does that step; otherwise null.',
   'deciders: for a people stage, the numbers of listed people the picture names as deciding; otherwise [].',
+  'input: a step where people add something rather than decide (a form, data, feedback); ask is what they add, deciders who adds it.',
   'If the person added a note, follow it: it may rename stages, pick a team, or leave something out.',
   '',
   'Answer with JSON only, no prose and no code fence:',
   '{"name": "<short process name>", "about": "<one sentence: what goes in and what comes out>",',
-  ' "stages": [{"name": "...", "kind": "team" | "worker" | "people", "ask": "...", "role": "<who does it in the picture, or empty>",',
+  ' "stages": [{"name": "...", "kind": "team" | "worker" | "people" | "input", "ask": "...", "role": "<who does it in the picture, or empty>",',
   '   "team": <number or null>, "worker": <number or null>, "deciders": [<numbers>], "sendBackTo": <stage number or null>,',
   '   "delayDays": <number or null>, "repeat": {"everyDays": <n>, "times": <n>} or null}],',
   ' "notes": ["<what was unclear or left out, each under 25 words>"]}',
@@ -164,9 +165,16 @@ function num(raw: unknown): number | null {
 
 function kindOf(raw: unknown): ProcessStageKind {
   const k = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-  if (k === 'people' || k === 'decision' || k === 'approval' || k === 'person') return 'people';
+  if (k === 'people' || k === 'decision' || k === 'approval' || k === 'person' || isInput(k)) return 'people';
   if (k === 'worker') return 'worker';
   return 'team';
+}
+
+/// A people step that gathers something rather than deciding: "form",
+/// "input", "feedback". Its one field is what the step asks, to be edited.
+function isInput(raw: unknown): boolean {
+  const k = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return k === 'input' || k === 'form' || k === 'feedback' || k === 'data';
 }
 
 /// Words in a stage that say what it is about, for matching it to a team.
@@ -218,6 +226,10 @@ export function readProcessDraft(reply: string, input: Omit<ProcessImageInput, '
     const role = text(s.role, 60);
     const stage: DraftedStage = { id: `d${i + 1}`, name, kind, ...(ask ? { ask } : {}) };
     if (kind === 'people') {
+      if (isInput(s.kind)) {
+        stage.mode = 'input';
+        stage.fields = [{ id: 'f1', label: ask || name, kind: 'longText', required: true }];
+      }
       const picked = (Array.isArray(s.deciders) ? s.deciders : []).map(num).filter((n): n is number => n !== null && Number.isInteger(n));
       const approvers = [...new Set(picked)].map((n) => input.people?.[n - 1]).filter((p): p is ProcessPerson => !!p).slice(0, 10);
       stage.approvers = approvers.map((p) => ({ name: p.name, ...(p.slackUserId ? { slackUserId: p.slackUserId } : {}) }));

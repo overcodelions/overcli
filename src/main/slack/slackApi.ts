@@ -172,6 +172,8 @@ export interface SlackMessage {
   ts: string;
   user?: string;
   bot_id?: string;
+  /// The name a bot message was posted as (a worker's or a team's).
+  username?: string;
   text: string;
   files?: SlackFile[];
 }

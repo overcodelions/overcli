@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LibraryItem } from '../org/orgService';
-import { contentWords, isLookup, libraryCandidates, matchExisting, score, summarize, whenText, type WorkCandidate } from './existingWork';
+import { contentWords, declined, isLookup, libraryCandidates, matchExisting, roomText, score, summarize, whenText, type WorkCandidate } from './existingWork';
 
 const NOW = new Date('2026-10-20T15:00:00').getTime();
 const HOUR = 60 * 60 * 1000;
@@ -53,6 +53,41 @@ describe('existing work', () => {
     // One content word is never enough to show.
     expect(matchExisting('where is the roadmap', [ROADMAP], NOW).every((h) => h.weak)).toBe(true);
     expect(matchExisting('what?', [ROADMAP], NOW)).toEqual([]);
+  });
+
+  it('reads a task\'s room with it, and leaves out a worker declining', () => {
+    const task = { id: 't-9', kind: 'task', title: 'Exports MLP', at: NOW - DAY, status: 'delivered', body: 'The pack.', source: { kind: 'team', teamId: 'team-p', teamName: 'Product Team', taskId: 't-9' } } as unknown as LibraryItem;
+    const room = [
+      { id: 'a', speaker: { kind: 'you' as const }, text: 'what is code acme doing', at: NOW, exchange: 0 },
+      { id: 'b', speaker: { kind: 'member' as const, workerId: 'w-h', name: 'Hugo' }, text: 'Code acme is the platform squad.', at: NOW, exchange: 0 },
+      { id: 'c', speaker: { kind: 'coordinator' as const }, text: 'oops', at: NOW, exchange: 0, failed: true },
+    ];
+    const [c] = libraryCandidates([task], { room: () => room });
+    expect(c.body).toBe("The pack.\n\nSince then, in the team's room:\n\nAsked: what is code acme doing\n\nHugo: Code acme is the platform squad.");
+    expect(matchExisting('what is code acme doing', [c], NOW)[0].weak).toBeUndefined();
+    expect(roomText([])).toBe('');
+
+    const no = { id: 'ask:1', kind: 'answer', title: 'what is code acme doing', at: NOW, status: 'delivered', workerId: 'w-v', workerName: 'Vantage', body: 'This is internal product territory, outside my job as the competitive analyst.', source: { kind: 'ask' } } as unknown as LibraryItem;
+    expect(libraryCandidates([no])).toEqual([]);
+    expect(declined("That's not my remit.")).toBe(true);
+    expect(declined('Code acme ships in March. I have no access to Jira, so the ticket count may lag.')).toBe(false);
+  });
+
+  it('shows the same question to the same team once, the newer', () => {
+    const older: WorkCandidate = { ...ROADMAP, hit: { ...ROADMAP.hit, at: NOW - 2 * DAY, teamTaskId: 't-0' }, group: 'task:t-0' };
+    const hits = matchExisting('whats the roadmap for q1 2027', [older, ROADMAP], NOW);
+    expect(hits.map((h) => h.teamTaskId)).toEqual(['t-1']);
+  });
+
+  it('does not show words found only scattered through a body', () => {
+    const pack: WorkCandidate = {
+      hit: { kind: 'team', title: 'Exports MLP and how close are we', who: 'Product Team', at: NOW - DAY, teamTaskId: 't-2' },
+      body: 'The code is merged to master. Open tickets: ACME-412 and ACME-413 are still red in CI.',
+    };
+    expect(matchExisting('what is code red doing', [pack], NOW).every((h) => h.weak)).toBe(true);
+    // Side by side, as asked: a match.
+    const said: WorkCandidate = { ...pack, body: 'Code red is the platform squad; it owns the sandbox.' };
+    expect(matchExisting('what is code red doing', [said], NOW)[0].weak).toBeUndefined();
   });
 
   it('ranks the newer and the title match higher', () => {

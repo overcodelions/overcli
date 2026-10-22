@@ -222,7 +222,7 @@ export function startDaemon(
   if (controlAt && 'error' in controlAt) {
     deps.out(`control: not started — $OVERCLI_CONTROL: ${controlAt.error}`);
   } else if (controlAt) {
-    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, processes: engines.processes,
+    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, processes: engines.processes, slackConversations: engines.slackConversations,
       draftProcess: (input) => draftProcessFromImage(drafterDepsFor(engines.runner), input), slackPeople: slackDirectory(), log: deps.out });
     control = server;
     listenControlPlane(server, controlAt).then(

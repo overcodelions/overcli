@@ -80,11 +80,11 @@ describe('defaultTaskTab', () => {
     expect(defaultTaskTab(task(debate()), 4)).toBe('landed');
   });
 
-  it('opens on the conversation while someone answers, or when replies came after the wrap-up', () => {
+  it('opens on the conversation only while someone answers; a question since still opens where it landed', () => {
     const busy = task(debate(), { room: { messages: debate(), busy: { speaker: 'Mira', since: 1 } } });
     expect(defaultTaskTab(busy, 4)).toBe('conversation');
     const after = [...debate(), msg(1, you, 'More?'), msg(1, mira, 'Yes, more.')];
-    expect(defaultTaskTab(task(after), 4)).toBe('conversation');
+    expect(defaultTaskTab(task(after), 4)).toBe('landed');
   });
 
   it('opens on the pack once a pack update came after everything said', () => {

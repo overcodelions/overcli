@@ -310,10 +310,10 @@ export interface WorkerEngineDeps {
   /// worker's flow as-is, whole pipeline and all.
   pieceFlow?: (flowId: string, opts?: { check?: boolean }) => { ok: true; flowId: string } | { ok: false; error: string };
   /// Name and description of each flow on a worker's contract, in the order
-  /// given, skipping ids that no longer resolve. Only needed to tell a
-  /// multi-flow worker's planner what it can route to; without it every item
-  /// runs through the first flow, which is what a one-flow worker does anyway.
-  flowsFor?: (ids: string[]) => Array<{ id: string; name: string; description?: string }>;
+  /// given, skipping ids that no longer resolve. Tells a multi-flow worker's
+  /// planner what it can route to, and any worker on an errand how big each
+  /// flow is, so a quick question doesn't ride a weekly report's flow.
+  flowsFor?: (ids: string[]) => Array<{ id: string; name: string; description?: string; steps?: string[] }>;
   /// Tools every worker gets on top of its own (the org's shared tools).
   sharedMcpServers?: () => string[];
   /// The org's default scope for each tool (toolScope.ts), under the
@@ -2432,16 +2432,27 @@ export class WorkerEngine {
     ];
   }
 
-  private flowsBlock(w: Worker): string[] {
-    if (w.flowIds.length < 2 || !this.deps.flowsFor) return [];
+  /// A shift only needs this to route between flows, so a one-flow worker's
+  /// shift goes without. An errand always gets it: whether the flow it has is
+  /// the right SIZE for the ask is the triage call, and a worker that never
+  /// saw its flow sent "what do competitors charge for MDF?" through a
+  /// six-step weekly report build.
+  private flowsBlock(w: Worker, errand = false): string[] {
+    const min = errand ? 1 : 2;
+    if (w.flowIds.length < min || !this.deps.flowsFor) return [];
     const flows = this.deps.flowsFor(w.flowIds);
-    if (flows.length < 2) return [];
+    if (flows.length < min) return [];
+    const line = (f: (typeof flows)[number]) => [
+      `  - id: "${f.id}" — ${f.name}${f.description ? `: ${f.description.trim()}` : ''}`,
+      ...(f.steps?.length ? [`    ${f.steps.length} steps: ${f.steps.join(' → ')}`] : []),
+    ];
+    if (flows.length === 1) return ['', 'YOUR FLOW — every candidate runs through it:', ...line(flows[0])];
     return [
       '',
       'YOUR FLOWS — every candidate runs through exactly one of these. Add',
       '"suggestedFlowId": "<id>" to a candidate to send it to the flow that fits; a',
       'candidate without one runs through the first.',
-      ...flows.map((f) => `  - id: "${f.id}" — ${f.name}${f.description ? `: ${f.description}` : ''}`),
+      ...flows.flatMap(line),
     ];
   }
 
@@ -3157,15 +3168,17 @@ export class WorkerEngine {
       'Same three paths as before: answer it now if you can settle it from what you',
       'already have — an answered question is a finished errand, not a failure;',
       `otherwise propose at most ${w.caps.maxItemsPerShift} candidates against your existing`,
-      'flows; or, if it needs real investigation and none of your flows fit, emit an',
-      'empty candidates list and a <flow_request> block for a read-only flow. Start',
+      'flows, if one fits the ask at its size; or, if it needs real investigation and',
+      'none of your flows fit — or the one that covers it would do far more than was',
+      'asked — emit an empty candidates list and a <flow_request> block for a',
+      'read-only flow sized to the ask. Start',
       'your reply with <subject>What this errand is, as a title</subject>.',
       // Its flows, again: they change under a long-lived session too — a
       // worker pointed at a repo this afternoon has a flow it didn't have at
       // breakfast, and a candidate that doesn't name it runs through the first.
       ...this.standingBlock(w),
       ...this.runningBlock(w),
-      ...this.flowsBlock(w),
+      ...this.flowsBlock(w, true),
       ...handoff,
       ...REPLIES_HINT,
     ].join('\n');
@@ -3215,7 +3228,7 @@ export class WorkerEngine {
         : []),
       ...(from ? [] : this.delegationBlock(w)),
       ...this.runningBlock(w),
-      ...this.flowsBlock(w),
+      ...this.flowsBlock(w, true),
     ];
     if (rejected.length > 0) {
       parts.push(
@@ -3247,11 +3260,16 @@ export class WorkerEngine {
       '   the ask. Your planning turn is for dispatching work, not performing it: a',
       '   flow has review, fact-check and report steps you cannot reproduce inline,',
       '   so answering in prose instead quietly ships the weaker deliverable.',
+      '   A flow fits only at its SIZE: its final output has to be the thing asked',
+      '   for. A narrow question inside your remit does not fit a flow built for your',
+      '   recurring report — a full sweep, a built report, a review loop — just',
+      '   because the topic matches. That is path 3, with a flow sized to the question.',
       '',
       '3. ASK FOR A NEW FLOW. If answering properly needs real investigation — several',
       '   steps, reading a lot of the codebase, correlating things you cannot hold in',
-      '   one turn — and none of your flows fits, do NOT guess and do NOT force it into',
-      '   the wrong flow. Emit an empty candidates list and end your reply with a block:',
+      '   one turn — and none of your flows fits, or the one that covers it would do far',
+      '   more than was asked, do NOT guess and do NOT force it into the wrong flow.',
+      '   Emit an empty candidates list and end your reply with a block:',
       '',
       '     <flow_request>',
       '     One paragraph describing the flow needed to answer this errand: what each',

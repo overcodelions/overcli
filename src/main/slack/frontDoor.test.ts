@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Attachment } from '../../shared/types';
+import type { TeamRoom } from '../../shared/flows/team';
 import type { ErrandProgress } from '../org/orgService';
-import { FrontDoor, namedWorker, rankByWords, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
+import { FrontDoor, namedWorker, rankByWords, roomStatus, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
 import { readRoute, routePrompt } from './frontDoorRoute';
 import type { SlackMessage } from './slackApi';
 
@@ -10,7 +11,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const TRIAGE: FrontDoorWorker = { id: 'w-triage', name: 'Triage', tagline: 'Fixes product bugs', job: 'Reproduce bugs in the web app, fix them, and open a pull request with tests.' };
 const VANTAGE: FrontDoorWorker = { id: 'w-vantage', name: 'Vantage', tagline: 'Competitive analyst', job: 'Research competitors and write competitive analysis reports on features, pricing and positioning.' };
 
-function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null } = {}) {
+function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null } = {}) {
   const posts: string[] = [];
   const briefs: Array<{ teamId: string; brief: string }> = [];
   const items: Array<{ processId: string; brief: string }> = [];
@@ -80,6 +81,9 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
           },
         }
       : {}),
+    ...(opts.room ? { teamRoom: () => opts.room!() } : {}),
+    ...(opts.plain ? { plain: async (q: string, a: string) => opts.plain!(q, a) } : {}),
+    ...(opts.answer ? { answer: async (_c: unknown, text: string) => opts.answer!(text) } : {}),
     progress: () => progress,
     route: async (_text, offered, rel) => {
       routed++;
@@ -661,6 +665,104 @@ describe('looking up existing work first', () => {
     await no.door.onMessage({ channel: 'D0ACME', ts: '6.1', threadTs: '6.0', user: 'U1', text: 'None of these', dm: true });
     expect(no.routed()).toBe(1);
     expect(no.asks[0].workerId).toBe('w-triage');
+  });
+
+  it('takes a question typed under an offer as one about it, and posts the room\'s answer back here', async () => {
+    let room: TeamRoom | undefined = { messages: [] };
+    const h = harness({ blocks: true, askTeam: true, room: () => room, findExisting: () => [ROADMAP], route: { workerId: 'w-triage', why: 'x' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.0', user: 'U1', text: 'whats the roadmap for q1 2027', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.1', threadTs: '7.0', user: 'U1', text: 'what is the mobile app doing', dm: true });
+    // Not looked up again, not routed: put to the team that made it.
+    expect(h.looked).toHaveLength(1);
+    expect(h.routed()).toBe(0);
+    expect(h.teamAsks).toEqual([{ taskId: 't-1', text: 'what is the mobile app doing' }]);
+    expect(h.posts.at(-1)).toBe("D0ACME@7.0: Asked *Product Team*. I'll post their answer here.");
+    // The stale button: already asked.
+    await h.door.onChoice({ channel: 'D0ACME', messageTs: '7.2', threadTs: '7.0', user: 'U1', text: 'Ask the team about it' });
+    expect(h.teamAsks).toHaveLength(1);
+    expect(h.posts.at(-1)).toBe("D0ACME@7.0: Already asked *Product Team*. I'll post their answer here.");
+
+    const asked = { id: 'm1', speaker: { kind: 'you' as const }, text: 'what is the mobile app doing', at: Date.now(), exchange: 0 };
+    room = { messages: [asked], busy: { speaker: 'Coordinator', since: Date.now() } };
+    await h.door.poll();
+    // Who's on it, in the thread, while the room works.
+    expect(h.posts.at(-1)).toContain('[as Product Team] :hourglass_flowing_sand: *Product Team* is on it');
+    expect(h.posts.at(-1)).toContain('• Coordinator is picking who should answer');
+    room = { messages: [asked, { id: 'm2', speaker: { kind: 'coordinator' }, text: 'It ships in February.', at: Date.now(), exchange: 0 }], busy: null };
+    await h.door.poll();
+    expect(h.posts.at(-1)).toBe('D0ACME@7.0: [as Product Team] It ships in February.\n\n<https://overcli.acme.example/#teamtask/t-1|Open the task>');
+    expect(h.edits.at(-1)?.text).toMatch(/^:white_check_mark: \*Product Team\* answered in \d+ min\.$/);
+    await h.door.poll();
+    expect(h.posts.filter((p) => p.includes('February'))).toHaveLength(1);
+    // More in the thread: the same room.
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.3', threadTs: '7.0', user: 'U1', text: 'and integrations?', dm: true });
+    expect(h.teamAsks.at(-1)).toEqual({ taskId: 't-1', text: 'and integrations?' });
+  });
+
+  it('answers a question from what is already known, under the team\'s name', async () => {
+    const h = harness({ blocks: true, askTeam: true, findExisting: () => [ROADMAP], answer: () => ({ text: 'Reporting ships first in Q1, then the mobile app.', who: 'Product Team', hits: [ROADMAP], from: ['Product Team\'s task', 'What Product Team knows'] }), route: { workerId: 'w-triage', why: 'x' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '9.0', user: 'U1', text: 'whats next on the roadmap', dm: true });
+    expect(h.looked).toHaveLength(0);
+    expect(h.routed()).toBe(0);
+    expect(h.posts).toEqual(["D0ACME@9.0: Checking what's already been worked out…", 'D0ACME@9.0: [as Product Team] Reporting ships first in Q1, then the mobile app.']);
+    expect(h.blocks[0].text).toBe("From Product Team's task · What Product Team knows");
+    expect((h.blocks[0].blocks[1] as { elements: Array<{ text: { text: string } }> }).elements.map((b) => b.text.text)).toEqual(['Open it', 'Ask the team about it', "That's not it"]);
+    // "Not it": to a worker, as before.
+    await h.door.onMessage({ channel: 'D0ACME', ts: '9.1', threadTs: '9.0', user: 'U1', text: 'not it', dm: true });
+    expect(h.asks[0].workerId).toBe('w-triage');
+
+    // Nothing known covers it: offered and routed as before.
+    const none = harness({ findExisting: () => [], answer: () => null, route: { workerId: 'w-vantage', why: 'research' } });
+    await none.door.onMessage({ channel: 'D0ACME', ts: '9.2', user: 'U1', text: 'what are competitors charging?', dm: true });
+    expect(none.looked).toHaveLength(1);
+    expect(none.asks[0].workerId).toBe('w-vantage');
+  });
+
+  it('says a room\'s answer plainly in Slack, or as it was when that fails', async () => {
+    const asked = { id: 'm1', speaker: { kind: 'you' as const }, text: 'what is next', at: Date.now() + 60_000, exchange: 0 };
+    const said = { id: 'm2', speaker: { kind: 'coordinator' as const }, text: 'C1 first. Agreed: C1.', at: Date.now() + 60_000, exchange: 0 };
+    for (const [plain, want] of [[() => 'The MDF Programs pilot comes first.', 'The MDF Programs pilot comes first.'], [() => null, 'C1 first. Agreed: C1.']] as const) {
+      const h = harness({ blocks: true, askTeam: true, plain, room: () => ({ messages: [asked, said], busy: null }), findExisting: () => [ROADMAP] });
+      await h.door.onMessage({ channel: 'D0ACME', ts: '10.0', user: 'U1', text: 'whats the roadmap for q1 2027', dm: true });
+      await h.door.onMessage({ channel: 'D0ACME', ts: '10.1', threadTs: '10.0', user: 'U1', text: 'what is next', dm: true });
+      await h.door.poll();
+      expect(h.posts.at(-1)).toContain(`[as Product Team] ${want}`);
+    }
+  });
+
+  it('logs each conversation and what came of it', async () => {
+    const h = harness({ blocks: true, askTeam: true, findExisting: () => [ROADMAP], answer: () => ({ text: 'Reporting first.', who: 'Product Team', hits: [ROADMAP], from: ['x'] }), route: { workerId: 'w-triage', why: 'x' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '11.0', user: 'U1', text: 'whats next on the roadmap', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '12.0', user: 'U1', text: 'add an export button', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '11.1', threadTs: '11.0', user: 'U1', text: 'what about mobile?', dm: true });
+    expect(h.state().log?.map((l) => [l.key, l.by, l.text, l.outcome])).toEqual([
+      ['D0ACME:11.0', 'Pat', 'whats next on the roadmap', 'Asked Product Team'],
+      ['D0ACME:12.0', 'Pat', 'add an export button', 'Triage has it'],
+    ]);
+    expect(h.state().log?.[0].url).toBe(ROADMAP.url);
+    expect(h.door.conversations()[0].key).toBe('D0ACME:11.0');
+  });
+
+  it('says who in the room is on the question', () => {
+    const t0 = 1_000_000;
+    const q = { id: 'q', speaker: { kind: 'you' as const }, text: 'what next', at: t0, exchange: 2 };
+    const hugo = { id: 'h', speaker: { kind: 'member' as const, workerId: 'w-h', name: 'Hugo' }, text: 'Reporting.', at: t0 + 1, exchange: 2 };
+    const at = t0 + 3 * 60_000;
+    expect(roomStatus({ messages: [], queue: [{ text: 'what next', at: t0 }] }, 'what next', t0, 'Product Team', at)).toBe(':hourglass_flowing_sand: *Product Team* is on it · 3 min so far\n• Next in line: they\'re answering another question first');
+    expect(roomStatus({ messages: [q], busy: { speaker: 'Hugo', since: t0 + 60_000 } }, 'what next', t0, 'Product Team', at)).toContain('• Hugo is answering · 2 min');
+    expect(roomStatus({ messages: [q, hugo], busy: { speaker: 'Lena', since: at } }, 'what next', t0, 'Product Team', at)).toBe(':hourglass_flowing_sand: *Product Team* is on it · 3 min so far\n✓ Hugo answered\n• Lena is answering · 1 min');
+    expect(roomStatus({ messages: [q, hugo], busy: { speaker: 'Hugo', since: at } }, 'what next', t0, 'Product Team', at)).toContain('• Hugo is responding');
+    expect(roomStatus({ messages: [q, hugo], busy: { speaker: 'Coordinator', since: at } }, 'what next', t0, 'Product Team', at)).toContain('• Coordinator is summing up');
+    // Done talking: the answer takes over.
+    expect(roomStatus({ messages: [q, hugo], busy: null }, 'what next', t0, 'Product Team', at)).toBeNull();
+  });
+
+  it('never makes a question a team task', async () => {
+    const PRODUCT: FrontDoorTeam = { id: 'team-product', name: 'Product Team', purpose: 'Roadmaps and plans', members: ['Hugo'] };
+    const h = harness({ teams: [PRODUCT], route: { workerId: 'w-triage', why: 'x' } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '8.0', user: 'U1', text: 'whats next on the roadmap?', dm: true });
+    expect(h.candidates[0]).not.toContain('team:team-product');
+    expect(h.briefs).toHaveLength(0);
   });
 
   it('lists recent related work for the router', () => {

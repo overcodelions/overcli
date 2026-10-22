@@ -7,6 +7,7 @@
 // Library behind it already holds only what the person may see.
 
 import type { LibraryItem } from '../org/orgService';
+import type { TeamMessage } from '../../shared/flows/team';
 
 /// A finished piece of work that may already answer the request.
 export interface ExistingHit {
@@ -105,6 +106,19 @@ export interface Scored {
   matched: number;
   coverage: number;
   rank: number;
+  /// Content words found in its title (or who made it).
+  inTitle: number;
+  /// The request's words side by side somewhere in it, as asked.
+  phrase: boolean;
+}
+
+/// Whether `words` appear one after another in `seq`.
+function hasPhrase(seq: string[], words: string[]): boolean {
+  if (words.length < 2) return false;
+  for (let i = 0; i + words.length <= seq.length; i++) {
+    if (words.every((w, j) => seq[i + j] === w)) return true;
+  }
+  return false;
 }
 
 /// How well one piece of work matches the request's words: a word in its
@@ -113,8 +127,10 @@ export interface Scored {
 export function score(words: string[], c: WorkCandidate, now: number): Scored | null {
   const age = (now - c.hit.at) / DAY_MS;
   if (!words.length || age > RECENT_DAYS) return null;
-  const title = new Set(tokens(`${c.hit.title} ${c.hit.who}`));
-  const body = new Set(tokens(c.body ?? ''));
+  const titleSeq = tokens(`${c.hit.title} ${c.hit.who}`);
+  const bodySeq = tokens(c.body ?? '');
+  const title = new Set(titleSeq);
+  const body = new Set(bodySeq);
   let inTitle = 0;
   let matched = 0;
   for (const w of words) {
@@ -126,12 +142,20 @@ export function score(words: string[], c: WorkCandidate, now: number): Scored | 
   const weighted = (inTitle * 2 + (matched - inTitle)) / (words.length * 2);
   const fresh = 1 - Math.max(0, age) / (RECENT_DAYS * 2);
   const kind = c.hit.kind === 'team' ? 0.1 : c.hit.kind === 'file' ? 0.05 : c.hit.kind === 'process' ? 0.03 : 0;
-  return { candidate: c, matched, coverage, rank: weighted * fresh + kind };
+  return { candidate: c, matched, coverage, rank: weighted * fresh + kind, inTitle, phrase: hasPhrase(titleSeq, words) || hasPhrase(bodySeq, words) };
 }
 
 /// What to show (strong matches, best first, one per task) and what to hint
 /// at (weaker ones). Few content words, nothing shown: "what's up?" isn't a lookup of anything.
 export function matchExisting(text: string, candidates: WorkCandidate[], now: number): ExistingHit[] {
+  return matchWork(text, candidates, now).map(({ candidate, weak }) =>
+    weak ? { ...candidate.hit, summary: '', weak: true } : { ...candidate.hit, summary: summarize(candidate.body ?? '') },
+  );
+}
+
+/// `matchExisting`, keeping the candidates themselves: what answering from
+/// them needs is their whole body, not a summary.
+export function matchWork(text: string, candidates: WorkCandidate[], now: number): Array<{ candidate: WorkCandidate; weak: boolean }> {
   const words = contentWords(text);
   if (!words.length) return [];
   const scored = candidates
@@ -142,17 +166,21 @@ export function matchExisting(text: string, candidates: WorkCandidate[], now: nu
   const strong: Scored[] = [];
   const weak: Scored[] = [];
   for (const s of scored) {
+    // The same question asked twice of the same team is one piece of work
+    // here: the better (newer) of the two.
+    const same = `same:${s.candidate.hit.who}:${s.candidate.hit.title.trim().toLowerCase()}`;
     const group = s.candidate.group;
-    if (group && seen.has(group)) continue;
+    if ((group && seen.has(group)) || seen.has(same)) continue;
     if (group) seen.add(group);
-    if (s.coverage >= STRONG_COVERAGE && s.matched >= STRONG_WORDS) {
+    seen.add(same);
+    // Words only scattered through a long body ("code" in one place, a
+    // ticket key "ACME-412" in another) aren't what "code acme" asked about:
+    // shown only when one is in the title or they appear together.
+    if (s.coverage >= STRONG_COVERAGE && s.matched >= STRONG_WORDS && (s.inTitle > 0 || s.phrase)) {
       if (strong.length < MAX_SHOWN) strong.push(s);
     } else if (weak.length < MAX_RELATED) weak.push(s);
   }
-  return [
-    ...strong.map((s) => ({ ...s.candidate.hit, summary: summarize(s.candidate.body ?? '') })),
-    ...weak.map((s) => ({ ...s.candidate.hit, summary: '', weak: true })),
-  ];
+  return [...strong.map((s) => ({ candidate: s.candidate, weak: false })), ...weak.map((s) => ({ candidate: s.candidate, weak: true }))];
 }
 
 /// The first two or three sentences of a body, as plain text.
@@ -185,22 +213,47 @@ export function whenText(at: number, now: number): string {
   return `${Math.max(2, Math.ceil((startOfToday.getTime() - at) / DAY_MS))} days ago`;
 }
 
+/// A worker saying it won't or can't, rather than answering: "outside my
+/// job", "not my remit", "I have no tool to check". Read near the start only,
+/// where a refusal says so; an answer that mentions a limit later still counts.
+const DECLINED = /\b(?:not (?:my|in my) (?:remit|job|area|lane|scope)|outside (?:my|of my) (?:job|remit|scope|area|lane)|(?:i (?:can'?t|cannot|don'?t|do not) (?:help with|answer|look (?:that|this|it) up))|i have no (?:tool(?:ing|s)?|access|way) to (?:check|look|see|answer))\b/i;
+
+export function declined(reply: string | undefined): boolean {
+  return !!reply && DECLINED.test(reply.slice(0, 400).replace(/[’‘]/g, "'"));
+}
+
+/// What was said in a finished task's room after its pack: each question and
+/// who answered what. Failed turns left out. Empty when nobody talked.
+export function roomText(messages: TeamMessage[] | undefined, max = 8000): string {
+  const said = (messages ?? [])
+    .filter((m) => !m.failed && m.text.trim())
+    .map((m) => `${m.speaker.kind === 'you' ? 'Asked' : m.speaker.kind === 'member' ? m.speaker.name : 'Coordinator'}: ${m.text.trim()}`)
+    .join('\n\n');
+  if (!said) return '';
+  // The newest part when it is long: what was said last is the latest word.
+  return `Since then, in the team's room:\n\n${said.length > max ? `…${said.slice(-max)}` : said}`;
+}
+
 /// The Library's items as candidates: a team task as its team's, a kept file
 /// as its task's (the task wins when both match), the rest as their
-/// worker's. Failed work answers nothing. `consoleUrl`: links when the org
-/// has a public address.
-export function libraryCandidates(items: LibraryItem[], opts: { consoleUrl?: string; taskStatus?: (taskId: string) => string | undefined } = {}): WorkCandidate[] {
+/// worker's. Failed work, and a worker declining, answers nothing.
+/// `consoleUrl`: links when the org has a public address. `room`: what was
+/// said in a task's room since, read with the task.
+export function libraryCandidates(items: LibraryItem[], opts: { consoleUrl?: string; taskStatus?: (taskId: string) => string | undefined; room?: (taskId: string) => TeamMessage[] | undefined } = {}): WorkCandidate[] {
   const base = opts.consoleUrl?.replace(/\/+$/, '');
   const out: WorkCandidate[] = [];
   for (const x of items) {
     if (x.status === 'failed' || x.status === 'skipped' || !x.title.trim()) continue;
+    if (x.kind === 'answer' && declined(x.body)) continue;
     const body = x.body?.slice(0, 20_000);
     const team = x.source.kind === 'team' ? x.source : null;
     if (x.kind === 'task' && team) {
       const status = opts.taskStatus?.(team.taskId);
+      const room = roomText(opts.room?.(team.taskId));
+      const full = [body, room].filter(Boolean).join('\n\n');
       out.push({
         hit: { kind: 'team', title: x.title, who: team.teamName, at: x.at, teamTaskId: team.taskId, teamId: team.teamId, ...(base ? { url: `${base}/#teamtask/${encodeURIComponent(team.taskId)}` } : {}), ...(status ? { status } : {}) },
-        ...(body ? { body } : {}),
+        ...(full ? { body: full } : {}),
         group: `task:${team.taskId}`,
       });
     } else if (x.kind === 'file' && team) {

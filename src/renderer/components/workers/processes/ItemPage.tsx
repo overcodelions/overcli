@@ -40,6 +40,7 @@ import {
   type StageCard,
   type VoteRow,
 } from "./processView";
+import { StageForm, missingAnswers } from "./StageFields";
 
 const primaryBtn = "pil-btn bg-accent border-accent text-white hover:opacity-90";
 const plainBtn = "pil-btn border-card-strong bg-surface-elevated text-ink hover:bg-card-strong";
@@ -148,12 +149,14 @@ export function ItemPage({
   const [sending, setSending] = useState(false);
   const [backTo, setBackTo] = useState(back.defaultIndex);
   const [why, setWhy] = useState("");
+  const [answers, setAnswers] = useState<Record<string, string>>({});
 
   // Where it moves, the send back and move pickers start from its new place.
   useEffect(() => {
     setBackTo(sendBackChoices(stages, item.stageIndex).defaultIndex);
     setMoveTo(String(item.stageIndex));
     setSending(false);
+    setAnswers({});
     // Only a move resets them: `stages` is a new array on every poll.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.stageIndex]);
@@ -178,7 +181,7 @@ export function ItemPage({
   const openTask = item.taskId && stage?.teamId ? () => selectTeam(stage.teamId!, item.taskId) : null;
   const canSkip = can.move && item.stageIndex < stages.length - 1;
 
-  const act = async (action: ProcessItemAction, extra: { note?: string; stageIndex?: number } = {}): Promise<boolean> => {
+  const act = async (action: ProcessItemAction, extra: { note?: string; stageIndex?: number; answers?: Record<string, string> } = {}): Promise<boolean> => {
     if (action === "stop" && !window.confirm(`Stop ${item.title}? Any team work on it is cancelled; what it produced stays.`)) return false;
     setBusy(action);
     setError(null);
@@ -188,6 +191,7 @@ export function ItemPage({
       action,
       ...(text ? { note: text } : {}),
       ...(extra.stageIndex !== undefined ? { stageIndex: extra.stageIndex } : {}),
+      ...(extra.answers ? { answers: extra.answers } : {}),
     });
     setBusy(null);
     if (!res.ok) {
@@ -196,6 +200,17 @@ export function ItemPage({
     }
     onChanged();
     return true;
+  };
+
+  const fields = stage?.kind === "people" ? (stage.fields ?? []) : [];
+  const inputStage = stage?.kind === "people" && stage.mode === "input";
+  const approve = async () => {
+    const missing = missingAnswers(fields, answers);
+    if (missing.length) {
+      setError(`Fill in ${missing.map((m) => `“${m}”`).join(", ")}.`);
+      return;
+    }
+    if (await act("approve", fields.length ? { answers } : {})) setAnswers({});
   };
 
   const sendBack = async () => {
@@ -459,8 +474,8 @@ export function ItemPage({
             </div>
             <div className="flex flex-wrap gap-2">
               {can.approve && (
-                <button type="button" className={primaryBtn} disabled={!!busy} onClick={() => void act("approve")}>
-                  {busy === "approve" ? "Approving…" : "Approve"}
+                <button type="button" className={primaryBtn} disabled={!!busy} onClick={() => void approve()}>
+                  {busy === "approve" ? (inputStage ? "Submitting…" : "Approving…") : inputStage ? "Submit" : "Approve"}
                 </button>
               )}
               {can.sendBack && back.choices.length > 0 && deciding && (
@@ -475,6 +490,7 @@ export function ItemPage({
               )}
             </div>
           </div>
+          {deciding && can.approve && !sending && fields.length > 0 && <StageForm fields={fields} answers={answers} onChange={setAnswers} />}
           {sending && (
             <div className="flex flex-col gap-2.5 border-t border-amber-400/25 pt-3">
               <span className="text-[12.5px] text-ink-muted">Send it back to</span>

@@ -575,4 +575,81 @@ describe('who can see and start a process', () => {
     expect(h.svc.submit(from(owner), made.process.id, { brief: 'Plan next quarter', source: 'slack' }).ok).toBe(true);
     expect(h.svc.save(owner, { id: made.process.id, name: 'Mine now', stages }).ok).toBe(false);
   });
+
+  it('hands on what people fill in at a stage, and what a decider says as they approve', () => {
+    const h = harness();
+    const made = h.svc.save(owner, {
+      access: { who: 'everyone' },
+      name: 'Budgeted build',
+      stages: [
+        {
+          id: 'scope',
+          name: 'Scope it',
+          kind: 'people',
+          mode: 'input',
+          approvers: [{ name: 'Sam', slackUserId: 'U0SAM' }],
+          fields: [
+            { id: 'budget', label: 'Budget', kind: 'text', required: true },
+            { id: 'segment', label: 'Segment', kind: 'choice', options: ['SMB', 'Mid-market'], required: true },
+            { id: 'notes', label: 'Anything to know', kind: 'longText' },
+          ],
+        },
+        { id: 'ok', name: 'Sign off', kind: 'people', approvers: [{ name: 'Sam', slackUserId: 'U0SAM' }] },
+        { id: 'build', name: 'Develop', kind: 'team', teamId: 't-build' },
+      ],
+    });
+    if (!made.ok) throw new Error(made.error);
+    const sub = h.svc.submit({ name: 'Riley' }, made.process.id, { brief: 'Usage dashboards', source: 'console' });
+    if (!sub.ok) throw new Error(sub.error);
+    // The ask says what it wants filled in.
+    const ask = h.told.find((t) => t.to === 'Sam' && t.decide)!;
+    expect(ask.text).toContain('fill in _Usage dashboards_');
+    expect(ask.text).toContain('• Budget\n• Segment\n• Anything to know (optional)');
+    expect(h.svc.stageOf(sub.item.id, 'scope')?.fields?.length).toBe(3);
+    expect(h.svc.stageOf(sub.item.id, 'ok')).toBeUndefined();
+
+    // Required fields and choices are checked.
+    expect(h.svc.act(judge, sub.item.id, 'approve', { answers: { budget: '40k' } })).toMatchObject({ ok: false, error: 'Fill in “Segment”.' });
+    expect(h.svc.act(judge, sub.item.id, 'approve', { answers: { budget: '40k', segment: 'Enterprise' } })).toMatchObject({ ok: false, error: expect.stringContaining('Pick one') });
+    expect(h.svc.act(judge, sub.item.id, 'approve', { answers: { budget: '40k', segment: 'Mid-market', stray: 'x' } }).ok).toBe(true);
+    const at = h.state().items[0];
+    expect(at.stageIndex).toBe(1);
+    expect(at.artifacts).toEqual([expect.objectContaining({ stageId: 'scope', title: 'What people added', summary: 'From Sam:\nBudget: 40k\nSegment: Mid-market', files: [] })]);
+    // The next people stage sees it as what came before.
+    expect(h.told.filter((t) => t.to === 'Sam' && t.decide)[1].text).toContain('*Scope it* produced: From Sam: Budget: 40k');
+
+    // A plain approve's note is handed on too.
+    expect(h.svc.act(judge, sub.item.id, 'approve', { note: 'Ship the SMB view first.' }).ok).toBe(true);
+    expect(h.briefs[0].text).toContain('## Scope it: What people added\nFrom Sam:\nBudget: 40k');
+    expect(h.briefs[0].text).toContain('## Sign off: What the deciders said\nFrom Sam:\nNote: Ship the SMB view first.');
+  });
+
+  it('collects everyone’s answers when all of them must fill it in', () => {
+    const h = harness();
+    const made = h.svc.save(owner, {
+      access: { who: 'everyone' },
+      name: 'Survey',
+      stages: [
+        { id: 'ask', name: 'Reviewers weigh in', kind: 'people', mode: 'input', needs: 'all', approvers: [{ name: 'Sam', slackUserId: 'U0SAM' }, { name: 'Ana', slackUserId: 'U0ANA' }], fields: [{ id: 'view', label: 'Your view', kind: 'longText', required: true }] },
+        { id: 'build', name: 'Develop', kind: 'team', teamId: 't-build' },
+      ],
+    });
+    if (!made.ok) throw new Error(made.error);
+    const sub = h.svc.submit({ name: 'Riley' }, made.process.id, { brief: 'Pricing page', source: 'console' });
+    if (!sub.ok) throw new Error(sub.error);
+    expect(h.state().items[0].stageNote).toBe('0 of 2 filled in');
+    expect(h.svc.act(judge, sub.item.id, 'approve', { answers: { view: 'Too busy.' } }).ok).toBe(true);
+    expect(h.state().items[0]).toMatchObject({ stageIndex: 0, stageNote: '1 of 2 filled in, waiting on 1 more' });
+    expect(h.svc.act({ name: 'Ana', slackUserId: 'U0ANA', admin: false }, sub.item.id, 'approve', { answers: { view: 'Lead with the free tier.' } }).ok).toBe(true);
+    expect(h.state().items[0].artifacts[0].summary).toBe('From Sam:\nYour view:\nToo busy.\n\nFrom Ana:\nYour view:\nLead with the free tier.');
+    expect(h.told.some((t) => t.to === 'decided' && t.text === 'Filled in by Sam, Ana.')).toBe(true);
+  });
+
+  it('refuses an input stage with nothing to fill in, or a choice with one option', () => {
+    const h = harness();
+    const people = [{ name: 'Sam' }];
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'X', stages: [{ id: 'a', name: 'Add data', kind: 'people', mode: 'input', approvers: people }] })).toMatchObject({ ok: false, error: expect.stringContaining('Add something to fill in') });
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'X', stages: [{ id: 'a', name: 'Add data', kind: 'people', approvers: people, fields: [{ id: 'f1', label: 'Tier', kind: 'choice', options: ['Gold'] }] }] })).toMatchObject({ ok: false, error: expect.stringContaining('at least two choices') });
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'X', stages: [{ id: 'a', name: 'Add data', kind: 'people', mode: 'input', approvers: [] }] })).toMatchObject({ ok: false, error: 'Say who fills in Add data.' });
+  });
 });

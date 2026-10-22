@@ -24,7 +24,8 @@ import { installTool, installedToolUrl } from '../org/tools';
 import { downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, lookupByEmail, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
 import { routeRequest } from './frontDoorRoute';
-import { libraryCandidates, matchExisting, type WorkCandidate } from './existingWork';
+import { libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
+import { answerFromWork, type AnswerSource } from './existingAnswer';
 import { drafterDepsFor } from '../org/hireDraft';
 import { canManage, canSee, isAdmin } from '../../shared/org/policy';
 import { managerFor } from '../../shared/flows/org';
@@ -167,6 +168,17 @@ export function createOrgControl(
     onAskDone: (ask) => commands?.askAnswered(ask),
   });
   commands = new SlackCommands({
+    // The pack's summary, read against the pack itself: what the team found,
+    // said for whoever asked, with its labels named.
+    plainPack: async (task) => {
+      if (!task.pack) return null;
+      const sources: AnswerSource[] = [
+        { label: `${task.teamName}'s summary of what it found`, who: task.teamName, body: task.pack.summary },
+        { label: `${task.teamName}'s pack, for what its labels mean`, who: task.teamName, body: packText(task.id) },
+      ].filter((x) => x.body.trim());
+      const got = await answerFromWork(drafterDepsFor(engines.runner), `What did ${task.teamName} find? The request was: ${task.title ?? task.brief}`, sources);
+      return got?.text ?? null;
+    },
     processes: () => processes,
     processDms: (() => {
       const store = jsonOrgStore<Record<string, Array<{ channel: string; ts: string }>>>('process-decision-dms.json', () => ({}));
@@ -393,6 +405,46 @@ export function createOrgControl(
   const names = new Map<string, string>();
   const bot = () => (slack.teamId() ? configuredSlackToken('bot') : undefined);
   const owner = options.frontDoorOwner;
+  // A team task's pack, every file of it, as one text.
+  const packText = (taskId: string): string => {
+    const teams = engines.teams?.();
+    const task = teams?.list().tasks.find((t) => t.id === taskId);
+    return (task?.pack?.files ?? [])
+      .map((f) => {
+        const got = teams?.readFile?.(taskId, f);
+        return got?.ok ? got.body : '';
+      })
+      .join('\n\n');
+  };
+  // What the caller can see in the Library, and finished process items: what
+  // the front door looks through before handing a question to anyone.
+  const workCandidates = (caller: Parameters<OrgService['library']>[0]): WorkCandidate[] => {
+    const consoleUrl = loadOrgPolicy().policy.publicUrl;
+    const tasks = new Map((engines.teams?.()?.list().tasks ?? []).map((t) => [t.id, t]));
+    const candidates: WorkCandidate[] = libraryCandidates(org.library(caller, { limit: 300 }), {
+      ...(consoleUrl ? { consoleUrl } : {}),
+      taskStatus: (taskId) => {
+        const t = tasks.get(taskId);
+        if (t?.status !== 'review') return undefined;
+        return t.requestedBy?.slackUserId && t.requestedBy.slackUserId === caller.slackUserId ? 'waiting on your review' : 'waiting on review';
+      },
+      room: (taskId) => tasks.get(taskId)?.room?.messages,
+    });
+    for (const p of processes.list(caller)) {
+      const got = processes.get(caller, p.id);
+      if (!got.ok) continue;
+      for (const i of got.items) {
+        if (i.status !== 'done') continue;
+        const last = i.artifacts.at(-1);
+        candidates.push({
+          hit: { kind: 'process', title: i.title, who: p.name, at: i.finishedAt ?? i.updatedAt, ...(consoleUrl ? { url: `${consoleUrl.replace(/\/+$/, '')}/#process/${encodeURIComponent(p.id)}/${encodeURIComponent(i.id)}` } : {}) },
+          body: last ? `${last.summary}\n${i.brief}` : i.brief,
+          ...(last?.taskId ? { group: `task:${last.taskId}` } : {}),
+        });
+      }
+    }
+    return candidates;
+  };
   const frontDoor = new FrontDoor({
     // Only those the person may start: the router never offers one they can't.
     processes: (caller) =>
@@ -412,36 +464,45 @@ export function createOrgControl(
       }, loadOrgPolicy().policy.publicUrl),
     // What the caller can see in the Library, and finished process items,
     // matched against the question: what already answers it is offered first.
-    findExisting: (caller, text) => {
-      const consoleUrl = loadOrgPolicy().policy.publicUrl;
-      const tasks = new Map((engines.teams?.()?.list().tasks ?? []).map((t) => [t.id, t]));
-      const candidates: WorkCandidate[] = libraryCandidates(org.library(caller, { limit: 300 }), {
-        ...(consoleUrl ? { consoleUrl } : {}),
-        taskStatus: (taskId) => {
-          const t = tasks.get(taskId);
-          if (t?.status !== 'review') return undefined;
-          return t.requestedBy?.slackUserId && t.requestedBy.slackUserId === caller.slackUserId ? 'waiting on your review' : 'waiting on review';
-        },
-      });
-      for (const p of processes.list(caller)) {
-        const got = processes.get(caller, p.id);
-        if (!got.ok) continue;
-        for (const i of got.items) {
-          if (i.status !== 'done') continue;
-          const last = i.artifacts.at(-1);
-          candidates.push({
-            hit: { kind: 'process', title: i.title, who: p.name, at: i.finishedAt ?? i.updatedAt, ...(consoleUrl ? { url: `${consoleUrl.replace(/\/+$/, '')}/#process/${encodeURIComponent(p.id)}/${encodeURIComponent(i.id)}` } : {}) },
-            body: last ? `${last.summary}\n${i.brief}` : i.brief,
-            ...(last?.taskId ? { group: `task:${last.taskId}` } : {}),
-          });
-        }
-      }
-      return matchExisting(text, candidates, Date.now());
+    findExisting: (caller, text) => matchExisting(text, workCandidates(caller), Date.now()),
+    // What the room said, with the task's pack beside it to name what its
+    // labels stand for: the question answered from those, for Slack.
+    plain: async (question, answer, taskId) => {
+      const task = engines.teams?.()?.list().tasks.find((t) => t.id === taskId);
+      const pack = packText(taskId);
+      const sources: AnswerSource[] = [
+        { label: `What ${task?.teamName ?? 'the team'} said just now`, who: task?.teamName ?? 'the team', body: answer },
+        ...(pack.trim() ? [{ label: `${task?.teamName ?? 'The team'}'s pack, for what its labels mean`, who: task?.teamName ?? 'the team', body: pack }] : []),
+      ];
+      return (await answerFromWork(drafterDepsFor(engines.runner), question, sources))?.text ?? null;
+    },
+    // The finished work that matches, and what each team the caller can see
+    // knows: read, and the question answered from them.
+    answer: async (caller, text) => {
+      const now = Date.now();
+      const work = matchWork(text, workCandidates(caller), now).filter((m) => !m.weak).slice(0, 3);
+      const seen = new Set(org.teams(caller).map((t) => t.id));
+      const sources: AnswerSource[] = [
+        ...work.map(({ candidate: c }): AnswerSource => ({
+          label: `${c.hit.who}'s ${c.hit.kind === 'team' ? 'task' : 'work'} "${c.hit.title}" (${whenText(c.hit.at, now)})`,
+          who: c.hit.who,
+          body: c.body ?? '',
+          hit: { ...c.hit, summary: '' },
+        })),
+        ...(engines.teams?.()?.list().teams ?? [])
+          .filter((t) => seen.has(t.id) && t.knowledge?.status === 'ready' && t.knowledge.body?.trim())
+          .map((t): AnswerSource => ({ label: `What ${t.name} knows${t.knowledge!.updatedAt ? ` (as of ${whenText(t.knowledge!.updatedAt, now)})` : ''}`, who: t.name, body: t.knowledge!.body! })),
+      ].filter((s) => s.body.trim());
+      const got = await answerFromWork(drafterDepsFor(engines.runner), text, sources);
+      if (!got) return null;
+      return { text: got.text, who: got.used[0].who, hits: got.used.flatMap((s) => (s.hit ? [s.hit] : [])), from: got.used.map((s) => s.label) };
     },
     askTeam: (caller, taskId, text) => {
       const res = org.teamRoom(caller, taskId, { kind: 'ask', text });
-      return res.ok ? { ok: true } : res;
+      return res.ok ? { ok: true, ...(res.queued ? { queued: true } : {}) } : res;
     },
+    // Only to see when it has answered: the ask itself went through teamRoom's checks.
+    teamRoom: (taskId) => engines.teams?.()?.list().tasks.find((t) => t.id === taskId)?.room,
     ...(owner
       ? {
           mayAsk: (slackUserId: string) => {

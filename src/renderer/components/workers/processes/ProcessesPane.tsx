@@ -17,6 +17,7 @@ import { WorkerAvatar, workerInitials } from "../WorkerAvatar";
 import { ProcessItemPage } from "./ProcessItemPage";
 import { FLOW_KIND_PILL, FlowLegend, ProcessFlow, flowWho } from "./ProcessFlow";
 import { FromImageSheet, ImageGlyph, PictureBanner, PictureViewer, type PictureStart } from "./FromImage";
+import { StageAsksEditor } from "./StageFields";
 import { workerTagline, type Worker } from "@shared/flows/worker";
 import type { ProcessDef, ProcessStage } from "@shared/org/process";
 import { libraryProcess, stagesFromLibrary, suggestTeamFor, type LibraryProcess } from "@shared/org/processLibrary";
@@ -1045,7 +1046,7 @@ function ProcessEditor({
       at,
       k === "people"
         ? { kind: k, approvers: cur.approvers?.length ? cur.approvers : [DESKTOP_PERSON], delayDays: undefined, repeat: undefined }
-        : { kind: k },
+        : { kind: k, mode: undefined, fields: undefined },
     );
   const missing = stages.map((s, i) => ({ s, i })).filter((x) => !stageReady(x.s, teamIds, workerIds));
   const fromLibrary = cur ? libraryStageFor(templateId, cur.id) : undefined;
@@ -1461,7 +1462,7 @@ function ProcessEditor({
                     ) : (
                       <>
                         <FormRow
-                          label="Who decides"
+                          label={cur.mode === "input" ? "Who fills it in" : "Who decides"}
                           hint={
                             (roleHint ? `The picture says: ${roleHint}. ` : "") +
                             (fromLibrary ? `Usually the ${fromLibrary.who.toLowerCase()}. Here it's you.` : "Here it's you. Published to your org, they're asked in Slack.")
@@ -1510,6 +1511,9 @@ function ProcessEditor({
                             placeholder="What makes it worth going on."
                             className="field max-w-xl resize-y px-2.5 py-2 text-[13px] leading-relaxed text-ink"
                           />
+                        </FormRow>
+                        <FormRow label="Asks for" hint="What they fill in is handed on to every stage after: a budget, the segment, what they think.">
+                          <StageAsksEditor stage={cur} onChange={(p) => patch(at, p)} />
                         </FormRow>
                         {showMore && (
                           <>
