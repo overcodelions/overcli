@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ORG_POLICY } from '../../shared/org/policy';
 import type { OrgService, HireSummary } from '../org/orgService';
-import { HIRE_APPROVE_ACTION, HIRE_ASK_TOOLS_ACTION, HIRE_CONFIRM_ACTION, JOIN_LETIN_ACTION, PROPOSALS_APPROVE_ACTION, PROPOSALS_SKIP_ACTION, SlackCommands, TEAM_APPROVE_ACTION, TEAM_MAKE_ACTION, HIRE_EDIT_ACTION } from './slackCommands';
+import { HIRE_APPROVE_ACTION, HIRE_ASK_TOOLS_ACTION, HIRE_CONFIRM_ACTION, JOIN_LETIN_ACTION, PROPOSALS_APPROVE_ACTION, PROPOSALS_SKIP_ACTION, SlackCommands, TEAM_APPROVE_ACTION, TEAM_MAKE_ACTION, HIRE_EDIT_ACTION, type SlackCommandsDeps } from './slackCommands';
 import type { AccessService } from '../org/accessService';
 
 const TEAM = 'T0ACME';
@@ -29,7 +29,7 @@ function fakeSlack() {
   return { posts, fetchImpl };
 }
 
-function harness(org: Partial<OrgService>, access?: Partial<AccessService>) {
+function harness(org: Partial<OrgService>, access?: Partial<AccessService>, deps: Partial<SlackCommandsDeps> = {}) {
   const slack = fakeSlack();
   const cmds = new SlackCommands({
     org: org as OrgService,
@@ -39,6 +39,7 @@ function harness(org: Partial<OrgService>, access?: Partial<AccessService>) {
     teamId: () => TEAM,
     log: () => {},
     fetchImpl: slack.fetchImpl as never,
+    ...deps,
   });
   return { cmds, posts: slack.posts };
 }
@@ -257,6 +258,19 @@ describe('team tasks in Slack', () => {
     expect(JSON.stringify(asks[0].body.blocks)).toContain('Which regions?');
     await cmds.onThreadReply({ channel: 'D0PAT', thread_ts: asks[0].body.ts ?? '200.1', user: PAT, text: '1. US and UK\n2. Team and Business' }, TEAM);
     expect(decided).toEqual([['t1', { kind: 'answer', answers: ['US and UK', 'Team and Business'] }]]);
+  });
+
+  it('says a finished pack plainly, and never says "finished" again for an old task after a restart', async () => {
+    const now = Date.now();
+    const pack = { summary: 'C1 first (§6).', files: ['pack/PLAN.md'] };
+    const { cmds, posts } = harness({}, undefined, { plainPack: async () => 'The MDF Programs pilot comes first.', now: () => now });
+    cmds.onEvent({ type: 'teamTaskUpdate', task: task({ id: 't-new', status: 'done', pack, finishedAt: now - 60_000 }) });
+    cmds.onEvent({ type: 'teamTaskUpdate', task: task({ id: 't-old', status: 'done', pack, finishedAt: now - 2 * 24 * 3_600_000 }) });
+    await new Promise((r) => setTimeout(r, 0));
+    const dms = posts.filter((p) => p.url.endsWith('chat.postMessage')).map((p) => JSON.stringify(p.body.blocks));
+    expect(dms.filter((b) => b.includes('finished'))).toHaveLength(1);
+    expect(dms.find((b) => b.includes('finished'))).toContain('The MDF Programs pilot comes first.');
+    expect(dms.join()).not.toContain('C1 first');
   });
 
   it('opens a Change it form for an offer, and redraws the offer when it’s saved', async () => {

@@ -2865,7 +2865,7 @@ export interface IPCInvokeMap {
   'processes:submit': (args: { processId: string; title?: string; brief: string }) =>
     | { ok: true; item: ProcessItem }
     | { ok: false; error: string };
-  'processes:act': (args: { itemId: string; action: ProcessItemAction; note?: string; stageIndex?: number }) =>
+  'processes:act': (args: { itemId: string; action: ProcessItemAction; note?: string; stageIndex?: number; answers?: Record<string, string> }) =>
     | { ok: true; item: ProcessItem }
     | { ok: false; error: string };
   'workers:list': () => Array<{

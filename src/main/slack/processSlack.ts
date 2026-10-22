@@ -1,14 +1,18 @@
 // Processes in Slack: a decision DM with Approve / Send back / Stop, the
-// form that asks what to change when sending back, and `/idea`.
+// form that asks what to change when sending back, the form a stage that
+// asks for something is filled in with, and `/idea`.
 
+import type { ProcessStage } from '../../shared/org/process';
 import { escapeMrkdwn } from './slackApi';
 
 export const PROC_APPROVE_ACTION = 'overcli_proc_approve';
 export const PROC_SENDBACK_ACTION = 'overcli_proc_sendback';
 export const PROC_STOP_ACTION = 'overcli_proc_stop';
 export const PROC_SENDBACK_VIEW = 'overcli_proc_sendback_view';
+export const PROC_FILL_ACTION = 'overcli_proc_fill';
+export const PROC_FILL_VIEW = 'overcli_proc_fill_view';
 
-export const PROC_ACTIONS = new Set([PROC_APPROVE_ACTION, PROC_SENDBACK_ACTION, PROC_STOP_ACTION]);
+export const PROC_ACTIONS = new Set([PROC_APPROVE_ACTION, PROC_SENDBACK_ACTION, PROC_STOP_ACTION, PROC_FILL_ACTION]);
 
 /// What the send-back form carries back: the item, the stage it was asked
 /// at, and the DM to settle.
@@ -37,7 +41,9 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-export function decisionBlocks(text: string, itemId: string, stageId: string): unknown[] {
+/// The DM's buttons. A stage that asks for something opens its form in place
+/// of Approve; an input stage has no decision to make, so says "Fill it in".
+export function decisionBlocks(text: string, itemId: string, stageId: string, stage?: Pick<ProcessStage, 'mode' | 'fields'>): unknown[] {
   const button = (label: string, actionId: string, style?: 'primary' | 'danger') => ({
     type: 'button',
     text: { type: 'plain_text', text: label },
@@ -47,8 +53,61 @@ export function decisionBlocks(text: string, itemId: string, stageId: string): u
   });
   return [
     { type: 'section', text: { type: 'mrkdwn', text: clip(text, 2900) } },
-    { type: 'actions', elements: [button('Approve', PROC_APPROVE_ACTION, 'primary'), button('Send back…', PROC_SENDBACK_ACTION), button('Stop it', PROC_STOP_ACTION, 'danger')] },
+    {
+      type: 'actions',
+      elements: [
+        stage?.fields?.length ? button(stage.mode === 'input' ? 'Fill it in…' : 'Approve…', PROC_FILL_ACTION, 'primary') : button('Approve', PROC_APPROVE_ACTION, 'primary'),
+        button('Send back…', PROC_SENDBACK_ACTION),
+        button('Stop it', PROC_STOP_ACTION, 'danger'),
+      ],
+    },
   ];
+}
+
+/// The form for a stage that asks for something: one input per field, and
+/// a note. Submitting it is the approve.
+export function fillView(title: string, stage: Pick<ProcessStage, 'name' | 'ask' | 'mode' | 'fields'>, meta: SendBackMeta): unknown {
+  const input = stage.mode === 'input';
+  const plain = (text: string) => ({ type: 'plain_text', text: clip(text, 150) });
+  return {
+    type: 'modal',
+    callback_id: PROC_FILL_VIEW,
+    private_metadata: JSON.stringify(meta),
+    title: plain(clip(stage.name, 24)),
+    submit: plain(input ? 'Submit' : 'Approve'),
+    close: plain('Cancel'),
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: `_${escapeMrkdwn(clip(title, 200))}_${stage.ask ? `\n> ${escapeMrkdwn(clip(stage.ask, 600))}` : ''}\nWhat you put here is handed on to the stages after.` } },
+      ...(stage.fields ?? []).map((f) => ({
+        type: 'input',
+        block_id: `f_${f.id}`,
+        optional: !f.required,
+        label: plain(f.label),
+        element:
+          f.kind === 'choice'
+            ? { type: 'static_select', action_id: 'v', options: (f.options ?? []).slice(0, 100).map((o) => ({ text: plain(o), value: o.slice(0, 150) })) }
+            : { type: 'plain_text_input', action_id: 'v', multiline: f.kind === 'longText', max_length: f.kind === 'longText' ? 3000 : 400 },
+      })),
+      {
+        type: 'input',
+        block_id: 'note',
+        optional: true,
+        label: plain('Anything else'),
+        element: { type: 'plain_text_input', action_id: 'v', multiline: true, max_length: 2000 },
+      },
+    ],
+  };
+}
+
+/// The form's answers by field id, and its note.
+export function readFill(values: Record<string, Record<string, { value?: string | null; selected_option?: { value?: string } | null }>>): { answers: Record<string, string>; note: string } {
+  const answers: Record<string, string> = {};
+  for (const [block, v] of Object.entries(values)) {
+    if (!block.startsWith('f_')) continue;
+    const got = v.v?.selected_option?.value ?? v.v?.value ?? '';
+    if (got.trim()) answers[block.slice(2)] = got.trim();
+  }
+  return { answers, note: values.note?.v?.value?.trim() ?? '' };
 }
 
 export function sendBackView(title: string, meta: SendBackMeta): unknown {

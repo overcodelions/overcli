@@ -4,7 +4,10 @@
 // is several workers on one deliverable; a process sits above teams.
 //
 // Each stage is either a team, briefed with everything the stages before it
-// produced, or people, who decide: approve, send it back, or stop it. The
+// produced, or people, who decide: approve, send it back, or stop it. People
+// can be asked to fill something in as well (a budget, the target segment,
+// what they think), or only that; what they put becomes the stage's
+// artifact, so every stage after is briefed with it. The
 // process has an owner; each stage has an owner (a team's leader, who
 // answers its questions and signs off what leaves it); each item has the
 // person who started it, told as it moves.
@@ -60,6 +63,22 @@ export function parseProcessAccess(raw: unknown): ProcessAccess | string {
   return { who, ...(groups.length ? { groups } : {}), ...(people.length ? { people } : {}) };
 }
 
+/// Something people fill in at a people stage.
+export type ProcessFieldKind = 'text' | 'longText' | 'choice';
+
+export interface ProcessField {
+  id: string;
+  label: string;
+  kind: ProcessFieldKind;
+  /// choice: what they pick from.
+  options?: string[];
+  required?: boolean;
+}
+
+/// What a people stage asks for: a decision (approve, send back or stop),
+/// or input, where they fill in its fields and submit.
+export type ProcessStageMode = 'decide' | 'input';
+
 export interface ProcessStage {
   id: string;
   name: string;
@@ -85,6 +104,10 @@ export interface ProcessStage {
   /// default), all of them, or at least this many. A send back or a stop
   /// from any one of them acts at once.
   needs?: 'any' | 'all' | number;
+  /// people: decide (the default) or input. Input needs fields.
+  mode?: ProcessStageMode;
+  /// people: what they fill in. Their answers are handed on.
+  fields?: ProcessField[];
   /// What this stage is for, in the process owner's words: added to a
   /// team's brief, shown to people deciding.
   ask?: string;
@@ -197,7 +220,7 @@ export interface ProcessItem {
   /// Runs of the current stage done so far, when it repeats.
   runs?: number;
   /// Approvals so far at the current people stage, when it needs more than one.
-  votes?: Array<{ by: string; slackUserId?: string; at: number; note?: string }>;
+  votes?: Array<{ by: string; slackUserId?: string; at: number; note?: string; answers?: Record<string, string> }>;
   /// Said when it was sent back; goes into the next brief, then clears.
   feedback?: { by: string; note: string };
   artifacts: ProcessArtifact[];
@@ -235,7 +258,10 @@ export function validateProcess(def: Pick<ProcessDef, 'name' | 'stages' | 'owner
       if (!s.workerId) return `Pick the worker for ${label}.`;
       if (workerIds && !workerIds.has(s.workerId)) return `The worker for ${label} is gone. Pick another.`;
     } else if (s.kind === 'people') {
-      if (!s.approvers?.length && !s.approverGroups?.length) return `Say who decides at ${label}.`;
+      if (!s.approvers?.length && !s.approverGroups?.length) return s.mode === 'input' ? `Say who fills in ${label}.` : `Say who decides at ${label}.`;
+      const bad = fieldsProblem(s.fields, label);
+      if (bad) return bad;
+      if (s.mode === 'input' && !s.fields?.length) return `Add something to fill in at ${label}, or make it a decision.`;
       if (typeof s.needs === 'number') {
         if (!Number.isInteger(s.needs) || s.needs < 1 || s.needs > 50) return `Say how many must approve at ${label}: a whole number from 1.`;
         if (!s.approverGroups?.length && s.needs > (s.approvers?.length ?? 0)) return `${label} needs ${s.needs} approvals but only ${s.approvers?.length ?? 0} people decide there.`;
@@ -248,6 +274,50 @@ export function validateProcess(def: Pick<ProcessDef, 'name' | 'stages' | 'owner
     if (s.sendBackTo && !ids.has(s.sendBackTo)) return `${s.name} sends back to a stage that isn't in the process.`;
   }
   return null;
+}
+
+function fieldsProblem(fields: ProcessField[] | undefined, label: string): string | null {
+  if (!fields?.length) return null;
+  if (fields.length > 12) return `${label} asks for at most 12 things.`;
+  const ids = new Set<string>();
+  for (const f of fields) {
+    if (!f.label?.trim()) return `Name each thing ${label} asks for.`;
+    if (!f.id || ids.has(f.id)) return `Two things ${label} asks for share the id ${f.id}.`;
+    ids.add(f.id);
+    if (f.kind === 'choice' && (f.options?.filter((o) => o.trim()).length ?? 0) < 2) return `Give “${f.label}” in ${label} at least two choices.`;
+  }
+  return null;
+}
+
+/// Answers from untrusted input, checked against a stage's fields: only its
+/// fields, choices from its options, and every required one there. Returns
+/// the answers, or the problem.
+export function checkAnswers(fields: readonly ProcessField[] | undefined, raw: unknown): Record<string, string> | string {
+  const given = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const f of fields ?? []) {
+    const v = typeof given[f.id] === 'string' ? (given[f.id] as string).trim().slice(0, f.kind === 'longText' ? 4000 : 400) : '';
+    if (!v) {
+      if (f.required) return `Fill in “${f.label}”.`;
+      continue;
+    }
+    if (f.kind === 'choice' && !(f.options ?? []).includes(v)) return `Pick one of the choices for “${f.label}”.`;
+    out[f.id] = v;
+  }
+  return out;
+}
+
+/// What people put at a people stage, as the next stages read it: each
+/// person's answers by label, and their note.
+export function answersText(fields: readonly ProcessField[] | undefined, entries: ReadonlyArray<{ by: string; note?: string; answers?: Record<string, string> }>): string {
+  return entries
+    .map((e) => {
+      const lines = (fields ?? []).filter((f) => e.answers?.[f.id]).map((f) => (f.kind === 'longText' ? `${f.label}:\n${e.answers![f.id]}` : `${f.label}: ${e.answers![f.id]}`));
+      if (e.note) lines.push(`Note: ${e.note}`);
+      return lines.length ? `From ${e.by}:\n${lines.join('\n')}` : '';
+    })
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 /// Where "send it back" from stage `from` lands: its chosen stage, else the
@@ -304,7 +374,7 @@ export function stageBrief(def: ProcessDef, item: ProcessItem, index: number, fi
     for (const a of ownRuns) parts.push(`\n## ${a.title}\n${clip(a.summary, 3000)}`);
   }
   const next = def.stages[index + 1];
-  if (next) parts.push(`\nWhen this stage is done it goes to ${next.name}${next.kind === 'people' ? ', where people decide whether it goes on' : ''}. Write the pack for them.`);
+  if (next) parts.push(`\nWhen this stage is done it goes to ${next.name}${next.kind === 'people' ? (next.mode === 'input' ? ', where people add what they know' : ', where people decide whether it goes on') : ''}. Write the pack for them.`);
   return parts.join('\n');
 }
 

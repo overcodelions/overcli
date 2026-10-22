@@ -134,4 +134,10 @@ describe('processImagePrompt', () => {
     expect(p).toMatch(/Workers:\n1\. Notetaker/);
     expect(p).toMatch(/People:\n1\. Pat\n2\. Sam/);
   });
+
+  it('reads a step where people add something as an input stage', () => {
+    const res = readProcessDraft(reply({ name: 'Intake', stages: [{ name: 'Add budget', kind: 'form', ask: 'The budget and cost centre.', deciders: [1] }] }), INPUT);
+    if (!res.ok) throw new Error(res.error);
+    expect(res.draft.stages[0]).toMatchObject({ kind: 'people', mode: 'input', fields: [{ id: 'f1', label: 'The budget and cost centre.', kind: 'longText', required: true }] });
+  });
 });

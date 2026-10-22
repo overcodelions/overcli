@@ -28,7 +28,23 @@ import { HIRE_EDIT_VIEW, TEAM_EDIT_VIEW, hireEditView, readHireEdit, readTeamEdi
 import { DEFAULT_TEAM_CHECKPOINTS } from '../../shared/flows/team';
 import type { ProcessPerson } from '../../shared/org/process';
 import type { ProcessService } from '../org/processes';
-import { PROC_ACTIONS, PROC_APPROVE_ACTION, PROC_SENDBACK_ACTION, PROC_SENDBACK_VIEW, PROC_STOP_ACTION, decisionBlocks, parseIdea, readDecisionValue, readSendBack, sendBackView, type SendBackMeta } from './processSlack';
+import {
+  PROC_ACTIONS,
+  PROC_APPROVE_ACTION,
+  PROC_FILL_ACTION,
+  PROC_FILL_VIEW,
+  PROC_SENDBACK_ACTION,
+  PROC_SENDBACK_VIEW,
+  PROC_STOP_ACTION,
+  decisionBlocks,
+  fillView,
+  parseIdea,
+  readDecisionValue,
+  readFill,
+  readSendBack,
+  sendBackView,
+  type SendBackMeta,
+} from './processSlack';
 import { deliverResults, finishedText, slackMarkup, type PostAs } from './deliver';
 import { TEAM_ACCEPT_ACTION, TEAM_CONTINUE_ACTION, TEAM_PIECE_APPROVE_ACTION, TEAM_PIECE_RETRY_ACTION, stageNote, stagesDone, teamCard, type PieceLook } from './teamCard';
 
@@ -75,6 +91,9 @@ export interface SlackCommandsDeps {
   /// The console's Library, linked from a finished shift's DM.
   libraryUrl?(): string | null;
   now?(): number;
+  /// A team's pack summary said plainly for the person who asked: what it
+  /// found, its internal labels named. Null, or absent: the summary as written.
+  plainPack?(task: TeamTask): Promise<string | null>;
   /// Where each team task's live card is, so it is edited rather than
   /// posted again, across restarts. Absent: kept in memory.
   teamCards?: { load(): Record<string, TeamCardRef>; save(all: Record<string, TeamCardRef>): void };
@@ -278,7 +297,8 @@ export class SlackCommands {
   /// people stage is waiting on them.
   async processNotify(to: ProcessPerson, text: string, decide?: { itemId: string; stageId: string }): Promise<void> {
     if (!to.slackUserId) return;
-    const posted = await this.dm(to.slackUserId, text, decide ? { blocks: decisionBlocks(text, decide.itemId, decide.stageId) } : {});
+    const stage = decide ? this.deps.processes?.()?.stageOf(decide.itemId, decide.stageId) : undefined;
+    const posted = await this.dm(to.slackUserId, text, decide ? { blocks: decisionBlocks(text, decide.itemId, decide.stageId, stage) } : {});
     if (!posted || !decide) return;
     const all = this.decisionDms();
     const key = `${decide.itemId}:${decide.stageId}`;
@@ -621,7 +641,7 @@ export class SlackCommands {
 
   /// Which hire, and what its offer is now, for the Change it form.
   handlesView(callbackId: string | undefined): boolean {
-    return callbackId === HIRE_EDIT_VIEW || callbackId === TEAM_EDIT_VIEW || callbackId === PROC_SENDBACK_VIEW;
+    return callbackId === HIRE_EDIT_VIEW || callbackId === TEAM_EDIT_VIEW || callbackId === PROC_SENDBACK_VIEW || callbackId === PROC_FILL_VIEW;
   }
 
   private processItemTitle(itemId: string): string {
@@ -641,6 +661,21 @@ export class SlackCommands {
     if (bot) await updateMessage(bot, { channel: meta.channel, ts: meta.ts, text: `Sent back by ${caller.name}`, blocks: [section(`Sent back by ${escapeMrkdwn(caller.name)}: “${escapeMrkdwn(res.item.title)}”\n> ${escapeMrkdwn(clip(note, 500))}`)] }, this.deps.fetchImpl);
   }
 
+  /// A stage's form filled in: approve with the answers, settle the DM.
+  private async onFill(caller: OrgCaller, meta: SendBackMeta, filled: { answers: Record<string, string>; note: string }): Promise<void> {
+    const procs = this.deps.processes?.();
+    if (!procs) return;
+    const res = procs.act(caller, meta.itemId, 'approve', { stageId: meta.stageId ?? '', answers: filled.answers, ...(filled.note ? { note: filled.note } : {}) });
+    if (!res.ok) {
+      await this.reply(meta.channel, meta.ts, res.error);
+      return;
+    }
+    const bot = this.deps.botToken();
+    const waiting = res.item.status === 'active' && res.item.votes?.some((v) => v.slackUserId === caller.slackUserId) ? res.item.stageNote : undefined;
+    const text = waiting ? `You filled in “${res.item.title}”: ${waiting}.` : `Filled in by ${caller.name}: “${res.item.title}” moves on.`;
+    if (bot) await updateMessage(bot, { channel: meta.channel, ts: meta.ts, text, blocks: [section(escapeMrkdwn(text))] }, this.deps.fetchImpl);
+  }
+
   /// A Change it form was saved: apply it and redraw the message it came from.
   async onViewSubmit(payload: unknown): Promise<void> {
     const p = payload as { user?: { id?: string; name?: string; username?: string }; team?: { id?: string }; view?: { callback_id?: string; private_metadata?: string; state?: { values?: Record<string, never> } } };
@@ -655,6 +690,10 @@ export class SlackCommands {
     const values = p.view.state?.values ?? {};
     if (p.view.callback_id === PROC_SENDBACK_VIEW) {
       await this.onSendBack(caller, meta as unknown as SendBackMeta, readSendBack(values as Record<string, Record<string, { value?: string }>>));
+      return;
+    }
+    if (p.view.callback_id === PROC_FILL_VIEW) {
+      await this.onFill(caller, meta as unknown as SendBackMeta, readFill(values));
       return;
     }
     const bot = this.deps.botToken();
@@ -801,6 +840,19 @@ export class SlackCommands {
           return;
         }
         await settle(approve ? `Approved by ${caller.name}: “${res.item.title}” moves on.` : `Stopped by ${caller.name}: “${res.item.title}”.`);
+        return;
+      }
+      case PROC_FILL_ACTION: {
+        const procs = this.deps.processes?.();
+        const bot = this.deps.botToken();
+        if (!procs || !bot || !p.trigger_id || !channel || !ts) return;
+        const { itemId, stageId } = readDecisionValue(action.value);
+        const stage = stageId ? procs.stageOf(itemId, stageId) : undefined;
+        if (!stage) {
+          await settle('It has moved on since.');
+          return;
+        }
+        await openView(bot, p.trigger_id, fillView(this.processItemTitle(itemId), stage, { itemId, stageId: stage.id, channel, ts }), this.deps.fetchImpl);
         return;
       }
       case PROC_SENDBACK_ACTION: {
@@ -1106,11 +1158,22 @@ export class SlackCommands {
     void this.teamCardFor(task, to);
     const state =
       task.status === 'waiting' ? `waiting:${task.waiting?.reason}:${task.stageIndex}` : `${task.status}:${task.stageIndex}`;
-    if (this.toldTeam.get(task.id) === state) return;
+    const previous = this.toldTeam.get(task.id);
+    if (previous === state) return;
     // Claimed before the post, which awaits: a burst of updates for one
     // state must not each send the DM.
-    const previous = this.toldTeam.get(task.id);
     this.toldTeam.set(task.id, state);
+    // What was said is remembered only while the app runs: after a restart, a
+    // task that finished long ago and changed since (a question in its room)
+    // is not news, and its "finished" DM is not sent again.
+    if (previous === undefined && task.status === 'done' && task.finishedAt && (this.deps.now ?? Date.now)() - task.finishedAt > SHIFT_DM_WINDOW_MS) return;
+    const summary =
+      task.pack && (task.status === 'review' || task.status === 'done')
+        ? ((await this.deps.plainPack?.(task).catch((err: unknown) => {
+            this.deps.log('warn', `Could not say ${task.teamName}'s pack plainly: ${String(err)}`);
+            return null;
+          })) ?? task.pack.summary)
+        : '';
     const title = escapeMrkdwn(task.title ?? clip(task.brief, 80));
     const team = escapeMrkdwn(task.teamName);
     let posted: { channel: string; ts: string } | null = null;
@@ -1161,7 +1224,7 @@ export class SlackCommands {
         as: this.asOf(task.teamId, task.teamName),
         ...(card ? { threadTs: card.ts, broadcast: true } : {}),
         blocks: [
-          section(`*${team}* finished _${title}_ and is holding it for your review.\n${slackMarkup(clip(task.pack.summary, 1500))}`),
+          section(`*${team}* finished _${title}_ and is holding it for your review.\n${slackMarkup(clip(summary, 1500))}`),
           { type: 'actions', elements: [button('Accept', TEAM_ACCEPT_ACTION, task.id, 'primary')] },
           context(`The report is attached in this thread${task.pack.files.length ? ` (${escapeMrkdwn(task.pack.files.map((f) => f.split('/').pop()).join(', '))})` : ''}. To ask for changes, open the task in the console.`),
         ],
@@ -1172,7 +1235,7 @@ export class SlackCommands {
         ...(this.cardOf(task.id) ? { threadTs: this.cardOf(task.id)!.ts } : {}),
         blocks: [
           section(`*${team}* finished _${title}_`),
-          section(slackMarkup(clip(task.pack.summary, 2500))),
+          section(slackMarkup(clip(summary, 2500))),
           context(`Spent $${task.spentUSD.toFixed(2)}. Files: ${escapeMrkdwn(task.pack.files.join(', ') || 'none')}.`),
         ],
       });

@@ -3,7 +3,22 @@
 // the person is asked to pick.
 
 import { oneShotDraftText, type DraftDeps } from '../flows/drafter';
+import { pickDrafterBackend } from '../../shared/flows/drafterBackend';
+import { tierDefault, type ModelSpeed } from '../../shared/modelCatalog';
+import { healthyBackends } from '../health';
 import type { FrontDoorWorker } from './frontDoor';
+
+/// The model at `tier` for whichever CLI is signed in. Undefined: the
+/// drafter's own default (no tiers on that backend).
+export async function tierModel(deps: DraftDeps, tier: ModelSpeed): Promise<string | undefined> {
+  const healthy = await healthyBackends(deps.settings.backendPaths);
+  const backend = pickDrafterBackend({
+    preferred: deps.settings.preferredBackend,
+    isHealthy: (b) => healthy.has(b),
+    isEnabled: (b) => deps.settings.disabledBackends[b] !== true,
+  });
+  return backend && backend !== 'ollama' ? tierDefault(backend, tier, deps.settings.flowModelDefaults) : undefined;
+}
 
 const SYSTEM = [
   'You route a request from someone at work to the one AI worker best suited to do it.',
@@ -16,8 +31,9 @@ const SYSTEM = [
   'Some entries are PROCESSES. Pick a process only when the request is a new item of the kind it takes in',
   '(a new idea for an idea process, a bug report for a bug process); never for a question about something.',
   'You may also be given recent work that may be related, each with the team or worker that made it.',
-  'A question about something listed there goes to the team or worker that made it, even when it is a',
-  'question: they know it best, and someone else would make it again from scratch.',
+  'A question about something listed there goes to the worker that made it, or for a team\'s work to the',
+  'member of that team whose job fits the question best: they know it best, and someone else would make',
+  'it again from scratch. A question never goes to a TEAM itself.',
   'Pick the worker, team or process whose job covers the request. If none of them plausibly does, pick none.',
   'Answer with JSON only, no prose and no code fence:',
   '{"worker": <the worker\'s number, or null>, "why": "<under 12 words, why this worker>"}',
@@ -48,7 +64,10 @@ export function readRoute(reply: string, workers: FrontDoorWorker[]): { workerId
 
 export async function routeRequest(deps: DraftDeps, text: string, workers: FrontDoorWorker[], related?: Array<{ title: string; who: string }>): Promise<{ workerId: string; why: string } | null> {
   if (!workers.length) return null;
+  // Picking from a list: the fast tier, so the person isn't kept waiting.
+  const model = await tierModel(deps, 'fast');
   const res = await oneShotDraftText(deps, {
+    ...(model ? { model } : {}),
     buildSystemPrompt: () => SYSTEM,
     userMessage: routePrompt(text, workers.slice(0, 40), related),
     verb: 'route the request',

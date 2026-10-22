@@ -306,6 +306,14 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .wc-out { margin-top: 8px; max-height: 460px; overflow: auto; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); }
 .wc-out pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
 .prose { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; min-width: 0; }
+.sl-thread { display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
+.sl-msg { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start; }
+.sl-av { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 650; background: var(--line); color: var(--ink); }
+.sl-msg.bot .sl-av { background: color-mix(in srgb, var(--go) 22%, transparent); color: var(--go); }
+.sl-who { font-size: 12.5px; color: var(--faint, inherit); opacity: .85; margin-bottom: 2px; }
+.sl-who b { font-weight: 600; opacity: 1; }
+.sl-note { margin-left: 38px; font-size: 12.5px; opacity: .65; line-height: 1.5; }
+.sl-note .prose { font-size: 12.5px; }
 .prose > * + * { margin-top: 8px; }
 .prose p, .prose ul, .prose ol, .prose pre, .prose blockquote, .prose h3, .prose h4, .prose h5, .prose h6 { margin-bottom: 0; }
 .prose h3 { font-size: 16px; font-weight: 650; margin-top: 14px; } .prose h4 { font-size: 14.5px; font-weight: 650; margin-top: 12px; }
@@ -2038,7 +2046,8 @@ export const CONSOLE_JS = String.raw`
       { id: 'workers', label: 'Workers', icon: 'people' },
       { id: 'teams', label: 'Teams', icon: 'team' },
       { id: 'processes', label: 'Processes', icon: 'arrow' },
-      { id: 'reports', label: 'Reports', icon: 'bars' }
+      { id: 'reports', label: 'Reports', icon: 'bars' },
+      { id: 'slack', label: 'Slack', icon: 'slack' }
     ];
     if (state.me && state.me.admin) {
       t.push('sep', { group: 'Admin' });
@@ -2287,7 +2296,7 @@ export const CONSOLE_JS = String.raw`
       h('main', { class: 'main' }, main)));
     refreshCounts();
     if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
-    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports }[state.tab] || viewToday;
+    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
     view().then(function (node) { main.textContent = ''; append(main, node); })
       .catch(function (e) { main.textContent = ''; main.appendChild(h('div', { class: 'msg err', text: String(e.message || e) })); });
   }
@@ -4048,6 +4057,43 @@ export const CONSOLE_JS = String.raw`
   function listWords(xs) { return xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1]; }
   /// Where "send it back" from a stage lands: its chosen stage, else the
   /// nearest team or worker stage before it, else the start. As the server has it.
+  // A people stage's fields and mode, edited in place on the stage.
+  function asksEditor(s, changed) {
+    var box = h('div', { style: 'display:flex;flex-direction:column;gap:6px' });
+    var KINDS = [['text', 'Short answer'], ['longText', 'Long answer'], ['choice', 'Pick one']];
+    var set = function (fields) {
+      if (fields.length) s.fields = fields; else { delete s.fields; delete s.mode; }
+      draw(); changed();
+    };
+    var draw = function () {
+      var fields = s.fields || [];
+      var mode = h('select', { 'aria-label': 'What people do here', onchange: function () {
+        if (mode.value === 'input') { s.mode = 'input'; if (!fields.length) s.fields = [{ id: 'f1', label: '', kind: 'text', required: true }]; } else delete s.mode;
+        draw(); changed();
+      } },
+        h('option', { value: 'decide', text: 'Decide, and fill in anything asked', selected: s.mode !== 'input' }),
+        h('option', { value: 'input', text: 'Fill in only', selected: s.mode === 'input' }));
+      fill(box, [h('span', { style: 'width:auto' }, mode)].concat(fields.map(function (f, n) {
+        var put = function (patch) { set(fields.map(function (x, k) { return k === n ? Object.assign({}, x, patch) : x; })); };
+        var label = h('input', { type: 'text', value: f.label, placeholder: 'e.g. Budget for this', 'aria-label': 'Question ' + (n + 1), onchange: function () { put({ label: label.value.trim() }); } });
+        var kind = h('select', { 'aria-label': 'Kind of answer', onchange: function () { put({ kind: kind.value }); } }, KINDS.map(function (k) { return h('option', { value: k[0], text: k[1], selected: f.kind === k[0] }); }));
+        var opts = f.kind === 'choice' ? h('input', { type: 'text', value: (f.options || []).join(', '), placeholder: 'Choices, comma-separated', 'aria-label': 'Choices', onchange: function () {
+          put({ options: opts.value.split(',').map(function (o) { return o.trim(); }).filter(Boolean) });
+        } }) : null;
+        var req = h('input', { type: 'checkbox', checked: !!f.required, onchange: function () { put({ required: req.checked || undefined }); } });
+        return h('div', { class: 'row', style: 'gap:6px' }, label, h('span', { style: 'width:auto' }, kind), opts,
+          h('label', { class: 'faint' }, req, ' Required'),
+          h('button', { class: 'btn', type: 'button', text: '×', 'aria-label': 'Remove question ' + (n + 1), onclick: function () { set(fields.filter(function (_, k) { return k !== n; })); } }));
+      })).concat(fields.length < 12 ? [h('button', { class: 'btn', type: 'button', text: '+ Ask for something', onclick: function () {
+        var id = fields.length + 1;
+        while (fields.some(function (x) { return x.id === 'f' + id; })) id++;
+        set(fields.concat([{ id: 'f' + id, label: '', kind: 'text' }]));
+      } })] : []));
+    };
+    draw();
+    return box;
+  }
+
   function sendBackIndex(p, from) {
     var chosen = (p.stages[from] || {}).sendBackTo;
     if (chosen) for (var i = 0; i < p.stages.length; i++) if (p.stages[i].id === chosen) return i;
@@ -4895,14 +4941,30 @@ export const CONSOLE_JS = String.raw`
       var sendBtn = h('button', { class: 'btn', text: 'Send back…', 'aria-expanded': 'false' });
       var toggleSend = function (open) { sendOpen = open; sendBox.hidden = !open; sendBtn.setAttribute('aria-expanded', open ? 'true' : 'false'); if (open) why.focus(); };
       sendBtn.onclick = function () { toggleSend(!sendOpen); };
-      var approve = h('button', { class: 'btn go', text: 'Approve' });
-      approve.onclick = function () { act('approve', {}, 'Approving…', approve); };
+      // A stage that asks for something: its fields, sent with the approve.
+      var inputStage = stage.mode === 'input';
+      var asks = (stage.fields || []).map(function (f) {
+        var el = f.kind === 'choice'
+          ? h('select', { 'aria-label': f.label }, h('option', { value: '', text: 'Pick one' }), (f.options || []).map(function (o) { return h('option', { value: o, text: o }); }))
+          : f.kind === 'longText' ? h('textarea', { rows: '3', 'aria-label': f.label }) : h('input', { type: 'text', 'aria-label': f.label });
+        return { f: f, el: el };
+      });
+      var askBox = asks.length ? h('div', { class: 'pi-send' }, asks.map(function (a) {
+        return [h('span', { class: 'pi-bandsub', text: a.f.label + (a.f.required ? '' : ' (optional)') }), a.el];
+      })) : null;
+      var approve = h('button', { class: 'btn go', text: inputStage ? 'Submit' : 'Approve' });
+      approve.onclick = function () {
+        var answers = {};
+        asks.forEach(function (a) { if (a.el.value.trim()) answers[a.f.id] = a.el.value.trim(); });
+        act('approve', asks.length ? { answers: answers } : {}, inputStage ? 'Submitting…' : 'Approving…', approve);
+      };
       band = h('section', { class: 'pi-band need', 'aria-label': 'Your call' },
         h('div', { class: 'pi-bandrow' },
           h('span', { class: 'pi-bandic' }, icon('check', 18)),
           h('div', { class: 'pi-bandtext' }, h('b', { text: 'Your call: ' + stage.name.charAt(0).toLowerCase() + stage.name.slice(1) }), h('span', { class: 'pi-bandsub', text: sub.join(' ') })),
           h('div', { class: 'row', style: 'gap:8px' }, approve, earlier.length ? sendBtn : null,
             prUrl ? h('a', { class: 'btn', href: prUrl, target: '_blank', rel: 'noopener', text: prLabel }) : null)),
+        askBox,
         earlier.length ? sendBox : null);
     } else if (turn) {
       var primary = stage.kind === 'worker' ? (stage.workerId ? 'Open ' + who(stage) : null) : it.taskId ? (it.ownerTurn === 'pack' ? 'Review the pack' : 'Open the task') : null;
@@ -5614,6 +5676,7 @@ export const CONSOLE_JS = String.raw`
             [2, 3, 4, 5].map(function (n) { return h('option', { value: String(n), text: 'At least ' + n, selected: s.needs === n }); }));
           rows.push(row('Approvals', needs, 'A send back or a stop from any one of them acts at once. Everyone’s approval is recorded on the item.'));
           rows.push(row('Send back to', back, 'Briefed with what the decider says needs to change.'));
+          rows.push(row('Asks for', asksEditor(s, function () { drawMap(); drawReady(); }), 'What they fill in is handed on to every stage after: a budget, the segment, what they think. Fill in only drops the decision for a Submit.'));
         }
         rows.push(row(s.kind === 'people' ? 'Look for' : 'The job', ask, s.kind === 'people' ? null : 'Goes in the brief.'));
         fill(inspector, [
@@ -8626,6 +8689,95 @@ export const CONSOLE_JS = String.raw`
     });
   }
 
+
+  // ---- slack -----------------------------------------------------------
+
+  /// What people asked overgo in Slack, what came of each, and the thread
+  /// as it stands in Slack. Looks again every few seconds while open: new
+  /// questions arrive, and an open thread shows replies as they're posted.
+  function viewSlack() {
+    var sub = state.me && state.me.admin
+      ? 'Every question asked of overgo in Slack, what it did with each, and the thread as it stands.'
+      : 'What you asked overgo in Slack, what it did with each, and the thread as it stands.';
+    var list = h('div', { class: 'stack' });
+    var open = {};
+    var rows = {};
+    // How many are on screen: each look re-reads exactly those, so the
+    // newest rise to the top without the page growing on its own.
+    var shown = 25;
+    var more = h('button', { class: 'btn', text: 'Show more', hidden: true });
+    more.onclick = function () {
+      shown += 25;
+      var restore = busy(more, 'Loading…');
+      put().then(restore);
+    };
+    var put = function () {
+      return api('GET', '/api/slack/conversations?limit=' + shown).then(function (r) {
+        if (r.ok === false) { list.replaceChildren(msg(r)); more.hidden = true; return; }
+        more.hidden = !r.more;
+        if (!r.conversations.length) { list.replaceChildren(h('p', { class: 'muted', text: 'Nothing asked in Slack yet. DM overgo, or mention it in a channel.' })); return; }
+        list.replaceChildren.apply(list, r.conversations.map(function (c) {
+          var row = rows[c.key];
+          var sig = c.lastAt + '|' + (c.outcome || '');
+          if (!row || row.sig !== sig) {
+            var fresh = slackConversation(c, open);
+            if (row && open[c.key]) fresh.reload();
+            row = rows[c.key] = { node: fresh.node, reload: fresh.reload, sig: sig };
+          }
+          return row.node;
+        }));
+      });
+    };
+    return put().then(function () {
+      var id = setInterval(function () {
+        if (!list.isConnected) { clearInterval(id); return; }
+        put();
+        Object.keys(open).forEach(function (k) { if (open[k] && rows[k]) rows[k].reload(); });
+      }, 8000);
+      return [head('Slack', sub), list, h('div', { class: 'row', style: 'justify-content:center;margin-top:12px' }, more)];
+    });
+  }
+
+  /// One conversation: who asked what, what came of it, and its thread.
+  function slackConversation(c, open) {
+    var body = h('div', { class: 'stack', style: 'gap:12px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)', hidden: !open[c.key] });
+    var toggle = h('button', { class: 'linkish', text: open[c.key] ? 'Hide the thread' : 'Show the thread' });
+    var reading = false;
+    var load = function () {
+      if (reading) return;
+      reading = true;
+      if (!body.childNodes.length) body.appendChild(thinking('Reading the thread from Slack…'));
+      api('GET', '/api/slack/conversations/' + encodeURIComponent(c.key)).then(function (t) {
+        reading = false;
+        if (t.ok === false) { body.replaceChildren(msg(t)); return; }
+        body.replaceChildren(h('div', { class: 'sl-thread' }, t.messages.map(function (m) {
+          // overgo's housekeeping, quietly; answers and questions in full.
+          if (m.note) return h('div', { class: 'sl-note' }, md(m.text));
+          return h('div', { class: 'sl-msg' + (m.bot ? ' bot' : '') },
+            h('span', { class: 'sl-av', 'aria-hidden': 'true', text: (m.from || '?').charAt(0).toUpperCase() }),
+            h('div', { style: 'min-width:0' },
+              h('div', { class: 'sl-who' }, h('b', { text: m.from }), ' · ' + clock(m.at)),
+              md(m.text)));
+        })));
+      });
+    };
+    toggle.onclick = function () {
+      open[c.key] = body.hidden;
+      body.hidden = !body.hidden;
+      toggle.textContent = body.hidden ? 'Show the thread' : 'Hide the thread';
+      if (!body.hidden) load();
+    };
+    if (open[c.key]) load();
+    var node = h('article', { class: 'panel pad' },
+      h('div', { class: 'faint', style: 'font-size:12.5px', text: c.by + ' · ' + ago(c.at) + (c.dm ? ' · in a DM' : ' · in a channel') + (c.lastAt > c.at + 60000 ? ' · last activity ' + ago(c.lastAt) : '') }),
+      h('div', { style: 'font-size:15px;font-weight:600;margin:4px 0 8px', text: c.text }),
+      h('div', { class: 'row', style: 'gap:14px;flex-wrap:wrap' },
+        h('span', { class: 'muted', style: 'font-size:13.5px', text: c.outcome || 'Answered in the thread' }),
+        c.url ? h('a', { class: 'linkish', href: c.url.indexOf('#') >= 0 ? c.url.slice(c.url.indexOf('#')) : c.url, text: 'Open it' }) : null,
+        toggle),
+      body);
+    return { node: node, reload: load };
+  }
 
   // ---- rules -----------------------------------------------------------
 

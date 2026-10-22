@@ -12,6 +12,8 @@ import type { OrgCaller } from '../../shared/org/policy';
 import {
   sendBackIndex,
   accessOf,
+  answersText,
+  checkAnswers,
   parseProcessAccess,
   stageBrief,
   validateProcess,
@@ -65,7 +67,8 @@ export interface ProcessDeps {
   isAdmin(caller: OrgCaller): boolean;
   /// The people in a group of deciders, now. Absent: groups decide nothing.
   groupMembers?(groupId: string): ProcessPerson[];
-  /// A message to one person. `decide`: offer Approve / Send back / Stop.
+  /// A message to one person. `decide`: offer Approve / Send back / Stop,
+  /// or the stage's form to fill in when it asks for something.
   notify?(to: ProcessPerson, text: string, decide?: { itemId: string; stageId: string }): void;
   /// A decision was made (or a vote cast): the decision messages sent for it
   /// can say so and drop their buttons once `final`.
@@ -124,6 +127,7 @@ function outline(def: ProcessDef): ProcessDef {
       kind: st.kind,
       ...(st.kind === 'people' ? { approvers: [] } : {}),
       ...(st.needs !== undefined ? { needs: st.needs } : {}),
+      ...(st.mode ? { mode: st.mode } : {}),
       ...(st.why ? { why: st.why } : {}),
       ...(st.delayDays ? { delayDays: st.delayDays } : {}),
       ...(st.repeat ? { repeat: st.repeat } : {}),
@@ -292,7 +296,7 @@ export class ProcessService {
 
   /// "2 of 3 approved", for the board and the messages.
   private tally(stage: ProcessStage, item: ProcessItem): string {
-    return `${item.votes?.length ?? 0} of ${this.needed(stage)} approved`;
+    return `${item.votes?.length ?? 0} of ${this.needed(stage)} ${stage.mode === 'input' ? 'filled in' : 'approved'}`;
   }
 
   /// Who decides at a stage, as said to people: "Sam or Product leads".
@@ -687,6 +691,14 @@ export class ProcessService {
     return this.peek().items.find((i) => i.id === id);
   }
 
+  /// The people stage an item is at, when it is still at `stageId`: what a
+  /// decision message's form asks for.
+  stageOf(itemId: string, stageId: string): ProcessStage | undefined {
+    const item = this.item(itemId);
+    const stage = item && item.status === 'active' ? this.peek().processes.find((p) => p.id === item.processId)?.stages[item.stageIndex] : undefined;
+    return stage?.kind === 'people' && stage.id === stageId ? stage : undefined;
+  }
+
   /// One file a stage handed on, for anyone who can see the item: its
   /// people needn't be able to see the team that made it.
   artifactFile(caller: OrgCaller, itemId: string, taskId: string, name: string): Result<{ name: string; body: string }> {
@@ -779,7 +791,8 @@ export class ProcessService {
   /// A decision at a people stage, or the owner steering an item.
   /// `stageId`: the stage a decision was asked at (a Slack button's). A
   /// decision for a stage the item has since left is refused.
-  act(caller: OrgCaller, itemId: string, action: ItemAction, opts: { note?: string; stageIndex?: number; stageId?: string } = {}): Result<{ item: ProcessItem }> {
+  /// `answers`: what an approve fills in, by field id, when the stage asks for something.
+  act(caller: OrgCaller, itemId: string, action: ItemAction, opts: { note?: string; stageIndex?: number; stageId?: string; answers?: unknown } = {}): Result<{ item: ProcessItem }> {
     const s = this.load();
     const item = s.items.find((i) => i.id === itemId);
     if (!item) return { ok: false, error: 'No such item.' };
@@ -810,6 +823,9 @@ export class ProcessService {
             ok: false,
             error: stage?.kind === 'people' ? `Only ${this.decidersText(stage)} or ${def.owner.name} decide here.` : 'This stage moves on by itself when its work is done.',
           };
+        const checked = checkAnswers(stage?.kind === 'people' ? stage.fields : undefined, opts.answers);
+        if (typeof checked === 'string') return { ok: false, error: checked };
+        const answers = Object.keys(checked).length ? checked : undefined;
         const need = this.needed(stage!);
         if (need > 1) {
           const votes = item.votes ?? [];
@@ -832,6 +848,7 @@ export class ProcessService {
               ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}),
               at: this.now(),
               ...(note ? { note } : {}),
+              ...(answers ? { answers } : {}),
             },
           ];
           this.event(item, 'approved', {
@@ -840,16 +857,18 @@ export class ProcessService {
           });
           if (item.votes.length < need) {
             item.stageNote = `${this.tally(stage!, item)}, waiting on ${need - item.votes.length} more`;
-            this.deps.decided?.(item.id, stage!.id, `${caller.name} approved (${this.tally(stage!, item)}).`, false);
+            this.deps.decided?.(item.id, stage!.id, `${caller.name} ${stage!.mode === 'input' ? 'filled it in' : 'approved'} (${this.tally(stage!, item)}).`, false);
             break;
           }
-          this.deps.decided?.(item.id, stage!.id, `Approved by ${item.votes.map((v) => v.by).join(', ')}.`, true);
+          this.deps.decided?.(item.id, stage!.id, `${this.doneWord(stage!)} by ${item.votes.map((v) => v.by).join(', ')}.`, true);
+          this.handOn(stage!, item, item.votes);
         } else {
           this.event(item, 'approved', {
             by: caller.name,
             ...(note ? { note } : {}),
           });
-          this.deps.decided?.(item.id, stage!.id, `Approved by ${caller.name}.`, true);
+          this.deps.decided?.(item.id, stage!.id, `${this.doneWord(stage!)} by ${caller.name}.`, true);
+          this.handOn(stage!, item, [{ by: caller.name, ...(note ? { note } : {}), ...(answers ? { answers } : {}) }]);
         }
         this.advance(def, item);
         break;
@@ -954,6 +973,19 @@ export class ProcessService {
 
   // ---- MOVING -----------------------------------------------------------
 
+  private doneWord(stage: ProcessStage): string {
+    return stage.mode === 'input' ? 'Filled in' : 'Approved';
+  }
+
+  /// What people said as they approved or filled it in becomes the stage's
+  /// artifact, so the stages after are briefed with it. Nothing said, nothing kept.
+  private handOn(stage: ProcessStage, item: ProcessItem, entries: ReadonlyArray<{ by: string; note?: string; answers?: Record<string, string> }>): void {
+    const summary = answersText(stage.fields, entries);
+    item.artifacts = item.artifacts.filter((a) => a.stageId !== stage.id);
+    if (!summary) return;
+    item.artifacts.push({ stageId: stage.id, stageName: stage.name, at: this.now(), title: stage.mode === 'input' ? 'What people added' : 'What the deciders said', summary, files: [] });
+  }
+
   private event(item: ProcessItem, kind: ProcessEventKind, extra: { by?: string; note?: string; stageId?: string } = {}): void {
     item.history.push({ at: this.now(), kind, ...extra });
     if (item.history.length > 200) item.history = item.history.slice(-200);
@@ -1047,11 +1079,14 @@ export class ProcessService {
     } else {
       const who = this.deciders(stage);
       const need = this.needed(stage);
-      item.stageNote = need > 1 ? `0 of ${need} approved` : `Waiting on ${this.decidersText(stage)}`;
+      const input = stage.mode === 'input';
+      item.stageNote = need > 1 ? `0 of ${need} ${input ? 'filled in' : 'approved'}` : `Waiting on ${this.decidersText(stage)}`;
       const earlier = item.artifacts.at(-1);
+      const asks = (stage.fields ?? []).map((f) => `• ${f.label}${f.required ? '' : ' (optional)'}`).join('\n');
       const text = [
-        `*${def.name}* · *${stage.name}*: decide on _${item.title}_ (from ${item.initiator.name}).${need > 1 ? ` It needs ${need} approvals; a send back or a stop from anyone acts at once.` : ''}`,
+        `*${def.name}* · *${stage.name}*: ${input ? 'fill in' : 'decide on'} _${item.title}_ (from ${item.initiator.name}).${need > 1 ? ` It needs ${need} ${input ? 'of you to fill it in' : 'approvals'}; a send back or a stop from anyone acts at once.` : ''}`,
         stage.ask ? `> ${stage.ask}` : '',
+        asks ? `${input ? 'It asks for' : 'With your decision, it asks for'}:\n${asks}` : '',
         earlier ? `*${earlier.stageName}* produced: ${clip(earlier.summary, 600)}` : `The request: ${clip(item.brief, 600)}`,
         item.feedback ? `Last time it was sent back: ${item.feedback.note}` : '',
       ]

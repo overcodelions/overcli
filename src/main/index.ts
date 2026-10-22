@@ -760,7 +760,7 @@ export function registerIpc(): void {
       );
       return ids.flatMap((id) => {
         const f = byId.get(id);
-        return f ? [{ id: f.id, name: f.name, description: f.description }] : [];
+        return f ? [{ id: f.id, name: f.name, description: f.description, steps: f.steps.map((s) => s.id) }] : [];
       });
     },
     pieceFlow: (flowId, opts) => {
@@ -2741,8 +2741,8 @@ export function registerIpc(): void {
     const res = processService.submit({ name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, processId, { title, brief, source: 'desktop', byAdmin: me.admin });
     return res.ok ? { ok: true as const, item: res.item } : res;
   });
-  ipcMain.handle('processes:act', (_e, { itemId, action, note, stageIndex }) =>
-    processService ? processService.act(desktopCaller(), itemId, action, { note, stageIndex }) : noProcesses,
+  ipcMain.handle('processes:act', (_e, { itemId, action, note, stageIndex, answers }) =>
+    processService ? processService.act(desktopCaller(), itemId, action, { note, stageIndex, answers }) : noProcesses,
   );
   ipcMain.handle('processes:intake', (_e, { id }) => {
     const def = processService?.get(desktopCaller(), id);
