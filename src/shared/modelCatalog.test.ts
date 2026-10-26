@@ -149,6 +149,7 @@ describe('friendlyModelLabel — codex (OpenAI GPT)', () => {
   it('title-cases the GPT-6 codenames', () => {
     expect(friendlyModelLabel('codex', 'gpt-6-astra')).toBe('GPT-6 Astra (Codex)');
     expect(friendlyModelLabel('codex', 'gpt-6.1-sol')).toBe('GPT-6.1 Sol (Codex)');
+    expect(friendlyModelLabel('codex', 'gpt-6.1-terra')).toBe('GPT-6.1 Terra (Codex)');
   });
 
   it('lists gpt-6.1-sol first so it is the codex default', () => {
@@ -162,6 +163,10 @@ describe('friendlyModelLabel — codex (OpenAI GPT)', () => {
 
   it('offers gpt-6.1-sol as the upgrade for a gpt-5.6-sol pin', () => {
     expect(newestInFamily('codex', 'gpt-5.6-sol')).toBe('gpt-6.1-sol');
+  });
+
+  it('offers gpt-6.1-terra as the upgrade for a gpt-5.6-terra pin', () => {
+    expect(newestInFamily('codex', 'gpt-5.6-terra')).toBe('gpt-6.1-terra');
   });
 
   it('lists gemini-3.1-pro first so it is the gemini default', () => {
@@ -263,6 +268,7 @@ describe('modelSpeed', () => {
     ['gpt-6-astra', 'frontier'],
     ['gpt-6.1-sol', 'thinking'],
     ['gpt-5.6-sol', 'thinking'],
+    ['gpt-6.1-terra', 'standard'],
     ['gpt-5.6-terra', 'standard'],
     ['gpt-5.6-luna', 'fast'],
     ['gpt-5.5', 'thinking'],
@@ -353,9 +359,9 @@ describe('latestAtTier', () => {
   });
 
   it('does not promote a tier onto a newer model from another tier', () => {
-    // gpt-6.1-sol is newer than terra but sits at the thinking tier — the
-    // standard default must not climb into it.
-    expect(latestAtTier('codex', 'standard')).toBe('gpt-5.6-terra');
+    // gpt-6.1-sol sits at the thinking tier — the standard default must
+    // stay on terra rather than climb into it.
+    expect(latestAtTier('codex', 'standard')).toBe('gpt-6.1-terra');
     expect(latestAtTier('codex', 'thinking')).toBe('gpt-6.1-sol');
   });
 

@@ -91,7 +91,7 @@ import { isSafeAwsName, readAwsAuthOverview } from './awsProfiles';
 import { awsEnv, awsSsoLoginCommand, resolveAwsBinary, runAwsSsoLogin } from './awsSsoLogin';
 import { backendNeedsShell, buildBackendEnv } from './backendPaths';
 import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './resolveFilePath';
-import { listFileEntriesAsync, listFileEntriesSync } from './fileWalk';
+import { findFileEntriesAsync, listFileEntriesAsync, listFileEntriesSync, listFileTreeAsync, type WalkResult } from './fileWalk';
 import { closeAllTreeWatchers, noteRelistCost, unwatchTree, watchTree } from './fileTreeWatch';
 import { HandoffInbox, defaultInboxDir } from './handoffInbox';
 import { ConnectionsInbox, defaultConnectionsDir } from './overdbInbox';
@@ -129,7 +129,7 @@ import {
 import { deleteOllamaSession } from './ollamaStore';
 import { auditOllama, updateOllama } from './ollamaSecurity';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
-import { initAutoUpdater, refreshUpdateChannel, quitAndInstall, updateStatus } from './updater';
+import { checkBeforeQuit, initAutoUpdater, refreshUpdateChannel, quitAndInstall, updateStatus } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { host } from './host';
 import { ServicesManager, fsRepoReader, importFile as importServicesFile } from './services/manager';
@@ -1487,8 +1487,14 @@ export function registerIpc(): void {
     return listFilesRecursiveAsync(root);
   });
   ipcMain.handle('fs:listFileEntries', (_e, root: string) => {
-    if (!isPathUnderRegisteredRoot(root)) return Promise.resolve([]);
+    if (!isPathUnderRegisteredRoot(root)) return Promise.resolve({ entries: [], truncated: false, unlistedDirs: [] });
     return listFileEntriesShared(root);
+  });
+  ipcMain.handle('fs:findFileEntries', (_e, root: string, query: string) => {
+    if (!isPathUnderRegisteredRoot(root) || typeof query !== 'string') {
+      return Promise.resolve({ entries: [], truncated: false, unlistedDirs: [] });
+    }
+    return findFileEntriesAsync(root, query);
   });
   // Live tree watching. The renderer's file tree lists its root once per
   // mount; without this, a file the agent writes only appears after the pane
@@ -4104,19 +4110,19 @@ const fileListCache = new Map<string, { at: number; files: string[] }>();
 // Sharing the in-flight walk halves that without ever serving a stale
 // listing the way a TTL cache would — the whole point of the event is that
 // what's on disk just changed.
-const inFlightEntryWalks = new Map<string, Promise<Array<{ path: string; sizeBytes: number }>>>();
+const inFlightEntryWalks = new Map<string, Promise<WalkResult>>();
 
-function listFileEntriesShared(root: string): Promise<Array<{ path: string; sizeBytes: number }>> {
+function listFileEntriesShared(root: string): Promise<WalkResult> {
   const key = path.resolve(root);
   const running = inFlightEntryWalks.get(key);
   if (running) return running;
   const startedAt = Date.now();
-  const walk = listFileEntriesAsync(root)
-    .then((entries) => {
+  const walk = listFileTreeAsync(root)
+    .then((result) => {
       // What the walk cost is what paces the watcher: a root that takes half
       // a second to list doesn't get relisted every 1.5s.
       noteRelistCost(root, Date.now() - startedAt);
-      return entries;
+      return result;
     })
     .finally(() => {
       inFlightEntryWalks.delete(key);
@@ -4669,10 +4675,11 @@ app.on('before-quit', (event) => {
   flushTeamTasks();
   // Run writes are async now (see runsStore.saveRun). Defer the first quit
   // long enough to flush any in-flight checkpoint to disk, then quit for real.
-  // Writes are sub-10ms, so the delay is imperceptible.
+  // Writes are sub-10ms, so the delay is imperceptible. The same hold gives
+  // an update one last look, so one restart is enough to install it.
   if (!flushedRuns) {
     event.preventDefault();
-    void flushRuns().finally(() => {
+    void Promise.all([flushRuns(), checkBeforeQuit()]).finally(() => {
       flushedRuns = true;
       app.quit();
     });

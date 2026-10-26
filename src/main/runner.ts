@@ -1147,6 +1147,7 @@ export class RunnerManager {
       finish: (r: OneShotResult) => void;
       /// Approval requests this turn may grant itself (see `oneShot`'s `permit`).
       permit?: (toolName: string, toolInput?: string) => boolean;
+      refusal?: string;
       /// Live progress plumbing — populated only when the caller passed an
       /// `onProgress` hook (the orchestrator producer, which streams its
       /// investigation into the UI). `partial` is the cumulative snapshot of
@@ -1549,6 +1550,10 @@ export class RunnerManager {
     /// Which approval requests this hidden turn grants itself. Nobody can
     /// answer one, so every other request is refused at once. Absent: all are.
     permit?: (toolName: string, toolInput?: string) => boolean;
+    /// What a request `permit` refuses tells the model, instead of "denied
+    /// by user": otherwise it reports a person said no and offers to ask
+    /// again, which no reply can change.
+    refusal?: string;
     /// Pin this turn to a conversation the caller owns, instead of a
     /// throwaway. Paired with `resumeSessionId` it makes consecutive
     /// one-shots a single thread — see `OneShotResult.sessionId`.
@@ -1625,6 +1630,7 @@ export class RunnerManager {
         onProgress: args.onProgress,
         bump: idle.bump,
         ...(args.permit ? { permit: args.permit } : {}),
+        ...(args.refusal ? { refusal: args.refusal } : {}),
       });
       const sent = this.send({
         conversationId,
@@ -1689,7 +1695,7 @@ export class RunnerManager {
         }
         if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
           const ok = !!waiter.permit?.(ev.kind.info.toolName, ev.kind.info.toolInput);
-          this.respondPermission(cid, ev.kind.info.requestId, ok, undefined, 'once', ev.kind.info.toolName);
+          this.respondPermission(cid, ev.kind.info.requestId, ok, undefined, 'once', ev.kind.info.toolName, ok ? undefined : waiter.refusal);
           continue;
         }
         if (ev.kind.type !== 'assistant' || ev.reviewer) continue;
@@ -4450,9 +4456,10 @@ export class RunnerManager {
 
   private nextCodexFallbackModel(model: string): string | null {
     const m = (model || '').trim().toLowerCase();
-    // GPT-6.1 Sol shipped Sept 2026 and may not be rolled out everywhere
+    // GPT-6.1 Sol (Sept 2026) and Terra (Oct 2026) and may not be rolled out everywhere
     // yet; step back to the previous Sol before leaving the line.
     if (m === 'gpt-6.1-sol') return 'gpt-5.6-sol';
+    if (m === 'gpt-6.1-terra') return 'gpt-5.6-terra';
     // GPT-5.6 (sol/terra/luna) may not be enabled on every account yet;
     // fall back to the equivalent-tier 5.5/5.4 model when it's rejected.
     if (m === 'gpt-5.6-sol') return 'gpt-5.5';

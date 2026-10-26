@@ -68,6 +68,11 @@ export interface WorkerTrigger {
   /// Just say what changed, with a link: no worker turn, so nothing to pay
   /// for while it's quiet. The worker only runs when asked to do more.
   notifyOnly?: boolean;
+  /// What it finds starts without waiting for an OK, as its manager's own ask
+  /// would. Off by default: an event's details come from outside the org, so
+  /// a trigger proposes unless the manager opted in. Honoured only while the
+  /// worker works on its own (autonomous), and still within its launch cap.
+  startsOnItsOwn?: boolean;
   webhook?: { tokenHash: string; idPath?: string };
   slack?: { channel: string; on: 'message' | 'mention' | 'reaction'; reaction?: string; contains?: string };
   createdBy: string;
@@ -112,8 +117,9 @@ export interface TriggerDeps {
   worker(id: string): { id: string; name: string; enabled: boolean } | null;
   /// Hand an event to a team or a process. Absent: those triggers skip.
   handTo?(hand: TriggerHand, event: { title: string; text: string; url?: string; triggerName: string }): { ok: true; label: string } | { ok: false; error: string };
-  /// Hand the worker a task; the answer arrives on `done`.
-  ask(workerId: string, triggerName: string, text: string):
+  /// Hand the worker a task; the answer arrives on `done`. `startsOnItsOwn`:
+  /// the trigger's manager let what it finds start without an OK.
+  ask(workerId: string, triggerName: string, text: string, startsOnItsOwn: boolean):
     | { ok: true; askId: string; done: Promise<{ ok: true; reply: string; launched: number } | { ok: false; error: string }> }
     | { ok: false; error: string };
   toolConfig(name: string): McpServerConfig | null;
@@ -199,7 +205,7 @@ export class TriggerService {
     return { ok: true, trigger, ...(token ? { token } : {}) };
   }
 
-  update(id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly'>>): { ok: true; trigger: WorkerTrigger } | { ok: false; error: string } {
+  update(id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly' | 'startsOnItsOwn'>>): { ok: true; trigger: WorkerTrigger } | { ok: false; error: string } {
     const all = this.deps.store.list();
     const i = all.findIndex((t) => t.id === id);
     if (i < 0) return { ok: false, error: 'No such trigger.' };
@@ -503,7 +509,7 @@ export class TriggerService {
     if (!worker) return skip('The worker is gone.');
     if (!worker.enabled) return skip(`${worker.name} is paused.`);
     if (this.firedToday(t.id) >= t.maxPerDay) return skip(`Over today's limit of ${t.maxPerDay}.`);
-    const started = this.deps.ask(t.workerId, t.name, eventPrompt(t, item));
+    const started = this.deps.ask(t.workerId, t.name, eventPrompt(t, item), t.startsOnItsOwn === true);
     if (!started.ok) return skip(started.error);
     const d = { ...base, askId: started.askId };
     this.putDeliverable(d);

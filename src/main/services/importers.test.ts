@@ -620,6 +620,89 @@ local_resource('acme-directory', serve_cmd=NVM_INIT + 'npm run dev')
       'source ~/.nvm/nvm.sh && npm run dev',
     ]);
   });
+
+  // A Python service started by hand: the command opens with the worktree
+  // switch, built by a helper that sets a local before it returns.
+  const python = `
+SERVICES_DIR = os.path.abspath(os.getenv('SERVICES_DIR', '..'))
+
+def _wt_flag(name):
+    return '/tmp/tilt-worktree-' + name
+
+def _wt_cd(name, repo_path):
+    # cd into the selected worktree or the main checkout
+    f = _wt_flag(name)
+    return 'cd "$( [ -s ' + f + ' ] && cat ' + f + ' || echo ' + repo_path + ' )"'
+
+def _guarded(name):
+    if name:
+        return 'x'
+    return 'y'
+
+_MCP_REPO = SERVICES_DIR + '/acme-mcp'
+_mcp_resolve = _wt_cd('acme-mcp', _MCP_REPO) + ' || exit 1; echo "Running from $(pwd)"; '
+_mcp_venv = 'if [ ! -x .venv/bin/acme-mcp-http ]; then uv venv .venv; fi; '
+_mcp_deps = [_MCP_REPO + '/src']
+local_resource(
+    'acme-mcp',
+    serve_cmd=['sh', '-c', _mcp_resolve + _mcp_venv + 'MCP_HTTP_PORT=8002 .venv/bin/acme-mcp-http'],
+    serve_dir=_MCP_REPO,
+    deps=_mcp_deps,
+    links=['http://localhost:8002/healthz'],
+)
+local_resource(
+    'acme-agent',
+    serve_cmd=['sh', '-c', 'cd ' + _MCP_REPO + '/agent && .venv/bin/uvicorn main:app --port 8084'],
+    serve_dir=_MCP_REPO,
+    deps=[_MCP_REPO + '/agent/main.py', SERVICES_DIR + '/elsewhere/main.py'],
+    links=['http://localhost:8084'],
+)
+local_resource('acme-guarded', serve_cmd=['sh', '-c', _guarded('a')], serve_dir=_MCP_REPO)
+local_resource('acme-mcp-tests', cmd=['sh', '-c', _mcp_resolve + '.venv/bin/python -m pytest -q'])
+`;
+  const fromPython = (name: string) =>
+    parseTiltfile(python, undefined, { dir: '/work/acme-local-dev', env: {} }).find((s) => s.name === name);
+
+  it('reads a helper that sets a local before it returns, and drops the worktree cd', () => {
+    // Overcli runs it in the bound checkout; the cd would pin it to Tilt's choice.
+    expect(fromPython('acme-mcp')?.command).toEqual([
+      'sh',
+      '-c',
+      'echo "Running from $(pwd)"; if [ ! -x .venv/bin/acme-mcp-http ]; then uv venv .venv; fi; ' +
+        'MCP_HTTP_PORT=8002 .venv/bin/acme-mcp-http',
+    ]);
+  });
+
+  it('finds the repo of a task with no dir in its worktree glue', () => {
+    expect(fromPython('acme-mcp-tests')).toMatchObject({
+      task: true,
+      repoHint: 'acme-mcp',
+      command: ['sh', '-c', 'echo "Running from $(pwd)"; .venv/bin/python -m pytest -q'],
+    });
+  });
+
+  it('keeps a cd into a folder inside the checkout, made relative', () => {
+    expect(fromPython('acme-agent')?.command).toEqual([
+      'sh',
+      '-c',
+      'cd agent && .venv/bin/uvicorn main:app --port 8084',
+    ]);
+  });
+
+  it('does not read a helper whose return sits behind an if', () => {
+    expect(fromPython('acme-guarded')?.command).toBeUndefined();
+  });
+
+  it('probes the health path a link names, on the linked port', () => {
+    expect(fromPython('acme-mcp')?.ready).toEqual({ kind: 'http', path: '/healthz', port: 8002 });
+    // A root link says nothing about health; the port is all it gives.
+    expect(fromPython('acme-agent')?.ready).toEqual({ kind: 'tcp', port: 8084 });
+  });
+
+  it('watches the deps inside its checkout, relative to it', () => {
+    expect(fromPython('acme-mcp')?.watch).toEqual(['src/**']);
+    expect(fromPython('acme-agent')?.watch).toEqual(['agent/main.py']);
+  });
 });
 
 // ── the reason importing beats copy-pasting ─────────────────────────────────

@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { log } from '../diagnostics';
 import { rebindMissingBackends } from '../../shared/flows/templateResolver';
-import { readsOnlyWithin } from '../permissionPolicy';
+import { readsOnlyWithin, writesOnlyIn } from '../permissionPolicy';
 import { fetchesChecked, judgeFetch, noteSeen, seedOnce } from '../safeFetch';
 import { workerFilesDir } from './workerFiles';
 
@@ -6008,7 +6008,5 @@ export { FlowRuntimeImpl as FlowRuntime };
 /// file edit only inside its own files folder.
 export function readerAllows(tool: string, input: unknown, projectPath: string, roots: string[], ownDir: string | null): boolean {
   if (tool === 'Bash') return readsOnlyWithin('Bash', input, projectPath, roots);
-  const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
-  const target = typeof args.file_path === 'string' ? args.file_path : typeof args.notebook_path === 'string' ? args.notebook_path : '';
-  return !!ownDir && !!target && isAbsolute(target) && (resolve(target) + sep).startsWith(resolve(ownDir) + sep);
+  return !!ownDir && writesOnlyIn(tool, input, ownDir);
 }

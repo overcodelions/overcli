@@ -143,7 +143,7 @@ describe('oneShot approval prompts', () => {
         { kind: { type: 'permissionRequest', info: { requestId: 'r1', toolName: 'ExitPlanMode' } } },
       ],
     });
-    expect(answered).toEqual([['hidden-1', 'r1', false, undefined, 'once', 'ExitPlanMode']]);
+    expect(answered).toEqual([['hidden-1', 'r1', false, undefined, 'once', 'ExitPlanMode', undefined]]);
     priv.tapOneShot({ type: 'running', conversationId: 'hidden-1', isRunning: false });
     await expect(turn).resolves.toMatchObject({ ok: true, text: expect.stringContaining('<team_plan>') });
   });

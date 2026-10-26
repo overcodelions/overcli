@@ -12,6 +12,15 @@ let appliedChannel: 'stable' | 'nightly' | null = null;
 // What the last check found, so the About sheet can say "latest" next to the
 // version instead of leaving people to compare numbers with the releases page.
 let status: UpdateStatus = { state: 'unknown' };
+// When a check last came back with nothing newer, so a quit straight after one
+// does not ask again.
+let latestAt = 0;
+
+// How long a quit may wait for an update to finish downloading. Past this it
+// quits anyway: the next launch finds the update again.
+const QUIT_WAIT_MS = 20_000;
+// A check this recent that found nothing is still the answer at quit.
+const QUIT_RECHECK_AFTER_MS = 60 * 60 * 1000;
 
 export function updateStatus(): UpdateStatus {
   return status;
@@ -92,6 +101,7 @@ export function initAutoUpdater(getWindow: () => BrowserWindow | null): void {
     // A download already waiting stays the answer; a later check finding
     // nothing newer doesn't make the running build the latest.
     if (status.state !== 'downloaded') status = { state: 'latest' };
+    latestAt = Date.now();
   });
   autoUpdater.on('download-progress', (p) => {
     notify('update:progress', { percent: Math.round(p.percent) });
@@ -124,6 +134,33 @@ export function refreshUpdateChannel(): void {
   if (channel === appliedChannel) return;
   applyChannel();
   check();
+}
+
+// Look once more on the way out. The checks run at launch and every six
+// hours, so an app left open across a nightly quit with nothing downloaded,
+// and the next launch only downloaded it — taking two restarts to update.
+// Waiting here for the download lets autoInstallOnAppQuit install it on this
+// quit instead. Never rejects, and never holds a quit past QUIT_WAIT_MS.
+export async function checkBeforeQuit(): Promise<void> {
+  if (!wired || status.state === 'downloaded') return;
+  if (status.state === 'latest' && Date.now() - latestAt < QUIT_RECHECK_AFTER_MS) return;
+  let timer: NodeJS.Timeout | undefined;
+  const giveUp = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      log('info', 'updater', 'quitting before the update finished downloading');
+      resolve();
+    }, QUIT_WAIT_MS);
+  });
+  const lookAndDownload = autoUpdater
+    .checkForUpdates()
+    .then((result) => result?.downloadPromise)
+    .then(() => undefined)
+    .catch((err) => log('error', 'updater', 'check before quit failed', err));
+  try {
+    await Promise.race([lookAndDownload, giveUp]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Quit and install a downloaded update now — invoked when the user clicks

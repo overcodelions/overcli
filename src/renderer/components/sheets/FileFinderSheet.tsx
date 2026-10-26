@@ -7,15 +7,22 @@ export function FileFinderSheet({ rootPath }: { rootPath: string }) {
   const pendingFinderQuery = useStore((s) => s.pendingFinderQuery);
   const [query, setQuery] = useState(pendingFinderQuery);
   const [files, setFiles] = useState<string[]>([]);
+  /// The listing hit main's file cap, so the file wanted may not be in it —
+  /// every query then also searches the disk (`diskMatches`).
+  const [truncated, setTruncated] = useState(false);
+  const [diskMatches, setDiskMatches] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    window.overcli.invoke('fs:listFiles', rootPath).then((list) => {
+    // fs:listFileEntries rather than fs:listFiles: only it says whether the
+    // walk was capped, which a big multi-project root always is.
+    window.overcli.invoke('fs:listFileEntries', rootPath).then((list) => {
       if (!cancelled) {
-        setFiles(list);
+        setFiles(list.entries.map((entry) => entry.path));
+        setTruncated(list.truncated);
         setLoading(false);
       }
     });
@@ -24,7 +31,37 @@ export function FileFinderSheet({ rootPath }: { rootPath: string }) {
     };
   }, [rootPath]);
 
-  const filtered = useMemo(() => rankMatches(files, query, rootPath).slice(0, 60), [files, query, rootPath]);
+  const trimmed = query.trim();
+  useEffect(() => {
+    if (!truncated || !trimmed) {
+      setDiskMatches([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void window.overcli
+        .invoke('fs:findFileEntries', rootPath, trimmed)
+        .then((res) => {
+          if (!cancelled) setDiskMatches(res.entries.map((entry) => entry.path));
+        })
+        .catch(() => {
+          if (!cancelled) setDiskMatches([]);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [truncated, trimmed, rootPath]);
+
+  const candidates = useMemo(
+    () => (diskMatches.length === 0 ? files : [...new Set([...files, ...diskMatches])]),
+    [files, diskMatches],
+  );
+  const filtered = useMemo(
+    () => rankMatches(candidates, query, rootPath).slice(0, 60),
+    [candidates, query, rootPath],
+  );
 
   useEffect(() => {
     setSelected(0);

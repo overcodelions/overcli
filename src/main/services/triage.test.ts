@@ -56,6 +56,11 @@ describe('the profile contradiction', () => {
     const found = triage(ctx({ lines, env: {} }));
     expect(found.some((f) => f.id === 'profile-mismatch')).toBe(false);
   });
+
+  it('says nothing when the profile asked for is still an unfilled reference', () => {
+    const found = triage(ctx({ lines, env: { SPRING_PROFILES_ACTIVE: '${SPRING_PROFILES_ACTIVE}' } }));
+    expect(found.some((f) => f.id === 'profile-mismatch')).toBe(false);
+  });
 });
 
 describe('an unresolved placeholder', () => {

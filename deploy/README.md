@@ -290,7 +290,7 @@ Three ways to expose the control plane, strictest first:
 2. **Internal load balancer with TLS** in front of 7420, for a proper `https://` name inside the network. The app and CLI require https for anything that isn't this machine.
 3. **Public HTTPS ingress**, only if you want claude.ai connectors. Use an ALB or API gateway with TLS, or Cloudflare Tunnel (outbound-only, like Socket Mode). Restrict it to Anthropic's published egress ranges, and keep token auth on.
 
-The compose file binds 7420 to loopback. Open it up deliberately. Behind a proxy or load balancer, set `OVERCLI_TRUST_PROXY=1` so rate limits see each person's address rather than the proxy's; without it, `X-Forwarded-*` headers are ignored.
+The compose file binds 7420 to loopback and sets `OVERCLI_PUBLISHED_ON_LOOPBACK=1`, so a browser on that machine may send passwords (a database's, a tool's keys) over plain http. Open it up deliberately, and drop that variable when you do. Behind a proxy or load balancer, set `OVERCLI_TRUST_PROXY=1` so rate limits see each person's address rather than the proxy's; without it, `X-Forwarded-*` headers are ignored.
 
 ## Operating it
 

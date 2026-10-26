@@ -37,7 +37,7 @@ import {
   type ImportSet,
   type ImportedService,
 } from './importers';
-import { resolveOptions, type ResolvedOption } from './options';
+import { resolveOptions, substitute, type ResolvedOption } from './options';
 import { differingNames, findSharedValues, referToShared, withMachineValue } from './consolidate';
 import type { PortClaim } from './ports';
 import { parseWorktreeList, type WorktreeChoice } from '../../shared/worktrees';
@@ -424,7 +424,6 @@ export class ServicesManager {
     binding: { ref: string; path: string; portOffset?: number },
   ): Promise<void> {
     await this.supervisor(workspaceId).rebind(serviceId, binding);
-    this.persistBinding(workspaceId, { ...binding, serviceId });
     await this.excludeProjectedPaths(workspaceId, serviceId);
   }
 
@@ -434,11 +433,7 @@ export class ServicesManager {
     workspaceId: string,
     targets: readonly { serviceId: string; ref: string; path: string }[],
   ): Promise<string[]> {
-    const moved = await this.supervisor(workspaceId).rebindAll(targets);
-    for (const target of targets) {
-      if (moved.includes(target.serviceId)) this.persistBinding(workspaceId, target);
-    }
-    return moved;
+    return this.supervisor(workspaceId).rebindAll(targets);
   }
 
   /// Ports this workspace's own supervisor is holding.
@@ -772,8 +767,10 @@ export class ServicesManager {
     const options = resolveOptions(stack.services, spec, machine);
     const env = { ...(spec.config.inject ?? {}) };
     const configDir = ensureServiceConfigDir(this.dataDir, workspaceId, serviceId);
+    // Filled the way the launch fills them, or a rule compares what the
+    // process reported with a literal `${SPRING_PROFILES_ACTIVE}`.
     for (const key of Object.keys(env)) {
-      env[key] = env[key].replace(/\$\{SERVICE_CONFIG_DIR\}/g, configDir);
+      env[key] = substitute(env[key].replace(/\$\{SERVICE_CONFIG_DIR\}/g, configDir), machine) ?? env[key];
     }
 
     // Read once, asynchronously: both rules below want the main checkout's
@@ -1587,8 +1584,11 @@ export class ServicesManager {
         port: first?.port ?? match?.spec.port,
         debugKind: match?.spec.debugKind,
         debugPort: first?.debugPort ?? match?.spec.debugPort,
-        ready: match?.spec.ready ?? { kind: 'none' },
-        selfReloads: match?.spec.selfReloads ?? false,
+        ready: first?.ready ?? onPort(match?.spec.ready, first?.port) ?? { kind: 'none' },
+        // A file that says what to restart on is saying the runner does not
+        // reload itself; detection's `--reload` was about its own command.
+        selfReloads: first?.watch ? false : (match?.spec.selfReloads ?? false),
+        watch: first?.watch,
         group: first?.group ?? match?.spec.group,
         task: first?.task || undefined,
         options: single ? applyMachineValues(factored.perService[0].own, secrets) : shared,
@@ -1800,6 +1800,14 @@ export class ServicesManager {
       watchFiles: watchServiceFiles,
     }, stack.lastRuns);
     supervisor.on((event) => {
+      // Saved the moment the supervisor moves, not when the move returns: that
+      // waits on a stop and a config mirror per service, and any write in
+      // between hands the supervisor the saved — old — binding back, so the
+      // next start runs in the checkout the chip says it left.
+      if (event.kind === 'rebound') {
+        const binding = supervisor.binding(event.serviceId);
+        if (binding) this.persistBinding(workspaceId, binding);
+      }
       this.rememberRun(workspaceId, event);
       this.emit({ ...event, workspaceId });
     });
@@ -1984,6 +1992,14 @@ function withDebugDefaults(spec: ServiceSpec, others: readonly ServiceSpec[]): S
   while (taken.has(debugPort) && debugPort < 65_535) debugPort++;
   if (spec.debugKind === debugKind && spec.debugPort === debugPort) return spec;
   return { ...spec, debugKind, debugPort };
+}
+
+/// Detection's probe moved to the port the file states. Detection only knows
+/// the framework's default — uvicorn's 8000 — and a probe on it waits for
+/// whatever else is there instead of this service.
+function onPort(probe: ReadinessProbe | undefined, port: number | undefined): ReadinessProbe | undefined {
+  if (!probe || port === undefined) return probe;
+  return probe.kind === 'http' || probe.kind === 'tcp' ? { ...probe, port } : probe;
 }
 
 /// A stable, path-safe id for a proposed service. The project id alone is not

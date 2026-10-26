@@ -469,6 +469,27 @@ describe('ServicesManager.rebind', () => {
     const bindings = loadStack(dataDir, 'ws1').bindings;
     expect(bindings.find((b) => b.serviceId === 'security')?.ref).toBe('master');
   });
+
+  it('keeps the move when the stack is written while it is still in progress', async () => {
+    // The pane polls while a move waits on each service's stop and config
+    // mirror, and any write in that window handed the supervisor the saved
+    // bindings — still the old checkout — so the next start ran there.
+    const events: { kind: string; from?: string }[] = [];
+    let wroteDuringMove = false;
+    const mgr: ServicesManager = new ServicesManager(dataDir, (e) => {
+      events.push(e);
+      if (e.kind === 'rebound' && !wroteDuringMove) {
+        wroteDuringMove = true;
+        mgr.setPinned('ws1', 'api', undefined);
+      }
+    });
+    mgr.addService('ws1', spec, { ref: 'master', path: repo });
+
+    await mgr.rebindAll('ws1', [{ serviceId: 'api', ref: 'feat/x', path: repo }]);
+    await mgr.rebind('ws1', 'api', { ref: 'feat/y', path: repo });
+
+    expect(events.filter((e) => e.kind === 'rebound').map((e) => e.from)).toEqual(['master', 'feat/x']);
+  });
 });
 
 describe('ServicesManager.scan', () => {
@@ -794,6 +815,57 @@ describe('importing services that live in another project', () => {
     expect(outcome.skipped).toEqual([
       { name: 'agent', reason: 'bedrock-agent is not a project in this workspace' },
     ]);
+  });
+
+  it("keeps the file's probe and restart globs over detection's uvicorn defaults", () => {
+    // A FastAPI repo: detection would say `uvicorn --reload`, ready on :8000,
+    // reloads itself. The Tiltfile runs it on :8002, checks /healthz, and
+    // restarts it when src/ changes.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'acme-mcp-'));
+    try {
+      fs.writeFileSync(path.join(home, 'requirements.txt'), 'fastapi\nuvicorn\n');
+      const { mgr } = manager();
+      mgr.importServices('ws1', {
+        projectId: 'tilt',
+        projectPath: repo,
+        projectName: 'acme-local-dev',
+        services: [
+          {
+            name: 'acme-mcp',
+            command: ['sh', '-c', '.venv/bin/acme-mcp-http'],
+            port: 8002,
+            ready: { kind: 'http', path: '/healthz', port: 8002 },
+            watch: ['src/**'],
+            repoHint: path.basename(home),
+            options: [],
+            env: {},
+            source: 'tiltfile',
+          },
+          {
+            name: 'acme-agent',
+            command: ['sh', '-c', '.venv/bin/uvicorn main:app --port 8084'],
+            port: 8084,
+            repoHint: path.basename(home),
+            options: [],
+            env: {},
+            source: 'tiltfile',
+          },
+        ],
+        siblings: [{ id: 'mcp', name: 'acme-mcp', path: home }],
+      });
+
+      const [mcp, agent] = mgr.view('ws1').services;
+      expect(mcp).toMatchObject({
+        command: ['sh', '-c', '.venv/bin/acme-mcp-http'],
+        ready: { kind: 'http', path: '/healthz', port: 8002 },
+        selfReloads: false,
+        watch: ['src/**'],
+      });
+      // No probe stated: detection's, moved to the port the file gives.
+      expect(agent.ready).not.toMatchObject({ port: 8000 });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("runs the start line a Tiltfile hands its helper, not detection's guess", () => {

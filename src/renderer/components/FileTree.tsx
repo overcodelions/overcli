@@ -33,6 +33,18 @@ export const FileTree = memo(function FileTree({
   onBeforeOpen?: () => boolean;
 }) {
   const [entries, setEntries] = useState<FileTreeEntry[]>([]);
+  /// The listing hit main's file cap, so it's only part of the folder — the
+  /// filter then searches the disk (`diskMatches`) instead of trusting it.
+  const [truncated, setTruncated] = useState(false);
+  const [diskMatches, setDiskMatches] = useState<FileTreeEntry[]>([]);
+  /// Folders the capped walk found but never opened, drawn so they can still
+  /// be browsed. Expanding one lists it on its own (`subListings`, keyed by
+  /// folder path), which may in turn hand back unopened folders of its own.
+  const [unlistedDirs, setUnlistedDirs] = useState<string[]>([]);
+  const [subListings, setSubListings] = useState<Map<string, SubListing>>(new Map());
+  const subListingsRef = useRef(subListings);
+  subListingsRef.current = subListings;
+  const [searching, setSearching] = useState(false);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState('');
@@ -52,6 +64,16 @@ export const FileTree = memo(function FileTree({
   /// folders, filter and selection) on screen until the new one lands, so a
   /// background relist isn't visible beyond the row that appeared.
   const seqRef = useRef(0);
+  const loadDir = useCallback(async (dir: string) => {
+    let listing: SubListing;
+    try {
+      const res = await window.overcli.invoke('fs:listFileEntries', dir);
+      listing = { entries: res.entries, unlistedDirs: res.unlistedDirs };
+    } catch {
+      listing = { entries: [], unlistedDirs: [] };
+    }
+    setSubListings((cur) => new Map(cur).set(dir, listing));
+  }, []);
   const load = useCallback(
     async (mode: 'initial' | 'refresh') => {
       const seq = ++seqRef.current;
@@ -60,7 +82,16 @@ export const FileTree = memo(function FileTree({
       try {
         const list = await window.overcli.invoke('fs:listFileEntries', rootPath);
         if (seq !== seqRef.current) return;
-        setEntries(list);
+        setEntries(list.entries);
+        setTruncated(list.truncated);
+        setUnlistedDirs(list.unlistedDirs);
+        // Folders already opened past the cap relist with the root, or a
+        // file written into one would never appear.
+        if (mode === 'refresh') {
+          for (const dir of subListingsRef.current.keys()) void loadDir(dir);
+        } else {
+          setSubListings(new Map());
+        }
         // Auto-expand the top-level so the user sees immediate
         // structure without clicking to unfold the root.
         if (mode === 'initial') setExpanded(new Set(['']));
@@ -73,7 +104,7 @@ export const FileTree = memo(function FileTree({
         }
       }
     },
-    [rootPath],
+    [rootPath, loadDir],
   );
 
   useEffect(() => {
@@ -109,14 +140,59 @@ export const FileTree = memo(function FileTree({
     };
   }, [rootPath, load]);
 
-  const blockedCount = useMemo(() => entries.filter(isBlockedEntry).length, [entries]);
+  // A capped listing can't answer a filter on its own: the file being looked
+  // for may sit past the cap while a few other matches don't. Search the disk
+  // too, debounced, and merge what it finds into the tree.
+  const query = filter.trim();
+  useEffect(() => {
+    if (!truncated || !query) {
+      setDiskMatches([]);
+      setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      void window.overcli
+        .invoke('fs:findFileEntries', rootPath, query)
+        .then((res) => {
+          if (!cancelled) setDiskMatches(res.entries);
+        })
+        .catch(() => {
+          if (!cancelled) setDiskMatches([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [truncated, query, rootPath]);
+
+  const allEntries = useMemo(() => {
+    if (diskMatches.length === 0 && subListings.size === 0) return entries;
+    const merged = new Map(entries.map((entry) => [entry.path, entry]));
+    for (const listing of subListings.values()) {
+      for (const entry of listing.entries) merged.set(entry.path, entry);
+    }
+    for (const entry of diskMatches) merged.set(entry.path, entry);
+    return [...merged.values()];
+  }, [entries, diskMatches, subListings]);
+  const pendingDirs = useMemo(() => {
+    const dirs = new Set(unlistedDirs);
+    for (const listing of subListings.values()) for (const dir of listing.unlistedDirs) dirs.add(dir);
+    return dirs;
+  }, [unlistedDirs, subListings]);
+  const blockedCount = useMemo(() => allEntries.filter(isBlockedEntry).length, [allEntries]);
   const visibleEntries = useMemo(
-    () => (showBlocked ? entries : entries.filter((entry) => !isBlockedEntry(entry))),
-    [entries, showBlocked],
+    () => (showBlocked ? allEntries : allEntries.filter((entry) => !isBlockedEntry(entry))),
+    [allEntries, showBlocked],
   );
   const tree = useMemo(
-    () => buildTree(visibleEntries, rootPath, filter.trim().toLowerCase()),
-    [visibleEntries, rootPath, filter],
+    () => buildTree(visibleEntries, rootPath, filter.trim().toLowerCase(), pendingDirs, subListings),
+    [visibleEntries, rootPath, filter, pendingDirs, subListings],
   );
   // Stable identities so memoized rows survive a FileTree re-render (a
   // filter keystroke, a failed row action) without rebuilding every node.
@@ -128,6 +204,13 @@ export const FileTree = memo(function FileTree({
       return next;
     });
   }, []);
+  // An unopened folder lists itself the first time it's expanded.
+  const expandUnlisted = useCallback(
+    (dir: string) => {
+      if (!subListingsRef.current.has(dir)) void loadDir(dir);
+    },
+    [loadDir],
+  );
   const pick = useCallback(
     (p: string) => {
       if (onBeforeOpen && !onBeforeOpen()) return;
@@ -192,6 +275,13 @@ export const FileTree = memo(function FileTree({
             {showBlocked ? 'Hide' : 'Show'} {blockedCount} blocked file{blockedCount === 1 ? '' : 's'}
           </button>
         )}
+        {truncated && (
+          <div className="mt-2 text-[10px] text-amber-300/80 leading-relaxed">
+            {searching
+              ? 'Searching the whole folder…'
+              : 'Too many files to list at once — some folders load when opened. Filter searches everything.'}
+          </div>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto px-1 py-1">
         {loading ? (
@@ -214,6 +304,7 @@ export const FileTree = memo(function FileTree({
               onCompare={onCompare}
               forceOpen={filter.length > 0}
               onActionError={setActionError}
+              onExpandUnlisted={expandUnlisted}
             />
           ))
         )}
@@ -252,10 +343,23 @@ interface TreeNode {
   /// is stable across re-indexes.
   key: string;
   isDir: boolean;
+  /// A folder the capped walk never opened — its children arrive on expand.
+  unlisted: boolean;
   children: TreeNode[];
 }
 
-function buildTree(entries: FileTreeEntry[], root: string, filter: string): TreeNode {
+interface SubListing {
+  entries: FileTreeEntry[];
+  unlistedDirs: string[];
+}
+
+function buildTree(
+  entries: FileTreeEntry[],
+  root: string,
+  filter: string,
+  unlistedDirs: Set<string>,
+  subListings: Map<string, SubListing>,
+): TreeNode {
   const sep = root.includes('\\') ? '\\' : '/';
   const rootTrim = root.endsWith(sep) ? root.slice(0, -sep.length) : root;
   const rootNode: TreeNode = {
@@ -265,13 +369,39 @@ function buildTree(entries: FileTreeEntry[], root: string, filter: string): Tree
     blocked: false,
     key: '',
     isDir: true,
+    unlisted: false,
     children: [],
   };
+  const relOf = (full: string) =>
+    full.startsWith(rootTrim + sep) ? full.slice(rootTrim.length + sep.length) : full;
+  // A filter has its own disk search, so unopened folders would only be noise.
+  if (!filter) {
+    for (const dir of unlistedDirs) {
+      let cursor = rootNode;
+      const parts = relOf(dir).split(sep);
+      for (let i = 0; i < parts.length; i++) {
+        let child = cursor.children.find((c) => c.name === parts[i]);
+        if (!child) {
+          child = {
+            name: parts[i],
+            fullPath: [cursor.fullPath, parts[i]].join(sep),
+            sizeBytes: 0,
+            blocked: false,
+            key: parts.slice(0, i + 1).join('/'),
+            isDir: true,
+            unlisted: false,
+            children: [],
+          };
+          cursor.children.push(child);
+        }
+        cursor = child;
+      }
+      // Kept once opened, so a folder that turned out empty doesn't vanish.
+      cursor.unlisted = !subListings.has(dir);
+    }
+  }
   for (const entry of entries) {
-    const full = entry.path;
-    const rel = full.startsWith(rootTrim + sep)
-      ? full.slice(rootTrim.length + sep.length)
-      : full;
+    const rel = relOf(entry.path);
     if (filter && !rel.toLowerCase().includes(filter)) continue;
     const parts = rel.split(sep);
     let cursor = rootNode;
@@ -287,6 +417,7 @@ function buildTree(entries: FileTreeEntry[], root: string, filter: string): Tree
           blocked: isLeaf ? isBlockedEntry(entry) : false,
           key: parts.slice(0, i + 1).join('/'),
           isDir: !isLeaf,
+          unlisted: false,
           children: [],
         };
         cursor.children.push(child);
@@ -321,6 +452,7 @@ const TreeNode = memo(function TreeNodeRow({
   onCompare,
   forceOpen,
   onActionError,
+  onExpandUnlisted,
 }: {
   node: TreeNode;
   depth: number;
@@ -332,8 +464,13 @@ const TreeNode = memo(function TreeNodeRow({
   onCompare?: (path: string) => void;
   forceOpen: boolean;
   onActionError: (message: string | null) => void;
+  onExpandUnlisted: (dir: string) => void;
 }) {
   const isOpen = forceOpen || expanded.has(node.key);
+  const onToggle = () => {
+    if (node.unlisted && !isOpen) onExpandUnlisted(node.fullPath);
+    toggle(node.key);
+  };
   const selected = selectedPath === node.fullPath;
   const isCompareBase = compareBase === node.fullPath;
   if (!node.isDir) {
@@ -373,11 +510,11 @@ const TreeNode = memo(function TreeNodeRow({
       <div
         role="button"
         tabIndex={0}
-        onClick={() => toggle(node.key)}
+        onClick={onToggle}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            toggle(node.key);
+            onToggle();
           }
         }}
         style={{ paddingLeft: 8 + depth * 12 }}
@@ -396,6 +533,11 @@ const TreeNode = memo(function TreeNodeRow({
         <span className="truncate">{node.name}</span>
         <OpenInTerminalButton path={node.fullPath} onResult={onActionError} />
       </div>
+      {isOpen && node.unlisted && node.children.length === 0 && (
+        <div style={{ paddingLeft: 20 + (depth + 1) * 12 }} className="py-0.5 text-[10px] text-ink-faint">
+          Listing…
+        </div>
+      )}
       {isOpen &&
         node.children.map((c) => (
           <TreeNode
@@ -410,6 +552,7 @@ const TreeNode = memo(function TreeNodeRow({
             onCompare={onCompare}
             forceOpen={forceOpen}
             onActionError={onActionError}
+            onExpandUnlisted={onExpandUnlisted}
           />
         ))}
     </div>

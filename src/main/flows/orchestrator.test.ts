@@ -23,6 +23,7 @@ vi.mock('../health', () => ({
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { workerFilesDir } from './workerFiles';
 
 import { runGitAsync } from '../git';
 import { OrchestratorImpl, type BatchLauncher } from './orchestrator';
@@ -1182,6 +1183,19 @@ describe('OrchestratorImpl worker batches', () => {
     expect(h.started[0].chrome).toBe(true);
     // The planning turn answers errands, so it browses too.
     expect(h.oneShotCalls[0].chrome).toBe(true);
+  });
+
+  it("lets a worker's planning turn write only in its own files folder, and says why the rest is refused", async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h);
+    const { permit, refusal } = h.oneShotCalls[0];
+    const own = workerFilesDir('w1');
+    const join = path.join;
+    expect(permit('Write', JSON.stringify({ file_path: join(own, 'clients.csv'), content: 'a,b' }))).toBe(true);
+    expect(permit('Write', JSON.stringify({ file_path: '/proj/clients.csv', content: 'a,b' }))).toBe(false);
+    expect(permit('Bash', JSON.stringify({ command: `python3 -c 'x' > ${join(own, 'clients.csv')}` }))).toBe(false);
+    expect(refusal).toContain('no reply in this conversation can change that');
+    expect(refusal).toContain(own);
   });
 
   it('names a team piece after its task branch, not a ticket key in its prompt', async () => {

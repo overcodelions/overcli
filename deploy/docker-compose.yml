@@ -12,6 +12,10 @@ services:
     env_file: .env
     environment:
       OVERCLI_SLACK_ENABLED: "1"
+      # Goes with the loopback port below: browsers on this host reach the
+      # container from Docker's gateway, so tell it they're local and it takes
+      # passwords over plain http. Remove it if you open the port up.
+      OVERCLI_PUBLISHED_ON_LOOPBACK: "1"
     # What a worker's run may do without a person. Widen deliberately; external
     # actions (push, send, publish) still stop for the manager's approval in
     # Slack unless the worker is trusted with them.
@@ -31,7 +35,8 @@ services:
     volumes:
       - ${OVERCLI_DATA:-overcli-data}:/data
     # Loopback only: reach the console over an SSH tunnel or the VPN host's
-    # reverse proxy. Change to "7420:7420" only behind a firewall.
+    # reverse proxy. Change to "7420:7420" only behind a firewall, and then
+    # drop OVERCLI_PUBLISHED_ON_LOOPBACK above.
     ports:
       - "127.0.0.1:7420:7420"
 

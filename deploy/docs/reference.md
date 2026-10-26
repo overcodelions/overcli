@@ -11,6 +11,7 @@ Set these in `deploy/.env`, the task definition, or the shell. Secrets can also 
 | `OVERCLI_HOME` | The data directory (`/data` in the image). Default `~/.overcli`. |
 | `OVERCLI_CONTROL` | Where the console and MCP listen, e.g. `0.0.0.0:7420`. Same as `--control`. |
 | `OVERCLI_TRUST_PROXY` | `1` behind a load balancer or proxy that sets `X-Forwarded-*`. |
+| `OVERCLI_PUBLISHED_ON_LOOPBACK` | `1` when the port is published on the host's loopback only, so a browser on that host counts as local and may send passwords over http. The compose file sets it; remove it if you open the port. |
 | `TZ` | Time zone for schedules. Unset: the org's `timezone` from `org.json`. |
 
 ### The model
