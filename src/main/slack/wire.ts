@@ -21,13 +21,13 @@ import { SsoService, SSO_CLIENT_SECRET_ENV } from '../org/sso';
 import { ConnectionsService } from '../org/connections';
 import { ToolSignIn } from '../org/toolSignIn';
 import { installTool, installedToolUrl } from '../org/tools';
-import { downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, lookupByEmail, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
+import { downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, lookupByEmail, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
-import { routeRequest } from './frontDoorRoute';
+import { answerGeneral, routeRequest } from './frontDoorRoute';
 import { libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
 import { answerFromWork, type AnswerSource } from './existingAnswer';
 import { drafterDepsFor } from '../org/hireDraft';
-import { canManage, canSee, isAdmin } from '../../shared/org/policy';
+import { canManage, canSee, inAudience, isAdmin, type AudienceRole, type OrgCaller } from '../../shared/org/policy';
 import { managerFor } from '../../shared/flows/org';
 import type { ProcessPerson, ProcessState } from '../../shared/org/process';
 import { ProcessService } from '../org/processes';
@@ -39,8 +39,17 @@ import path from 'node:path';
 import { TriggerService, triggerFiles } from '../org/triggers';
 import { callTool } from '../org/mcpDirect';
 import { readClaudeMcpServers } from '../mcpConfig';
-import { orgDir } from '../org/orgStores';
+import { fileDigestState, orgDir } from '../org/orgStores';
+import { digestDue } from '../org/orgService';
 import { Store } from '../store';
+import { changesOfRun } from '../org/runChanges';
+
+/// Whoever else is in a channel: someone with no access of their own. What
+/// they can see is what a reply in the channel may draw on.
+const EVERYONE: OrgCaller = { name: 'everyone in the channel', admin: false };
+/// How long a question's candidates are reused, between answering it and
+/// looking it up.
+const CANDIDATES_TTL_MS = 60_000;
 
 export function createSlackBridge(engines: {
   flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun'>;
@@ -59,6 +68,10 @@ export function createSlackBridge(engines: {
     steerRun: (args) => flowRuntime.steerRun(args),
     resumeRun: (args) => flowRuntime.resumeRun(args),
     rejectRun: (runId) => rejectWorkerRun({ flowRuntime, orchestrator }, runId),
+    runChanges: async (runId, diff) => {
+      const run = flowRuntime.getRun(runId);
+      return run ? changesOfRun(run, { diff }) : null;
+    },
     store: fileThreadStore,
     standIn: () => loadOrgPolicy().policy.admins[0],
     onStatus: engines.onStatus,
@@ -165,9 +178,29 @@ export function createOrgControl(
     onHireAwaitingApproval: (hire, approvers) => commands?.notifyApprovers(hire, approvers),
     onHireDecided: (hire, outcome) => commands?.notifyDecided(hire, outcome),
     onToolsWanted: (hire, tools, admins) => commands?.notifyToolsWanted(hire, tools, admins),
+    onToolRequest: (r, admins) => commands?.notifyToolRequest(r, admins),
+    onToolRequestDecided: (r) => commands?.notifyToolRequestDecided(r),
+    onToolTrouble: (t, admins) => commands?.notifyToolTrouble(t, admins),
     onAskDone: (ask) => commands?.askAnswered(ask),
   });
+  // The Monday digest: to everyone who manages a worker, and the admins.
+  const digestTimer = setInterval(() => {
+    const policy = loadOrgPolicy().policy;
+    const week = digestDue(Date.now(), policy.timezone, fileDigestState.lastWeek());
+    if (!week || !commands || !slack.getStatus().connected) return;
+    fileDigestState.sent(week);
+    const people = new Set([...policy.admins, ...engines.workerEngine.roster().filter((w) => w.enabled).map((w) => w.manager?.slackUserId).filter((id): id is string => !!id)]);
+    for (const id of people) void commands.sendDigest(id).catch(() => false);
+  }, 15 * 60_000);
+  digestTimer.unref?.();
+  slack.setAlwaysAllow((slackUserId, runId) => {
+    const policy = loadOrgPolicy().policy;
+    const name = (policy.people?.[slackUserId] as { name?: string } | undefined)?.name ?? slackUserId;
+    return org.alwaysAllowStep({ slackUserId, name, admin: isAdmin(policy, { slackUserId, name, admin: false }) }, runId);
+  });
   commands = new SlackCommands({
+    // Replies under a worker's results go to it (the door is made below).
+    adoptThread: (channel, threadTs, worker) => frontDoor.adopt(channel, threadTs, worker),
     // The pack's summary, read against the pack itself: what the team found,
     // said for whoever asked, with its labels named.
     plainPack: async (task) => {
@@ -340,6 +373,7 @@ export function createOrgControl(
     },
     isAdmin: (caller) => isAdmin(loadOrgPolicy().policy, caller),
     groupMembers: (groupId) => org.directory().groups.find((g) => g.id === groupId)?.members ?? [],
+    hasRole: (person, roles) => inAudience(loadOrgPolicy().policy, { name: person.name, admin: false, ...(person.slackUserId ? { slackUserId: person.slackUserId } : {}) }, { roles: roles as AudienceRole[] }),
     notify: (to, text, decide) => void commands?.processNotify(to, text, decide),
     decided: (itemId, stageId, text, final) => void commands?.processDecided(itemId, stageId, text, final),
     log: (message) => log('info', 'org', message),
@@ -417,11 +451,15 @@ export function createOrgControl(
       .join('\n\n');
   };
   // What the caller can see in the Library, and finished process items: what
-  // the front door looks through before handing a question to anyone.
-  const workCandidates = (caller: Parameters<OrgService['library']>[0]): WorkCandidate[] => {
+  // the front door looks through before handing a question to anyone. In a
+  // channel (`shared`), only what everyone can see: what a person with no
+  // access of their own would, and in the Library as open to everyone.
+  const workCandidates = (caller: OrgCaller, shared: boolean): WorkCandidate[] => {
     const consoleUrl = loadOrgPolicy().policy.publicUrl;
     const tasks = new Map((engines.teams?.()?.list().tasks ?? []).map((t) => [t.id, t]));
-    const candidates: WorkCandidate[] = libraryCandidates(org.library(caller, { limit: 300 }), {
+    const viewer = shared ? EVERYONE : caller;
+    const items = org.library(viewer, { limit: 300 }).filter((i) => !shared || i.visibility === 'org');
+    const candidates: WorkCandidate[] = libraryCandidates(items, {
       ...(consoleUrl ? { consoleUrl } : {}),
       taskStatus: (taskId) => {
         const t = tasks.get(taskId);
@@ -430,8 +468,8 @@ export function createOrgControl(
       },
       room: (taskId) => tasks.get(taskId)?.room?.messages,
     });
-    for (const p of processes.list(caller)) {
-      const got = processes.get(caller, p.id);
+    for (const p of processes.list(viewer)) {
+      const got = processes.get(viewer, p.id);
       if (!got.ok) continue;
       for (const i of got.items) {
         if (i.status !== 'done') continue;
@@ -443,7 +481,26 @@ export function createOrgControl(
         });
       }
     }
+    // The room's Ask is only for whoever asked for the task: not offered to anyone else.
+    for (const c of candidates) if (c.hit.teamTaskId && !org.mayTalkToRoom(caller, c.hit.teamTaskId)) c.hit.canAsk = false;
     return candidates;
+  };
+  // The answer and the lookup after it read the same candidates: built once
+  // for a question, not again when the answer comes back empty.
+  let lastCandidates: { key: string; at: number; list: WorkCandidate[] } | null = null;
+  const candidatesFor = (caller: OrgCaller, shared: boolean): WorkCandidate[] => {
+    const key = `${caller.slackUserId ?? caller.name}:${shared}`;
+    const now = Date.now();
+    if (lastCandidates?.key === key && now - lastCandidates.at < CANDIDATES_TTL_MS) return lastCandidates.list;
+    const list = workCandidates(caller, shared);
+    lastCandidates = { key, at: now, list };
+    return list;
+  };
+  // A team's knowledge goes into a channel's answer only when the team is
+  // open to everyone: one of its members is (as the Library has it).
+  const openToEveryone = (team: { members: Array<{ workerId: string }> }): boolean => {
+    const roster = engines.workerEngine.roster();
+    return team.members.some((m) => roster.find((w) => w.id === m.workerId)?.visibility === 'org');
   };
   const frontDoor = new FrontDoor({
     // Only those the person may start: the router never offers one they can't.
@@ -464,7 +521,7 @@ export function createOrgControl(
       }, loadOrgPolicy().policy.publicUrl),
     // What the caller can see in the Library, and finished process items,
     // matched against the question: what already answers it is offered first.
-    findExisting: (caller, text) => matchExisting(text, workCandidates(caller), Date.now()),
+    findExisting: (caller, text, { shared }) => matchExisting(text, candidatesFor(caller, shared), Date.now()),
     // What the room said, with the task's pack beside it to name what its
     // labels stand for: the question answered from those, for Slack.
     plain: async (question, answer, taskId) => {
@@ -478,10 +535,10 @@ export function createOrgControl(
     },
     // The finished work that matches, and what each team the caller can see
     // knows: read, and the question answered from them.
-    answer: async (caller, text) => {
+    answer: async (caller, text, { shared }) => {
       const now = Date.now();
-      const work = matchWork(text, workCandidates(caller), now).filter((m) => !m.weak).slice(0, 3);
-      const seen = new Set(org.teams(caller).map((t) => t.id));
+      const work = matchWork(text, candidatesFor(caller, shared), now).filter((m) => !m.weak).slice(0, 3);
+      const seen = new Set(org.teams(shared ? EVERYONE : caller).map((t) => t.id));
       const sources: AnswerSource[] = [
         ...work.map(({ candidate: c }): AnswerSource => ({
           label: `${c.hit.who}'s ${c.hit.kind === 'team' ? 'task' : 'work'} "${c.hit.title}" (${whenText(c.hit.at, now)})`,
@@ -490,7 +547,7 @@ export function createOrgControl(
           hit: { ...c.hit, summary: '' },
         })),
         ...(engines.teams?.()?.list().teams ?? [])
-          .filter((t) => seen.has(t.id) && t.knowledge?.status === 'ready' && t.knowledge.body?.trim())
+          .filter((t) => seen.has(t.id) && (!shared || openToEveryone(t)) && t.knowledge?.status === 'ready' && t.knowledge.body?.trim())
           .map((t): AnswerSource => ({ label: `What ${t.name} knows${t.knowledge!.updatedAt ? ` (as of ${whenText(t.knowledge!.updatedAt, now)})` : ''}`, who: t.name, body: t.knowledge!.body! })),
       ].filter((s) => s.body.trim());
       const got = await answerFromWork(drafterDepsFor(engines.runner), text, sources);
@@ -541,6 +598,7 @@ export function createOrgControl(
           ...(roster.get(w.id)?.jobDescription ? { job: roster.get(w.id)!.jobDescription } : {}),
           ...(w.manager ? { manager: w.manager } : {}),
           ...(w.tools.length ? { tools: w.tools.filter((t) => t.ok).map((t) => t.name) } : {}),
+          ...(w.place && w.place.kind !== 'folder' ? { code: w.place.kind === 'workspace' ? `${w.place.name} (${(w.place.repos ?? []).join(', ')})` : w.place.name } : {}),
           avatarUrl: roster.get(w.id)?.avatarUrl ?? initialsPicture(w.id, w.name),
         }));
     },
@@ -549,6 +607,14 @@ export function createOrgControl(
         .teams(caller)
         .filter((t) => t.canBrief)
         .map((t) => ({ id: t.id, name: t.name, ...(t.purpose ? { purpose: t.purpose } : {}), members: t.members.map((m) => m.name) })),
+    following: (caller) => {
+      const res = org.watching(caller, { limit: 0 });
+      return res.ok ? res.mine.map((r) => ({ item: r.item, ...(r.status ? { status: r.status } : {}), worker: r.worker })) : [];
+    },
+    follow: async (caller, itemId, on, opts) => {
+      const res = await org.followOrSetUp(caller, itemId, on, opts);
+      return res.ok ? { worker: res.worker, trigger: res.trigger, everyMinutes: res.everyMinutes, ...(res.status ? { status: res.status } : {}), ...(res.setUp ? { setUp: true } : {}) } : res.error;
+    },
     track: (caller, workerId, itemId, on) => {
       const res = org.trackItem(caller, workerId, itemId, on);
       return res.ok ? { worker: res.worker, tracked: res.tracked } : res.error;
@@ -564,6 +630,7 @@ export function createOrgControl(
     handBack: (askId) => org.handBack(askId),
     progress: (id) => org.errandProgress(id),
     route: (text, workers, related) => routeRequest(drafterDepsFor(engines.runner), text, workers, related),
+    general: (_caller, text, context, workers) => answerGeneral(drafterDepsFor(engines.runner), text, context, workers),
     slack: {
       post: async (channel, text, threadTs, as) => {
         const token = bot();
@@ -619,6 +686,21 @@ export function createOrgControl(
         const res = await uploadFile(token, { channel, threadTs, filename, bytes });
         if (!res.ok) log('warn', 'slack', `The front door could not attach ${filename}: ${res.error}`);
         return res.ok;
+      },
+      dm: async (user, text) => {
+        const token = bot();
+        if (!token) return false;
+        const im = await openIm(token, user);
+        if (!im.ok) return false;
+        const res = await postMessage(token, { channel: im.data, text });
+        if (!res.ok) log('warn', 'slack', `The front door could not DM ${user}: ${res.error}`);
+        return res.ok;
+      },
+      permalink: async (channel, ts) => {
+        const token = bot();
+        if (!token) return null;
+        const res = await permalink(token, channel, ts);
+        return res.ok ? res.data : null;
       },
     },
     libraryUrl: () => loadOrgPolicy().policy.publicUrl ?? null,

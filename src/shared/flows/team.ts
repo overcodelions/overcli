@@ -14,6 +14,7 @@
 // shifts. This module is the shared contract main and renderer both validate
 // against; the engine lives in src/main/flows/teamEngine.ts.
 
+import { isReadOnlyMcpTool } from './mcpTools';
 import type { UUID } from '../types';
 import type { Flow } from './schema';
 
@@ -124,6 +125,13 @@ export interface Team {
   /// or fetched into it. The member's own shifts and errands keep the
   /// member's settings either way. See `piecesActFreely`.
   piecesAskFirst?: boolean;
+  /// Who may give it tasks (and so see it): the people who manage its
+  /// members (absent), anyone who shares a people-team with one of them, or
+  /// everyone. Admins always may.
+  whoCanBrief?: 'managers' | 'team' | 'org';
+  /// Who may give it tasks, picked: people, groups and roles. When set, it
+  /// decides over `whoCanBrief`; its members' managers and admins always may.
+  audience?: import('../org/policy').Audience;
   /// Only workers from `projectPath` belong on this team: the roster
   /// drafter is shown no one else and hires for every other part.
   ownProjectOnly?: boolean;
@@ -1966,14 +1974,14 @@ export function stageFileName(stageIndex: number, stageTitle: string, author: st
 
 /// The id a member's one-step team flow is saved under — one per source flow,
 /// rewritten on every commission so it follows edits to the original.
-export function teamPieceFlowId(flowId: string, opts: { check?: boolean } = {}): string {
-  return `team-piece-${opts.check ? 'checked-' : ''}${flowId}`;
+export function teamPieceFlowId(flowId: string, opts: { check?: boolean; readOnly?: boolean } = {}): string {
+  return `team-piece-${opts.readOnly ? 'read-' : opts.check ? 'checked-' : ''}${flowId}`;
 }
 
 /// The member's own flow a team piece was made from: the inverse of
 /// `teamPieceFlowId`. Any other id is already the member's own.
 export function sourceFlowIdOfPiece(flowId: string): string {
-  return flowId.replace(/^team-piece-(?:checked-)?/, '');
+  return flowId.replace(/^team-piece-(?:checked-|read-)?/, '');
 }
 
 /// The flow with `tools` added to its first step. A piece takes every step's
@@ -2016,6 +2024,27 @@ const TEAM_CHECK_SYSTEM_PROMPT = [
 /// reach the shared folder. Claude's names; other backends keep their own.
 const PIECE_WRITE_TOOLS = ['Write', 'Edit'];
 
+/// The tools of a member's flow a piece that only reads keeps: looking at
+/// files, read-only git, searching the web, and its tools' reads.
+const PIECE_READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'WebSearch']);
+const PIECE_READ_GIT = /^Bash\((?:git (?:diff|log|show|status|ls-files|rev-parse|blame|grep|shortlog)|rg|grep)(?::\*)?\)$/;
+
+/// A piece that only reads: what each member knows, for a learning pass.
+/// Its member's reads and nothing that writes or acts — so it never needs
+/// anyone's OK — plus writing its notes into its own folder.
+function readOnlyPieceFlow(flow: Flow): Flow {
+  const piece = teamPieceFlow(flow);
+  const keep = (t: string) => PIECE_READ_TOOLS.has(t) || PIECE_READ_GIT.test(t) || PIECE_WRITE_TOOLS.includes(t) || (t.startsWith('mcp__') && isReadOnlyMcpTool(t));
+  const tools = [...new Set([...piece.steps[0].tools.filter(keep), 'WebSearch', ...PIECE_WRITE_TOOLS])];
+  return {
+    ...piece,
+    id: teamPieceFlowId(flow.id, { readOnly: true }),
+    name: `${flow.name} — team piece, reads only`,
+    description: `"${flow.name}" for a team piece that only reads.`,
+    steps: [{ ...piece.steps[0], tools, effect: 'local' as const }],
+  };
+}
+
 const TEAM_PIECE_SYSTEM_PROMPT = [
   'You are a member of a team, doing ONE piece of a larger task. The message tells you who',
   'you are on the team, what the task is, exactly what your piece is, and where the team\u2019s',
@@ -2042,7 +2071,8 @@ const TEAM_PIECE_SYSTEM_PROMPT = [
 /// The model is the participant that runs most of the flow's steps (ties go
 /// to the one declared first): that is the member's working voice, where a
 /// single fast polish step is not.
-export function teamPieceFlow(flow: Flow, opts: { check?: boolean } = {}): Flow {
+export function teamPieceFlow(flow: Flow, opts: { check?: boolean; readOnly?: boolean } = {}): Flow {
+  if (opts.readOnly) return readOnlyPieceFlow(flow);
   const counts = new Map<string, number>();
   for (const step of flow.steps) counts.set(step.participantId, (counts.get(step.participantId) ?? 0) + 1);
   const participant =

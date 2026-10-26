@@ -245,6 +245,12 @@ export async function openIm(botToken: string, userId: string, fetchImpl?: Fetch
   return res.ok ? { ok: true, data: res.data.channel.id } : res;
 }
 
+/// A link to one message, for pointing back at a thread from a DM.
+export async function permalink(botToken: string, channel: string, ts: string, fetchImpl?: FetchLike): Promise<SlackResult<string>> {
+  const res = await slackRead<{ permalink: string }>('chat.getPermalink', botToken, { channel, message_ts: ts }, fetchImpl);
+  return res.ok ? { ok: true, data: res.data.permalink } : res;
+}
+
 export interface SlackPost {
   channel: string;
   text: string;

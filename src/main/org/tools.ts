@@ -11,6 +11,8 @@
 // Secrets are written where the CLIs read them and never handed back: the
 // listing says a value is set, not what it is.
 
+import { warmNpxTools } from './npxWarm';
+import { log } from '../diagnostics';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -98,12 +100,29 @@ export function listTools(
   return { tools, missing };
 }
 
-export function installTool(input: ToolInput): { ok: true } | { ok: false; error: string } {
+/// A setting that holds an address (`JIRA_URL`, `API_ENDPOINT`): one given
+/// without its scheme (`acme.example.net`) makes every request fail before it
+/// leaves, so it gets `https://`. Returns the settings, and which were fixed.
+export function fixAddresses(env: Record<string, string>): { env: Record<string, string>; fixed: string[] } {
+  const fixed: string[] = [];
+  const out = Object.fromEntries(
+    Object.entries(env).map(([k, v]) => {
+      const value = v.trim();
+      if (!/(^|_)(URL|URI|ENDPOINT|BASE_URL|HOST_URL)$/i.test(k) || !value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value) || /\s/.test(value) || !value.includes('.')) return [k, v];
+      fixed.push(k);
+      return [k, `https://${value}`];
+    }),
+  );
+  return { env: out, fixed };
+}
+
+export function installTool(input: ToolInput): { ok: true; fixed?: string[] } | { ok: false; error: string } {
   const name = input.name?.trim() ?? '';
   if (!TOOL_NAME.test(name)) return { ok: false, error: 'A name is letters, numbers, dashes or underscores, and must match what workers list (e.g. jira).' };
   const clean = (o?: Record<string, string>) =>
     Object.fromEntries(Object.entries(o ?? {}).filter(([k, v]) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(k.trim()) && typeof v === 'string').map(([k, v]) => [k.trim(), v]));
   let config: McpServerConfig;
+  let fixed: string[] = [];
   if (input.kind === 'http') {
     let url: URL;
     try {
@@ -121,7 +140,8 @@ export function installTool(input: ToolInput): { ok: true } | { ok: false; error
   } else {
     const command = input.command?.trim() ?? '';
     if (!command) return { ok: false, error: 'Say what command starts it, e.g. npx.' };
-    const env = clean(input.env);
+    const { env, fixed: addressed } = fixAddresses(clean(input.env));
+    fixed = addressed;
     config = { command, args: (input.args ?? []).map(String).filter((a) => a.length), ...(Object.keys(env).length ? { env } : {}) };
   }
   try {
@@ -129,10 +149,38 @@ export function installTool(input: ToolInput): { ok: true } | { ok: false; error
     // Codex takes command servers the same way; its remote ones are set up
     // differently, so those stay Claude's.
     if (codexInstalled() && input.kind !== 'http') writeMcpServer('codex', name, config);
+    // Installed now, with time to spare, rather than inside its first check.
+    if (typeof config.command === 'string') {
+      void warmNpxTools({ [name]: { command: config.command, args: Array.isArray(config.args) ? config.args.map(String) : [] } }, (level, msg) => log(level, 'org.tools', msg));
+    }
   } catch (err) {
     return { ok: false, error: `Could not write the config: ${err instanceof Error ? err.message : String(err)}` };
   }
-  return { ok: true };
+  return { ok: true, ...(fixed.length ? { fixed } : {}) };
+}
+
+/// Change some of an installed tool's settings, keeping the rest and who has
+/// it: a fixed address, a new token. A blank value leaves that one as it was.
+/// Only a command tool's settings: a remote one signs in again instead.
+export function updateToolSettings(name: string, values: Record<string, string>): { ok: true; changed: string[]; fixed?: string[] } | { ok: false; error: string } {
+  const current = readClaudeMcpServers()[name];
+  if (!TOOL_NAME.test(name) || !current) return { ok: false, error: 'No tool by that name.' };
+  if (typeof current.url === 'string') return { ok: false, error: 'A remote tool’s keys change by signing in again, or removing it and adding it back.' };
+  const env = current.env && typeof current.env === 'object' && !Array.isArray(current.env) ? { ...(current.env as Record<string, string>) } : {};
+  const given = Object.fromEntries(Object.entries(values).filter(([k, v]) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(k) && typeof v === 'string' && v.trim()));
+  const unknown = Object.keys(given).filter((k) => !(k in env));
+  if (unknown.length) return { ok: false, error: `${name} has no setting called ${unknown.join(', ')}.` };
+  if (!Object.keys(given).length) return { ok: false, error: 'Type a new value for at least one setting.' };
+  const { env: next, fixed } = fixAddresses({ ...env, ...given });
+  const config: McpServerConfig = { ...current, env: next };
+  try {
+    writeMcpServer('claude', name, config);
+    if (codexInstalled()) writeMcpServer('codex', name, config);
+  } catch (err) {
+    return { ok: false, error: `Could not write the config: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const touched = fixed.filter((k) => k in given);
+  return { ok: true, changed: Object.keys(given), ...(touched.length ? { fixed: touched } : {}) };
 }
 
 export function uninstallTool(name: string): { ok: true } | { ok: false; error: string } {

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 // Building the same engines the app builds, without the app.
 //
 // This is `registerIpc` (src/main/index.ts:294) with the renderer removed. The
@@ -13,6 +14,7 @@
 // permission tap sits in the middle, because a run with nobody watching has to
 // answer its own tool prompts. See permissions.ts.
 
+import { isCodingWorker } from '../shared/flows/worker';
 import type { ProcessService } from '../main/org/processes';
 import path from 'node:path';
 import { RunActivity } from '../main/flows/runActivity';
@@ -54,17 +56,21 @@ import type { TriggerService } from '../main/org/triggers';
 import { createTeamEngine, runDeliverablesFor } from '../main/flows/teamWire';
 import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraft';
 import { bindAllowList } from '../main/org/repoGrants';
-import { BranchLander } from '../main/org/landBranches';
+import { BranchLander, describe as describeLanded } from '../main/org/landBranches';
 import { runRepoTests } from './repoTests';
 import { credentialGitEnv, type ConnectedRepo } from '../main/org/repos';
 import { execFile } from 'node:child_process';
+import { setSafeFetch } from '../main/safeFetch';
 import { setWebReadsTrusted } from '../main/flows/trustedCommands';
-import { loadOrgPolicy, orgDir } from '../main/org/orgStores';
+import { loadOrgPolicy, orgDir, fileHandbook } from '../main/org/orgStores';
 import { guardCredentials } from '../main/org/credentialGuard';
 import { closeToolGateway, openToolGateway, type ToolGateway } from '../main/org/toolGateway';
 import { useRemoteToolVault } from '../main/org/tools';
 import { readClaudeMcpServers, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
 import { log } from '../main/diagnostics';
+import { serverShapedFlow } from '../main/org/serverFlow';
+import { ticketFlowId, ticketFlowYaml, ticketOf, ticketPrompt, trackerOf } from '../main/org/ticketFollowUp';
+import { parseFlowYaml } from '../shared/flows/yaml';
 import type { SecretsService } from '../main/org/secrets/service';
 import { teamHireJobDescription } from '../shared/flows/team';
 import type { OrgService } from '../main/org/orgService';
@@ -164,7 +170,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
   let answerPermissions: (event: MainToRendererEvent) => void = () => {};
 
   // What each run is doing, step by step, for the console. Kept as long as
-  // the org keeps things (Setup → Rules), and a week when it keeps forever.
+  // the org keeps things (Setup → Records), and a week when it keeps forever.
   const runActivity = new RunActivity(
     (conversationId) => flowRuntime?.listRuns().find((r) => Object.values(r.conversationIds).includes(conversationId))?.id,
     { dir: path.join(host().dataDir(), 'run-activity'), keepDays: () => loadOrgPolicy().policy.retentionDays ?? 7 },
@@ -215,6 +221,13 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     // notification passes through two wraps, so nothing double-posts.
     withWebhookNotify(options.onNotify ?? (() => {})),
   );
+  // A flow written on a desktop with Codex or Gemini still runs here: a step
+  // on a backend this machine lacks moves to one it has, at the same tier.
+  flowRuntime.backendsAvailable = async () => {
+    const settings = Store.load().settings;
+    const healthy = await healthyBackends(settings.backendPaths);
+    return [...healthy].filter((b) => settings.disabledBackends[b] !== true);
+  };
 
   const orchestrator = new OrchestratorImpl(
     runner,
@@ -275,14 +288,14 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
       const byId = new Map(loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).map((f) => [f.id, f]));
       return ids.flatMap((id) => {
         const f = byId.get(id);
-        return f ? [{ id: f.id, name: f.name, ...(f.description ? { description: f.description } : {}), steps: f.steps.map((s) => s.id) }] : [];
+        return f ? [{ id: f.id, name: f.name, ...(f.description ? { description: f.description } : {}), steps: f.steps.map((s) => s.id), stepTools: f.steps.map((s) => ({ ...(s.role ? { role: s.role } : {}), ...(s.effect ? { effect: s.effect } : {}), ...(s.tools ? { tools: s.tools } : {}) })) }] : [];
       });
     },
     // A team member's piece runs its flow cut down to the piece, as in the app.
     pieceFlow: (flowId, opts) => {
       const flow = loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).find((f) => f.id === flowId);
       if (!flow) return { ok: false, error: `flow "${flowId}" not found` };
-      const piece = teamPieceFlow(flow, { check: opts?.check });
+      const piece = teamPieceFlow(flow, { check: opts?.check, readOnly: opts?.readOnly });
       const saved = saveFlow({ flow: piece, target: 'generated' });
       return saved.ok ? { ok: true, flowId: piece.id } : saved;
     },
@@ -330,6 +343,14 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
 
   // A worker's tool scopes, enforced on its runs (toolScope.ts).
   flowRuntime.setToolScopes((id) => effectiveScopes(workerEngine.get(id)?.toolScopes, loadOrgPolicy().policy.toolDefaults));
+  workerEngine.handbook = () => fileHandbook.read();
+  flowRuntime.skipsCheckpoints = (id) => workerEngine.get(id)?.caps.skipCheckpoints === true;
+  flowRuntime.readsOnlyWorker = (id, projectPath) => {
+    const w = workerEngine.get(id);
+    return !!w && !isCodingWorker(w) && isGitRepoOrWorkspace(w.projectPath || projectPath);
+  };
+  flowRuntime.standingGrants = (id, flowId) =>
+    (workerEngine.get(id)?.caps.alwaysAllow ?? []).filter((k) => k.startsWith(`${flowId}/`)).map((k) => `step:${k.slice(flowId.length + 1)}`);
   flowRuntime.setRunObserver((run) => {
     orchestrator.onRunUpdate(run);
   });
@@ -363,7 +384,10 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
 export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // Research without asking, unless the org's rules say to ask. Before the
   // engines: restoring runs at startup already decides which steps ask.
-  setWebReadsTrusted(() => !loadOrgPolicy().policy.webNeedsApproval);
+  // A step that fetches pages needn't stop first unless the rules say ask;
+  // on `safe`, each fetch is judged as it happens instead (safeFetch.ts).
+  setWebReadsTrusted(() => loadOrgPolicy().policy.webFetch !== 'ask');
+  setSafeFetch({ mode: () => loadOrgPolicy().policy.webFetch, ownDomains: () => loadOrgPolicy().policy.ownDomains });
   // Teams fold run and batch events into their tasks, so they hear the same
   // emit every other engine does. Built below, after the engines it drives.
   let teams: TeamEngine | null = null;
@@ -476,6 +500,19 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // server (landBranches.ts).
   // Git gets the host tokens and nothing else secret; the tests get no secrets at all.
   const gitEnv = credentialGitEnv;
+  // A worker's flow on a connected repo or workspace ships through the
+  // server: its own push and "did it ship" steps give way to the server's
+  // pull-request step, and the server pushes and hands back the links.
+  flowRuntime.reshapeFlow = (flow, at) => {
+    if (!at.workerId) return flow;
+    const list = org.repoList({ name: 'overcli', admin: true });
+    if (!list.ok) return flow;
+    const places = new Set([...list.repos.map((r: ConnectedRepo) => r.path), ...list.workspaces.map((w: { rootPath: string }) => w.rootPath)]);
+    if (!places.has(at.projectPath)) return flow;
+    const shaped = serverShapedFlow(flow);
+    if (shaped) log('info', 'flows', `"${flow.name}" runs here with the server's push in place of ${flow.steps.length - shaped.steps.length + 1} shipping step(s).`);
+    return shaped ?? flow;
+  };
   const lander = new BranchLander({
     test: (command, cwd) => runRepoTests(command, cwd),
     git: (args, cwd) =>
@@ -487,6 +524,28 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     repos: () => org.repoList({ name: 'overcli', admin: true }).ok ? (org.repoList({ name: 'overcli', admin: true }) as { repos: ConnectedRepo[] }).repos : [],
     attach: (runId, name, body) => void flowRuntime.attachArtifact(runId, name, body),
     log: (message) => options.onNotify?.({ title: 'Push', body: message }),
+    branchPrefix: () => Store.load().settings.agentBranchPrefix || 'agent/',
+    // Pushed: the ticket it was for gets the link, from its worker's tracker.
+    onLanded: (run, landed) => {
+      const w = run.workerId ? workerEngine.get(run.workerId) : undefined;
+      const ticket = ticketOf(run);
+      const server = trackerOf(w?.mcpServers);
+      if (!w || !ticket || !server || run.flowId.startsWith('org-ticket-')) return;
+      const flow = parseFlowYaml({ yaml: ticketFlowYaml(server), id: ticketFlowId(server), source: 'user', filePath: '' });
+      const saved = flow ? saveFlow({ flow, target: 'user' }) : { ok: false as const, error: 'the flow did not parse' };
+      if (!flow || !saved.ok) return log('warn', 'org.repos', `Couldn't set up the ticket update for ${ticket}: ${saved.ok ? '' : saved.error}`);
+      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to review`, prompt: ticketPrompt(run, ticket, landed), flowId: flow.id }).then((res) => {
+        if (!res.ok) log('warn', 'org.repos', `Couldn't start the ticket update for ${ticket}: ${res.error}`);
+      });
+    },
+  });
+
+  // "Push again" on a run whose push was refused, once that's put right.
+  org.setRelander(async (runId) => {
+    const run = flowRuntime.getRun(runId);
+    const places = run ? (run.workspaceWorktrees?.length ? run.workspaceWorktrees.map((m) => m.worktreePath) : run.worktreePath ? [run.worktreePath] : []) : [];
+    if (!run || !places.some((p) => fs.existsSync(p))) return null;
+    return describeLanded(await lander.land(run));
   });
 
   flowRuntime.setRunObserver((run) => {
@@ -495,6 +554,9 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     void slack.onRunUpdate(run);
     lander.onRun(run);
   });
+  // Runs that finished in the last day without being pushed (a server from
+  // before every repo run was pushed here): pushed now, once.
+  for (const run of flowRuntime.listRuns()) if (Date.now() - run.createdAt < 86_400_000) lander.onRun(run);
 
   // index.ts:585. Missing from `buildEngines`, which is survivable for `run`
   // (a one-shot `workShiftNow` rarely escalates) but not for a daemon: without
@@ -516,6 +578,9 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     processes,
     slackConversations: slackConversations({
       log: () => frontDoor.conversations(),
+      stats: () => frontDoor.stats(),
+      followed: (user) => frontDoor.followedThreads(user),
+      unfollow: (channel, threadTs, user) => frontDoor.subscribe(channel, threadTs, user, false),
       botToken: () => configuredSlackToken('bot'),
       admin: (caller) => isAdmin(loadOrgPolicy().policy, caller),
     }),

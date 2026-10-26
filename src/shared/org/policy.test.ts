@@ -1,15 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  DEFAULT_ORG_POLICY,
-  canHire,
-  canManage,
-  canSee,
-  committedBudget,
-  hireDecision,
-  parseOrgPolicy,
-  type OrgCaller,
-  type OrgPolicy,
-} from './policy';
+import { DEFAULT_ORG_POLICY, canHire, canManage, canSee, committedBudget, hireDecision, parseOrgPolicy, type OrgCaller, type OrgPolicy, inAudience, parseAudience } from './policy';
 
 const PAT = 'U0ACMEPAT';
 const SAM = 'U0ACMESAM';
@@ -131,5 +121,34 @@ describe('hireDecision', () => {
       expect(d.reasons.join(' ')).toMatch(/warehouse/);
       expect(d.reasons.join(' ')).not.toMatch(/acme-feedback/);
     }
+  });
+});
+
+describe('who a worker, team or idea is open to, when picked', () => {
+  const policy = parseOrgPolicy({ name: 'Acme', admins: ['U0ADMIN1'], approvers: ['U0APPR01'], hirers: ['U0HIRE01'], teams: { Product: ['U0PAT001', 'U0SAM001'] } }).policy;
+  const as = (slackUserId: string) => ({ slackUserId, name: slackUserId, admin: false });
+
+  it('lets in the people, groups and roles picked, and no one else', () => {
+    const a = { people: ['U0LEE001'], groups: ['team:Product'], roles: ['approver' as const] };
+    expect(inAudience(policy, as('U0LEE001'), a)).toBe(true);
+    expect(inAudience(policy, as('U0SAM001'), a)).toBe(true);
+    expect(inAudience(policy, as('U0APPR01'), a)).toBe(true);
+    expect(inAudience(policy, as('U0HIRE01'), a)).toBe(false);
+    expect(inAudience(policy, as('U0ADMIN1'), a)).toBe(false);
+    expect(inAudience(policy, as('U0ADMIN1'), { roles: ['admin'] })).toBe(true);
+    expect(inAudience(policy, as('U0HIRE01'), { roles: ['hirer'] })).toBe(true);
+  });
+
+  it('decides over visibility for a worker that has one', () => {
+    const roster = [{ id: 'w', enabled: true, manager: { name: 'Pat', slackUserId: 'U0PAT001' }, visibility: 'org' as const, audience: { people: ['U0LEE001'] } }];
+    expect(canSee(policy, roster as never, 'w', as('U0LEE001'))).toBe(true);
+    expect(canSee(policy, roster as never, 'w', as('U0SAM001'))).toBe(false);
+    expect(canSee(policy, roster as never, 'w', as('U0PAT001'))).toBe(true);
+  });
+
+  it('reads one from a request, and refuses what it can’t be', () => {
+    expect(parseAudience({ people: ['U0LEE001', 'U0LEE001'], groups: ['team:Product'], roles: ['hirer'] })).toEqual({ ok: true, audience: { people: ['U0LEE001'], groups: ['team:Product'], roles: ['hirer'] } });
+    expect(parseAudience({ people: ['lee'] }).ok).toBe(false);
+    expect(parseAudience({ roles: ['owner'] }).ok).toBe(false);
   });
 });

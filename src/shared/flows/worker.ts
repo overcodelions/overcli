@@ -44,6 +44,17 @@ export function workerPace(w: Pick<Worker, 'pace'>): WorkerPace {
 
 export interface WorkerCaps {
   maxItemsPerShift: number;
+  /// How many Slack conversations it answers at once (each its own thread
+  /// and session). Absent: ANSWERS_AT_ONCE. Its desk, and a shift, are still
+  /// one at a time.
+  answersAtOnce?: number;
+  /// Run straight through its flows' own checkpoints (a step's
+  /// `pauseBefore`), as when its manager isn't there to look. An admin's
+  /// call. Absent: it stops at them like anyone running the flow.
+  skipCheckpoints?: boolean;
+  /// Steps its manager said it may always run without asking, as
+  /// `flowId/stepId`: a standing "yes" to the same approval every day.
+  alwaysAllow?: string[];
   runIn: 'worktree' | 'cwd';
   /// Let worker-owned runs cross the runtime's push/message/service-update
   /// boundary without a per-step approval. Optional so workers persisted by
@@ -154,6 +165,10 @@ export interface Worker {
   /// pinned every existing worker to a model its new backend rejects.
   heartbeatBackend?: Backend;
   flowIds: string[];
+  /// The flow its work goes through unless the ask names another of its
+  /// flows, or plainly can't run through this one. One of `flowIds`; absent,
+  /// or no longer among them: the first.
+  preferredFlowId?: string;
   /// A flow that runs once after a shift's items have all finished, with
   /// every item's result as its input — for a job whose deliverable is the
   /// COMBINATION (one digest, one report) rather than each piece on its own.
@@ -187,6 +202,27 @@ export interface Worker {
   /// hand: a worker that only reads its repo should not carry ~22 browser
   /// tools into every run.
   browser?: boolean;
+  /// Who can ask it, picked: people, groups and roles. When set, it decides
+  /// over `visibility`; its manager and admins always can.
+  audience?: import('../org/policy').Audience;
+  /// Whether it changes code. On: its own checkout and branch per run, and
+  /// what it makes goes out as a pull request. Off: it reads the connected
+  /// repos in place and can't change them. Absent: on when it has one of
+  /// the server's pull-request flows (`isCodingWorker`).
+  writesCode?: boolean;
+  /// What it found out by going through its own tools for its job: its
+  /// onboarding (`OrgService.learnWorker`), read before every run. Its
+  /// manager can correct it; it refreshes weekly unless told not to.
+  knowledge?: {
+    status: 'learning' | 'ready' | 'failed';
+    body?: string;
+    updatedAt?: number;
+    triedAt?: number;
+    error?: string;
+    refresh?: 'weekly' | 'off';
+    /// A person edited it after the worker wrote it.
+    editedBy?: string;
+  };
   /// Hired from a team — in its editor, or by its coordinator's plan —
   /// rather than from the hire screen. Such a hire works on demand (no
   /// shifts) until you give it some; this only says where it came from, so
@@ -552,9 +588,18 @@ export const WORKER_DEMOTE_REJECTION_STREAK = 3;
 /// SCHEDULE_AUTO_APPROVE_MAX is dominated by WORKER_MAX_ITEMS_PER_SHIFT today;
 /// it stays in the Math.min so raising the worker cap can never silently
 /// exceed the app-wide unattended-launch ceiling.
-export function workerAutoApproveCap(w: Pick<Worker, 'trust' | 'caps'>): number {
+/// A worker pointed at a repo or a workspace: its work lands as pushed
+/// branches, a person opens the pull request, and the server keeps it off the
+/// default branch and runs the repo's tests before each push.
+export function isCodingWorker(w: Pick<Worker, 'flowIds'> & Partial<Pick<Worker, 'writesCode'>>): boolean {
+  return w.writesCode ?? w.flowIds.some((id) => id.startsWith('org-pr-'));
+}
+
+export function workerAutoApproveCap(w: Pick<Worker, 'trust' | 'caps'> & Partial<Pick<Worker, 'flowIds' | 'writesCode'>>): number {
   if (w.trust === 'probation') return 0;
-  if (w.trust === 'trusted') return Math.min(2, w.caps.maxItemsPerShift);
+  // A trusted coding worker gets on with it: what it makes is a branch for a
+  // person to review, never a change anyone already has.
+  if (w.trust === 'trusted' && !isCodingWorker({ flowIds: w.flowIds ?? [], ...(w.writesCode !== undefined ? { writesCode: w.writesCode } : {}) })) return Math.min(2, w.caps.maxItemsPerShift);
   return Math.min(w.caps.maxItemsPerShift, WORKER_MAX_ITEMS_PER_SHIFT, SCHEDULE_AUTO_APPROVE_MAX);
 }
 
@@ -1455,7 +1500,7 @@ export function resolveHandoffTarget<T extends Pick<Worker, 'id' | 'name'>>(
 /// where it came from, and so the engine can tell a delegated errand apart
 /// from a typed one when deciding whether it may delegate onward (it may not).
 export function workerOrigin(
-  w: Pick<Worker, 'id' | 'name' | 'caps' | 'browser'>,
+  w: Pick<Worker, 'id' | 'name' | 'caps' | 'browser'> & Partial<Pick<Worker, 'trust' | 'flowIds' | 'writesCode'>>,
   task: 'shift' | 'errand',
   errand?: string,
   from?: { workerId: UUID; workerName: string; orchestrationId?: UUID },
@@ -1466,6 +1511,7 @@ export function workerOrigin(
   task: 'shift' | 'errand';
   errand?: string;
   allowExternalActions?: boolean;
+  externalActionGrant?: string[];
   browser?: boolean;
   from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
 } {
@@ -1476,10 +1522,19 @@ export function workerOrigin(
     task,
     ...(errand !== undefined ? { errand } : {}),
     ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
+    // Trusted with code: writing the pull request (the server then pushes
+    // the branch, tested, never to the default) needs no click. On
+    // probation it still waits for its manager.
+    ...(!w.caps.allowExternalActions && w.trust === 'trusted' && isCodingWorker({ flowIds: w.flowIds ?? [], ...(w.writesCode !== undefined ? { writesCode: w.writesCode } : {}) }) ? { externalActionGrant: [CODING_STEP_GRANT, TICKET_STEP_GRANT] } : {}),
     ...(w.browser ? { browser: true } : {}),
     ...(from ? { from } : {}),
   };
 }
+
+/// The grant that lets a trusted coding worker's pull-request step through.
+export const CODING_STEP_GRANT = 'step:pull-request';
+/// And the one that lets it update the ticket once its branch is pushed.
+export const TICKET_STEP_GRANT = 'step:ticket-update';
 
 /// The desk prefix that means "skip the thinking, run the flow on this".
 export const DIRECT_RUN_PREFIX = '/run';
@@ -1504,3 +1559,8 @@ export function parseDirectRun(message: string): string | null {
   const work = rest.trim();
   return work ? work : null;
 }
+
+/// How many conversations a worker answers at once unless told otherwise,
+/// and the most it may.
+export const ANSWERS_AT_ONCE = 3;
+export const ANSWERS_AT_ONCE_MAX = 6;

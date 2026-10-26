@@ -103,6 +103,27 @@ afterAll(() => {
   server.close();
 });
 
+describe('viewing as someone', () => {
+  it('lets an admin read the console as one person, changes nothing, and turns everyone else away', async () => {
+    const { org: o, calls: seen } = fakeOrg();
+    const admin = createControlPlane({ org: o, log: () => {}, authenticate: (t) => (t === 'ocli_admin' ? { slackUserId: 'U0ACMEADM', name: 'Ada', admin: true } : t === 'ocli_good' ? PAT : null) });
+    await listenControlPlane(admin, { host: '127.0.0.1', port: 0 });
+    const at = `http://127.0.0.1:${(admin.address() as AddressInfo).port}`;
+    try {
+      const as = { 'X-Overgo-View-As': 'U0ACMEPAT', 'X-Overgo-View-As-Name': encodeURIComponent('Pat') };
+      const read = await fetch(`${at}/api/workers/w1/files`, { headers: { Authorization: 'Bearer ocli_admin', ...as } });
+      expect(read.status).toBe(200);
+      expect(seen.filter((c) => c.op === 'workerFileList').at(-1)).toMatchObject({ caller: 'Pat' });
+      const write = await fetch(`${at}/api/workers/w1/update`, { method: 'POST', headers: { Authorization: 'Bearer ocli_admin', 'Content-Type': 'application/json', ...as }, body: '{}' });
+      expect(write.status).toBe(403);
+      const notAdmin = await fetch(`${at}/api/workers/w1/files`, { headers: { Authorization: 'Bearer ocli_good', 'X-Overgo-View-As': 'U0ACMEADM' } });
+      expect(notAdmin.status).toBe(403);
+    } finally {
+      admin.close();
+    }
+  });
+});
+
 describe('control plane HTTP', () => {
   it('opens a worker’s own file by the link its Files list handed out', async () => {
     const res = await fetch(`${base}/api/workers/w1/files`, { headers: { Authorization: 'Bearer ocli_good' } });

@@ -7,11 +7,15 @@
 // worker engine, runs in the runtime; this is a policy gate in front of both,
 // returning plain data each surface renders in its own way.
 
+import type { LoginResult } from './toolLogin';
+import { generalize, readShape, readToolCall, setupPrompt } from './watchSetup';
 import { randomUUID } from 'node:crypto';
 import type { FlowRun, FlowRunState } from '../../shared/flows/schema';
+import type { RunChanges } from './runChanges';
+import { ticketFlowId, ticketFlowYaml, trackerOf } from './ticketFollowUp';
 import { flowRunTitle } from '../../shared/flows/schema';
 import type { HireMessage, Worker, WorkerErrandResult, WorkerJournalEntry, WorkerTrustLevel, WorkerVisibility } from '../../shared/flows/worker';
-import { WORKER_NOTE_MAX, isSlackUserId, validateOrgFields, workerTagline } from '../../shared/flows/worker';
+import { ANSWERS_AT_ONCE, ANSWERS_AT_ONCE_MAX, WORKER_NOTE_MAX, isCodingWorker, isSlackUserId, validateOrgFields, workerTagline } from '../../shared/flows/worker';
 import { describeTrigger, type ScheduleTrigger } from '../../shared/flows/schedule';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import { buildOrgTree, managerFor, type OrgNode } from '../../shared/flows/org';
@@ -27,13 +31,13 @@ import {
   canHire,
   canManage,
   canSee,
+  sharesTeam,
   committedBudget,
   hireDecision,
   isAdmin,
   type OrgCaller,
   type OrgPolicy,
-  type OrgRole,
-} from '../../shared/org/policy';
+  type OrgRole, inAudience, type Audience } from '../../shared/org/policy';
 import { buildThreads, nowLine, type WorkThread } from './workThreads';
 import { isReadOnlyMcpTool, parseMcpToolName } from '../../shared/flows/mcpTools';
 import { stepsARunGrantCovers } from '../flows/stepEffect';
@@ -50,9 +54,12 @@ import { TOOL_NAME } from './tools';
 import { catalogFor, connectorTitle, connectorTool, TOOL_CATALOG, type CatalogTool } from './toolCatalog';
 import type { Discovery, SignInSummary } from './toolSignIn';
 import type { Deliverable, Destination, TriggerService, WorkerTrigger } from './triggers';
+import { argsFor } from './triggers';
 import { newPullRequestLink, prFlowId as prFlowIdFor, prFlowYaml as prFlowFor, workspaceFlowId, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
 import type { ModelProvider, SecretStatus } from './secrets/service';
-import type { AskRecord, AskStore, AuditEntry, AuditStore, HireStore, KeptFile, PublishedState, PublishedStore, Rating, RatingStore, SavedFile, TeamFileStore, TeamPublishShape } from './orgStores';
+import type { ToolTrouble } from './toolHealth';
+import { HANDBOOK_MAX, WORKER_VERSIONS_KEPT } from './orgStores';
+import type { AskRecord, AskStore, AuditEntry, AuditStore, HireStore, KeptFile, PublishedState, PublishedStore, Rating, RatingStore, SavedFile, TeamFileStore, TeamPublishShape, ToolRequest, ToolRequestStore, WorkerConfig, WorkerVersion, WorkerVersionStore } from './orgStores';
 import type { ToolCall } from './mcpDirect';
 import { classifyServer, fileTitle, isText, listFolder, linkFrom, mimeFor, pickUploadTool, readInFolder, slugFor, uploadArgs, type DestinationKind } from './teamFiles';
 import { buildZip, type ZipEntry } from './zip';
@@ -173,6 +180,16 @@ export interface WorkerSummary {
   /// The tools (MCP servers) it lists, whether this server has each, and how
   /// much of it the worker may use (absent: the whole tool).
   tools: Array<{ name: string; ok: boolean; scope?: ToolScope; scopeFrom?: 'default' | 'own' }>;
+  /// How many Slack conversations it answers at once.
+  answersAtOnce: number;
+  /// Runs through its flows' own checkpoints without stopping.
+  skipCheckpoints?: boolean;
+  /// Steps it always runs without asking, `flowId/stepId`.
+  alwaysAllow?: string[];
+  /// Set by hand: whether it changes code. Absent: from its flows (`coding`).
+  writesCode?: boolean;
+  /// Who can ask it, picked; absent: `visibility` says.
+  audience?: Audience;
   /// When it runs, in words ("Weekdays at 09:00"), and the next time.
   schedule: string;
   cadence: ScheduleTrigger | null;
@@ -180,6 +197,8 @@ export interface WorkerSummary {
   /// Where it works: a connected repo, a workspace of repos, or a folder.
   /// Absent: nowhere in particular, so it can't change code.
   place?: { kind: 'repo' | 'workspace' | 'folder'; name: string; repos?: string[] };
+  /// Pointed at a repo or workspace: its work lands as branches to review.
+  coding?: boolean;
 }
 
 /// One run's worth of work a worker on probation proposed, waiting for its
@@ -402,6 +421,10 @@ export interface TodayView {
   org: string;
   waiting: WaitingItem[];
   hireApprovals: HireSummary[];
+  /// Managers asking for tools for their workers: an admin's to decide.
+  toolRequests: ToolRequest[];
+  /// Tools failing right now: an admin's to fix.
+  toolTrouble: ToolTrouble[];
   teamTasks: TeamTaskSummary[];
   proposals: ProposalBatch[];
   delivered: WorkItem[];
@@ -409,7 +432,31 @@ export interface TodayView {
   spend: { spentUSD: number; projectedUSD: number; allowanceUSD?: number; committedUSD?: number };
 }
 
-export type TriggerView = Omit<WorkerTrigger, 'webhook' | 'seen'> & { webhook?: { idPath?: string }; seenCount: number; handledToday: number; handledTotal: number };
+export type TriggerView = Omit<WorkerTrigger, 'webhook' | 'seen' | 'followers'> & {
+  webhook?: { idPath?: string };
+  seenCount: number;
+  handledToday: number;
+  handledTotal: number;
+  /// Who follows each tracked item: how many, and who to someone who manages the worker.
+  following?: Record<string, { count: number; names?: string[] }>;
+};
+
+/// One tracked ticket, as the Watching report lists it.
+export interface WatchRow {
+  item: string;
+  /// Its field's value when last checked.
+  status?: string;
+  triggerId: string;
+  trigger: string;
+  workerId: string;
+  worker: string;
+  everyMinutes: number;
+  lastPolledAt?: number;
+  followers: number;
+  /// Who, to an admin or someone who manages the worker.
+  followerNames?: string[];
+  youFollow: boolean;
+}
 
 /// Where a Library item came from — one shape per kind of source.
 export type LibraryOrigin =
@@ -477,12 +524,19 @@ export type { Destination };
 
 export interface WorkerDetail {
   worker: WorkerSummary;
+  /// What its work could change; empty when it only reads, and then anyone
+  /// who can ask it gets answers without its manager's OK. Absent: unknown here.
+  changes?: string[];
+  /// Its tools whose keys the server found don't sign in.
+  toolProblems?: string[];
   jobDescription: string;
   readiness: TrustReadiness;
   stats: { runs: number; failed: number; rated: number; usefulPct: number | null };
   delivered: WorkItem[];
   questions: Array<{ question: string; answer?: string; answeredBy?: string; at: number; waiting: boolean }>;
   learned: Array<{ at: number; note: string }>;
+  /// What it found out going through its tools (its onboarding).
+  knowledge?: Worker['knowledge'];
   recent: Array<{ at: number; kind: string; title: string; note?: string }>;
   /// What people asked it lately, newest first, with the answers.
   asks: AskRecord[];
@@ -595,7 +649,16 @@ export interface OrgServiceDeps {
     setEnabled(id: UUID, enabled: boolean): { ok: true } | { ok: false; error: string };
     remove(id: UUID): { ok: true } | { ok: false; error: string };
     /// `conversation`: a conversation of its own (a Slack thread), not today's desk.
-    runErrand(id: UUID, instruction: string, attachments?: Attachment[], conversation?: string, untrusted?: boolean): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }>;
+    /// `mayLaunch`: asked by someone else, of a worker that only reads.
+    runErrand(id: UUID, instruction: string, attachments?: Attachment[], conversation?: string, untrusted?: boolean, mayLaunch?: boolean): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }>;
+    /// What its work could change; empty when it only reads. Absent: every
+    /// worker counts as one that could change something.
+    changesOf?(id: UUID): string[];
+    /// Its flows by name, its usual one first.
+    flowsOf?(id: UUID): Array<{ id: string; name: string }>;
+    /// One look-up run with the worker's tools, nothing to approve
+    /// (`WorkerEngine.lookup`). Absent: watches are only set up by hand.
+    lookup?(id: UUID, args: { title: string; prompt: string }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }>;
     journalFor(id: UUID): WorkerJournalEntry[];
     /// A note into its memory, read by every later turn (`WorkerEngine.remember`).
     remember?(id: UUID, text: string): Result;
@@ -709,6 +772,13 @@ export interface OrgServiceDeps {
     tokenFor(repo: ConnectedRepo): string | null;
     /// Why this server won't run repo tests, or undefined when it will.
     testsOff?(): string | undefined;
+    /// What every branch a worker pushes starts with (`agent/`).
+    branchPrefix?(): string;
+    setBranchPrefix?(prefix: string): void;
+    /// Bring each repo's default branch up to origin's. Problems, in words.
+    freshen?(paths: string[]): Promise<string[]>;
+    /// When they last caught up with origin.
+    lastRefreshed?(): number | undefined;
     workspaces(): OrgWorkspace[];
     createWorkspace(input: { name: string; repos: string[]; instructions?: string }, by: string): Result<{ workspace: OrgWorkspace }>;
     updateWorkspace(id: string, patch: { repos?: string[]; instructions?: string }): Result<{ workspace: OrgWorkspace }>;
@@ -726,6 +796,8 @@ export interface OrgServiceDeps {
   };
   /// What a finished run produced: its artifacts (the answer last) and files.
   runDeliverables?(runId: UUID): Array<{ name: string; body?: string; sourcePath?: string; bytes?: number }>;
+  /// What a run has changed in its worktrees so far (runChanges.ts).
+  runChanges?(run: FlowRun, opts: { diff?: boolean }): Promise<RunChanges>;
   /// A file a run wrote, whole. Absent or null: it cannot be read here.
   readRunFile?(path: string): Buffer | null;
   /// Change org.json in place (a tool's default scope).
@@ -749,11 +821,17 @@ export interface OrgServiceDeps {
     list(roster: Worker[], statuses?: Record<string, string>): { tools: ToolSummary[]; missing: Array<{ name: string; workers: string[]; template?: ToolTemplate }> };
     /// How a published worker's tools were set up where it came from.
     remember?(templates: ToolTemplate[], onlyNew?: boolean): void;
-    install(input: ToolInput): { ok: true } | { ok: false; error: string };
+    install(input: ToolInput): { ok: true; fixed?: string[] } | { ok: false; error: string };
+    /// Change some of a tool's settings in place (`updateToolSettings`).
+    update?(name: string, values: Record<string, string>): { ok: true; changed: string[]; fixed?: string[] } | { ok: false; error: string };
+    /// Whether its stored keys sign in (`toolLogin.ts`). Null: can't tell.
+    login?(name: string): Promise<LoginResult | null>;
     uninstall(name: string): { ok: true } | { ok: false; error: string };
     /// Start the model CLI once and read what each server reports.
     check(): Promise<Record<string, string> | null>;
   };
+  /// The last sign-in check of each tool, kept across restarts. Absent: in memory.
+  toolLogins?: { load(): Record<string, LoginResult>; save(all: Record<string, LoginResult>): void };
   /// Workers acting on business events. Absent: no triggers on this host.
   triggers?: () => TriggerService | null;
   /// Team task files kept in the Library or saved elsewhere. Absent: kept
@@ -762,6 +840,9 @@ export interface OrgServiceDeps {
   /// Whether a worker the person can see already does a job they're about to
   /// hire for (hireOverlap.ts). Absent: no such check.
   overlap?(job: string, workers: Array<{ id: string; name: string; tagline?: string; job?: string }>): Promise<{ workerId: string; why: string } | null>;
+  /// Its job rewritten with a change someone described (jobRewrite.ts).
+  /// Null: the model gave nothing usable. Absent: no such help on this host.
+  rewriteJob?(args: { name: string; job: string; ask: string }): Promise<string | null>;
   /// A picture for a worker, from its name and job, not one in `taken`.
   /// Null: nothing suited it (`pickPicture`).
   pickPicture?(worker: { name: string; job: string; tagline?: string }, taken: string[]): Promise<string | null>;
@@ -800,6 +881,24 @@ export interface OrgServiceDeps {
   onHireAwaitingApproval?(hire: PendingHire, approvers: string[]): void;
   /// Ask the admins to set up tools a hire wants (a Slack DM, usually).
   onToolsWanted?(hire: PendingHire, tools: WantedTool[], admins: string[]): void;
+  /// The org's handbook every worker reads. Absent: none on this host.
+  handbook?: { read(): string; write(text: string): void };
+  /// Disk use on the server, for Setup → Readiness. Absent: not shown.
+  storage?: {
+    report(): Promise<StorageReport>;
+    discard(runId: string): Promise<{ ok: true; removed: number } | { ok: false; error: string }>;
+    clearToolCache(): Promise<void>;
+  };
+  /// Each worker's setup over time, to see and restore. Absent: in memory.
+  workerVersions?: WorkerVersionStore;
+  /// Tools failing now (toolHealth.ts). Absent: nobody is watching.
+  toolHealth?: { list(): ToolTrouble[]; clear(tool: string): void };
+  /// Requests for a tool for one worker (`requestTool`). Absent: kept in memory.
+  toolRequests?: ToolRequestStore;
+  /// A manager asked the admins for a tool.
+  onToolRequest?(request: ToolRequest, admins: string[]): void;
+  /// An admin gave or declined one.
+  onToolRequestDecided?(request: ToolRequest): void;
   /// Tell the person who asked how it went.
   onHireDecided?(hire: PendingHire, outcome: { approved: boolean; by: string; worker?: Worker; error?: string }): void;
   now?(): number;
@@ -808,7 +907,9 @@ export interface OrgServiceDeps {
 function pauseKind(run: FlowRun): 'question' | 'approval' | null {
   if (run.state.kind !== 'paused' || !run.workerId) return null;
   if (run.state.reason === 'needsInput') return 'question';
-  if (run.state.reason === 'externalAction') return 'approval';
+  // A flow's own "look before this step" waits on a person just the same:
+  // left off this list, a run stopped there sat silent in every inbox.
+  if (run.state.reason === 'externalAction' || run.state.reason === 'preStep') return 'approval';
   return null;
 }
 
@@ -949,6 +1050,14 @@ export interface RunPast {
   result?: { name: string; body: string };
   error?: string;
 }
+
+/// How long a look-up to set up a watch may take, and how often it's checked.
+const LOOKUP_WAIT_MS = 10 * 60 * 1000;
+/// Onboarding reads more than a look-up does.
+const LEARN_WAIT_MS = 30 * 60 * 1000;
+const DAY_MS = 86_400_000;
+const WEEK_MS = 7 * DAY_MS;
+const LOOKUP_POLL_MS = 3000;
 
 export interface ErrandProgress {
   done: boolean;
@@ -1121,7 +1230,13 @@ export class OrgService {
           nextRunAt: w.enabled ? nextShift(w.id) ?? null : null,
           state: this.deps.planning?.(w.id) && state === 'idle' ? 'working' : state,
           tools,
+          answersAtOnce: w.caps.answersAtOnce ?? ANSWERS_AT_ONCE,
+          ...(w.caps.skipCheckpoints ? { skipCheckpoints: true } : {}),
+          ...(w.caps.alwaysAllow?.length ? { alwaysAllow: [...w.caps.alwaysAllow] } : {}),
           ...(w.projectPath ? { place: placeOf(w.projectPath) } : {}),
+          ...(isCodingWorker(w) ? { coding: true } : {}),
+          ...(w.writesCode !== undefined ? { writesCode: w.writesCode } : {}),
+          ...(w.audience ? { audience: w.audience } : {}),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -1495,9 +1610,14 @@ export class OrgService {
 
   /// Approve or reject the step a run waits on. `forRun`: approve the later
   /// steps that need only the same outside tools too (`WaitingItem.coversLater`).
-  decideRun(caller: OrgCaller, runId: UUID, approve: boolean, forRun = false): Result {
+  decideRun(caller: OrgCaller, runId: UUID, approve: boolean, forRun = false, always = false): Result {
     const found = this.pausedFor(caller, runId, 'approval');
     if (!found.ok) return found;
+    // "Always": from now on this step of this flow runs without asking.
+    if (approve && always) {
+      const saved = this.alwaysAllowStep(caller, runId);
+      if (!saved.ok) return saved;
+    }
     // Read before acting: approving moves the run on, and the log should
     // name the step that was approved, not the one after it.
     const step = found.run.state.kind === 'paused' ? found.run.state.nextStepId : 'a step';
@@ -1505,6 +1625,19 @@ export class OrgService {
     const res = approve ? this.deps.runs.resumeRun({ runId, ...(forRun ? { forRun: true } : {}) }) : this.deps.rejectRun(runId);
     if (res.ok) this.record(caller, `${approve ? 'Approved' : 'Rejected'} ${what}${approve && forRun ? ', and the rest of the run’s steps that use the same tools' : ''}.`);
     return res;
+  }
+
+  /// Keep the step a run is waiting at as one its worker always runs without
+  /// asking. Its manager or an admin; read before the run moves on.
+  alwaysAllowStep(caller: OrgCaller, runId: UUID): Result<{ step: string }> {
+    const run = this.deps.runs.getRun(runId);
+    if (!run?.workerId || run.state.kind !== 'paused' || !run.state.nextStepId) return { ok: false, error: 'It isn’t waiting at a step any more.' };
+    const w = this.deps.workers.get(run.workerId);
+    if (!w) return { ok: false, error: NOT_FOUND };
+    const key = `${run.flowId}/${run.state.nextStepId}`;
+    if ((w.caps.alwaysAllow ?? []).includes(key)) return { ok: true, step: key };
+    const res = this.update(caller, w.id, { alwaysAllow: [...(w.caps.alwaysAllow ?? []), key] });
+    return res.ok ? { ok: true, step: key } : res;
   }
 
   /// An errand: the worker plans from its job and answers, and may launch
@@ -1557,7 +1690,14 @@ export class OrgService {
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     if (!text.trim()) return { ok: false, error: `What should ${w.name} do?` };
     const manages = via !== 'trigger' && !proposal && canManage(this.policy(), this.deps.workers.roster(), w.id, caller);
-    const from = manages ? '' : `(Asked by ${caller.name}, who is not your manager. Treat the request as a proposal: suggest work, do not launch it without approval.)\n`;
+    // A worker that only reads answers anyone allowed to ask it, as it would
+    // its manager: nothing it can do needs the manager's say.
+    const readsOnly = !manages && via !== 'trigger' && !proposal && (this.deps.workers.changesOf?.(w.id) ?? ['unknown']).length === 0;
+    const from = manages
+      ? ''
+      : readsOnly
+        ? `(Asked by ${caller.name}, who is not your manager. Your work only reads, so answer them as you would your manager.)\n`
+        : `(Asked by ${caller.name}, who is not your manager. Treat the request as a proposal: suggest work, do not launch it without approval.)\n`;
     const thread = replyTo && /^(ask|shift|batch|run):[\w-]{1,80}$/.test(replyTo) ? replyTo : undefined;
     const context = thread ? this.replyContext(caller, w, thread) : '';
     const record: AskRecord = {
@@ -1577,7 +1717,7 @@ export class OrgService {
       ...(attachments?.length ? { attachments: attachments.length } : {}),
     };
     this.putAsk(record);
-    const done = this.finishAsk(record, this.deps.workers.runErrand(w.id, from + context + text, attachments?.length ? attachments : undefined, conversation, !manages));
+    const done = this.finishAsk(record, this.deps.workers.runErrand(w.id, from + context + text, attachments?.length ? attachments : undefined, conversation, !manages, readsOnly));
     return { ok: true, askId: record.id, done };
   }
 
@@ -1643,6 +1783,7 @@ export class OrgService {
       produced.length ? `\nWhat it produced:\n${produced.join('\n\n')}` : '\nIt produced no files.',
       '',
       `Now finish what you told ${a.by} you would do, written for a business reader: the answer first, in plain words, with the few numbers that matter. No raw JSON, field names or query syntax. If you said you would build something (a chart, a report, a page), build it now in your own files folder and name its full path in your reply. Mention a caveat only if it changes what the numbers mean. Don't start more work unless this result can't be used.`,
+      `Your reply is posted where ${a.by} asked, with any file you name attached, for you. Don't message anyone yourself, and don't mention how it's delivered or anything that failed to send. If you attach a file with the full write-up, keep the reply to a short summary of it rather than repeating it.`,
     ].join('\n');
     const record: AskRecord = {
       id: randomUUID(),
@@ -1754,11 +1895,64 @@ export class OrgService {
   // ---- TOOLS --------------------------------------------------------------
 
   private toolStatuses: { at: number; statuses: Record<string, string> } | null = null;
+  private loginCache: Record<string, LoginResult> | null = null;
+
+  private logins(): Record<string, LoginResult> {
+    return (this.loginCache ??= this.deps.toolLogins?.load() ?? {});
+  }
+
+  /// Check one tool's stored keys sign in, and keep what it found.
+  private async checkLoginOf(name: string): Promise<LoginResult | null> {
+    if (!this.deps.tools?.login) return null;
+    let res: LoginResult | null = null;
+    try {
+      res = await this.deps.tools.login(name);
+    } catch {
+      res = null;
+    }
+    const all = { ...this.logins() };
+    if (res) all[name] = res;
+    else delete all[name];
+    this.loginCache = all;
+    this.deps.toolLogins?.save(all);
+    return res;
+  }
+
+  /// A worker's tools whose keys the server found don't sign in, said for it.
+  /// Pushes a finished run's worktrees again (BranchLander.land): set by the
+  /// server once its pusher exists. Null when the run has no checkout left.
+  private relander?: (runId: UUID) => Promise<string | null>;
+  setRelander(fn: (runId: UUID) => Promise<string | null>): void {
+    this.relander = fn;
+  }
+
+  /// Push a finished run again: after its push was refused (a token that
+  /// couldn't write, say) and that's been put right. Its manager or an admin.
+  async pushRunAgain(caller: OrgCaller, runId: UUID): Promise<Result<{ result: string }>> {
+    const r = this.deps.runs.getRun(runId);
+    if (!r?.workerId || !canSee(this.policy(), this.deps.workers.roster(), r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
+    if (!canManage(this.policy(), this.deps.workers.roster(), r.workerId, caller)) return { ok: false, error: 'Only its manager or an admin can push it.' };
+    if (r.state.kind !== 'done') return { ok: false, error: 'Only a finished run can be pushed.' };
+    if (!this.relander) return { ok: false, error: 'Runs can’t be pushed from this server.' };
+    const result = await this.relander(runId);
+    if (result === null) return { ok: false, error: 'Its checkout is gone, so there is nothing left to push.' };
+    this.record(caller, `Pushed "${flowRunTitle(r)}" again.`);
+    return { ok: true, result };
+  }
+
+  toolProblemsFor(workerId: UUID): string[] {
+    const w = this.deps.workers.get(workerId);
+    if (!w) return [];
+    const names = new Set([...(w.mcpServers ?? []), ...(this.policy().sharedMcpServers ?? [])]);
+    return Object.entries(this.logins())
+      .filter(([name, l]) => names.has(name) && l.state === 'rejected')
+      .map(([name, l]) => `${name}: its sign-in is refused, so what it reads comes back empty or fails. ${l.reason ?? ''}`.trim());
+  }
 
   /// What MCP servers workers here can use, who uses each, and what a worker
   /// names that is not installed. Admins see it all; a manager sees whether
   /// their workers' tools are here.
-  tools(caller: OrgCaller): Result<{ tools: Array<ToolSummary & { access: 'picked' | 'managers' | 'everyone'; signIn?: SignInSummary }>; missing: Array<{ name: string; workers: string[]; template?: ToolTemplate; connector?: { title: string; tool: string; installed: boolean } }>; catalog?: CatalogTool[]; checkedAt?: number; canEdit: boolean; signIn: boolean }> {
+  tools(caller: OrgCaller): Result<{ tools: Array<ToolSummary & { access: 'picked' | 'managers' | 'everyone'; signIn?: SignInSummary; login?: LoginResult; trouble?: ToolTrouble; serviceAccount?: boolean; actsAs?: string; actsAsGone?: boolean }>; missing: Array<{ name: string; workers: string[]; template?: ToolTemplate; connector?: { title: string; tool: string; installed: boolean } }>; catalog?: CatalogTool[]; checkedAt?: number; canEdit: boolean; signIn: boolean }> {
     if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
     const roster = this.deps.workers.roster();
     const admin = isAdmin(this.policy(), caller);
@@ -1770,11 +1964,24 @@ export class OrgService {
     const shared = new Set(policy.sharedMcpServers ?? []);
     const allowed = new Set(policy.allowedMcpServers ?? []);
     const signedIn = this.deps.toolSignIn?.summaries() ?? {};
-    const withAccess = listed.tools.map((t) => ({
-      ...t,
-      access: (shared.has(t.name) ? 'everyone' : allowed.has(t.name) ? 'managers' : 'picked') as 'picked' | 'managers' | 'everyone',
-      ...(t.kind === 'http' && signedIn[t.name] ? { signIn: signedIn[t.name] } : {}),
-    }));
+    const logins = this.logins();
+    const trouble = new Map((this.deps.toolHealth?.list() ?? []).map((x) => [x.tool, x]));
+    // Who the org knows, to tell when a tool still signs in as someone gone.
+    const known = new Set([...(this.deps.people?.() ?? []).map((p) => p.name), ...Object.values(policy.people ?? {}).map((p) => (p as { name?: string }).name ?? '')].filter(Boolean).map((n) => n.toLowerCase()));
+    const service = new Set(policy.serviceAccounts ?? []);
+    const withAccess = listed.tools.map((t) => {
+      const person = logins[t.name]?.state === 'ok' && !service.has(t.name) ? personOf(logins[t.name].as) : null;
+      return {
+        ...t,
+        ...(logins[t.name] ? { login: logins[t.name] } : {}),
+        access: (shared.has(t.name) ? 'everyone' : allowed.has(t.name) ? 'managers' : 'picked') as 'picked' | 'managers' | 'everyone',
+        ...(t.kind === 'http' && signedIn[t.name] ? { signIn: signedIn[t.name] } : {}),
+        ...(trouble.has(t.name) ? { trouble: trouble.get(t.name)! } : {}),
+        ...(service.has(t.name) ? { serviceAccount: true } : {}),
+        // Signs in as a person: everyone who asks its workers acts as them.
+        ...(person ? { actsAs: person, ...(known.size && !known.has(person.toLowerCase()) ? { actsAsGone: true } : {}) } : {}),
+      };
+    });
     return {
       ok: true,
       tools: admin ? withAccess : withAccess.filter((t) => t.usedBy.length || t.access === 'everyone'),
@@ -1896,13 +2103,14 @@ export class OrgService {
     return { ok: true };
   }
 
-  installTool(caller: OrgCaller, input: ToolInput): Result {
+  installTool(caller: OrgCaller, input: ToolInput): Result<{ fixed?: string[] }> {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can install tools on the server.' };
     if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
     const res = this.deps.tools.install(input);
     if (res.ok) {
       this.record(caller, `Installed the ${input.name} tool (${input.kind === 'http' ? input.url : input.command}).`);
       this.adoptConnectors(input.name);
+      void this.checkLoginOf(input.name.trim());
     }
     return res;
   }
@@ -1926,6 +2134,19 @@ export class OrgService {
       if (this.deps.workers.save({ ...structuredClone(w), mcpServers: next, ...(scopes ? { toolScopes: scopes } : {}) }).ok) moved.push(w.name);
     }
     return moved;
+  }
+
+  /// New values for some of a tool's settings, keeping the rest and who has
+  /// it. Only the names go in the record, never a value.
+  /// The new keys are tried at once, so the save says whether they sign in.
+  async updateToolSettings(caller: OrgCaller, name: string, values: Record<string, string>): Promise<Result<{ changed: string[]; fixed?: string[]; login?: LoginResult }>> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can change a tool’s keys.' };
+    if (!this.deps.tools?.update) return { ok: false, error: 'Tools cannot be changed on this server.' };
+    const res = this.deps.tools.update(name, values);
+    if (!res.ok) return res;
+    this.record(caller, `Changed ${res.changed.join(', ')} on the ${name} tool.`);
+    const login = await this.checkLoginOf(name);
+    return { ...res, ...(login ? { login } : {}) };
   }
 
   uninstallTool(caller: OrgCaller, name: string): Result {
@@ -1976,6 +2197,9 @@ export class OrgService {
     const statuses = await this.deps.tools.check();
     if (!statuses) return { ok: false, error: 'Claude did not start on the server, so the tools could not be checked. See Admin → health.' };
     this.toolStatuses = { at: this.now(), statuses };
+    // Starting isn't signing in: a bad token still starts. Each tool's keys
+    // are tried too.
+    await Promise.all(Object.keys(statuses).map((name) => this.checkLoginOf(name)));
     return { ok: true, statuses };
   }
 
@@ -2000,14 +2224,20 @@ export class OrgService {
   }
 
   /// A trigger as people see it: never its webhook secret or the ids it has seen.
-  private showTrigger(t: WorkerTrigger, s: TriggerService): TriggerView {
-    const { webhook, seen, states, ...rest } = t;
+  private showTrigger(t: WorkerTrigger, s: TriggerService, seeNames = false): TriggerView {
+    const { webhook, seen, states, followers, ...rest } = t;
+    const following = Object.fromEntries(
+      Object.entries(followers ?? {})
+        .filter(([, ids]) => ids.length)
+        .map(([item, ids]) => [item, { count: ids.length, ...(seeNames ? { names: this.namesFor(ids) } : {}) }]),
+    );
     const start = new Date(this.now());
     start.setHours(0, 0, 0, 0);
     const mine = s.deliverables().filter((d) => d.source.triggerId === t.id);
     return {
       ...rest,
       ...(webhook ? { webhook: { ...(webhook.idPath ? { idPath: webhook.idPath } : {}) } } : {}),
+      ...(Object.keys(following).length ? { following } : {}),
       seenCount: seen?.length ?? 0,
       handledToday: mine.filter((d) => d.at >= start.getTime()).length,
       handledTotal: mine.filter((d) => d.status === 'delivered').length,
@@ -2023,7 +2253,8 @@ export class OrgService {
     if (!s) return { ok: false, error: 'Triggers run on the org server.' };
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
-    return { ok: true, triggers: s.list(w.id).map((t) => this.showTrigger(t, s)), canEdit: canManage(this.policy(), this.deps.workers.roster(), w.id, caller) };
+    const canEdit = canManage(this.policy(), this.deps.workers.roster(), w.id, caller);
+    return { ok: true, triggers: s.list(w.id).map((t) => this.showTrigger(t, s, canEdit || isAdmin(this.policy(), caller))), canEdit };
   }
 
   createTrigger(
@@ -2093,6 +2324,185 @@ export class OrgService {
     if (!res.ok) return res;
     this.record(caller, `${on ? 'Tracking' : 'Stopped tracking'} ${itemId} on ${found.worker.name}'s ${watch.name}.`);
     return { ok: true, worker: found.worker.name, trigger: watch.name, tracked: res.tracked.length };
+  }
+
+  /// "Let me know when ACME-412 changes": DM the caller when it moves, on a
+  /// change watch of a worker they can see. The one already tracking it, or
+  /// tracking its project's tickets, before any other.
+  followItem(caller: OrgCaller, itemId: string, on: boolean): Result<{ worker: string; trigger: string; everyMinutes: number }> {
+    const s = this.triggerSvc();
+    if (!s) return { ok: false, error: 'Following a ticket needs the org server.' };
+    const user = caller.slackUserId;
+    if (!user) return { ok: false, error: 'Link your Slack account first, so there is somewhere to DM you.' };
+    const names = new Map(this.listWorkers(caller).map((w) => [w.id, w.name]));
+    const watches = s.list().filter((t) => t.enabled && t.kind === 'watch' && t.watch?.changes && t.watch.tracked && names.has(t.workerId));
+    const said = (t: WorkerTrigger) => ({ worker: names.get(t.workerId) ?? 'A worker', trigger: t.name, everyMinutes: t.watch!.everyMinutes });
+    if (!on) {
+      const mine = watches.filter((t) => t.followers?.[itemId]?.includes(user));
+      if (!mine.length) return { ok: false, error: `You weren't following ${itemId}.` };
+      for (const t of mine) s.follow(t.id, itemId, user, false);
+      this.record(caller, `Stopped following ${itemId}.`);
+      return { ok: true, ...said(mine[0]) };
+    }
+    if (!watches.length) return { ok: false, error: `Nobody watches tickets for changes yet, so I can't follow ${itemId}. A manager can give a worker a change watch with “Only items I track” on its Triggers tab.` };
+    const project = itemId.includes('-') ? `${itemId.split('-')[0]}-` : null;
+    const pick = watches.find((t) => t.watch!.tracked!.includes(itemId)) ?? (project ? watches.find((t) => t.watch!.tracked!.some((x) => x.startsWith(project))) : undefined) ?? watches[0];
+    const res = s.follow(pick.id, itemId, user, true);
+    if (!res.ok) return res;
+    this.record(caller, `Following ${itemId} on ${said(pick).worker}'s ${pick.name}.`);
+    return { ok: true, ...said(pick) };
+  }
+
+  /// Every ticket tracked by a change watch of a worker the caller can see,
+  /// found and paged, and all the ones the caller follows. Who follows is
+  /// named to an admin or someone who manages the worker; to anyone else, a count.
+  watching(caller: OrgCaller, query: { q?: string; offset?: number; limit?: number } = {}): Result<{ rows: WatchRow[]; total: number; mine: WatchRow[] }> {
+    const s = this.triggerSvc();
+    if (!s) return { ok: false, error: 'Watches run on the org server.' };
+    const policy = this.policy();
+    const roster = this.deps.workers.roster();
+    const admin = isAdmin(policy, caller);
+    const names = new Map(this.listWorkers(caller).map((w) => [w.id, w.name]));
+    const all: WatchRow[] = [];
+    for (const t of s.list()) {
+      if (t.kind !== 'watch' || !t.watch?.changes || !t.watch.tracked || !names.has(t.workerId)) continue;
+      const seeNames = admin || canManage(policy, roster, t.workerId, caller);
+      for (const item of t.watch.tracked) {
+        const ids = t.followers?.[item] ?? [];
+        const status = t.states?.[item];
+        all.push({
+          item,
+          ...(status !== undefined ? { status } : {}),
+          triggerId: t.id,
+          trigger: t.name,
+          workerId: t.workerId,
+          worker: names.get(t.workerId)!,
+          everyMinutes: t.watch.everyMinutes,
+          ...(t.lastPolledAt ? { lastPolledAt: t.lastPolledAt } : {}),
+          followers: ids.length,
+          ...(seeNames && ids.length ? { followerNames: this.namesFor(ids) } : {}),
+          youFollow: !!caller.slackUserId && ids.includes(caller.slackUserId),
+        });
+      }
+    }
+    all.sort((a, b) => a.item.localeCompare(b.item, undefined, { numeric: true }) || a.worker.localeCompare(b.worker));
+    const q = query.q?.trim().toLowerCase();
+    const found = q ? all.filter((r) => [r.item, r.worker, r.trigger, r.status ?? '', ...(r.followerNames ?? [])].some((x) => x.toLowerCase().includes(q))) : all;
+    const offset = Math.max(0, Math.floor(query.offset ?? 0));
+    const limit = Math.max(0, Math.min(500, Math.floor(query.limit ?? 50)));
+    const mine = all.filter((r) => r.youFollow);
+    // Being set up right now: shown as followed, so it doesn't look lost.
+    const pending = [...this.settingUp.values()]
+      .filter((p) => p.user === caller.slackUserId && !mine.some((r) => r.item === p.item))
+      .map((p): WatchRow => ({ item: p.item, status: `being set up: waiting on ${p.worker}`, triggerId: '', trigger: 'being set up', workerId: p.workerId, worker: p.worker, everyMinutes: 0, followers: 1, youFollow: true }));
+    return { ok: true, rows: found.slice(offset, offset + limit), total: found.length, mine: [...mine, ...pending] };
+  }
+
+  /// Follow a ticket, setting up the watch for it first when there's none to
+  /// put it on: one already tracking its project's tickets, or one on the
+  /// worker preferred (the one the thread is with). Setting one up asks a
+  /// worker the caller manages to look the ticket up once (`watchSetup`).
+  /// `say`: a word while that runs, which takes a minute.
+  async followOrSetUp(caller: OrgCaller, itemId: string, on: boolean, opts: { workerId?: string; say?(text: string): void } = {}): Promise<Result<{ worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>> {
+    const s = this.triggerSvc();
+    if (!on || !s) return this.followItem(caller, itemId, on);
+    const names = new Map(this.listWorkers(caller).map((w) => [w.id, w]));
+    const watches = s.list().filter((t) => t.enabled && t.kind === 'watch' && t.watch?.changes && t.watch.tracked && names.has(t.workerId));
+    const project = itemId.includes('-') ? `${itemId.split('-')[0]}-` : null;
+    const fits = watches.find((t) => t.watch!.tracked!.includes(itemId) || (!!project && t.watch!.tracked!.some((x) => x.startsWith(project))));
+    if (fits) return this.followItem(caller, itemId, on);
+    if (!caller.slackUserId) return { ok: false, error: 'Link your Slack account first, so there is somewhere to DM you.' };
+    const policy = this.policy();
+    const roster = this.deps.workers.roster();
+    const mine = [...names.values()].filter((w) => w.enabled && canManage(policy, roster, w.id, caller));
+    const w = (opts.workerId ? mine.find((x) => x.id === opts.workerId) : undefined) ?? mine.find((x) => x.tools.some((t) => t.ok));
+    if (!w) {
+      const other = opts.workerId ? names.get(opts.workerId) : undefined;
+      const what = project ? `${project.slice(0, -1)} tickets` : itemId;
+      return { ok: false, error: other ? `Nothing watches ${what} yet, and only ${other.manager ?? 'its manager'} can set ${other.name} up to. Ask them, or a manager of a worker that can reach the tracker.` : `Nothing watches ${what} yet, and none of your workers can be set up to. A manager can give a worker a change watch on its Triggers tab.` };
+    }
+    const fail = (why: string): Result<never> => ({ ok: false, error: `Couldn't set up a watch for ${itemId} with ${w.name}: ${why} A manager can set one up by hand on its Triggers tab.` });
+    if (!this.deps.workers.lookup) return fail("this server can't run a look-up for it.");
+    // A watch calls the tool itself between runs, so only a tool installed
+    // here will do: a connector the worker's own Claude account brings works
+    // inside its runs and nowhere else.
+    const callable = w.tools.filter((t) => t.ok && s.canCall(t.name)).map((t) => t.name);
+    if (!callable.length) {
+      return {
+        ok: false,
+        error: `${w.name} reaches the tracker through a connector that only works inside its own runs, and a watch has to check the tracker on its own between them. Add the tracker's MCP server on Setup → Tools and give ${w.name} access, and following ${itemId} will set itself up.`,
+      };
+    }
+    opts.say?.(`Setting up a watch for *${itemId}* with ${w.name}. It looks the ticket up once to learn how; a few minutes.`);
+    // Shown as followed, "being set up", while the look-up runs: a follow
+    // that only appears minutes later looked like one that hadn't worked.
+    const pendingKey = `${caller.slackUserId}:${itemId}`;
+    this.settingUp.set(pendingKey, { item: itemId, user: caller.slackUserId, workerId: w.id, worker: w.name, since: this.now() });
+    try {
+      return await this.setUpWatch(caller, itemId, w, s, callable, project, fail);
+    } finally {
+      this.settingUp.delete(pendingKey);
+    }
+  }
+
+  /// Follows being set up right now, by person and ticket.
+  private settingUp = new Map<string, { item: string; user: string; workerId: string; worker: string; since: number }>();
+
+  private async setUpWatch(
+    caller: OrgCaller,
+    itemId: string,
+    w: { id: string; name: string; tools: Array<{ name: string; ok: boolean }> },
+    s: TriggerService,
+    callable: string[],
+    project: string | null,
+    fail: (why: string) => Result<never>,
+  ): Promise<Result<{ worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>> {
+    const ran = await this.deps.workers.lookup!(w.id, { title: `How to watch ${itemId}`, prompt: setupPrompt(itemId, callable) });
+    if (!ran.ok) return fail(ran.error);
+    const answer = await this.lookupAnswer(ran.orchestrationId);
+    if (!answer.ok) return fail(answer.error);
+    const call = readToolCall(answer.text, w.tools.map((t) => t.name));
+    if (!call) return fail("it couldn't find a tool that looks tickets up.");
+    const general = generalize(call.args, itemId);
+    if (!general.found) return fail(`the call it used doesn't name ${itemId}, so it can't be pointed at other tickets.`);
+    const probe = await s.probe(call.server, call.tool, argsFor({ server: call.server, tool: call.tool, args: general.args, everyMinutes: 15, tracked: [itemId] }));
+    if (!probe.ok) return fail(probe.error);
+    const shape = readShape(probe.json, itemId);
+    if (!shape) return fail(`asking ${call.server} that way didn't bring back ${itemId} with a status.`);
+    const made = s.create({
+      workerId: w.id,
+      name: `Ticket changes${project ? ` (${project.slice(0, -1)})` : ''}`,
+      kind: 'watch',
+      enabled: true,
+      instructions: '',
+      notifyOnly: true,
+      deliver: [],
+      maxPerDay: 200,
+      watch: { server: call.server, tool: call.tool, args: general.args, everyMinutes: 15, itemsPath: shape.itemsPath, idPath: shape.idPath, changes: shape.statusPath, tracked: [itemId] },
+      createdBy: caller.name,
+    });
+    if (!made.ok) return fail(made.error);
+    const followed = s.follow(made.trigger.id, itemId, caller.slackUserId!, true);
+    if (!followed.ok) return fail(followed.error);
+    this.record(caller, `Set up ${w.name}'s ${made.trigger.name} to follow ${itemId}.`);
+    return { ok: true, worker: w.name, trigger: made.trigger.name, everyMinutes: 15, status: shape.status, setUp: true };
+  }
+
+  /// What a look-up run answered, once it ends: its output and what it said.
+  /// Gives up after `waitMs`, or when it stops for a person.
+  private async lookupAnswer(orchestrationId: UUID, waitMs = LOOKUP_WAIT_MS): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+    const until = this.now() + waitMs;
+    for (;;) {
+      const p = this.errandProgress(orchestrationId);
+      if (p?.done) {
+        if (!p.items.some((i) => i.status === 'done')) return { ok: false, error: `its look-up ended without finishing${p.items[0]?.note ? ` (${p.items[0].note})` : ''}.` };
+        return { ok: true, text: [...p.files.map((f) => f.body ?? ''), ...p.items.map((i) => i.said ?? '')].join('\n') };
+      }
+      const paused = p?.items.find((i) => i.paused)?.paused;
+      if (paused) return { ok: false, error: `its look-up ${paused}, so it was left for a person.` };
+      if (this.now() > until) return { ok: false, error: 'its look-up took too long.' };
+      await new Promise((r) => setTimeout(r, LOOKUP_POLL_MS));
+    }
   }
 
   removeTrigger(caller: OrgCaller, id: string): Result {
@@ -2455,6 +2865,19 @@ export class OrgService {
       toolScopes?: Record<string, unknown>;
       /// Its picture: an https image link, or null for initials again.
       avatarUrl?: string | null;
+      /// The flow its work goes through unless the ask names another; null
+      /// for its first again.
+      preferredFlowId?: string | null;
+      /// How many Slack conversations it answers at once.
+      answersAtOnce?: number;
+      /// Run through its flows' own checkpoints. An admin's call.
+      skipCheckpoints?: boolean;
+      /// Steps it may always run without asking, `flowId/stepId`.
+      alwaysAllow?: string[];
+      /// Whether it changes code; null for "from its flows" again.
+      writesCode?: boolean | null;
+      /// Who can ask it, picked; null to go back to `visibility`.
+      audience?: Audience | null;
     },
   ): Result<{ worker: WorkerSummary }> {
     const found = this.managed(caller, idOrName);
@@ -2504,6 +2927,41 @@ export class OrgService {
       next.budgetUSDPerMonth = patch.budgetUSDPerMonth;
     }
     if (patch.cadence !== undefined) next.cadence = patch.cadence;
+    if (patch.answersAtOnce !== undefined) {
+      const n = Number(patch.answersAtOnce);
+      if (!Number.isInteger(n) || n < 1 || n > ANSWERS_AT_ONCE_MAX) return { ok: false, error: `Between 1 and ${ANSWERS_AT_ONCE_MAX} at once.` };
+      next.caps = { ...next.caps, answersAtOnce: n };
+    }
+    if (patch.skipCheckpoints !== undefined && patch.skipCheckpoints !== (w.caps.skipCheckpoints === true)) {
+      // A checkpoint is where someone meant to look; only an admin says
+      // nobody needs to.
+      if (!admin) return { ok: false, error: 'Only an admin can let a worker run through its flows’ checkpoints.' };
+      const caps = { ...next.caps };
+      if (patch.skipCheckpoints) caps.skipCheckpoints = true;
+      else delete caps.skipCheckpoints;
+      next.caps = caps;
+    }
+    if (patch.audience !== undefined) {
+      if (patch.audience === null) delete next.audience;
+      else next.audience = patch.audience;
+    }
+    if (patch.writesCode !== undefined) {
+      if (patch.writesCode === null) delete next.writesCode;
+      else next.writesCode = patch.writesCode === true;
+    }
+    if (patch.alwaysAllow !== undefined) {
+      const list = [...new Set((Array.isArray(patch.alwaysAllow) ? patch.alwaysAllow : []).map(String))];
+      if (list.length > 50 || list.some((k) => !/^[\w.-]{1,120}\/[\w.-]{1,120}$/.test(k))) return { ok: false, error: 'Always-allowed steps are a flow and a step, like solve-ticket/push.' };
+      const caps = { ...next.caps };
+      if (list.length) caps.alwaysAllow = list;
+      else delete caps.alwaysAllow;
+      next.caps = caps;
+    }
+    if (patch.preferredFlowId !== undefined) {
+      if (patch.preferredFlowId === null || patch.preferredFlowId === '') delete next.preferredFlowId;
+      else if (!w.flowIds.includes(String(patch.preferredFlowId))) return { ok: false, error: `That isn't one of ${w.name}'s flows.` };
+      else next.preferredFlowId = String(patch.preferredFlowId);
+    }
     if (patch.avatarUrl !== undefined) {
       if (patch.avatarUrl === null || !patch.avatarUrl.trim()) delete next.avatarUrl;
       else next.avatarUrl = patch.avatarUrl.trim().slice(0, 500);
@@ -2550,8 +3008,10 @@ export class OrgService {
     }
     const invalid = validateOrgFields(next);
     if (invalid) return { ok: false, error: invalid };
+    this.withTicketFlow(next);
     const saved = this.deps.workers.save(next);
     if (!saved.ok) return saved;
+    this.version(caller, w, next);
     this.record(caller, `Changed ${w.name}: ${Object.keys(patch).join(', ')}.`);
     // Re-read through the caller's eyes: moving a worker to another manager
     // can take it out of the caller's sight.
@@ -2913,6 +3373,8 @@ export class OrgService {
     this.putHire(null, hire.id);
     // Its face, picked while it settles in: nobody waits on it.
     void this.choosePicture(saved.worker.id);
+    // And it gets to know its tools before its first real job.
+    if ((saved.worker.mcpServers ?? []).length) void this.startLearning(saved.worker.id);
     const summary = this.summaryFor({ name: 'admin', admin: true }, saved.worker.id)!;
     return { ok: true, worker: saved.worker, summary };
   }
@@ -3208,6 +3670,10 @@ export class OrgService {
     return {
       ok: true,
       worker: summary,
+      ...(this.deps.workers.changesOf ? { changes: this.deps.workers.changesOf(w.id) } : {}),
+      ...(this.deps.workers.flowsOf ? { flows: this.deps.workers.flowsOf(w.id) } : {}),
+      ...(w.preferredFlowId ? { preferredFlowId: w.preferredFlowId } : {}),
+      toolProblems: this.toolProblemsFor(w.id),
       jobDescription: w.jobDescription,
       readiness: trustReadiness(w, journal, now),
       stats: {
@@ -3218,6 +3684,7 @@ export class OrgService {
       },
       delivered,
       questions: questions.slice(0, 20),
+      ...(w.knowledge ? { knowledge: w.knowledge } : {}),
       learned: journal
         .filter((e) => e.kind === 'note' && e.note)
         .slice(-12)
@@ -3231,7 +3698,8 @@ export class OrgService {
       missingTools: this.deps.tools ? this.deps.tools.list([w]).missing.map((m) => m.name) : [],
       triggers: (() => {
         const s = this.triggerSvc();
-        return s ? s.list(w.id).map((t) => this.showTrigger(t, s)) : [];
+        const names = canManage(this.policy(), this.deps.workers.roster(), w.id, caller) || isAdmin(this.policy(), caller);
+        return s ? s.list(w.id).map((t) => this.showTrigger(t, s, names)) : [];
       })(),
       value: this.workerValue(w.id),
       now: this.runsNow(w.id),
@@ -3263,6 +3731,34 @@ export class OrgService {
     };
   }
 
+  /// What each of a run's steps did: what it wrote, and the activity in the
+  /// time it ran, for whoever can see its worker. For a finished run, where
+  /// the live view has nothing left to show.
+  runSteps(caller: OrgCaller, runId: UUID): Result<{ steps: Array<{ id: string; output?: string; body?: string; startedAt?: number; endedAt?: number; outcome?: string; costUSD?: number; error?: string; activity: Array<{ at: number; kind: string; text: string }> }> }> {
+    const r = this.deps.runs.getRun(runId);
+    if (!r?.workerId || !canSee(this.policy(), this.deps.workers.roster(), r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
+    const activity = this.deps.runActivity?.(runId, 0) ?? [];
+    const steps = r.flowSnapshot.steps.map((s) => {
+      const tries = r.attempts.filter((a) => a.stepId === s.id);
+      const last = tries[tries.length - 1];
+      const body = (last?.artifact?.body ?? (s.output ? r.artifacts?.[s.output]?.body : undefined))?.slice(0, 20_000);
+      const from = tries[0]?.startedAt;
+      const to = last?.endedAt ?? this.now();
+      return {
+        id: s.id,
+        ...(s.output ? { output: s.output } : {}),
+        ...(body ? { body } : {}),
+        ...(from ? { startedAt: from } : {}),
+        ...(last?.endedAt ? { endedAt: last.endedAt } : {}),
+        ...(last?.outcome ? { outcome: last.outcome } : {}),
+        ...(tries.some((a) => a.costUSD) ? { costUSD: tries.reduce((n, a) => n + (a.costUSD ?? 0), 0) } : {}),
+        ...(last?.errorMessage ? { error: last.errorMessage.slice(0, 800) } : {}),
+        activity: from ? activity.filter((x) => x.at >= from && x.at <= to).slice(-200) : [],
+      };
+    });
+    return { ok: true, steps };
+  }
+
   /// The files a run wrote besides what its steps said — a report's HTML,
   /// the data behind it — for whoever can see its worker. Its steps' text
   /// is the report you read in the thread; these are what it made.
@@ -3271,6 +3767,33 @@ export class OrgService {
     if (!r?.workerId || !canSee(this.policy(), this.deps.workers.roster(), r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
     const files = (this.deps.runDeliverables?.(runId) ?? []).filter((f) => f.sourcePath).map((f) => ({ name: f.name, ...(f.bytes ? { bytes: f.bytes } : {}) }));
     return { ok: true, files };
+  }
+
+  /// What a run has changed so far, repo by repo, for whoever can see its
+  /// worker: before it pushes, so a Continue is made with the diff in view.
+  async runChanges(caller: OrgCaller, runId: UUID, diff = false): Promise<Result<RunChanges>> {
+    const r = this.deps.runs.getRun(runId);
+    if (!r?.workerId || !canSee(this.policy(), this.deps.workers.roster(), r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
+    if (!this.deps.runChanges) return { ok: false, error: 'Changes can’t be read on this server.' };
+    return { ok: true, ...(await this.deps.runChanges(r, { diff })) };
+  }
+
+  /// A worker's newest run that changed code and matches `about` (a ticket
+  /// key, or words from its title or ask); the newest such run when `about`
+  /// is empty. For "/worker Ada changes ACME-412".
+  latestCodeRun(caller: OrgCaller, idOrName: string, about: string): Result<{ runId: UUID; title: string }> {
+    const w = this.resolve(caller, idOrName);
+    if (!w) return { ok: false, error: NOT_FOUND };
+    const words = about.toLowerCase().split(/\s+/).filter(Boolean);
+    const hit = this.deps.runs
+      .listRuns()
+      .filter((r) => r.workerId === w.id && (r.worktreePath || r.workspaceWorktrees?.length))
+      .filter((r) => {
+        const text = `${flowRunTitle(r)} ${r.userPrompt ?? ''}`.toLowerCase();
+        return words.every((x) => text.includes(x));
+      })
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    return hit ? { ok: true, runId: hit.id, title: flowRunTitle(hit) } : { ok: false, error: `No run of ${w.name}'s that changed code${about.trim() ? ` matches "${about.trim()}"` : ''}.` };
   }
 
   /// Everything in a worker's own files, newest first, for whoever can see
@@ -3314,7 +3837,7 @@ export class OrgService {
     for (const r of this.deps.runs.listRuns()) {
       const w = r.workerId ? visible.get(r.workerId) : undefined;
       if (!w) continue;
-      const waiting = r.state.kind === 'paused' && (r.state.reason === 'needsInput' || r.state.reason === 'externalAction' || r.state.reason === 'riskyStep');
+      const waiting = r.state.kind === 'paused' && (r.state.reason === 'needsInput' || r.state.reason === 'externalAction' || r.state.reason === 'riskyStep' || r.state.reason === 'preStep');
       if (r.state.kind !== 'running' && !waiting) continue;
       const steps = r.flowSnapshot.steps;
       const at = r.state.kind === 'running' ? r.state.currentStepId : r.state.kind === 'paused' ? r.state.nextStepId : undefined;
@@ -3648,7 +4171,7 @@ export class OrgService {
               ? 'working'
               : reason === 'needsInput'
                 ? 'question'
-                : reason === 'externalAction' || reason === 'riskyStep'
+                : reason === 'externalAction' || reason === 'riskyStep' || reason === 'preStep'
                   ? 'approval'
                   : reason === 'interrupted'
                     ? 'interrupted'
@@ -3656,6 +4179,369 @@ export class OrgService {
           ...(r.costUSD ? { costUSD: r.costUSD } : {}),
         };
       });
+  }
+
+  /// Its job with a described change worked in, to read before saving:
+  /// nothing is saved here. From `job` when given (an edit not yet saved),
+  /// else the job it has. Its manager or an admin.
+  async suggestJob(caller: OrgCaller, idOrName: string, ask: string, job?: string): Promise<Result<{ name: string; job: string }>> {
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    if (!this.deps.rewriteJob) return { ok: false, error: 'Rewriting a job isn’t set up on this server. Change it by hand.' };
+    const change = ask.trim();
+    if (change.length < 3) return { ok: false, error: 'Say what should change.' };
+    const from = (job ?? found.worker.jobDescription).trim();
+    const next = await this.deps.rewriteJob({ name: found.worker.name, job: from, ask: change.slice(0, 2000) }).catch(() => null);
+    if (!next) return { ok: false, error: 'Couldn’t write a new version just now. Try again, or change it by hand.' };
+    return { ok: true, name: found.worker.name, job: next };
+  }
+
+  // ---- ONBOARDING -------------------------------------------------------
+
+  /// Have a worker go through its own tools for its job, read only, and
+  /// write down what it found (`Worker.knowledge`). Its manager or an admin.
+  learnWorker(caller: OrgCaller, idOrName: string): Result<{ name: string }> {
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    if (!this.deps.workers.lookup) return { ok: false, error: 'Workers can’t learn on this server.' };
+    if (found.worker.knowledge?.status === 'learning' && this.now() - (found.worker.knowledge.triedAt ?? 0) < LEARN_WAIT_MS) {
+      return { ok: false, error: `${found.worker.name} is already learning.` };
+    }
+    void this.startLearning(found.worker.id);
+    this.record(caller, `Had ${found.worker.name} learn its tools.`);
+    return { ok: true, name: found.worker.name };
+  }
+
+  private saveKnowledge(id: UUID, k: NonNullable<Worker['knowledge']>): void {
+    const w = this.deps.workers.get(id);
+    if (w) this.deps.workers.save({ ...w, knowledge: k });
+  }
+
+  /// The run itself: a look-up with its reading tools, waited on.
+  private async startLearning(id: UUID): Promise<void> {
+    const w = this.deps.workers.get(id);
+    if (!w || !this.deps.workers.lookup) return;
+    const prior = w.knowledge;
+    const base = { ...(prior?.body ? { body: prior.body, updatedAt: prior.updatedAt } : {}), ...(prior?.refresh ? { refresh: prior.refresh } : {}) };
+    this.saveKnowledge(id, { ...base, status: 'learning', triedAt: this.now() });
+    const fail = (error: string) => this.saveKnowledge(id, { ...base, status: prior?.body ? 'ready' : 'failed', triedAt: this.now(), error });
+    try {
+      const ran = await this.deps.workers.lookup(id, { title: 'Getting to know its tools', prompt: learnPrompt(w, prior?.body) });
+      if (!ran.ok) return fail(ran.error);
+      const answer = await this.lookupAnswer(ran.orchestrationId, LEARN_WAIT_MS);
+      if (!answer.ok) return fail(answer.error);
+      const body = readKnowledge(answer.text);
+      if (!body) return fail('It didn’t write anything down.');
+      this.saveKnowledge(id, { status: 'ready', body, updatedAt: this.now(), triedAt: this.now(), ...(prior?.refresh ? { refresh: prior.refresh } : {}) });
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /// Its manager corrects what it knows, or says how often it refreshes.
+  setKnowledge(caller: OrgCaller, idOrName: string, patch: { body?: string; refresh?: 'weekly' | 'off' }): Result<{ name: string }> {
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const k = found.worker.knowledge ?? { status: 'ready' as const };
+    const next = { ...k };
+    if (patch.body !== undefined) {
+      const body = patch.body.trim();
+      if (body.length > 10_000) return { ok: false, error: 'Keep it under 10,000 characters: it reads all of it every run.' };
+      next.body = body;
+      next.status = 'ready';
+      next.updatedAt = this.now();
+      next.editedBy = caller.name;
+      delete next.error;
+    }
+    if (patch.refresh === 'weekly' || patch.refresh === 'off') next.refresh = patch.refresh;
+    this.saveKnowledge(found.worker.id, next);
+    this.record(caller, `Changed what ${found.worker.name} knows${patch.refresh ? ` (refresh: ${patch.refresh})` : ''}.`);
+    return { ok: true, name: found.worker.name };
+  }
+
+  /// Workers whose onboarding is a week old learn again, unless told not to.
+  /// One at a time a call, so a server back from a long sleep doesn't send
+  /// every worker off at once.
+  refreshKnowledgeDue(): void {
+    const now = this.now();
+    const due = this.deps.workers.roster().find((w) => w.enabled && w.knowledge?.status === 'ready' && w.knowledge.refresh !== 'off' && now - (w.knowledge.updatedAt ?? 0) > WEEK_MS && now - (w.knowledge.triedAt ?? 0) > DAY_MS);
+    if (due) void this.startLearning(due.id);
+  }
+
+  // ---- STORAGE ----------------------------------------------------------
+
+  /// What's using the server's disk. Admins.
+  async storage(caller: OrgCaller): Promise<Result<{ report: StorageReport }>> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can see the server’s storage.' };
+    if (!this.deps.storage) return { ok: false, error: 'Storage isn’t reported on this server.' };
+    return { ok: true, report: await this.deps.storage.report() };
+  }
+
+  /// Throw away a finished run's checkouts, unpushed work and all. Admins.
+  async discardCheckouts(caller: OrgCaller, runId: string): Promise<Result<{ removed: number }>> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can do that.' };
+    if (!this.deps.storage) return { ok: false, error: 'Storage isn’t managed on this server.' };
+    const res = await this.deps.storage.discard(runId);
+    if (res.ok) this.record(caller, `Deleted the checkouts of run ${runId}, with work that was never pushed.`);
+    return res;
+  }
+
+  /// Empty the tools' package cache; they install again in the background.
+  async clearToolCache(caller: OrgCaller): Promise<Result> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can do that.' };
+    if (!this.deps.storage) return { ok: false, error: 'Storage isn’t managed on this server.' };
+    await this.deps.storage.clearToolCache();
+    this.record(caller, 'Cleared the tools’ package cache.');
+    return { ok: true };
+  }
+
+  // ---- HANDBOOK ---------------------------------------------------------
+
+  /// What every worker reads after its job. Anyone can read it.
+  handbook(_caller: OrgCaller): Result<{ text: string; canEdit: boolean }> {
+    if (!this.deps.handbook) return { ok: false, error: 'There’s no handbook on this server.' };
+    return { ok: true, text: this.deps.handbook.read(), canEdit: isAdmin(this.policy(), _caller) };
+  }
+
+  setHandbook(caller: OrgCaller, text: string): Result<{ text: string }> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can change the handbook.' };
+    if (!this.deps.handbook) return { ok: false, error: 'There’s no handbook on this server.' };
+    const t = text.replace(/\r\n/g, '\n').trim();
+    if (t.length > HANDBOOK_MAX) return { ok: false, error: `Keep it under ${HANDBOOK_MAX.toLocaleString()} characters: every worker reads all of it on every run.` };
+    this.deps.handbook.write(t);
+    this.record(caller, 'Changed the handbook.');
+    return { ok: true, text: t };
+  }
+
+  // ---- DIGEST -----------------------------------------------------------
+
+  /// The week for someone: what their workers did and what waits on them;
+  /// for an admin, the org's totals too. Null: nothing to say to them.
+  weeklyDigest(caller: OrgCaller): Result<{ digest: WeeklyDigest | null }> {
+    const rep = this.report(caller, 7);
+    if (!rep.ok) return rep;
+    const since = this.now() - 7 * 86_400_000;
+    const ratings = (this.deps.ratings?.list() ?? []).filter((r) => r.at >= since);
+    const rated = (id: string, useful: boolean) => ratings.filter((r) => r.workerId === id && r.useful === useful).length;
+    const rows = rep.report.byWorker;
+    const mine = rows.filter((r) => r.youManage).map((r) => ({
+      name: r.name, done: r.itemsDone, failed: r.itemsFailed, errands: r.errands, costUSD: r.costUSD,
+      useful: rated(r.workerId, true), notUseful: rated(r.workerId, false),
+    }));
+    const waiting = this.listWaiting(caller);
+    const oldest = waiting.reduce<number | undefined>((m, x) => {
+      const at = (x as { since?: number }).since;
+      return at && (!m || at < m) ? at : m;
+    }, undefined);
+    const policy = this.policy();
+    const admin = isAdmin(policy, caller);
+    const done = rows.reduce((n, r) => n + r.itemsDone, 0);
+    const cost = rows.reduce((n, r) => n + r.costUSD, 0);
+    const org = admin
+      ? {
+          workers: rows.length, done, failed: rows.reduce((n, r) => n + r.itemsFailed, 0), costUSD: cost,
+          costPerDone: done ? cost / done : null,
+          useful: ratings.filter((r) => r.useful).length, notUseful: ratings.filter((r) => !r.useful).length,
+          troubled: (this.deps.toolHealth?.list() ?? []).map((t) => t.tool),
+          toolRequests: this.toolRequestList().filter((r) => r.status === 'open').length,
+        }
+      : undefined;
+    if (!mine.length && !waiting.length && !org) return { ok: true, digest: null };
+    return { ok: true, digest: { org: policy.name ?? 'Your org', mine, waiting: waiting.length, ...(oldest ? { oldestWaitingAt: oldest } : {}), ...(org ? { orgTotals: org } : {}) } };
+  }
+
+  // ---- VERSIONS ---------------------------------------------------------
+
+  private memVersions: WorkerVersion[] = [];
+
+  private versionList(): WorkerVersion[] {
+    return this.deps.workerVersions?.list() ?? this.memVersions;
+  }
+
+  private configOf(w: Worker): WorkerConfig {
+    return {
+      jobDescription: w.jobDescription,
+      mcpServers: [...(w.mcpServers ?? [])],
+      ...(w.toolScopes ? { toolScopes: structuredClone(w.toolScopes) as Record<string, unknown> } : {}),
+      trust: w.trust,
+      ...(w.visibility ? { visibility: w.visibility } : {}),
+      budgetUSDPerMonth: w.budgetUSDPerMonth,
+      cadence: structuredClone(w.cadence),
+      ...(w.preferredFlowId ? { preferredFlowId: w.preferredFlowId } : {}),
+      ...(w.caps.answersAtOnce ? { answersAtOnce: w.caps.answersAtOnce } : {}),
+      ...(w.caps.skipCheckpoints ? { skipCheckpoints: true } : {}),
+      ...(w.caps.alwaysAllow?.length ? { alwaysAllow: [...w.caps.alwaysAllow] } : {}),
+    };
+  }
+
+  /// Keep a version when what it's set up to do changed: the one before
+  /// too, the first time, so there's always something to go back to.
+  private version(caller: OrgCaller, before: Worker, after: Worker): void {
+    const was = this.configOf(before);
+    const now = this.configOf(after);
+    const WORDS: Record<keyof WorkerConfig, string> = {
+      jobDescription: 'its job', mcpServers: 'its tools', toolScopes: 'how much of its tools', trust: 'its trust', visibility: 'who can ask it',
+      budgetUSDPerMonth: 'its budget', cadence: 'when it runs', preferredFlowId: 'its usual flow', answersAtOnce: 'answers at once',
+      skipCheckpoints: 'checkpoints', alwaysAllow: 'what it may always do',
+    };
+    const keys = [...new Set([...Object.keys(was), ...Object.keys(now)])] as Array<keyof WorkerConfig>;
+    const changed = keys.filter((k) => JSON.stringify(was[k] ?? null) !== JSON.stringify(now[k] ?? null)).map((k) => WORDS[k]);
+    if (!changed.length) return;
+    const all = this.versionList();
+    const mine = all.filter((v) => v.workerId === after.id);
+    const add: WorkerVersion[] = [];
+    if (!mine.length) add.push({ id: randomUUID(), workerId: after.id, at: this.now() - 1, by: 'before history was kept', changed: ['as it was'], config: was });
+    add.push({ id: randomUUID(), workerId: after.id, at: this.now(), by: caller.name, changed, config: now });
+    const kept = [...mine, ...add].slice(-WORKER_VERSIONS_KEPT);
+    const next = [...all.filter((v) => v.workerId !== after.id), ...kept];
+    if (this.deps.workerVersions) this.deps.workerVersions.save(next);
+    else this.memVersions = next;
+  }
+
+  /// A worker's setup over time, newest first. Whoever can see it.
+  workerHistory(caller: OrgCaller, idOrName: string): Result<{ versions: Array<Omit<WorkerVersion, 'config'> & { job: string; tools: string[]; trust: string }> }> {
+    const w = this.resolve(caller, idOrName);
+    if (!w) return { ok: false, error: NOT_FOUND };
+    const versions = this.versionList().filter((v) => v.workerId === w.id).reverse()
+      .map(({ config, ...v }) => ({ ...v, job: config.jobDescription, tools: config.mcpServers, trust: config.trust }));
+    return { ok: true, versions };
+  }
+
+  /// Back to a version: through the same rules as changing it by hand, so
+  /// restoring can't give it what you couldn't.
+  restoreWorker(caller: OrgCaller, idOrName: string, versionId: string): Result<{ worker: WorkerSummary }> {
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const v = this.versionList().find((x) => x.id === versionId && x.workerId === found.worker.id);
+    if (!v) return { ok: false, error: 'No such version.' };
+    const c = v.config;
+    const res = this.update(caller, found.worker.id, {
+      jobDescription: c.jobDescription,
+      mcpServers: c.mcpServers,
+      toolScopes: Object.fromEntries([...new Set([...Object.keys(found.worker.toolScopes ?? {}), ...Object.keys(c.toolScopes ?? {})])].map((k) => [k, (c.toolScopes ?? {})[k] ?? null])),
+      visibility: (c.visibility ?? 'private') as WorkerVisibility,
+      budgetUSDPerMonth: c.budgetUSDPerMonth,
+      cadence: c.cadence as ScheduleTrigger | null,
+      preferredFlowId: c.preferredFlowId ?? null,
+      answersAtOnce: c.answersAtOnce ?? ANSWERS_AT_ONCE,
+      skipCheckpoints: c.skipCheckpoints === true,
+      alwaysAllow: c.alwaysAllow ?? [],
+    });
+    if (!res.ok) return res;
+    if (c.trust !== found.worker.trust) {
+      const t = this.setTrust(caller, found.worker.id, c.trust as WorkerTrustLevel);
+      if (!t.ok) return { ok: false, error: `Restored everything but its trust: ${t.error}` };
+    }
+    this.record(caller, `Restored ${found.worker.name} to how it was ${new Date(v.at).toISOString().slice(0, 16).replace('T', ' ')}.`);
+    const summary = this.summaryFor(caller, found.worker.id);
+    return summary ? { ok: true, worker: summary } : res;
+  }
+
+  // ---- TOOL REQUESTS ----------------------------------------------------
+
+  private memToolRequests: ToolRequest[] = [];
+
+  private toolRequestList(): ToolRequest[] {
+    return this.deps.toolRequests?.list() ?? this.memToolRequests;
+  }
+
+  private saveToolRequests(all: ToolRequest[]): void {
+    if (this.deps.toolRequests) this.deps.toolRequests.save(all);
+    else this.memToolRequests = all;
+  }
+
+  /// Give a worker a tool, or ask an admin for it. One the org clears for
+  /// any hire (or any tool, for an admin) is given at once; anything else,
+  /// or one this server doesn't have yet, becomes a request the admins see.
+  /// Its manager or an admin.
+  requestTool(caller: OrgCaller, idOrName: string, tool: string, why?: string): Result<{ given: boolean; name: string; tool: string; request?: ToolRequest; asked?: string[] }> {
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const w = found.worker;
+    const name = tool.trim().slice(0, 80);
+    if (!name) return { ok: false, error: 'Which tool?' };
+    const policy = this.policy();
+    const admin = isAdmin(policy, caller);
+    const installed = this.deps.tools ? this.deps.tools.list([]).tools.map((t) => t.name) : null;
+    const match = installed?.find((n) => n.toLowerCase() === name.toLowerCase()) ?? (installed ? undefined : name);
+    const shared = policy.sharedMcpServers ?? [];
+    if (match && ((w.mcpServers ?? []).includes(match) || shared.includes(match))) return { ok: false, error: `${w.name} already has ${match}.` };
+    if (match && (admin || (policy.allowedMcpServers ?? []).includes(match))) {
+      const res = this.update(caller, w.id, { mcpServers: [...(w.mcpServers ?? []), match] });
+      if (!res.ok) return res;
+      return { ok: true, given: true, name: w.name, tool: match };
+    }
+    if (admin) return { ok: false, error: `${name} isn’t on this server yet. Add it under Setup → Tools, then give it to ${w.name}.` };
+    const all = this.toolRequestList();
+    const asking = match ?? name;
+    const open = all.find((r) => r.status === 'open' && r.workerId === w.id && r.tool.toLowerCase() === asking.toLowerCase());
+    if (open) return { ok: false, error: `${open.by.name} already asked for ${open.tool} for ${w.name}. It’s waiting on an admin.` };
+    const admins = policy.admins.filter((a) => a !== caller.slackUserId);
+    if (!admins.length) return { ok: false, error: 'Nobody is an admin on this org yet, so there is no one to ask.' };
+    const request: ToolRequest = {
+      id: randomUUID(),
+      workerId: w.id,
+      workerName: w.name,
+      tool: asking,
+      ...(why?.trim() ? { why: why.trim().slice(0, 500) } : {}),
+      by: { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) },
+      at: this.now(),
+      status: 'open',
+    };
+    this.saveToolRequests([...all, request]);
+    this.deps.onToolRequest?.(request, admins);
+    this.record(caller, `Asked the admins for ${asking} for ${w.name}.`);
+    return { ok: true, given: false, name: w.name, tool: asking, request, asked: admins };
+  }
+
+  /// An admin says a failing tool is dealt with.
+  clearToolTrouble(caller: OrgCaller, tool: string): Result {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can do that.' };
+    this.deps.toolHealth?.clear(tool);
+    this.record(caller, `Marked ${tool} as fixed.`);
+    return { ok: true };
+  }
+
+  /// Whether a tool by this name is on this server.
+  toolInstalled(name: string): boolean {
+    return !this.deps.tools || this.deps.tools.list([]).tools.some((t) => t.name.toLowerCase() === name.toLowerCase());
+  }
+
+  /// The requests an admin decides (all still open), or the ones you made.
+  toolRequests(caller: OrgCaller): ToolRequest[] {
+    const all = this.toolRequestList();
+    if (isAdmin(this.policy(), caller)) return all.filter((r) => r.status === 'open');
+    return all.filter((r) => !!caller.slackUserId && r.by.slackUserId === caller.slackUserId).slice(-20);
+  }
+
+  /// An admin gives the tool asked for, or declines it. Giving needs it
+  /// installed: one that isn't is installed first, under Setup → Tools.
+  decideToolRequest(caller: OrgCaller, id: string, give: boolean, note?: string): Result<{ request: ToolRequest }> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can decide a tool request.' };
+    const all = this.toolRequestList();
+    const r = all.find((x) => x.id === id);
+    if (!r) return { ok: false, error: 'No such request.' };
+    if (r.status !== 'open') return { ok: false, error: `${r.decidedBy ?? 'Someone'} already ${r.status === 'given' ? 'gave it' : 'declined it'}.` };
+    if (give) {
+      const w = this.deps.workers.get(r.workerId);
+      if (!w) return { ok: false, error: `${r.workerName} isn’t here any more.` };
+      const installed = this.deps.tools ? this.deps.tools.list([]).tools.map((t) => t.name) : null;
+      const match = installed ? installed.find((n) => n.toLowerCase() === r.tool.toLowerCase()) : r.tool;
+      if (!match) return { ok: false, error: `${r.tool} isn’t on this server yet. Add it under Setup → Tools first, then give it.` };
+      if (!(w.mcpServers ?? []).includes(match)) {
+        const res = this.update(caller, w.id, { mcpServers: [...(w.mcpServers ?? []), match] });
+        if (!res.ok) return res;
+      }
+      r.tool = match;
+    }
+    r.status = give ? 'given' : 'declined';
+    r.decidedBy = caller.name;
+    r.decidedAt = this.now();
+    if (!give && note?.trim()) r.note = note.trim().slice(0, 300);
+    this.saveToolRequests(all);
+    this.deps.onToolRequestDecided?.(r);
+    this.record(caller, `${give ? 'Gave' : 'Declined'} ${r.tool} for ${r.workerName} (asked by ${r.by.name}).`);
+    return { ok: true, request: r };
   }
 
   /// Raise or lower a worker's trust. Its manager may move it between
@@ -3681,6 +4567,8 @@ export class OrgService {
       else delete next.caps.allowExternalActions;
       this.deps.workers.save(next);
     }
+    const now = this.deps.workers.get(found.worker.id);
+    if (now) this.version(caller, found.worker, now);
     this.record(caller, `Set ${found.worker.name} to ${trust}.`);
     return { ok: true, name: found.worker.name, trust };
   }
@@ -3706,6 +4594,8 @@ export class OrgService {
             .filter((h) => h.status === 'awaitingApproval' && h.requestedBy.slackUserId !== caller.slackUserId)
             .map((h) => this.summarize(h))
         : [],
+      toolRequests: isAdmin(policy, caller) ? this.toolRequestList().filter((r) => r.status === 'open') : [],
+      toolTrouble: isAdmin(policy, caller) ? this.deps.toolHealth?.list() ?? [] : [],
       teamTasks: this.teamTasks(caller).filter((t) => t.status !== 'done' && t.status !== 'cancelled'),
       proposals: this.proposals(caller),
       delivered: this.workItems(crewSource, this.now() - 36 * 3_600_000, 12),
@@ -3805,7 +4695,7 @@ export class OrgService {
   // ---- REPOS ------------------------------------------------------------
 
   /// Connected repos, and who works in each.
-  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string }> {
+  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; branchPrefix?: string; lastRefreshedAt?: number }> {
     if (!this.deps.repos) return { ok: false, error: 'Repos are not available on this server.' };
     if (!canHire(this.policy(), caller)) return { ok: false, error: 'Only people who may hire workers can see the repos.' };
     const roster = this.deps.workers.roster();
@@ -3819,7 +4709,37 @@ export class OrgService {
       }),
       workspaces: repos.workspaces().map((ws) => ({ ...ws, workers: roster.filter((w) => w.projectPath === ws.rootPath).map((w) => w.name) })),
       ...(testsOff ? { testsOff } : {}),
+      ...(repos.branchPrefix ? { branchPrefix: repos.branchPrefix() } : {}),
+      ...(repos.lastRefreshed?.() ? { lastRefreshedAt: repos.lastRefreshed!() } : {}),
     };
+  }
+
+  /// What every branch a worker pushes starts with. A name git takes as a
+  /// branch, ending in `/`, `-` or `_` so the run's own name stays apart,
+  /// and never one a default branch could be named by.
+  /// Bring every connected repo up to date with origin now, as the hourly
+  /// refresh does. Admins.
+  async refreshRepos(caller: OrgCaller): Promise<Result<{ repos: number; problems: string[] }>> {
+    const repos = this.deps.repos;
+    if (!repos?.freshen) return { ok: false, error: 'Repos can’t be refreshed on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can refresh the repos.' };
+    const list = repos.list();
+    const problems = await repos.freshen(list.map((r) => r.path));
+    this.record(caller, 'Refreshed the connected repos from origin.');
+    return { ok: true, repos: list.length, problems };
+  }
+
+  setBranchPrefix(caller: OrgCaller, prefix: string): Result<{ branchPrefix: string }> {
+    const repos = this.deps.repos;
+    if (!repos?.setBranchPrefix) return { ok: false, error: 'Branches can’t be set up on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can change how branches are named.' };
+    const p = prefix.trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,38}[/_-]$/.test(p) || /\.\.|\/\/|@\{|\.lock\/|\/\./.test(p)) {
+      return { ok: false, error: 'Use letters, digits, dots, dashes and slashes, ending in "/", "-" or "_" — for example overgo/.' };
+    }
+    repos.setBranchPrefix(p);
+    this.record(caller, `Set worker branches to start with ${p}.`);
+    return { ok: true, branchPrefix: p };
   }
 
   async connectRepo(caller: OrgCaller, input: { url: string; name?: string; testCommand?: string }): Promise<Result<{ repo: ConnectedRepo; warning?: string }>> {
@@ -3863,10 +4783,42 @@ export class OrgService {
     // A worker works in one place: the flows for any other repo or workspace
     // go, so its planning can't launch work against somewhere it isn't.
     const others = (id: string) => id.startsWith('org-pr-') && id !== flowId;
-    const saved = this.deps.workers.save({ ...w, projectPath: place, flowIds: [...new Set([...w.flowIds.filter((id) => !others(id)), flowId])] });
+    // Its changes land as pushed branches by default: the repo's flow is
+    // preferred, unless someone already picked one of its other flows.
+    const picked = w.preferredFlowId && !w.preferredFlowId.startsWith('org-pr-') && w.flowIds.includes(w.preferredFlowId);
+    const saved = this.deps.workers.save({ ...w, projectPath: place, flowIds: [...new Set([...w.flowIds.filter((id) => !others(id)), flowId])], preferredFlowId: picked ? w.preferredFlowId : flowId });
     if (!saved.ok) return saved;
     this.record(caller, `Let ${w.name} change ${repo ? repo.name : `the ${ws!.name} workspace (${ws!.repos.join(', ')})`}; its changes arrive as branches to open pull requests from.`);
     return { ok: true, worker: w.name, flow: flowId };
+  }
+
+  /// Rewrite the repo and workspace flows workers use from what this version
+  /// makes, so a fix to them reaches the workers already in place. Runs
+  /// under way keep the flow they started with.
+  refreshRepoFlows(): void {
+    // Every worker with a tracker has its "Ticket actions" flow.
+    for (const w of this.deps.workers.roster()) {
+      const next = structuredClone(w);
+      if (this.withTicketFlow(next)) this.deps.workers.save(next);
+    }
+    const repos = this.deps.repos;
+    const save = this.deps.saveFlow;
+    if (!repos || !save) return;
+    const used = new Set(this.deps.workers.roster().flatMap((w) => w.flowIds));
+    for (const r of repos.list()) if (used.has(prFlowIdFor(r))) save(prFlowIdFor(r), prFlowFor(r));
+    for (const ws of repos.workspaces()) if (used.has(workspaceFlowId(ws))) save(workspaceFlowId(ws), workspaceFlowYaml(ws, repos.list()));
+  }
+
+  /// Gives a worker with a tracker its "Ticket actions" flow, after its
+  /// others; true when that changed it.
+  private withTicketFlow(w: Worker): boolean {
+    const server = trackerOf(w.mcpServers);
+    if (!server || !this.deps.saveFlow) return false;
+    const id = ticketFlowId(server);
+    if (!this.deps.saveFlow(id, ticketFlowYaml(server)).ok) return false;
+    if (w.flowIds.includes(id)) return false;
+    w.flowIds = [...w.flowIds, id];
+    return true;
   }
 
   createWorkspace(caller: OrgCaller, input: { name: string; repos: string[]; instructions?: string }): Result<{ workspace: OrgWorkspace }> {
@@ -4301,7 +5253,7 @@ export class OrgService {
   /// Where a team checks in with you, whether its members' pieces ask
   /// before acting outside their sandbox, and how it should go about its
   /// work. For whoever manages one of its members, or an admin.
-  updateTeamSettings(caller: OrgCaller, teamId: UUID, patch: { checkpoints?: Partial<TeamCheckpoints>; piecesAskFirst?: boolean; budgetUSDPerTask?: number; guidance?: string; avatarUrl?: string | null }): Result {
+  updateTeamSettings(caller: OrgCaller, teamId: UUID, patch: { checkpoints?: Partial<TeamCheckpoints>; piecesAskFirst?: boolean; budgetUSDPerTask?: number; guidance?: string; avatarUrl?: string | null; whoCanBrief?: Team['whoCanBrief']; audience?: Audience | null }): Result {
     if (!this.deps.teams?.save) return { ok: false, error: 'Teams are not running on this server.' };
     const team = this.deps.teams.list().teams.find((t) => t.id === teamId);
     if (!team) return { ok: false, error: 'No team by that id.' };
@@ -4309,18 +5261,27 @@ export class OrgService {
     if (patch.budgetUSDPerTask !== undefined && (!Number.isFinite(patch.budgetUSDPerTask) || patch.budgetUSDPerTask <= 0)) return { ok: false, error: 'Set a budget per task above $0.' };
     if (patch.guidance !== undefined && patch.guidance.trim().length > TEAM_GUIDANCE_MAX) return { ok: false, error: `Keep the guidance under ${TEAM_GUIDANCE_MAX.toLocaleString()} characters.` };
     if (patch.avatarUrl && !/^https:\/\/\S{1,500}$/.test(patch.avatarUrl.trim())) return { ok: false, error: 'The picture must be an https:// image link.' };
-    const { piecesAskFirst: _was, avatarUrl: _pic, ...rest } = team;
+    if (patch.whoCanBrief !== undefined && !['managers', 'team', 'org'].includes(patch.whoCanBrief)) return { ok: false, error: 'Who can give it tasks: managers, team or org.' };
+    const who = patch.whoCanBrief ?? team.whoCanBrief ?? 'managers';
+    const { piecesAskFirst: _was, avatarUrl: _pic, whoCanBrief: _who, audience: _aud, ...rest } = team;
+    const audience = patch.audience === undefined ? team.audience : patch.audience ?? undefined;
     const saved = this.deps.teams.save({
       ...rest,
       checkpoints: { ...DEFAULT_TEAM_CHECKPOINTS, ...(team.checkpoints ?? {}), ...(patch.checkpoints ?? {}) },
       ...(patch.budgetUSDPerTask !== undefined ? { budgetUSDPerTask: Math.round(patch.budgetUSDPerTask * 100) / 100 } : {}),
       ...((patch.piecesAskFirst ?? team.piecesAskFirst !== false) ? {} : { piecesAskFirst: false }),
+      ...(who !== 'managers' ? { whoCanBrief: who } : {}),
+      ...(audience ? { audience } : {}),
       ...(patch.guidance !== undefined ? { guidance: patch.guidance } : {}),
       ...((patch.avatarUrl === undefined ? team.avatarUrl : patch.avatarUrl?.trim()) ? { avatarUrl: (patch.avatarUrl === undefined ? team.avatarUrl : patch.avatarUrl!.trim())! } : {}),
     });
     if (!saved.ok) return saved;
     if (patch.guidance !== undefined && patch.guidance.trim() !== (team.guidance ?? '')) {
       this.record(caller, patch.guidance.trim() ? `Changed how ${team.name} works.` : `Cleared ${team.name}'s guidance.`);
+    }
+    if (patch.audience !== undefined) this.record(caller, `Changed who can give ${team.name} tasks.`);
+    if (patch.whoCanBrief !== undefined && who !== (team.whoCanBrief ?? 'managers')) {
+      this.record(caller, `${team.name} now takes tasks from ${who === 'org' ? 'everyone' : who === 'team' ? "anyone on a team with its members' managers" : "its members' managers"}.`);
     }
     if (patch.piecesAskFirst !== undefined && patch.piecesAskFirst !== (team.piecesAskFirst !== false)) {
       this.record(caller, patch.piecesAskFirst ? `${team.name}'s members ask again before acting outside their sandbox.` : `${team.name}'s members act outside their sandbox without asking on its tasks.`);
@@ -4466,7 +5427,7 @@ export class OrgService {
   /// approval it waits on) and the pack. `now` says what the team is doing
   /// this moment, in a sentence.
   teamPage(caller: OrgCaller, teamIdOrName: string): Result<{
-    team: { id: UUID; name: string; purpose?: string; guidance?: string; avatarUrl?: string; budgetUSDPerTask: number; canBrief: boolean; canChange: boolean; checkpoints: TeamCheckpoints; piecesAskFirst: boolean; members: TeamMemberRow[]; knowledge?: { status: 'learning' | 'ready' | 'failed'; updatedAt?: number; taskId?: UUID; error?: string; words?: number; refresh: 'weekly' | 'off' } };
+    team: { id: UUID; name: string; purpose?: string; guidance?: string; avatarUrl?: string; budgetUSDPerTask: number; canBrief: boolean; canChange: boolean; checkpoints: TeamCheckpoints; piecesAskFirst: boolean; whoCanBrief: NonNullable<Team['whoCanBrief']>; audience?: Audience; members: TeamMemberRow[]; knowledge?: { status: 'learning' | 'ready' | 'failed'; updatedAt?: number; taskId?: UUID; error?: string; words?: number; refresh: 'weekly' | 'off' } };
     tasks: TeamTaskDetail[];
     now: { sentence: string; taskId: UUID; waitingOnYou: boolean } | null;
   }> {
@@ -4501,6 +5462,8 @@ export class OrgService {
         canChange: this.canChangeTeam(caller, team),
         checkpoints: { ...DEFAULT_TEAM_CHECKPOINTS, ...(team.checkpoints ?? {}) },
         piecesAskFirst: team.piecesAskFirst !== false,
+        whoCanBrief: team.whoCanBrief ?? 'managers',
+        ...(team.audience ? { audience: team.audience } : {}),
         members,
         ...(team.knowledge
           ? {
@@ -4984,15 +5947,32 @@ export class OrgService {
     const names = new Map(roster.map((w) => [w.id, w.name]));
     return this.deps.teams
       .list()
-      .teams.filter((t) => (opts.disbanded || !t.disbanded) && t.members.some((m) => canSee(policy, roster, m.workerId, caller)))
+      .teams.filter((t) => (opts.disbanded || !t.disbanded) && (t.members.some((m) => canSee(policy, roster, m.workerId, caller)) || this.mayBrief(caller, t)))
       .map((t) => ({
         id: t.id,
         name: t.name,
         ...(t.purpose ? { purpose: t.purpose } : {}),
         ...(t.avatarUrl ? { avatarUrl: t.avatarUrl } : {}),
         members: t.members.map((m) => ({ name: names.get(m.workerId) ?? 'a former worker', role: m.role })),
-        canBrief: isAdmin(policy, caller) || t.members.some((m) => canManage(policy, roster, m.workerId, caller)),
+        canBrief: this.mayBrief(caller, t),
       }));
+  }
+
+  /// Whether someone may give a team tasks: an admin, whoever manages one of
+  /// its members, and as far as its `whoCanBrief` opens it.
+  private mayBrief(caller: OrgCaller, team: Team): boolean {
+    const policy = this.policy();
+    const roster = this.deps.workers.roster();
+    if (isAdmin(policy, caller) || team.members.some((m) => canManage(policy, roster, m.workerId, caller))) return true;
+    if (team.audience) return inAudience(policy, caller, team.audience);
+    if (team.whoCanBrief === 'org') return true;
+    if (team.whoCanBrief === 'team' && caller.slackUserId) {
+      return team.members.some((m) => {
+        const boss = managerFor(roster, m.workerId)?.slackUserId;
+        return !!boss && sharesTeam(policy, boss, caller.slackUserId!);
+      });
+    }
+    return false;
   }
 
   teamTasks(caller: OrgCaller): TeamTaskSummary[] {
@@ -5013,7 +5993,7 @@ export class OrgService {
     const key = teamIdOrName.trim().toLowerCase();
     const team = this.teams(caller).find((t) => t.id === teamIdOrName || t.name.toLowerCase() === key);
     if (!team) return { ok: false, error: 'No team by that name that you can see.' };
-    if (!team.canBrief) return { ok: false, error: `Only people who manage someone on ${team.name} can give it work.` };
+    if (!team.canBrief) return { ok: false, error: `You can't give ${team.name} tasks. Ask someone who manages one of its members to open it up on the team's page.` };
     const res = this.deps.teams.brief(team.id, text, [], undefined, {
       requestedBy: { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) },
     });
@@ -5121,6 +6101,12 @@ export class OrgService {
     });
   }
 
+  /// Whether `teamRoom` would let this person talk to the task's team.
+  mayTalkToRoom(caller: OrgCaller, taskId: UUID): boolean {
+    const task = this.deps.teams?.list().tasks.find((t) => t.id === taskId);
+    return !!task && (this.askedForTask(task, caller) || isAdmin(this.policy(), caller));
+  }
+
   /// Talk to a finished task's team, or fold what it said into the pack:
   /// for whoever asked for the task, or an admin.
   teamRoom(caller: OrgCaller, taskId: UUID, action: { kind: 'ask'; text: string } | { kind: 'continue' } | { kind: 'updatePack'; changes?: string[] }): Result<{ queued?: boolean }> {
@@ -5128,7 +6114,7 @@ export class OrgService {
     if (!teams) return { ok: false, error: 'Teams are not running on this server.' };
     const task = teams.list().tasks.find((t) => t.id === taskId);
     if (!task) return { ok: false, error: 'No team task with that id.' };
-    if (!this.askedForTask(task, caller) && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can talk to its team.' };
+    if (!this.mayTalkToRoom(caller, taskId)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can talk to its team.' };
     const name = `${task.teamName}'s task "${task.title ?? task.brief.slice(0, 60)}"`;
     if (action.kind === 'ask') {
       if (!teams.roomAsk) return { ok: false, error: 'Talking to the team isn’t available here.' };
@@ -5410,4 +6396,75 @@ function roomHandoffView(h: TeamHandoff): { title: string; status: string; who: 
     who: h.assignments.map((a) => a.workerName),
     ...(steps.length > 1 ? { steps } : {}),
   };
+}
+
+/// The person a tool's keys sign in as, from "Lionel Farr on Jira": null
+/// when it reads as an account rather than someone (a bot, a service user).
+export function personOf(as: string | undefined): string | null {
+  if (!as) return null;
+  const who = as.replace(/\s+(?:on|in|at|@)\s+.*$/i, '').trim();
+  if (!who || /@/.test(who) || /\b(bot|service|svc|automation|integration|system|api|admin|robot|app|overgo)\b/i.test(who)) return null;
+  return /^\p{Lu}[\p{L}'-]+(?:\s+\p{Lu}[\p{L}'-]+)+$/u.test(who) ? who : null;
+}
+
+/// A week, for one person (`OrgService.weeklyDigest`).
+export interface WeeklyDigest {
+  org: string;
+  mine: Array<{ name: string; done: number; failed: number; errands: number; costUSD: number; useful: number; notUseful: number }>;
+  waiting: number;
+  oldestWaitingAt?: number;
+  orgTotals?: { workers: number; done: number; failed: number; costUSD: number; costPerDone: number | null; useful: number; notUseful: number; troubled: string[]; toolRequests: number };
+}
+
+/// When the Monday digest is due: 9am or later on a Monday in the org's
+/// time zone, for a week it hasn't gone out for. The week's key, or null.
+export function digestDue(now: number, timeZone: string | undefined, lastWeek: string | null): string | null {
+  let parts: Record<string, string>;
+  try {
+    parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: timeZone || undefined, weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(now)).map((p) => [p.type, p.value]));
+  } catch {
+    return null;
+  }
+  if (parts.weekday !== 'Mon' || Number(parts.hour) < 9) return null;
+  const week = `${parts.year}-${parts.month}-${parts.day}`;
+  return week === lastWeek ? null : week;
+}
+
+/// What a worker's onboarding asks: go through its tools for its job, read
+/// only, and write down what it will need, as notes it reads every run.
+export function learnPrompt(w: Pick<Worker, 'name' | 'mcpServers'>, before?: string): string {
+  return [
+    `This is your onboarding, ${w.name}. Before your next real job, get to know the tools and places your job uses, so you don't have to look things up mid-task.`,
+    'Use your tools to READ ONLY. Change nothing, post nothing, comment on nothing.',
+    '',
+    'Find out, for your job specifically:',
+    '- the projects, boards, spaces or folders you work in: their exact names and keys;',
+    '- how work moves there: statuses, transitions, fields and labels people actually use;',
+    '- who does what: owners, assignees, teams you see again and again;',
+    '- where things live: documents, dashboards, repos, links you will need;',
+    '- anything that surprised you or that a newcomer would get wrong.',
+    before ? `\nYour notes from last time are below. Check them against what you see now: keep what still holds, fix what changed, drop what's gone.\n\n<previous>\n${before.slice(0, 6000)}\n</previous>` : '',
+    '',
+    'Then write your notes as markdown, under 1,500 words, with short headed sections and exact names, keys and links. Facts you checked, not guesses: mark anything you could not confirm.',
+    'Put the notes between <knowledge> and </knowledge>, and nothing else inside.',
+  ].filter((l) => l !== '').join('\n');
+}
+
+/// The notes from an onboarding reply: what's inside <knowledge>, or the
+/// whole reply when it forgot the tags.
+export function readKnowledge(text: string): string | null {
+  const m = /<knowledge>([\s\S]*?)<\/knowledge>/i.exec(text);
+  const body = (m ? m[1] : text).trim();
+  return body.length >= 40 ? body.slice(0, 10_000) : null;
+}
+
+/// What's using the server's disk (`OrgService.storage`). Bytes; null when
+/// it couldn't be measured.
+export interface StorageReport {
+  volume: { freeBytes: number; totalBytes: number } | null;
+  checkouts: { count: number; bytes: number | null };
+  repos: number | null;
+  toolCache: number | null;
+  kept: Array<{ runId: string; title: string; worker?: string; workerId?: string; since: number }>;
+  measuredAt: number;
 }

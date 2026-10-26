@@ -7,6 +7,9 @@ import type { ErrandProgress } from '../org/orgService';
 import { escapeMrkdwn } from './slackApi';
 
 export const SLACK_TEXT_MAX = 2800;
+/// Past this a reply is summarized in the thread and attached whole; up to
+/// it, posted whole (Slack folds a long message behind "Show more").
+export const SLACK_LONG_REPLY = 10_000;
 const MAX_UPLOAD_BYTES = 10_000_000;
 const MAX_UPLOADS = 5;
 /// What Slack previews or people open: documents, pages, data and images.
@@ -111,12 +114,14 @@ export function finishedText(workerName: string, p: ErrandProgress, library: str
     .join('\n');
 }
 
-/// A reply in the thread: short ones as they are; long ones summarized in
-/// the message and attached whole.
+/// A reply in the thread: posted whole, unless it is very long, then the
+/// start of it with the whole attached.
 ///
 /// A file the reply names in the worker's own files (a report it built while
 /// answering, with no run to collect it) goes up too, and the reply names it
-/// rather than a path on the server nobody in Slack can open.
+/// rather than a path on the server nobody in Slack can open. With a file of
+/// its own the reply isn't attached as well: that file is the full version,
+/// and a copy of the reply beside it is the same thing twice.
 ///
 /// `as`: post it as the worker itself, under its name and picture.
 export async function deliverText(io: DeliverIo, channel: string, threadTs: string, workerName: string, text: string, filename: string, workerId?: string, as?: PostAs): Promise<void> {
@@ -129,7 +134,8 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
   let body = text.trim() || 'Done.';
   for (const f of files) body = body.split(f.path).join(`${f.name} (attached)`);
   const lead = as ? '' : `*${workerName}:* `;
-  if (body.length <= SLACK_TEXT_MAX) await io.post(channel, `${lead}${slackMarkup(body)}`, threadTs, as);
+  if (body.length <= SLACK_LONG_REPLY) await io.post(channel, `${lead}${slackMarkup(body)}`, threadTs, as);
+  else if (files.length) await io.post(channel, `${lead}${slackMarkup(clip(body, SLACK_LONG_REPLY))}\n\n_More in ${files.map((f) => f.name).join(', ')}._`, threadTs, as);
   else {
     await io.post(channel, `${lead}${slackMarkup(clip(body, 1200))}\n\n_The full answer is attached._`, threadTs, as);
     await io.upload(channel, threadTs, filename, Buffer.from(body, 'utf8'));

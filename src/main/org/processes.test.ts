@@ -204,7 +204,17 @@ describe('processes', () => {
     h.tasks.set('task-1', { status: 'done', pack: { summary: 'Plan', files: [] } });
     h.svc.poll();
     expect(h.told.filter((t) => t.decide).map((t) => t.to)).toEqual(['Sam', 'Ana']);
-    expect(h.state().items[0].stageNote).toBe('Waiting on Product leads');
+    // Who decides is said to those who see the whole process, not to Riley,
+    // who sees it as an outline (and so without its approvers).
+    expect(h.state().items[0].stageNote).toBe('Waiting for a decision');
+    const ana = h.svc.get({ name: 'Ana', slackUserId: 'U0ANA', admin: false }, made.process.id);
+    const riley = h.svc.get({ name: 'Riley', admin: false }, made.process.id);
+    if (!ana.ok || !riley.ok) throw new Error('get');
+    expect(ana.items[0].waitsOn).toBe('Product leads');
+    expect(riley.items[0].waitsOn).toBe('its approvers');
+    expect(h.told.find((t) => t.to === 'Riley' && t.text.includes('now at *Approve*'))?.text).toContain('waiting on its approvers to decide');
+    const refused = h.svc.act({ name: 'Riley', admin: false }, sub.item.id, 'approve');
+    expect(refused.ok ? '' : refused.error).not.toContain('Product leads');
     expect(h.svc.waitingOn({ name: 'Ana', slackUserId: 'U0ANA' })).toHaveLength(1);
     expect(h.svc.act({ name: 'Ana', slackUserId: 'U0ANA', admin: false }, sub.item.id, 'approve').ok).toBe(true);
   });

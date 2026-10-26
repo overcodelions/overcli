@@ -49,6 +49,9 @@ export interface FrontDoorWorker {
   tools?: string[];
   /// Its picture: its replies post under its name and this face.
   avatarUrl?: string;
+  /// The code it can read: its repo, or its workspace and the repos in it.
+  /// How a module works is read from code, not from tickets about it.
+  code?: string;
 }
 
 /// A team the person may give work to. It goes to the door as one more
@@ -92,9 +95,42 @@ const TRACK = /^(?:also\s+)?(stop\s+|un)?(?:track(?:ing)?|watch(?:ing)?)\s+([A-Z
 const NOT_IT = /^(?:(?:no|nope|nah)[,.!\s]*)?(?:that'?s not it|that is not it|not it|not that(?: one)?|none(?: of (?:these|them|those))?|neither(?: of them)?|something else|no|nope|nah)[.!]?$/i;
 /// …that it is, and that's all.
 const THANKS = /^(?:thanks?(?: you)?|thx|ty|great|perfect|got it|ok(?:ay)?|cool|nice|that'?s it|that'?s the one|yes|yep|yeah)[.!]*$/i;
+/// Only thanks: where the last word may have been a question ("shall we
+/// start?"), "yes" and "ok" are answers, not the end of it.
+const THANKS_ONLY = /^(?:(?:great|perfect|awesome|ok(?:ay)?|got it)[,!\s]+)?(?:thanks?(?: you)?(?: so much)?|thx|ty|cheers|much appreciated)[.!]*$/i;
 const ORDINALS: Array<[RegExp, number]> = [[/^(?:#?1|one|(?:the )?first(?: one)?|(?:the )?top(?: one)?)[.!]?$/i, 0], [/^(?:#?2|two|(?:the )?second(?: one)?)[.!]?$/i, 1], [/^(?:#?3|three|(?:the )?third(?: one)?)[.!]?$/i, 2]];
 /// A link button: Slack opens it, and the press it reports is acknowledged and dropped.
 const OPEN_LINK = 'overcli_open_link';
+
+/// "Let me know when there's news": DM me when something is posted here.
+const SUBSCRIBE = /^(?:please\s+)?(?:let me know|keep me (?:posted|updated|in the loop)|notify me|ping me|dm me|remind me|give me a (?:heads[- ]up|shout)|subscribe|follow(?: this)?|watch(?: this)?)(?:\s+(?:when|if|once|on)\b.*)?[.!]?$/i;
+/// …and to stop.
+const UNSUBSCRIBE = /^(?:unsubscribe|unfollow|unwatch|stop (?:notifying|pinging|dm'?ing) me)[.!]?$/i;
+/// The same said anywhere in a longer message: "that's it — can you let me
+/// know when the status changes?"
+const NOTIFY = /\b(?:let me know|keep me (?:posted|updated|in the loop)|notify me|ping me|dm me|alert me|tell me|remind me|give me a (?:heads[- ]up|shout))\b[^.!?]*\b(?:when|if|once|as soon as|whenever)\b/i;
+/// "Unfollow" only as what the message starts with: "the unsubscribe link
+/// is broken" is a bug report.
+const STOP_NOTIFY = /\b(?:stop|don'?t keep) (?:notifying|pinging|telling|dm'?ing|following|watching|tracking)\b|^(?:please\s+)?(?:unfollow|unsubscribe|unwatch)\b/i;
+/// Words that ask nothing of their own around a "let me know": "can you",
+/// "thanks", "that's it".
+const FILLER = new Set('thats thanks thank thx okay great perfect cool also just hey yes yep yeah sure'.split(' '));
+/// "What am I following?"
+const FOLLOWING_ASK = /^(?:(?:so\s+)?what(?:'s| is| am| are)? (?:i|we|me) (?:following|watching|tracking)|(?:show |list )?(?:my )?(?:follows|followed tickets|tickets i(?:'m| am) following))[?.!]*$/i;
+/// A ticket named in a message: "ACME-412", "acme-412".
+const TICKET = /\b([A-Za-z][A-Za-z0-9]{1,15}-\d{1,7})\b/;
+/// A "notify me" button: pressing it subscribes the presser, and the button
+/// stays for the next person.
+export const DOOR_SUBSCRIBE_ACTION = 'overcli_door_subscribe';
+/// A reply to the front desk's answer asking for a worker after all.
+const HAND_OFF = /^(?:hand (?:it|this) (?:off|over|to someone)|give (?:it|this) to (?:someone|a worker)|find someone|ask a worker|someone else)[.!]?$/i;
+/// A worker saying the request isn't its job: the door finds someone else.
+const DECLINE = /\bNOT_MINE\b:?\s*([^\n]*)/;
+/// How many workers may say "not mine" before the door answers itself.
+const MAX_DECLINES = 2;
+/// A follow-up the worker hasn't answered by then gets a word in the thread,
+/// so it doesn't look ignored while the worker thinks.
+const ACK_AFTER_MS = 8000;
 
 /// A reply to "who should take this?" that leaves it to the door.
 const ANYONE = /^(?:any(?:one|body)?|whoever|you (?:pick|choose|decide)|doesn'?t matter|no preference|dunno|not sure)[.!]?$/i;
@@ -126,6 +162,11 @@ interface DoorThread {
   /// A finished team task this thread put a question to: more said here goes
   /// to the same room.
   room?: { taskId: string; who: string; url?: string; question: string };
+  /// A question the door answered itself: held so "hand it off" can still
+  /// give it to a worker.
+  desk?: { text: string; files: SlackFile[] };
+  /// Workers that said the request isn't theirs: not offered it again.
+  declined?: string[];
   at: number;
 }
 
@@ -180,6 +221,38 @@ export interface DoorLog {
   url?: string;
   /// When anything last happened in it.
   lastAt?: number;
+  /// The outcome as a kind, and who it went to: a worker, or a team or
+  /// process when `team`. The Slack page colours each by these.
+  kind?: DoorOutcome;
+  who?: string;
+  team?: boolean;
+}
+
+/// Someone who asked to hear, by DM, when something is posted in a thread.
+export interface DoorSub {
+  key: string;
+  channel: string;
+  threadTs: string;
+  user: string;
+  at: number;
+}
+
+/// What the door did with a conversation, counted for the Slack page:
+/// answered (from known work or by the door itself), offered existing work,
+/// handed to someone, asked who should take it, or a worker said not theirs.
+export type DoorOutcome = 'answered' | 'offered' | 'handed' | 'asked-who' | 'declined';
+
+/// One person's day at the door. Kept far longer than the conversations,
+/// so the counts outlast them.
+export interface DoorDay {
+  day: string;
+  user: string;
+  by: string;
+  messages: number;
+  /// New conversations started.
+  started: number;
+  /// Messages sent in a DM rather than a channel.
+  dm: number;
 }
 
 export interface FrontDoorState {
@@ -189,6 +262,12 @@ export interface FrontDoorState {
   log?: DoorLog[];
   /// Absent in state saved before rooms were followed.
   rooms?: RoomFollow[];
+  /// Absent in state saved before threads could be followed by DM.
+  subs?: DoorSub[];
+  /// Absent in state saved before the door kept counts.
+  days?: DoorDay[];
+  /// What came of conversations, per day: `{ '2026-10-22': { handed: 3 } }`.
+  outcomes?: Record<string, Partial<Record<DoorOutcome, number>>>;
 }
 
 type Answered = { ok: true; reply: string; proposed?: number; orchestrationId?: string; choices?: string[]; askId?: string } | { ok: false; error: string };
@@ -235,6 +314,15 @@ export interface FrontDoorDeps {
   /// run's output is posted as it is.
   handBack?(askId: string): { done: Promise<Answered> } | null;
   progress(orchestrationId: string): ErrandProgress | null;
+  /// "Let me know when ACME-412 changes": the caller is DMed when it moves,
+  /// on a change watch of a worker they can see. A string is why it can't.
+  /// Absent: only threads can be followed.
+  /// `workerId`: who the thread is with, to set a watch up on when there's
+  /// none to put it on. `say`: a word in the thread while that runs.
+  follow?(caller: OrgCaller, itemId: string, on: boolean, opts: { workerId?: string; say(text: string): void }): Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }> | string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean };
+  /// The tickets the caller follows, for "what am I following?". Absent: it's
+  /// routed like any request.
+  following?(caller: OrgCaller): Array<{ item: string; status?: string; worker: string }>;
   /// "Track ACME-412" to a named worker: onto its change watch's list, with
   /// no model turn. A string is why it couldn't. Absent: it's an ordinary ask.
   track?(caller: OrgCaller, workerId: string, itemId: string, on: boolean): string | { worker: string; tracked: number };
@@ -257,11 +345,14 @@ export interface FrontDoorDeps {
   /// Finished work this person can see that may already answer a question:
   /// strong matches are offered before routing, `weak` ones only tell the
   /// router who made something related. Absent: every request is routed.
-  findExisting?(caller: OrgCaller, text: string): Promise<ExistingHit[]> | ExistingHit[];
+  /// `shared`: asked in a channel, where everyone in it reads the reply, so
+  /// only work everyone can see counts.
+  findExisting?(caller: OrgCaller, text: string, opts: { shared: boolean }): Promise<ExistingHit[]> | ExistingHit[];
   /// A question answered from what's already known (finished work, what
   /// teams know), said under `who`'s name; `hits`: the work it came from.
   /// Null: that doesn't cover it. Absent: matches are only offered.
-  answer?(caller: OrgCaller, text: string): Promise<{ text: string; who: string; hits: ExistingHit[]; from: string[] } | null>;
+  /// `shared`: as for `findExisting`.
+  answer?(caller: OrgCaller, text: string, opts: { shared: boolean }): Promise<{ text: string; who: string; hits: ExistingHit[]; from: string[] } | null>;
   /// Put a question to a finished team task's team; its answer lands in the
   /// task. `queued`: the room is answering something else first.
   askTeam?(caller: OrgCaller, taskId: string, text: string): { ok: true; queued?: boolean } | { ok: false; error: string };
@@ -272,6 +363,10 @@ export interface FrontDoorDeps {
   /// A team task's room, to see whether it has answered (`roomAnswer`).
   /// Absent: the answer stays in the task.
   teamRoom?(taskId: string): TeamRoom | undefined;
+  /// A question nobody's job covers, answered by the door itself, naming who
+  /// could look things up when it can't. `context`: the thread so far. Null:
+  /// it couldn't. Absent: the person is asked who should take it.
+  general?(caller: OrgCaller, text: string, context: string, workers: FrontDoorWorker[]): Promise<string | null>;
   /// A model's pick when the words alone don't settle it. Null: no one fits.
   /// `related`: recent work that may be what the request is about.
   route(text: string, workers: FrontDoorWorker[], related?: Array<{ title: string; who: string }>): Promise<{ workerId: string; why: string } | null>;
@@ -288,6 +383,10 @@ export interface FrontDoorDeps {
     update?(channel: string, ts: string, text: string): Promise<boolean>;
     /// Post and say where it landed, for a message edited as work moves.
     postTs?(channel: string, text: string, threadTs: string, as?: PostAs): Promise<string | null>;
+    /// A direct message from the app. Absent: threads can't be followed by DM.
+    dm?(user: string, text: string): Promise<boolean>;
+    /// A link to a message, for a DM pointing back at its thread.
+    permalink?(channel: string, ts: string): Promise<string | null>;
   };
   /// Where people read what workers delivered, for the closing link.
   libraryUrl(): string | null;
@@ -304,6 +403,13 @@ const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 5_000_000;
 const THREAD_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const FOLLOW_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+/// How long the door's counts are kept.
+const STATS_TTL_DAYS = 180;
+
+/// "2026-10-22", in UTC: the day a count goes under.
+export function dayOf(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
 /// How far back a top-level mention looks in its channel.
 const RECENT_MESSAGES = 8;
 const CONTEXT_HEAD = {
@@ -324,7 +430,7 @@ export function namedWorker(text: string, workers: FrontDoorWorker[]): { worker:
   const t = text.trim();
   for (const w of [...workers].sort((a, b) => b.name.length - a.name.length)) {
     const name = w.name.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const m = new RegExp(`^(?:ask\\s+|hey\\s+|@)?(?:the\\s+)?${name}(?:\\s+team)?(?:[,:\\s]+(?:to\\s+|please\\s+)?|$)`, 'i').exec(t);
+    const m = new RegExp(`^(?:ask\\s+|hey\\s+|get\\s+|have\\s+|let\\s+|@)?(?:the\\s+)?${name}(?:\\s+team)?(?:[,:\\s]+(?:to\\s+|please\\s+)?|$)`, 'i').exec(t);
     if (m) return { worker: w, rest: t.slice(m[0].length).trim() || t };
   }
   return null;
@@ -346,6 +452,20 @@ export function rankByWords(text: string, workers: FrontDoorWorker[]): Array<{ w
 
 function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+/// Whether a "let me know when…" (or "stop following…") is all the message
+/// says: nothing is left once that sentence is taken out but filler. "Fix
+/// the Safari case and ping me when it's done" still asks for a fix.
+export function onlyAsks(text: string, clauses: RegExp[]): boolean {
+  for (const re of clauses) {
+    const m = re.exec(text);
+    if (!m) continue;
+    const to = text.slice(m.index).search(/[.!?](?:\s|$)/);
+    const rest = `${text.slice(0, m.index)} ${to < 0 ? '' : text.slice(m.index + to + 1)}`;
+    return words(rest).every((w) => FILLER.has(w));
+  }
+  return false;
 }
 
 /// Whether the request names a worker, team or process anywhere in it.
@@ -407,6 +527,7 @@ export function roomStatus(room: Pick<TeamRoom, 'messages' | 'busy' | 'queue'> |
 /// What asking about it is called: the team for a task (or a file from one),
 /// the worker for its own work, nothing for a process item.
 function askLabel(h: ExistingHit): string | null {
+  if (h.canAsk === false) return null;
   if (h.teamTaskId) return 'Ask the team about it';
   if (h.workerId && h.kind === 'worker') return `Ask ${h.who} about it`;
   return null;
@@ -441,7 +562,28 @@ export class FrontDoor {
     const cutoff = this.now() - THREAD_TTL_MS;
     this.state.threads = this.state.threads.filter((t) => t.at > cutoff).slice(-500);
     if (this.state.log) this.state.log = this.state.log.filter((l) => (l.lastAt ?? l.at) > cutoff).slice(-500);
+    if (this.state.subs) this.state.subs = this.state.subs.filter((x) => x.at > cutoff);
+    const oldest = dayOf(this.now() - STATS_TTL_DAYS * 24 * 60 * 60 * 1000);
+    if (this.state.days) this.state.days = this.state.days.filter((d) => d.day >= oldest);
+    if (this.state.outcomes) for (const d of Object.keys(this.state.outcomes)) if (d < oldest) delete this.state.outcomes[d];
     this.deps.store.save(this.state);
+  }
+
+  /// The door's counts: each person's days, and what came of conversations.
+  stats(): { days: DoorDay[]; outcomes: Record<string, Partial<Record<DoorOutcome, number>>> } {
+    return { days: [...(this.state.days ?? [])], outcomes: { ...(this.state.outcomes ?? {}) } };
+  }
+
+  /// One more message from `user` today.
+  private count(user: string, by: string, started: boolean, dm: boolean): void {
+    const day = dayOf(this.now());
+    const days = (this.state.days ??= []);
+    let d = days.find((x) => x.day === day && x.user === user);
+    if (!d) days.push((d = { day, user, by, messages: 0, started: 0, dm: 0 }));
+    d.by = by;
+    d.messages++;
+    if (started) d.started++;
+    if (dm) d.dm++;
   }
 
   /// The conversations people started, newest first.
@@ -450,11 +592,57 @@ export class FrontDoor {
   }
 
   /// Say what came of a conversation. Kept even when nothing else is.
-  private note(key: string, outcome: string, url?: string): void {
+  /// `count` false keeps a follow-up out of the counts.
+  private note(key: string, outcome: string, kind: DoorOutcome, url?: string, to?: { who: string; team?: boolean }, count = true): void {
+    if (count) {
+      const day = ((this.state.outcomes ??= {})[dayOf(this.now())] ??= {});
+      day[kind] = (day[kind] ?? 0) + 1;
+    }
     const l = this.state.log?.find((x) => x.key === key);
-    if (!l) return;
-    Object.assign(l, { outcome, lastAt: this.now(), ...(url ? { url } : {}) });
+    if (!l) {
+      this.save();
+      return;
+    }
+    Object.assign(l, { outcome, kind, lastAt: this.now(), ...(url ? { url } : {}) });
+    if (to) Object.assign(l, { who: to.who, team: !!to.team });
+    else {
+      delete l.who;
+      delete l.team;
+    }
     this.save();
+  }
+
+  /// A thread the server posted a worker's work into (a shift's results, an
+  /// answer, an approval it settled): a reply there is for that worker, and
+  /// reads the thread as its context, rather than starting over with "who
+  /// should take this?".
+  adopt(channel: string, threadTs: string, worker: { id: string; name: string }): void {
+    const key = `${channel}:${threadTs}`;
+    const known = this.state.threads.find((t) => t.key === key);
+    if (known) {
+      // A thread left on "who should take this?" (or "is it one of these?")
+      // when nobody picked: it's this worker's now.
+      if (!known.workerId && !known.room) {
+        known.workerId = worker.id;
+        known.workerName = worker.name;
+        delete known.pending;
+        delete known.existing;
+        delete known.desk;
+        this.save();
+      }
+      return;
+    }
+    this.state.threads.push({ key, workerId: worker.id, workerName: worker.name, at: this.now() });
+    this.save();
+  }
+
+  /// The Slack threads someone follows, newest first, with what each was
+  /// about: for "what am I following?" and the console's Watching page.
+  followedThreads(user: string): Array<{ key: string; channel: string; threadTs: string; text: string; at: number }> {
+    return (this.state.subs ?? [])
+      .filter((x) => x.user === user)
+      .map((x) => ({ key: x.key, channel: x.channel, threadTs: x.threadTs, text: this.state.log?.find((l) => l.key === x.key)?.text ?? 'A Slack thread', at: x.at }))
+      .sort((a, b) => b.at - a.at);
   }
 
   /// Whether a reply in this thread is meant for the door.
@@ -502,15 +690,45 @@ export class FrontDoor {
     const logged = this.state.log?.find((l) => l.key === key);
     if (logged) logged.lastAt = this.now();
     else if (text || req.files?.length) (this.state.log ??= []).push({ key, channel: req.channel, threadTs: root, user: req.user, by: caller.name, text: text || '(a file)', at: this.now(), dm: req.dm });
-    // Workers and teams side by side: a team is picked for a real piece of
-    // work that fits it, and runs as a team task.
+    if (text || req.files?.length) this.count(req.user, caller.name, !logged, req.dm);
     const procs = this.deps.submitProcess ? (this.deps.processes?.(caller) ?? []) : [];
-    const workers = [
-      ...this.deps.workers(caller),
-      ...(this.deps.briefTeam ? (this.deps.teams?.(caller) ?? []).map(teamCandidate) : []),
-      ...procs.map(processCandidate),
-    ];
+    const workers = this.candidates(caller);
     const known = this.state.threads.find((t) => t.key === key);
+
+    if (this.deps.following && text && FOLLOWING_ASK.test(withoutHello(text))) {
+      const mine = this.deps.following(caller);
+      const followed = this.followedThreads(req.user);
+      const subs = followed.length;
+      const threads = subs
+        ? `\nAnd ${subs === 1 ? 'one Slack thread' : `${subs} Slack threads`}, by DM when something's posted:\n${followed.slice(0, 10).map((t) => `• <https://slack.com/archives/${t.channel}/p${t.threadTs.replace('.', '')}|${t.text.slice(0, 80).replace(/[<>|]/g, '')}>`).join('\n')}${subs > 10 ? `\n…and ${subs - 10} more, on Reports → Watching.` : ''}\nSay *unfollow* in a thread to stop it.`
+        : '';
+      await say(mine.length
+        ? `You're following ${mine.length === 1 ? 'one ticket' : `${mine.length} tickets`}:\n${mine.slice(0, 25).map((m) => `• *${m.item}*${m.status ? ` — ${m.status}` : ''} · ${m.worker} watches it`).join('\n')}${mine.length > 25 ? `\n…and ${mine.length - 25} more, in Reports → Watching.` : ''}\nSay *stop following <ticket>* to drop one.${threads}`
+        : `You're not following any tickets. Say *let me know when ACME-412 changes* and I'll DM you when it moves.${threads}`);
+      return;
+    }
+    // "Let me know when ACME-412 changes", or when there's news here. A
+    // ticket named, here or earlier in the thread, is followed where it
+    // lives; otherwise the thread is, in a channel. In a DM with no ticket
+    // it's for whoever is on it. Said beside a request ("fix it and ping me
+    // when it's done"), it's followed and the request still goes on; a
+    // "stop following" is only ever one said on its own.
+    const stopNews = !!text && (UNSUBSCRIBE.test(text) || STOP_NOTIFY.test(text)) && onlyAsks(text, [STOP_NOTIFY, UNSUBSCRIBE]);
+    const wantsNews = !!text && !stopNews && (SUBSCRIBE.test(text) || NOTIFY.test(text));
+    if (wantsNews || stopNews) {
+      const alone = stopNews || onlyAsks(text, [NOTIFY, SUBSCRIBE]);
+      const ticket = this.deps.follow ? this.ticketFor(text, key, known) : null;
+      if (ticket) {
+        this.save();
+        const thread = known?.workerId && !known.workerId.startsWith(TEAM_ID) && !known.workerId.startsWith(PROCESS_ID) ? known.workerId : known?.existing?.hits.find((h) => h.workerId)?.workerId;
+        await this.followTicket(req, caller, ticket, !stopNews, thread);
+        if (alone) return;
+      } else if (known && !req.dm) {
+        this.save();
+        await this.subscribe(req.channel, root, req.user, !stopNews, req.dm);
+        if (alone) return;
+      }
+    }
     // What was offered as maybe already it, when the person said something
     // else instead: a hint to the router, and no second look.
     let offered: Array<{ title: string; who: string }> | null = null;
@@ -571,7 +789,7 @@ export class FrontDoor {
           this.save();
           return this.offerExisting(req, [picked]);
         }
-      } else if (hits[0] && /^ask\b/i.test(text)) {
+      } else if (hits[0] && askLabel(hits[0]) && /^ask\b/i.test(text)) {
         delete known.existing;
         this.save();
         return this.askAbout(req, key, caller, workers, hits[0], original, files);
@@ -603,7 +821,29 @@ export class FrontDoor {
         await say(`Already asked *${room.who}*. I'll post their answer here.`);
         return;
       }
+      // "Thanks!" is the end of it, not another question for the room.
+      if (THANKS_ONLY.test(text.replace(/[’‘]/g, "'"))) {
+        await say(`Glad it helped. Ask more here and it goes to *${room.who}*.`);
+        return;
+      }
       return this.askRoom(req, key, caller, room.taskId, room.who, room.url, text);
+    }
+    // More for a question the door answered itself.
+    if (known?.desk && !known.workerId) {
+      const desk = known.desk;
+      if (!text) return;
+      if (HAND_OFF.test(text) || ANYONE.test(text)) {
+        delete known.desk;
+        this.save();
+        return this.route(req, key, caller, workers, desk.text, desk.files, [], false);
+      }
+      if (THANKS_ONLY.test(text.replace(/[’‘]/g, "'"))) {
+        await say('Glad it helped.');
+        return;
+      }
+      if (!namedWorker(text, workers)) return this.desk(req, key, caller, workers, text, req.files ?? []);
+      delete known.desk;
+      this.save();
     }
     // An item in a process is followed by DM and /idea, not here.
     if (known?.workerId?.startsWith(PROCESS_ID)) {
@@ -623,6 +863,12 @@ export class FrontDoor {
         return;
       }
       if (!text) return;
+      // "Triage will need to read the code": brought in by name, another
+      // worker takes the thread over, with everything said in it so far.
+      const named = namedWorker(text, workers);
+      if (named && named.worker.id !== worker.id) {
+        return this.hand(req, key, caller, named.worker, `${caller.name} brought you into this thread, after ${worker.name}: ${text}`, req.files ?? [], `${caller.name} asked for ${named.worker.name}`);
+      }
       return this.hand(req, key, caller, worker, text, req.files ?? [], '', true);
     }
     if (!text && !req.files?.length) return;
@@ -675,23 +921,26 @@ export class FrontDoor {
     // team's finished work isn't started again from scratch.
     let related: Array<{ title: string; who: string }> = offered ?? [];
     // A question the teams already worked out: answered from that, here.
+    // In a channel everyone in it reads the answer, so it comes only from
+    // what everyone can see; what's private to the caller stays out of it.
+    const shared = !req.dm;
     if (!offered && this.deps.answer && isLookup(text) && !mentionsAny(text, workers)) {
       await say("Checking what's already been worked out…");
       let answered: Awaited<ReturnType<NonNullable<FrontDoorDeps['answer']>>> = null;
       try {
-        answered = await this.deps.answer(caller, text);
+        answered = await this.deps.answer(caller, text, { shared });
       } catch (err) {
         this.deps.log(`Front door: answering from existing work failed: ${String(err)}`);
       }
       if (answered) {
-        this.note(key, `Answered from what ${answered.who} already worked out`, answered.hits[0]?.url);
+        this.note(key, `Answered from what ${answered.who} already worked out`, 'answered', answered.hits[0]?.url);
         return this.answerHere(req, key, text, answered);
       }
     }
     if (!offered && this.deps.findExisting && isLookup(text) && !mentionsAny(text, workers)) {
       let found: ExistingHit[] = [];
       try {
-        found = await this.deps.findExisting(caller, text);
+        found = await this.deps.findExisting(caller, text, { shared });
       } catch (err) {
         this.deps.log(`Front door: looking up existing work failed: ${String(err)}`);
       }
@@ -702,28 +951,49 @@ export class FrontDoor {
         if (known) Object.assign(known, { existing, at: this.now() });
         else this.state.threads.push({ key, existing, at: this.now() });
         this.save();
-        this.note(key, 'Offered work that may already answer it');
+        this.note(key, 'Offered work that may already answer it', 'offered');
         return this.offerExisting(req, hits);
       }
     }
     return this.route(req, key, caller, workers, text, req.files ?? [], related);
   }
 
+  /// Workers, teams and processes side by side: a team is picked for a real
+  /// piece of work that fits it, and runs as a team task.
+  private candidates(caller: OrgCaller): FrontDoorWorker[] {
+    const procs = this.deps.submitProcess ? (this.deps.processes?.(caller) ?? []) : [];
+    return [
+      ...this.deps.workers(caller),
+      ...(this.deps.briefTeam ? (this.deps.teams?.(caller) ?? []).map(teamCandidate) : []),
+      ...procs.map(processCandidate),
+    ];
+  }
+
   /// Hand a new request to whoever fits: a clear match by words, the only
-  /// worker there is, a model's pick, or else the person picks.
-  private async route(req: FrontDoorRequest, key: string, caller: OrgCaller, workers: FrontDoorWorker[], text: string, files: SlackFile[], related: Array<{ title: string; who: string }>): Promise<void> {
-    const root = req.threadTs ?? req.ts;
-    const say = (t: string) => this.deps.slack.post(req.channel, t, root);
+  /// worker there is, a model's pick. When nobody fits, a question is
+  /// answered by the door itself (`desk`, unless the person asked for a
+  /// worker); anything else, the person picks.
+  private async route(req: FrontDoorRequest, key: string, caller: OrgCaller, workers: FrontDoorWorker[], text: string, files: SlackFile[], related: Array<{ title: string; who: string }>, desk = true): Promise<void> {
+    const lookup = isLookup(text);
+    const declined = this.state.threads.find((t) => t.key === key)?.declined ?? [];
+    if (declined.length) workers = workers.filter((w) => !declined.includes(w.id));
     // A question wants an answer back here, not a team task with a plan to
-    // approve: a team only when nobody else is there to answer.
-    const solo = isLookup(text) ? workers.filter((w) => !w.id.startsWith(TEAM_ID)) : workers;
-    if (solo.length) workers = solo;
+    // approve, nor a new item in a process: a team only when nobody else is
+    // there to answer and the door can't answer it itself.
+    const solo = lookup ? workers.filter((w) => !w.id.startsWith(TEAM_ID) && !w.id.startsWith(PROCESS_ID)) : workers;
+    if (solo.length || (desk && this.deps.general)) workers = solo;
+    const canDesk = desk && !!this.deps.general;
+    if (!workers.length) {
+      if (canDesk) return this.desk(req, key, caller, this.candidates(caller), text, files);
+      await this.deps.slack.post(req.channel, `Nobody else here can take that. Start a new message and name who should, or ask someone to share a worker with you.`, req.threadTs ?? req.ts);
+      return;
+    }
     const ranked = rankByWords(text, workers);
     const [first, second] = ranked;
     if (first && first.score >= 3 && first.score >= 2 * (second?.score ?? 0)) {
       return this.hand(req, key, caller, first.worker, text, files, `it's the closest match for this`);
     }
-    if (workers.length === 1) return this.hand(req, key, caller, workers[0], text, files, '');
+    if (workers.length === 1 && !(canDesk && lookup && !first?.score)) return this.hand(req, key, caller, workers[0], text, files, '');
     let routed: { workerId: string; why: string } | null = null;
     try {
       routed = await this.deps.route(text, workers, related.length ? related : undefined);
@@ -732,7 +1002,18 @@ export class FrontDoor {
     }
     const chosen = routed && workers.find((w) => w.id === routed!.workerId);
     if (chosen) return this.hand(req, key, caller, chosen, text, files, routed!.why);
-    const choices = ranked.slice(0, 5).map((r) => r.worker);
+    // Nobody's job covers it: a question, or a request whose words match no
+    // one, is answered here rather than handed to a guess who'd say it isn't
+    // theirs.
+    if (canDesk && (lookup || !first?.score)) return this.desk(req, key, caller, this.candidates(caller), text, files);
+    return this.pick(req, key, ranked.map((r) => r.worker), text, files);
+  }
+
+  /// "Who should take this?", with the best few by words to tap.
+  private async pick(req: FrontDoorRequest, key: string, ranked: FrontDoorWorker[], text: string, files: SlackFile[]): Promise<void> {
+    const root = req.threadTs ?? req.ts;
+    const say = (t: string) => this.deps.slack.post(req.channel, t, root);
+    const choices = ranked.slice(0, 5);
     const pending = { text, files, choices: choices.map((w) => ({ id: w.id, name: w.name })) };
     const known = this.state.threads.find((t) => t.key === key);
     if (known) Object.assign(known, { pending, at: this.now() });
@@ -747,7 +1028,122 @@ export class FrontDoor {
         { type: 'actions', elements: picks.map((name, i) => ({ type: 'button', text: { type: 'plain_text', text: name.slice(0, 75) }, action_id: `${DOOR_CHOICE_ACTION}_${i}`, value: name })) },
       ], root));
     if (!tapped) await say(`${list}\n\nReply with a name, or say *anyone* and I'll pick.`);
-    this.note(key, 'Asked who should take it');
+    this.note(key, 'Asked who should take it', 'asked-who');
+  }
+
+  /// A question nobody's job covers, answered by the door itself, with a way
+  /// to hand it to a worker after all. When it can't answer, the person
+  /// picks who should take it.
+  private async desk(req: FrontDoorRequest, key: string, caller: OrgCaller, workers: FrontDoorWorker[], text: string, files: SlackFile[]): Promise<void> {
+    const root = req.threadTs ?? req.ts;
+    const context = await this.context(req, files);
+    let reply: string | null = null;
+    try {
+      reply = await this.deps.general!(caller, text, context.thread, workers.filter((w) => !w.id.startsWith(PROCESS_ID)));
+    } catch (err) {
+      this.deps.log(`Front door: answering at the front desk failed: ${String(err)}`);
+    }
+    if (!reply?.trim()) {
+      // Nothing from the desk: the person picks, among those a question may go to.
+      const declined = this.state.threads.find((t) => t.key === key)?.declined ?? [];
+      const pool = workers.filter((w) => !declined.includes(w.id) && !w.id.startsWith(PROCESS_ID) && !(isLookup(text) && w.id.startsWith(TEAM_ID)));
+      return this.pick(req, key, rankByWords(text, pool.length ? pool : workers).map((r) => r.worker), text, files);
+    }
+    const desk = { text, files };
+    const known = this.state.threads.find((t) => t.key === key);
+    if (known) Object.assign(known, { desk, at: this.now() });
+    else this.state.threads.push({ key, desk, at: this.now() });
+    this.note(key, 'Answered it itself', 'answered');
+    await deliverText(this.io(), req.channel, root, 'overgo', reply, `${slug(text)}.md`);
+    await this.notify(req.channel, root, 'overgo', reply);
+    const hint = 'Ask more here, or hand it to a worker.';
+    const tapped =
+      this.deps.slack.postBlocks &&
+      (await this.deps.slack.postBlocks(req.channel, hint, [
+        { type: 'context', elements: [{ type: 'mrkdwn', text: hint }] },
+        { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Hand it to someone' }, action_id: `${DOOR_CHOICE_ACTION}_0`, value: 'Hand it to someone' }] },
+      ], root));
+    if (!tapped) await this.deps.slack.post(req.channel, '_Ask more here, or reply *hand it off* and I\'ll find a worker to take it._', root);
+  }
+
+  /// The ticket a "let me know" is about: named in it, or else in what the
+  /// thread asked first.
+  private ticketFor(text: string, key: string, known: DoorThread | undefined): string | null {
+    const said = [text, known?.existing?.text, known?.desk?.text, known?.room?.question, known?.pending?.text, this.state.log?.find((l) => l.key === key)?.text];
+    for (const s of said) {
+      const m = s ? TICKET.exec(s) : null;
+      if (m) return m[1].toUpperCase();
+    }
+    return null;
+  }
+
+  /// Follow a ticket by DM, or stop.
+  private async followTicket(req: FrontDoorRequest, caller: OrgCaller, ticket: string, on: boolean, workerId?: string): Promise<void> {
+    const say = (t: string) => this.deps.slack.post(req.channel, t, req.threadTs ?? req.ts);
+    let res: Awaited<ReturnType<NonNullable<FrontDoorDeps['follow']>>>;
+    try {
+      res = await this.deps.follow!(caller, ticket, on, { ...(workerId ? { workerId } : {}), say: (t) => void say(t) });
+    } catch (err) {
+      this.deps.log(`Front door: following ${ticket} failed: ${String(err)}`);
+      res = `Couldn't follow ${ticket} just now. Try again in a minute.`;
+    }
+    if (typeof res === 'string') {
+      await say(res);
+      return;
+    }
+    if (!on) {
+      await say(`Stopped. No more DMs about *${ticket}*.`);
+      return;
+    }
+    const now = res.status ? ` (now _${res.status}_)` : '';
+    await say(res.setUp
+      ? `Following *${ticket}*${now}: I'll DM you when its status changes. I set up _${res.trigger}_ on ${res.worker} for it, checking every ${res.everyMinutes} min; it's on ${res.worker}'s Triggers tab, and other tickets you follow will use it too. Say *stop following ${ticket}* to stop.`
+      : `Following *${ticket}*${now}: I'll DM you when its status changes. ${res.worker}'s _${res.trigger}_ checks every ${res.everyMinutes} min. Say *stop following ${ticket}* to stop.`);
+  }
+
+  /// Follow a thread by DM, or stop. In a DM there's nothing to follow: it's
+  /// all said there already.
+  async subscribe(channel: string, threadTs: string, user: string, on: boolean, dm = channel.startsWith('D')): Promise<void> {
+    const key = `${channel}:${threadTs}`;
+    const tell = async (text: string) => {
+      if (!(this.deps.slack.dm && (await this.deps.slack.dm(user, text)))) await this.deps.slack.post(channel, `<@${user}> ${text}`, threadTs);
+    };
+    if (dm) {
+      await this.deps.slack.post(channel, "Everything about it comes back here, so there's nothing more to follow.", threadTs);
+      return;
+    }
+    if (!this.deps.slack.dm) {
+      await this.deps.slack.post(channel, "I can't send DMs from here, so follow the thread in Slack to hear when there's news.", threadTs);
+      return;
+    }
+    const subs = (this.state.subs ??= []);
+    const had = subs.some((x) => x.key === key && x.user === user);
+    const link = (await this.deps.slack.permalink?.(channel, threadTs).catch(() => null)) ?? null;
+    const thread = link ? `<${link}|that thread>` : 'that thread';
+    if (!on) {
+      this.state.subs = subs.filter((x) => !(x.key === key && x.user === user));
+      this.save();
+      await tell(had ? `Stopped. No more DMs about ${thread}.` : `You weren't following ${thread}.`);
+      return;
+    }
+    if (!had) subs.push({ key, channel, threadTs, user, at: this.now() });
+    this.save();
+    await tell(`${had ? 'Already on it' : 'Will do'}: I'll DM you when there's an answer or results in ${thread}. Reply *unsubscribe* there to stop.`);
+  }
+
+  /// Something new was posted in a thread: a DM to each person following it.
+  private async notify(channel: string, threadTs: string, who: string, text: string): Promise<void> {
+    const key = `${channel}:${threadTs}`;
+    const subs = (this.state.subs ?? []).filter((x) => x.key === key);
+    if (!subs.length || !this.deps.slack.dm) return;
+    const link = (await this.deps.slack.permalink?.(channel, threadTs).catch(() => null)) ?? null;
+    const gist = clip(text.replace(/\s+/g, ' ').trim(), 200);
+    const where = link ? `<${link}|a thread you're following>` : "a thread you're following";
+    for (const sub of subs) {
+      await this.deps.slack.dm(sub.user, `*${who}* posted in ${where}:\n> ${gist}`).catch((err: unknown) => this.deps.log(`Front door: could not DM a follower: ${String(err)}`));
+      sub.at = this.now();
+    }
+    this.save();
   }
 
   /// The answer from what's already known, under its maker's name, then
@@ -764,7 +1160,9 @@ export class FrontDoor {
     await deliverText(this.io(), req.channel, root, answered.who, answered.text, `${slug(text)}.md`, undefined, { name: answered.who });
     const h = hits[0];
     const ask = h ? askLabel(h) : null;
-    const from = `From ${answered.from.join(' · ')}`;
+    // The main source and a count: the full list is in what it links to.
+    const [main, ...rest] = answered.from;
+    const from = `From ${main ?? 'earlier work'}${rest.length ? ` and ${rest.length} more` : ''}`;
     const buttons = [
       ...(h?.url ? [{ type: 'button', text: { type: 'plain_text', text: 'Open it' }, url: h.url, action_id: OPEN_LINK, value: 'open' }] : []),
       ...(ask ? [{ type: 'button', text: { type: 'plain_text', text: ask.slice(0, 75) }, action_id: `${DOOR_CHOICE_ACTION}_0`, value: ask }] : []),
@@ -842,7 +1240,7 @@ export class FrontDoor {
       await say(`Couldn't ask ${who}: ${res.error}`);
       return;
     }
-    this.note(key, `Asked ${who}`, url);
+    this.note(key, `Asked ${who}`, 'handed', url, { who, team: true });
     if (!this.deps.teamRoom) {
       await say(`Asked *${who}* — their answer will land in the task${url ? `: ${url}` : '.'}`);
       return;
@@ -883,7 +1281,7 @@ export class FrontDoor {
       if (existing) Object.assign(existing, { workerId: worker.id, workerName: res.process, pending: undefined, at: this.now() });
       else this.state.threads.push({ key, workerId: worker.id, workerName: res.process, at: this.now() });
       this.save();
-      this.note(key, `Put into ${res.process}`);
+      this.note(key, `Put into ${res.process}`, 'handed', undefined, { who: res.process, team: true });
       await say(`In: _${res.title}_ goes into *${res.process}*${why ? ` (${why})` : ''}, starting at *${res.stage}*. You'll get a DM each time it moves; \`/idea\` shows where it is.`);
       return;
     }
@@ -904,7 +1302,7 @@ export class FrontDoor {
       if (existing) Object.assign(existing, { workerId: worker.id, workerName: worker.name, pending: undefined, at: this.now() });
       else this.state.threads.push({ key, workerId: worker.id, workerName: worker.name, at: this.now() });
       this.save();
-      this.note(key, `${worker.name} took it as a team task`);
+      this.note(key, `${worker.name} took it as a team task`, 'handed', undefined, { who: worker.name });
       await say(
         res.queued
           ? `*${worker.name}* will take this as a team task${why ? ` (${why})` : ''}. It's finishing another one first, so this is next in line. When it starts, its coordinator will DM you anything it needs to know, then a plan to approve.`
@@ -920,7 +1318,10 @@ export class FrontDoor {
       '\nYour reply is posted back in that Slack thread for you, so answer here rather than posting to Slack with any Slack tool you have. If this needs work done, start it; what it produces is posted there when it ends.',
       // Without this the worker looks for an upload tool, finds none and says
       // it can't send the file, in the same message the file arrives with.
-      'To send a file (a report, a page, data), write it in your own files folder and name its full path in your reply: it is attached to the thread for you, and the path is shown as its name.',
+      'To send a file (a report, a page, data), write it in your own files folder and name its full path in your reply: it is attached to the thread for you, and the path is shown as its name. With a file attached, keep the reply to a short summary of it rather than repeating it.',
+      // Without this a misrouted question ends at "that isn't my job" and the
+      // person is left to find someone else themselves.
+      followUp ? '' : 'If this plainly isn\'t something your job or tools cover, reply with only `NOT_MINE:` and one short line on why, and the request goes to someone else. If you can help at all, help.',
     ].filter(Boolean).join('\n');
     const started = this.deps.ask(caller, worker.id, prompt, context.images, `slack:${key}`, text);
     if (!started.ok) {
@@ -931,17 +1332,42 @@ export class FrontDoor {
     if (existing) Object.assign(existing, { workerId: worker.id, workerName: worker.name, at: this.now() });
     else this.state.threads.push({ key, workerId: worker.id, workerName: worker.name, at: this.now() });
     this.save();
-    if (!followUp) await say(`*${worker.name}* has this${why ? ` (${why})` : ''}. I'll reply here.`);
-    this.note(key, `${worker.name} has it`);
+    if (!followUp) {
+      const took = `*${worker.name}* has this${why ? ` (${why})` : ''}. I'll reply here.`;
+      // In a channel, others in the thread can ask to hear when it's done.
+      const tapped =
+        !req.dm &&
+        this.deps.slack.dm &&
+        this.deps.slack.postBlocks &&
+        (await this.deps.slack.postBlocks(req.channel, took, [
+          { type: 'section', text: { type: 'mrkdwn', text: took } },
+          { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: '🔔 Notify me' }, action_id: DOOR_SUBSCRIBE_ACTION, value: 'subscribe' }] },
+        ], root));
+      if (!tapped) await say(took);
+    }
+    this.note(key, `${worker.name} has it`, 'handed', undefined, { who: worker.name }, !followUp);
+    let answered = false;
+    if (followUp) {
+      const ack = setTimeout(() => {
+        if (!answered) void say(`_${worker.name} is on it…_`);
+      }, ACK_AFTER_MS);
+      ack.unref?.();
+    }
     // Not awaited: an errand can take minutes, and Slack's other events
     // (approvals, answers) must not wait behind it.
     void started.done
+      .finally(() => {
+        answered = true;
+      })
       .then(async (res) => {
         if (!res.ok) {
           await say(`${worker.name} couldn't take it: ${res.error}`);
           return;
         }
+        const no = !followUp && !res.orchestrationId && res.reply.length < 600 ? DECLINE.exec(res.reply) : null;
+        if (no) return this.declined(req, key, caller, worker, text, files, no[1].trim());
         await deliverText(this.io(), req.channel, root, worker.name, res.reply, `${slug(text)}.md`, worker.id, { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) });
+        await this.notify(req.channel, root, worker.name, res.reply);
         // The answers it offered, one tap each, as on its page in the console.
         if (res.choices?.length && this.deps.slack.postBlocks) {
           const picks = res.choices.slice(0, 5).map((c) => c.trim()).filter(Boolean);
@@ -959,6 +1385,24 @@ export class FrontDoor {
         }
       })
       .catch((err: unknown) => this.deps.log(`Front door: ${worker.name}'s answer could not be posted: ${String(err)}`));
+  }
+
+  /// A worker said the request isn't its job: someone else, without it. After
+  /// a couple of those the door answers itself, or the person picks.
+  private async declined(req: FrontDoorRequest, key: string, caller: OrgCaller, worker: FrontDoorWorker, text: string, files: SlackFile[], why: string): Promise<void> {
+    const root = req.threadTs ?? req.ts;
+    const known = this.state.threads.find((t) => t.key === key);
+    const declined = [...(known?.declined ?? []), worker.id];
+    if (known) {
+      Object.assign(known, { declined, at: this.now() });
+      delete known.workerId;
+      delete known.workerName;
+    } else this.state.threads.push({ key, declined, at: this.now() });
+    this.note(key, `${worker.name} said it isn't theirs`, 'declined', undefined, { who: worker.name });
+    await this.deps.slack.post(req.channel, `*${worker.name}* says this isn't theirs${why ? ` (${clip(why, 140)})` : ''}. Finding someone else…`, root);
+    const workers = this.candidates(caller);
+    if (declined.length >= MAX_DECLINES && this.deps.general) return this.desk(req, key, caller, workers, text, files);
+    return this.route(req, key, caller, workers, text, files, []);
   }
 
   /// The thread so far (when the request is in one) and its files: images
@@ -1071,6 +1515,7 @@ export class FrontDoor {
       try {
         await deliverText(this.io(), r.channel, r.threadTs, r.who, `${said}${r.url ? `\n\n[Open the task](${r.url})` : ''}`, `${slug(r.who)}-answer.md`, undefined, { name: r.who });
         await this.showRoomStatus(r, `:white_check_mark: *${r.who}* answered in ${minutes(this.now() - r.since)}.`).catch(() => undefined);
+        await this.notify(r.channel, r.threadTs, r.who, said);
       } catch (err) {
         this.deps.log(`Front door: ${r.who}'s answer could not be posted: ${String(err)}`);
         keep.push(r);
@@ -1134,11 +1579,14 @@ export class FrontDoor {
       const res = await back.done;
       if (res.ok) {
         await deliverText(this.io(), f.channel, f.threadTs, f.workerName, res.reply, `${slug(f.workerName)}-answer.md`, f.workerId, { name: f.workerName, ...(f.avatarUrl ? { iconUrl: f.avatarUrl } : {}) });
+        await this.notify(f.channel, f.threadTs, f.workerName, res.reply);
         return;
       }
       this.deps.log(`Front door: ${f.workerName} could not finish up: ${res.error}`);
     }
-    await this.deps.slack.post(f.channel, finishedText(f.workerName, p, this.deps.libraryUrl()), f.threadTs);
+    const done = finishedText(f.workerName, p, this.deps.libraryUrl());
+    await this.deps.slack.post(f.channel, done, f.threadTs);
     await deliverResults(this.io(), f.channel, f.threadTs, f.workerName, p);
+    await this.notify(f.channel, f.threadTs, f.workerName, done);
   }
 }

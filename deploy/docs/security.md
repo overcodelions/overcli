@@ -10,19 +10,36 @@ What workers can and can't do on an org server, and where each control is.
 | **Permissions policy** | Each tool request a worker run makes gets an automatic answer: `deny` refuses everything, `allow-list` allows only the named tools, `auto-approve` allows everything. The compose file uses `allow-list`. | `overcli serve --permissions` |
 | **Narrowed commands** | Shell access is never granted wholesale. Connecting a repo adds only `git switch/add/commit/push`, read-only git, and that repo's test command. Any other shell command is refused. | Automatic, from Setup → Repos |
 | **Visibility** | Who may ask a worker: its manager, its team, or everyone. | The worker's settings |
-| **Budgets** | Per worker, per person (allowance), and for the whole org. At a limit, scheduled work stops. | The worker's settings, Setup → Rules |
-| **Approvers** | Hires over an allowance, and tools that aren't pre-approved, need an approver's yes. | Setup → Rules |
+| **Budgets** | Per worker, per person (allowance), and for the whole org. At a limit, scheduled work stops. | The worker’s settings, Setup → Hiring and Spending |
+| **Approvers** | Hires over an allowance, and tools that aren’t pre-approved, need an approver’s yes. | Setup → Hiring |
 
 A worker's own limits always win. `--permissions auto-approve` can't grant a worker outside actions its trust level doesn't allow.
 
+**Exceptions a manager or admin makes,** all on the worker's Access tab and recorded in its history:
+
+- **Always allow** on an approval lets that one step of that flow run without asking from then on. A manager can take it off at any time.
+- **Run straight through its flows' checkpoints** skips the pauses a flow's author wrote in (`pause_before`). Only an admin can switch it on. Outside actions still ask, as the trust level says.
+
+**What never asks:** a step whose tools only read, and read-only commands on the worker's own folders (`git log`, `git show`, `git blame`, `git grep`, `git shortlog`, `rg`, `grep`, also after a `cd` into the repo). The step's instructions mentioning a write doesn't change that; what decides is what its tools can do.
+
 ## Reading the web
 
-- **Doesn't ask by default.** On an org server, searching the web and opening pages (WebSearch, WebFetch) runs without the manager's approval, because research is most of what workers do. Anything that acts (a push, a post, a write to another system) still asks.
-- **Turning it back on:** **Setup → Rules → "Workers ask before reading the web"** (`webNeedsApproval` in `org.json`). Use it when the server's network can reach things a fetched page must not.
+Reading the web isn't the risk; the address is. A worker that has read a ticket could put it in a web address (`https://example.com/?q=<the ticket>`), and opening that page hands it to whoever runs the site. So on an org server, **Setup → Hiring → Opening web pages** (`webFetch` in `org.json`) has three settings:
+
+- **Safe fetches** (the default): searching never asks. A worker opens a page without asking only when the address came from the request, a search result, or a page it already read. An address it wrote itself is refused, and it's told to search for it first.
+- **Ask before a step that opens pages:** the manager approves first.
+- **Any page, without asking.**
+
+Whatever the setting:
+
+- **The server's own addresses are never opened:** `localhost`, loopback, link-local (where cloud metadata lives) and the metadata names.
+- **Private addresses** (`10.…`, `192.168.…`, names ending `.internal` or `.local`, a bare host name) are refused, unless an admin lists the site under **Your own sites (always open)** (`ownDomains`). Sites listed there are always open.
+- **Workers set to act on their own** fetch freely.
+- **Anything that acts** (a push, a post, a write to another system) still asks, as its trust says.
 - **The desktop app** still asks before workers read the web, as before.
 
 > [!WARNING]
-> A page a worker opens can carry instructions meant for the model. A worker that reads a hostile page could be steered into fetching an internal address. On a cloud server that includes the instance metadata endpoint.
+> A page a worker opens can carry instructions meant for the model. Safe fetches don't check where a public name resolves to, so a public name that points at a private address isn't caught. Keep the server's network narrow too.
 
 > [!TIP]
 > Run the server where outbound traffic is limited to what workers need. Use IMDSv2 with a hop limit of 1 on EC2, and keep task-role permissions narrow on Fargate.

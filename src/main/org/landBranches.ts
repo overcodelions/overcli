@@ -33,6 +33,10 @@ export interface LandDeps {
   test?(command: string, cwd: string): Promise<{ ok: true } | { ok: false; error: string; refused?: true }>;
   attach(runId: string, name: string, body: string): void;
   log(message: string): void;
+  /// What every pushed branch starts with (the console's setting). Absent: `overcli/`.
+  branchPrefix?(): string;
+  /// After a run's branches are pushed: the ticket follow-up hangs off this.
+  onLanded?(run: FlowRun, landed: Landed[]): void;
 }
 
 export interface Landed {
@@ -67,15 +71,28 @@ export class BranchLander {
 
   constructor(private readonly deps: LandDeps) {}
 
-  /// Fed every run update; acts once on a finished repo or workspace run.
+  /// Fed every run update; acts once on a finished repo or workspace run:
+  /// a repo's own flow, or any worker flow that ran in a connected repo's
+  /// worktree (a "solve a ticket" flow brought from a desktop). Its model's
+  /// shell holds no git credentials on a server, so its own push fails; the
+  /// server pushes the same way for both.
   onRun(run: FlowRun): void {
-    if (!run.flowId.startsWith('org-pr-')) return;
+    if (!run.flowId.startsWith('org-pr-') && !this.inConnectedRepo(run)) return;
     if (run.state.kind !== 'done' || !run.state.success) return;
     if (run.artifacts?.[LANDED_ARTIFACT] || this.busy.has(run.id)) return;
     this.busy.add(run.id);
     void this.land(run)
       .catch((err: unknown) => this.deps.log(`Could not push run ${run.id}: ${String(err)}`))
       .finally(() => this.busy.delete(run.id));
+  }
+
+  private inConnectedRepo(run: FlowRun): boolean {
+    // A team member's piece works on the task's shared branch, which lands as
+    // one change when the task does, not one branch per piece.
+    if (!run.workerId || run.team) return false;
+    const repos = new Set(this.deps.repos().map((r) => r.path));
+    const places = run.workspaceWorktrees?.length ? run.workspaceWorktrees.map((m) => m.projectPath) : run.worktreePath ? [run.projectPath] : [];
+    return places.some((p) => repos.has(p));
   }
 
   async land(run: FlowRun): Promise<Landed[]> {
@@ -85,7 +102,7 @@ export class BranchLander {
         ? [{ name: path.basename(run.projectPath), projectPath: run.projectPath, worktreePath: run.worktreePath }]
         : [];
     const { title, body } = pullRequestText(run);
-    const branch = `overcli/${slugify(title)}-${run.id.slice(0, 6)}`;
+    const branch = `${this.deps.branchPrefix?.() || 'overcli/'}${slugify(title)}-${run.id.slice(0, 6)}`;
     const out: Landed[] = [];
     for (const place of places) {
       const repo = this.deps.repos().find((r) => r.path === place.projectPath);
@@ -93,6 +110,7 @@ export class BranchLander {
       out.push(await this.landOne(place, repo, branch, title, body).catch((err: unknown) => ({ repo: place.name, error: err instanceof Error ? err.message : String(err) })));
     }
     this.deps.attach(run.id, LANDED_ARTIFACT, describe(out));
+    if (out.some((l) => l.url || (l.branch && !l.error))) this.deps.onLanded?.(run, out);
     return out;
   }
 
@@ -115,6 +133,11 @@ export class BranchLander {
     const base = repo?.defaultBranch ?? 'main';
     const ahead = await git(['rev-list', '--count', `origin/${base}..HEAD`]);
     if (ahead.ok && Number(ahead.stdout.trim()) === 0) return { repo: place.name, skipped: 'no changes' };
+    // The run pushed it itself (a flow with its own push step, where it could):
+    // a second branch of the same commits would only be noise.
+    const there = await git(['for-each-ref', '--contains', 'HEAD', '--format=%(refname:short)', 'refs/remotes/origin']);
+    const pushedAs = there.ok ? there.stdout.split('\n').map((s) => s.trim()).filter((b) => b && b !== `origin/${base}` && b !== 'origin/HEAD')[0] : undefined;
+    if (pushedAs) return { repo: place.name, branch: pushedAs.replace(/^origin\//, ''), ...(repo && newPullRequestLink(repo, pushedAs.replace(/^origin\//, '')) ? { url: newPullRequestLink(repo, pushedAs.replace(/^origin\//, ''))! } : {}) };
     if (repo?.testCommand && this.deps.test) {
       const tested = await this.deps.test(repo.testCommand, place.worktreePath);
       if (!tested.ok && tested.refused) return { repo: place.name, skipped: `repo tests are turned off on this server, so nothing was pushed. ${tested.error}` };
@@ -131,7 +154,12 @@ export class BranchLander {
 /// Library and the worker's page read the links from.
 export function describe(landed: Landed[]): string {
   if (!landed.length) return 'Nothing to push: this run had no repo to push from.';
-  return landed
+  // A workspace of thirty repos where one changed: the one, and a count of
+  // the rest, not thirty lines saying "no changes".
+  const quiet = landed.filter((l) => l.skipped === 'no changes');
+  const told = landed.filter((l) => l.skipped !== 'no changes');
+  if (!told.length) return 'Nothing to push: no repo changed.';
+  return told
     .map((l) =>
       l.url
         ? `Open a pull request for ${l.repo}: ${l.url}`
@@ -139,7 +167,18 @@ export function describe(landed: Landed[]): string {
           ? `${l.repo}: pushed branch ${l.branch}`
           : l.skipped
             ? `${l.repo}: not pushed — ${l.skipped}`
-            : `${l.repo}: could not push — ${l.error}`,
+            : `${l.repo}: could not push — ${pushAdvice(l.error ?? '')}`,
     )
+    .concat(quiet.length ? [`${quiet.length} other ${quiet.length === 1 ? 'repo' : 'repos'} had no changes.`] : [])
+    // A list, so it reads as one line per repo wherever it's shown as markdown.
+    .map((line) => `- ${line}`)
     .join('\n');
+}
+
+/// A refused push, with what to do when the host says the token can't write.
+function pushAdvice(error: string): string {
+  if (/privilege scopes|403|permission to .* denied|write access/i.test(error)) {
+    return `${error.trim()}\nThe server's token can read this repo but not push to it. Give it write access (Bitbucket: Repositories: Write; GitHub: Contents: Read and write) and save it again under Setup → Secrets.`;
+  }
+  return error;
 }

@@ -6906,7 +6906,7 @@ function CadenceField({
           No clock. This worker never wakes on its own — you talk to it at its
           desk, and it plans whatever you ask through its job description, its
           journal and its trust level like any other worker. Use{" "}
-          <span className="text-ink">Work a shift now</span> when you want it to
+          <span className="text-ink">Run shift now</span> when you want it to
           do a full shift on your say-so.
         </div>
       ) : cadence.kind === "cron" ? (

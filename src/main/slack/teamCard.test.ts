@@ -99,7 +99,7 @@ describe('the card in Slack', () => {
       return new Response(JSON.stringify(json));
     };
     const cmds = new SlackCommands({
-      org: { decideRun: (...a: unknown[]) => (decided.push(a), { ok: true }) } as unknown as OrgService,
+      org: { decideRun: (...a: unknown[]) => (decided.push(a), { ok: true }), decideTeamTask: () => ({ ok: true }) } as unknown as OrgService,
       policy: () => DEFAULT_ORG_POLICY,
       botToken: () => 'xoxb-test',
       teamId: () => 'T0ACME',
@@ -155,6 +155,18 @@ describe('the card in Slack', () => {
     expect(notice?.body).toMatchObject({ thread_ts: '400.1', reply_broadcast: true });
     expect(JSON.stringify(notice?.body.blocks)).toContain(TEAM_ACCEPT_ACTION);
     expect(JSON.stringify(notice?.body.blocks)).toContain('*Verdict:* go.');
+  });
+
+  it('takes the Accept button away once it is pressed, in the thread and the conversation alike', async () => {
+    const s = setup();
+    const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'Holding it for your review.' } }, { type: 'actions', elements: [{ type: 'button', action_id: TEAM_ACCEPT_ACTION, value: 't1' }] }];
+    await s.cmds.onAction({ user: { id: PAT }, team: { id: 'T0ACME' }, actions: [{ action_id: TEAM_ACCEPT_ACTION, value: 't1' }], channel: { id: 'D0PAT' }, message: { ts: '400.9', thread_ts: '400.1', blocks } });
+    const update = s.calls.find((c) => c.method === 'chat.update');
+    expect(update?.body).toMatchObject({ channel: 'D0PAT', ts: '400.9' });
+    const json = JSON.stringify(update?.body.blocks);
+    expect(json).not.toContain(TEAM_ACCEPT_ACTION);
+    expect(json).toContain('Holding it for your review.');
+    expect(json).toMatch(/Accepted by <@|Already accepted/);
   });
 
   it('approves a waiting piece from the card', async () => {

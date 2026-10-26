@@ -28,6 +28,9 @@ const SYSTEM = [
   'a small fix goes to a single worker, even when a team covers the topic.',
   'A request about a specific thing in a system (a ticket, an account, a page, a pull request) needs a',
   'worker whose tools reach that system: prefer it, and never pick one with no tool that could look it up.',
+  'A question about how something in the product works or was built (a module, a feature\'s behaviour, its logic,',
+  'who wrote the code) needs a worker that reads that code: prefer one whose "Reads code" covers it. A tracker',
+  'search only shows who touched tickets about it, not how it works.',
   'Some entries are PROCESSES. Pick a process only when the request is a new item of the kind it takes in',
   '(a new idea for an idea process, a bug report for a bug process); never for a question about something.',
   'You may also be given recent work that may be related, each with the team or worker that made it.',
@@ -41,10 +44,34 @@ const SYSTEM = [
 
 export function routePrompt(text: string, workers: FrontDoorWorker[], related: Array<{ title: string; who: string }> = []): string {
   const list = workers
-    .map((w, i) => `${i + 1}. ${w.name}${w.tagline ? ` — ${w.tagline}` : ''}\n   Job: ${(w.job ?? '').replace(/\s+/g, ' ').slice(0, 400)}\n   Tools: ${w.tools?.length ? w.tools.join(', ') : 'none beyond files and the web'}`)
+    .map((w, i) => `${i + 1}. ${w.name}${w.tagline ? ` — ${w.tagline}` : ''}\n   Job: ${(w.job ?? '').replace(/\s+/g, ' ').slice(0, 400)}\n   Tools: ${w.tools?.length ? w.tools.join(', ') : 'none beyond files and the web'}\n   Reads code: ${w.code ?? 'none'}`)
     .join('\n');
   const recent = related.length ? `\n\nRecent work that may be related:\n${related.slice(0, 5).map((r) => `- ${r.title.replace(/\s+/g, ' ').slice(0, 160)} — by ${r.who}`).join('\n')}` : '';
   return `Request:\n${text.slice(0, 2000)}\n\nWorkers:\n${list}${recent}`;
+}
+
+const DESK = [
+  'You are the front desk for a company\'s AI workers, answering in a Slack thread.',
+  'Nobody\'s job covers this question, so you answer it yourself: directly, briefly, in plain words, using the thread for context.',
+  'You cannot see the company\'s systems (tickets, accounts, code, documents). When the answer depends on them, say so in a line,',
+  'and if one of the workers listed could look it up, name that worker and say to ask them by name.',
+  'Never claim to have checked something you could not. No preamble, no sign-off; Slack markdown only (*bold*, _italic_, • lists).',
+].join('\n');
+
+/// A question nobody's job covers, answered by the door itself, with the
+/// workers named so it can point at one that could look something up.
+export async function answerGeneral(deps: DraftDeps, text: string, context: string, workers: FrontDoorWorker[]): Promise<string | null> {
+  const model = await tierModel(deps, 'standard');
+  const list = workers.slice(0, 40).map((w) => `- ${w.name}${w.tagline ? ` — ${w.tagline}` : ''}${w.tools?.length ? ` (tools: ${w.tools.join(', ')})` : ''}${w.code ? ` (reads code: ${w.code})` : ''}`).join('\n');
+  const res = await oneShotDraftText(deps, {
+    ...(model ? { model } : {}),
+    buildSystemPrompt: () => DESK,
+    userMessage: `Question:\n${text.slice(0, 4000)}${context ? `\n\nThe thread so far:\n${context}` : ''}${list ? `\n\nWorkers people can ask:\n${list}` : ''}`,
+    verb: 'answer the question',
+    timeouts: { timeoutMs: 120_000, idleTimeoutMs: 60_000 },
+    permissionMode: 'plan',
+  });
+  return res.ok && res.text.trim() ? res.text.trim() : null;
 }
 
 /// The model's answer, read leniently: the first JSON object in it.

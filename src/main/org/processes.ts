@@ -67,6 +67,8 @@ export interface ProcessDeps {
   isAdmin(caller: OrgCaller): boolean;
   /// The people in a group of deciders, now. Absent: groups decide nothing.
   groupMembers?(groupId: string): ProcessPerson[];
+  /// Whether this person has any of these roles (ProcessAccess.roles).
+  hasRole?(person: { name: string; slackUserId?: string }, roles: string[]): boolean;
   /// A message to one person. `decide`: offer Approve / Send back / Stop,
   /// or the stage's form to fill in when it asks for something.
   notify?(to: ProcessPerson, text: string, decide?: { itemId: string; stageId: string }): void;
@@ -214,7 +216,11 @@ export class ProcessService {
     if (access.who === 'private') return false;
     // Groups are read now, so someone who joins or leaves a team gains or
     // loses the process with it.
-    return (access.people ?? []).some((p) => samePerson(p, caller)) || (access.groups ?? []).some((g) => (this.deps.groupMembers?.(g.id) ?? []).some((p) => samePerson(p, caller)));
+    return (
+      (access.people ?? []).some((p) => samePerson(p, caller)) ||
+      (access.groups ?? []).some((g) => (this.deps.groupMembers?.(g.id) ?? []).some((p) => samePerson(p, caller))) ||
+      (!!access.roles?.length && !!this.deps.hasRole?.(caller, access.roles))
+    );
   }
 
   /// Whether the caller made the process. One made before creators were kept
@@ -300,7 +306,10 @@ export class ProcessService {
   }
 
   /// Who decides at a stage, as said to people: "Sam or Product leads".
-  private decidersText(stage: ProcessStage): string {
+  /// Unnamed to someone who sees the process only as an outline: its
+  /// approvers are left out of that, and so out of what it says to them.
+  private decidersText(stage: ProcessStage, named = true): string {
+    if (!named) return stage.mode === 'input' ? 'the people who fill it in' : 'its approvers';
     return [...(stage.approvers ?? []).map((p) => p.name), ...(stage.approverGroups ?? []).map((g) => g.name)].join(' or ') || 'nobody yet';
   }
 
@@ -369,7 +378,7 @@ export class ProcessService {
     const canDecide = this.decides(caller, def, item) && !this.voted(caller, item);
     const owner = this.turnOwner(def, item);
     const stage = def.stages[item.stageIndex];
-    const waitsOn = owner?.name ?? (item.status === 'active' && stage?.kind === 'people' ? this.decidersText(stage) : undefined);
+    const waitsOn = owner?.name ?? (item.status === 'active' && stage?.kind === 'people' ? this.decidersText(stage, this.seesAll(caller, def)) : undefined);
     return {
       ...item,
       stageName: item.status === 'done' ? 'Done' : item.status === 'stopped' ? 'Stopped' : (def.stages[item.stageIndex]?.name ?? ''),
@@ -821,7 +830,7 @@ export class ProcessService {
         if (!this.decides(caller, def, item))
           return {
             ok: false,
-            error: stage?.kind === 'people' ? `Only ${this.decidersText(stage)} or ${def.owner.name} decide here.` : 'This stage moves on by itself when its work is done.',
+            error: stage?.kind === 'people' ? `Only ${this.decidersText(stage, this.seesAll(caller, def))} or ${def.owner.name} decide here.` : 'This stage moves on by itself when its work is done.',
           };
         const checked = checkAnswers(stage?.kind === 'people' ? stage.fields : undefined, opts.answers);
         if (typeof checked === 'string') return { ok: false, error: checked };
@@ -1080,7 +1089,9 @@ export class ProcessService {
       const who = this.deciders(stage);
       const need = this.needed(stage);
       const input = stage.mode === 'input';
-      item.stageNote = need > 1 ? `0 of ${need} ${input ? 'filled in' : 'approved'}` : `Waiting on ${this.decidersText(stage)}`;
+      // Kept on the item, which everyone in it sees: who decides is said
+      // per viewer, in `waitsOn`.
+      item.stageNote = need > 1 ? `0 of ${need} ${input ? 'filled in' : 'approved'}` : input ? 'Waiting to be filled in' : 'Waiting for a decision';
       const earlier = item.artifacts.at(-1);
       const asks = (stage.fields ?? []).map((f) => `• ${f.label}${f.required ? '' : ' (optional)'}`).join('\n');
       const text = [
@@ -1093,7 +1104,8 @@ export class ProcessService {
         .filter(Boolean)
         .join('\n');
       for (const p of who) this.deps.notify?.(p, text, { itemId: item.id, stageId: stage.id });
-      this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}, waiting on ${this.decidersText(stage)} to decide.`);
+      const named = this.seesAll({ ...item.initiator, admin: false }, def);
+      this.tell(item.initiator, `_${item.title}_ is now at *${stage.name}* in ${def.name}, waiting on ${this.decidersText(stage, named)} to decide.`);
     }
   }
 

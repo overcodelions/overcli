@@ -628,7 +628,7 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
       {
         description:
           "Admins: change some of the org's rules. Pass only the keys to change; null removes an optional one. " +
-          'Keys: name, publicUrl, timezone, hirers ("*" or Slack ids), budgetAllowanceUSD, approvers, orgVisibilityNeedsAdmin, webNeedsApproval (workers ask before reading the web), ' +
+          'Keys: name, publicUrl, timezone, hirers ("*" or Slack ids), budgetAllowanceUSD, approvers, orgVisibilityNeedsAdmin, webFetch ("ask", "safe": only addresses a worker was shown or the org’s own sites, "any"), ownDomains (the org’s own sites), ' +
           'allowedMcpServers, teams ({name: [Slack ids]}), roles ([{name, job, tools, budgetUSDPerMonth}]), orgBudgetUSD, alertAtPercent, ' +
           'retentionDays, sso ({issuer, clientId, allowedDomains, required}), people ({email: Slack id}), fleet ([{name, url}]). ' +
           'Read org_rules first, and confirm the change with the person.',

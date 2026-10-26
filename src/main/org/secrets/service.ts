@@ -75,7 +75,7 @@ export const KNOWN_SECRETS: KnownSecret[] = [
     name: 'OVERCLI_SSO_CLIENT_SECRET',
     label: 'Company sign-in client secret',
     why: 'Company sign-in (Okta, Entra ID, Google Workspace) with a confidential client. A public client using PKCE needs none.',
-    how: 'In your identity provider, the app registration made for overcli → its client secret. The issuer and client ID go on Setup → Rules, spending and sign-in.',
+    how: 'In your identity provider, the app registration made for overcli → its client secret. The issuer and client ID go on Setup → Sign-in.',
   },
   {
     name: 'GOOGLE_OAUTH_CLIENT_ID',

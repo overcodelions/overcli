@@ -17,6 +17,7 @@ import { log } from '../diagnostics';
 import { DEFAULT_ORG_POLICY, parseOrgPolicy, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
 import type { TeamCheckpoints } from '../../shared/flows/team';
 import type { PendingHire } from './orgService';
+import type { ToolTrouble } from './toolHealth';
 import type { AccessStore, Invite, JoinRequest } from './accessService';
 
 export function orgDir(): string {
@@ -25,6 +26,13 @@ export function orgDir(): string {
 
 export function orgPolicyPath(): string {
   return path.join(host().dataDir(), 'org.json');
+}
+
+function writeAtomicText(file: string, text: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
 }
 
 function readJson(file: string): unknown {
@@ -376,6 +384,128 @@ export const fileRatingStore: RatingStore = {
     // The newest few thousand are plenty for "was it useful"; older ones
     // already live on as notes in the workers' journals.
     writeAtomic(path.join(orgDir(), 'ratings.json'), ratings.slice(-5000));
+  },
+};
+
+// ---- TOOL REQUESTS --------------------------------------------------------
+
+/// A manager asking an admin for a tool for one of their workers: one the
+/// org hasn't cleared for any hire, or one this server doesn't have yet.
+export interface ToolRequest {
+  id: string;
+  workerId: string;
+  workerName: string;
+  /// The tool's name as installed, or what they called one that isn't.
+  tool: string;
+  why?: string;
+  by: { name: string; slackUserId?: string };
+  at: number;
+  status: 'open' | 'given' | 'declined';
+  decidedBy?: string;
+  decidedAt?: number;
+  /// What the admin said with a decline.
+  note?: string;
+}
+
+export interface ToolRequestStore {
+  list(): ToolRequest[];
+  save(all: ToolRequest[]): void;
+}
+
+export const fileToolRequestStore: ToolRequestStore = {
+  list() {
+    const raw = readJson(path.join(orgDir(), 'tool-requests.json'));
+    return Array.isArray(raw) ? (raw as ToolRequest[]) : [];
+  },
+  save(all) {
+    // Open ones always; decided ones while they're still news.
+    writeAtomic(path.join(orgDir(), 'tool-requests.json'), all.filter((r) => r.status === 'open').concat(all.filter((r) => r.status !== 'open').slice(-500)));
+  },
+};
+
+// ---- WORKER VERSIONS ------------------------------------------------------
+
+/// What a worker is set up to do, as one version: what restoring brings back.
+export interface WorkerConfig {
+  jobDescription: string;
+  mcpServers: string[];
+  toolScopes?: Record<string, unknown>;
+  trust: string;
+  visibility?: string;
+  budgetUSDPerMonth: number;
+  cadence: unknown;
+  preferredFlowId?: string;
+  answersAtOnce?: number;
+  skipCheckpoints?: boolean;
+  alwaysAllow?: string[];
+}
+
+export interface WorkerVersion {
+  id: string;
+  workerId: string;
+  at: number;
+  by: string;
+  /// What this version changed, in words: "its job", "its tools".
+  changed: string[];
+  config: WorkerConfig;
+}
+
+/// Kept per worker; older ones go.
+export const WORKER_VERSIONS_KEPT = 50;
+
+export interface WorkerVersionStore {
+  list(): WorkerVersion[];
+  save(all: WorkerVersion[]): void;
+}
+
+export const fileWorkerVersionStore: WorkerVersionStore = {
+  list() {
+    const raw = readJson(path.join(orgDir(), 'worker-versions.json'));
+    return Array.isArray(raw) ? (raw as WorkerVersion[]) : [];
+  },
+  save(all) {
+    writeAtomic(path.join(orgDir(), 'worker-versions.json'), all);
+  },
+};
+
+// ---- HANDBOOK -------------------------------------------------------------
+
+/// What every worker should know about the org, written once by an admin.
+export const HANDBOOK_MAX = 12_000;
+
+export const fileHandbook = {
+  read(): string {
+    try {
+      return fs.readFileSync(path.join(orgDir(), 'handbook.md'), 'utf8');
+    } catch {
+      return '';
+    }
+  },
+  write(text: string): void {
+    writeAtomicText(path.join(orgDir(), 'handbook.md'), text);
+  },
+};
+
+// ---- DIGEST ---------------------------------------------------------------
+
+/// The week the Monday digest last went out for, `YYYY-MM-DD` of its Monday.
+export const fileDigestState = {
+  lastWeek(): string | null {
+    const raw = readJson(path.join(orgDir(), 'digest.json')) as { lastWeek?: unknown } | null;
+    return raw && typeof raw.lastWeek === 'string' ? raw.lastWeek : null;
+  },
+  sent(week: string): void {
+    writeAtomic(path.join(orgDir(), 'digest.json'), { lastWeek: week });
+  },
+};
+
+export const fileToolHealthStore = {
+  load(): ToolTrouble[] {
+    const raw = readJson(path.join(orgDir(), 'tool-health.json'));
+    return Array.isArray(raw) ? (raw as ToolTrouble[]) : [];
+  },
+  save(all: ToolTrouble[]): void {
+    writeAtomic(path.join(orgDir(), 'tool-health.json'), all);
   },
 };
 

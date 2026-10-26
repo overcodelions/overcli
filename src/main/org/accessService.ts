@@ -17,7 +17,7 @@
 // hashes; pairing secrets live in memory for ten minutes and no longer.
 
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
-import { isAdmin, parseOrgPolicy, type OrgCaller, type OrgPolicy, type OrgRole, type OrgSso } from '../../shared/org/policy';
+import { isAdmin, parseOrgPolicy, type OrgCaller, type OrgPolicy, type OrgRole, type OrgSso, type WebFetchMode } from '../../shared/org/policy';
 import { isSlackUserId } from '../../shared/flows/worker';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
@@ -114,7 +114,7 @@ export interface AccessDeps {
 /// The rules the Admin page may change. Admins, allowances and roles of
 /// people are set from People; the Slack workspace only with `org init`.
 export const EDITABLE_RULES = [
-  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'webNeedsApproval',
+  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
   'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'retentionDays', 'sso', 'people', 'fleet',
 ] as const;
 
@@ -127,6 +127,8 @@ export interface EditableRules {
   approvers: string[];
   orgVisibilityNeedsAdmin: boolean;
   webNeedsApproval: boolean;
+  webFetch: WebFetchMode;
+  ownDomains: string[];
   allowedMcpServers: string[];
   sharedMcpServers: string[];
   teams: Record<string, string[]>;
@@ -490,6 +492,8 @@ export class AccessService {
         approvers: p.approvers,
         orgVisibilityNeedsAdmin: p.orgVisibilityNeedsAdmin,
         webNeedsApproval: p.webNeedsApproval,
+        webFetch: p.webFetch,
+        ownDomains: p.ownDomains,
         allowedMcpServers: p.allowedMcpServers ?? [],
         sharedMcpServers: p.sharedMcpServers ?? [],
         teams: p.teams,

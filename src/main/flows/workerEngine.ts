@@ -25,6 +25,8 @@
 // deterministic entry ids, and the journal's idempotent append makes the
 // fold safe to run on every event, restart, or replay.
 
+import { stepOutsideTools } from './stepEffect';
+import { readConnectors, whatItChanges, type StepTools } from '../../shared/flows/readsOnly';
 import { knownMcpTools } from './mcpToolCache';
 import { effectiveScopes, scopeDenies, type ToolScopes } from '../../shared/flows/toolScope';
 import { randomUUID } from 'node:crypto';
@@ -78,6 +80,9 @@ import {
   type WorkerJournalEntry,
   type WorkerScorecard,
   type WorkerTrustLevel,
+  ANSWERS_AT_ONCE,
+  ANSWERS_AT_ONCE_MAX,
+  isCodingWorker,
 } from '../../shared/flows/worker';
 import {
   DEFAULT_TREASURY_USD,
@@ -308,12 +313,12 @@ export interface WorkerEngineDeps {
   /// Save the one-step team version of a worker's flow and return its id
   /// (see `teamPieceFlow`). Optional: without it a team piece runs the
   /// worker's flow as-is, whole pipeline and all.
-  pieceFlow?: (flowId: string, opts?: { check?: boolean }) => { ok: true; flowId: string } | { ok: false; error: string };
+  pieceFlow?: (flowId: string, opts?: { check?: boolean; readOnly?: boolean }) => { ok: true; flowId: string } | { ok: false; error: string };
   /// Name and description of each flow on a worker's contract, in the order
   /// given, skipping ids that no longer resolve. Tells a multi-flow worker's
   /// planner what it can route to, and any worker on an errand how big each
   /// flow is, so a quick question doesn't ride a weekly report's flow.
-  flowsFor?: (ids: string[]) => Array<{ id: string; name: string; description?: string; steps?: string[] }>;
+  flowsFor?: (ids: string[]) => Array<{ id: string; name: string; description?: string; steps?: string[]; stepTools?: StepTools[] }>;
   /// Tools every worker gets on top of its own (the org's shared tools).
   sharedMcpServers?: () => string[];
   /// The org's default scope for each tool (toolScope.ts), under the
@@ -397,6 +402,21 @@ const THREAD_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const THREAD_SESSION_MAX = 50;
 
 export class WorkerEngine {
+  /// The org's handbook, read by every worker after its job. Set by the org
+  /// server; absent (the desktop): none.
+  handbook?: () => string;
+
+  private handbookLines(w?: Pick<Worker, 'knowledge'>): string[] {
+    const text = this.handbook?.().trim();
+    const known = w?.knowledge?.body?.trim();
+    return [
+      ...(text ? ['', 'YOUR ORGANIZATION’S HANDBOOK (what every worker here should know; your job description and the step you are running come first)', text.slice(0, 12_000)] : []),
+      ...(known
+        ? ['', `WHAT YOU FOUND OUT ABOUT YOUR TOOLS AND WORK (your onboarding${w!.knowledge!.updatedAt ? `, ${new Date(w!.knowledge!.updatedAt).toISOString().slice(0, 10)}` : ''}; check anything that may have changed since)`, known.slice(0, 10_000)]
+        : []),
+    ];
+  }
+
   private workers = new Map<UUID, Worker>();
   /// Shift batches whose wrap-up is being parked right now — see maybeWrapUp.
   private wrappingUp = new Set<UUID>();
@@ -419,6 +439,16 @@ export class WorkerEngine {
   /// When each in-flight planning turn began, and whether it's an errand —
   /// so a console can say "deciding what to do" instead of looking idle.
   private planningSince = new Map<UUID, { since: number; task: 'shift' | 'errand'; manual?: boolean }>();
+  /// Conversations being answered side by side, by worker (see fireInLane).
+  private answering = new Map<UUID, number>();
+  /// Each conversation's own line: a second message waits for the first.
+  private lanes = new Map<string, Promise<unknown>>();
+  /// Who is waiting for a worker to be free: lane answers waiting for a slot
+  /// or for a shift to finish, and a shift waiting for answers to finish.
+  private waiters = new Map<UUID, Array<() => void>>();
+  /// Shifts and desk turns waiting for answers to finish: no new answer
+  /// starts meanwhile, so a busy Slack can't hold a shift off for ever.
+  private queuedBehind = new Map<UUID, number>();
   /// Referrals currently in flight per receiver id, so one colleague can't be
   /// buried under an unbounded queue of handoffs. See `MAX_PENDING_REFERRALS`.
   private pendingReferrals = new Map<string, number>();
@@ -1424,6 +1454,64 @@ export class WorkerEngine {
     return denied.length ? { mcpDeniedTools: denied } : {};
   }
 
+  private toolProblems: ((workerId: UUID) => string[]) | null = null;
+
+  /// Which of a worker's tools the server found won't sign in, told to its
+  /// turns so a refused login is said as one, not as "no data".
+  setToolProblems(fn: ((workerId: UUID) => string[]) | null): void {
+    this.toolProblems = fn;
+  }
+
+  private withToolProblems(w: Worker, prompt: string): string {
+    const problems = this.toolProblems?.(w.id) ?? [];
+    if (!problems.length) return prompt;
+    return [
+      'TOOLS THAT WON\u2019T WORK RIGHT NOW (the server checked their sign-in)',
+      ...problems.map((p) => `- ${p}`),
+      'Don\u2019t rely on them. If the work needs one, say so plainly, naming the tool and that an admin',
+      'must fix its keys on Setup \u2192 Tools, instead of reporting empty results.',
+      '',
+      prompt,
+    ].join('\n');
+  }
+
+  /// Its flows by name, its usual one first, for the console to pick from.
+  flowsOf(id: UUID): Array<{ id: string; name: string }> {
+    const w = this.workers.get(id);
+    if (!w || !this.deps.flowsFor) return [];
+    const usual = defaultFlowOf(w);
+    return this.deps
+      .flowsFor(w.flowIds)
+      .map((f) => ({ id: f.id, name: f.name }))
+      .sort((a, b) => (b.id === usual ? 1 : 0) - (a.id === usual ? 1 : 0));
+  }
+
+  /// What this worker's work could change; empty when it only reads, and
+  /// then anyone allowed to ask it may have it run (`whatItChanges`).
+  changesOf(id: UUID): string[] {
+    const w = this.workers.get(id);
+    if (!w) return ['it is gone'];
+    if (!this.deps.flowsFor) return ['its flow can’t be read here'];
+    const flows = this.deps.flowsFor(w.flowIds);
+    if (!flows.length) return ['it has no flow'];
+    return whatItChanges(flows.flatMap((f) => f.stepTools ?? []), w.caps.allowExternalActions === true);
+  }
+
+  /// A quick turn's tools: its own and the shared servers, plus the account
+  /// connectors its flow reads through, with their writing tools denied. Its
+  /// run would read through those anyway; without them a question waits on a
+  /// whole run whenever a server's own copy of the tool is down.
+  private quickTurnTools(w: Worker): { mcpAllowlist?: string[]; mcpDeniedTools?: string[] } {
+    const own = this.mcpServersOf(w);
+    const denies = this.scopeDeniesOf(w).mcpDeniedTools ?? [];
+    const flows = this.deps.flowsFor?.(w.flowIds) ?? [];
+    const conn = readConnectors(flows.flatMap((f) => f.stepTools ?? []));
+    // No allowlist means every server already; nothing to add to.
+    const mcpAllowlist = own === undefined || !conn.servers.length ? own : [...new Set([...own, ...conn.servers])];
+    const denied = [...new Set([...denies, ...conn.denied])];
+    return { ...(mcpAllowlist !== undefined ? { mcpAllowlist } : {}), ...(denied.length ? { mcpDeniedTools: denied } : {}) };
+  }
+
   private mcpServersOf(w: Worker): string[] | undefined {
     const shared = this.deps.sharedMcpServers?.() ?? [];
     if (!shared.length || w.mcpServers === undefined) return w.mcpServers;
@@ -1452,7 +1540,9 @@ export class WorkerEngine {
     instruction: string,
     attachments?: Attachment[],
     /// A conversation of its own (a Slack thread) instead of today's desk.
-    opts: { conversation?: string; untrusted?: boolean } = {},
+    /// `mayLaunch`: someone who isn't its manager, asking a worker that only
+    /// reads; what it proposes starts as its manager's ask would.
+    opts: { conversation?: string; untrusted?: boolean; mayLaunch?: boolean } = {},
   ): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
@@ -1472,6 +1562,7 @@ export class WorkerEngine {
       attachments,
       ...(opts.conversation ? { conversation: opts.conversation } : {}),
       ...(opts.untrusted ? { untrusted: true } : {}),
+      ...(opts.mayLaunch ? { mayLaunch: true } : {}),
     });
     this.arm();
     if (!res.ok) return res;
@@ -1506,6 +1597,12 @@ export class WorkerEngine {
       /// Outside tools you already approved for this run (see
       /// FlowRuntimeStartArgs.externalActionGrant). Narrower than the grant.
       externalActionGrant?: string[];
+      /// A piece that only reads: its member's reads and nothing else, so
+      /// it never needs anyone's OK.
+      readOnly?: boolean;
+      /// Someone approved the plan this piece is part of: that covers what
+      /// the piece itself needs, as its own Approve would.
+      planApproved?: boolean;
       /// Fork off this branch: a team task's shared branch, so the piece
       /// starts from what earlier pieces did. Always in a worktree then —
       /// the branch is merged into, never your checkout.
@@ -1525,7 +1622,7 @@ export class WorkerEngine {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
-    const ownFlowId = w.flowIds[0];
+    const ownFlowId = defaultFlowOf(w);
     if (!ownFlowId) return { ok: false, error: `${w.name} has no flow to run.` };
     const allocation = this.allocate(this.now());
     const funding = fundingFor(allocation, id);
@@ -1534,11 +1631,18 @@ export class WorkerEngine {
     }
     let flowId = ownFlowId;
     if (this.deps.pieceFlow && args.mode !== 'full') {
-      const piece = this.deps.pieceFlow(ownFlowId, { check: args.check });
+      const piece = this.deps.pieceFlow(ownFlowId, { check: args.check, readOnly: args.readOnly });
       if (!piece.ok) return { ok: false, error: `Could not set up ${w.name}'s piece: ${piece.error}` };
       flowId = piece.flowId;
     }
     const label = `${args.team.teamName}: ${args.title}`;
+    // An approved plan approves its pieces: the outside tools the piece's
+    // steps need, as clicking Approve on each would. A step that says it
+    // ships or sends still asks, since no tool grant answers that.
+    const planGrant = args.planApproved
+      ? (this.deps.flowsFor?.([flowId]) ?? []).flatMap((f) => (f.stepTools ?? []).flatMap((st, i) => stepOutsideTools({ id: f.steps?.[i] ?? 'piece', output: '', ...st } as Parameters<typeof stepOutsideTools>[0]) ?? []))
+      : [];
+    const grant = [...new Set([...(args.externalActionGrant ?? []), ...planGrant])];
     const res = await this.deps.parker.parkDirect({
       origin: (() => {
         const { allowExternalActions: _member, ...base } = workerOrigin(w, 'errand', label);
@@ -1546,7 +1650,7 @@ export class WorkerEngine {
           ...base,
           team: args.team,
           ...(args.allowExternalActions === true ? { allowExternalActions: true } : {}),
-          ...(args.externalActionGrant?.length ? { externalActionGrant: args.externalActionGrant } : {}),
+          ...(grant.length ? { externalActionGrant: grant } : {}),
         };
       })(),
       projectPath: args.projectPath ?? w.projectPath,
@@ -1562,6 +1666,62 @@ export class WorkerEngine {
       maxConcurrent: 1,
       autoLaunch: true,
       note: `Commissioned by the ${args.team.teamName} team.`,
+    });
+    if (!res.ok) return res;
+    return { ok: true, orchestrationId: res.orchestrationId };
+  }
+
+  /// A small run the server hands a worker after its own work, like updating
+  /// the ticket once its branch is pushed: the flow given, in place, started
+  /// now. What it may do outside follows the worker's trust (workerOrigin).
+  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
+    if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
+    const res = await this.deps.parker.parkDirect({
+      origin: workerOrigin(w, 'errand', args.title),
+      projectPath: w.projectPath,
+      prompt: args.prompt,
+      title: args.title,
+      flowId: args.flowId,
+      runIn: 'cwd',
+      maxConcurrent: 1,
+      autoLaunch: true,
+      note: 'Follow-up after its branch was pushed.',
+    });
+    return res.ok ? { ok: true, orchestrationId: res.orchestrationId } : res;
+  }
+
+  /// One look-up with the worker's own tools, answered and done: a one-step
+  /// version of its flow, as a team piece runs, with nothing to plan or
+  /// approve. Its planning turn doesn't hold the flow's tools, so "look this
+  /// up and say how" has to run here to see what a tool really answers.
+  async lookup(id: UUID, args: { title: string; prompt: string }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
+    if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
+    const ownFlowId = defaultFlowOf(w);
+    if (!ownFlowId) return { ok: false, error: `${w.name} has no flow to run.` };
+    const allocation = this.allocate(this.now());
+    const funding = fundingFor(allocation, id);
+    if (funding && !funding.funded) return { ok: false, error: describeFundingBlock(funding, allocation) };
+    let flowId = ownFlowId;
+    if (this.deps.pieceFlow) {
+      // A look-up only reads, so it never stops to ask anyone.
+      const piece = this.deps.pieceFlow(ownFlowId, { readOnly: true });
+      if (!piece.ok) return { ok: false, error: `Could not set up ${w.name}'s look-up: ${piece.error}` };
+      flowId = piece.flowId;
+    }
+    const res = await this.deps.parker.parkDirect({
+      origin: workerOrigin(w, 'errand', args.title),
+      projectPath: w.projectPath,
+      prompt: this.buildDirectPrompt(w, args.prompt, { files: false }),
+      title: `${w.name}: ${args.title}`,
+      flowId,
+      runIn: this.effectiveRunIn(w),
+      maxConcurrent: 1,
+      autoLaunch: true,
+      note: 'A look-up to set something up.',
     });
     if (!res.ok) return res;
     return { ok: true, orchestrationId: res.orchestrationId };
@@ -1627,7 +1787,7 @@ export class WorkerEngine {
       const timing = this.timing(w);
       if (!timing) continue; // on demand — nothing to wake up for
       const decision = evaluateSchedule(timing, now, {
-        busy: this.firing.has(w.id),
+        busy: this.busy(w.id),
         openSince: this.openSince,
         hostResumedAt: this.hostResumedAt,
       });
@@ -1677,7 +1837,7 @@ export class WorkerEngine {
       for (const id of [...this.workers.keys()]) {
         const w = this.workers.get(id);
         if (!w) continue;
-        if (this.firing.has(id)) continue;
+        if (this.busy(id)) continue;
         this.compactIfDue(w);
         const timing = this.timing(w);
         if (!timing) continue; // on demand — the clock never brings it round
@@ -1734,6 +1894,70 @@ export class WorkerEngine {
   /// `firing` guard — that guard stays as the scheduler's "is this worker
   /// busy" signal (a scheduled shift still SKIPS rather than piling up), but
   /// nothing a person typed is refused for being second in line.
+  /// Wakes everything waiting on this worker to look again.
+  private wake(id: UUID): void {
+    const ws = this.waiters.get(id) ?? [];
+    this.waiters.delete(id);
+    for (const r of ws) r();
+  }
+
+  private until(id: UUID, ready: () => boolean): Promise<void> {
+    if (ready()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const check = () => {
+        if (ready()) resolve();
+        else (this.waiters.get(id) ?? this.waiters.set(id, []).get(id)!).push(check);
+      };
+      check();
+    });
+  }
+
+  /// A Slack conversation's answer, beside others: up to its worker's
+  /// `answersAtOnce` at a time, each in its own thread and session, so
+  /// nothing they hold is shared. A conversation's own messages stay in
+  /// order, and none starts while a shift is being planned. Its desk keeps
+  /// the one queue: every desk ask resumes the same session.
+  private fireInLane(w: Worker, opts: Parameters<WorkerEngine['fire']>[1]): ReturnType<WorkerEngine['fire']> {
+    const key = `${w.id}:${opts.conversation}`;
+    const run = async (): ReturnType<WorkerEngine['fire']> => {
+      const cap = () => Math.max(1, Math.min(ANSWERS_AT_ONCE_MAX, (this.workers.get(w.id) ?? w).caps.answersAtOnce ?? ANSWERS_AT_ONCE));
+      // The slot is taken in the same breath as it's found free, or two
+      // answers both see the last one free and both take it.
+      await this.until(w.id, () => {
+        if (this.firing.has(w.id) || this.queuedBehind.get(w.id) || (this.answering.get(w.id) ?? 0) >= cap()) return false;
+        this.answering.set(w.id, (this.answering.get(w.id) ?? 0) + 1);
+        return true;
+      });
+      const fresh = this.workers.get(w.id) ?? w;
+      if (!this.planningSince.has(w.id)) this.planningSince.set(w.id, { since: Date.now(), task: 'errand', ...(opts.manual ? { manual: true } : {}) });
+      try {
+        if (opts.deferIfAway?.()) return { ok: true };
+        return await this.fireInner(fresh, opts);
+      } finally {
+        const left = (this.answering.get(w.id) ?? 1) - 1;
+        if (left > 0) this.answering.set(w.id, left);
+        else {
+          this.answering.delete(w.id);
+          if (!this.firing.has(w.id)) this.planningSince.delete(w.id);
+        }
+        this.wake(w.id);
+      }
+    };
+    const prior = this.lanes.get(key) ?? Promise.resolve();
+    const next = prior.then(run, run);
+    const tail = next.catch(() => undefined);
+    this.lanes.set(key, tail);
+    void tail.then(() => {
+      if (this.lanes.get(key) === tail) this.lanes.delete(key);
+    });
+    return next;
+  }
+
+  /// Whether it's doing anything: a shift or desk turn, or an answer.
+  private busy(id: UUID): boolean {
+    return this.firing.has(id) || (this.answering.get(id) ?? 0) > 0;
+  }
+
   private async fire(
     w: Worker,
     opts: {
@@ -1746,13 +1970,34 @@ export class WorkerEngine {
       /// The errand's own conversation (see `runErrand`).
       conversation?: string;
       untrusted?: boolean;
+      mayLaunch?: boolean;
       /// Checked when the turn reaches the front of the queue: true means the
       /// caller has put the work back on hold, so skip it.
       deferIfAway?: () => boolean;
     },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
+    // A Slack conversation's answer goes beside others, in its own line.
+    if (opts.errand && opts.conversation && !opts.from) return this.fireInLane(w, opts);
     return this.enqueue(w.id, async () => {
-      if (opts.deferIfAway?.()) return { ok: true };
+      // Behind any conversations being answered: a shift, or a desk turn,
+      // has the worker to itself.
+      if (this.answering.get(w.id)) {
+        this.queuedBehind.set(w.id, (this.queuedBehind.get(w.id) ?? 0) + 1);
+        try {
+          await this.until(w.id, () => !this.answering.get(w.id));
+        } finally {
+          const n = (this.queuedBehind.get(w.id) ?? 1) - 1;
+          if (n > 0) this.queuedBehind.set(w.id, n);
+          else this.queuedBehind.delete(w.id);
+        }
+      }
+      // Put back on hold: the answers that stood aside for it may go now.
+      // (Woken here, not on the way out of the wait above: there they'd take
+      // the worker before the shift marks it busy.)
+      if (opts.deferIfAway?.()) {
+        this.wake(w.id);
+        return { ok: true };
+      }
       // The wait can be minutes; the worker may have been edited meanwhile.
       const fresh = this.workers.get(w.id) ?? w;
       if (this.firing.has(fresh.id)) return { ok: false, error: 'A shift is already starting.' };
@@ -1763,6 +2008,7 @@ export class WorkerEngine {
       } finally {
         this.firing.delete(fresh.id);
         this.planningSince.delete(fresh.id);
+        this.wake(fresh.id);
       }
     });
   }
@@ -1778,6 +2024,7 @@ export class WorkerEngine {
       from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
       conversation?: string;
       untrusted?: boolean;
+      mayLaunch?: boolean;
     },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     const now = this.now();
@@ -1841,7 +2088,7 @@ export class WorkerEngine {
 
     // Errands share the firing guard and budget gate, but they are not shifts:
     // never stamp cadence bookkeeping before their planning turn.
-    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments, opts.from, opts.conversation, opts.untrusted);
+    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments, opts.from, opts.conversation, opts.untrusted, opts.mayLaunch);
 
     // Stamp BEFORE awaiting the planning turn — it can run for minutes, long
     // enough for another tick to read a stale lastShiftAt and double-fire.
@@ -1944,8 +2191,8 @@ export class WorkerEngine {
     return this.deps.parker.parkProposal({
       origin: workerOrigin(w, 'shift'),
       projectPath: w.projectPath,
-      prompt: this.buildShiftPrompt(w, sequence, rejected, previousPlannedAt, manual),
-      flowId: w.flowIds[0],
+      prompt: this.withToolProblems(w, this.buildShiftPrompt(w, sequence, rejected, previousPlannedAt, manual)),
+      flowId: defaultFlowOf(w),
       runIn,
       maxConcurrent: Math.min(w.caps.maxItemsPerShift, 4),
       title: `[Shift ${sequence}] ${w.name}`,
@@ -1987,7 +2234,7 @@ export class WorkerEngine {
         error: 'A direct run takes no attachments — send it as an ordinary message instead.',
       };
     }
-    const flowId = w.flowIds[0];
+    const flowId = defaultFlowOf(w);
     if (!flowId) return { ok: false, error: `${w.name} has no flow to run.` };
 
     const at = this.now();
@@ -2058,6 +2305,7 @@ export class WorkerEngine {
     from?: { workerId: UUID; workerName: string; orchestrationId?: UUID },
     conversation?: string,
     untrusted?: boolean,
+    mayLaunch?: boolean,
   ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
     const at = this.now();
     const rejected = this.journal.rejectedTitles(w.id);
@@ -2101,31 +2349,30 @@ export class WorkerEngine {
           w,
           warm
             ? this.buildWarmPrompt(w, errand)
-            : this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from),
+            : this.withToolProblems(w, this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from)),
         ),
         // Replay is the fallback for a thread we cannot resume. A warm turn
         // remembers the exchanges for itself, and re-sending them would read
         // as the manager saying it all a second time.
         ...(!warm && priorTurns.length > 0 ? { priorTurns } : {}),
         attachments,
-        flowId: w.flowIds[0],
+        flowId: defaultFlowOf(w),
         runIn,
         maxConcurrent: Math.min(w.caps.maxItemsPerShift, 4),
         title: `[Errand] ${errandLabel(errand)}`,
-        // Never auto-approved, at any trust level. A shift is something you
-        // scheduled, so letting it launch unattended is a standing decision
-        // you already made; a sentence you typed at the desk is not. With the
-        // Ask/Create-work toggle gone every message can produce candidates,
-        // and the thing that used to keep a casual question from launching an
-        // unattended run on an autonomous worker was that toggle — so the
-        // guarantee moves here, where it does not depend on you classifying
-        // your own sentence first.
+        // Its manager asking: as much starts on its own as a shift may, by
+        // trust (none on probation, two when trusted, its cap when
+        // autonomous). Trust is the manager's standing answer to "may it go
+        // ahead without asking me?", whether the work came from a schedule or
+        // a sentence. Anyone else asking proposes, and waits for an OK.
+        // Someone else asking a worker that only reads: the same, since
+        // nothing it can do needs its manager's say (`changesOf`).
+        ...((!from && !untrusted) || mayLaunch) && workerAutoApproveCap(w) > 0 ? { autoApprove: { maxItems: workerAutoApproveCap(w) } } : {},
         model: w.heartbeatModel,
         backend: w.heartbeatBackend,
         maxItems: w.caps.maxItemsPerShift,
         excludeTitles: rejected,
-        mcpAllowlist: this.mcpServersOf(w),
-        ...this.scopeDeniesOf(w),
+        ...this.quickTurnTools(w),
         ...(desk ? { conversationId: desk.conversationId } : {}),
         ...(resumeSessionId ? { resumeSessionId } : {}),
         allowedFlowIds: w.flowIds,
@@ -2340,11 +2587,18 @@ export class WorkerEngine {
       'just because the description mentions it.',
       '',
       w.jobDescription,
+      ...this.handbookLines(w),
       '',
       'WHAT THIS WORKER HAS ALREADY DONE (newest first)',
       digest || '(nothing yet — this is its first piece of work)',
       '',
       ...files,
+      ...(this.toolProblems?.(w.id) ?? []).flatMap((p, i, all) => [...(i === 0 ? ['TOOLS THAT WON\u2019T WORK RIGHT NOW (the server checked their sign-in)'] : []), `- ${p}`, ...(i === all.length - 1 ? [''] : [])]),
+      'IF YOUR TOOLS AREN\u2019T THERE',
+      'If a tool this work needs is missing, refuses, or every call to it fails, STOP and',
+      'say plainly which tool and that it needs connecting. Do not carry on without it:',
+      'never record empty results as a baseline, a cursor mark or a finding.',
+      '',
       'THE WORK',
       work,
     ].join('\n');
@@ -2371,6 +2625,7 @@ export class WorkerEngine {
       '',
       'YOUR JOB DESCRIPTION',
       w.jobDescription,
+      ...this.handbookLines(w),
       '',
       'YOUR JOURNAL (newest first — what you already proposed and how it was received):',
       digest || '(first shift — no journal yet)',
@@ -2391,6 +2646,7 @@ export class WorkerEngine {
       '',
       'Plan THIS shift: investigate the project as it stands right now and decide what the most',
       `valuable version of your job is today. Propose at most ${w.caps.maxItemsPerShift} candidates, best first.`,
+      'If a tool your job needs is missing or failing, say so and propose nothing that depends on it.',
       'Skip anything your journal shows was already done or is still in flight. If nothing worth',
       'doing has appeared since your last shift, say so and emit an empty candidates list —',
       'an honest empty shift beats makework.',
@@ -2440,7 +2696,9 @@ export class WorkerEngine {
   private flowsBlock(w: Worker, errand = false): string[] {
     const min = errand ? 1 : 2;
     if (w.flowIds.length < min || !this.deps.flowsFor) return [];
-    const flows = this.deps.flowsFor(w.flowIds);
+    // Its usual flow first: the one a candidate without a suggestion runs through.
+    const usual = defaultFlowOf(w);
+    const flows = this.deps.flowsFor(w.flowIds).sort((a, b) => (b.id === usual ? 1 : 0) - (a.id === usual ? 1 : 0));
     if (flows.length < min) return [];
     const line = (f: (typeof flows)[number]) => [
       `  - id: "${f.id}" — ${f.name}${f.description ? `: ${f.description.trim()}` : ''}`,
@@ -2450,8 +2708,11 @@ export class WorkerEngine {
     return [
       '',
       'YOUR FLOWS — every candidate runs through exactly one of these. Add',
-      '"suggestedFlowId": "<id>" to a candidate to send it to the flow that fits; a',
+      '"suggestedFlowId": "<id>" to a candidate to send it to another one; a',
       'candidate without one runs through the first.',
+      w.preferredFlowId
+        ? 'The first is your preferred flow: use it unless the request names another of these flows (by id or name), or the work plainly cannot run through it — and then say why in the candidate.'
+        : 'When the request names one of these flows (by id or name), use that one.',
       ...flows.flatMap(line),
     ];
   }
@@ -2489,6 +2750,7 @@ export class WorkerEngine {
       '',
       'YOUR JOB DESCRIPTION',
       worker.jobDescription,
+      ...this.handbookLines(worker),
       '',
       'YOUR JOURNAL (newest first)',
       this.journal.digest(worker.id) || '(no journal yet)',
@@ -2558,6 +2820,7 @@ export class WorkerEngine {
       'Look in it with Glob and Read (Glob that path with `**`), not shell commands:',
       'on a server, shell commands are often not allowed, and a refused `ls` is not',
       'an empty directory.',
+      ...(isCodingWorker(w) ? ['The server fetches each repo from origin before a run starts, so a run always begins from the latest code: never fetch or pull yourself, and don\'t warn that you couldn\'t.'] : []),
       `Work you FILED more than ${WORKER_COMPACTION_KEEP_DAYS} days ago is moved into an`,
       '`archive/` subfolder once a week. Notes and baselines you wrote yourself are never',
       'moved. Do not read `archive/` unless you specifically need something old.',
@@ -3218,6 +3481,7 @@ export class WorkerEngine {
       '',
       'YOUR JOB DESCRIPTION',
       w.jobDescription,
+      ...this.handbookLines(w),
       '',
       'YOUR JOURNAL (newest first — what you already proposed and how it was received):',
       this.journal.digest(w.id) || '(no journal yet)',
@@ -3255,7 +3519,12 @@ export class WorkerEngine {
       '',
       '2. USE YOUR EXISTING FLOWS. If the errand is work of a kind you already have a',
       `   flow for, propose at most ${w.caps.maxItemsPerShift} candidates, best first,`,
-      '   each a self-contained ask. This is the normal path for work in your remit,',
+      '   each a self-contained ask. Prefer ONE candidate that covers the whole ask when',
+      '   one run can do it (several projects, several tickets): split only when the',
+      '   pieces cannot share a run. Each extra candidate is one more thing to approve.',
+      '   If a tool the work needs is missing or failing in this turn, say so and propose',
+      '   nothing that depends on it: a run would hit the same wall.',
+      '   This is the normal path for work in your remit,',
       '   and it WINS THE TIE against path 1 whenever a flow on your contract covers',
       '   the ask. Your planning turn is for dispatching work, not performing it: a',
       '   flow has review, fact-check and report steps you cannot reproduce inline,',
@@ -3603,6 +3872,7 @@ export class WorkerEngine {
       '',
       'THE JOB DESCRIPTION',
       w.jobDescription,
+      ...this.handbookLines(w),
       '',
       `THE SHIFT: ${o.title ?? 'untitled'} (${counts})`,
       '',
@@ -3691,6 +3961,9 @@ export class WorkerEngine {
   /// same reasoning as the scheduler's effectiveRunIn. A cwd *preference*
   /// (autonomous workers only) is honored as-is.
   private effectiveRunIn(w: Worker, projectPath: string = w.projectPath): 'cwd' | 'worktree' {
+    // A worker that doesn't change code reads the repos where they are: a
+    // checkout of every repo for every question cost minutes and gigabytes.
+    if (!isCodingWorker(w)) return 'cwd';
     if (w.caps.runIn !== 'worktree') return 'cwd';
     return this.deps.isGitRepo(projectPath) ? 'worktree' : 'cwd';
   }
@@ -3948,6 +4221,11 @@ function describeShiftNotification(count: number, queued: number, excluded: numb
 function paced(w: Worker, prompt: string): string {
   if (workerPace(w) !== 'swift') return prompt;
   return [CONCISE_RESPONSE_DIRECTIVE, EFFICIENT_TOOL_DIRECTIVE, prompt].join('\n\n');
+}
+
+/// The flow a worker's work goes through when nothing picks another.
+export function defaultFlowOf(w: Pick<Worker, 'flowIds' | 'preferredFlowId'>): string {
+  return w.preferredFlowId && w.flowIds.includes(w.preferredFlowId) ? w.preferredFlowId : w.flowIds[0];
 }
 
 function errandLabel(errand: string): string {

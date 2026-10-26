@@ -93,4 +93,12 @@ describe('where org workers may work', () => {
     expect(resolveWorkPlace(store, undefined, '/etc')).toEqual({ ok: true, path: '/srv/acme' });
     expect(resolveWorkPlace({ workspaces: [], projects: [] }).ok).toBe(false);
   });
+
+  it('puts a hire nobody placed in the everyday folder, not the first repo', () => {
+    const withEveryday = { workspaces: [{ rootPath: '/srv/acme' }], projects: [{ path: '/srv/acme-api' }, { path: '/data/projects/Workers', everyday: true }] };
+    expect(resolveWorkPlace(withEveryday)).toEqual({ ok: true, path: '/data/projects/Workers' });
+    expect(resolveWorkPlace(withEveryday, undefined, '/etc')).toEqual({ ok: true, path: '/data/projects/Workers' });
+    // A place the job named still wins.
+    expect(resolveWorkPlace(withEveryday, undefined, '/srv/acme')).toEqual({ ok: true, path: '/srv/acme' });
+  });
 });

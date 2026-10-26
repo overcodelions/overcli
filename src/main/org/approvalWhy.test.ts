@@ -34,9 +34,15 @@ describe('reading the web on the org server', () => {
     expect(resolveStepEffect(capture)).toBe('external');
   });
 
-  it('is a rule, on unless turned off', () => {
-    expect(parseOrgPolicy({ name: 'Acme' }).policy.webNeedsApproval).toBe(true);
-    expect(parseOrgPolicy({ name: 'Acme', webNeedsApproval: false }).policy.webNeedsApproval).toBe(false);
+  it('is a rule: safe fetches unless set, and the old switch still read', () => {
+    expect(parseOrgPolicy({ name: 'Acme' }).policy.webFetch).toBe('safe');
+    expect(parseOrgPolicy({ name: 'Acme', webNeedsApproval: true }).policy.webFetch).toBe('ask');
+    expect(parseOrgPolicy({ name: 'Acme', webNeedsApproval: false }).policy.webFetch).toBe('any');
+    expect(parseOrgPolicy({ name: 'Acme', webNeedsApproval: true, webFetch: 'safe' }).policy).toMatchObject({ webFetch: 'safe', webNeedsApproval: false });
+    expect(parseOrgPolicy({ name: 'Acme', webFetch: 'sometimes' }).warnings.join(' ')).toContain('webFetch');
+    const own = parseOrgPolicy({ name: 'Acme', ownDomains: ['acme.atlassian.net', 'not a site'] });
+    expect(own.policy.ownDomains).toEqual(['acme.atlassian.net']);
+    expect(own.warnings.join(' ')).toContain('ownDomains');
   });
 });
 
@@ -46,7 +52,9 @@ describe('a step that only reads its trackers', () => {
     const step = { id: 'piece', role: 'custom' as const, output: 'piece.md', systemPromptOverride: 'Do your piece. Write files into your working folder.', tools: ['Read', 'Write', 'Edit', 'mcp__acme-tracker__feature_list', 'mcp__acme-tracker__release_list', 'mcp__zendesk__search'] };
     expect(resolveStepEffect(step)).toBe('local');
     expect(resolveStepEffect({ ...step, tools: [...step.tools, 'mcp__claude_ai_Acme_Wiki__createIssue'] })).toBe('external');
-    expect(resolveStepEffect({ ...step, systemPromptOverride: 'Create a Jira ticket for each finding.' })).toBe('external');
+    // Words alone don't make it ask: nothing it may use could create one,
+    // and a call off its list is refused on an unattended run.
+    expect(resolveStepEffect({ ...step, systemPromptOverride: 'Create a Jira ticket for each finding.' })).toBe('local');
   });
 });
 

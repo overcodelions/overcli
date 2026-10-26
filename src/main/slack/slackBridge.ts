@@ -23,27 +23,24 @@ import { flowRunTitle } from '../../shared/flows/schema';
 import type { Worker } from '../../shared/flows/worker';
 import { managerFor } from '../../shared/flows/org';
 import type { UUID } from '../../shared/types';
-import {
-  authTest,
-  escapeMrkdwn,
-  openIm,
-  postMessage,
-  updateMessage,
-  type FetchLike,
-  type SlackIdentity,
-} from './slackApi';
+import { authTest, escapeMrkdwn, openIm, postMessage, updateMessage, type FetchLike, type SlackIdentity, uploadFile } from './slackApi';
 import { SocketModeClient, type SocketCtor, type SocketEnvelope } from './socketMode';
 import { threadKey, type SlackThread, type SlackThreadKind, type ThreadStore } from './threadStore';
 import type { SlackCommands } from './slackCommands';
-import { DOOR_CHOICE_ACTION, type FrontDoor } from './frontDoor';
-import { stepsARunGrantCovers } from '../flows/stepEffect';
+import { DOOR_CHOICE_ACTION, DOOR_SUBSCRIBE_ACTION, type FrontDoor } from './frontDoor';
+import { stepOutsideTools, stepsARunGrantCovers } from '../flows/stepEffect';
+import { changesAsDiff, changesSummary, type RunChanges } from '../org/runChanges';
+import type { FlowStep } from '../../shared/flows/schema';
 import { initialsPicture } from '../../shared/flows/avatars';
 import type { SlackFile } from './slackApi';
 
 export const SLACK_APPROVE_ACTION = 'overcli_approve';
 /// Approve the step and the later ones needing only the same tools.
 export const SLACK_APPROVE_RUN_ACTION = 'overcli_approve_run';
+export const SLACK_APPROVE_ALWAYS_ACTION = 'overcli_approve_always';
 export const SLACK_REJECT_ACTION = 'overcli_reject';
+/// "Show changes" on an approval: the run's diff, as a file in the thread.
+export const SLACK_CHANGES_ACTION = 'overcli_changes';
 
 /// What the bridge reports to Settings. Never carries a token.
 export interface SlackBridgeStatus {
@@ -63,6 +60,9 @@ export interface SlackBridgeDeps {
   expectedTeamId?(): string | undefined;
   workers(): Worker[];
   getRun(runId: UUID): FlowRun | null;
+  /// Keep the step a run waits at as one its worker always runs (its
+  /// manager's "Always allow"). Absent: no such button.
+  alwaysAllow?(slackUserId: string, runId: UUID): { ok: true } | { ok: false; error: string };
   listRuns(): FlowRun[];
   steerRun(args: { runId: UUID; text: string }): Result;
   resumeRun(args: { runId: UUID; forRun?: boolean }): Result;
@@ -72,6 +72,8 @@ export interface SlackBridgeDeps {
   /// Decline a paused run: abort it and settle its batch item, as Reject
   /// does at the desk.
   rejectRun(runId: UUID): Result;
+  /// What a run has changed so far (runChanges.ts); with the diff when asked.
+  runChanges?(runId: UUID, diff: boolean): Promise<RunChanges | null>;
   store: ThreadStore;
   /// Who answers in Slack for a worker whose manager isn't in it (signed in
   /// before Slack was connected, say): an admin, so a question or approval
@@ -90,7 +92,9 @@ export interface SlackBridgeDeps {
 function pauseKind(run: FlowRun): SlackThreadKind | null {
   if (run.state.kind !== 'paused' || !run.workerId) return null;
   if (run.state.reason === 'needsInput') return 'question';
-  if (run.state.reason === 'externalAction') return 'approval';
+  // A flow's own checkpoint ("pause before push") waits on a person too.
+  // Posted nowhere, the run looked hung from Slack.
+  if (run.state.reason === 'externalAction' || run.state.reason === 'preStep') return 'approval';
   return null;
 }
 
@@ -286,6 +290,10 @@ export class SlackBridge {
     const step = run.flowSnapshot.steps.find((s) => s.id === stepId);
     let text: string;
     let blocks: unknown[];
+    // What it has changed so far, so an OK (a push, most often) is given
+    // with the change in view.
+    const changes = kind === 'approval' ? await this.deps.runChanges?.(run.id, false).catch(() => null) : null;
+    const changed = !!changes?.repos.length;
     if (kind === 'question') {
       const question = exchange?.question ?? 'The run needs your input before it can go on.';
       const why = exchange?.note?.trim();
@@ -299,9 +307,16 @@ export class SlackBridge {
       ];
     } else {
       const what = step ? `the step *${escapeMrkdwn(step.id)}*` : 'the next step';
+      // The flow's own checkpoint, not a reach outside: its author asked to
+      // look before this step runs.
+      const checkpoint = run.state.kind === 'paused' && run.state.reason === 'preStep';
       // Later steps needing only the same tools: one OK can cover them.
       const later = !earlier && run.state.kind === 'paused' && run.state.reason === 'externalAction' ? stepsARunGrantCovers(run.flowSnapshot.steps, stepId).length : 0;
-      text = earlier ? `${worker.name} needs your OK again on "${flowRunTitle(run)}"` : `${worker.name} wants to act outside its sandbox on "${flowRunTitle(run)}"`;
+      text = earlier
+        ? `${worker.name} needs your OK again on "${flowRunTitle(run)}"`
+        : checkpoint
+          ? `${worker.name} is ready for ${step?.id ?? 'the next step'} on "${flowRunTitle(run)}"`
+          : `${worker.name} wants to act outside its sandbox on "${flowRunTitle(run)}"`;
       blocks = [
         {
           type: 'section',
@@ -309,21 +324,34 @@ export class SlackBridge {
             type: 'mrkdwn',
             text: earlier
               ? `*Asking again.* I restarted while ${what} was running. It can change a service, so running it again could repeat what it already did, and it needs your OK again.`
-              : `*Approval needed* for _${title}_\n` +
-                `I am about to run ${what}, which reaches outside my sandbox — it may push, send, publish or change a service.`,
+              : checkpoint
+                ? `*Ready for ${what}* of _${title}_\nThe flow stops here so someone looks before it runs. Continue when you're happy, or stop it.`
+                : `*Approval needed* for _${title}_\n` +
+                  `I am about to run ${what}, which reaches outside my sandbox — it may push, send, publish or change a service.`,
           },
         },
-        ...(step?.systemPromptOverride && !earlier
-          ? [{ type: 'section', text: { type: 'mrkdwn', text: quote(clip(step.systemPromptOverride, 1200)) } }]
+        // What it was asked to do and what it needs, not the flow's own
+        // instructions: a team piece's are the same for every member.
+        ...(!earlier && taskOf(run)
+          ? [{ type: 'section', text: { type: 'mrkdwn', text: `*Its task*\n${quote(clip(taskOf(run), 900))}` } }]
           : []),
+        ...(step && !earlier
+          ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: needsText(step) }] }]
+          : []),
+        ...(changed ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `*Changes so far:* ${escapeMrkdwn(changesSummary(changes!))}` }] }] : []),
         {
           type: 'actions',
           elements: [
             ...(later ? [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Approve for this run' }, action_id: SLACK_APPROVE_RUN_ACTION, value: id }] : []),
-            { type: 'button', ...(later ? {} : { style: 'primary' }), text: { type: 'plain_text', text: later ? 'Just this step' : 'Approve' }, action_id: SLACK_APPROVE_ACTION, value: id },
-            { type: 'button', style: 'danger', text: { type: 'plain_text', text: 'Reject' }, action_id: SLACK_REJECT_ACTION, value: id },
+            { type: 'button', ...(later ? {} : { style: 'primary' }), text: { type: 'plain_text', text: later ? 'Just this step' : checkpoint ? 'Continue' : 'Approve' }, action_id: SLACK_APPROVE_ACTION, value: id },
+            { type: 'button', style: 'danger', text: { type: 'plain_text', text: checkpoint ? 'Stop' : 'Reject' }, action_id: SLACK_REJECT_ACTION, value: id },
+            ...(changed ? [{ type: 'button', text: { type: 'plain_text', text: 'Show changes' }, action_id: SLACK_CHANGES_ACTION, value: id }] : []),
+            ...(!checkpoint && !earlier && this.alwaysAllow ? [{ type: 'button', text: { type: 'plain_text', text: 'Always allow' }, action_id: SLACK_APPROVE_ALWAYS_ACTION, value: id }] : []),
           ],
         },
+        ...(!checkpoint && !earlier && this.alwaysAllow
+          ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `Always allow: ${escapeMrkdwn(step?.id ?? 'this step')} runs without asking from now on. Undo it in its Settings in the console.` }] }]
+          : []),
         ...(later
           ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: `For this run also covers ${later === 1 ? 'the 1 later step that uses' : `the ${later} later steps that use`} the same tools. Anything new still asks.` }] }]
           : []),
@@ -361,6 +389,7 @@ export class SlackBridge {
       channel: posted.data.channel,
       threadTs: earlier?.threadTs ?? inThread?.threadTs ?? posted.data.ts,
       ...(earlier || inThread ? { messageTs: posted.data.ts } : {}),
+      ...(kind === 'approval' ? { about: `${step ? `*${escapeMrkdwn(step.id)}*` : 'the next step'} on _${escapeMrkdwn(flowRunTitle(run))}_` } : {}),
       createdAt: this.now(),
     });
     this.persist();
@@ -378,8 +407,9 @@ export class SlackBridge {
       t.resolution = 'elsewhere';
       this.persist();
       const done = !run || run.state.kind === 'done' || run.state.kind === 'aborted';
-      await this.reply(t, done ? 'This run has finished — nothing more needed here.' : 'Answered outside Slack — nothing more needed here.');
-      if (t.kind === 'approval') await this.clearButtons(t, 'Handled outside Slack.');
+      // An approval's card says so itself; a second message would only repeat it.
+      if (t.kind === 'approval') await this.clearButtons(t, done ? 'The run has finished.' : 'Handled outside Slack.');
+      else await this.reply(t, done ? 'This run has finished — nothing more needed here.' : 'Answered outside Slack — nothing more needed here.');
     }
   }
 
@@ -388,6 +418,12 @@ export class SlackBridge {
     if (pauseKind(run) !== t.kind) return false;
     if (t.kind === 'question' && t.exchangeId) return openExchange(run, t.stepId)?.id === t.exchangeId;
     return true;
+  }
+
+  /// "Always allow" on approval cards, once the org server can keep it.
+  private alwaysAllow: SlackBridgeDeps['alwaysAllow'];
+  setAlwaysAllow(fn: SlackBridgeDeps['alwaysAllow']): void {
+    this.alwaysAllow = fn;
   }
 
   private persist(): void {
@@ -411,7 +447,7 @@ export class SlackBridge {
         channel: t.channel,
         ts: t.messageTs ?? t.threadTs,
         text: outcome,
-        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `*${escapeMrkdwn(t.workerName)}* asked for approval. ${outcome}` } }],
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `*${escapeMrkdwn(t.workerName)}* asked for approval${t.about ? ` to run ${t.about}` : ''}. ${outcome}` } }],
       },
       this.deps.fetchImpl,
     );
@@ -439,9 +475,9 @@ export class SlackBridge {
 
   /// "@overgo …" and DMs that aren't answers to anything: requests for
   /// whichever worker fits. See frontDoor.ts.
-  private frontDoor: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice'> | null = null;
+  private frontDoor: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice' | 'subscribe' | 'adopt'> | null = null;
 
-  setFrontDoor(door: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice'> | null): void {
+  setFrontDoor(door: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice' | 'subscribe' | 'adopt'> | null): void {
     this.frontDoor = door;
   }
 
@@ -468,9 +504,11 @@ export class SlackBridge {
       event?: { type?: string; channel_type?: string; user?: string; bot_id?: string; subtype?: string; text?: string; ts?: string; thread_ts?: string; channel?: string; files?: SlackFile[] };
     };
     const ev = p?.event;
-    // A message with a screenshot is a `file_share`; every other subtype is
-    // an edit, a join, a bot — not something someone said.
-    const said = !!ev && !ev.bot_id && (!ev.subtype || ev.subtype === 'file_share') && !!ev.user;
+    // A message with a screenshot is a `file_share`, and a thread reply also
+    // sent to the channel a `thread_broadcast`; every other subtype is an
+    // edit, a join, a bot — not something someone said.
+    const said = !!ev && !ev.bot_id && (!ev.subtype || ev.subtype === 'file_share' || ev.subtype === 'thread_broadcast') && !!ev.user;
+    const route = (where: string) => this.deps.log('info', `Slack ${ev?.type ?? 'event'} from ${ev?.user ?? '?'} in ${ev?.channel ?? '?'}${ev?.thread_ts ? ` (thread ${ev.thread_ts})` : ''}: ${where}`);
     if (ev && ev.channel_type !== 'im' && this.fromOurTeam(p.team_id)) {
       let took = false;
       if (this.eventTap) {
@@ -480,35 +518,86 @@ export class SlackBridge {
           this.deps.log('warn', `A Slack trigger failed: ${String(err)}`);
         }
       }
-      if (took || !said) return;
-      if (ev.type === 'app_mention') return this.toFrontDoor(ev, false);
-      // A plain reply in a thread the door started carries on that request.
-      // One that mentions the bot arrives again as an app_mention.
+      if (took) return route('a trigger took it');
+      if (!said) return;
+      // A reply that mentions the bot arrives twice: as a message and as an
+      // app_mention. The app_mention is the one acted on.
       const mentioned = !!this.identity && (ev.text ?? '').includes(`<@${this.identity.botUserId}>`);
-      // A run's question asked in this thread takes the reply as its answer.
-      const asking = ev.type === 'message' && ev.thread_ts && ev.channel && !mentioned ? this.openQuestion(ev.channel, ev.thread_ts) : undefined;
-      if (asking) return this.answer(asking, ev);
-      if (ev.type === 'message' && ev.thread_ts && ev.channel && !mentioned && this.frontDoor?.owns(ev.channel, ev.thread_ts)) return this.toFrontDoor(ev, false);
+      if (ev.type === 'message' && mentioned) return;
+      // A run's question asked in this thread takes the reply as its answer,
+      // whether or not it mentions the bot: "@overgo yes, use X" is still
+      // the answer, not a new request.
+      const asking = ev.thread_ts && ev.channel ? this.openQuestion(ev.channel, ev.thread_ts) : undefined;
+      if (asking) {
+        route(`answers the question for run ${asking.runId}`);
+        return this.answer(asking, { ...ev, text: this.withoutMention(ev.text) });
+      }
+      if (ev.type === 'app_mention') {
+        route('the front door (a mention)');
+        return this.toFrontDoor(ev, false);
+      }
+      // A plain reply in a thread the door started carries on that request.
+      if (ev.type === 'message' && ev.thread_ts && ev.channel && this.frontDoor?.owns(ev.channel, ev.thread_ts)) {
+        route('the front door (its thread)');
+        return this.toFrontDoor(ev, false);
+      }
+      // A run's settled question or approval: more said there is for its worker.
+      const run = ev.type === 'message' && ev.thread_ts ? this.threads.find((x) => x.channel === ev.channel && x.threadTs === ev.thread_ts && x.resolvedAt) : undefined;
+      if (run && this.frontDoor) {
+        this.frontDoor.adopt(run.channel, run.threadTs, { id: run.workerId, name: run.workerName });
+        route(`the front door, for ${run.workerName} (a settled run thread)`);
+        return this.toFrontDoor(ev, false);
+      }
+      if (ev.thread_ts) route('nothing: not a thread anyone here is waiting on');
       return;
     }
     if (!ev || ev.type !== 'message' || ev.channel_type !== 'im') return;
     if (!said || !this.fromOurTeam(p.team_id)) return;
-    // A new DM: a request for whoever fits.
-    if (!ev.thread_ts) return this.toFrontDoor(ev, true);
+    if (!ev.thread_ts) {
+      // Replying beside a question rather than in its thread is still the
+      // answer, when it's the one question waiting on you in this DM.
+      const waiting = this.threads.filter((x) => x.channel === ev.channel && x.kind === 'question' && !x.resolvedAt && x.managerSlackUserId === ev.user);
+      if (waiting.length === 1) {
+        route(`answers the one open question here, for run ${waiting[0].runId}`);
+        return this.answer(waiting[0], ev);
+      }
+      // Likewise beside a team's questions, when they're the only ones open.
+      if (!waiting.length && (await this.commands?.answerLoneTeamQuestion(ev, p.team_id))) {
+        route("answers the team's questions waiting here");
+        return;
+      }
+      // A new DM: a request for whoever fits.
+      route(waiting.length ? `the front door (${waiting.length} questions open here, so not taken as an answer)` : 'the front door (a new DM)');
+      return this.toFrontDoor(ev, true);
+    }
     // A request's thread, where the work it started asks and gets approved:
     // a reply answers an open question, else carries on the conversation.
     const asking = this.openQuestion(ev.channel!, ev.thread_ts);
-    if (asking) return this.answer(asking, ev);
-    if (this.frontDoor?.owns(ev.channel!, ev.thread_ts)) return this.toFrontDoor(ev, true);
+    if (asking) {
+      route(`answers the question for run ${asking.runId}`);
+      return this.answer(asking, { ...ev, text: this.withoutMention(ev.text) });
+    }
+    if (this.frontDoor?.owns(ev.channel!, ev.thread_ts)) {
+      route('the front door (its thread)');
+      return this.toFrontDoor(ev, true);
+    }
     const t = this.threads.find((x) => x.channel === ev.channel && x.threadTs === ev.thread_ts);
     if (!t) {
       // Not a run's thread — maybe a hire interview, else a request's thread.
       const took = await this.commands?.onThreadReply(ev, p.team_id);
+      route(took ? 'a team or hire thread' : 'the front door (a thread nobody here owns)');
       if (!took) await this.toFrontDoor(ev, true);
       return;
     }
+    route(`run ${t.runId}'s ${t.kind} thread`);
     if (!this.isCurrentManager(t, ev.user)) return;
     if (t.resolvedAt) {
+      // Settled, but the worker is still there: "can you push it and give
+      // me the PR?" under its approval is for it, with the thread as context.
+      if (this.frontDoor) {
+        this.frontDoor.adopt(t.channel, t.threadTs, { id: t.workerId, name: t.workerName });
+        return this.toFrontDoor(ev, true);
+      }
       await this.reply(t, 'This one is already settled — start a new thread if something changed.');
       return;
     }
@@ -524,9 +613,37 @@ export class SlackBridge {
     return this.threads.find((x) => x.channel === channel && x.threadTs === threadTs && x.kind === 'question' && !x.resolvedAt);
   }
 
+  /// A run's diff as a file in its approval's thread.
+  private async postChanges(t: SlackThread): Promise<void> {
+    const bot = this.deps.tokens().bot;
+    const changes = await this.deps.runChanges?.(t.runId, true).catch(() => null);
+    if (!bot) return;
+    if (!changes?.repos.length) {
+      await this.reply(t, changes?.gone ? 'Its checkout is gone now; the changes are on its branch.' : 'No changes to show yet.');
+      return;
+    }
+    const posted = await uploadFile(bot, { channel: t.channel, threadTs: t.threadTs, filename: `${t.workerName.replace(/[^\w.-]+/g, '-')}-changes.diff`, bytes: Buffer.from(changesAsDiff(changes)), title: changesSummary(changes) }, this.deps.fetchImpl);
+    if (!posted.ok) {
+      this.deps.log('warn', `Could not post the changes for run ${t.runId}: ${posted.error}`);
+      await this.reply(t, `Couldn't attach the diff (${posted.error}). It's on the run's page in the console.`);
+    }
+  }
+
+  /// The text with the bot's own mention taken out.
+  private withoutMention(text: string | undefined): string {
+    return this.identity ? (text ?? '').split(`<@${this.identity.botUserId}>`).join('').trim() : (text ?? '').trim();
+  }
+
   /// A reply to a run's question: its answer, from its manager.
   private async answer(t: SlackThread, ev: { user?: string; text?: string }): Promise<void> {
-    if (!this.isCurrentManager(t, ev.user)) return;
+    if (!this.isCurrentManager(t, ev.user)) {
+      // Said so, rather than nothing: someone answering who can't looks
+      // exactly like the worker not being there.
+      const who = this.slackAnswerer(t.workerId);
+      this.deps.log('info', `Slack answer for run ${t.runId} from ${ev.user ?? '?'} not taken: only ${who?.id ?? 'its manager'} answers it.`);
+      await this.reply(t, who ? `Only <@${who.id}> can answer this one — it's their worker's question.` : 'Only its manager can answer this one.');
+      return;
+    }
     const answer = (ev.text ?? '').trim();
     if (!answer) return;
     const run = this.deps.getRun(t.runId);
@@ -561,6 +678,22 @@ export class SlackBridge {
     }
     if (p?.type !== 'block_actions' || !this.fromOurTeam(p.team?.id)) return;
     const action = p.actions?.[0];
+    // "Show changes" on an approval: the diff, as a file in its thread, for
+    // whoever the approval went to.
+    if (action?.action_id === SLACK_CHANGES_ACTION) {
+      const t = this.threads.find((x) => x.id === action.value);
+      if (t && p.user?.id === t.managerSlackUserId) await this.postChanges(t);
+      return;
+    }
+    // "Notify me" under a front-door hand-off: the presser follows the thread by DM.
+    if (action?.action_id === DOOR_SUBSCRIBE_ACTION && this.frontDoor) {
+      const m = (payload as { message?: { ts?: string; thread_ts?: string }; channel?: { id?: string }; container?: { channel_id?: string } });
+      const channel = m.channel?.id ?? m.container?.channel_id;
+      const ts = m.message?.ts;
+      const user = p.user?.id;
+      if (channel && ts && user) await this.frontDoor.subscribe(channel, m.message?.thread_ts ?? ts, user, true);
+      return;
+    }
     // A one-tap answer under a worker's reply in a front-door thread.
     if (action?.action_id?.startsWith(DOOR_CHOICE_ACTION) && this.frontDoor) {
       const m = (payload as { message?: { ts?: string; thread_ts?: string }; channel?: { id?: string }; container?: { channel_id?: string } });
@@ -574,7 +707,7 @@ export class SlackBridge {
       await this.commands.onAction(payload);
       return;
     }
-    if (!action || (action.action_id !== SLACK_APPROVE_ACTION && action.action_id !== SLACK_APPROVE_RUN_ACTION && action.action_id !== SLACK_REJECT_ACTION)) return;
+    if (!action || (action.action_id !== SLACK_APPROVE_ACTION && action.action_id !== SLACK_APPROVE_RUN_ACTION && action.action_id !== SLACK_APPROVE_ALWAYS_ACTION && action.action_id !== SLACK_REJECT_ACTION)) return;
     const t = this.threads.find((x) => x.id === action.value && x.kind === 'approval');
     if (!t || !this.isCurrentManager(t, p.user?.id) || t.resolvedAt) return;
     const run = this.deps.getRun(t.runId);
@@ -583,7 +716,15 @@ export class SlackBridge {
       return;
     }
     const forRun = action.action_id === SLACK_APPROVE_RUN_ACTION;
-    const approve = forRun || action.action_id === SLACK_APPROVE_ACTION;
+    const always = action.action_id === SLACK_APPROVE_ALWAYS_ACTION;
+    if (always && this.alwaysAllow) {
+      const kept = this.alwaysAllow(p.user!.id!, t.runId);
+      if (!kept.ok) {
+        await this.reply(t, `That did not go through: ${kept.error}`);
+        return;
+      }
+    }
+    const approve = forRun || always || action.action_id === SLACK_APPROVE_ACTION;
     const res = approve ? this.deps.resumeRun({ runId: t.runId, ...(forRun ? { forRun: true } : {}) }) : this.deps.rejectRun(t.runId);
     if (!res.ok) {
       await this.reply(t, `That did not go through: ${res.error}`);
@@ -592,7 +733,7 @@ export class SlackBridge {
     t.resolvedAt = this.now();
     t.resolution = approve ? 'approved' : 'rejected';
     this.persist();
-    await this.clearButtons(t, !approve ? `Rejected by <@${t.managerSlackUserId}>.` : forRun ? `Approved for this run by <@${t.managerSlackUserId}>.` : `Approved by <@${t.managerSlackUserId}>.`);
+    await this.clearButtons(t, !approve ? `Rejected by <@${t.managerSlackUserId}>.` : always ? `Approved by <@${t.managerSlackUserId}>, and always allowed from now on.` : forRun ? `Approved for this run by <@${t.managerSlackUserId}>.` : `Approved by <@${t.managerSlackUserId}>.`);
   }
 }
 
@@ -604,4 +745,19 @@ export async function testSlackTokens(
   if (!bot) return { ok: false, error: 'Add the bot token first.' };
   const who = await authTest(bot, fetchImpl);
   return who.ok ? { ok: true, team: who.data.team } : who;
+}
+
+/// What a step needs that asks, in a line for the approval card.
+function needsText(step: FlowStep): string {
+  const outside = stepOutsideTools(step);
+  if (outside === null) return 'Why: the step says it ships, sends or changes something outside, or names no tools.';
+  return outside.length ? `It needs: ${escapeMrkdwn(outside.join(', '))}` : 'It only works locally.';
+}
+
+/// What a run was asked to do: a worker's prompt opens with who it is and
+/// what it keeps, and the ask itself follows THE WORK.
+function taskOf(run: FlowRun): string {
+  const p = run.userPrompt ?? '';
+  const at = p.lastIndexOf('\nTHE WORK\n');
+  return (at >= 0 ? p.slice(at + '\nTHE WORK\n'.length) : p).trim();
 }

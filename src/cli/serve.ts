@@ -227,7 +227,10 @@ export function startDaemon(
     control = server;
     listenControlPlane(server, controlAt).then(
       () => {
-        const shown = controlAt.host.includes(':') ? `[${controlAt.host}]` : controlAt.host;
+        // Listening on every interface (0.0.0.0, ::) is not an address anyone
+        // can open: on this machine it is localhost.
+        const any = ['0.0.0.0', '::', ''].includes(controlAt.host);
+        const shown = any ? 'localhost' : controlAt.host.includes(':') ? `[${controlAt.host}]` : controlAt.host;
         deps.out(`control: http://${shown}:${controlAt.port}/ (console) and /mcp`);
         if (listTokens().length === 0) {
           // First run: nobody can sign in yet. Rather than send the operator
@@ -275,6 +278,8 @@ export function startDaemon(
   // A console ask's handed-off work, back to its worker to finish up once it
   // ends. Slack's front door does its own, to answer in the thread.
   const handBack = setInterval(() => engines.org.handBackDue(), 30_000);
+  // Workers whose onboarding notes are a week old learn again.
+  const relearn = setInterval(() => engines.org.refreshKnowledgeDue(), 30 * 60_000);
 
   const everyone: OrgCaller = { name: 'overcli', admin: true };
   const housekeeping = startHousekeeping({
@@ -312,6 +317,7 @@ export function startDaemon(
     deps.out(`${signal} — stopping schedules and workers.`);
     clearInterval(keepAlive);
     clearInterval(handBack);
+    clearInterval(relearn);
     housekeeping.stop();
     secrets?.stop();
     engines.triggers.stop();

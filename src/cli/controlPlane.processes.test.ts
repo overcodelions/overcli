@@ -45,6 +45,7 @@ describe('process routes', () => {
   });
   const org = {
     publishedTeamId: (local: string) => (local === 'desk-team-1' ? 't-product' : undefined),
+    workingNow: () => [{ kind: 'deciding', id: 'deciding:w-tri', at: 2, title: 'Working out how to answer', detail: 'a question', workerId: 'w-tri', workerName: 'Triage' }, { kind: 'run', id: 'run:r1', at: 1, title: 'Weekly site audit', detail: 'step 2 of 3, crawl pages', workerId: 'w-owen', workerName: 'Owen' }],
     runningNow: () => [{ workerId: 'w-owen', workerName: 'Owen', run: { runId: 'r1', title: 'Weekly site audit', startedAt: 1, step: { index: 2, total: 3, name: 'crawl-pages' }, finished: ['plan'], state: 'working' } }],
     teamTasks: () => [],
   };
@@ -134,10 +135,15 @@ describe('process routes', () => {
   });
   it('lists everything in flight for the Inbox: worker runs and process items, with decisions marked', async () => {
     const res = await call(RILEY, 'GET', '/api/inflight');
-    expect(res.items.find((x: { kind: string }) => x.kind === 'worker')).toMatchObject({ title: 'Weekly site audit', who: 'Owen', total: 3, at: 1, now: 'Step 2 of 3 · crawl pages', needsYou: false });
+    expect(res.items.find((x: { id: string }) => x.id === 'r1')).toMatchObject({ kind: 'worker', title: 'Weekly site audit', who: 'Owen', total: 3, at: 1, now: 'Step 2 of 3 · crawl pages', needsYou: false });
     const proc = res.items.filter((x: { kind: string }) => x.kind === 'process');
     expect(proc.length).toBeGreaterThan(0);
     expect(proc[0]).toMatchObject({ who: 'Idea to launch', needsYou: false });
+  });
+  it('counts a worker working out an answer as in flight, as the bar does, and no run twice', async () => {
+    const res = await call(RILEY, 'GET', '/api/inflight');
+    expect(res.items.find((x: { id: string }) => x.id === 'deciding:w-tri')).toMatchObject({ kind: 'worker', who: 'Triage', title: 'Working out how to answer', now: 'Deciding · a question', needsYou: false });
+    expect(res.items.filter((x: { title: string }) => x.title === 'Weekly site audit')).toHaveLength(1);
   });
 });
 

@@ -67,6 +67,7 @@ export function SetupSheet() {
 
       <HelpFooter>
         <HelpLink label="How overcli works" onClick={() => openSheet({ type: 'basics' })} />
+        <HelpLink label="Troubleshooting" onClick={() => openSheet({ type: 'guide', page: 'troubleshooting' })} />
         <HelpLink label="Settings" onClick={() => openSheet({ type: 'settings' })} />
         <span className="flex-1" />
         <HelpLink label="Close" onClick={() => openSheet(null)} />

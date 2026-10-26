@@ -274,3 +274,24 @@ describe('watching tracked tickets for a change', () => {
     expect(h.svc.track(made.trigger.id, 'not a ticket id!', true)).toMatchObject({ ok: false });
   });
 });
+
+describe('following a tracked ticket', () => {
+  const issues = (a: string) => ({ issues: [{ key: 'ACME-1', fields: { summary: 'Export fails', status: { name: a } } }] });
+
+  it('tracks it and DMs each follower when it moves, once even if the watch already DMs them', async () => {
+    const h = harness({ items: issues('To do') });
+    const made = h.svc.create(watch({ name: 'Moves', instructions: '', notifyOnly: true, deliver: [{ kind: 'dm', slackUserId: 'U0ACMEPAT' }], watch: { server: 'jira', tool: 'search', args: { jql: 'key in ({{ids}})' }, everyMinutes: 15, changes: 'fields.status.name', tracked: [] } }));
+    if (!made.ok) throw new Error(made.error);
+    expect(h.svc.follow(made.trigger.id, 'ACME-1', 'U0ACMESAM', true)).toEqual({ ok: true, followers: 1 });
+    expect(h.svc.follow(made.trigger.id, 'ACME-1', 'U0ACMEPAT', true)).toEqual({ ok: true, followers: 2 });
+    expect(h.triggers()[0].watch?.tracked).toEqual(['ACME-1']);
+    await h.svc.poll(made.trigger.id);
+    h.setItems(issues('Done'));
+    await h.svc.poll(made.trigger.id);
+    await tick();
+    expect(h.posts.sort()).toEqual(['dm:U0ACMEPAT:*ACME-1: Export fails* moved from _To do_ to *Done*', 'dm:U0ACMESAM:*ACME-1: Export fails* moved from _To do_ to *Done*']);
+    // Stopping leaves it tracked for the others.
+    expect(h.svc.follow(made.trigger.id, 'ACME-1', 'U0ACMESAM', false)).toEqual({ ok: true, followers: 1 });
+    expect(h.triggers()[0].watch?.tracked).toEqual(['ACME-1']);
+  });
+});

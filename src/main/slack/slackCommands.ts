@@ -15,16 +15,18 @@
 // MCP — and no more.
 
 import type { OrgService, HireSummary, PendingHire, WaitingItem, WantedTool, WorkerSummary } from '../org/orgService';
-import type { AskRecord } from '../org/orgStores';
+import type { AskRecord, ToolRequest } from '../org/orgStores';
+import type { ToolTrouble } from '../org/toolHealth';
 import { ROLE_TEXT, type AccessService, type Invite, type JoinRequest } from '../org/accessService';
 import { slackCall } from './slackApi';
+import { changesAsDiff, changesSummary } from '../org/runChanges';
 import { isAdmin, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
 import type { Worker } from '../../shared/flows/worker';
 import type { TeamTask } from '../../shared/flows/team';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { MainToRendererEvent } from '../../shared/types';
 import { escapeMrkdwn, fetchMessage, openIm, openView, postMessage, updateMessage, uploadFile, userName, type FetchLike } from './slackApi';
-import { HIRE_EDIT_VIEW, TEAM_EDIT_VIEW, hireEditView, readHireEdit, readTeamEdit, teamEditView, type EditMeta, type TeamDraftForm } from './editForms';
+import { HIRE_EDIT_VIEW, TEAM_EDIT_VIEW, WORKER_EDIT_VIEW, hireEditView, readHireEdit, readWorkerEdit, workerEditView, readTeamEdit, teamEditView, type EditMeta, type TeamDraftForm } from './editForms';
 import { DEFAULT_TEAM_CHECKPOINTS } from '../../shared/flows/team';
 import type { ProcessPerson } from '../../shared/org/process';
 import type { ProcessService } from '../org/processes';
@@ -71,12 +73,19 @@ export const OPEN_LINK_ACTION = 'overcli_open_link';
 export const PROPOSALS_APPROVE_ACTION = 'overcli_proposals_approve';
 export const PROPOSALS_SKIP_ACTION = 'overcli_proposals_skip';
 export const BUDGET_RAISE_ACTION = 'overcli_budget_raise';
+export const JOB_USE_ACTION = 'overcli_job_use';
+export const TOOLREQ_GIVE_ACTION = 'overcli_toolreq_give';
+export const TOOLREQ_DECLINE_ACTION = 'overcli_toolreq_decline';
+export const JOB_KEEP_ACTION = 'overcli_job_keep';
 
 /// A console question answered later than this gets its answer DMed too.
 export const ASK_DM_AFTER_MS = 30_000;
 
 export interface SlackCommandsDeps {
   org: OrgService;
+  /// Hands replies in a thread this posted a worker's work into to that
+  /// worker (FrontDoor.adopt).
+  adoptThread?(channel: string, threadTs: string, worker: { id: string; name: string }): void;
   /// Invites and `/overgo join`. Absent: the access commands are not offered.
   access?: AccessService;
   policy(): OrgPolicy;
@@ -141,6 +150,7 @@ interface SlashPayload {
   user_name?: string;
   team_id?: string;
   response_url?: string;
+  trigger_id?: string;
 }
 
 const MAX_LINES = 25;
@@ -162,6 +172,10 @@ export class SlackCommands {
   private hireThreads = new Map<string, string>();
   /// Crews suggested by `/team new`, waiting on Make the team. In memory: a
   /// restart means asking again.
+  /// Rewritten jobs waiting for their asker to read and accept, by id.
+  /// The admins' DMs about each tool request, to settle when one decides.
+  private toolRequestCards = new Map<string, Array<{ channel: string; ts: string }>>();
+  private jobDrafts = new Map<string, { workerId: string; name: string; job: string; by: string }>();
   private teamDrafts = new Map<string, TeamDraftForm & { by: string; note: string; members: Array<{ workerId: string; name: string; role: string }>; hires: Array<{ job: string; role: string }> }>();
   /// Display names seen on commands, so an approval DM can say who asked.
   private names = new Map<string, string>();
@@ -266,7 +280,7 @@ export class SlackCommands {
     const caller = this.caller(p.user_id, p.user_name);
     const text = (p.text ?? '').trim();
     if (p.command === '/hire') return this.hire(caller, text, p.response_url);
-    if (p.command === '/worker') return this.worker(caller, text, p.response_url);
+    if (p.command === '/worker') return this.worker(caller, text, p.response_url, p.trigger_id);
     if (p.command === '/team') return this.team(caller, text, p.response_url);
     // `/overcli` is the command Slack apps installed before the rename have.
     if (p.command === '/overgo' || p.command === '/overcli') return this.join(caller, text, p.response_url);
@@ -343,6 +357,10 @@ export class SlackCommands {
   /// `/overgo join`: ask to use the org's workers. Slack has already said
   /// who is asking.
   private async join(caller: OrgCaller, text: string, responseUrl?: string): Promise<void> {
+    if (text.trim().toLowerCase() === 'digest') {
+      const sent = await this.sendDigest(caller.slackUserId!);
+      return this.respond(responseUrl, sent ? 'Your week so far is in your DMs.' : 'Nothing to report yet: you don’t manage any workers, and nothing waits on you.');
+    }
     const access = this.deps.access;
     if (text.toLowerCase() !== 'join' || !access) {
       return this.respond(responseUrl, '`/overgo join` asks to use this org’s AI workers. Once you’re in: `/worker`, `/team`, `/hire`.');
@@ -453,7 +471,7 @@ export class SlackCommands {
     };
   }
 
-  private async worker(caller: OrgCaller, text: string, responseUrl?: string): Promise<void> {
+  private async worker(caller: OrgCaller, text: string, responseUrl?: string, triggerId?: string): Promise<void> {
     const { org } = this.deps;
     if (!text || text === 'list') {
       const list = org.listWorkers(caller);
@@ -509,7 +527,7 @@ export class SlackCommands {
       return this.respond(responseUrl, res.ok ? `${verb === 'track' ? 'Tracking' : 'Stopped tracking'} ${rest.trim().split(/\s+/)[0]}. ${res.worker} tracks ${res.tracked} on “${res.trigger}”.` : res.error);
     }
     // "/worker Vantage what do you know about …" is an ask without the word.
-    if (verb && verb !== 'pause' && verb !== 'resume' && verb !== 'ask') {
+    if (verb && verb !== 'pause' && verb !== 'resume' && verb !== 'ask' && verb !== 'changes' && !(verb === 'edit' && !rest.trim())) {
       verb = 'ask';
       rest = words.slice(used).join(' ');
     }
@@ -524,27 +542,100 @@ export class SlackCommands {
         ...(recent ? [section(`*Recently*\n${recent}`)] : []),
       ]);
     }
+    // "/worker Ada changes ACME-412": what that run changed, the diff in a DM.
+    if (verb === 'changes') {
+      const found = org.latestCodeRun(caller, worker.id, rest);
+      if (!found.ok) return this.respond(responseUrl, found.error);
+      const ch = await org.runChanges(caller, found.runId, true);
+      if (!ch.ok) return this.respond(responseUrl, ch.error);
+      if (!ch.repos.length) return this.respond(responseUrl, ch.gone ? `"${found.title}" is finished and its checkout is gone; the changes are on its branch.` : `"${found.title}" hasn't changed anything yet.`);
+      await this.respond(responseUrl, `${found.title}: ${changesSummary(ch)}. The diff is in your DMs.`);
+      const dm = await this.dm(caller.slackUserId!, `Changes in "${found.title}": ${changesSummary(ch)}`);
+      const bot = this.deps.botToken();
+      if (dm && bot) {
+        const up = await uploadFile(bot, { channel: dm.channel, threadTs: dm.ts, filename: `${worker.name.replace(/[^\w.-]+/g, '-')}-changes.diff`, bytes: Buffer.from(changesAsDiff(ch)) }, this.deps.fetchImpl);
+        if (!up.ok) this.deps.log('warn', `Could not attach the diff: ${up.error}`);
+      }
+      return;
+    }
+    // "/worker Ada learn": its onboarding, again or for the first time.
+    if (verb === 'learn') {
+      const res = org.learnWorker(caller, worker.id);
+      return this.respond(responseUrl, res.ok ? `${res.name} is going through its tools to learn what its job needs. Its notes show on its Job tab in the console in a few minutes.` : res.error);
+    }
+    // "/worker Ada tools": what it has. "/worker Ada tools add zendesk: to
+    // read tickets": given at once if the org clears it, else asked of an admin.
+    if (verb === 'tools') {
+      const add = /^(?:add|give|request)\s+([^:]+?)(?:\s*:\s*([\s\S]*))?$/i.exec(rest.trim());
+      if (add) {
+        const res = org.requestTool(caller, worker.id, add[1], add[2]);
+        if (!res.ok) return this.respond(responseUrl, res.error);
+        return this.respond(responseUrl, res.given
+          ? `Gave ${res.tool} to ${res.name}. It can use it from its next run.`
+          : `Asked the admins for ${res.tool} for ${res.name}. I'll tell you when one decides.`);
+      }
+      const got = org.getWorker(caller, worker.id);
+      if (!got.ok) return this.respond(responseUrl, got.error);
+      const tools = (got.worker.tools ?? []).map((t) => `${t.name}${t.ok ? '' : ' (not on this server)'}`);
+      return this.respond(responseUrl, `${worker.name} has ${tools.length ? tools.join(', ') : 'no tools'}. Give it one with \`/worker ${worker.name} tools add <tool>: what it's for\`.`);
+    }
+    // "/worker Ada edit": its job, schedule, budget, who can ask it and how
+    // many it answers at once, in a form. Its manager or an admin.
+    if (verb === 'edit') {
+      const got = org.getWorker(caller, worker.id);
+      if (!got.ok) return this.respond(responseUrl, got.error);
+      if (!got.worker.youManage) return this.respond(responseUrl, `Only ${worker.name}'s manager or an admin can change it.`);
+      const bot = this.deps.botToken();
+      if (!bot || !triggerId) return this.respond(responseUrl, `Change ${worker.name} on its Settings tab in the console.`);
+      const w = got.worker;
+      const form = workerEditView(
+        { name: w.name, jobDescription: got.jobDescription, budgetUSDPerMonth: w.budgetUSDPerMonth, visibility: w.visibility, schedule: w.schedule, answersAtOnce: w.answersAtOnce, trust: w.trust, ...(w.skipCheckpoints ? { skipCheckpoints: true } : {}) },
+        { id: w.id, channel: '', ts: '' },
+        { admin: org.whoami(caller).admin },
+      );
+      const opened = await openView(bot, triggerId, form, this.deps.fetchImpl);
+      if (!opened.ok) return this.respond(responseUrl, `Couldn't open the form (${opened.error}). Change ${worker.name} on its Settings tab in the console.`);
+      return;
+    }
     if (verb === 'pause' || verb === 'resume') {
       const res = org.setPaused(caller, worker.id, verb === 'pause');
       return this.respond(responseUrl, res.ok ? `${res.name} is ${verb === 'pause' ? 'paused' : 'back at work'}.` : res.error);
     }
     if (verb === 'ask') {
       if (!rest.trim()) return this.respond(responseUrl, `What should I ask ${worker.name}? \`/worker ${worker.name} ask …\``);
-      await this.respond(responseUrl, `Asked ${worker.name}. The answer will come to you in a DM.`);
+      await this.respond(responseUrl, `Asked ${worker.name}. It's working on it in your DMs.`);
+      // Said in the DM at once, so the wait shows somewhere: working out an
+      // answer can take minutes, and a DM that stays empty until then reads
+      // as nobody being there. The answer lands in its thread.
+      const asked = escapeMrkdwn(clip(rest, 200));
+      const onIt = await this.dm(caller.slackUserId!, `${worker.name} is on it: ${clip(rest, 200)}`, {
+        blocks: [section(`:hourglass_flowing_sand: *${escapeMrkdwn(worker.name)}* is working on _${asked}_`), context('The answer comes in this thread.')],
+      });
+      if (onIt) this.deps.adoptThread?.(onIt.channel, onIt.ts, { id: worker.id, name: worker.name });
       const res = await org.ask(caller, worker.id, rest, 'slack');
       await this.dm(
         caller.slackUserId!,
         res.ok ? `${worker.name}: ${clip(res.reply, 2800)}` : `${worker.name} could not take that: ${res.error}`,
-        res.ok
-          ? {
-              blocks: [
-                section(`*${escapeMrkdwn(worker.name)}* answered _${escapeMrkdwn(clip(rest, 120))}_`),
-                section(slackMarkup(clip(res.reply, 2800))),
-                ...(res.launched ? [context(`Started ${res.launched} piece(s) of work.`)] : []),
-              ],
-            }
-          : {},
+        {
+          ...(res.ok
+            ? {
+                blocks: [
+                  section(`*${escapeMrkdwn(worker.name)}* answered _${escapeMrkdwn(clip(rest, 120))}_`),
+                  section(slackMarkup(clip(res.reply, 2800))),
+                  ...(res.launched ? [context(`Started ${res.launched} piece(s) of work.`)] : []),
+                ],
+              }
+            : {}),
+          // In the thread, and in the DM too, so it notifies like any message.
+          ...(onIt ? { inThread: { channel: onIt.channel, threadTs: onIt.ts }, broadcast: true } : {}),
+        },
       );
+      const bot = this.deps.botToken();
+      if (onIt && bot) {
+        const done = res.ok ? `:white_check_mark: *${escapeMrkdwn(worker.name)}* answered _${asked}_` : `:x: *${escapeMrkdwn(worker.name)}* couldn't take _${asked}_`;
+        const updated = await updateMessage(bot, { channel: onIt.channel, ts: onIt.ts, text: done, blocks: [section(done)] }, this.deps.fetchImpl);
+        if (!updated.ok) this.deps.log('warn', `Could not mark the ask answered: ${updated.error}`);
+      }
       return;
     }
     return this.respond(responseUrl, HELP);
@@ -641,7 +732,7 @@ export class SlackCommands {
 
   /// Which hire, and what its offer is now, for the Change it form.
   handlesView(callbackId: string | undefined): boolean {
-    return callbackId === HIRE_EDIT_VIEW || callbackId === TEAM_EDIT_VIEW || callbackId === PROC_SENDBACK_VIEW || callbackId === PROC_FILL_VIEW;
+    return callbackId === HIRE_EDIT_VIEW || callbackId === TEAM_EDIT_VIEW || callbackId === WORKER_EDIT_VIEW || callbackId === PROC_SENDBACK_VIEW || callbackId === PROC_FILL_VIEW;
   }
 
   private processItemTitle(itemId: string): string {
@@ -692,6 +783,11 @@ export class SlackCommands {
       await this.onSendBack(caller, meta as unknown as SendBackMeta, readSendBack(values as Record<string, Record<string, { value?: string }>>));
       return;
     }
+    // "/worker <name> edit", saved: the same rules as its Settings tab.
+    if (p.view.callback_id === WORKER_EDIT_VIEW) {
+      await this.onWorkerEdit(caller, meta.id, values);
+      return;
+    }
     if (p.view.callback_id === PROC_FILL_VIEW) {
       await this.onFill(caller, meta as unknown as SendBackMeta, readFill(values));
       return;
@@ -714,7 +810,101 @@ export class SlackCommands {
     await updateMessage(bot, { channel: meta.channel, ts: meta.ts, text: drawn.text, blocks: drawn.blocks }, this.deps.fetchImpl);
   }
 
+  /// "/worker <name> edit", saved. Only what moved is saved and named; a
+  /// change said in words comes back as a rewritten job to accept.
+  private async onWorkerEdit(caller: OrgCaller, workerId: string, values: Parameters<typeof readWorkerEdit>[0]): Promise<void> {
+    const { org } = this.deps;
+    const got = org.getWorker(caller, workerId);
+    if (!got.ok) {
+      if (caller.slackUserId) await this.dm(caller.slackUserId, `That change didn't go through: ${got.error}`);
+      return;
+    }
+    const w = got.worker;
+    const { patch, ask, trust } = readWorkerEdit(values);
+    // The job as the form left it: the base for a rewrite, never saved
+    // alongside one.
+    const base = patch.jobDescription ?? got.jobDescription;
+    if (ask || patch.jobDescription === got.jobDescription.trim()) delete patch.jobDescription;
+    if (patch.budgetUSDPerMonth === w.budgetUSDPerMonth) delete patch.budgetUSDPerMonth;
+    if (patch.visibility === w.visibility) delete patch.visibility;
+    if (patch.answersAtOnce === w.answersAtOnce) delete patch.answersAtOnce;
+    if (patch.skipCheckpoints === (w.skipCheckpoints === true)) delete patch.skipCheckpoints;
+    const said: string[] = [];
+    const failed: string[] = [];
+    if (Object.keys(patch).length) {
+      const res = org.update(caller, workerId, patch);
+      if (res.ok) said.push(...Object.keys(patch).map((k) => ({ jobDescription: 'its job', cadence: 'when it runs', budgetUSDPerMonth: 'its budget', visibility: 'who can ask it', answersAtOnce: 'how many it answers at once', skipCheckpoints: patch.skipCheckpoints ? 'runs through its checkpoints' : 'stops at its checkpoints' })[k as 'jobDescription'] ?? k));
+      else failed.push(res.error);
+    }
+    if (trust && trust !== w.trust) {
+      const res = org.setTrust(caller, workerId, trust);
+      if (res.ok) said.push(`how much it does alone (${({ probation: 'asks first', trusted: 'trusted', autonomous: 'on its own' } as const)[trust]})`);
+      else failed.push(res.error);
+    }
+    if (!caller.slackUserId) return;
+    const lines = [
+      said.length ? `Saved ${w.name}: ${said.join(', ')}. It applies from its next run.` : '',
+      ...failed.map((e) => `That change didn't go through: ${e}`),
+    ].filter(Boolean);
+    if (lines.length) await this.dm(caller.slackUserId, lines.join('\n'));
+    else if (!ask) await this.dm(caller.slackUserId, `Nothing changed on ${w.name}.`);
+    if (ask) await this.rewriteJobInDm(caller, w.id, w.name, base, ask);
+  }
+
+  /// A job rewritten from a change said in words, shown in a DM to accept.
+  private async rewriteJobInDm(caller: OrgCaller, workerId: string, name: string, job: string, ask: string): Promise<void> {
+    const user = caller.slackUserId!;
+    const bot = this.deps.botToken();
+    const asked = escapeMrkdwn(clip(ask, 300));
+    const card = await this.dm(user, `Rewriting ${name}'s job…`, { blocks: [section(`:pencil2: Rewriting *${escapeMrkdwn(name)}*'s job: _${asked}_`), context('The new version comes here for you to read before it is saved.')] });
+    const res = await this.deps.org.suggestJob(caller, workerId, ask, job);
+    if (!res.ok) {
+      if (bot && card) await updateMessage(bot, { channel: card.channel, ts: card.ts, text: res.error, blocks: [section(`Couldn't rewrite *${escapeMrkdwn(name)}*'s job: ${escapeMrkdwn(res.error)}`)] }, this.deps.fetchImpl);
+      else await this.dm(user, res.error);
+      return;
+    }
+    const id = `${user}:${Date.now().toString(36)}`;
+    this.jobDrafts.set(id, { workerId, name: res.name, job: res.job, by: user });
+    // A job too long for a message goes along as a file: nobody accepts a
+    // job they couldn't read.
+    const fits = res.job.length <= 2800;
+    const blocks = [
+      section(`*${escapeMrkdwn(res.name)}'s job, rewritten* for _${asked}_`),
+      ...(fits ? [section(quote(res.job))] : [context('It is long, so the new version is attached in this thread.')]),
+      { type: 'actions', elements: [button('Use this', JOB_USE_ACTION, id, 'primary'), button('Keep the old one', JOB_KEEP_ACTION, id)] },
+    ];
+    const text = `${res.name}'s job, rewritten`;
+    let at = card;
+    if (bot && card) await updateMessage(bot, { channel: card.channel, ts: card.ts, text, blocks }, this.deps.fetchImpl);
+    else at = await this.dm(user, text, { blocks });
+    if (!fits && bot && at) {
+      const up = await uploadFile(bot, { channel: at.channel, threadTs: at.ts, filename: `${res.name.replace(/[^\w.-]+/g, '-')}-job.txt`, bytes: Buffer.from(res.job) }, this.deps.fetchImpl);
+      if (!up.ok) this.deps.log('warn', `Could not attach the rewritten job: ${up.error}`);
+    }
+  }
+
   // ---- THREADS ----------------------------------------------------------
+
+  /// A DM sent beside a team's questions rather than in their thread: taken
+  /// as the answer when they're the only team questions waiting in this DM.
+  /// False when there are none, or several, so the bridge routes it as usual.
+  async answerLoneTeamQuestion(event: { channel?: string; user?: string; text?: string; ts?: string }, teamId: unknown): Promise<boolean> {
+    if (!event.channel || !event.user) return false;
+    // Only questions still waiting: a task that moved on (answered in the
+    // console, cancelled, planned without them) leaves its thread behind,
+    // and that thread took a new message as answers nobody was asking for.
+    const caller = this.caller(event.user);
+    const asking = new Set(this.deps.org.teamTasks(caller).filter((t) => t.needs === 'answers').map((t) => t.id));
+    const keys = [...this.teamThreads.keys()].filter((k) => k.startsWith(`${event.channel}:`));
+    for (const k of keys) {
+      if (!asking.has(this.teamThreads.get(k)!)) this.teamThreads.delete(k);
+    }
+    if (keys.some((k) => !this.teamThreads.has(k))) this.keepTeamThreads();
+    const open = keys.filter((k) => this.teamThreads.has(k));
+    if (open.length !== 1) return false;
+    const threadTs = open[0].slice(event.channel.length + 1);
+    return this.onThreadReply({ ...event, thread_ts: threadTs }, teamId);
+  }
 
   /// A reply in a hire interview thread. Returns false when the thread is not
   /// one of ours, so the bridge can ignore it.
@@ -788,6 +978,10 @@ export class SlackCommands {
       actionId === LINK_DECLINE_ACTION ||
       actionId === OPEN_LINK_ACTION ||
       actionId === BUDGET_RAISE_ACTION ||
+      actionId === JOB_USE_ACTION ||
+      actionId === TOOLREQ_GIVE_ACTION ||
+      actionId === TOOLREQ_DECLINE_ACTION ||
+      actionId === JOB_KEEP_ACTION ||
       actionId === TEAM_PIECE_APPROVE_ACTION ||
       actionId === TEAM_ACCEPT_ACTION ||
       actionId === TEAM_PIECE_RETRY_ACTION ||
@@ -863,6 +1057,28 @@ export class SlackCommands {
         const meta: SendBackMeta = { itemId, ...(stageId ? { stageId } : {}), channel, ts };
         await openView(bot, p.trigger_id, sendBackView(this.processItemTitle(itemId), meta), this.deps.fetchImpl);
         return;
+      }
+      case TOOLREQ_GIVE_ACTION:
+      case TOOLREQ_DECLINE_ACTION: {
+        // Its DMs are settled by notifyToolRequestDecided, every admin's.
+        const res = org.decideToolRequest(caller, action.value, action.action_id === TOOLREQ_GIVE_ACTION);
+        if (!res.ok && channel && threadTs) await this.reply(channel, threadTs, res.error);
+        return;
+      }
+      case JOB_USE_ACTION:
+      case JOB_KEEP_ACTION: {
+        const draft = this.jobDrafts.get(action.value);
+        if (!draft) return settle('That rewrite has gone (the server restarted). Ask again with /worker <name> edit.');
+        if (draft.by !== p.user.id) return;
+        this.jobDrafts.delete(action.value);
+        if (action.action_id === JOB_KEEP_ACTION) return settle(`Kept ${draft.name}'s job as it was.`);
+        const res = org.update(caller, draft.workerId, { jobDescription: draft.job });
+        if (!res.ok) {
+          this.jobDrafts.set(action.value, draft);
+          if (channel && threadTs) await this.reply(channel, threadTs, `That didn't save: ${res.error}`);
+          return;
+        }
+        return settle(`Saved ${draft.name}'s new job. It applies from its next run.`);
       }
       case BUDGET_RAISE_ACTION: {
         const [workerId, amount] = action.value.split(':');
@@ -967,7 +1183,18 @@ export class SlackCommands {
       }
       case TEAM_ACCEPT_ACTION: {
         const res = org.decideTeamTask(caller, action.value, { kind: 'accept' });
-        if (!res.ok && channel && threadTs) await this.reply(channel, threadTs, res.error);
+        // The button goes once it has done its job, or once there's nothing
+        // left for it to do (accepted already, here or in the console): the
+        // message is the same one in the thread and in the conversation, so
+        // both lose it.
+        const settledAlready = !res.ok && /no pack waiting/i.test(res.error);
+        const bot = this.deps.botToken();
+        if ((res.ok || settledAlready) && bot && channel && ts) {
+          const was = ((payload as { message?: { blocks?: Array<{ type?: string }> } }).message?.blocks ?? []).filter((x) => x.type !== 'actions');
+          const note = res.ok ? `:white_check_mark: Accepted by <@${p.user!.id}>.` : 'Already accepted.';
+          await updateMessage(bot, { channel, ts, text: note, blocks: [...was, context(note)] }, this.deps.fetchImpl);
+        }
+        if (!res.ok && !settledAlready && channel && threadTs) await this.reply(channel, threadTs, res.error);
         return;
       }
       case TEAM_PIECE_APPROVE_ACTION:
@@ -1077,6 +1304,12 @@ export class SlackCommands {
   /// Batches already put in front of a manager, so progress updates on the
   /// same batch do not DM again.
   private toldBatches = new Set<string>();
+  /// The card each batch was proposed on, to say so when it's decided
+  /// somewhere else (the console, another tap) and not leave stale buttons.
+  private batchCards = new Map<string, { channel: string; ts: string }>();
+  /// How long to wait for an errand's ask to be linked to its batch, so the
+  /// card goes to the thread it was asked in.
+  threadWaitMs = 1500;
 
   /// Finished shifts whose manager has been told.
   private toldFinished = new Set<string>();
@@ -1103,6 +1336,7 @@ export class SlackCommands {
       as: this.asOf(o.origin.workerId, name),
     });
     if (!head) return;
+    this.deps.adoptThread?.(head.channel, head.ts, { id: o.origin.workerId, name });
     await deliverResults(
       {
         post: (channel, text, threadTs) => postMessage(bot, { channel, text, threadTs }, this.deps.fetchImpl),
@@ -1123,16 +1357,33 @@ export class SlackCommands {
   /// A worker on probation proposed work at a scheduled run: ask its manager.
   private async onBatch(o: Orchestration): Promise<void> {
     if (o.origin?.kind === 'worker' && o.origin.task === 'shift') void this.onShiftDone(o);
-    if (o.origin?.kind !== 'worker' || this.toldBatches.has(o.id)) return;
+    if (o.origin?.kind !== 'worker') return;
     const items = o.items.filter((i) => i.status === 'proposed');
-    if (!items.length) return;
+    // Decided somewhere else: the card says so, rather than waiting for a tap
+    // to find out.
+    const card = this.batchCards.get(o.id);
+    if (card && !items.length) {
+      this.batchCards.delete(o.id);
+      const started = o.items.filter((i) => i.status !== 'cancelled' && i.status !== 'proposed').length;
+      const bot = this.deps.botToken();
+      const text = started ? `Approved: ${started === 1 ? 'one thing' : `${started} things`} started.` : 'Skipped.';
+      if (bot) await updateMessage(bot, { channel: card.channel, ts: card.ts, text, blocks: [section(escapeMrkdwn(text))] }, this.deps.fetchImpl);
+      return;
+    }
+    if (this.toldBatches.has(o.id) || !items.length) return;
     const to = this.deps.org.managerSlackId(o.origin.workerId);
     if (!to || !this.deps.botToken()) return;
     this.toldBatches.add(o.id);
     const name = o.origin.workerName;
     const lines = items.slice(0, 8).map((i) => `• ${escapeMrkdwn(clip(i.candidate.title, 140))}`).join('\n');
     // Asked for in a Slack thread by the person who approves it: asked there.
-    const thread = this.deps.org.slackThreadFor?.({ orchestrationId: o.id });
+    // An errand's batch can be announced before its ask is linked to it, so
+    // look again after a moment.
+    let thread = this.deps.org.slackThreadFor?.({ orchestrationId: o.id }) ?? null;
+    if (!thread && o.origin.task === 'errand' && this.deps.org.slackThreadFor && this.threadWaitMs > 0) {
+      await new Promise((r) => setTimeout(r, this.threadWaitMs));
+      thread = this.deps.org.slackThreadFor({ orchestrationId: o.id });
+    }
     const posted = await this.dm(to, `${name} proposes ${items.length} thing${items.length === 1 ? '' : 's'} to do`, {
       as: this.asOf(o.origin.workerId, name),
       ...(thread && thread.slackUserId === to ? { inThread: { channel: thread.channel, threadTs: thread.threadTs } } : {}),
@@ -1149,6 +1400,7 @@ export class SlackCommands {
       ],
     });
     if (!posted) this.toldBatches.delete(o.id);
+    else this.batchCards.set(o.id, posted);
   }
 
   private async onTeamTask(task: TeamTask): Promise<void> {
@@ -1497,6 +1749,83 @@ export class SlackCommands {
     }
   }
 
+  /// A manager asked for a tool: each admin gets it to give or decline.
+  notifyToolRequest(r: ToolRequest, admins: string[]): void {
+    const who = r.by.slackUserId ? `<@${r.by.slackUserId}>` : escapeMrkdwn(r.by.name);
+    const installed = this.deps.org.toolInstalled?.(r.tool) ?? true;
+    const blocks = [
+      section(`*Tool request* — ${who} wants *${escapeMrkdwn(r.tool)}* for *${escapeMrkdwn(r.workerName)}*`),
+      ...(r.why ? [section(quote(clip(r.why, 600)))] : []),
+      ...(installed ? [] : [context(`${escapeMrkdwn(r.tool)} isn’t on this server yet. Add it under Setup → Tools in the console, then give it here.`)]),
+      { type: 'actions', elements: [button('Give it', TOOLREQ_GIVE_ACTION, r.id, 'primary'), button('Decline', TOOLREQ_DECLINE_ACTION, r.id)] },
+    ];
+    for (const admin of admins) {
+      void this.dm(admin, `${r.by.name} wants ${r.tool} for ${r.workerName}`, { blocks }).then((at) => {
+        if (at) this.toolRequestCards.set(r.id, [...(this.toolRequestCards.get(r.id) ?? []), at]);
+      });
+    }
+  }
+
+  /// The Monday digest, or one on demand (`/overgo digest`). False: nothing
+  /// to tell this person.
+  async sendDigest(slackUserId: string): Promise<boolean> {
+    const res = this.deps.org.weeklyDigest(this.caller(slackUserId));
+    if (!res.ok || !res.digest) return false;
+    const d = res.digest;
+    const money = (n: number) => `$${n < 10 ? n.toFixed(2) : Math.round(n)}`;
+    const lines = d.mine.map((w) => {
+      const bits = [`${w.done} done`, w.failed ? `${w.failed} failed` : '', w.errands ? `${w.errands} asked` : '', money(w.costUSD), w.useful || w.notUseful ? `rated useful ${w.useful} of ${w.useful + w.notUseful}` : ''].filter(Boolean);
+      return `• *${escapeMrkdwn(w.name)}*: ${bits.join(' · ')}`;
+    });
+    const blocks: unknown[] = [section(`*Your week with ${escapeMrkdwn(d.org)}’s workers*`)];
+    if (lines.length) blocks.push(section(lines.join('\n')));
+    if (d.waiting) blocks.push(section(`:hourglass_flowing_sand: *${d.waiting} waiting on you*${d.oldestWaitingAt ? `, the oldest since ${new Date(d.oldestWaitingAt).toLocaleDateString('en-US', { weekday: 'long' })}` : ''}. They're in your Inbox.`));
+    const o = d.orgTotals;
+    if (o) {
+      blocks.push(section([
+        `*The org this week*: ${o.workers} workers finished ${o.done} things${o.failed ? `, ${o.failed} failed` : ''}, for ${money(o.costUSD)}${o.costPerDone != null ? ` (${money(o.costPerDone)} each)` : ''}.`,
+        o.useful || o.notUseful ? `Rated useful ${o.useful} of ${o.useful + o.notUseful} times.` : '',
+        o.troubled.length ? `:warning: Failing tools: ${escapeMrkdwn(o.troubled.join(', '))}.` : '',
+        o.toolRequests ? `${o.toolRequests} tool request${o.toolRequests === 1 ? '' : 's'} waiting.` : '',
+      ].filter(Boolean).join('\n')));
+    }
+    blocks.push(context('Every Monday at 9. `/overgo digest` for this week so far, any time.'));
+    return !!(await this.dm(slackUserId, `Your week with ${d.org}'s workers`, { blocks }));
+  }
+
+  /// A tool started failing: what, since when, who it holds up, what to do.
+  notifyToolTrouble(t: ToolTrouble, admins: string[]): void {
+    const what = t.kind === 'auth' ? 'can’t sign in' : t.kind === 'gone' ? 'says its API is gone or retired' : `has failed ${t.count} times in a row`;
+    const fix = t.kind === 'auth'
+      ? 'Its key has likely expired or lost access. Replace it under Setup → Tools in the console.'
+      : t.kind === 'gone'
+        ? 'The vendor may have retired what it calls. Check for a newer version of the tool under Setup → Tools.'
+        : 'Check it under Setup → Tools; Check now shows whether it connects.';
+    const text = `${t.tool} ${what}`;
+    for (const admin of admins) {
+      void this.dm(admin, text, {
+        blocks: [
+          section(`:warning: *${escapeMrkdwn(t.tool)}* ${what}${t.workers.length ? `. Workers held up: ${escapeMrkdwn(t.workers.join(', '))}` : ''}.`),
+          section(quote(clip(t.lastError, 300))),
+          context(`${fix} I'll stay quiet about it for a day, and clear it the moment a call works.`),
+        ],
+      });
+    }
+  }
+
+  /// Decided: every admin's DM says so, and whoever asked hears.
+  notifyToolRequestDecided(r: ToolRequest): void {
+    const bot = this.deps.botToken();
+    const outcome = r.status === 'given' ? `${r.decidedBy} gave ${r.tool} to ${r.workerName}.` : `${r.decidedBy} declined ${r.tool} for ${r.workerName}${r.note ? `: ${r.note}` : '.'}`;
+    if (bot) {
+      for (const at of this.toolRequestCards.get(r.id) ?? []) {
+        void updateMessage(bot, { channel: at.channel, ts: at.ts, text: outcome, blocks: [section(`*Tool request* from ${escapeMrkdwn(r.by.name)}: ${escapeMrkdwn(outcome)}`)] }, this.deps.fetchImpl);
+      }
+    }
+    this.toolRequestCards.delete(r.id);
+    if (r.by.slackUserId) void this.dm(r.by.slackUserId, r.status === 'given' ? `${outcome} It can use it from its next run.` : outcome);
+  }
+
   notifyDecided(hire: PendingHire, outcome: { approved: boolean; by: string; worker?: Worker; error?: string }): void {
     const to = hire.requestedBy.slackUserId;
     if (!to) return;
@@ -1516,6 +1845,11 @@ const HELP = [
   '`/worker <name>` — one worker',
   '`/worker <name> <text>` — ask it to do something',
   '`/worker <name> pause` / `resume`',
+  '`/worker <name> learn` — have it go through its tools and learn what its job needs',
+  '`/overgo digest` — your week with your workers, so far',
+  '`/worker <name> tools add <tool>: why` — give it a tool, or ask an admin for one',
+  '`/worker <name> edit` — change its job (or say what should change), trust, schedule, budget, who can ask it',
+  '`/worker <name> changes [ticket or words]` — what its run changed, with the diff',
   '`/worker <name> track <ticket>` / `untrack <ticket>` — what its change watch follows',
   '`/hire <job description>` — hire a worker',
   '`/team` — the teams you can see, and what each is on',

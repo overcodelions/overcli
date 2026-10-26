@@ -4048,6 +4048,7 @@ export type MenuCommand =
   | 'newConversation'
   | 'setup'
   | 'basics'
+  | 'guide'
   | 'shortcuts'
   | 'whatsNew'
   | 'about'

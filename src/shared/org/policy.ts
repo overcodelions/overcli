@@ -77,6 +77,17 @@ export interface OrgPolicy {
   /// On for a server whose network can reach things the web must not (see
   /// docs/security.md).
   webNeedsApproval: boolean;
+  /// How workers open web pages (WebFetch): `ask` before each step that
+  /// does, `safe` without asking when the address came from the ask, a
+  /// search result or a page it read (src/main/safeFetch.ts), `any` freely.
+  /// From `webNeedsApproval` when unset (true: ask, false: any), else safe.
+  webFetch: WebFetchMode;
+  /// Tools whose keys belong to a service account rather than a person, as
+  /// an admin said: no "acts as a person" warning on them.
+  serviceAccounts?: string[];
+  /// The org's own sites (`acme.atlassian.net`, `wiki.acme.com`): a safe
+  /// fetch opens them, and the pages under them, whatever the address.
+  ownDomains: string[];
   /// Anyone in the org's Slack who asks (`/overgo join`) gets in straight
   /// away, as someone who can ask workers things. Off: an admin lets them in.
   openJoin: boolean;
@@ -119,7 +130,9 @@ export const DEFAULT_ORG_POLICY: OrgPolicy = {
   approvers: [],
   teams: {},
   orgVisibilityNeedsAdmin: true,
-  webNeedsApproval: true,
+  webNeedsApproval: false,
+  webFetch: 'safe',
+  ownDomains: [],
   openJoin: false,
   alertAtPercent: 80,
   people: {},
@@ -135,6 +148,8 @@ export interface OrgCaller {
   /// Granted by a token minted with `--admin`, or by `OrgPolicy.admins`.
   admin: boolean;
 }
+
+export type WebFetchMode = 'ask' | 'safe' | 'any';
 
 function strings(raw: unknown): string[] {
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim()) : [];
@@ -286,6 +301,7 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
       teams,
       ...(r.allowedMcpServers !== undefined ? { allowedMcpServers: strings(r.allowedMcpServers) } : {}),
       ...(r.sharedMcpServers !== undefined ? { sharedMcpServers: strings(r.sharedMcpServers) } : {}),
+      ...(r.serviceAccounts !== undefined ? { serviceAccounts: strings(r.serviceAccounts) } : {}),
       ...(() => {
         const raw = r.toolDefaults && typeof r.toolDefaults === 'object' ? (r.toolDefaults as Record<string, unknown>) : {};
         const out: ToolScopes = {};
@@ -296,7 +312,17 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
         return Object.keys(out).length ? { toolDefaults: out } : {};
       })(),
       orgVisibilityNeedsAdmin: r.orgVisibilityNeedsAdmin !== false,
-      webNeedsApproval: r.webNeedsApproval !== false,
+      ...(() => {
+        const set = r.webFetch === 'ask' || r.webFetch === 'safe' || r.webFetch === 'any' ? r.webFetch : undefined;
+        if (r.webFetch !== undefined && !set) warnings.push('webFetch must be "ask", "safe" or "any".');
+        const webFetch: WebFetchMode = set ?? (r.webNeedsApproval === true ? 'ask' : r.webNeedsApproval === false ? 'any' : 'safe');
+        return { webFetch, webNeedsApproval: webFetch === 'ask' };
+      })(),
+      ownDomains: strings(r.ownDomains).filter((d) => {
+        const ok = /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/i.test(d);
+        if (!ok) warnings.push(`ownDomains: "${d}" is not a site name like acme.atlassian.net.`);
+        return ok;
+      }),
       openJoin: r.openJoin === true,
       ...(orgBudget ? { orgBudgetUSD: orgBudget } : {}),
       alertAtPercent: Math.min(alertAt, 100),
@@ -313,7 +339,7 @@ export function isAdmin(policy: OrgPolicy, caller: OrgCaller): boolean {
   return caller.admin || (!!caller.slackUserId && policy.admins.includes(caller.slackUserId));
 }
 
-type RosterWorker = Pick<Worker, 'id' | 'reportsTo' | 'enabled' | 'manager' | 'visibility'>;
+type RosterWorker = Pick<Worker, 'id' | 'reportsTo' | 'enabled' | 'manager' | 'visibility'> & Partial<Pick<Worker, 'audience'>>;
 
 /// The person a worker answers to — its own manager, or the nearest one up
 /// the chain. Managing a worker means being that person.
@@ -326,8 +352,55 @@ export function canManage(policy: OrgPolicy, roster: readonly RosterWorker[], wo
   return isAdmin(policy, caller) || managesWorker(roster, workerId, caller);
 }
 
-function sharesTeam(policy: OrgPolicy, a: string, b: string): boolean {
+export function sharesTeam(policy: OrgPolicy, a: string, b: string): boolean {
   return Object.values(policy.teams).some((members) => members.includes(a) && members.includes(b));
+}
+
+// ---- AUDIENCES ------------------------------------------------------------
+
+/// Roles a worker, team or idea can be opened to, beside people and groups.
+export type AudienceRole = 'admin' | 'approver' | 'hirer';
+export const AUDIENCE_ROLES: Array<[AudienceRole, string]> = [
+  ['admin', 'Admins'],
+  ['approver', 'Hire approvers'],
+  ['hirer', 'People who can hire'],
+];
+
+/// Who a worker, team or idea is open to when it's picked rather than "only
+/// its manager" or "everyone": any of these people (Slack ids), anyone in
+/// these groups (`team:<name>`, the org's people teams) or with these roles.
+/// Read live, so joining a group or gaining a role gains access with it.
+export interface Audience {
+  people?: string[];
+  groups?: string[];
+  roles?: AudienceRole[];
+}
+
+export function inAudience(policy: OrgPolicy, caller: OrgCaller, a: Audience): boolean {
+  const roles = a.roles ?? [];
+  if (roles.includes('admin') && isAdmin(policy, caller)) return true;
+  const id = caller.slackUserId;
+  if (!id) return false;
+  if ((a.people ?? []).includes(id)) return true;
+  if ((a.groups ?? []).some((g) => g.startsWith('team:') && (policy.teams[g.slice(5)] ?? []).includes(id))) return true;
+  if (roles.includes('approver') && approversFor(policy).includes(id)) return true;
+  if (roles.includes('hirer') && (policy.hirers === '*' || policy.hirers.includes(id))) return true;
+  return false;
+}
+
+/// An audience from a request, or an error saying what's wrong with it.
+export function parseAudience(raw: unknown): { ok: true; audience: Audience } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object') return { ok: false, error: 'Pick who can use it.' };
+  const r = raw as Record<string, unknown>;
+  const list = (v: unknown) => (Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter(Boolean))] : []);
+  const people = list(r.people);
+  const groups = list(r.groups);
+  const roles = list(r.roles);
+  if (people.some((p) => !isSlackUserId(p))) return { ok: false, error: 'People are picked by their Slack member id.' };
+  if (groups.some((g) => !/^team:.{1,80}$/.test(g))) return { ok: false, error: 'That isn’t one of the org’s groups.' };
+  if (roles.some((x) => !AUDIENCE_ROLES.some(([k]) => k === x))) return { ok: false, error: 'Roles are admins, hire approvers or people who can hire.' };
+  if (people.length + groups.length + roles.length > 200) return { ok: false, error: 'That’s too many to pick one by one: pick a group instead.' };
+  return { ok: true, audience: { ...(people.length ? { people } : {}), ...(groups.length ? { groups } : {}), ...(roles.length ? { roles: roles as AudienceRole[] } : {}) } };
 }
 
 /// Who may see a worker and ask it things.
@@ -335,6 +408,8 @@ export function canSee(policy: OrgPolicy, roster: readonly RosterWorker[], worke
   if (canManage(policy, roster, workerId, caller)) return true;
   const worker = roster.find((w) => w.id === workerId);
   if (!worker) return false;
+  // Picked people, groups or roles, when set, say it all.
+  if (worker.audience) return inAudience(policy, caller, worker.audience);
   const visibility: WorkerVisibility = worker.visibility ?? 'private';
   if (visibility === 'org') return true;
   if (visibility === 'team') {

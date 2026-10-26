@@ -4,6 +4,8 @@
 // supplied at construction, and buffers a writer handle on stdin so we can
 // feed new user turns without respawning.
 
+import { fetchesChecked, judgeFetch, noteSeen, seedOnce } from './safeFetch';
+import { watchToolEvents } from './toolWatch';
 import { isAccountConnector } from '../shared/flows/mcpTools';
 import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1135,7 +1137,7 @@ export class RunnerManager {
       sessionId?: string;
       finish: (r: OneShotResult) => void;
       /// Approval requests this turn may grant itself (see `oneShot`'s `permit`).
-      permit?: (toolName: string) => boolean;
+      permit?: (toolName: string, toolInput?: string) => boolean;
       /// Live progress plumbing — populated only when the caller passed an
       /// `onProgress` hook (the orchestrator producer, which streams its
       /// investigation into the UI). `partial` is the cumulative snapshot of
@@ -1180,6 +1182,7 @@ export class RunnerManager {
     // hidden conversations have no UI and shouldn't create phantom runner
     // state or fire completion notifications. A no-op for normal convs.
     this.emit = (event) => {
+      watchToolEvents(event);
       if (this.tapOneShot(event)) return;
       this.trackRunning(event);
       this.rememberInit(event);
@@ -1536,7 +1539,7 @@ export class RunnerManager {
     mcpDeniedTools?: string[];
     /// Which approval requests this hidden turn grants itself. Nobody can
     /// answer one, so every other request is refused at once. Absent: all are.
-    permit?: (toolName: string) => boolean;
+    permit?: (toolName: string, toolInput?: string) => boolean;
     /// Pin this turn to a conversation the caller owns, instead of a
     /// throwaway. Paired with `resumeSessionId` it makes consecutive
     /// one-shots a single thread — see `OneShotResult.sessionId`.
@@ -1601,6 +1604,7 @@ export class RunnerManager {
       });
       idle.bump();
       if (args.cancelKey) this.oneShotCancelKeys.set(args.cancelKey, conversationId);
+      if (fetchesChecked()) seedOnce(conversationId, args.prompt);
       this.oneShotWaiters.set(conversationId, {
         text: '',
         settled: false,
@@ -1666,8 +1670,16 @@ export class RunnerManager {
         // sat there.)
         // The one exception is what the caller said this turn may do: a
         // worker reading its own tools while it works out an answer.
+        // Safe fetches: what the turn was shown is what it may open.
+        if (ev.kind.type === 'toolResult' && fetchesChecked()) for (const r of ev.kind.results) noteSeen(cid, r.content);
+        if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided && ev.kind.info.toolName === 'WebFetch' && fetchesChecked()) {
+          const verdict = judgeFetch(cid, ev.kind.info.toolInput);
+          log('info', 'runner.permission', `${verdict.allow ? 'allowed' : 'refused'} WebFetch in a hidden turn (safe fetch: ${verdict.why})`);
+          this.respondPermission(cid, ev.kind.info.requestId, verdict.allow, undefined, 'once', undefined, verdict.allow ? undefined : verdict.note);
+          continue;
+        }
         if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
-          const ok = !!waiter.permit?.(ev.kind.info.toolName);
+          const ok = !!waiter.permit?.(ev.kind.info.toolName, ev.kind.info.toolInput);
           this.respondPermission(cid, ev.kind.info.requestId, ok, undefined, 'once', ev.kind.info.toolName);
           continue;
         }

@@ -611,6 +611,13 @@ export interface FlowRun {
   /// sends, publishes, and service updates without the runtime boundary.
   /// Missing on historical runs is deliberately equivalent to false.
   allowExternalActions?: boolean;
+  /// Snapshot of its worker's choice to run through the flow's own
+  /// checkpoints (`pauseBefore`). Never waives an approval to act outside.
+  skipCheckpoints?: boolean;
+  /// Its worker reads code and doesn't change it, running in the connected
+  /// repos themselves: no file edits outside its own files folder, and only
+  /// shell commands that read, whatever its trust.
+  readsOnly?: boolean;
   /// A one-shot grant, not a standing one: the id of the step the user just
   /// approved by clicking Continue on an `externalAction` / `riskyStep`
   /// pause. Consulted

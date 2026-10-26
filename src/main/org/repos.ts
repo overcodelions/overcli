@@ -24,6 +24,12 @@ import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 export type RepoHost = 'github' | 'bitbucket' | 'other';
 
+/// A token rather than an account name: a known token shape, a stand-in
+/// user for tokens, or simply too long to be a name.
+function looksLikeToken(name: string): boolean {
+  return name.length >= 30 || /^(gh[pousr]_|github_pat_|glpat-|ATBB|ATAT|ATCTT|xox[abp]-)/.test(name) || /^(x-token-auth|x-access-token|oauth2|x-bitbucket-api-token-auth)$/i.test(name);
+}
+
 export const LOCAL_REPOS_ENV = 'OVERCLI_ALLOW_LOCAL_REPOS';
 
 export interface ConnectedRepo {
@@ -121,7 +127,10 @@ export function parseRepoUrl(raw: string, opts: { allowLocal?: boolean } = {}): 
   try {
     const u = new URL(url);
     if (u.protocol !== 'https:') return { ok: false, error: 'Use an https:// or git@ address.' };
-    if (u.username || u.password) return { ok: false, error: 'Leave the token out of the address — set it on the server instead.' };
+    // A host's own "clone" address carries the account name
+    // (https://pat@bitbucket.org/…): dropped, since the token signs in. A
+    // password, or a token pasted where the name goes, is a secret.
+    if (u.password || looksLikeToken(decodeURIComponent(u.username))) return { ok: false, error: 'Leave the token out of the address — set it on the server instead.' };
     const parts = u.pathname.replace(/\.git$/, '').split('/').filter(Boolean);
     if (parts.length < 2) return { ok: false, error: 'That address names no repo. It looks like https://github.com/acme/app' };
     const web = `${u.origin}/${parts.join('/')}`;
@@ -383,7 +392,35 @@ export class RepoService {
   /// allow-list: read-only git, for planning. Nothing that writes — the
   /// server commits and pushes (landBranches.ts), and the hook runs tests.
   codeTools(): string[] {
-    return this.list().length ? [...READ_GIT_TOOLS] : [];
+    if (!this.list().length) return [];
+    return [...new Set([...READ_GIT_TOOLS, ...this.workspaces().flatMap((w) => workspaceGitTools(w.repos))])];
+  }
+
+  /// Bring the clones at these paths up to date with origin before a run
+  /// forks its worktrees from them, so work starts from the default branch
+  /// as it is now rather than as it was when the repo was connected. Paths
+  /// that aren't connected repos are left alone. Returns what went wrong,
+  /// for the log; a repo that can't be fetched forks from what its clone has.
+  async freshen(paths: string[]): Promise<string[]> {
+    const repos = this.list().filter((r) => paths.includes(r.path));
+    const problems = await Promise.all(
+      repos.map(async (r): Promise<string | null> => {
+        const git = (args: string[]) => this.deps.git(args, r.path);
+        const fetched = await within(FRESHEN_MS, git(['fetch', '--prune', 'origin', r.defaultBranch]));
+        if (!fetched) return `${r.name}: fetching origin took too long; forking from the clone as it is.`;
+        if (!fetched.ok) return `${r.name}: couldn't fetch origin (${fetched.error}); forking from the clone as it is.`;
+        // The clone is the server's own and nobody works in it, so its
+        // default branch simply moves to origin's. Checked out, it moves
+        // with its files; otherwise only the branch moves.
+        const head = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
+        const moved =
+          head.ok && head.stdout.trim() === r.defaultBranch
+            ? await git(['merge', '--ff-only', `origin/${r.defaultBranch}`])
+            : await git(['fetch', 'origin', `${r.defaultBranch}:${r.defaultBranch}`]);
+        return moved.ok ? null : `${r.name}: couldn't move ${r.defaultBranch} to origin's (${moved.error}).`;
+      }),
+    );
+    return problems.filter((p): p is string => !!p);
   }
 
   /// Commands that run without asking. None now that tests run in the hook;
@@ -397,6 +434,12 @@ export class RepoService {
 const PLAN_MODEL = 'claude-opus-5-5';
 const WORK_MODEL = 'claude-sonnet-5-5';
 const READ_GIT_TOOLS = ['Bash(git diff:*)', 'Bash(git status:*)', 'Bash(git log:*)'];
+/// A workspace's run folder isn't a repo: git reaches each one by name.
+const workspaceGitTools = (names: string[]) => names.flatMap((n) => ['status', 'diff', 'log'].map((c) => `Bash(git -C ${n} ${c}:*)`));
+/// A fetch that hangs shouldn't hold a launch for long.
+const FRESHEN_MS = 60_000;
+const within = <T>(ms: number, p: Promise<T>): Promise<T | null> =>
+  Promise.race([p, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms).unref?.())]);
 const q = (tools: string[]) => tools.map((t) => (/[(]/.test(t) ? `"${t}"` : t)).join(', ');
 const indent = (lines: string[]) => lines.map((l) => `      ${l}`).join('\n');
 
@@ -405,6 +448,21 @@ const indent = (lines: string[]) => lines.map((l) => `      ${l}`).join('\n');
 /// changed repo (landBranches.ts) with these as the commit message. External,
 /// so on probation it waits for the manager's yes, and nothing is pushed
 /// without it.
+/// What the server's pull-request step is told: write the title and
+/// description, nothing else; the server pushes after it.
+export function pullRequestPrompt(what: string): string[] {
+  return [
+    'You write the pull request for a change that is already made. If the request above asks for',
+    'commits, branches or pushes, that part is not yours: overcli does it after you, from your words.',
+    'Write the pull request, and nothing else. The first line is its title: what',
+    'changed, under 70 characters, no prefix. Then a blank line, then the description: what changed',
+    `and why, which ${what} it touches, and how it was checked. Plain markdown; no attribution lines.`,
+    'Run no commands. Once you finish and the change is approved, overcli commits it and pushes a',
+    'branch in each repo that changed. Git runs each repo\'s tests first and refuses a push that',
+    'fails, so say plainly if you expect a test to fail.',
+  ];
+}
+
 function pullRequestStep(inputs: string, what: string): string[] {
   return [
     '  - id: pull-request',
@@ -416,16 +474,7 @@ function pullRequestStep(inputs: string, what: string): string[] {
     `    inputs: [${inputs}]`,
     `    tools: [${q(['Read', 'Grep', 'Glob'])}]`,
     '    system_prompt: |',
-    indent([
-      'You write the pull request for a change that is already made. If the request above asks for',
-      'commits, branches or pushes, that part is not yours: overcli does it after you, from your words.',
-      'Write the pull request, and nothing else. The first line is its title: what',
-      'changed, under 70 characters, no prefix. Then a blank line, then the description: what changed',
-      `and why, which ${what} it touches, and how it was checked. Plain markdown; no attribution lines.`,
-      'Run no commands. Once you finish and the change is approved, overcli commits it and pushes a',
-      'branch in each repo that changed. Git runs each repo\'s tests first and refuses a push that',
-      'fails, so say plainly if you expect a test to fail.',
-    ]),
+    indent(pullRequestPrompt(what)),
     '    output: pull-request.md',
   ];
 }
@@ -487,6 +536,7 @@ export function prFlowId(repo: Pick<ConnectedRepo, 'name'>): string {
 export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): string {
   const members = ws.repos.map((n) => repos.find((r) => r.name === n)).filter((r): r is ConnectedRepo => !!r);
   const layout = members.map((r) => `- ${r.name}/: ${r.url}, pull requests against ${r.defaultBranch}${r.testCommand ? `, tests: ${r.testCommand}` : ''}`);
+  const git = workspaceGitTools(members.map((r) => r.name));
   return [
     `name: Change the ${ws.name} workspace and push branches`,
     'description: |',
@@ -499,12 +549,16 @@ export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): str
     `    model: { backend: claude, model: ${PLAN_MODEL} }`,
     '    role: planner',
     '    inputs: [user_prompt]',
-    `    tools: [${q(['Read', 'Grep', 'Glob'])}]`,
+    `    tools: [${q(['Read', 'Grep', 'Glob', ...git])}]`,
     '    system_prompt: |',
     indent([
       `You are planning one change across the ${ws.name} workspace, from a request someone made.`,
-      'This folder holds a working copy of each repo, side by side:',
+      'This folder holds a working copy of each repo, side by side, each already up to date with',
+      'its default branch on origin:',
       ...layout,
+      'This folder is not a repo itself. To see a repo\'s history or changes, name it with -C:',
+      `git -C <repo> log, git -C <repo> diff, git -C <repo> status (for example git -C ${members[0]?.name ?? 'app'} log).`,
+      'Those are the only commands you can run.',
       'Read the request (and any screenshots), find the code involved in each repo, and write a',
       'short plan: which repos change, which files in each and how, what must stay in step between',
       'them (an API field and the app that shows it), and how you will know it works. Leave out',
@@ -517,7 +571,7 @@ export function workspaceFlowYaml(ws: OrgWorkspace, repos: ConnectedRepo[]): str
     `    model: { backend: claude, model: ${WORK_MODEL} }`,
     '    role: implementer',
     '    inputs: [user_prompt, plan.md]',
-    `    tools: [${q(['Read', 'Edit', 'Write', 'Grep', 'Glob'])}]`,
+    `    tools: [${q(['Read', 'Edit', 'Write', 'Grep', 'Glob', ...git])}]`,
     '    permission_mode: acceptEdits',
     '    system_prompt: |',
     indent([

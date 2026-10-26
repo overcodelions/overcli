@@ -30,6 +30,11 @@ const RUN_MODES: { label: string; note: string; body: string }[] = [
     body: 'Git can check the same repository out into a second directory. Overcli makes one, puts the agent in it on a fresh branch, and leaves your working copy alone — so a long run can go wrong at no cost. Afterwards you read the diff and merge it, or delete the worktree and lose nothing.',
   },
   {
+    label: 'Existing worktree',
+    note: 'a worktree already on disk, on its branch',
+    body: 'Picks up where an earlier agent left off: the chat runs in a worktree that already exists, on the branch it is already on. Nothing new is created, and the work stays off your checkout until you merge it.',
+  },
+  {
     label: 'Review a branch',
     note: 'detached worktree, read-only',
     body: 'Checks a branch out somewhere else on disk and reviews it with no write access. Nothing it does can change a file, which makes it the safe way to point a model at code you did not write.',
@@ -86,7 +91,7 @@ export function BasicsSheet() {
 
         <HelpSection
           title="Where the work happens"
-          lead="Every send picks one of four run modes. The pill under the composer is where you change it, and the choice decides which copy of your repository the model can touch."
+          lead="Every send picks one of five run modes. The pill under the composer is where you change it, and the choice decides which copy of your repository the model can touch."
         >
           <div className="grid gap-2.5 sm:grid-cols-2">
             {RUN_MODES.map((m) => (
@@ -124,6 +129,7 @@ export function BasicsSheet() {
       </div>
 
       <HelpFooter>
+        <HelpLink label="The full guide" onClick={() => openSheet({ type: 'guide' })} />
         <HelpLink label="Setup" onClick={() => openSheet({ type: 'setup' })} />
         <HelpLink label="Keyboard shortcuts" onClick={() => openSheet({ type: 'shortcutsHelp' })} />
         <HelpLink label="About overcli" onClick={() => openSheet({ type: 'about' })} />

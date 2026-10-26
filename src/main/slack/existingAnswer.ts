@@ -23,6 +23,8 @@ export interface AnswerSource {
 /// Each source cut to this, and all of them together to the total.
 const SOURCE_MAX = 15_000;
 const TOTAL_MAX = 60_000;
+/// How long a lookup waits on the model before the question goes on as before.
+const ANSWER_TIMEOUT_MS = 45_000;
 
 const SYSTEM = [
   'You answer a question someone at work asked in Slack, using only the numbered sources given:',
@@ -87,7 +89,7 @@ export function readAnswer(reply: string, sources: AnswerSource[]): { text: stri
     .replace(/^[^\n]*(?:plan file|here'?s (?:the|my|a|your) (?:reply|answer|response))[^\n]*\n+(?:\s*-{3,}\s*\n+)?/i, '')
     .trim();
   if (!t || /^NONE[.!]?$/i.test(t)) return null;
-  const m = /\n\s*\**sources?\**:\s*([\d,\sand]+)\s*$/i.exec(t);
+  const m = /\n\s*\**sources?\**:\s*([\d,\sand]+?)\s*[.!]?\**\s*$/i.exec(t);
   const used = m
     ? [...new Set(m[1].split(/[^\d]+/).filter(Boolean).map(Number))].map((n) => sources[n - 1]).filter((s): s is AnswerSource => !!s)
     : [];
@@ -105,7 +107,9 @@ export async function answerFromWork(deps: DraftDeps, question: string, sources:
     buildSystemPrompt: () => SYSTEM,
     userMessage: answerPrompt(question, sources),
     verb: 'answer the question',
-    timeouts: { timeoutMs: 120_000, idleTimeoutMs: 90_000 },
+    // The person is waiting in the thread and the question still has to be
+    // routed after a NONE: a slow answer gives way to that.
+    timeouts: { timeoutMs: ANSWER_TIMEOUT_MS, idleTimeoutMs: ANSWER_TIMEOUT_MS },
     // Not `plan`: plan mode has it write a plan file and present the
     // answer as a plan. Everything it needs is in the prompt.
     permissionMode: 'default',

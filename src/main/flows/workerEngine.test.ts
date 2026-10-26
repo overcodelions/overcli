@@ -56,7 +56,7 @@ vi.mock('./workerFiles', async (importOriginal) => ({
   fileWorkerDeliverable: fileDeliverableMock,
 }));
 
-import { WorkerEngine, parseFlowRequest, type WorkerEngineDeps, type WorkerParker } from './workerEngine';
+import { WorkerEngine, defaultFlowOf, parseFlowRequest, type WorkerEngineDeps, type WorkerParker } from './workerEngine';
 import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
 import type { HeldHandoff, Worker, WorkerJournalEntry, WorkersAway } from '../../shared/flows/worker';
 import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
@@ -550,7 +550,7 @@ describe('WorkerEngine on-demand workers', () => {
       expect(h.direct[0]).toMatchObject({
         projectPath: '/repo',
         flowId: 'fix-it',
-        runIn: 'worktree',
+        runIn: 'cwd',
         origin: { kind: 'worker', workerId: 'worker-1', task: 'errand' },
       });
       // The work itself, verbatim and last, under its own heading.
@@ -1137,28 +1137,25 @@ describe('errand triage', () => {
 });
 
 describe('WorkerEngine errands', () => {
-  it('never auto-approves a desk errand, at any trust level', async () => {
-    // The Ask/Create-work toggle used to be the only thing standing between a
-    // casual question and an unattended launch on an autonomous worker. The
-    // toggle is gone, so the guarantee lives here instead: a shift is
-    // something you scheduled and may launch on its own; a sentence you typed
-    // is not, whoever you typed it to.
+  it('lets its manager\'s errand start what its trust allows, and anyone else\'s only propose', async () => {
+    // Trust is the manager's standing answer to "may it go ahead without
+    // asking me?": none on probation, two when trusted, its cap when
+    // autonomous, whether the work came from a schedule or a sentence.
+    const caps = { probation: undefined, trusted: { maxItems: 2 }, autonomous: { maxItems: 3 } } as const;
     for (const trust of ['probation', 'trusted', 'autonomous'] as const) {
       const h = makeHarness({ seed: [seedWorker({ trust })] });
       h.engine.start();
       await h.engine.runErrand('worker-1', 'What changed?');
-      expect(h.parked[0].autoApprove).toBeUndefined();
-      // The ceiling is still the worker's own — it may PROPOSE its full cap,
-      // it just cannot launch any of it without you.
+      expect(h.parked[0].autoApprove).toEqual(caps[trust]);
       expect(h.parked[0].maxItems).toBe(3);
     }
 
-    // A shift keeps its cap, so removing the toggle did not quietly ground
-    // the autonomous workers.
-    const shift = makeHarness({ seed: [seedWorker({ trust: 'autonomous' })] });
-    shift.engine.start();
-    await shift.engine.workShiftNow('worker-1');
-    expect(shift.parked[0].autoApprove).toEqual({ maxItems: 3 });
+    // Someone who isn't its manager: it proposes, and nothing launches
+    // without an OK, at any trust level.
+    const other = makeHarness({ seed: [seedWorker({ trust: 'autonomous' })] });
+    other.engine.start();
+    await other.engine.runErrand('worker-1', 'What changed?', undefined, { untrusted: true });
+    expect(other.parked[0].autoApprove).toBeUndefined();
   });
 
   it('leads a swift worker\'s errand with the Swift directives, and a full one\'s with the job', async () => {
@@ -1354,6 +1351,20 @@ describe('WorkerEngine errands', () => {
     expect(starts.map((e: any) => e.warm)).toEqual([false, true]);
   });
 
+  it('lets a worker that only reads start work for whoever may ask it, and reads through its flow\'s connectors on a quick turn', async () => {
+    const reads: WorkerEngineDeps['flowsFor'] = (ids) => ids.map((id) => ({ id, name: id, stepTools: [{ tools: ['mcp__claude_ai_Acme_Tracker__getIssue', 'mcp__claude_ai_Acme_Tracker__editIssue'] }] }));
+    const h = makeHarness({ seed: [seedWorker({ trust: 'trusted', mcpServers: ['acme-wiki'] })], flowsFor: reads });
+    h.engine.start();
+    expect(h.engine.changesOf('worker-1')).toEqual(['it can use claude_ai_Acme_Tracker → editIssue']);
+    await h.engine.runErrand('worker-1', 'What is the state of ACME-412?', undefined, { untrusted: true, mayLaunch: true });
+    expect(h.parked[0].autoApprove).toEqual({ maxItems: 2 });
+    expect(h.parked[0].mcpAllowlist).toEqual(['acme-wiki', 'claude.ai Acme Tracker']);
+    expect(h.parked[0].mcpDeniedTools).toEqual(['mcp__claude_ai_Acme_Tracker__editIssue']);
+    // Without the say-so, someone else's ask still only proposes.
+    await h.engine.runErrand('worker-1', 'And ACME-9?', undefined, { untrusted: true });
+    expect(h.parked[1].autoApprove).toBeUndefined();
+  });
+
   it('carries the worker\'s MCP allowlist into every shift and errand', async () => {
     const h = makeHarness({ seed: [seedWorker({ mcpServers: ['atlassian'] })] });
     h.engine.start();
@@ -1400,7 +1411,7 @@ describe('WorkerEngine errands', () => {
       title: `[Errand] ${instruction}`,
       origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Scout' },
       allowedFlowIds: ['fix-it'],
-      runIn: 'worktree',
+      runIn: 'cwd',
       maxItems: 3,
     });
     expect(h.parked[0].prompt).toContain('Find the most valuable maintenance work');
@@ -1452,7 +1463,7 @@ describe('WorkerEngine errands', () => {
     h.engine.start();
     const savedBefore = h.saved.length;
     await h.engine.runErrand('worker-1', 'Investigate the failed spec.');
-    expect(h.parked[0].autoApprove).toBeUndefined();
+    expect(h.parked[0].autoApprove).toEqual({ maxItems: 2 });
     expect(h.parked[0].excludeTitles).toEqual(['do not repeat this']);
     expect(h.parked[0].prompt).toContain('Do not repeat this');
     expect(h.saved).toHaveLength(savedBefore);
@@ -2164,6 +2175,24 @@ describe('WorkerEngine generated flows', () => {
     });
   }
 
+  it('gives a worker that writes code its own checkout, and one that only reads none', async () => {
+    for (const [writesCode, want] of [[true, 'worktree'], [false, 'cwd']] as const) {
+      const calls: string[] = [];
+      const h = makeHarness({
+        seed: [{ ...seedWorker(), writesCode }],
+        generatedFlow: async (args) => {
+          calls.push(args.runIn);
+          return { ok: true, orchestrationId: 'orch-gen', flowId: 'generated-abcd1234' };
+        },
+      });
+      h.engine.start();
+      h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+      h.orchestrations.set('orch-1', replyRequesting('Read the CI logs and correlate.'));
+      await h.engine.runErrand('worker-1', 'why did CI get slower this month');
+      expect(calls).toEqual([want]);
+    }
+  });
+
   it('drafts and launches a flow when the worker asks for one', async () => {
     const calls: Array<{ request: string; errand: string; runIn: string }> = [];
     const h = makeHarness({
@@ -2195,7 +2224,7 @@ describe('WorkerEngine generated flows', () => {
     expect(res.ok).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0].request).toBe('Read the CI logs and correlate.');
-    expect(calls[0].runIn).toBe('worktree');
+    expect(calls[0].runIn).toBe('cwd');
     // Reported as work launched, not as an empty errand.
     expect(res.ok && res.result).toMatchObject({
       orchestrationId: 'orch-gen',
@@ -2872,6 +2901,28 @@ describe('WorkerEngine delegation', () => {
     await h.flush();
     expect(referred()[0]?.origin).toMatchObject({ workerId: 'triage', errand: 'Look at XYZ-6814.' });
     expect(h.held()).toHaveLength(0);
+  });
+
+  it('lets a Slack answer waiting behind a referral go once the referral is put back on hold', async () => {
+    const h = datedHarness();
+    seedErrandReply(h, 'Tell Triage', 'Passing it on. <handoff to="Triage">Look at XYZ-6814.</handoff>');
+    h.engine.start();
+    const release = h.holdPark('triage');
+    const first = h.engine.runErrand('triage', 'status of ACME-1?', undefined, { conversation: 'slack:C1:1.0' });
+    await h.flush();
+    // The referral waits for that answer; the next answer waits for the referral.
+    await h.engine.runErrand(CHIEF, 'Tell Triage');
+    await h.flush();
+    void h.engine.runErrand('triage', 'status of ACME-2?', undefined, { conversation: 'slack:C1:2.0' });
+    await h.flush();
+
+    h.engine.setAway();
+    release();
+    await first;
+    await h.flush();
+    await h.flush();
+    expect(h.held()).toHaveLength(1);
+    expect(h.parked.some((p) => p.prompt.includes('ACME-2'))).toBe(true);
   });
 
   it('tells the sender when a dated handoff can no longer reach anyone', async () => {
@@ -3642,6 +3693,25 @@ describe('WorkerEngine.commission', () => {
     expect(origin && origin.kind === 'worker' ? origin.allowExternalActions : undefined).toBeUndefined();
   });
 
+  it("runs a learning piece that only reads, and an approved plan's piece with what it needs granted", async () => {
+    const opts: Array<{ check?: boolean; readOnly?: boolean } | undefined> = [];
+    const h = makeHarness({
+      seed: [seedWorker({ cadence: null })],
+      pieceFlow: (flowId, o) => {
+        opts.push(o);
+        return { ok: true, flowId: `team-piece-${flowId}` };
+      },
+      flowsFor: (ids) => ids.map((id) => ({ id, name: id, steps: ['piece'], stepTools: [{ tools: ['Read', 'Bash', 'mcp__tracker__search_issues'] }] })),
+    });
+    h.engine.start();
+    await h.engine.commission('worker-1', { title: 'Learn', prompt: 'What do you know?', team, readOnly: true });
+    expect(opts[0]).toMatchObject({ readOnly: true });
+    await h.engine.commission('worker-1', { title: 'Draft', prompt: 'Draft it', team, planApproved: true });
+    const origin = h.direct[1]?.origin;
+    expect(origin && origin.kind === 'worker' ? origin.externalActionGrant : undefined).toEqual(['bash']);
+    expect(origin && origin.kind === 'worker' ? origin.allowExternalActions : undefined).toBeUndefined();
+  });
+
   it('refuses the piece rather than run the whole pipeline when the piece flow cannot be made', async () => {
     const h = makeHarness({
       seed: [seedWorker({ cadence: null })],
@@ -3654,3 +3724,50 @@ describe('WorkerEngine.commission', () => {
   });
 });
 
+describe('a worker\'s usual flow', () => {
+  it('is its preferred one while that is still among its flows, else the first', () => {
+    expect(defaultFlowOf({ flowIds: ['a', 'b'] })).toBe('a');
+    expect(defaultFlowOf({ flowIds: ['a', 'b'], preferredFlowId: 'b' })).toBe('b');
+    expect(defaultFlowOf({ flowIds: ['a'], preferredFlowId: 'gone' })).toBe('a');
+  });
+});
+
+describe('answering several Slack conversations at once', () => {
+  const settle = async (h: { flush(): Promise<void> }) => {
+    for (let i = 0; i < 8; i++) await h.flush();
+  };
+
+  it('answers different conversations side by side, and one conversation in order', async () => {
+    const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+    h.engine.start();
+    const release = h.holdPark();
+    const a = h.engine.runErrand('worker-1', 'status of ACME-1?', undefined, { conversation: 'slack:C1:1.0' });
+    const b = h.engine.runErrand('worker-1', 'status of ACME-2?', undefined, { conversation: 'slack:C1:2.0' });
+    const a2 = h.engine.runErrand('worker-1', 'and ACME-3?', undefined, { conversation: 'slack:C1:1.0' });
+    await settle(h);
+    // Two conversations at once; the second message of the first waits its turn.
+    expect(h.parked.map((p) => p.prompt).filter((t) => /ACME-1|ACME-2|ACME-3/.test(t))).toHaveLength(2);
+    expect(h.parked.some((p) => p.prompt.includes('ACME-3'))).toBe(false);
+    release();
+    await Promise.all([a, b, a2]);
+    expect(h.parked.some((p) => p.prompt.includes('ACME-3'))).toBe(true);
+  });
+
+  it('keeps to the limit, and lets a shift have the worker to itself', async () => {
+    const h = makeHarness({ seed: [seedWorker({ cadence: null, caps: { maxItemsPerShift: 3, runIn: 'worktree', answersAtOnce: 1 } })] });
+    h.engine.start();
+    const release = h.holdPark();
+    const a = h.engine.runErrand('worker-1', 'status of ACME-1?', undefined, { conversation: 'slack:C1:1.0' });
+    const b = h.engine.runErrand('worker-1', 'status of ACME-2?', undefined, { conversation: 'slack:C1:2.0' });
+    await settle(h);
+    expect(h.parked).toHaveLength(1);
+    const shift = h.engine.workShiftNow('worker-1');
+    await settle(h);
+    expect(h.parked).toHaveLength(1);
+    release();
+    await Promise.all([a, b, shift]);
+    // The shift went ahead of the answer still waiting, so a busy Slack can't hold it off.
+    expect(h.parked).toHaveLength(3);
+    expect(h.parked[1].prompt).not.toContain('ACME-2');
+  });
+});

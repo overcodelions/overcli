@@ -127,8 +127,33 @@ describe('repos', () => {
     await h.svc.connectRepo(admin, { url: 'https://github.com/acme/app' });
     expect(h.svc.letWorkOnRepo(sam, 'Triage', 'app').ok).toBe(false);
     expect(h.svc.letWorkOnRepo(pat, 'Triage', 'app')).toEqual({ ok: true, worker: 'Triage', flow: 'org-pr-app' });
-    expect(h.roster.get('triage')).toMatchObject({ projectPath: '/data/repos/app', flowIds: ['triage-flow', 'org-pr-app'] });
+    expect(h.roster.get('triage')).toMatchObject({ projectPath: '/data/repos/app', flowIds: ['triage-flow', 'org-pr-app'], preferredFlowId: 'org-pr-app' });
     expect(h.svc.repoList(pat)).toMatchObject({ ok: true, repos: [{ name: 'app', workers: ['Triage'] }] });
+  });
+  it('keeps a preferred flow someone picked, and only takes one of its own', async () => {
+    const h = harness();
+    await h.svc.connectRepo(admin, { url: 'https://github.com/acme/app' });
+    expect(h.svc.update(pat, 'Triage', { preferredFlowId: 'nope' })).toMatchObject({ ok: false, error: expect.stringContaining("isn't one of Triage's flows") });
+    expect(h.svc.update(pat, 'Triage', { preferredFlowId: 'triage-flow' }).ok).toBe(true);
+    h.svc.letWorkOnRepo(pat, 'Triage', 'app');
+    expect(h.roster.get('triage')!.preferredFlowId).toBe('triage-flow');
+    expect(h.svc.update(pat, 'Triage', { preferredFlowId: null }).ok).toBe(true);
+    expect(h.roster.get('triage')!.preferredFlowId).toBeUndefined();
+  });
+});
+
+describe('branch prefix', () => {
+  it('lets admins set one git takes, and refuses the rest', () => {
+    let saved = 'agent/';
+    const h = harness();
+    const repos = (h.svc as unknown as { deps: { repos: Record<string, unknown> } }).deps.repos;
+    repos.branchPrefix = () => saved;
+    repos.setBranchPrefix = (p: string) => { saved = p; };
+    expect(h.svc.setBranchPrefix(pat, 'overgo/').ok).toBe(false);
+    expect(h.svc.setBranchPrefix(admin, 'overgo/')).toEqual({ ok: true, branchPrefix: 'overgo/' });
+    expect(saved).toBe('overgo/');
+    for (const bad of ['overgo', '../x/', 'a//b/', 'x y/', '-x/']) expect(h.svc.setBranchPrefix(admin, bad).ok).toBe(false);
+    expect(h.svc.repoList(admin)).toMatchObject({ ok: true, branchPrefix: 'overgo/' });
   });
 });
 
@@ -295,7 +320,7 @@ describe('workspaces in the org', () => {
     expect(h.svc.letWorkOnRepo(pat, 'Triage', 'app')).toMatchObject({ ok: true, flow: 'org-pr-app' });
     expect(h.svc.letWorkOnRepo(pat, 'Triage', 'shop')).toEqual({ ok: true, worker: 'Triage', flow: 'org-pr-ws-shop' });
     // One place at a time: the repo's flow goes when it moves to the workspace.
-    expect(h.roster.get('triage')).toMatchObject({ projectPath: '/data/workspaces/ws-shop', flowIds: ['triage-flow', 'org-pr-ws-shop'] });
+    expect(h.roster.get('triage')).toMatchObject({ projectPath: '/data/workspaces/ws-shop', flowIds: ['triage-flow', 'org-pr-ws-shop'], preferredFlowId: 'org-pr-ws-shop' });
     expect(h.svc.repoList(pat)).toMatchObject({ ok: true, workspaces: [{ name: 'Shop', workers: ['Triage'] }] });
     expect(h.svc.removeWorkspace(admin, 'Shop')).toMatchObject({ ok: false, error: expect.stringContaining('Triage works there') });
   });
@@ -514,6 +539,15 @@ describe('tools for every worker', () => {
 });
 
 describe("giving a worker a tool", () => {
+  it('gives a worker with a tracker its "Ticket actions" flow, after its own', () => {
+    const h = harness();
+    expect(h.svc.update(admin, 'Triage', { mcpServers: ['atlassian'] }).ok).toBe(true);
+    expect(h.roster.get('triage')?.flowIds).toEqual(['triage-flow', 'org-ticket-actions-atlassian']);
+    expect(h.flows).toContain('org-ticket-actions-atlassian');
+    expect(h.svc.update(admin, 'Triage', { budgetUSDPerMonth: 40 }).ok).toBe(true);
+    expect(h.roster.get('triage')?.flowIds.filter((x) => x.startsWith('org-ticket-'))).toHaveLength(1);
+  });
+
   it('lets a manager give tools the org allows any hire, and leaves the rest to an admin', () => {
     const h = harness();
     expect(h.svc.update(pat, 'Triage', { mcpServers: ['tracker'] })).toMatchObject({ ok: false, error: expect.stringContaining('needs an admin') });

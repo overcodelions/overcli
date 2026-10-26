@@ -1,3 +1,4 @@
+import { createHmac, hkdfSync } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -113,15 +114,29 @@ describe('tool gateway', () => {
     const gw = await open(dir, file, {}, calls);
     const url = String(file.servers.crm.url);
 
-    const refused = await post(url, minted, call('create_record'));
-    expect(refused.json.result).toMatchObject({ isError: true });
-    expect(refused.json.result.content[0].text).toContain('did not start');
-    expect(calls).toEqual([expect.objectContaining({ allowed: false, who: 'unknown run not-a-ru' })]);
-    // Listing is still answered.
-    expect((await post(url, minted, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }))).status).toBe(200);
+    // Run keys are signed with what each start keeps in memory: one from an
+    // earlier start isn't a key at all now.
+    expect((await post(url, minted, call('create_record'))).status).toBe(401);
+    expect((await post(url, minted, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }))).status).toBe(401);
+    expect(calls).toEqual([]);
     // A run this start handed a key to, worker or not, still calls.
     expect((await post(url, `Bearer ${gw.keyFor('a-run')}`, call('search_records'))).json.result.content[0].text).toBe('from the tool');
     expect(tool.seen.filter((x) => x.body.includes('tools/call'))).toHaveLength(1);
+  });
+
+  it('refuses a live run key made from the key file', async () => {
+    const dir = tmpDir();
+    const tool = await upstream();
+    const file = configFile({ crm: { type: 'http', url: tool.url, headers: { Authorization: `Bearer ${TOKEN}` } } });
+    const gw = await open(dir, file);
+    const url = String(file.servers.crm.url);
+    gw.keyFor('live-run');
+    // What a worker that read the key file could sign: the box key's way, for the live run.
+    const root = fs.readFileSync(path.join(dir, 'tool-gateway.key'));
+    const mac = Buffer.from(hkdfSync('sha256', root, Buffer.alloc(0), 'tool-gateway key', 32));
+    const forged = `Bearer c.live-run.${createHmac('sha256', mac).update('c.live-run').digest('base64url')}`;
+    expect((await post(url, forged, call('create_record'))).status).toBe(401);
+    expect(tool.seen).toHaveLength(0);
   });
 
   it('binds a run to its own key and refuses calls outside its worker scope', async () => {

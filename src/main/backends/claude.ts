@@ -4,6 +4,7 @@
 // constructed via `makeParserState` and threaded through `parseChunk` —
 // the runner stores it opaquely.
 
+import { fetchesChecked } from '../safeFetch';
 import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from '../parsers/claude';
 import { normalizeAllowedDirs } from '../permissionRules';
 import type { BackendCtx, BackendSendArgs, BackendSpec, ParseChunkResult } from './types';
@@ -100,7 +101,10 @@ export const claudeBackend: BackendSpec = {
       a.push('--add-dir', dir);
     }
     if (args.allowedTools !== undefined) {
-      a.push('--allowedTools', args.allowedTools.join(' '));
+      // Checked fetches go to the approval broker one by one (safeFetch.ts),
+      // so none is pre-approved here.
+      const tools = fetchesChecked() ? args.allowedTools.filter((t) => t !== 'WebFetch' && !t.startsWith('WebFetch(')) : args.allowedTools;
+      a.push('--allowedTools', tools.join(' '));
     }
     if (args.disallowedTools?.length) a.push('--disallowedTools', args.disallowedTools.join(' '));
     // Layered on top of the user's own settings files, not instead of them.

@@ -173,6 +173,8 @@ export type ActiveSheet =
   /// buildMenu in src/main/index.ts.
   | { type: 'setup' }
   | { type: 'basics' }
+  /// The full user guide (docs/guide), optionally opened on one page.
+  | { type: 'guide'; page?: string }
   | { type: 'whatsNew' };
 
 export type DetailMode =

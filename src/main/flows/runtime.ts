@@ -32,6 +32,13 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { log } from '../diagnostics';
+import { rebindMissingBackends } from '../../shared/flows/templateResolver';
+import { readsOnlyWithin } from '../permissionPolicy';
+import { fetchesChecked, judgeFetch, noteSeen, seedOnce } from '../safeFetch';
+import { workerFilesDir } from './workerFiles';
+
+/// The file tools a reader's run checks call by call (`FlowRun.readsOnly`).
+const READER_CHECKED = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 import { migrateClaudeSessionCwd } from '../history';
 
 import type {
@@ -610,6 +617,26 @@ export class FlowRuntimeImpl {
   /// the attachment directory.
   private static readonly INLINE_THRESHOLD_BYTES = 20_000;
 
+  /// Brings a repo's clone up to date before a run forks its worktree from
+  /// it. The server sets it for the repos it cloned; the desktop leaves a
+  /// person's own checkout alone.
+  beforeFork?: (repoPaths: string[]) => Promise<void>;
+  /// The backends this machine can run. Set, a flow's step on any other
+  /// backend moves to one of these at the same tier when its run starts.
+  /// Whether a worker runs through its flows' own checkpoints. Set by the
+  /// org server from the worker's record; absent: every flow stops at them.
+  skipsCheckpoints?: (workerId: UUID) => boolean;
+  /// Whether a worker's run here only reads: one that doesn't change code,
+  /// working in a repo or workspace. Set by the org server.
+  readsOnlyWorker?: (workerId: UUID, projectPath: string) => boolean;
+  /// The steps of a flow its worker may always run without asking, as
+  /// `step:<id>` grants. Set by the org server; absent: none.
+  standingGrants?: (workerId: UUID, flowId: string) => string[];
+  backendsAvailable?: () => Promise<Backend[]>;
+  /// Reshapes the run's copy of a flow before it starts: the server ends a
+  /// worker's flow on a connected repo with its own push (serverFlow.ts).
+  reshapeFlow?: (flow: Flow, args: { projectPath: string; workerId?: string }) => Flow;
+
   constructor(
     private runner: RunnerManager,
     private emit: (event: MainToRendererEvent) => void,
@@ -778,6 +805,43 @@ export class FlowRuntimeImpl {
           ev.kind.info.decisionNote = note;
         }
       }
+      // A reader (readsOnly): it may write only in its own files folder, and
+      // run only shell lines that read. Whatever its trust: these are the
+      // shared repos everyone's runs start from.
+      if (run.readsOnly) {
+        const roots = [run.projectPath, ...(run.workspaceWorktrees ?? []).map((m) => m.worktreePath)];
+        const own = run.workerId ? workerFilesDir(run.workerId) : null;
+        for (const ev of event.events) {
+          if (ev.kind.type !== 'permissionRequest' || ev.kind.info.decided) continue;
+          const tool = ev.kind.info.toolName;
+          if (tool !== 'Bash' && !READER_CHECKED.has(tool)) continue;
+          const allow = readerAllows(tool, ev.kind.info.toolInput, run.projectPath, roots, own);
+          const note = tool === 'Bash'
+            ? 'Refused by policy, not by a person: this worker reads code and does not change it, so only shell commands that read run here (git log, git show, git blame, git grep, rg, grep, ls, cat; cd into a folder first if you like). Run what you need as plain reads, and say in your reply if something could not be read.'
+            : `Refused by policy, not by a person: this worker reads code and does not change it, so it can't write in the repos. To keep a file, write it in your own files folder (${own ?? 'not set up'}) and name its full path in your reply.`;
+          log('info', 'flows.permission', `${allow ? 'allowed' : 'refused'} "${tool}" for reader run ${runId}`);
+          this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, allow, undefined, undefined, undefined, allow ? undefined : note);
+          ev.kind.info.decided = allow ? 'allow' : 'deny';
+          ev.kind.info.decidedBy = 'policy';
+          ev.kind.info.decisionNote = allow ? 'Allowed: a read.' : 'Refused: this worker only reads here.';
+        }
+      }
+      // Safe fetches (safeFetch.ts): a page it may open is one it was shown
+      // — its ask, a search result, a page it read — or the org's own site.
+      if (fetchesChecked()) {
+        seedOnce(runId, run.userPrompt ?? '');
+        for (const ev of event.events) {
+          if (ev.kind.type === 'toolResult') for (const r of ev.kind.results) noteSeen(runId, r.content);
+          if (ev.kind.type !== 'permissionRequest' || ev.kind.info.decided || ev.kind.info.toolName !== 'WebFetch') continue;
+          const approved = !!run.externalActionApprovedStepId && run.externalActionApprovedStepId === currentStepId;
+          const verdict = approved ? { allow: true, why: 'its step was approved' } : judgeFetch(runId, ev.kind.info.toolInput);
+          log('info', 'flows.permission', `${verdict.allow ? 'allowed' : 'refused'} WebFetch for run ${runId} (safe fetch: ${verdict.why})`);
+          this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, verdict.allow, undefined, undefined, undefined, verdict.allow ? undefined : verdict.note);
+          ev.kind.info.decided = verdict.allow ? 'allow' : 'deny';
+          ev.kind.info.decidedBy = 'policy';
+          ev.kind.info.decisionNote = verdict.allow ? `Allowed: ${verdict.why}.` : `Refused: ${verdict.why}.`;
+        }
+      }
       if (run.workerId && !run.allowExternalActions) {
         for (const ev of event.events) {
           if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
@@ -787,8 +851,15 @@ export class FlowRuntimeImpl {
             // looking up its tracker is what it was put on the team to do,
             // and the step's tools never list every lookup. Its scope, if it
             // has one, was checked just above.
-            const read = ev.kind.info.toolName.startsWith('mcp__') && isReadOnlyMcpTool(ev.kind.info.toolName);
-            const allow = approvedStep || read;
+            // So is a shell line that only reads inside the run's own folder
+            // (`git log`, `rg`, `ls`): nobody needs to approve a look.
+            const roots = [run.projectPath, ...(run.workspaceWorktrees ?? []).map((m) => m.worktreePath)];
+            const read = readsOnlyWithin(ev.kind.info.toolName, ev.kind.info.toolInput, run.projectPath, roots);
+            // A step the grant names may use the tools it lists by server
+            // (`mcp__tracker`): the ticket follow-up's tracker, nothing else.
+            const named = !!current && !!run.externalActionRunGrant?.includes(`step:${current.id}`) &&
+              current.tools.some((t) => /^mcp__[^_]+(?:_[^_]+)*$/.test(t) && !t.slice(5).includes('__') && ev.kind.type === 'permissionRequest' && ev.kind.info.toolName.startsWith(`${t}__`));
+            const allow = approvedStep || read || named;
             log(
               'info',
               'flows.permission',
@@ -805,7 +876,14 @@ export class FlowRuntimeImpl {
               undefined,
               undefined,
               undefined,
-              allow ? undefined : refusalForModel(`${tool} is not among the tools this work was given (the worker's flow does not list it).`),
+              allow
+                ? undefined
+                : tool === 'Bash'
+                  // Not "don't retry": a shell refused once for a loop or a
+                  // write still runs plain reads, and a code reader that gave
+                  // up on it after one refusal never read any history.
+                  ? 'Refused by policy, not by a person: that shell command is not one this work may run without approval. This is not a file-permission or access problem. Commands that only read inside your folders still run: git log, git show, git blame, git grep, rg, grep, ls, cat, with cd into a folder first if you like. A loop, a variable, $(…), or anything that writes is refused. Run what you need as plain reads like those, and say in your reply if something still could not be read.'
+                  : refusalForModel(`${tool} is not among the tools this work was given (the worker's flow does not list it).`),
             );
             // Say so on the event itself before it reaches the renderer (this
             // tap runs first, on the same object). Otherwise the card offered
@@ -991,8 +1069,9 @@ export class FlowRuntimeImpl {
   ): Promise<{ ok: true; runId: UUID } | { ok: false; error: string; preflight?: PreflightResult }> {
     const projectPaths = this.getProjects().map(p => p.path);
     const flows = loadAllFlows({ projectPaths });
-    const flow = flows.find(f => f.id === args.flowId);
-    if (!flow) return { ok: false, error: `Flow "${args.flowId}" not found.` };
+    const found = flows.find(f => f.id === args.flowId);
+    if (!found) return { ok: false, error: `Flow "${args.flowId}" not found.` };
+    const flow = await this.onBackendsHere(this.reshapeFlow?.(found, { projectPath: args.projectPath, ...(args.workerId ? { workerId: args.workerId } : {}) }) ?? found);
     if (flow.steps.length === 0) return { ok: false, error: 'Flow has no steps.' };
 
     // A worker-owned worktree run must not smuggle an output back into the
@@ -1195,9 +1274,12 @@ export class FlowRuntimeImpl {
     // where a one-step exfiltration flow would put it. `pauseBefore` is still
     // excluded: it is a between-steps checkpoint and has no meaning before
     // the run has started.
+    // What this run may do without asking: its launch's grant, and the steps
+    // its manager always allows for this flow.
+    const runGrant = [...new Set([...(args.externalActionGrant ?? []), ...(args.workerId ? this.standingGrants?.(args.workerId, flow.id) ?? [] : [])])];
     const firstPauseReason =
       pauseReasonBeforeStep(
-        { workerId: args.workerId, allowExternalActions: args.allowExternalActions, externalActionRunGrant: args.externalActionGrant },
+        { workerId: args.workerId, allowExternalActions: args.allowExternalActions, externalActionRunGrant: runGrant },
         { ...firstStep, pauseBefore: false },
       ) ?? null;
     const run: FlowRun = {
@@ -1241,7 +1323,9 @@ export class FlowRuntimeImpl {
       workerName: args.workerName,
       ...(args.team ? { team: args.team } : {}),
       ...(args.allowExternalActions ? { allowExternalActions: true } : {}),
-      ...(args.externalActionGrant?.length ? { externalActionRunGrant: args.externalActionGrant } : {}),
+      ...(runGrant.length ? { externalActionRunGrant: runGrant } : {}),
+      ...(args.workerId && this.skipsCheckpoints?.(args.workerId) ? { skipCheckpoints: true } : {}),
+      ...(args.workerId && this.readsOnlyWorker?.(args.workerId, cwd) ? { readsOnly: true } : {}),
       ...(args.chrome ? { chrome: true } : {}),
       ...(args.unattended ? { unattended: true } : {}),
       ...(args.unattendedAllowedTools ? { unattendedAllowedTools: args.unattendedAllowedTools } : {}),
@@ -3268,7 +3352,9 @@ export class FlowRuntimeImpl {
       // A scoped worker's out-of-scope calls are never pre-approved, and the
       // ones the server has seen are refused by the CLI outright.
       enabledTools: (() => {
-        const tools = enabledToolsFor(run, step);
+        // A reader's edits and shell lines are each checked as they come,
+        // so none is approved ahead.
+        const tools = enabledToolsFor(run, step).filter((t) => !run.readsOnly || !(READER_CHECKED.has(t) || t === 'Bash' || t.startsWith('Bash(')));
         const scopes = this.scopesOf(run);
         return scopes ? tools.filter((t) => inToolScope(scopes, t)) : tools;
       })(),
@@ -4403,6 +4489,9 @@ export class FlowRuntimeImpl {
   }
 
   private resolvePermissionMode(run: FlowRun, step: FlowStep): PermissionMode {
+    // A reader works in the shared repos: every call that isn't plainly a
+    // read must reach the check below, whatever the step or its trust say.
+    if (run.readsOnly) return 'acceptEdits';
     if (step.permissionMode) return step.permissionMode;
     // Flows are designed to run unattended — the user has already opted
     // into "automate this whole pipeline".
@@ -4554,6 +4643,7 @@ export class FlowRuntimeImpl {
       if (members.length === 0) {
         return { ok: false, error: 'Workspace has no eligible member projects.' };
       }
+      await this.freshen(members.map((p) => p.path));
       const branchPrefix = settings.agentBranchPrefix || 'agent/';
       const wtNameBase = uniqueWorktreeName(
         members.map((p) => p.path),
@@ -4638,6 +4728,7 @@ export class FlowRuntimeImpl {
         total: 1,
         message: 'Preparing worktree…',
       });
+      await this.freshen([args.projectPath]);
       const baseBranch = sharedBase ?? (await detectBaseBranchAsync(args.projectPath));
       const result = await createWorktreeAsync({
         projectPath: args.projectPath,
@@ -4650,6 +4741,34 @@ export class FlowRuntimeImpl {
       }
       this.emitLaunchProgress(args.projectPath, { completed: 1, total: 1, message: 'Worktree ready' });
       return { ok: true, worktreePath: result.worktreePath, branchName: result.branchName };
+    }
+  }
+
+  /// The flow as this machine can run it: steps on a backend it doesn't have
+  /// move to one it does, at the same tier. Unchanged when nothing says what
+  /// it has, or the check fails.
+  private async onBackendsHere(flow: Flow): Promise<Flow> {
+    if (!this.backendsAvailable) return flow;
+    let healthy: Backend[];
+    try {
+      healthy = await this.backendsAvailable();
+    } catch {
+      return flow;
+    }
+    const settings = this.getSettings();
+    const res = rebindMissingBackends(flow, { healthyBackends: healthy, preferredBackend: settings.preferredBackend, modelDefaults: settings.flowModelDefaults });
+    if (res.moved.length) log('info', 'flows', `"${flow.name}" runs here with ${res.moved.map((m) => `${m.from} → ${m.to}`).join(', ')}: those backends aren't available on this machine.`);
+    return res.flow;
+  }
+
+  /// Never stops a launch: a repo that can't be brought up to date forks
+  /// from what its clone has.
+  private async freshen(paths: string[]): Promise<void> {
+    if (!this.beforeFork) return;
+    try {
+      await this.beforeFork(paths);
+    } catch (err) {
+      log('warn', 'flows', `Couldn't bring the repos up to date before forking: ${(err as Error).message}`);
     }
   }
 
@@ -4867,10 +4986,13 @@ export function isGatingReviewStep(
 export { resolveStepEffect, runGrantCovers, stepOutsideTools } from './stepEffect';
 
 export function pauseReasonBeforeStep(
-  run: Pick<FlowRun, 'workerId' | 'allowExternalActions' | 'externalActionRunGrant'>,
+  run: Pick<FlowRun, 'workerId' | 'allowExternalActions' | 'externalActionRunGrant'> & Partial<Pick<FlowRun, 'skipCheckpoints'>>,
   step: Pick<FlowStep, 'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect' | 'pauseBefore'>,
 ): 'externalAction' | 'riskyStep' | 'preStep' | null {
-  if (run.workerId && !run.allowExternalActions && resolveStepEffect(step) === 'external' && !runGrantCovers(run, step)) {
+  // A grant may name a step outright (`step:pull-request`): a trusted coding
+  // worker writing its pull request, which the server then pushes.
+  const named = !!run.externalActionRunGrant?.includes(`step:${step.id}`);
+  if (run.workerId && !run.allowExternalActions && resolveStepEffect(step) === 'external' && !runGrantCovers(run, step) && !named) {
     return 'externalAction';
   }
   // The other way a step can be unsafe to run. `resolveStepEffect` above hunts
@@ -4889,7 +5011,10 @@ export function pauseReasonBeforeStep(
   // `allowExternalActions` does not waive it either: that grant is about
   // pushing and messaging, not about reading a private key.
   if (scanStepRisks(step).some((f) => f.severity === 'high')) return 'riskyStep';
-  return step.pauseBefore ? 'preStep' : null;
+  // The flow author's "look before this step": a worker whose admin said it
+  // runs through them goes on. Only this one: the two boundaries above
+  // stand whatever it was told.
+  return step.pauseBefore && !run.skipCheckpoints ? 'preStep' : null;
 }
 
 /// Does a worker candidate explicitly direct a write into its persistent
@@ -5811,3 +5936,13 @@ async function computeRunDiff(cwd: string, baselineCommit: string): Promise<stri
 // Public alias used by main/index.ts — keeps a single import name whether
 // callers want the type or the constructor.
 export { FlowRuntimeImpl as FlowRuntime };
+
+/// What a reader's run (`FlowRun.readsOnly`) may do with a call that comes
+/// to the check: a shell line only when it reads inside its folders, and a
+/// file edit only inside its own files folder.
+export function readerAllows(tool: string, input: unknown, projectPath: string, roots: string[], ownDir: string | null): boolean {
+  if (tool === 'Bash') return readsOnlyWithin('Bash', input, projectPath, roots);
+  const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const target = typeof args.file_path === 'string' ? args.file_path : typeof args.notebook_path === 'string' ? args.notebook_path : '';
+  return !!ownDir && !!target && isAbsolute(target) && (resolve(target) + sep).startsWith(resolve(ownDir) + sep);
+}

@@ -36,6 +36,8 @@ export interface ProcessAccess {
   who: ProcessAudience;
   groups?: Array<{ id: string; name: string }>;
   people?: ProcessPerson[];
+  /// Roles, for `people`: admins, hire approvers, people who can hire.
+  roles?: Array<'admin' | 'approver' | 'hirer'>;
 }
 
 /// A process's access as stored; absent is everyone, as processes made
@@ -46,7 +48,7 @@ export function accessOf(def: Pick<ProcessDef, 'access'>): ProcessAccess {
 
 /// An access setting from untrusted input, or a reason it isn't one.
 export function parseProcessAccess(raw: unknown): ProcessAccess | string {
-  const r = (raw ?? {}) as { who?: unknown; groups?: unknown; people?: unknown };
+  const r = (raw ?? {}) as { who?: unknown; groups?: unknown; people?: unknown; roles?: unknown };
   const who = r.who;
   if (who !== 'private' && who !== 'team' && who !== 'people' && who !== 'everyone') return 'Say who can see and start it: only you, a team, certain people or everyone.';
   if (who === 'private' || who === 'everyone') return { who };
@@ -58,9 +60,10 @@ export function parseProcessAccess(raw: unknown): ProcessAccess | string {
     .filter((p): p is ProcessPerson => !!p && typeof p.name === 'string' && !!p.name.trim())
     .slice(0, 200)
     .map((p) => ({ name: p.name.trim(), ...(typeof p.slackUserId === 'string' && p.slackUserId ? { slackUserId: p.slackUserId } : {}) }));
+  const roles = (Array.isArray(r.roles) ? r.roles : []).filter((x): x is 'admin' | 'approver' | 'hirer' => x === 'admin' || x === 'approver' || x === 'hirer');
   if (who === 'team' && !groups.length) return 'Pick the team that can see and start it.';
-  if (who === 'people' && !groups.length && !people.length) return 'Pick the people who can see and start it.';
-  return { who, ...(groups.length ? { groups } : {}), ...(people.length ? { people } : {}) };
+  if (who === 'people' && !groups.length && !people.length && !roles.length) return 'Pick the people who can see and start it.';
+  return { who, ...(groups.length ? { groups } : {}), ...(people.length ? { people } : {}), ...(who === 'people' && roles.length ? { roles: [...new Set(roles)] } : {}) };
 }
 
 /// Something people fill in at a people stage.

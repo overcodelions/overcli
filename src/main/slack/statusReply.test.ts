@@ -5,7 +5,7 @@ import { GREETING, SELF_ASK, STATUS_ASK, adminReply, selfReply, statusReply, wit
 const quiet: TodayView = {
   org: 'Acme',
   waiting: [],
-  hireApprovals: [],
+  hireApprovals: [], toolRequests: [], toolTrouble: [],
   teamTasks: [],
   proposals: [],
   delivered: [],

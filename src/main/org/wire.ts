@@ -1,6 +1,12 @@
 // Build the org control plane over the engines — shared by the app and
 // `overcli serve`, like the Slack bridge, so both enforce one set of rules.
 
+import os from 'node:os';
+import { checkoutHealth, discardCheckouts, folderBytes, keptCheckouts, sweepWorktrees, volumeOf } from './worktreeSweep';
+import type { StorageReport } from './orgService';
+import { warmNpxTools } from './npxWarm';
+import { ToolHealth, type ToolTrouble } from './toolHealth';
+import { setToolWatcher } from '../toolWatch';
 import type { FlowRuntimeImpl } from '../flows/runtime';
 import type { OrchestratorImpl } from '../flows/orchestrator';
 import type { WorkerEngine } from '../flows/workerEngine';
@@ -19,20 +25,25 @@ import { OrgService, type HealthItem, type OrgServiceDeps, type SetupOffer } fro
 import type { ServerVersion } from './updateCheck';
 import { draftHire, drafterDepsFor, saveDraftedHire } from './hireDraft';
 import { findOverlap } from './hireOverlap';
+import { rewriteJob } from './jobRewrite';
 import { pickPicture } from './pickPicture';
 import { oneShotDraftText } from '../flows/drafter';
 import { resolveWorkPlace } from './defaultProject';
-import { installTool, listTools, loadToolTemplates, rememberToolTemplates, toolTemplatesFile, uninstallTool } from './tools';
+import { installTool, listTools, loadToolTemplates, rememberToolTemplates, toolTemplatesFile, uninstallTool, updateToolSettings } from './tools';
 import { host } from '../host';
 import { readClaudeInit } from '../flows/mcpProbe';
 import { readClaudeMcpServers } from '../mcpConfig';
+import { mcpServerKey } from '../../shared/flows/toolScope';
+import { checkLogin, checkLoginByCall, type LoginResult } from './toolLogin';
 import { callTool, listServerTools } from './mcpDirect';
 import type { TriggerService } from './triggers';
-import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy } from './orgStores';
+import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileToolRequestStore, fileToolHealthStore, fileWorkerVersionStore, fileHandbook, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy } from './orgStores';
 import { RepoService, type RepoState } from './repos';
 import { projectIdFor, repairProjectIds } from '../projectIds';
 import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from '../workspace';
 import { applyRepoGrants } from './repoGrants';
+import { changesOfRun } from './runChanges';
+import { log } from '../diagnostics';
 import type { SecretsService } from './secrets/service';
 import type { ConnectionsService } from './connections';
 import type { ToolSignIn } from './toolSignIn';
@@ -43,7 +54,7 @@ import path from 'node:path';
 
 export interface OrgEngines {
   runner: RunnerManager;
-  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun'>;
+  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork'>;
   orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem' | 'list' | 'approveBatch'>;
   workerEngine: WorkerEngine;
   /// A getter: the app builds teams after the plane.
@@ -151,19 +162,58 @@ export function rejectWorkerRun(
 
 export function createOrgService(
   engines: OrgEngines,
-  hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided' | 'onToolsWanted' | 'onAskDone'> = {},
+  hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided' | 'onToolsWanted' | 'onAskDone' | 'onToolRequest' | 'onToolRequestDecided'> & {
+    /// A tool started failing: tell these admins.
+    onToolTrouble?(t: ToolTrouble, admins: string[]): void;
+  } = {},
 ): OrgService {
   const { runner, flowRuntime, workerEngine } = engines;
   const repos = createRepoService();
   applyRepoGrants(repos);
-  return new OrgService({
+  // Runs on a connected repo start from its default branch as origin has it.
+  flowRuntime.beforeFork = (paths) => repos.freshen(paths).then((problems) => problems.forEach((p) => log('warn', 'org.repos', p)));
+  // The last storage measurement (storage.report).
+  let storageCache: StorageReport | null = null;
+  // When the connected repos last caught up with origin.
+  let lastRefreshAt: number | undefined;
+  // npx tools installed ahead of their first check or run, and a broken
+  // install put right; then again every half hour for ones added since.
+  const warm = () => {
+    const tools = Object.fromEntries(Object.entries(readClaudeMcpServers()).map(([n, c]) => [n, { command: typeof c.command === 'string' ? c.command : undefined, args: Array.isArray(c.args) ? c.args.map(String) : [] }]));
+    void warmNpxTools(tools, (level, msg) => log(level, 'org.tools', msg)).catch(() => undefined);
+  };
+  warm();
+  setInterval(warm, 30 * 60_000).unref?.();
+  // The connected repos follow origin every hour: readers work in them in
+  // place, and coders' checkouts start from them.
+  const refresh = () => void repos.freshen(repos.list().map((r) => r.path)).then((problems) => { lastRefreshAt = Date.now(); problems.forEach((p) => log('warn', 'org.repos', p)); }).catch(() => undefined);
+  setTimeout(refresh, 2 * 60_000).unref?.();
+  setInterval(refresh, 60 * 60_000).unref?.();
+  // Finished runs' checkouts, once nothing in them can be lost.
+  const sweep = () => void sweepWorktrees(flowRuntime.listRuns(), (level, msg) => log(level, 'org.worktrees', msg));
+  setTimeout(sweep, 60_000).unref?.();
+  setInterval(sweep, 10 * 60_000).unref?.();
+  // Every tool call's outcome, from any run or answer: an expired key or a
+  // retired API reaches the admins instead of hiding in run logs.
+  const toolHealth = new ToolHealth({
+    ...fileToolHealthStore,
+    alert: (t) => hooks.onToolTrouble?.(t, loadOrgPolicy().policy.admins),
+  });
+  setToolWatcher((o) => {
+    const worker = o.ok ? undefined : flowRuntime.listRuns().find((r) => Object.values(r.conversationIds ?? {}).includes(o.conversationId))?.workerName;
+    toolHealth.observe({ tool: o.server, ok: o.ok, text: o.text, ...(worker ? { worker } : {}) });
+  });
+  const org = new OrgService({
     workers: {
       roster: () => workerEngine.roster(),
       get: (id) => workerEngine.get(id),
       save: (w) => workerEngine.save(w),
       setEnabled: (id, enabled) => workerEngine.setEnabled(id, enabled),
       remove: (id) => workerEngine.remove(id),
-      runErrand: (id, text, attachments, conversation, untrusted) => workerEngine.runErrand(id, text, attachments, { ...(conversation ? { conversation } : {}), ...(untrusted ? { untrusted: true } : {}) }),
+      runErrand: (id, text, attachments, conversation, untrusted, mayLaunch) => workerEngine.runErrand(id, text, attachments, { ...(conversation ? { conversation } : {}), ...(untrusted ? { untrusted: true } : {}), ...(mayLaunch ? { mayLaunch: true } : {}) }),
+      changesOf: (id) => workerEngine.changesOf(id),
+      flowsOf: (id) => workerEngine.flowsOf(id),
+      lookup: (id, args) => workerEngine.lookup(id, args),
       journalFor: (id) => workerEngine.journalFor(id),
       remember: (id, text) => workerEngine.remember(id, text),
       forgetNote: (id, entryId) => workerEngine.forgetNote(id, entryId),
@@ -187,6 +237,7 @@ export function createOrgService(
     policy: () => loadOrgPolicy().policy,
     draft: (args) => draftHire({ runner, ...args }),
     overlap: (job, workers) => findOverlap(drafterDepsFor(runner), job, workers),
+    rewriteJob: (args) => rewriteJob(drafterDepsFor(runner), args),
     pickPicture: (worker, taken) =>
       pickPicture(
         (system, message) =>
@@ -284,6 +335,10 @@ export function createOrgService(
       updateWorkspace: (id, patch) => repos.updateWorkspace(id, patch),
       removeWorkspace: (id) => repos.removeWorkspace(id),
       testsOff: () => repos.testsOff(),
+      branchPrefix: () => Store.load().settings.agentBranchPrefix || 'agent/',
+      freshen: (paths) => repos.freshen(paths).then((problems) => { lastRefreshAt = Date.now(); return problems; }),
+      lastRefreshed: () => lastRefreshAt,
+      setBranchPrefix: (prefix) => Store.saveSettings({ ...Store.load().settings, agentBranchPrefix: prefix }),
       changed: () => applyRepoGrants(repos),
     },
     saveFlow: (id, yaml) => {
@@ -298,6 +353,7 @@ export function createOrgService(
       return abort ? abort.call(engines.orchestrator, { id }) : { ok: false, error: 'Batches can’t be stopped from here.' };
     },
     runDeliverables: runDeliverablesFor((id) => engines.flowRuntime.getRun(id)),
+    runChanges: (run, opts) => changesOfRun(run, opts),
     workerFiles: {
       list: (id) => listWorkerFiles(id),
       read: (id, name) => readWorkerFileBytes(id, name, 16 * 1024 * 1024),
@@ -327,6 +383,7 @@ export function createOrgService(
       return config ? callTool(config, tool, args) : { ok: false, error: `${server} isn't installed on this server.` };
     },
     teamFiles: fileTeamFileStore,
+    toolLogins: jsonOrgStore<Record<string, LoginResult>>('tool-logins.json', () => ({})),
     ...(engines.connections ? { connections: engines.connections } : {}),
     ...(engines.toolSignIn ? { toolSignIn: engines.toolSignIn } : {}),
     tools: {
@@ -334,6 +391,22 @@ export function createOrgService(
       remember: (templates, onlyNew) => rememberToolTemplates(toolTemplatesFile(host().dataDir()), templates, onlyNew),
       install: installTool,
       uninstall: uninstallTool,
+      update: updateToolSettings,
+      login: async (name) => {
+        const config = readClaudeMcpServers()[name];
+        if (!config) return null;
+        const env = config.env && typeof config.env === 'object' && !Array.isArray(config.env) ? (config.env as Record<string, string>) : {};
+        const now = Date.now();
+        return (await checkLogin(env, now)) ?? checkLoginByCall(
+          () => listServerTools(config, { schemas: true }),
+          async (tool) => {
+            const r = await callTool(config, tool, {});
+            return r.ok ? { ok: true, text: r.text } : r;
+          },
+          mcpServerKey(name),
+          now,
+        );
+      },
       check: async () => {
         const binary = resolveBackendPath('claude', Store.load().settings.backendPaths.claude);
         const init = binary ? await readClaudeInit(binary) : null;
@@ -341,10 +414,44 @@ export function createOrgService(
       },
     },
     ratings: fileRatingStore,
+    toolRequests: fileToolRequestStore,
+    toolHealth,
+    workerVersions: fileWorkerVersionStore,
+    storage: {
+      // Measuring 20 GB takes a while: once every few minutes is plenty.
+      report: async () => {
+        if (storageCache && Date.now() - storageCache.measuredAt < 5 * 60_000) return storageCache;
+        const home = os.homedir();
+        const wtRoot = path.join(home, '.overcli', 'worktrees');
+        let count = 0;
+        try {
+          for (const r of fs.readdirSync(wtRoot)) count += fs.readdirSync(path.join(wtRoot, r)).length;
+        } catch {
+          // none yet
+        }
+        const [checkoutBytes, repoBytes, cacheBytes] = await Promise.all([folderBytes(wtRoot), folderBytes(path.join(host().dataDir(), 'repos')), folderBytes(path.join(home, '.npm', '_npx'))]);
+        storageCache = { volume: volumeOf(host().dataDir()), checkouts: { count, bytes: checkoutBytes }, repos: repoBytes, toolCache: cacheBytes, kept: keptCheckouts(), measuredAt: Date.now() };
+        return storageCache;
+      },
+      discard: async (runId) => {
+        const run = flowRuntime.getRun(runId);
+        if (!run) return { ok: false, error: 'No such run.' };
+        if (run.state.kind !== 'done' && run.state.kind !== 'aborted') return { ok: false, error: 'That run is still going.' };
+        const removed = await discardCheckouts(run);
+        storageCache = null;
+        return { ok: true, removed };
+      },
+      clearToolCache: async () => {
+        fs.rmSync(path.join(os.homedir(), '.npm', '_npx'), { recursive: true, force: true });
+        storageCache = null;
+        warm();
+      },
+    },
+    handbook: fileHandbook,
     ...(engines.version ? { version: engines.version } : {}),
     health: (() => {
       const models = backendProbe();
-      return () => [...(engines.health?.() ?? []), models()];
+      return () => [...(engines.health?.() ?? []), models(), checkoutHealth()];
     })(),
     people: () =>
       listTokens().map((t) => ({
@@ -357,6 +464,15 @@ export function createOrgService(
       })),
     ...hooks,
   });
+  // Its runs hear which of their tools the server found won't sign in.
+  workerEngine.setToolProblems?.((id) => org.toolProblemsFor(id));
+  // Never stops the server: workers keep the flows they have.
+  try {
+    org.refreshRepoFlows();
+  } catch (err) {
+    log('warn', 'org.repos', `Couldn't refresh the repo flows: ${(err as Error).message}`);
+  }
+  return org;
 }
 
 /// Connected repos, cloned under the data directory and registered as

@@ -18,7 +18,7 @@ vi.mock('../health', () => ({
 }));
 vi.mock('../diagnostics', () => ({ log: mockLog }));
 
-import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './workerDrafter';
+import { draftWorkerFromPrompt, givenWorkerName, reviseWorkerFromPrompt } from './workerDrafter';
 import type { DraftDeps } from './drafter';
 
 function claudeDeps(backend: 'claude' | 'copilot' | 'gemini' | 'codex' = 'claude', reply = ''): DraftDeps {
@@ -821,5 +821,20 @@ describe('attachments', () => {
     expect(oneShot).toHaveBeenCalledTimes(2);
     expect(oneShot.mock.calls[0][0].attachments).toEqual([SPEC]);
     expect(oneShot.mock.calls[1][0].attachments).toEqual([SPEC]);
+  });
+});
+
+describe('a name the person gives the worker', () => {
+  it('is read from how the description opens, or from "named" and "call it"', () => {
+    expect(givenWorkerName('Atlas, a code explorer. It answers questions about our code.')).toBe('Atlas');
+    expect(givenWorkerName('Atlas — watches CI and files the flakes')).toBe('Atlas');
+    expect(givenWorkerName('A worker that watches CI. Call it Mender.')).toBe('Mender');
+    expect(givenWorkerName('Someone named Theo who checks the sprint board')).toBe('Theo');
+  });
+
+  it('is not invented when they left naming to the drafter', () => {
+    expect(givenWorkerName('A code explorer that answers questions about our code.')).toBeNull();
+    expect(givenWorkerName('Watch the sprint board, and flag stuck tickets.')).toBeNull();
+    expect(givenWorkerName('Someone, who checks the sprint board')).toBeNull();
   });
 });

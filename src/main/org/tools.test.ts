@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { installTool, listTools, parseTemplates, templateFrom, uninstallTool } from './tools';
+import { fixAddresses, installTool, listTools, parseTemplates, templateFrom, uninstallTool, updateToolSettings } from './tools';
 
 let home = '';
 const savedHome = process.env.HOME;
@@ -50,5 +50,30 @@ describe('what a published worker brings', () => {
     expect(template).toHaveLength(1);
     const { missing } = listTools([{ name: 'Triage', mcpServers: ['acme-crm'] }], {}, { 'acme-crm': template[0] });
     expect(missing[0]).toMatchObject({ name: 'acme-crm', template: { command: 'uvx', envKeys: ['CRM_TOKEN'] } });
+  });
+});
+
+describe('a tool\'s settings', () => {
+  it('adds https:// to an address given without it, at install', () => {
+    expect(installTool({ name: 'tracker', kind: 'command', command: 'uvx', args: ['acme-tracker-mcp'], env: { TRACKER_URL: 'acme.example.net', TRACKER_TOKEN: 'sekrit' } })).toEqual({ ok: true, fixed: ['TRACKER_URL'] });
+    const file = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
+    expect(file.mcpServers.tracker.env).toEqual({ TRACKER_URL: 'https://acme.example.net', TRACKER_TOKEN: 'sekrit' });
+  });
+
+  it('changes some settings in place and keeps the rest', () => {
+    installTool({ name: 'tracker', kind: 'command', command: 'uvx', args: ['acme-tracker-mcp'], env: { TRACKER_URL: 'https://old.example.net', TRACKER_TOKEN: 'sekrit' } });
+    expect(updateToolSettings('tracker', { TRACKER_URL: 'new.example.net', TRACKER_TOKEN: '  ' })).toEqual({ ok: true, changed: ['TRACKER_URL'], fixed: ['TRACKER_URL'] });
+    const file = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'));
+    expect(file.mcpServers.tracker).toEqual({ command: 'uvx', args: ['acme-tracker-mcp'], env: { TRACKER_URL: 'https://new.example.net', TRACKER_TOKEN: 'sekrit' } });
+    expect(updateToolSettings('tracker', { NOPE: 'x' })).toMatchObject({ ok: false, error: 'tracker has no setting called NOPE.' });
+    expect(updateToolSettings('tracker', {})).toMatchObject({ ok: false });
+    expect(updateToolSettings('missing', { A: 'b' })).toMatchObject({ ok: false, error: 'No tool by that name.' });
+  });
+
+  it('only touches settings that hold an address, and leaves full ones alone', () => {
+    expect(fixAddresses({ JIRA_URL: 'acme.example.net', API_ENDPOINT: 'http://x.example', NAME: 'acme.example.net', EMPTY_URL: '', LOCAL_URL: 'localhost' })).toEqual({
+      env: { JIRA_URL: 'https://acme.example.net', API_ENDPOINT: 'http://x.example', NAME: 'acme.example.net', EMPTY_URL: '', LOCAL_URL: 'localhost' },
+      fixed: ['JIRA_URL'],
+    });
   });
 });
