@@ -55,9 +55,24 @@ describe('buildResponseModePrompt', () => {
       assistant('b', [tool('2', 'Grep')]),
       assistant('c', [tool('3', 'Grep')]),
     ];
-    expect(buildResponseModePrompt('Continue', 'normal', prior)).toBe(
+    expect(buildResponseModePrompt('Continue', 'normal', prior, undefined, 'bypassPermissions')).toBe(
       'The previous turn used Grep in 3 separate model rounds (3 calls). Consolidate independent Grep work this turn.\n\nContinue',
     );
+  });
+
+  it('asks for parallel simple calls, not one chained command, when calls are checked', () => {
+    const prior = [
+      event('u', { type: 'localUser', text: 'inspect' }),
+      assistant('a', [tool('1', 'Bash')]),
+      assistant('b', [tool('2', 'Bash')]),
+      assistant('c', [tool('3', 'Bash')]),
+    ];
+    for (const mode of ['default', 'acceptEdits', 'auto', undefined] as const) {
+      expect(buildResponseModePrompt('Continue', 'normal', prior, undefined, mode)).toBe(
+        'The previous turn used Bash in 3 separate model rounds (3 calls). ' +
+          'Send independent Bash calls together in one message this turn, each kept simple.\n\nContinue',
+      );
+    }
   });
 
   it('makes concise output explicit without lowering reasoning', () => {

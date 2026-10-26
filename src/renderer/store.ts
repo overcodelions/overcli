@@ -3598,6 +3598,7 @@ export const useStore = create<StoreState>((set, get) => ({
       conv.responseStyle ?? 'normal',
       priorEvents,
       conv.responseMode,
+      effectivePermissionMode,
     );
 
     // `@service:<name>` stays compact in the visible user turn, while the

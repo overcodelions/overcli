@@ -26,6 +26,15 @@ describe('visibleUserPrompt', () => {
     ).toBe('Keep going');
   });
 
+  it('hides the parallel-calls nudge a checked-mode prompt carries', () => {
+    expect(
+      visibleUserPrompt(
+        'The previous turn used Bash in 3 separate model rounds (3 calls). ' +
+          'Send independent Bash calls together in one message this turn, each kept simple.\n\nKeep going',
+      ),
+    ).toBe('Keep going');
+  });
+
   it('hides attachment paths and retains friendly labels', () => {
     const prompt =
       '<image name=[Image #1] path="/private/a.png"></image>' +

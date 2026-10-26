@@ -2047,7 +2047,7 @@ export class RunnerManager {
       // paths spawn the same binary, so the gate has to be opened on each
       // or Claude in Chrome works on one transport and not the other.
       chrome: this.chromeFor(args),
-      appendSystemPrompt: claudeSystemPromptAppend(narrateFor(args)),
+      appendSystemPrompt: claudeSystemPromptAppend(narrateFor(args), args.permissionMode),
       // This transport loads the whole config, so its gateway tools get the
       // conversation's own key, as the cli transport's do.
       mcpServers: {

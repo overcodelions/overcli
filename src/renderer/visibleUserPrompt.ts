@@ -4,7 +4,7 @@ import { BATCHING_DIRECTIVE } from '@shared/turbo';
 /// mode prompt. Replayed transcripts carry it, so it's stripped like the
 /// batching directive.
 const LEADING_CONSOLIDATION_NUDGE =
-  /^The previous turn used [A-Za-z0-9_.-]+ in \d+ separate model rounds \(\d+ calls\)\. Consolidate independent [A-Za-z0-9_.-]+ work this turn\.\s*/;
+  /^The previous turn used [A-Za-z0-9_.-]+ in \d+ separate model rounds \(\d+ calls\)\. (Consolidate independent [A-Za-z0-9_.-]+ work this turn|Send independent [A-Za-z0-9_.-]+ calls together in one message this turn, each kept simple)\.\s*/;
 
 const LEADING_IMAGE_TAG = /^\s*<image\s+name=\[([^\]]+)\]\s+path="[^"]*"\s*>\s*<\/image>/i;
 
