@@ -25,8 +25,10 @@ What happens:
 - **Ask inside a thread,** and the thread comes along: "@overgo Triage, fix this" under a bug report means *that* bug.
 - **Ask right after something in a channel,** and the last few messages come along too: post a ticket, then "@overgo what's the status of this ticket?"
 - **Questions about a record go to a worker that can open it.** A ticket, an account or a pull request goes to a worker whose tools reach that system, rather than one that could only guess.
+- **Questions about how the product works go to a worker that reads its code.** "How does the CSV export decide which columns to include?" goes to a worker whose repo or workspace holds that code, rather than one that could only search tickets about it.
 - **Screenshots** in the message or the thread are attached for the worker to see.
 - **Follow up in the same thread** ("and make it blue") and the same worker picks it up.
+- **Bring another worker in by name.** In a worker's thread, start your reply with another worker's name ("Triage will need to check the logs", "ask Triage to look at this", or with get, have or let) and that worker takes the thread over, with everything said in it so far.
 
 ### Things to know
 
@@ -41,9 +43,13 @@ What happens:
 | `/worker` | Lists the workers you can see |
 | `/worker Triage ask <text>` | Asks one worker; the answer comes as a DM |
 | `/worker waiting` | What's waiting on you |
+| `/worker Triage edit` | Changes its job (or says what should change), trust, schedule, budget and who can ask it. For its manager |
+| `/worker Triage learn` | Has it go through its tools and learn what its job needs |
+| `/worker Triage tools` · `tools add <tool>: why` | Lists its tools, or gives it one (or asks an admin for one) |
 | `/team Pricing: <task>` | Gives a team a task; its plan comes back for approval |
 | `/team new <what it's for>` | Suggests a team from your workers, to make with one button |
-| `/hire <the job>` | Hires a worker, with a short interview |
+| `/hire <the job>` | Hires a worker, with a short interview. Name it in the description ("Atlas, a code explorer…" or "call it Atlas") and it keeps that name |
+| `/overgo digest` | Your week with your workers, so far |
 | `/idea <process>: <the idea>` | Puts an idea into a process; `/idea` alone shows where yours are |
 
 ## The web console

@@ -153,6 +153,10 @@ export interface TeamEngineDeps {
       allowExternalActions?: boolean;
       /// Outside tools you already approved for this piece's run.
       externalActionGrant?: string[];
+      /// A piece that only reads (a learning pass): never needs an OK.
+      readOnly?: boolean;
+      /// The plan it belongs to was approved, which covers the piece.
+      planApproved?: boolean;
       /// Fork the piece off the task branch rather than the project as it is.
       baseBranch?: string;
       /// Work in the task branch's own worktrees instead of forking off it.
@@ -1484,6 +1488,11 @@ export class TeamEngine {
           // the room handed off: that started on the model's say-so.
           ...(piecesActFreely(team) && !stage.fromRoom ? { allowExternalActions: true } : {}),
           ...(a.grant?.length ? { externalActionGrant: a.grant } : {}),
+          // Learning what each member knows only reads: nothing to approve.
+          // Any other piece is part of a plan someone approved (or a team
+          // set to run plans without asking), which covers what the piece
+          // needs. Work the room handed off started on the model's say-so.
+          ...(task.kind === 'learn' ? { readOnly: true } : !stage.fromRoom ? { planApproved: true } : {}),
           // Code that merges into the task branch is checked first, by the
           // member's own check step, when its flow has one. A piece with the
           // stage to itself works on the task branch directly: nobody else is

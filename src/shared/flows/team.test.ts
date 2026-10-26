@@ -484,7 +484,22 @@ describe('sourceFlowIdOfPiece / withStepTools', () => {
   it('finds the member flow a piece came from', () => {
     expect(sourceFlowIdOfPiece(teamPieceFlowId('budget'))).toBe('budget');
     expect(sourceFlowIdOfPiece(teamPieceFlowId('budget', { check: true }))).toBe('budget');
+    expect(sourceFlowIdOfPiece(teamPieceFlowId('budget', { readOnly: true }))).toBe('budget');
     expect(sourceFlowIdOfPiece('budget')).toBe('budget');
+  });
+
+  it('makes a piece that only reads from a flow that can do more, so it never asks', () => {
+    const f = {
+      id: 'ops', name: 'Ops', input: 'user_prompt', source: 'user',
+      participants: [{ id: 'p', backend: 'claude', model: 'claude-sonnet-5-5', name: 'Sonnet' }],
+      steps: [{ id: 'work', participantId: 'p', role: 'custom', inputs: ['user_prompt'], output: 'out.md', effect: 'external',
+        tools: ['Read', 'Bash', 'WebFetch', 'Bash(git log:*)', 'mcp__tracker__search_issues', 'mcp__tracker__create_issue'] }],
+    } as unknown as Parameters<typeof teamPieceFlow>[0];
+    const piece = teamPieceFlow(f, { readOnly: true });
+    expect(piece.id).toBe('team-piece-read-ops');
+    expect(piece.steps).toHaveLength(1);
+    expect(piece.steps[0].effect).toBe('local');
+    expect(piece.steps[0].tools.sort()).toEqual(['Bash(git log:*)', 'Edit', 'Read', 'WebSearch', 'Write', 'mcp__tracker__search_issues'].sort());
   });
 
   it('adds only missing tools, to the first step', () => {

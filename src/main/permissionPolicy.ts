@@ -20,6 +20,8 @@
 // one-sided on purpose: anything we can't place is neither read-only nor
 // safe to remember, so the worst a wrong guess costs is one extra card.
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { isReadOnlyMcpTool } from '../shared/flows/mcpTools';
 
 /// Tools that cannot change anything. Launching a subagent is here because
@@ -100,7 +102,7 @@ const READ_ONLY_GIT: Record<string, RegExp> = {
   whatchanged: GIT_HISTORY_FLAGS,
   'rev-list': GIT_HISTORY_FLAGS,
   shortlog: /^(-[nsec]+|--numbered|--summary|--email|--committer|--all|--no-merges|--since=.*|--until=.*|--author=.*|--format=.*|--group=.*|--)$/,
-  blame: /^(-[lstfnecwp]+|-L.+|-M\d*|-C\d*|--porcelain|--line-porcelain|--incremental|--root|--show-email|--show-name|--show-number|--date=.*|--abbrev=\d+|--ignore-rev=.*|--)$/,
+  blame: /^(-[lstfnecwp]+|-L.*|\d+,[+-]?\d*|-M\d*|-C\d*|--porcelain|--line-porcelain|--incremental|--root|--show-email|--show-name|--show-number|--date=.*|--abbrev=\d+|--ignore-rev=.*|--)$/,
   grep: /^(-[nivwcLlhHEFPIqozapW]+|-[ABC]\d*|-e|--line-number|--ignore-case|--word-regexp|--invert-match|--count|--files-with-matches|--files-without-match|--name-only|--cached|--untracked|--no-index|--exclude-standard|--no-exclude-standard|--recurse-submodules|--heading|--break|--full-name|--column|--only-matching|--show-function|--function-context|--context=\d+|--after-context=\d+|--before-context=\d+|--max-depth=-?\d+|--threads=\d+|--and|--or|--not|--all-match|--text|--null|--quiet|--basic-regexp|--extended-regexp|--fixed-strings|--perl-regexp|--color(=\w+)?|--no-color|--)$/,
   'rev-parse': /^(-q|--quiet|--verify|--short(=\d+)?|--abbrev-ref(=\w+)?|--symbolic|--symbolic-full-name|--show-toplevel|--show-prefix|--show-cdup|--git-dir|--git-common-dir|--absolute-git-dir|--is-inside-work-tree|--is-inside-git-dir|--is-bare-repository|--is-shallow-repository|--all|--branches|--tags|--remotes|--)$/,
   'ls-files': /^(-[cdmoiskutvfz]+|-x.+|--cached|--deleted|--modified|--others|--ignored|--stage|--unmerged|--killed|--directory|--no-empty-directory|--exclude-standard|--exclude=.*|--full-name|--error-unmatch|--eol|--format=.*|--)$/,
@@ -257,7 +259,7 @@ function gitReadsOnly(w: string[]): boolean {
   }
   if (sub === 'worktree' && args[1] !== 'list') return false;
   if (sub === 'stash' && args[1] !== 'list' && args[1] !== 'show') return false;
-  if (sub === 'remote' && args[1] && !['-v', '--verbose', 'show', 'get-url'].includes(args[1])) return false;
+  if (sub === 'remote' && args[1] && !['-v', '--verbose', 'get-url'].includes(args[1])) return false;
   if (sub === 'reflog' && args[1] && args[1] !== 'show') return false;
   const flags = Object.prototype.hasOwnProperty.call(READ_ONLY_GIT, sub) ? READ_ONLY_GIT[sub] : null;
   if (!flags) return false;
@@ -345,6 +347,152 @@ export function isReadOnlyCall(toolName: string, input: unknown): boolean {
     return !!cmd && isReadOnlyBashCommand(cmd);
   }
   return false;
+}
+
+/// The folders a read may reach: each root, where it really is, and, for a
+/// workspace's folder (links to each repo, and not a repo itself), the
+/// folders its links lead to. A link inside a repo is followed nowhere: it
+/// could point anywhere on the server.
+function readableRoots(roots: readonly string[]): string[] {
+  const out = new Set<string>();
+  const real = (p: string) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return null;
+    }
+  };
+  for (const r of roots) {
+    out.add(path.resolve(r));
+    const rr = real(r);
+    if (!rr) continue;
+    out.add(rr);
+    if (fs.existsSync(path.join(rr, '.git'))) continue;
+    try {
+      for (const e of fs.readdirSync(rr, { withFileTypes: true })) {
+        if (!e.isSymbolicLink()) continue;
+        const to = real(path.join(rr, e.name));
+        if (to && fs.statSync(to).isDirectory()) out.add(to);
+      }
+    } catch {
+      // not a folder
+    }
+  }
+  return [...out];
+}
+
+/// Whether a path stays inside `roots`, both as named and where it really
+/// leads, so a link in the repo can't reach the server's secrets.
+function insideRoots(roots: readonly string[]): (p: string) => boolean {
+  const allowed = readableRoots(roots);
+  const within = (p: string) => allowed.some((r) => p === r || p.startsWith(r.endsWith(path.sep) ? r : r + path.sep));
+  return (p: string) => {
+    if (!within(p)) return false;
+    try {
+      return within(fs.realpathSync(p));
+    } catch {
+      return true; // not there: nothing to read
+    }
+  };
+}
+
+/// A shell line that only reads, run from `cwd`, naming nothing outside
+/// `roots`: a worker looking around its own repo with `git log`, `ls` or
+/// `rg`. Each path it names must stay inside, where it really leads too.
+export function bashReadsOnlyUnder(command: string, cwd: string, roots: readonly string[]): boolean {
+  if (!command.trim() || !roots.length) return false;
+  const inside = insideRoots(roots);
+  let here = path.resolve(cwd);
+  if (!inside(here)) return false;
+  const split = splitCommands(command);
+  if (split.opaque) return false;
+  // `cd repo && git log` is how a model reads a repo. `cd` changes nothing:
+  // it only says where the rest runs, so it is stepped past (staying inside
+  // the folders) and the rest judged from there. Refusing it made a code
+  // reader give up on the shell for its whole run.
+  const rest: Array<{ c: string; at: string }> = [];
+  for (const c of split.commands) {
+    const w = words(c);
+    if (w[0] === 'cd') {
+      if (w.length !== 2 || w[1] === '-' || w[1].startsWith('~') || w[1].includes('$')) return false;
+      here = path.resolve(here, w[1]);
+      if (!inside(here)) return false;
+      continue;
+    }
+    rest.push({ c, at: here });
+  }
+  if (!rest.length) return true;
+  if (!isReadOnlyBashCommand(rest.map((r) => r.c).join(' && '))) return false;
+  for (const { c, at } of rest) {
+    const here = at;
+    const w = words(c);
+    for (let i = 1; i < w.length; i++) {
+      const a = w[i];
+      if (a === '/dev/null' || /^\d?>&\d$/.test(a)) continue;
+      if (a.startsWith('~') || a.includes('$')) return false;
+      if (a.startsWith('-')) {
+        // `--flag=path` names a path too.
+        const eq = a.indexOf('=');
+        if (eq > 0 && /[/.]/.test(a.slice(eq + 1)) && !inside(path.resolve(here, a.slice(eq + 1)))) return false;
+        continue;
+      }
+      // Anything that names a path, or is one here (a link in the repo).
+      const p = path.resolve(here, a);
+      if ((a.includes('/') || a.startsWith('.') || fs.existsSync(p)) && !inside(p)) return false;
+    }
+  }
+  return true;
+}
+
+/// The tools that read files, and the input fields naming what they read.
+/// Unset, each reads from the run's folder.
+const FILE_READ_FIELDS: Record<string, readonly string[]> = {
+  Read: ['file_path'],
+  Grep: ['path'],
+  Glob: ['path'],
+  LS: ['path'],
+  NotebookRead: ['notebook_path'],
+};
+
+/// A file tool's call that names nothing outside `roots`. A glob that is
+/// absolute or climbs out (`/etc/*`, `../../*`) leaves the folder too.
+function fileReadWithin(toolName: string, input: unknown, cwd: string, roots: readonly string[]): boolean {
+  if (!roots.length) return false;
+  const inside = insideRoots(roots);
+  const here = path.resolve(cwd);
+  if (!inside(here)) return false;
+  const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  for (const field of FILE_READ_FIELDS[toolName]) {
+    const v = args[field];
+    if (v === undefined || v === null || v === '') continue;
+    if (typeof v !== 'string' || v.startsWith('~') || v.includes('$')) return false;
+    if (!inside(path.resolve(here, v))) return false;
+  }
+  const glob = toolName === 'Glob' ? args.pattern : toolName === 'Grep' ? args.glob : undefined;
+  if (glob !== undefined) {
+    if (typeof glob !== 'string' || path.isAbsolute(glob) || glob.startsWith('~') || glob.split(/[\\/]/).includes('..')) return false;
+  }
+  return true;
+}
+
+/// A call that only reads and reaches nothing outside `roots`: a file read
+/// inside them, another read-only tool, a read-only MCP call, or a shell
+/// line `bashReadsOnlyUnder` accepts.
+export function readsOnlyWithin(toolName: string, input: unknown, cwd: string, roots: readonly string[]): boolean {
+  let parsed = input;
+  if (typeof input === 'string') {
+    try {
+      parsed = JSON.parse(input);
+    } catch {
+      parsed = toolName === 'Bash' ? { command: input } : {};
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(FILE_READ_FIELDS, toolName)) return fileReadWithin(toolName, parsed, cwd, roots);
+  if (READ_ONLY_TOOLS.has(toolName)) return true;
+  if (toolName.startsWith('mcp__')) return isReadOnlyMcpTool(toolName);
+  if (toolName !== 'Bash') return false;
+  const cmd = bashCommandOf(parsed);
+  return !!cmd && bashReadsOnlyUnder(cmd, cwd, roots);
 }
 
 /// True for a call that always gets a card, even past an allow rule.

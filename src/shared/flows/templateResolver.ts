@@ -23,7 +23,7 @@ import {
   type FlowModelDefaults,
   type ModelSpeed,
 } from '../modelCatalog';
-import type { Flow, FlowParticipant } from './schema';
+import type { Flow, FlowModelRef, FlowParticipant } from './schema';
 
 export interface TemplateResolveContext {
   /// Backends the user currently has working ('ready' health). Order
@@ -45,7 +45,7 @@ const PREMIUM_PREFERENCE: Backend[] = ['claude', 'codex', 'gemini', 'copilot'];
 /// What tier did the template intend for this participant? Ollama is
 /// always treated as 'fast' regardless of the specific model since
 /// templates use ollama as the "local fast worker" slot.
-function intendedTier(p: FlowParticipant): ModelSpeed {
+function intendedTier(p: Pick<FlowParticipant, 'backend' | 'model'>): ModelSpeed {
   if (p.backend === 'ollama') return 'fast';
   return modelSpeed(p.model);
 }
@@ -124,6 +124,47 @@ export function pickForParticipant(
   if (pick) return pick;
 
   return undefined;
+}
+
+/// A flow whose steps use a backend this machine can't run, moved to one it
+/// can at the same tier: a premium thinking step stays a thinking step, a
+/// local fast one becomes a fast one. Steps on a backend it has are left as
+/// they are. A flow written on a desktop with Codex still runs on a server
+/// with only Claude. Returns the input itself when nothing moved.
+export function rebindMissingBackends(
+  flow: Flow,
+  ctx: { healthyBackends: Backend[]; preferredBackend?: Backend; modelDefaults?: FlowModelDefaults },
+): { flow: Flow; moved: Array<{ from: string; to: string }> } {
+  const missing = (r: FlowModelRef) => !ctx.healthyBackends.includes(r.backend);
+  const refs: FlowModelRef[] = [...(flow.participants ?? []), ...flow.steps.flatMap((s) => (!s.participantId && s.model ? [s.model] : []))];
+  if (!ctx.healthyBackends.length || !refs.some(missing)) return { flow, moved: [] };
+  const out: Flow = JSON.parse(JSON.stringify(flow));
+  const moved: Array<{ from: string; to: string }> = [];
+  const rebind = (r: FlowModelRef) => {
+    if (!missing(r)) return undefined;
+    const pick = pickPremium(intendedTier(r), ctx.preferredBackend ?? 'claude', ctx.healthyBackends, ctx.modelDefaults);
+    if (pick) moved.push({ from: friendlyModelLabel(r.backend, r.model), to: friendlyModelLabel(pick.backend, pick.model) });
+    return pick;
+  };
+  for (const p of out.participants ?? []) {
+    const was = friendlyModelLabel(p.backend, p.model);
+    const pick = rebind(p);
+    if (!pick) continue;
+    p.backend = pick.backend;
+    p.model = pick.model;
+    // A name the author gave stays; one that only named the old model moves.
+    if (p.name === was) p.name = friendlyModelLabel(pick.backend, pick.model);
+  }
+  for (const step of out.steps) {
+    if (!step.model) continue;
+    const p = step.participantId ? out.participants?.find((x) => x.id === step.participantId) : undefined;
+    if (p) step.model = { backend: p.backend, model: p.model };
+    else {
+      const pick = rebind(step.model);
+      if (pick) step.model = pick;
+    }
+  }
+  return { flow: out, moved };
 }
 
 /// Walk a template's participants (and legacy step-level model refs)

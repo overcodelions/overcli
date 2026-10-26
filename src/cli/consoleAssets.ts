@@ -145,6 +145,21 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .nav button[aria-current="page"] .issue { color: inherit; opacity: 0.85; }
 .nav .sep { height: 1px; background: var(--line); margin: 10px 6px; }
 .nav .group { padding: 4px 10px 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+.setup { display: flex; gap: 36px; align-items: flex-start; }
+.setup-rail { flex: 0 0 200px; position: sticky; top: 72px; max-height: calc(100vh - 88px); overflow-y: auto; }
+.setup-rail .group { padding-top: 14px; }
+.setup-rail .group:first-child { padding-top: 4px; }
+.setup-rail button { min-height: 32px; font-size: 13.5px; }
+.setup-rail .light { margin-left: auto; }
+.setup-rail .light.need { background: var(--need); }
+.setup-pick { display: none; }
+.setup-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.picked { display: flex; flex-wrap: wrap; gap: 8px; }
+.picked .chip { cursor: default; gap: 8px; padding: 0 6px 0 4px; }
+.picked .chip button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 4px; border-radius: 50%; display: inline-flex; }
+.picked .chip button:hover { color: var(--ink); background: var(--panel); }
+.unsaved { font-size: 12.5px; color: var(--need); }
+@media (max-width: 880px) { .setup { flex-direction: column; gap: 16px; } .setup-rail { display: none; } .setup-pick { display: block; width: 100%; } .setup-body { max-width: none; } }
 .me-name { font-weight: 600; }
 .me-role { color: var(--faint); font-size: 12px; }
 .allow-label { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
@@ -155,6 +170,10 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .linkish:hover { color: var(--ink); }
 
 .main { min-width: 0; padding: 28px 36px 64px; }
+/* A worker's name and tabs stay under the top bar while its page scrolls,
+   painted out to the page's own edges and no further. */
+.wk-sticky { position: sticky; top: 56px; z-index: 4; background: var(--bg); margin: 0 calc(-1 * var(--pad-x, 32px)); padding: 0 var(--pad-x, 32px); }
+.wk-sticky .page-head { padding-top: 6px; }
 /* Data pages use the whole width; pages you read or write on keep a measure.
    Both sit against the sidebar rather than floating in the middle. */
 .page { display: flex; flex-direction: column; gap: 22px; }
@@ -253,7 +272,7 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .dear { color: var(--need); font-weight: 600; }
 .serif, .ask-name, .item .t, .who-name, .card-name, .person-name, .role h3, .offer-name, .dialog h2, .solo h1, .big, .brand-name, .place b { letter-spacing: -0.02em; font-weight: 500; }
 .label { margin: 0; font-size: 12.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
-.main { padding: 24px clamp(16px, 2vw, 32px) 40px; }
+.main { --pad-x: clamp(16px, 2vw, 32px); padding: 24px var(--pad-x) 40px; }
 .page-sub { margin-top: 6px; color: var(--muted); max-width: 66ch; }
 .section-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--need); flex: none; }
@@ -306,14 +325,64 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .wc-out { margin-top: 8px; max-height: 460px; overflow: auto; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); }
 .wc-out pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12.5px; }
 .prose { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; min-width: 0; }
-.sl-thread { display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
-.sl-msg { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start; }
-.sl-av { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 650; background: var(--line); color: var(--ink); }
-.sl-msg.bot .sl-av { background: color-mix(in srgb, var(--go) 22%, transparent); color: var(--go); }
-.sl-who { font-size: 12.5px; color: var(--faint, inherit); opacity: .85; margin-bottom: 2px; }
-.sl-who b { font-weight: 600; opacity: 1; }
-.sl-note { margin-left: 38px; font-size: 12.5px; opacity: .65; line-height: 1.5; }
+.sl-split { display: flex; flex-wrap: wrap; min-height: 560px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.sl-side { flex: 1 1 340px; max-width: 460px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+/* The list's tools and the open thread's heading share one height, so the
+   line under each runs straight across the panel. */
+.sl-tools { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-bottom: 1px solid var(--line); min-height: 144px; box-sizing: border-box; }
+.sl-find { max-width: none; flex: none; height: 34px; background: var(--bg); }
+.sl-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.sl-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--line); background: none; color: var(--muted); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.sl-chip:hover { color: var(--ink); border-color: var(--line-2); }
+.sl-chip[aria-pressed="true"] { background: var(--go-soft); border-color: color-mix(in srgb, var(--go) 45%, transparent); color: var(--go); }
+.sl-chip .n { font-weight: 500; opacity: 0.75; font-variant-numeric: tabular-nums; }
+.sl-list { list-style: none; margin: 0; padding: 0 6px 10px; display: flex; flex-direction: column; gap: 2px; overflow-x: hidden; overflow-y: auto; max-height: calc(100vh - 330px); }
+.sl-day { padding: 12px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.sl-none { padding: 16px 10px; font-size: 13px; }
+.sl-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 12px; border: 0; border-radius: var(--r); background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.sl-row:hover { background: var(--panel-2); }
+.sl-row[aria-current="true"] { background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+.sl-q { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sl-ago { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sl-meta { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--muted); }
+.sl-meta > span:last-child { flex: none; white-space: nowrap; }
+.sl-new { align-self: center; justify-self: end; width: 8px; height: 8px; border-radius: 50%; background: var(--go); }
+.sl-out { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; padding: 1px 9px 1px 2px; border-radius: 999px; background: var(--line); color: var(--ink); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.sl-badge { flex: none; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 10.5px; font-weight: 700; background: var(--line-2); color: var(--ink); }
+.sl-out.ok { background: var(--ok-soft); color: var(--ok); } .sl-out.ok .sl-badge { background: var(--ok); color: var(--panel); }
+.sl-out.info { background: var(--info-soft); color: var(--info); } .sl-out.info .sl-badge { background: var(--info); color: var(--panel); }
+.sl-out.violet { background: var(--violet-soft); color: var(--violet); } .sl-out.violet .sl-badge { background: var(--violet); color: var(--panel); }
+.sl-out.need { background: var(--need-soft); color: var(--need); } .sl-out.need .sl-badge { background: var(--need); color: var(--panel); }
+.sl-out.big { padding: 3px 12px 3px 3px; font-size: 13px; } .sl-out.big .sl-badge { width: 22px; height: 22px; font-size: 11px; }
+.sl-more { margin-top: auto; display: flex; justify-content: center; padding: 8px; border-top: 1px solid var(--line); }
+.sl-more:has(> [hidden]) { display: none; }
+.sl-pane { flex: 999 1 460px; min-width: 0; display: flex; flex-direction: column; background: var(--panel); }
+.sl-pane-head { padding: 22px 28px 18px; border-bottom: 1px solid var(--line); min-height: 144px; box-sizing: border-box; }
+.sl-pane-head .sl-col { display: flex; flex-direction: column; gap: 10px; }
+.sl-pane-meta { font-size: 12.5px; color: var(--muted); } .sl-pane-meta b { color: var(--ink); font-weight: 600; }
+.sl-pane-q { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+.sl-pane-body { flex: 1; overflow-y: auto; padding: 26px 28px 32px; max-height: calc(100vh - 390px); }
+.sl-pane-foot { padding: 12px 28px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.sl-live-line { display: flex; align-items: center; gap: 8px; }
+.sl-live { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+@media (max-width: 880px) {
+  .sl-side { max-width: none; border-right: 0; border-bottom: 1px solid var(--line); }
+  .sl-list, .sl-pane-body { max-height: none; }
+  .sl-pane-head, .sl-pane-body, .sl-pane-foot { padding-left: 16px; padding-right: 16px; }
+}
+.sl-col { width: 100%; max-width: 820px; }
+.sl-thread { display: flex; flex-direction: column; gap: 18px; }
+.sl-msg { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; align-items: start; }
+.sl-msg.cont { margin-top: -10px; }
+.sl-av { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700; background: var(--line-2); color: var(--ink); }
+.sl-msg.bot .sl-av { background: var(--violet-soft); color: var(--violet); }
+.sl-msg.go .sl-av { background: var(--go-soft); color: var(--go); }
+.sl-who { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; font-size: 12px; color: var(--muted); }
+.sl-who b { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.sl-note { display: flex; align-items: baseline; gap: 10px; margin-left: 44px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.sl-note::before { content: ""; flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--faint); transform: translateY(-2px); }
 .sl-note .prose { font-size: 12.5px; }
+.sl-msg .prose { color: var(--ink); }
 .prose > * + * { margin-top: 8px; }
 .prose p, .prose ul, .prose ol, .prose pre, .prose blockquote, .prose h3, .prose h4, .prose h5, .prose h6 { margin-bottom: 0; }
 .prose h3 { font-size: 16px; font-weight: 650; margin-top: 14px; } .prose h4 { font-size: 14.5px; font-weight: 650; margin-top: 12px; }
@@ -411,7 +480,7 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .chip[aria-pressed="true"] { border-color: var(--go); color: var(--ink); background: var(--go-soft); }
 /* Fields share a button's height, so a row of them lines up; selects are drawn
    to match the inputs rather than as the platform's pill. */
-textarea, input[type=text], input[type=number], input[type=search], input[type=time], input[type=date], select { width: 100%; min-height: 36px; border: 1px solid var(--line-2); background-color: var(--panel); border-radius: var(--r); padding: 7px 11px; font-size: 13.5px; line-height: 1.45; }
+textarea, input[type=text], input[type=password], input[type=url], input[type=email], input[type=number], input[type=search], input[type=time], input[type=date], select { width: 100%; min-height: 36px; border: 1px solid var(--line-2); background-color: var(--panel); border-radius: var(--r); padding: 7px 11px; font-size: 13.5px; line-height: 1.45; }
 select { appearance: none; -webkit-appearance: none; padding-right: 32px; cursor: pointer;
   background-image: linear-gradient(45deg, transparent 50%, var(--faint) 50%), linear-gradient(135deg, var(--faint) 50%, transparent 50%);
   background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%; background-size: 5px 5px; background-repeat: no-repeat; }
@@ -495,6 +564,14 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
 .t-item { display: flex; gap: 10px; align-items: flex-start; }
 .t-run { display: flex; flex-direction: column; gap: 10px; }
 .run-files { display: flex; flex-direction: column; gap: 6px; }
+.inv-row + .inv-row { border-top: 1px solid var(--line); padding-top: 10px; }
+.viewas-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; padding: 10px 14px; border-radius: var(--r); background: var(--need-soft); border: 1px solid var(--need); color: var(--ink); font-size: 13.5px; }
+.run-changes { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r); }
+.run-changes:empty { display: none; }
+.run-changes .cf { display: flex; gap: 10px; font-size: 12.5px; min-width: 0; }
+.run-changes .cf code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+pre.diff { max-height: 520px; overflow: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel-2); padding: 10px 12px; border-radius: var(--r-sm); margin: 0; }
+pre.diff .da { color: var(--ok); } pre.diff .dd { color: var(--bad); } pre.diff .dc { color: var(--go); } pre.diff .dh { color: var(--muted); font-weight: 600; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; width: max-content; max-width: 100%; flex-wrap: wrap; }
 .seg-b { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13.5px; padding: 8px 14px; min-height: 38px; cursor: pointer; }
 .seg-b.on { background: var(--go-soft); color: var(--ink); font-weight: 600; }
@@ -681,6 +758,31 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .tstate { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .tstate.ok { color: var(--ok); } .tstate.need { color: var(--need); } .tstate.bad { color: var(--bad); }
 .tl-list { border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; max-height: 420px; overflow-y: auto; }
+.tp { display: flex; flex-direction: column; gap: 26px; }
+.tp-sec { display: flex; flex-direction: column; gap: 10px; }
+.tp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.tp-card { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.tp-ctl, .tp select, .tp input[type=search], .tp input[type=text], .tp input[type=password] { height: 36px; min-height: 36px; box-sizing: border-box; font-size: 13.5px; }
+.tp-status { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 16px; border-radius: var(--r); background: var(--panel-2); border: 1px solid var(--line); }
+.tp-status.bad { border-color: color-mix(in srgb, var(--need) 40%, var(--line)); }
+.tp-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) minmax(0, 160px) auto 30px; gap: 12px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--line); }
+.tp-row:first-child { border-top: 0; }
+.tp-row.wide .tp-sub { color: var(--need); }
+.tp-sub { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-x { width: 30px; padding: 0; justify-content: center; }
+.tp-suggest { border: 1px solid var(--line); border-radius: var(--r); max-height: 280px; overflow-y: auto; background: var(--panel); }
+.tp-opt { display: block; width: 100%; text-align: left; padding: 9px 12px; border: 0; border-top: 1px solid var(--line); background: none; font: inherit; font-size: 13.5px; color: var(--ink); cursor: pointer; }
+.tp-opt:hover:not([disabled]), .tp-opt:focus-visible { background: var(--go-soft); }
+.tp-opt[disabled] { cursor: default; opacity: .6; }
+.tp-rules { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 14px 16px; align-items: center; }
+.tp-rl { font-size: 13.5px; font-weight: 600; }
+.tp-key { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--line); }
+.tp-key:first-child { border-top: 0; }
+.tp-key.editing { background: var(--panel-2); }
+.tp-kn { font-size: 12.5px; font-weight: 600; }
+.tp-set { height: 22px; padding: 0 8px; border-radius: 999px; background: var(--ok-soft); color: var(--ok); font-size: 11.5px; font-weight: 600; display: inline-flex; align-items: center; }
+.tp-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 16px; border-top: 1px solid var(--line); }
+@media (max-width: 560px) { .tp-row { grid-template-columns: 30px minmax(0, 1fr) 30px; } .tp-row > :nth-child(3), .tp-row > :nth-child(4) { grid-column: 2; } .tp-rules { grid-template-columns: 1fr; } }
 .tl-group { padding: 7px 12px; background: var(--panel-2); font-size: 12px; font-weight: 600; color: var(--muted); border-top: 1px solid var(--line); }
 .tl-group:first-child { border-top: 0; }
 .tl-row { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border-top: 1px solid var(--line); cursor: pointer; min-height: 40px; }
@@ -703,7 +805,7 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .wl-detail-ask { margin: 0; font-size: 13.5px; color: var(--muted); }
 .wl-ask { display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 5px 5px 5px 14px; }
 .wl { display: flex; flex-wrap: wrap; gap: 16px; align-items: stretch; }
-.wl-left { flex: 1 1 300px; max-width: 400px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - 320px); min-height: 420px; }
+.wl-left { flex: 1 1 300px; max-width: 400px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - var(--wl-top, 320px) - 20px); min-height: 420px; }
 .wl-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .chip.small { min-height: 28px; font-size: 12.5px; padding: 0 10px; }
 .wl-list { overflow-y: auto; flex: 1; }
@@ -722,7 +824,7 @@ mark.on { background: var(--need); color: var(--need-ink); }
 @media (prefers-reduced-motion: reduce) { .wl-dot.live { animation: none; } }
 .wl-more { width: 100%; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--go); font: inherit; font-size: 13px; padding: 10px; cursor: pointer; min-height: 42px; }
 .wl-detail { flex: 999 1 520px; min-width: 0; display: flex; }
-.wl-detail-in { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); display: flex; flex-direction: column; height: calc(100vh - 320px); min-height: 420px; }
+.wl-detail-in { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); display: flex; flex-direction: column; height: calc(100vh - var(--wl-top, 320px) - 20px); min-height: 420px; }
 .wl-detail-body .watch-list.boxed { max-height: 46vh; }
 @media (max-width: 960px) { .wl-left { max-width: none; height: auto; max-height: 50vh; } .wl-detail-in { height: auto; } }
 .wl-detail-head { padding: 16px 20px 10px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--line); }
@@ -778,6 +880,12 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .tag { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); font-size: 12px; white-space: nowrap; }
 .tag.need { background: var(--need-soft); border-color: transparent; color: var(--need); font-weight: 600; }
 .tag.go { background: var(--go-soft); border-color: transparent; color: var(--go); }
+.sel-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: var(--r); background: var(--go-soft); border: 1px solid var(--go); font-size: 13.5px; }
+.repo-table th.tick, .repo-table td.tick { width: 18px; padding-right: 0; }
+.repo-table tr.picked td { background: var(--go-soft); }
+.ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.ws-foot { border-top: 1px solid var(--line); padding-top: 12px; align-items: center; }
+.panel.dashed { border-style: dashed; background: none; box-shadow: none; }
 .msg { font-size: 13px; padding: 8px 12px; border-radius: var(--r-sm); }
 .msg.ok { background: var(--go-soft); color: var(--go); }
 .msg.err { background: var(--bad-soft); color: var(--bad); }
@@ -1811,7 +1919,9 @@ export const CONSOLE_JS = String.raw`
   function api(method, path, body) {
     return fetch(path, {
       method: method,
-      headers: Object.assign({ Authorization: 'Bearer ' + token() }, body ? { 'Content-Type': 'application/json' } : {}),
+      headers: Object.assign({ Authorization: 'Bearer ' + token() }, body ? { 'Content-Type': 'application/json' } : {},
+        // An admin viewing as someone: every read answered as for them.
+        state.viewAs ? { 'X-Overgo-View-As': state.viewAs.id, 'X-Overgo-View-As-Name': encodeURIComponent(state.viewAs.name) } : {}),
       body: body ? JSON.stringify(body) : undefined
     }).then(function (res) {
       if (res.status === 401) { store(TOKEN_KEY, null); state.me = null; render(); throw new Error('Your token was not accepted. Sign in again.'); }
@@ -2079,7 +2189,7 @@ export const CONSOLE_JS = String.raw`
     return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
       var t = r[0], tl = r[1];
       var fixes = tl && tl.ok !== false ? tl.missing.length : 0;
-      state.counts.today = fixes + t.waiting.length + t.hireApprovals.length + t.proposals.length + t.teamTasks.filter(function (x) { return x.waitingOnYou; }).length;
+      state.counts.today = fixes + t.waiting.length + t.hireApprovals.length + (t.toolRequests || []).length + (t.toolTrouble || []).length + t.proposals.length + t.teamTasks.filter(function (x) { return x.waitingOnYou; }).length;
       document.querySelectorAll('[data-count]').forEach(function (el) {
         var n = state.counts[el.getAttribute('data-count')];
         el.textContent = n ? String(n) : ''; el.hidden = !n;
@@ -2293,7 +2403,7 @@ export const CONSOLE_JS = String.raw`
           h('a', { href: 'https://github.com/overcodelions/overcli', target: '_blank', rel: 'noopener' }, 'powered by ', h('code', { text: 'overcli' })),
           me.version ? h('span', { class: 'side-by-ver' }, 'v' + me.version,
             me.newer ? h('a', { href: me.newer.url, target: '_blank', rel: 'noopener', title: 'A newer release is out. Setup → Readiness says how to upgrade.', text: ' · ' + me.newer.version + ' is out' }) : null) : null)),
-      h('main', { class: 'main' }, main)));
+      h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main)));
     refreshCounts();
     if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
     var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
@@ -2334,14 +2444,16 @@ export const CONSOLE_JS = String.raw`
       var whole = later ? h('button', { class: 'btn go', text: 'Approve for this run' }) : null;
       var approve = h('button', { class: later ? 'btn' : 'btn go', text: later ? 'Just this step' : 'Approve' });
       var reject = h('button', { class: 'btn danger', text: 'Turn down' });
-      var decide = function (yes, forRun) {
+      // A standing yes: this step of this flow runs without asking from now on.
+      var always = it.reaches ? h('button', { class: 'btn quiet', text: 'Always allow', title: 'From now on ' + it.workerName + ' runs this step without asking. Undo it in its Settings.' }) : null;
+      var decide = function (yes, forRun, alwaysToo) {
         return function () {
-          approve.disabled = reject.disabled = true; if (whole) whole.disabled = true;
-          api('POST', '/api/approval', { runId: it.runId, approve: yes, forRun: !!forRun }).then(done(!yes ? 'Rejected. The run is stopped.' : forRun ? 'Approved for this run. It won’t ask again unless a step needs something new.' : 'Approved. The step is running.'))
-            .then(function (r) { if (r.ok === false) { approve.disabled = reject.disabled = false; if (whole) whole.disabled = false; } });
+          approve.disabled = reject.disabled = true; if (whole) whole.disabled = true; if (always) always.disabled = true;
+          api('POST', '/api/approval', { runId: it.runId, approve: yes, forRun: !!forRun, always: !!alwaysToo }).then(done(!yes ? 'Rejected. The run is stopped.' : alwaysToo ? 'Approved, and always allowed from now on.' : forRun ? 'Approved for this run. It won’t ask again unless a step needs something new.' : 'Approved. The step is running.'))
+            .then(function (r) { if (r.ok === false) { approve.disabled = reject.disabled = false; if (whole) whole.disabled = false; if (always) always.disabled = false; } });
         };
       };
-      approve.onclick = decide(true); reject.onclick = decide(false); if (whole) whole.onclick = decide(true, true);
+      approve.onclick = decide(true); reject.onclick = decide(false); if (whole) whole.onclick = decide(true, true); if (always) always.onclick = decide(true, false, true);
       var covers = later ? ' Approving for this run also covers ' + (later === 1 ? 'the 1 later step that uses' : 'the ' + later + ' later steps that use') + ' the same tools; anything new still asks.' : ' Approving covers this one step.';
       body = [h('p', { class: 'muted', text: it.reaches && it.reaches.length
           ? 'Its next step ' + it.reaches.join(', ') + ', so it asks first.' + covers
@@ -2350,7 +2462,7 @@ export const CONSOLE_JS = String.raw`
         (it.inputs || []).map(function (inp) {
           return h('details', null, h('summary', { text: 'What it will use: ' + inp.name }), h('div', { class: 'preview', style: 'margin-top:8px' }, h('pre', { text: inp.preview })));
         }),
-        h('div', { class: 'row' }, whole, approve, reject)];
+        h('div', { class: 'row' }, whole, approve, always, reject)];
     }
     append(card, [avatar(it.workerId, it.workerName, 'm'), h('div', { class: 'ask-body' },
       h('div', { class: 'ask-head' },
@@ -2358,6 +2470,46 @@ export const CONSOLE_JS = String.raw`
         h('span', { class: 'tag need', text: it.kind === 'question' ? 'Asks' : 'Wants approval' }),
         h('span', { class: 'faint', text: it.title + (it.since ? ', ' + ago(it.since) : '') })),
       body, out)]);
+    return card;
+  }
+
+  // A tool failing now, for an admin to fix.
+  function troubleCard(x) {
+    return h('article', { class: 'panel ask fix' },
+      h('span', { class: 'avatar m', style: 'background:var(--bad-soft);color:var(--bad)' }, icon('alert', 18)),
+      h('div', { class: 'ask-body' },
+        h('div', { class: 'ask-head' }, h('span', { class: 'tag bad', text: 'Fix' }), h('span', { class: 'ask-name', text: x.tool + (x.kind === 'auth' ? ' can’t sign in' : x.kind === 'gone' ? ' says its API is gone' : ' keeps failing') })),
+        h('p', { class: 'muted', style: 'overflow-wrap:anywhere', text: x.lastError }),
+        h('p', { class: 'faint', text: 'Since ' + ago(x.since) + (x.workers.length ? '. Held up: ' + x.workers.join(', ') : '') + '.' }),
+        h('div', { class: 'row' }, h('button', { class: 'btn go', text: 'Open ' + x.tool, onclick: function () { go('setup', { setupTab: 'tools' }); } }))));
+  }
+
+  // A manager asking for a tool for one of their workers.
+  function toolRequestCard(x) {
+    var out = h('div');
+    var card = h('article', { class: 'panel ask need' });
+    var yes = h('button', { class: 'btn go', text: 'Give it' });
+    var no = h('button', { class: 'btn', text: 'Decline' });
+    var decide = function (give) {
+      return function () {
+        yes.disabled = no.disabled = true;
+        api('POST', '/api/tool-requests/' + encodeURIComponent(x.id) + '/decide', { give: give }).then(function (r) {
+          out.textContent = '';
+          if (r.ok === false) {
+            yes.disabled = no.disabled = false;
+            append(out, [msg(r), /Setup/.test(r.error || '') ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Open Setup → Tools', onclick: function () { go('setup', { setupTab: 'tools' }); } }) : null]);
+            return;
+          }
+          out.appendChild(msg(r, give ? x.workerName + ' has ' + x.tool + ' now.' : 'Declined.'));
+          card.classList.remove('need'); card.classList.add('done'); refreshCounts();
+        });
+      };
+    };
+    yes.onclick = decide(true); no.onclick = decide(false);
+    append(card, [avatar('', x.workerName, 'm'), h('div', { class: 'ask-body' },
+      h('div', { class: 'ask-head' }, h('span', { class: 'ask-name', text: x.by.name + ' wants ' + x.tool + ' for ' + x.workerName }), h('span', { class: 'tag need', text: 'Tool' })),
+      x.why ? h('p', { class: 'muted', text: x.why }) : null,
+      h('div', { class: 'row' }, yes, no), out)]);
     return card;
   }
 
@@ -2711,7 +2863,7 @@ export const CONSOLE_JS = String.raw`
       t.delivered = cameIn;
       var fixes = tl && tl.ok !== false ? tl.missing : [];
       var mineTasks = t.teamTasks.filter(function (x) { return x.waitingOnYou; });
-      var needs = fixes.length + t.waiting.length + t.hireApprovals.length + mineTasks.length + t.proposals.length;
+      var needs = fixes.length + (t.toolTrouble || []).length + t.waiting.length + t.hireApprovals.length + (t.toolRequests || []).length + mineTasks.length + t.proposals.length;
       var title = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 ? ' needs you' : needs === 0 ? ' needs you' : ' need you');
       var byWorker = {};
       t.delivered.forEach(function (d) { byWorker[d.workerName] = (byWorker[d.workerName] || 0) + 1; });
@@ -2729,11 +2881,16 @@ export const CONSOLE_JS = String.raw`
       // what waits on you is in Needs you instead.
       var flight = r[4] && r[4].ok !== false ? r[4].items || [] : [];
       var decisions = flight.filter(function (x) { return x.kind === 'process' && x.needsYou; });
-      var moving = flight.filter(function (x) { return !x.needsYou; }).sort(function (a, b) { return (b.stuck ? 1 : 0) - (a.stuck ? 1 : 0) || b.since - a.since; });
+      var movingOf = function (list) { return list.filter(function (x) { return !x.needsYou; }).sort(function (a, b) { return (b.stuck ? 1 : 0) - (a.stuck ? 1 : 0) || b.since - a.since; }); };
+      var moving = movingOf(flight);
       needs += decisions.length;
       var KIND = { worker: ['W', 'Worker'], team: ['T', 'Team'], process: ['P', 'Process'] };
       var openFlight = function (x) {
-        if (x.kind === 'worker') return go('worker', { workerId: x.workerId, workerTab: 'talk' });
+        if (x.kind === 'worker') {
+          // Land on the work that's moving, as the bar's list does.
+          state.wlLive = x.workerId; if (state.wlSel) delete state.wlSel[x.workerId];
+          return go('worker', { workerId: x.workerId, workerTab: 'talk' });
+        }
         if (x.kind === 'team') return openTask(x.id);
         go('process', { processId: x.processId, processItem: x.id });
       };
@@ -2756,6 +2913,23 @@ export const CONSOLE_JS = String.raw`
         }) : [h('p', { class: 'muted', style: 'margin:0;padding:16px', text: moving.length ? 'Nothing of this kind in flight.' : 'Nothing running right now.' })]);
       };
       drawFlight();
+      var flightCount = h('b', { text: String(moving.length) });
+      var flightLabel = h('span', { class: 'label', style: 'flex:1', text: 'In flight · ' + moving.length });
+      // The bar's live list polls; when what's moving there changes, fetch
+      // in flight again so the two agree without a reload.
+      var seenNow = null;
+      onNow(flightBody, function (items) {
+        var sig = items.map(function (x) { return x.id; }).sort().join('|');
+        if (seenNow === null || sig === seenNow) { seenNow = sig; return; }
+        seenNow = sig;
+        api('GET', '/api/inflight').then(function (y) {
+          if (!y || y.ok === false) return;
+          moving = movingOf(y.items || []);
+          flightCount.textContent = String(moving.length);
+          flightLabel.textContent = 'In flight · ' + moving.length;
+          drawFlight();
+        });
+      });
       var flightTabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'Show' }, [['all', 'All'], ['worker', 'Workers'], ['team', 'Teams'], ['process', 'Processes']].map(function (o) {
         return h('button', { type: 'button', 'aria-pressed': flightTab === o[0] ? 'true' : 'false', onclick: function () { state.flightTab = o[0]; render(); } }, o[1]);
       }));
@@ -2770,7 +2944,7 @@ export const CONSOLE_JS = String.raw`
       nodes[0].querySelector('.page-title').textContent = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 || needs === 0 ? ' needs you' : ' need you');
       nodes.push(h('div', { class: 'if-sum' },
         h('span', null, h('b', { class: needs ? 'need' : '', text: String(needs) }), ' need you'),
-        h('span', null, h('b', { text: String(moving.length) }), ' in flight'),
+        h('span', null, flightCount, ' in flight'),
         h('span', null, h('b', { class: 'ok', text: String(finished.length) }), ' finished since yesterday'),
         h('span', { class: 'faint' }, money(t.spend.spentUSD) + ' this month' + (t.spend.allowanceUSD != null ? ' of ' + money(t.spend.allowanceUSD) : ''))));
       nodes.push(h('div', { class: 'stack', style: 'gap:22px' },
@@ -2778,12 +2952,12 @@ export const CONSOLE_JS = String.raw`
         // when nothing does. A crew of nobody gets the way to hire one.
         needs ? h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Needs you' },
           h('span', { class: 'label if-needlabel', text: 'Needs you · ' + needs }),
-          h('div', { class: 'stack', style: 'gap:8px' }, fixes.map(fixCard), t.waiting.map(waitingCard), decisions.map(decisionCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), mineTasks.map(teamTaskCard)))
+          h('div', { class: 'stack', style: 'gap:8px' }, fixes.map(fixCard), (t.toolTrouble || []).map(troubleCard), t.waiting.map(waitingCard), decisions.map(decisionCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), (t.toolRequests || []).map(toolRequestCard), mineTasks.map(teamTaskCard)))
           : !t.crew.length ? h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'Nobody to hear from yet.' }),
               h('p', { text: 'Hire a worker and what it needs from you lands here.' }),
               state.me.canHire ? h('div', { style: 'margin-top:14px' }, h('button', { class: 'btn go', text: 'Hire your first worker', onclick: function () { go('hire'); } })) : null) : null,
         h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'In flight' },
-          h('div', { class: 'row', style: 'gap:12px' }, h('span', { class: 'label', style: 'flex:1', text: 'In flight · ' + moving.length }),
+          h('div', { class: 'row', style: 'gap:12px' }, flightLabel,
             upcoming.length ? h('span', { class: 'faint if-next' }, 'Up next: ', upcoming.map(function (w, i) {
               return [i ? ' · ' : '', h('button', { class: 'linkish', style: 'font-size:12.5px', text: w.name, onclick: function () { openWorker(w.id); } }), ' ' + when(w.nextShiftAt)];
             })) : null,
@@ -2872,7 +3046,7 @@ export const CONSOLE_JS = String.raw`
           var tr = h('tr', { class: 'link', tabindex: '0', onclick: function () { openWorker(w.id); }, onkeydown: function (e) { if (e.key === 'Enter') openWorker(w.id); } },
             h('td', null, h('div', { class: 'who' }, avatar(w.id, w.name, 's'), h('div', { style: 'min-width:0' }, h('b', { text: w.name }), h('span', { class: 'sub', text: w.tagline })))),
             h('td', null, workerBadge(w)),
-            h('td', null, h('span', { class: 'badge t-' + w.trust, text: TRUST_RUNG[w.trust] || w.trust })),
+            h('td', null, h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, h('span', { class: 'badge t-' + w.trust, text: TRUST_RUNG[w.trust] || w.trust }), w.coding ? codingTag() : null)),
             h('td', { class: 'muted', text: w.manager || '—' }),
             h('td', { class: 'muted' }, w.schedule, w.enabled && w.nextRunAt ? h('span', { class: 'sub', text: 'Next ' + when(w.nextRunAt) }) : null),
             h('td', null, spendCell(w.spentThisMonthUSD, w.budgetUSDPerMonth)));
@@ -2910,6 +3084,23 @@ export const CONSOLE_JS = String.raw`
   }
 
   /// Every run a worker has finished, newest first, 50 at a time. A row
+  /// "Push again" under a run's push result when a repo couldn't be pushed:
+  /// once the token or the tests are put right, the server tries again.
+  function pushAgain(r, w) {
+    if (!w.youManage || !r.result || r.result.name !== 'pull-requests.md' || !/could not push|not pushed — (?!no changes)/.test(r.result.body)) return null;
+    var out = h('div');
+    var b = h('button', { class: 'btn small', text: 'Push again' });
+    b.onclick = function (e) {
+      e.stopPropagation();
+      var restore = busy(b, 'Pushing…');
+      api('POST', '/api/runs/' + encodeURIComponent(r.runId) + '/push', {}).then(function (x) {
+        restore();
+        fill(out, x.ok === false ? [msg(x)] : [h('div', { class: 'wc-out', style: 'margin-top:0' }, md(x.result))]);
+      });
+    };
+    return h('div', { class: 'stack', style: 'gap:8px' }, h('div', null, b), out);
+  }
+
   /// opens to show what the run produced.
   function runsView(w) {
     var outcome = state.runsOutcome || '';
@@ -2920,12 +3111,19 @@ export const CONSOLE_JS = String.raw`
     var MARK = { done: ['Finished', 'ok'], failed: ['Failed', 'bad'], stopped: ['Stopped', ''] };
     var row = function (r) {
       var isMd = r.result && /\.(md|markdown|txt)$/i.test(r.result.name);
+      // Its whole story is on the Conversation tab: every step, its activity,
+      // what it changed.
+      var openRun = h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go);margin-bottom:8px', text: 'Open the run →', onclick: function (e) {
+        e.stopPropagation(); state.wlFindRun = { worker: w.id, runId: r.runId }; state.workerTab = 'talk'; render();
+      } });
       var detail = h('tr', { class: 'run-detail', hidden: true }, h('td', { colspan: '6' },
+        h('div', null, openRun),
         r.error ? h('div', { class: 'msg err', style: 'margin-bottom:10px', text: r.error }) : null,
         r.result ? h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint' }, 'What it produced: ', h('code', { text: r.result.name })),
-          h('div', { class: 'wc-out', style: 'margin-top:0' }, isMd ? md(r.result.body) : h('pre', { text: r.result.body })))
+          h('div', { class: 'wc-out', style: 'margin-top:0' }, isMd ? md(r.result.body) : h('pre', { text: r.result.body })),
+          pushAgain(r, w))
           : !r.error ? h('span', { class: 'faint', text: 'It produced no file.' }) : null));
-      var open = !!(r.result || r.error);
+      var open = true;
       var tr = h('tr', { class: open ? 'link' : null, tabindex: open ? '0' : null, 'aria-expanded': open ? 'false' : null },
         h('td', { class: 'muted', text: when(r.at) }),
         h('td', null, h('b', { style: 'font-weight:600', text: r.title }), r.result ? h('span', { class: 'sub', text: r.result.name }) : null),
@@ -3097,12 +3295,15 @@ export const CONSOLE_JS = String.raw`
   /// The thread's lifecycle with its one running run's stages in place of
   /// "Running · step 1 of 2": one rail, not two.
   function mergedRail(t) {
-    var r = t.runs.length === 1 && (t.runs[0].state === 'working' || t.runs[0].state === 'paused') ? t.runs[0] : null;
+    var r = t.runs.length === 1 && (t.runs[0].state === 'working' || t.runs[0].state === 'paused' || t.runs[0].state === 'done') ? t.runs[0] : null;
     if (!r || !r.steps || r.steps.length < 2) return t.progress;
+    // A finished run shows its steps too, each with how long it took, in
+    // place of "Ran in 43 min": what it did is the point of looking.
+    var done = r.state === 'done';
     return [].concat.apply([], t.progress.map(function (p) {
-      if (p.state !== 'now') return [p];
+      if (done ? !/^Ran in /.test(p.label) : p.state !== 'now') return [p];
       return r.steps.map(function (s) {
-        return { label: s.label, state: s.state, detail: s.state === 'done' && s.tookMs ? secs(s.tookMs) : s.state === 'now' ? 'now · ' + secs(Date.now() - r.startedAt) : '' };
+        return { id: s.id, label: s.label, state: s.state, detail: s.state === 'done' && s.tookMs ? secs(s.tookMs) : s.state === 'now' ? 'now · ' + secs(Date.now() - r.startedAt) : '' };
       });
     }));
   }
@@ -3164,6 +3365,9 @@ export const CONSOLE_JS = String.raw`
         }
       }
       if (s.state === 'now' && i > 0 && live) inside.push(liveRunView(live.runId, 'step'));
+      // A step that's done: what it wrote and what it did, a click away.
+      var stepRun = live || t.runs.filter(function (r) { return r.runId; })[0];
+      if ((s.state === 'done' || s.state === 'failed') && s.id && stepRun && stepRun.runId) inside.push(stepDetail(stepRun.runId, s.id));
       if (i === failedAt) {
         var why = t.error || (broke && (broke.error || (broke.state === 'stopped' ? 'It was stopped before it finished.' : '')));
         if (why) inside.push(h('div', { class: 'msg err', text: why }));
@@ -3179,7 +3383,100 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'vs-body' }, h('div', { class: 'vs-name' }, h('b', { text: s.label }), tag ? h('span', { class: 'vs-tag', text: tag }) : null, sub ? h('span', { class: 'vs-sub', text: sub }) : null), inside),
         h('span', { class: 'vs-time' }, time));
     });
-    return h('div', { class: 'stack', style: 'gap:0' }, h('div', { class: 'vprog' }, line, bar), h('ol', { class: 'vsteps', 'aria-label': 'Steps' }, rows));
+    // What it changed, under the steps: there before it pushes, so a
+    // Continue is made with the diff in view.
+    var coded = live || t.runs.filter(function (r) { return r.runId; })[0];
+    return h('div', { class: 'stack', style: 'gap:0' }, h('div', { class: 'vprog' }, line, bar), h('ol', { class: 'vsteps', 'aria-label': 'Steps' }, rows),
+      coded && coded.runId ? runChangesBox(coded.runId) : null);
+  }
+
+  /// One finished step, folded: open it to read what it wrote and the
+  /// tools it used, from /steps (asked once per run, then kept).
+  var runStepsCache = {};
+  function stepDetail(runId, stepId) {
+    var body = h('div', { class: 'stack', style: 'gap:10px;margin-top:6px', hidden: true });
+    var toggle = h('button', { class: 'linkish', style: 'font-size:12.5px;color:var(--go)', text: 'What it did', 'aria-expanded': 'false' });
+    var loaded = false;
+    toggle.onclick = function () {
+      body.hidden = !body.hidden;
+      toggle.setAttribute('aria-expanded', body.hidden ? 'false' : 'true');
+      toggle.textContent = body.hidden ? 'What it did' : 'Hide';
+      if (loaded || body.hidden) return;
+      loaded = true;
+      fill(body, [thinking('Loading…')]);
+      var hit = runStepsCache[runId];
+      if (!hit || Date.now() - hit.at > 60000) hit = runStepsCache[runId] = { at: Date.now(), p: api('GET', '/api/runs/' + encodeURIComponent(runId) + '/steps') };
+      hit.p.then(function (x) {
+        var st = x && x.ok !== false ? (x.steps || []).filter(function (y) { return y.id === stepId; })[0] : null;
+        if (!st) { fill(body, [h('p', { class: 'faint', text: x && x.ok === false ? x.error : 'Nothing recorded for this step.' })]); return; }
+        var facts = [st.startedAt && st.endedAt ? 'took ' + secs(st.endedAt - st.startedAt) : '', st.costUSD ? money(st.costUSD) : '', st.activity.length ? plural(st.activity.length, 'action', 'actions') : ''].filter(Boolean).join(' · ');
+        fill(body, [
+          facts ? h('span', { class: 'faint', text: facts }) : null,
+          st.error ? h('div', { class: 'msg err', text: st.error }) : null,
+          st.body ? h('div', { class: 'stack', style: 'gap:4px' }, h('span', { class: 't-kind', text: 'What it wrote' + (st.output ? ' · ' + st.output : '') }),
+            /^diff --git|^--- a\//m.test(st.body) ? diffView(st.body) : h('div', { class: 'wc-out', style: 'margin-top:0;max-height:420px;overflow:auto' }, md(st.body))) : null,
+          st.activity.length ? h('div', { class: 'stack', style: 'gap:4px' }, h('span', { class: 't-kind', text: 'What it did' }),
+            h('ol', { class: 'watch-list boxed', style: 'max-height:320px;overflow:auto' }, st.activity.map(function (a) {
+              return h('li', { class: 'watch-item ' + a.kind }, h('span', { class: 'faint', style: 'min-width:64px', text: clock(a.at) }), h('span', { text: a.text }));
+            }))) : null,
+          !st.body && !st.activity.length && !st.error ? h('p', { class: 'faint', text: 'Nothing recorded for this step.' }) : null,
+        ]);
+      });
+    };
+    return h('div', null, toggle, body);
+  }
+
+  /// What a run has changed so far, repo by repo, its diff a click away.
+  /// Asked again at most every 15 s: the timeline redraws as the run moves.
+  var runChangesCache = {};
+  function runChangesBox(runId) {
+    var box = h('div', { class: 'run-changes' });
+    var draw = function (x) {
+      if (!x || x.ok === false || !x.repos || !x.repos.length) return;
+      var full = h('div', { class: 'stack', style: 'gap:10px' });
+      var show = h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: 'Show the diff' });
+      show.onclick = function () {
+        if (full.childNodes.length) { full.textContent = ''; show.textContent = 'Show the diff'; return; }
+        var restore = busy(show, 'Loading…');
+        api('GET', '/api/runs/' + encodeURIComponent(runId) + '/changes?diff=1').then(function (y) {
+          restore();
+          if (!y || y.ok === false) { full.appendChild(msg(y)); return; }
+          show.textContent = 'Hide the diff';
+          fill(full, y.repos.map(function (r) { return h('div', { class: 'stack', style: 'gap:4px' }, h('b', { text: r.name }), diffView(r.diff || '')); }));
+        });
+      };
+      append(box, [
+        h('div', { class: 'spread', style: 'align-items:center' }, h('span', { class: 't-kind', text: 'Changes so far' }), show),
+        x.repos.map(function (r) {
+          return h('div', { class: 'stack', style: 'gap:4px' },
+            h('div', { class: 'row', style: 'gap:8px' }, h('b', { text: r.name }), r.branch ? h('code', { class: 'tag', text: r.branch }) : null,
+              h('span', { class: 'faint' }, plural(r.files.length, 'file', 'files') + ' · ', h('span', { style: 'color:var(--ok)', text: '+' + r.insertions }), ' ', h('span', { style: 'color:var(--bad)', text: '−' + r.deletions }))),
+            r.files.slice(0, 25).map(function (f) {
+              return h('div', { class: 'cf' }, h('span', { class: 'faint', style: 'min-width:64px', text: '+' + f.additions + ' −' + f.deletions }), h('code', { title: f.path, text: f.path }));
+            }),
+            r.files.length > 25 ? h('span', { class: 'faint', text: 'and ' + plural(r.files.length - 25, 'more file', 'more files') }) : null);
+        }),
+        full]);
+    };
+    // One request, shared by every box drawn while it's out: the timeline
+    // redraws as the run moves, and a reply drawn into a box already
+    // replaced never showed.
+    var hit = runChangesCache[runId];
+    if (!hit || Date.now() - hit.at > 15000) {
+      hit = runChangesCache[runId] = { at: Date.now(), p: api('GET', '/api/runs/' + encodeURIComponent(runId) + '/changes') };
+    }
+    hit.p.then(draw);
+    return box;
+  }
+
+  /// A unified diff, its added, removed and header lines told apart.
+  function diffView(text) {
+    var pre = h('pre', { class: 'diff' });
+    text.split('\n').slice(0, 6000).forEach(function (l) {
+      var cls = /^(\+\+\+|---|diff |index |new file|deleted file)/.test(l) ? 'dh' : l[0] === '+' ? 'da' : l[0] === '-' ? 'dd' : /^@@/.test(l) ? 'dc' : null;
+      pre.appendChild(h('span', { class: cls, text: l + '\n' }));
+    });
+    return pre;
   }
 
   /// Stop a run that's going, after a yes: what it wrote stays.
@@ -3301,7 +3598,9 @@ export const CONSOLE_JS = String.raw`
     var form = h('div', { class: 't-compose', hidden: !drafts[t.id] }, box, h('div', { class: 'row', style: 'justify-content:flex-end' }, go_));
     var open = h('button', { class: 'linkish', style: 'color:var(--go);font-size:13.5px', text: 'Reply', onclick: function () { form.hidden = false; open.hidden = true; box.focus(); } });
     if (drafts[t.id]) open.hidden = true;
-    var choices = (deciding ? [] : last.choices || []).map(function (c) {
+    // One-tap answers about what to start go stale once it has started.
+    var acted = (t.runs || []).some(function (r) { return r.startedAt && last.at && r.startedAt >= last.at; });
+    var choices = (deciding || acted ? [] : last.choices || []).map(function (c) {
       var b = h('button', { class: 'chip', style: 'min-height:34px;font-size:13px', text: c });
       b.onclick = function () { send(c, b); };
       return b;
@@ -3602,6 +3901,12 @@ export const CONSOLE_JS = String.raw`
     }
     liveSubscribe(w.id, Object.assign(function (x) {
       data = x;
+      // Opened from a row on the Runs tab: the thread that run belongs to.
+      if (state.wlFindRun && state.wlFindRun.worker === w.id) {
+        var want = state.wlFindRun.runId;
+        var hit = x.threads.filter(function (t) { return (t.runs || []).some(function (rr) { return rr.runId === want; }); })[0];
+        if (hit) { sel = hit.id; state.wlSel[w.id] = sel; state.wlFindRun = null; }
+      }
       // Opened from "working now": the live thread, once it's in the list.
       if (state.wlLive === w.id) {
         var moving = x.threads.filter(function (t) { return t.stage === 'deciding' || t.stage === 'running'; })[0];
@@ -3613,18 +3918,32 @@ export const CONSOLE_JS = String.raw`
     return h('section', { class: 'stack', style: 'gap:12px', 'aria-label': w.name + '’s work' },
       w.enabled ? h('div', { class: 'stack', style: 'gap:6px' }, h('div', { class: 'wl-ask' }, input, send), out)
         : h('p', { class: 'muted', text: w.name + ' is paused. Resume it to ask it things.' }),
-      h('div', { class: 'wl' },
+      fitToWindow(h('div', { class: 'wl' },
         h('div', { class: 'wl-left' }, h('div', { class: 'wl-tools' }, chips, q), list),
-        detail));
+        detail)));
+  }
+
+  /// The list and the thread end at the window's bottom edge, however tall
+  /// the page above them is: their height is the window's less where they
+  /// start on the page, so what's scrolled inside them is never cut off.
+  /// Measured once they're on the page, and again when the window resizes.
+  function fitToWindow(el) {
+    var measure = function () {
+      if (!el.isConnected) { window.removeEventListener('resize', measure); return; }
+      el.style.setProperty('--wl-top', Math.round(el.getBoundingClientRect().top + window.scrollY) + 'px');
+    };
+    requestAnimationFrame(function () { requestAnimationFrame(measure); });
+    window.addEventListener('resize', measure);
+    return el;
   }
 
   /// Every way to reach a worker or a team, with its own name filled in and
   /// a copy button on each: here, Slack, Claude (MCP) and a script.
   function reachView(kind, name, who) {
-    var base = location.origin;
+    var base = location.origin.replace('//0.0.0.0', '//localhost');
     var copyBlock = function (text) {
       var b = h('button', { class: 'btn small', text: 'Copy' });
-      b.onclick = function () { try { navigator.clipboard.writeText(text).then(function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }); } catch (e) {} };
+      b.onclick = function () { copyText(text, b, 'Copy'); };
       return h('div', { class: 'reach-code' }, h('pre', { text: text }), b);
     };
     var lower = name.toLowerCase();
@@ -3645,6 +3964,12 @@ export const CONSOLE_JS = String.raw`
       way('From a script', 'With a key from the Slack & Claude page. It answers at once with an id; the answer lands when it’s ready.', isWorker
         ? ['curl -s ' + base + '/api/ask \\\n  -H "Authorization: Bearer $OVERCLI_ORG_TOKEN" -H "Content-Type: application/json" \\\n  -d \'' + JSON.stringify({ worker: name, message: 'What changed this week?' }) + '\'', 'curl -s ' + base + '/api/asks/<id> -H "Authorization: Bearer $OVERCLI_ORG_TOKEN"']
         : ['curl -s ' + base + '/api/teams/brief \\\n  -H "Authorization: Bearer $OVERCLI_ORG_TOKEN" -H "Content-Type: application/json" \\\n  -d \'' + JSON.stringify({ team: name, text: 'What is the best thing on our roadmap?' }) + '\'']));
+  }
+
+  /// A coding worker: pointed at a repo or workspace, so its work lands as
+  /// branches. Trusted, it goes ahead; on probation it still asks.
+  function codingTag() {
+    return h('span', { class: 'tag go', title: 'Works in a repo or workspace: its changes arrive as branches for a person to review. Trusted, it goes ahead without asking.', text: 'Coding' });
   }
 
   function viewWorker() {
@@ -3687,7 +4012,13 @@ export const CONSOLE_JS = String.raw`
       if (w.youManage) {
         var reports = h('select', { 'aria-label': 'Reports to' }, h('option', { value: '', text: 'Nobody, it’s at the top' }),
           all.filter(function (x) { return x.id !== w.id; }).map(function (x) { return h('option', { value: x.id, text: x.name, selected: !!(w.reportsTo && w.reportsTo.id === x.id) }); }));
-        var vis = h('select', { 'aria-label': 'Who may ask it' }, ['private', 'team', 'org'].map(function (v) { return h('option', { value: v, text: VIS[v], selected: w.visibility === v }); }));
+        var whoAsks = audiencePicker({
+          label: 'Who can ask it',
+          kind: w.audience || w.visibility === 'team' ? 'picked' : w.visibility === 'org' ? 'everyone' : 'manager',
+          audience: w.audience,
+          managerGroupsOf: !w.audience && w.visibility === 'team' ? w.managerSlackUserId : null,
+          onChange: function () { later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
+        });
         var budget = h('input', { type: 'number', min: '1', step: '1', value: String(w.budgetUSDPerMonth), 'aria-label': 'Monthly budget' });
         var sched = scheduleEditor(w.cadence);
         var saved = h('div');
@@ -3724,49 +4055,89 @@ export const CONSOLE_JS = String.raw`
         };
         // One section per question a manager asks: when, who, how much, and
         // the irreversible ones apart at the bottom.
-        var group = function (title, sub, body) {
+        // Each section saves as it's changed, like Access does, and says so
+        // in its own header: no Save button to forget.
+        var notes = {};
+        var group = function (title, sub, body, key) {
+          var note = key ? (notes[key] = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px;margin-left:8px' })) : null;
           return h('section', { class: 'panel pad sgroup' },
-            h('div', null, h('h2', { class: 'section-title', text: title }), sub ? h('p', { class: 'faint', style: 'margin-top:4px', text: sub }) : null),
+            h('div', null, h('h2', { class: 'section-title', style: 'display:flex;align-items:baseline' }, title, note), sub ? h('p', { class: 'faint', style: 'margin-top:4px', text: sub }) : null),
             h('div', { class: 'stack' }, body));
         };
-        var saveAll = h('button', { class: 'btn go', text: 'Save changes' });
-        saveAll.onclick = function () {
-          var patch = { reportsTo: reports.value || null, visibility: vis.value, budgetUSDPerMonth: Number(budget.value), cadence: sched.value() };
-          if (mgr && mgr.value !== (w.managerSlackUserId || '')) {
-            var who = mgr._people.filter(function (p) { return p.slackUserId === mgr.value; })[0];
-            patch.manager = who ? { name: who.name, slackUserId: who.slackUserId } : null;
-          }
-          var restore = busy(saveAll, 'Saving…');
-          var move = where && where.value && where.value !== here
-            ? api('POST', '/api/repos/' + encodeURIComponent(where.value) + '/workers', { worker: w.id })
-            : Promise.resolve({ ok: true });
-          move.then(function (m) {
-            if (m.ok === false) { restore(); saved.textContent = ''; saved.appendChild(msg(m)); return; }
-            return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch })
-              .then(function (x) { restore(); saved.textContent = ''; saved.appendChild(msg(x, 'Saved. It applies from its next run.')); if (x.ok !== false && where && where.value !== here) setTimeout(render, 800); });
+        var saveNow = function (key, patch) {
+          var note = notes[key];
+          if (note) { note.className = 'faint'; note.textContent = 'Saving…'; }
+          return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: patch }).then(function (x) {
+            if (!note) return x;
+            note.textContent = ''; note.className = '';
+            if (x.ok === false) { note.appendChild(msg(x)); return x; }
+            note.className = 'msg ok'; note.textContent = 'Saved';
+            setTimeout(function () { if (note.isConnected && note.textContent === 'Saved') { note.textContent = ''; note.className = ''; } }, 2500);
+            return x;
+          });
+        };
+        // Typing and ticking settle first, so a burst of clicks is one save.
+        var timers = {};
+        var later = function (key, make) { clearTimeout(timers[key]); timers[key] = setTimeout(function () { saveNow(key, make()); }, 600); };
+        // Its preferred flow: what its work goes through unless the ask names
+        // another. Only worth asking with more than one.
+        var flows = d.flows || [];
+        var usual = flows.length > 1 ? h('select', { 'aria-label': 'Preferred flow' },
+          h('option', { value: '', text: 'Let it choose (first: ' + flows[0].name + ')', selected: !d.preferredFlowId }),
+          flows.map(function (f) { return h('option', { value: f.id, text: f.name, selected: f.id === d.preferredFlowId }); })) : null;
+        // How many people it answers at once in Slack, each in their own thread.
+        var atOnce = h('select', { 'aria-label': 'Conversations at once', style: 'max-width:200px' }, [1, 2, 3, 4, 5, 6].map(function (n) {
+          return h('option', { value: String(n), text: n === 1 ? 'One at a time' : n + ' at once', selected: n === (w.answersAtOnce || 3) });
+        }));
+        // Changes save as they're made.
+        sched.node.addEventListener('change', function () { later('when', function () { return { cadence: sched.value() }; }); });
+        sched.node.addEventListener('input', function () { later('when', function () { return { cadence: sched.value() }; }); });
+        reports.onchange = function () { saveNow('boss', { reportsTo: reports.value || null }); };
+        if (mgr) mgr.onchange = function () {
+          var who = mgr._people.filter(function (p) { return p.slackUserId === mgr.value; })[0];
+          saveNow('boss', { manager: who ? { name: who.name, slackUserId: who.slackUserId } : null });
+        };
+        atOnce.onchange = function () { saveNow('slack', { answersAtOnce: Number(atOnce.value) }); };
+        if (usual) usual.onchange = function () { saveNow('flow', { preferredFlowId: usual.value || null }); };
+        budget.onchange = function () {
+          var n = Number(budget.value);
+          if (!(n > 0)) { budget.value = String(w.budgetUSDPerMonth); return; }
+          saveNow('budget', { budgetUSDPerMonth: n });
+        };
+        if (where) where.onchange = function () {
+          if (!where.value || where.value === here) return;
+          var note = notes.where;
+          if (note) { note.className = 'faint'; note.textContent = 'Moving…'; }
+          api('POST', '/api/repos/' + encodeURIComponent(where.value) + '/workers', { worker: w.id }).then(function (m) {
+            if (note) { note.textContent = ''; note.className = ''; note.appendChild(msg(m, 'Moved')); }
+            if (m.ok !== false) setTimeout(render, 800);
           });
         };
         settings = h('div', { class: 'stack', style: 'gap:16px' },
           group('Picture', 'Its face here and on what it posts in Slack. Pick one, or use a link to your own image.', [picturePicker(w, function (url) { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { avatarUrl: url } }); },
             function () { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/picture/pick', {}); })]),
-          group('When it runs', 'On its own schedule, or only when someone asks.', [sched.node]),
+          group('When it runs', 'On its own schedule, or only when someone asks.', [sched.node], 'when'),
           group('Who it answers to', 'Its questions and approvals go here, climbing the chain if its boss can’t answer.', [
             h('div', { class: 'grid2' }, mgr ? h('label', { class: 'field' }, 'Manager', mgr) : h('div', { class: 'field' }, h('span', { text: 'Manager' }), h('span', { style: 'color:var(--ink)', text: w.manager || 'Nobody yet' })),
-              h('label', { class: 'field' }, 'Reports to (another worker)', reports))]),
-          group('Who can ask it', 'Anyone who can ask it can learn what its tools can reach.', [h('div', { style: 'max-width:360px' }, vis)]),
+              h('label', { class: 'field' }, 'Reports to (another worker)', reports))], 'boss'),
+          group('Who can ask it', 'Anyone who can ask it can learn what its tools can reach.', [whoAsks.node,
+            d.changes ? (d.changes.length
+              ? h('p', { class: 'faint', style: 'font-size:13px;margin-top:8px', text: 'When someone other than its manager asks, work it proposes waits for its manager’s OK, because ' + d.changes.slice(0, 3).join('; ') + (d.changes.length > 3 ? '; and more' : '') + '. A worker that only reads answers anyone it lets ask, with no OK.' })
+              : h('p', { class: 'msg ok', style: 'font-size:13px;margin-top:8px', text: 'It only reads, so anyone who can ask it gets answers straight away, with no OK from its manager.' })) : null], 'who'),
           group('Where it works', 'The repo, or workspace of repos, it reads and changes. Its changes arrive as branches to open pull requests from.', [
             where ? h('div', { style: 'max-width:480px' }, where)
-              : h('p', { class: 'faint', text: (w.place ? placeText(w.place) + '. ' : '') + (state.me.admin ? 'Connect a repo under Setup → Repos to let it change code there.' : 'An admin connects repos under Setup → Repos.') })]),
+              : h('p', { class: 'faint', text: (w.place ? placeText(w.place) + '. ' : '') + (state.me.admin ? 'Connect a repo under Setup → Repos to let it change code there.' : 'An admin connects repos under Setup → Repos.') })], 'where'),
+          group('Answering in Slack', 'How many people it answers at once, each in their own thread. Its desk here, and its shifts, still take one thing at a time; each answer counts against its budget.', [atOnce], 'slack'),
+          usual ? group('How it works', 'The flow its work goes through, unless you name another of its flows when you ask (“use solve-ticket”).', [h('div', { style: 'max-width:480px' }, usual)], 'flow') : null,
           group('Budget', 'At its budget it stops until the month turns.', [h('label', { class: 'field', style: 'max-width:240px' }, 'Monthly budget (USD)', budget),
-            h('span', { class: 'faint', text: money(w.spentThisMonthUSD) + ' spent so far this month.' })]),
-          h('div', { class: 'foot' }, saveAll, saved),
+            h('span', { class: 'faint', text: money(w.spentThisMonthUSD) + ' spent so far this month.' })], 'budget'),
           h('section', { class: 'panel pad sgroup', style: 'border-color:var(--bad-line)' },
             h('div', null, h('h2', { class: 'section-title', text: 'Pause or let go' }), h('p', { class: 'faint', style: 'margin-top:4px', text: 'Pausing keeps everything; letting go retires it for good.' })),
             h('div', { class: 'row' },
               h('button', { class: 'btn', text: w.enabled ? 'Pause ' + w.name : 'Resume ' + w.name, onclick: function () {
                 api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/paused', { paused: w.enabled }).then(function (x) { if (x.ok === false) { saved.textContent = ''; saved.appendChild(msg(x)); } else render(); });
               } }),
-              letGo)));
+              letGo), saved));
       }
 
       // The job, readable at full width; its manager can rewrite it.
@@ -3788,15 +4159,35 @@ export const CONSOLE_JS = String.raw`
               d.jobDescription = ta.value.trim(); render();
             });
           };
+          // Say the change, and it is written in for you to read before saving.
+          var ask = h('input', { type: 'text', 'aria-label': 'What should change', placeholder: 'Say what should change, e.g. “also check the Ops board on Fridays”', style: 'flex:1;min-width:220px' });
+          var rewrite = h('button', { class: 'btn', text: 'Rewrite it' });
+          var note = h('div', { 'aria-live': 'polite', class: 'faint', style: 'font-size:13px' });
+          rewrite.onclick = function () {
+            if (!ask.value.trim()) { ask.focus(); return; }
+            var restore = busy(rewrite, 'Rewriting…');
+            note.textContent = '';
+            api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/suggest-job', { ask: ask.value, job: ta.value }).then(function (x) {
+              restore();
+              if (x.ok === false) { note.appendChild(msg(x)); return; }
+              var before = ta.value;
+              ta.value = x.job;
+              ask.value = '';
+              append(note, ['Rewritten below. Read it over, then save. ',
+                h('button', { class: 'linkish', text: 'Undo', onclick: function () { ta.value = before; note.textContent = ''; } })]);
+            });
+          };
+          ask.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); rewrite.click(); } };
           box.textContent = '';
-          append(box, [h('p', { class: 'muted', text: 'This is what ' + w.name + ' plans every run from. Say what to do, what to skip, and where things live.' }), ta,
+          append(box, [h('p', { class: 'muted', text: 'This is what ' + w.name + ' plans every run from. Say what to do, what to skip, and where things live.' }),
+            h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, ask, rewrite), note, ta,
             h('div', { class: 'foot' }, save, h('button', { class: 'btn quiet', text: 'Cancel', onclick: function () { render(); } }), out)]);
-          ta.focus();
+          ask.focus();
         };
         append(box, text);
         return h('div', { class: 'split' }, h('div', { class: 'wide' },
             h('section', { class: 'sec', 'aria-labelledby': 'jobh' }, h('div', { class: 'sec-head' }, h('h2', { id: 'jobh', class: 'label', text: 'The job it was hired for' }), edit), box)),
-          h('aside', { class: 'narrow' }, card('learned', 'What it has learned', null, [
+          h('aside', { class: 'narrow' }, knowsCard(w, d), card('learned', 'What it has learned', null, [
             h('p', { class: 'faint', text: 'From your ratings and notes. It reads these alongside its job before every run.' }),
             d.learned.length ? h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
               : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing yet.' })])));
@@ -3804,6 +4195,8 @@ export const CONSOLE_JS = String.raw`
 
       var st = workerStatus(w);
       var missing = (w.tools || []).filter(function (t) { return !t.ok; }).map(function (t) { return t.name; });
+      // Access lives in Settings now; old links to it land on its section.
+      if (state.workerTab === 'access') { state.workerTab = 'settings'; state.settingsSection = 'access'; }
       var tab = state.workerTab || 'talk';
       var change = w.youManage ? function () { state.workerTab = 'settings'; render(); } : null;
       var row = function (k, v, extra) {
@@ -3821,12 +4214,19 @@ export const CONSOLE_JS = String.raw`
           return h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, h('span', { style: 'display:inline-flex;color:' + (t.enabled ? 'var(--go)' : 'var(--faint)') }, icon('bolt', 15)), h('span', { style: 'font-size:13.5px', text: t.name + (t.enabled ? '' : ' (off)') }));
         }),
         d.value && d.value.handled ? h('p', { class: 'faint', text: plural(d.value.handled, 'event', 'events') + ' handled this month' + (d.value.medianMinutes != null ? ', typically in ' + (d.value.medianMinutes < 1 ? 'under a minute' : Math.round(d.value.medianMinutes) + ' min') : '') + '.' }) : null]);
+      var toAccess = function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); };
+      var accessBits = h('div', { class: 'stack', style: 'gap:8px;padding:12px 18px 6px' }, [
+        h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'badge t-' + rd.level, text: RUNG[rd.level] }),
+          rd.readyFor && rd.readyFor !== rd.level ? h('span', { class: 'faint', style: 'font-size:12.5px', text: 'ready for ' + RUNG[rd.readyFor].toLowerCase() }) : null),
+        (w.tools || []).length ? h('div', { class: 'stack', style: 'gap:4px' }, w.tools.map(function (t) {
+          return h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;font-size:13.5px' }, h('span', { class: 'sdot ' + (t.ok ? 'ok' : 'bad') }),
+            h('span', { style: 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap', title: t.name, text: t.name }),
+            h('span', { class: 'faint', style: 'font-size:12px;flex:none', text: !t.ok ? 'not on server' : t.shared ? 'every worker' : t.scope && t.scope.mode === 'read' ? 'read only' : t.scope && t.scope.mode === 'only' ? 'some calls' : '' }));
+        })) : h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'No tools yet.' }),
+        (w.alwaysAllow || []).length || w.skipCheckpoints ? h('p', { class: 'faint', style: 'font-size:12.5px;margin:0', text: [(w.alwaysAllow || []).length ? plural(w.alwaysAllow.length, 'step', 'steps') + ' always allowed' : '', w.skipCheckpoints ? 'runs through checkpoints' : ''].filter(Boolean).join(' · ') + '.' }) : null]);
       var aside = h('aside', { class: 'narrow', 'aria-label': 'Setup' },
         onItsOwn,
-        trustCard,
-        (w.tools || []).length ? card('tl', 'Tools', null,
-          w.tools.map(function (t) { return toolScopeRow(w, t); })) : null,
-        card('setup', 'Setup', change ? h('button', { class: 'linkish', text: 'Settings', onclick: change }) : null, h('div', { style: 'padding:2px 18px' },
+        card('setup', 'Setup', change ? h('button', { class: 'linkish', text: 'Settings', onclick: change }) : null, [accessBits, w.youManage ? h('div', { style: 'padding:0 18px' }, h('button', { class: 'linkish', style: 'font-size:13px', text: 'Tools and trust →', onclick: toAccess })) : null, h('div', { style: 'padding:2px 18px' },
           row('Runs', w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '')),
           row('Answers to', (w.manager || 'Nobody yet') + (w.managerInherited ? ' (through its boss)' : '')),
           w.reportsTo ? row('Reports to', w.reportsTo.name) : null,
@@ -3836,11 +4236,81 @@ export const CONSOLE_JS = String.raw`
             h('div', { class: 'row', style: 'flex-wrap:nowrap' }, h('span', { style: 'flex:1' }, h('span', { class: 'k', text: 'Budget' }), h('span', { class: 'v', text: money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) + ' this month' })),
               change ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Change', onclick: change }) : null),
             h('div', { class: 'meter' + (pct >= 85 ? ' high' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' }))),
-          job), true),
+          job)], true),
         card('learn', 'What it remembers', null, [
           d.learned.length ? h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
             : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing from you yet. Answer “Was this useful?” under a result and it reads that before every run.' }),
           h('p', { class: 'faint', text: 'In the last 30 days: ' + plural(d.stats.runs, 'run', 'runs') + (d.stats.failed ? ', ' + d.stats.failed + ' failed' : '') + (d.stats.usefulPct != null ? ', ' + d.stats.usefulPct + '% rated useful' : ', none rated yet') + '.' })]));
+
+      // Access: what it may use and how much it does without asking.
+      var accessView = function () {
+        var section = function (title, sub, body) {
+          return h('section', { class: 'panel pad stack', style: 'gap:12px' }, h('div', null, h('h2', { class: 'section-title', text: title }), sub ? h('p', { class: 'faint', style: 'margin-top:4px;font-size:13px', text: sub }) : null), body);
+        };
+        var skip = state.me.admin ? h('input', { type: 'checkbox', checked: !!w.skipCheckpoints }) : null;
+        var skipOut = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+        if (skip) skip.onchange = function () {
+          skip.disabled = true;
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { skipCheckpoints: skip.checked } }).then(function (x) {
+            skip.disabled = false; skipOut.textContent = '';
+            if (x.ok === false) { skip.checked = !skip.checked; skipOut.appendChild(msg(x)); } else { w.skipCheckpoints = skip.checked; skipOut.appendChild(msg(x, 'Saved. It applies from its next run.')); }
+          });
+        };
+        return h('div', { class: 'stack', style: 'gap:16px' },
+          section('Tools', 'What it can reach, and how much of each. Calls outside a tool’s scope are refused, even with your OK.',
+            [(w.tools || []).length ? h('div', { class: 'stack access-tools', style: 'gap:0' }, w.tools.map(function (t) {
+              return h('div', { style: 'padding:10px 0;border-bottom:1px solid var(--line)' }, toolScopeRow(w, t));
+            })) : h('p', { class: 'faint', text: 'No tools yet.' }),
+            w.youManage ? giveToolPanel(w) : null]),
+          section('Writes code', 'A worker that writes code gets its own copy of each repo for every run, and what it makes goes out as a pull request. One that doesn’t reads the repos where they are, kept up to date hourly, and can’t change them.',
+            (function () {
+              var sel = h('select', { 'aria-label': 'Writes code', style: 'max-width:420px' },
+                h('option', { value: '', text: 'From its flows (now: ' + (w.coding && w.writesCode === undefined ? 'writes code' : w.writesCode === undefined ? 'only reads' : 'from its flows') + ')', selected: w.writesCode === undefined }),
+                h('option', { value: 'yes', text: 'Writes code: its own checkout and a pull request per run', selected: w.writesCode === true }),
+                h('option', { value: 'no', text: 'Only reads code: works in the repos as they are', selected: w.writesCode === false }));
+              var said = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+              sel.disabled = !w.youManage;
+              sel.onchange = function () {
+                sel.disabled = true;
+                api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { writesCode: sel.value === '' ? null : sel.value === 'yes' } }).then(function (x) {
+                  sel.disabled = false; said.textContent = ''; said.appendChild(msg(x, 'Saved. It applies from its next run.'));
+                });
+              };
+              return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' }, sel, said);
+            })()),
+          trustCard,
+          section('Always allowed', 'Steps you said it may always run without asking, from “Always allow” on an approval. Take one off and it asks again.',
+            (w.alwaysAllow || []).length ? h('div', { class: 'stack', style: 'gap:6px' }, w.alwaysAllow.map(function (k) {
+              return h('div', { class: 'row', style: 'gap:10px' }, h('code', { style: 'font-size:12.5px', text: k.replace('/', ' → ') }),
+                w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Take off', onclick: function (e) {
+                  var restore = busy(e.target, 'Saving…');
+                  api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { alwaysAllow: w.alwaysAllow.filter(function (x) { return x !== k; }) } }).then(function (x) { restore(); if (x.ok === false) alert(x.error); else render(); });
+                } }) : null);
+            })) : h('p', { class: 'faint', style: 'font-size:13px', text: 'Nothing yet. Every step that reaches outside asks, as its trust says.' })),
+          section('Checkpoints', 'Where its flows stop so someone looks before a step, like “Continue to push?”. Anything that acts outside the server still asks unless its trust says otherwise.',
+            skip ? h('div', { class: 'row', style: 'gap:10px' }, h('label', { class: 'toggle' }, skip, h('span', { text: 'Run straight through its flows’ checkpoints' })), skipOut)
+              : h('p', { class: 'faint', style: 'font-size:13px', text: w.skipCheckpoints ? 'It runs straight through its flows’ checkpoints. An admin set this.' : 'It stops at its flows’ checkpoints. Only an admin can change that.' })));
+      };
+
+      // Everything about how it's set up, in one tab: its own setup, what it
+      // may use and do alone, and its history. A short list jumps to each.
+      var settingsView = function () {
+        var parts = [];
+        if (settings) parts.push(['general', 'General', settings]);
+        parts.push(['access', 'Access', accessView()]);
+        if (w.youManage) parts.push(['history', 'History', h('section', { class: 'panel pad stack', style: 'gap:10px' },
+          h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Every change to its job, tools, trust and settings. Restore one to go back to it.' }), workerHistory(w))]);
+        var jump = function (id) { var el = document.getElementById('ws-' + id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+        var nav = h('nav', { 'aria-label': 'Settings sections', style: 'position:sticky;top:calc(56px + var(--wk-head, 190px) + 16px);display:flex;flex-direction:column;gap:4px;min-width:130px' },
+          parts.map(function (p) { return h('button', { class: 'linkish', style: 'text-align:left;font-size:14px;padding:4px 0', text: p[1], onclick: function () { jump(p[0]); } }); }));
+        var body = h('div', { class: 'stack', style: 'gap:32px;flex:1;min-width:0' }, parts.map(function (p) {
+          return h('div', { id: 'ws-' + p[0], class: 'stack', style: 'gap:12px;scroll-margin-top:calc(56px + var(--wk-head, 190px) + 16px)' }, h('h2', { class: 'label', text: p[1] }), p[2]);
+        }));
+        // How tall the pinned head is, so the list and a jump land below it.
+        setTimeout(function () { var head = document.querySelector('.wk-sticky'); if (head) document.documentElement.style.setProperty('--wk-head', head.offsetHeight + 'px'); }, 0);
+        if (state.settingsSection) { var to = state.settingsSection; state.settingsSection = null; setTimeout(function () { jump(to); }, 60); }
+        return h('div', { style: 'display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap' }, parts.length > 1 ? nav : null, body);
+      };
 
       var pause = function (e) {
         busy(e.target, w.enabled ? 'Pausing…' : 'Resuming…');
@@ -3848,13 +4318,13 @@ export const CONSOLE_JS = String.raw`
           if (x.ok === false) { var note = document.getElementById('run-note'); if (note) { note.textContent = ''; note.appendChild(msg(x)); } } else render();
         });
       };
-      return [h('header', { class: 'page-head' },
+      return [h('div', { class: 'wk-sticky' }, h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
             h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Workers', onclick: function () { go('workers'); } }), ' / ' + w.name),
             h('div', { class: 'row', style: 'gap:16px;flex-wrap:nowrap' }, avatar(w.id, w.name, 'xl'),
               h('div', { style: 'min-width:0;display:flex;flex-direction:column;gap:6px' },
                 h('h1', { class: 'page-title', text: w.name }),
-                h('div', { class: 'row', style: 'gap:8px' }, workerBadge(w), w.tagline ? h('span', { class: 'muted', style: 'font-size:13.5px', text: w.tagline }) : null),
+                h('div', { class: 'row', style: 'gap:8px' }, workerBadge(w), w.coding ? codingTag() : null, w.tagline ? h('span', { class: 'muted', style: 'font-size:13.5px', text: w.tagline }) : null),
                 h('div', { class: 'faint', style: 'font-size:13px' },
                   [w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'Works when asked', TRUST_RUNG[w.trust] || w.trust, money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) + ' this month', plural((w.tools || []).length, 'tool', 'tools')].join(' · '),
                   w.youManage ? [' · ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Settings', onclick: function () { state.workerTab = 'settings'; render(); } })] : null)))),
@@ -3885,21 +4355,33 @@ export const CONSOLE_JS = String.raw`
             null)),
         h('div', { id: 'run-note' }),
         nowBar(w),
-        missing.length ? h('div', { class: 'banner', role: 'status' },
+        (d.toolProblems || []).length ? h('div', { class: 'banner', role: 'status' },
           h('span', { style: 'color:var(--bad);flex:none' }, icon('alert', 20)),
-          h('span', { text: w.name + '’s job needs ' + missing.join(', ') + ', which ' + (missing.length === 1 ? 'isn’t' : 'aren’t') + ' installed on this server — so it works without ' + (missing.length === 1 ? 'it' : 'them') + '.' }),
-          state.me.admin ? h('button', { class: 'btn bad', text: 'Install ' + missing[0], onclick: function () { go('setup', { setupTab: 'tools' }); } }) : h('span', { class: 'faint', style: 'flex:none', text: 'Ask an admin to install it.' })) : null,
+          h('span', { text: w.name + '’s tool sign-in is refused, so what it reads comes back empty. ' + d.toolProblems[0] }),
+          state.me.admin ? h('button', { class: 'btn bad', text: 'Fix its keys', onclick: function () { go('setup', { setupTab: 'tools' }); } }) : h('span', { class: 'faint', style: 'flex:none', text: 'Ask an admin to fix its keys.' })) : null,
+        missing.length ? (function () {
+          // One it has under another name (productboard-api for productboard)
+          // does the job: said, so taking the missing one off is the fix.
+          var stand = (w.tools || []).filter(function (x) { return x.ok && x.name !== missing[0] && x.name.indexOf(missing[0] + '-') === 0; })[0];
+          return h('div', { class: 'banner', role: 'status' },
+            h('span', { style: 'color:var(--bad);flex:none' }, icon('alert', 20)),
+            h('span', { text: w.name + '’s job needs ' + missing.join(', ') + ', which ' + (missing.length === 1 ? 'isn’t' : 'aren’t') + ' installed on this server — so it works without ' + (missing.length === 1 ? 'it' : 'them') + '.' + (stand ? ' It has ' + stand.name + ', which does the same job: take ' + missing[0] + ' off.' : '') }),
+            h('div', { class: 'row', style: 'gap:8px;flex:none' },
+              w.youManage ? h('button', { class: 'btn' + (stand ? ' bad' : ''), text: 'Take ' + missing[0] + ' off', onclick: function (e) { takeToolOff(w, missing[0], e.target); } }) : null,
+              state.me.admin && !stand ? h('button', { class: 'btn bad', text: 'Install ' + missing[0], onclick: function () { go('setup', { setupTab: 'tools' }); } }) : null,
+              !w.youManage && !state.me.admin ? h('span', { class: 'faint', text: 'Ask an admin to install it.' }) : null));
+        })() : null,
         h('div', { class: 'tabs', role: 'tablist', 'aria-label': w.name },
-          [['talk', 'Conversation'], ['runs', 'Runs'], ['files', 'Files'], ['journal', 'Journal'], ['triggers', 'Triggers' + ((d.triggers || []).length ? ' · ' + d.triggers.length : '')], ['job', 'Job'], ['reach', 'How to reach'], w.youManage ? ['settings', 'Settings'] : null].filter(Boolean).map(function (t) {
+          [['talk', 'Conversation'], ['runs', 'Runs'], ['files', 'Files'], ['journal', 'Journal'], ['triggers', 'Triggers' + ((d.triggers || []).length ? ' · ' + d.triggers.length : '')], ['job', 'Job'], ['reach', 'How to reach'], ['settings', 'Settings']].filter(Boolean).map(function (t) {
             return h('button', { role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', text: t[1], onclick: function () { state.workerTab = t[0]; render(); } });
-          })),
+          }))),
         tab === 'reach' ? reachView('worker', w.name, VIS[w.visibility || 'private'])
           : tab === 'runs' ? runsView(w)
           : tab === 'files' ? filesView(w)
           : tab === 'journal' ? journalView(w)
           : tab === 'triggers' ? triggersView(w, d)
           : tab === 'job' ? h('div', { class: 'stack', style: 'gap:16px' }, jobView(), w.youManage ? null : aside)
-          : tab === 'settings' && settings ? h('div', { class: 'split' }, h('div', { class: 'wide' }, settings), aside)
+          : tab === 'settings' ? settingsView()
           : conversation(w)];
     });
   }
@@ -5308,7 +5790,13 @@ export const CONSOLE_JS = String.raw`
     var chosen = items.filter(function (x) { return x.id === current; })[0];
     var wrap = h('div', { class: 'dp' });
     var panel = null;
-    var close = function () { if (panel) { panel.remove(); panel = null; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('mousedown', outside); } };
+    var place = null;
+    var close = function () {
+      if (!panel) return;
+      panel.remove(); panel = null; btn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('mousedown', outside);
+      if (place) { window.removeEventListener('scroll', place, true); window.removeEventListener('resize', place); place = null; }
+    };
     var outside = function (e) { if (!wrap.contains(e.target)) close(); };
     var face = function (it) { return avatar(it.id, it.name, 'm'); };
     var btn = h('button', { type: 'button', class: 'dp-btn', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'aria-label': label },
@@ -5348,6 +5836,27 @@ export const CONSOLE_JS = String.raw`
       drawList();
       panel = h('div', { class: 'dp-panel' }, h('div', { class: 'dp-search' }, icon('search', 14), q), list);
       wrap.appendChild(panel);
+      // Placed against the window, not the card it sits in: a card that
+      // clips its overflow cut the list off. Below the button when there's
+      // room, else above it, as tall as the room allows; it follows the
+      // button as the page scrolls.
+      place = function () {
+        if (!panel) return;
+        var r = btn.getBoundingClientRect();
+        var below = window.innerHeight - r.bottom - 16, above = r.top - 16;
+        var up = below < 280 && above > below;
+        var width = Math.min(Math.max(r.width, 460), window.innerWidth - 40);
+        panel.style.setProperty('position', 'fixed');
+        panel.style.setProperty('left', Math.max(20, Math.min(r.left, window.innerWidth - width - 20)) + 'px');
+        panel.style.setProperty('width', width + 'px');
+        panel.style.setProperty('top', up ? 'auto' : (r.bottom + 6) + 'px');
+        panel.style.setProperty('bottom', up ? (window.innerHeight - r.top + 6) + 'px' : 'auto');
+        panel.style.setProperty('z-index', '60');
+        list.style.setProperty('max-height', Math.max(160, Math.min(380, (up ? above : below) - 56)) + 'px');
+      };
+      place();
+      window.addEventListener('scroll', place, true);
+      window.addEventListener('resize', place);
       btn.setAttribute('aria-expanded', 'true');
       document.addEventListener('mousedown', outside);
       setTimeout(function () { q.focus(); }, 0);
@@ -5666,7 +6175,7 @@ export const CONSOLE_JS = String.raw`
           var back = h('select', { 'aria-label': 'Send back goes to', onchange: function () { if (back.value) s.sendBackTo = back.value; else delete s.sendBackTo; drawMap(); } },
             h('option', { value: '', text: 'The stage before' }),
             model.stages.slice(0, i).filter(function (x) { return x.kind !== 'people'; }).map(function (x) { return h('option', { value: x.id, text: x.name || 'Unnamed stage', selected: s.sendBackTo === x.id }); }));
-          rows.push(row('Who decides', chips, (hint ? 'Usually: ' + hint.who + '. ' : '') + (roleHint[s.id] ? 'The picture says: ' + roleHint[s.id] + '. ' : '') + 'Everyone here, and everyone in a group, gets a Slack DM with Approve, Send back and Stop. Groups are set under Setup → Rules.'));
+          rows.push(row('Who decides', chips, (hint ? 'Usually: ' + hint.who + '. ' : '') + (roleHint[s.id] ? 'The picture says: ' + roleHint[s.id] + '. ' : '') + 'Everyone here, and everyone in a group, gets a Slack DM with Approve, Send back and Stop. Groups are set under Setup → People & teams.'));
           var needs = h('select', { 'aria-label': 'How many must approve', onchange: function () {
             if (needs.value === 'any') delete s.needs; else s.needs = needs.value === 'all' ? 'all' : Number(needs.value);
             drawReady();
@@ -5789,7 +6298,15 @@ export const CONSOLE_JS = String.raw`
                 if (!a.people.some(function (y) { return y.slackUserId ? y.slackUserId === x.slackUserId : y.name === x.name; })) a.people.push(x);
                 drawAccess(); var q = accPop.querySelector('.acc-field input'); if (q) q.focus();
               }, { quiet: true, onGroup: function (g) { if (!a.groups.some(function (y) { return y.id === g.id; })) a.groups.push(g); drawAccess(); var q = accPop.querySelector('.acc-field input'); if (q) q.focus(); } })])),
-          a.who === 'team' && !a.groups.length ? h('span', { class: 'acc-need', text: 'Pick at least one team.' }) : null) : null;
+          a.who === 'team' && !a.groups.length ? h('span', { class: 'acc-need', text: 'Pick at least one team.' }) : null,
+          // Roles, beside people and groups: whoever holds one, as it changes.
+          a.who === 'people' ? h('div', { class: 'stack', style: 'gap:6px;margin-top:10px' }, h('span', { class: 'acc-label', text: 'Roles' }),
+            h('div', { class: 'picks' }, [['admin', 'Admins'], ['approver', 'Hire approvers'], ['hirer', 'People who can hire']].map(function (r) {
+              a.roles = a.roles || [];
+              var b = h('input', { type: 'checkbox', checked: a.roles.indexOf(r[0]) >= 0 });
+              b.onchange = function () { var i = a.roles.indexOf(r[0]); if (b.checked && i < 0) a.roles.push(r[0]); else if (!b.checked && i >= 0) a.roles.splice(i, 1); };
+              return h('label', { class: 'toggle' }, b, h('span', { text: r[1] }));
+            }))) : null) : null;
         var always = [h('span', null, h('b', { text: model.owner ? model.owner.name : me.name }), ' · owner')];
         if (creator && !(model.owner && (creator.slackUserId ? creator.slackUserId === model.owner.slackUserId : creator.name === model.owner.name))) always.push(h('span', null, h('b', { text: creator.name }), ' · made it'));
         always.push(h('span', null, h('b', { text: 'Admins' })));
@@ -7546,7 +8063,7 @@ export const CONSOLE_JS = String.raw`
         h('div', null, h('span', { class: 'label', text: 'You, once' }), p('Register overgo with Google for the whole org. This connects nobody’s Drive: it only lets overgo ask Google.')),
         h('div', null, h('span', { class: 'label', text: 'Each person, for themselves' }), p('Connects their own Google account from Your connections, and approves it on Google’s own page. Their files save into their Drive, as them.'))),
       local ? h('div', { class: 'msg', style: 'background:var(--need-soft);color:var(--ink)' },
-        h('b', { text: 'This server’s address is localhost. ' }), 'That works for trying it on this machine. For your team, set the console address first (Setup → Rules, “Console address”, or publicUrl in org.json), then come back: the address below changes to match, and that is the one to give Google.') : null,
+        h('b', { text: 'This server’s address is localhost. ' }), 'That works for trying it on this machine. For your team, set the console address first (Setup → General, “Console address”, or publicUrl in org.json), then come back: the address below changes to match, and that is the one to give Google.') : null,
       h('ol', { class: 'gsteps' },
         step(1, 'Pick a Google Cloud project', [p('In console.cloud.google.com, choose or create a project for overgo. Any project in your company’s Google Workspace is fine.')]),
         step(2, 'Turn on the Google Drive API', [p('APIs & Services → Library → search “Google Drive API” → Enable.')]),
@@ -7646,6 +8163,51 @@ export const CONSOLE_JS = String.raw`
         })),
       h('span', { class: 'faint', style: 'font-size:12.5px', text: 'You always approve the plan. Changes apply to work that starts after them.' }),
       out);
+  }
+
+  // Who may give a team tasks: its members' managers always can; beyond
+  // them, everyone, or picked people, groups and roles.
+  function teamWho(t) {
+    var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+    var pick = audiencePicker({
+      label: 'Who can give it tasks',
+      kind: t.audience ? 'picked' : t.whoCanBrief === 'org' ? 'everyone' : 'manager',
+      audience: t.audience,
+      ownLabel: 'Its members’ managers',
+      ownShort: 'its members’ managers',
+      ownNote: 'Its members’ managers, and ',
+      ownHint: 'Only its members’ managers, and admins.',
+      readOnly: !t.canChange,
+    });
+    var save = h('button', { class: 'btn small go', text: 'Save', onclick: function (e) {
+      var v = pick.value();
+      var body = v.kind === 'picked' ? { audience: v.audience } : { audience: null, whoCanBrief: v.kind === 'everyone' ? 'org' : 'managers' };
+      var restore = busy(e.target, 'Saving…');
+      api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/settings', body).then(function (x) { restore(); out.textContent = ''; out.appendChild(msg(x, 'Saved. It applies to tasks given from now on.')); });
+    } });
+    return h('div', { class: 'stack', style: 'gap:10px' },
+      h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Here, in Slack with /team, and when a request is routed to it. Admins always can.' + (!t.audience && t.whoCanBrief === 'team' ? ' Now: anyone on a team with its members’ managers.' : '') }),
+      pick.node, t.canChange ? h('div', { class: 'row', style: 'gap:8px' }, save, out) : null);
+  }
+
+  // A team's settings in one tab, as a worker's are: a short list jumps
+  // to each section.
+  function teamSettingsView(t) {
+    var parts = [
+      ['who', 'Who can give it tasks', teamWho(t)],
+      t.canChange ? ['how', 'How it works with you', teamSettings(t)] : null,
+      t.canChange || t.guidance ? ['guide', 'How it should work', teamGuide(t), true] : null,
+      t.canChange ? ['picture', 'Picture', picturePicker(t, function (url) { return api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/settings', { avatarUrl: url }); })] : null,
+      ['reach', 'Reach ' + t.name, reachView('team', t.name)],
+      t.canChange ? ['end', 'Disband', teamEnd(t), true] : null,
+    ].filter(Boolean);
+    var jump = function (id) { var el = document.getElementById('ts-' + id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    var nav = h('nav', { 'aria-label': 'Team settings sections', style: 'position:sticky;top:72px;display:flex;flex-direction:column;gap:4px;min-width:150px' },
+      parts.map(function (p) { return h('button', { class: 'linkish', style: 'text-align:left;font-size:14px;padding:4px 0', text: p[1], onclick: function () { jump(p[0]); } }); }));
+    var body = h('div', { class: 'stack', style: 'gap:28px;flex:1;min-width:0' }, parts.map(function (p) {
+      return h('div', { id: 'ts-' + p[0], class: 'stack', style: 'gap:10px;scroll-margin-top:72px' }, h('h2', { class: 'label', text: p[1] }), p[3] ? p[2] : h('section', { class: 'panel pad stack' }, p[2]));
+    }));
+    return h('div', { style: 'display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap' }, nav, body);
   }
 
   /// Retiring a team: disband it (its work stays in the Library, its members
@@ -7878,6 +8440,7 @@ export const CONSOLE_JS = String.raw`
         : h('p', { class: 'faint', text: 'Only people who manage someone on this team can give it work.' });
       var toComposer = function () { composer.scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(function () { input.focus(); }, 300); };
       if (state.teamFocusBrief && t.canBrief) { state.teamFocusBrief = false; setTimeout(toComposer, 150); }
+      var teamTab = state.teamTab === 'settings' ? 'settings' : 'tasks';
       return [h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
             h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Teams', onclick: function () { go('teams'); } }), ' / ' + t.name),
@@ -7886,17 +8449,21 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'page-actions' }, faces, t.canBrief ? h('button', { class: 'btn go', onclick: toComposer }, icon('plus', 16), 'Give it a task') : null)),
         nowSlot,
         kpiSlot,
-        h('div', { class: 'split quarters' },
-          h('div', { class: 'wide stack', style: 'gap:16px' }, x.tasks.length ? [list, earlier, composer] : [composer, list]),
-          h('aside', { class: 'narrow stack', style: 'gap:16px' },
-            teamKnows(t, refresh),
-            t.canChange || t.guidance ? teamGuide(t) : null,
-            card('teammembers', 'Members · ' + t.members.length, null, membersBox, true),
-            t.canChange ? card('teamhow', 'How it works with you', null, teamSettings(t)) : null,
-            t.canChange ? card('teampic', 'Picture', null, h('details', null, h('summary', { text: t.avatarUrl ? 'Change its picture' : 'Give it a picture' }), h('div', { style: 'margin-top:12px' },
-              picturePicker(t, function (url) { return api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/settings', { avatarUrl: url }); })))) : null,
-            card('teamreach', 'Reach ' + t.name, null, h('details', null, h('summary', { text: 'From Slack, Claude or the API' }), h('div', { style: 'margin-top:12px' }, reachView('team', t.name)))),
-            t.canChange ? teamEnd(t) : null))];
+        h('div', { class: 'tabs', role: 'tablist', 'aria-label': t.name },
+          [['tasks', 'Tasks'], ['settings', 'Settings']].map(function (x_) {
+            return h('button', { role: 'tab', 'aria-selected': teamTab === x_[0] ? 'true' : 'false', text: x_[1], onclick: function () { state.teamTab = x_[0]; render(); } });
+          })),
+        teamTab === 'settings' ? teamSettingsView(t)
+          : h('div', { class: 'split quarters' },
+            h('div', { class: 'wide stack', style: 'gap:16px' }, x.tasks.length ? [list, earlier, composer] : [composer, list]),
+            h('aside', { class: 'narrow stack', style: 'gap:16px' },
+              teamKnows(t, refresh),
+              card('teammembers', 'Members · ' + t.members.length, null, membersBox, true),
+              card('teamsetup', 'Setup', h('button', { class: 'linkish', text: 'Settings', onclick: function () { state.teamTab = 'settings'; render(); } }), h('div', { class: 'stack', style: 'gap:6px;padding:12px 18px;font-size:13.5px' },
+                h('span', null, h('span', { class: 'faint', text: 'Who can give it tasks: ' }), t.audience ? 'picked people, groups or roles' : t.whoCanBrief === 'org' ? 'everyone' : t.whoCanBrief === 'team' ? 'its managers’ teams' : 'its members’ managers'),
+                h('span', null, h('span', { class: 'faint', text: 'Checks in with you: ' }), String(['askFirst', 'reviewBeforeChallenge', 'finalReview', 'approveRoomWork'].filter(function (k) { return t.checkpoints[k]; }).length) + ' of 4 points'),
+                h('span', null, h('span', { class: 'faint', text: 'Budget: ' }), money(t.budgetUSDPerTask) + ' a task'),
+                t.guidance ? h('span', { class: 'faint', text: 'Has guidance on how to work.' }) : null))))];
     });
   }
 
@@ -8197,12 +8764,12 @@ export const CONSOLE_JS = String.raw`
 
   function codeBlock(text) {
     var b = h('button', { class: 'btn small', text: 'Copy' });
-    b.onclick = function () { navigator.clipboard.writeText(text).then(function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }); };
+    b.onclick = function () { copyText(text, b, 'Copy'); };
     return h('div', { class: 'code' }, h('pre', { text: text }), b);
   }
 
   function viewConnect() {
-    var base = location.origin;
+    var base = location.origin.replace('//0.0.0.0', '//localhost');
     var mcp = base + '/mcp';
     // Each tool gets a key of its own, made here and shown once, so signing
     // out this browser (or one tool) leaves the others working.
@@ -8229,8 +8796,24 @@ export const CONSOLE_JS = String.raw`
         'export OVERCLI_ORG_URL=' + base + '\nexport OVERCLI_ORG_TOKEN=' + tok + '\novercli workers push "Worker name"'] },
       { id: 'slack', label: 'Slack', steps: [
         'Nothing to set up: if your admin connected Slack, these work in any channel or DM:',
-        '/worker                     your workers\n/worker waiting             what’s waiting on you\n/worker <name> ask <text>   ask a worker to do something\n/team <name>: <task>        give a team a task\n/hire <job>                 hire a worker\n/overgo join                ask to join, or get a new sign-in link',
-        'Questions, approvals and the work your workers propose arrive as DMs. Reply in the thread to answer, or press a button.'] }
+        // Kept in step with the Slack help (slackCommands.ts HELP).
+        [
+          '/worker                          your workers',
+          '/worker waiting                  what’s waiting on you',
+          '/worker <name>                   one worker',
+          '/worker <name> <text>            ask it to do something',
+          '/worker <name> pause | resume    stop it, or start it again',
+          '/worker <name> edit              change its job, trust, schedule, budget…',
+          '/worker <name> changes [ticket]  what its run changed, with the diff',
+          '/worker <name> track <ticket>    add a ticket to its change watch',
+          '/team                            the teams you can see',
+          '/team <name>: <task>             give a team a task',
+          '/team new <what it’s for>        make a team from your workers',
+          '/hire <job>                      hire a worker',
+          '/overgo join                     ask to join, or get a new sign-in link'
+        ].join('\n'),
+        'Or just DM overgo: it finds the worker for what you ask. To follow a ticket, say “let me know when ACME-412 changes” (or “remind me when…”); “what am I following?” lists your tickets and threads.',
+        'Questions, approvals and the work your workers propose arrive as DMs. Reply in the thread to answer, or press a button. Mentioning @overgo in a thread works too.'] }
     ]; };
     var CLIENTS = buildClients();
     var current = state.connectTab || CLIENTS[0].id;
@@ -8379,9 +8962,34 @@ export const CONSOLE_JS = String.raw`
     });
   }
 
+  /// Text to the clipboard. The clipboard API is only there on https or
+  /// localhost; on any other http address it falls back to a hidden box and
+  /// the browser's copy command, and failing that says to press ⌘C.
+  function copyText(text, button, label) {
+    var done = function (ok) {
+      button.textContent = ok ? 'Copied' : 'Press ⌘C to copy';
+      setTimeout(function () { button.textContent = label; }, 1800);
+    };
+    var fallback = function () {
+      var box = document.createElement('textarea');
+      box.value = text;
+      box.setAttribute('readonly', '');
+      box.style.position = 'fixed';
+      box.style.opacity = '0';
+      document.body.appendChild(box);
+      box.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      box.remove();
+      done(ok);
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+    else fallback();
+  }
+
   function linkBox(link, label) {
     var copy = h('button', { class: 'btn small', text: 'Copy link' });
-    copy.onclick = function () { navigator.clipboard.writeText(link).then(function () { copy.textContent = 'Copied'; }); };
+    copy.onclick = function () { copyText(link, copy, 'Copy link'); };
     return h('div', { class: 'stack', style: 'gap:6px' }, h('p', { class: 'muted', style: 'font-size:13px', text: label }),
       h('div', { class: 'code' }, h('pre', { text: link }), copy));
   }
@@ -8389,7 +8997,7 @@ export const CONSOLE_JS = String.raw`
   function inviteRow(i) {
     var out = h('div');
     var meta = (i.sentInSlack ? 'Sent in Slack ' : 'Link made ') + ago(i.createdAt) + ' by ' + i.invitedBy + '. ' + ROLE_LABEL[i.role] + '.';
-    return h('div', { class: 'stack', style: 'gap:4px;padding-top:8px;border-top:1px solid var(--line)' },
+    return h('div', { class: 'stack inv-row', style: 'gap:4px' },
       h('div', { class: 'spread', style: 'align-items:center' },
         h('b', { style: 'font-weight:600', text: i.name }),
         h('div', { class: 'row', style: 'gap:4px' },
@@ -8473,11 +9081,30 @@ export const CONSOLE_JS = String.raw`
         h('div', null, h('div', { style: 'font-weight:600', text: p.name }), h('div', { class: 'faint', text: p.slackUserId || 'No Slack account' })))),
       h('td', null, role),
       h('td', { text: String(p.workers) }),
-      h('td', { style: 'min-width:160px' }, h('div', { style: 'font-size:13px', text: money(p.spentUSD) + (p.allowanceUSD != null ? ' of ' + money(p.allowanceUSD) : '') }),
+      h('td', { style: 'min-width:160px' }, h('div', { style: 'font-size:13px', text: money(p.spentUSD) + (p.allowanceUSD ? ' of ' + money(p.allowanceUSD) : ' · no limit') }),
         p.allowanceUSD ? h('div', { class: 'meter' + (pct >= 85 ? ' high' : ''), style: 'margin-top:5px' }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })) : null),
       h('td', { class: 'muted', style: 'font-size:13px', text: where }),
-      h('td', { style: 'text-align:right' }, h('button', { class: 'btn small', text: 'Manage', onclick: function () { manage.hidden = !manage.hidden; } })));
+      h('td', { style: 'text-align:right;white-space:nowrap' },
+        p.slackUserId && p.slackUserId !== state.me.slackUserId ? h('button', { class: 'btn small quiet', text: 'View as', title: 'See the console as ' + p.name + ' does, read only', onclick: function () { viewAs({ id: p.slackUserId, name: p.name }); } }) : null,
+        ' ', h('button', { class: 'btn small', text: 'Manage', onclick: function () { manage.hidden = !manage.hidden; } })));
     return [row, manage];
+  }
+
+  /// See the console as one person does: what they can see, read only.
+  /// Kept for this tab only; a reload is back to yourself.
+  function viewAs(who) {
+    state.viewAs = who;
+    api('GET', '/api/whoami').then(function (me) { state.me = me; go('today'); }, function () { state.viewAs = null; render(); });
+  }
+  function stopViewAs() {
+    state.viewAs = null;
+    api('GET', '/api/whoami').then(function (me) { state.me = me; go('people'); });
+  }
+  function viewAsBar() {
+    return h('div', { class: 'viewas-bar', role: 'status' },
+      icon('person', 16),
+      h('span', { style: 'flex:1;min-width:0' }, 'Viewing as ', h('b', { text: state.viewAs.name }), ': what they see. Read only, so nothing can be changed.'),
+      h('button', { class: 'btn small', text: 'Stop', onclick: stopViewAs }));
   }
 
   function inviteDialog() {
@@ -8596,7 +9223,7 @@ export const CONSOLE_JS = String.raw`
   }
 
   function placesGrid(org, live) {
-    var base = location.origin;
+    var base = location.origin.replace('//0.0.0.0', '//localhost');
     var place = function (title, text, cta, onclick) {
       return h('button', { type: 'button', class: 'place', onclick: live ? onclick : null, disabled: !live }, h('b', { text: title }), h('span', { class: 'muted', style: 'font-size:13.5px', text: text }), h('span', { class: 'cta', text: cta }));
     };
@@ -8693,140 +9320,290 @@ export const CONSOLE_JS = String.raw`
   // ---- slack -----------------------------------------------------------
 
   /// What people asked overgo in Slack, what came of each, and the thread
-  /// as it stands in Slack. Looks again every few seconds while open: new
-  /// questions arrive, and an open thread shows replies as they're posted.
+  /// as it stands in Slack: the list beside the open thread. Looks again
+  /// every few seconds while open: new questions arrive, and the open
+  /// thread shows replies as they're posted.
   function viewSlack() {
-    var sub = state.me && state.me.admin
-      ? 'Every question asked of overgo in Slack, what it did with each, and the thread as it stands.'
-      : 'What you asked overgo in Slack, what it did with each, and the thread as it stands.';
-    var list = h('div', { class: 'stack' });
-    var open = {};
-    var rows = {};
+    var admin = !!(state.me && state.me.admin);
+    var sub = admin
+      ? 'Every question asked of overgo in Slack, who picked it up, and the thread as it stands.'
+      : 'What you asked overgo in Slack, who picked it up, and the thread as it stands.';
     // How many are on screen: each look re-reads exactly those, so the
     // newest rise to the top without the page growing on its own.
     var shown = 25;
-    var more = h('button', { class: 'btn', text: 'Show more', hidden: true });
+    var convs = [];
+    var picked = null;
+    var filter = 'all';
+    var query = '';
+    var rows = {};
+    var thread = slackThread();
+    var list = h('ul', { class: 'sl-list', 'aria-label': 'Conversations' });
+    var chips = h('div', { class: 'sl-filters', role: 'group', 'aria-label': 'Filter by outcome' });
+    var find = h('input', { type: 'search', placeholder: 'Search questions', 'aria-label': 'Search questions' });
+    find.oninput = function () { query = find.value.trim().toLowerCase(); draw(); };
+    var more = h('button', { class: 'btn quiet', text: 'Show older', hidden: true });
     more.onclick = function () {
       shown += 25;
       var restore = busy(more, 'Loading…');
       put().then(restore);
     };
+    var pick = function (c, jump) {
+      picked = c.key;
+      draw();
+      thread.show(c);
+      if (jump && window.matchMedia('(max-width: 880px)').matches) thread.node.scrollIntoView({ block: 'start' });
+    };
+    var row = function (c) {
+      var on = c.key === picked;
+      var fresh = c.lastAt > Date.now() - 10 * 60000;
+      var sig = c.lastAt + '|' + (c.outcome || '') + '|' + on + '|' + fresh + '|' + ago(c.lastAt);
+      var r = rows[c.key];
+      if (r && r.sig === sig) return r.node;
+      var node = h('li', null, h('button', { class: 'sl-row', 'aria-current': on ? 'true' : null, onclick: function () { pick(c, true); } },
+        h('span', { class: 'sl-q', text: c.text }),
+        h('span', { class: 'sl-ago', text: ago(c.lastAt) }),
+        h('span', { class: 'sl-meta' }, slackOutcome(c), h('span', { text: (admin ? c.by + ' · ' : '') + (c.dm ? 'DM' : 'channel') })),
+        fresh ? h('span', { class: 'sl-new', title: 'Active in the last 10 minutes' }) : h('span')));
+      rows[c.key] = { node: node, sig: sig };
+      return node;
+    };
+    var draw = function () {
+      fill(chips, SLACK_FILTERS.map(function (f) {
+        var n = f[0] === 'all' ? convs.length : convs.filter(function (c) { return slackTone(c).group === f[0]; }).length;
+        if (!n && f[0] !== 'all' && filter !== f[0]) return null;
+        return h('button', { class: 'sl-chip', 'aria-pressed': filter === f[0] ? 'true' : 'false', onclick: function () { filter = f[0]; draw(); } },
+          f[1], h('span', { class: 'n', text: String(n) }));
+      }));
+      var day = null;
+      var out = [];
+      convs.forEach(function (c) {
+        if (filter !== 'all' && slackTone(c).group !== filter) return;
+        if (query && (c.text + ' ' + c.by + ' ' + (c.outcome || '')).toLowerCase().indexOf(query) < 0) return;
+        var d = dayLabel(c.lastAt);
+        if (d !== day) out.push(h('li', { class: 'sl-day', text: day = d }));
+        out.push(row(c));
+      });
+      fill(list, out.length ? out : h('li', { class: 'muted sl-none', text: 'Nothing matches.' }));
+    };
     var put = function () {
       return api('GET', '/api/slack/conversations?limit=' + shown).then(function (r) {
-        if (r.ok === false) { list.replaceChildren(msg(r)); more.hidden = true; return; }
+        if (r.ok === false) { fill(list, h('li', null, msg(r))); more.hidden = true; return; }
         more.hidden = !r.more;
-        if (!r.conversations.length) { list.replaceChildren(h('p', { class: 'muted', text: 'Nothing asked in Slack yet. DM overgo, or mention it in a channel.' })); return; }
-        list.replaceChildren.apply(list, r.conversations.map(function (c) {
-          var row = rows[c.key];
-          var sig = c.lastAt + '|' + (c.outcome || '');
-          if (!row || row.sig !== sig) {
-            var fresh = slackConversation(c, open);
-            if (row && open[c.key]) fresh.reload();
-            row = rows[c.key] = { node: fresh.node, reload: fresh.reload, sig: sig };
-          }
-          return row.node;
-        }));
+        convs = r.conversations;
+        var c = convs.filter(function (x) { return x.key === picked; })[0];
+        if (!c && !picked && convs.length) return pick(convs[0]);
+        draw();
+        if (c) thread.show(c);
       });
     };
     return put().then(function () {
+      var usage = h('button', { class: 'btn small', onclick: function () { state.reportView = 'slack'; go('reports'); } }, icon('chart', 16), 'Usage');
+      if (!convs.length) return [head('Slack', sub, usage), h('p', { class: 'muted', text: 'Nothing asked in Slack yet. DM overgo, or mention it in a channel.' })];
       var id = setInterval(function () {
         if (!list.isConnected) { clearInterval(id); return; }
         put();
-        Object.keys(open).forEach(function (k) { if (open[k] && rows[k]) rows[k].reload(); });
+        thread.reload();
       }, 8000);
-      return [head('Slack', sub), list, h('div', { class: 'row', style: 'justify-content:center;margin-top:12px' }, more)];
+      return [head('Slack', sub, usage),
+        h('div', { class: 'sl-split' },
+          h('section', { class: 'sl-side', 'aria-label': 'Questions' },
+            h('div', { class: 'sl-tools' }, h('label', { class: 'search sl-find' }, icon('search', 14), find), chips),
+            list,
+            h('div', { class: 'sl-more' }, more)),
+          thread.node)];
     });
   }
 
-  /// One conversation: who asked what, what came of it, and its thread.
-  function slackConversation(c, open) {
-    var body = h('div', { class: 'stack', style: 'gap:12px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)', hidden: !open[c.key] });
-    var toggle = h('button', { class: 'linkish', text: open[c.key] ? 'Hide the thread' : 'Show the thread' });
+  var SLACK_FILTERS = [['all', 'All'], ['worker', 'With a worker'], ['team', 'With a team'], ['answered', 'Answered'], ['needs', 'Needs someone']];
+
+  /// How a conversation went, as a colour, the filter it falls under, and
+  /// the initial on its badge.
+  function slackTone(c) {
+    var initial = c.who ? c.who.charAt(0).toUpperCase() : 'o';
+    if (c.kind === 'answered' || c.kind === 'offered') return { tone: 'ok', group: 'answered', initial: 'o' };
+    if (c.kind === 'handed') return { tone: c.team ? 'info' : 'violet', group: c.team ? 'team' : 'worker', initial: initial };
+    if (c.kind) return { tone: 'need', group: 'needs', initial: c.who ? initial : '?' };
+    return { tone: '', group: 'other', initial: initial };
+  }
+
+  function slackOutcome(c, big) {
+    var t = slackTone(c);
+    return h('span', { class: 'sl-out ' + t.tone + (big ? ' big' : '') },
+      h('span', { class: 'sl-badge', 'aria-hidden': 'true', text: t.initial }), c.outcome || 'Answered in the thread');
+  }
+
+  function dayLabel(ms) {
+    var d = new Date(ms), now = new Date();
+    var days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+    if (days === 0) return 'Today';
+    if (days === 1) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: days < 7 ? 'long' : undefined, month: 'short', day: 'numeric' });
+  }
+
+  /// The open conversation: who asked what, what came of it, and its thread
+  /// read from Slack.
+  function slackThread() {
+    var top = h('div', { class: 'sl-pane-head' });
+    var body = h('div', { class: 'sl-pane-body' });
+    var node = h('section', { class: 'sl-pane', 'aria-label': 'Thread' }, top, body,
+      h('div', { class: 'sl-pane-foot' }, h('div', { class: 'sl-col sl-live-line' }, h('span', { class: 'sl-live', 'aria-hidden': 'true' }), 'Live: new replies in Slack show up here as they’re posted.')));
+    var cur = null;
+    var sig = '';
     var reading = false;
     var load = function () {
-      if (reading) return;
+      if (!cur || reading) return;
+      var key = cur.key;
       reading = true;
-      if (!body.childNodes.length) body.appendChild(thinking('Reading the thread from Slack…'));
-      api('GET', '/api/slack/conversations/' + encodeURIComponent(c.key)).then(function (t) {
+      api('GET', '/api/slack/conversations/' + encodeURIComponent(key)).then(function (t) {
         reading = false;
-        if (t.ok === false) { body.replaceChildren(msg(t)); return; }
-        body.replaceChildren(h('div', { class: 'sl-thread' }, t.messages.map(function (m) {
+        if (!cur || cur.key !== key) return load();
+        if (t.ok === false) { fill(body, msg(t)); return; }
+        // The whole conversation, the question first, as it reads in Slack:
+        // with only the heading, the answer seemed to start from nowhere. A
+        // run from one sender reads as one message, named once.
+        var ms = t.messages;
+        var prev = null;
+        fill(body, h('div', { class: 'sl-thread sl-col' }, ms.map(function (m) {
+          var after = prev;
+          prev = m;
           // overgo's housekeeping, quietly; answers and questions in full.
           if (m.note) return h('div', { class: 'sl-note' }, md(m.text));
-          return h('div', { class: 'sl-msg' + (m.bot ? ' bot' : '') },
+          var cls = 'sl-msg' + (m.bot ? ' bot' : '') + (m.bot && m.from === 'overgo' ? ' go' : '');
+          if (after && !after.note && after.from === m.from && m.at - after.at < 5 * 60000) return h('div', { class: cls + ' cont' }, h('span'), md(m.text));
+          return h('div', { class: cls },
             h('span', { class: 'sl-av', 'aria-hidden': 'true', text: (m.from || '?').charAt(0).toUpperCase() }),
             h('div', { style: 'min-width:0' },
-              h('div', { class: 'sl-who' }, h('b', { text: m.from }), ' · ' + clock(m.at)),
+              h('div', { class: 'sl-who' }, h('b', { text: m.from }), h('span', { text: clock(m.at) })),
               md(m.text)));
         })));
       });
     };
-    toggle.onclick = function () {
-      open[c.key] = body.hidden;
-      body.hidden = !body.hidden;
-      toggle.textContent = body.hidden ? 'Show the thread' : 'Hide the thread';
-      if (!body.hidden) load();
+    return {
+      node: node,
+      reload: load,
+      show: function (c) {
+        var s = c.key + '|' + c.lastAt + '|' + (c.outcome || '') + '|' + ago(c.at) + '|' + ago(c.lastAt);
+        if (s === sig) return;
+        var moved = !cur || cur.key !== c.key;
+        cur = c;
+        sig = s;
+        fill(top, h('div', { class: 'sl-col' },
+          h('div', { class: 'sl-pane-meta' }, h('b', { text: c.by }), ' · asked ' + ago(c.at) + (c.dm ? ' in a DM' : ' in a channel') + (c.lastAt > c.at + 60000 ? ' · last activity ' + ago(c.lastAt) : '')),
+          h('h2', { class: 'sl-pane-q', text: c.text }),
+          h('div', { class: 'row', style: 'gap:14px;flex-wrap:wrap' }, slackOutcome(c, true),
+            c.url ? h('a', { class: 'linkish', href: c.url.indexOf('#') >= 0 ? c.url.slice(c.url.indexOf('#')) : c.url, text: 'Open it' }) : null)));
+        if (moved) { fill(body, thinking('Reading the thread from Slack…')); load(); }
+      }
     };
-    if (open[c.key]) load();
-    var node = h('article', { class: 'panel pad' },
-      h('div', { class: 'faint', style: 'font-size:12.5px', text: c.by + ' · ' + ago(c.at) + (c.dm ? ' · in a DM' : ' · in a channel') + (c.lastAt > c.at + 60000 ? ' · last activity ' + ago(c.lastAt) : '') }),
-      h('div', { style: 'font-size:15px;font-weight:600;margin:4px 0 8px', text: c.text }),
-      h('div', { class: 'row', style: 'gap:14px;flex-wrap:wrap' },
-        h('span', { class: 'muted', style: 'font-size:13.5px', text: c.outcome || 'Answered in the thread' }),
-        c.url ? h('a', { class: 'linkish', href: c.url.indexOf('#') >= 0 ? c.url.slice(c.url.indexOf('#')) : c.url, text: 'Open it' }) : null,
-        toggle),
-      body);
-    return { node: node, reload: load };
   }
 
   // ---- rules -----------------------------------------------------------
 
   /// Tick boxes for the people who have access, plus a box for anyone else
   /// by Slack member ID. Reads back as a list of IDs.
+  // Who's picked, as chips, and a search to add anyone: the people the org
+  // knows, or anyone else in its Slack. Picks are Slack member IDs.
   function peoplePicker(people, chosen, label) {
-    var picked = {};
-    (chosen || []).forEach(function (id) { picked[id] = true; });
-    var known = people.filter(function (p) { return p.slackUserId; });
-    var extra = h('input', { type: 'text', placeholder: 'Others, by Slack member ID (U012AB3CD), comma separated', 'aria-label': label + ': others by Slack member ID' });
-    extra.value = (chosen || []).filter(function (id) { return !known.some(function (p) { return p.slackUserId === id; }); }).join(', ');
-    var boxes = known.map(function (p) {
-      var b = h('input', { type: 'checkbox', checked: !!picked[p.slackUserId] });
-      return { id: p.slackUserId, box: b, el: h('label', { class: 'toggle' }, b, h('span', { text: p.name })) };
+    var ids = (chosen || []).slice();
+    var names = {};
+    people.forEach(function (p) { if (p.slackUserId) names[p.slackUserId] = p.name; });
+    var chips = h('div', { class: 'picked' });
+    var draw = function () {
+      fill(chips, ids.length ? ids.map(function (id) {
+        return h('span', { class: 'chip small' }, avatar(id, names[id] || id, 's'), h('span', { text: names[id] || id }),
+          h('button', { type: 'button', 'aria-label': 'Remove ' + (names[id] || id), onclick: function () { ids = ids.filter(function (x) { return x !== id; }); draw(); } }, icon('x', 12)));
+      }) : [h('span', { class: 'faint', style: 'font-size:13px', text: 'Nobody yet.' })]);
+    };
+    // Names for IDs the people list doesn't have yet.
+    directory().then(function (d) { d.people.forEach(function (p) { if (!names[p.slackUserId]) names[p.slackUserId] = p.name; }); draw(); });
+    draw();
+    var add = personPicker(label + ': add someone', function (x) {
+      var id = x.slackUserId || (/^[UW][A-Z0-9]{6,}$/.test((x.name || '').trim()) ? x.name.trim() : null);
+      if (!id || ids.indexOf(id) >= 0) return;
+      if (x.slackUserId) names[id] = x.name;
+      ids.push(id); draw();
     });
     return {
-      node: h('div', { class: 'stack', style: 'gap:8px', role: 'group', 'aria-label': label }, boxes.length ? h('div', { class: 'picks' }, boxes.map(function (b) { return b.el; })) : null, extra),
-      value: function () {
-        var ids = boxes.filter(function (b) { return b.box.checked; }).map(function (b) { return b.id; });
-        extra.value.split(',').map(function (x) { return x.trim(); }).filter(Boolean).forEach(function (id) { if (ids.indexOf(id) < 0) ids.push(id); });
-        return ids;
-      }
+      node: h('div', { class: 'stack', style: 'gap:8px', role: 'group', 'aria-label': label }, chips, h('div', { style: 'max-width:420px' }, add)),
+      value: function () { return ids.slice(); }
+    };
+  }
+
+  // Tick from the tools installed here. One already chosen but no longer
+  // installed stays, ticked, so saving doesn't quietly drop it.
+  function toolPicker(installed, chosen, label) {
+    var names = installed.slice();
+    (chosen || []).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
+    names.sort(function (a, b) { return a.localeCompare(b); });
+    var boxes = names.map(function (n) {
+      var b = h('input', { type: 'checkbox', checked: (chosen || []).indexOf(n) >= 0 });
+      var gone = installed.indexOf(n) < 0;
+      return { name: n, box: b, el: h('label', { class: 'toggle' }, b, h('span', { text: n + (gone ? ' (not installed)' : '') })) };
+    });
+    return {
+      node: h('div', { role: 'group', 'aria-label': label }, boxes.length ? h('div', { class: 'picks' }, boxes.map(function (b) { return b.el; }))
+        : h('p', { class: 'faint', style: 'font-size:13px', text: 'No tools installed yet. Add them under Setup → Tools.' })),
+      value: function () { return boxes.filter(function (b) { return b.box.checked; }).map(function (b) { return b.name; }); }
     };
   }
 
   function ruleSection(title, sub, fields, collect) {
     var out = h('div', { 'aria-live': 'polite' });
-    var save = h('button', { class: 'btn go', text: 'Save' });
+    var save = h('button', { class: 'btn go', text: 'Save', disabled: true });
+    var unsaved = h('span', { class: 'unsaved', hidden: true, text: 'Unsaved changes' });
+    // Save waits for a change: typing, ticking, or adding or removing a row.
+    var changed = function () { save.disabled = false; unsaved.hidden = false; out.textContent = ''; };
     save.onclick = function () {
       var patch = collect();
       if (!patch) return;
       var restore = busy(save, 'Saving…');
       api('POST', '/api/admin/rules', { patch: patch }).then(function (x) {
         restore(); out.textContent = ''; out.appendChild(msg(x, 'Saved. It applies now.'));
+        if (x.ok !== false) { save.disabled = true; unsaved.hidden = true; }
       });
     };
-    return h('section', { class: 'panel pad stack' },
+    var sec = h('section', { class: 'panel pad stack' },
       h('h2', { class: 'section-title', text: title }), sub ? h('p', { class: 'hint', style: 'font-size:13px', text: sub }) : null,
-      fields, h('div', { class: 'foot' }, save, out));
+      fields, h('div', { class: 'foot' }, save, unsaved, out));
+    sec.addEventListener('input', changed);
+    sec.addEventListener('change', changed);
+    sec.addEventListener('click', function (e) { var b = e.target.closest && e.target.closest('button'); if (b && b !== save && sec.contains(b)) changed(); });
+    sec._title = title; sec._sub = sub;
+    return sec;
+  }
+
+  /// Everyone on the server, with their role and the teams they're in.
+  /// Inviting and changing roles stay on People.
+  function rosterPanel(people, teams) {
+    var inTeams = {};
+    Object.keys(teams || {}).forEach(function (t) { teams[t].forEach(function (id) { (inTeams[id] = inTeams[id] || []).push(t); }); });
+    var rows = people.slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    return h('section', { class: 'panel pad stack', 'aria-labelledby': 'roster' },
+      h('div', { class: 'spread', style: 'align-items:center' },
+        h('h2', { id: 'roster', class: 'section-title', text: 'People · ' + rows.length }),
+        h('button', { class: 'btn small', text: 'Invite or change roles on People', onclick: function () { go('people'); } })),
+      rows.length ? h('div', { class: 'listed' }, rows.map(function (p) {
+        var ts = p.slackUserId ? inTeams[p.slackUserId] || [] : [];
+        return h('div', { class: 'row', style: 'gap:10px;align-items:center' },
+          avatar(p.slackUserId || p.name, p.name, 's'),
+          h('b', { style: 'font-weight:600;flex:1 1 160px;min-width:0', text: p.name }),
+          h('span', { class: 'tag', text: p.role }),
+          h('span', { class: 'faint', style: 'flex:2 1 200px;font-size:13px', text: ts.length ? ts.join(', ') : p.slackUserId ? 'No team' : 'Not linked to Slack, so not on a team' }));
+      })) : h('p', { class: 'faint', text: 'Nobody yet. Invite people on People.' }));
   }
 
   function numOrNull(input) { var v = input.value.trim(); return v === '' ? null : Number(v); }
   function list(text) { return text.split(',').map(function (x) { return x.trim(); }).filter(Boolean); }
 
-  function viewRules() {
-    return Promise.all([api('GET', '/api/admin/rules'), api('GET', '/api/admin/people')]).then(function (r) {
+  /// The org’s rules. Given a section id, just that one (a Setup page):
+  /// its title and sub become the page's head.
+  function viewRules(only) {
+    return Promise.all([api('GET', '/api/admin/rules'), api('GET', '/api/admin/people'), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
       var res = r[0], ppl = r[1];
       if (res.ok === false) return [msg(res)];
       var R = res.rules, people = ppl.ok === false ? [] : ppl.people;
+      // The tools installed here, for picking a role's: names, not typing.
+      var installed = r[2] && r[2].ok !== false && r[2].tools ? r[2].tools.map(function (t) { return t.name; }) : [];
 
       // Who the org is.
       var name = h('input', { type: 'text', value: R.name, placeholder: 'Acme' });
@@ -8844,18 +9621,26 @@ export const CONSOLE_JS = String.raw`
       var allowance = h('input', { type: 'number', min: '0', step: '1', value: String(R.budgetAllowanceUSD) });
       var approvers = peoplePicker(people, R.approvers, 'Who approves hires over an allowance');
       var visAdmin = h('input', { type: 'checkbox', checked: R.orgVisibilityNeedsAdmin });
-      var webAsk = h('input', { type: 'checkbox', checked: !!R.webNeedsApproval });
-      var cleared = h('input', { type: 'text', value: R.allowedMcpServers.join(', '), placeholder: 'acme-crm, acme-docs' });
+      // How workers open web pages: ask, safe (only addresses they were shown,
+      // and the org's own sites), or anything.
+      var webMode = h('select', { 'aria-label': 'Opening web pages' },
+        [['safe', 'Safe fetches: pages from searches, the ask, or your own sites'], ['ask', 'Ask before a step that opens pages'], ['any', 'Any page, without asking']].map(function (o) {
+          return h('option', { value: o[0], text: o[1], selected: (R.webFetch || 'safe') === o[0] });
+        }));
+      var ownSites = h('input', { type: 'text', value: (R.ownDomains || []).join(', '), placeholder: 'acme.atlassian.net, wiki.acme.com' });
+      var cleared = toolPicker(installed, R.allowedMcpServers, 'Tools any hire may have without approval');
       var hiring = ruleSection('Hiring', 'Who may hire, what their workers may cost before a hire needs approval, and who approves.',
         h('div', { class: 'stack' },
           h('label', { class: 'toggle' }, everyone, h('span', { text: 'Everyone with access may hire' })),
           hirers.node,
-          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Allowance per person (USD a month)', allowance), h('label', { class: 'field' }, 'Tools any hire may have without approval', cleared)),
+          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Allowance per person (USD a month)', allowance)),
+          h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Tools any hire may have without approval. Any other tool, a manager asks an admin for.' }), cleared.node),
           h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Approves hires over an allowance (none ticked: the admins)' }), approvers.node),
           h('label', { class: 'toggle' }, visAdmin, h('span', { text: 'Making a worker visible to everyone needs an admin' })),
-          h('label', { class: 'toggle' }, webAsk, h('span', { text: 'Workers ask before reading the web (searching, or opening a page). Off: research runs without asking; anything that acts still asks.' }))),
+          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Opening web pages', webMode), h('label', { class: 'field' }, 'Your own sites (always open)', ownSites)),
+          h('p', { class: 'faint', style: 'font-size:13px', text: 'Safe fetches keep research free while stopping a worker from writing what it knows into an address: it opens a page only when the address came from a search result, the request, or a page it read. The server’s own and private addresses are never opened. Workers set to act on their own fetch freely.' })),
         function () {
-          return { hirers: everyone.checked ? '*' : hirers.value(), budgetAllowanceUSD: Number(allowance.value || 0), approvers: approvers.value(), orgVisibilityNeedsAdmin: visAdmin.checked, webNeedsApproval: webAsk.checked, allowedMcpServers: list(cleared.value) };
+          return { hirers: everyone.checked ? '*' : hirers.value(), budgetAllowanceUSD: Number(allowance.value || 0), approvers: approvers.value(), orgVisibilityNeedsAdmin: visAdmin.checked, webFetch: webMode.value, webNeedsApproval: null, ownDomains: list(ownSites.value), allowedMcpServers: cleared.value() };
         });
 
       // Spending.
@@ -8897,13 +9682,25 @@ export const CONSOLE_JS = String.raw`
         var n = h('input', { type: 'text', value: role.name, placeholder: 'Product analyst' });
         var job = h('textarea', { 'aria-label': 'What the job is', placeholder: 'Reads the product board and usage data, and writes a weekly summary for the product team.' });
         job.value = role.job;
-        var tools = h('input', { type: 'text', value: role.tools.join(', '), placeholder: 'acme-analytics' });
+        // Each installed tool to tick, plus any it names that's gone, so
+        // saving never quietly drops one.
+        var toolNames = installed.concat(role.tools.filter(function (x) { return installed.indexOf(x) < 0; }));
+        var toolBoxes = toolNames.map(function (name) {
+          var box = h('input', { type: 'checkbox', 'aria-label': 'Give it ' + name });
+          box.checked = role.tools.indexOf(name) >= 0;
+          var gone = installed.indexOf(name) < 0;
+          return { name: name, box: box, el: h('label', { class: 'toggle', title: gone ? 'Not installed on this server any more' : '' }, box, h('code', { text: name }), gone ? h('span', { class: 'faint', text: ' (not installed)' }) : null) };
+        });
+        var tools = toolBoxes.length
+          ? h('div', { class: 'row', style: 'gap:12px' }, toolBoxes.map(function (x) { return x.el; }))
+          : h('span', { class: 'faint', text: 'No tools are installed yet: add them under Setup → Tools.' });
         var b = h('input', { type: 'number', min: '1', step: '1', value: String(role.budgetUSDPerMonth) });
         var row = h('div', { class: 'panel stack' },
           h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Role', n), h('label', { class: 'field' }, 'Budget (USD a month)', b)),
-          h('label', { class: 'field' }, 'The job', job), h('label', { class: 'field' }, 'Tools cleared for it', tools),
+          h('label', { class: 'field' }, 'The job', job), h('div', { class: 'field' }, h('span', { text: 'Tools cleared for it' }), tools,
+            h('span', { class: 'faint', style: 'font-size:12px', text: 'How much of each it may use follows the tool’s own default, under Setup → Tools.' })),
           h('div', null, h('button', { class: 'btn quiet small', text: 'Remove role', onclick: function () { row.remove(); } })));
-        row._read = function () { return { name: n.value.trim(), job: job.value.trim(), tools: list(tools.value), budgetUSDPerMonth: Number(b.value || 0) }; };
+        row._read = function () { return { name: n.value.trim(), job: job.value.trim(), tools: toolBoxes.filter(function (x) { return x.box.checked; }).map(function (x) { return x.name; }), budgetUSDPerMonth: Number(b.value || 0) }; };
         roleRows.appendChild(row);
       };
       R.roles.forEach(addRole);
@@ -8911,8 +9708,15 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'stack' }, roleRows, h('div', null, h('button', { class: 'btn small', text: 'Add a role', onclick: function () { addRole(null); } }))),
         function () { return { roles: [].slice.call(roleRows.children).map(function (row) { return row._read(); }).filter(function (x) { return x.name; }) }; });
 
+      var signin = ssoSection(R)[0], servers = fleetSection(R)[0];
+      var parts = { general: identity, hiring: hiring, spending: spending, teams: teams, roles: roles, records: records, signin: signin, servers: servers };
+      if (typeof only === 'string' && parts[only]) {
+        var sec = parts[only];
+        [].slice.call(sec.children, 0, sec._sub ? 2 : 1).forEach(function (el) { el.remove(); });
+        return [head(sec._title, sec._sub)].concat(only === 'teams' ? [rosterPanel(people, R.teams)] : []).concat([sec]);
+      }
       return [head('Rules', 'What people may do with the workers. Changes apply at once, and each is written to the decision log.', null),
-        identity, hiring, spending, teams, roles, records].concat(ssoSection(R)).concat(fleetSection(R));
+        identity, hiring, spending, teams, roles, records, signin, servers];
     });
   }
 
@@ -9159,90 +9963,127 @@ export const CONSOLE_JS = String.raw`
   /// A tool's scope on the Manage panel: its default for every worker that
   /// has it (with what that allows and refuses, call by call), then each
   /// worker with its own scope and the last week's use.
-  function toolScopeSection(t, workers) {
-    var box = h('div', { class: 'stack', style: 'gap:18px' }, h('span', { class: 'faint', text: 'Reading its calls…' }));
+  /// A tool's panel, its two working parts: the workers who have it (each
+  /// with how much of it they may use, and a way to take it back) and one
+  /// box to give it to a worker or a whole team; and its rules (who can give
+  /// it, and its default scope, saved as it's picked). After any change the
+  /// panel opens again from the server, so what it shows is what's saved.
+  function toolPanelParts(t, workers, ctx) {
+    var holders = h('div', { class: 'tp-sec' });
+    var rules = h('div', { class: 'tp-sec' });
     var out = h('div', { 'aria-live': 'polite' });
-    api('GET', '/api/admin/tools/' + encodeURIComponent(t.name) + '/scope').then(function (p) {
-      box.textContent = '';
-      if (p.ok === false) { box.appendChild(msg(p)); return; }
-      var def = p.default || { mode: 'full' };
-      var picked = def.mode === 'only' ? def.calls.slice() : [];
-      var mode = def.mode;
-      var radios = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Default scope for ' + t.name });
-      var lists = h('div', { class: 'stack', style: 'gap:10px' });
-      var allows = function (c) { return mode === 'full' || (mode === 'read' ? c.read : picked.indexOf(c.name) >= 0); };
-      var drawLists = function () {
-        lists.textContent = '';
-        if (!p.calls.length) { lists.appendChild(h('span', { class: 'faint', text: 'Its calls show once it connects.' })); return; }
-        if (mode === 'only') {
-          lists.appendChild(h('div', { class: 'stack', style: 'gap:4px;max-height:240px;overflow:auto' }, p.calls.map(function (c) {
-            var id = 'dc-' + t.name + '-' + c.name;
-            var box_ = h('input', { type: 'checkbox', id: id, checked: picked.indexOf(c.name) >= 0 });
-            box_.onchange = function () { if (box_.checked) picked.push(c.name); else picked = picked.filter(function (x) { return x !== c.name; }); };
-            return h('label', { for: id, class: 'row', style: 'gap:8px;flex-wrap:nowrap;font-size:13px' }, box_, h('code', { text: c.name }), h('span', { class: 'faint', text: c.read ? 'reads' : 'changes' }));
-          })));
-          return;
-        }
-        var ok = p.calls.filter(allows), no = p.calls.filter(function (c) { return !allows(c); });
-        var chips = function (xs, cls) { return h('div', { class: 'row', style: 'gap:6px' }, xs.slice(0, 8).map(function (c) { return h('code', { class: 'tag ' + cls, text: c.name }); }), xs.length > 8 ? h('span', { class: 'faint', text: '+' + (xs.length - 8) + ' more' }) : null); };
-        append(lists, [h('div', { class: 'stack', style: 'gap:4px' }, h('b', { style: 'font-size:13px;color:var(--go)', text: 'Allowed · ' + ok.length }), ok.length ? chips(ok, 'go') : h('span', { class: 'faint', text: 'Nothing.' })),
-          no.length ? h('div', { class: 'stack', style: 'gap:4px' }, h('b', { style: 'font-size:13px;color:var(--need)', text: 'Refused · ' + no.length }), chips(no, 'need')) : null]);
-      };
-      var drawRadios = function () {
-        radios.textContent = '';
-        ['full', 'read', 'only'].forEach(function (m) {
-          radios.appendChild(h('button', { role: 'radio', 'aria-checked': mode === m ? 'true' : 'false', class: 'seg-b' + (mode === m ? ' on' : ''), text: SCOPE_LABEL[m], onclick: function () { mode = m; drawRadios(); drawLists(); } }));
+    var holding = function () { return workers.filter(function (w) { return (w.tools || []).some(function (x) { return x.name === t.name; }); }); };
+    var canGive = ctx.canEdit || t.access === 'managers';
+    var draw = function (p) {
+      var def = (p && p.default) || { mode: 'full' };
+      var calls = (p && p.calls) || [];
+      var rows = p ? p.workers : holding().map(function (w) { return { id: w.id, name: w.name, manager: w.manager }; });
+      var byId = {};
+      workers.forEach(function (w) { byId[w.id] = w; });
+      // ---- workers who have it
+      var list = h('div', { class: 'tp-card' }, rows.length ? rows.map(function (w) {
+        var full = byId[w.id] || w;
+        var wide = p && w.own && def.mode !== 'full' && (w.own.mode === 'full' || (def.mode === 'read' && w.own.mode === 'only' && w.own.calls.some(function (c) { var hit = calls.filter(function (x) { return x.name === c; })[0]; return hit && !hit.read; })));
+        var pick = p ? h('select', { class: 'tp-ctl', 'aria-label': 'How much of ' + t.name + ' ' + w.name + ' may use' },
+          h('option', { value: 'default', text: 'Default · ' + scopeWords(def), selected: !w.own }),
+          ['full', 'read', 'only'].map(function (m) { return h('option', { value: m, text: SCOPE_LABEL[m] + (m === 'only' && w.own && w.own.mode === 'only' ? ' · ' + w.own.calls.length : ''), selected: !!w.own && w.own.mode === m }); })) : null;
+        if (pick) pick.onchange = function () {
+          var v = pick.value === 'default' ? null : pick.value === 'full' ? { mode: 'full' } : pick.value === 'read' ? { mode: 'read' } : { mode: 'only', calls: (w.own && w.own.calls) || calls.filter(function (c) { return c.read; }).map(function (c) { return c.name; }) };
+          var patch = {}; patch[t.name] = v;
+          pick.disabled = true;
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { toolScopes: patch } }).then(function (x) {
+            pick.disabled = false;
+            if (x.ok === false) { fill(out, [msg(x)]); return; }
+            ctx.reopen();
+          });
+        };
+        var take = canGive ? h('button', { class: 'btn small quiet tp-x', 'aria-label': 'Take ' + t.name + ' from ' + w.name, title: 'Take it from ' + w.name }, icon('x', 13)) : null;
+        if (take) take.onclick = function () {
+          take.disabled = true;
+          ctx.give(full, false).then(function (x) { if (x && x.ok === false) { take.disabled = false; return; } ctx.reopen(); });
+        };
+        return h('div', { class: 'tp-row' + (wide ? ' wide' : '') },
+          avatar(w.id, w.name, 's'),
+          h('span', { class: 'stack', style: 'gap:2px;min-width:0' }, h('b', { style: 'font-weight:600', text: w.name }),
+            h('span', { class: 'faint tp-sub', text: wide ? 'Wider than the default: only an admin can set this.' : [full.tagline, w.manager].filter(Boolean).join(' · ') })),
+          pick || h('span'),
+          h('span', { class: 'faint', style: 'font-size:12px;text-align:right;white-space:nowrap', text: p ? (w.calls ? plural(w.calls, 'call', 'calls') : 'Not used') + (w.refused ? ' · ' + w.refused + ' refused' : '') : '' }),
+          take || h('span'));
+      }) : h('p', { class: 'muted', style: 'margin:0;padding:14px', text: t.access === 'everyone' ? 'Every worker has it.' : 'No worker has it yet.' }));
+      // One box: a worker by name, or a whole team.
+      var adder = null;
+      if (canGive && t.access !== 'everyone') {
+        var q = h('input', { type: 'search', class: 'tp-ctl', placeholder: 'Give it to a worker or team…', 'aria-label': 'Give ' + t.name + ' to a worker or team' });
+        var sug = h('div', { class: 'tp-suggest', hidden: true });
+        var has = function (w) { return (w.tools || []).some(function (x) { return x.name === t.name; }); };
+        var drawSug = function () {
+          var words = q.value.trim().toLowerCase();
+          var match = function (txt) { return !words || txt.toLowerCase().indexOf(words) >= 0; };
+          var ws = workers.filter(function (w) { return !has(w) && match(w.name + ' ' + (w.tagline || '') + ' ' + (w.manager || '')); }).slice(0, 8);
+          var ts = (ctx.teams || []).filter(function (tm) { return match(tm.name); }).slice(0, 4);
+          fill(sug, (ts.length ? [h('div', { class: 'tl-group', text: 'Teams' })].concat(ts.map(function (tm) {
+            var missing = workers.filter(function (w) { return !has(w) && tm.members.some(function (m) { return m.name === w.name; }); });
+            return h('button', { type: 'button', class: 'tp-opt', disabled: !missing.length, onclick: function () {
+              fill(sug, [thinking('Giving it to ' + tm.name + '…')]);
+              missing.reduce(function (pr, w) { return pr.then(function () { return ctx.give(w, true); }); }, Promise.resolve()).then(ctx.reopen);
+            } }, h('b', { text: tm.name }), h('span', { class: 'faint', text: missing.length ? ' · gives it to ' + plural(missing.length, 'worker', 'workers') : ' · everyone has it' }));
+          })) : []).concat(ws.length ? [h('div', { class: 'tl-group', text: 'Workers' })].concat(ws.map(function (w) {
+            return h('button', { type: 'button', class: 'tp-opt', onclick: function () {
+              fill(sug, [thinking('Giving it to ' + w.name + '…')]);
+              ctx.give(w, true).then(function (x) { if (x && x.ok === false) { sug.hidden = true; return; } ctx.reopen(); });
+            } }, h('b', { text: w.name }), h('span', { class: 'faint', text: [w.tagline, w.manager].filter(Boolean).map(function (x) { return ' · ' + x; }).join('') }));
+          })) : []).concat(!ts.length && !ws.length ? [h('p', { class: 'muted', style: 'margin:0;padding:12px', text: words ? 'Nobody matches.' : 'Every worker you can give it to has it.' })] : []));
+          sug.hidden = false;
+        };
+        q.oninput = drawSug;
+        q.onfocus = drawSug;
+        adder = h('div', { class: 'stack', style: 'gap:6px' }, q, sug,
+          h('span', { class: 'faint', style: 'font-size:12px', text: 'A worker you add shows here at once, and uses it from its next run.' }));
+      }
+      fill(holders, [h('div', { class: 'tp-head' }, h('h3', { class: 't-kind', text: 'Workers who have it · ' + rows.length }), p ? h('span', { class: 'faint', style: 'font-size:12px', text: 'Last 7 days' }) : null),
+        list, adder, out]);
+      // ---- rules
+      if (!ctx.canEdit) { rules.hidden = true; return; }
+      var mode = def.mode, picked = def.mode === 'only' ? def.calls.slice() : [];
+      var seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Default scope for ' + t.name });
+      var picks = h('div', { class: 'stack', style: 'gap:6px' });
+      var said = h('span', { class: 'faint', style: 'font-size:12px' });
+      var saveDef = function (value) {
+        said.textContent = 'Saving…';
+        return api('POST', '/api/admin/tools/' + encodeURIComponent(t.name) + '/scope', { default: value }).then(function (x) {
+          if (x.ok === false) { said.textContent = ''; fill(out, [msg(x)]); return; }
+          said.textContent = 'Saved';
+          ctx.reopen();
         });
       };
-      var saveDef = h('button', { class: 'btn go small', text: 'Save the default' });
-      saveDef.onclick = function () {
-        var restore = busy(saveDef, 'Saving…');
-        var value = mode === 'full' ? null : mode === 'read' ? { mode: 'read' } : { mode: 'only', calls: picked };
-        api('POST', '/api/admin/tools/' + encodeURIComponent(t.name) + '/scope', { default: value }).then(function (x) {
-          restore(); out.textContent = ''; out.appendChild(msg(x, 'Saved. Every worker that has ' + t.name + ' gets this unless it has its own.'));
-          if (x.ok !== false) { def = x.default || { mode: 'full' }; drawRows(); }
-        });
+      var drawSeg = function () {
+        fill(seg, ['full', 'read', 'only'].map(function (m) {
+          return h('button', { type: 'button', role: 'radio', 'aria-checked': mode === m ? 'true' : 'false', class: 'seg-b' + (mode === m ? ' on' : ''), text: SCOPE_LABEL[m], onclick: function () {
+            mode = m; drawSeg();
+            // Whole tool and read only save as they're picked; the calls to
+            // pick need picking first.
+            if (m !== 'only') return void saveDef(m === 'full' ? null : { mode: 'read' });
+            if (!calls.length) { fill(picks, [h('span', { class: 'faint', text: 'Its calls show once it connects.' })]); return; }
+            fill(picks, [h('div', { class: 'tp-card', style: 'max-height:220px;overflow:auto;padding:6px 10px' }, calls.map(function (c) {
+              var box = h('input', { type: 'checkbox', checked: picked.indexOf(c.name) >= 0 });
+              box.onchange = function () { if (box.checked) picked.push(c.name); else picked = picked.filter(function (x) { return x !== c.name; }); };
+              return h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;font-size:13px;padding:4px 0' }, box, h('code', { text: c.name }), h('span', { class: 'faint', text: c.read ? 'reads' : 'changes' }));
+            })), h('div', null, h('button', { class: 'btn small go', text: 'Save these calls', onclick: function () { saveDef({ mode: 'only', calls: picked }); } }))]);
+          } });
+        }));
       };
-      drawRadios(); drawLists();
-      // Each worker that has it.
-      var rows = h('div', { class: 'stack', style: 'gap:0' });
-      var drawRows = function () {
-        rows.textContent = '';
-        if (!p.workers.length) { rows.appendChild(h('p', { class: 'muted', style: 'margin:0', text: 'No worker has it yet.' })); return; }
-        p.workers.forEach(function (w) {
-          var wide = w.own && (def.mode !== 'full') && (w.own.mode === 'full' || (def.mode === 'read' && w.own.mode === 'only' && w.own.calls.some(function (c) { var hit = p.calls.filter(function (x) { return x.name === c; })[0]; return hit && !hit.read; })));
-          var pick = h('select', { 'aria-label': w.name + '’s scope for ' + t.name },
-            h('option', { value: 'default', text: 'Default · ' + scopeWords(def), selected: !w.own }),
-            ['full', 'read', 'only'].map(function (m) { return h('option', { value: m, text: SCOPE_LABEL[m] + (m === 'only' && w.own && w.own.mode === 'only' ? ' · ' + w.own.calls.length : ''), selected: !!w.own && w.own.mode === m }); }));
-          var note = h('span', { class: 'faint', style: 'font-size:12px' });
-          if (w.own && w.own.mode === 'only') note.textContent = w.own.calls.slice(0, 3).join(', ') + (w.own.calls.length > 3 ? '…' : '');
-          if (wide) { note.textContent = 'Wider than the default, set by an admin'; note.style.color = 'var(--need)'; }
-          pick.onchange = function () {
-            var v = pick.value === 'default' ? null : pick.value === 'full' ? { mode: 'full' } : pick.value === 'read' ? { mode: 'read' } : { mode: 'only', calls: (w.own && w.own.calls) || p.calls.filter(function (c) { return c.read; }).map(function (c) { return c.name; }) };
-            var patch = {}; patch[t.name] = v;
-            pick.disabled = true;
-            api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { toolScopes: patch } }).then(function (x) {
-              pick.disabled = false;
-              out.textContent = ''; out.appendChild(msg(x, 'Saved ' + w.name + '.'));
-              if (x.ok !== false) { if (v) w.own = v; else delete w.own; drawRows(); }
-            });
-          };
-          rows.appendChild(h('div', { class: 'scope-row' + (wide ? ' wide' : '') },
-            h('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0' }, avatar(w.id, w.name, 's'), h('b', { style: 'font-weight:600', text: w.name })),
-            h('span', { class: 'faint', text: w.manager || '' }),
-            h('span', { class: 'stack', style: 'gap:2px;min-width:0' }, pick, note),
-            h('span', { class: 'faint', style: 'font-size:13px', text: (w.calls ? plural(w.calls, 'call', 'calls') : 'Not used') + (w.refused ? ' · ' + w.refused + ' refused' : '') })));
-        });
-      };
-      drawRows();
-      append(box, [
-        h('section', { class: 'stack', style: 'gap:8px' }, h('div', { class: 'spread' }, h('div', { class: 't-kind', text: 'Default scope' }), h('span', { class: 'faint', style: 'font-size:12.5px', text: 'For every worker that has it, unless set below' })),
-          radios, lists, h('div', null, saveDef)),
-        h('section', { class: 'stack', style: 'gap:8px' }, h('div', { class: 'spread' }, h('div', { class: 't-kind', text: 'Each worker' }), h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Narrower: any manager. Wider: an admin. Last 7 days on the right.' })),
-          rows),
-        out]);
-    });
-    return box;
+      drawSeg();
+      fill(rules, [h('h3', { class: 't-kind', text: 'Rules' }),
+        h('div', { class: 'tp-rules' },
+          h('span', { class: 'tp-rl', text: 'Who can give it' }), ctx.level,
+          h('span', { class: 'tp-rl', text: 'Default scope' }), h('div', { class: 'row', style: 'gap:10px' }, seg, said)),
+        picks]);
+    };
+    if (ctx.canEdit) {
+      fill(holders, [thinking('Reading who has it…')]);
+      api('GET', '/api/admin/tools/' + encodeURIComponent(t.name) + '/scope').then(function (p) { draw(p && p.ok !== false ? p : null); }, function () { draw(null); });
+    } else draw(null);
+    return { holders: holders, rules: rules };
   }
 
   /// One tool on a worker's card: whether the server has it, how much of it
@@ -9302,6 +10143,7 @@ export const CONSOLE_JS = String.raw`
       h('div', { class: 'row', style: 'flex-wrap:nowrap' }, h('span', { class: 'sdot ' + (t.ok ? 'ok' : 'bad') }), h('span', { style: 'flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis', title: t.name, text: t.name }),
         label ? h('span', { class: 'badge', text: label }) : null,
         t.ok ? h('span', { class: 'faint', text: t.shared ? 'Every worker has it' : 'Installed' }) : state.me.admin ? h('button', { class: 'linkish', style: 'color:var(--bad);font-size:13px', text: 'Not on this server — install', onclick: function () { go('setup', { setupTab: 'tools' }); } }) : h('span', { class: 'faint', style: 'color:var(--bad)', text: 'Not on this server' }),
+        !t.shared && w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Take it off', 'aria-label': 'Take ' + t.name + ' off ' + w.name, onclick: function (e) { takeToolOff(w, t.name, e.target); } }) : null,
         w.youManage && t.ok ? h('button', { class: 'linkish', style: 'font-size:13px', 'aria-expanded': 'false', text: 'Scope', onclick: function (e) { open(); e.target.setAttribute('aria-expanded', editor.hidden ? 'false' : 'true'); } }) : null),
       editor);
   }
@@ -9667,21 +10509,40 @@ export const CONSOLE_JS = String.raw`
       daily.length ? h('div', { class: 'axis' }, h('span', { text: shortDay(daily[0].day) }), h('span', { text: shortDay(daily[daily.length - 1].day) })) : null);
   }
 
+  /// One CSV cell. Text that starts like a formula (=, +, -, @) is opened
+  /// as one by a spreadsheet: a Slack name of "=HYPERLINK(…)" would be a live
+  /// link. Such text gets a leading ' so it reads as text.
+  function csvCell(v) {
+    var t = String(v);
+    if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(t)) t = "'" + t;
+    return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  }
+
   function reportCsv(rows) {
     var cols = ['Worker', 'Jobs finished', 'Jobs failed', 'Shifts', 'Quiet shifts', 'Failed shifts', 'Agent minutes', 'Tokens', 'Spend USD', 'Spend per job USD'];
-    var esc = function (v) { v = String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     return [cols].concat(rows.map(function (r) {
       var pj = perJob(r);
       return [r.name, r.itemsDone, r.itemsFailed, r.shifts, r.quietShifts, r.failedShifts, Math.round(r.workedMs / 60000), r.inputTokens + r.outputTokens, r.costUSD.toFixed(2), pj == null ? '' : pj.toFixed(2)];
-    })).map(function (row) { return row.map(esc).join(','); }).join('\n');
+    })).map(function (row) { return row.map(csvCell).join(','); }).join('\n');
+  }
+
+  /// Workers or Slack: which report the Reports page shows.
+  function reportSwitch() {
+    var on = state.reportView || 'workers';
+    return h('div', { class: 'seg', role: 'group', 'aria-label': 'Report' }, [['workers', 'Workers'], ['slack', 'Slack'], ['watching', 'Watching']].map(function (o) {
+      return h('button', { 'aria-pressed': on === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.reportView = o[0]; render(); } });
+    }));
   }
 
   function viewReports() {
     var days = state.reportDays == null ? 30 : state.reportDays;
+    if (state.reportView === 'slack') return viewSlackReport(days);
+    // Built at once, its rows filled as they load; handed back like the rest.
+    if (state.reportView === 'watching') return Promise.resolve(viewWatching());
     return api('GET', '/api/report?days=' + days).then(function (r) {
-      var seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Window' }, [[7, '7 days'], [30, '30 days'], [0, 'All time']].map(function (o) {
+      var seg = h('div', { class: 'page-actions' }, reportSwitch(), h('div', { class: 'seg', role: 'group', 'aria-label': 'Window' }, [[7, '7 days'], [30, '30 days'], [0, 'All time']].map(function (o) {
         return h('button', { 'aria-pressed': days === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.reportDays = o[0]; render(); } });
-      }));
+      })));
       var sub = 'What your workers delivered, what it cost, and where the time went.';
       if (r.ok === false) return [head('Reports', sub, seg, 'Workspace'), emptyState('No report yet.', r.error)];
       var rep = r.report || r;
@@ -9759,6 +10620,210 @@ export const CONSOLE_JS = String.raw`
               h('td', { class: 'r', text: t.itemsDone ? cents(t.costUSD / t.itemsDone) : '—' }), h('td')))))),
         h('p', { class: 'faint', text: 'Spend is each run’s model cost as its backend reports it; backends that don’t report a price count as $0, and planning and chat turns aren’t included. Only workers you can see are counted.' })];
     });
+  }
+
+  var SLACK_METRICS = [
+    { key: 'messages', label: 'Messages', tint: '#5d72ff', fmt: String },
+    { key: 'started', label: 'Conversations', tint: '#059669', fmt: String },
+    { key: 'askers', label: 'People asking', tint: '#a855f7', fmt: String }
+  ];
+
+  /// Who asks overgo what in Slack, for an org of any size: the totals and
+  /// what came of them, by day, then everyone who asked, searched, sorted
+  /// and paged on the server. An admin sees everyone; anyone else, themself.
+  function viewSlackReport(days) {
+    var admin = !!(state.me && state.me.admin);
+    var seg = h('div', { class: 'page-actions' }, reportSwitch(), h('div', { class: 'seg', role: 'group', 'aria-label': 'Window' }, [[7, '7 days'], [30, '30 days'], [0, 'All time']].map(function (o) {
+      return h('button', { 'aria-pressed': days === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.reportDays = o[0]; render(); } });
+    })));
+    var sub = admin ? 'Who asks overgo what in Slack, and what came of it.' : 'What you have asked overgo in Slack.';
+    return api('GET', '/api/slack/stats?days=' + days + '&limit=0').then(function (r) {
+      if (r.ok === false) return [head('Reports', sub, seg, 'Workspace'), emptyState('No Slack report.', r.error)];
+      var s = r.stats;
+      if (!s.messages) return [head('Reports', sub, seg, 'Workspace'), emptyState('Nothing asked in Slack in this window.', 'Counting started when this version was installed. Try a longer range, or check back once people have asked something.')];
+      var o = s.outcomes || {};
+      var handled = (o.answered || 0) + (o.offered || 0) + (o.handed || 0);
+      var stuck = (o['asked-who'] || 0) + (o.declined || 0);
+      var econ = function (k, v) { return h('div', null, h('span', { class: 'muted', text: k }), h('b', { text: v })); };
+      return [head('Reports', sub, seg, 'Workspace'),
+        h('div', { class: 'kpis' },
+          h('div', { class: 'kpi' }, kpiIcon('inbox'), h('span', { class: 'k', text: 'Messages' }), h('span', { class: 'v', text: String(s.messages) }), h('span', { class: 'n', text: plural(s.started, 'conversation', 'conversations') + ' started' })),
+          admin ? h('div', { class: 'kpi' }, kpiIcon('people', 'violet'), h('span', { class: 'k', text: 'People asking' }), h('span', { class: 'v', text: String(s.askers) }), h('span', { class: 'n', text: s.askers ? (s.messages / s.askers).toFixed(1) + ' messages each on average' : '' })) : null,
+          admin ? h('div', { class: 'kpi' }, kpiIcon('bolt', 'ok'), h('span', { class: 'k', text: 'Answered or handed off' }), h('span', { class: 'v', text: String(handled) }), h('span', { class: 'n', text: (o.answered || 0) + ' answered by overgo or from past work' })) : null,
+          admin ? h('div', { class: 'kpi' }, kpiIcon('inbox', 'need'), h('span', { class: 'k', text: 'Had to ask who' }), h('span', { class: 'v' + (stuck ? ' need' : ''), text: String(stuck) }), h('span', { class: 'n', text: (o.declined || 0) + ' turned down by a worker' })) : null),
+        h('div', { class: 'charts' }, SLACK_METRICS.filter(function (m) { return admin || m.key !== 'askers'; }).map(function (m) { return dayChart(m, s.daily || []); })),
+        admin ? card('so', 'What came of it', null, [h('div', { class: 'econ' },
+          econ('Answered by overgo or from past work', String(o.answered || 0)),
+          econ('Offered work that already existed', String(o.offered || 0)),
+          econ('Handed to a worker, team or process', String(o.handed || 0)),
+          econ('Asked who should take it', String(o['asked-who'] || 0)),
+          econ('Turned down by a worker', String(o.declined || 0)))]) : null,
+        slackPeople(days, admin)];
+    });
+  }
+
+  /// Everyone who asked, a page at a time from the server: search, sort by
+  /// any column, export the lot.
+  function slackPeople(days, admin) {
+    var PAGE = 50;
+    var sort = state.slackSort || 'messages';
+    var offset = 0;
+    var query = h('input', { type: 'search', placeholder: 'Find a person', 'aria-label': 'Find a person', value: state.slackQuery || '', style: 'width:200px;font-size:13px' });
+    var tbody = h('tbody');
+    var range = h('span', { class: 'faint' });
+    var prev = h('button', { class: 'btn small', text: '← Previous' });
+    var next = h('button', { class: 'btn small', text: 'Next →' });
+    var heads = {};
+    var url = function (o, limit) {
+      return '/api/slack/stats?days=' + days + '&sort=' + sort + '&offset=' + o + '&limit=' + limit + (query.value.trim() ? '&q=' + encodeURIComponent(query.value.trim()) : '');
+    };
+    var load = function () {
+      return api('GET', url(offset, PAGE)).then(function (r) {
+        if (r.ok === false) { tbody.replaceChildren(h('tr', null, h('td', { colspan: '5' }, msg(r)))); return; }
+        var s = r.stats;
+        if (!s.people.length) tbody.replaceChildren(h('tr', null, h('td', { colspan: '5', class: 'muted', text: query.value.trim() ? 'Nobody by that name asked in this window.' : 'Nobody asked in this window.' })));
+        else tbody.replaceChildren.apply(tbody, s.people.map(function (p) {
+          return h('tr', null,
+            h('td', null, h('b', { text: p.by })),
+            h('td', { class: 'r', text: String(p.messages) }),
+            h('td', { class: 'r', text: String(p.started) }),
+            h('td', { class: 'r', text: String(p.dm) }),
+            h('td', { class: 'r muted', text: shortDay(p.lastDay) }));
+        }));
+        range.textContent = s.peopleTotal ? (offset + 1) + '–' + (offset + s.people.length) + ' of ' + plural(s.peopleTotal, 'person', 'people') : '';
+        prev.disabled = offset === 0;
+        next.disabled = offset + s.people.length >= s.peopleTotal;
+      });
+    };
+    var th = function (key, label, right) {
+      var b = h('button', { 'aria-pressed': sort === key ? 'true' : 'false', text: label + (sort === key ? ' ↓' : '') });
+      heads[key] = { b: b, label: label };
+      b.onclick = function () {
+        sort = state.slackSort = key;
+        offset = 0;
+        Object.keys(heads).forEach(function (k) { heads[k].b.setAttribute('aria-pressed', k === key ? 'true' : 'false'); heads[k].b.textContent = heads[k].label + (k === key ? ' ↓' : ''); });
+        load();
+      };
+      return h('th', { class: right ? 'r' : null }, b);
+    };
+    var timer = null;
+    query.oninput = function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { state.slackQuery = query.value; offset = 0; load(); }, 250);
+    };
+    prev.onclick = function () { offset = Math.max(0, offset - PAGE); load(); };
+    next.onclick = function () { offset += PAGE; load(); };
+    var exportBtn = h('button', { class: 'btn small', onclick: function () {
+      var restore = busy(exportBtn, 'Exporting…');
+      api('GET', url(0, 5000)).then(function (r) {
+        restore();
+        if (r.ok === false) return;
+            var csv = [['Person', 'Slack ID', 'Messages', 'Conversations', 'In DMs', 'Last asked']].concat(r.stats.people.map(function (p) { return [p.by, p.user, p.messages, p.started, p.dm, p.lastDay]; }))
+          .map(function (row) { return row.map(csvCell).join(','); }).join('\n');
+        var a = h('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: 'slack-usage-' + (days || 'all') + 'd.csv' });
+        document.body.appendChild(a); a.click(); a.remove();
+      });
+    } }, 'Export CSV');
+    load();
+    return h('section', { class: 'tcard', 'aria-label': 'By person' },
+      h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: admin ? 'By person' : 'You' }), h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, admin ? query : null, exportBtn)),
+      h('div', { class: 'tscroll' }, h('table', { class: 'data' },
+        h('thead', null, h('tr', null, th('name', 'Person'), th('messages', 'Messages', true), th('started', 'Conversations', true), th('dm', 'In DMs', true), th('recent', 'Last asked', true))),
+        tbody)),
+      admin ? h('div', { class: 'row', style: 'justify-content:space-between;align-items:center;padding:10px 14px;gap:8px;flex-wrap:wrap' }, range, h('div', { class: 'row', style: 'gap:8px' }, prev, next)) : null);
+  }
+
+  /// Every ticket a change watch tracks, across the workers you can see:
+  /// yours to follow or drop at the top, then the lot, searched and paged on
+  /// the server.
+  function viewWatching() {
+    var sub = 'Tickets your workers watch for changes, and who gets a DM when one moves.';
+    var head0 = head('Reports', sub, h('div', { class: 'page-actions' }, reportSwitch()), 'Workspace');
+    var out = h('div', { 'aria-live': 'polite' });
+    var follow = function (item, on, button) {
+      // Following a ticket nothing watches yet sets a watch up first: a
+      // worker looks the ticket up, about a minute. Said, and the button held.
+      var restore = button ? busy(button, on ? 'Setting up…' : 'Stopping…') : null;
+      if (on) fill(out, [h('p', { class: 'faint', style: 'margin:0', text: 'Following ' + item + '. If nothing watches it yet, a worker looks it up once to learn how; about a minute.' })]);
+      return api('POST', '/api/watching/follow', { item: item, on: on }).then(function (x) {
+        if (restore) restore();
+        out.textContent = '';
+        if (x.ok === false) { out.appendChild(msg(x)); return; }
+        render();
+      });
+    };
+    var PAGE = 50;
+    var offset = 0;
+    var query = h('input', { type: 'search', placeholder: 'Find a ticket, worker or status', 'aria-label': 'Find a ticket', value: state.watchQuery || '', style: 'width:240px;font-size:13px' });
+    var tbody = h('tbody');
+    var range = h('span', { class: 'faint' });
+    var prev = h('button', { class: 'btn small', text: '← Previous' });
+    var next = h('button', { class: 'btn small', text: 'Next →' });
+    var load = function () {
+      return api('GET', '/api/watching?offset=' + offset + '&limit=' + PAGE + (query.value.trim() ? '&q=' + encodeURIComponent(query.value.trim()) : '')).then(function (r) {
+        if (r.ok === false) { tbody.replaceChildren(h('tr', null, h('td', { colspan: '5' }, msg(r)))); return; }
+        if (!r.rows.length) tbody.replaceChildren(h('tr', null, h('td', { colspan: '5', class: 'muted', text: query.value.trim() ? 'Nothing tracked matches that.' : 'Nothing is tracked yet. Give a worker a change watch with “Only items I track” on its Triggers tab, or follow a ticket above.' })));
+        else tbody.replaceChildren.apply(tbody, r.rows.map(function (w) {
+          var who = w.followerNames ? w.followerNames.join(', ') : w.followers ? plural(w.followers, 'person', 'people') : '—';
+          return h('tr', null,
+            h('td', null, h('b', { text: w.item })),
+            h('td', { text: w.status || '—' }),
+            h('td', null, h('div', { class: 'who' }, h('div', { style: 'min-width:0' }, h('a', { class: 'linkish', href: '#', text: w.worker, onclick: function (e) { e.preventDefault(); state.workerTab = 'triggers'; openWorker(w.workerId); } }), h('span', { class: 'sub', text: w.trigger + ' · every ' + w.everyMinutes + ' min' + (w.lastPolledAt ? ' · checked ' + ago(w.lastPolledAt) : '') })))),
+            h('td', null, w.youFollow ? h('span', { class: 'tag go', text: 'You' }) : null, ' ', h('span', { class: 'muted', text: who })),
+            h('td', { class: 'r' }, h('button', { class: 'btn small' + (w.youFollow ? ' quiet' : ''), text: w.youFollow ? 'Unfollow' : 'Follow', onclick: function () { follow(w.item, !w.youFollow); } })));
+        }));
+        range.textContent = r.total ? (offset + 1) + '–' + (offset + r.rows.length) + ' of ' + plural(r.total, 'ticket', 'tickets') : '';
+        prev.disabled = offset === 0;
+        next.disabled = offset + r.rows.length >= r.total;
+        mineBox.replaceChildren.apply(mineBox, r.mine.length
+          ? r.mine.map(function (m) {
+              return h('span', { class: 'tag', title: m.worker + ' · ' + m.trigger }, h('b', { text: m.item }), m.status ? ' — ' + m.status : '', h('button', { class: 'linkish', style: 'margin-left:4px;color:inherit', 'aria-label': 'Unfollow ' + m.item, onclick: function () { follow(m.item, false); } }, icon('x', 11)));
+            })
+          : [h('span', { class: 'muted', text: 'You aren’t following any tickets.' })]);
+      });
+    };
+    var timer = null;
+    query.oninput = function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { state.watchQuery = query.value; offset = 0; load(); }, 250);
+    };
+    prev.onclick = function () { offset = Math.max(0, offset - PAGE); load(); };
+    next.onclick = function () { offset += PAGE; load(); };
+    var mineBox = h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' });
+    // The box and its button one height, side by side.
+    var add = h('input', { type: 'text', placeholder: 'ACME-412', 'aria-label': 'Follow a ticket', style: 'width:150px;height:34px;min-height:34px;padding:0 10px;font-size:13px;box-sizing:border-box' });
+    var addBtn = h('button', { class: 'btn small', text: 'Follow', style: 'height:34px;min-height:34px;box-sizing:border-box' });
+    var addIt = function () { if (add.value.trim() && !addBtn.disabled) follow(add.value.trim(), true, addBtn); };
+    addBtn.onclick = addIt;
+    // The Slack threads you follow ("Notify me", or "keep me posted" in one).
+    var threadsBox = h('div', { class: 'stack', style: 'gap:6px;margin-top:10px' });
+    api('GET', '/api/slack/following').then(function (x) {
+      if (!x || x.ok === false || !x.threads) return;
+      fill(threadsBox, [h('span', { class: 't-kind', text: 'Slack threads you follow' }),
+        x.threads.length ? x.threads.map(function (t) {
+          return h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0' },
+            h('a', { href: t.url, target: '_blank', rel: 'noopener', style: 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap', text: t.text }),
+            h('span', { class: 'faint', style: 'flex:none', text: ago(t.at) }),
+            h('button', { class: 'linkish', style: 'flex:none;font-size:13px', text: 'Unfollow', onclick: function () {
+              api('POST', '/api/slack/following/stop', { key: t.key }).then(function (y) { if (y.ok === false) { out.textContent = ''; out.appendChild(msg(y)); } else render(); });
+            } }));
+        }) : h('span', { class: 'muted', text: 'None. Press “Notify me” under a reply in Slack, or say “keep me posted” in a thread.' })]);
+    });
+    add.onkeydown = function (e) { if (e.key === 'Enter') addIt(); };
+    load();
+    return [head0,
+      card('yf', 'You’re following', null, [
+        h('p', { class: 'muted', style: 'font-size:13px', text: 'overgo DMs you in Slack when one of these changes. In Slack, say “let me know when ACME-412 changes” or “what am I following?”.' }),
+        mineBox,
+        h('div', { class: 'row', style: 'gap:6px;margin-top:6px;align-items:center' }, add, addBtn),
+        out,
+        threadsBox]),
+      h('section', { class: 'tcard', 'aria-label': 'Everything tracked' },
+        h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'Everything tracked' }), query),
+        h('div', { class: 'tscroll' }, h('table', { class: 'data' },
+          h('thead', null, h('tr', null, h('th', { text: 'Ticket' }), h('th', { text: 'Status' }), h('th', { text: 'Watched by' }), h('th', { text: 'Following' }), h('th'))),
+          tbody)),
+        h('div', { class: 'row', style: 'justify-content:space-between;align-items:center;padding:10px 14px;gap:8px;flex-wrap:wrap' }, range, h('div', { class: 'row', style: 'gap:8px' }, prev, next)))];
   }
 
   /// One Library item on a page of its own: what Pop out opens.
@@ -10083,7 +11148,8 @@ export const CONSOLE_JS = String.raw`
       };
       add.onkeydown = function (e) { if (e.key === 'Enter' && add.value.trim()) track(add.value.trim(), true); };
       append(box, [h('span', { class: 'faint', style: 'font-size:12.5px', text: t.watch.tracked.length ? 'Tracking' : 'Tracking nothing yet' })].concat(t.watch.tracked.map(function (k) {
-        return h('span', { class: 'tag' }, k, canEdit ? h('button', { class: 'linkish', style: 'margin-left:4px;color:inherit', 'aria-label': 'Stop tracking ' + k, onclick: function () { track(k, false); } }, icon('x', 11)) : null);
+        var f = t.following && t.following[k];
+        return h('span', { class: 'tag', title: f ? (f.names ? 'Following: ' + f.names.join(', ') : plural(f.count, 'person follows', 'people follow') + ' it') : null }, k, f ? h('span', { class: 'faint', text: ' · ' + f.count + ' following' }) : null, canEdit ? h('button', { class: 'linkish', style: 'margin-left:4px;color:inherit', 'aria-label': 'Stop tracking ' + k, onclick: function () { track(k, false); } }, icon('x', 11)) : null);
       }), canEdit ? [add, h('button', { class: 'btn small', text: 'Track', onclick: function () { if (add.value.trim()) track(add.value.trim(), true); } })] : []));
       return box;
     })() : null;
@@ -10153,13 +11219,31 @@ export const CONSOLE_JS = String.raw`
       server.appendChild(h('option', { value: '', text: 'Pick a tool' }));
       tools.forEach(function (t) { server.appendChild(h('option', { value: t.name, text: t.name })); });
     });
+    // A tool that can list alarms in ALARM state gets a one-click setup, as
+    // on a process's intake.
+    var preset = h('div', { class: 'msg', hidden: true });
+    var alarmPreset = function () {
+      call.value = 'get_active_alarms';
+      args.value = '{}';
+      every.value = '5';
+      fireOn.value = 'new';
+      itemsPath.value = ''; idPath.value = '';
+      if (!name.value.trim()) name.value = 'CloudWatch alarms';
+      if (!instructions.value.trim()) instructions.value = 'An alarm went off. Pull the logs around the time it changed state with a Logs Insights query, find the likely cause, and post a short summary: what broke, since when, how bad, and what to check first.';
+      syncFire();
+    };
     server.onchange = function () {
       call.textContent = ''; call.appendChild(h('option', { value: '', text: 'Loading…' }));
+      preset.hidden = true;
       if (!server.value) return;
       api('GET', '/api/tools/' + encodeURIComponent(server.value) + '/calls').then(function (r) {
         call.textContent = '';
         if (r.ok === false) { call.appendChild(h('option', { value: '', text: r.error })); return; }
         r.tools.forEach(function (t) { call.appendChild(h('option', { value: t.name, text: t.name, title: t.description || '' })); });
+        if (!r.tools.some(function (t) { return t.name === 'get_active_alarms'; })) return;
+        preset.textContent = '';
+        append(preset, [h('span', { text: 'This tool lists CloudWatch alarms. ' }), h('button', { type: 'button', class: 'btn small', text: 'Set it up for CloudWatch alarms', onclick: alarmPreset })]);
+        preset.hidden = false;
       });
     };
     parts.watch = h('div', { class: 'stack' },
@@ -10279,19 +11363,89 @@ export const CONSOLE_JS = String.raw`
 
   // ---- setup (org) -------------------------------------------------------
 
-  /// Everything an admin sets up, in one place: how ready the server is,
-  /// the tools workers can use, and the rules.
+  /// Everything an admin sets up, in one place, one page at a time: how
+  /// ready the server is, the org, its workers' rules, and what they connect
+  /// to. A grouped list beside the page picks one.
+  var SETUP = [
+    { group: null, pages: [['ready', 'Readiness', 'What this server needs so workers can do their jobs.']] },
+    { group: 'Organization', pages: [
+      ['general', 'General', 'Its name, the address people use, and the time zone schedules run in.'],
+      ['teams', 'People & teams', 'Groups of people. A worker set to "my team may ask it" is open to everyone who shares a team with its manager.'],
+      ['signin', 'Sign-in', 'Let people sign in with the company account (Okta, Entra ID, Google — anything that speaks OpenID Connect).'],
+      ['records', 'Records', 'How long the decision log, finished runs and each run’s step-by-step activity are kept. Older ones are deleted each night. Left blank, records stay forever and run activity a week.']] },
+    { group: 'Workers', pages: [
+      ['hiring', 'Hiring', 'Who may hire, what their workers may cost before a hire needs approval, and who approves.'],
+      ['roles', 'Role catalog', 'Approved jobs on the Hire page. Hiring one skips the interview, and its tools need no approver.'],
+      ['handbook', 'Handbook', 'What every worker reads after its job: names, project keys, who owns what, house style.'],
+      ['spending', 'Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.']] },
+    { group: 'Connections', pages: [
+      ['tools', 'Tools', 'The MCP servers workers here can use, and which workers have each.'],
+      ['secrets', 'Secrets', 'Keys the tools and the server use. Changes apply at once, no restart.'],
+      ['repos', 'Repos & workspaces', 'Repos workers can change, and workspaces that group them.'],
+      ['offers', 'From desktops', 'Setups people published from the overcli app, to connect and install.'],
+      ['servers', 'Other servers', 'Other overcli servers in the company, to watch from Activity.']] }
+  ];
+  // The old Rules tab's address opens its first page.
+  var SETUP_OLD = { rules: 'general' };
+  var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, servers: 1 };
+  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', secrets: 'setup--secrets', handbook: 'setup--handbook' };
   function viewSetup() {
-    var tab = state.setupTab || 'ready';
-    var tabs_ = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Setup' },
-      [['ready', 'Readiness'], ['offers', 'From desktops'], ['tools', 'Tools'], ['repos', 'Repos'], ['secrets', 'Secrets'], ['rules', 'Rules, spending and sign-in']].map(function (t) {
-        return h('button', { role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', text: t[1], onclick: function () { state.setupTab = t[0]; render(); } });
+    if (SETUP_OLD[state.setupTab]) state.setupTab = SETUP_OLD[state.setupTab];
+    var tab = state.setupTab || 'ready', page = null, group = null;
+    SETUP.forEach(function (g) { g.pages.forEach(function (p) { if (p[0] === tab) { page = p; group = g.group; } }); });
+    if (!page) { tab = 'ready'; page = SETUP[0].pages[0]; }
+    var pick = function (id) { state.setupTab = id; render(); };
+    var buttons = {};
+    var rail = h('nav', { class: 'nav setup-rail', 'aria-label': 'Setup pages' }, SETUP.map(function (g) {
+      return [g.group ? h('div', { class: 'group', text: g.group }) : null].concat(g.pages.map(function (p) {
+        return (buttons[p[0]] = h('button', { 'aria-current': p[0] === tab ? 'page' : null, onclick: function () { pick(p[0]); } }, p[1]));
       }));
-    var learn = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', secrets: 'setup--secrets', rules: 'setup--rules-spending-and-sign-in' }[tab];
-    var headNode = head('Setup', 'What this server needs so workers can do their jobs. Everything here applies at once.',
-      h('a', { class: 'btn small', href: '/docs/admins' + (learn ? '#' + learn : ''), target: '_blank', rel: 'noopener', text: 'Learn more ↗' }));
-    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'secrets' ? viewSecrets() : tab === 'rules' ? viewRules() : readiness();
-    return body.then(function (nodes) { return [headNode, tabs_].concat(tab === 'ready' ? nodes : nodes.slice(1)); });
+    }));
+    var narrow = h('select', { class: 'setup-pick', 'aria-label': 'Setup page', onchange: function (e) { pick(e.target.value); } }, SETUP.map(function (g) {
+      var opts = g.pages.map(function (p) { return h('option', { value: p[0], text: p[1], selected: p[0] === tab }); });
+      return g.group ? h('optgroup', { label: g.group }, opts) : opts;
+    }));
+    // What still needs doing, as a light beside its page.
+    Promise.all([api('GET', '/api/admin/health').catch(function () { return { ok: false }; }), api('GET', '/api/tools').catch(function () { return { ok: false }; })]).then(function (r) {
+      var mark = function (id, cls, why) { var b = buttons[id]; if (b && !b.querySelector('.light')) b.appendChild(h('span', { class: 'light ' + cls, title: why, 'aria-label': why })); };
+      var items = r[0].ok === false ? [] : r[0].items || [];
+      var sso = items.filter(function (i) { return i.name === 'Company sign-in'; })[0];
+      var missing = r[1].ok === false ? [] : r[1].missing || [];
+      if (missing.length) { mark('tools', 'bad', plural(missing.length, 'tool missing', 'tools missing')); mark('ready', 'need', 'Something needs setting up'); }
+      if (items.some(function (i) { return !i.ok && i.name !== 'Company sign-in'; })) mark('ready', 'need', 'Something needs setting up');
+      if (sso && !sso.ok) mark('signin', '', 'Off');
+    });
+    var learn = SETUP_LEARN[tab] || 'setup--rules-spending-and-sign-in';
+    var headNode = head(page[1], page[2],
+      h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), group ? 'Setup · ' + group : 'Setup');
+    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'secrets' ? viewSecrets() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
+    return body.then(function (nodes) {
+      return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, headNode, tab === 'ready' ? nodes : nodes.slice(1)))];
+    });
+  }
+
+  /// The handbook every worker reads after its job: names, project keys, who
+  /// owns what, house style. Written once, here.
+  function viewHandbook() {
+    return api('GET', '/api/handbook').then(function (r) {
+      var top = head('Handbook');
+      if (r.ok === false) return [top, msg(r)];
+      var ta = h('textarea', { 'aria-label': 'Handbook', style: 'min-height:420px;font-size:14px;line-height:1.6', placeholder: 'Our product is Acme CRM: accounts, contacts, pipelines and quotes.\n\nWhere work is tracked: WEB (the web app), API (the platform), OPS (infrastructure).\nOwners: pipelines, Sam; quotes, Pat.\nHouse style: plain words, no buzzwords, link the ticket.' });
+      ta.value = r.text || '';
+      var count = h('span', { class: 'faint', style: 'font-size:12.5px' });
+      var sync = function () { count.textContent = ta.value.length.toLocaleString() + ' / 12,000 characters'; };
+      ta.oninput = sync; sync();
+      var out = h('div', { 'aria-live': 'polite' });
+      var save = h('button', { class: 'btn go', text: 'Save the handbook' });
+      save.onclick = function () {
+        var restore = busy(save, 'Saving…');
+        api('POST', '/api/handbook', { text: ta.value }).then(function (x) { restore(); out.textContent = ''; out.appendChild(msg(x, 'Saved. Every worker reads it from its next run.')); });
+      };
+      if (!r.canEdit) ta.readOnly = true;
+      return [top, h('section', { class: 'panel pad stack' },
+        h('p', { class: 'hint', style: 'font-size:13px', text: 'Every worker reads this after its own job, before every run and every answer. Put what any of them should know: what the products are called, where work is tracked, who owns what, how you like things written. Keep it short; it costs a little on every run.' }),
+        ta, h('div', { class: 'foot' }, r.canEdit ? save : h('span', { class: 'faint', text: 'An admin keeps this.' }), count, out))];
+    });
   }
 
   /// Code repos workers may change by pushing branches: connect one, then let
@@ -10311,8 +11465,11 @@ export const CONSOLE_JS = String.raw`
         var toolRow = function (t) {
           if (t.installed) return h('div', { class: 'srow' }, h('div', { class: 'stack', style: 'gap:2px;min-width:0' }, h('b', { text: t.name }), h('span', { class: 'faint mono', text: t.kind === 'http' ? t.url : [t.command].concat(t.args || []).join(' ') })),
             done(o.installed.indexOf(t.name) >= 0 ? 'Installed with the keys sent' : 'Installed'));
-          var inputs = t.envKeys.map(function (k) { return { k: k, where: 'env', el: h('input', { type: 'password', placeholder: k, 'aria-label': k + ' for ' + t.name, autocomplete: 'off' }) }; })
-            .concat(t.headerKeys.map(function (k) { return { k: k, where: 'headers', el: h('input', { type: 'password', placeholder: k + ' (header)', 'aria-label': k + ' header for ' + t.name, autocomplete: 'off' }) }; }));
+          var inputs = t.envKeys.map(function (k) { return { k: k, where: 'env', el: h('input', { type: 'password', placeholder: 'Paste its value', 'aria-label': k + ' for ' + t.name, autocomplete: 'off' }) }; })
+            .concat(t.headerKeys.map(function (k) { return { k: k, where: 'headers', el: h('input', { type: 'password', placeholder: 'Paste its value', 'aria-label': k + ' header for ' + t.name, autocomplete: 'off' }) }; }));
+          // A program that lives on that Mac isn't on this server: installed as
+          // it is, the tool would never start.
+          var macOnly = t.kind !== 'http' && /(^|\s)\/(Users|home)\//.test([t.command].concat(t.args || []).join(' '));
           var install = h('button', { class: 'btn go small', text: 'Install' });
           install.onclick = function () {
             var env = {}, headers = {};
@@ -10320,10 +11477,13 @@ export const CONSOLE_JS = String.raw`
             var restore = busy(install, 'Installing…');
             api('POST', '/api/admin/tools', { tool: { name: t.name, kind: t.kind, command: t.command || '', args: t.args || [], url: t.url || '', env: env, headers: headers } }).then(function (r) { restore(); after(r, t.name + ' is installed.'); });
           };
+          if (macOnly) install = h('button', { class: 'btn small', text: 'Find it in the catalog', onclick: function () { state.setupTab = 'tools'; render(); } });
           return h('div', { class: 'srow', style: 'align-items:flex-start' },
-            h('div', { class: 'stack', style: 'gap:6px;min-width:0;flex:1' }, h('b', { text: t.name }), h('span', { class: 'faint mono', text: t.kind === 'http' ? t.url : [t.command].concat(t.args || []).join(' ') }),
-              inputs.length ? h('div', { class: 'stack', style: 'gap:6px;max-width:420px' }, inputs.map(function (i) { return i.el; }),
-                h('span', { class: 'faint', style: 'font-size:12px', text: 'Use a service account or bot token made for the org, not a person’s own: every worker that uses this tool acts with it.' })) : null),
+            h('div', { class: 'stack', style: 'gap:8px;min-width:0;flex:1' }, h('b', { text: t.name }), h('span', { class: 'faint mono', style: 'overflow-wrap:anywhere', text: t.kind === 'http' ? t.url : [t.command].concat(t.args || []).join(' ') }),
+              macOnly ? h('p', { class: 'msg err', style: 'font-size:13px;margin:0;max-width:640px', text: 'This runs a program from that Mac, which isn’t on this server, so installed as it is it would never start. Add ' + t.name + ' from the tool catalog instead, or with a command the server can run (npx, uvx, docker).' })
+                : inputs.length ? h('div', { class: 'stack', style: 'gap:10px;max-width:460px' }, inputs.map(function (i) {
+                  return h('label', { class: 'field' }, h('span', { class: 'mono', style: 'font-size:12.5px', text: i.k + (i.where === 'headers' ? ' (header)' : '') }), i.el);
+                }), h('span', { class: 'faint', style: 'font-size:12px', text: 'Use a service account or bot token made for the org, not a person’s own: every worker that uses this tool acts with it.' })) : null),
             install);
         };
         // How each repo can come over: its remote when the host's token is
@@ -10413,86 +11573,232 @@ export const CONSOLE_JS = String.raw`
     });
   }
 
+  /// Connected repos as one list, then the workspaces grouping them. Tick two
+  /// or more repos to group them into a workspace.
   function viewRepos() {
     return Promise.all([api('GET', '/api/repos'), api('GET', '/api/workers')]).then(function (r) {
       var data = r[0], workers = r[1] || [];
       var top = head('Repos');
       if (data.ok === false) return [top, msg(data)];
       var admin = state.me && state.me.admin;
-      var url = h('input', { type: 'text', placeholder: 'https://github.com/acme/app', 'aria-label': 'Repo address' });
-      var test = h('input', { type: 'text', placeholder: 'npm test', 'aria-label': 'Test command' });
-      var out = h('div');
-      var connect = admin ? h('section', { class: 'panel pad stack' },
-        h('h2', { class: 'section-title', text: 'Connect a repo' }),
-        h('p', { class: 'faint', text: 'Workers you point at it push each change as a branch and hand back the link to open a pull request; a person opens it. The server refuses pushes to the default branch, and a worker on probation waits for its manager’s yes before each push. Protect the default branch on your git host too.' }),
-        h('p', { class: 'faint', text: 'GitHub, Bitbucket or any git host. Over https the server needs the host’s token, set on the Secrets tab (GH_TOKEN, BITBUCKET_TOKEN or GIT_TOKEN); a git@ address uses the server’s ssh key.' }),
-        h('label', { class: 'field' }, 'Address', url),
-        h('label', { class: 'field' }, 'Test command (optional, run before every push)', test),
-        data.testsOff ? h('p', { class: 'faint', text: 'Repo tests are turned off on this server, so a repo with a test command pushes nothing until they’re on. ' + data.testsOff }) : null,
-        h('div', null, h('button', { class: 'btn go', text: 'Connect', onclick: function (e) {
-          var restore = busy(e.target, 'Cloning…');
-          api('POST', '/api/repos', { url: url.value, testCommand: test.value }).then(function (x) {
-            restore(); out.textContent = ''; out.appendChild(msg(x, (x.repo ? x.repo.name : 'The repo') + ' is connected. Point a worker at it below.'));
-            if (x.warning) out.appendChild(h('div', { class: 'msg err', role: 'alert', text: x.warning }));
-            if (x.ok !== false) setTimeout(render, 1200);
-          });
-        } })), out) : null;
-      var cards = data.repos.map(function (repo) {
-        var pick = h('select', { 'aria-label': 'Worker for ' + repo.name }, [h('option', { value: '', text: 'Pick a worker…' })].concat(workers.map(function (w) { return h('option', { value: w.id, text: w.name }); })));
-        var said = h('div');
-        return h('article', { class: 'panel pad stack' },
-          h('div', { class: 'spread' }, h('h3', { text: repo.name }), admin ? h('button', { class: 'linkish', text: 'Disconnect', onclick: function () {
-            api('POST', '/api/repos/' + encodeURIComponent(repo.name) + '/remove', {}).then(function (x) { said.textContent = ''; said.appendChild(msg(x, 'Disconnected.')); if (x.ok !== false) setTimeout(render, 800); });
-          } }) : null),
-          h('p', { class: 'muted', text: repo.url + ' · branches against ' + repo.defaultBranch + (repo.testCommand ? ' · tests: ' + repo.testCommand : ' · no test command') }),
-          repo.testCommand && data.testsOff ? h('div', { class: 'msg err', text: 'Nothing is pushed from here yet: repo tests are turned off on this server. ' + data.testsOff }) : null,
-          repo.canPush ? null : repo.tokenEnv && admin ? h('div', { class: 'stack', style: 'gap:8px' }, h('p', { class: 'faint', text: 'The server can’t push here yet. Paste ' + repo.tokenEnv + '. It’s kept in the server’s secrets and never shown again.' }), secretField(repo.tokenEnv)) : h('div', { class: 'msg err', text: 'The server can’t push here yet: an admin adds ' + (repo.tokenEnv || 'the host’s token') + ' on Setup → Secrets, or reconnects it with its git@ address.' }),
-          h('p', { class: 'faint', text: repo.workers.length ? 'Works here: ' + repo.workers.join(', ') : 'No worker works here yet.' }),
-          h('div', { class: 'row', style: 'gap:8px' }, pick, h('button', { class: 'btn', text: 'Let it change this repo', onclick: function (e) {
-            if (!pick.value) return;
-            var restore = busy(e.target, 'Saving…');
-            api('POST', '/api/repos/' + encodeURIComponent(repo.name) + '/workers', { worker: pick.value }).then(function (x) {
-              restore(); said.textContent = ''; said.appendChild(msg(x, (x.worker || 'It') + ' works in ' + repo.name + ' now. Ask it for a change and it comes back as a branch, with the link to open a pull request.'));
-              if (x.ok !== false) setTimeout(render, 1500);
+      var repos = data.repos || [], spaces = data.workspaces || [];
+      var connect = admin ? connectRepoPanel(data, !repos.length) : null;
+      var form = admin ? workspaceForm(repos) : null;
+      var openConnect = function () { connect.hidden = false; connect.scrollIntoView({ block: 'nearest' }); connect.querySelector('input').focus(); };
+      var connectBtn = admin ? h('button', { class: 'btn go', onclick: openConnect }, icon('plus', 16), repos.length ? 'Connect a repo' : 'Connect your first repo') : null;
+      var q = repos.length > 5 ? h('input', { type: 'search', placeholder: 'Filter repos', 'aria-label': 'Filter repos', style: 'width:200px' }) : null;
+      var listHead = h('div', { class: 'spread', style: 'align-items:flex-end' },
+        h('div', { class: 'stack', style: 'gap:4px' },
+          h('h2', { class: 'section-title' }, 'Repos', h('span', { class: 'faint', style: 'font-weight:500', text: '· ' + repos.length })),
+          h('p', { class: 'faint', text: 'Code workers may change. They push a branch and a person opens the pull request; never the default branch.' })),
+        h('div', { class: 'page-actions' }, q, connectBtn));
+
+      var picked = {};
+      var selBar = h('div', { class: 'sel-bar', hidden: true, 'aria-live': 'polite' });
+      var drawSel = function () {
+        var names = repos.filter(function (x) { return picked[x.name]; }).map(function (x) { return x.name; });
+        selBar.hidden = !names.length;
+        fill(selBar, [
+          h('span', null, h('b', { text: plural(names.length, 'repo', 'repos') + ' ticked' }), ' · ' + names.join(', ')),
+          h('div', { class: 'row', style: 'gap:10px' },
+            h('button', { class: 'btn go small', text: 'Group into a workspace', disabled: names.length < 2, title: names.length < 2 ? 'Tick at least two' : null, onclick: function () { form.open(names); } }),
+            h('button', { class: 'linkish', style: 'font-size:13px', text: 'Clear', onclick: function () { picked = {}; draw(); } }))]);
+      };
+
+      var spacesOf = function (name) { return spaces.filter(function (w) { return w.repos.indexOf(name) >= 0; }); };
+      var body = h('tbody');
+      var row = function (repo) {
+        // One row under the repo for whatever it opened: the worker picker
+        // or the token field. Opening the same one again closes it.
+        var detail = h('tr', { class: 'run-detail', hidden: true });
+        var cell = h('td', { colspan: admin ? '6' : '4' });
+        detail.appendChild(cell);
+        var toggle = function (kind, build) {
+          if (!detail.hidden && detail.getAttribute('data-kind') === kind) { detail.hidden = true; return; }
+          detail.setAttribute('data-kind', kind); fill(cell, build()); detail.hidden = false;
+        };
+        var push = repo.canPush ? h('span', { class: 'badge ok', text: 'Can push' })
+          : repo.tokenEnv && admin ? h('button', { class: 'tag need', style: 'cursor:pointer', text: 'Can’t push · add ' + repo.tokenEnv, onclick: function () {
+              toggle('token', function () { return h('div', { class: 'stack', style: 'gap:8px;max-width:640px' }, h('p', { class: 'faint', text: 'Paste ' + repo.tokenEnv + '. It’s kept in the server’s secrets and never shown again.' }), secretField(repo.tokenEnv)); });
+            } })
+          : h('span', { class: 'tag need', text: 'Can’t push', title: 'An admin adds ' + (repo.tokenEnv || 'the host’s token') + ' on Setup → Secrets, or reconnects it with its git@ address.' });
+        var tests = !repo.testCommand ? h('span', { class: 'faint', text: 'No tests' })
+          : data.testsOff ? h('span', { class: 'tag bad', text: 'Tests off on server', title: 'Nothing is pushed from here until repo tests are on. ' + data.testsOff })
+          : h('code', { class: 'tag', text: repo.testCommand });
+        var addWorker = h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: repo.workers.length ? '+' : '+ Add', 'aria-label': 'Add a worker to ' + repo.name, onclick: function () {
+          toggle('worker', function () { return placeWorker(repo.name, workers, false); });
+        } });
+        var ws = spacesOf(repo.name);
+        var tick = h('input', { type: 'checkbox', 'aria-label': 'Tick ' + repo.name });
+        tick.checked = !!picked[repo.name];
+        tick.onchange = function () { picked[repo.name] = tick.checked; tr.classList.toggle('picked', tick.checked); drawSel(); };
+        var tr = h('tr', { class: picked[repo.name] ? 'picked' : null },
+          admin ? h('td', { class: 'tick' }, tick) : null,
+          h('td', null, h('div', { class: 'stack', style: 'gap:2px' }, h('b', { text: repo.name }),
+            h('span', { class: 'sub', text: repo.url.replace(/^https?:\/\//, '').replace(/\.git$/, '') + ' · branches off ' + repo.defaultBranch }))),
+          h('td', null, h('div', { class: 'row', style: 'gap:6px' }, push, tests)),
+          h('td', { class: 'wrap' }, h('div', { class: 'row', style: 'gap:6px' }, workerTags(repo.workers, workers), addWorker)),
+          h('td', { class: 'wrap' }, ws.length ? h('div', { class: 'row', style: 'gap:6px' }, ws.map(function (w) { return h('span', { class: 'tag go', text: w.name }); })) : h('span', { class: 'faint', text: '—' })),
+          admin ? h('td', { class: 'r' }, h('button', { class: 'linkish', text: 'Disconnect', onclick: function (e) {
+            var restore = busy(e.target, 'Disconnecting…');
+            api('POST', '/api/repos/' + encodeURIComponent(repo.name) + '/remove', {}).then(function (x) {
+              restore(); if (x.ok === false) { toggle('error', function () { return msg(x); }); return; }
+              render();
             });
-          } })), said);
-      });
-      return [top, connect].concat(cards.length ? cards : [emptyState('No repos connected yet.', admin ? 'Connect one above.' : 'Ask an admin to connect one.')], workspacesSection(data, workers, admin));
+          } })) : null);
+        return [tr, detail];
+      };
+      var tickAll = admin ? h('input', { type: 'checkbox', 'aria-label': 'Tick every repo shown' }) : null;
+      var shown = function () {
+        var words = q ? q.value.trim().toLowerCase() : '';
+        return repos.filter(function (x) { return !words || x.name.toLowerCase().indexOf(words) >= 0 || x.url.toLowerCase().indexOf(words) >= 0; });
+      };
+      var draw = function () {
+        var list = shown();
+        fill(body, list.length ? list.map(row) : h('tr', null, h('td', { colspan: admin ? '6' : '4', class: 'faint', text: 'No repo matches.' })));
+        if (tickAll) tickAll.checked = list.length > 0 && list.every(function (x) { return picked[x.name]; });
+        drawSel();
+      };
+      if (tickAll) tickAll.onchange = function () { shown().forEach(function (x) { picked[x.name] = tickAll.checked; }); draw(); };
+      if (q) q.oninput = draw;
+      var table = repos.length ? h('div', { class: 'panel', style: 'overflow-x:auto' },
+        h('table', { class: 'data repo-table' },
+          h('thead', null, h('tr', null, admin ? h('th', { class: 'tick' }, tickAll) : null, h('th', { text: 'Repo' }), h('th', { text: 'Status' }), h('th', { text: 'Workers' }), h('th', { text: 'Workspaces' }), admin ? h('th') : null)),
+          body))
+        : emptyState('No repos connected yet.', admin ? 'Connect one and point a worker at it.' : 'Ask an admin to connect one.');
+      draw();
+
+      // The repos' two settings, in one strip: what a worker's branches
+      // start with, and catching up with origin. Admins only.
+      var settingsStrip = admin && repos.length ? (function () {
+        var input = h('input', { type: 'text', value: data.branchPrefix || '', 'aria-label': 'Branch prefix', style: 'width:130px;height:30px' });
+        var said = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+        var when_ = h('span', { class: 'faint', style: 'font-size:13px', text: 'Follows origin hourly' + (data.lastRefreshedAt ? ' · last ' + ago(data.lastRefreshedAt) : '') });
+        var save = h('button', { class: 'btn small', text: 'Save', onclick: function (e) {
+          var restore = busy(e.target, 'Saving…');
+          api('POST', '/api/repos/branch-prefix', { prefix: input.value }).then(function (x) { restore(); said.textContent = ''; said.appendChild(msg(x, 'Saved. New runs use it.')); });
+        } });
+        var refresh = h('button', { class: 'btn small quiet', text: 'Refresh now', onclick: function (e) {
+          var restore = busy(e.target, 'Refreshing…');
+          api('POST', '/api/repos/refresh', {}).then(function (x) {
+            restore(); said.textContent = '';
+            if (x.ok === false) { said.appendChild(msg(x)); return; }
+            when_.textContent = 'Follows origin hourly · last just now';
+            said.appendChild(msg({ ok: !(x.problems && x.problems.length) }, x.problems && x.problems.length ? x.problems.join(' ') : 'All ' + x.repos + ' up to date.'));
+          });
+        } });
+        return h('div', { class: 'panel', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:10px 28px;padding:10px 16px' },
+          data.branchPrefix ? h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, h('span', { class: 'faint', style: 'font-size:13px', text: 'Worker branches start with' }), input, save) : null,
+          data.branchPrefix ? h('span', { 'aria-hidden': 'true', style: 'width:1px;height:22px;background:var(--line)' }) : null,
+          h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, when_, refresh),
+          said);
+      })() : null;
+      return [top, listHead, settingsStrip, connect, data.testsOff && repos.some(function (x) { return x.testCommand; }) ? h('div', { class: 'msg err', text: 'Repos with a test command push nothing yet: repo tests are turned off on this server. ' + data.testsOff }) : null,
+        selBar, table].concat(workspacesSection(repos, spaces, workers, admin, form, openConnect));
     });
+  }
+
+  /// The form that connects a repo, shut until asked for unless there are
+  /// no repos yet.
+  function connectRepoPanel(data, open) {
+    var url = h('input', { type: 'text', placeholder: 'https://github.com/acme/app', 'aria-label': 'Repo address' });
+    var test = h('input', { type: 'text', placeholder: 'npm test', 'aria-label': 'Test command' });
+    var out = h('div');
+    var panel = h('section', { class: 'panel pad stack', hidden: !open },
+      h('div', { class: 'spread' }, h('h2', { class: 'section-title', text: 'Connect a repo' }),
+        open ? null : h('button', { class: 'linkish', text: 'Cancel', onclick: function () { panel.hidden = true; } })),
+      h('p', { class: 'faint', text: 'GitHub, Bitbucket or any git host. Over https the server needs the host’s token, set on the Secrets tab (GH_TOKEN, BITBUCKET_TOKEN or GIT_TOKEN); a git@ address uses the server’s ssh key. A worker on probation waits for its manager’s yes before each push. Protect the default branch on your git host too.' }),
+      h('label', { class: 'field' }, 'Address', url),
+      h('label', { class: 'field' }, 'Test command (optional, run before every push)', test),
+      data.testsOff ? h('p', { class: 'faint', text: 'Repo tests are turned off on this server, so a repo with a test command pushes nothing until they’re on. ' + data.testsOff }) : null,
+      h('div', null, h('button', { class: 'btn go', text: 'Connect', onclick: function (e) {
+        var restore = busy(e.target, 'Cloning…');
+        api('POST', '/api/repos', { url: url.value, testCommand: test.value }).then(function (x) {
+          restore(); out.textContent = ''; out.appendChild(msg(x, (x.repo ? x.repo.name : 'The repo') + ' is connected. Point a worker at it below.'));
+          if (x.warning) out.appendChild(h('div', { class: 'msg err', role: 'alert', text: x.warning }));
+          if (x.ok !== false) setTimeout(render, 1200);
+        });
+      } })), out);
+    return panel;
+  }
+
+  /// Workers' names as tags that open the worker.
+  function workerTags(names, workers) {
+    return names.map(function (n) {
+      var w = workers.filter(function (x) { return x.name === n; })[0];
+      return w ? h('button', { class: 'tag', style: 'cursor:pointer', text: n, onclick: function () { openWorker(w.id); } }) : h('span', { class: 'tag', text: n });
+    });
+  }
+
+  /// Point a worker at a repo or workspace. A worker works in one place, so
+  /// each choice says where it works now.
+  function placeWorker(place, workers, isSpace) {
+    var at = function (w) { return w.place && w.place.kind !== 'folder' ? w.place.name : ''; };
+    var pick = h('select', { 'aria-label': 'Worker for ' + place }, h('option', { value: '', text: 'Pick a worker…' }),
+      workers.map(function (w) {
+        var where = at(w);
+        return h('option', { value: w.id, disabled: where === place, text: w.name + (where === place ? ' · works here' : where ? ' · moves from ' + where : ' · not in a repo yet') });
+      }));
+    var said = h('div');
+    return h('div', { class: 'stack', style: 'gap:8px;max-width:640px' },
+      h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, pick, h('button', { class: 'btn go small', text: 'Add', onclick: function (e) {
+        if (!pick.value) { pick.focus(); return; }
+        var restore = busy(e.target, 'Saving…');
+        api('POST', '/api/repos/' + encodeURIComponent(place) + '/workers', { worker: pick.value }).then(function (x) {
+          restore(); said.textContent = '';
+          said.appendChild(msg(x, (x.worker || 'It') + ' works in ' + place + ' now. ' + (isSpace ? 'A change comes back as a branch in each repo it touched, with a link for each.' : 'Ask it for a change and it comes back as a branch, with the link to open a pull request.')));
+          if (x.ok !== false) setTimeout(render, 1500);
+        });
+      } })),
+      h('p', { class: 'faint', text: 'A worker works in one repo or workspace at a time; adding it here moves it.' }),
+      said);
+  }
+
+  /// Make a workspace: shut until opened, from New workspace or from repos
+  /// ticked in the list.
+  function workspaceForm(repos) {
+    var name = h('input', { type: 'text', placeholder: 'Storefront', 'aria-label': 'Workspace name' });
+    var notes = h('textarea', { placeholder: 'What every run should know: which repo owns what, what must stay in step (the API is the source of truth for prices…)', 'aria-label': 'Workspace instructions', style: 'min-height:70px' });
+    var picks = repos.map(function (r) { return { name: r.name, box: h('input', { type: 'checkbox', 'aria-label': 'Include ' + r.name }) }; });
+    var said = h('div');
+    var el = h('section', { class: 'panel pad stack', hidden: true },
+      h('div', { class: 'spread' }, h('h2', { class: 'section-title', text: 'New workspace' }), h('button', { class: 'linkish', text: 'Cancel', onclick: function () { el.hidden = true; } })),
+      h('label', { class: 'field' }, 'Name', name),
+      h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Repos (two or more)' }),
+        h('div', { class: 'row', style: 'gap:14px' }, picks.map(function (p) { return h('label', { class: 'toggle' }, p.box, h('code', { text: p.name })); }))),
+      h('label', { class: 'field' }, 'Instructions (optional)', notes),
+      h('div', null, h('button', { class: 'btn go', text: 'Make the workspace', onclick: function (e) {
+        var chosen = picks.filter(function (p) { return p.box.checked; }).map(function (p) { return p.name; });
+        var restore = busy(e.target, 'Making…');
+        api('POST', '/api/workspaces', { name: name.value, repos: chosen, instructions: notes.value }).then(function (x) {
+          restore(); said.textContent = ''; said.appendChild(msg(x, (x.workspace ? x.workspace.name : 'The workspace') + ' is ready. Point a worker at it below.'));
+          if (x.ok !== false) setTimeout(render, 1200);
+        });
+      } })), said);
+    return { el: el, open: function (names) {
+      picks.forEach(function (p) { p.box.checked = names.indexOf(p.name) >= 0; });
+      el.hidden = false; el.scrollIntoView({ block: 'nearest' }); name.focus();
+    } };
   }
 
   /// Repos grouped so one worker or team changes them together. Each run
   /// gets its own worktree of every repo, side by side, and pushes a branch in
   /// each repo it changed.
-  function workspacesSection(data, workers, admin) {
-    var repos = data.repos || [], spaces = data.workspaces || [];
-    if (repos.length < 2 && !spaces.length) return null;
-    var intro = h('div', { class: 'stack', style: 'gap:4px;margin-top:12px' },
-      h('h2', { class: 'section-title', text: 'Workspaces' }),
-      h('p', { class: 'faint', text: 'Group repos that change together, like an API and the app that uses it. A worker or team in a workspace plans across all of them; each run gets its own worktree of every repo, runs each repo’s tests, and pushes a branch in each repo it changed, with one pull request link per repo.' }));
-    var make = null;
-    if (admin && repos.length >= 2) {
-      var name = h('input', { type: 'text', placeholder: 'Storefront', 'aria-label': 'Workspace name' });
-      var notes = h('textarea', { placeholder: 'What every run should know: which repo owns what, what must stay in step (the API is the source of truth for prices…)', 'aria-label': 'Workspace instructions', style: 'min-height:70px' });
-      var picks = repos.map(function (r) { return { name: r.name, box: h('input', { type: 'checkbox', 'aria-label': 'Include ' + r.name }) }; });
-      var said = h('div');
-      make = h('section', { class: 'panel pad stack' },
-        h('h3', { text: 'Make a workspace' }),
-        h('label', { class: 'field' }, 'Name', name),
-        h('div', { class: 'row', style: 'gap:14px' }, picks.map(function (p) { return h('label', { class: 'toggle' }, p.box, h('code', { text: p.name })); })),
-        h('label', { class: 'field' }, 'Instructions (optional)', notes),
-        h('div', null, h('button', { class: 'btn go', text: 'Make the workspace', onclick: function (e) {
-          var chosen = picks.filter(function (p) { return p.box.checked; }).map(function (p) { return p.name; });
-          var restore = busy(e.target, 'Making…');
-          api('POST', '/api/workspaces', { name: name.value, repos: chosen, instructions: notes.value }).then(function (x) {
-            restore(); said.textContent = ''; said.appendChild(msg(x, (x.workspace ? x.workspace.name : 'The workspace') + ' is ready. Point a worker at it below.'));
-            if (x.ok !== false) setTimeout(render, 1200);
-          });
-        } })), said);
+  function workspacesSection(repos, spaces, workers, admin, form, openConnect) {
+    var intro = h('div', { class: 'spread', style: 'align-items:flex-end;margin-top:16px' },
+      h('div', { class: 'stack', style: 'gap:4px' },
+        h('h2', { class: 'section-title' }, 'Workspaces', h('span', { class: 'faint', style: 'font-weight:500', text: '· ' + spaces.length })),
+        h('p', { class: 'faint', style: 'max-width:720px', text: 'Group repos that change together, like an API and the app that uses it. A worker or team in a workspace plans across all of them; each run gets its own worktree of every repo, runs each repo’s tests, and pushes a branch in each repo it changed, with one pull request link per repo.' })),
+      admin && repos.length >= 2 ? h('button', { class: 'btn', onclick: function () { form.open([]); } }, icon('plus', 16), 'New workspace') : null);
+    if (repos.length < 2 && !spaces.length) {
+      return [intro, h('div', { class: 'panel pad dashed stack', style: 'gap:8px' },
+        h('b', { text: 'A workspace needs at least two repos' }),
+        h('p', { class: 'faint', text: repos.length ? 'You have one connected. Connect another and you can group them here.' : 'Connect two repos and you can group them here.' }),
+        admin && openConnect ? h('div', null, h('button', { class: 'btn', text: repos.length ? 'Connect another repo' : 'Connect a repo', onclick: openConnect })) : null)];
     }
     var cards = spaces.map(function (ws) {
       var said = h('div');
-      var pick = h('select', { 'aria-label': 'Worker for ' + ws.name }, [h('option', { value: '', text: 'Pick a worker…' })].concat(workers.map(function (w) { return h('option', { value: w.id, text: w.name }); })));
+      var adding = h('div', { hidden: true });
       var notes = h('textarea', { 'aria-label': 'Instructions for ' + ws.name, style: 'min-height:70px' });
       notes.value = ws.instructions || '';
       var boxes = repos.map(function (r) { var b = h('input', { type: 'checkbox', 'aria-label': 'Include ' + r.name }); b.checked = ws.repos.indexOf(r.name) >= 0; return { name: r.name, box: b }; });
@@ -10506,26 +11812,27 @@ export const CONSOLE_JS = String.raw`
             if (x.ok !== false) setTimeout(render, 1200);
           });
         } })));
-      return h('article', { class: 'panel pad stack' },
-        h('div', { class: 'spread' }, h('h3', { text: ws.name }), admin ? h('div', { class: 'row', style: 'gap:12px' },
-          h('button', { class: 'linkish', text: 'Change', onclick: function () { editor.hidden = !editor.hidden; } }),
-          h('button', { class: 'linkish', text: 'Remove', onclick: function () {
-            api('POST', '/api/workspaces/' + encodeURIComponent(ws.id) + '/remove', {}).then(function (x) { said.textContent = ''; said.appendChild(msg(x, 'Removed.')); if (x.ok !== false) setTimeout(render, 800); });
-          } })) : null),
-        h('div', { class: 'row', style: 'gap:6px' }, ws.repos.map(function (r) { return h('span', { class: 'tag', text: r }); })),
+      return h('article', { class: 'panel pad stack', style: 'gap:12px' },
+        h('div', { class: 'spread' },
+          h('div', { class: 'stack', style: 'gap:2px' }, h('h3', { text: ws.name }), h('span', { class: 'faint', text: plural(ws.repos.length, 'repo', 'repos') + (ws.instructions ? ' · has instructions' : '') })),
+          admin ? h('div', { class: 'row', style: 'gap:12px' },
+            h('button', { class: 'linkish', text: 'Edit', onclick: function () { editor.hidden = !editor.hidden; } }),
+            h('button', { class: 'linkish', text: 'Remove', onclick: function () {
+              api('POST', '/api/workspaces/' + encodeURIComponent(ws.id) + '/remove', {}).then(function (x) { said.textContent = ''; said.appendChild(msg(x, 'Removed.')); if (x.ok !== false) setTimeout(render, 800); });
+            } })) : null),
+        h('div', { class: 'row', style: 'gap:6px' }, ws.repos.map(function (r) { return h('code', { class: 'tag', text: r }); })),
         ws.instructions ? h('details', null, h('summary', { text: 'Instructions every run reads' }), h('div', { style: 'white-space:pre-wrap;margin-top:6px;font-size:13.5px', text: ws.instructions })) : null,
         editor,
-        h('p', { class: 'faint', text: ws.workers.length ? 'Works here: ' + ws.workers.join(', ') : 'No worker works here yet.' }),
-        h('div', { class: 'row', style: 'gap:8px' }, pick, h('button', { class: 'btn', text: 'Let it change this workspace', onclick: function (e) {
-          if (!pick.value) return;
-          var restore = busy(e.target, 'Saving…');
-          api('POST', '/api/repos/' + encodeURIComponent(ws.name) + '/workers', { worker: pick.value }).then(function (x) {
-            restore(); said.textContent = ''; said.appendChild(msg(x, (x.worker || 'It') + ' works in ' + ws.name + ' now. A change comes back as a branch in each repo it touched, with a link for each.'));
-            if (x.ok !== false) setTimeout(render, 1500);
-          });
-        } })), said);
+        h('div', { class: 'spread ws-foot' },
+          ws.workers.length ? h('div', { class: 'row', style: 'gap:6px' }, workerTags(ws.workers, workers)) : h('span', { class: 'faint', text: 'No worker yet' }),
+          h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: '+ Add worker', onclick: function () {
+            if (adding.hidden) fill(adding, placeWorker(ws.name, workers, true));
+            adding.hidden = !adding.hidden;
+          } })),
+        adding, said);
     });
-    return [intro, make].concat(cards);
+    if (!cards.length) cards = [h('div', { class: 'panel pad dashed faint', text: 'No workspaces yet. Tick two or more repos above and group them, or start a new one.' })];
+    return [intro, form ? form.el : null, h('div', { class: 'ws-grid' }, cards)];
   }
 
   /// One secret's value, pasted and saved; never read back. A text field
@@ -10547,6 +11854,53 @@ export const CONSOLE_JS = String.raw`
 
   /// What the server keeps secret: where, which are set, what needs a missing
   /// one. One row each; values go in and never come back out.
+  /// A tool's settings by name, values never shown; an admin can set new
+  /// values for some and keep the rest, and who has the tool stays as it is.
+  function toolKeys(t, canEdit, reopen) {
+    var command = t.kind !== 'http';
+    var out = h('div', { 'aria-live': 'polite' });
+    var rows = t.secrets.map(function (k) {
+      var secret = /TOKEN|SECRET|PASSWORD|KEY/i.test(k);
+      var hint = (t.settings && t.settings[k]) || '';
+      var row = h('div', { class: 'tp-key' });
+      var drawRow = function (editing) {
+        if (!editing) {
+          fill(row, [h('span', { class: 'stack', style: 'gap:2px;min-width:0' }, h('code', { class: 'tp-kn', text: k }), hint ? h('span', { class: 'faint', style: 'font-size:12px', text: hint }) : null),
+            h('span', { class: 'tp-set', text: 'Set' }),
+            canEdit && command ? h('button', { class: 'btn small', text: 'Replace', onclick: function () { drawRow(true); } }) : h('span')]);
+          row.classList.remove('editing');
+          return;
+        }
+        row.classList.add('editing');
+        var input = h('input', { type: secret ? 'password' : 'text', class: 'tp-ctl', placeholder: 'Paste the new value', autocomplete: 'off', 'aria-label': 'New value for ' + k });
+        var save = h('button', { class: 'btn small go', text: 'Save and check' });
+        save.onclick = function () {
+          if (!input.value.trim()) { input.focus(); return; }
+          var values = {}; values[k] = input.value;
+          var restore = busy(save, 'Saving…');
+          api('POST', '/api/admin/tools/' + encodeURIComponent(t.name) + '/settings', { values: values }).then(function (x) {
+            restore();
+            if (x.ok === false) { fill(out, [msg(x)]); return; }
+            var line = 'Saved ' + k + (x.fixed && x.fixed.length ? ' (added https://)' : '') + '.';
+            if (x.login && x.login.state === 'rejected') { fill(out, [msg({ ok: false, error: line + ' But the sign-in is still refused: ' + x.login.reason })]); drawRow(false); return; }
+            fill(out, [msg(x, line + (x.login && x.login.state === 'ok' ? ' It signs in' + (x.login.as ? ' as ' + x.login.as : '') + '.' : '') + ' Workers use it from their next run.')]);
+            if (reopen) reopen(); else drawRow(false);
+          });
+        };
+        fill(row, [h('span', { class: 'stack', style: 'gap:2px;min-width:0' }, h('code', { class: 'tp-kn', text: k }), hint ? h('span', { class: 'faint', style: 'font-size:12px', text: hint }) : null),
+          h('span', { class: 'tp-set', text: 'Set' }), h('span'),
+          h('div', { class: 'stack', style: 'gap:8px;grid-column:1 / -1' }, input,
+            h('div', { class: 'row', style: 'gap:8px' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: function () { drawRow(false); } })))]);
+        input.focus();
+      };
+      drawRow(false);
+      return row;
+    });
+    return h('section', { class: 'tp-sec' },
+      h('div', { class: 'tp-head' }, h('h3', { class: 't-kind', text: 'Keys' }), h('span', { class: 'faint', style: 'font-size:12px', text: 'Kept in the server’s secrets, never shown' })),
+      h('div', { class: 'tp-card' }, rows), out);
+  }
+
   function viewSecrets() {
     return api('GET', '/api/secrets').then(function (data) {
       var top = head('Secrets');
@@ -10620,7 +11974,7 @@ export const CONSOLE_JS = String.raw`
         { ok: people.length > 1 && !asking, title: 'People', detail: plural(people.length, 'person', 'people') + ' in' + (asking ? ', ' + asking + ' asking to join' : ''), optional: false,
           action: asking ? ['Let them in', function () { go('people'); }] : people.length < 2 ? ['Invite people', function () { go('people'); }] : null },
         { ok: !!(sso && sso.ok), title: 'Company sign-in', detail: sso ? sso.detail : 'Optional. People sign in through Slack links until you set it up.', optional: true,
-          action: sso && sso.ok ? null : ['Set it up', function () { state.setupTab = 'rules'; render(); }] }
+          action: sso && sso.ok ? null : ['Set it up', function () { state.setupTab = 'signin'; render(); }] }
       ];
       var core = checks.filter(function (c) { return !c.optional; });
       var done = core.filter(function (c) { return c.ok; }).length;
@@ -10642,8 +11996,62 @@ export const CONSOLE_JS = String.raw`
             h('span', { class: c.ok ? 'ck-ok' : c.bad ? 'ck-bad' : 'ck-off', style: 'flex:none;display:inline-flex' }, icon(c.ok ? 'check' : 'alert', 20)),
             h('span', null, h('span', { style: 'font-weight:550', text: c.title + (c.optional ? ' (optional)' : '') }), h('span', { class: 'faint', style: c.bad ? 'color:var(--bad)' : '', text: c.detail })),
             c.action ? h('button', { class: 'btn small' + (c.bad ? ' bad' : ''), text: c.action[0], onclick: c.action[1] }) : null);
-        })))];
+        }))), storagePanel()];
     });
+  }
+
+  /// What's using the server's disk: checkouts, connected repos and the
+  /// tools' package cache, against what's free; and anything kept for work
+  /// that was never pushed, to open or let go.
+  function storagePanel() {
+    var body = h('div', { class: 'stack', style: 'gap:12px' }, h('p', { class: 'faint', text: 'Measuring…' }));
+    var sec = h('section', { class: 'panel pad stack', 'aria-labelledby': 'storage' },
+      h('div', { class: 'spread' }, h('h2', { id: 'storage', class: 'section-title', style: 'font-size:18px', text: 'Storage' })), body);
+    var size = function (b) { return b == null ? '–' : b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b >= 1e6 ? Math.round(b / 1e6) + ' MB' : Math.round(b / 1e3) + ' KB'; };
+    var draw = function () {
+      api('GET', '/api/admin/storage').then(function (r) {
+        body.textContent = '';
+        if (r.ok === false) { body.appendChild(msg(r)); return; }
+        var s = r.report, v = s.volume;
+        var used = v ? v.totalBytes - v.freeBytes : null;
+        var pct = v && v.totalBytes ? Math.min(100, (used / v.totalBytes) * 100) : 0;
+        var line = function (label, value, note, action) {
+          return h('div', { class: 'row', style: 'gap:12px;flex-wrap:nowrap;padding:8px 0;border-bottom:1px solid var(--line)' },
+            h('span', { style: 'flex:1;min-width:0' }, h('span', { style: 'font-weight:550', text: label }), note ? h('span', { class: 'faint', style: 'display:block;font-size:12.5px', text: note }) : null),
+            h('span', { class: 'mono', style: 'font-size:13px;flex:none', text: value }), action || null);
+        };
+        var clear = h('button', { class: 'btn small quiet', text: 'Clear', onclick: function (e) {
+          if (!window.confirm('Empty the tools’ package cache? They download again in the background, and a tool may take a minute to start meanwhile.')) return;
+          var restore = busy(e.target, 'Clearing…');
+          api('POST', '/api/admin/storage/clear-cache', {}).then(function () { restore(); draw(); });
+        } });
+        append(body, [
+          v ? h('div', { class: 'stack', style: 'gap:6px' },
+            h('div', { class: 'spread' }, h('span', { text: size(used) + ' used of ' + size(v.totalBytes) }), h('span', { class: 'faint', text: size(v.freeBytes) + ' free' })),
+            h('div', { class: 'meter' + (pct >= 85 ? ' high' : ''), style: 'height:8px' }, h('span', { style: 'width:' + pct.toFixed(0) + '%' }))) : null,
+          h('div', null,
+            line('Run checkouts', size(s.checkouts.bytes), plural(s.checkouts.count, 'checkout', 'checkouts') + '. Removed by themselves once nothing in them can be lost.'),
+            line('Connected repos', size(s.repos), 'The server’s own copy of each repo, kept up to date hourly.'),
+            line('Tools’ package cache', size(s.toolCache), 'What npx-run tools downloaded. Clear it if a tool won’t start with “Cannot find module”.', clear)),
+          s.kept.length ? h('div', { class: 'stack', style: 'gap:6px' },
+            h('span', { style: 'font-weight:550', text: 'Kept for work that was never pushed' }),
+            s.kept.map(function (k) {
+              var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+              return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' },
+                h('span', { style: 'flex:1;min-width:200px;font-size:13.5px', text: (k.worker ? k.worker + ': ' : '') + k.title }),
+                h('span', { class: 'faint', style: 'font-size:12.5px', text: 'since ' + when(k.since) }),
+                k.workerId ? h('button', { class: 'btn small quiet', text: 'Open the run', onclick: function () { state.wlFindRun = { worker: k.workerId, runId: k.runId }; go('worker', { workerId: k.workerId, workerTab: 'talk' }); } }) : null,
+                h('button', { class: 'btn small bad', text: 'Delete it', onclick: function (e) {
+                  if (!window.confirm('Delete the checkouts of “' + k.title + '”? Its changes were never pushed, so they’re lost for good.')) return;
+                  var restore = busy(e.target, 'Deleting…');
+                  api('POST', '/api/admin/storage/discard', { runId: k.runId }).then(function (x) { restore(); if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else draw(); });
+                } }), out);
+            })) : null,
+          h('p', { class: 'faint', style: 'font-size:12px;margin:0', text: 'Measured ' + ago(s.measuredAt) + '.' })]);
+      });
+    };
+    draw();
+    return sec;
   }
 
   // ---- tools (MCP servers on this server) --------------------------------
@@ -10682,6 +12090,262 @@ export const CONSOLE_JS = String.raw`
 
   /// The install form. prefill is a name, or what a published worker
   /// brought: its command or URL and the names of its settings, no values.
+  /// How to bring a server of your own: by what it is and where it lives.
+  /// An example command fills the Command box.
+  function byoGuide(use) {
+    var way = function (title, text, example, extra) {
+      return h('div', { class: 'stack', style: 'gap:4px;padding:10px 0;border-top:1px solid var(--line)' },
+        h('b', { style: 'font-size:13.5px', text: title }),
+        h('span', { class: 'faint', style: 'font-size:12.5px', text: text }),
+        example ? h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;min-width:0' },
+          h('code', { style: 'font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0', text: example }),
+          h('button', { type: 'button', class: 'linkish', style: 'font-size:12.5px;color:var(--go);flex:none', text: 'Use this', onclick: function () { use(example); } })) : null,
+        extra ? h('pre', { style: 'margin:0;font-size:11.5px;background:var(--panel-2);padding:8px 10px;border-radius:var(--r-sm);overflow:auto', text: extra }) : null);
+    };
+    return h('details', { class: 'stack', style: 'gap:0' },
+      h('summary', { style: 'cursor:pointer;font-size:13px;font-weight:600', text: 'Bringing your own server' }),
+      h('div', { class: 'stack', style: 'gap:0;margin-top:8px' },
+        way('Published on npm or PyPI', 'Runs from its package; it downloads on first use, so the server needs the internet.', 'npx -y your-mcp-server'),
+        way('In a git repo', 'Runs straight from the repo. An npm one needs a bin, and its built files or a prepare script; a private repo needs a key the server can use.', 'npx -y github:your-org/your-mcp-server'),
+        way('A folder on the machine running overgo', 'Mount it into the container in docker-compose.yml, run npm ci in it first, then run it by its path. Only for a server on that same machine.', 'node /mcp/your-server/src/index.js',
+          'volumes:\n  - ./your-mcp-server:/mcp/your-server:ro'),
+        way('Built into your own image', 'Versioned with the image, and nothing depends on one machine.', 'node /opt/mcp/your-server/src/index.js',
+          'FROM ghcr.io/overcodelions/overcli-server:branch\nCOPY your-mcp-server /opt/mcp/your-server\nRUN cd /opt/mcp/your-server && npm ci --omit=dev'),
+        way('Running somewhere else', 'A server that speaks HTTP: choose a URL above instead, with its address and an Authorization header.', null),
+        h('p', { class: 'faint', style: 'margin:8px 0 0;font-size:12px', text: 'Put keys in the box above, never in the command or the image: the server keeps them in its secrets. It runs as the server with those keys, so read a community server’s code first.' })));
+  }
+
+  /// Take a tool off a worker: one its job named that isn't on this server,
+  /// say, when it has another that does the same job.
+  // Who can use a worker, a team or an idea: only its own people, everyone,
+  // or picked people, groups and roles. One control for all three, read
+  // back as { kind, audience }. The org's people and groups load once.
+  function audiencePicker(opts) {
+    var kind = opts.kind || 'manager';
+    var a = opts.audience || {};
+    var people = (a.people || []).slice(), groups = (a.groups || []).slice(), roles = (a.roles || []).slice();
+    var names = {};
+    var ROLES = [['admin', 'Admins'], ['approver', 'Hire approvers'], ['hirer', 'People who can hire']];
+    var changed = function () { if (opts.onChange) opts.onChange(); };
+    var seg = h('div', { class: 'seg', role: 'group', 'aria-label': opts.label || 'Who can use it' });
+    var choices = [['manager', opts.ownLabel || 'Only its manager'], ['everyone', opts.everyoneLabel || 'Everyone in the org'], ['picked', 'Picked people, groups or roles']];
+    var buttons = choices.map(function (c) {
+      return h('button', { type: 'button', text: c[1], 'aria-pressed': kind === c[0] ? 'true' : 'false', disabled: !!opts.readOnly, onclick: function () { kind = c[0]; draw(); changed(); } });
+    });
+    append(seg, buttons);
+    var summary = h('span', { class: 'faint', style: 'font-size:12.5px' });
+    var panel = h('div', { class: 'stack', style: 'gap:10px;margin-top:4px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--panel-2)' });
+    var groupName = function (id) { return id.indexOf('team:') === 0 ? id.slice(5) : id; };
+    var describe = function () {
+      if (kind === 'manager') return opts.ownHint || 'Only its manager, and admins.';
+      if (kind === 'everyone') return 'Anyone in the org.';
+      var bits = people.map(function (id) { return names[id] || id; }).concat(groups.map(groupName), roles.map(function (r) { return ROLES.filter(function (x) { return x[0] === r; })[0][1]; }));
+      return bits.length ? (opts.ownNote || 'Its manager, and ') + bits.join(', ') + '.' : 'Nobody picked yet, so only ' + (opts.ownShort || 'its manager') + '.';
+    };
+    var draw = function () {
+      buttons.forEach(function (b, i) { b.setAttribute('aria-pressed', choices[i][0] === kind ? 'true' : 'false'); });
+      summary.textContent = describe();
+      panel.hidden = kind !== 'picked';
+      if (kind !== 'picked') return;
+      // People and groups in one field, as the idea editor has it.
+      var field = h('div', { class: 'acc-field' },
+        groups.map(function (g, n) { return groupChip({ id: g, name: groupName(g) }, opts.readOnly ? null : function () { groups.splice(n, 1); draw(); changed(); }); }),
+        people.map(function (id, n) { return personChip({ slackUserId: id, name: names[id] || id }, opts.readOnly ? null : function () { people.splice(n, 1); draw(); changed(); }); }),
+        opts.readOnly ? null : personPicker('Add a person or a group', function (x) {
+          if (x.slackUserId && people.indexOf(x.slackUserId) < 0) { people.push(x.slackUserId); names[x.slackUserId] = x.name; }
+          draw(); changed(); var q = panel.querySelector('.acc-field input'); if (q) q.focus();
+        }, { quiet: true, onGroup: function (g) {
+          // The directory's Admins and Hire approvers are roles here.
+          if (g.id === 'admins' || g.id === 'approvers') { var r = g.id === 'admins' ? 'admin' : 'approver'; if (roles.indexOf(r) < 0) roles.push(r); }
+          else if (groups.indexOf(g.id) < 0) groups.push(g.id);
+          draw(); changed(); var q = panel.querySelector('.acc-field input'); if (q) q.focus();
+        } }));
+      var pills = h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, ROLES.map(function (r) {
+        var on = roles.indexOf(r[0]) >= 0;
+        return h('button', { type: 'button', class: 'pp-chip' + (on ? ' on' : ''), 'aria-pressed': on ? 'true' : 'false', disabled: !!opts.readOnly,
+          style: 'cursor:pointer;' + (on ? 'background:var(--go-soft);color:var(--go);border-color:var(--go)' : ''),
+          onclick: function () { var i = roles.indexOf(r[0]); if (i < 0) roles.push(r[0]); else roles.splice(i, 1); draw(); changed(); } },
+          on ? icon('check', 12) : icon('plus', 12), r[1]);
+      }));
+      fill(panel, [
+        h('span', { class: 'acc-label', text: 'Besides ' + (opts.ownShort || 'its manager') }),
+        field,
+        h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:center' }, h('span', { class: 'acc-label', text: 'And anyone who is' }), pills)]);
+    };
+    // Names for the people already picked.
+    (state.dirCache ? Promise.resolve(state.dirCache) : api('GET', '/api/directory')).then(function (d) {
+      var dir = d && d.ok !== false ? d : { people: [], groups: [] };
+      state.dirCache = dir;
+      dir.people.forEach(function (p) { names[p.slackUserId] = p.name; });
+      // The old "people in my groups": the manager's groups, ticked.
+      if (opts.managerGroupsOf && kind === 'picked' && !groups.length && !people.length && !roles.length) {
+        dir.groups.forEach(function (g) { if (g.id.indexOf('team:') === 0 && g.members.some(function (m) { return m.slackUserId === opts.managerGroupsOf; })) groups.push(g.id); });
+      }
+      draw();
+    });
+    draw();
+    return {
+      node: h('div', { class: 'stack', style: 'gap:8px;max-width:720px' }, seg, summary, panel),
+      value: function () { return { kind: kind, audience: kind === 'picked' ? { people: people, groups: groups, roles: roles } : null }; }
+    };
+  }
+
+  // Its onboarding: what it found out going through its own tools, read
+  // before every run. Learn (again), correct it, or stop the weekly refresh.
+  function knowsCard(w, d) {
+    var k = d.knowledge || null;
+    var out = h('div', { 'aria-live': 'polite', style: 'font-size:13px' });
+    var learn = function (label) {
+      return w.youManage ? h('button', { class: 'btn small' + (k ? '' : ' go'), text: label, onclick: function (e) {
+        var restore = busy(e.target, 'Starting…');
+        api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/learn', {}).then(function (x) { restore(); if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else render(); });
+      } }) : null;
+    };
+    var body;
+    if (k && k.status === 'learning') {
+      body = [h('p', { class: 'row', style: 'margin:0;gap:8px;font-size:13.5px' }, h('span', { class: 'livedot' }), 'Going through its tools, read only. A few minutes.')];
+    } else if (!k || !k.body) {
+      body = [h('p', { class: 'faint', style: 'font-size:13.5px', text: (k && k.error ? 'Its last try didn’t finish: ' + k.error + ' ' : '') + 'It hasn’t been through its tools yet. Learning takes one read-only run: it finds the projects, statuses, people and places its job uses, and reads its notes before every run after.' }),
+        learn('Learn its tools')];
+    } else {
+      var text = h('div', { style: 'white-space:pre-wrap;font-size:13px;line-height:1.55;max-height:320px;overflow:auto', text: k.body });
+      var refresh = w.youManage ? h('select', { 'aria-label': 'Refresh', style: 'width:auto;font-size:12.5px' },
+        h('option', { value: 'weekly', text: 'Refresh weekly', selected: k.refresh !== 'off' }), h('option', { value: 'off', text: 'Don’t refresh', selected: k.refresh === 'off' })) : null;
+      if (refresh) refresh.onchange = function () { api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/knowledge', { refresh: refresh.value }); };
+      var edit = w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Correct it', onclick: function () {
+        var ta = h('textarea', { style: 'min-height:260px;font-size:13px' }); ta.value = k.body;
+        var save = h('button', { class: 'btn small go', text: 'Save' });
+        save.onclick = function () {
+          var restore = busy(save, 'Saving…');
+          api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/knowledge', { body: ta.value }).then(function (x) { restore(); if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else render(); });
+        };
+        text.replaceWith(h('div', { class: 'stack', style: 'gap:6px' }, ta, h('div', { class: 'row', style: 'gap:8px' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: function () { render(); } }))));
+        ta.focus();
+      } }) : null;
+      body = [h('p', { class: 'faint', style: 'font-size:12.5px;margin:0', text: 'From its tools ' + when(k.updatedAt) + (k.editedBy ? ', corrected by ' + k.editedBy : '') + '. It reads this before every run.' + (k.error ? ' Its last refresh didn’t finish: ' + k.error : '') }),
+        text, h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, learn('Learn again'), edit, refresh)];
+    }
+    return card('knows', 'What it knows', null, body.concat([out]));
+  }
+
+  // A worker's setup over time, newest first, with Restore.
+  function workerHistory(w) {
+    var box = h('div', { class: 'stack', style: 'gap:6px' }, h('p', { class: 'faint', text: 'Loading…' }));
+    api('GET', '/api/workers/' + encodeURIComponent(w.id) + '/history').then(function (r) {
+      box.textContent = '';
+      var vs = r && r.ok !== false ? r.versions || [] : [];
+      if (!vs.length) { box.appendChild(h('p', { class: 'faint', text: 'No changes yet. The first change keeps how it was, too.' })); return; }
+      vs.slice(0, 15).forEach(function (v, i) {
+        var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+        append(box, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:baseline' },
+          h('span', { style: 'font-size:13px;min-width:120px', text: when(v.at) }),
+          h('span', { style: 'font-size:13px;flex:1;min-width:180px', text: (v.changed || []).join(', ') + ' · ' + v.by }),
+          h('details', null, h('summary', { class: 'linkish', style: 'font-size:12.5px', text: 'The job then' }), h('div', { class: 'quote', style: 'font-size:13px;margin-top:6px;white-space:pre-wrap;max-height:260px;overflow:auto', text: v.job })),
+          i === 0 ? h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Now' }) : w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Restore', onclick: function (e) {
+            if (!window.confirm('Put ' + w.name + ' back to how it was ' + when(v.at) + '? Its job, tools, trust and settings go back; its history keeps today’s too.')) return;
+            var restore = busy(e.target, 'Restoring…');
+            api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/restore', { versionId: v.id }).then(function (x) { restore(); if (x.ok === false) { out.textContent = x.error; } else render(); });
+          } }) : null, out));
+      });
+    });
+    return box;
+  }
+
+  // Give a worker a tool: one the org clears for any hire (or any, for an
+  // admin) is given at once; anything else, or one not on this server yet,
+  // goes to the admins as a request. Its open requests show underneath.
+  function giveToolPanel(w) {
+    var box = h('div', { class: 'stack', style: 'gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)' });
+    var pending = h('div', { class: 'stack', style: 'gap:4px' });
+    var open = h('button', { class: 'linkish', style: 'font-size:13px;align-self:flex-start', text: '+ Give it a tool' });
+    api('GET', '/api/tool-requests').then(function (rs) {
+      (Array.isArray(rs) ? rs : []).filter(function (r) { return r.workerId === w.id && r.status === 'open'; }).forEach(function (r) {
+        pending.appendChild(h('p', { class: 'faint', style: 'font-size:12.5px;margin:0', text: r.tool + ': asked by ' + r.by.name + ', waiting on an admin.' }));
+      });
+    });
+    open.onclick = function () {
+      open.hidden = true;
+      var have = (w.tools || []).map(function (t) { return t.name; });
+      var pick = h('select', { 'aria-label': 'Tool' }, h('option', { value: '', text: 'Loading tools…' }));
+      var other = h('input', { type: 'text', placeholder: 'Its name, e.g. Productboard notes', 'aria-label': 'A tool not listed', hidden: true });
+      var why = h('input', { type: 'text', placeholder: 'What it’s for (helps an admin decide)', 'aria-label': 'What it’s for' });
+      var go_ = h('button', { class: 'btn small go', text: 'Give it' });
+      var out = h('div', { 'aria-live': 'polite', style: 'font-size:13px' });
+      api('GET', '/api/tools').then(function (r) {
+        pick.textContent = '';
+        var tools = r && r.ok !== false && r.tools ? r.tools.filter(function (t) { return have.indexOf(t.name) < 0; }) : [];
+        pick.appendChild(h('option', { value: '', text: tools.length ? 'Pick a tool…' : 'Nothing else installed' }));
+        tools.forEach(function (t) { pick.appendChild(h('option', { value: t.name, text: t.name })); });
+        pick.appendChild(h('option', { value: '__other', text: 'Something not listed…' }));
+      });
+      pick.onchange = function () { other.hidden = pick.value !== '__other'; if (!other.hidden) other.focus(); };
+      go_.onclick = function () {
+        var tool = pick.value === '__other' ? other.value.trim() : pick.value;
+        if (!tool) { pick.focus(); return; }
+        var restore = busy(go_, 'Working…');
+        api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/tools/request', { tool: tool, why: why.value }).then(function (x) {
+          restore(); out.textContent = '';
+          if (x.ok === false) { out.appendChild(msg(x)); return; }
+          if (x.given) { render(); return; }
+          out.appendChild(msg(x, 'Asked the admins for ' + x.tool + '. You’ll hear in Slack when one decides.'));
+          pending.appendChild(h('p', { class: 'faint', style: 'font-size:12.5px;margin:0', text: x.tool + ': asked by you, waiting on an admin.' }));
+          why.value = ''; other.value = ''; pick.value = '';
+        });
+      };
+      append(box, [pick, other, why, h('div', { class: 'row', style: 'gap:8px' }, go_, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: function () { box.textContent = ''; open.hidden = false; append(box, [pending, open]); } })), out]);
+      pick.focus();
+    };
+    append(box, [pending, open]);
+    return box;
+  }
+
+  // A tool failing now: the last error, who it holds up, and "fixed".
+  function toolTroubleBox(t, canEdit, reopen) {
+    var x = t.trouble;
+    if (!x) return null;
+    var out = h('div', { 'aria-live': 'polite' });
+    return h('section', { class: 'panel pad stack', style: 'gap:6px;border-color:var(--bad-line);background:var(--bad-soft)' },
+      h('b', { style: 'font-size:13.5px', text: x.kind === 'auth' ? 'Its calls are being refused: the key has likely expired or lost access.' : x.kind === 'gone' ? 'It says what it calls is retired or gone.' : 'Its last ' + x.count + ' calls failed.' }),
+      h('div', { class: 'quote', style: 'font-size:12.5px;overflow-wrap:anywhere', text: x.lastError }),
+      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Since ' + ago(x.since) + (x.workers.length ? '. Held up: ' + x.workers.join(', ') : '') + '. It clears itself the next time a call works.' }),
+      canEdit ? h('div', { class: 'row', style: 'gap:8px' }, h('button', { class: 'btn small', text: 'Mark fixed', onclick: function (e) {
+        var restore = busy(e.target, 'Saving…');
+        api('POST', '/api/tools/' + encodeURIComponent(t.name) + '/trouble/clear', {}).then(function (r) { restore(); if (r.ok === false) { out.textContent = ''; out.appendChild(msg(r)); } else reopen(); });
+      } }), out) : null);
+  }
+
+  // A tool whose keys are a person's: everyone who asks its workers acts as
+  // them. Use a service account's key; an admin says when it is one.
+  function actsAsBox(t, canEdit, reopen) {
+    var mark = function (on) {
+      return function (e) {
+        var restore = busy(e.target, 'Saving…');
+        api('GET', '/api/admin/rules').then(function (R) {
+          var list = (R.rules && R.rules.serviceAccounts || []).filter(function (n) { return n !== t.name; });
+          if (on) list.push(t.name);
+          return api('POST', '/api/admin/rules', { patch: { serviceAccounts: list } });
+        }).then(function () { restore(); reopen(); });
+      };
+    };
+    if (t.serviceAccount) return canEdit ? h('p', { class: 'faint', style: 'font-size:12.5px;margin:0' }, 'Its keys are a service account’s. ', h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Not any more', onclick: mark(false) })) : null;
+    if (!t.actsAs) return null;
+    return h('section', { class: 'panel pad stack', style: 'gap:6px;border-color:' + (t.actsAsGone ? 'var(--bad-line)' : 'var(--warn-line, var(--line))') },
+      h('b', { style: 'font-size:13.5px', text: t.actsAsGone ? 'It signs in as ' + t.actsAs + ', who isn’t in the org any more.' : 'It acts as ' + t.actsAs + '.' }),
+      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Anyone who can ask a worker with ' + t.name + ' reads what ' + t.actsAs + ' can, and what it changes shows as theirs. ' + (t.actsAsGone ? 'When their account is closed, every worker with it stops. ' : 'If they leave, every worker with it stops. ') + 'Use a service account’s key instead.' }),
+      canEdit ? h('div', { class: 'row', style: 'gap:8px' }, h('button', { class: 'btn small', text: 'These are a service account’s keys', onclick: mark(true) })) : null);
+  }
+
+  function takeToolOff(w, name, btn) {
+    if (!window.confirm('Take ' + name + ' off ' + w.name + '? It stops looking for it; its other tools stay.')) return;
+    var keep = (w.tools || []).filter(function (x) { return !x.shared && x.name !== name; }).map(function (x) { return x.name; });
+    var restore = btn ? busy(btn, 'Taking it off…') : null;
+    api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { mcpServers: keep } }).then(function (x) {
+      if (restore) restore();
+      if (x.ok === false) { alert(x.error); return; }
+      render();
+    });
+  }
+
   function toolForm(prefill, onDone) {
     var tpl = prefill && typeof prefill === 'object' ? prefill : null;
     var name = h('input', { type: 'text', value: tpl ? tpl.name : prefill || '', placeholder: 'jira', 'aria-label': 'Name' });
@@ -10690,7 +12354,8 @@ export const CONSOLE_JS = String.raw`
     var env = h('textarea', { placeholder: 'JIRA_URL=https://acme.atlassian.example\nJIRA_API_TOKEN=…', 'aria-label': 'Environment', style: 'min-height:70px;font-family:var(--mono, monospace)' });
     var url = h('input', { type: 'text', placeholder: 'https://mcp.acme.example/mcp', 'aria-label': 'URL' });
     var headers = h('textarea', { placeholder: 'Authorization: Bearer …', 'aria-label': 'Headers', style: 'min-height:56px;font-family:var(--mono, monospace)' });
-    var cmdPart = h('div', { class: 'stack', style: 'gap:10px' }, h('label', { class: 'field' }, 'Command', cmd), h('label', { class: 'field' }, 'Settings and secrets (one KEY=value a line)', env));
+    var cmdPart = h('div', { class: 'stack', style: 'gap:10px' }, h('label', { class: 'field' }, 'Command', cmd), h('label', { class: 'field' }, 'Settings and secrets (one KEY=value a line)', env),
+      tpl ? null : byoGuide(function (example) { cmd.value = example; cmd.focus(); }));
     // A remote server says how it signs in: nothing, a token, or a sign-in
     // page. With a sign-in page the token box goes and the button signs in.
     var how = null;
@@ -10845,8 +12510,10 @@ export const CONSOLE_JS = String.raw`
       if (r.ok === false) return [msg(r)];
       var onThisMac = function (t) { return /(^|\s)\/(Users|home)\//.test(t.target); };
       var stateOf = function (t) {
+        if (t.trouble) return { tone: 'bad', text: t.trouble.kind === 'auth' ? 'Can’t sign in since ' + ago(t.trouble.since) : t.trouble.kind === 'gone' ? 'Its API looks retired' : 'Failing since ' + ago(t.trouble.since) };
         if (t.signIn && t.signIn.ended) return { tone: 'need', text: 'Sign in again' };
-        if (t.status === 'connected') return { tone: 'ok', text: onThisMac(t) ? 'Connects · Mac only' : 'Connects' };
+        if (t.login && t.login.state === 'rejected') return { tone: 'bad', text: 'Login rejected' };
+        if (t.status === 'connected') return { tone: 'ok', text: (onThisMac(t) ? 'Connects · Mac only' : 'Connects') + (t.login && t.login.state === 'ok' && t.login.as ? ' as ' + t.login.as : '') };
         if (t.status === 'needs-auth') return { tone: 'need', text: 'Needs a sign-in' };
         if (t.status === 'failed') return { tone: 'bad', text: 'Won’t start' };
         if (t.status) return { tone: 'bad', text: t.status };
@@ -10854,6 +12521,8 @@ export const CONSOLE_JS = String.raw`
       };
       var nextStep = function (t) {
         if (t.signIn && t.signIn.ended) return (t.signIn.why || 'The sign-in ended.') + ' Until then workers that have it run without it.';
+        if (t.login && t.login.state === 'rejected') return t.login.reason + ' Until then, workers that have it get empty answers from it. Fix it with Change keys below.';
+        if (t.login && t.login.state === 'unreachable') return t.login.reason || '';
         if (t.status === 'needs-auth' && t.kind === 'http' && r.signIn) return 'It signs in through a browser. Sign it in below, once, for every worker that has it.';
         if (t.status === 'needs-auth') return 'On this Mac, run “claude mcp” in a terminal (or /mcp in Claude Code), pick ' + t.name + ' and sign in. This server uses the same login. A server elsewhere can’t open a browser: install it with an API token instead.';
         if (t.status === 'failed') return onThisMac(t) ? 'It runs a file from someone’s Mac, which a server elsewhere won’t have. Reinstall it from its package (npx -y <package>).' : 'Check the command, and that its keys are set.';
@@ -10865,7 +12534,7 @@ export const CONSOLE_JS = String.raw`
       var LEVEL = { picked: 'Picked', managers: 'Any manager', everyone: 'Every worker' };
       var filter = state.toolsFilter || 'all';
       var q = h('input', { type: 'search', placeholder: 'Find a tool or worker', 'aria-label': 'Find a tool, or a worker to see its tools', style: 'width:220px' });
-      var needYou = function (t) { return (t.signIn && t.signIn.ended) || t.status === 'needs-auth' || t.status === 'failed' || (t.access !== 'everyone' && !holders(t).length); };
+      var needYou = function (t) { return (t.signIn && t.signIn.ended) || (t.login && t.login.state === 'rejected') || t.status === 'needs-auth' || t.status === 'failed' || (t.access !== 'everyone' && !holders(t).length); };
       var counts = { all: r.tools.length, need: r.tools.filter(needYou).length, everyone: r.tools.filter(function (t) { return t.access === 'everyone'; }).length, nobody: r.tools.filter(function (t) { return t.access !== 'everyone' && !holders(t).length; }).length };
       var chips = h('div', { class: 'row', role: 'group', 'aria-label': 'Show', style: 'gap:6px' });
       var body = h('tbody');
@@ -10928,12 +12597,22 @@ export const CONSOLE_JS = String.raw`
             var names = c.tools.map(function (x) { return x.name; });
             var writes = names.filter(function (n) { return WRITE.test(n.replace(/([a-z])([A-Z])/g, '$1_$2').replace(/[-\s]/g, '_')); });
             var reads = names.filter(function (n) { return writes.indexOf(n) < 0; });
-            append(actions, [h('div', { class: 'row', style: 'gap:6px' },
-              reads.length ? h('span', { class: 'tag', text: 'Reads: ' + reads.length }) : null,
-              writes.length ? h('span', { class: 'tag need', text: 'Changes: ' + writes.slice(0, 6).join(', ') + (writes.length > 6 ? ' +' + (writes.length - 6) : '') }) : h('span', { class: 'tag go', text: 'Only reads' }))]);
+            // Counts at a glance; the names, wrapped, when asked for.
+            var names_ = function (list) {
+              return h('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 10px;font-family:var(--mono, monospace);font-size:12px;color:var(--muted);min-width:0' },
+                list.map(function (n) { return h('span', { style: 'overflow-wrap:anywhere', text: n }); }));
+            };
+            var more = h('details', { style: 'min-width:0' }, h('summary', { class: 'linkish', style: 'font-size:12.5px;cursor:pointer', text: 'See what it can do' }),
+              h('div', { class: 'stack', style: 'gap:10px;margin-top:8px' },
+                writes.length ? h('div', { class: 'stack', style: 'gap:4px' }, h('span', { class: 'label', text: 'Changes things · ' + writes.length }), names_(writes)) : null,
+                reads.length ? h('div', { class: 'stack', style: 'gap:4px' }, h('span', { class: 'label', text: 'Reads · ' + reads.length }), names_(reads)) : null));
+            append(actions, [h('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+              reads.length ? h('span', { class: 'tag', text: plural(reads.length, 'read', 'reads') }) : null,
+              writes.length ? h('span', { class: 'tag need', text: plural(writes.length, 'change', 'changes') }) : h('span', { class: 'tag go', text: 'Only reads' })),
+              names.length ? more : null]);
           });
-          var level = h('select', { 'aria-label': 'Who can use ' + t.name },
-            [['picked', 'Workers you pick'], ['managers', 'Any manager can give it'], ['everyone', 'Every worker']].map(function (o) { return h('option', { value: o[0], text: o[1], selected: t.access === o[0] }); }));
+          var level = h('select', { class: 'tp-ctl', 'aria-label': 'Who can give ' + t.name },
+            [['picked', 'Only admins, to workers they pick'], ['managers', 'Any manager, to their workers'], ['everyone', 'Every worker has it']].map(function (o) { return h('option', { value: o[0], text: o[1], selected: t.access === o[0] }); }));
           level.onchange = function () {
             var to = level.value;
             if (to === 'everyone' && !window.confirm('Every worker, including future hires, gets ' + t.name + '.' + (t.secrets.length ? '\n\nIt uses ' + t.secrets.join(', ') + ': every worker acts with that key.' : '') + '\n\nWorkers that ask first still ask before a step that changes something.')) { level.value = t.access; return; }
@@ -10945,7 +12624,7 @@ export const CONSOLE_JS = String.raw`
               if (to === 'everyone') shared.push(t.name);
               return api('POST', '/api/admin/rules', { patch: { allowedMcpServers: allowed, sharedMcpServers: shared } }).then(function (x) {
                 out.textContent = ''; out.appendChild(msg(x, 'Saved.'));
-                if (x.ok !== false) { t.access = to; draw(); drawList(); }
+                if (x.ok !== false) { t.access = to; draw(); reopen(); }
               });
             });
           };
@@ -10960,48 +12639,16 @@ export const CONSOLE_JS = String.raw`
               return x;
             });
           };
-          var find = h('input', { type: 'search', placeholder: 'Find a worker, team or manager', 'aria-label': 'Find a worker' });
-          var showAll = false;
-          var listBox = h('div', { class: 'tl-list' });
-          var teamPick = teams.length ? h('select', { 'aria-label': 'Give to a team' }, [h('option', { value: '', text: 'Give to a team…' })].concat(teams.map(function (tm) { return h('option', { value: tm.id, text: tm.name + ' (' + tm.members.length + ')' }); }))) : null;
-          if (teamPick) teamPick.onchange = function () {
-            var tm = teams.filter(function (x) { return x.id === teamPick.value; })[0];
-            if (!tm) return;
-            teamPick.disabled = true;
-            var names = tm.members.map(function (m) { return m.name; });
-            var targets = workers.filter(function (w) { return names.indexOf(w.name) >= 0 && !(w.tools || []).some(function (x) { return x.name === t.name; }); });
-            targets.reduce(function (p, w) { return p.then(function () { return give(w, true); }); }, Promise.resolve()).then(function () {
-              teamPick.disabled = false; teamPick.value = '';
-              out.textContent = ''; out.appendChild(msg({}, targets.length ? 'Gave ' + t.name + ' to ' + plural(targets.length, 'worker', 'workers') + ' on ' + tm.name + '.' : 'Everyone on ' + tm.name + ' already has it.'));
-              draw(); drawList();
+          // After a change, the panel again from what the server now says:
+          // a worker just given it shows at once, with its scope.
+          var reopen = function () {
+            Promise.all([api('GET', '/api/tools'), api('GET', '/api/workers').catch(function () { return null; })]).then(function (rr) {
+              var nt = rr[0] && rr[0].tools ? rr[0].tools.filter(function (x) { return x.name === t.name; })[0] : null;
+              if (Array.isArray(rr[1])) { workers.length = 0; rr[1].forEach(function (w) { workers.push(w); }); }
+              if (nt) { Object.assign(t, nt); draw(); manage(t); } else { var rd = document.getElementById('reader'); if (rd) rd.remove(); render(); }
             });
           };
-          var drawList = function () {
-            listBox.textContent = '';
-            if (t.access === 'everyone') { listBox.appendChild(h('p', { class: 'muted', style: 'padding:12px', text: 'Every worker has it. Choose Workers you pick to give it one by one.' })); return; }
-            var words = find.value.trim().toLowerCase();
-            var teamOf = function (w) { return teams.filter(function (tm) { return tm.members.some(function (m) { return m.name === w.name; }); }).map(function (tm) { return tm.name; }); };
-            var match = workers.filter(function (w) {
-              var has = (w.tools || []).some(function (x) { return x.name === t.name; });
-              if (!showAll && !words && !has) return false;
-              return !words || (w.name + ' ' + (w.tagline || '') + ' ' + (w.manager || '') + ' ' + teamOf(w).join(' ')).toLowerCase().indexOf(words) >= 0;
-            });
-            var groups = {};
-            match.forEach(function (w) { var g = teamOf(w)[0] || (w.manager ? 'Managed by ' + w.manager : 'No team'); (groups[g] = groups[g] || []).push(w); });
-            Object.keys(groups).sort().forEach(function (g) {
-              listBox.appendChild(h('div', { class: 'tl-group', text: g + ' · ' + groups[g].length }));
-              groups[g].forEach(function (w) {
-                var box = h('input', { type: 'checkbox', checked: (w.tools || []).some(function (x) { return x.name === t.name; }) });
-                box.onchange = function () { box.disabled = true; give(w, box.checked).then(function (x) { box.disabled = false; if (x.ok === false) box.checked = !box.checked; draw(); }); };
-                listBox.appendChild(h('label', { class: 'tl-row' }, box, h('span', { style: 'flex:1;min-width:0' }, h('b', { style: 'font-weight:500', text: w.name }), h('span', { class: 'faint', style: 'font-size:13px', text: (w.tagline ? ' · ' + w.tagline : '') + (w.manager ? ' · ' + w.manager : '') }))));
-              });
-            });
-            if (!match.length) listBox.appendChild(h('p', { class: 'muted', style: 'padding:12px', text: words ? 'No worker matches.' : 'Nobody has it yet. Show everyone to give it.' }));
-          };
-          find.oninput = drawList;
-          var toggleAll = h('button', { class: 'chip', 'aria-pressed': 'false', text: 'Show everyone · ' + workers.length });
-          toggleAll.onclick = function () { showAll = !showAll; toggleAll.setAttribute('aria-pressed', showAll ? 'true' : 'false'); drawList(); };
-          drawList();
+          var parts = toolPanelParts(t, workers, { canEdit: r.canEdit, give: give, reopen: reopen, level: level, teams: teams });
           // A remote tool: who signed it in, and signing it in (again).
           var signed = t.kind === 'http' && r.canEdit && r.signIn ? (function () {
             var b = h('button', { class: 'btn small' + (t.signIn && !t.signIn.ended ? '' : ' go'), text: t.signIn ? 'Sign in again' : 'Sign in for everyone' });
@@ -11016,19 +12663,26 @@ export const CONSOLE_JS = String.raw`
             if (!window.confirm('Remove ' + t.name + '? Workers that use it carry on without it.')) return;
             api('POST', '/api/admin/tools/' + encodeURIComponent(t.name) + '/remove').then(function (x) { if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else { document.getElementById('reader').remove(); render(); } });
           } });
-          var scopeBox = r.canEdit ? toolScopeSection(t, workers) : null;
-          put([h('div', { class: 'stack', style: 'gap:18px' },
-            h('section', { class: 'stack', style: 'gap:6px' }, h('div', { class: 't-kind', text: 'State' }), h('span', { class: 'tstate ' + st.tone }, h('span', { class: 'light' + (st.tone === 'ok' ? ' ok' : st.tone ? ' bad' : '') }), st.text + (r.checkedAt ? ' · checked ' + ago(r.checkedAt) : '')), step ? h('p', { class: 'muted', style: 'margin:0;font-size:13.5px', text: step }) : null),
+          var check = r.canEdit ? h('button', { class: 'btn small', text: 'Check now' }) : null;
+          if (check) check.onclick = function () {
+            var restore = busy(check, 'Checking…');
+            api('POST', '/api/admin/tools/check').then(function () { restore(); reopen(); });
+          };
+          var ok = st.tone === 'ok';
+          put([h('div', { class: 'tp' },
+            h('section', { class: 'tp-status' + (ok ? ' ok' : st.tone ? ' bad' : '') },
+              h('div', { class: 'stack', style: 'gap:3px;flex:1 1 260px;min-width:0' },
+                h('b', { style: 'font-size:13.5px', text: st.text }),
+                h('span', { class: 'faint', style: 'font-size:12.5px', text: step || (r.checkedAt ? 'Checked ' + ago(r.checkedAt) + '.' : 'Not checked yet.') }),
+                ok ? actions : null),
+              check),
+            toolTroubleBox(t, r.canEdit, reopen),
+            actsAsBox(t, r.canEdit, reopen),
             signed,
-            h('section', { class: 'stack', style: 'gap:6px' }, h('div', { class: 't-kind', text: 'What it can do' }), actions),
-            r.canEdit ? h('section', { class: 'stack', style: 'gap:6px' }, h('div', { class: 't-kind', text: 'Who can use it' }), level) : null,
-            scopeBox,
-            h('section', { class: 'stack', style: 'gap:8px' },
-              h('div', { class: 'spread' }, h('div', { class: 't-kind', text: 'Workers who have it' }), r.canEdit ? teamPick : null),
-              h('div', { class: 'row', style: 'gap:8px' }, h('span', { style: 'flex:1 1 220px' }, find), toggleAll),
-              listBox),
-            t.secrets.length && !t.signIn ? h('section', { class: 'stack', style: 'gap:6px' }, h('div', { class: 't-kind', text: 'Keys' }), h('span', { style: 'font-size:13.5px', text: t.secrets.join(', ') + ' (values hidden)' })) : null,
-            r.canEdit ? h('div', null, removeBtn) : null,
+            parts.holders,
+            parts.rules,
+            t.secrets.length && !t.signIn ? toolKeys(t, r.canEdit, reopen) : null,
+            r.canEdit ? h('section', { class: 'tp-foot' }, h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Removing it takes it from every worker that has it.' }), removeBtn) : null,
             out)]);
         });
       };

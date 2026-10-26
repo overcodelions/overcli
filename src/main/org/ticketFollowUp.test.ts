@@ -1,0 +1,32 @@
+import { describe, expect, it } from 'vitest';
+import { ticketFlowId, ticketFlowYaml, ticketOf, ticketPrompt, trackerOf, TICKET_STEP } from './ticketFollowUp';
+import { parseFlowYaml } from '../../shared/flows/yaml';
+import { validateFlow } from '../../shared/flows/validation';
+import { stepShips } from './serverFlow';
+import { pauseReasonBeforeStep } from '../flows/runtime';
+import type { FlowRun } from '../../shared/flows/schema';
+
+const run = { id: 'r1', flowId: 'solve-ticket', userPrompt: 'Implement ACME-412 end to end', artifacts: { 'pull-request.md': { body: 'Fix the bleed\n\nKeeps the filter local.' } }, flowSnapshot: { name: 'Solve', steps: [] } } as unknown as FlowRun;
+
+describe('the ticket follow-up', () => {
+  it('finds the ticket and the tracker, and asks with the links', () => {
+    expect(ticketOf(run)).toBe('ACME-412');
+    expect(trackerOf(['github', 'atlassian'])).toBe('atlassian');
+    expect(trackerOf(['github'])).toBeNull();
+    const prompt = ticketPrompt(run, 'ACME-412', [{ repo: 'app', branch: 'b', url: 'https://example.test/pr/1' }, { repo: 'web', skipped: 'no changes' }]);
+    expect(prompt).toContain('- app: https://example.test/pr/1');
+    expect(prompt).not.toContain('web');
+    expect(prompt).toContain('Keeps the filter local.');
+  });
+
+  it("is one step on the tracker alone, asks a worker on probation, and lets a trusted coding worker's named grant through", () => {
+    const flow = parseFlowYaml({ yaml: ticketFlowYaml('atlassian'), id: ticketFlowId('atlassian'), source: 'user', filePath: '' })!;
+    expect(validateFlow(flow).errors).toEqual([]);
+    expect(flow.name).toBe('Ticket actions');
+    const step = flow.steps[0];
+    expect(step).toMatchObject({ id: TICKET_STEP, tools: ['mcp__atlassian'], effect: 'external' });
+    expect(stepShips(step)).toBe(false);
+    expect(pauseReasonBeforeStep({ workerId: 'w' }, step)).toBe('externalAction');
+    expect(pauseReasonBeforeStep({ workerId: 'w', externalActionRunGrant: ['step:ticket-update'] }, step)).toBeNull();
+  });
+});

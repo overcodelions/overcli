@@ -16,7 +16,7 @@
 // it persists across restarts and remembers the producer turn so "why did I
 // launch these" stays answerable.
 
-import { isReadOnlyMcpTool } from '../../shared/flows/mcpTools';
+import { readsOnlyWithin } from '../permissionPolicy';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 
@@ -241,6 +241,9 @@ function buildProducerPrompt(args: {
   return parts.join('\n');
 }
 
+/// Tools that write files, which a turn working out an answer never needs.
+const WRITES_FILES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
 export class OrchestratorImpl {
   private batches = new Map<UUID, Orchestration>();
   /// childRunId → orchestrationId, so `onRunUpdate` can route a terminal
@@ -353,8 +356,10 @@ export class OrchestratorImpl {
           'No CLI is signed in to investigate with. Set up Claude, Codex, Gemini, or Copilot in Settings first.',
       };
     }
+    // Working out an answer reads; the run it proposes does the changing.
+    // So the server's file-writing grants stay with the runs.
     const enabledTools = this.unattended
-      ? (this.launchPolicy.unattendedAllowedTools ?? [])
+      ? (this.launchPolicy.unattendedAllowedTools ?? []).filter((t) => !WRITES_FILES.has(t))
       : undefined;
     // Never trust a pinned model against a backend it may not belong to: the
     // pin and the backend are resolved from different places and can drift
@@ -384,10 +389,11 @@ export class OrchestratorImpl {
       cwd,
       mcpAllowlist: args.mcpAllowlist,
       ...(args.mcpDeniedTools?.length ? { mcpDeniedTools: args.mcpDeniedTools } : {}),
-      // A worker working out an answer reads its own tools (its turn loads
-      // only those): a tracker lookup is no one's to approve. Writes, and
-      // calls its scope refuses, still are refused.
-      permit: (tool: string) => tool.startsWith('mcp__') && isReadOnlyMcpTool(tool) && !(args.mcpDeniedTools ?? []).includes(tool),
+      // A worker working out an answer reads freely: its own tools (its turn
+      // loads only those) and its own repo, with `git log` or `rg`. Nobody
+      // is there to approve a look. Writes, anything outside its folder, and
+      // calls its scope refuses, are still refused.
+      permit: (tool: string, input?: string) => !(args.mcpDeniedTools ?? []).includes(tool) && readsOnlyWithin(tool, input ?? '', cwd, [cwd]),
       ...(args.chrome ? { chrome: true } : {}),
       conversationId: args.conversationId,
       resumeSessionId: args.resumeSessionId,

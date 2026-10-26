@@ -885,6 +885,12 @@ function usePaletteCommands({ showDebug }: { showDebug: boolean }): PaletteComma
         run: () => state().openSheet({ type: 'setup' }),
       },
       {
+        id: 'app.guide',
+        title: 'Overcli guide',
+        keywords: ['help', 'docs', 'documentation', 'guide', 'getting started', 'tutorial', 'manual', 'how do i'],
+        run: () => state().openSheet({ type: 'guide' }),
+      },
+      {
         id: 'app.basics',
         title: 'How overcli works',
         keywords: ['basics', 'help', 'worktree', 'permission', 'flows', 'onboarding', 'guide'],

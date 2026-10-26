@@ -5,10 +5,12 @@
 
 import type { HireSummary } from '../org/orgService';
 import type { TeamCheckpoints } from '../../shared/flows/team';
-import type { WorkerVisibility } from '../../shared/flows/worker';
+import type { WorkerTrustLevel, WorkerVisibility } from '../../shared/flows/worker';
+import type { ScheduleTrigger } from '../../shared/flows/schedule';
 
 export const HIRE_EDIT_VIEW = 'overcli_hire_edit';
 export const TEAM_EDIT_VIEW = 'overcli_team_edit';
+export const WORKER_EDIT_VIEW = 'overcli_worker_edit';
 
 /// What a submitted form names: the draft, and the message to redraw.
 export interface EditMeta {
@@ -164,5 +166,93 @@ export function readTeamEdit(values: Values, current: TeamDraftForm): TeamDraftF
     },
     hireVisibility: vis === 'private' || vis === 'team' || vis === 'org' ? vis : current.hireVisibility,
     hasHires: current.hasHires,
+  };
+}
+
+/// The schedules `/worker <name> edit` offers, besides keeping the one it has.
+const SCHEDULES: Array<[string, string, ScheduleTrigger | null]> = [
+  ['asked', 'Only when asked', null],
+  ['weekdays', 'Weekdays at 9am', { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] }],
+  ['daily', 'Every day at 9am', { kind: 'daily', time: '09:00' }],
+  ['hourly', 'Every hour, weekdays 8am–6pm', { kind: 'interval', everyMinutes: 60, days: [1, 2, 3, 4, 5], window: { start: '08:00', end: '18:00' } }],
+];
+const KEEP = '__keep';
+/// Slack's longest text box; a longer job is changed in the console.
+const JOB_MAX = 3000;
+
+/// The trust levels, as the console's ladder names them.
+const TRUST: Array<[WorkerTrustLevel, string]> = [
+  ['probation', 'Asks first: proposes, you say go'],
+  ['trusted', 'Trusted: starts its own work, asks before acting outside'],
+  ['autonomous', 'On its own: acts outside without asking'],
+];
+
+/// `/worker <name> edit`: what its manager changes most, in Slack. Tools
+/// and repos change what it may reach, so they stay in the console. Its job
+/// can be rewritten by hand, or by saying what should change: that comes
+/// back as a DM to read and accept, never saved unseen.
+export function workerEditView(
+  w: { name: string; jobDescription: string; budgetUSDPerMonth: number; visibility: WorkerVisibility; schedule: string; answersAtOnce: number; trust: WorkerTrustLevel; skipCheckpoints?: boolean },
+  meta: EditMeta,
+  opts: { admin: boolean } = { admin: false },
+) {
+  const jobFits = w.jobDescription.length <= JOB_MAX;
+  // Only an admin makes a worker autonomous; one already there keeps its
+  // option so the form shows where it stands.
+  const trust = TRUST.filter(([v]) => v !== 'autonomous' || opts.admin || w.trust === 'autonomous');
+  return view(WORKER_EDIT_VIEW, `Change ${w.name}`, meta, [
+    ...(jobFits
+      ? [input('job', 'Its job', { type: 'plain_text_input', multiline: true, max_length: JOB_MAX, initial_value: w.jobDescription }, { hint: 'What it reads before every run.' })]
+      : [{ type: 'context', elements: [{ type: 'mrkdwn', text: 'Its job is too long to change by hand here: say what should change below, or change it on its Job tab in the console.' }] }]),
+    input('ask', 'Or say what should change', { type: 'plain_text_input', multiline: true, max_length: 1000, placeholder: text('e.g. also check the Ops board on Fridays') }, {
+      optional: true,
+      hint: 'I rewrite its job with this and DM you the new version to accept.',
+    }),
+    input('trust', 'How much it does alone', select(trust.map(([v, l]) => option(l, v)), w.trust), {
+      hint: opts.admin ? 'Asking first is safest for a new worker.' : 'Only an admin can let it act on its own.',
+    }),
+    ...(opts.admin
+      ? [input('checkpoints', 'Its flows’ checkpoints', { type: 'checkboxes', options: [option('Run straight through them', 'skip')], ...(w.skipCheckpoints ? { initial_options: [option('Run straight through them', 'skip')] } : {}) }, {
+          optional: true,
+          hint: 'Where a flow stops so someone looks before a step. Acting outside still asks unless its trust says otherwise.',
+        })]
+      : []),
+    input('schedule', 'When it runs', select([option(`Keep: ${w.schedule}`, KEEP), ...SCHEDULES.map(([v, l]) => option(l, v))], KEEP)),
+    input('budget', 'Monthly budget ($)', { type: 'number_input', is_decimal_allowed: false, min_value: '1', max_value: '10000', initial_value: String(w.budgetUSDPerMonth) }),
+    input('visibility', 'Who can ask it', select(VISIBILITY.map(([v, l]) => option(l, v)), w.visibility), { hint: 'Who can ask never widens what it can reach.' }),
+    input('atonce', 'Slack conversations at once', select([1, 2, 3, 4, 5, 6].map((n) => option(n === 1 ? 'One at a time' : `${n} at once`, String(n))), String(w.answersAtOnce)), {
+      hint: 'Each in its own thread. Each answer counts against its budget.',
+    }),
+  ]);
+}
+
+export interface WorkerEditAnswers {
+  patch: { jobDescription?: string; cadence?: ScheduleTrigger | null; budgetUSDPerMonth?: number; visibility?: WorkerVisibility; answersAtOnce?: number; skipCheckpoints?: boolean };
+  /// A change to its job, said in words, to rewrite it with.
+  ask?: string;
+  trust?: WorkerTrustLevel;
+}
+
+export function readWorkerEdit(values: Values): WorkerEditAnswers {
+  const v = (b: string) => values[b]?.v;
+  const patch: WorkerEditAnswers['patch'] = {};
+  const job = v('job')?.value;
+  if (typeof job === 'string' && job.trim()) patch.jobDescription = job.trim();
+  const sched = v('schedule')?.selected_option?.value;
+  const picked = SCHEDULES.find(([k]) => k === sched);
+  if (picked) patch.cadence = picked[2];
+  if (v('budget')?.value) patch.budgetUSDPerMonth = Number(v('budget')!.value);
+  const vis = v('visibility')?.selected_option?.value;
+  if (vis === 'private' || vis === 'team' || vis === 'org') patch.visibility = vis;
+  const n = Number(v('atonce')?.selected_option?.value);
+  if (Number.isInteger(n) && n >= 1) patch.answersAtOnce = n;
+  // Only an admin's form has the box; read it only when it was there.
+  if (values.checkpoints) patch.skipCheckpoints = (v('checkpoints')?.selected_options ?? []).some((o) => o.value === 'skip');
+  const ask = v('ask')?.value?.trim();
+  const trust = v('trust')?.selected_option?.value;
+  return {
+    patch,
+    ...(ask ? { ask } : {}),
+    ...(trust === 'probation' || trust === 'trusted' || trust === 'autonomous' ? { trust } : {}),
   };
 }

@@ -38,10 +38,12 @@ export function normalizeOrgUrl(raw: string): { ok: true; url: string } | { ok: 
   } catch {
     return { ok: false, error: 'That is not a URL. It looks like https://overgo.acme.internal:7420' };
   }
-  const local = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(u.hostname);
+  const local = ['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0'].includes(u.hostname);
   if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) {
     return { ok: false, error: 'Use https:// — your token would travel in the clear over http to another machine.' };
   }
+  // 0.0.0.0 is a server's "every interface", shown by mistake: this machine.
+  if (u.hostname === '0.0.0.0') u.hostname = 'localhost';
   return { ok: true, url: `${u.protocol}//${u.host}` };
 }
 

@@ -263,11 +263,24 @@ interface ClaudeAssistantEvent {
 
 /// Mtime-keyed cache so repeat stats requests skip the line-by-line
 /// JSON.parse on transcripts that haven't changed since the last scan.
-/// Module-level — survives across IPC calls within a single app run.
+/// Module-level — survives across IPC calls within a single app run. Kept
+/// to the most recently read `CLAUDE_FILE_CACHE_MAX` files, and a file that's
+/// gone leaves it, so a long run doesn't hold every transcript it ever saw.
 const claudeFileCache = new Map<
   string,
   { mtimeMs: number; events: ClaudeAssistantEvent[]; title?: string }
 >();
+const CLAUDE_FILE_CACHE_MAX = 5000;
+
+function cacheClaudeFile(filePath: string, entry: { mtimeMs: number; events: ClaudeAssistantEvent[]; title?: string }): void {
+  claudeFileCache.delete(filePath);
+  claudeFileCache.set(filePath, entry);
+  while (claudeFileCache.size > CLAUDE_FILE_CACHE_MAX) {
+    const oldest = claudeFileCache.keys().next().value;
+    if (oldest === undefined) break;
+    claudeFileCache.delete(oldest);
+  }
+}
 
 /// The `ai-title` Claude Code wrote into a transcript, as of its last parse.
 export function claudeTranscriptTitle(filePath: string): string | undefined {
@@ -282,13 +295,18 @@ export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] 
   try {
     mtimeMs = fs.statSync(filePath).mtimeMs;
   } catch {
+    claudeFileCache.delete(filePath);
     return [];
   }
   const cached = claudeFileCache.get(filePath);
-  if (cached && cached.mtimeMs === mtimeMs) return cached.events;
+  if (cached && cached.mtimeMs === mtimeMs) {
+    // Most recently used goes last: the first to go is the longest unread.
+    cacheClaudeFile(filePath, cached);
+    return cached.events;
+  }
   const raw = readFileSafe(filePath);
   if (!raw) {
-    claudeFileCache.set(filePath, { mtimeMs, events: [] });
+    cacheClaudeFile(filePath, { mtimeMs, events: [] });
     return [];
   }
   const events: ClaudeAssistantEvent[] = [];
@@ -394,7 +412,7 @@ export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] 
     events.push(event);
     if (messageId) byMessageId.set(messageId, event);
   }
-  claudeFileCache.set(filePath, { mtimeMs, events, title });
+  cacheClaudeFile(filePath, { mtimeMs, events, title });
   return events;
 }
 

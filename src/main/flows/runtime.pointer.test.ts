@@ -534,7 +534,7 @@ describe('resuming an externalAction pause', () => {
     expect(denied).toBe(true);
     // Not "denied by user": the model is told it's the step's tool list, so
     // it doesn't report a permissions problem that isn't one.
-    expect(told).toContain('Bash is not among the tools');
+    expect(told).toContain('that shell command is not one this work may run without approval');
     expect(told).toContain('not a file-permission or access problem');
     expect(r.refusedTools).toEqual(['Bash']);
   });

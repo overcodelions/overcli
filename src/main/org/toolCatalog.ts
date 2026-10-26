@@ -170,6 +170,44 @@ export const TOOL_CATALOG: CatalogTool[] = [
     docs: 'https://developers.hubspot.com/mcp',
     settings: { PRIVATE_APP_ACCESS_TOKEN: 'pat-… from a private app (Settings → Integrations → Private apps) with the CRM scopes workers need' },
   }),
+  command('zendesk', ['npx', '-y', 'zd-mcp-server@0.6.1'], ['ZENDESK_SUBDOMAIN', 'ZENDESK_EMAIL', 'ZENDESK_TOKEN'], {
+    // Zendesk's own MCP server doesn't read tickets yet: this one is a
+    // community server.
+    title: 'Zendesk',
+    blurb: 'Support tickets: search them, read the thread, comment and update. A community server, not Zendesk’s own.',
+    category: 'Customers and sales',
+    docs: 'https://github.com/koundinya/zd-mcp-server',
+    settings: {
+      ZENDESK_SUBDOMAIN: 'The part before .zendesk.com in your Zendesk address',
+      ZENDESK_EMAIL: 'The email of the Zendesk user the token belongs to',
+      ZENDESK_TOKEN: 'An API token (Admin Center → Apps and integrations → Zendesk API)',
+    },
+  }),
+  // Productboard's own server, signed in with a Productboard login; a
+  // community server takes an API token where that sign-in can't reach.
+  remote('productboard', 'https://mcp.productboard.com', {
+    title: 'Productboard',
+    blurb: 'Features, notes and insights, specs and documents: read and update them.',
+    category: 'Work tracking',
+    docs: 'https://productboard.com/integrations/mcp-server',
+    withToken: keyCommand(['npx', '-y', '@tomgutt/productboard-mcp@2.0.0'], ['PRODUCTBOARD_ACCESS_TOKEN'], 'https://github.com/tomgutt/tg-productboard-mcp', {
+      PRODUCTBOARD_ACCESS_TOKEN: 'A public API access token (Productboard → Integrations → Public API). This is a community server, not Productboard’s own.',
+    }),
+  }),
+  // The same workspace through Productboard's public API with a token, as
+  // its own tool: Productboard's server only signs people in, and a token
+  // belongs to no one's login, which suits workers running on their own.
+  // Productboard has retired API v1 for workspaces moved to v2, and the
+  // first community server (productboard-mcp) only speaks v1: this one
+  // speaks v2. Pinned to the version read through: a community package
+  // runs with the org's token, and a newer one could do anything with it.
+  command('productboard-api', ['npx', '-y', '@tomgutt/productboard-mcp@2.0.0'], ['PRODUCTBOARD_ACCESS_TOKEN'], {
+    title: 'Productboard (API token)',
+    blurb: 'Features, notes, companies and releases through the public API v2, with a token. A community server, not Productboard’s own.',
+    category: 'Work tracking',
+    docs: 'https://github.com/tomgutt/tg-productboard-mcp',
+    settings: { PRODUCTBOARD_ACCESS_TOKEN: 'A public API access token (Productboard → Integrations → Public API), made by a Productboard admin' },
+  }),
   remote('intercom', 'https://mcp.intercom.com/mcp', {
     title: 'Intercom',
     blurb: 'Conversations and contacts, to answer and route support.',

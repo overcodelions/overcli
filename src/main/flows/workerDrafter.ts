@@ -144,6 +144,9 @@ function hireSystemPrompt(
     '    crew above. Pick a short, common given name anyone could spell after hearing it',
     '    once, starting with a different letter from everyone in the crew; do not echo the',
     '    job description, the project or the tools.',
+    '    EXCEPT: when the user names the worker themselves ("Atlas, a code explorer…", "call it',
+    '    Atlas", "named Atlas"), use exactly that name, whatever the rules above say. Only a name',
+    '    already in the crew is changed, and then say so in your summary.',
     '  - FLOWS: each entry is how one KIND of work gets done, and has exactly one of flowId',
     '    (an existing flow) or flowRequest (a new one). Prefer an existing flow when one',
     '    genuinely fits. ONE flow is the normal case. Add a second — at most',
@@ -419,7 +422,11 @@ export async function draftWorkerFromPrompt(
         deps,
       )
     : null;
-  const contract = checked?.contract ?? drafted0;
+  // A name the person gave stands, whatever the model preferred: it's what
+  // they will call it. Unless the crew already has it.
+  const given = givenWorkerName(jobDescription);
+  const crewNames = new Set((args.crew ?? []).map((n) => n.toLowerCase()));
+  const contract = given && !crewNames.has(given.toLowerCase()) ? { ...(checked?.contract ?? drafted0), name: given } : checked?.contract ?? drafted0;
   const summary = checked?.note
     ? `${draftSummary}\n\n**Checked against your answers:** ${checked.note}`.trim()
     : draftSummary;
@@ -971,4 +978,19 @@ export async function personalizeImportedWorker(
   }
   const note = out.text.replace(/<personalize>[\s\S]*$/i, '').trim();
   return { ok: true, questions, note };
+}
+
+/// Words a description may open with that aren't a name: "Someone, …".
+const NOT_A_NAME = new Set(['a', 'an', 'the', 'someone', 'somebody', 'worker', 'hire', 'please', 'hey', 'hi', 'ok', 'okay', 'yes', 'so', 'now', 'also', 'then', 'basically', 'ideally', 'i', 'we', 'it', 'this', 'my', 'our']);
+
+/// The name the person gave the worker in its description, if they did:
+/// "Atlas, a code explorer…", "Atlas — watches…", "call it Atlas",
+/// "named Atlas". Null when they left naming to the drafter.
+export function givenWorkerName(description: string): string | null {
+  const t = description.trim();
+  const said = /\b(?:[Nn]amed|[Cc]alled|[Cc]all (?:it|her|him|them))\s+["“']?([A-Z][a-zA-Z'-]{1,23})\b/.exec(t);
+  const opens = /^(?:[Hh]ire\s+)?["“']?([A-Z][a-zA-Z'-]{1,23})["”']?(?:\s*[—–:]\s*\S|\s+-\s+\S|\s*,\s*(?:a|an|the|our|my|who|which|that|it|someone)\b)/.exec(t);
+  const name = said?.[1] ?? opens?.[1];
+  if (!name || NOT_A_NAME.has(name.toLowerCase())) return null;
+  return name[0].toUpperCase() + name.slice(1);
 }

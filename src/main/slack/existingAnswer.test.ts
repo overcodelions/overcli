@@ -27,5 +27,8 @@ describe('answering from existing work', () => {
     // A preface and a rule around it: dropped.
     expect(readAnswer("I've written the answer into the plan file. Here's the reply for Slack:\n\n---\n\nReporting first.\n\n---\nSources: 1", [PLAN])).toEqual({ text: 'Reporting first.', used: [PLAN] });
     expect(readAnswer('  none. ', [PLAN])).toBeNull();
+    // A full stop after the list: still the sources line, not part of the answer.
+    expect(readAnswer('Reporting first.\n\nSources: 2.', [PLAN, KNOWS])).toEqual({ text: 'Reporting first.', used: [KNOWS] });
+    expect(readAnswer('Reporting first.\n\n**Sources: 1, 2.**', [PLAN, KNOWS])).toEqual({ text: 'Reporting first.', used: [PLAN, KNOWS] });
   });
 });

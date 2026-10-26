@@ -50,24 +50,24 @@ export function stepOutsideTools(
     /\b(?:send|post|reply|respond|message|dm|deliver)\b[^.\n]{0,100}\b(?:slack|teams|email|e-mail|message|dm|channel|thread|recipient|inbox)\b|\b(?:slack|teams|email|e-mail|message|dm|channel|thread|recipient|inbox)\b[^.\n]{0,100}\b(?:send|post|reply|respond|message|deliver)\b/i;
   const serviceWrite =
     /\b(?:create|update|edit|change|delete|remove|close|transition|assign|comment|add|record|schedule|invite|upload)\b[^.\n]{0,110}\b(?:jira|productboard|zendesk|salesforce|linear|asana|trello|ticket|issue|insight|card|calendar|event|crm|record)\b|\b(?:jira|productboard|zendesk|salesforce|linear|asana|trello|ticket|issue|insight|card|calendar|event|crm)\b[^.\n]{0,110}\b(?:create|update|edit|change|delete|remove|close|transition|assign|comment|add|record|schedule|invite|upload)\b/i;
-  if (directExternal.test(actionableText) || prWrite.test(actionableText) || messageWrite.test(actionableText) || serviceWrite.test(actionableText)) {
-    return null;
-  }
   // Fail closed: a step that reaches for a tool we don't recognise as read-only
   // is treated as external, so an unattended worker pauses rather than acting.
   // Covers both the Claude-style tool names and the Ollama built-in kit
   // (read_file/list_dir/write_file/edit_file/grep/bash — see ollamaTools.ts)
   // used by the shipped templates' `build`/`tests` steps.
-  // `bash`, `websearch` and `webfetch` are NOT here on purpose: bash reaches
+  // A web search only reads, so it is here. `bash` and `webfetch` are NOT, on purpose: bash reaches
   // curl/git push/ssh/aws with the user's on-disk credentials, and webfetch is
   // a bare SSRF primitive. An unattended worker must stop and ask first.
   const LOCAL_TOOLS = new Set([
-    'read', 'grep', 'glob', 'ls', 'edit', 'write', 'notebookedit', 'todowrite', 'task',
+    'read', 'grep', 'glob', 'ls', 'edit', 'write', 'notebookedit', 'todowrite', 'task', 'websearch',
     'read_file', 'list_dir', 'write_file', 'edit_file',
   ]);
   // Scoped read-only git is local: `Bash(git diff:*)` cannot mutate anything,
   // and forcing a pause on it made two shipped templates stall at step 1.
-  const READONLY_BASH = /^bash\(\s*git\s+(?:diff|log|show|status|ls-files|rev-parse)(?::\*)?\s*\)$/;
+  // So is searching the code and its history: `git blame`, `git grep`,
+  // `rg`. In a worker's run each command is still checked as it runs
+  // (readsOnlyWithin), so one that writes is refused whatever the prefix.
+  const READONLY_BASH = /^bash\(\s*(?:git\s+(?:diff|log|show|status|ls-files|rev-parse|blame|grep|shortlog)|rg|grep)(?::\*)?\s*\)$/;
   // An MCP tool that only reads — searching a mailbox, listing a calendar —
   // is not acting on the world, so granting it keeps the step local. One
   // whose name says it sends, creates or updates, or says nothing we can
@@ -81,7 +81,17 @@ export function stepOutsideTools(
   // Fail closed on an absent or empty declaration: a step that names nothing
   // is granted everything by the CLI, which is the opposite of "local".
   if (declared.length === 0) return null;
-  return [...new Set(declared.filter((t) => !isLocalTool(t)).map((t) => t.toLowerCase().trim()))];
+  const outside = [...new Set(declared.filter((t) => !isLocalTool(t)).map((t) => t.toLowerCase().trim()))];
+  // Its words count only when it has a tool that could do what they say.
+  // A step granted nothing but reads and its own files can't transition a
+  // ticket however its prompt talks about one ("never transition…", "a
+  // comment ready to post"), and every morning check that read a tracker
+  // stopped for an approval nothing in it could use. Anything outside its
+  // list goes to the approval broker, which refuses it on an unattended run.
+  if (outside.length && (directExternal.test(actionableText) || prWrite.test(actionableText) || messageWrite.test(actionableText) || serviceWrite.test(actionableText))) {
+    return null;
+  }
+  return outside;
 }
 
 /// Whether approving an earlier step "for this run" covers this one: every

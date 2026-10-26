@@ -57,7 +57,7 @@ Set these in `deploy/.env`, the task definition, or the shell. Secrets can also 
 
 ## `org.json`
 
-The org's identity and rules, on the data volume. Write it with `overcli org init`, then change it on **Setup → Rules** (or by hand: changes apply without a restart). `deploy/org.example.json` has every field.
+The org's identity and rules, on the data volume. Write it with `overcli org init`, then change it on **Setup** (General, Hiring, Spending and the other pages) (or by hand: changes apply without a restart). `deploy/org.example.json` has every field.
 
 | Field | Meaning |
 |---|---|
@@ -71,6 +71,9 @@ The org's identity and rules, on the data volume. Write it with `overcli org ini
 | `roles` | The Hire page's catalog |
 | `teams` | Groups of people, for "its team may ask it" |
 | `orgVisibilityNeedsAdmin` | Whether "everyone may ask it" needs an admin |
+| `webFetch` | How workers open web pages: `"safe"` (the default), `"ask"` or `"any"`. An older `webNeedsApproval: true` reads as `"ask"`, `false` as `"any"` |
+| `ownDomains` | Sites workers may always open, such as `acme.atlassian.net` |
+| `serviceAccounts` | Tools whose keys an admin marked as a service account's |
 | `sso` | Company sign-in: issuer, client ID, whether it's required |
 | `people` | Email → Slack member ID, for company sign-in |
 
@@ -109,10 +112,14 @@ Connect Claude Code, Claude Desktop or Codex to `<server>/mcp` with your key. Wh
 |---|---|
 | `@overgo <request>` or a DM | Whoever fits takes it; answers in the thread |
 | `/worker`, `/worker <name> ask <text>`, `/worker waiting` | List, ask, what's waiting on you |
+| `/worker <name> edit` | A form to change its job, trust, schedule, budget, who can ask it |
+| `/worker <name> learn` | Its onboarding: it goes through its tools, read only |
+| `/worker <name> tools`, `/worker <name> tools add <tool>: why` | Its tools; give it one, or ask an admin for one |
 | `/team <name>: <task>` | Give a team a task (it waits as Up next if the team is busy) |
 | `/team new <what it's for>` | Make a team from your workers: a suggested crew comes by DM |
 | `/hire <the job>` | Hire a worker |
 | `/idea [process:] <the idea>` | Put an idea into a process, or see where yours are |
+| `/overgo digest` | Your week with your workers so far (it also comes every Monday at 9) |
 | `/overgo join` | Ask to be let in |
 
 The app's scopes and events are in `src/main/slack/slack-app-manifest.yml`. Reinstall the app when the manifest changes.
@@ -123,6 +130,9 @@ The app's scopes and events are in `src/main/slack/slack-app-manifest.yml`. Rein
 |---|---|
 | `org.json` | The org's rules |
 | `org/` | Sign-ins (hashed), invites, the decision log, ratings, asks, triggers, the Library's event deliverables, repos |
+| `org/handbook.md` | The handbook every worker reads |
+| `org/worker-versions.json` | Each worker's history, for Restore |
+| `org/tool-requests.json`, `org/tool-health.json` | Tool requests, and tools that are failing |
 | `secrets.enc` | Encrypted secrets (file store) |
 | `workers/`, `flows/`, `teams/` | Workers, their flows, teams |
 | `repos/` | Connected repos' clones |

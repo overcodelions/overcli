@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
 import type { Worker } from '../../shared/flows/worker';
-import { SLACK_APPROVE_ACTION, SLACK_APPROVE_RUN_ACTION, SLACK_REJECT_ACTION, SlackBridge, type SlackBridgeDeps } from './slackBridge';
+import { SLACK_APPROVE_ACTION, SLACK_CHANGES_ACTION, SLACK_APPROVE_RUN_ACTION, SLACK_REJECT_ACTION, SlackBridge, type SlackBridgeDeps } from './slackBridge';
 import type { SocketCtor, SocketLike } from './socketMode';
 import type { SlackThread } from './threadStore';
 
@@ -65,7 +65,7 @@ function worker(over: Partial<Worker> = {}): Worker {
   };
 }
 
-function pausedRun(reason: 'needsInput' | 'externalAction', over: Partial<FlowRun> = {}): FlowRun {
+function pausedRun(reason: 'needsInput' | 'externalAction' | 'preStep', over: Partial<FlowRun> = {}): FlowRun {
   return {
     id: 'run-1',
     workerId: 'w-ana',
@@ -132,6 +132,45 @@ const reply = (text: string, over: Record<string, unknown> = {}) => ({
 });
 
 describe('SlackBridge outbound', () => {
+  it("posts a flow's own checkpoint with Continue and Stop, and Continue resumes it", async () => {
+    const h = harness({ runs: [pausedRun('preStep')] });
+    await h.bridge.start();
+    const post = h.slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    expect(post.body.channel).toBe('D0ACME');
+    const blocks = JSON.stringify(post.body.blocks);
+    expect(blocks).toContain('Ready for');
+    expect(blocks).toContain('"Continue"');
+    expect(blocks).toContain('"Stop"');
+    expect(blocks).not.toContain('Show changes');
+    const id = h.saved()[0].id;
+    await h.bridge.onEnvelope({
+      type: 'interactive',
+      envelope_id: 'e7',
+      payload: { type: 'block_actions', user: { id: MANAGER }, team: { id: TEAM }, actions: [{ action_id: SLACK_APPROVE_ACTION, value: id }] },
+    });
+    expect(h.resumed).toEqual(['run-1']);
+  });
+
+  it('shows what an approval would push, and posts the diff in its thread on Show changes', async () => {
+    const h = harness({ runs: [pausedRun('preStep')] });
+    const asked: boolean[] = [];
+    (h.deps as { runChanges?: unknown }).runChanges = async (_id: string, diff: boolean) => {
+      asked.push(diff);
+      return { repos: [{ name: 'api', insertions: 3, deletions: 1, files: [{ path: 'a.ts', status: 'M', additions: 3, deletions: 1 }], ...(diff ? { diff: '+x' } : {}) }] };
+    };
+    await h.bridge.start();
+    const post = h.slack.calls.find((c) => c.method === 'chat.postMessage')!;
+    const blocks = JSON.stringify(post.body.blocks);
+    expect(blocks).toContain('1 file, +3 −1 in api');
+    expect(blocks).toContain('Show changes');
+    await h.bridge.onEnvelope({
+      type: 'interactive',
+      envelope_id: 'e8',
+      payload: { type: 'block_actions', user: { id: MANAGER }, team: { id: TEAM }, actions: [{ action_id: SLACK_CHANGES_ACTION, value: h.saved()[0].id }] },
+    });
+    expect(asked).toEqual([false, true]);
+  });
+
   it('DMs the manager as the worker when a run needs input', async () => {
     const h = harness({ runs: [pausedRun('needsInput')] });
     await h.bridge.start();
@@ -261,6 +300,44 @@ describe('SlackBridge inbound', () => {
     expect(h.saved()[0].resolution).toBe('answered');
   });
 
+  it('takes a reply beside the question, not in its thread, when it is the one waiting there', async () => {
+    const h = harness({ runs: [pausedRun('needsInput')] });
+    await h.bridge.start();
+    await h.bridge.onEnvelope(reply('Over 500 seats.', { thread_ts: undefined, ts: '100.5' }));
+    expect(h.steers[0]).toMatchObject({ runId: 'run-1' });
+    expect(h.resumed).toEqual(['run-1']);
+  });
+
+  it('takes a reply also sent to the channel as the answer', async () => {
+    const h = harness({ runs: [pausedRun('needsInput')] });
+    await h.bridge.start();
+    await h.bridge.onEnvelope(reply('Over 500 seats.', { subtype: 'thread_broadcast' }));
+    expect(h.steers[0]).toMatchObject({ runId: 'run-1' });
+  });
+
+  it("hands a reply under a settled approval to its worker, with the thread, instead of saying it's settled", async () => {
+    const h = harness({ runs: [pausedRun('externalAction')] });
+    const adopted: string[] = [];
+    const sent: Array<{ text: string }> = [];
+    h.bridge.setFrontDoor({ owns: () => false, adopt: (c: string, t: string, w: { name: string }) => adopted.push(`${c}:${t}:${w.name}`), onMessage: async (r: { text: string }) => { sent.push(r); } } as never);
+    await h.bridge.start();
+    const t = h.saved()[0];
+    (h.bridge as unknown as { threads: Array<{ resolvedAt?: number }> }).threads[0].resolvedAt = 1;
+    await h.bridge.onEnvelope(reply('can you push it and give me the PR url', { thread_ts: t.threadTs, ts: '100.9' }));
+    expect(adopted).toEqual([`${t.channel}:${t.threadTs}:Ana`]);
+    expect(sent[0].text).toContain('push it');
+  });
+
+  it("sends a new DM to the front door when the team questions it might answer aren't waiting any more", async () => {
+    const h = harness({ runs: [] });
+    const asked: string[] = [];
+    h.bridge.setCommands({ answerLoneTeamQuestion: async () => false, onThreadReply: async () => false, handlesAction: () => false } as never);
+    h.bridge.setFrontDoor({ owns: () => false, adopt: () => {}, onMessage: async (r: { text: string }) => { asked.push(r.text); } } as never);
+    await h.bridge.start();
+    await h.bridge.onEnvelope(reply('can you remind me when ACME-1 transitions', { thread_ts: undefined, ts: '200.1' }));
+    expect(asked).toEqual(['can you remind me when ACME-1 transitions']);
+  });
+
   it('ignores anyone who is not the manager', async () => {
     const h = harness({ runs: [pausedRun('needsInput')] });
     await h.bridge.start();
@@ -288,7 +365,9 @@ describe('SlackBridge inbound', () => {
     });
     expect(h.resumed).toEqual(['run-1']);
     expect(h.saved()[0].resolution).toBe('approved');
-    expect(h.slack.calls.some((c) => c.method === 'chat.update')).toBe(true);
+    // The settled card still says what was approved.
+    const update = h.slack.calls.find((c) => c.method === 'chat.update');
+    expect(JSON.stringify(update?.body)).toMatch(/asked for approval to run \*[^*]+\* on _/);
   });
 
   it('asks again in the same thread when a restart puts an approved step back at the gate', async () => {

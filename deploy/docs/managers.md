@@ -7,21 +7,36 @@ You manage a worker if you hired it, published it, or had it handed to you. Its 
 The worker's questions and approvals come to you as Slack DMs, and also wait in the console's **Inbox**.
 
 - **A question:** reply in the DM thread. Your answer goes to the worker and it carries on.
-- **An approval** (before it pushes, posts, sends, or writes to another system): press **Approve** or **Reject**. The card says what the step does ("runs git push", "uses jira: add comment"), what it's told to do, and what it read first. Reading the web doesn't ask, unless your org's rules say it should.
+- **An approval** (before it pushes, posts, sends, or writes to another system): press **Approve** or **Reject**. The card says what the step does ("runs git push", "uses jira: add comment"), what it's told to do, and what it read first. Once it's settled, the card still says what it was for. Reading the web doesn't ask, unless your org's rules say it should.
+- **Always allow** on an approval card (in Slack and on the console) approves the step and lets that step of that flow run without asking from then on. Take it back on the worker's [Access](#access) tab.
 - **Proposals** from a scheduled run on probation: a list of what it wants to do. Pick which go ahead.
+
+**What doesn't ask.** A step whose tools only read (a search, a ticket lookup, its own files) runs without an approval, even when its instructions mention writing something. So do read-only shell commands on its own folders, such as `git log`, `git show`, `git blame`, `git grep`, `git shortlog`, `rg` and `grep`, also after a `cd` into the repo (`cd api && git log`).
 
 A question climbs the **reports-to** chain before it reaches a person. If the worker reports to another worker, that one tries to answer first, and you're asked only when it can't.
 
 ## Trust
 
+The worker's **Access** tab shows this as **How much it does alone**:
+
 | Level | What it does on its own |
 |---|---|
-| **Probation** | Everything that reaches outside the server waits for you. New workers start here. |
-| **Trusted** | Its best work starts without you; you're asked about the rest. |
-| **Autonomous** | Runs whole shifts unattended. Only an admin can set this. |
+| **Asks first** (probation) | It proposes each run's work, and everything that reaches outside the server waits for you. New workers start here. |
+| **Trusted** | It starts its own runs, and still asks before anything that changes something outside the server: a ticket, a message, a push. |
+| **On its own** (autonomous) | It starts its own work and acts outside the server without asking. Only an admin can set this. |
 
-- **Moving up:** your call. The worker's page shows when its record supports it, such as enough approved work and few rejections.
-- **Moving down:** automatic. Three rejections in a row drop it a level; approving anything resets the count.
+- **Moving up:** your call. **Trust it to start its own work** (or, for an admin, **Let it act on its own**). The ladder marks a level **ready** when its record supports it, such as enough approved work and few rejections, but you can move it up before then.
+- **Moving down:** **Back to asks first**, or automatic: three rejections in a row drop it a level; approving anything resets the count.
+
+## Access
+
+The worker's **Access** tab is what it may use and how much it does without asking. The sidebar of its page shows a short version (its trust, its tools and their scope, any standing approvals) with **Manage →** to open the tab.
+
+- **Tools:** each tool it has, with its **Scope**: the org's default, everything, read only, or only the calls you tick. Calls outside a tool's scope are refused, even with your OK. A scope wider than the org's default needs an admin. **Take it off** removes a tool.
+- **+ Give it a tool:** pick an installed tool, or **Something not listed…**, and say what it's for. A tool your org clears for any hire is given at once. Anything else goes to the admins, and waits under the list as "waiting on an admin" until one decides; you hear in Slack. From Slack: `/worker Ada tools` lists its tools, and `/worker Ada tools add zendesk: to read tickets` gives or asks.
+- **How much it does alone:** the trust ladder above.
+- **Always allowed:** the steps you said it may always run, from **Always allow** on an approval. **Take off** and it asks again.
+- **Checkpoints:** some flows stop before a step so someone looks first ("Continue to push?"). An admin can switch on **Run straight through its flows' checkpoints**. Anything that acts outside the server still asks, unless its trust says otherwise.
 
 ## Watching it work
 
@@ -65,13 +80,38 @@ The worker then plans the change, makes it, and writes the pull request. On prob
 
 A team's code works the same way: when a team task in a repo or workspace is done, **Push the branches** on its card pushes each repo's branch past its tests.
 
+## The job and what it knows
+
+**The job** is on the worker's **Job** tab. It's what the worker plans every run from. **Edit the job** to change it by hand, or say the change in a sentence ("also check the WEB board on Fridays") and press **Rewrite it**: the job is rewritten in the box for you to read. **Undo** puts it back. Nothing is saved until you press **Save the job**.
+
+In Slack, `/worker Ada edit` opens a form with the job, **Or say what should change**, **How much it does alone** (only an admin can pick **On its own**), when it runs, its budget, who can ask it, and **Slack conversations at once**. Admins also see a box to run straight through its flows' checkpoints. A change said in words comes back as a DM with the rewritten job: **Use this** or **Keep the old one**.
+
+**What it knows** (a card beside the job) is its onboarding: one read-only run through its own tools, finding the projects, statuses, people and places its job uses. It reads these notes before every run.
+
+- **When it happens:** by itself when it's hired with tools, or when you press **Learn its tools**. In Slack: `/worker Ada learn`. It takes a few minutes.
+- **Learn again** goes through its tools again. **Correct it** lets you edit the notes yourself.
+- **Refresh weekly** (the default) learns again once its notes are a week old. **Don't refresh** keeps them as they are.
+
+Every worker also reads your org's **handbook**, which an admin keeps on Setup → Handbook, after its own job.
+
 ## Settings
 
-- **Who may ask it:** just you, your team, or everyone. "Everyone" may need an admin, depending on your org's rules.
-- **Reports to:** another worker that tries to answer its questions first.
+- **Picture:** its face on the console and on what it posts in Slack.
+- **When it runs:** its schedule, or only when someone asks.
+- **Who it answers to:** its manager (an admin changes this), and the worker it **reports to**, which tries to answer its questions first.
+- **Who can ask it:** just you, your team, or everyone. "Everyone" may need an admin, depending on your org's rules. Anyone who can ask it can learn what its tools can reach.
+- **Where it works:** the repo, or workspace of repos, it reads and changes.
+- **Answering in Slack:** how many people it answers at once, each in their own thread. Each answer counts against its budget.
+- **How it works:** the flow its work goes through, unless you name another of its flows when you ask ("use solve-ticket"). Shown when it has more than one.
+- **History:** every change to its job, tools, trust and settings, newest first, with who made it and **The job then**. **Restore** puts it back to that version. Restoring follows the same rules as changing it by hand, so it can't give the worker anything you couldn't, such as a trust level only an admin sets. The last 50 versions of each worker are kept; the page shows the newest 15.
 - **Budget:** what it may spend a month. You're warned at 80%, and scheduled runs stop at the limit until the month turns. A raise over your allowance goes to an approver.
-- **Job:** edit the job description on the Job tab. It's what the worker reads every time.
 - **Pause** stops everything it would start, without losing its journal.
+
+Tools, trust, standing approvals and checkpoints are on the [Access](#access) tab.
+
+## Your week
+
+Every Monday at 9am (the org's time zone) overgo DMs you a week in review: for each of your workers, what it finished, what failed, how often it was asked, what it cost and how it was rated, and what's waiting on you. `/overgo digest` sends this week's so far, any time.
 
 ## Teams
 
@@ -118,7 +158,7 @@ Who owns what:
 **Who can see and start it.** Set under **Owner** in the editor:
 
 - **Private**: only its owner, whoever made it, and admins. This is where every new process starts.
-- **A team**: the members of the teams you pick (the org's teams on **Rules, spending and sign-in**), as they are at the time. Someone who joins the team can start it; someone who leaves can't.
+- **A team**: the members of the teams you pick (the org’s teams on **Setup → People & teams**), as they are at the time. Someone who joins the team can start it; someone who leaves can't.
 - **Certain people**: the people you name, and anyone in a group you add.
 - **Everyone**: anyone in the org. Processes made before this setting existed start here, as they worked before.
 

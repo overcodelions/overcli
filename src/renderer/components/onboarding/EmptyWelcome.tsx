@@ -120,6 +120,10 @@ export function EmptyWelcome({
               onClick={() => openSheet({ type: 'basics' })}
             />
             <QuietAction
+              label="or follow the getting started guide"
+              onClick={() => openSheet({ type: 'guide', page: 'getting-started' })}
+            />
+            <QuietAction
               label="or see the shortcuts"
               onClick={() => openSheet({ type: 'shortcutsHelp' })}
             />

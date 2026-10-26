@@ -96,6 +96,86 @@ describe('/worker', () => {
     expect(posts[0].body.text).toBe('Ana Lee is paused.');
   });
 
+  it('opens a form to change a worker for its manager, saves it with the same rules, and turns others away', async () => {
+    const updates: unknown[] = [];
+    const trusts: string[] = [];
+    const worker = (youManage: boolean) => ({ ok: true, jobDescription: 'Reads the board.', recent: [], worker: { id: 'w', name: 'Ana Lee', youManage, budgetUSDPerMonth: 30, visibility: 'private', schedule: 'Weekdays at 9am', answersAtOnce: 3, trust: 'probation' } }) as never;
+    const mine = harness({
+      resolve: (_c, name) => (name.toLowerCase() === 'ana lee' ? ({ id: 'w', name: 'Ana Lee' } as never) : null),
+      getWorker: () => worker(true),
+      whoami: () => ({ admin: false }) as never,
+      setTrust: (_c, _id, t) => {
+        trusts.push(t);
+        return { ok: true, name: 'Ana Lee', trust: t };
+      },
+      update: (_c, id, patch) => {
+        updates.push([id, patch]);
+        return { ok: true, worker: { name: 'Ana Lee' } } as never;
+      },
+    });
+    await mine.cmds.onSlash(slash('/worker', 'Ana Lee edit', { trigger_id: 'trig' }));
+    const opened = mine.posts.find((x) => x.url.endsWith('views.open'));
+    expect(opened?.body.trigger_id).toBe('trig');
+    expect(JSON.stringify(opened?.body.view)).toContain('Reads the board.');
+    // Not an admin: no "on its own" to pick.
+    expect(JSON.stringify(opened?.body.view)).toContain('Trusted: starts its own work');
+    expect(JSON.stringify(opened?.body.view)).not.toContain('On its own');
+    const view = opened!.body.view as { callback_id: string; private_metadata: string };
+    await mine.cmds.onViewSubmit({
+      user: { id: PAT }, team: { id: TEAM },
+      view: { callback_id: view.callback_id, private_metadata: view.private_metadata, state: { values: {
+        job: { v: { value: 'Reads the board, and the roadmap.' } },
+        schedule: { v: { selected_option: { value: 'asked' } } },
+        budget: { v: { value: '40' } },
+        visibility: { v: { selected_option: { value: 'org' } } },
+        atonce: { v: { selected_option: { value: '2' } } },
+        trust: { v: { selected_option: { value: 'trusted' } } },
+      } } },
+    });
+    expect(updates).toEqual([['w', { jobDescription: 'Reads the board, and the roadmap.', cadence: null, budgetUSDPerMonth: 40, visibility: 'org', answersAtOnce: 2 }]]);
+    expect(trusts).toEqual(['trusted']);
+
+    const theirs = harness({ resolve: (_c, name) => (name.toLowerCase() === 'ana lee' ? ({ id: 'w', name: 'Ana Lee' } as never) : null), getWorker: () => worker(false) });
+    await theirs.cmds.onSlash(slash('/worker', 'Ana Lee edit', { trigger_id: 'trig' }));
+    expect(theirs.posts.some((x) => x.url.endsWith('views.open'))).toBe(false);
+    expect(theirs.posts[0].body.text).toContain("Only Ana Lee's manager or an admin");
+  });
+
+  it('rewrites a job from a change said in words, and saves it only when accepted', async () => {
+    const updates: unknown[] = [];
+    const asks: Array<[string, string | undefined]> = [];
+    const { cmds, posts } = harness({
+      getWorker: () => ({ ok: true, jobDescription: 'Reads the board.', recent: [], worker: { id: 'w', name: 'Ana Lee', youManage: true, budgetUSDPerMonth: 30, visibility: 'private', schedule: 'Weekdays at 9am', answersAtOnce: 3, trust: 'trusted' } }) as never,
+      suggestJob: async (_c, _id, ask, job) => {
+        asks.push([ask, job]);
+        return { ok: true, name: 'Ana Lee', job: 'Reads the board and the roadmap.' };
+      },
+      update: (_c, id, patch) => {
+        updates.push([id, patch]);
+        return { ok: true, worker: { name: 'Ana Lee' } } as never;
+      },
+    });
+    await cmds.onViewSubmit({
+      user: { id: PAT }, team: { id: TEAM },
+      view: { callback_id: 'overcli_worker_edit', private_metadata: JSON.stringify({ id: 'w', channel: '', ts: '' }), state: { values: {
+        job: { v: { value: 'Reads the board.' } },
+        ask: { v: { value: 'also the roadmap' } },
+        budget: { v: { value: '30' } },
+        visibility: { v: { selected_option: { value: 'private' } } },
+        atonce: { v: { selected_option: { value: '3' } } },
+        trust: { v: { selected_option: { value: 'trusted' } } },
+      } } },
+    });
+    // Nothing moved but the job, and that waits to be read.
+    expect(updates).toEqual([]);
+    expect(asks).toEqual([['also the roadmap', 'Reads the board.']]);
+    const shown = JSON.stringify(posts.map((x) => x.body));
+    expect(shown).toContain('Reads the board and the roadmap.');
+    const use = /"action_id":"overcli_job_use","value":"([^"]+)"/.exec(shown)!;
+    await cmds.onAction({ user: { id: PAT }, team: { id: TEAM }, actions: [{ action_id: 'overcli_job_use', value: use[1] }], channel: { id: 'D1' }, message: { ts: '1.0' } });
+    expect(updates).toEqual([['w', { jobDescription: 'Reads the board and the roadmap.' }]]);
+  });
+
   it('takes "Name, question" as an ask', async () => {
     const asked: string[] = [];
     const { cmds } = harness({

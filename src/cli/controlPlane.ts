@@ -31,7 +31,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 
 import { callerForToken, loadOrgPolicy, revokeOwnToken } from '../main/org/orgStores';
 import { auditCsv } from '../main/org/retention';
-import type { SlackConversations } from '../main/slack/conversations';
+import type { AskerSort, SlackConversations } from '../main/slack/conversations';
 import { parseTemplates } from '../main/org/tools';
 import { reachOf } from '../main/org/reach';
 import { DOCS_CSS, DOCS_JS, renderDocsPage } from './docsPages';
@@ -49,7 +49,7 @@ import type { AccessService, PersonRole } from '../main/org/accessService';
 import type { SlackPerson } from '../main/slack/slackApi';
 import { slackManifestForConsole } from '../main/slack/slackManifest';
 import type { OrgService, SetupPublishInput, TeamPublishInput } from '../main/org/orgService';
-import { isAdmin, type OrgCaller } from '../shared/org/policy';
+import { AUDIENCE_ROLES, isAdmin, parseAudience, type OrgCaller } from '../shared/org/policy';
 import { CONSOLE_CSS, CONSOLE_HTML, CONSOLE_ICON, CONSOLE_JS } from './consoleAssets';
 import { registerOrgTools } from './orgMcpTools';
 import { FileLinks, fileHeaders } from './fileLinks';
@@ -670,11 +670,17 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
           needsYou: x.decide,
           stuck: !!x.item.blocked,
         }));
-        return { ok: true, items: [...runs, ...tasks, ...items] };
+        // A worker working out an answer, or what to do next, before any run
+        // starts: the bar's "working" counts it, so in flight does too.
+        const deciding = org
+          .workingNow(c)
+          .filter((x) => x.kind === 'deciding')
+          .map((x) => ({ kind: 'worker', id: x.id, workerId: x.workerId, title: x.title, who: x.workerName, total: 1, at: 0, now: `Deciding · ${x.detail}`, since: x.at, needsYou: false }));
+        return { ok: true, items: [...deciding, ...runs, ...tasks, ...items] };
       },
     },
     // Who can be picked to lead a stage or decide at one.
-    { method: 'GET', path: /^\/api\/directory$/, handle: () => ({ ok: true, ...org.directory() }) },
+    { method: 'GET', path: /^\/api\/directory$/, handle: () => ({ ok: true, ...org.directory(), roles: AUDIENCE_ROLES.map(([id, name]) => ({ id, name })) }) },
     // The library: ways SaaS teams commonly run work, to start from.
     { method: 'GET', path: /^\/api\/process-library$/, handle: () => ({ ok: true, library: PROCESS_LIBRARY }) },
     {
@@ -919,6 +925,22 @@ function numParam(url: URL, key: string): number | undefined {
 function slackRoutes(convos?: SlackConversations): Array<{ method: string; path: RegExp; handle: Handler }> {
   const off = { ok: false as const, error: 'Slack is not connected on this server.' };
   return [
+    {
+      method: 'GET',
+      path: /^\/api\/slack\/stats$/,
+      handle: (c, _b, _p, url) =>
+        convos?.stats(c, {
+          // 0: every day kept.
+          days: url.searchParams.has('days') ? Number(url.searchParams.get('days')) : undefined,
+          q: url.searchParams.get('q') ?? undefined,
+          sort: (url.searchParams.get('sort') ?? undefined) as AskerSort | undefined,
+          offset: Number(url.searchParams.get('offset')) || 0,
+          limit: url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : undefined,
+        }) ?? off,
+    },
+    // The Slack threads you follow, and stopping one.
+    { method: 'GET', path: /^\/api\/slack\/following$/, handle: (c) => convos?.followed?.(c) ?? off },
+    { method: 'POST', path: /^\/api\/slack\/following\/stop$/, handle: (c, b) => convos?.unfollow?.(c, typeof b.key === 'string' ? b.key : '') ?? off },
     { method: 'GET', path: /^\/api\/slack\/conversations$/, handle: (c, _b, _p, url) => convos?.list(c, Number(url.searchParams.get('limit')) || undefined) ?? off },
     { method: 'GET', path: /^\/api\/slack\/conversations\/([^/]+)$/, handle: (c, _b, p) => convos?.thread(c, decodeURIComponent(p[0])) ?? off },
   ];
@@ -1007,6 +1029,34 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       handle: (c, b, [id]) =>
         TRUST.has(str(b.trust)) ? org.setTrust(c, decodeURIComponent(id), str(b.trust) as 'probation' | 'trusted' | 'autonomous') : { ok: false, error: 'Pick probation, trusted or autonomous.' },
     },
+    { method: 'GET', path: /^\/api\/tool-requests$/, handle: (c) => org.toolRequests(c) },
+    { method: 'GET', path: /^\/api\/handbook$/, handle: (c) => org.handbook(c) },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/learn$/, handle: (c, _b, [id]) => org.learnWorker(c, decodeURIComponent(id)) },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/knowledge$/,
+      handle: (c, b, [id]) => org.setKnowledge(c, decodeURIComponent(id), { ...(typeof b.body === 'string' ? { body: b.body } : {}), ...(b.refresh === 'weekly' || b.refresh === 'off' ? { refresh: b.refresh } : {}) }),
+    },
+    { method: 'POST', path: /^\/api\/handbook$/, handle: (c, b) => org.setHandbook(c, str(b.text)) },
+    { method: 'GET', path: /^\/api\/digest$/, handle: (c) => org.weeklyDigest(c) },
+    { method: 'GET', path: /^\/api\/workers\/([^/]+)\/history$/, handle: (c, _b, [id]) => org.workerHistory(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/restore$/, handle: (c, b, [id]) => org.restoreWorker(c, decodeURIComponent(id), str(b.versionId)) },
+    { method: 'POST', path: /^\/api\/tools\/([^/]+)\/trouble\/clear$/, handle: (c, _b, [name]) => org.clearToolTrouble(c, decodeURIComponent(name)) },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/tools\/request$/,
+      handle: (c, b, [id]) => org.requestTool(c, decodeURIComponent(id), str(b.tool), typeof b.why === 'string' ? b.why : undefined),
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/tool-requests\/([^/]+)\/decide$/,
+      handle: (c, b, [id]) => org.decideToolRequest(c, decodeURIComponent(id), b.give === true, typeof b.note === 'string' ? b.note : undefined),
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/suggest-job$/,
+      handle: (c, b, [id]) => org.suggestJob(c, decodeURIComponent(id), str(b.ask), typeof b.job === 'string' ? b.job : undefined),
+    },
     { method: 'GET', path: /^\/api\/roles$/, handle: (c) => org.roles(c) },
     { method: 'POST', path: /^\/api\/roles\/hire$/, handle: (c, b) => org.hireRole(c, str(b.role), str(b.extra)) },
     { method: 'POST', path: /^\/api\/publish$/, handle: (c, b) => org.publishWorker(c, str(b.yaml), hireOptions(b.options), parseTemplates(b.tools), str(b.localId) || undefined) },
@@ -1037,6 +1087,11 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/secrets$/, handle: (c, b) => org.setSecret(c, str(b.name), str(b.value)) },
     { method: 'POST', path: /^\/api\/secrets\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.removeSecret(c, decodeURIComponent(name)) },
     { method: 'GET', path: /^\/api\/repos$/, handle: (c) => org.repoList(c) },
+    { method: 'POST', path: /^\/api\/repos\/branch-prefix$/, handle: (c, b) => org.setBranchPrefix(c, str(b.prefix)) },
+    { method: 'POST', path: /^\/api\/repos\/refresh$/, handle: (c) => org.refreshRepos(c) },
+    { method: 'GET', path: /^\/api\/admin\/storage$/, handle: (c) => org.storage(c) },
+    { method: 'POST', path: /^\/api\/admin\/storage\/discard$/, handle: (c, b) => org.discardCheckouts(c, str(b.runId)) },
+    { method: 'POST', path: /^\/api\/admin\/storage\/clear-cache$/, handle: (c) => org.clearToolCache(c) },
     { method: 'POST', path: /^\/api\/workspaces$/, handle: (c, b) => org.createWorkspace(c, { name: str(b.name), repos: Array.isArray(b.repos) ? b.repos.map(String) : [], instructions: str(b.instructions) || undefined }) },
     { method: 'POST', path: /^\/api\/workspaces\/([^/]+)$/, handle: (c, b, [id]) => org.updateWorkspace(c, decodeURIComponent(id), { ...(Array.isArray(b.repos) ? { repos: b.repos.map(String) } : {}), ...(typeof b.instructions === 'string' ? { instructions: b.instructions } : {}) }) },
     { method: 'POST', path: /^\/api\/workspaces\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeWorkspace(c, decodeURIComponent(id)) },
@@ -1073,6 +1128,12 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         };
       },
     },
+    // What each step of a run did: what it wrote, and its activity.
+    { method: 'GET', path: /^\/api\/runs\/([^/]+)\/steps$/, handle: (c, _b, [id]) => org.runSteps(c, decodeURIComponent(id)) },
+    // Push a finished run again, once what refused it is put right.
+    { method: 'POST', path: /^\/api\/runs\/([^/]+)\/push$/, handle: (c, _b, [id]) => org.pushRunAgain(c, decodeURIComponent(id)) },
+    // What a run has changed so far; `?diff=1` adds the diff itself.
+    { method: 'GET', path: /^\/api\/runs\/([^/]+)\/changes$/, handle: (c, _b, [id], url) => org.runChanges(c, decodeURIComponent(id), url.searchParams.get('diff') === '1') },
     { method: 'GET', path: /^\/api\/runs\/([^/]+)\/live$/, handle: (c, _b, [id], url) => org.runLive(c, decodeURIComponent(id), numParam(url, 'after') ?? 0) },
     {
       method: 'POST',
@@ -1086,6 +1147,8 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         return org.updateTeamSettings(c, decodeURIComponent(id), {
           ...(checkpoints ? { checkpoints } : {}),
           ...(flag(b.piecesAskFirst) !== undefined ? { piecesAskFirst: flag(b.piecesAskFirst) } : {}),
+          ...(b.whoCanBrief === 'managers' || b.whoCanBrief === 'team' || b.whoCanBrief === 'org' ? { whoCanBrief: b.whoCanBrief } : {}),
+          ...(b.audience === null ? { audience: null } : (() => { const a = b.audience !== undefined ? parseAudience(b.audience) : null; return a?.ok ? { audience: a.audience } : {}; })()),
           ...(typeof b.budgetUSDPerTask === 'number' ? { budgetUSDPerTask: b.budgetUSDPerTask } : {}),
           ...(typeof b.guidance === 'string' ? { guidance: b.guidance } : {}),
           ...(typeof b.avatarUrl === 'string' || b.avatarUrl === null ? { avatarUrl: b.avatarUrl as string | null } : {}),
@@ -1194,7 +1257,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'GET', path: /^\/api\/waiting$/, handle: (c) => org.listWaiting(c) },
     { method: 'GET', path: /^\/api\/hires$/, handle: (c) => org.listHires(c) },
     { method: 'POST', path: /^\/api\/answer$/, handle: (c, b) => org.answer(c, str(b.runId), str(b.answer)) },
-    { method: 'POST', path: /^\/api\/approval$/, handle: (c, b) => org.decideRun(c, str(b.runId), b.approve === true, b.forRun === true) },
+    { method: 'POST', path: /^\/api\/approval$/, handle: (c, b) => org.decideRun(c, str(b.runId), b.approve === true, b.forRun === true, b.always === true) },
     {
       // Returns at once: the console follows the question by id, so leaving
       // the page loses nothing.
@@ -1255,6 +1318,14 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         });
       },
     },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/tools\/([^/]+)\/settings$/,
+      handle: (c, b, [name]) => {
+        const values = b.values && typeof b.values === 'object' && !Array.isArray(b.values) ? Object.fromEntries(Object.entries(b.values as Record<string, unknown>).filter(([, v]) => typeof v === 'string')) as Record<string, string> : {};
+        return org.updateToolSettings(c, decodeURIComponent(name), values);
+      },
+    },
     { method: 'POST', path: /^\/api\/admin\/tools\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.uninstallTool(c, decodeURIComponent(name)) },
     { method: 'POST', path: /^\/api\/admin\/tools\/discover$/, handle: (c, b, _p, _u, base) => org.discoverToolSignIn(c, str(b.url), base) },
     {
@@ -1297,6 +1368,12 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/picture\/pick$/, handle: (c, _b, [id]) => org.pickWorkerPicture(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/runs\/([^/]+)\/stop$/, handle: (c, _b, [id]) => org.stopRun(c, decodeURIComponent(id)) },
+    {
+      method: 'GET',
+      path: /^\/api\/watching$/,
+      handle: (c, _b, _p, url) => org.watching(c, { q: url.searchParams.get('q') ?? undefined, offset: Number(url.searchParams.get('offset')) || 0, ...(url.searchParams.has('limit') ? { limit: Number(url.searchParams.get('limit')) } : {}) }),
+    },
+    { method: 'POST', path: /^\/api\/watching\/follow$/, handle: (c, b) => org.followOrSetUp(c, str(b.item).trim().toUpperCase(), b.on !== false) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/track$/, handle: (c, b, [id]) => org.trackItem(c, decodeURIComponent(id), str(b.item), b.on !== false) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/retire$/, handle: (c, _b, [id]) => org.retire(c, decodeURIComponent(id)) },
     {
@@ -1304,6 +1381,11 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       path: /^\/api\/workers\/([^/]+)\/update$/,
       handle: (c, b, [id]) => {
         const patch = { ...((b.patch ?? {}) as Parameters<OrgService['update']>[2]) };
+        if (patch && 'audience' in patch && patch.audience !== null) {
+          const a = parseAudience(patch.audience);
+          if (!a.ok) return a;
+          patch.audience = a.audience;
+        }
         if (patch && 'cadence' in patch) {
           const cadence = parseCadence(patch.cadence);
           if (cadence === undefined) return { ok: false, error: 'That schedule is not one overcli understands.' };
@@ -1542,6 +1624,24 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           if (req.method === 'POST' && path === '/api/signout') return send(res, 200, { ok: revokeOwnToken(bearer(req)!) });
           const route = routes.find((r) => r.method === req.method && r.path.test(path));
           if (!route) return send(res, 404, { ok: false, error: 'No such route.' });
+          // "View as": an admin seeing the console as one person sees it, to
+          // check what they can see. Read only: nothing is done in their name.
+          let as = caller;
+          const viewAs = String(req.headers['x-overgo-view-as'] ?? '').trim();
+          if (viewAs) {
+            const policy = loadOrgPolicy().policy;
+            if (!isAdmin(policy, caller)) return send(res, 403, { ok: false, error: 'Only admins can view the console as someone else.' });
+            if (!/^[UW][A-Z0-9]{6,}$/.test(viewAs)) return send(res, 400, { ok: false, error: 'View as whom? That is not a Slack member id.' });
+            if (req.method !== 'GET') return send(res, 403, { ok: false, error: "You're viewing as someone else, so nothing can be changed. Stop viewing as them to make changes." });
+            let name = viewAs;
+            try {
+              name = decodeURIComponent(String(req.headers['x-overgo-view-as-name'] ?? '')).trim().slice(0, 80) || viewAs;
+            } catch {
+              // a name that doesn't decode: their id will do
+            }
+            const them = { slackUserId: viewAs, name, admin: false };
+            as = { ...them, admin: isAdmin(policy, them) };
+          }
           let body: Record<string, unknown> = {};
           if (req.method === 'POST') {
             try {
@@ -1552,7 +1652,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
             }
           }
           const params = route.path.exec(path)!.slice(1);
-          const answer = await route.handle(caller, body, params, url, base, privateChannel(req));
+          const answer = await route.handle(as, body, params, url, base, privateChannel(req));
           if (answer && typeof answer === 'object' && ZIP in answer) {
             const zip = (answer as Record<string, unknown>)[ZIP] as { filename: string; data: Buffer };
             res.writeHead(200, {

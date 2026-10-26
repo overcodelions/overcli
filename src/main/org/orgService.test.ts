@@ -49,7 +49,7 @@ function drafted(over: Partial<DraftedHire['contract']> = {}): DraftedHire {
   } as DraftedHire;
 }
 
-function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<OrgPolicy>; draft?: DraftedHire | string[]; teams?: boolean; overlap?: string; launches?: number; hold?: Promise<void> } = {}) {
+function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<OrgPolicy>; draft?: DraftedHire | string[]; teams?: boolean; overlap?: string; launches?: number; hold?: Promise<void>; changes?: string[] } = {}) {
   const roster = new Map((opts.roster ?? []).map((w) => [w.id, w]));
   const teams = new Map<string, Team>();
   const teamTasks: TeamTask[] = [];
@@ -76,13 +76,14 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
         roster.delete(id);
         return { ok: true };
       },
-      runErrand: async (id, text, _attachments, _conversation, untrusted) => {
-        calls.push(`errand:${id}:${text}${untrusted ? ':untrusted' : ''}`);
+      runErrand: async (id, text, _attachments, _conversation, untrusted, mayLaunch) => {
+        calls.push(`errand:${id}:${text}${untrusted ? ':untrusted' : ''}${mayLaunch ? ':mayLaunch' : ''}`);
         if (opts.hold) await opts.hold;
         const n = opts.launches ?? 0;
         return { ok: true, result: { orchestrationId: 'o', count: n, queued: n, launchedNothing: !n, reply: 'Done.' } };
       },
       journalFor: () => [],
+      ...(opts.changes ? { changesOf: () => opts.changes! } : {}),
       spentThisMonth: () => new Map(),
       workerNames: () => [...roster.values()].map((w) => w.name),
     },
@@ -201,6 +202,26 @@ describe('OrgService visibility', () => {
     expect(svc.askStatus(pat, started.askId)).toMatchObject({ ok: true, ask: { status: 'answered', reply: 'Done.' } });
     expect(svc.askStatus(sam, started.askId).ok).toBe(true);
     expect(svc.workerDetail(pat, 'Open')).toMatchObject({ ok: true, asks: [{ id: started.askId, status: 'answered' }] });
+  });
+});
+
+describe('asking a worker that only reads', () => {
+  const roster = [worker('reader', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org' })];
+
+  it('starts work for anyone who may ask it, and only proposes when its work could change something', async () => {
+    const reads = harness({ roster, changes: [] });
+    const a = reads.svc.startAsk(sam, 'reader', 'what is the state of ACME-412?', 'slack');
+    if (!a.ok) throw new Error(a.error);
+    await a.done;
+    expect(reads.calls[0]).toContain('Your work only reads, so answer them as you would your manager.');
+    expect(reads.calls[0]).toMatch(/:untrusted:mayLaunch$/);
+
+    const writes = harness({ roster, changes: ['it can use acme → createIssue'] });
+    const b = writes.svc.startAsk(sam, 'reader', 'what is the state of ACME-412?', 'slack');
+    if (!b.ok) throw new Error(b.error);
+    await b.done;
+    expect(writes.calls[0]).toContain('Treat the request as a proposal');
+    expect(writes.calls[0]).toMatch(/:untrusted$/);
   });
 });
 
@@ -407,6 +428,69 @@ describe('OrgService manage', () => {
   it('refuses changes from someone who does not manage the worker', () => {
     const { svc } = harness({ roster: [worker('open', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'org' })] });
     expect(svc.setPaused(pat, 'open', true)).toMatchObject({ ok: false });
+  });
+
+  it('keeps each change as a version, and restores one through the same rules', () => {
+    const { svc } = harness({ policy: { budgetAllowanceUSD: 1000 }, roster: [worker('mine', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    const job = (svc.getWorker(pat, 'mine') as { jobDescription: string }).jobDescription;
+    expect(svc.update(pat, 'mine', { jobDescription: 'Reads the board every morning and posts what moved.' })).toMatchObject({ ok: true });
+    expect(svc.update(pat, 'mine', { budgetUSDPerMonth: 5 })).toMatchObject({ ok: true });
+    const h = svc.workerHistory(pat, 'mine') as { ok: true; versions: Array<{ id: string; changed: string[]; job: string }> };
+    expect(h.versions.map((v) => v.changed)).toEqual([['its budget'], ['its job'], ['as it was']]);
+    expect(svc.restoreWorker(pat, 'mine', h.versions[2].id)).toMatchObject({ ok: true });
+    expect((svc.getWorker(pat, 'mine') as { jobDescription: string }).jobDescription).toBe(job);
+    // Restoring is a change too, and can be undone the same way.
+    expect((svc.workerHistory(pat, 'mine') as { versions: unknown[] }).versions).toHaveLength(4);
+  });
+
+  it('restores nothing a manager could not set by hand', () => {
+    const { svc } = harness({ roster: [worker('mine', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    svc.update(pat, 'mine', { budgetUSDPerMonth: 1 });
+    const first = (svc.workerHistory(pat, 'mine') as { versions: Array<{ id: string }> }).versions.at(-1)!;
+    // Back up to the old budget is a raise, and this manager has no allowance.
+    expect(svc.restoreWorker(pat, 'mine', first.id)).toMatchObject({ ok: false });
+  });
+
+  it('says whether a worker writes code, from its flows unless set', () => {
+    const { svc } = harness({ roster: [worker('mine', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    expect((svc.getWorker(pat, 'mine') as { worker: { coding?: boolean } }).worker.coding).toBeUndefined();
+    expect(svc.update(pat, 'mine', { writesCode: true })).toMatchObject({ ok: true, worker: { coding: true, writesCode: true } });
+    expect(svc.update(pat, 'mine', { writesCode: null })).toMatchObject({ ok: true });
+    expect((svc.getWorker(pat, 'mine') as { worker: { writesCode?: boolean } }).worker.writesCode).toBeUndefined();
+  });
+
+  it('keeps steps its manager always allows, and takes them off again', () => {
+    const { svc } = harness({ roster: [worker('mine', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    expect(svc.update(pat, 'mine', { alwaysAllow: ['morning-check/file-proposals'] })).toMatchObject({ ok: true, worker: { alwaysAllow: ['morning-check/file-proposals'] } });
+    expect(svc.update(pat, 'mine', { alwaysAllow: ['not a step'] })).toMatchObject({ ok: false });
+    expect(svc.update(pat, 'mine', { alwaysAllow: [] })).toMatchObject({ ok: true });
+    expect((svc.getWorker(pat, 'mine') as { worker: { alwaysAllow?: string[] } }).worker.alwaysAllow).toBeUndefined();
+  });
+
+  it('gives a cleared tool at once, and asks an admin for anything else', () => {
+    const boss: OrgCaller = { slackUserId: BOSS, name: 'Boss', admin: false };
+    const { svc } = harness({ policy: { admins: [BOSS], allowedMcpServers: ['acme-docs'] }, roster: [worker('mine', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    expect(svc.requestTool(pat, 'mine', 'acme-docs')).toMatchObject({ ok: true, given: true });
+    const asked = svc.requestTool(pat, 'mine', 'acme-crm', 'to read accounts');
+    expect(asked).toMatchObject({ ok: true, given: false, asked: [BOSS] });
+    expect(svc.requestTool(pat, 'mine', 'acme-crm')).toMatchObject({ ok: false, error: expect.stringContaining('already asked') });
+    expect(svc.today(boss).toolRequests).toHaveLength(1);
+    expect(svc.today(pat).toolRequests).toEqual([]);
+    const id = (asked as { request: { id: string } }).request.id;
+    expect(svc.decideToolRequest(pat, id, true)).toMatchObject({ ok: false });
+    expect(svc.decideToolRequest(boss, id, true)).toMatchObject({ ok: true, request: { status: 'given', decidedBy: 'Boss' } });
+    expect(svc.getWorker(pat, 'mine')).toMatchObject({ ok: true, worker: { tools: expect.arrayContaining([expect.objectContaining({ name: 'acme-crm' })]) } });
+    expect(svc.decideToolRequest(boss, id, false)).toMatchObject({ ok: false, error: expect.stringContaining('already') });
+  });
+
+  it('needs an admin to let a worker run through its flows’ checkpoints', () => {
+    const boss: OrgCaller = { slackUserId: BOSS, name: 'Boss', admin: false };
+    const { svc } = harness({ policy: { admins: [BOSS] }, roster: [worker('mine', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    expect(svc.update(pat, 'mine', { skipCheckpoints: true })).toMatchObject({ ok: false });
+    expect(svc.update(boss, 'mine', { skipCheckpoints: true })).toMatchObject({ ok: true, worker: { skipCheckpoints: true } });
+    // Its manager may leave it as it is while changing something else.
+    expect(svc.update(pat, 'mine', { skipCheckpoints: true, answersAtOnce: 2 })).toMatchObject({ ok: true });
+    expect(svc.update(boss, 'mine', { skipCheckpoints: false })).toMatchObject({ ok: true });
   });
 
   it('needs an admin to widen visibility to the whole org', () => {

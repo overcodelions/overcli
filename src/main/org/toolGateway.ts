@@ -207,6 +207,12 @@ export class ToolGateway {
   private port = 0;
   private readonly seal: Buffer;
   private readonly mac: Buffer;
+  /// Signs run keys: made at each start and never written down, so a worker
+  /// that can read the key file still can't make another run's key. (The box
+  /// key is signed with the file's, as configs on disk carry it; it may
+  /// never call a tool.) The port changes each start too, so no run key
+  /// outlives the start that issued it.
+  private readonly runMac = randomBytes(32);
   private doc: Doc;
   /// Workers seen behind run keys, kept after the runtime lets the run go.
   private readonly known = new Map<string, GatewayCaller>();
@@ -258,7 +264,7 @@ export class ToolGateway {
       if (this.issued.size > MAX_ISSUED) this.issued.delete(this.issued.values().next().value!);
     }
     const subject = conversationId ? `c.${conversationId}` : 'b';
-    return `${subject}.${createHmac('sha256', this.mac).update(subject).digest('base64url')}`;
+    return `${subject}.${this.sign(subject)}`;
   }
 
   /// Seal a tool's real address and headers, and give back the config the
@@ -291,6 +297,10 @@ export class ToolGateway {
     return { type: 'http', url: `${this.base()}${encodeURIComponent(name)}`, headers: { Authorization: `Bearer ${this.keyFor()}` } };
   }
 
+  private sign(subject: string): string {
+    return createHmac('sha256', subject.startsWith('c.') ? this.runMac : this.mac).update(subject).digest('base64url');
+  }
+
   /// Who a key belongs to: `box` for the shared config, a conversation id for
   /// a run, null for anything this gateway did not issue.
   private verify(header: string | undefined): { conversationId?: string } | null {
@@ -298,7 +308,7 @@ export class ToolGateway {
     const dot = token.lastIndexOf('.');
     if (dot <= 0) return null;
     const subject = token.slice(0, dot);
-    const want = Buffer.from(createHmac('sha256', this.mac).update(subject).digest('base64url'));
+    const want = Buffer.from(this.sign(subject));
     const got = Buffer.from(token.slice(dot + 1));
     if (got.length !== want.length || !timingSafeEqual(got, want)) return null;
     if (subject === 'b') return {};

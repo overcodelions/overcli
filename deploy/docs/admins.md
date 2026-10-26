@@ -2,6 +2,8 @@
 
 Admins set the server up and keep it healthy. Most of this lives on the console's **Setup** page, with people and the decision log on **People** and **Activity**.
 
+Setup is one page at a time, picked from the list beside it: **Readiness**; **Organization** (General, People & teams, Sign-in, Records); **Workers** (Hiring, Role catalog, Handbook, Spending); and **Connections** (Tools, Secrets, Repos & workspaces, From desktops, Other servers). On a phone the list is a menu above the page. Each page saves on its own, and **Save** waits until something changed.
+
 ## Setup → Readiness
 
 A checklist of what the server needs: a model, Slack, a place to work, the tools workers list, people. Each missing item says how to fix it.
@@ -67,11 +69,35 @@ Either way the server needs outbound access to the service; a network with no wa
 
 **Who can use a tool.** Each tool on Setup → Tools has three levels:
 
-- **Workers you pick:** you give it to each worker that needs it (**Give it to a worker**). Use this for anything that changes systems people rely on, or that uses one person's key.
-- **Any manager can give it:** managers add it to their own workers without asking an admin. Use this for tools that write, but where a mistake is cheap.
-- **Every worker:** every worker has it, including future hires. Use this for tools that only read. Before you switch it on, the console lists the tool's actions that can change things.
+- **Only admins, to workers they pick:** you give it to each worker that needs it (**Give it to a worker**). Use this for anything that changes systems people rely on, or that uses one person's key.
+- **Any manager, to their workers:** managers add it to their own workers without asking an admin. Use this for tools that write, but where a mistake is cheap.
+- **Every worker has it:** every worker has it, including future hires. Use this for tools that only read. Before you switch it on, the console lists the tool's actions that can change things.
 
 Workers that ask first still ask before any step that changes something, whatever a tool's level.
+
+**What a tool can do.** A tool's panel counts its actions: so many **reads**, so many **changes**, or **Only reads**. **See what it can do** lists them by name.
+
+**Whose keys it uses.** When a tool's keys belong to a person, its panel says **It acts as** that person: anyone who can ask a worker with the tool reads what they can, and what it changes shows as theirs. The box turns red when that person has left the org, because every worker with the tool stops when their account is closed. Replace the key with a service account's. If the keys already are one, press **These are a service account's keys** and the warning goes away (**Not any more** undoes it).
+
+### Tool requests
+
+A manager who wants a tool for a worker asks from the worker's **Access** tab (**+ Give it a tool**) or from Slack (`/worker Ada tools add zendesk: to read tickets`).
+
+- **Given at once** when the tool is one any hire may have (see [Setup → Hiring](#setup--rules-spending-and-sign-in)), or when an admin asks.
+- **Otherwise it comes to you.** Every admin gets a Slack DM, and a **Tool** card waits in the Inbox, with what it's for. **Give it** or **Decline**. A tool that isn't installed yet has to be installed on Setup → Tools first.
+- **The person who asked hears** in Slack either way, and the DMs to the other admins update to say who decided.
+
+### When a tool stops working
+
+The server watches every tool call. A tool that starts failing reaches you, instead of showing up as workers quietly saying they couldn't read something.
+
+- **Right away** when its calls are refused (401, 403, an expired or revoked key) or when it says what it calls is retired or gone.
+- **After five failures in a row** for any other error, so a model calling a tool wrong now and then doesn't count.
+- **How you hear:** a Slack DM to every admin, with the last error and the workers it holds up, at most once a day per tool. A **Fix** card waits in the Inbox.
+- **On Setup → Tools** the tool shows **Can't sign in since…**, **Its API looks retired** or **Failing since…**. Its panel has the last error and **Mark fixed**.
+- **It clears itself** the next time a call to the tool works.
+
+**npx tools are installed ahead of time.** A tool run as `npx -y <package>` used to download itself on its first start, inside a run's short start-up time. Cut off halfway, it left a broken install and every start after failed with "Cannot find module". The server now installs each npx tool in the background at startup, every 30 minutes, and right after you install one, and removes and reinstalls a broken install. Pin a version in the command (`zd-mcp-server@0.6.1`, as the catalog's Zendesk does) so an update can't change the tool under you.
 ## Setup → Repos
 
 Code repos workers may change. See also [Security model](security.md#code).
@@ -102,6 +128,16 @@ Every secret the server uses, with why it's needed and how to get one. Values go
 - **The environment wins.** A secret set in the server's environment (`deploy/.env` or the task definition) shows as "set by the environment" and is changed there.
 - **Read-only mode:** with `OVERCLI_SECRETS_READONLY=1`, for secrets managed in Terraform, the page lists them and changes nothing. The server re-reads them every five minutes either way.
 
+## Setup → Handbook
+
+What every worker should know about your org, written once. Every worker reads it after its own job, before every run and every answer.
+
+- **What to put in it:** what your products are called, where work is tracked, who owns what, how you like things written. For example: "Work is tracked in WEB (the site) and API (the platform). Billing questions go to Ada's team."
+- **Keep it short.** It's read on every run, so it costs a little each time. The limit is 12,000 characters.
+- **Who changes it:** admins. Everyone else can read it. **Save the handbook** applies from each worker's next run, and the change goes in the decision log.
+
+It's kept in `org/handbook.md` on the data volume. A worker's own job still comes first: put what only one worker needs in its job, not here.
+
 ## Google Drive for everyone
 
 People can save a team's files into their own Google Drive, as themselves. There are two steps, done by different people:
@@ -110,7 +146,7 @@ People can save a team's files into their own Google Drive, as themselves. There
 - **Each person, for themselves:** connects their own Google account from their menu (**Your connections**) and approves it on Google's own page. Their files then save into their Drive, in a folder called `overcli`.
 
 > [!NOTE]
-> Set the console address first (**Setup → Rules**, or `publicUrl` in `org.json`). The redirect address Google needs is built from it, and connecting only works from that address. `localhost` is fine for trying it on one machine.
+> Set the console address first (**Setup → General**, or `publicUrl` in `org.json`). The redirect address Google needs is built from it, and connecting only works from that address. `localhost` is fine for trying it on one machine.
 
 ### Turning it on
 
@@ -142,15 +178,19 @@ People can save a team's files into their own Google Drive, as themselves. There
 
 ## Setup → Rules, spending and sign-in
 
-The org's rules, kept in `org.json` on the volume and editable here (or by Claude with `set_org_rules`). Every change is checked and logged.
+The org's rules, kept in `org.json` on the volume (or set by Claude with `set_org_rules`). Every change is checked and logged. They're spread across Setup's pages: the org's name, address and time zone on **General**; teams on **People & teams**; who may hire, approvals, visibility and web pages on **Hiring**; roles on **Role catalog**; the org budget on **Spending**; how long records are kept on **Records**; company sign-in on **Sign-in**.
 
 - **Who may hire:** everyone, or a list of people.
 - **Allowances:** what one person's workers may cost a month before a hire needs an approver; per-person overrides; who the approvers are.
 - **Org budget:** what all workers together may cost a month. At the cap, scheduled runs stop until the month turns. Warnings go out at `alertAtPercent` (80% by default).
-- **Approved tools:** connectors any hire gets without approval.
+- **Tools any hire may have without approval:** tick them from the installed tools. Managers give these to their workers at once; any other tool, they ask an admin for (see [Tool requests](#tool-requests)).
 - **Roles:** the catalog on the Hire page. Each role is a job, its cleared tools, and a budget.
 - **Visibility:** whether "everyone may ask it" needs an admin.
-- **Reading the web:** whether workers ask before searching the web or opening a page. Off by default; see [Security model](security.md#reading-the-web).
+- **Opening web pages:** how workers open pages. Searching the web never asks. See [Security model](security.md#reading-the-web).
+  - **Safe fetches** (the default): a worker opens a page only when the address came from the request, a search result, or a page it already read. An address it wrote itself is refused, and it's told to search for it first.
+  - **Ask before a step that opens pages:** the manager approves first.
+  - **Any page, without asking.**
+- **Your own sites (always open):** sites workers may always open, such as `acme.atlassian.net, wiki.acme.com`. Subdomains count. List a private address here if workers should read it.
 - **Company sign-in:** OpenID Connect (Okta, Entra ID, Google Workspace). Enter the issuer and client ID here; a confidential client's secret goes on Setup → Secrets as `OVERCLI_SSO_CLIENT_SECRET`. "Everyone signs in this way" turns invite links into role grants.
 
 ## People
@@ -164,6 +204,15 @@ The org's rules, kept in `org.json` on the volume and editable here (or by Claud
 ## Activity
 
 The decision log: hires, approvals, rule changes, secrets set (by name), repos connected, trust changes. It's searchable and exports to CSV. Retention follows the org's rules.
+
+## The Monday digest
+
+Every Monday at 9am in the org's time zone, overgo DMs a short week in review:
+
+- **To each manager:** for each of their workers, what it finished, what failed, how many times it was asked, what it cost, and how people rated it. Then how much is waiting on them.
+- **To admins,** as well: the org's totals, the cost per finished item, tools that are failing, and tool requests waiting.
+
+`/overgo digest` sends this week's so far, any time. Someone with nothing to report gets nothing.
 
 ## Day to day
 

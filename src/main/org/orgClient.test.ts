@@ -8,6 +8,8 @@ describe('normalizeOrgUrl', () => {
   });
   it('allows plain http only to this machine', () => {
     expect(normalizeOrgUrl('http://127.0.0.1:7420')).toEqual({ ok: true, url: 'http://127.0.0.1:7420' });
+    // A server's "every interface" address, copied from its console: this machine.
+    expect(normalizeOrgUrl('http://0.0.0.0:7420')).toEqual({ ok: true, url: 'http://localhost:7420' });
     expect(normalizeOrgUrl('http://overcli.acme.example').ok).toBe(false);
     expect(normalizeOrgUrl('not a url').ok).toBe(false);
   });

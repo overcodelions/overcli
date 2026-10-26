@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { FLOW_TEMPLATES } from './templates';
 import { parseFlowYaml } from './yaml';
-import { resolveTemplateForUser } from './templateResolver';
+import { rebindMissingBackends, resolveTemplateForUser } from './templateResolver';
 
 function loadTemplate(id: string) {
   const t = FLOW_TEMPLATES.find((x) => x.id === id);
@@ -136,5 +136,41 @@ describe('resolveTemplateForUser — user pins', () => {
       ollamaModels: [],
     });
     expect(withEmpty.participants).toEqual(without.participants);
+  });
+});
+
+describe('rebindMissingBackends', () => {
+  const yaml = [
+    'name: Solve it',
+    'input: user_prompt',
+    'steps:',
+    '  - id: plan',
+    '    model: { backend: claude, model: claude-opus-5-5 }',
+    '    role: planner',
+    '    inputs: [user_prompt]',
+    '    output: plan.md',
+    '  - id: review',
+    '    model: { backend: codex, model: gpt-5.4 }',
+    '    role: reviewer',
+    '    inputs: [plan.md]',
+    '    output: review.md',
+  ].join('\n');
+  const flow = parseFlowYaml({ yaml, id: 'solve-it', source: 'user', filePath: '' })!;
+  const modelOf = (f: typeof flow, id: string) => {
+    const step = f.steps.find((s) => s.id === id)!;
+    return f.participants.find((p) => p.id === step.participantId) ?? step.model!;
+  };
+
+  it('moves a step on a backend this machine lacks to one it has, and leaves the rest', () => {
+    const res = rebindMissingBackends(flow, { healthyBackends: ['claude'] });
+    expect(modelOf(res.flow, 'review').backend).toBe('claude');
+    expect(modelOf(res.flow, 'plan')).toMatchObject({ backend: 'claude', model: 'claude-opus-5-5' });
+    expect(res.moved).toHaveLength(1);
+    expect(modelOf(flow, 'review').backend).toBe('codex');
+  });
+
+  it('changes nothing when every backend is here, or nothing is known to be', () => {
+    expect(rebindMissingBackends(flow, { healthyBackends: ['claude', 'codex'] })).toEqual({ flow, moved: [] });
+    expect(rebindMissingBackends(flow, { healthyBackends: [] })).toEqual({ flow, moved: [] });
   });
 });

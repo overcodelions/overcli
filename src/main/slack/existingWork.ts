@@ -25,6 +25,9 @@ export interface ExistingHit {
   teamId?: string;
   /// Where it stands, in words: "waiting on your review".
   status?: string;
+  /// False when the person asking may not put a question to it: a team
+  /// task's room talks only to whoever asked for the task, or an admin.
+  canAsk?: boolean;
   /// Related but not a match: never shown, only a hint to the router.
   weak?: boolean;
 }

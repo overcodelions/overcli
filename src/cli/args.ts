@@ -737,8 +737,10 @@ RUN OPTIONS
 SERVE OPTIONS
   --state-dir DIR        Which saved schedules and workers to run, and where
                          the daemon keeps their journals. Default:
-                         $OVERCLI_HOME, then ~/.overcli — the same state the
-                         desktop app uses, NOT a throwaway directory.
+                         $OVERCLI_HOME, then ~/.overcli. The desktop app keeps
+                         its own state elsewhere (on macOS, ~/Library/
+                         Application Support/Overcli) — pass that here to run
+                         the app's schedules and workers.
   --permissions POLICY   deny (default) | allow-list | auto-approve. Means
                          exactly what it means for run, and matters more: a
                          daemon fires unattended work for as long as it is

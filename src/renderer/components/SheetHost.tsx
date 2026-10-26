@@ -20,6 +20,7 @@ import { FlowLaunchSheet } from './sheets/FlowLaunchSheet';
 import { ShortcutsHelpSheet } from './sheets/ShortcutsHelpSheet';
 import { SetupSheet } from './sheets/SetupSheet';
 import { BasicsSheet } from './sheets/BasicsSheet';
+import { GuideSheet } from './sheets/GuideSheet';
 import { WhatsNewSheet } from './sheets/WhatsNewSheet';
 import { WorktreeDiffSheet } from './sheets/WorktreeDiffSheet';
 import { ProjectDiffSheet } from './sheets/ProjectDiffSheet';
@@ -103,6 +104,9 @@ export function SheetHost() {
   // a specimen panel all need more than the default 680px, which squeezed the
   // concept grid into one column and wrapped every term onto four lines.
   const isHelp = sheet.type === 'basics' || sheet.type === 'setup';
+  // The guide has a nav rail beside long pages; a fixed height keeps the
+  // frame still as you move between a short page and a long one.
+  const isGuide = sheet.type === 'guide';
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
@@ -122,6 +126,8 @@ export function SheetHost() {
               : 'max-w-[1240px] h-[88vh]'
             : isAbout
               ? 'max-w-[1040px] max-h-[90vh]'
+              : isGuide
+                ? 'max-w-[1080px] h-[86vh]'
               : isHelp
                 ? 'max-w-[900px] max-h-[86vh]'
                 : isSettings
@@ -189,6 +195,7 @@ export function SheetHost() {
         {sheet.type === 'shortcutsHelp' && <ShortcutsHelpSheet />}
         {sheet.type === 'setup' && <SetupSheet />}
         {sheet.type === 'basics' && <BasicsSheet />}
+        {sheet.type === 'guide' && <GuideSheet initialPage={sheet.page} />}
         {sheet.type === 'whatsNew' && <WhatsNewSheet />}
       </div>
     </div>

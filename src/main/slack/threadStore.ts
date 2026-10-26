@@ -31,6 +31,9 @@ export interface SlackThread {
   /// rather than the thread's first message.
   messageTs?: string;
   createdAt: number;
+  /// What it asked about, `*assess* on _Morning check_`, kept so the card
+  /// still says so once its buttons are gone.
+  about?: string;
   resolvedAt?: number;
   resolution?: 'answered' | 'approved' | 'rejected' | 'elsewhere';
 }

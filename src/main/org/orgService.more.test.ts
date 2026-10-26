@@ -260,6 +260,15 @@ describe('teams', () => {
     expect(h.svc.briefTeam(sam, 'Pricing', 'x x x x x x').ok).toBe(false);
   });
 
+  it('opens a team to everyone when it is set so, and keeps it to its managers otherwise', () => {
+    const open = harness({ roster: [worker('luke', { manager: { name: 'Pat', slackUserId: PAT } })], teams: { teams: [{ ...team, whoCanBrief: 'org' }], tasks: [] } });
+    expect(open.svc.teams(sam)[0]).toMatchObject({ name: 'Pricing', canBrief: true });
+    expect(open.svc.briefTeam(sam, 'Pricing', 'Review Q4 pricing')).toMatchObject({ ok: true });
+    const shut = harness({ roster: [worker('luke', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org' })], teams: { teams: [team], tasks: [] } });
+    expect(shut.svc.teams(sam)[0]).toMatchObject({ canBrief: false });
+    expect(shut.svc.briefTeam(sam, 'Pricing', 'x x x x x x')).toMatchObject({ ok: false, error: expect.stringContaining("can't give Pricing tasks") });
+  });
+
   it('puts the task in front of whoever asked for it, and only they steer it', () => {
     const h = harness({ roster: [worker('luke', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org' })], teams: { teams: [team], tasks: [task] } });
     expect(h.svc.today(pat).teamTasks[0]).toMatchObject({ waitingOnYou: true, needs: 'answers', questions: ['Which regions?'] });

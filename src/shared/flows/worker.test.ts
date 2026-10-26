@@ -110,6 +110,9 @@ describe('worker', () => {
   it('caps unattended launches by trust level', () => {
     expect(workerAutoApproveCap({ trust: 'probation', caps: { maxItemsPerShift: 5, runIn: 'worktree' } })).toBe(0);
     expect(workerAutoApproveCap({ trust: 'trusted', caps: { maxItemsPerShift: 5, runIn: 'worktree' } })).toBe(2);
+    // A trusted coding worker gets on with it; on probation it still asks.
+    expect(workerAutoApproveCap({ trust: 'trusted', flowIds: ['org-pr-app'], caps: { maxItemsPerShift: 5, runIn: 'worktree' } })).toBe(5);
+    expect(workerAutoApproveCap({ trust: 'probation', flowIds: ['org-pr-app'], caps: { maxItemsPerShift: 5, runIn: 'worktree' } })).toBe(0);
     expect(workerAutoApproveCap({ trust: 'autonomous', caps: { maxItemsPerShift: 5, runIn: 'worktree' } })).toBe(5);
   });
 

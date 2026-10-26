@@ -155,7 +155,7 @@ describe('workspaces', () => {
     expect(made).toMatchObject({ ok: true, workspace: { id: 'ws-storefront', repos: ['app', 'api', 'infra'], instructions: 'The API owns prices.' } });
     expect(h.workspaces).toEqual(['ws-storefront:app+api+infra (with instructions)']);
     expect(h.svc.createWorkspace({ name: 'storefront', repos: ['app', 'api'] }, 'Bo').ok).toBe(false);
-    expect(h.svc.codeTools()).toEqual(['Bash(git diff:*)', 'Bash(git status:*)', 'Bash(git log:*)']);
+    expect(h.svc.codeTools()).toEqual(['Bash(git diff:*)', 'Bash(git status:*)', 'Bash(git log:*)', ...['app', 'api', 'infra'].flatMap((n) => [`Bash(git -C ${n} status:*)`, `Bash(git -C ${n} diff:*)`, `Bash(git -C ${n} log:*)`])]);
     expect(h.svc.trustedCommands()).toEqual([]);
     h.svc.disconnect('infra');
     expect(h.svc.workspace('Storefront')?.repos).toEqual(['app', 'api']);
@@ -177,6 +177,30 @@ describe('workspaces', () => {
     expect(resolveStepEffect(pr)).toBe('external');
     expect(pr.systemPromptOverride).toContain('which repos it touches');
     expect(flow.steps.find((x) => x.id === 'plan')!.systemPromptOverride).toContain('- api/: https://github.com/acme/api.git, pull requests against trunk, tests: go test ./...');
+  });
+
+  it('lets planning and building read each repo\'s git by name, and nothing that writes', async () => {
+    const h = await three();
+    const made = h.svc.createWorkspace({ name: 'Storefront', repos: ['app', 'api'] }, 'Bo');
+    if (!made.ok) throw new Error(made.error);
+    const flow = parseFlowYaml({ yaml: workspaceFlowYaml(made.workspace, h.svc.list()), id: 'org-pr-ws-storefront', source: 'user', filePath: '' })!;
+    const tools = (id: string) => flow.steps.find((x) => x.id === id)!.tools ?? [];
+    for (const id of ['plan', 'build']) expect(tools(id)).toEqual(expect.arrayContaining(['Bash(git -C app log:*)', 'Bash(git -C api status:*)', 'Bash(git -C api diff:*)']));
+    expect(tools('pull-request').some((t) => t.startsWith('Bash'))).toBe(false);
+    expect([...tools('plan'), ...tools('build')].filter((t) => t.startsWith('Bash')).every((t) => /^Bash\(git -C (app|api) (status|diff|log):\*\)$/.test(t))).toBe(true);
+    expect(flow.steps.find((x) => x.id === 'plan')!.systemPromptOverride).toContain('git -C app log');
+  });
+});
+
+describe('bringing clones up to date before a run forks', () => {
+  it('fetches only connected repos, and moves the default branch to origin\'s', async () => {
+    const h = service({ GH_TOKEN: 'ghs_test' });
+    await h.svc.connect({ url: 'https://github.com/acme/app' }, 'Bo');
+    const app = h.svc.list()[0];
+    h.calls.length = 0;
+    expect(await h.svc.freshen([app.path, '/somewhere/else'])).toEqual([]);
+    // Not checked out here (the fake HEAD is elsewhere): only the branch moves.
+    expect(h.calls).toEqual(['fetch --prune origin trunk', 'rev-parse --abbrev-ref HEAD', 'fetch origin trunk:trunk']);
   });
 });
 
@@ -236,6 +260,38 @@ describe('the server pushing a finished run', () => {
     expect(landed[1].url).toContain('github.com/acme/b/compare/main...');
     expect(attached).toHaveLength(1);
   });
+  it("pushes a worker's own flow that ran in a connected repo, under the branch prefix, unless it pushed itself", async () => {
+    const pushed: string[][] = [];
+    let remote = '';
+    const lander = new BranchLander({
+      git: async (args) => {
+        if (args[0] === 'push') pushed.push(args);
+        return { ok: true, stdout: args[0] === 'status' ? '' : args[0] === 'rev-list' ? '2\n' : args[0] === 'for-each-ref' ? remote : '' };
+      },
+      repos: () => [{ name: 'app', url: 'https://github.com/acme/app.git', path: '/x', defaultBranch: 'main', addedBy: 'Bo', at: 0 }],
+      attach: () => {},
+      log: () => {},
+      branchPrefix: () => 'bots/',
+    });
+    const run = { id: 'abcdef123', flowId: 'solve-ticket', workerId: 'w1', projectPath: '/ws', userPrompt: 'Fix ACME-412', artifacts: {}, state: { kind: 'done', success: true },
+      workspaceWorktrees: [{ name: 'app', projectPath: '/x', worktreePath: '/x-wt', branchName: 'agent/x' }] };
+    lander.onRun(run as never);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pushed[0]?.at(-1)).toMatch(/^HEAD:refs\/heads\/bots\/fix-acme-412-abcdef$/);
+    remote = 'origin/main\norigin/agent/ACME-412\n';
+    const [again] = await lander.land(run as never);
+    expect(again).toMatchObject({ repo: 'app', branch: 'agent/ACME-412' });
+    expect(pushed).toHaveLength(1);
+    // A team member's piece lands with its task, not on its own.
+    lander.onRun({ ...run, id: 'team1', team: { teamId: 't', teamName: 'T' } } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pushed).toHaveLength(1);
+    // A run nobody's worker made, outside the connected repos, is left alone.
+    lander.onRun({ ...run, id: 'zzz', workerId: undefined, flowId: 'solve-ticket' } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pushed).toHaveLength(1);
+  });
+
   it('commits and pushes without running hooks', async () => {
     const calls: string[][] = [];
     const lander = new BranchLander({
@@ -368,5 +424,14 @@ describe('the server pushing a single-repo run', () => {
     } as unknown as FlowRun);
     expect(landed).toEqual([{ repo: 'app', branch: 'overcli/say-more-in-the-readme-999888', url: 'https://bitbucket.org/acme/app/pull-requests/new?source=overcli/say-more-in-the-readme-999888&dest=trunk' }]);
     expect(run(['log', '-1', '--format=%s', 'overcli/say-more-in-the-readme-999888'], path.join(root, 'app.git')).trim()).toBe('Say more in the README');
+  });
+});
+
+describe('a repo address as the host hands it out', () => {
+  it('drops the account name a clone address carries, and still refuses a token', () => {
+    expect(parseRepoUrl('https://pat@bitbucket.org/acme/app.git')).toMatchObject({ ok: true, url: 'https://bitbucket.org/acme/app.git', host: 'bitbucket', name: 'app' });
+    expect(parseRepoUrl('https://pat:sekrit@bitbucket.org/acme/app.git')).toMatchObject({ ok: false });
+    expect(parseRepoUrl('https://ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/acme/app')).toMatchObject({ ok: false });
+    expect(parseRepoUrl('https://x-token-auth@bitbucket.org/acme/app.git')).toMatchObject({ ok: false });
   });
 });

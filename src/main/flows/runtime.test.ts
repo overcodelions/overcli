@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useTestHost } from '../testHost';
+import { stepOutsideTools } from './stepEffect';
 import type { FlowRun } from '../../shared/flows/schema';
 
 // Only the one integration-style suite below (`FlowRuntimeImpl — diff
@@ -773,22 +774,48 @@ describe('worker effect boundary', () => {
   });
 
   it('gates pushes, messages, and service mutations for worker runs', () => {
-    expect(resolveStepEffect(step('Push the branch and open a pull request.'))).toBe('external');
-    expect(resolveStepEffect(step('Send the final brief in a Slack DM.'))).toBe('external');
-    expect(resolveStepEffect(step('Create the approved ProductBoard insight.'))).toBe('external');
+    const can = { tools: ['Read', 'Bash'] };
+    expect(resolveStepEffect(step('Push the branch and open a pull request.', can))).toBe('external');
+    expect(resolveStepEffect(step('Send the final brief in a Slack DM.', can))).toBe('external');
+    expect(resolveStepEffect(step('Create the approved ProductBoard insight.', can))).toBe('external');
     expect(
-      pauseReasonBeforeStep({ workerId: 'worker-1' }, step('Update the Jira ticket.')),
+      pauseReasonBeforeStep({ workerId: 'worker-1' }, step('Update the Jira ticket.', can)),
     ).toBe('externalAction');
+    // Said as a reason, not a tool: no grant for bash covers "update the ticket".
+    expect(stepOutsideTools(step('Update the Jira ticket.', can))).toBeNull();
   });
 
-  it('treats bash and the web tools as external so an unattended worker pauses', () => {
-    for (const tool of ['bash', 'Bash', 'websearch', 'webfetch']) {
+  it('leaves a step local when nothing it may use could do what its words say', () => {
+    const check = step(
+      'Use jira_get_transitions to confirm a valid transition. You must NEVER transition or comment on any Jira ticket. Draft a comment ready to post on the ticket.',
+      { tools: ['Read', 'Write', 'mcp__tracker__jira_search', 'mcp__tracker__jira_get_issue'] },
+    );
+    expect(resolveStepEffect(check)).toBe('local');
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1' }, check)).toBeNull();
+  });
+
+  it('keeps a step local when its shell is scoped to reading code and its history', () => {
+    const explore = { ...step('Find where the module lives and who wrote it.'), tools: ['Read', 'Grep', 'Bash(git log:*)', 'Bash(git blame:*)', 'Bash(git grep:*)', 'Bash(rg:*)', 'Bash(grep:*)'] };
+    expect(resolveStepEffect(explore)).toBe('local');
+    expect(resolveStepEffect({ ...explore, tools: [...explore.tools, 'Bash(git push:*)'] })).toBe('external');
+  });
+
+  it('treats bash and web fetch as external so an unattended worker pauses, and a web search as a read', () => {
+    for (const tool of ['bash', 'Bash', 'webfetch']) {
       expect(resolveStepEffect({ ...step('Run the checks.'), tools: [tool] })).toBe('external');
     }
     expect(resolveStepEffect({ ...step('Run the checks.'), tools: ['read', 'grep'] })).toBe('local');
+    expect(resolveStepEffect({ ...step('Run the checks.'), tools: ['read', 'WebSearch'] })).toBe('local');
     expect(
       pauseReasonBeforeStep({ workerId: 'worker-1' }, { ...step('Run the checks.'), tools: ['bash'] }),
     ).toBe('externalAction');
+  });
+
+  it("lets a trusted coding worker's pull-request step through by name, and nothing else", () => {
+    const pr = { ...step('Write the pull request.'), id: 'pull-request', effect: 'external' as const, tools: ['Read'] };
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1' }, pr)).toBe('externalAction');
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1', externalActionRunGrant: ['step:pull-request'] }, pr)).toBeNull();
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1', externalActionRunGrant: ['step:pull-request'] }, { ...pr, id: 'deploy' })).toBe('externalAction');
   });
 
   it('keeps a step local when the MCP tools it lists only read', () => {
@@ -808,11 +835,25 @@ describe('worker effect boundary', () => {
     ).toBe('external');
   });
 
+  it('lets a step through that its worker always allows, by name', () => {
+    const file = { ...step('Move the tickets.', { tools: ['Read', 'mcp__tracker__transition_issue'] }), id: 'file-proposals' };
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1' }, file)).toBe('externalAction');
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1', externalActionRunGrant: ['step:file-proposals'] }, file)).toBeNull();
+  });
+
+  it("runs through a flow's own checkpoints for a worker told to, and nothing more", () => {
+    const check = step('Look at the branch.', { pauseBefore: true });
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1' }, check)).toBe('preStep');
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1', skipCheckpoints: true }, check)).toBeNull();
+    // Acting outside still asks.
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1', skipCheckpoints: true }, step('Push the branch.', { pauseBefore: true, tools: ['Read', 'Bash'] }))).toBe('externalAction');
+  });
+
   it('honors explicit metadata and leaves ordinary flows unchanged', () => {
     const external = step('Write a local file.', { effect: 'external' as const });
     expect(resolveStepEffect(external)).toBe('external');
     expect(
-      resolveStepEffect(step('Push the branch.', { effect: 'local' as const })),
+      resolveStepEffect(step('Push the branch.', { effect: 'local' as const, tools: ['Read', 'Bash'] })),
     ).toBe('external');
     expect(pauseReasonBeforeStep({ workerId: undefined }, external)).toBeNull();
   });
@@ -2184,5 +2225,20 @@ describe('FlowRuntimeImpl — holding a run at its next step', () => {
       reason: 'externalAction',
     });
     expect(executed).toEqual([]);
+  });
+});
+
+describe('a worker that only reads code', () => {
+  it('runs shell lines that read, and writes only in its own files folder', async () => {
+    const { readerAllows } = await import('./runtime');
+    const root = mkdtempSync(join(tmpdir(), 'reader-'));
+    const own = join(root, 'own');
+    expect(readerAllows('Bash', { command: 'git log --oneline -5' }, root, [root], own)).toBe(true);
+    expect(readerAllows('Bash', { command: 'git commit -am x' }, root, [root], own)).toBe(false);
+    expect(readerAllows('Edit', { file_path: join(root, 'src', 'a.ts') }, root, [root], own)).toBe(false);
+    expect(readerAllows('Write', { file_path: join(own, 'answer.md') }, root, [root], own)).toBe(true);
+    expect(readerAllows('Write', { file_path: join(root, 'own-not', 'x.md') }, root, [root], own)).toBe(false);
+    expect(readerAllows('Write', { file_path: 'answer.md' }, root, [root], own)).toBe(false);
+    rmSync(root, { recursive: true, force: true });
   });
 });

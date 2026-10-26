@@ -78,6 +78,9 @@ export interface WorkerTrigger {
   seeded?: boolean;
   /// Changes: the field's last value, by item id.
   states?: Record<string, string>;
+  /// Changes: who asked to hear when an item moves, by item id ("let me
+  /// know when ACME-412 changes"). DMed beside the trigger's own destinations.
+  followers?: Record<string, string[]>;
   lastPolledAt?: number;
   lastFiredAt?: number;
   lastError?: string;
@@ -226,6 +229,18 @@ export class TriggerService {
 
   /// Run a watch's tool once and show what it would see — the "Test it"
   /// button in the builder.
+  /// Whether a tool is installed here, so a watch can call it on its own.
+  canCall(server: string): boolean {
+    return !!this.deps.toolConfig(server);
+  }
+
+  /// One call to a tool as it answers, for reading the shape of what it says.
+  async probe(server: string, tool: string, args: Record<string, unknown>): Promise<ToolCall | { ok: false; error: string }> {
+    const config = this.deps.toolConfig(server);
+    if (!config) return { ok: false, error: `${server} isn't installed on this server. Install it on Setup → Tools.` };
+    return this.deps.callTool(config, tool, args);
+  }
+
   async test(watch: NonNullable<WorkerTrigger['watch']>): Promise<{ ok: true; items: WatchItem[] } | { ok: false; error: string }> {
     const config = this.deps.toolConfig(watch.server);
     if (!config) return { ok: false, error: `${watch.server} isn't installed on this server. Install it on Setup → Tools.` };
@@ -321,6 +336,19 @@ export class TriggerService {
       const item = { ...m.item, title: `${m.item.title} moved from ${m.from} to ${m.to}`, data: { change: { field, from: m.from, to: m.to }, item: m.item.data } };
       if (t.notifyOnly) void this.notice(t, m.item, m.from, m.to);
       else this.fire(t, item);
+      void this.tellFollowers(t, m.item, m.from, m.to);
+    }
+  }
+
+  /// A move said to each person following the item, unless the trigger's
+  /// own plain notice already DMs them.
+  private async tellFollowers(t: WorkerTrigger, item: WatchItem, from: string, to: string): Promise<void> {
+    const dm = this.deps.slack?.dm;
+    if (!dm) return;
+    const already = new Set(t.notifyOnly ? t.deliver.flatMap((d) => (d.kind === 'dm' ? [d.slackUserId] : [])) : []);
+    for (const user of t.followers?.[item.id] ?? []) {
+      if (already.has(user)) continue;
+      await dm(user, moveText(item, from, to)).catch((err: unknown) => this.deps.log(`triggers: could not DM a follower of ${item.id}: ${String(err)}`));
     }
   }
 
@@ -341,8 +369,7 @@ export class TriggerService {
       this.putDeliverable({ ...d, status: 'skipped', error: `Over today's limit of ${t.maxPerDay}.`, doneAt: this.now() });
       return;
     }
-    const link = item.url && /^https?:\/\//i.test(item.url) ? ` · <${item.url.replace(/[<>|]/g, '')}|open it>` : '';
-    const text = `*${escapeMrkdwn(item.title)}* moved from _${escapeMrkdwn(from)}_ to *${escapeMrkdwn(to)}*${link}`;
+    const text = moveText(item, from, to);
     for (const dest of t.deliver) {
       if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, text))) d.deliveredTo.push(`Slack #${dest.channel}`);
       if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, text))) d.deliveredTo.push('a DM');
@@ -366,6 +393,26 @@ export class TriggerService {
     if (!on) delete states[key];
     this.patchState(id, { watch: { ...t.watch, tracked }, states });
     return { ok: true, tracked };
+  }
+
+  /// Follow one item by DM, or stop: following tracks it on the watch too.
+  /// Stopping leaves it tracked, since others may still be following.
+  follow(id: string, itemId: string, slackUserId: string, on: boolean): { ok: true; followers: number } | { ok: false; error: string } {
+    const key = itemId.trim();
+    if (on) {
+      const tracked = this.track(id, key, true);
+      if (!tracked.ok) return tracked;
+    }
+    const t = this.get(id);
+    if (!t?.watch) return { ok: false, error: 'No such watch.' };
+    const followers = { ...(t.followers ?? {}) };
+    const now = new Set(followers[key] ?? []);
+    if (on) now.add(slackUserId);
+    else now.delete(slackUserId);
+    if (now.size) followers[key] = [...now];
+    else delete followers[key];
+    this.patchState(id, { followers });
+    return { ok: true, followers: now.size };
   }
 
   // ---- WEBHOOK ---------------------------------------------------------------
@@ -566,6 +613,13 @@ export function eventItem(body: unknown, idPath?: string): WatchItem {
   const url = (pr?.html_url ?? issue?.html_url ?? items[0]?.url) as string | undefined;
   const id = idPath || !issue ? items[0]?.id : String(issue.key ?? issue.id ?? items[0]?.id);
   return { id: `${b.webhookEvent ?? b.action ?? ''}:${id ?? Date.now()}`, title: String(title).slice(0, 160), ...(url ? { url } : {}), data: body };
+}
+
+/// "*ACME-2: Slow login* moved from _In review_ to *Done* · open it", with
+/// nothing in the ticket able to plant a mention or break the link.
+function moveText(item: WatchItem, from: string, to: string): string {
+  const link = item.url && /^https?:\/\//i.test(item.url) ? ` · <${item.url.replace(/[<>|]/g, '')}|open it>` : '';
+  return `*${escapeMrkdwn(item.title)}* moved from _${escapeMrkdwn(from)}_ to *${escapeMrkdwn(to)}*${link}`;
 }
 
 /// The tool's arguments, with `{{ids}}` in any string replaced by the tracked ids.

@@ -35,6 +35,7 @@
   <a href="#features">Features</a> ·
   <a href="#download">Download</a> ·
   <a href="#quick-start">Quick Start</a> ·
+  <a href="docs/guide/README.md"><strong>Guide</strong></a> ·
   <a href="#security">Security</a> ·
   <a href="#a-fatherson-project">About</a>
 </p>
@@ -123,14 +124,15 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 | 13 | **Changes bar** | Live `+/−` rollup above the composer counting everything touched this turn. Click to expand, click a file to jump to it, click commit. |
 | 14 | **Local model dashboard** | A real UI for Ollama: catalog, filter by maker or country, pull & delete with one click, live server logs, GPU readout. Switched on in **Settings → Labs**. |
 | 15 | **Usage dashboard** | Rolling 5h / 24h / 7d stats, broken down by backend, model, and project. |
-| 16 | **Smart downgrades** | Near a rate or cost cap, Overcli can step down automatically — `opus` → `sonnet`, cloud → local Ollama — so the next turn still ships. Off by default. |
+| 16 | **Smart downgrades** | When a Codex model is unavailable, Overcli respawns on the next model down and retries the turn, so it still ships. On by default — **Settings → Advanced → Resilience**. |
 | 17 | **Health badges** | Per-backend status pills: *ready*, *unauthenticated*, *missing*, *error*. Know what's broken before you try to use it. |
-| 18 | **Colosseum** | Fire one prompt at every backend in parallel. Compare the diffs side by side. Keep the winner, discard the rest. Switched on in **Settings → Labs** as *Compare models*. |
+| 18 | **Colosseum** | Fire one prompt at Claude, Codex and Gemini in parallel. Compare the diffs side by side. Keep the winner, discard the rest. Switched on in **Settings → Labs** as *Compare models*. |
 | 19 | **Flows** | Chain LLM steps into a pipeline — each step its own model, tools, and role. A premium model plans and reviews, a local Ollama model executes, and artifacts (`plan.md`, `diff`, `review.md`) hand off step to step. Run in a worktree, pause before any step, or hijack a participant mid-flight. Start from a template or describe what you want and your signed-in backend drafts the YAML. |
 | 20 | **Standing Workers** | Hire a persona that wakes on its own clock, proposes work, and files what it produces. Describe the job and whichever backend you're signed into — Claude, Codex, Gemini or Copilot — drafts the contract and its flow. Every worker starts on probation — nothing launches until you approve the batch — and promotion is an explicit act. A shared monthly pot is paid down the roster in priority order, so the crew's total spend is a number you approve once. Each worker keeps a desk, a calendar, a filing cabinet, and a journal, and the whole job exports as a `.worker.yaml` you can hand to another team. On an everyday project a worker can put finished documents into the folder itself — added, never overwritten, with a version saved so you can undo them. Switched on in **Settings → Labs**. |
 | 21 | **Teams** | Put workers together on one task. Write a brief and a coordinator plans the stages — who contributes, who challenges — for you to approve, hiring any member the plan is missing. Members work in the team's project on one shared branch per task, files land in a shared folder, and the coordinator writes the final pack. Afterwards, ask the team follow-up questions in its room and hand work back to a member. Members keep their own permissions unless you say otherwise, and a budget per task caps the spend. Lives in the Workers view. |
 | 22 | **Documents projects** | Overcli without a repo. **Open a folder** of documents and Overcli offers the documents view, or **Start something new**: describe what you want and get a prepared folder in `~/Documents/Overcli Projects/` — one flat folder, deliberately no `inbox/` or `output/` — with an undo history it sets up for you, and starter flows for documents rather than code. |
 | 23 | **Headless CLI** | The same flows and workers, run from a command line instead of the app — one shot in CI or on a box you own, driving the same runtime the GUI does. Deploy a flow or a worker cadence straight to GitHub Actions or Jenkins as a generated pipeline. |
+| 24 | **overgo, the org server** *(alpha)* | The same workers, hosted for a whole org: asked from Slack, the web console or Claude, with managers approving what they do. Each worker has an Access tab (tools and their scope, how much it does alone, standing approvals), a history you can restore from, and notes from going through its own tools; admins keep one handbook every worker reads. Expired keys and retired tool APIs alert the admins, and a Monday digest tells managers how the week went. See [`deploy/docs/`](deploy/docs/README.md). |
 
 ## Download
 
@@ -158,6 +160,8 @@ Every build, with checksums, SBOM and provenance attestation, is on the
 > Prefer to build it yourself? See [Build & package](#build--package) below.
 
 ## Quick Start
+
+> New to Overcli? The **[Getting started guide](docs/guide/getting-started.md)** walks you from install to your first merged agent branch, with diagrams. The full **[guide](docs/guide/README.md)** covers flows, workers, workspaces and more.
 
 ### 1. Install the backends you want to use
 

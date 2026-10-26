@@ -400,6 +400,9 @@ export function App() {
         case 'basics':
           openSheet({ type: 'basics' });
           return;
+        case 'guide':
+          openSheet({ type: 'guide' });
+          return;
         case 'shortcuts':
           openSheet({ type: 'shortcutsHelp' });
           return;

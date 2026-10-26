@@ -8,8 +8,11 @@ import {
   isRiskyBashCommand,
   riskyAskRules,
   ruleCovers,
-  splitCommands,
-} from './permissionPolicy';
+  readsOnlyWithin,
+  splitCommands, bashReadsOnlyUnder } from './permissionPolicy';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const bash = (command: string) => ({ command });
 
@@ -81,6 +84,8 @@ describe('isReadOnlyBashCommand', () => {
     'find . -exec rm {} \\;',
     'git branch new-feature',
     'git remote add origin x',
+    // Contacts the remote to list its branches.
+    'git remote show origin',
     'git commit -m x',
     'sort -o out.txt in.txt',
     'rg --pre=sh x /tmp/a',
@@ -252,5 +257,83 @@ describe('isReadOnlyCall', () => {
     expect(isReadOnlyCall('Edit', {})).toBe(false);
     expect(isReadOnlyCall('ExitPlanMode', {})).toBe(false);
     expect(isReadOnlyCall('WebFetch', { url: 'https://x' })).toBe(false);
+  });
+});
+
+describe('readsOnlyWithin', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-reads-'));
+  const repo = path.join(root, 'repos', 'app');
+  const outside = path.join(root, 'secrets');
+  const space = path.join(root, 'workspaces', 'shop');
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  fs.mkdirSync(outside, { recursive: true });
+  fs.mkdirSync(space, { recursive: true });
+  fs.writeFileSync(path.join(outside, 'key'), 'x');
+  fs.symlinkSync(path.join(outside, 'key'), path.join(repo, 'leak'));
+  fs.symlinkSync(repo, path.join(space, 'app'));
+  const ok = (command: string, cwd = repo, roots = [repo]) => readsOnlyWithin('Bash', JSON.stringify({ command }), cwd, roots);
+
+  it('lets a worker look around its own repo', () => {
+    expect(ok('git log --oneline -5')).toBe(true);
+    expect(ok('git status')).toBe(true);
+    expect(ok('ls src')).toBe(true);
+    expect(ok('rg TODO src')).toBe(true);
+    expect(readsOnlyWithin('mcp__tracker__search_issues', {}, repo, [repo])).toBe(true);
+  });
+
+  it('follows a workspace into the repos it links to', () => {
+    expect(ok('git -C app log -3', space, [space])).toBe(true);
+    expect(ok('ls app/src', space, [space])).toBe(true);
+  });
+
+  it('refuses anything that writes, leaves its folder, or follows a link out', () => {
+    expect(ok('rm src')).toBe(false);
+    expect(ok('git push')).toBe(false);
+    expect(ok('cat ../../secrets/key')).toBe(false);
+    expect(ok(`cat ${path.join(outside, 'key')}`)).toBe(false);
+    expect(ok('cat leak')).toBe(false);
+    expect(ok('ls', outside)).toBe(false);
+    expect(ok('echo $GH_TOKEN')).toBe(false);
+    expect(readsOnlyWithin('mcp__tracker__create_issue', {}, repo, [repo])).toBe(false);
+  });
+
+  it('keeps file tools inside the folder too', () => {
+    const read = (tool: string, input: unknown, cwd = repo, roots = [repo]) => readsOnlyWithin(tool, input, cwd, roots);
+    expect(read('Read', { file_path: path.join(repo, 'src', 'a.ts') })).toBe(true);
+    expect(read('Read', JSON.stringify({ file_path: 'src/a.ts' }))).toBe(true);
+    expect(read('Grep', { pattern: 'TODO' })).toBe(true);
+    expect(read('Glob', { pattern: 'src/**/*.ts' })).toBe(true);
+    expect(read('Read', { file_path: 'app/src/a.ts' }, space, [space])).toBe(true);
+
+    expect(read('Read', { file_path: path.join(outside, 'key') })).toBe(false);
+    expect(read('Read', JSON.stringify({ file_path: path.join(outside, 'key') }))).toBe(false);
+    expect(read('Read', { file_path: '~/.netrc' })).toBe(false);
+    expect(read('Read', { file_path: '../../secrets/key' })).toBe(false);
+    expect(read('Read', { file_path: 'leak' })).toBe(false);
+    expect(read('NotebookRead', { notebook_path: path.join(outside, 'n.ipynb') })).toBe(false);
+    expect(read('Grep', { pattern: 'x', path: outside })).toBe(false);
+    expect(read('Grep', { pattern: 'x', glob: '../**' })).toBe(false);
+    expect(read('Glob', { pattern: `${outside}/*` })).toBe(false);
+    expect(read('Glob', { pattern: '../../**/*' })).toBe(false);
+    expect(read('LS', { path: outside })).toBe(false);
+    expect(read('Read', { file_path: 'src/a.ts' }, outside)).toBe(false);
+  });
+});
+
+describe('reading a repo after cd', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cdread-'));
+  fs.mkdirSync(path.join(root, 'repo-a'));
+  it('steps past cd into a folder inside, and judges the rest from there', () => {
+    expect(bashReadsOnlyUnder('cd repo-a && git log --oneline -20', root, [root])).toBe(true);
+    expect(bashReadsOnlyUnder(`cd ${path.join(root, 'repo-a')} && git blame -L 1,40 src/x.ts | head`, root, [root])).toBe(true);
+    expect(bashReadsOnlyUnder('cd repo-a && rg -n Campaign . | head -50', root, [root])).toBe(true);
+  });
+  it('still refuses leaving the folders, or anything that writes after cd', () => {
+    expect(bashReadsOnlyUnder('cd / && cat etc/passwd', root, [root])).toBe(false);
+    expect(bashReadsOnlyUnder('cd ~ && ls', root, [root])).toBe(false);
+    expect(bashReadsOnlyUnder('cd repo-a && git push', root, [root])).toBe(false);
+    expect(bashReadsOnlyUnder('cd repo-a && rm -rf .', root, [root])).toBe(false);
+    expect(bashReadsOnlyUnder('cd repo-a && echo x > out.txt', root, [root])).toBe(false);
   });
 });

@@ -762,8 +762,8 @@ function SlackField({
         label={kind === 'bot' ? 'Bot token' : 'App-level token'}
         help={
           kind === 'bot'
-            ? 'xoxb-… from OAuth & Permissions. Scopes: chat:write, chat:write.customize, im:write, im:history. Stored in the OS keychain.'
-            : 'xapp-… from Basic Information → App-Level Tokens, with connections:write. Turn on Socket Mode and Interactivity, and subscribe to the message.im bot event.'
+            ? 'xoxb-… from OAuth & Permissions. Create the app from src/main/slack/slack-app-manifest.yml so it has every scope and event it needs. Stored in the OS keychain.'
+            : 'xapp-… from Basic Information → App-Level Tokens, with connections:write. The manifest already turns on Socket Mode, Interactivity and the bot events.'
         }
       >
         <div className="flex gap-2">

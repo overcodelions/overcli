@@ -84,13 +84,28 @@ export async function listServerTools(
   }
 }
 
+/// A tool's structured answer, with the wrapper some servers put round a
+/// string taken off: FastMCP returns a tool's JSON text as `{ "result":
+/// "<that JSON>" }`, and a ticket search read through it found no tickets.
+export function unwrapResult(structured: unknown): unknown {
+  if (!structured || typeof structured !== 'object' || Array.isArray(structured)) return structured;
+  const values = Object.values(structured);
+  if (values.length !== 1 || typeof values[0] !== 'string') return structured;
+  try {
+    const inner: unknown = JSON.parse(values[0]);
+    return inner && typeof inner === 'object' ? inner : structured;
+  } catch {
+    return structured;
+  }
+}
+
 export async function callTool(config: McpServerConfig, tool: string, args: Record<string, unknown>): Promise<ToolCall> {
   try {
     const res = await withClient(config, (c) => c.callTool({ name: tool, arguments: args }));
     const parts = Array.isArray(res.content) ? (res.content as Array<{ type?: string; text?: string }>) : [];
     const text = parts.filter((p) => p.type === 'text' && typeof p.text === 'string').map((p) => p.text).join('\n');
     if (res.isError) return { ok: false, error: text.slice(0, 500) || 'The tool reported an error.' };
-    const structured = (res as { structuredContent?: unknown }).structuredContent;
+    const structured = unwrapResult((res as { structuredContent?: unknown }).structuredContent);
     let json: unknown = structured ?? null;
     if (json === null && text) {
       try {

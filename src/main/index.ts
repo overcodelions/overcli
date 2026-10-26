@@ -760,13 +760,13 @@ export function registerIpc(): void {
       );
       return ids.flatMap((id) => {
         const f = byId.get(id);
-        return f ? [{ id: f.id, name: f.name, description: f.description, steps: f.steps.map((s) => s.id) }] : [];
+        return f ? [{ id: f.id, name: f.name, description: f.description, steps: f.steps.map((s) => s.id), stepTools: f.steps.map((s) => ({ ...(s.role ? { role: s.role } : {}), ...(s.effect ? { effect: s.effect } : {}), ...(s.tools ? { tools: s.tools } : {}) })) }] : [];
       });
     },
     pieceFlow: (flowId, opts) => {
       const flow = loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).find((f) => f.id === flowId);
       if (!flow) return { ok: false, error: `flow "${flowId}" not found` };
-      const piece = teamPieceFlow(flow, { check: opts?.check });
+      const piece = teamPieceFlow(flow, { check: opts?.check, readOnly: opts?.readOnly });
       const saved = saveFlow({ flow: piece, target: 'generated' });
       return saved.ok ? { ok: true, flowId: piece.id } : saved;
     },
@@ -1037,14 +1037,28 @@ export function registerIpc(): void {
     const { pairId, pollSecret, userCode, verifyUrl, expiresAt } = started.data;
     // The server is only an address someone pasted: open its page only when
     // it is a web page on that same server.
+    // This machine by any of its names (localhost, 127.0.0.1, ::1, 0.0.0.0)
+    // is the same server: which one comes back depends on how it was reached.
+    const here = (h: string) => (['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0'].includes(h) ? 'this machine' : h);
     const sameServer = (() => {
       try {
-        return new URL(verifyUrl).origin === new URL(base.url).origin;
+        const a = new URL(verifyUrl);
+        const b = new URL(base.url);
+        return a.protocol === b.protocol && a.port === b.port && here(a.hostname) === here(b.hostname);
       } catch {
         return false;
       }
     })();
-    if (!isSafeExternalUrl(verifyUrl) || !sameServer) return { ok: false, error: 'The org server sent back a sign-in page on another address. Check the address and try again.' };
+    if (!isSafeExternalUrl(verifyUrl) || !sameServer) {
+      const sent = (() => {
+        try {
+          return new URL(verifyUrl).origin;
+        } catch {
+          return 'something that is not an address';
+        }
+      })();
+      return { ok: false, error: `The org server sent back a sign-in page on another address (${sent}, not ${base.url}). Check the address and try again.` };
+    }
     void shell.openExternal(verifyUrl);
     // One poll at a time, two seconds apart. A blip is retried; only a run of
     // failures ends the sign-in.
@@ -4240,6 +4254,7 @@ function buildMenu(): void {
       // stuck, so this is where those surfaces live now.
       role: 'help',
       submenu: [
+        { label: 'Overcli Guide', click: () => menuCommand('guide') },
         { label: 'How Overcli Works', click: () => menuCommand('basics') },
         {
           label: 'Keyboard Shortcuts',
@@ -4258,7 +4273,7 @@ function buildMenu(): void {
         { label: 'About Overcli', click: () => menuCommand('about') },
         { type: 'separator' },
         {
-          label: 'Documentation',
+          label: 'Overcli Website',
           click: () => void shell.openExternal('https://overcli.app'),
         },
         {
