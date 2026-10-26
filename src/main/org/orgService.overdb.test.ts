@@ -147,6 +147,35 @@ describe('databases from overdb', () => {
     expect(h.svc.databases.approveOverdbConnection(admin, h.offerId('orders-prod'), undefined, true)).toMatchObject({ ok: false, error: expect.stringMatching(/already set up/) });
   });
 
+  it('never sends a kept password to an address an update changed', () => {
+    const h = harness();
+    h.svc.databases.publishOverdbConnection(pat, { connection: shopStaging });
+    h.svc.databases.approveOverdbConnection(admin, h.offerId('shop-staging'), 'pw-1', true);
+
+    // Same id, somewhere else, with TLS off.
+    h.svc.databases.publishOverdbConnection(pat, { connection: { ...shopStaging, host: 'db.acme-elsewhere.example', ssl: 'disable' } });
+    const list = h.svc.databases.overdbConnections(admin);
+    expect(list.ok && list.offers[0].moved).toEqual(['host', 'ssl']);
+    const id = h.offerId('shop-staging');
+    expect(h.svc.databases.approveOverdbConnection(admin, id, undefined, true)).toMatchObject({ ok: false, error: expect.stringMatching(/host, ssl.*password again/) });
+    expect(h.installs).toHaveLength(1);
+
+    // Typed again, the admin chose to send it there.
+    expect(h.svc.databases.approveOverdbConnection(admin, id, 'pw-2', true)).toEqual({ ok: true });
+    expect(h.installs.at(-1)!.env).toEqual({ OVERDB_SHOP_STAGING_PASSWORD: 'pw-2' });
+  });
+
+  it('keeps the password when an update only changes what agents are told', () => {
+    const h = harness();
+    h.svc.databases.publishOverdbConnection(pat, { connection: shopStaging });
+    h.svc.databases.approveOverdbConnection(admin, h.offerId('shop-staging'), 'pw-1', true);
+    h.svc.databases.publishOverdbConnection(pat, { connection: { ...shopStaging, defaultSchema: 'shop' } });
+    const list = h.svc.databases.overdbConnections(admin);
+    expect(list.ok && list.offers[0].moved).toEqual([]);
+    expect(h.svc.databases.approveOverdbConnection(admin, h.offerId('shop-staging'), undefined, true)).toEqual({ ok: true });
+    expect(h.installs.at(-1)!.env).toEqual({ OVERDB_SHOP_STAGING_PASSWORD: 'pw-1' });
+  });
+
   it('says overdb is missing rather than half setting it up', () => {
     const h = harness({ headless: null });
     h.svc.databases.publishOverdbConnection(pat, { connection: ordersProd });

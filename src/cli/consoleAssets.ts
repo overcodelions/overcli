@@ -11719,7 +11719,7 @@ export const CONSOLE_JS = String.raw`
       var envTag = function (c) { return h('span', { class: 'tag' + (c.env === 'prod' ? ' need' : ''), text: c.env }); };
       var offerRow = function (o) {
         var c = o.connection;
-        var pass = c.credential.source === 'secret' ? h('input', { type: 'password', autocomplete: 'off', placeholder: o.hasPassword ? 'Password (kept: leave empty)' : 'Password for ' + (c.user || c.name), 'aria-label': 'Password for ' + c.name }) : null;
+        var pass = c.credential.source === 'secret' ? h('input', { type: 'password', autocomplete: 'off', placeholder: o.hasPassword && !o.moved.length ? 'Password (kept: leave empty)' : o.moved.length ? 'Changed ' + o.moved.join(', ') + ': password again' : 'Password for ' + (c.user || c.name), 'aria-label': 'Password for ' + c.name }) : null;
         var approve = h('button', { class: 'btn go small', text: o.replaces ? 'Update' : 'Set up', disabled: !x.headless });
         approve.onclick = function () {
           var restore = busy(approve, 'Setting up…');

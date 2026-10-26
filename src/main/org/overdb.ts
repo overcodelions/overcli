@@ -49,6 +49,15 @@ export interface OverdbQuery {
 export { OVERDB_TOOL };
 export const OVERDB_CONNECTIONS_FILE = 'overdb-connections.json';
 
+/// Where a connection sends its password. A connection published again with
+/// any of these changed must not take the kept password there unasked.
+const ADDRESS_FIELDS = ['engine', 'host', 'port', 'user', 'database', 'ssl', 'sslRootCert', 'region'] as const;
+
+/// The address fields that differ between the live connection and its update.
+export function addressChanges(live: OverdbConnection, next: OverdbConnection): string[] {
+  return ADDRESS_FIELDS.filter((k) => live[k] !== next[k]);
+}
+
 /// What the org service passes in: its stores, and the overdb install.
 export interface OverdbDeps {
   /// Database connections published from overdb, waiting for an admin.
@@ -131,7 +140,7 @@ export class OverdbOrg {
 
   overdbConnections(caller: OrgCaller): Result<{
     headless: string | null;
-    offers: Array<OverdbOffer & { hasPassword: boolean; replaces: boolean }>;
+    offers: Array<OverdbOffer & { hasPassword: boolean; replaces: boolean; moved: string[] }>;
     connections: Array<OverdbConnection & { hasPassword: boolean }>;
   }> {
     if (!isAdmin(this.host.policy(), caller)) return { ok: false, error: 'Only an admin can set up the server.' };
@@ -144,14 +153,19 @@ export class OverdbOrg {
       offers: this.loadOverdbOffers()
         .slice()
         .reverse()
-        .map((o) => ({ ...o, hasPassword: hasPassword(o.connection), replaces: live.some((c) => c.id === o.connection.id) })),
+        .map((o) => {
+          const was = live.find((c) => c.id === o.connection.id);
+          return { ...o, hasPassword: hasPassword(o.connection), replaces: Boolean(was), moved: was ? addressChanges(was, o.connection) : [] };
+        }),
       connections: live.map((c) => ({ ...c, hasPassword: hasPassword(c) })),
     };
   }
 
   /// Finish a published connection. A password only travels like a tool's
   /// keys do (`secure`: TLS, a trusted proxy that saw https, or this
-  /// machine), and goes straight into the tool's env.
+  /// machine), and goes straight into the tool's env. An update that points
+  /// somewhere new needs the password typed again: the kept one is never
+  /// sent to an address the admin didn't give it to.
   approveOverdbConnection(caller: OrgCaller, offerId: string, password: string | undefined, secure: boolean): Result {
     if (!isAdmin(this.host.policy(), caller)) return { ok: false, error: 'Only an admin can set up the server.' };
     const offer = this.loadOverdbOffers().find((o) => o.id === offerId);
@@ -167,9 +181,13 @@ export class OverdbOrg {
       if (file.connections.some((x) => x.id !== c.id && x.credential.source === 'secret' && x.credential.env === name)) {
         return { ok: false, error: `${name} already holds another database's password.` };
       }
+      const was = file.connections.find((x) => x.id === c.id);
+      const moved = was ? addressChanges(was, c) : [];
       if (password) {
         if (!secure) return { ok: false, error: 'Passwords only travel over https, or to a server on this same machine.' };
         env[name] = password;
+      } else if (moved.length) {
+        return { ok: false, error: `${c.name} changed its ${moved.join(', ')}. Type its password again to send it there.` };
       } else if (!env[name]) {
         return { ok: false, error: `${c.name} needs its password.` };
       }
