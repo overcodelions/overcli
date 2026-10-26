@@ -11489,13 +11489,14 @@ export const CONSOLE_JS = String.raw`
       ['tools', 'Tools', 'The MCP servers workers here can use, and which workers have each.'],
       ['secrets', 'Secrets', 'Keys the tools and the server use. Changes apply at once, no restart.'],
       ['repos', 'Repos & workspaces', 'Repos workers can change, and workspaces that group them.'],
+      ['databases', 'Databases', 'Databases published from overdb that workers can read through the overdb tool. Read-only, with every query logged.'],
       ['offers', 'From desktops', 'Setups people published from the overcli app, to connect and install.'],
       ['servers', 'Other servers', 'Other overcli servers in the company, to watch from Activity.']] }
   ];
   // The old Rules tab's address opens its first page.
   var SETUP_OLD = { rules: 'general' };
   var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
-  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', secrets: 'setup--secrets', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', secrets: 'setup--secrets', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
   function viewSetup() {
     if (SETUP_OLD[state.setupTab]) state.setupTab = SETUP_OLD[state.setupTab];
     var tab = state.setupTab || 'ready', page = null, group = null;
@@ -11525,7 +11526,7 @@ export const CONSOLE_JS = String.raw`
     var learn = SETUP_LEARN[tab] || 'setup--rules-spending-and-sign-in';
     var headNode = head(page[1], page[2],
       h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), group ? 'Setup · ' + group : 'Setup');
-    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'secrets' ? viewSecrets() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
+    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'secrets' ? viewSecrets() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
     return body.then(function (nodes) {
       return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, headNode, tab === 'ready' ? nodes : nodes.slice(1)))];
     });
@@ -11677,6 +11678,81 @@ export const CONSOLE_JS = String.raw`
           section('Tools', o.tools.map(toolRow)),
           out);
       }));
+    });
+  }
+
+  /// Databases people published from overdb, for workers to read through the
+  /// overdb tool: each waiting one with what it takes to finish it — its
+  /// password, or the server's AWS role granted — and the finished ones.
+  function viewDatabases() {
+    return Promise.all([api('GET', '/api/overdb'), api('GET', '/api/overdb/queries')]).then(function (both) {
+      var x = both[0], q = both[1];
+      var top = head('Databases');
+      if (x.ok === false) return [top, msg(x)];
+      var out = h('div', { 'aria-live': 'polite' });
+      var after = function (r, okText) { out.textContent = ''; out.appendChild(msg(r, okText)); if (r.ok !== false) setTimeout(render, 700); };
+      var where = function (c) { return c.engine === 'dynamodb' ? 'DynamoDB · ' + (c.region || '') : c.engine + ' · ' + (c.user ? c.user + '@' : '') + c.host + (c.port ? ':' + c.port : '') + (c.database ? '/' + c.database : ''); };
+      var how = function (c) {
+        var s = c.credential.source;
+        if (s === 'aws-iam') return 'Signs in as ' + (c.user || 'its user') + ' with an IAM token from this server’s AWS role, which needs rds-db:connect for that user.';
+        if (s === 'secret') return 'Password kept in ' + c.credential.env + ', for the overdb tool only.';
+        return c.engine === 'dynamodb' ? 'Reads with this server’s AWS role.' : 'No password.';
+      };
+      // What a database tells workers besides its tables: the tenancy rule, notes, the map.
+      var told = function (c) {
+        var ctx = c.context || {};
+        var parts = [];
+        if (ctx.tenant) parts.push('one tenant per query, by ' + (ctx.tenant.via && ctx.tenant.via.length ? ctx.tenant.via.join(' / ') : ctx.tenant.table + '.' + ctx.tenant.column));
+        else if (ctx.noTenant) parts.push('not multi-tenant');
+        if (ctx.notes) parts.push('notes');
+        if (ctx.map) parts.push('a map of ' + plural(Object.keys(ctx.map.tables).length, 'table', 'tables') + ' from the code');
+        return parts.length ? h('span', { class: 'faint', style: 'font-size:12px', text: 'Tells workers: ' + parts.join(' · ') + '.' }) : null;
+      };
+      var queryRow = function (e) {
+        return h('div', { class: 'srow', style: 'align-items:flex-start' },
+          h('div', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' },
+            h('span', { class: 'row', style: 'gap:8px' }, h('b', { text: e.worker || 'Unknown worker' }), h('span', { class: 'faint', text: e.tool + ' on ' + e.connection + ' · ' + ago(Date.parse(e.at)) })),
+            e.sql ? h('span', { class: 'faint mono', style: 'font-size:12px;white-space:pre-wrap;word-break:break-word', text: e.sql.length > 300 ? e.sql.slice(0, 300) + '…' : e.sql }) : null,
+            e.ok ? null : h('span', { class: 'faint', style: 'font-size:12px', text: e.error || 'Failed.' })),
+          h('span', { class: 'tag' + (e.ok ? '' : ' bad'), text: e.ok ? (typeof e.rowCount === 'number' ? plural(e.rowCount, 'row', 'rows') + (e.truncated ? '+' : '') : 'ok') : 'refused' }));
+      };
+      var envTag = function (c) { return h('span', { class: 'tag' + (c.env === 'prod' ? ' need' : ''), text: c.env }); };
+      var offerRow = function (o) {
+        var c = o.connection;
+        var pass = c.credential.source === 'secret' ? h('input', { type: 'password', autocomplete: 'off', placeholder: o.hasPassword && !o.moved.length ? 'Password (kept: leave empty)' : o.moved.length ? 'Changed ' + o.moved.join(', ') + ': password again' : 'Password for ' + (c.user || c.name), 'aria-label': 'Password for ' + c.name }) : null;
+        var approve = h('button', { class: 'btn go small', text: o.replaces ? 'Update' : 'Set up', disabled: !x.headless });
+        approve.onclick = function () {
+          var restore = busy(approve, 'Setting up…');
+          api('POST', '/api/overdb/offers/' + encodeURIComponent(o.id) + '/approve', pass && pass.value ? { password: pass.value } : {}).then(function (r) { restore(); after(r, c.name + ' is ready for workers.'); });
+        };
+        var dismiss = h('button', { class: 'linkish', style: 'font-size:13px', text: 'Dismiss', onclick: function () { api('POST', '/api/overdb/offers/' + encodeURIComponent(o.id) + '/remove', {}).then(function (y) { after(y, 'Dismissed.'); }); } });
+        return h('div', { class: 'srow', style: 'align-items:flex-start' },
+          h('div', { class: 'stack', style: 'gap:6px;min-width:0;flex:1' },
+            h('span', { class: 'row', style: 'gap:8px' }, h('b', { text: c.name }), envTag(c), h('span', { class: 'faint', text: 'from ' + o.by + ' · ' + ago(o.at) })),
+            h('span', { class: 'faint mono', text: where(c) }),
+            h('span', { class: 'faint', style: 'font-size:12px', text: how(c) + (c.env === 'prod' ? ' Workers can read production: use a login that can only read.' : '') }),
+            told(c),
+            pass ? h('div', { style: 'max-width:420px' }, pass) : null),
+          h('span', { class: 'row', style: 'gap:10px' }, dismiss, approve));
+      };
+      var liveRow = function (c) {
+        var remove = h('button', { class: 'linkish', style: 'font-size:13px', text: 'Remove' });
+        remove.onclick = function () { api('POST', '/api/overdb/connections/' + encodeURIComponent(c.id) + '/remove', {}).then(function (y) { after(y, c.name + ' is removed.'); }); };
+        return h('div', { class: 'srow' },
+          h('div', { class: 'stack', style: 'gap:2px;min-width:0' }, h('span', { class: 'row', style: 'gap:8px' }, h('b', { text: c.name }), envTag(c)), h('span', { class: 'faint mono', text: where(c) }), told(c),
+            c.hasPassword ? null : h('span', { class: 'faint', style: 'font-size:12px', text: 'Its password is missing: publish it again from overdb, then set it up with the password.' })),
+          remove);
+      };
+      var section = function (title, rows) { return rows.length ? h('section', { class: 'panel pad stack', style: 'gap:12px' }, h('h2', { class: 'section-title', text: title }), rows) : null; };
+      if (!x.offers.length && !x.connections.length) {
+        return [top, emptyState('No databases yet.', 'In overdb, open a connection’s Read-only menu and choose Publish to your org’s server. It lands here for you to finish, and workers with the overdb tool can then read it. Read-only, always.')];
+      }
+      return [top,
+        x.headless ? null : h('div', { class: 'banner', role: 'status', text: 'overdb isn’t installed on this server, so nothing here can be set up yet. Put overdb’s dist folder on the server and set OVERDB_HEADLESS to its dist/mcp/headless.js.' }),
+        section('Waiting', x.offers.map(offerRow)),
+        section('Set up · workers reach these through the overdb tool', x.connections.map(liveRow)),
+        q && q.ok !== false && q.queries.length ? section('Recent queries by workers · no rows are kept', q.queries.slice(0, 50).map(queryRow)) : null,
+        out].filter(Boolean);
     });
   }
 

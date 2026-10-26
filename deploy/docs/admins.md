@@ -115,6 +115,28 @@ Protect the default branch on your git host as well (required reviews, no force 
 - **What a run does:** each run gets its own worktree of every repo. The server pushes one branch per changed repo, each past that repo's tests, and the reply has one pull request link per repo.
 - **Changing or removing it:** **Change** edits the repos or instructions, and workers in it use the new setup from their next run. A workspace can't be removed while a worker works there.
 
+## Setup → Databases
+
+Databases people published from [overdb](https://github.com/overcodelions/overdb), for workers to read. In overdb, someone opens a connection's Read-only menu and chooses **Publish to your org's server**; their overcli app sends it here. What arrives is where the database is and which login to use, never a password.
+
+Each one waits under **Waiting** until you finish it:
+
+- **A password connection** asks for the password once. It goes straight into the overdb tool's own settings, under the variable the row names, and nowhere else: not the connections file, not the audit log. Like a tool's keys, it is only accepted over https or on this same machine.
+- **An IAM connection** signs in with a token from this server's own AWS role. Give the role `rds-db:connect` for the login the row names; there is nothing to type.
+- **DynamoDB** reads with this server's AWS role directly.
+
+Each row also says what it **tells workers**: the tenancy rule (which column every query filters on), the publisher's notes, and overdb's map of the code — what each table is for, the values a status column takes, the links only the code makes. Workers get these before they write SQL, so their queries are right the first time. They come from overdb as they were when published; publish again to update them.
+
+**Set up** writes the connection to `org/overdb-connections.json` and installs the **overdb** tool, which runs overdb's MCP server against that file. Then add `overdb` to the workers that should read these databases, as with any tool. Every session is read-only on the database itself and every statement has a 30-second limit, but a read can still be expensive: use a login made for agents, with only the grants you would give them, especially on prod.
+
+The server needs overdb's built `dist` folder. The Docker image keeps it at `/opt/overdb`; anywhere else, set `OVERDB_HEADLESS` to its `dist/mcp/headless.js`. Until then the tab says so and nothing can be set up.
+
+**Remove** takes a database away from workers, and its password with it.
+
+**Recent queries by workers** lists what each worker asked of which database: the tool, the SQL, how many rows came back, and anything refused — including a worker naming a database it was not given. No rows are kept, and no values bound into a query. The log is `org/overdb-queries.jsonl`, moved aside at 5 MB.
+
+Rows a worker reads go to the model and can end up wherever that worker posts: Slack, a ticket, a pull request. Give the overdb tool to workers whose output stays where the data may go, and point production at a read replica.
+
 ## Setup → Secrets
 
 Every secret the server uses, with why it's needed and how to get one. Values go in and are never shown again; changes apply at once and are recorded by name in the decision log. Where they're kept depends on `OVERCLI_SECRETS`:

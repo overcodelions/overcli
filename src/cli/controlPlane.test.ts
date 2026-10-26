@@ -81,6 +81,16 @@ function fakeOrg() {
       calls.push({ op: 'answer', caller: c.name, args: { runId, answer } });
       return { ok: false, error: "Only this worker's manager can do that." };
     },
+    databases: {
+      approveOverdbConnection: (c: OrgCaller, id: string, password: string | undefined, secure: boolean) => {
+        calls.push({ op: 'approveOverdbConnection', caller: c.name, args: { id, password, secure } });
+        return { ok: true };
+      },
+      publishOverdbConnection: (c: OrgCaller, input: unknown) => {
+        calls.push({ op: 'publishOverdbConnection', caller: c.name, args: input });
+        return { ok: true, waiting: true };
+      },
+    },
   } as unknown as OrgService;
   return { org, calls };
 }
@@ -214,6 +224,14 @@ describe('control plane HTTP', () => {
     } finally {
       delete process.env.OVERCLI_TRUST_PROXY;
     }
+  });
+
+  it('hands a database password to the service with whether it came over a private channel', async () => {
+    const auth = { Authorization: 'Bearer ocli_good', 'Content-Type': 'application/json' };
+    await fetch(`${base}/api/overdb/offers/o%201/approve`, { method: 'POST', headers: auth, body: JSON.stringify({ password: 'pw' }) });
+    expect(calls.filter((c) => c.op === 'approveOverdbConnection').at(-1)).toEqual({ op: 'approveOverdbConnection', caller: 'Pat', args: { id: 'o 1', password: 'pw', secure: true } });
+    await fetch(`${base}/api/publish/overdb-connection`, { method: 'POST', headers: auth, body: JSON.stringify({ id: 'p', connection: { name: 'x' } }) });
+    expect(calls.filter((c) => c.op === 'publishOverdbConnection').at(-1)).toEqual({ op: 'publishOverdbConnection', caller: 'Pat', args: { connection: { name: 'x' } } });
   });
 
   it('passes the report window through, defaulting to 30 days', async () => {

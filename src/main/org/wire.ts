@@ -22,6 +22,8 @@ import { Store } from '../store';
 import { isEverydayProject } from '../../shared/everydayProjects';
 import type { Worker } from '../../shared/flows/worker';
 import { OrgService, type HealthItem, type OrgServiceDeps, type SetupOffer } from './orgService';
+import { OVERDB_CONNECTIONS_FILE, OVERDB_TOOL, type OverdbOffer } from './overdb';
+import { OVERDB_FILE_VERSION, type OverdbConnectionsFile } from '../../shared/overdbConnection';
 import type { ServerVersion } from './updateCheck';
 import { draftHire, drafterDepsFor, saveDraftedHire } from './hireDraft';
 import { findOverlap } from './hireOverlap';
@@ -37,7 +39,7 @@ import { mcpServerKey } from '../../shared/flows/toolScope';
 import { checkLogin, checkLoginByCall, type LoginResult } from './toolLogin';
 import { callTool, listServerTools } from './mcpDirect';
 import type { TriggerService } from './triggers';
-import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileToolRequestStore, fileToolHealthStore, fileWorkerVersionStore, fileHandbook, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy } from './orgStores';
+import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileToolRequestStore, fileToolHealthStore, fileWorkerVersionStore, fileHandbook, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy, orgDir } from './orgStores';
 import { RepoService, type RepoState } from './repos';
 import { projectIdFor, repairProjectIds } from '../projectIds';
 import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from '../workspace';
@@ -312,6 +314,30 @@ export function createOrgService(
     published: filePublishedStore,
     runActivity: (runId, after) => engines.runActivity?.list(runId, after) ?? [],
     setupOffers: jsonOrgStore<{ offers: SetupOffer[] }>('setup-offers.json', () => ({ offers: [] })),
+    overdbOffers: jsonOrgStore<{ offers: OverdbOffer[] }>('overdb-offers.json', () => ({ offers: [] })),
+    overdbConnections: jsonOrgStore<OverdbConnectionsFile>(OVERDB_CONNECTIONS_FILE, () => ({ version: OVERDB_FILE_VERSION, connections: [] })),
+    overdb: {
+      // The Docker image puts overdb here; anywhere else says so in OVERDB_HEADLESS.
+      headlessPath: () => {
+        const at = process.env.OVERDB_HEADLESS?.trim() || '/opt/overdb/dist/mcp/headless.js';
+        return fs.existsSync(at) ? at : null;
+      },
+      connectionsFile: () => path.join(orgDir(), OVERDB_CONNECTIONS_FILE),
+      queryLogFile: () => path.join(orgDir(), 'overdb-queries.jsonl'),
+      // The newest part is what the console shows; the rest rotates away (overdb keeps it under 5 MB).
+      readQueryLog: () => {
+        try {
+          return fs.readFileSync(path.join(orgDir(), 'overdb-queries.jsonl'), 'utf-8');
+        } catch {
+          return '';
+        }
+      },
+      toolEnv: () => {
+        const env = readClaudeMcpServers()[OVERDB_TOOL]?.env;
+        if (!env || typeof env !== 'object' || Array.isArray(env)) return {};
+        return Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => typeof e[1] === 'string'));
+      },
+    },
     ...(engines.secrets
       ? (() => {
           const secrets = engines.secrets;

@@ -77,6 +77,7 @@ import type { SecretsService } from '../main/org/secrets/service';
 import { teamHireJobDescription } from '../shared/flows/team';
 import type { OrgService } from '../main/org/orgService';
 import type { AccessService } from '../main/org/accessService';
+import { useOverdbWorkerLookup } from '../main/org/overdbBinding';
 
 export interface HeadlessEngines {
   runner: RunnerManager;
@@ -487,6 +488,8 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   guardCredentials(host().dataDir());
   const toolFile = { read: () => readClaudeMcpServers(), write: (name: string, c: McpServerConfig) => writeMcpServer('claude', name, c) };
   let gateway: ToolGateway | null = null;
+  // Whose run the overdb tool is serving, for its query log (overdbBinding.ts).
+  useOverdbWorkerLookup((id) => flowRuntime.workerForConversation(id)?.workerName);
   if (process.env.OVERCLI_TOOL_GATEWAY === '1') {
     openToolGateway(
       {

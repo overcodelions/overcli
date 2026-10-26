@@ -8,10 +8,49 @@
 # uv runs Python tools packaged for uvx, such as AWS's CloudWatch MCP server
 # (deploy/aws.md). Pin it with --build-arg UV_VERSION=<x.y.z>.
 ARG UV_VERSION=0.8.0
+# overdb's read-only MCP server, for Setup → Databases, built from GitHub at
+# this ref. To build against a checkout instead (CI, or the two changing
+# together): --build-context overdb-src=../overdb
+ARG OVERDB_REF=master
+# A Debian mirror to use instead of deb.debian.org, for networks that cannot
+# reach it: --build-arg DEBIAN_MIRROR=mirrors.edge.kernel.org. Security
+# updates then come straight from security.debian.org, which few mirrors carry.
+ARG DEBIAN_MIRROR=
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+# ---- overdb: just its main-process code, compiled; no Electron, no UI -----
+FROM node:22-bookworm-slim AS overdb-clone
+ARG OVERDB_REF
+ARG DEBIAN_MIRROR
+RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i -e "s#deb.debian.org/debian-security#security.debian.org/debian-security#" -e "s#deb.debian.org/debian\$#${DEBIAN_MIRROR}/debian#" /etc/apt/sources.list.d/debian.sources; fi
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && git clone --depth 1 --branch "${OVERDB_REF}" https://github.com/overcodelions/overdb.git /overdb
+# The repo at the root of a stage of its own, so a --build-context checkout
+# can stand in for it.
+FROM scratch AS overdb-src
+COPY --from=overdb-clone /overdb/ /
+
+FROM node:22-bookworm-slim AS overdb
+WORKDIR /overdb
+# Electron is a dev dependency for its types; its 100 MB binary is never run.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+COPY --from=overdb-src package.json package-lock.json ./
+# electron-builder packages the desktop app; nothing here needs it, and its
+# platform-specific peers (dmg-builder, the Windows installer) leave a lock
+# file made on a Mac unusable by `npm ci` on Linux. Without it, `npm install`
+# still takes every other version from the lock.
+RUN npm pkg delete devDependencies.electron-builder \
+ && npm install --ignore-scripts --no-audit --no-fund
+COPY --from=overdb-src tsconfig.json tsconfig.main.json ./
+COPY --from=overdb-src src ./src
+RUN npx tsc -p tsconfig.main.json && npm prune --omit=dev && rm -rf src
 
 # ---- build: compile the CLI (tsc) with dev dependencies, then drop them ----
 FROM node:22-bookworm-slim AS build
+ARG DEBIAN_MIRROR
+RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i -e "s#deb.debian.org/debian-security#security.debian.org/debian-security#" -e "s#deb.debian.org/debian\$#${DEBIAN_MIRROR}/debian#" /etc/apt/sources.list.d/debian.sources; fi
 # node-pty is a dependency of the desktop app and compiles on install.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ \
@@ -31,6 +70,8 @@ FROM node:22-bookworm-slim
 # git for worktrees; ssh for git remotes; the model CLIs are what every
 # worker turn runs. Claude Code always; Codex when INSTALL_CODEX=1. Pin the
 # versions for reproducible images: --build-arg CLAUDE_CODE_VERSION=<x.y.z>.
+ARG DEBIAN_MIRROR
+RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i -e "s#deb.debian.org/debian-security#security.debian.org/debian-security#" -e "s#deb.debian.org/debian\$#${DEBIAN_MIRROR}/debian#" /etc/apt/sources.list.d/debian.sources; fi
 ARG CLAUDE_CODE_VERSION=latest
 ARG INSTALL_CODEX=0
 ARG CODEX_VERSION=latest
@@ -53,6 +94,8 @@ COPY --from=build /src/src/renderer/fonts ./src/renderer/fonts
 # The docs, served at /docs: the same pages GitHub shows, for this version.
 COPY deploy/docs ./deploy/docs
 COPY deploy/README.md deploy/aws.md deploy/gcp.md ./deploy/
+# overdb's headless MCP server; Setup → Databases installs the overdb tool on it.
+COPY --from=overdb /overdb /opt/overdb
 RUN ln -s /app/dist/cli/index.js /usr/local/bin/overcli && chmod +x /app/dist/cli/index.js
 
 # All state — workers, journals, runs, tokens, the org policy, cloned repos —
@@ -62,7 +105,8 @@ RUN ln -s /app/dist/cli/index.js /usr/local/bin/overcli && chmod +x /app/dist/cl
 ENV OVERCLI_HOME=/data \
     HOME=/data/home \
     OVERCLI_CONTROL=0.0.0.0:7420 \
-    OVERCLI_TOOL_GATEWAY=1
+    OVERCLI_TOOL_GATEWAY=1 \
+    OVERDB_HEADLESS=/opt/overdb/dist/mcp/headless.js
 RUN mkdir -p /data/home \
  && chown -R node:node /data \
  && git config --system user.name "overcli workers" \
