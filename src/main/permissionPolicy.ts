@@ -47,7 +47,7 @@ const READ_ONLY_COMMANDS = new Set([
   'ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg',
   'find', 'stat', 'du', 'df', 'which', 'type', 'sort', 'cut', 'diff',
   'basename', 'dirname', 'realpath', 'readlink', 'date', 'whoami', 'nl', 'true',
-  'uname', 'column', 'tac', 'rev', 'cmp',
+  'uname', 'column', 'tac', 'rev', 'cmp', 'file',
 ]);
 
 /// The flags each read-only command may take. Anything else — an unknown
@@ -74,6 +74,8 @@ const SAFE_FLAGS: Record<string, RegExp> = {
   basename: /^-[as]$/,
   realpath: /^-[esqmz]+$/,
   readlink: /^-[fmenqz]+$/,
+  // Not -C (compiles a magic file) or -m (loads one).
+  file: /^(-[bhiLz]+|--brief|--mime(-type|-encoding)?)$/,
   date: /^(-[uRI]\w*|-d|--date(=.*)?|--iso-8601(=\w+)?)$/,
   uname: /^-[asnrvmpio]+$/,
   nl: /^(-b\S*|-n\S*|-w\d*)$/,
@@ -289,10 +291,26 @@ function commandReadsOnly(command: string): boolean {
   const cmd = w[0];
   if (!cmd) return true;
   if (cmd === 'git') return gitReadsOnly(w);
+  // `cd` only moves where the next command looks, and a read anywhere is
+  // already a read. Models open nearly every line with it.
+  if (cmd === 'cd') return w.length <= 2 && !w[1]?.startsWith('-');
+  if (cmd === 'sed') return sedPrintsOnly(w);
   if (!READ_ONLY_COMMANDS.has(cmd)) return false;
   const safe = SAFE_FLAGS[cmd];
   if (w.slice(1).some((a) => a.startsWith('-') && !(safe && safe.test(a)))) return false;
   return true;
+}
+
+/// `sed -n 120,180p file`: the way models page through a file. Only a
+/// printed line range counts. A sed script can also write (`w`), run a
+/// command (`e`) or edit in place (`-i`), and none of those fit the shape.
+function sedPrintsOnly(w: string[]): boolean {
+  const args = w.slice(1);
+  const scriptAt = args.findIndex((a) => !a.startsWith('-'));
+  if (scriptAt < 0) return false;
+  if (!args.slice(0, scriptAt).every((a) => a === '-n')) return false;
+  if (!/^(\d+|\$)(,(\d+|\$))?p$/.test(args[scriptAt])) return false;
+  return args.slice(scriptAt + 1).every((a) => !a.startsWith('-'));
 }
 
 /// True when every command in the line only reads, and nothing is written

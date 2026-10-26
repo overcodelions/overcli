@@ -129,7 +129,7 @@ import {
 import { deleteOllamaSession } from './ollamaStore';
 import { auditOllama, updateOllama } from './ollamaSecurity';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
-import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
+import { initAutoUpdater, refreshUpdateChannel, quitAndInstall, updateStatus } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { host } from './host';
 import { ServicesManager, fsRepoReader, importFile as importServicesFile } from './services/manager';
@@ -1232,6 +1232,7 @@ export function registerIpc(): void {
   ipcMain.handle('app:whatsNew', () => getWhatsNew());
   ipcMain.handle('app:markWhatsNewSeen', () => markWhatsNewSeen());
   ipcMain.handle('app:version', () => app.getVersion());
+  ipcMain.handle('app:updateStatus', () => updateStatus());
 
   // Everything arriving here was typed into the app by a person who is
   // watching, so the chat permission policy applies. See SendArgs.interactive.
@@ -1244,6 +1245,9 @@ export function registerIpc(): void {
   );
   ipcMain.handle('runner:respondPermission', (_e, { conversationId, requestId, approved, addDir, scope, rule }) =>
       runner!.respondPermission(conversationId, requestId, approved, addDir, scope, rule),
+  );
+  ipcMain.handle('runner:allowRestOfTurn', (_e, { conversationId, allow }) =>
+      runner!.allowRestOfTurn(conversationId, allow),
   );
   ipcMain.handle('runner:respondCodexApproval', (_e, { conversationId, callId, kind, approved }) =>
       runner!.respondCodexApproval(conversationId, callId, kind, approved),

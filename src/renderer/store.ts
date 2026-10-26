@@ -558,6 +558,9 @@ interface StoreState {
   prewarmNewConversation(): void;
   stop(conversationId: UUID): Promise<void>;
   resetConversation(conversationId: UUID): Promise<void>;
+  /// Stop asking for the rest of the running turn, answering what's waiting
+  /// now. `safe` leaves risky calls asking; `everything` is Bypass's.
+  allowRestOfTurn(conversationId: UUID, allow: 'everything' | 'safe'): Promise<void>;
   respondPermission(
     conversationId: UUID,
     requestId: string,
@@ -3145,6 +3148,24 @@ export const useStore = create<StoreState>((set, get) => ({
       return { ...c, pendingPermissionMode: mode };
     });
     await saveConversationState(get);
+    // A running turn keeps the mode it launched with, so switching to Bypass
+    // mid-turn would still leave its prompts asking.
+    if (!getRunner(id)?.isRunning || prev.mode === 'bypassPermissions') return;
+    if (mode === 'bypassPermissions') await get().allowRestOfTurn(id, 'everything');
+    else await window.overcli.invoke('runner:allowRestOfTurn', { conversationId: id, allow: 'off' });
+  },
+  async allowRestOfTurn(id, allow) {
+    await window.overcli.invoke('runner:allowRestOfTurn', { conversationId: id, allow });
+    // Approve what's already waiting too. ExitPlanMode stays a choice:
+    // approving it means "go build the plan", not "stop asking". Risky calls
+    // keep their card unless this came from Bypass.
+    for (const e of getRunner(id)?.events ?? []) {
+      if (e.kind.type !== 'permissionRequest') continue;
+      const info = e.kind.info;
+      if (info.decided || (info.backend && info.backend !== 'claude') || info.toolName === 'ExitPlanMode') continue;
+      if (allow === 'safe' && info.riskNote) continue;
+      await get().respondPermission(id, info.requestId, true);
+    }
   },
   async setBackendModel(id, backend, model) {
     if (backend !== 'ollama' && model && !isSupportedPremiumModel(backend, model)) {

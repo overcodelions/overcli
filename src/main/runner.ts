@@ -96,7 +96,7 @@ import {
   isInsideAllowedDirs,
   normalizeAllowedDirs,
 } from './permissionRules';
-import { alwaysAllowRule, decideBeforeAsking, riskNote, riskyAskRules } from './permissionPolicy';
+import { alwaysAllowRule, decideBeforeAsking, isRiskyCall, riskNote, riskyAskRules } from './permissionPolicy';
 import { summarizeToolUse } from './toolDescription';
 import { CommandChangeTracker } from './commandFileChanges';
 import { collapsePartialAssistants } from './streamSnapshot';
@@ -897,6 +897,11 @@ interface ActiveProcess {
   /// reach the live subprocess.
   /// `message`: what a refusal tells the model; absent, "denied by user".
   pendingPermissions: Map<string, (approved: boolean, message?: string) => void>;
+  /// Prompts the rest of this turn answers without asking: `everything`
+  /// after a mid-turn switch to Bypass (the mode itself lands on the next
+  /// spawn), `safe` from the card's "Allow rest of turn", which still asks
+  /// about risky calls. Cleared when the next turn starts. See allowRestOfTurn.
+  allowRestOfTurn?: 'everything' | 'safe';
   pendingCodexApprovals: Map<string, (approved: boolean) => void>;
   pendingUserInputs: Map<string, (answers: Record<string, UserInputAnswer>) => void>;
   /// Accumulated context for the current turn so we can feed the
@@ -1799,6 +1804,13 @@ export class RunnerManager {
       });
       return;
     }
+    if (this.allowedForRestOfTurn(active, req.toolName, req.toolInput)) {
+      this.claudeBroker.resolve(req.conversationId, req.requestId, {
+        behavior: 'allow',
+        updatedInput: req.toolInput,
+      });
+      return;
+    }
     // ExitPlanMode is a real gate: allowing it tells Claude the plan is
     // approved, so it leaves plan mode and proceeds straight into coding.
     // Do NOT auto-allow — fall through to the pending-permission path so
@@ -2115,6 +2127,9 @@ export class RunnerManager {
       if (toolName === 'AskUserQuestion') {
         return { behavior: 'allow', updatedInput: input };
       }
+      if (this.allowedForRestOfTurn(active, toolName, input)) {
+        return { behavior: 'allow', updatedInput: input };
+      }
       // ExitPlanMode is a real gate: allowing it tells Claude the plan is
       // approved and it leaves plan mode. Fall through to the pending-
       // permission path so the plan card drives the decision; auto-allowing
@@ -2407,6 +2422,23 @@ export class RunnerManager {
     if (this.runningConvs.size === 0) this.stopReconcileTimer();
   }
 
+  /// Stop asking for the rest of the running turn. Bypass picked mid-turn
+  /// needs this because the running Claude process keeps the mode it was
+  /// launched with until the next send respawns it; the card's "Allow rest
+  /// of turn" is the same thing short of risky calls. `off` undoes it when
+  /// the user switches back before sending.
+  allowRestOfTurn(conversationId: UUID, allow: 'everything' | 'safe' | 'off'): void {
+    const active = this.procs.get(conversationId);
+    if (active) active.allowRestOfTurn = allow === 'off' ? undefined : allow;
+  }
+
+  /// ExitPlanMode is never swept up: approving it means "go build the
+  /// plan", not "stop asking".
+  private allowedForRestOfTurn(active: ActiveProcess, toolName: string, input: unknown): boolean {
+    if (!active.allowRestOfTurn || toolName === 'ExitPlanMode') return false;
+    return active.allowRestOfTurn === 'everything' || !isRiskyCall(toolName, input);
+  }
+
   respondPermission(
     conversationId: UUID,
     requestId: string,
@@ -2629,6 +2661,7 @@ export class RunnerManager {
       }
       const spawnedNow = !this.procs.get(convId);
       const active = this.procs.get(convId) ?? this.spawnFor(args);
+      active.allowRestOfTurn = undefined;
       // spawnFor stamps whatever effort argv got, which under auto-effort is
       // this turn's classified tier. The stamp has to hold the *configured*
       // tier instead or the next turn reads its own auto-lowering back as a

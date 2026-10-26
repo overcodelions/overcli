@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useStore } from '../../store';
+import type { UpdateStatus } from '../../../shared/types';
 import {
   RotaSpecimen,
   ServiceAskDemo,
@@ -114,9 +115,11 @@ export function AboutSheet() {
   // said 0.1.0 while the app shipped 0.12.0, and nightly stamps its version
   // in CI where no source file can be hand-edited to match.
   const [version, setVersion] = useState('');
+  const [update, setUpdate] = useState<UpdateStatus>({ state: 'unknown' });
 
   useEffect(() => {
     void window.overcli.invoke('app:version').then(setVersion);
+    void window.overcli.invoke('app:updateStatus').then(setUpdate);
   }, []);
 
   return (
@@ -133,6 +136,9 @@ export function AboutSheet() {
               {version && (
                 <div className="rounded-full border border-card-strong bg-card/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-ink-muted">
                   v{version}
+                  {update.state === 'latest' && <span className="ml-1.5 text-accent">· latest</span>}
+                  {update.state === 'available' && <span className="ml-1.5 text-ink">· v{update.version} downloading</span>}
+                  {update.state === 'downloaded' && <span className="ml-1.5 text-ink">· v{update.version} on restart</span>}
                 </div>
               )}
               {/* The deliberate way in. The panel opens by itself once per

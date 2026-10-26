@@ -3,6 +3,7 @@ import { useStore } from '../store';
 
 export function PermissionCard({ info, conversationId }: { info: PermissionRequestInfo; conversationId: UUID }) {
   const respond = useStore((s) => s.respondPermission);
+  const allowRestOfTurn = useStore((s) => s.allowRestOfTurn);
   const decided = info.decided;
   const label = info.backend ?? 'agent';
   // Offer "Allow + Add Dir" only when the main process flagged the path
@@ -25,6 +26,10 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
   // Undefined: a request from before the chat policy, or a flow step's —
   // remember the tool name as before. Null: nothing safe to remember.
   const rule = info.alwaysAllowRule === undefined ? info.toolName : info.alwaysAllowRule;
+  // For a turn doing a run of one-off commands no single rule covers.
+  // Claude only (the runner answers its prompts), and never on a risky call:
+  // those always get their own card.
+  const canAllowTurn = info.backend === 'claude' && !info.riskNote && info.toolName !== 'ExitPlanMode';
   return (
     <div className="rounded-lg border border-blue-500/30 bg-blue-500/8 px-3 py-2 text-xs">
       <div className="flex items-center gap-2 text-blue-400 font-medium">
@@ -105,6 +110,15 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
               title={`Remembered for this project as ${rule}`}
             >
               {alwaysAllowLabel(rule)}
+            </button>
+          )}
+          {canAllowTurn && (
+            <button
+              onClick={() => void allowRestOfTurn(conversationId, 'safe')}
+              className="px-3 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 border border-accent/40"
+              title="Allows this and every other request until the turn ends. Risky commands still ask."
+            >
+              Allow rest of turn
             </button>
           )}
           {canAddDir && addDirTarget && (
