@@ -305,12 +305,19 @@ function clientKey(req: http.IncomingMessage): string {
   return fwd || req.socket.remoteAddress || 'unknown';
 }
 
+/// The operator vouches the port is published on the host's loopback only
+/// (OVERCLI_PUBLISHED_ON_LOOPBACK=1, set by the compose file beside its
+/// `127.0.0.1:` port). In a container every browser on that host arrives from
+/// the bridge's gateway, never 127.0.0.1, so the socket alone can't tell.
+const publishedOnLoopback = (): boolean => process.env.OVERCLI_PUBLISHED_ON_LOOPBACK === '1';
+
 /// Whether a request's body crossed the wire where nobody else could read it:
 /// over TLS, through a trusted proxy that saw https, or from this machine
 /// itself. Never from the Host header, which any client can set.
-function privateChannel(req: http.IncomingMessage): boolean {
+export function privateChannel(req: Pick<http.IncomingMessage, 'socket' | 'headers'>): boolean {
   if ('encrypted' in req.socket && (req.socket as { encrypted?: boolean }).encrypted) return true;
   if (trustProxy()) return String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
+  if (publishedOnLoopback()) return true;
   const ip = req.socket.remoteAddress ?? '';
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
@@ -458,6 +465,7 @@ function triggerInput(raw: unknown): Parameters<OrgService['createTrigger']>[2] 
     deliver,
     maxPerDay: Number(t.maxPerDay) || 50,
     ...(t.notifyOnly === true ? { notifyOnly: true } : {}),
+    ...(t.startsOnItsOwn === true ? { startsOnItsOwn: true } : {}),
     ...(kind === 'watch'
       ? {
           watch: {
@@ -490,6 +498,7 @@ function triggerPatch(raw: unknown): Parameters<OrgService['updateTrigger']>[2] 
     ...(p.maxPerDay !== undefined ? { maxPerDay: full.maxPerDay } : {}),
     ...(p.watch ? { watch: full.watch } : {}),
     ...(typeof p.notifyOnly === 'boolean' ? { notifyOnly: p.notifyOnly } : {}),
+    ...(typeof p.startsOnItsOwn === 'boolean' ? { startsOnItsOwn: p.startsOnItsOwn } : {}),
     ...(p.slack ? { slack: triggerInput({ kind: 'slack', slack: p.slack }).slack } : {}),
   };
 }

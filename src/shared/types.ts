@@ -1820,7 +1820,12 @@ export interface IPCInvokeMap {
     rootPath?: string;
   }) => { ok: true } | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
-  'fs:listFileEntries': (root: string) => FileTreeEntry[];
+  /// `truncated`: the walk hit its cap, so the tree shows part of the folder;
+  /// `unlistedDirs` are the folders it found but didn't open, listed on expand.
+  'fs:listFileEntries': (root: string) => { entries: FileTreeEntry[]; truncated: boolean; unlistedDirs: string[] };
+  /// Files under `root` whose relative path contains `query`, searched on
+  /// disk past the listing's cap. `truncated`: more matched than were returned.
+  'fs:findFileEntries': (root: string, query: string) => { entries: FileTreeEntry[]; truncated: boolean };
   /// Start watching `root` so the file tree can relist itself when an agent
   /// (or anything else) writes into the project. Refcounted in main — every
   /// `fs:watchTree` needs a matching `fs:unwatchTree`. `key` is the resolved

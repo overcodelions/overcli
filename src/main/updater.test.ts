@@ -47,15 +47,18 @@ const { autoUpdater } = vi.hoisted(() => ({
       this._channel = value;
       this.allowDowngrade = true;
     },
-    on: () => {},
-    checkForUpdates: () => Promise.resolve(null),
+    handlers: {} as Record<string, (info?: unknown) => void>,
+    on(event: string, handler: (info?: unknown) => void) {
+      this.handlers[event] = handler;
+    },
+    checkForUpdates: (): Promise<unknown> => Promise.resolve(null),
     quitAndInstall: () => {},
   },
 }));
 
 vi.mock('electron-updater', () => ({ autoUpdater }));
 
-import { initAutoUpdater, refreshUpdateChannel } from './updater';
+import { checkBeforeQuit, initAutoUpdater, refreshUpdateChannel } from './updater';
 
 function init(channel: 'stable' | 'nightly', currentVersion: string) {
   version = currentVersion;
@@ -110,5 +113,64 @@ describe('update channel', () => {
     expect(autoUpdater.channel).toBe('nightly');
     expect(autoUpdater.allowPrerelease).toBe(true);
     expect(autoUpdater.allowDowngrade).toBe(false);
+  });
+});
+
+// Checks run at launch and every six hours, so an app open across a release
+// quit with nothing downloaded and took a second restart to update.
+describe('checking before quit', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    init('nightly', '0.16.2-nightly.20260829.abc');
+    // Whatever an earlier test left behind is not the answer here.
+    autoUpdater.handlers['update-available']({ version: '0.16.2-nightly.20260830.def' });
+  });
+
+  it('holds the quit until the update has downloaded', async () => {
+    let finishDownload = () => {};
+    const downloadPromise = new Promise<void>((resolve) => { finishDownload = resolve; });
+    autoUpdater.checkForUpdates = () => Promise.resolve({ downloadPromise });
+
+    let done = false;
+    const quit = checkBeforeQuit().then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(done).toBe(false);
+
+    finishDownload();
+    await quit;
+    expect(done).toBe(true);
+  });
+
+  it('quits anyway when the download takes too long', async () => {
+    autoUpdater.checkForUpdates = () => Promise.resolve({ downloadPromise: new Promise(() => {}) });
+
+    let done = false;
+    const quit = checkBeforeQuit().then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await quit;
+    expect(done).toBe(true);
+  });
+
+  it('quits when the check fails', async () => {
+    autoUpdater.checkForUpdates = () => Promise.reject(new Error('offline'));
+    await expect(checkBeforeQuit()).resolves.toBeUndefined();
+  });
+
+  it('does not look again when the update is already downloaded', async () => {
+    const check = vi.fn(() => Promise.resolve(null));
+    autoUpdater.checkForUpdates = check;
+    autoUpdater.handlers['update-downloaded']({ version: '0.16.2-nightly.20260830.def' });
+
+    await checkBeforeQuit();
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it('does not look again straight after a check found nothing', async () => {
+    const check = vi.fn(() => Promise.resolve(null));
+    autoUpdater.checkForUpdates = check;
+    autoUpdater.handlers['update-not-available']();
+
+    await checkBeforeQuit();
+    expect(check).not.toHaveBeenCalled();
   });
 });

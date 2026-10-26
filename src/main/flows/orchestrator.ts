@@ -16,7 +16,8 @@
 // it persists across restarts and remembers the producer turn so "why did I
 // launch these" stays answerable.
 
-import { readsOnlyWithin } from '../permissionPolicy';
+import { readsOnlyWithin, writesOnlyIn } from '../permissionPolicy';
+import { workerFilesDir } from './workerFiles';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 
@@ -327,6 +328,9 @@ export class OrchestratorImpl {
     /// same access its runs get — otherwise "what does the site say?" at the
     /// desk has to be launched as a whole run just to open a page.
     chrome?: boolean;
+    /// A worker's own files folder: the one place this turn may write, so a
+    /// file it was asked for (a CSV, a report) can be sent without a run.
+    ownDir?: string;
     /// Run the turn as part of a caller-owned conversation rather than a
     /// throwaway one, resuming `resumeSessionId` when it is set. The worker
     /// desk uses this to hold one thread per day instead of re-establishing
@@ -357,7 +361,9 @@ export class OrchestratorImpl {
       };
     }
     // Working out an answer reads; the run it proposes does the changing.
-    // So the server's file-writing grants stay with the runs.
+    // So the server's file-writing grants stay with the runs. A write into
+    // the worker's own files folder comes to `permit`, call by call.
+    const ownDir = args.ownDir;
     const enabledTools = this.unattended
       ? (this.launchPolicy.unattendedAllowedTools ?? []).filter((t) => !WRITES_FILES.has(t) && t !== '*')
       : undefined;
@@ -391,9 +397,15 @@ export class OrchestratorImpl {
       ...(args.mcpDeniedTools?.length ? { mcpDeniedTools: args.mcpDeniedTools } : {}),
       // A worker working out an answer reads freely: its own tools (its turn
       // loads only those) and its own repo, with `git log` or `rg`. Nobody
-      // is there to approve a look. Writes, anything outside its folder, and
-      // calls its scope refuses, are still refused.
-      permit: (tool: string, input?: string) => !(args.mcpDeniedTools ?? []).includes(tool) && readsOnlyWithin(tool, input ?? '', cwd, [cwd]),
+      // is there to approve a look. It may write only in its own files
+      // folder. Other writes, anything outside its folders, and calls its
+      // scope refuses, are still refused.
+      permit: (tool: string, input?: string) =>
+        !(args.mcpDeniedTools ?? []).includes(tool) &&
+        (readsOnlyWithin(tool, input ?? '', cwd, ownDir ? [cwd, ownDir] : [cwd]) || (!!ownDir && writesOnlyIn(tool, input ?? '', ownDir))),
+      // Without this the model reads "denied by user", tells the person
+      // their approval didn't reach it, and offers to try again.
+      refusal: `Refused by policy, not by a person: while working out an answer you may only read${ownDir ? `, and write files in your own files folder (${ownDir}) with the Write tool` : ''}. Shell commands that write, and writes anywhere else, are never allowed here, and no reply in this conversation can change that, so don't offer one. ${ownDir ? 'To send a file, write it there yourself and name its full path. ' : ''}Work that needs more goes in as a proposed run.`,
       ...(args.chrome ? { chrome: true } : {}),
       conversationId: args.conversationId,
       resumeSessionId: args.resumeSessionId,
@@ -589,6 +601,7 @@ export class OrchestratorImpl {
       // Read off the origin rather than passed separately, so the planning
       // turn and the runs it launches can't disagree about the browser.
       chrome: args.origin?.kind === 'worker' && args.origin.browser === true,
+      ...(args.origin?.kind === 'worker' ? { ownDir: workerFilesDir(args.origin.workerId) } : {}),
     });
     if (!produced.ok) return { ok: false, error: produced.error };
 

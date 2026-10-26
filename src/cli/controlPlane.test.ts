@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { bearer, createControlPlane, listenControlPlane, parseCadence } from './controlPlane';
+import { bearer, createControlPlane, listenControlPlane, parseCadence, privateChannel } from './controlPlane';
 import { parseArgs, parseControlAddress } from './args';
 import type { OrgService } from '../main/org/orgService';
 import type { OrgCaller } from '../shared/org/policy';
@@ -222,6 +222,21 @@ describe('control plane HTTP', () => {
       await fetch(`${base}/api/publish/setup`, { method: 'POST', headers: { ...auth, 'X-Forwarded-Proto': 'https' }, body: JSON.stringify(body) });
       expect((calls.filter((c) => c.op === 'publishSetup').at(-1)!.args as { secure: boolean }).secure).toBe(true);
     } finally {
+      delete process.env.OVERCLI_TRUST_PROXY;
+    }
+  });
+
+  it('takes a container gateway as local only when the port is published on loopback', () => {
+    const fromGateway = { socket: { remoteAddress: '192.168.65.1' }, headers: {} } as unknown as Parameters<typeof privateChannel>[0];
+    expect(privateChannel(fromGateway)).toBe(false);
+    process.env.OVERCLI_PUBLISHED_ON_LOOPBACK = '1';
+    try {
+      expect(privateChannel(fromGateway)).toBe(true);
+      // A trusted proxy's word still wins: it may be serving plain http to anyone.
+      process.env.OVERCLI_TRUST_PROXY = '1';
+      expect(privateChannel({ ...fromGateway, headers: { 'x-forwarded-proto': 'http' } })).toBe(false);
+    } finally {
+      delete process.env.OVERCLI_PUBLISHED_ON_LOOPBACK;
       delete process.env.OVERCLI_TRUST_PROXY;
     }
   });

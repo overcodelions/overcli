@@ -89,7 +89,9 @@ function missingDebugTool(ctx: TriageContext): Finding[] {
 /// no hint that the profile was ever the problem.
 function profileContradiction(ctx: TriageContext): Finding[] {
   const wanted = ctx.env.SPRING_PROFILES_ACTIVE;
-  if (!wanted) return [];
+  // Still a reference means we do not know what was asked for, and naming the
+  // placeholder as the profile we wanted is a diagnosis nobody can act on.
+  if (!wanted || wanted.includes('${')) return [];
 
   for (const line of ctx.lines) {
     const match = /following profiles are active:\s*(.+?)\s*$/i.exec(line);

@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { listFileEntriesAsync, listFileEntriesSync, type WalkEntry } from './fileWalk';
+import {
+  findFileEntriesAsync,
+  listFileEntriesAsync,
+  listFileEntriesSync,
+  listFileTreeAsync,
+  type WalkEntry,
+} from './fileWalk';
 
 /// A tree with everything the walk has an opinion about: nesting, a skipped
 /// build directory, a symlinked project (the workspace shape), a symlink to
@@ -78,4 +84,34 @@ describe('project walk', () => {
     expect(listFileEntriesSync(root).length).toBeGreaterThan(0);
     expect((await listFileEntriesAsync(root)).length).toBeGreaterThan(0);
   }, 30_000);
+
+  it('reports a complete walk as not truncated', async () => {
+    const root = fixture();
+    const result = await listFileTreeAsync(root);
+    expect(result.truncated).toBe(false);
+    expect(result.unlistedDirs).toEqual([]);
+  });
+
+  it('hands back the folders a capped walk never opened', async () => {
+    const root = fixture();
+    const result = await listFileTreeAsync(root, 1);
+    expect(result.truncated).toBe(true);
+    // Every file is either listed or under a folder left for the tree to open.
+    const covered = (rel: string) =>
+      result.entries.some((e) => path.relative(root, e.path) === rel) ||
+      result.unlistedDirs.some((d) => rel.startsWith(path.relative(root, d) + path.sep));
+    for (const rel of ['README.md', 'member/member.ts', 'src/deep/nested.ts', 'src/index.ts']) {
+      expect(covered(rel)).toBe(true);
+    }
+  });
+
+  it('finds files by relative path past the listing cap', async () => {
+    const root = fixture();
+    expect(names((await findFileEntriesAsync(root, 'NESTED')).entries, root)).toEqual(['src/deep/nested.ts']);
+    // Matches through a symlinked project, and on the folder part of the path.
+    expect(names((await findFileEntriesAsync(root, 'member/')).entries, root)).toEqual(['member/member.ts']);
+    expect((await findFileEntriesAsync(root, '   ')).entries).toEqual([]);
+    const capped = await findFileEntriesAsync(root, '.', 1);
+    expect(capped.truncated).toBe(true);
+  });
 });

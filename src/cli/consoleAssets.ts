@@ -49,6 +49,7 @@ export const CONSOLE_HTML = `<!doctype html>
 // The frame sits a step darker than the page, so the chrome reads as chrome.
 const DARK = `
   --bg: #161619; --side: #111114; --panel: #1b1b20; --panel-2: #23232a; --line: #2c2c33; --line-2: #3a3a43;
+  --field: #121215; --field-line: #686874;
   --ink: #ececf1; --muted: #b0b0ba; --faint: #8e8e98; --solid: #ececf1; --solid-ink: #17171c;
   --go: #7c8bff; --go-ink: #10121f; --go-soft: rgba(124, 139, 255, 0.16);
   --ok: #4ccf8f; --ok-soft: rgba(76, 207, 143, 0.13);
@@ -61,6 +62,7 @@ const DARK = `
 
 const LIGHT = `
   --bg: #f6f6f8; --side: #ffffff; --panel: #ffffff; --panel-2: #f3f3f6; --line: #e1e1e7; --line-2: #c8c8d0;
+  --field: #ffffff; --field-line: #8e8e99;
   --ink: #17171c; --muted: #4a4a52; --faint: #6b6b74; --solid: #17171c; --solid-ink: #ffffff;
   --go: #4355e0; --go-ink: #ffffff; --go-soft: rgba(93, 114, 255, 0.11);
   --ok: #17784a; --ok-soft: #e2f4ea;
@@ -452,6 +454,8 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .hiresteps li { display: flex; flex-direction: column; gap: 4px; padding: 14px 4px 0; border-top: 2px solid var(--line-2); }
 .hiresteps li.on { border-top-color: var(--ink); }
 .sgroup { display: grid; grid-template-columns: minmax(180px, 300px) minmax(0, 1fr); gap: 16px 32px; align-items: start; }
+.sgroup > .stack { max-width: 640px; min-width: 0; }
+.sgroup.danger { border-color: var(--bad-line); }
 .pad { padding: 18px; }
 /* A panel whose first child is its title gets the section card's header bar,
    and its closing row of buttons is ruled off, so every form reads the same. */
@@ -481,10 +485,11 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .chip[aria-pressed="true"] { border-color: var(--go); color: var(--ink); background: var(--go-soft); }
 /* Fields share a button's height, so a row of them lines up; selects are drawn
    to match the inputs rather than as the platform's pill. */
-textarea, input[type=text], input[type=password], input[type=url], input[type=email], input[type=number], input[type=search], input[type=time], input[type=date], select { width: 100%; min-height: 36px; border: 1px solid var(--line-2); background-color: var(--panel); border-radius: var(--r); padding: 7px 11px; font-size: 13.5px; line-height: 1.45; }
+textarea, input[type=text], input[type=password], input[type=url], input[type=email], input[type=number], input[type=search], input[type=time], input[type=date], select { width: 100%; min-height: 36px; border: 1px solid var(--field-line); background-color: var(--field); border-radius: var(--r); padding: 7px 11px; font-size: 13.5px; line-height: 1.45; }
 select { appearance: none; -webkit-appearance: none; padding-right: 32px; cursor: pointer;
   background-image: linear-gradient(45deg, transparent 50%, var(--faint) 50%), linear-gradient(135deg, var(--faint) 50%, transparent 50%);
   background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%; background-size: 5px 5px; background-repeat: no-repeat; }
+textarea:hover, input:hover, select:hover { border-color: var(--muted); }
 textarea:focus, input:focus, select:focus { outline: none; border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
 textarea { min-height: 84px; resize: vertical; }
 textarea::placeholder, input::placeholder { color: var(--faint); }
@@ -822,6 +827,13 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .wl-sub { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wl-meta { font-size: 12px; color: var(--faint); white-space: nowrap; text-align: right; }
 .wl-meta.bad { color: var(--bad); } .wl-meta.need { color: var(--need); }
+.jl-row { grid-template-columns: 120px minmax(0, 1fr) auto; align-items: start; cursor: default; }
+.jl-row.clickable { cursor: pointer; }
+.jl-row:not(.clickable):hover { background: transparent; }
+.jl-reply { font-size: 13px; line-height: 1.5; color: var(--muted); }
+.jl-reply > * { margin: 0 0 4px; }
+.jl-reply.clamp { margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.jl-notes .wl-row { padding-left: 0; padding-right: 0; }
 .wl-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-2); }
 .wl-dot.live { background: var(--go); animation: livepulse 1.8s infinite; } .wl-dot.ok { background: var(--ok); } .wl-dot.bad { background: var(--bad); } .wl-dot.need { background: var(--need); }
 @media (prefers-reduced-motion: reduce) { .wl-dot.live { animation: none; } }
@@ -864,9 +876,18 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .hint { font-size: 12.5px; color: var(--faint); font-weight: 400; }
 /* A form laid out in steps: a readable width, each step ruled off. */
 .form { display: flex; flex-direction: column; max-width: 960px; }
-.fstep { display: flex; flex-direction: column; gap: 12px; padding: 20px 0; border-top: 1px solid var(--line); }
+.fstep { display: flex; flex-direction: column; gap: 12px; padding: 24px 0 20px; border-top: 1px solid var(--line); }
+.fstep > .label { font-size: 13px; font-weight: 650; color: var(--ink); margin-bottom: 2px; }
 .fstep:first-child { border-top: 0; padding-top: 0; }
 .form-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding-top: 18px; border-top: 1px solid var(--line); }
+.trig-row.clickable { cursor: pointer; transition: border-color 0.12s; }
+.trig-row.clickable:hover { border-color: var(--line-2); }
+.trig-form { gap: 14px; }
+.trig-head h1 { margin: 2px 0 0; font-size: 20px; font-weight: 600; }
+.trig-says { background: var(--go-soft); border-radius: var(--r-lg); padding: 16px 20px; display: flex; flex-direction: column; gap: 4px; }
+.trig-says p { margin: 0; font-size: 15px; line-height: 1.6; max-width: 820px; }
+.trig-foot { position: sticky; bottom: 0; z-index: 2; background: var(--bg); padding-bottom: 14px; }
+.msg.need { background: var(--need-soft); color: var(--need); }
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .choice { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: var(--r); border: 1px solid var(--line-2); background: var(--panel); color: var(--ink); text-align: left; cursor: pointer; }
 .choice:hover { border-color: var(--go); }
@@ -2076,6 +2097,16 @@ export const CONSOLE_JS = String.raw`
     return h('section', { class: 'sec', 'aria-labelledby': id },
       h('div', { class: 'sec-head' }, h('h2', { id: id, class: 'label', text: title }), action || null),
       h('div', { class: 'sec-body' + (flush ? ' flush' : '') }, body));
+  }
+  /// One row of a settings-style page: what it is and why on the left, its
+  /// controls on the right. Worker settings and its triggers share it, so they
+  /// read alike. opts.note sits beside the title (a "Saved"); opts.danger
+  /// gives the red edge of the rows that stop or remove something.
+  function settingRow(title, sub, body, opts) {
+    opts = opts || {};
+    return h('section', { class: 'panel pad sgroup' + (opts.danger ? ' danger' : '') },
+      h('div', null, h('h2', { class: 'section-title', style: 'display:flex;align-items:baseline' }, title, opts.note || null), sub ? h('p', { class: 'faint', style: 'margin-top:4px', text: sub }) : null),
+      h('div', { class: 'stack' }, body));
   }
   /// A card that opens something: a click anywhere on it, or Enter or Space
   /// when it has focus. Buttons and links inside keep their own clicks.
@@ -3299,7 +3330,7 @@ export const CONSOLE_JS = String.raw`
     no.onclick = function () { decide([], waiting.map(function (i) { return i.candidateId; }), no, 'Skipping…'); };
     return h('div', { class: 't-ok' },
       h('div', { class: 'stack', style: 'gap:8px' }, boxes.map(function (b) { return b.row; })),
-      h('p', { class: 'faint', text: w.trust === 'probation' ? w.name + ' asks first, so nothing starts until you say.' : 'This needs your OK before it starts.' }),
+      h('p', { class: 'faint', text: w.trust === 'probation' ? w.name + ' asks first, so nothing starts until you say.' : t.source === 'trigger' ? 'A trigger set this off with details from outside your org, so it waits for your OK. To let this trigger’s work start on its own, turn that on in its settings under Triggers.' : 'This needs your OK before it starts.' }),
       h('div', { class: 'row' }, yes, no), out);
   }
 
@@ -3774,6 +3805,19 @@ export const CONSOLE_JS = String.raw`
   /// A worker's page, list and detail: everything it has done down the left,
   /// one line each and filterable; the one you pick on the right in full —
   /// what it found, its report, its run live while it works, and replies.
+  /// The thread a selection names: by its id, or, from the Journal, the one
+  /// holding that run ("run:<id>") or batch ("batch:<id>").
+  function threadFor(threads, sel) {
+    if (!sel) return null;
+    var exact = threads.filter(function (x) { return x.id === sel; })[0];
+    if (exact) return exact;
+    var kind = sel.slice(0, sel.indexOf(':')), id = sel.slice(sel.indexOf(':') + 1);
+    return threads.filter(function (x) {
+      if (kind === 'run') return x.runs.some(function (r) { return r.runId === id; });
+      if (kind === 'batch') return !!(x.proposal && x.proposal.batchId === id);
+      return false;
+    })[0] || null;
+  }
   function conversation(w) {
     var input = h('input', { type: 'text', placeholder: 'Ask ' + w.name + ' something, or give it a task…', 'aria-label': 'Message for ' + w.name, style: 'flex:1;min-width:0;border:0;outline:none;background:transparent;font:inherit;min-height:36px' });
     var out = h('div', { 'aria-live': 'polite' });
@@ -3872,7 +3916,8 @@ export const CONSOLE_JS = String.raw`
     var detailKey = '';
     var drawDetail = function (force) {
       if (!data) return;
-      var t = data.threads.filter(function (x) { return x.id === sel; })[0] || data.threads[0];
+      var t = threadFor(data.threads, sel) || data.threads[0];
+      if (t && sel && t.id !== sel) { sel = t.id; state.wlSel[w.id] = sel; drawList(); }
       if (!t) { detail.replaceChildren(h('div', { class: 'wl-empty muted', text: 'Pick something on the left to see it in full.' })); return; }
       if (!sel) { sel = t.id; state.wlSel[w.id] = sel; }
       var key = JSON.stringify([t.id, t.stage, t.selfStage, t.headline, t.progress, t.reply && t.reply.text.length, t.choices, t.proposal, (t.followUps || []).length, t.runs.map(function (r) { return [r.state, r.step.index, r.summary, r.rating]; })]);
@@ -4030,7 +4075,7 @@ export const CONSOLE_JS = String.raw`
           managerGroupsOf: !w.audience && w.visibility === 'team' ? w.managerSlackUserId : null,
           onChange: function () { later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
         });
-        var budget = h('input', { type: 'number', min: '1', step: '1', value: String(w.budgetUSDPerMonth), 'aria-label': 'Monthly budget' });
+        var budget = h('input', { type: 'number', min: '1', step: '1', value: String(Math.round(w.budgetUSDPerMonth * 100) / 100), 'aria-label': 'Monthly budget' });
         var sched = scheduleEditor(w.cadence);
         var saved = h('div');
         // Where it works: one repo or one workspace of repos. Moving it swaps
@@ -4071,9 +4116,7 @@ export const CONSOLE_JS = String.raw`
         var notes = {};
         var group = function (title, sub, body, key) {
           var note = key ? (notes[key] = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px;margin-left:8px' })) : null;
-          return h('section', { class: 'panel pad sgroup' },
-            h('div', null, h('h2', { class: 'section-title', style: 'display:flex;align-items:baseline' }, title, note), sub ? h('p', { class: 'faint', style: 'margin-top:4px', text: sub }) : null),
-            h('div', { class: 'stack' }, body));
+          return settingRow(title, sub, body, { note: note });
         };
         var saveNow = function (key, patch) {
           var note = notes[key];
@@ -4112,7 +4155,7 @@ export const CONSOLE_JS = String.raw`
         if (usual) usual.onchange = function () { saveNow('flow', { preferredFlowId: usual.value || null }); };
         budget.onchange = function () {
           var n = Number(budget.value);
-          if (!(n > 0)) { budget.value = String(w.budgetUSDPerMonth); return; }
+          if (!(n > 0)) { budget.value = String(Math.round(w.budgetUSDPerMonth * 100) / 100); return; }
           saveNow('budget', { budgetUSDPerMonth: n });
         };
         if (where) where.onchange = function () {
@@ -4142,13 +4185,12 @@ export const CONSOLE_JS = String.raw`
           usual ? group('How it works', 'The flow its work goes through, unless you name another of its flows when you ask (“use solve-ticket”).', [h('div', { style: 'max-width:480px' }, usual)], 'flow') : null,
           group('Budget', 'At its budget it stops until the month turns.', [h('label', { class: 'field', style: 'max-width:240px' }, 'Monthly budget (USD)', budget),
             h('span', { class: 'faint', text: money(w.spentThisMonthUSD) + ' spent so far this month.' })], 'budget'),
-          h('section', { class: 'panel pad sgroup', style: 'border-color:var(--bad-line)' },
-            h('div', null, h('h2', { class: 'section-title', text: 'Pause or let go' }), h('p', { class: 'faint', style: 'margin-top:4px', text: 'Pausing keeps everything; letting go retires it for good.' })),
+          settingRow('Pause or let go', 'Pausing keeps everything; letting go retires it for good.', [
             h('div', { class: 'row' },
               h('button', { class: 'btn', text: w.enabled ? 'Pause ' + w.name : 'Resume ' + w.name, onclick: function () {
                 api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/paused', { paused: w.enabled }).then(function (x) { if (x.ok === false) { saved.textContent = ''; saved.appendChild(msg(x)); } else render(); });
               } }),
-              letGo), saved));
+              letGo), saved], { danger: true }));
       }
 
       // The job, readable at full width; its manager can rewrite it.
@@ -10430,6 +10472,10 @@ export const CONSOLE_JS = String.raw`
   /// from itself, read by every turn it plans), then what it did, newest
   /// first. Managers add a note or take one back.
   var JOURNAL_KIND = { shift: 'Checked in', proposed: 'Proposed', launched: 'Started', approved: 'You approved', rejected: 'Turned down', completed: 'Finished', failed: 'Failed', errand: 'Asked', delegated: 'Handed on', demoted: 'Trust lowered', compacted: 'Tidied up' };
+  /// The steps one piece of work goes through, in order, and how its line
+  /// names them.
+  var JOURNAL_STEP = { proposed: 0, approved: 1, rejected: 1, launched: 2, completed: 3, failed: 3 };
+  var JOURNAL_STEP_WORD = { proposed: 'Proposed', approved: 'you OK’d', rejected: 'turned down', launched: 'started', completed: 'finished', failed: 'failed' };
   function journalView(w) {
     var box = h('div', { class: 'stack', style: 'gap:16px' }, thinking('Loading its journal…'));
     var notesBox = h('div', { class: 'stack', style: 'gap:0' });
@@ -10445,36 +10491,120 @@ export const CONSOLE_JS = String.raw`
         } }) : null;
         return h('div', { class: 'wl-row', style: 'grid-template-columns:1fr auto auto;align-items:center' },
           h('span', { class: 'wl-title', style: 'white-space:normal', text: n.note }), h('span', { class: 'wl-meta', text: when(n.at) }), forget);
-      }) : [h('p', { class: 'muted', style: 'margin:0;padding:12px 16px', text: 'No notes yet. When you tell ' + w.name + ' to change how it works, from here or in a conversation, the note lands here and every turn it plans reads it.' })]);
+      }) : []);
     };
+    // A piece of work leaves up to four entries (proposed, approved, started,
+    // finished); they read as one row with its steps on a line, in the order
+    // they happen, whatever order they were written in within a minute.
     var drawEntries = function () {
       list.textContent = '';
       if (!entries.length) { list.appendChild(h('p', { class: 'muted', text: 'Nothing yet. Its check-ins, questions and runs land here.' })); return; }
-      var days = [];
+      var rows = [];
+      var groups = {};
       entries.forEach(function (e) {
-        var day = dayLabel(e.at);
+        if (!(e.kind in JOURNAL_STEP)) { rows.push({ at: e.at, one: e }); return; }
+        var key = e.orchestrationId ? e.orchestrationId + '|' + e.title : e.id.replace(/:(proposed|approved|launched|completed|failed|rejected)$/, '');
+        var g = groups[key];
+        if (!g) rows.push(g = groups[key] = { at: e.at, steps: [] });
+        g.steps.push(e);
+        g.at = Math.max(g.at, e.at);
+      });
+      rows.sort(function (a, b) { return b.at - a.at; });
+      var show = state.jlFilter || 'all';
+      rows = rows.filter(function (r) { return show === 'all' || (show === 'work' ? !!r.steps : r.one && r.one.kind === 'errand'); });
+      if (!rows.length) { list.appendChild(h('p', { class: 'muted', text: show === 'work' ? 'No work in what’s loaded.' : 'No answers in what’s loaded.' })); return; }
+      var days = [];
+      rows.forEach(function (r) {
+        var day = dayLabel(r.at);
         var last = days[days.length - 1];
         if (!last || last.day !== day) days.push(last = { day: day, items: [] });
-        last.items.push(e);
+        last.items.push(r);
       });
       days.forEach(function (d) {
         list.appendChild(h('section', { class: 'panel', 'aria-label': d.day }, h('div', { class: 'wl-day', text: d.day }),
-          d.items.map(function (e) {
-            var bad = e.kind === 'failed' || e.kind === 'rejected' || e.kind === 'demoted';
-            return h('div', { class: 'wl-row', style: 'grid-template-columns:120px 1fr auto;align-items:start' },
-              h('span', { class: 'badge' + (bad ? ' bad' : e.kind === 'completed' ? ' ok' : ''), style: 'justify-self:start', text: JOURNAL_KIND[e.kind] || e.kind }),
-              h('span', { class: 'stack', style: 'gap:2px;min-width:0' },
-                e.title ? h('span', { class: 'wl-title', style: 'white-space:normal', text: e.title }) : null,
-                e.note ? h('span', { class: 'wl-sub', style: 'white-space:normal', text: e.note }) : null),
-              h('span', { class: 'wl-meta', text: clock(e.at) + (e.costUSD ? ' · ' + money(e.costUSD) : '') }));
-          })));
+          d.items.map(function (r) { return r.one ? journalOne(r.one) : journalWork(r.steps); })));
       });
+    };
+    // Where a row leads: its thread on Conversation, found there by the run
+    // or batch it holds (a trigger's or an ask's thread takes in its batch).
+    // All of it, just the work (one row per piece), or just its answers.
+    var filterSeg = function () {
+      var seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Show' });
+      var draw = function () {
+        seg.textContent = '';
+        [['all', 'All'], ['work', 'Work'], ['answers', 'Answers']].forEach(function (c) {
+          seg.appendChild(h('button', { type: 'button', text: c[1], 'aria-pressed': (state.jlFilter || 'all') === c[0] ? 'true' : 'false', onclick: function () { state.jlFilter = c[0]; draw(); drawEntries(); } }));
+        });
+      };
+      draw();
+      return seg;
+    };
+    var openThread = function (hint) {
+      return function () { state.wlSel = state.wlSel || {}; state.wlSel[w.id] = hint; state.workerTab = 'talk'; render(); };
+    };
+    var row = function (hint, label, cells) {
+      return hint ? openCard('wl-row jl-row', label, openThread(hint), cells) : h('div', { class: 'wl-row jl-row' }, cells);
+    };
+    var journalWork = function (steps) {
+      steps.sort(function (a, b) { return JOURNAL_STEP[a.kind] - JOURNAL_STEP[b.kind] || a.at - b.at; });
+      var last = steps[steps.length - 1];
+      var bad = last.kind === 'failed' || last.kind === 'rejected';
+      var started = steps.filter(function (e) { return e.kind === 'launched'; })[0];
+      var took = started && (last.kind === 'completed' || last.kind === 'failed') ? last.at - started.at : 0;
+      var prev = '';
+      var track = steps.map(function (e) {
+        var t = clock(e.at);
+        var line = JOURNAL_STEP_WORD[e.kind] + (t !== prev ? ' ' + t : '');
+        prev = t;
+        return line;
+      }).join(' → ') + (took >= 60000 ? ' · took ' + secs(took) : '');
+      var note = steps.filter(function (e) { return e.note; }).pop();
+      var cost = steps.reduce(function (n, e) { return n + (e.costUSD || 0); }, 0);
+      var run = steps.filter(function (e) { return e.runId; })[0];
+      var hint = run ? 'run:' + run.runId : last.orchestrationId ? 'batch:' + last.orchestrationId : null;
+      return row(hint, last.title, [
+        h('span', { class: 'badge' + (bad ? ' bad' : last.kind === 'completed' ? ' ok' : ''), style: 'justify-self:start', text: JOURNAL_KIND[last.kind] }),
+        h('span', { class: 'stack', style: 'gap:2px;min-width:0' },
+          h('span', { class: 'wl-title', style: 'white-space:normal', text: last.title }),
+          h('span', { class: 'wl-sub', style: 'white-space:normal', text: track }),
+          note ? h('span', { class: 'wl-sub', style: 'white-space:normal', text: note.note }) : null),
+        h('span', { class: 'wl-meta', text: clock(last.at) + (cost ? ' · ' + money(cost) : '') })]);
+    };
+    // One entry of its own: a check-in, an answer, a handoff. An answer is
+    // the worker's own words, so it renders as it does in Conversation, two
+    // lines at first.
+    var journalOne = function (e) {
+      var bad = e.kind === 'demoted';
+      var reply = null;
+      // An ask it answered in words is noted "Nothing launched — <answer>";
+      // one that became work is noted with what it proposed.
+      var said = e.kind === 'errand' && /^Nothing launched — /.test(e.note || '') ? e.note.replace(/^Nothing launched — /, '') : '';
+      if (said) {
+        // Closed, it's two whole lines of plain text (a clamp can't stop
+        // cleanly inside rendered paragraphs); open, it renders as it does in
+        // Conversation.
+        var short = h('p', { class: 'jl-reply clamp', text: said.replace(/[\x60*_#>]/g, '').replace(/\s+/g, ' ').trim() });
+        var full = h('div', { class: 'jl-reply', hidden: true }, md(said));
+        var toggle = said.length > 160 ? h('button', { class: 'linkish', style: 'font-size:12.5px;color:var(--go);justify-self:start', text: 'Show more', onclick: function () {
+          var open = full.hidden;
+          full.hidden = !open; short.hidden = open;
+          toggle.textContent = open ? 'Show less' : 'Show more';
+        } }) : null;
+        reply = [short, full, toggle];
+      }
+      var hint = e.kind === 'shift' ? 'shift:' + e.id : e.runId ? 'run:' + e.runId : e.orchestrationId ? 'batch:' + e.orchestrationId : null;
+      return row(hint, e.title || JOURNAL_KIND[e.kind] || e.kind, [
+        h('span', { class: 'badge' + (bad ? ' bad' : ''), style: 'justify-self:start', text: said ? 'Answered' : JOURNAL_KIND[e.kind] || e.kind }),
+        h('span', { class: 'stack', style: 'gap:2px;min-width:0' },
+          e.title ? h('span', { class: 'wl-title', style: 'white-space:normal', text: e.title }) : null,
+          reply || (e.note ? h('span', { class: 'wl-sub', style: 'white-space:normal', text: e.note }) : null)),
+        h('span', { class: 'wl-meta', text: clock(e.at) + (e.costUSD ? ' · ' + money(e.costUSD) : '') })]);
     };
     var page = function (before) {
       return api('GET', '/api/workers/' + encodeURIComponent(w.id) + '/journal' + (before ? '?before=' + before : ''));
     };
     var showMore = function (x) {
-      more.replaceChildren(x.nextBefore ? h('div', { style: 'text-align:center' }, h('button', { class: 'btn small', text: 'Show older', onclick: function (ev) {
+      fill(more, x.nextBefore ? h('div', { style: 'text-align:center' }, h('button', { class: 'btn small', text: 'Show older', onclick: function (ev) {
         var restore = busy(ev.target, 'Loading…');
         page(x.nextBefore).then(function (y) { restore(); if (y.ok === false) return; entries = entries.concat(y.entries); drawEntries(); showMore(y); });
       } })) : null);
@@ -10485,21 +10615,26 @@ export const CONSOLE_JS = String.raw`
         entries = x.entries;
         drawNotes(x); drawEntries(); showMore(x);
         if (box.querySelector('.journal-notes')) return;
-        var input = h('input', { placeholder: 'A standing note for ' + w.name + ', e.g. “Also cover Introw in the weekly check”', 'aria-label': 'Note for ' + w.name, maxlength: '600' });
-        var add = h('button', { class: 'btn go small', text: 'Add note' });
+        var input = h('textarea', { placeholder: 'e.g. Always link the pull request on the ticket', 'aria-label': 'Note for ' + w.name, maxlength: '600', style: 'min-height:64px' });
+        var add = h('button', { class: 'btn', text: 'Add note' });
         add.onclick = function () {
           if (!input.value.trim()) { input.focus(); return; }
           var restore = busy(add, 'Adding…');
           api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/journal', { note: input.value }).then(function (r) { restore(); out.replaceChildren(msg(r, 'Noted. Its next turn reads it.')); if (r.ok !== false) { input.value = ''; load(); } });
         };
-        input.onkeydown = function (e) { if (e.key === 'Enter') add.click(); };
+        input.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) add.click(); };
         box.replaceChildren(
-          h('section', { class: 'panel journal-notes', 'aria-labelledby': 'jnotes' },
-            h('div', { class: 'sec-head' }, h('h2', { id: 'jnotes', class: 'label', text: 'Notes it keeps' }), h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Read by every turn it plans' })),
-            notesBox,
-            x.canChange ? h('div', { class: 'inline-form', style: 'padding:12px 16px;border-top:1px solid var(--line)' }, input, add) : null,
-            h('div', { style: 'padding:0 16px' }, out)),
-          h('div', { class: 't-kind', text: 'What it did' }),
+          // Laid out like a Settings row: what notes are on the left, the
+          // notes and a box for another on the right.
+          (function () {
+            var r = settingRow('Notes it keeps', 'Standing instructions every turn it plans reads. Tell ' + w.name + ' how to work differently, here or in a conversation, and it lands here.', [
+              h('div', { class: 'jl-notes' }, notesBox),
+              x.canChange ? h('div', { class: 'stack', style: 'gap:8px' }, input, h('div', { class: 'row', style: 'gap:10px' }, add, h('span', { class: 'faint', style: 'font-size:12.5px', text: '⌘ Enter adds it' }))) : null,
+              out]);
+            r.classList.add('journal-notes');
+            return r;
+          })(),
+          h('div', { class: 'spread', style: 'align-items:center' }, h('div', { class: 't-kind', text: 'What it did' }), filterSeg()),
           list, more);
       });
     };
@@ -11236,7 +11371,7 @@ export const CONSOLE_JS = String.raw`
     return 'On an event';
   }
 
-  function triggerRow(t, canEdit) {
+  function triggerRow(t, canEdit, onEdit) {
     var out = h('div', { 'aria-live': 'polite' });
     var act = function (path, body, ok) { return function () { api('POST', path, body).then(function (x) { if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); } else if (ok) { out.textContent = ''; out.appendChild(msg({}, ok)); setTimeout(render, 1200); } else render(); }); }; };
     var deliver = (t.deliver || []).map(function (d) { return d.kind === 'slack' ? 'posts in #' + d.channel : d.kind === 'thread' ? 'replies in the thread' : d.kind === 'dm' ? 'DMs you' : d.text; });
@@ -11257,36 +11392,47 @@ export const CONSOLE_JS = String.raw`
       }), canEdit ? [add, h('button', { class: 'btn small', text: 'Track', onclick: function () { if (add.value.trim()) track(add.value.trim(), true); } })] : []));
       return box;
     })() : null;
-    return h('article', { class: 'panel', style: 'padding:16px 18px;display:flex;flex-direction:column;gap:8px' + (t.enabled ? '' : ';opacity:.7') },
+    // Editing is what a trigger is mostly for, so the whole row opens it; its
+    // own buttons and the tracking box keep their clicks (openCard).
+    var row = onEdit ? openCard('panel trig-row', 'Edit ' + t.name, onEdit) : h('article', { class: 'panel trig-row' });
+    row.style.cssText = 'padding:16px 18px;display:flex;flex-direction:column;gap:8px' + (t.enabled ? '' : ';opacity:.7');
+    append(row, [
       h('div', { class: 'spread', style: 'align-items:center' },
         h('div', { class: 'row', style: 'gap:10px' }, h('span', { style: 'color:var(--go);display:inline-flex' }, icon('bolt', 17)), h('b', { style: 'font-weight:600', text: t.name }), h('span', { class: 'tag' + (t.enabled ? ' go' : ''), text: t.enabled ? 'On' : 'Off' })),
         canEdit ? h('div', { class: 'row', style: 'gap:6px' },
           t.kind === 'watch' && t.enabled ? h('button', { class: 'btn small', text: 'Check now', onclick: act('/api/triggers/' + encodeURIComponent(t.id) + '/check', {}, 'Checked.') }) : null,
+          onEdit ? h('button', { class: 'btn small', text: 'Edit', onclick: onEdit }) : null,
           h('button', { class: 'btn small', text: t.enabled ? 'Pause' : 'Turn on', onclick: act('/api/triggers/' + encodeURIComponent(t.id), { patch: { enabled: !t.enabled } }) }),
           h('button', { class: 'btn small quiet', text: 'Remove', onclick: function () { if (window.confirm('Remove “' + t.name + '”? What it already delivered stays in the Library.')) act('/api/triggers/' + encodeURIComponent(t.id) + '/remove', {})(); } })) : null),
-      h('span', { class: 'muted', style: 'font-size:13.5px', text: triggerWhen(t) + ' → ' + (t.notifyOnly ? 'says what changed' : t.instructions.split('\n')[0].slice(0, 140)) + (deliver.length ? ' → ' + deliver.join(', ') : '') }),
+      h('span', { class: 'muted', style: 'font-size:13.5px', text: triggerWhen(t) + ' → ' + (t.notifyOnly ? 'says what changed' : (t.startsOnItsOwn ? 'starts on its own: ' : '') + t.instructions.split('\n')[0].slice(0, 140)) + (deliver.length ? ' → ' + deliver.join(', ') : '') }),
       tracked,
-      h('span', { class: 'faint', text: [t.handledTotal + ' handled', t.handledToday + ' today of ' + t.maxPerDay, t.lastFiredAt ? 'last ' + ago(t.lastFiredAt) : 'not set off yet', t.kind === 'watch' && t.lastPolledAt ? 'checked ' + ago(t.lastPolledAt) : null].filter(Boolean).join(' · ') }),
+      h('span', { class: 'faint', text: [t.handledTotal + ' handled', t.handledToday + ' today of ' + t.maxPerDay, t.lastFiredAt ? 'last ' + ago(t.lastFiredAt) : 'not set off yet', t.kind === 'watch' && t.lastPolledAt ? 'checked ' + ago(t.lastPolledAt) : null, t.kind === 'watch' && t.seeded ? (t.lastFiredAt ? 'has seen ' + plural(t.seenCount || 0, 'item', 'items') : 'watching for new ones — ' + plural(t.seenCount || 0, 'item', 'items') + ' already there skipped') : null].filter(Boolean).join(' · ') }),
       t.lastError ? h('div', { class: 'msg err', text: t.lastError }) : null,
-      out);
+      out]);
+    return row;
   }
 
   /// Build a trigger in plain steps: what sets it off, what to do, where the
-  /// result goes. A watch can be tried before it is saved.
-  function triggerBuilder(w, done) {
-    var kind = 'watch';
+  /// result goes. A watch can be tried before it is saved. Given a trigger,
+  /// it opens filled in and saves as a change to it; what sets it off stays.
+  function triggerBuilder(w, done, t) {
+    var kind = t ? t.kind : 'watch';
     var name = h('input', { type: 'text', placeholder: 'e.g. New bugs in Support Backlog', 'aria-label': 'Name' });
     var kinds = h('div', { class: 'choices', role: 'radiogroup', 'aria-label': 'What sets it off' });
     var parts = {};
     // Watch
     var server = h('select', { 'aria-label': 'Tool' }, h('option', { value: '', text: 'Loading tools…' }));
     var call = h('select', { 'aria-label': 'Call' }, h('option', { value: '', text: 'Pick a tool first' }));
+    // A search tool's one argument (Jira's jql) gets a field of its own; the
+    // raw JSON stays under Advanced for anything else.
+    var query = h('textarea', { 'aria-label': 'Search', style: 'min-height:64px;font-family:var(--mono);font-size:12.5px' });
+    var queryKey = null;
     var args = h('textarea', { 'aria-label': 'Arguments (JSON)', placeholder: '{ "jql": "project = ACME AND sprint = \\"Support Backlog\\" AND statusCategory != Done" }', style: 'min-height:70px;font-family:var(--mono);font-size:12.5px' });
     var every = h('select', { 'aria-label': 'How often' }, [5, 10, 15, 30, 60].map(function (n) { return h('option', { value: String(n), text: 'every ' + n + ' min', selected: n === 15 }); }));
     var itemsPath = h('input', { type: 'text', placeholder: 'e.g. issues', 'aria-label': 'Where the list is' });
     var idPath = h('input', { type: 'text', placeholder: 'e.g. key', 'aria-label': 'What identifies an item' });
     // New items, or a change to one field of the items it sees.
-    var fireOn = h('select', { 'aria-label': 'Set off by' }, h('option', { value: 'new', text: 'a new item' }), h('option', { value: 'change', text: 'a change to a field' }));
+    var fireOn = h('select', { 'aria-label': 'Set off by' }, h('option', { value: 'new', text: 'a new item, from now on' }), h('option', { value: 'change', text: 'a change to a field' }));
     var field = h('input', { type: 'text', placeholder: 'e.g. fields.status.name', 'aria-label': 'Which field' });
     var onlyTracked = h('input', { type: 'checkbox' });
     var trackList = h('input', { type: 'text', placeholder: 'ACME-412, ACME-415 (add more later from Slack)', 'aria-label': 'Items to track' });
@@ -11322,6 +11468,10 @@ export const CONSOLE_JS = String.raw`
       if (!tools.length) { server.appendChild(h('option', { value: '', text: 'No tools installed — add one on Setup → Tools' })); return; }
       server.appendChild(h('option', { value: '', text: 'Pick a tool' }));
       tools.forEach(function (t) { server.appendChild(h('option', { value: t.name, text: t.name })); });
+      if (t && t.watch && t.watch.server) {
+        if (!tools.some(function (x) { return x.name === t.watch.server; })) server.appendChild(h('option', { value: t.watch.server, text: t.watch.server }));
+        server.value = t.watch.server; wantCall = t.watch.tool; server.onchange();
+      }
     });
     // A tool that can list alarms in ALARM state gets a one-click setup, as
     // on a process's intake.
@@ -11336,6 +11486,7 @@ export const CONSOLE_JS = String.raw`
       if (!instructions.value.trim()) instructions.value = 'An alarm went off. Pull the logs around the time it changed state with a Logs Insights query, find the likely cause, and post a short summary: what broke, since when, how bad, and what to check first.';
       syncFire();
     };
+    var wantCall = null;
     server.onchange = function () {
       call.textContent = ''; call.appendChild(h('option', { value: '', text: 'Loading…' }));
       preset.hidden = true;
@@ -11344,20 +11495,50 @@ export const CONSOLE_JS = String.raw`
         call.textContent = '';
         if (r.ok === false) { call.appendChild(h('option', { value: '', text: r.error })); return; }
         r.tools.forEach(function (t) { call.appendChild(h('option', { value: t.name, text: t.name, title: t.description || '' })); });
+        if (wantCall) {
+          if (!r.tools.some(function (x) { return x.name === wantCall; })) call.appendChild(h('option', { value: wantCall, text: wantCall }));
+          call.value = wantCall; wantCall = null;
+        }
+        syncQuery();
+        syncSays();
         if (!r.tools.some(function (t) { return t.name === 'get_active_alarms'; })) return;
         preset.textContent = '';
         append(preset, [h('span', { text: 'This tool lists CloudWatch alarms. ' }), h('button', { type: 'button', class: 'btn small', text: 'Set it up for CloudWatch alarms', onclick: alarmPreset })]);
         preset.hidden = false;
       });
     };
+    var queryLabel = h('span', { text: 'Search' });
+    var queryField = h('label', { class: 'field' }, queryLabel, query);
+    var argsField = h('label', { class: 'field' }, 'With (JSON)', args);
+    var argsInline = h('div');
+    var argsAdvanced = h('div', { style: 'margin-top:10px' });
+    var syncQuery = function () {
+      var a = parseArgs();
+      var keys = a && typeof a === 'object' && !Array.isArray(a) ? Object.keys(a) : [];
+      queryKey = keys.length === 1 && typeof a[keys[0]] === 'string' ? keys[0] : null;
+      queryField.hidden = !queryKey;
+      if (queryKey) {
+        queryLabel.textContent = queryKey === 'jql' ? 'Search (JQL)' : queryKey === 'cql' ? 'Search (CQL)' : 'Search (' + queryKey + ')';
+        if (document.activeElement !== query) query.value = a[queryKey];
+      }
+      (queryKey ? argsAdvanced : argsInline).appendChild(argsField);
+    };
+    query.oninput = function () { if (queryKey) { var o = {}; o[queryKey] = query.value; args.value = JSON.stringify(o, null, 2); } };
+    args.onchange = syncQuery;
+    call.onchange = function () {
+      if (!args.value.trim() && /jira.*search|search.*jira|jql/i.test(call.value)) args.value = '{ "jql": "" }';
+      syncQuery();
+    };
     parts.watch = h('div', { class: 'stack' },
       h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Tool', server), h('label', { class: 'field' }, 'What to ask it', call)),
       preset,
-      h('label', { class: 'field' }, 'With (JSON)', args),
+      queryField, argsInline,
       h('div', { class: 'row', style: 'align-items:flex-end;gap:12px' }, h('label', { class: 'field', style: 'width:200px' }, 'How often to check', every), h('label', { class: 'field', style: 'width:200px' }, 'Set off by', fireOn), test),
+      h('p', { class: 'hint', text: 'It works going forward: what the search finds when it starts is skipped, and each item that shows up after sets it off.' }),
       changeBox,
       testOut,
-      h('details', null, h('summary', { text: 'If it can’t tell items apart' }), h('div', { class: 'grid2', style: 'margin-top:10px' }, h('label', { class: 'field' }, 'Where the list is', itemsPath), h('label', { class: 'field' }, 'What identifies an item', idPath))));
+      h('details', null, h('summary', { text: 'Advanced: raw arguments, and telling items apart' }), argsAdvanced, h('div', { class: 'grid2', style: 'margin-top:10px' }, h('label', { class: 'field' }, 'Where the list is', itemsPath), h('label', { class: 'field' }, 'What identifies an item', idPath))));
+    syncQuery();
     // Webhook
     var hookId = h('input', { type: 'text', placeholder: 'optional, e.g. issue.key', 'aria-label': 'What identifies an event' });
     parts.webhook = h('div', { class: 'stack' }, h('p', { class: 'muted', text: 'You get a secret address when you save. Paste it into Jira automation, a GitHub webhook, your CRM or Zapier. Each post is one event; repeats of the same event are handled once.' }),
@@ -11379,6 +11560,10 @@ export const CONSOLE_JS = String.raw`
     var drawKinds = function () {
       kinds.textContent = '';
       KINDS.forEach(function (k) {
+        if (t && k[0] !== t.kind) return;
+        // What sets a saved trigger off can't change, so it isn't a choice:
+        // its row says what it is instead.
+        if (t) { kinds.removeAttribute('role'); return; }
         kinds.appendChild(h('button', { type: 'button', role: 'radio', 'aria-checked': kind === k[0] ? 'true' : 'false', class: 'choice', onclick: function () { kind = k[0]; drawKinds(); sync(); } },
           h('b', { text: k[1] }), h('span', { text: k[2] })));
       });
@@ -11389,15 +11574,82 @@ export const CONSOLE_JS = String.raw`
     var sync = function () { kindBody.textContent = ''; kindBody.appendChild(parts[kind]); threadRow.style.display = kind === 'slack' ? '' : 'none'; };
     drawKinds(); sync();
     var instructions = h('textarea', { 'aria-label': 'What to do with each one', placeholder: 'e.g. Triage the ticket: reproduce it if you can, label it, and say who owns it. If it’s small and clear, fix it and open a PR.', style: 'min-height:90px' });
-    var instrStep = h('div', { class: 'fstep' }, h('span', { class: 'label', text: '2 · What it does with each one' }), instructions,
-      h('p', { class: 'hint', text: 'It gets the event’s details with this. ' + (w.trust === 'probation' ? 'On probation, it proposes what it would do and waits for you.' : 'Trusted, it goes ahead.') }));
+    // Only an autonomous worker can be let off the OK: a trigger never gets
+    // more say than its manager's own ask would.
+    var mayStart = w.trust === 'autonomous';
+    var instrStep = settingRow('What it does with each one', mayStart ? 'It gets the event’s details with this, marked as coming from outside your org.' : 'It gets the event’s details with this, and proposes what it would do for you to OK. Set ' + w.name + ' to On its own to let a trigger start work without asking.', [instructions]);
+    var alone = false;
+    // The same control as "Who can ask it" on Settings: one question, two answers.
+    var decides = h('div', { class: 'seg', role: 'group', 'aria-label': 'Who decides whether the work starts' });
+    var decideLine = h('p', { class: 'faint', style: 'margin:0;font-size:13px' });
+    var aloneWarn = h('p', { class: 'msg need', style: 'margin:0', text: 'Anyone who can create what this trigger watches can now start ' + (w.coding ? 'coding ' : '') + 'work. Only choose this for a source you trust.' });
+    var drawDecides = function () {
+      decides.textContent = '';
+      [[false, 'Ask me first', 'It proposes the work. Nothing starts until you OK it in Conversation.'],
+        [true, 'Start on its own', 'It starts right away, up to ' + w.name + '’s launch cap.']].forEach(function (c) {
+        decides.appendChild(h('button', { type: 'button', text: c[1], 'aria-pressed': alone === c[0] ? 'true' : 'false', onclick: function () { alone = c[0]; drawDecides(); syncSays(); } }));
+        if (alone === c[0]) decideLine.textContent = c[2];
+      });
+      aloneWarn.hidden = !alone;
+    };
+    var decideStep = settingRow('Who decides', 'Whether what it finds waits for your OK.', [h('div', null, decides), decideLine, aloneWarn]);
+    decideStep.hidden = !mayStart;
+    var syncFireBase = syncFire;
+    syncFire = function () { syncFireBase(); decideStep.hidden = !mayStart || instrStep.hidden; };
+    fireOn.onchange = syncFire; onlyTracked.onchange = syncFire; plain.onchange = syncFire;
     syncFire();
     var postTo = h('input', { type: 'text', placeholder: 'Channel ID, e.g. C012AB3CD (optional)', 'aria-label': 'Post each result in this Slack channel' });
     var itself = h('input', { type: 'text', placeholder: 'e.g. Comment your triage on the ticket (optional)', 'aria-label': 'The worker delivers it itself' });
     var perDay = h('input', { type: 'number', min: '1', max: '500', value: '50', 'aria-label': 'At most per day' });
     var dmMe = h('input', { type: 'checkbox' });
+    if (t) {
+      name.value = t.name || '';
+      instructions.value = t.instructions || '';
+      perDay.value = String(t.maxPerDay || 50);
+      // Kept as saved even while the worker isn't autonomous: it does nothing
+      // then, and an unrelated edit shouldn't quietly clear it.
+      alone = !!t.startsOnItsOwn;
+      (t.deliver || []).forEach(function (d) {
+        if (d.kind === 'slack') postTo.value = d.channel;
+        else if (d.kind === 'worker') itself.value = d.text;
+        else if (d.kind === 'dm') dmMe.checked = true;
+        else if (d.kind === 'thread') thread.checked = true;
+      });
+      if (t.watch) {
+        args.value = JSON.stringify(t.watch.args || {}, null, 2);
+        if (![].some.call(every.options, function (o) { return Number(o.value) === t.watch.everyMinutes; })) every.appendChild(h('option', { value: String(t.watch.everyMinutes), text: 'every ' + t.watch.everyMinutes + ' min' }));
+        every.value = String(t.watch.everyMinutes);
+        itemsPath.value = t.watch.itemsPath || ''; idPath.value = t.watch.idPath || '';
+        fireOn.value = t.watch.changes ? 'change' : 'new';
+        field.value = t.watch.changes || '';
+        onlyTracked.checked = !!t.watch.tracked;
+        trackList.value = (t.watch.tracked || []).join(', ');
+        plain.checked = !!t.notifyOnly;
+        syncFire();
+      }
+      if (t.slack) {
+        channel.value = t.slack.channel || ''; on.value = t.slack.on || 'message'; emoji.value = t.slack.reaction || ''; contains.value = t.slack.contains || '';
+        on.onchange();
+      }
+      if (t.webhook) { hookId.value = t.webhook.idPath || ''; hookId.disabled = true; }
+    }
+    drawDecides();
+    // The trigger in one sentence, kept up to date as the form changes.
+    var says = h('p');
+    var syncSays = function () {
+      var when = kind === 'watch'
+        ? 'Every ' + every.value + ' min, ' + w.name + ' asks ' + (server.value || 'a tool') + (call.value ? ' (' + call.value + ')' : '') + (fireOn.value === 'change' ? '. When ' + (field.value.trim() || 'a field') + ' changes on ' + (onlyTracked.checked ? 'an item you track' : 'an item') : '. For each new item')
+        : kind === 'webhook' ? 'When another system posts an event to its secret address'
+        : 'On ' + (on.value === 'reaction' ? 'a :' + (emoji.value.trim() || 'emoji') + ': reaction' : on.value === 'mention' ? 'a mention of the bot' : 'each new message') + ' in ' + (channel.value.trim() || 'a channel') + (contains.value.trim() ? ' containing “' + contains.value.trim() + '”' : '');
+      var notify = kind === 'watch' && fireOn.value === 'change' && plain.checked;
+      var first = instructions.value.trim().split('\n')[0];
+      var what = notify ? 'it says what changed, with a link. No worker turn.'
+        : 'it does “' + (first.length > 120 ? first.slice(0, 120) + '…' : first || 'what you write in step 2') + '”, ' + (alone ? 'starting without asking' : 'once you OK it') + '.';
+      var to = [itself.value.trim() ? itself.value.trim().replace(/[.]$/, '').toLowerCase() : null, postTo.value.trim() ? 'posts in ' + postTo.value.trim() : null, dmMe.checked ? 'DMs you' : null, kind === 'slack' && thread.checked ? 'replies in the thread' : null].filter(Boolean);
+      says.textContent = when + ', ' + what + (to.length ? ' Then: ' + to.join(', ') + '.' : '') + ' At most ' + (Number(perDay.value) || 50) + ' a day.';
+    };
     var out = h('div', { 'aria-live': 'polite' });
-    var save = h('button', { class: 'btn go', text: 'Save trigger' });
+    var save = h('button', { class: 'btn go', text: t ? 'Save changes' : 'Save trigger' });
     save.onclick = function () {
       var a = kind === 'watch' ? parseArgs() : {};
       if (a === null) { out.textContent = ''; out.appendChild(h('div', { class: 'msg err', text: 'The arguments aren’t valid JSON.' })); return; }
@@ -11407,13 +11659,24 @@ export const CONSOLE_JS = String.raw`
       if (itself.value.trim()) deliver.push({ kind: 'worker', text: itself.value.trim() });
       if (dmMe.checked) deliver.push({ kind: 'dm' });
       var changes = kind === 'watch' && fireOn.value === 'change';
-      var trigger = { name: name.value.trim(), kind: kind, instructions: instructions.value.trim(), deliver: deliver, maxPerDay: Number(perDay.value) || 50, notifyOnly: changes && plain.checked,
+      var trigger = { name: name.value.trim(), kind: kind, instructions: instructions.value.trim(), deliver: deliver, maxPerDay: Number(perDay.value) || 50, notifyOnly: changes && plain.checked, startsOnItsOwn: alone,
         watch: Object.assign({ server: server.value, tool: call.value, args: a, everyMinutes: Number(every.value), itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() },
           changes ? { changes: field.value.trim() } : {},
           changes && onlyTracked.checked ? { tracked: trackList.value.split(/[\s,]+/).map(function (x) { return x.trim(); }).filter(Boolean) } : {}),
         slack: { channel: channel.value.trim(), on: on.value, reaction: emoji.value.trim(), contains: contains.value.trim() },
         webhook: { idPath: hookId.value.trim() } };
       var restore = busy(save, 'Saving…');
+      if (t) {
+        var patch = { name: trigger.name, instructions: trigger.instructions, deliver: deliver, maxPerDay: trigger.maxPerDay, notifyOnly: trigger.notifyOnly, startsOnItsOwn: trigger.startsOnItsOwn };
+        if (kind === 'watch') patch.watch = trigger.watch;
+        if (kind === 'slack') patch.slack = trigger.slack;
+        api('POST', '/api/triggers/' + encodeURIComponent(t.id), { patch: patch }).then(function (x) {
+          restore(); out.textContent = '';
+          if (x.ok === false) { out.appendChild(msg(x)); return; }
+          done();
+        });
+        return;
+      }
       api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/triggers', { trigger: trigger }).then(function (x) {
         restore(); out.textContent = '';
         if (x.ok === false) { out.appendChild(msg(x)); return; }
@@ -11427,42 +11690,74 @@ export const CONSOLE_JS = String.raw`
         done();
       });
     };
-    return card('newtrig', 'New trigger for ' + w.name, h('button', { class: 'linkish', text: 'Cancel', onclick: done }), h('div', { class: 'form' },
-      h('div', { class: 'fstep' }, h('label', { class: 'field', style: 'max-width:440px' }, 'Name', name)),
-      h('div', { class: 'fstep' }, h('span', { class: 'label', text: '1 · What sets it off' }), kinds, kindBody),
+    // Laid out like the worker's Settings, one row per question, but in the
+    // order a trigger is read: when, what, who decides, where, how many.
+    var kindOf = KINDS.filter(function (k) { return k[0] === kind; })[0];
+    perDay.style.width = '90px';
+    var stopOut = h('div', { 'aria-live': 'polite' });
+    var act = function (path, body) { api('POST', path, body).then(function (x) { if (x.ok === false) { stopOut.textContent = ''; stopOut.appendChild(msg(x)); } else done(); }); };
+    var form = h('div', { class: 'stack trig-form' },
+      h('div', { class: 'spread trig-head', style: 'align-items:center' },
+        h('div', null, h('button', { type: 'button', class: 'linkish', text: '← All triggers', onclick: done }), h('h1', { text: t ? t.name : 'New trigger for ' + w.name })),
+        t ? h('span', { class: 'faint', text: [t.enabled ? 'On' : 'Paused', t.kind === 'watch' && t.lastPolledAt ? 'checked ' + ago(t.lastPolledAt) : null, (t.handledTotal || 0) + ' handled'].filter(Boolean).join(' · ') }) : null),
+      h('section', { class: 'trig-says', 'aria-label': 'In plain words' }, h('span', { class: 'label', text: 'In plain words' }), says),
+      settingRow('Name', 'How it shows in the list and on what it delivers.', [name]),
+      settingRow('What sets it off', t ? kindOf[1] + ': ' + kindOf[2].charAt(0).toLowerCase() + kindOf[2].slice(1) + ' Fixed once saved.' : 'Something new in a tool, another system telling us, or something in Slack.', [kinds, kindBody]),
       instrStep,
-      h('div', { class: 'fstep' }, h('span', { class: 'label', text: '3 · Where the result goes' }),
-        h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Post each result in a Slack channel', postTo), h('label', { class: 'field' }, 'Or the worker delivers it itself', itself)),
+      decideStep,
+      settingRow('Where the result goes', 'Everything it delivers is also kept in the Library.', [
+        h('label', { class: 'field' }, 'The worker delivers it itself', itself),
+        h('label', { class: 'field' }, 'Also post in a Slack channel', postTo),
         h('label', { class: 'toggle' }, dmMe, h('span', { text: 'DM me in Slack' })),
-        threadRow, h('p', { class: 'hint', text: 'Everything it delivers is also kept in the Library.' })),
-      h('div', { class: 'fstep' }, h('span', { class: 'label', text: '4 · Limit' }),
-        h('div', { class: 'row', style: 'align-items:flex-end;gap:12px' }, h('label', { class: 'field', style: 'width:200px' }, 'Most it handles a day', perDay), h('span', { class: 'hint', style: 'padding-bottom:9px', text: 'Keeps cost in check if a tool floods it.' }))),
-      h('div', { class: 'form-foot' }, save, h('button', { class: 'btn quiet', text: 'Cancel', onclick: done }), out)));
+        threadRow]),
+      settingRow('Limit', 'Keeps cost in check if a tool floods it.', [h('label', { class: 'row', style: 'gap:10px;align-items:center;font-size:14px' }, 'At most', perDay, 'a day')]),
+      t ? settingRow('Pause or remove', 'Pausing keeps it as it is. What it already delivered stays in the Library either way.', [
+        h('div', { class: 'row' },
+          h('button', { class: 'btn', text: t.enabled ? 'Pause trigger' : 'Turn it back on', onclick: function () { act('/api/triggers/' + encodeURIComponent(t.id), { patch: { enabled: !t.enabled } }); } }),
+          h('button', { class: 'btn danger', text: 'Remove trigger', onclick: function () { if (window.confirm('Remove “' + t.name + '”? What it already delivered stays in the Library.')) act('/api/triggers/' + encodeURIComponent(t.id) + '/remove', {}); } })),
+        stopOut], { danger: true }) : null,
+      h('div', { class: 'form-foot trig-foot' }, save, h('button', { class: 'btn quiet', text: 'Cancel', onclick: done }), out));
+    form.addEventListener('input', syncSays);
+    form.addEventListener('change', syncSays);
+    form.addEventListener('click', function () { setTimeout(syncSays, 0); });
+    syncSays();
+    return form;
   }
 
   function triggersView(w, d) {
     var list = d.triggers || [];
-    var holder = h('div', { class: 'stack', style: 'gap:12px' });
-    var opened = false;
-    var showBuilder = function (e) { if (e && e.currentTarget) e.currentTarget.hidden = true; holder.textContent = ''; holder.appendChild(triggerBuilder(w, function () { state.triggerOpen = false; render(); })); holder.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    var v = d.value;
+    var root = h('div', { class: 'stack', style: 'gap:16px' });
+    var close = function () { state.triggerOpen = false; render(); };
+    // A form open is the whole tab: the stats, the list and Add are for
+    // browsing, and only get in the way of the one trigger being edited.
+    // The form takes the tab's place, so it already starts at the top of the
+    // tab: no scroll, which would collapse the pinned worker header. Only a
+    // long list scrolled past goes back up, to show the form's top.
+    var focus = function (form) {
+      root.textContent = ''; root.appendChild(form);
+      var head = document.querySelector('.wk-sticky');
+      if (root.getBoundingClientRect().top < (head ? head.getBoundingClientRect().bottom : 0)) window.scrollTo({ top: 0 });
+    };
+    var showBuilder = function () { focus(triggerBuilder(w, close)); };
     // Asked for from elsewhere ("Add a trigger"), or nothing to show yet: open
     // the builder rather than make them click again.
     if (w.youManage && (state.triggerOpen || !list.length)) {
-      state.triggerOpen = false; opened = true;
-      holder.appendChild(triggerBuilder(w, function () { state.triggerOpen = false; render(); }));
+      state.triggerOpen = false;
+      root.appendChild(triggerBuilder(w, close));
+      return root;
     }
-    var v = d.value;
-    return h('div', { class: 'stack', style: 'gap:16px' },
+    append(root, [
       v ? h('div', { class: 'kpis' },
         h('div', { class: 'kpi' }, kpiIcon('bolt', 'ok'), h('span', { class: 'k', text: 'Handled this month' }), h('span', { class: 'v', text: String(v.handled) })),
         h('div', { class: 'kpi' }, kpiIcon('clock', 'info'), h('span', { class: 'k', text: 'Typical time' }), h('span', { class: 'v', text: v.medianMinutes == null ? '—' : v.medianMinutes < 1 ? '<1 min' : Math.round(v.medianMinutes) + ' min' })),
         h('div', { class: 'kpi' }, kpiIcon('bars', 'violet'), h('span', { class: 'k', text: 'Cost per item' }), h('span', { class: 'v', text: v.costPerItemUSD == null ? '—' : money(v.costPerItemUSD) })),
         h('div', { class: 'kpi' }, kpiIcon('up', 'violet'), h('span', { class: 'k', text: 'Rated useful' }), h('span', { class: 'v', text: v.rated ? Math.round((100 * v.useful) / v.rated) + '%' : '—' }))) : null,
       h('div', { class: 'spread', style: 'align-items:center' },
-        h('p', { class: 'muted', text: list.length ? 'What sets ' + w.name + ' off on its own, besides its schedule (' + w.schedule.toLowerCase() + ').' : w.name + ' only works on its schedule (' + w.schedule.toLowerCase() + ') and when asked. Give it a trigger so it acts the moment work shows up.' }),
-        w.youManage && !opened ? h('button', { class: 'btn go', onclick: showBuilder }, icon('bolt', 15), 'Add a trigger') : null),
-      list.map(function (t) { return triggerRow(t, w.youManage); }),
-      holder);
+        h('p', { class: 'muted', text: list.length ? 'What sets ' + w.name + ' off on its own' + (/when asked/i.test(w.schedule) ? '.' : ', besides its schedule (' + w.schedule.toLowerCase() + ').') : w.name + ' only works on its schedule (' + w.schedule.toLowerCase() + ') and when asked. Give it a trigger so it acts the moment work shows up.' }),
+        w.youManage ? h('button', { class: 'btn go', onclick: showBuilder }, icon('bolt', 15), 'Add a trigger') : null),
+      list.map(function (t) { return triggerRow(t, w.youManage, w.youManage ? function () { focus(triggerBuilder(w, render, t)); } : null); })]);
+    return root;
   }
 
   // ---- setup (org) -------------------------------------------------------
@@ -11711,7 +12006,7 @@ export const CONSOLE_JS = String.raw`
       var queryRow = function (e) {
         return h('div', { class: 'srow', style: 'align-items:flex-start' },
           h('div', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' },
-            h('span', { class: 'row', style: 'gap:8px' }, h('b', { text: e.worker || 'Unknown worker' }), h('span', { class: 'faint', text: e.tool + ' on ' + e.connection + ' · ' + ago(Date.parse(e.at)) })),
+            h('span', { class: 'row', style: 'gap:8px' }, e.worker ? h('b', { text: e.worker }) : h('span', { class: 'muted', text: 'No worker recorded' }), h('span', { class: 'faint', text: e.tool + ' on ' + e.connection + ' · ' + ago(Date.parse(e.at)) })),
             e.sql ? h('span', { class: 'faint mono', style: 'font-size:12px;white-space:pre-wrap;word-break:break-word', text: e.sql.length > 300 ? e.sql.slice(0, 300) + '…' : e.sql }) : null,
             e.ok ? null : h('span', { class: 'faint', style: 'font-size:12px', text: e.error || 'Failed.' })),
           h('span', { class: 'tag' + (e.ok ? '' : ' bad'), text: e.ok ? (typeof e.rowCount === 'number' ? plural(e.rowCount, 'row', 'rows') + (e.truncated ? '+' : '') : 'ok') : 'refused' }));
@@ -11743,7 +12038,8 @@ export const CONSOLE_JS = String.raw`
             c.hasPassword ? null : h('span', { class: 'faint', style: 'font-size:12px', text: 'Its password is missing: publish it again from overdb, then set it up with the password.' })),
           remove);
       };
-      var section = function (title, rows) { return rows.length ? h('section', { class: 'panel pad stack', style: 'gap:12px' }, h('h2', { class: 'section-title', text: title }), rows) : null; };
+      // A heading bar, then the rows in their own box so the first one drops its top line.
+      var section = function (title, rows) { return rows.length ? h('section', { class: 'panel' }, h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: title })), h('div', null, rows)) : null; };
       if (!x.offers.length && !x.connections.length) {
         return [top, emptyState('No databases yet.', 'In overdb, open a connection’s Read-only menu and choose Publish to your org’s server. It lands here for you to finish, and workers with the overdb tool can then read it. Read-only, always.')];
       }

@@ -4,7 +4,7 @@
 // model — they are what a file SAID before anyone accepted it. The pane needs
 // the types to render the offer; nothing else does.
 
-import type { ServiceOption } from './services';
+import type { ReadinessProbe, ServiceOption } from './services';
 
 /// Where a set of imported services came from, for the sentence offering them.
 export type ImportSource = 'intellij' | 'vscode' | 'vscode-tasks' | 'tiltfile' | 'compose' | 'procfile';
@@ -28,6 +28,13 @@ export interface ImportedService {
   env: Record<string, string>;
   subpath?: string;
   port?: number;
+  /// What the file says to check, such as a Tilt link to `/healthz`. Beats
+  /// detection's default probe, which knows neither the path nor, when the
+  /// file moved the port, the port.
+  ready?: ReadinessProbe;
+  /// Checkout-relative globs the file restarts it on (Tilt's `deps`). A
+  /// stated list means the runner does not reload itself.
+  watch?: string[];
   /// Attach port stated by the source, such as Tilt's debug_port parameter.
   debugPort?: number;
   group?: string;

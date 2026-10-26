@@ -22,7 +22,7 @@ import { parse as parseYaml } from 'yaml';
 
 import { parseOptions } from './options';
 import type { ImportSet, ImportSource, ImportedService } from '../../shared/servicesImport';
-import type { ServiceOption, ServiceSpec } from './types';
+import type { ReadinessProbe, ServiceOption, ServiceSpec } from './types';
 
 export type { ImportSet, ImportSource, ImportedService };
 
@@ -429,20 +429,27 @@ export function parseTiltfile(
     const run = serve ?? once;
     if (!name || !run) continue;
     const task = !serve;
+    // Tilt runs `cmd` in `dir` and `serve_cmd` in `serve_dir`.
+    const dirArg = call.args.find((a) => a.key === (task ? 'dir' : 'serve_dir'))?.value;
+    const dir = dirArg === undefined ? undefined : starlark.evaluate(dirArg, starlark.global);
+    const stated = commandValue(starlark.evaluate(run.value, starlark.global));
+    // A task with no `dir` still names its repo in the worktree glue it opens with.
+    const checkout = typeof dir === 'string' ? dir : worktreeGlueRepo(stated);
+    const links = call.args.find((a) => a.key === 'links')?.value;
+    const port = localhostPort([links]);
+    const deps = call.args.find((a) => a.key === 'deps')?.value;
     found.push({
       index: call.index,
       service: {
         name,
-        command: commandValue(starlark.evaluate(run.value, starlark.global)),
+        command: withoutCheckoutCd(stated, checkout),
         options: [],
         env: {},
         group: labelGroup(call.args.find((a) => a.key === 'labels')?.value),
-        port: localhostPort([call.args.find((a) => a.key === 'links')?.value]),
-        // Tilt runs `cmd` in `dir` and `serve_cmd` in `serve_dir`.
-        repoHint: lastPathSegment(
-          call.args.find((a) => a.key === (task ? 'dir' : 'serve_dir'))?.value,
-          (id) => globals[id],
-        ),
+        port,
+        ready: task ? undefined : linkProbe(links, port),
+        watch: deps === undefined || !checkout ? undefined : watchGlobs(starlark.evaluate(deps, starlark.global), checkout),
+        repoHint: lastPathSegment(dirArg, (id) => globals[id]) ?? (checkout ? path.basename(checkout) : undefined),
         task: task || undefined,
         deps: listLiteral(call.args.find((a) => a.key === 'resource_deps')?.value),
         excerpt: excerpt(source.slice(call.index, call.end)),
@@ -629,8 +636,11 @@ interface StarlarkDef {
   body: string;
   start: number;
   end: number;
-  /// The expression of a body that is nothing but `return <expression>`.
+  /// The expression of a body that is straight-line assignments and then
+  /// `return <expression>`.
   returns?: string;
+  /// Where in the body that `return` sits, so its locals are the ones before it.
+  returnsAt?: number;
   /// Set when the body declares a resource named by one of the parameters,
   /// with the `labels`, `serve_dir` and `serve_cmd` that resource was given.
   template?: {
@@ -731,7 +741,7 @@ function starlarkEvaluator(
     }
     const def = defs.find((d) => d.name === call[1]);
     if (!def?.returns) return undefined;
-    return evaluate(def.returns, paramScope(def, args, lookup, depth), depth + 1);
+    return evaluate(def.returns, bodyScope(def, args, lookup, def.returnsAt ?? 0, depth + 1), depth + 1);
   }
 
   /// A helper's parameters: what the call passed, evaluated where it was
@@ -764,8 +774,9 @@ function starlarkEvaluator(
     args: StarlarkArg[],
     caller: StarlarkLookup,
     until: number,
+    depth = 0,
   ): StarlarkLookup {
-    const params = paramScope(def, args, caller, 0);
+    const params = paramScope(def, args, caller, depth);
     const locals = new Map<string, StarlarkValue>();
     const lookup: StarlarkLookup = (id) => (locals.has(id) ? locals.get(id) : params(id));
     for (const assignment of bodyAssignments(def.body, until)) {
@@ -773,7 +784,7 @@ function starlarkEvaluator(
         locals.set(assignment.name, undefined);
         continue;
       }
-      const value = evaluate(assignment.expression, lookup, 1);
+      const value = evaluate(assignment.expression, lookup, depth + 1);
       if (assignment.op === '=') {
         locals.set(assignment.name, value);
       } else {
@@ -823,6 +834,34 @@ function bodyAssignments(
     i = end + 1;
   }
   return out;
+}
+
+/// The `return` of a body that does nothing else but assign locals first —
+/// `f = _flag(name)` then `return 'cd ' + f`. Anything else at the body's
+/// level, or anything indented deeper, may or may not run, so it is unknown.
+function straightLineReturn(body: string): { expression: string; at: number } | undefined {
+  let base: number | undefined;
+  let found: { expression: string; at: number } | undefined;
+  let i = 0;
+  while (i < body.length) {
+    const newline = body.indexOf('\n', i);
+    const line = body.slice(i, newline === -1 ? body.length : newline);
+    const trimmed = line.trimStart();
+    if (trimmed === '') {
+      i = newline === -1 ? body.length : newline + 1;
+      continue;
+    }
+    const indent = line.length - trimmed.length;
+    base ??= indent;
+    if (indent !== base || found) return undefined;
+    const ret = /^return\s+/.exec(trimmed);
+    if (!ret && !/^[A-Za-z_]\w*\s*\+?=(?!=)/.test(trimmed)) return undefined;
+    const start = i + indent + (ret ? ret[0].length : 0);
+    const end = statementEnd(body, start);
+    if (ret) found = { expression: body.slice(start, end).trim(), at: i };
+    i = end + 1;
+  }
+  return found;
 }
 
 /// The newline a statement starting at `start` ends on — the first one outside
@@ -975,8 +1014,7 @@ function findDefs(text: string): StarlarkDef[] {
     );
     const nameArg = resource?.args.find((a) => !a.key) ?? resource?.args.find((a) => a.key === 'name');
     const nameParam = params.find((p) => p.name === nameArg?.value)?.name;
-    const statements = body.split('\n').map((l) => l.trim()).filter(Boolean);
-    const returns = statements.length === 1 ? /^return\s+(.+)$/.exec(statements[0])?.[1] : undefined;
+    const returned = straightLineReturn(body);
 
     out.push({
       name: match[1],
@@ -984,7 +1022,8 @@ function findDefs(text: string): StarlarkDef[] {
       body,
       start: match.index!,
       end,
-      returns,
+      returns: returned?.expression,
+      returnsAt: returned?.at,
       template: nameParam && resource
         ? {
             nameParam,
@@ -1079,6 +1118,70 @@ function commandValue(value: StarlarkValue): string[] | undefined {
   if (/[&|;<>$`]|^\s*cd\s/.test(value)) return ['sh', '-c', value];
   const argv = value.split(/\s+/).filter(Boolean);
   return argv.length > 0 ? argv : undefined;
+}
+
+/// A command with its leading `cd` into its own checkout taken off.
+///
+/// Overcli starts a service in whichever checkout it is bound to, so a `cd`
+/// back into the repo — or Tilt's worktree glue, `cd "$( [ -s /tmp/flag ] &&
+/// cat /tmp/flag || echo /repo )"` — would pin it to the main checkout and
+/// follow Tilt's switch instead of overcli's. A `cd` into a folder inside the
+/// repo stays, as a relative one.
+function withoutCheckoutCd(command: string[] | undefined, checkout: string | undefined): string[] | undefined {
+  // A relative `cd` is relative to wherever it runs, so only an absolute
+  // checkout can be recognised in one.
+  if (!command || !checkout || !path.isAbsolute(checkout)) return command;
+  if (command.length !== 3 || command[0] !== 'sh' || command[1] !== '-c') return command;
+  const lead = /^\s*cd\s+("[^"]*"|'[^']*'|[^\s;&|]+)\s*(?:\|\|\s*exit(?:\s+\d+)?\s*)?(?:;|&&)\s*/.exec(command[2]);
+  if (!lead) return command;
+  const target = lead[1].replace(/^(["'])(.*)\1$/, '$2');
+  const root = checkout.replace(/\/+$/, '');
+  const rest = command[2].slice(lead[0].length);
+  let line: string | undefined;
+  if (target === root || (target.startsWith('$(') && new RegExp(`echo\\s+${escapeRegExp(root)}\\s*\\)$`).test(target))) {
+    line = rest;
+  } else if (target.startsWith(`${root}/`)) {
+    line = `cd ${target.slice(root.length + 1)} && ${rest}`;
+  }
+  return line === undefined || line.trim() === '' ? command : ['sh', '-c', line];
+}
+
+/// The main checkout a worktree switch falls back to — the `/repo` in
+/// `cd "$( … || echo /repo )"`. Only an absolute path counts.
+function worktreeGlueRepo(command: string[] | undefined): string | undefined {
+  if (!command || command.length !== 3 || command[0] !== 'sh' || command[1] !== '-c') return undefined;
+  const glue = /^\s*cd\s+"\$\([^"]*\becho\s+(\/[^\s")]+)\s*\)"/.exec(command[2]);
+  return glue?.[1];
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/// The probe a Tilt link names: an http check on its path, or just the port
+/// when it links to the root — a page at `/` says nothing about health.
+function linkProbe(links: string | undefined, port: number | undefined): ReadinessProbe | undefined {
+  if (port === undefined) return undefined;
+  const match = /https?:\/\/(?:localhost|127\.0\.0\.1):\d+(\/[^'"\s]*)?/.exec(links ?? '');
+  const linkPath = match?.[1];
+  return linkPath && linkPath !== '/' ? { kind: 'http', path: linkPath, port } : { kind: 'tcp', port };
+}
+
+/// Tilt's `deps`, absolute paths into the repo (and its worktrees), as
+/// checkout-relative globs. Paths outside the checkout — another worktree's
+/// copy of the same folder — are dropped; overcli follows the switch itself.
+function watchGlobs(value: StarlarkValue, checkout: string): string[] | undefined {
+  const paths = typeof value === 'string' ? [value] : value;
+  if (!paths) return undefined;
+  const root = checkout.replace(/\/+$/, '');
+  const globs = paths.flatMap((p) => {
+    if (!p.startsWith(`${root}/`)) return [];
+    const relative = p.slice(root.length + 1).replace(/\/+$/, '');
+    if (relative === '') return ['**'];
+    // A name with an extension is a file; anything else is a folder to watch whole.
+    return [/\.[\w-]+$/.test(path.basename(relative)) ? relative : `${relative}/**`];
+  });
+  return globs.length > 0 ? [...new Set(globs)] : undefined;
 }
 
 /// `['a', 'b']` as its strings. Anything built rather than written — a

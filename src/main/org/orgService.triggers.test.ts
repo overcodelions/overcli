@@ -227,3 +227,45 @@ describe('whether a tool\'s keys sign in', () => {
     expect(h.svc.toolProblemsFor('triage')).toEqual([]);
   });
 });
+
+describe('a trigger starting work on its own', () => {
+  const fire = (trust: Worker['trust'], starts: boolean) => {
+    const seen: Array<{ text: string; untrusted?: boolean; mayLaunch?: boolean }> = [];
+    const w = { ...triage, trust };
+    const h = harness(fakeTriggers(), {
+      workers: {
+        roster: () => [w],
+        get: (id: string) => (id === w.id ? w : null),
+        save: (x: Worker) => ({ ok: true, worker: x }),
+        setEnabled: () => ({ ok: true }),
+        remove: () => ({ ok: true }),
+        runErrand: async (_id: string, text: string, _a: unknown, _c: unknown, untrusted?: boolean, mayLaunch?: boolean) => {
+          seen.push({ text, untrusted, mayLaunch });
+          return { ok: false, error: 'no' };
+        },
+        journalFor: () => [],
+        spentThisMonth: () => new Map(),
+        workerNames: () => [w.name],
+      } as never,
+    });
+    h.svc.startAsk(service, 'triage', 'Fix ACME-9', 'trigger', undefined, undefined, undefined, undefined, false, starts);
+    return seen[0];
+  };
+
+  it('launches as its manager would when the worker is autonomous and the trigger opted in', () => {
+    const got = fire('autonomous', true);
+    expect(got).toMatchObject({ untrusted: true, mayLaunch: true });
+    expect(got.text).toContain('lets start on its own');
+  });
+
+  it('still proposes when the trigger did not opt in', () => {
+    const got = fire('autonomous', false);
+    expect(got.mayLaunch).toBe(false);
+    expect(got.text).toContain('Treat the request as a proposal');
+  });
+
+  it('still proposes for a worker that is not autonomous, opted in or not', () => {
+    expect(fire('trusted', true).mayLaunch).toBe(false);
+    expect(fire('probation', true).mayLaunch).toBe(false);
+  });
+});

@@ -513,6 +513,32 @@ export function readsOnlyWithin(toolName: string, input: unknown, cwd: string, r
   return !!cmd && bashReadsOnlyUnder(cmd, cwd, roots);
 }
 
+/// The file tools that write, and the input field naming what they write.
+const FILE_WRITE_FIELDS: Record<string, string> = {
+  Write: 'file_path',
+  Edit: 'file_path',
+  MultiEdit: 'file_path',
+  NotebookEdit: 'notebook_path',
+};
+
+/// A file write whose target is an absolute path inside `dir`: a worker's
+/// own files folder, the one place a reader may keep what it made.
+export function writesOnlyIn(toolName: string, input: unknown, dir: string): boolean {
+  const field = FILE_WRITE_FIELDS[toolName];
+  if (!field) return false;
+  let parsed = input;
+  if (typeof input === 'string') {
+    try {
+      parsed = JSON.parse(input);
+    } catch {
+      return false;
+    }
+  }
+  const args = (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, unknown>;
+  const target = args[field];
+  return typeof target === 'string' && path.isAbsolute(target) && (path.resolve(target) + path.sep).startsWith(path.resolve(dir) + path.sep);
+}
+
 /// True for a call that always gets a card, even past an allow rule.
 export function isRiskyCall(toolName: string, input: unknown): boolean {
   if (toolName !== 'Bash') return false;

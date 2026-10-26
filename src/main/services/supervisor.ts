@@ -1277,7 +1277,9 @@ export class Supervisor {
     return this.specs.find((s) => s.id === serviceId);
   }
 
-  private binding(serviceId: string): ServiceBinding | undefined {
+  /// Where this service runs now. The manager saves it from here on a rebind
+  /// rather than from what it asked for, so the two cannot drift apart.
+  binding(serviceId: string): ServiceBinding | undefined {
     return this.bindings.find((b) => b.serviceId === serviceId);
   }
 

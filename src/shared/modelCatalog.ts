@@ -33,8 +33,10 @@ export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
   // Opus 5 trails Opus 5.5 — a CLI or account that predates 6.1 needs it
   // one click away. `gpt-6-astra` is OpenAI's frontier model — the GPT-6
   // generation's flagship, priced well above the Sol line — and like
-  // `claude-fable-5-1` the frontier tier is opt-in.
-  codex: ['gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+  // `claude-fable-5-1` the frontier tier is opt-in. `gpt-6.1-terra` (Oct
+  // 2026) is the standard-tier default; `gpt-5.6-terra` trails it for the
+  // same not-rolled-out-yet reason as the Sol pair.
+  codex: ['gpt-6.1-sol', 'gpt-5.6-sol', 'gpt-6-astra', 'gpt-6.1-terra', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   // Gemini's Flash line iterates far faster than its Pro line — 3.7 Flash
   // shipped while 3.1 Pro is still the newest Pro id. Pro leads the list so
   // it stays the auto-pick + drafter default (first entry = strongest).
@@ -228,6 +230,9 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   // takes over the thinking tier rather than joining Astra at frontier.
   'gpt-6.1-sol': 'thinking',
   'gpt-5.6-sol': 'thinking',
+  // GPT-6.1 Terra is the balanced 6.1 model, so it takes over terra's
+  // middle tier.
+  'gpt-6.1-terra': 'standard',
   'gpt-5.6-terra': 'standard',
   'gpt-5.6-luna': 'fast',
   'gpt-5.5': 'thinking',

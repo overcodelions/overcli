@@ -8,6 +8,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
   let triggers: WorkerTrigger[] = [];
   let deliverables: Deliverable[] = [];
   const asked: string[] = [];
+  const startsFlags: boolean[] = [];
   const posts: string[] = [];
   const calls: unknown[] = [];
   let toolResult: unknown = opts.items ?? { issues: [{ key: 'ACME-1', fields: { summary: 'Export fails' } }] };
@@ -16,8 +17,9 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
     store: { list: () => structuredClone(triggers), save: (all) => (triggers = structuredClone(all)) },
     deliverables: { list: () => structuredClone(deliverables), save: (all) => (deliverables = structuredClone(all)) },
     worker: (id) => (id === 'triage' ? { id, name: 'Triage', enabled: !opts.paused } : null),
-    ask: (_w, name, text) => {
+    ask: (_w, name, text, starts) => {
       asked.push(`${name}|${text}`);
+      startsFlags.push(starts);
       return {
         ok: true,
         askId: `a${asked.length}`,
@@ -46,6 +48,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
   return {
     svc,
     asked,
+    startsFlags,
     posts,
     calls,
     deliverables: () => deliverables,
@@ -125,6 +128,18 @@ describe('watch triggers', () => {
     h.svc.fire(made.trigger, { id: 'x', title: 'X', data: {} });
     expect(h.asked).toEqual([]);
     expect(h.deliverables()[0]).toMatchObject({ status: 'skipped', error: 'Triage is paused.' });
+  });
+});
+
+describe('a trigger let start on its own', () => {
+  it('says so when it hands the worker an event, and is off unless set', () => {
+    const h = harness();
+    const off = h.svc.create(watch());
+    const on = h.svc.create(watch({ name: 'Bugs, hands-off', startsOnItsOwn: true }));
+    if (!off.ok || !on.ok) throw new Error('not made');
+    h.svc.fire(off.trigger, { id: 'a', title: 'A', data: {} });
+    h.svc.fire(on.trigger, { id: 'b', title: 'B', data: {} });
+    expect(h.startsFlags).toEqual([false, true]);
   });
 });
 

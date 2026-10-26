@@ -9,6 +9,7 @@ import {
   riskyAskRules,
   ruleCovers,
   readsOnlyWithin,
+  writesOnlyIn,
   splitCommands, bashReadsOnlyUnder } from './permissionPolicy';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -271,6 +272,22 @@ describe('isReadOnlyCall', () => {
     expect(isReadOnlyCall('Edit', {})).toBe(false);
     expect(isReadOnlyCall('ExitPlanMode', {})).toBe(false);
     expect(isReadOnlyCall('WebFetch', { url: 'https://x' })).toBe(false);
+  });
+});
+
+describe('writesOnlyIn', () => {
+  const own = path.join(os.tmpdir(), 'overcli-own', 'w1');
+  it('allows a file write whose absolute target is inside the folder', () => {
+    expect(writesOnlyIn('Write', { file_path: path.join(own, 'out.csv') }, own)).toBe(true);
+    expect(writesOnlyIn('Edit', JSON.stringify({ file_path: path.join(own, 'sub', 'a.md') }), own)).toBe(true);
+    expect(writesOnlyIn('NotebookEdit', { notebook_path: path.join(own, 'n.ipynb') }, own)).toBe(true);
+  });
+  it('refuses relative, climbing, sibling and non-write calls', () => {
+    expect(writesOnlyIn('Write', { file_path: 'out.csv' }, own)).toBe(false);
+    expect(writesOnlyIn('Write', { file_path: path.join(own, '..', 'w2', 'x') }, own)).toBe(false);
+    expect(writesOnlyIn('Write', { file_path: `${own}-evil/x` }, own)).toBe(false);
+    expect(writesOnlyIn('Bash', { command: `echo > ${own}/x` }, own)).toBe(false);
+    expect(writesOnlyIn('Write', 'not json', own)).toBe(false);
   });
 });
 

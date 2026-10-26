@@ -81,12 +81,12 @@ describe('drafterModelHints', () => {
       standard: 'claude-sonnet-5-5',
       fast: 'claude-sonnet-5-5',
     });
-    // codex: GPT-6.1 Sol reasons, and the GPT-5.6 family covers the rest —
-    // terra is the middle tier, luna the cheap one — so no tier has to
-    // degrade into a neighbour or into a legacy gpt-5.x id.
+    // codex: GPT-6.1 Sol reasons, GPT-6.1 Terra is the middle tier and
+    // GPT-5.6 Luna the cheap one — so no tier has to degrade into a
+    // neighbour or into a legacy gpt-5.x id.
     expect(drafterModelHints('codex')).toEqual({
       thinking: 'gpt-6.1-sol',
-      standard: 'gpt-5.6-terra',
+      standard: 'gpt-6.1-terra',
       fast: 'gpt-5.6-luna',
     });
   });
@@ -184,7 +184,7 @@ describe('resolveProducerModel', () => {
     // No catalog knows it, so `modelSpeed` returns 'standard' — a neutral
     // guess is better than failing an unattended shift. The runner would have
     // rejected the raw id anyway, so passing it through is not an option.
-    expect(resolveProducerModel('codex', 'some-imported-model')).toBe('gpt-5.6-terra');
+    expect(resolveProducerModel('codex', 'some-imported-model')).toBe('gpt-6.1-terra');
   });
 
   it('degrades downward when the backend has no model at the tier', () => {

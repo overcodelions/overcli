@@ -410,8 +410,8 @@ export function createOrgControl(
       const w = engines.workerEngine.roster().find((x) => x.id === id);
       return w ? { id: w.id, name: w.name, enabled: w.enabled } : null;
     },
-    ask: (workerId, triggerName, text) => {
-      const started = org.startAsk({ name: triggerName, admin: true }, workerId, text, 'trigger');
+    ask: (workerId, triggerName, text, startsOnItsOwn) => {
+      const started = org.startAsk({ name: triggerName, admin: true }, workerId, text, 'trigger', undefined, undefined, undefined, undefined, false, startsOnItsOwn);
       return started.ok
         ? { ok: true, askId: started.askId, done: started.done.then((r) => (r.ok ? { ok: true as const, reply: r.reply, launched: r.launched } : r)) }
         : started;
