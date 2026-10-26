@@ -181,6 +181,12 @@ export class SecretsService {
     return this.deps.store;
   }
 
+  /// The values applied from the store, whatever they are named: what a
+  /// worker's answer must never repeat (secretScrub.ts).
+  values(): string[] {
+    return [...this.applied.values()];
+  }
+
   /// Told the names after a change applies.
   onChange(listener: (names: string[]) => void): void {
     this.listeners.push(listener);

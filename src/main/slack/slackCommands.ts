@@ -19,6 +19,7 @@ import type { AskRecord, ToolRequest } from '../org/orgStores';
 import type { ToolTrouble } from '../org/toolHealth';
 import { ROLE_TEXT, type AccessService, type Invite, type JoinRequest } from '../org/accessService';
 import { slackCall } from './slackApi';
+import { scrubOutboundText } from '../secretScrub';
 import { changesAsDiff, changesSummary } from '../org/runChanges';
 import { isAdmin, type OrgCaller, type OrgPolicy } from '../../shared/org/policy';
 import type { Worker } from '../../shared/flows/worker';
@@ -225,7 +226,7 @@ export class SlackCommands {
       await (this.deps.fetchImpl ?? fetch)(url.toString(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
-        body: JSON.stringify({ response_type: 'ephemeral', text, ...(blocks ? { blocks } : {}) }),
+        body: JSON.stringify(scrubOutboundText({ response_type: 'ephemeral', text, ...(blocks ? { blocks } : {}) })),
       });
     } catch (err) {
       this.deps.log('warn', `Could not answer a slash command: ${String(err)}`);

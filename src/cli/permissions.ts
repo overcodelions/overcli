@@ -53,10 +53,12 @@ export interface PermissionDecision {
   /// Why, in one line, for the progress stream. The reason a job was useless
   /// is usually a denial nobody could see.
   reason: string;
+  /// The shell command, for a Bash request.
+  detail?: string;
 }
 
 export interface PermissionResponder {
-  respondPermission(conversationId: string, requestId: string, approved: boolean): void;
+  respondPermission(conversationId: string, requestId: string, approved: boolean, addDir?: string, scope?: 'once' | 'always', rule?: string, denyMessage?: string): void;
   respondCodexApproval(
     conversationId: string,
     callId: string,
@@ -76,6 +78,7 @@ export function decide(
   policy: PermissionPolicy,
   toolName: string,
   allowTools: ReadonlySet<string>,
+  toolInput = '',
 ): { approved: boolean; reason: string } {
   if (policy === 'auto-approve') {
     return { approved: true, reason: `auto-approved ${toolName} (--permissions auto-approve)` };
@@ -84,9 +87,46 @@ export function decide(
     if (allowTools.has(toolName)) {
       return { approved: true, reason: `allowed ${toolName} (--allow-tool)` };
     }
+    // The org's `everything` level (workerAccess.ts).
+    if (allowTools.has('*')) return { approved: true, reason: `allowed ${toolName} (every tool)` };
+    // `Bash(npm test:*)`: a command the org listed, run as it is.
+    if (toolName === 'Bash' && grantedCommand(toolInput, allowTools)) {
+      return { approved: true, reason: 'allowed Bash (a listed command)' };
+    }
     return { approved: false, reason: `denied ${toolName} (not in --allow-tool)` };
   }
   return { approved: false, reason: `denied ${toolName} (--permissions deny)` };
+}
+
+function commandOf(toolInput: string): string {
+  try {
+    const parsed = JSON.parse(toolInput) as { command?: unknown };
+    if (typeof parsed?.command === 'string') return parsed.command;
+  } catch {
+    // Already the command line.
+  }
+  return toolInput;
+}
+
+/// Whether every command in a shell line starts with one the allow-list
+/// grants as `Bash(<command>:*)`. A substitution, a redirect into a file, or
+/// any command not listed: no.
+export function grantedCommand(toolInput: string, allowTools: ReadonlySet<string>): boolean {
+  const prefixes = [...allowTools].map((t) => /^Bash\((.+):\*\)$/.exec(t)?.[1]).filter((x): x is string => !!x);
+  if (!prefixes.length) return false;
+  let command = toolInput;
+  try {
+    const parsed = JSON.parse(toolInput) as { command?: unknown };
+    if (typeof parsed?.command === 'string') command = parsed.command;
+  } catch {
+    // Already the command line.
+  }
+  const { commands, writes, opaque } = splitCommands(command);
+  if (opaque || writes || !commands.length) return false;
+  return commands.every((c) => {
+    const said = words(c).join(' ');
+    return prefixes.some((p) => said === p || said.startsWith(`${p} `));
+  });
 }
 
 /// A shell command that only reads, and only inside one of `roots`: a worker
@@ -95,8 +135,8 @@ export function decide(
 /// own baseline left it convinced it had none. Anything that writes, runs a
 /// substitution, climbs with `..`, or names a path outside the roots is not
 /// this.
-export function readsOnlyUnder(toolName: string, toolInput: string, roots: readonly string[]): boolean {
-  if (toolName !== 'Bash' || !roots.length) return false;
+export function readsOnlyUnder(toolName: string, toolInput: string, roots: readonly string[], also: (p: string) => boolean = () => false): boolean {
+  if (toolName !== 'Bash') return false;
   let command = toolInput;
   try {
     const parsed = JSON.parse(toolInput) as { command?: unknown };
@@ -105,13 +145,15 @@ export function readsOnlyUnder(toolName: string, toolInput: string, roots: reado
     // Already the command line.
   }
   if (!command.trim() || !isReadOnlyBashCommand(command)) return false;
-  const inside = (p: string) => roots.some((r) => p === r || p.startsWith(r.endsWith(path.sep) ? r : r + path.sep));
+  const inside = (p: string) => also(p) || roots.some((r) => p === r || p.startsWith(r.endsWith(path.sep) ? r : r + path.sep));
   for (const c of splitCommands(command).commands) {
     let namedHere = false;
     for (const w of words(c).slice(1)) {
       if (w === '/dev/null' || /^\d?>&\d$/.test(w)) continue;
       if (w.includes('..') || w.startsWith('~') || w.includes('$')) return false;
       if (w.startsWith('-')) continue;
+      // A count (`head -n 50`, `head -c 4000`) names nothing to read.
+      if (/^\d+$/.test(w)) continue;
       if (!w.startsWith('/') || !inside(path.resolve(w))) return false;
       namedHere = true;
     }
@@ -119,6 +161,27 @@ export function readsOnlyUnder(toolName: string, toolInput: string, roots: reado
     if (!namedHere) return false;
   }
   return true;
+}
+
+/// Where Claude Code keeps a tool result too big to hand the model inline
+/// (`~/.claude/projects/<project>/<session>/tool-results/<call>.txt`): the
+/// model is told the path and reads it, very often with `head`, `grep` or
+/// `wc`. The Read tool may open it already; refusing the shell for the same
+/// file left a worker holding a Zendesk search it believed it wasn't allowed
+/// to look at.
+export function isToolResultFile(p: string, home: string | undefined = process.env.HOME): boolean {
+  if (!home) return false;
+  const projects = path.join(home, '.claude', 'projects') + path.sep;
+  return p.startsWith(projects) && p.slice(projects.length).split(path.sep).includes('tool-results');
+}
+
+/// What a refused tool call is told, in place of "denied by user": it was a
+/// rule, not a person, and what to use instead. Without it a worker reported
+/// "your permission settings denied" and stopped rather than use Read.
+export function policyRefusal(toolName: string): string {
+  return toolName === 'Bash'
+    ? 'Refused by this server\'s rules, not by a person: shell commands are not allowed here, except plain reads (cat, head, grep, wc, ls) of your own files and of saved tool results. Use the Read and Grep tools instead; they are allowed and are not a way around anything. Carry on with them.'
+    : `Refused by this server's rules, not by a person: ${toolName} is not among the tools allowed here. Carry on with the tools you have, and say what you could not do.`;
 }
 
 /// The refusal handed back to a model that asked the user a question. Written
@@ -178,7 +241,9 @@ export function permissionTap(args: {
   /// and calls outside its scope never reach here (Claude refuses them).
   allowToolReads?: boolean;
 }): (event: MainToRendererEvent) => void {
-  const allow = new Set(args.allowTools);
+  // Read as each request comes: the list changes in place while the server
+  // runs (repo grants, the org's access level).
+  const allowNow = () => new Set(args.allowTools);
   const seen = new Set<string>();
 
   return (event: MainToRendererEvent) => {
@@ -194,14 +259,16 @@ export function permissionTap(args: {
         const key = `p:${event.conversationId}:${kind.info.requestId}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const own = args.policy !== 'auto-approve' && !allow.has(kind.info.toolName) && readsOnlyUnder(kind.info.toolName, kind.info.toolInput, args.readOnlyRoots?.(event.conversationId) ?? []);
+        const allow = allowNow();
+        const own = args.policy !== 'auto-approve' && !allow.has(kind.info.toolName) && readsOnlyUnder(kind.info.toolName, kind.info.toolInput, args.readOnlyRoots?.(event.conversationId) ?? [], (p) => isToolResultFile(p));
         const toolRead = args.policy === 'allow-list' && !!args.allowToolReads && !allow.has(kind.info.toolName) && kind.info.toolName.startsWith('mcp__') && isReadOnlyMcpTool(kind.info.toolName);
         const { approved, reason } = own
           ? { approved: true, reason: `allowed ${kind.info.toolName}: a read-only look at a worker's own files` }
           : toolRead
             ? { approved: true, reason: `allowed ${kind.info.toolName}: a tool call that only reads` }
-            : decide(args.policy, kind.info.toolName, allow);
-        args.responder.respondPermission(event.conversationId, kind.info.requestId, approved);
+            : decide(args.policy, kind.info.toolName, allow, kind.info.toolInput);
+        if (approved) args.responder.respondPermission(event.conversationId, kind.info.requestId, true);
+        else args.responder.respondPermission(event.conversationId, kind.info.requestId, false, undefined, undefined, undefined, policyRefusal(kind.info.toolName));
         args.onDecision?.({
           kind: 'permission',
           conversationId: event.conversationId,
@@ -209,6 +276,7 @@ export function permissionTap(args: {
           toolName: kind.info.toolName,
           approved,
           reason,
+          ...(kind.info.toolName === 'Bash' ? { detail: commandOf(kind.info.toolInput) } : {}),
         });
       } else if (kind.type === 'codexApproval') {
         if (kind.info.decided) continue;
@@ -223,7 +291,7 @@ export function permissionTap(args: {
               approved: false,
               reason: `denied codex ${toolName} (worker has no grant for external actions)`,
             }
-          : decide(args.policy, toolName, allow);
+          : decide(args.policy, toolName, allowNow());
         args.responder.respondCodexApproval(
           event.conversationId,
           kind.info.callId,

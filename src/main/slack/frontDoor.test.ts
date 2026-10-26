@@ -11,7 +11,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const TRIAGE: FrontDoorWorker = { id: 'w-triage', name: 'Triage', tagline: 'Fixes product bugs', job: 'Reproduce bugs in the web app, fix them, and open a pull request with tests.' };
 const VANTAGE: FrontDoorWorker = { id: 'w-vantage', name: 'Vantage', tagline: 'Competitive analyst', job: 'Research competitors and write competitive analysis reports on features, pricing and positioning.' };
 
-function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null; general?: (text: string) => string | null; replies?: Record<string, string>; dm?: boolean; now?: () => number; follow?: (item: string, on: boolean, workerId?: string, say?: (t: string) => void) => string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean } | Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>; following?: Array<{ item: string; status?: string; worker: string }>; slow?: boolean } = {}) {
+function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null; general?: (text: string) => string | null; replies?: Record<string, string>; dm?: boolean; now?: () => number; follow?: (item: string, on: boolean, workerId?: string, say?: (t: string) => void) => string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean } | Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>; following?: Array<{ item: string; status?: string; worker: string }>; slow?: boolean; continueRun?: (orchestrationId: string, text: string) => { ok: true; reply: string } | { ok: false; error: string } | null } = {}) {
   const posts: string[] = [];
   const briefs: Array<{ teamId: string; brief: string }> = [];
   const items: Array<{ processId: string; brief: string }> = [];
@@ -30,6 +30,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
   const blocks: Array<{ text: string; blocks: unknown[] }> = [];
   const dms: Array<{ user: string; text: string }> = [];
   const desked: string[] = [];
+  const continued: Array<{ orchestrationId: string; text: string; conversation: string; said: string }> = [];
   let progress: ErrandProgress | null = opts.progress ?? null;
   let state: FrontDoorState = { threads: [], follows: [] };
   const door = new FrontDoor({
@@ -69,6 +70,15 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
       return { ok: true, done: Promise.resolve({ ok: true as const, reply: opts.replies?.[workerId] ?? opts.reply ?? 'On it.', askId: 'ask-1', ...(opts.proposed ? { proposed: opts.proposed } : {}), ...(opts.orchestrationId ? { orchestrationId: opts.orchestrationId } : {}) }) };
     },
     ...(opts.handBack ? { handBack: opts.handBack } : {}),
+    ...(opts.continueRun
+      ? {
+          continueRun: (_c: unknown, orchestrationId: string, text: string, _a: Attachment[], conversation: string, said: string) => {
+            continued.push({ orchestrationId, text, conversation, said });
+            const res = opts.continueRun!(orchestrationId, text);
+            return res ? { ok: true as const, done: Promise.resolve(res.ok ? { ok: true as const, reply: res.reply } : res) } : null;
+          },
+        }
+      : {}),
     ...(opts.status ? { status: opts.status } : {}),
     ...(opts.findExisting
       ? {
@@ -159,7 +169,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
     store: { load: () => structuredClone(state), save: (s) => (state = structuredClone(s)) },
     log: () => {},
   });
-  return { door, posts, uploads, edits, asks, briefs, items, tracks, related, candidates, looked, audiences, teamAsks, blocks, dms, desked, routed: () => routed, setProgress: (p: ErrandProgress) => (progress = p), state: () => state };
+  return { door, posts, uploads, edits, asks, continued, briefs, items, tracks, related, candidates, looked, audiences, teamAsks, blocks, dms, desked, routed: () => routed, setProgress: (p: ErrandProgress) => (progress = p), state: () => state };
 }
 
 describe('the front door', () => {
@@ -339,6 +349,65 @@ describe('the front door', () => {
     expect(h.posts.at(-1)).toBe('D0ACME@7.0: [as Vantage] You closed 429 tickets this year, most in September. The chart: tickets.html (attached)');
     expect(h.posts.join('\n')).not.toContain('"total"');
     expect(h.uploads).toEqual(['tickets.html']);
+  });
+
+  it('carries a reply after finished work on with whoever ran its last step, like a chat', async () => {
+    const h = harness({
+      reply: 'Pulling the counts.',
+      orchestrationId: 'orch-11',
+      progress: { done: true, items: [{ title: 'Ticket tally', status: 'done' }], files: [{ name: 'result.json', body: '429 tickets' }], links: [] },
+      continueRun: () => ({ ok: true, reply: 'September had 61 of them, mostly billing.' }),
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.7', user: 'U1', text: 'Vantage count my tickets', dm: true });
+    await tick();
+    await h.door.poll();
+    await tick();
+    expect(h.state().threads[0].done).toMatchObject({ orchestrationId: 'orch-11', workerId: 'w-vantage' });
+    const before = h.asks.length;
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.9', threadTs: '7.7', user: 'U1', text: 'which month was worst?', dm: true });
+    await tick();
+    await tick();
+    expect(h.continued).toHaveLength(1);
+    expect(h.continued[0]).toMatchObject({ orchestrationId: 'orch-11', conversation: 'slack:D0ACME:7.7', said: 'which month was worst?' });
+    expect(h.continued[0].text).toContain('which month was worst?');
+    // Not a new errand for the worker.
+    expect(h.asks).toHaveLength(before);
+    expect(h.posts.at(-1)).toBe('D0ACME@7.7: [as Vantage] September had 61 of them, mostly billing.');
+  });
+
+  it('gives the follow-up to the worker when the finished work can\'t be carried on', async () => {
+    const h = harness({
+      reply: 'Pulling the counts.',
+      orchestrationId: 'orch-12',
+      progress: { done: true, items: [{ title: 'Ticket tally', status: 'done' }], files: [], links: [] },
+      continueRun: () => null,
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '8.1', user: 'U1', text: 'Vantage count my tickets', dm: true });
+    await tick();
+    await h.door.poll();
+    await tick();
+    await h.door.onMessage({ channel: 'D0ACME', ts: '8.2', threadTs: '8.1', user: 'U1', text: 'and last year?', dm: true });
+    await tick();
+    expect(h.continued).toHaveLength(1);
+    expect(h.asks.at(-1)?.text).toContain('More from Pat on the same request:\nand last year?');
+  });
+
+  it('falls back to the worker when carrying on fails partway', async () => {
+    const h = harness({
+      reply: 'Pulling the counts.',
+      orchestrationId: 'orch-13',
+      progress: { done: true, items: [{ title: 'Ticket tally', status: 'done' }], files: [], links: [] },
+      continueRun: () => ({ ok: false, error: 'session gone' }),
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '9.1', user: 'U1', text: 'Vantage count my tickets', dm: true });
+    await tick();
+    await h.door.poll();
+    await tick();
+    await h.door.onMessage({ channel: 'D0ACME', ts: '9.2', threadTs: '9.1', user: 'U1', text: 'and last year?', dm: true });
+    await tick();
+    await tick();
+    expect(h.asks.at(-1)?.text).toContain('and last year?');
+    expect(h.state().threads[0].done).toBeUndefined();
   });
 
   it('posts the raw output when the worker can\'t finish up', async () => {

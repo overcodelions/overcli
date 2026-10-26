@@ -167,6 +167,10 @@ interface DoorThread {
   desk?: { text: string; files: SlackFile[] };
   /// Workers that said the request isn't theirs: not offered it again.
   declined?: string[];
+  /// Work handed off from here that has finished: more said here goes to
+  /// whoever ran its last step, as the next turn of that conversation
+  /// (`FrontDoorDeps.continueRun`).
+  done?: { orchestrationId: string; at: number; workerId?: string };
   at: number;
 }
 
@@ -309,6 +313,11 @@ export interface FrontDoorDeps {
   workers(caller: OrgCaller): FrontDoorWorker[];
   /// `conversation`: the thread, as a key, so the worker keeps one conversation per thread.
   ask(caller: OrgCaller, workerId: string, text: string, attachments: Attachment[], conversation?: string, said?: string): Started;
+  /// A follow-up in a thread whose handed-off work has finished, said to
+  /// whoever ran the work's last step, in its conversation: a chat, not a
+  /// new errand. Null: it can't take it (the caller may not drive that work,
+  /// or there's nothing to continue), and it goes to the worker as before.
+  continueRun?(caller: OrgCaller, orchestrationId: string, text: string, attachments: Attachment[], conversation: string, said: string): Started | null;
   /// Finished handed-off work back to the worker that handed it off, to
   /// finish what it said it would. Null: nothing to hand back. Absent: the
   /// run's output is posted as it is.
@@ -869,6 +878,11 @@ export class FrontDoor {
       if (named && named.worker.id !== worker.id) {
         return this.hand(req, key, caller, named.worker, `${caller.name} brought you into this thread, after ${worker.name}: ${text}`, req.files ?? [], `${caller.name} asked for ${named.worker.name}`);
       }
+      // The work it handed off has finished: carry on with whoever did it.
+      if (known.done && this.deps.continueRun && (!known.done.workerId || known.done.workerId === worker.id)) {
+        const went = await this.continueRun(req, key, caller, worker, known.done.orchestrationId, text, req.files ?? []);
+        if (went) return;
+      }
       return this.hand(req, key, caller, worker, text, req.files ?? [], '', true);
     }
     if (!text && !req.files?.length) return;
@@ -1380,11 +1394,61 @@ export class FrontDoor {
           await say(`${worker.name} proposed ${res.proposed === 1 ? 'one piece of work' : `${res.proposed} pieces of work`} and is waiting for ${worker.manager ? `${worker.manager}'s` : 'its manager’s'} OK. I'll post the results here when it's done.`);
         }
         if (res.orchestrationId) {
+          const t = this.state.threads.find((x) => x.key === key);
+          if (t) delete t.done;
           this.state.follows.push({ orchestrationId: res.orchestrationId, channel: req.channel, threadTs: root, workerName: worker.name, since: this.now(), ...(res.askId ? { askId: res.askId } : {}), workerId: worker.id, ...(worker.avatarUrl ? { avatarUrl: worker.avatarUrl } : {}) });
           this.save();
         }
       })
       .catch((err: unknown) => this.deps.log(`Front door: ${worker.name}'s answer could not be posted: ${String(err)}`));
+  }
+
+  /// A follow-up to finished work, said to whoever ran its last step. Answers
+  /// come back like a chat: no "has this" line, a word only if it's slow.
+  /// False when that can't take it, for `hand` to.
+  private async continueRun(req: FrontDoorRequest, key: string, caller: OrgCaller, worker: FrontDoorWorker, orchestrationId: string, text: string, files: SlackFile[]): Promise<boolean> {
+    const root = req.threadTs ?? req.ts;
+    const say = (t: string) => this.deps.slack.post(req.channel, t, root);
+    const context = await this.context(req, files);
+    // The conversation already holds the work; only what's new rides along.
+    const prompt = [
+      `${caller.name}, in the Slack thread where this work was asked for, now that it's done:`,
+      text,
+      context.others.length ? `\nAlso shared there (not attached): ${context.others.join('; ')}` : '',
+      '\nAnswer them as the next message of this conversation, briefly and in plain words. Your reply is posted in the thread for you; to send a file, write it in your files folder and name its full path.',
+    ].filter(Boolean).join('\n');
+    const started = this.deps.continueRun!(caller, orchestrationId, prompt, context.images, `slack:${key}`, text);
+    if (!started || !started.ok) return false;
+    const t = this.state.threads.find((x) => x.key === key);
+    if (t) {
+      t.at = this.now();
+      if (t.done) t.done.at = this.now();
+    }
+    this.note(key, `${worker.name} carried on`, 'handed', undefined, { who: worker.name }, false);
+    let answered = false;
+    const ack = setTimeout(() => {
+      if (!answered) void say(`_${worker.name} is on it…_`);
+    }, ACK_AFTER_MS);
+    ack.unref?.();
+    void started.done
+      .finally(() => {
+        answered = true;
+        clearTimeout(ack);
+      })
+      .then(async (res) => {
+        if (!res.ok) {
+          // The conversation couldn't be continued (gone, timed out): the
+          // worker takes it the usual way rather than the person hearing why.
+          this.deps.log(`Front door: could not continue ${worker.name}'s finished work: ${res.error}`);
+          const gone = this.state.threads.find((x) => x.key === key);
+          if (gone) delete gone.done;
+          return this.hand(req, key, caller, worker, text, files, '', true);
+        }
+        await deliverText(this.io(), req.channel, root, worker.name, res.reply, `${slug(text)}.md`, worker.id, { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) });
+        await this.notify(req.channel, root, worker.name, res.reply);
+      })
+      .catch((err: unknown) => this.deps.log(`Front door: ${worker.name}'s answer could not be posted: ${String(err)}`));
+    return true;
   }
 
   /// A worker said the request isn't its job: someone else, without it. After
@@ -1570,6 +1634,12 @@ export class FrontDoor {
   /// can't happen or fails.
   private async finished(f: DoorFollow, p: ErrandProgress): Promise<void> {
     const ok = p.items.some((i) => i.status === 'done');
+    const thread = ok ? this.state.threads.find((t) => t.key === `${f.channel}:${f.threadTs}`) : undefined;
+    if (thread) {
+      thread.done = { orchestrationId: f.orchestrationId, at: this.now(), ...(f.workerId ? { workerId: f.workerId } : {}) };
+      thread.at = this.now();
+      this.save();
+    }
     if (f.status && this.deps.slack.update) {
       const took = minutes(this.now() - (f.since ?? this.now()));
       await this.deps.slack.update(f.channel, f.status.ts, ok ? `:white_check_mark: Done in ${took}. Writing it up…` : `:warning: It ended without finishing. What happened is below.`).catch(() => false);

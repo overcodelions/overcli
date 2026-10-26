@@ -15,6 +15,9 @@
   },
   "allowedMcpServers": ["acme-feedback"],
   "orgVisibilityNeedsAdmin": true,
+  "workerAccess": { "level": "shell", "commands": ["npm test", "jq"], "tools": [] },
+  "redactSecrets": true,
+  "providerModels": { "*": "us.anthropic.{id}" },
 
   "orgBudgetUSD": 2000,
   "alertAtPercent": 80,

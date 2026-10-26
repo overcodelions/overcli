@@ -478,12 +478,21 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
   // Replies are built where their questions are, so they claim their own
   // batches and runs; they are hung on their threads at the end.
   const replies: Array<{ parent: string; thread: WorkThread }> = [];
+  // A Slack thread is one conversation, however many messages it takes:
+  // each later ask in it hangs on the first, as a reply typed here would.
+  const firstIn = new Map<string, AskRecord>();
+  for (const a of [...input.asks].sort((x, y) => x.at - y.at)) if (a.conversation && !firstIn.has(a.conversation)) firstIn.set(a.conversation, a);
+  const parentOf = (a: AskRecord): string | undefined => {
+    const root = a.conversation ? firstIn.get(a.conversation) : undefined;
+    return root && root.id !== a.id ? `ask:${root.id}` : a.replyTo;
+  };
   for (const a of input.asks) {
     // Even while it's still deciding: the worker hands work off before its
     // reply comes back, and that batch is this ask's, not an errand of its
     // own titled with the raw prompt.
     const b = batchForAsk(a);
-    (a.replyTo ? (t: WorkThread) => replies.push({ parent: a.replyTo!, thread: t }) : (t: WorkThread) => threads.push(t))(
+    const parent = parentOf(a);
+    (parent ? (t: WorkThread) => replies.push({ parent, thread: t }) : (t: WorkThread) => threads.push(t))(
       make({
         id: `ask:${a.id}`,
         at: a.at,

@@ -5,7 +5,7 @@
 import { adminReply, statusReply } from './statusReply';
 import { initialsPicture } from '../../shared/flows/avatars';
 import { log } from '../diagnostics';
-import { collectKnownSecretValues, redactSecrets } from '../secretScrub';
+import { collectKnownSecretValues, redactSecrets, setOutboundScrub } from '../secretScrub';
 import type { FlowRuntimeImpl } from '../flows/runtime';
 import type { OrchestratorImpl } from '../flows/orchestrator';
 import type { WorkerEngine } from '../flows/workerEngine';
@@ -42,6 +42,7 @@ import { readClaudeMcpServers } from '../mcpConfig';
 import { fileDigestState, orgDir } from '../org/orgStores';
 import { digestDue } from '../org/orgService';
 import { Store } from '../store';
+import { setProviderModels } from '../backends/providerModels';
 import { changesOfRun } from '../org/runChanges';
 
 /// Whoever else is in a channel: someone with no access of their own. What
@@ -95,6 +96,15 @@ export function createOrgControl(
   options: { frontDoorOwner?: () => string | undefined } = {},
 ): { org: OrgService; commands: SlackCommands; access: AccessService; sso: SsoService; triggers: TriggerService; frontDoor: FrontDoor; connections: ConnectionsService; processes: ProcessService } {
   let commands: SlackCommands | null = null;
+  // What workers say to people is scrubbed of credentials, by the org's rule:
+  // the patterns, the environment's secrets, and every stored one whatever
+  // it is called.
+  setOutboundScrub({
+    enabled: () => loadOrgPolicy().policy.redactSecrets,
+    known: () => [...(engines.secrets?.values() ?? []), configuredSlackToken('bot'), configuredSlackToken('app')],
+  });
+  // Model ids as the server's provider (Bedrock, Vertex) names them.
+  setProviderModels(() => loadOrgPolicy().policy.providerModels);
   // Each person's own Google Drive. Its client comes from Setup → Secrets
   // (or the environment); its encryption key stays in the secrets store.
   const secrets = engines.secrets;
@@ -628,6 +638,10 @@ export function createOrgControl(
       return started.ok ? { ok: true, done: started.done } : started;
     },
     handBack: (askId) => org.handBack(askId),
+    continueRun: (caller, orchestrationId, text, attachments, conversation, said) => {
+      const went = org.continueRun(caller, orchestrationId, text, { via: 'slack', attachments, conversation, said });
+      return went ? { ok: true, done: went.done } : null;
+    },
     progress: (id) => org.errandProgress(id),
     route: (text, workers, related) => routeRequest(drafterDepsFor(engines.runner), text, workers, related),
     general: (_caller, text, context, workers) => answerGeneral(drafterDepsFor(engines.runner), text, context, workers),

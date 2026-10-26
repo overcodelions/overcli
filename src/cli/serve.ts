@@ -171,6 +171,7 @@ export function startDaemon(
     stateDir: opts.stateDir,
     policy: opts.permissions,
     allowTools: opts.allowTools,
+    ...(opts.maxAccess ? { maxAccess: opts.maxAccess } : {}),
     ...(secrets ? { secrets } : {}),
   });
   // A new Slack token from Setup → Secrets: reconnect with it.

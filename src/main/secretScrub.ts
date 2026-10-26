@@ -234,3 +234,51 @@ export function redactSecrets(
 
   return { text: out, redactedCount };
 }
+
+/// What leaves the server for people to read — Slack messages, an ask's
+/// answer, a file attached to a thread — scrubbed by the org's rule
+/// (`OrgPolicy.redactSecrets`). Set once by the host that has the policy and
+/// the stored secrets; unset (the desktop, a test) nothing is scrubbed here
+/// beyond what each caller does for itself.
+export interface OutboundScrub {
+  enabled(): boolean;
+  /// Values this server holds that must never be repeated, however they look:
+  /// the stored secrets and the Slack tokens, on top of the environment's.
+  known(): ReadonlyArray<string | null | undefined>;
+}
+
+let outbound: OutboundScrub | null = null;
+
+export function setOutboundScrub(scrub: OutboundScrub | null): void {
+  outbound = scrub;
+}
+
+/// `text` as it may be shown to people. Unchanged when the rule is off.
+export function scrubOutbound(text: string): string {
+  if (!outbound || !text || !outbound.enabled()) return text;
+  return redactSecrets(text, collectKnownSecretValues(process.env, outbound.known())).text;
+}
+
+/// Every `text` field in a Slack payload (blocks nest them), scrubbed. Only
+/// `text`: an avatar URL or a button's value is not prose, and a long data
+/// URL would read as a credential.
+export function scrubOutboundText<T>(value: T): T {
+  if (!outbound || !outbound.enabled()) return value;
+  const walk = (v: unknown, key?: string): unknown => {
+    if (typeof v === 'string') return key === 'text' ? scrubOutbound(v) : v;
+    if (Array.isArray(v)) return v.map((x) => walk(x, key));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, k)]));
+    return v;
+  };
+  return walk(value) as T;
+}
+
+/// A file about to be attached for people to read: scrubbed when it is text,
+/// as it is otherwise. Binary files (images, office documents) pass through.
+const TEXT_FILE = /\.(md|markdown|txt|csv|tsv|json|ya?ml|log|html?|xml|sql|sh|env|ini|toml|js|ts|py)$/i;
+export function scrubOutboundFile(filename: string, bytes: Buffer): Buffer {
+  if (!outbound || !outbound.enabled() || !TEXT_FILE.test(filename)) return bytes;
+  const text = bytes.toString('utf8');
+  const clean = scrubOutbound(text);
+  return clean === text ? bytes : Buffer.from(clean, 'utf8');
+}

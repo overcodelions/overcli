@@ -217,6 +217,8 @@ export function refusalForModel(why: string): string {
 export function enabledToolsFor(run: Pick<FlowRun, 'unattended' | 'unattendedAllowedTools'>, step: Pick<FlowStep, 'tools'>): string[] {
   if (!run.unattended) return step.tools;
   const allowed = run.unattendedAllowedTools ?? [];
+  // The org's `everything` level: the step has what it asks for.
+  if (allowed.includes('*')) return step.tools;
   // A narrowed grant, `Bash(git:*)`, stands in for the whole tool: a step
   // asking for Bash gets only the commands the policy names, and the CLI
   // routes any other command to the approval broker, which refuses it.
@@ -3178,6 +3180,70 @@ export class FlowRuntimeImpl {
     this.checkpoint(run);
     this.emitRunUpdate(run);
     return { ok: true };
+  }
+
+  /// A message to a finished run, answered by whoever ran its last step: it
+  /// is still sitting in that conversation with the work in front of it, so
+  /// a follow-up ("why that one?", "now split it by region") is a turn of
+  /// that conversation rather than a new errand planned from scratch. Same
+  /// permissions as the step had; the run's own rules for its tools apply as
+  /// they did. Resolves with what it said, once its turn has ended.
+  async chatWithRun(args: { runId: UUID; text: string; attachments?: Attachment[]; timeoutMs?: number }): Promise<{ ok: true; reply: string } | { ok: false; error: string }> {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if (run.state.kind !== 'done' && run.state.kind !== 'archived') return { ok: false, error: 'That run is not finished.' };
+    const step = [...run.flowSnapshot.steps].reverse().find((s) => run.conversationIds[stepParticipantKey(s)]);
+    if (!step) return { ok: false, error: 'Nobody in that run has a conversation to continue.' };
+    const participantId = stepParticipantKey(step);
+    const participant = run.flowSnapshot.participants.find((p) => p.id === participantId);
+    const convId = run.conversationIds[participantId];
+    if (!participant || !convId) return { ok: false, error: 'Nobody in that run has a conversation to continue.' };
+    const key = `${run.id}:${participantId}`;
+    if (this.finalizeWaiters.has(key)) return { ok: false, error: 'It is still answering the last message.' };
+    // Its events route back to this run again: a finished run's
+    // conversations may have been let go.
+    this.convIdToRun.set(convId, run.id);
+    this.latestAssistantTextByParticipant.delete(key);
+    const drained = new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        if (this.finalizeWaiters.get(key)) {
+          this.finalizeWaiters.delete(key);
+          resolve();
+        }
+      }, args.timeoutMs ?? 15 * 60_000);
+      timeout.unref?.();
+      this.finalizeWaiters.set(key, () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+    const sent = this.runner.send({
+      conversationId: convId,
+      prompt: args.text,
+      attachments: args.attachments,
+      backend: participant.backend,
+      cwd: run.projectPath,
+      sandboxFsWrites: this.sandboxFlowWrites(),
+      allowedDirs: this.runAllowedDirs(run),
+      model: effectiveParticipantModel(run, participantId),
+      permissionMode: this.resolvePermissionMode(run, step),
+      chrome: this.browseFor(run, participant.backend),
+      reviewBackend: null,
+      reviewMode: null,
+      reviewModel: null,
+      reviewPersona: null,
+      enabledTools: participant.backend === 'ollama' ? [] : undefined,
+    });
+    if (!sent.ok) {
+      this.finalizeWaiters.delete(key);
+      return { ok: false, error: sent.error };
+    }
+    run.lastUserTurnAt = Date.now();
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    await drained;
+    const reply = this.latestAssistantTextByParticipant.get(key)?.trim();
+    return reply ? { ok: true, reply } : { ok: false, error: 'It ended without saying anything.' };
   }
 
   private async executeStep(runId: UUID, stepId: string): Promise<void> {

@@ -34,6 +34,7 @@
 // written to any transcript. Clicking a symbol must not perturb the
 // agent's context.
 
+import { resolveClaudeModel } from './backends/providerModels';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -569,7 +570,7 @@ export function buildLookupArgs(
 ): string[] {
   switch (backend) {
     case 'claude': {
-      const a = ['--model', model];
+      const a = ['--model', resolveClaudeModel(model)];
       // Older CLIs exit on an unknown --effort; probed at the call site.
       if (opts.effortSupported !== false) a.push('--effort', 'low');
       a.push('--permission-mode', 'default');

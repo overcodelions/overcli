@@ -5,6 +5,8 @@
 // call returns a result rather than throwing — the bridge sits on the run
 // observer path, and a Slack outage must never take a worker's run down.
 
+import { scrubOutboundFile, scrubOutboundText } from '../secretScrub';
+
 export const SLACK_API_BASE = 'https://slack.com/api';
 
 /// Long enough for Slack on a slow day, short enough that a hung request
@@ -30,7 +32,9 @@ export async function slackCall<T extends object>(
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json; charset=utf-8',
       },
-      body: JSON.stringify(body),
+      // Every message, update and form goes through here: credentials are
+      // scrubbed out of its text by the org's rule (secretScrub.ts).
+      body: JSON.stringify(scrubOutboundText(body)),
       signal: controller.signal,
     });
     if (!res.ok) return { ok: false, error: `Slack ${method} returned HTTP ${res.status}.` };
@@ -215,10 +219,11 @@ export async function uploadFile(
   args: { channel: string; threadTs?: string; filename: string; bytes: Buffer; title?: string },
   fetchImpl: FetchLike = fetch,
 ): Promise<SlackResult<{ fileId: string }>> {
-  const slot = await slackRead<{ upload_url: string; file_id: string }>('files.getUploadURLExternal', botToken, { filename: args.filename, length: args.bytes.length }, fetchImpl);
+  const bytes = scrubOutboundFile(args.filename, args.bytes);
+  const slot = await slackRead<{ upload_url: string; file_id: string }>('files.getUploadURLExternal', botToken, { filename: args.filename, length: bytes.length }, fetchImpl);
   if (!slot.ok) return slot;
   try {
-    const put = await fetchImpl(slot.data.upload_url, { method: 'POST', body: new Uint8Array(args.bytes) });
+    const put = await fetchImpl(slot.data.upload_url, { method: 'POST', body: new Uint8Array(bytes) });
     if (!put.ok) return { ok: false, error: `Slack upload returned HTTP ${put.status}.` };
   } catch (err) {
     return { ok: false, error: `Slack upload: ${String(err)}` };

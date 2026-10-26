@@ -55,7 +55,9 @@ import type { ConnectionsService } from '../main/org/connections';
 import type { TriggerService } from '../main/org/triggers';
 import { createTeamEngine, runDeliverablesFor } from '../main/flows/teamWire';
 import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraft';
-import { bindAllowList } from '../main/org/repoGrants';
+import { bindAllowList, refreshAllowList } from '../main/org/repoGrants';
+import { baseAllowList, configureAccess, noteRefusal } from '../main/org/workerAccess';
+import type { AccessLevel } from '../shared/org/access';
 import { BranchLander, describe as describeLanded } from '../main/org/landBranches';
 import { runRepoTests } from './repoTests';
 import { credentialGitEnv, type ConnectedRepo } from '../main/org/repos';
@@ -136,6 +138,8 @@ export interface EngineOptions {
   stateDir?: string;
   policy: PermissionPolicy;
   allowTools: string[];
+  /// See `ServeOptions.maxAccess`.
+  maxAccess?: AccessLevel;
   /// See `permissionTap`. The CLI sets this when the file it is running is a
   /// worker whose caps do not include external actions.
   denyCodexApprovals?: boolean;
@@ -397,6 +401,13 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     // A worker asked a question reads its own tools while it works out the
     // answer; nobody is there to approve a lookup.
     allowToolReads: true,
+    // What workers were refused, counted for Setup → Permissions.
+    onPermission: (d) => {
+      options.onPermission?.(d);
+      if (d.approved || d.kind !== 'permission') return;
+      const who = workerFor(d.conversationId);
+      if (who) noteRefusal({ worker: who, tool: d.toolName, ...(d.detail ? { detail: d.detail } : {}), at: Date.now() });
+    },
     onNotify: (args) => {
       options.onNotify?.(args);
       slackCommands?.onNotice(args);
@@ -408,6 +419,13 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     },
   });
   const { flowRuntime, orchestrator, workerEngine, emit } = engines;
+  // The worker behind a conversation: a run's, or its own desk and Slack
+  // threads' (where questions are answered).
+  function workerFor(conversationId: string): string | undefined {
+    const run = flowRuntime.workerForConversation(conversationId as Parameters<typeof flowRuntime.workerForConversation>[0]);
+    if (run) return run.workerName;
+    return workerEngine.roster().find((w) => w.deskSession?.conversationId === conversationId || Object.values(w.threadSessions ?? {}).some((t) => t.conversationId === conversationId))?.name;
+  }
 
   const scheduler = new SchedulerEngine({
     launcher: flowRuntime,
@@ -456,7 +474,13 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   });
 
   // Connected repos add their PR commands to this list as they come and go.
-  if (options.policy === 'allow-list') bindAllowList(options.allowTools);
+  // The allow-list follows the org's access level when one is set
+  // (workerAccess.ts), within what the flags allow; repo grants ride on top.
+  configureAccess({ managed: options.policy === 'allow-list', allowTools: options.allowTools, ...(options.maxAccess ? { maxAccess: options.maxAccess } : {}), access: () => loadOrgPolicy().policy.workerAccess });
+  if (options.policy === 'allow-list') {
+    bindAllowList(options.allowTools, baseAllowList);
+    setInterval(refreshAllowList, 5_000).unref();
+  }
   // Claude's file tools may not read or change credential files
   // (credentialGuard.ts), and with the gateway on, a remote tool's token is
   // in no worker's config (toolGateway.ts). Neither stops a shell command.

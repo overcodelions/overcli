@@ -21,6 +21,10 @@ services:
       - allow-list
       - --allow-tool
       - Read,Glob,Grep,Edit,Write,WebSearch,WebFetch
+      # The most an admin may allow from the console (Setup → Workers →
+      # Permissions): read, standard, shell (listed commands) or everything.
+      - --max-access
+      - shell
     # Everything that matters lives in /data. Leave OVERCLI_DATA unset for a
     # Docker volume, or set it to a path on a durable disk (an EBS volume, a
     # GCE persistent disk) owned by uid 1000. See deploy/aws.md, deploy/gcp.md.

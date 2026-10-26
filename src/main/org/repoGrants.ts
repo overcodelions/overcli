@@ -10,18 +10,31 @@ import { setTrustedCommands } from '../flows/trustedCommands';
 import type { RepoService } from './repos';
 
 let target: string[] | null = null;
-let base: string[] = [];
+let base: () => string[] = () => [];
+let extra: string[] = [];
 
 /// The serve allow-list to keep up to date. Only `--permissions allow-list`
 /// has one; without it nothing is narrowed and nothing is added.
-export function bindAllowList(list: string[]): void {
+/// `baseOf`: what the list is before repo grants — the flags it was started
+/// with, or the org's access level (workerAccess.ts), read again on refresh.
+export function bindAllowList(list: string[], baseOf?: () => string[]): void {
   target = list;
-  base = [...list];
+  const start = [...list];
+  base = baseOf ?? (() => start);
+  refreshAllowList();
 }
 
 export function applyRepoGrants(repos: Pick<RepoService, 'codeTools' | 'trustedCommands'>): void {
   setTrustedCommands(repos.trustedCommands());
+  extra = repos.codeTools();
+  refreshAllowList();
+}
+
+/// Rebuild the list in place: its base as it is now, then the repos' grants.
+export function refreshAllowList(): void {
   if (!target) return;
-  const extra = repos.codeTools().filter((t) => !base.includes(t));
-  target.splice(0, target.length, ...base, ...extra);
+  const now = base();
+  const next = [...now, ...extra.filter((t) => !now.includes(t))];
+  if (next.length === target.length && next.every((t, i) => t === target![i])) return;
+  target.splice(0, target.length, ...next);
 }

@@ -5,6 +5,7 @@
 // Electron app's package, and a arg-parser dependency would be a runtime dep
 // for the desktop build too. The grammar is small enough that this is cheaper.
 
+import { ACCESS_LEVELS, type AccessLevel } from '../shared/org/access';
 export type PermissionPolicy = 'deny' | 'allow-list' | 'auto-approve';
 
 /// A worker's trust level, which decides how much a shift may launch without
@@ -70,6 +71,9 @@ export interface ServeOptions {
   stateDir?: string;
   permissions: PermissionPolicy;
   allowTools: string[];
+  /// The most the org's console may let workers do (Setup → Workers →
+  /// Permissions). Absent: what `--allow-tool` already allows.
+  maxAccess?: AccessLevel;
   /// Serve the org control plane — MCP at /mcp and the web console at / —
   /// on this address. Absent: no listener at all, as before.
   control?: { host: string; port: number };
@@ -224,7 +228,7 @@ function allowToolWarnings(permissions: PermissionPolicy, allowTools: string[]):
 /// The flags `serve` accepts. Everything else `run` takes is about a single
 /// file-shaped run and has no meaning for a process that outlives every run
 /// it starts, so those are refused by name rather than silently ignored.
-const SERVE_FLAGS = new Set(['--state-dir', '--permissions', '--allow-tool', '--control']);
+const SERVE_FLAGS = new Set(['--state-dir', '--permissions', '--allow-tool', '--control', '--max-access']);
 
 function parseServe(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
   const opts: ServeOptions = { permissions: 'deny', allowTools: [] };
@@ -269,6 +273,11 @@ function parseServe(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailu
         const control = parseControlAddress(value);
         if ('error' in control) return { ok: false, error: control.error };
         opts.control = control;
+        break;
+      }
+      case '--max-access': {
+        if (!ACCESS_LEVELS.includes(value as AccessLevel)) return { ok: false, error: `--max-access is one of ${ACCESS_LEVELS.join(', ')} (got "${value}").` };
+        opts.maxAccess = value as AccessLevel;
         break;
       }
     }

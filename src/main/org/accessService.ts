@@ -19,6 +19,10 @@
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isAdmin, parseOrgPolicy, type OrgCaller, type OrgPolicy, type OrgRole, type OrgSso, type WebFetchMode } from '../../shared/org/policy';
 import { isSlackUserId } from '../../shared/flows/worker';
+import { PREMIUM_MODELS } from '../../shared/modelCatalog';
+import { modelProvider, type ModelProviderKind } from '../backends/providerModels';
+import { accessServer, refusalSummary, type AccessServer } from './workerAccess';
+import type { WorkerAccess } from '../../shared/org/access';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -116,6 +120,7 @@ export interface AccessDeps {
 export const EDITABLE_RULES = [
   'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
   'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'retentionDays', 'sso', 'people', 'fleet',
+  'redactSecrets', 'providerModels', 'workerAccess',
 ] as const;
 
 export interface EditableRules {
@@ -139,6 +144,17 @@ export interface EditableRules {
   sso: OrgSso | null;
   people: Record<string, string>;
   fleet: Array<{ name: string; url: string }>;
+  redactSecrets: boolean;
+  providerModels: Record<string, string>;
+  /// Read only, for the Model ids page: the Claude models overcli offers, and
+  /// which provider this server's environment sends them to.
+  claudeModels: string[];
+  modelProvider: ModelProviderKind;
+  workerAccess: WorkerAccess | null;
+  /// Read only, for the Permissions page: whether this server lets the
+  /// console set a level, the highest it allows, and the last week's refusals.
+  accessServer: AccessServer;
+  accessRefusals: ReturnType<typeof refusalSummary>;
 }
 
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -504,6 +520,13 @@ export class AccessService {
         sso: p.sso ?? null,
         people: p.people,
         fleet: p.fleet,
+        redactSecrets: p.redactSecrets,
+        providerModels: p.providerModels ?? {},
+        claudeModels: [...PREMIUM_MODELS.claude],
+        modelProvider: modelProvider(),
+        workerAccess: p.workerAccess ?? null,
+        accessServer: accessServer(),
+        accessRefusals: refusalSummary(),
       },
     };
   }
