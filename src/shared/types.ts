@@ -62,6 +62,12 @@ import { DEFAULT_CLEANUP_RULES, type CleanupRules } from './cleanupRules';
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
 export type PermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits' | 'bypassPermissions';
+/// What the last update check found. `unknown` until one has answered, and
+/// always in dev builds, which never check.
+export type UpdateStatus =
+  | { state: 'unknown' }
+  | { state: 'latest' }
+  | { state: 'available' | 'downloaded'; version: string };
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max' | '';
 export type ResponseStyle = 'normal' | 'concise' | 'efficient';
 export type ResponseMode = 'full' | 'swift' | 'turbo' | 'warp';
@@ -1160,7 +1166,12 @@ export interface AppSettings {
   /// Preferred default backend for new conversations and agents. If unset
   /// or disabled, falls back to the first enabled backend.
   preferredBackend?: Backend;
+  /// Starting mode for new conversations. `auto` applies to Claude only;
+  /// other backends start in `default` (see startingPermissionMode).
   defaultPermissionMode: PermissionMode;
+  /// Which one-time moves of `defaultPermissionMode` this store has had.
+  /// 1: the old built-in `plan` became `auto`. See migratePermissionDefault.
+  permissionDefaultsVersion?: number;
   /// Fallback reasoning effort for backends with no explicit entry in
   /// `backendDefaultEfforts`.
   defaultEffort: EffortLevel;
@@ -1561,6 +1572,7 @@ export interface IPCInvokeMap {
   /// time, so this is the only honest source — a constant in the renderer
   /// goes stale the moment it isn't hand-edited alongside a release.
   'app:version': () => string;
+  'app:updateStatus': () => UpdateStatus;
   'runner:send': (args: {
     conversationId: UUID;
     prompt: string;
@@ -1659,6 +1671,10 @@ export interface IPCInvokeMap {
     /// requests that don't carry one.
     rule?: string;
   }) => void;
+  /// Answer the running turn's remaining approval prompts as allowed:
+  /// `everything` after a mid-turn switch to Bypass, `safe` (risky calls
+  /// still ask) from the card. Claude only; cleared when the next turn starts.
+  'runner:allowRestOfTurn': (args: { conversationId: UUID; allow: 'everything' | 'safe' | 'off' }) => void;
   'runner:respondCodexApproval': (args: {
     conversationId: UUID;
     callId: string;
@@ -4418,7 +4434,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   backendDefaultModels: {},
   flowModelDefaults: {},
   disabledBackends: {},
-  defaultPermissionMode: 'plan',
+  defaultPermissionMode: 'auto',
+  permissionDefaultsVersion: 1,
   defaultEffort: '',
   backendDefaultEfforts: {},
   agentBranchPrefix: 'agent/',

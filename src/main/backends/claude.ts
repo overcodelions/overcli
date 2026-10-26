@@ -8,7 +8,8 @@ import { fetchesChecked } from '../safeFetch';
 import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from '../parsers/claude';
 import { normalizeAllowedDirs } from '../permissionRules';
 import type { BackendCtx, BackendSendArgs, BackendSpec, ParseChunkResult } from './types';
-import { BATCHING_DIRECTIVE } from './turbo';
+import { batchingDirectiveFor } from '../../shared/turbo';
+import type { PermissionMode } from '../../shared/types';
 import { resolveClaudeModel } from './providerModels';
 import { NARRATION_DIRECTIVE } from '../../shared/transcriptLevel';
 
@@ -31,8 +32,11 @@ interface ClaudeStreamState {
 /// the SDK's `systemPrompt.append` in the runner — and the SDK copy went
 /// without the batching directive for as long as the two were written
 /// separately.
-export function claudeSystemPromptAppend(narrate: boolean): string {
-  return narrate ? `${BATCHING_DIRECTIVE}\n\n${NARRATION_DIRECTIVE}` : BATCHING_DIRECTIVE;
+///
+/// Which batching ask depends on the mode: see batchingDirectiveFor.
+export function claudeSystemPromptAppend(narrate: boolean, permissionMode?: PermissionMode): string {
+  const batching = batchingDirectiveFor(permissionMode);
+  return narrate ? `${batching}\n\n${NARRATION_DIRECTIVE}` : batching;
 }
 
 export const claudeBackend: BackendSpec = {
@@ -98,7 +102,7 @@ export const claudeBackend: BackendSpec = {
     }
     // Varies only with narration, which is a launch param — so a level change
     // respawns, and nothing else does.
-    a.push('--append-system-prompt', claudeSystemPromptAppend(!!args.narrate));
+    a.push('--append-system-prompt', claudeSystemPromptAppend(!!args.narrate, args.permissionMode));
     for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
       a.push('--add-dir', dir);
     }

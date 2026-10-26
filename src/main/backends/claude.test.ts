@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { claudeBackend, claudeSystemPromptAppend } from './claude';
 import { BATCHING_DIRECTIVE } from './turbo';
+import { PARALLEL_CALLS_DIRECTIVE } from '../../shared/turbo';
 import { NARRATION_DIRECTIVE } from '../../shared/transcriptLevel';
 import type { BackendCtx, BackendSendArgs } from './types';
 
@@ -60,15 +61,25 @@ describe('claudeBackend.buildArgs', () => {
 
   it('appends the fewer-larger-tool-calls directive with or without turbo', () => {
     // No longer turbo-gated. Batching does not trade away answer quality the
-    // way turbo's low-effort half does, so every conversation gets it — and
-    // because the value never varies, it never trips `paramsChanged` into a
-    // respawn the way a conditional flag would.
+    // way turbo's low-effort half does, so every conversation gets it. It
+    // only varies with the permission mode, which respawns anyway.
     for (const turbo of [true, false]) {
       const a = claudeBackend.buildArgs({ ...baseArgs, turbo }, noMcpCtx);
       const appended = a[a.indexOf('--append-system-prompt') + 1];
-      expect(appended).toMatch(/fewer, larger tool calls/i);
+      expect(appended).toMatch(/fewer model rounds/i);
       // The correctness caveat must survive any future edit to the wording.
       expect(appended).toMatch(/never skip a check/i);
+    }
+  });
+
+  it('asks for one combined command only in Bypass, where nothing is checked', () => {
+    const appended = (permissionMode: BackendSendArgs['permissionMode']) => {
+      const a = claudeBackend.buildArgs({ ...baseArgs, permissionMode }, noMcpCtx);
+      return a[a.indexOf('--append-system-prompt') + 1];
+    };
+    expect(appended('bypassPermissions')).toBe(BATCHING_DIRECTIVE);
+    for (const mode of ['default', 'acceptEdits', 'auto', 'plan'] as const) {
+      expect(appended(mode)).toBe(PARALLEL_CALLS_DIRECTIVE);
     }
   });
 
@@ -232,18 +243,19 @@ describe('claudeBackend narration', () => {
 
   it('appends the narration directive after the batching one when asked', () => {
     const prompt = systemPrompt(claudeBackend.buildArgs({ ...baseArgs, narrate: true }, noMcpCtx));
-    expect(prompt.startsWith(BATCHING_DIRECTIVE)).toBe(true);
+    expect(prompt.startsWith(PARALLEL_CALLS_DIRECTIVE)).toBe(true);
     expect(prompt).toContain(NARRATION_DIRECTIVE);
   });
 
   it('leaves the system prompt alone at quiet', () => {
-    expect(systemPrompt(claudeBackend.buildArgs(baseArgs, noMcpCtx))).toBe(BATCHING_DIRECTIVE);
+    expect(systemPrompt(claudeBackend.buildArgs(baseArgs, noMcpCtx))).toBe(PARALLEL_CALLS_DIRECTIVE);
   });
 
   it('builds the same text the SDK transport appends, batching included', () => {
-    expect(systemPrompt(claudeBackend.buildArgs({ ...baseArgs, narrate: true }, noMcpCtx))).toBe(claudeSystemPromptAppend(true));
-    expect(systemPrompt(claudeBackend.buildArgs(baseArgs, noMcpCtx))).toBe(claudeSystemPromptAppend(false));
-    expect(claudeSystemPromptAppend(false)).toContain(BATCHING_DIRECTIVE);
+    const mode = baseArgs.permissionMode;
+    expect(systemPrompt(claudeBackend.buildArgs({ ...baseArgs, narrate: true }, noMcpCtx))).toBe(claudeSystemPromptAppend(true, mode));
+    expect(systemPrompt(claudeBackend.buildArgs(baseArgs, noMcpCtx))).toBe(claudeSystemPromptAppend(false, mode));
+    expect(claudeSystemPromptAppend(false, mode)).toContain(PARALLEL_CALLS_DIRECTIVE);
   });
 });
 

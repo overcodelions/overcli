@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  startingPermissionMode,
   effortLabel,
   enabledBackends,
   isBackendEnabled,
@@ -159,5 +160,20 @@ describe('pickDefaultBackend', () => {
         },
       }),
     ).toBe('claude');
+  });
+});
+
+describe('startingPermissionMode', () => {
+  it('starts Claude in the default mode as set', () => {
+    expect(startingPermissionMode({ defaultPermissionMode: 'auto' }, 'claude')).toBe('auto');
+  });
+
+  it('starts other CLIs in Default when the setting is Auto', () => {
+    expect(startingPermissionMode({ defaultPermissionMode: 'auto' }, 'codex')).toBe('default');
+    expect(startingPermissionMode({ defaultPermissionMode: 'auto' }, 'gemini')).toBe('default');
+  });
+
+  it('passes every other mode through', () => {
+    expect(startingPermissionMode({ defaultPermissionMode: 'plan' }, 'codex')).toBe('plan');
   });
 });

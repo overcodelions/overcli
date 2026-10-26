@@ -1,4 +1,4 @@
-import type { ResponseMode, ResponseStyle, StreamEvent } from '@shared/types';
+import type { PermissionMode, ResponseMode, ResponseStyle, StreamEvent } from '@shared/types';
 import {
   CONCISE_RESPONSE_DIRECTIVE,
   EFFICIENT_TOOL_DIRECTIVE,
@@ -72,6 +72,7 @@ export function buildResponseModePrompt(
   style: ResponseStyle | undefined,
   priorEvents: readonly StreamEvent[],
   mode?: ResponseMode,
+  permissionMode?: PermissionMode,
 ): string {
   // The measured nudge rides on every style, Full included: like the batching
   // directive in the system prompt, asking for consolidation costs nothing in
@@ -80,7 +81,12 @@ export function buildResponseModePrompt(
   const nudge =
     opportunity && TOOL_NAME_SHAPE.test(opportunity.toolName)
       ? `The previous turn used ${opportunity.toolName} in ${opportunity.rounds} separate model rounds ` +
-        `(${opportunity.calls} calls). Consolidate independent ${opportunity.toolName} work this turn.`
+        `(${opportunity.calls} calls). ` +
+        // Outside Bypass, "consolidate" reads as "chain it into one command",
+        // which turns reads that would have gone through into prompts.
+        (permissionMode === 'bypassPermissions'
+          ? `Consolidate independent ${opportunity.toolName} work this turn.`
+          : `Send independent ${opportunity.toolName} calls together in one message this turn, each kept simple.`)
       : null;
   if (!style || style === 'normal') return nudge ? `${nudge}\n\n${prompt}` : prompt;
   const directives = [CONCISE_RESPONSE_DIRECTIVE];

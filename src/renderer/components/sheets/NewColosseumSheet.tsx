@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { startingPermissionMode } from '../conversationHeaderHelpers';
 import { useStore } from '../../store';
 import { UUID, Colosseum } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
@@ -73,7 +74,7 @@ export function NewColosseumSheet({ projectId }: { projectId: UUID }) {
                       totalCostUSD: 0,
                       turnCount: 0,
                       currentModel: c.model,
-                      permissionMode: settings.defaultPermissionMode,
+                      permissionMode: startingPermissionMode(settings, c.backend),
                       primaryBackend: c.backend,
                       claudeModel: c.backend === 'claude' ? c.model : undefined,
                       codexModel: c.backend === 'codex' ? c.model : undefined,

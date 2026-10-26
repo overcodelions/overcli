@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { startingPermissionMode } from '../conversationHeaderHelpers';
 import { useStore } from '../../store';
 import { Backend, Conversation, UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
@@ -304,7 +305,7 @@ export async function createBranchedAgent(
     totalCostUSD: 0,
     turnCount: 0,
     currentModel: '',
-    permissionMode: args.settings.defaultPermissionMode,
+    permissionMode: startingPermissionMode(args.settings, args.preferredBackend),
     primaryBackend: args.preferredBackend,
     worktreePath: res.worktreePath,
     branchName: res.branchName,
@@ -350,7 +351,7 @@ export async function createDetachedAgent(
     totalCostUSD: 0,
     turnCount: 0,
     currentModel: '',
-    permissionMode: args.settings.defaultPermissionMode,
+    permissionMode: startingPermissionMode(args.settings, args.preferredBackend),
     primaryBackend: args.preferredBackend,
     worktreePath: res.worktreePath,
     baseBranch: args.baseBranch,

@@ -2,12 +2,20 @@ import { app, BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { log } from './diagnostics';
 import { Store } from './store';
+import type { UpdateStatus } from '../shared/types';
 
 let wired = false;
 let getWindowRef: () => BrowserWindow | null = () => null;
 // The channel currently applied to autoUpdater. Lets refreshUpdateChannel()
 // no-op when an unrelated settings save comes through with the same channel.
 let appliedChannel: 'stable' | 'nightly' | null = null;
+// What the last check found, so the About sheet can say "latest" next to the
+// version instead of leaving people to compare numbers with the releases page.
+let status: UpdateStatus = { state: 'unknown' };
+
+export function updateStatus(): UpdateStatus {
+  return status;
+}
 
 // Nightly builds stamp their version as x.y.z-nightly.<date>.<sha>; every
 // tagged release is plain x.y.z. That prerelease tag is the only reliable
@@ -76,16 +84,21 @@ export function initAutoUpdater(getWindow: () => BrowserWindow | null): void {
 
   autoUpdater.on('update-available', (info) => {
     log('info', 'updater', `update available: ${info.version}`);
+    status = { state: 'available', version: info.version };
     notify('update:available', { version: info.version });
   });
   autoUpdater.on('update-not-available', () => {
     log('info', 'updater', 'no update available');
+    // A download already waiting stays the answer; a later check finding
+    // nothing newer doesn't make the running build the latest.
+    if (status.state !== 'downloaded') status = { state: 'latest' };
   });
   autoUpdater.on('download-progress', (p) => {
     notify('update:progress', { percent: Math.round(p.percent) });
   });
   autoUpdater.on('update-downloaded', (info) => {
     log('info', 'updater', `update downloaded: ${info.version} (installs on quit)`);
+    status = { state: 'downloaded', version: info.version };
     notify('update:downloaded', { version: info.version });
   });
   autoUpdater.on('error', (err) => {
