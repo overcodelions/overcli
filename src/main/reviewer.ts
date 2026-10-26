@@ -6,6 +6,7 @@
 // conversation so successive rounds reuse the codex thread instead of
 // paying cold-start each time.
 
+import { resolveClaudeModel } from './backends/providerModels';
 import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
@@ -1105,7 +1106,7 @@ export function buildReviewerArgs(
       // Empty-string and undefined both fall through to 'low'.
       const effort = opts.effort || 'low';
       const a: string[] = [];
-      if (model) a.push('--model', model);
+      if (model) a.push('--model', resolveClaudeModel(model));
       if (resume) a.push('--resume', resume);
       // Older claude CLIs predate `--effort` and exit immediately with
       // `error: unknown option '--effort'`. Skip the flag when the

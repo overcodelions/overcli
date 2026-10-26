@@ -54,7 +54,7 @@ import path from 'node:path';
 
 export interface OrgEngines {
   runner: RunnerManager;
-  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork'>;
+  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork' | 'chatWithRun'>;
   orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem' | 'list' | 'approveBatch'>;
   workerEngine: WorkerEngine;
   /// A getter: the app builds teams after the plane.
@@ -146,7 +146,7 @@ function importSharedWorker(
 /// and a failed item cannot be rejected, so the journal would never learn the
 /// idea was turned down.
 export function rejectWorkerRun(
-  engines: { flowRuntime: OrgEngines['flowRuntime']; orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem'> },
+  engines: { flowRuntime: Omit<OrgEngines['flowRuntime'], 'chatWithRun' | 'beforeFork'>; orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem'> },
   runId: string,
 ): { ok: true } | { ok: false; error: string } {
   const { flowRuntime, orchestrator } = engines;
@@ -225,6 +225,7 @@ export function createOrgService(
       getRun: (id) => flowRuntime.getRun(id),
       steerRun: (args) => flowRuntime.steerRun(args),
       resumeRun: (args) => flowRuntime.resumeRun(args),
+      chatWithRun: (args) => flowRuntime.chatWithRun(args),
     },
     rejectRun: (runId) => rejectWorkerRun(engines, runId),
     stopRun: (runId) => {

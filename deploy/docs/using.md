@@ -28,6 +28,7 @@ What happens:
 - **Questions about how the product works go to a worker that reads its code.** "How does the CSV export decide which columns to include?" goes to a worker whose repo or workspace holds that code, rather than one that could only search tickets about it.
 - **Screenshots** in the message or the thread are attached for the worker to see.
 - **Follow up in the same thread** ("and make it blue") and the same worker picks it up.
+- **Once work it started has finished,** a reply in the thread goes to whoever did that work's last step, in the same conversation: ask why, or for it split another way, and the answer comes back like the next message of a chat instead of new work planned from scratch. Only the worker's manager carries on this way (or anyone, for a worker that only reads); for anyone else it goes to the worker as a new request. In the console, every message in one Slack thread shows as one conversation.
 - **Bring another worker in by name.** In a worker's thread, start your reply with another worker's name ("Triage will need to check the logs", "ask Triage to look at this", or with get, have or let) and that worker takes the thread over, with everything said in it so far.
 
 ### Things to know

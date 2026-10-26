@@ -725,13 +725,18 @@ export class SlackBridge {
       }
     }
     const approve = forRun || always || action.action_id === SLACK_APPROVE_ACTION;
+    // Settled before the run moves: resuming announces the run's new state
+    // at once, and that sweep (settleStale) would otherwise find this card
+    // still open, call it handled elsewhere, and overwrite "Approved by".
+    t.resolvedAt = this.now();
+    t.resolution = approve ? 'approved' : 'rejected';
     const res = approve ? this.deps.resumeRun({ runId: t.runId, ...(forRun ? { forRun: true } : {}) }) : this.deps.rejectRun(t.runId);
     if (!res.ok) {
+      delete t.resolvedAt;
+      delete t.resolution;
       await this.reply(t, `That did not go through: ${res.error}`);
       return;
     }
-    t.resolvedAt = this.now();
-    t.resolution = approve ? 'approved' : 'rejected';
     this.persist();
     await this.clearButtons(t, !approve ? `Rejected by <@${t.managerSlackUserId}>.` : always ? `Approved by <@${t.managerSlackUserId}>, and always allowed from now on.` : forRun ? `Approved for this run by <@${t.managerSlackUserId}>.` : `Approved by <@${t.managerSlackUserId}>.`);
   }

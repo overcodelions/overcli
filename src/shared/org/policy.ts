@@ -10,6 +10,7 @@
 // see workers that are visible to everyone and manage the ones they manage —
 // and nobody can hire. Opening hiring is a decision someone writes down.
 
+import { ACCESS_LEVELS, commandGrant, type AccessLevel, type WorkerAccess } from './access';
 import type { UUID } from '../types';
 import type { Worker, WorkerVisibility } from '../flows/worker';
 import { isSlackUserId } from '../flows/worker';
@@ -91,6 +92,17 @@ export interface OrgPolicy {
   /// Anyone in the org's Slack who asks (`/overgo join`) gets in straight
   /// away, as someone who can ask workers things. Off: an admin lets them in.
   openJoin: boolean;
+  /// Scrub credentials (passwords, AWS keys, tokens, the server's stored
+  /// secrets) out of everything a worker says to people: Slack, the console's
+  /// answers, notifications. On unless an admin turns it off.
+  redactSecrets: boolean;
+  /// What workers may do on the server (Setup → Workers → Permissions).
+  /// Absent: what `overcli serve --allow-tool` says, as before.
+  workerAccess?: WorkerAccess;
+  /// Model ids as the server's provider names them (Bedrock, Vertex), by the
+  /// id overcli knows: `{ "claude-opus-5-5": "us.anthropic.claude-opus-5-5" }`.
+  /// Absent ones are translated by rule (`providerModelId`).
+  providerModels?: Record<string, string>;
   /// What every worker together may cost in a month. Past it, scheduled runs
   /// stop until the month turns or someone raises it. Absent: no org cap,
   /// only each worker's own budget.
@@ -134,6 +146,7 @@ export const DEFAULT_ORG_POLICY: OrgPolicy = {
   webFetch: 'safe',
   ownDomains: [],
   openJoin: false,
+  redactSecrets: true,
   alertAtPercent: 80,
   people: {},
   fleet: [],
@@ -324,6 +337,31 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
         return ok;
       }),
       openJoin: r.openJoin === true,
+      redactSecrets: r.redactSecrets !== false,
+      ...(() => {
+        if (r.workerAccess === undefined) return {};
+        const a = r.workerAccess && typeof r.workerAccess === 'object' && !Array.isArray(r.workerAccess) ? (r.workerAccess as Record<string, unknown>) : null;
+        if (!a || !ACCESS_LEVELS.includes(a.level as AccessLevel)) {
+          warnings.push('workerAccess needs a level: read, standard, shell or everything.');
+          return {};
+        }
+        const commands = strings(a.commands);
+        for (const c of commands) if (!commandGrant(c)) warnings.push(`workerAccess: "${c}" is not a command to allow (no ; | & $ ( ) or redirects).`);
+        const tools = strings(a.tools);
+        for (const t of tools) if (!/^[\w.-]{1,120}$/.test(t)) warnings.push(`workerAccess: "${t}" is not a tool name.`);
+        return { workerAccess: { level: a.level as AccessLevel, commands: commands.filter((c) => commandGrant(c)), tools: tools.filter((t) => /^[\w.-]{1,120}$/.test(t)) } };
+      })(),
+      ...(() => {
+        if (r.providerModels === undefined) return {};
+        const out: Record<string, string> = {};
+        const raw = r.providerModels && typeof r.providerModels === 'object' && !Array.isArray(r.providerModels) ? (r.providerModels as Record<string, unknown>) : null;
+        if (!raw) warnings.push('providerModels must map model ids to the provider\'s ids.');
+        for (const [from, to] of Object.entries(raw ?? {})) {
+          if (typeof to === 'string' && /^[\w.:@/-]{1,200}$/.test(to.trim()) && /^[\w.:@-]{1,100}$/.test(from)) out[from] = to.trim();
+          else warnings.push(`providerModels: "${from}" needs a model id like us.anthropic.claude-opus-5-5.`);
+        }
+        return Object.keys(out).length ? { providerModels: out } : {};
+      })(),
       ...(orgBudget ? { orgBudgetUSD: orgBudget } : {}),
       alertAtPercent: Math.min(alertAt, 100),
       ...(retentionDays ? { retentionDays } : {}),

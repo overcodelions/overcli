@@ -10,6 +10,7 @@
 // lines straight through the existing `claudeBackend.parseChunk` parser.
 // Zero duplication of the event-translation logic.
 
+import { resolveClaudeModel } from './backends/providerModels';
 import { EventEmitter } from 'node:events';
 import {
   query,
@@ -114,7 +115,7 @@ export class ClaudeSdkClient extends EventEmitter {
       ...(o.pathToClaudeCodeExecutable
         ? { pathToClaudeCodeExecutable: o.pathToClaudeCodeExecutable }
         : {}),
-      ...(o.model ? { model: o.model } : {}),
+      ...(o.model ? { model: resolveClaudeModel(o.model) } : {}),
       permissionMode: o.permissionMode,
       ...(o.allowedDirs?.length ? { additionalDirectories: o.allowedDirs } : {}),
       ...(o.resumeSessionId ? { resume: o.resumeSessionId } : {}),

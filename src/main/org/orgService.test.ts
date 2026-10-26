@@ -393,6 +393,22 @@ describe('handed-off work', () => {
     expect(svc.handBack('a1')).toBeNull();
   });
 
+  it('carries a follow-up on in the conversation of the work\'s last step, for its manager', async () => {
+    const { svc, saved } = setup({ at: Date.now() });
+    const chats: Array<{ runId: string; text: string }> = [];
+    const deps = (svc as unknown as { deps: ConstructorParameters<typeof OrgService>[0] }).deps;
+    deps.runs = { ...deps.runs, getRun: (id) => (id === 'r1' ? ({ id: 'r1', workerId: 'open' } as never) : null), chatWithRun: async (a) => (chats.push(a), { ok: true, reply: 'September, with 125.' }) };
+    const went = svc.continueRun(pat, 'o1', 'which month was worst?', { via: 'slack', conversation: 'slack:D1:1.0' });
+    if (!went) throw new Error('not carried on');
+    expect(went.runId).toBe('r1');
+    const res = await went.done;
+    expect(res).toMatchObject({ ok: true, reply: 'September, with 125.', launched: 0 });
+    expect(chats).toEqual([{ runId: 'r1', text: 'which month was worst?' }]);
+    expect(saved().at(-1)).toMatchObject({ replyTo: 'run:r1', status: 'answered', reply: 'September, with 125.', conversation: 'slack:D1:1.0' });
+    // Someone who doesn't manage a worker that changes things gets the usual errand.
+    expect(svc.continueRun(sam, 'o1', 'and last year?')).toBeNull();
+  });
+
   it('hands back console asks made since the server started, and leaves older ones alone', () => {
     expect(setup({ via: 'console', at: 1 }).svc.handBackDue()).toBe(0);
     expect(setup({ via: 'console', at: Date.now() + 1000 }).svc.handBackDue()).toBe(1);
@@ -733,5 +749,14 @@ describe('stopping a worker’s run', () => {
     expect(h.svc.stopRun({ slackUserId: SAM, name: 'Sam', admin: false }, 'run-1')).toMatchObject({ ok: false });
     expect(h.svc.stopRun({ slackUserId: PAT, name: 'Pat', admin: false }, 'run-1')).toEqual({ ok: true });
     expect(h.calls).toContain('stop:run-1');
+  });
+});
+
+describe('a run\'s last word, as progress', () => {
+  it('drops the output contract and the markdown', async () => {
+    const { plainSaid } = await import('./orgService');
+    expect(plainSaid('<output name="release_contents.md"> # Acme release 2026-10-25: release contents\n## 1. Release identification\n- **Release:** Jira fix version `2026-10-25`. It exists in both ACME and BETA.'))
+      .toBe('Release: Jira fix version 2026-10-25. It exists in both ACME and BETA.');
+    expect(plainSaid('Reading the ACME board now.')).toBe('Reading the ACME board now.');
   });
 });

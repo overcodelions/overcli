@@ -73,6 +73,9 @@ The org's identity and rules, on the data volume. Write it with `overcli org ini
 | `orgVisibilityNeedsAdmin` | Whether "everyone may ask it" needs an admin |
 | `webFetch` | How workers open web pages: `"safe"` (the default), `"ask"` or `"any"`. An older `webNeedsApproval: true` reads as `"ask"`, `false` as `"any"` |
 | `ownDomains` | Sites workers may always open, such as `acme.atlassian.net` |
+| `workerAccess` | What workers may do: `{ "level": "read" \| "standard" \| "shell" \| "everything", "commands": [...], "tools": [...] }`. Absent: what `--allow-tool` lists |
+| `redactSecrets` | Replace credentials in what workers say to people. On unless `false` |
+| `providerModels` | Model ids on Bedrock or Vertex, by overcli's id; `"*"` with `{id}` for the rest |
 | `serviceAccounts` | Tools whose keys an admin marked as a service account's |
 | `sso` | Company sign-in: issuer, client ID, whether it's required |
 | `people` | Email → Slack member ID, for company sign-in |
@@ -81,7 +84,7 @@ The org's identity and rules, on the data volume. Write it with `overcli org ini
 
 | Command | Does |
 |---|---|
-| `overcli serve [--control ADDR] [--permissions P] [--allow-tool T]` | Runs the server |
+| `overcli serve [--control ADDR] [--permissions P] [--allow-tool T] [--max-access L]` | Runs the server. `--max-access` (`read`, `standard`, `shell`, `everything`) is the most Setup → Permissions may allow; without it, what `--allow-tool` allows |
 | `overcli org init --name N [--admin U…] [--slack-team T…] [--url URL] [--timezone Z]` | Writes `org.json` |
 | `overcli org show` | Prints the org and its rules |
 | `overcli tokens create --name N [--slack U…] [--admin]` | A token for a script; printed once |

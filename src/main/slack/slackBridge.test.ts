@@ -370,6 +370,26 @@ describe('SlackBridge inbound', () => {
     expect(JSON.stringify(update?.body)).toMatch(/asked for approval to run \*[^*]+\* on _/);
   });
 
+  it('says who approved, even when the run announces its new state while the button is being handled', async () => {
+    const h = harness({ runs: [pausedRun('externalAction')] });
+    await h.bridge.start();
+    const resume = h.deps.resumeRun;
+    // As the runtime does: resuming emits the run's update straight away.
+    h.deps.resumeRun = (a) => {
+      const res = resume(a);
+      void h.bridge.onRunUpdate(h.runs.get(a.runId)!);
+      return res;
+    };
+    await h.bridge.onEnvelope({
+      type: 'interactive',
+      envelope_id: 'e2',
+      payload: { type: 'block_actions', user: { id: MANAGER }, team: { id: TEAM }, actions: [{ action_id: SLACK_APPROVE_ACTION, value: h.saved()[0].id }] },
+    });
+    const updates = h.slack.calls.filter((c) => c.method === 'chat.update').map((c) => JSON.stringify(c.body));
+    expect(updates.some((u) => u.includes('Handled outside Slack'))).toBe(false);
+    expect(updates.at(-1)).toContain('Approved by');
+  });
+
   it('asks again in the same thread when a restart puts an approved step back at the gate', async () => {
     const run = pausedRun('externalAction');
     const h = harness({ runs: [run] });

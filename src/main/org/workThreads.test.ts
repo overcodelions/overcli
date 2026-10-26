@@ -215,3 +215,19 @@ describe('summarize', () => {
     expect(summarize('# Title\n\n---\n**Findings:**\n- Prices are **up 10%**, see [the page](https://acme.test).\n- Second point')).toBe('Prices are up 10%, see the page. Second point');
   });
 });
+
+describe('a Slack thread', () => {
+  it('is one conversation: every later message in it hangs on the first', () => {
+    const t = buildThreads(input({
+      asks: [
+        ask({ id: 'a1', at: 1_000, doneAt: 2_000, reply: 'Understood.', conversation: 'slack:D1:1.0' }),
+        ask({ id: 'a2', at: 3_000, doneAt: 4_000, reply: 'I am a worker.', conversation: 'slack:D1:1.0' }),
+        ask({ id: 'a3', at: 5_000, doneAt: 6_000, reply: 'Yes, here.', conversation: 'slack:D1:1.0', replyTo: 'run:r9' }),
+        ask({ id: 'b1', at: 7_000, doneAt: 8_000, reply: 'Other thread.', conversation: 'slack:D1:7.0' }),
+      ],
+    }));
+    expect(t.map((x) => x.id)).toEqual(['ask:b1', 'ask:a1']);
+    expect(t[1].followUps?.map((f) => f.id)).toEqual(['ask:a2', 'ask:a3']);
+  });
+});
+

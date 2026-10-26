@@ -147,8 +147,9 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .nav .group { padding: 4px 10px 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
 .setup { display: flex; gap: 36px; align-items: flex-start; }
 .setup-rail { flex: 0 0 200px; position: sticky; top: 72px; max-height: calc(100vh - 88px); overflow-y: auto; }
-.setup-rail .group { padding-top: 14px; }
-.setup-rail .group:first-child { padding-top: 4px; }
+/* The rail's sections: brighter than their pages, a rule between them. */
+.setup-rail .group { margin-top: 16px; padding: 16px 10px 8px; border-top: 1px solid var(--line-2); color: var(--ink); font-size: 11.5px; letter-spacing: 0.1em; font-weight: 700; }
+.setup-rail .group:first-child { margin-top: 0; padding-top: 4px; border-top: 0; }
 .setup-rail button { min-height: 32px; font-size: 13.5px; }
 .setup-rail .light { margin-left: auto; }
 .setup-rail .light.need { background: var(--need); }
@@ -493,6 +494,8 @@ textarea::placeholder, input::placeholder { color: var(--faint); }
 .now-run { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .now-run:last-child { border-bottom: 0; padding-bottom: 0; }
 .nowslot:empty, #run-note:empty { display: none; }
+/* Clear of the header's meta line above and the tabs below. */
+.nowslot { margin: 16px 0 8px; }
 .nowbar { background: var(--panel); border: 1px solid var(--go); border-radius: var(--r-lg); padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
 .nowbar.need { border-color: var(--need); }
 .nowbar .line { display: flex; gap: 8px 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
@@ -871,6 +874,14 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .choice b { font-size: 14px; font-weight: 600; }
 .choice span { font-size: 12.5px; color: var(--muted); }
 .alpha { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; background: var(--need-soft); color: var(--need); }
+.access-opt { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md, 8px); cursor: pointer; }
+.access-opt:has(input:checked) { border-color: var(--go); }
+.access-opt.off { opacity: 0.55; cursor: default; }
+.access-opt input { margin-top: 3px; }
+.model-rows { display: grid; gap: 6px; }
+.model-row { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); gap: 12px; align-items: center; }
+.model-row code { font-size: 12.5px; color: var(--muted); }
+@media (max-width: 640px) { .model-row { grid-template-columns: 1fr; gap: 4px; } }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 20px; }
 .picks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .picks .toggle { font-size: 13px; }
@@ -9708,15 +9719,108 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'stack' }, roleRows, h('div', null, h('button', { class: 'btn small', text: 'Add a role', onclick: function () { addRole(null); } }))),
         function () { return { roles: [].slice.call(roleRows.children).map(function (row) { return row._read(); }).filter(function (x) { return x.name; }) }; });
 
+      // Credentials scrubbed out of what workers say.
+      var redact = h('input', { type: 'checkbox', checked: R.redactSecrets !== false });
+      var redaction = ruleSection('Secrets in answers', 'Passwords, AWS keys, tokens and every secret stored on Setup → Secrets, replaced with [REDACTED] in anything a worker says to people.',
+        h('div', { class: 'stack' },
+          h('label', { class: 'toggle' }, redact, h('span', { text: 'Redact credentials from Slack messages, answers, attached files and notifications' })),
+          h('p', { class: 'faint', style: 'font-size:13px', text: 'Known formats (AWS access keys, GitHub, Slack and Stripe tokens, private keys, bearer tokens, password= lines) and the exact values this server holds are caught. Anything encoded or split across lines can still get through, so keep secrets out of the work itself too. Run logs on this server are not changed.' })),
+        function () { return { redactSecrets: redact.checked }; });
+
+      // Model ids as the server's provider (Bedrock, Vertex) names them: a
+      // row per model overcli offers, its default shown until one is typed.
+      var pm = R.providerModels || {}, prov = R.modelProvider || 'anthropic';
+      var catalog = R.claudeModels || [];
+      var pattern = h('input', { type: 'text', value: pm['*'] || '', placeholder: prov === 'bedrock' ? 'anthropic.{id}' : '{id}', 'aria-label': 'Every other model' });
+      var fallback = function (id) {
+        var p = pattern.value.trim();
+        if (p) return p.indexOf('{id}') >= 0 ? p.replace('{id}', id) : p + id;
+        return prov === 'bedrock' ? 'anthropic.' + id : id;
+      };
+      var modelRows = catalog.map(function (id) {
+        var input = h('input', { type: 'text', value: pm[id] || '', 'aria-label': id });
+        return { id: id, input: input, row: h('div', { class: 'model-row' }, h('code', { text: id }), input) };
+      });
+      // Models overcli doesn't list (a new one, an ARN for one of your own
+      // profiles): one per line, typed as overcli will be asked for it.
+      var others = h('textarea', { rows: '3', placeholder: 'claude-opus-5-6 = us.anthropic.claude-opus-5-6', 'aria-label': 'Other models' });
+      others.value = Object.keys(pm).filter(function (k) { return k !== '*' && catalog.indexOf(k) < 0; }).map(function (k) { return k + ' = ' + pm[k]; }).join('\n');
+      var reset = h('button', { class: 'btn quiet small', text: 'Reset to defaults', onclick: function () {
+        pattern.value = ''; others.value = '';
+        modelRows.forEach(function (m) { m.input.value = ''; });
+        placeholders();
+      } });
+      var placeholders = function () { modelRows.forEach(function (m) { m.input.setAttribute('placeholder', fallback(m.id)); }); };
+      pattern.addEventListener('input', placeholders); placeholders();
+      var where = prov === 'bedrock' ? 'This server sends models to Amazon Bedrock (CLAUDE_CODE_USE_BEDROCK).' : prov === 'vertex' ? 'This server sends models to Google Vertex AI (CLAUDE_CODE_USE_VERTEX).' : 'This server uses the Anthropic API, which takes these ids as they are: nothing here applies until it runs on Bedrock or Vertex.';
+      var models = ruleSection('Model ids', 'The id each model goes by on Bedrock or Vertex. Leave a row empty to use the grey default.',
+        h('div', { class: 'stack' },
+          h('p', { class: prov === 'anthropic' ? 'faint' : '', style: 'font-size:13px', text: where }),
+          h('label', { class: 'field' }, 'Every model not set below ({id} stands for its id, e.g. us.anthropic.{id})', pattern),
+          h('div', { class: 'model-rows' }, modelRows.map(function (m) { return m.row; })),
+          h('label', { class: 'field' }, 'Other models, one per line: overcli id = provider id', others),
+          h('div', null, reset),
+          h('p', { class: 'faint', style: 'font-size:13px', text: 'Use your Bedrock inference profile ids (us., eu., apac. or global.) when the account calls models through one, as they appear in the Bedrock console. The server’s own ANTHROPIC_DEFAULT_*_MODEL settings still apply to the opus, sonnet and haiku aliases.' })),
+        function () {
+          var out = {};
+          if (pattern.value.trim()) out['*'] = pattern.value.trim();
+          modelRows.forEach(function (m) { var v = m.input.value.trim(); if (v) out[m.id] = v; });
+          others.value.split('\n').forEach(function (line) { var i = line.indexOf('='); if (i > 0) { var k = line.slice(0, i).trim(), v = line.slice(i + 1).trim(); if (k && v && k !== '*') out[k] = v; } });
+          return { providerModels: Object.keys(out).length ? out : null };
+        });
+
+      // What workers may do on this server: one level, capped by the server.
+      var AX = [
+        ['read', 'Read only', 'Read files and the web, and use tools only to look things up. Nothing is changed.'],
+        ['standard', 'Standard', 'Also edit and write files in their own folders and the repos they work in. Shell commands only to read their own files and saved tool results.'],
+        ['shell', 'Shell for listed commands', 'Also run the commands listed below, such as npm test or jq. Any other command is refused.'],
+        ['everything', 'Everything', 'Any tool and any shell command, without asking. Only for a server whose network and keys you would hand a person.']];
+      var AXI = function (l) { for (var i = 0; i < AX.length; i++) if (AX[i][0] === l) return i; return -1; };
+      var srv = R.accessServer || { managed: false, ceiling: 'read' };
+      var cur = R.workerAccess || null;
+      // Not set yet: show the level the startup flags already give, so the
+      // page says what's true rather than nothing.
+      var picked = cur ? cur.level : srv.managed ? (srv.current || null) : null;
+      var levelBoxes = AX.map(function (a) {
+        var over = AXI(a[0]) > AXI(srv.ceiling);
+        var radio = h('input', { type: 'radio', name: 'worker-access', value: a[0], checked: picked === a[0], disabled: !srv.managed || over });
+        radio.onchange = function () { picked = a[0]; cmdField.hidden = picked !== 'shell'; };
+        return h('label', { class: 'access-opt' + (over || !srv.managed ? ' off' : '') }, radio,
+          h('span', { class: 'stack', style: 'gap:2px' }, h('strong', { text: a[1] + (over ? ' · above this server’s limit' : '') }), h('span', { class: 'faint', style: 'font-size:13px', text: a[2] })));
+      });
+      var cmds = h('textarea', { rows: '4', placeholder: 'npm test\njq\npython scripts/report.py', 'aria-label': 'Allowed commands' });
+      cmds.value = ((cur && cur.commands) || []).join('\n');
+      var cmdField = h('label', { class: 'field', hidden: picked !== 'shell' }, 'Commands workers may run, one per line, by how they start', cmds);
+      var extraTools = h('input', { type: 'text', value: ((cur && cur.tools) || []).join(', '), placeholder: 'mcp__zendesk__create_ticket' });
+      var refused = (R.accessRefusals || []).slice(0, 12);
+      var permissions = ruleSection('Permissions', 'What workers may do on this server without asking. Changes apply within a few seconds.',
+        h('div', { class: 'stack' },
+          !srv.managed ? h('p', { class: 'banner', text: 'This server was started without an allow-list (--permissions ' + (srv.ceiling === 'everything' ? 'auto-approve' : 'deny') + '), so it decides on its own and nothing here applies. Start it with --permissions allow-list to manage workers’ permissions from this page.' }) : null,
+          srv.managed && !cur ? h('p', { class: 'faint', style: 'font-size:13px', text: 'Workers have ' + (AXI(srv.current) >= 0 ? AX[AXI(srv.current)][1] : 'what the server was started with') + ' now, from how the server was started (--allow-tool). Pick a level and save to manage it here instead.' }) : null,
+          h('div', { class: 'stack', style: 'gap:8px', role: 'radiogroup', 'aria-label': 'Worker access' }, levelBoxes),
+          srv.managed && srv.ceiling !== 'everything' ? h('p', { class: 'faint', style: 'font-size:13px', text: 'This server allows up to ' + AX[AXI(srv.ceiling)][1] + '. Whoever runs it can raise that with --max-access when starting it.' }) : null,
+          cmdField,
+          h('label', { class: 'field' }, 'More tools by name, at any level (comma-separated)', extraTools),
+          h('div', { class: 'stack', style: 'gap:6px' }, h('strong', { style: 'font-size:13.5px', text: 'Refused in the last week' }),
+            refused.length ? h('div', { class: 'listed' }, refused.map(function (r) {
+              return h('div', { class: 'row', style: 'gap:12px;padding:6px 0' }, h('span', { style: 'flex:0 0 120px', text: r.worker }), h('code', { text: r.tool }),
+                h('span', { class: 'faint', style: 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px', text: (r.example || '') }),
+                h('span', { class: 'faint', style: 'font-size:13px', text: plural(r.count, 'time', 'times') + ' · ' + ago(r.lastAt) }));
+            })) : h('p', { class: 'faint', style: 'font-size:13px', text: 'Nothing refused since the server started.' }))),
+        function () {
+          if (!picked) return { workerAccess: null };
+          return { workerAccess: { level: picked, commands: picked === 'shell' ? cmds.value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean) : [], tools: list(extraTools.value) } };
+        });
+
       var signin = ssoSection(R)[0], servers = fleetSection(R)[0];
-      var parts = { general: identity, hiring: hiring, spending: spending, teams: teams, roles: roles, records: records, signin: signin, servers: servers };
+      var parts = { general: identity, hiring: hiring, spending: spending, teams: teams, roles: roles, records: records, signin: signin, servers: servers, redaction: redaction, models: models, permissions: permissions };
       if (typeof only === 'string' && parts[only]) {
         var sec = parts[only];
         [].slice.call(sec.children, 0, sec._sub ? 2 : 1).forEach(function (el) { el.remove(); });
         return [head(sec._title, sec._sub)].concat(only === 'teams' ? [rosterPanel(people, R.teams)] : []).concat([sec]);
       }
       return [head('Rules', 'What people may do with the workers. Changes apply at once, and each is written to the decision log.', null),
-        identity, hiring, spending, teams, roles, records, signin, servers];
+        identity, hiring, spending, teams, roles, records, permissions, redaction, models, signin, servers];
     });
   }
 
@@ -11377,7 +11481,10 @@ export const CONSOLE_JS = String.raw`
       ['hiring', 'Hiring', 'Who may hire, what their workers may cost before a hire needs approval, and who approves.'],
       ['roles', 'Role catalog', 'Approved jobs on the Hire page. Hiring one skips the interview, and its tools need no approver.'],
       ['handbook', 'Handbook', 'What every worker reads after its job: names, project keys, who owns what, house style.'],
-      ['spending', 'Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.']] },
+      ['spending', 'Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.'],
+      ['permissions', 'Permissions', 'What workers may do on this server without asking: read only, edit files, run listed commands, or everything.'],
+      ['redaction', 'Secrets in answers', 'Passwords, AWS keys, tokens and stored secrets kept out of what workers say to people.'],
+      ['models', 'Model ids', 'The id each model goes by on Bedrock or Vertex.']] },
     { group: 'Connections', pages: [
       ['tools', 'Tools', 'The MCP servers workers here can use, and which workers have each.'],
       ['secrets', 'Secrets', 'Keys the tools and the server use. Changes apply at once, no restart.'],
@@ -11387,8 +11494,8 @@ export const CONSOLE_JS = String.raw`
   ];
   // The old Rules tab's address opens its first page.
   var SETUP_OLD = { rules: 'general' };
-  var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, servers: 1 };
-  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', secrets: 'setup--secrets', handbook: 'setup--handbook' };
+  var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
+  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', secrets: 'setup--secrets', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
   function viewSetup() {
     if (SETUP_OLD[state.setupTab]) state.setupTab = SETUP_OLD[state.setupTab];
     var tab = state.setupTab || 'ready', page = null, group = null;

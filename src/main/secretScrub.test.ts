@@ -14,9 +14,9 @@
 // real patterns without leaving strings that trip every scanner downstream.
 // Do not re-inline these.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { collectKnownSecretValues, redactSecrets, shannonEntropy } from './secretScrub';
+import { collectKnownSecretValues, redactSecrets, scrubOutbound, scrubOutboundFile, scrubOutboundText, setOutboundScrub, shannonEntropy } from './secretScrub';
 
 const AKIA = 'AKIAIOSFODNN7EXAMPLE';
 const AWS_SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
@@ -237,5 +237,38 @@ describe('shannonEntropy', () => {
     expect(shannonEntropy('aaaaaaaa')).toBe(0);
     expect(shannonEntropy('')).toBe(0);
     expect(shannonEntropy(AWS_SECRET)).toBeGreaterThan(3);
+  });
+});
+
+describe('the outbound rule', () => {
+  afterEach(() => setOutboundScrub(null));
+  const KEY = 'AKIAIOSFODNN7EXAMPLE';
+
+  it('changes nothing until a host turns it on', () => {
+    expect(scrubOutbound(`key ${KEY}`)).toBe(`key ${KEY}`);
+  });
+
+  it('scrubs patterns and the values the server holds, whatever they look like', () => {
+    setOutboundScrub({ enabled: () => true, known: () => ['hunter2-but-longer'] });
+    expect(scrubOutbound(`key ${KEY}, db pw hunter2-but-longer`)).toBe('key [REDACTED:aws-access-key-id], db pw [REDACTED:known-secret]');
+  });
+
+  it('is off when the org turns it off', () => {
+    setOutboundScrub({ enabled: () => false, known: () => [] });
+    expect(scrubOutbound(`key ${KEY}`)).toBe(`key ${KEY}`);
+  });
+
+  it('scrubs only the text of a Slack payload, blocks included', () => {
+    setOutboundScrub({ enabled: () => true, known: () => [] });
+    const icon = 'https://img.acme.example/a/' + 'Ab1'.repeat(14);
+    const out = scrubOutboundText({ channel: 'C1', text: KEY, icon_url: icon, blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `see ${KEY}` } }] });
+    expect(out).toEqual({ channel: 'C1', text: '[REDACTED:aws-access-key-id]', icon_url: icon, blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'see [REDACTED:aws-access-key-id]' } }] });
+  });
+
+  it('scrubs text files and leaves the rest', () => {
+    setOutboundScrub({ enabled: () => true, known: () => [] });
+    expect(scrubOutboundFile('report.md', Buffer.from(KEY)).toString()).toBe('[REDACTED:aws-access-key-id]');
+    const png = Buffer.from(KEY);
+    expect(scrubOutboundFile('chart.png', png)).toBe(png);
   });
 });

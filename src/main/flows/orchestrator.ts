@@ -359,7 +359,7 @@ export class OrchestratorImpl {
     // Working out an answer reads; the run it proposes does the changing.
     // So the server's file-writing grants stay with the runs.
     const enabledTools = this.unattended
-      ? (this.launchPolicy.unattendedAllowedTools ?? []).filter((t) => !WRITES_FILES.has(t))
+      ? (this.launchPolicy.unattendedAllowedTools ?? []).filter((t) => !WRITES_FILES.has(t) && t !== '*')
       : undefined;
     // Never trust a pinned model against a backend it may not belong to: the
     // pin and the backend are resolved from different places and can drift

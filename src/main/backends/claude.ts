@@ -9,6 +9,7 @@ import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from '../pa
 import { normalizeAllowedDirs } from '../permissionRules';
 import type { BackendCtx, BackendSendArgs, BackendSpec, ParseChunkResult } from './types';
 import { BATCHING_DIRECTIVE } from './turbo';
+import { resolveClaudeModel } from './providerModels';
 import { NARRATION_DIRECTIVE } from '../../shared/transcriptLevel';
 
 interface ClaudeStreamState {
@@ -48,7 +49,8 @@ export const claudeBackend: BackendSpec = {
       '--include-partial-messages',
     ];
     if (args.sessionId) a.push('--resume', args.sessionId);
-    if (args.model) a.push('--model', args.model);
+    // On Bedrock or Vertex, the id that provider knows it by.
+    if (args.model) a.push('--model', resolveClaudeModel(args.model));
     if (args.permissionMode && args.permissionMode !== 'default') {
       a.push('--permission-mode', args.permissionMode);
     }

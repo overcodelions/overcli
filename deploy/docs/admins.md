@@ -178,7 +178,7 @@ People can save a team's files into their own Google Drive, as themselves. There
 
 ## Setup → Rules, spending and sign-in
 
-The org's rules, kept in `org.json` on the volume (or set by Claude with `set_org_rules`). Every change is checked and logged. They're spread across Setup's pages: the org's name, address and time zone on **General**; teams on **People & teams**; who may hire, approvals, visibility and web pages on **Hiring**; roles on **Role catalog**; the org budget on **Spending**; how long records are kept on **Records**; company sign-in on **Sign-in**.
+The org's rules, kept in `org.json` on the volume (or set by Claude with `set_org_rules`). Every change is checked and logged. They're spread across Setup's pages: the org's name, address and time zone on **General**; teams on **People & teams**; who may hire, approvals, visibility and web pages on **Hiring**; roles on **Role catalog**; the org budget on **Spending**; what workers may do on **Permissions**; credentials kept out of answers on **Secrets in answers**; Bedrock and Vertex model ids on **Model ids**; how long records are kept on **Records**; company sign-in on **Sign-in**.
 
 - **Who may hire:** everyone, or a list of people.
 - **Allowances:** what one person's workers may cost a month before a hire needs an approver; per-person overrides; who the approvers are.
@@ -192,6 +192,38 @@ The org's rules, kept in `org.json` on the volume (or set by Claude with `set_or
   - **Any page, without asking.**
 - **Your own sites (always open):** sites workers may always open, such as `acme.atlassian.net, wiki.acme.com`. Subdomains count. List a private address here if workers should read it.
 - **Company sign-in:** OpenID Connect (Okta, Entra ID, Google Workspace). Enter the issuer and client ID here; a confidential client's secret goes on Setup → Secrets as `OVERCLI_SSO_CLIENT_SECRET`. "Everyone signs in this way" turns invite links into role grants.
+
+## Setup → Permissions
+
+What workers may do on the server without asking. Pick one level:
+
+- **Read only:** read files and the web, and use tools only to look things up.
+- **Standard:** also edit and write files. Shell commands only to read their own files and saved tool results.
+- **Shell for listed commands:** also run the commands you list, one per line, by how they start (`npm test`, `jq`). Any other command is refused.
+- **Everything:** any tool and any command, without asking.
+
+**More tools by name** adds single tools at any level, such as one connector's write (`mcp__acme-tracker__create_issue`). A tool added here is used without asking, whatever the worker's trust level, so add one only when workers should act with it on their own.
+
+The server caps the level with `--max-access` (the compose file uses `shell`); levels above it are greyed out. Until you save a level, workers get what the server was started with (`--allow-tool`), and the page shows which level that comes to. Repo grants (git and each repo's test command) are added on top while a repo is connected. Changes apply within a few seconds.
+
+**Refused in the last week** lists each worker's refused tools, how often, and an example. Raise the level when a worker keeps running into the same one. The counts start again when the server restarts.
+
+The level and the trust level are separate: trust decides how much work a worker starts without a manager's OK; the level decides which tools any worker may use at all.
+
+## Setup → Secrets in answers
+
+On by default. Credentials are replaced with `[REDACTED]` in everything workers say to people: Slack, the console, MCP, attached text files and notifications. See [Security model](security.md#secrets).
+
+## Setup → Model ids
+
+On Bedrock (`CLAUDE_CODE_USE_BEDROCK=1`) or Vertex (`CLAUDE_CODE_USE_VERTEX=1`), the id each model goes by there. The page says which provider the server uses and lists every Claude model overcli offers, each with its default in grey: on Bedrock `anthropic.<id>`, on Vertex the id as it is.
+
+- **Every model not set below:** one pattern for all of them, with `{id}` standing for the model's id. Most Bedrock accounts call models through an inference profile: `us.anthropic.{id}` (or `eu.`, `apac.`, `global.`).
+- **A row per model:** set one when its id differs, such as an application inference profile's ARN.
+- **Other models:** ids overcli doesn't list yet, one per line as `overcli id = provider id`.
+- **Reset to defaults** clears them all.
+
+Copy the ids from the Bedrock or Vertex console. The aliases Claude Code resolves itself (`opus`, `sonnet`, `haiku`) are left alone, so the server's `ANTHROPIC_DEFAULT_*_MODEL` settings still apply to them.
 
 ## People
 

@@ -40,6 +40,7 @@ So on AWS the job is to put `/data` on a durable disk, snapshot it, and run exac
    CLAUDE_CODE_USE_BEDROCK=1
    AWS_REGION=us-east-1
    ```
+   Bedrock names models differently: overcli sends `anthropic.<id>` unless you say otherwise. If the account calls models through an inference profile, set the pattern on **Setup → Model ids**, for example `us.anthropic.{id}`, using the ids the Bedrock console shows.
    The CloudFormation template runs the container on the host network so the server can read Secrets Manager and Bedrock through the instance role. Accepted risk: code a worker runs inside the container can reach that role too, so keep the role to Bedrock invoke and the `overcli/<Org>/` secrets prefix only. Repo test commands do not run in this setup unless you set `OVERCLI_TEST_AS_SERVER=1` in `deploy/.env` (the container cannot switch user), so until then a repo with a test command pushes nothing; connect it without one, or decide that trade-off with the role kept that small.
 5. **Secrets.** Keep them in Secrets Manager, managed from the console. In `deploy/.env`, set `OVERCLI_SECRETS=aws:overcli/acme/`. Then add the git host tokens, Slack tokens and SSO client secret on **Setup → Secrets**. They're written to Secrets Manager under that prefix and used at once, with no restart. Give the instance role the [secrets policy](#secrets-policy) below. Never bake secrets into the image.
 6. **Image.** Build once and push to ECR. The instance pulls it.

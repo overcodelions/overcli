@@ -7,6 +7,7 @@
 // worker engine, runs in the runtime; this is a policy gate in front of both,
 // returning plain data each surface renders in its own way.
 
+import { scrubOutbound } from '../secretScrub';
 import type { LoginResult } from './toolLogin';
 import { generalize, readShape, readToolCall, setupPrompt } from './watchSetup';
 import { randomUUID } from 'node:crypto';
@@ -38,7 +39,7 @@ import {
   type OrgCaller,
   type OrgPolicy,
   type OrgRole, inAudience, type Audience } from '../../shared/org/policy';
-import { buildThreads, nowLine, type WorkThread } from './workThreads';
+import { buildThreads, nowLine, summarize, type WorkThread } from './workThreads';
 import { isReadOnlyMcpTool, parseMcpToolName } from '../../shared/flows/mcpTools';
 import { stepsARunGrantCovers } from '../flows/stepEffect';
 import { initialsPicture } from '../../shared/flows/avatars';
@@ -672,6 +673,9 @@ export interface OrgServiceDeps {
     getRun(id: UUID): FlowRun | null;
     steerRun(args: { runId: UUID; text: string }): { ok: true } | { ok: false; error: string };
     resumeRun(args: { runId: UUID; forRun?: boolean }): { ok: true } | { ok: false; error: string };
+    /// A message to a finished run's last step, answered in its conversation
+    /// (`FlowRuntimeImpl.chatWithRun`). Absent: follow-ups go to the worker.
+    chatWithRun?(args: { runId: UUID; text: string; attachments?: Attachment[] }): Promise<{ ok: true; reply: string } | { ok: false; error: string }>;
   };
   rejectRun(runId: UUID): { ok: true } | { ok: false; error: string };
   /// Stop a worker's run that is going: its batch, so nothing queued behind
@@ -1069,6 +1073,14 @@ export interface ErrandProgress {
   files: Array<{ name: string; body?: string; sourcePath?: string }>;
   /// Pull requests (and pages to open one), and documents the work links to.
   links: string[];
+}
+
+/// The last thing a run said, as a progress line in Slack: what a step
+/// handed on comes wrapped in its `<output>` contract and written as a
+/// document, so the tags go and the markdown is read as plain words.
+export function plainSaid(said: string): string {
+  const body = said.replace(/<\/?output\b[^>]*>/gi, '\n').replace(/<\/?(?:subject|candidates|handoff)\b[^>]*>/gi, '\n');
+  return summarize(body, 240);
 }
 
 /// Why a run stopped for a person, as the asker hears it.
@@ -1728,7 +1740,10 @@ export class OrgService {
     run: ReturnType<OrgServiceDeps['workers']['runErrand']>,
   ): Promise<Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }>> {
     return run.then(
-      (res): Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }> => {
+      (raw): Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }> => {
+        // The answer is for people: credentials out of it before it is kept or
+        // shown anywhere (secretScrub.ts, by the org's rule).
+        const res = raw.ok ? { ...raw, result: { ...raw.result, reply: scrubOutbound(raw.result.reply) } } : { ...raw, error: scrubOutbound(raw.error) };
         const cancelled = this.allAsks().find((a) => a.id === record.id)?.cancelled === true;
         const finished: AskRecord = res.ok
           ? { ...record, status: 'answered', reply: res.result.reply, launched: res.result.queued, ...(res.result.count ? { orchestrationId: res.result.orchestrationId } : {}), ...(res.result.choices?.length ? { choices: res.result.choices } : {}), doneAt: this.now() }
@@ -1802,6 +1817,54 @@ export class OrgService {
     };
     this.putAsk(record);
     return { askId: record.id, done: this.finishAsk(record, this.deps.workers.runErrand(w.id, prompt, undefined, a.conversation, a.untrusted === true)) };
+  }
+
+  /// A follow-up on work an ask handed off, once it has finished: said to
+  /// whoever ran the work's last step, in that step's own conversation, so it
+  /// answers like the next message of a chat — it has the work in front of it
+  /// — instead of the worker planning a new errand from scratch. Null when
+  /// that can't be: the work isn't finished, there is no run to continue, or
+  /// the caller may not drive the worker's work (it may change things, and
+  /// they aren't its manager), and the follow-up goes to the worker instead.
+  continueRun(
+    caller: OrgCaller,
+    orchestrationId: UUID,
+    text: string,
+    opts: { via?: AskRecord['via']; attachments?: Attachment[]; conversation?: string; said?: string } = {},
+  ): { askId: string; runId: UUID; done: ReturnType<OrgService['finishAsk']> } | null {
+    const chat = this.deps.runs.chatWithRun;
+    if (!chat || !text.trim()) return null;
+    const p = this.errandProgress(orchestrationId);
+    const runId = p?.done ? [...p.items].reverse().find((i) => i.status === 'done' && i.runId)?.runId : undefined;
+    const run = runId ? this.deps.runs.getRun(runId) : null;
+    if (!runId || !run?.workerId) return null;
+    const w = this.resolve(caller, run.workerId);
+    if (!w?.enabled) return null;
+    const manages = canManage(this.policy(), this.deps.workers.roster(), w.id, caller);
+    const readsOnly = (this.deps.workers.changesOf?.(w.id) ?? ['unknown']).length === 0;
+    if (!manages && !readsOnly) return null;
+    const record: AskRecord = {
+      id: randomUUID(),
+      workerId: w.id,
+      workerName: w.name,
+      by: caller.name,
+      ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}),
+      text: (opts.said?.trim() || text.trim()).slice(0, 4000),
+      at: this.now(),
+      status: 'working',
+      ...(opts.via ? { via: opts.via } : {}),
+      replyTo: `run:${runId}`,
+      prompt: text.slice(0, 16_000),
+      ...(opts.conversation ? { conversation: opts.conversation } : {}),
+      ...(!manages ? { untrusted: true } : {}),
+      ...(opts.attachments?.length ? { attachments: opts.attachments.length } : {}),
+    };
+    this.putAsk(record);
+    const run$ = chat({ runId, text, ...(opts.attachments?.length ? { attachments: opts.attachments } : {}) }).then(
+      (res): { ok: true; result: WorkerErrandResult } | { ok: false; error: string } =>
+        res.ok ? { ok: true, result: { orchestrationId, count: 0, queued: 0, launchedNothing: true, reply: res.reply } } : res,
+    );
+    return { askId: record.id, runId, done: this.finishAsk(record, run$) };
   }
 
   /// Asks made in the console whose handed-off work has finished, handed
@@ -4687,7 +4750,7 @@ export class OrgService {
     return {
       ...(index >= 0 ? { step: { index: index + 1, total: steps.length, name: steps[index].id.replace(/[-_]+/g, ' ') } } : {}),
       startedAt: r.createdAt,
-      ...(said ? { said: said.replace(/\s+/g, ' ').trim().slice(0, 240) } : {}),
+      ...(said && plainSaid(said) ? { said: plainSaid(said) } : {}),
       ...(r.state.kind === 'paused' ? { paused: `${PAUSED_WORDS[r.state.reason]}${index >= 0 ? ` before ${steps[index].id.replace(/[-_]+/g, ' ')}` : ''}` } : {}),
     };
   }
