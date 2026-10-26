@@ -680,6 +680,7 @@ function AgentsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
             onChange={(e) => patch({ defaultPermissionMode: e.target.value as PermissionMode })}
             className="field px-2 py-1 text-xs"
           >
+            <option value="auto">Auto (Claude; other CLIs start in Default)</option>
             <option value="default">Default</option>
             <option value="plan">Plan (read-only until told)</option>
             <option value="acceptEdits">Accept edits</option>

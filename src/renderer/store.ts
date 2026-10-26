@@ -96,6 +96,7 @@ import {
   enabledBackends,
   isBackendEnabled,
   pickDefaultBackend,
+  startingPermissionMode,
 } from './components/conversationHeaderHelpers';
 import { isSupportedPremiumModel, latestAtTier, premiumModelsForBackend } from '@shared/modelCatalog';
 import type { PaletteScope } from './components/sheets/commandPalette';
@@ -2039,7 +2040,7 @@ export const useStore = create<StoreState>((set, get) => ({
       totalCostUSD: 0,
       turnCount: 0,
       currentModel: '',
-      permissionMode: get().settings.defaultPermissionMode,
+      permissionMode: startingPermissionMode(get().settings, preferred),
       primaryBackend: preferred,
     };
     set((s) => ({
@@ -2123,7 +2124,7 @@ export const useStore = create<StoreState>((set, get) => ({
       totalCostUSD: 0,
       turnCount: 0,
       currentModel: '',
-      permissionMode: get().settings.defaultPermissionMode,
+      permissionMode: startingPermissionMode(get().settings, pickDefaultBackend(get().settings, get().backendHealth)),
       primaryBackend: pickDefaultBackend(get().settings, get().backendHealth),
       worktreePath: args.worktreePath,
       branchName: args.branchName,
@@ -2153,7 +2154,7 @@ export const useStore = create<StoreState>((set, get) => ({
       totalCostUSD: 0,
       turnCount: 0,
       currentModel: '',
-      permissionMode: get().settings.defaultPermissionMode,
+      permissionMode: startingPermissionMode(get().settings, pickDefaultBackend(get().settings, get().backendHealth)),
       primaryBackend: pickDefaultBackend(get().settings, get().backendHealth),
       // The run's root, not one minted for this chat: archiving a coordinator
       // removes the root named by ITS OWN id, so this one is never touched.
@@ -2292,7 +2293,7 @@ export const useStore = create<StoreState>((set, get) => ({
       totalCostUSD: 0,
       turnCount: 0,
       currentModel: '',
-      permissionMode: get().settings.defaultPermissionMode,
+      permissionMode: startingPermissionMode(get().settings, preferred),
       primaryBackend: preferred,
     };
     set((s) => ({
@@ -2346,7 +2347,7 @@ export const useStore = create<StoreState>((set, get) => ({
         baseBranch,
         branchPrefix: state.settings.agentBranchPrefix,
         coordinatorId,
-        permissionMode: state.settings.defaultPermissionMode,
+        permissionMode: startingPermissionMode(state.settings, preferred),
         backend: preferred,
       });
       if (!res.ok) {
@@ -2388,7 +2389,7 @@ export const useStore = create<StoreState>((set, get) => ({
       totalCostUSD: 0,
       turnCount: 0,
       currentModel: '',
-      permissionMode: state.settings.defaultPermissionMode,
+      permissionMode: startingPermissionMode(state.settings, preferred),
       primaryBackend: preferred,
       workspaceAgentMemberIds: memberIds,
       branchName: `${state.settings.agentBranchPrefix}${agentSlug}`,
@@ -2461,7 +2462,7 @@ export const useStore = create<StoreState>((set, get) => ({
           baseBranch,
           branchPrefix: state.settings.agentBranchPrefix,
           coordinatorId: coordinator.id,
-          permissionMode: state.settings.defaultPermissionMode,
+          permissionMode: startingPermissionMode(state.settings, backend),
           backend,
         });
         if (!res.ok) {
@@ -2546,7 +2547,7 @@ export const useStore = create<StoreState>((set, get) => ({
       totalCostUSD: 0,
       turnCount: 0,
       currentModel: '',
-      permissionMode: state.settings.defaultPermissionMode,
+      permissionMode: startingPermissionMode(state.settings, preferred),
       primaryBackend: preferred,
       reviewAgent: true,
       reviewAgentKind: 'docs',

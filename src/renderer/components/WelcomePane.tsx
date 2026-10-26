@@ -58,6 +58,7 @@ import {
   permissionNote,
   permissionTone,
   pickDefaultBackend,
+  startingPermissionMode,
 } from './conversationHeaderHelpers';
 
 const WELCOME_KEY = '__welcome__';
@@ -119,8 +120,8 @@ export function WelcomePane() {
   // Once the user picks from the backend pill, that choice is theirs — the
   // health-driven re-seed below stops second-guessing it.
   const [backendPicked, setBackendPicked] = useState(false);
-  const [permissionMode, setLocalPermissionMode] = useState<PermissionMode>(
-    settings.defaultPermissionMode,
+  const [permissionMode, setLocalPermissionMode] = useState<PermissionMode>(() =>
+    startingPermissionMode(settings, backend),
   );
   const [effort, setEffort] = useState<EffortLevel>(effortForBackend(settings, backend));
   // Same bargain as `backendPicked`: effort follows the chosen backend's

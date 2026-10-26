@@ -1166,7 +1166,12 @@ export interface AppSettings {
   /// Preferred default backend for new conversations and agents. If unset
   /// or disabled, falls back to the first enabled backend.
   preferredBackend?: Backend;
+  /// Starting mode for new conversations. `auto` applies to Claude only;
+  /// other backends start in `default` (see startingPermissionMode).
   defaultPermissionMode: PermissionMode;
+  /// Which one-time moves of `defaultPermissionMode` this store has had.
+  /// 1: the old built-in `plan` became `auto`. See migratePermissionDefault.
+  permissionDefaultsVersion?: number;
   /// Fallback reasoning effort for backends with no explicit entry in
   /// `backendDefaultEfforts`.
   defaultEffort: EffortLevel;
@@ -4429,7 +4434,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   backendDefaultModels: {},
   flowModelDefaults: {},
   disabledBackends: {},
-  defaultPermissionMode: 'plan',
+  defaultPermissionMode: 'auto',
+  permissionDefaultsVersion: 1,
   defaultEffort: '',
   backendDefaultEfforts: {},
   agentBranchPrefix: 'agent/',

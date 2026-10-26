@@ -171,6 +171,20 @@ export function applyPlacesDefault(settings: AppSettings): AppSettings {
   };
 }
 
+/// The built-in default used to be Plan, so nearly every store says `plan`
+/// without anyone having picked it, and every new chat started read-only.
+/// Move that to Auto once. Runs on the stored settings before defaults are
+/// merged in, since the marker is in the defaults: a store without it is one
+/// written before this, and a user who picks Plan afterwards keeps it.
+export function migratePermissionDefault(stored: Partial<AppSettings>): Partial<AppSettings> {
+  if ((stored.permissionDefaultsVersion ?? 0) >= 1) return stored;
+  return {
+    ...stored,
+    defaultPermissionMode: stored.defaultPermissionMode === 'plan' ? 'auto' : stored.defaultPermissionMode,
+    permissionDefaultsVersion: 1,
+  };
+}
+
 function sanitizeSettings(raw: AppSettings): AppSettings {
   const settings = applyPlacesDefault(raw);
   // Same lift-or-drop the conversations get: a pin on a superseded model
@@ -256,7 +270,7 @@ export function loadState(): StoreState {
     const merged = {
       ...emptyState(),
       ...parsed,
-      settings: sanitizeSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) }),
+      settings: sanitizeSettings({ ...DEFAULT_SETTINGS, ...migratePermissionDefault(parsed.settings ?? {}) }),
     };
     merged.projects = sanitizeProjects(merged.projects);
     merged.workspaces = sanitizeWorkspaces(merged.workspaces);

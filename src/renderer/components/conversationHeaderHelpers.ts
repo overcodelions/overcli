@@ -80,6 +80,17 @@ export function enabledBackends(
 ///
 /// Falls back to plain enabled-order when health hasn't been probed yet, or
 /// when nothing is ready: a default that might not run beats no default.
+/// The mode a new conversation starts in. Auto is Claude's own classifier,
+/// so other backends start in Default instead of showing a label for a mode
+/// they'd quietly run as Default anyway.
+export function startingPermissionMode(
+  settings: { defaultPermissionMode: PermissionMode },
+  backend: Backend,
+): PermissionMode {
+  const mode = settings.defaultPermissionMode;
+  return mode === 'auto' && backend !== 'claude' ? 'default' : mode;
+}
+
 export function pickDefaultBackend(
   settings: {
     disabledBackends?: Partial<Record<Backend, boolean>>;
