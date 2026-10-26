@@ -125,6 +125,7 @@ import { isSafeIdSegment } from '../shared/flows/safeId';
 import { stripSecrets } from './org/secrets';
 import { credentialDenyRules } from './org/credentialGuard';
 import { bindToolGateway, boundGatewayTools } from './org/toolGateway';
+import { bindOverdbInConfig, boundOverdbTool } from './org/overdbBinding';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -647,9 +648,12 @@ function deniedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | '
 function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'conversationId' | 'skipGlobalMcp' | 'turbo'>): string {
   if (args.backend !== 'claude') return '';
   const allowlist = effectiveMcpAllowlist(args.mcpAllowlist);
-  if (allowlist) return bindToolGateway(buildClaudeMcpConfigArg(allowlist, args.cwd) ?? '', args.conversationId);
+  if (allowlist) return bindOverdbInConfig(bindToolGateway(buildClaudeMcpConfigArg(allowlist, args.cwd) ?? '', args.conversationId), args.conversationId);
   if (args.skipGlobalMcp || args.turbo) return '';
-  const bound = boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId);
+  const bound = {
+    ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId),
+    ...boundOverdbTool(() => readClaudeMcpServers(args.cwd), args.conversationId),
+  };
   return Object.keys(bound).length ? JSON.stringify({ mcpServers: bound }) : '';
 }
 
@@ -2034,7 +2038,10 @@ export class RunnerManager {
       appendSystemPrompt: claudeSystemPromptAppend(narrateFor(args)),
       // This transport loads the whole config, so its gateway tools get the
       // conversation's own key, as the cli transport's do.
-      mcpServers: boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId) as ClaudeSdkStartOptions['mcpServers'],
+      mcpServers: {
+        ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId),
+        ...boundOverdbTool(() => readClaudeMcpServers(args.cwd), convId),
+      } as ClaudeSdkStartOptions['mcpServers'],
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.

@@ -94,6 +94,7 @@ import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './reso
 import { listFileEntriesAsync, listFileEntriesSync } from './fileWalk';
 import { closeAllTreeWatchers, noteRelistCost, unwatchTree, watchTree } from './fileTreeWatch';
 import { HandoffInbox, defaultInboxDir } from './handoffInbox';
+import { ConnectionsInbox, defaultConnectionsDir } from './overdbInbox';
 import { loadWorkLog } from './work/workLog';
 import { lookupPrs } from './work/prLookup';
 import { searchPrompts, warmPromptIndex } from './work/promptIndex';
@@ -191,6 +192,7 @@ import {
   publishProcessToOrg,
   publishTeamToOrg,
   publishSetupToOrg,
+  publishOverdbConnectionToOrg,
   publishToOrg,
   redeemInvite,
   signOutAt,
@@ -298,6 +300,7 @@ let orgTriggers: TriggerService | null = null;
 let orgService: OrgService | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
 let handoffInbox: HandoffInbox | null = null;
+let connectionsInbox: ConnectionsInbox | null = null;
 /// Long-lived service processes, one supervisor per workspace. Built lazily
 /// because most sessions never open the Services pane, and because it needs
 /// the host's data directory, which is installed at boot.
@@ -990,6 +993,8 @@ export function registerIpc(): void {
   ipcMain.handle('org:setToken', (_e, token) => {
     try {
       const ok = host().secrets.set(ORG_TOKEN_KEY, token?.trim() || null);
+      // A pasted token is a sign-in like the others: send what was waiting on one.
+      if (ok && token?.trim()) void connectionsInbox?.retry();
       return ok ? { ok } : { ok, error: 'This build cannot store secrets — set $OVERCLI_ORG_TOKEN instead.' };
     } catch (err) {
       return { ok: false, error: String(err) };
@@ -1027,6 +1032,7 @@ export function registerIpc(): void {
       const failed = keepOrg(base.url, res.data.token);
       if (failed) return { ok: false, error: failed };
       emitToRenderer({ type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url });
+      void connectionsInbox?.retry();
       return { ok: true, signedIn: true, org: res.data.org, name: res.data.name };
     }
     const base = normalizeOrgUrl(url);
@@ -1094,6 +1100,7 @@ export function registerIpc(): void {
             ? { type: 'orgSignIn', outcome: 'failed', error: failed }
             : { type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url },
         );
+        if (!failed) void connectionsInbox?.retry();
       } else {
         emitToRenderer({ type: 'orgSignIn', outcome: res.data.status });
       }
@@ -4325,6 +4332,37 @@ function startHandoffInbox(): void {
   }
 }
 
+/// Open `~/.overcli/inbox/connections` — databases overdb publishes to the
+/// org — and push what is there. Making the folder is what tells overdb this
+/// app can take them, so it is made whether or not anyone is signed in to an
+/// org; what arrives before a sign-in waits for one. Not in `registerIpc`,
+/// for the same reason as the handoff inbox.
+function startConnectionsInbox(): void {
+  const signInFirst = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org.', retry: true };
+  connectionsInbox = new ConnectionsInbox(
+    defaultConnectionsDir(),
+    async (push) => {
+      const raw = Store.load().settings.orgServerUrl;
+      if (!raw) return signInFirst;
+      const url = normalizeOrgUrl(raw);
+      if (!url.ok) return { ok: false, error: url.error, retry: true };
+      const token = configuredOrgToken();
+      if (!token) return signInFirst;
+      return publishOverdbConnectionToOrg(url.url, token, push);
+    },
+    {
+      pushed: (push, message) => host().notify({ title: `${push.connection.name} sent to your org`, body: message }),
+      waiting: (push, error) => log('info', 'overdbInbox', `${push.connection.name} is waiting: ${error}`),
+      rejected: (name, reason) => host().notify({ title: 'A database from overdb was not sent', body: `${name}: ${reason}` }),
+    },
+  );
+  try {
+    connectionsInbox.start();
+  } catch (e) {
+    log('warn', 'connectionsInbox.start', 'Could not open the connections inbox', e);
+  }
+}
+
 async function clearDevHttpCache(): Promise<void> {
   if (!isDev) return;
   try {
@@ -4366,6 +4404,7 @@ app.whenReady().then(() => {
   });
   registerIpc();
   startHandoffInbox();
+  startConnectionsInbox();
   // Build the Work search's prompt index once the window is up, so the first
   // search doesn't pay for reading every transcript.
   setTimeout(() => warmPromptIndex(), 20_000);
@@ -4609,6 +4648,7 @@ app.on('before-quit', (event) => {
   symbolLookup?.dispose();
   closeAllTreeWatchers();
   handoffInbox?.dispose();
+  connectionsInbox?.dispose();
   // Drop the pending timers so a quit can't fire a schedule or a worker
   // shift into a runtime that's already tearing its subprocesses down.
   scheduler?.dispose();

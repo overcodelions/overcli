@@ -11,6 +11,7 @@ import { log } from '../diagnostics';
 
 import type { ProcessDef, ProcessPerson, ProcessStage } from '../../shared/org/process';
 import type { ToolTemplate } from './tools';
+import type { ConnectionPush } from '../../shared/overdbConnection';
 
 export const ORG_TOKEN_KEY = 'org-control-token';
 export const ORG_TOKEN_ENV = 'OVERCLI_ORG_TOKEN';
@@ -70,7 +71,7 @@ export function dialable(base: string): string {
   }
 }
 
-async function call<T>(base: string, token: string, method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+async function call<T>(base: string, token: string, method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string; status?: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -80,10 +81,10 @@ async function call<T>(base: string, token: string, method: 'GET' | 'POST', path
       ...(body ? { body: JSON.stringify(body) } : {}),
       signal: controller.signal,
     });
-    if (res.status === 401) return { ok: false, error: 'The org server did not accept your token. Ask an admin for a new one.' };
-    if (!res.ok) return { ok: false, error: `The org server answered HTTP ${res.status}.` };
+    if (res.status === 401) return { ok: false, error: 'The org server did not accept your token. Ask an admin for a new one.', status: 401 };
+    if (!res.ok) return { ok: false, error: `The org server answered HTTP ${res.status}.`, status: res.status };
     const data = (await res.json()) as T & { ok?: boolean; error?: string };
-    if (data && typeof data === 'object' && data.ok === false) return { ok: false, error: data.error ?? 'The org server refused.' };
+    if (data && typeof data === 'object' && data.ok === false) return { ok: false, error: data.error ?? 'The org server refused.', status: res.status };
     return { ok: true, data };
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError';
@@ -237,6 +238,23 @@ export async function publishSetupToOrg(
       .filter(Boolean)
       .join(' '),
   };
+}
+
+/// A database connection overdb published (src/shared/overdbConnection.ts).
+/// `retry`: worth sending again later — the server was out of reach, broke,
+/// or didn't know the token — as against a server that read it and said no.
+export async function publishOverdbConnectionToOrg(
+  base: string,
+  token: string,
+  push: ConnectionPush,
+): Promise<{ ok: true; message: string } | { ok: false; error: string; retry: boolean }> {
+  const res = await call<{ waiting: boolean }>(base, token, 'POST', '/api/publish/overdb-connection', { id: push.id, connection: push.connection });
+  if (!res.ok) {
+    const answered = res.status !== undefined && res.status !== 401 && res.status < 500;
+    // A 404 is a server too old to take connections: worth trying again once it is updated.
+    return { ok: false, error: res.error, retry: !answered || res.status === 404 };
+  }
+  return { ok: true, message: `${push.connection.name} is on the org server, waiting for an admin to finish it under Setup → Databases.` };
 }
 
 async function callPublic<T>(base: string, path: string, body: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string }> {

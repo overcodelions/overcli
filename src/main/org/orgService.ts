@@ -52,6 +52,7 @@ import type { Attachment, UUID } from '../../shared/types';
 import type { DraftedHire, HireDraftResult } from './hireDraft';
 import type { ToolInput, ToolSummary, ToolTemplate } from './tools';
 import { TOOL_NAME } from './tools';
+import { OverdbOrg, type OverdbDeps } from './overdb';
 import { catalogFor, connectorTitle, connectorTool, TOOL_CATALOG, type CatalogTool } from './toolCatalog';
 import type { Discovery, SignInSummary } from './toolSignIn';
 import type { Deliverable, Destination, TriggerService, WorkerTrigger } from './triggers';
@@ -298,6 +299,7 @@ export interface SetupOffer {
   /// Tools installed as it arrived, because their keys came with them.
   installed: string[];
 }
+
 
 export interface SetupPublishInput {
   tools: ToolTemplate[];
@@ -642,7 +644,8 @@ const REPORT_WINDOWS = new Set([7, 30, 0]);
 /// Who sees a worker's output, by its visibility, as the Library says it.
 const VISIBLE_TO: Record<WorkerVisibility, string> = { private: 'Only its manager', team: 'Its manager’s team', org: 'Everyone' };
 
-export interface OrgServiceDeps {
+/// `OverdbDeps`: databases published from overdb — see overdb.ts.
+export interface OrgServiceDeps extends OverdbDeps {
   workers: {
     roster(): Worker[];
     get(id: UUID): Worker | null;
@@ -2164,6 +2167,16 @@ export class OrgService {
     if (!all.some((o) => o.id === id)) return { ok: false, error: 'No such setup.' };
     this.saveOffers(all.filter((o) => o.id !== id));
     return { ok: true };
+  }
+
+  /// Databases published from overdb (Setup → Databases): overdb.ts.
+  private overdbOrg: OverdbOrg | null = null;
+  get databases(): OverdbOrg {
+    return (this.overdbOrg ??= new OverdbOrg(this.deps, {
+      policy: () => this.policy(),
+      record: (caller, what) => this.record(caller, what),
+      now: () => this.now(),
+    }));
   }
 
   installTool(caller: OrgCaller, input: ToolInput): Result<{ fixed?: string[] }> {

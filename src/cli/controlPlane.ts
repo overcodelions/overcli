@@ -1064,6 +1064,16 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/publish\/setup$/, handle: (c, b, _p, _u, _base, secure) => org.publishSetup(c, setupInput(b), secure) },
     { method: 'GET', path: /^\/api\/setup\/offers$/, handle: (c) => org.setupOffers(c) },
     { method: 'POST', path: /^\/api\/setup\/offers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.dismissSetupOffer(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/publish\/overdb-connection$/, handle: (c, b) => org.databases.publishOverdbConnection(c, { connection: b.connection }) },
+    { method: 'GET', path: /^\/api\/overdb$/, handle: (c) => org.databases.overdbConnections(c) },
+    { method: 'GET', path: /^\/api\/overdb\/queries$/, handle: (c) => org.databases.overdbQueries(c) },
+    {
+      method: 'POST',
+      path: /^\/api\/overdb\/offers\/([^/]+)\/approve$/,
+      handle: (c, b, [id], _u, _base, secure) => org.databases.approveOverdbConnection(c, decodeURIComponent(id), str(b.password) || undefined, secure),
+    },
+    { method: 'POST', path: /^\/api\/overdb\/offers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.databases.dismissOverdbOffer(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/overdb\/connections\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.databases.removeOverdbConnection(c, decodeURIComponent(id)) },
     {
       method: 'POST',
       path: /^\/api\/teams$/,
