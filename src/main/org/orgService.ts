@@ -46,6 +46,7 @@ import { initialsPicture } from '../../shared/flows/avatars';
 import { describeScope, mcpServerKey, parseToolScope, withinScope, type ToolScope, type ToolScopes } from '../../shared/flows/toolScope';
 import { answerOptions, projectMonthEnd, trustReadiness, workerState, type TrustReadiness, type WorkerState } from '../../shared/org/insights';
 import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, TeamStageKind, TeamTask } from '../../shared/flows/team';
+import { resolveShortNames } from '../../shared/shortName';
 import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive } from '../../shared/flows/team';
 import { parseWorkerYaml } from '../../shared/flows/workerYaml';
 import type { Attachment, UUID } from '../../shared/types';
@@ -192,6 +193,8 @@ export interface WorkerSummary {
   writesCode?: boolean;
   /// Who can ask it, picked; absent: `visibility` says.
   audience?: Audience;
+  /// Slack channel IDs where it answers without being named.
+  slackHomeChannels?: string[];
   /// When it runs, in words ("Weekdays at 09:00"), and the next time.
   schedule: string;
   cadence: ScheduleTrigger | null;
@@ -700,7 +703,7 @@ export interface OrgServiceDeps extends OverdbDeps {
   /// Worker batches, for proposals waiting on a manager.
   batches?: {
     list(): Orchestration[];
-    approve(id: UUID, candidateIds: string[] | 'all'): Promise<{ ok: true; queued: number } | { ok: false; error: string }>;
+    approve(id: UUID, candidateIds: string[] | 'all', by?: string): Promise<{ ok: true; queued: number } | { ok: false; error: string }>;
     reject(id: UUID, candidateId: string): { ok: true } | { ok: false; error: string };
   };
   /// Start a worker's scheduled run now.
@@ -1252,6 +1255,7 @@ export class OrgService {
           ...(isCodingWorker(w) ? { coding: true } : {}),
           ...(w.writesCode !== undefined ? { writesCode: w.writesCode } : {}),
           ...(w.audience ? { audience: w.audience } : {}),
+          ...(w.slackHomeChannels?.length ? { slackHomeChannels: [...w.slackHomeChannels] } : {}),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -1454,7 +1458,7 @@ export class OrgService {
     const approve = decision.approve === 'all' ? batch.items.map((i) => i.candidateId).filter((id) => !skip.includes(id)) : decision.approve.filter((id) => ids.has(id) && !skip.includes(id));
     let queued = 0;
     if (approve.length) {
-      const res = await this.deps.batches.approve(batchId, approve.length === batch.items.length ? 'all' : approve);
+      const res = await this.deps.batches.approve(batchId, approve.length === batch.items.length ? 'all' : approve, caller.name);
       if (!res.ok) return res;
       queued = res.queued;
     }
@@ -2964,6 +2968,8 @@ export class OrgService {
       writesCode?: boolean | null;
       /// Who can ask it, picked; null to go back to `visibility`.
       audience?: Audience | null;
+      /// Slack channel IDs where it answers without being named; null for none.
+      slackHomeChannels?: string[] | null;
     },
   ): Result<{ worker: WorkerSummary }> {
     const found = this.managed(caller, idOrName);
@@ -3085,6 +3091,13 @@ export class OrgService {
       }
       if (Object.keys(scopes).length) next.toolScopes = scopes;
       else delete next.toolScopes;
+    }
+    if (patch.slackHomeChannels !== undefined) {
+      const ids = [...new Set((patch.slackHomeChannels ?? []).map((c) => String(c).trim().toUpperCase()))];
+      if (ids.some((c) => !/^[CG][A-Z0-9]{6,}$/.test(c))) return { ok: false, error: 'A home channel is a Slack channel ID (it looks like C012AB3CD; in Slack: channel details → bottom).' };
+      if (ids.length > 20) return { ok: false, error: 'At most 20 home channels.' };
+      if (ids.length) next.slackHomeChannels = ids;
+      else delete next.slackHomeChannels;
     }
     if (patch.jobDescription !== undefined) {
       const job = String(patch.jobDescription).trim();
@@ -5339,7 +5352,7 @@ export class OrgService {
   /// Where a team checks in with you, whether its members' pieces ask
   /// before acting outside their sandbox, and how it should go about its
   /// work. For whoever manages one of its members, or an admin.
-  updateTeamSettings(caller: OrgCaller, teamId: UUID, patch: { checkpoints?: Partial<TeamCheckpoints>; piecesAskFirst?: boolean; budgetUSDPerTask?: number; guidance?: string; avatarUrl?: string | null; whoCanBrief?: Team['whoCanBrief']; audience?: Audience | null }): Result {
+  updateTeamSettings(caller: OrgCaller, teamId: UUID, patch: { checkpoints?: Partial<TeamCheckpoints>; piecesAskFirst?: boolean; budgetUSDPerTask?: number; guidance?: string; avatarUrl?: string | null; whoCanBrief?: Team['whoCanBrief']; audience?: Audience | null; shortName?: string }): Result {
     if (!this.deps.teams?.save) return { ok: false, error: 'Teams are not running on this server.' };
     const team = this.deps.teams.list().teams.find((t) => t.id === teamId);
     if (!team) return { ok: false, error: 'No team by that id.' };
@@ -5359,6 +5372,7 @@ export class OrgService {
       ...(who !== 'managers' ? { whoCanBrief: who } : {}),
       ...(audience ? { audience } : {}),
       ...(patch.guidance !== undefined ? { guidance: patch.guidance } : {}),
+      ...(patch.shortName !== undefined ? { shortName: patch.shortName } : {}),
       ...((patch.avatarUrl === undefined ? team.avatarUrl : patch.avatarUrl?.trim()) ? { avatarUrl: (patch.avatarUrl === undefined ? team.avatarUrl : patch.avatarUrl!.trim())! } : {}),
     });
     if (!saved.ok) return saved;
@@ -5366,6 +5380,9 @@ export class OrgService {
       this.record(caller, patch.guidance.trim() ? `Changed how ${team.name} works.` : `Cleared ${team.name}'s guidance.`);
     }
     if (patch.audience !== undefined) this.record(caller, `Changed who can give ${team.name} tasks.`);
+    if (patch.shortName !== undefined && patch.shortName.trim().toLowerCase() !== (team.shortName ?? '')) {
+      this.record(caller, patch.shortName.trim() ? `${team.name} now goes by "${patch.shortName.trim().toLowerCase()}".` : `${team.name} no longer has a short name.`);
+    }
     if (patch.whoCanBrief !== undefined && who !== (team.whoCanBrief ?? 'managers')) {
       this.record(caller, `${team.name} now takes tasks from ${who === 'org' ? 'everyone' : who === 'team' ? "anyone on a team with its members' managers" : "its members' managers"}.`);
     }
@@ -5373,6 +5390,11 @@ export class OrgService {
       this.record(caller, patch.piecesAskFirst ? `${team.name}'s members ask again before acting outside their sandbox.` : `${team.name}'s members act outside their sandbox without asking on its tasks.`);
     }
     return { ok: true };
+  }
+
+  /// Every team's short name: its own, or its initials while free.
+  private teamShortNames(): Map<string, string> {
+    return resolveShortNames((this.deps.teams?.list().teams ?? []).filter((t) => !t.disbanded).sort((a, b) => a.createdAt - b.createdAt));
   }
 
   private canChangeTeam(caller: OrgCaller, team: Team): boolean {
@@ -5513,7 +5535,7 @@ export class OrgService {
   /// approval it waits on) and the pack. `now` says what the team is doing
   /// this moment, in a sentence.
   teamPage(caller: OrgCaller, teamIdOrName: string): Result<{
-    team: { id: UUID; name: string; purpose?: string; guidance?: string; avatarUrl?: string; budgetUSDPerTask: number; canBrief: boolean; canChange: boolean; checkpoints: TeamCheckpoints; piecesAskFirst: boolean; whoCanBrief: NonNullable<Team['whoCanBrief']>; audience?: Audience; members: TeamMemberRow[]; knowledge?: { status: 'learning' | 'ready' | 'failed'; updatedAt?: number; taskId?: UUID; error?: string; words?: number; refresh: 'weekly' | 'off' } };
+    team: { id: UUID; name: string; shortName?: string; shortNameAuto?: boolean; purpose?: string; guidance?: string; avatarUrl?: string; budgetUSDPerTask: number; canBrief: boolean; canChange: boolean; checkpoints: TeamCheckpoints; piecesAskFirst: boolean; whoCanBrief: NonNullable<Team['whoCanBrief']>; audience?: Audience; members: TeamMemberRow[]; knowledge?: { status: 'learning' | 'ready' | 'failed'; updatedAt?: number; taskId?: UUID; error?: string; words?: number; refresh: 'weekly' | 'off' } };
     tasks: TeamTaskDetail[];
     now: { sentence: string; taskId: UUID; waitingOnYou: boolean } | null;
   }> {
@@ -5535,11 +5557,13 @@ export class OrgService {
       .map((t) => this.taskDetail(t, caller, roster, runsById, waiting));
     const members = this.teamMembers(team, all.tasks, roster, runs);
     const first = tasks.find((t) => t.waitingOnYou || t.piecesNeedYou > 0) ?? tasks.find((t) => t.status === 'running' || t.status === 'planning');
+    const shortName = this.teamShortNames().get(team.id);
     return {
       ok: true,
       team: {
         id: team.id,
         name: team.name,
+        ...(shortName ? { shortName, ...(team.shortName ? {} : { shortNameAuto: true }) } : {}),
         ...(team.purpose ? { purpose: team.purpose } : {}),
         ...(team.guidance ? { guidance: team.guidance } : {}),
         ...(team.avatarUrl ? { avatarUrl: team.avatarUrl } : {}),
@@ -6026,17 +6050,19 @@ export class OrgService {
   /// The teams someone can see: those with a member they can see. A
   /// disbanded team only with `disbanded`, for what it delivered (the
   /// Library, its task pages): it takes no work and lists nowhere.
-  teams(caller: OrgCaller, opts: { disbanded?: boolean } = {}): Array<{ id: UUID; name: string; purpose?: string; avatarUrl?: string; members: Array<{ name: string; role: string }>; canBrief: boolean }> {
+  teams(caller: OrgCaller, opts: { disbanded?: boolean } = {}): Array<{ id: UUID; name: string; shortName?: string; shortNameAuto?: boolean; purpose?: string; avatarUrl?: string; members: Array<{ name: string; role: string }>; canBrief: boolean }> {
     if (!this.deps.teams) return [];
     const policy = this.policy();
     const roster = this.deps.workers.roster();
     const names = new Map(roster.map((w) => [w.id, w.name]));
+    const short = this.teamShortNames();
     return this.deps.teams
       .list()
       .teams.filter((t) => (opts.disbanded || !t.disbanded) && (t.members.some((m) => canSee(policy, roster, m.workerId, caller)) || this.mayBrief(caller, t)))
       .map((t) => ({
         id: t.id,
         name: t.name,
+        ...(short.has(t.id) ? { shortName: short.get(t.id), ...(t.shortName ? {} : { shortNameAuto: true }) } : {}),
         ...(t.purpose ? { purpose: t.purpose } : {}),
         ...(t.avatarUrl ? { avatarUrl: t.avatarUrl } : {}),
         members: t.members.map((m) => ({ name: names.get(m.workerId) ?? 'a former worker', role: m.role })),
@@ -6077,7 +6103,7 @@ export class OrgService {
   briefTeam(caller: OrgCaller, teamIdOrName: string, text: string): Result<{ task: TeamTaskSummary }> {
     if (!this.deps.teams) return { ok: false, error: 'Teams are not running on this server.' };
     const key = teamIdOrName.trim().toLowerCase();
-    const team = this.teams(caller).find((t) => t.id === teamIdOrName || t.name.toLowerCase() === key);
+    const team = this.teams(caller).find((t) => t.id === teamIdOrName || t.name.toLowerCase() === key) ?? this.teams(caller).find((t) => t.shortName === key);
     if (!team) return { ok: false, error: 'No team by that name that you can see.' };
     if (!team.canBrief) return { ok: false, error: `You can't give ${team.name} tasks. Ask someone who manages one of its members to open it up on the team's page.` };
     const res = this.deps.teams.brief(team.id, text, [], undefined, {

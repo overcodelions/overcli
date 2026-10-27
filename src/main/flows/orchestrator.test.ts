@@ -1214,6 +1214,17 @@ describe('OrchestratorImpl worker batches', () => {
     expect(h.started[0].worktreeName).toBe('fix-login-s2-scout');
   });
 
+  it('says on the batch whether it started alone, and who approved it', async () => {
+    const h = makeHarness();
+    const alone = await h.engine.parkDirect({ projectPath: '/proj', prompt: 'answer it', title: 'Q', flowId: 'contract-main', runIn: 'worktree', maxConcurrent: 1, autoLaunch: true });
+    const waits = await h.engine.parkDirect({ projectPath: '/proj', prompt: 'answer it', title: 'Q', flowId: 'contract-main', runIn: 'worktree', maxConcurrent: 1 });
+    if (!alone.ok || !waits.ok) throw new Error('park failed');
+    expect(h.engine.list().find((o) => o.id === alone.orchestrationId)?.autoLaunched).toBe(true);
+    expect(h.engine.list().find((o) => o.id === waits.orchestrationId)?.autoLaunched).toBeUndefined();
+    expect(await h.engine.approveBatch({ id: waits.orchestrationId, by: 'Pat' })).toMatchObject({ ok: true, queued: 1 });
+    expect(h.engine.list().find((o) => o.id === waits.orchestrationId)?.approvedBy).toBe('Pat');
+  });
+
   it('hands a direct team piece the task branch worktrees to work in', async () => {
     const h = makeHarness();
     const adoptWorktrees = {

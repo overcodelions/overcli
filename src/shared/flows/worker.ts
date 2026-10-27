@@ -114,6 +114,10 @@ export interface Worker {
   /// back rather than leaving the desk bare. Never read by a shift prompt —
   /// this is copy for the human.
   errandStarters?: string[];
+  /// Slack channels (IDs) where it answers "@overgo …" without being named:
+  /// the channel is its, so the request is too. Several workers may share
+  /// one; then the request goes to whichever of them fits.
+  slackHomeChannels?: string[];
   jobDescription: string;
   projectPath: string;
   /// When the clock wakes this worker — or `null` for a worker with no

@@ -134,17 +134,26 @@ export function readSendBack(values: Record<string, Record<string, { value?: str
   return values.note?.v?.value?.trim() ?? '';
 }
 
-/// `/idea [process name:] what it is`. With one process the name can go.
-export function parseIdea(text: string, processes: Array<{ id: string; name: string }>): { processId: string; brief: string } | { error: string } | null {
+/// `/idea [process name:] what it is`, or `/idea lrb what it is` with its
+/// short name. With one process the name can go.
+export function parseIdea(text: string, processes: Array<{ id: string; name: string; shortName?: string }>): { processId: string; brief: string } | { error: string } | null {
   const t = text.trim();
   if (!t) return null;
   const named = /^([^:]{1,80}):\s*([\s\S]+)$/.exec(t);
   if (named) {
     const key = named[1].trim().toLowerCase();
-    const p = processes.find((x) => x.name.toLowerCase() === key);
+    const p = processes.find((x) => x.name.toLowerCase() === key) ?? processes.find((x) => x.shortName === key);
     if (p) return { processId: p.id, brief: named[2].trim() };
   }
+  const first = /^(\S+)\s+([\s\S]+)$/.exec(t);
+  const short = first && processes.find((x) => x.shortName && x.shortName === first[1].toLowerCase());
+  if (short) return { processId: short.id, brief: first[2].trim() };
   if (processes.length === 1) return { processId: processes[0].id, brief: t };
   if (!processes.length) return { error: 'There are no processes to put ideas into yet. Someone can make one on the console’s Processes page.' };
-  return { error: `Which process? Start with its name: ${processes.map((p) => `\`/idea ${p.name}: …\``).join(', ')}` };
+  return { error: `Which process? Start with its name: ${processes.map(ideaExample).join(', ')}` };
+}
+
+/// How to send one in: by its short name when it has one.
+export function ideaExample(p: { name: string; shortName?: string }): string {
+  return p.shortName ? `\`/idea ${p.shortName} …\` (${p.name})` : `\`/idea ${p.name}: …\``;
 }

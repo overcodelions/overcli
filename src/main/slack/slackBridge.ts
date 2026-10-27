@@ -167,6 +167,11 @@ export class SlackBridge {
     return this.identity?.teamId ?? null;
   }
 
+  /// The bot's own member id, once connected: what "@overgo" is in a message.
+  botUserId(): string | null {
+    return this.identity?.botUserId ?? null;
+  }
+
   private now(): number {
     return this.deps.now?.() ?? Date.now();
   }

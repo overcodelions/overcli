@@ -14,6 +14,7 @@ import { useTeamsStore } from "../../../teamsStore";
 import { useWorkersStore } from "../../../workersStore";
 import { relativeTime } from "../workerDeskSelectors";
 import { WorkerAvatar, workerInitials } from "../WorkerAvatar";
+import { ShortNameChip, ShortNameField } from "../ShortNameField";
 import { ProcessItemPage } from "./ProcessItemPage";
 import { FLOW_KIND_PILL, FlowLegend, ProcessFlow, flowWho } from "./ProcessFlow";
 import { FromImageSheet, ImageGlyph, PictureBanner, PictureViewer, type PictureStart } from "./FromImage";
@@ -173,6 +174,7 @@ let resumeLibraryPick: string | null = null;
 type EditorSnapshot = {
   existing: ProcessDef | null;
   name: string;
+  shortName: string;
   purpose: string;
   about?: string;
   templateId?: string;
@@ -999,6 +1001,7 @@ function ProcessEditor({
   const [loading, setLoading] = useState(!!id && !resume);
   const [name, setName] = useState(resume?.name ?? draft?.name ?? "");
   const [purpose, setPurpose] = useState(resume?.purpose ?? draft?.purpose ?? "");
+  const [shortName, setShortName] = useState(resume?.shortName ?? "");
   /// Carried through a save: what the library said it's for, and which one.
   const [about, setAbout] = useState(resume ? resume.about : draft && "about" in draft ? draft.about : undefined);
   const [templateId, setTemplateId] = useState(resume ? resume.templateId : draft && "templateId" in draft ? draft.templateId : undefined);
@@ -1024,6 +1027,8 @@ function ProcessEditor({
       }
       setExisting(res.process);
       setName(res.process.name);
+      // Its initials are used while the box is empty: they stay automatic.
+      setShortName(res.process.shortNameAuto ? "" : (res.process.shortName ?? ""));
       setPurpose(res.process.purpose ?? "");
       setAbout(res.process.about);
       setTemplateId(res.process.templateId);
@@ -1062,7 +1067,7 @@ function ProcessEditor({
   /// come back to this editor as it is.
   const makeTeam = () => {
     if (!cur) return;
-    resumeEditor = { existing, name, purpose, about, templateId, stages, sel: at, codeIn };
+    resumeEditor = { existing, name, shortName, purpose, about, templateId, stages, sel: at, codeIn };
     openTeamEditor(null, fromLibrary ? teamBriefFor(fromLibrary, name || "this process") : `A team for the "${cur.name}" stage. ${cur.ask ?? ""}`.trim());
   };
 
@@ -1074,6 +1079,7 @@ function ProcessEditor({
     const payload = {
       ...(existing ? { id: existing.id } : {}),
       name,
+      shortName,
       ...(purpose.trim() ? { purpose } : {}),
       ...(about ? { about } : {}),
       ...(templateId ? { templateId } : {}),
@@ -1140,6 +1146,9 @@ function ProcessEditor({
               placeholder="What it takes in and what comes out"
               className="-ml-1.5 rounded-md border border-transparent bg-transparent px-1.5 py-0.5 text-sm text-ink-muted outline-none placeholder:italic placeholder:text-ink-faint hover:border-card focus:border-accent focus:bg-surface-elevated"
             />
+            <span className="mt-1.5">
+              <ShortNameField id="process-short" value={shortName} name={name} command="/idea" onChange={setShortName} />
+            </span>
             <span className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-ink-faint">
               <span className="flex items-center gap-1.5">
                 <Glyph name="person" size={12} />
@@ -1785,7 +1794,10 @@ function ProcessBoard({ id, onEdit }: { id: string; onEdit: () => void }) {
               <button className="self-start text-xs text-ink-faint hover:text-ink" onClick={() => showProcesses(null)}>
                 Processes
               </button>
-              <h1 className="truncate text-2xl font-semibold tracking-tight text-ink">{process.name}</h1>
+              <div className="flex min-w-0 items-baseline gap-2.5">
+                <h1 className="truncate text-2xl font-semibold tracking-tight text-ink">{process.name}</h1>
+                {process.shortName && <ShortNameChip command="/idea" short={process.shortName} />}
+              </div>
               {process.purpose && <div className="max-w-3xl text-[13px] text-ink-muted">{process.purpose}</div>}
               {!busy && (
                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[12.5px] text-ink-faint">
@@ -1875,6 +1887,7 @@ function ProcessBoard({ id, onEdit }: { id: string; onEdit: () => void }) {
                 <PutInCard
                   processId={process.id}
                   processName={process.name}
+                  shortName={process.shortName}
                   first={first}
                   firstWho={first ? flowWho(first, doer) : ""}
                   canSteer={process.canSteer}
@@ -2141,6 +2154,7 @@ function TimeSpent({ items, stages }: { items: ProcessItemView[]; stages: Proces
 function PutInCard({
   processId,
   processName,
+  shortName,
   first,
   firstWho,
   canSteer,
@@ -2151,6 +2165,7 @@ function PutInCard({
 }: {
   processId: string;
   processName: string;
+  shortName?: string;
   first: ProcessStage | undefined;
   firstWho: string;
   canSteer: boolean;
@@ -2218,7 +2233,7 @@ function PutInCard({
       <div className="flex flex-col gap-2 border-t border-card pt-3">
         <span className="text-xs text-ink-muted">Other ways in</span>
         {way("page", "bg-accent", "This page", "anyone who can see it")}
-        {slackOn && way("slack", "bg-violet-400", `/idea in Slack, starting with “${processName}:”`, "anyone in the org")}
+        {slackOn && way("slack", "bg-violet-400", shortName ? `/idea ${shortName} … in Slack, or starting with “${processName}:”` : `/idea in Slack, starting with “${processName}:”`, "anyone in the org")}
         {(intake?.watches ?? []).map((w) =>
           way(
             `w:${w.id}`,
@@ -2236,7 +2251,7 @@ function PutInCard({
         )}
         {addWay && (
           <div className="-mx-[18px] -mb-4 mt-1 border-t border-card">
-            <IntakePanel processId={processId} processName={processName} canSteer={canSteer} slackOn={slackOn} onChanged={onIntakeChanged} bare />
+            <IntakePanel processId={processId} processName={processName} shortName={shortName} canSteer={canSteer} slackOn={slackOn} onChanged={onIntakeChanged} bare />
             <div className="px-4 pb-3">
               <button className={quietBtn} onClick={() => setAddWay(false)}>
                 Done
@@ -2373,6 +2388,7 @@ function fmtWhen(t: number): string {
 function IntakePanel({
   processId,
   processName,
+  shortName,
   canSteer,
   slackOn,
   onChanged,
@@ -2380,6 +2396,7 @@ function IntakePanel({
 }: {
   processId: string;
   processName: string;
+  shortName?: string;
   canSteer: boolean;
   slackOn: boolean;
   /// Told after a way in is added or removed, so a summary of them can catch up.
@@ -2443,11 +2460,16 @@ function IntakePanel({
           slackOn ? "Slack" : "Slack (off)",
           slackOn ? (
             <>
+              {shortName && (
+                <>
+                  <code>/idea {shortName} …</code>,{" "}
+                </>
+              )}
               <code>/idea {processName}: …</code> or <code>@overgo idea: …</code>. <code>/idea</code> alone shows where yours are.
             </>
           ) : (
             <>
-              Turn Slack on in Settings and you can send one in with <code>/idea {processName}: …</code>
+              Turn Slack on in Settings and you can send one in with <code>/idea {shortName ? `${shortName} …` : `${processName}: …`}</code>
             </>
           ),
         )}

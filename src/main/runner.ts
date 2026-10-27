@@ -96,7 +96,7 @@ import {
   isInsideAllowedDirs,
   normalizeAllowedDirs,
 } from './permissionRules';
-import { alwaysAllowRule, decideBeforeAsking, isRiskyCall, riskNote, riskyAskRules } from './permissionPolicy';
+import { alwaysAllowRule, decideBeforeAsking, riskNote, safeForRestOfTurn, noteRestOfTurn, type RestOfTurnState, riskyAskRules } from './permissionPolicy';
 import { summarizeToolUse } from './toolDescription';
 import { CommandChangeTracker } from './commandFileChanges';
 import { collapsePartialAssistants } from './streamSnapshot';
@@ -117,7 +117,7 @@ import {
   sandboxSupported,
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
-import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers } from './mcpConfig';
+import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers, type McpServerConfig } from './mcpConfig';
 import { knownMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
@@ -125,7 +125,8 @@ import { isSafeIdSegment } from '../shared/flows/safeId';
 import { stripSecrets } from './org/secrets';
 import { credentialDenyRules } from './org/credentialGuard';
 import { bindToolGateway, boundGatewayTools } from './org/toolGateway';
-import { bindOverdbInConfig, boundOverdbTool } from './org/overdbBinding';
+import { overdbToolsForRun } from './org/overdbBinding';
+import { type RunLaunch, bindRunTools, closeRunToolRelay, releaseRunTools, runToolRelayEnv } from './org/runToolRelay';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -642,19 +643,95 @@ function deniedTools(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | '
   return all.length ? [...new Set(all)] : undefined;
 }
 
+/// A path segment that reads as a token: long, one run of letters, digits,
+/// `-` and `_`, with a digit in it (or very long). "mcp", "v1" and "sse"
+/// are not; "a8f3…" and a signed key are.
+const TOKEN_SEGMENT = /^(?=.*\d)[A-Za-z0-9_-]{16,}$|^[A-Za-z0-9_.-]{32,}$/;
+
+/// Whether a remote address itself carries a credential: a user:password,
+/// a query string (`?token=…`), or a token-like path segment
+/// (`/s/<secret>/mcp`). Such an address goes through the relay too.
+export function urlCarriesCredentials(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.username || u.password || u.search) return true;
+    return u.pathname.split('/').some((segment) => TOKEN_SEGMENT.test(segment));
+  } catch { return true; }
+}
+
+/// Whether a tool's config can hold a credential, so a run's temp config
+/// must carry a relay descriptor for it instead: a command's env and args
+/// (a token is often an argument), a remote address's headers or a token in
+/// the address itself, and the gateway's per-run key. A plain remote
+/// address with no headers has nothing to hide, and may be one the CLI
+/// signs in to itself, which only it can do.
+export function toolCarriesCredentials(config: McpServerConfig): boolean {
+  if (typeof config.command === 'string') return true;
+  if (config.headers && typeof config.headers === 'object' && !Array.isArray(config.headers) && Object.keys(config.headers).length) return true;
+  if (typeof config.url !== 'string') return false;
+  return /^http:\/\/127\.0\.0\.1:\d+\/t\//.test(config.url) || urlCarriesCredentials(config.url);
+}
+
+/// The write jail's profile for this send, written under `dir`, or null when
+/// the send isn't jailed (see `shouldSandboxSpawn`). `dir` must lie outside
+/// every writable root: a jailed step that could edit the profile would
+/// rewrite the jail of the next one.
+export function seatbeltProfileFor(
+  args: Pick<SendArgs, 'backend' | 'cwd' | 'conversationId'> & Partial<Pick<SendArgs, 'sandboxFsWrites' | 'permissionMode' | 'allowedDirs'>>,
+  dir: () => string = () => path.join(host().dataDir(), 'seatbelt'),
+): { profile: string; roots: ReturnType<typeof sandboxRootsFor> } | null {
+  if (!shouldSandboxSpawn({ backend: args.backend, sandboxFsWrites: args.sandboxFsWrites, permissionMode: args.permissionMode ?? 'default' })) return null;
+  const roots = sandboxRootsFor({
+    backend: args.backend,
+    cwd: args.cwd,
+    extraWritable: args.allowedDirs ?? [],
+    extraRepos: resolveSymlinkWritableRoots(args.cwd),
+  });
+  return { profile: writeSeatbeltProfile(roots, dir()), roots };
+}
+
+/// How the run's relayed stdio tools start: in the run's folder, and inside
+/// the run's write jail when the run has one. The relay lives in the app,
+/// outside every jail, so this is what keeps a tool the model drives (or a
+/// tool a run planted in its own `.mcp.json`) as confined as the run itself.
+export function relayLaunchFor(
+  args: Pick<SendArgs, 'backend' | 'cwd' | 'conversationId'> & Partial<Pick<SendArgs, 'sandboxFsWrites' | 'permissionMode' | 'allowedDirs'>>,
+  profileDir?: () => string,
+): RunLaunch {
+  const jail = seatbeltProfileFor(args, profileDir);
+  return { cwd: args.cwd, ...(jail ? { sandboxProfile: jail.profile } : {}) };
+}
+
 /// A run's own tools, each gateway one carrying a key bound to the run
 /// (toolGateway.ts), so the gateway knows whose call it is. A run on the
 /// whole config gets just its gateway tools here, on top of that config.
-function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'conversationId' | 'skipGlobalMcp' | 'turbo'>): string {
+/// A run on an allowlist gets every tool on it, and each one that could
+/// carry a credential as a relay descriptor (runToolRelay.ts), so the temp
+/// config the CLI reads never holds a tool's env, args or headers.
+export function selectedClaudeMcpConfig(
+  args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd' | 'conversationId' | 'skipGlobalMcp' | 'turbo'> & Partial<Pick<SendArgs, 'sandboxFsWrites' | 'permissionMode' | 'allowedDirs'>>,
+  profileDir?: () => string,
+): string {
   if (args.backend !== 'claude') return '';
   const allowlist = effectiveMcpAllowlist(args.mcpAllowlist);
-  if (allowlist) return bindOverdbInConfig(bindToolGateway(buildClaudeMcpConfigArg(allowlist, args.cwd) ?? '', args.conversationId), args.conversationId);
+  if (allowlist) {
+    const raw = bindToolGateway(buildClaudeMcpConfigArg(allowlist, args.cwd) ?? '', args.conversationId);
+    if (!raw) { bindRunTools({}, args.conversationId); return ''; }
+    try {
+      const configured: Record<string, McpServerConfig> = JSON.parse(raw).mcpServers ?? {};
+      const databases = overdbToolsForRun(() => configured, args.conversationId);
+      const servers: Record<string, McpServerConfig> = { ...configured, ...databases };
+      const relay = Object.fromEntries(Object.entries(servers).filter(([name, config]) => name in databases || toolCarriesCredentials(config)));
+      const direct = Object.fromEntries(Object.entries(servers).filter(([name]) => !(name in relay)));
+      return JSON.stringify({ mcpServers: { ...direct, ...bindRunTools(relay, args.conversationId, relayLaunchFor(args, profileDir)) } });
+    } catch { throw new Error('Could not configure the run’s tool relay.'); }
+  }
   if (args.skipGlobalMcp || args.turbo) return '';
   const bound = {
     ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId),
-    ...boundOverdbTool(() => readClaudeMcpServers(args.cwd), args.conversationId),
+    ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), args.conversationId),
   };
-  return Object.keys(bound).length ? JSON.stringify({ mcpServers: bound }) : '';
+  return Object.keys(bound).length ? JSON.stringify({ mcpServers: bindRunTools(bound, args.conversationId, relayLaunchFor(args, profileDir)) }) : '';
 }
 
 export function claudeMcpLaunchFingerprint(
@@ -670,7 +747,12 @@ export function claudeMcpLaunchFingerprint(
   // strict mode directly; turbo is already compared separately but belongs to
   // the effective MCP scope too.
   const strict = !!(args.turbo || args.skipGlobalMcp || effectiveMcpAllowlist(args.mcpAllowlist) !== undefined);
-  return JSON.stringify({ strict, selectedConfig, blocked: mcpBlockedTools(args) ?? [] });
+  let sourceDigest = '';
+  try {
+    const source = strict ? buildClaudeMcpConfigArg(effectiveMcpAllowlist(args.mcpAllowlist) ?? [], args.cwd) ?? '' : JSON.stringify(readClaudeMcpServers(args.cwd));
+    sourceDigest = createHash('sha256').update(source).digest('hex');
+  } catch {}
+  return JSON.stringify({ strict, selectedConfig, sourceDigest, blocked: mcpBlockedTools(args) ?? [] });
 }
 
 export function sanitizeSpawnArgs(spawnArgs: string[], prompt?: string): string[] {
@@ -902,6 +984,9 @@ interface ActiveProcess {
   /// spawn), `safe` from the card's "Allow rest of turn", which still asks
   /// about risky calls. Cleared when the next turn starts. See allowRestOfTurn.
   allowRestOfTurn?: 'everything' | 'safe';
+  /// What the `safe` grant has let through so far this turn, which narrows
+  /// what it lets through next (permissionPolicy.ts, `noteRestOfTurn`).
+  restOfTurn?: RestOfTurnState;
   pendingCodexApprovals: Map<string, (approved: boolean) => void>;
   pendingUserInputs: Map<string, (answers: Record<string, UserInputAnswer>) => void>;
   /// Accumulated context for the current turn so we can feed the
@@ -1113,6 +1198,7 @@ export class RunnerManager {
   /// Per-conversation temp --mcp-config path for Claude's permission-prompt-tool.
   /// Present while the Claude subprocess is alive; cleared on close/kill.
   private claudeMcpByConv = new Map<UUID, string>();
+  private claudeBrokerEnvByConv = new Map<UUID, Record<string, string>>();
   /// Conversations whose next Claude turn has been requested but hasn't yet
   /// reached the synchronous `sendSubprocess` step (broker prep in flight).
   /// While set, swallow stray `running: false` emits from the *previous*
@@ -1910,7 +1996,7 @@ export class RunnerManager {
     // the variable there is at best inert and at worst confusing to anything
     // downstream that reads it as "we are inside Electron".
     const extraMcpServers = selected ? JSON.parse(selected).mcpServers : {};
-    const { configPath } = await this.claudeBroker.registerSession(
+    const { configPath, launchEnv } = await this.claudeBroker.registerSession(
       convId,
       helperScript,
       process.execPath,
@@ -1918,6 +2004,7 @@ export class RunnerManager {
       extraMcpServers,
     );
     this.claudeMcpByConv.set(convId, configPath);
+    this.claudeBrokerEnvByConv.set(convId, launchEnv);
   }
 
   /// Drive a Claude turn through @anthropic-ai/claude-agent-sdk instead of
@@ -2056,14 +2143,14 @@ export class RunnerManager {
       appendSystemPrompt: claudeSystemPromptAppend(narrateFor(args), args.permissionMode),
       // This transport loads the whole config, so its gateway tools get the
       // conversation's own key, as the cli transport's do.
-      mcpServers: {
+      mcpServers: bindRunTools({
         ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId),
-        ...boundOverdbTool(() => readClaudeMcpServers(args.cwd), convId),
-      } as ClaudeSdkStartOptions['mcpServers'],
+        ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), convId),
+      }, convId, relayLaunchFor(args)) as ClaudeSdkStartOptions['mcpServers'],
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.
-      env: { ...stripSecrets(process.env), ...claudeArtifactEnv(this.artifactsFor('claude')) },
+      env: { ...stripSecrets(process.env), ...claudeArtifactEnv(this.artifactsFor('claude')), ...this.claudeBrokerEnvByConv.get(convId), ...runToolRelayEnv(convId) },
       // We don't ship the SDK's bundled binary; point it at the user's
       // installed `claude` (the same one the cli transport spawns).
       pathToClaudeCodeExecutable: claudeSdkExecutablePath(
@@ -2435,14 +2522,18 @@ export class RunnerManager {
   /// the user switches back before sending.
   allowRestOfTurn(conversationId: UUID, allow: 'everything' | 'safe' | 'off'): void {
     const active = this.procs.get(conversationId);
-    if (active) active.allowRestOfTurn = allow === 'off' ? undefined : allow;
+    if (active) { active.allowRestOfTurn = allow === 'off' ? undefined : allow; active.restOfTurn = {}; }
   }
 
   /// ExitPlanMode is never swept up: approving it means "go build the
   /// plan", not "stop asking".
   private allowedForRestOfTurn(active: ActiveProcess, toolName: string, input: unknown): boolean {
     if (!active.allowRestOfTurn || toolName === 'ExitPlanMode') return false;
-    return active.allowRestOfTurn === 'everything' || !isRiskyCall(toolName, input);
+    if (active.allowRestOfTurn === 'everything') return true;
+    const state = (active.restOfTurn ??= {});
+    if (!safeForRestOfTurn(toolName, input, active.cwd ?? '', state)) return false;
+    noteRestOfTurn(state, toolName, input);
+    return true;
   }
 
   respondPermission(
@@ -2572,6 +2663,7 @@ export class RunnerManager {
     for (const id of Array.from(this.ollamaSessions.keys())) this.killOllama(id);
     for (const id of Array.from(this.geminiAcpSessions.keys())) this.killGeminiAcp(id);
     this.claudeBroker.shutdown();
+    closeRunToolRelay();
     this.stopReconcileTimer();
     // The idle-reap timer deliberately survives: on macOS `killAll` also
     // fires on `window-all-closed`, and the app can be reopened from the
@@ -2604,6 +2696,8 @@ export class RunnerManager {
     if (shouldReleaseClaudeBroker({ backend: active.backend, respawning: opts.respawning ?? false })) {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
+      this.claudeBrokerEnvByConv.delete(conversationId);
+      releaseRunTools(conversationId);
       // Explicit teardown (stop / backend switch) clears the SDK-fallback
       // pin, so the next Claude turn tries the default CLI path again —
       // e.g. after the user trims a crowded MCP config.
@@ -2668,6 +2762,7 @@ export class RunnerManager {
       const spawnedNow = !this.procs.get(convId);
       const active = this.procs.get(convId) ?? this.spawnFor(args);
       active.allowRestOfTurn = undefined;
+      active.restOfTurn = undefined;
       // spawnFor stamps whatever effort argv got, which under auto-effort is
       // this turn's classified tier. The stamp has to hold the *configured*
       // tier instead or the next turn reads its own auto-lowering back as a
@@ -3937,14 +4032,9 @@ export class RunnerManager {
     binary: string,
     argv: string[],
   ): { command: string; args: string[] } {
-    if (!shouldSandboxSpawn(args)) return { command: binary, args: argv };
-    const roots = sandboxRootsFor({
-      backend: args.backend,
-      cwd: args.cwd,
-      extraWritable: args.allowedDirs ?? [],
-      extraRepos: resolveSymlinkWritableRoots(args.cwd),
-    });
-    const profile = writeSeatbeltProfile(roots, path.join(host().dataDir(), 'seatbelt'));
+    const jail = seatbeltProfileFor(args);
+    if (!jail) return { command: binary, args: argv };
+    const { profile, roots } = jail;
     log(
       'info',
       'runner.sandbox',
@@ -3955,7 +4045,7 @@ export class RunnerManager {
 
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
-    const env = this.buildEnv(binary, args.backend);
+    const env = { ...this.buildEnv(binary, args.backend), ...(args.backend === 'claude' ? { ...this.claudeBrokerEnvByConv.get(args.conversationId), ...runToolRelayEnv(args.conversationId) } : {}) };
     if (shouldSandboxSpawn(args)) {
       const scratch = sandboxScratchDir(args.conversationId);
       try {
@@ -4232,6 +4322,8 @@ export class RunnerManager {
     if (active.backend === 'claude' && isCurrent) {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
+      this.claudeBrokerEnvByConv.delete(conversationId);
+      releaseRunTools(conversationId);
     }
     const skipRunningFalse = shouldSkipIdleOnClose({
       isCurrent,
@@ -4415,6 +4507,8 @@ export class RunnerManager {
     // would otherwise linger; drop it before re-sending.
     this.claudeBroker.unregisterSession(conversationId);
     this.claudeMcpByConv.delete(conversationId);
+    this.claudeBrokerEnvByConv.delete(conversationId);
+    releaseRunTools(conversationId);
     this.claudeSdkFallbackConvs.add(conversationId);
 
     this.emit({

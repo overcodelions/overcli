@@ -31,6 +31,7 @@ import {
   rolloverReason,
   continuationLines,
   TEAM_ROLLOVER_AGE_MS,
+  answerOnlyFlow,
 } from './team';
 
 const roster = [
@@ -500,6 +501,16 @@ describe('sourceFlowIdOfPiece / withStepTools', () => {
     expect(piece.steps).toHaveLength(1);
     expect(piece.steps[0].effect).toBe('local');
     expect(piece.steps[0].tools.sort()).toEqual(['Bash(git log:*)', 'Edit', 'Read', 'WebSearch', 'Write', 'mcp__tracker__search_issues'].sort());
+  });
+
+  it('holds a flow drafted to answer a question to reading, step by step', () => {
+    const f = {
+      id: 'q', steps: [
+        { id: 'trace', tools: ['Read', 'Grep', 'Bash', 'Bash(npm test:*)', 'Bash(git log:*)', 'Edit', 'Write', 'WebFetch', 'mcp__tracker__search_issues', 'mcp__tracker__create_issue'] },
+        { id: 'answer', tools: [] },
+      ],
+    } as unknown as Parameters<typeof answerOnlyFlow>[0];
+    expect(answerOnlyFlow(f).steps.map((st) => st.tools)).toEqual([['Read', 'Grep', 'Bash(git log:*)', 'mcp__tracker__search_issues'], []]);
   });
 
   it('adds only missing tools, to the first step', () => {

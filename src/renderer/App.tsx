@@ -35,6 +35,7 @@ import { anyRunJustFinished, createUnreviewedRefresher } from './unreviewedRefre
 import { useOrchestratorStore } from './orchestratorStore';
 import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
+import { PermissionMigrationNotice } from './components/PermissionMigrationNotice';
 import { ResizableDivider } from './components/ResizableDivider';
 import { SubagentDrawer } from './components/SubagentDrawer';
 import { ServiceLogDrawer } from './components/ServiceLogDrawer';
@@ -604,6 +605,7 @@ export function App() {
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
       <TitleBar />
+      <PermissionMigrationNotice />
       <div className="relative flex flex-1 min-h-0 overflow-hidden">
         {/* The way back to a hidden sidebar, where it went: a slim tab on the
             left edge that glows on hover. Without it a folded sidebar only

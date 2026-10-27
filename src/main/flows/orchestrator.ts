@@ -644,6 +644,7 @@ export class OrchestratorImpl {
       producer: { prompt: args.prompt, reply: produced.reply },
       origin,
       createdAt: Date.now(),
+      ...(autoCap > 0 && kept.length ? { autoLaunched: true } : {}),
       items: kept.map<OrchestrationItem>((candidate, index) => ({
         candidate,
         // The producer may name a flow per candidate; the caller's flow is
@@ -749,6 +750,7 @@ export class OrchestratorImpl {
       producer: { prompt, reply: '' },
       origin: args.origin,
       createdAt: Date.now(),
+      ...(args.autoLaunch ? { autoLaunched: true } : {}),
       items: [
         {
           candidate,
@@ -775,6 +777,8 @@ export class OrchestratorImpl {
     id: UUID;
     approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
     keepUnpicked?: boolean;
+    /// Who approved, by name, for the work's own record.
+    by?: string;
   }): Promise<{ ok: true; queued: number } | { ok: false; error: string }> {
     const o = this.batches.get(args.id);
     if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
@@ -802,6 +806,7 @@ export class OrchestratorImpl {
       item.status = 'queued';
       queued++;
     }
+    if (queued && args.by) o.approvedBy = args.by;
     this.persistAndEmit(o);
     if (queued === 0) {
       if (args.keepUnpicked) return { ok: false, error: 'That proposal is no longer waiting.' };

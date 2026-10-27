@@ -28,7 +28,7 @@ const WRITE_WORDS = new Set([
   'add', 'apply', 'mark', 'unmark', 'label', 'unlabel', 'schedule', 'respond', 'upload', 'share',
   'copy', 'merge', 'publish', 'edit', 'set', 'write', 'move', 'archive', 'invite', 'transition',
   'unsubscribe', 'draft', 'discard', 'execute', 'run', 'submit', 'approve', 'close', 'assign',
-  'comment', 'upsert', 'insert', 'patch', 'put', 'rename', 'undo', 'click', 'fill', 'navigate',
+  'comment', 'upsert', 'insert', 'patch', 'put', 'rename', 'replace', 'undo', 'click', 'fill', 'navigate',
   'evaluate', 'hover', 'select', 'pin', 'unpin', 'save', 'import', 'export', 'login', 'logout',
 ]);
 

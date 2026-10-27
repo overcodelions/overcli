@@ -165,6 +165,10 @@ export interface Orchestration {
   /// settled, because nothing will launch until someone presses Resume.
   pausedAt?: number;
   items: OrchestrationItem[];
+  /// Some of it started without anyone's OK: the worker's trust let it.
+  autoLaunched?: boolean;
+  /// Who approved what was waiting, when it went through the org (a name).
+  approvedBy?: string;
   /// Provenance: the producer turn that generated the candidates. We keep
   /// the user's ask + the assistant's prose reply so "why did I launch these"
   /// is answerable when the user comes back to the batch later.

@@ -156,4 +156,12 @@ describe('/idea', () => {
     expect(parseIdea('CSV export', procs)).toMatchObject({ error: expect.stringContaining('Which process?') });
     expect(parseIdea('', procs)).toBeNull();
   });
+
+  it('takes a short name as the first word, with or without a colon', () => {
+    const short = [{ id: 'p1', name: 'Launch review board', shortName: 'lrb' }, { id: 'p2', name: 'Bugs' }];
+    expect(parseIdea('lrb let customers export CSV', short)).toEqual({ processId: 'p1', brief: 'let customers export CSV' });
+    expect(parseIdea('LRB: CSV export', short)).toEqual({ processId: 'p1', brief: 'CSV export' });
+    expect(parseIdea('Bugs: CSV export fails', short)).toEqual({ processId: 'p2', brief: 'CSV export fails' });
+    expect(parseIdea('CSV export', short)).toMatchObject({ error: expect.stringContaining('`/idea lrb …`') });
+  });
 });

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   findFileEntriesAsync,
   listFileEntriesAsync,
@@ -36,6 +36,32 @@ function names(entries: WalkEntry[], root: string): string[] {
 }
 
 describe('project walk', () => {
+  it('does not read directories for an already canceled search', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const read = vi.spyOn(fs.promises, 'readdir');
+    try {
+      await expect(findFileEntriesAsync('/unread', 'file', 500, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+      expect(read).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); }
+  });
+
+  it('stops after an in-flight directory read is canceled, before scheduling stats', async () => {
+    const root = fixture();
+    const controller = new AbortController();
+    const original = fs.promises.readdir.bind(fs.promises);
+    const read = vi.spyOn(fs.promises, 'readdir').mockImplementationOnce((async (...args: Parameters<typeof fs.promises.readdir>) => {
+      const result = await original(...args);
+      controller.abort();
+      return result;
+    }) as typeof fs.promises.readdir);
+    const stat = vi.spyOn(fs.promises, 'stat');
+    try {
+      await expect(findFileEntriesAsync(root, 'file', 500, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(stat).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); stat.mockRestore(); }
+  });
   it('lists sources, follows symlinked projects, and skips build output', async () => {
     const root = fixture();
     const listed = names(listFileEntriesSync(root), root);

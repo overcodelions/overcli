@@ -13,6 +13,7 @@ describe('migratePermissionDefault', () => {
     expect(migratePermissionDefault({ defaultPermissionMode: 'plan' })).toEqual({
       defaultPermissionMode: 'auto',
       permissionDefaultsVersion: 1,
+      permissionDefaultMovedFromPlan: true,
     });
   });
 

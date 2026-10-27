@@ -16,9 +16,9 @@ export function slackManifest(): Record<string, unknown> {
       slash_commands: [
         { command: '/overgo', description: "Join your org's AI workers", usage_hint: 'join', should_escape: false },
         { command: '/worker', description: 'Your AI workers — list, ask, pause, what is waiting on you', usage_hint: '[name] [ask <text> | pause | resume] | waiting', should_escape: false },
-        { command: '/team', description: 'Give a team of workers a task, make a team, or list teams', usage_hint: "[team name]: [what you want back] | new [what it's for]", should_escape: false },
+        { command: '/team', description: 'Give a team of workers a task, make a team, or list teams', usage_hint: "[team name]: [what you want back] | [short name] [what you want back] | new [what it's for]", should_escape: false },
         { command: '/hire', description: 'Hire an AI worker', usage_hint: '<what it should do, for whom, from which sources>', should_escape: false },
-        { command: '/idea', description: 'Put an idea into a process, or see where yours are', usage_hint: '[process name:] <the idea>', should_escape: false },
+        { command: '/idea', description: 'Put an idea into a process, or see where yours are', usage_hint: '[process name: or short name] <the idea>', should_escape: false },
       ],
       app_home: { messages_tab_enabled: true, messages_tab_read_only_enabled: false },
     },

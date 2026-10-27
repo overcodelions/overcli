@@ -1,9 +1,9 @@
 // The overdb tool, told whose run it is serving.
 //
 // overdb's headless MCP server (Setup → Databases) logs every query an agent
-// makes. It runs as a child of the worker's model CLI, not of this server,
-// so it cannot know which worker asked — unless the run's own config says.
-// Each run's config gives the overdb entry two variables, the worker's name
+// makes. The app-owned relay starts it with the run's attribution so the
+// query log can identify the worker without exposing credentials to the CLI.
+// The app-owned transport gives overdb two variables, the worker's name
 // and the run's conversation, and overdb writes them on every line of its
 // query log (`--query-log`), which the Databases tab reads back.
 //
@@ -12,6 +12,7 @@
 
 import type { McpServerConfig } from '../mcpConfig';
 import { OVERDB_TOOL } from '../../shared/overdbConnection';
+import { bindRunTools } from './runToolRelay';
 
 let workerOf: (conversationId: string) => string | undefined = () => undefined;
 
@@ -29,6 +30,13 @@ function bound(config: McpServerConfig, conversationId: string): McpServerConfig
 /// For a run on the whole config: the overdb entry again, bound, to pass as
 /// the run's own config (it wins over the config's entry of the same name).
 export function boundOverdbTool(configured: () => Record<string, McpServerConfig>, conversationId: string): Record<string, McpServerConfig> {
+  const tools = overdbToolsForRun(configured, conversationId);
+  return Object.keys(tools).length ? bindRunTools(tools, conversationId) : {};
+}
+
+/// App-only source configuration. Collect this with gateway tools before
+/// registering the complete relay session; inspecting it has no side effects.
+export function overdbToolsForRun(configured: () => Record<string, McpServerConfig>, conversationId: string): Record<string, McpServerConfig> {
   const config = configured()[OVERDB_TOOL];
   return config && typeof config.command === 'string' ? { [OVERDB_TOOL]: bound(config, conversationId) } : {};
 }
@@ -44,6 +52,6 @@ export function bindOverdbInConfig(configJson: string, conversationId: string): 
   }
   const config = parsed.mcpServers?.[OVERDB_TOOL];
   if (!config || typeof config.command !== 'string') return configJson;
-  parsed.mcpServers![OVERDB_TOOL] = bound(config, conversationId);
+  parsed.mcpServers![OVERDB_TOOL] = bindRunTools({ [OVERDB_TOOL]: bound(config, conversationId) }, conversationId)[OVERDB_TOOL];
   return JSON.stringify(parsed);
 }

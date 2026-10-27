@@ -99,6 +99,9 @@ export const DEFAULT_TEAM_BUDGET_USD = 1000;
 export interface Team {
   id: UUID;
   name: string;
+  /// What `/team` and the front door take in place of its name: "pd".
+  /// Lowercase, unique among teams.
+  shortName?: string;
   /// One line: what the team is for. Shown under the name, and handed to the
   /// coordinator as the team's standing purpose.
   purpose?: string;
@@ -2043,6 +2046,15 @@ function readOnlyPieceFlow(flow: Flow): Flow {
     description: `"${flow.name}" for a team piece that only reads.`,
     steps: [{ ...piece.steps[0], tools, effect: 'local' as const }],
   };
+}
+
+/// A flow drafted to answer a question, held to reading: each step keeps
+/// only the tools that look (files, read-only git, the web search, its tools'
+/// reads). "It only answers" is then the tool list's doing, not a line in
+/// the drafter's brief; anything else a step tries waits on a person.
+export function answerOnlyFlow(flow: Flow): Flow {
+  const keep = (t: string) => PIECE_READ_TOOLS.has(t) || PIECE_READ_GIT.test(t) || (t.startsWith('mcp__') && isReadOnlyMcpTool(t));
+  return { ...flow, steps: flow.steps.map((step) => ({ ...step, tools: step.tools.filter(keep) })) };
 }
 
 const TEAM_PIECE_SYSTEM_PROMPT = [

@@ -30,7 +30,7 @@ features:
       should_escape: false
     - command: /team
       description: Give a team of workers a task, make a team, or list teams
-      usage_hint: "[team name]: [what you want back] | new [what it's for]"
+      usage_hint: "[team name]: [what you want back] | [short name] [what you want back] | new [what it's for]"
       should_escape: false
     - command: /hire
       description: Hire an AI worker
@@ -38,7 +38,7 @@ features:
       should_escape: false
     - command: /idea
       description: Put an idea into a process, or see where yours are
-      usage_hint: "[process name:] <the idea>"
+      usage_hint: "[process name: or short name] <the idea>"
       should_escape: false
   app_home:
     messages_tab_enabled: true

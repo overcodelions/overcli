@@ -546,6 +546,107 @@ export function isRiskyCall(toolName: string, input: unknown): boolean {
   return !!cmd && isRiskyBashCommand(cmd);
 }
 
+/// Files that decide what the allowed scripts run, so a write to one followed
+/// by `npm test` would run anything: the package manifest and the package
+/// managers' config, the runners' and linters' config (code, loaded on
+/// start), git's own files (hooks), and installed packages.
+const SCRIPT_CONFIG_FILES = /^(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|\.npmrc|\.yarnrc(?:\.yml)?|yarn\.lock|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.pnpmfile\.cjs|bun\.lockb?|bunfig\.toml|\.nvmrc|\.node-version|\.babelrc(?:\..*)?|babel\.config\..*|(?:vitest|vite|jest|playwright|cypress|mocha|ava|karma|webpack|rollup|esbuild|tsup|eslint|prettier|stylelint|lint-staged|commitlint|husky)\.config\..*|\.(?:mocharc|eslintrc|prettierrc|stylelintrc|lintstagedrc|huskyrc)(?:\..*)?)$/i;
+const SCRIPT_CONFIG_DIRS = new Set(['node_modules', '.git', '.husky', '.yarn', '.pnpm-store']);
+
+/// Whether a path's name, or any folder on the way, is one `npm test` and
+/// the other allowed scripts read as code or configuration.
+function configuresScripts(relative: string): boolean {
+  const parts = relative.split(/[\\/]+/).filter(Boolean);
+  if (!parts.length) return true;
+  if (parts.slice(0, -1).some((part) => SCRIPT_CONFIG_DIRS.has(part))) return true;
+  return SCRIPT_CONFIG_FILES.test(parts[parts.length - 1]);
+}
+
+/// What the `safe` grant has already let through this turn. A write makes
+/// the allowed scripts ask again (a test file can hold anything, and `npm
+/// test` runs it); a read of a credential-shaped file makes every tool call
+/// ask again (a read-only call's arguments can carry what was read out).
+export interface RestOfTurnState {
+  wrote?: boolean;
+  readSecret?: boolean;
+}
+
+/// Files whose contents are credentials, by name, wherever they are.
+const SECRET_SHAPED = /(?:^|[\\/])(?:\.env(?:\.[^\\/]*)?|\.npmrc|\.netrc|\.pgpass|\.git-credentials|\.claude\.json|credentials(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|[^\\/]*\.(?:pem|key|p12|pfx|jks|keystore|kdbx)|(?:[^\\/]*[^a-z\\/])?(?:secrets?|tokens?|passw(?:or)?ds?|apikeys?|api[-_]keys?)(?:[^a-z\\/][^\\/]*)?|\.ssh|\.aws|\.gnupg|\.docker|\.kube|\.config[\\/]gh|\.config[\\/]gcloud)(?:[\\/]|$)/i;
+
+/// Whether a call reads a credential-shaped file: a file tool by its path, a
+/// shell line by any path it names.
+export function readsSecretShaped(toolName: string, input: unknown): boolean {
+  if (typeof input === 'string') {
+    try { input = JSON.parse(input); } catch { input = toolName === 'Bash' ? { command: input } : {}; }
+  }
+  const args = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  if (toolName === 'Bash') {
+    const cmd = bashCommandOf(args) ?? '';
+    return splitCommands(cmd).commands.some((c) => words(c).slice(1).some((w) => SECRET_SHAPED.test(w)));
+  }
+  const fields = FILE_READ_FIELDS[toolName] ?? [];
+  return fields.some((f) => typeof args[f] === 'string' && SECRET_SHAPED.test(args[f] as string));
+}
+
+/// Record what a `safe` approval let through, for the next one's sake.
+export function noteRestOfTurn(state: RestOfTurnState, toolName: string, input: unknown): void {
+  if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') state.wrote = true;
+  if (readsSecretShaped(toolName, input)) state.readSecret = true;
+}
+
+/// What "Allow rest of turn" (safe) may approve without a card: reads
+/// inside the run's folder, writes inside it (not to the files that decide
+/// what its scripts run), read-only MCP calls, and shell lines that aren't
+/// risky, networked or opaque. `state` is what the grant has let through
+/// already: after a write, the scripts ask; after a secret read, tool calls ask.
+export function safeForRestOfTurn(toolName: string, input: unknown, cwd: string, state: RestOfTurnState = {}): boolean {
+  if (typeof input === 'string') {
+    try { input = JSON.parse(input); } catch { input = toolName === 'Bash' ? { command: input } : {}; }
+  }
+  if (isRiskyCall(toolName, input)) return false;
+  if (toolName.startsWith('mcp__')) {
+    return !state.readSecret && isReadOnlyMcpTool(toolName);
+  }
+  if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') {
+    const p = (input as { file_path?: unknown; notebook_path?: unknown } | null);
+    const target = typeof p?.file_path === 'string' ? p.file_path : typeof p?.notebook_path === 'string' ? p.notebook_path : '';
+    if (!target || !cwd) return false;
+    const resolved = path.resolve(cwd, target);
+    const contained = (candidate: string, root: string) => candidate === root || candidate.startsWith(root + path.sep);
+    if (!contained(resolved, path.resolve(cwd)) || configuresScripts(path.relative(path.resolve(cwd), resolved))) return false;
+    if (!fs.existsSync(cwd)) return true;
+    let ancestor = resolved;
+    const tail: string[] = [];
+    while (!fs.existsSync(ancestor)) {
+      // A link to nowhere exists without a target: a write through it lands
+      // wherever it points, so it is never a new file inside the folder.
+      try { fs.lstatSync(ancestor); return false; } catch { /* truly absent */ }
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return false;
+      tail.unshift(path.basename(ancestor));
+      ancestor = parent;
+    }
+    try {
+      const realRoot = fs.realpathSync(cwd);
+      const realTarget = path.join(fs.realpathSync(ancestor), ...tail);
+      return contained(realTarget, realRoot) && !configuresScripts(path.relative(realRoot, realTarget));
+    } catch { return false; }
+  }
+  if (toolName === 'Bash') {
+    const cmd = bashCommandOf(input) ?? '';
+    // A read stays inside the folder, where each path really leads: the
+    // turn's grant is for its work, not for `cat ~/.ssh/id_rsa`.
+    if (isReadOnlyBashCommand(cmd)) return !!cwd && bashReadsOnlyUnder(cmd, cwd, [cwd]);
+    if (state.wrote) return false;
+    const allowed = new Set(['npm test', 'npm run build', 'npm run lint', 'npm run typecheck']);
+    const parsed = splitCommands(cmd);
+    return !parsed.opaque && !parsed.writes && parsed.commands.length === 1 && allowed.has(parsed.commands[0].trim());
+  }
+  if (Object.prototype.hasOwnProperty.call(FILE_READ_FIELDS, toolName)) return !!cwd && fileReadWithin(toolName, input, cwd, [cwd]);
+  return READ_ONLY_TOOLS.has(toolName);
+}
+
 /// Package runners whose third word names the thing being run:
 /// `npm run build` grants `npm run build`, not every script.
 const RUNNER_SUBCOMMANDS = new Set(['run', 'exec', 'run-script', 'x', 'dlx']);

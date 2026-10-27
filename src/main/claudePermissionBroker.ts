@@ -70,7 +70,7 @@ export class ClaudePermissionBroker {
     helperCommand: string,
     helperExtraEnv: Record<string, string>,
     extraMcpServers: Record<string, unknown> = {},
-  ): Promise<{ configPath: string; token: string }> {
+  ): Promise<{ configPath: string; token: string; launchEnv: Record<string, string> }> {
     const port = await this.start();
     this.unregisterSession(conversationId);
     const token = randomBytes(24).toString('hex');
@@ -86,9 +86,6 @@ export class ClaudePermissionBroker {
           args: [helperScript],
           env: {
             ...helperExtraEnv,
-            OVERCLI_PERM_PORT: String(port),
-            OVERCLI_PERM_TOKEN: token,
-            OVERCLI_PERM_CONV: conversationId,
           },
         },
       },
@@ -97,7 +94,7 @@ export class ClaudePermissionBroker {
     const session: Session = { conversationId, token, configPath };
     this.sessionsByToken.set(token, session);
     this.sessionsByConvId.set(conversationId, session);
-    return { configPath, token };
+    return { configPath, token, launchEnv: { OVERCLI_PERM_PORT: String(port), OVERCLI_PERM_TOKEN: token, OVERCLI_PERM_CONV: conversationId } };
   }
 
   unregisterSession(conversationId: UUID): void {

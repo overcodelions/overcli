@@ -8,6 +8,7 @@
 // crew. Team hires join it on demand, with no shifts (`hireForTeam` in main).
 
 import { useMemo, useState } from "react";
+import { ShortNameField } from "../ShortNameField";
 
 import { useTeamsStore } from "../../../teamsStore";
 import { useWorkersStore } from "../../../workersStore";
@@ -80,6 +81,7 @@ export function TeamEditor() {
 
   const [name, setName] = useState(existing?.name ?? "");
   const [purpose, setPurpose] = useState(existing?.purpose ?? "");
+  const [shortName, setShortName] = useState(existing?.shortName ?? "");
   const [projectPath, setProjectPath] = useState(existing?.projectPath ?? "");
   const [ownProjectOnly, setOwnProjectOnly] = useState(existing?.ownProjectOnly ?? false);
   const [piecesAskFirst, setPiecesAskFirst] = useState(existing ? !piecesActFreely(existing) : true);
@@ -194,6 +196,7 @@ export function TeamEditor() {
     const res = await save({
       id: existing?.id,
       name,
+      shortName,
       purpose,
       ...(projectPath ? { projectPath } : {}),
       ...(onlyIn ? { ownProjectOnly: true } : {}),
@@ -251,6 +254,9 @@ export function TeamEditor() {
                   placeholder="What it's for, in one line"
                   className="max-w-3xl border-b border-dashed border-card bg-transparent py-0.5 text-sm text-ink-muted outline-none placeholder:italic placeholder:text-ink-faint focus:border-accent"
                 />
+                <span className="mt-1">
+                  <ShortNameField id="team-short" value={shortName} name={name} command="/team" onChange={setShortName} />
+                </span>
               </>
             ) : (
               <h1 className="text-2xl font-semibold tracking-tight text-ink">New team</h1>

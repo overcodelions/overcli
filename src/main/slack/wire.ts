@@ -408,7 +408,7 @@ export function createOrgControl(
     ...triggerFiles(orgDir()),
     worker: (id) => {
       const w = engines.workerEngine.roster().find((x) => x.id === id);
-      return w ? { id: w.id, name: w.name, enabled: w.enabled } : null;
+      return w ? { id: w.id, name: w.name, enabled: w.enabled, avatarUrl: w.avatarUrl ?? initialsPicture(w.id, w.name) } : null;
     },
     ask: (workerId, triggerName, text, startsOnItsOwn) => {
       const started = org.startAsk({ name: triggerName, admin: true }, workerId, text, 'trigger', undefined, undefined, undefined, undefined, false, startsOnItsOwn);
@@ -419,10 +419,13 @@ export function createOrgControl(
     toolConfig: (name) => readClaudeMcpServers()[name] ?? null,
     callTool,
     slack: {
-      post: async (channel, text, threadTs) => {
+      post: async (channel, text, threadTs, as) => {
         const bot = configuredSlackToken('bot');
         if (!bot || !slack.teamId()) return false;
-        const res = await postMessage(bot, { channel, text, ...(threadTs ? { threadTs } : {}) });
+        let res = await postMessage(bot, { channel, text, ...(threadTs ? { threadTs } : {}), ...(as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {}) });
+        // An app installed before it could post under another name: as
+        // itself, the worker's name in front unless the text already leads with it.
+        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(bot, { channel, text: text.startsWith(`*${as.name}*`) ? text : `*${as.name}:* ${text}`, ...(threadTs ? { threadTs } : {}) });
         if (!res.ok) log('warn', 'slack', `A trigger could not post to ${channel}: ${res.error}`);
         return res.ok;
       },
@@ -441,6 +444,7 @@ export function createOrgControl(
         if (!res.ok) log('warn', 'slack', `A trigger could not DM ${slackUserId}: ${res.error}`);
         return res.ok;
       },
+      botUserId: () => slack.botUserId(),
     },
     log: (message) => log('info', 'org', message),
   });
@@ -515,7 +519,7 @@ export function createOrgControl(
   const frontDoor = new FrontDoor({
     // Only those the person may start: the router never offers one they can't.
     processes: (caller) =>
-      processes.list(caller).filter((p) => p.stages.length && p.canStart).map((p) => ({ id: p.id, name: p.name, ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),
+      processes.list(caller).filter((p) => p.stages.length && p.canStart).map((p) => ({ id: p.id, name: p.name, ...(p.shortName ? { shortName: p.shortName, ...(p.shortNameAuto ? { shortNameAuto: true } : {}) } : {}), ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),
     submitProcess: (caller, processId, brief) => {
       const res = processes.submit({ name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) }, processId, { brief, source: 'slack' });
       return res.ok ? { ok: true, title: res.item.title, process: res.process.name, stage: res.process.stages[0].name } : res;
@@ -610,13 +614,14 @@ export function createOrgControl(
           ...(w.tools.length ? { tools: w.tools.filter((t) => t.ok).map((t) => t.name) } : {}),
           ...(w.place && w.place.kind !== 'folder' ? { code: w.place.kind === 'workspace' ? `${w.place.name} (${(w.place.repos ?? []).join(', ')})` : w.place.name } : {}),
           avatarUrl: roster.get(w.id)?.avatarUrl ?? initialsPicture(w.id, w.name),
+          ...(roster.get(w.id)?.slackHomeChannels?.length ? { homeChannels: roster.get(w.id)!.slackHomeChannels } : {}),
         }));
     },
     teams: (caller) =>
       org
         .teams(caller)
         .filter((t) => t.canBrief)
-        .map((t) => ({ id: t.id, name: t.name, ...(t.purpose ? { purpose: t.purpose } : {}), members: t.members.map((m) => m.name) })),
+        .map((t) => ({ id: t.id, name: t.name, ...(t.shortName ? { shortName: t.shortName, ...(t.shortNameAuto ? { shortNameAuto: true } : {}) } : {}), ...(t.purpose ? { purpose: t.purpose } : {}), members: t.members.map((m) => m.name) })),
     following: (caller) => {
       const res = org.watching(caller, { limit: 0 });
       return res.ok ? res.mine.map((r) => ({ item: r.item, ...(r.status ? { status: r.status } : {}), worker: r.worker })) : [];

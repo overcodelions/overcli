@@ -229,9 +229,13 @@ export function sandboxRootsFor(input: SandboxRootsInput): SeatbeltRoots {
     ...(userTmpParent ? [userTmpParent] : []),
     ...backendStateDirs(input.backend, home, input.cwd),
   ]);
-  const denied = canonicalRoots(
-    commonDirs.flatMap((d) => [path.join(d, 'hooks'), path.join(d, 'config')]),
-  );
+  // The project's `.mcp.json` is re-denied too: it names the tools the
+  // run's own next launch (and the user's later, unjailed `claude`) starts,
+  // so a planted entry is a way out of the jail, as a hook is.
+  const denied = canonicalRoots([
+    ...commonDirs.flatMap((d) => [path.join(d, 'hooks'), path.join(d, 'config')]),
+    ...repoDirs.map((d) => path.join(d, '.mcp.json')),
+  ]);
   return { writable, denied };
 }
 

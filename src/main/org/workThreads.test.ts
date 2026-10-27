@@ -118,6 +118,17 @@ describe('work threads', () => {
     expect(nowLine(t, 'Marta')).toMatchObject({ sentence: 'Marta is on step 2 of 2, compare, of “Acme pricing snapshot” because of Run now.', threadId: 'shift:shift-w-1', since: 3_000 });
   });
 
+  it('tells work that started on its own from work someone approved', () => {
+    const r = run('r1', { kind: 'running', currentStepId: 'compare' } as FlowRun['state'], 3_000);
+    const approved = { id: 'ap', workerId: 'w', kind: 'approved' as const, at: 2_500, title: 'x', orchestrationId: 'b1' };
+    const label = (extra: Partial<Orchestration>) =>
+      buildThreads(input({ journal: [shift({ orchestrationId: 'b1' }), approved], batches: [{ ...batch('b1', 1_500, [{ id: 'c1', status: 'running', runId: 'r1' }]), ...extra }], runs: [r] }))[0].progress[1].label;
+    expect(label({ autoLaunched: true })).toBe('Started on its own');
+    expect(label({ approvedBy: 'Pat' })).toBe('Pat approved');
+    // Older batches carry neither: the journal's word is all there is.
+    expect(label({})).toBe('You approved');
+  });
+
   it('leads a finished thread with what it found', () => {
     const r = run('r1', { kind: 'done', success: true } as FlowRun['state'], 3_000, {
       attempts: [{ stepId: 'compare', startedAt: 3_000, endedAt: 123_000, conversationId: 'c' }] as FlowRun['attempts'],

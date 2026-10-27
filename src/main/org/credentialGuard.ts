@@ -5,7 +5,9 @@
 // file tools in every mode: the CLIs' config (tool addresses and keys), the
 // CLIs' own sign-ins, git and ssh credentials, other processes' environments,
 // and the server's state (people's tokens, the audit log, the sealed secrets
-// and their keys). Change is denied as well as reading: a worker that could
+// and their keys), and every run's MCP config in the temp folder
+// (overcli-perm-*), which holds tool keys and the overdb tool's passwords.
+// Change is denied as well as reading: a worker that could
 // edit the CLIs' config or org.json could give itself tools or people admin
 // rights.
 //
@@ -14,6 +16,8 @@
 // commands unasked can still read these as the server's user. The deploy
 // docs (security.md) say so.
 
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 let rules: string[] = [];
@@ -39,7 +43,10 @@ export function credentialRules(dataDir: string): string[] {
     path.join(dataDir, 'secrets*'),
     path.join(dataDir, 'org.json'),
   ].map(rulePath);
-  return read.flatMap((p) => [`Read(${p})`, `Edit(${p})`]);
+  const tmp = new Set([os.tmpdir()]);
+  try { tmp.add(fs.realpathSync(os.tmpdir())); } catch { /* keep the plain path */ }
+  const runConfigs = [...tmp].map((t) => rulePath(path.join(t, 'overcli-perm-*')));
+  return [...read, ...runConfigs].flatMap((p) => [`Read(${p})`, `Edit(${p})`]);
 }
 
 /// Turn the guard on for every Claude process this server spawns.

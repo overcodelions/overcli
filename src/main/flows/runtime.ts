@@ -3198,6 +3198,9 @@ export class FlowRuntimeImpl {
     const participant = run.flowSnapshot.participants.find((p) => p.id === participantId);
     const convId = run.conversationIds[participantId];
     if (!participant || !convId) return { ok: false, error: 'Nobody in that run has a conversation to continue.' };
+    // A finished run's checkouts may already be swept: refuse, and the
+    // front door hands the follow-up to the worker instead.
+    if (![run.projectPath, ...this.runAllowedDirs(run)].every((d) => !d || existsSync(d))) return { ok: false, error: 'That run’s folders were cleaned up.' };
     const key = `${run.id}:${participantId}`;
     if (this.finalizeWaiters.has(key)) return { ok: false, error: 'It is still answering the last message.' };
     // Its events route back to this run again: a finished run's

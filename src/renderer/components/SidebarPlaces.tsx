@@ -357,6 +357,13 @@ export function PlaceBody({
     // the one on screen) sits with Recent instead of vanishing into the
     // count line, but a quiet place isn't backfilled with old agents.
     const agentSleep = partitionSleeping(byNewestFirst(agents.filter((c) => !isRunning(c))), sleepFacts, { floor: 0 });
+    // Finished runs too: one that ended this afternoon (or the one on screen)
+    // sits with Recent rather than behind the count line.
+    const runSleep = partitionSleeping(
+      [...settled].sort((a, b) => flowRunActivityAt(b) - flowRunActivityAt(a)),
+      (r) => ({ touchedAt: flowRunActivityAt(r), pinned: r.id === activeRunId }),
+      { floor: 0 },
+    );
     return {
       waiting,
       runningConvs: byNewestFirst([...plain, ...agents].filter(isRunning)),
@@ -364,14 +371,21 @@ export function PlaceBody({
       recent: byNewestFirst([...sleep.awake, ...agentSleep.awake]),
       older: sleep.sleeping,
       idleAgents: agentSleep.sleeping,
-      settled,
+      recentRuns: runSleep.awake,
+      settled: runSleep.sleeping,
     };
-  }, [conversations, runners, allRuns, path, selectedId, now]);
+  }, [conversations, runners, allRuns, path, selectedId, activeRunId, now]);
 
   const hasLive = parts.waiting.length + parts.runningConvs.length + parts.liveRuns.length > 0;
   const empty =
     !hasLive &&
-    parts.recent.length + parts.older.length + parts.idleAgents.length + parts.settled.length + colosseums.length === 0;
+    parts.recent.length +
+      parts.recentRuns.length +
+      parts.older.length +
+      parts.idleAgents.length +
+      parts.settled.length +
+      colosseums.length ===
+      0;
   const convRow = (c: Conversation) => (
     <ConversationRow key={c.id} conv={c} selected={c.id === selectedId} onClick={() => onSelect(c.id)} />
   );
@@ -402,10 +416,11 @@ export function PlaceBody({
           {parts.liveRuns.map(runRow)}
         </>
       )}
-      {parts.recent.length > 0 && (
+      {parts.recent.length + parts.recentRuns.length > 0 && (
         <>
           {hasLive && <BodyHeading>Recent</BodyHeading>}
           {parts.recent.map(convRow)}
+          {parts.recentRuns.map(runRow)}
         </>
       )}
       <Fold label={`${parts.older.length} older conversation${parts.older.length === 1 ? '' : 's'}`} count={parts.older.length}>

@@ -40,7 +40,7 @@ export function FileFinderSheet({ rootPath }: { rootPath: string }) {
     let cancelled = false;
     const timer = setTimeout(() => {
       void window.overcli
-        .invoke('fs:findFileEntries', rootPath, trimmed)
+        .invoke('fs:findFileEntries', rootPath, trimmed, 'finder')
         .then((res) => {
           if (!cancelled) setDiskMatches(res.entries.map((entry) => entry.path));
         })

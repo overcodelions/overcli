@@ -309,7 +309,10 @@ export interface WorkerEngineDeps {
     /// The `<flow_request>` body: what the flow must do, in the worker's words.
     request: string;
     runIn: 'cwd' | 'worktree';
-  }) => Promise<{ ok: true; orchestrationId: UUID; flowId: string } | { ok: false; error: string }>;
+    /// Start it now. Otherwise it waits for its manager's OK, as any other
+    /// work the worker proposes would.
+    launch: boolean;
+  }) => Promise<{ ok: true; orchestrationId: UUID; flowId: string; queued: number } | { ok: false; error: string }>;
   /// Save the one-step team version of a worker's flow and return its id
   /// (see `teamPieceFlow`). Optional: without it a team piece runs the
   /// worker's flow as-is, whole pipeline and all.
@@ -1542,7 +1545,9 @@ export class WorkerEngine {
     /// A conversation of its own (a Slack thread) instead of today's desk.
     /// `mayLaunch`: someone who isn't its manager, asking a worker that only
     /// reads; what it proposes starts as its manager's ask would.
-    opts: { conversation?: string; untrusted?: boolean; mayLaunch?: boolean } = {},
+    /// `atDesk`: its owner, typing at the desktop app's own desk, where a
+    /// question's investigation starts as soon as it's drafted.
+    opts: { conversation?: string; untrusted?: boolean; mayLaunch?: boolean; atDesk?: boolean } = {},
   ): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
@@ -1563,6 +1568,7 @@ export class WorkerEngine {
       ...(opts.conversation ? { conversation: opts.conversation } : {}),
       ...(opts.untrusted ? { untrusted: true } : {}),
       ...(opts.mayLaunch ? { mayLaunch: true } : {}),
+      ...(opts.atDesk ? { atDesk: true } : {}),
     });
     this.arm();
     if (!res.ok) return res;
@@ -1971,6 +1977,7 @@ export class WorkerEngine {
       conversation?: string;
       untrusted?: boolean;
       mayLaunch?: boolean;
+      atDesk?: boolean;
       /// Checked when the turn reaches the front of the queue: true means the
       /// caller has put the work back on hold, so skip it.
       deferIfAway?: () => boolean;
@@ -2025,6 +2032,7 @@ export class WorkerEngine {
       conversation?: string;
       untrusted?: boolean;
       mayLaunch?: boolean;
+      atDesk?: boolean;
     },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     const now = this.now();
@@ -2088,7 +2096,7 @@ export class WorkerEngine {
 
     // Errands share the firing guard and budget gate, but they are not shifts:
     // never stamp cadence bookkeeping before their planning turn.
-    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments, opts.from, opts.conversation, opts.untrusted, opts.mayLaunch);
+    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments, opts.from, opts.conversation, opts.untrusted, opts.mayLaunch, opts.atDesk);
 
     // Stamp BEFORE awaiting the planning turn — it can run for minutes, long
     // enough for another tick to read a stale lastShiftAt and double-fire.
@@ -2306,6 +2314,7 @@ export class WorkerEngine {
     conversation?: string,
     untrusted?: boolean,
     mayLaunch?: boolean,
+    atDesk?: boolean,
   ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
     const at = this.now();
     const rejected = this.journal.rejectedTitles(w.id);
@@ -2450,11 +2459,19 @@ export class WorkerEngine {
     // the candidates it did produce are the safer half to act on.
     const request = res.count === 0 ? parseFlowRequest(rawReply) : null;
     if (request && this.deps.generatedFlow) {
+      // Asked through the org (Slack, the console, a trigger), the same rule
+      // as anything else it proposes: it starts on its own only when its
+      // trust lets it and the ask is its manager's (or nothing it does needs
+      // the manager). The flow only reads, but a run still spends its budget
+      // and minutes, and on Asks first nothing starts alone. Its owner at the
+      // desktop desk is right there, so theirs starts as it always has.
+      const launch = (atDesk === true && !from) || (((!from && !untrusted) || mayLaunch === true) && workerAutoApproveCap(w) > 0);
       const built = await this.deps.generatedFlow({
         worker: w,
         errand,
         request,
         runIn,
+        launch,
       });
       if (built.ok) {
         this.journal.append({
@@ -2463,20 +2480,20 @@ export class WorkerEngine {
           kind: 'errand',
           at,
           title: subject,
-          note: `Drafted a flow to answer this — ${built.flowId}. ${reply} ${handoffs}`.trim(),
+          note: `${built.queued ? 'Drafted a flow to answer this' : 'Drafted a flow to answer this, waiting for an OK'} — ${built.flowId}. ${reply} ${handoffs}`.trim(),
           orchestrationId: built.orchestrationId,
         });
         this.emitWorker(fresh);
         this.deps.notify({
-          title: `${fresh.name} is investigating`,
-          body: `Built a flow to answer "${subject}".`,
+          title: built.queued ? `${fresh.name} is investigating` : `${fresh.name} wants to investigate`,
+          body: built.queued ? `Built a flow to answer "${subject}".` : `Built a flow to answer "${subject}". It starts when you approve it.`,
         });
         return {
           ok: true,
           errand: {
             orchestrationId: built.orchestrationId,
             count: 1,
-            queued: 1,
+            queued: built.queued,
             launchedNothing: false,
             reply,
             ...(choices.length ? { choices } : {}),

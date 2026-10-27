@@ -182,6 +182,7 @@ export function migratePermissionDefault(stored: Partial<AppSettings>): Partial<
     ...stored,
     defaultPermissionMode: stored.defaultPermissionMode === 'plan' ? 'auto' : stored.defaultPermissionMode,
     permissionDefaultsVersion: 1,
+    ...(stored.defaultPermissionMode === 'plan' ? { permissionDefaultMovedFromPlan: true } : {}),
   };
 }
 

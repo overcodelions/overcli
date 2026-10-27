@@ -81,10 +81,18 @@ export function forgetSeen(key: string): void {
   seeded.delete(key);
 }
 
+/// IPv4 written as IPv6 (`::ffff:a9fe:a9fe`, `::a9fe:a9fe`), back to dotted form.
+function unmapV4(h: string): string {
+  const m = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (!m) return h;
+  const a = parseInt(m[1], 16), b = parseInt(m[2], 16);
+  return `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
+}
+
 /// The server's own insides, whatever anyone lists: loopback, link-local
 /// (cloud metadata lives there) and the names that mean "this machine".
 function neverHost(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+  const h = unmapV4(host.replace(/^\[|\]$/g, '').toLowerCase());
   if (h === 'localhost' || h.endsWith('.localhost') || h === '0.0.0.0' || h === '::' || h === '::1') return true;
   if (/^127\./.test(h) || /^169\.254\./.test(h) || /^fe80:/i.test(h)) return true;
   if (/^::ffff:(127\.|169\.254\.)/.test(h)) return true;
@@ -94,7 +102,7 @@ function neverHost(host: string): boolean {
 /// Private networks and names that only mean something inside one. Open
 /// only when the org lists it as its own.
 function privateHost(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+  const h = unmapV4(host.replace(/^\[|\]$/g, '').toLowerCase());
   if (/^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
   if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return true;
   if (/^f[cd][0-9a-f]{2}:/.test(h) || /^::ffff:(10\.|192\.168\.|172\.)/.test(h)) return true;
