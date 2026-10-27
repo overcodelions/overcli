@@ -4,7 +4,12 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-26
+
 ### Security
+- **Run tool configs are credential-free.** On a run with a tool allowlist, every tool that could carry a credential (a command's env and args, a remote address's headers or a token in the address itself, the gateway's key, database passwords) reaches the worker as a relay descriptor; the real config stays in the app, and a tool the relay starts gets the same stripped environment a worker does, runs in the run's folder, and runs inside the run's write jail when the run has one. A plain remote address with no headers and no token in it is the one thing named as it is. Workers inherit only a revocable run token. A write-jailed run can no longer write its project's `.mcp.json`, for the same reason it can't write git hooks.
+- **"Allow rest of turn" is narrower.** It approves reads inside the run's folder, edits inside it, read-only tool calls and ordinary shell lines. Network commands (`curl`, `ssh`…), opaque ones (`$(…)`, `sh -c`), tool writes and risky commands still ask, as do writes to `package.json`, `.npmrc`, lockfiles and the test runners' and linters' config (what `npm test` would run), writes through a link to nowhere, and reads outside the folder. Once the grant has let an edit through, `npm test` and the other scripts ask again that turn; once it has let a read of a credential-shaped file (`.env`, a key, `~/.aws`) through, tool calls ask again.
+- **Safe fetches refuse metadata and loopback addresses written as IPv6** (`http://[::ffff:a9fe:a9fe]/`).
 - **Slack answers in a channel draw only on what everyone can see.** In 0.22.0, a question asked in a shared channel could be answered from a private team's work or knowledge that only the asker could see, and the answer, its "From …" line and a DM to anyone following the thread showed it to the whole channel. In a channel, the answer, the work offered as "this may already be it", and the rooms asked from it now come only from work open to everyone (as the Library marks it) and the knowledge of teams open to everyone. In a DM they draw on everything you can see, as before.
 - **Workers' file reads are kept to their own folders.** A worker run without a grant for outside actions has Read, Grep, Glob, LS and NotebookRead approved only for paths inside its run's folders (and the repos a workspace links to), checked where each path really leads, the same check its read-only shell lines get. A glob that is absolute or climbs out of the folder is refused too. Before, these were approved on any path.
 - **A worker that reads the tool gateway's key file can no longer make another run's key.** Run keys are signed with a secret each start keeps in memory only, so a forged key for a live run is refused outright. Workers that run shell commands can still read the sealed tokens; see the security page.
@@ -13,6 +18,14 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **CSV exports can't carry formulas.** The console's Slack usage and worker report exports put a `'` before a cell that starts with `=`, `+`, `-` or `@`, so a Slack display name like `=HYPERLINK(…)` opens as text.
 
 ### Added
+- **Short names for processes and teams.** Each goes by its initials ("lrb" for Launch review board) unless you set your own, and Slack takes them in place of the whole name: `/idea lrb let customers export CSV`, `/team pd draft the PRFAQ`, or as the first word of a message to the app. Set it in the process editor, the team editor, or a team's settings in the console; it shows as a chip beside the name on its page (click to copy) and in its ways in. Bare `/idea` lists how to reach each process, `/team` shows each team's short name, and a reply to anyone who used the long name tells them the short one. Short names are unique among processes (and among teams), and common first words like "bug" are refused.
+- **Allow rest of turn** on permission cards approves safe requests until the turn ends, so one card covers the edits, reads and test runs that follow it.
+- **Bedrock model ids are recognised.** A model set as `us.anthropic.claude-…` or another Bedrock id is accepted where a model is picked, instead of being treated as unknown.
+- **Secrets are redacted from replies before they leave.** Stored secret values and credential-shaped strings are replaced with `[REDACTED]` in what a worker says to people (see Security).
+- **Chat in a Slack thread after a run has finished.** A reply in the thread of finished work reaches the worker that did it, which picks up the follow-up instead of the thread going quiet.
+- **Tilt import and services rebind in the Services pane.** A Tiltfile's resources can be imported as services, and a service whose port or process changed can be bound to the new one without being set up again.
+- **The file tree handles very large folders.** Past the listing's cap, folders load as they are opened, the tree can be filtered, and a search on disk finds files the listing left out.
+- **Flow triggers are editable.** A flow's triggers can be changed on its page, with the same checks as when they were made.
 - **Follow a Slack thread by DM.** Say "let me know when…" or "keep me posted" in a thread, or press **Notify me** under a reply, and overgo DMs you when an answer or results are posted there. **Unsubscribe** in the thread stops it. "Let me know when ACME-412 changes" follows the ticket instead, setting up a watch on a worker when none checks it. Said with a request ("fix the Safari case and ping me when it's done"), the request still goes to whoever is on it. "What am I following?" lists your tickets and threads.
 - **Slack and Watching reports in the console.** **Reports → Slack** shows who asks overgo what, what came of it (answered, handed to someone, offered existing work) and each thread as it stands, updating as replies come in, with counts per person and a CSV export. Admins see everyone, and everyone else sees their own. **Reports → Watching** lists the tickets your workers watch for changes and who gets a DM when one moves.
 - **A guide.** [`docs/guide/`](docs/guide/README.md) walks from install to a first merged agent branch, then covers chats and agents, flows, workers and teams, workspaces, services, Slack and the org server, the headless CLI and troubleshooting.
@@ -31,12 +44,14 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **A Monday digest.** At 9am on Mondays in the org's time zone, managers get a DM with each worker's week (done, failed, asked, cost, ratings) and what's waiting on them; admins also get the org's totals, cost per finished item, failing tools and open tool requests. `/overgo digest` sends it any time.
 - **Hand a Slack thread to another worker by name.** A reply in a worker's thread that starts with another worker's name ("Triage will need to…", "ask Triage to…") gives that worker the thread, with what was said so far. The router also knows which workers read code (their repo or workspace) and sends "how does X work" questions to them.
 - **Tool panels count what a tool can do:** so many reads and changes, with **See what it can do** for the names.
-- **Databases from overdb.** overdb can publish a connection to your org's server through this app: overcli now makes `~/.overcli/inbox/connections/`, which tells overdb to offer it, and sends what arrives there once you're signed in to your org. On the server, a new **Setup → Databases** page lists them for an admin to finish: type a password connection's password, or grant the server's AWS role for an IAM one. Finishing installs the **overdb** tool, overdb's read-only MCP server, for workers to use. Passwords live only in that tool's settings, never in a file or the audit log.
+- **Databases from overdb.** overdb can publish a connection to your org's server through this app: overcli now makes `~/.overcli/inbox/connections/`, which tells overdb to offer it, and sends what arrives there once you're signed in to your org. On the server, a new **Setup → Databases** page lists them for an admin to finish: type a password connection's password, or grant the server's AWS role for an IAM one. Finishing installs the **overdb** tool, overdb's read-only MCP server, for workers to use. Passwords remain in app-owned tool settings and relay transports, never in run configs or the audit log.
 - Databases carry what workers should know: the tenancy rule, the publisher's notes and overdb's map of the code, given to workers before they write SQL.
 - **Recent queries by workers** on Setup → Databases: each worker's queries, by database, with the SQL and row count and never the rows. Each run's overdb tool is told whose run it is.
 - The server image includes overdb at `/opt/overdb` (`OVERDB_REF` picks the version; `--build-context overdb-src=…` builds a checkout).
 
 ### Changed
+- **Output search is virtualized** for large cross-service result sets, so thousands of matching lines scroll without the window stalling (#608).
+- **New chats start in Auto, not Plan.** Upgrading moves a Plan default to Auto once; a notice lets you keep Auto or restore Plan.
 - **Setup has a side list.** The console's Setup page is one page at a time, picked from a grouped list: Readiness, then Organization (General, People & teams, Sign-in, Records), Workers (Hiring, Role catalog, Handbook, Spending) and Connections (Tools, Secrets, Repos & workspaces, From desktops, Other servers). The old "Rules, spending and sign-in" tab is split across those pages, and its old link opens General. A light marks a page that needs something: a missing tool, sign-in off. Each page's **Save** waits until something changed. On a phone the list is a menu.
 - **A step whose tools only read no longer asks** just because its instructions mention a write. Read-only shell commands (`git log`, `git show`, `git blame`, `git grep`, `git shortlog`, `rg` and `grep`) on a worker's own folders count as local, also after `cd <dir> &&` in a worker run.
 - **Approval cards keep saying what they were for** after they're settled.
@@ -44,9 +59,15 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **The catalog's Zendesk tool is pinned** to `zd-mcp-server@0.6.1`.
 
 ### Fixed
+- **Slack stop requests are heard however they're phrased.** "ok stop pinging me", "stop notifying me please", "unsubscribe, thank you", "unsubscribe me from this ticket ACME-412", "stop pinging me, I'll check myself" and "hey, stop following ACME-412" stop notifications. A bug report that mentions unsubscribing, or a request said beside one, still reaches the worker.
+- **"Ping me when it's done and bump the timeout" passes the second request on** as well as following the thread, while "ping me when it's merged and deployed", "…when lint and build pass" and "…when config.yaml is updated" only follow it. A second request that opens with an order ("and reopen ACME-9", "and make it work on Safari", "and see what breaks") is passed on too.
+- **Initials nobody chose don't claim a message.** A team or process goes by its initials after `/idea` and `/team` and as a reply to "Which process?", but a Slack message that starts with them ("see if the export still works", for Support Escalation Engineering) goes to the router as before. Initials that spell a common first word ("see", "add", "run") are not offered at all, and such words can't be set as short names.
+- **A new short name can't take over one in use.** Setting a process's or team's short name to another live one's initials ("dtpd", which `/idea dtpd …` already reaches) is refused, as a name already set would be.
+- File search, the storage report and file-tree refreshes no longer run duplicate walks. The file tree's filter and the file finder no longer cancel each other's search.
+- A branch checkout no longer hands the file tree thousands of changed paths: past 200, the open folders are relisted.
+- A tool reply over 8 MB fails that one call instead of ending the tool's session, and large replies are no longer rescanned as they arrive.
 - **An npx tool cut off on its first download stayed broken**, failing every start with "Cannot find module". The server now installs npx tools in the background at startup, every 30 minutes and after one is installed, and removes and reinstalls a broken install.
 - **"Thanks" in a Slack thread a team's room answered went to the room as another question.** It now ends the exchange. A "yes" still goes to the room, which may have asked one.
-- **"The unsubscribe link is broken" stopped notifications instead of reporting the bug.** "Unfollow" and "unsubscribe" count only when the message starts with them, and "stop following…" only when that's all it says.
 - **A question answered from known work could wait two minutes before being routed.** The answer gets 45 seconds, and the matching work is read once rather than again when it comes back empty.
 - **A "Sources: 1, 3." line ending in a full stop showed in the answer**, and the answer was credited to the first source.
 - **Ask the team about it** is offered only to whoever asked for the task, or an admin: the room refuses anyone else.
@@ -1028,7 +1049,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/overcodelions/overcli/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/overcodelions/overcli/compare/v0.21.2...v0.22.0
 [0.21.2]: https://github.com/overcodelions/overcli/compare/v0.21.1...v0.21.2
 [0.21.1]: https://github.com/overcodelions/overcli/compare/v0.21.0...v0.21.1

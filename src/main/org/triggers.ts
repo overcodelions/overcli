@@ -114,7 +114,8 @@ export interface Deliverable {
 export interface TriggerDeps {
   store: { list(): WorkerTrigger[]; save(all: WorkerTrigger[]): void };
   deliverables: { list(): Deliverable[]; save(all: Deliverable[]): void };
-  worker(id: string): { id: string; name: string; enabled: boolean } | null;
+  /// `avatarUrl`: what its Slack posts show, beside its name.
+  worker(id: string): { id: string; name: string; enabled: boolean; avatarUrl?: string } | null;
   /// Hand an event to a team or a process. Absent: those triggers skip.
   handTo?(hand: TriggerHand, event: { title: string; text: string; url?: string; triggerName: string }): { ok: true; label: string } | { ok: false; error: string };
   /// Hand the worker a task; the answer arrives on `done`. `startsOnItsOwn`:
@@ -125,10 +126,14 @@ export interface TriggerDeps {
   toolConfig(name: string): McpServerConfig | null;
   callTool(config: McpServerConfig, tool: string, args: Record<string, unknown>): Promise<ToolCall>;
   slack?: {
-    post(channel: string, text: string, threadTs?: string): Promise<boolean>;
+    /// `as`: post under the worker's name and face, as the front door does.
+    post(channel: string, text: string, threadTs?: string, as?: { name: string; iconUrl?: string }): Promise<boolean>;
     message(channel: string, ts: string): Promise<{ text: string; user?: string } | null>;
     /// A DM to one person. Absent: DM destinations are skipped.
     dm?(slackUserId: string, text: string): Promise<boolean>;
+    /// The bot's own member id: a message that @-mentions it is the front
+    /// door's, not a trigger's.
+    botUserId?(): string | null;
   };
   log(message: string): void;
   now?(): number;
@@ -140,6 +145,8 @@ const MAX_SEEN = 5000;
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const URL_RE = /https?:\/\/[^\s<>)"'\]]+/g;
+/// The worker's whole reply when there was nothing for it: nothing is posted.
+const PASS_RE = /^\W*pass\W*$/i;
 
 export class TriggerService {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -189,6 +196,9 @@ export class TriggerService {
   /// A new trigger. A webhook's secret URL token is returned once, never kept.
   create(input: Omit<WorkerTrigger, 'id' | 'createdAt' | 'seen' | 'seeded' | 'webhook'> & { webhook?: { idPath?: string } }): { ok: true; trigger: WorkerTrigger; token?: string } | { ok: false; error: string } {
     const { webhook: hook, ...rest } = input;
+    // The front door already answers "@overgo …" as the right worker, in the
+    // thread, follow-ups included; a trigger would take the mention from it.
+    if (rest.kind === 'slack' && rest.slack?.on === 'mention') return { ok: false, error: "Mentions need no trigger: \"@overgo\" with the worker's name, or a question in its line of work, reaches it and it answers in the thread. To have it answer unasked, use each new message." };
     const invalid = this.validate(rest);
     if (invalid) return { ok: false, error: invalid };
     const token = input.kind === 'webhook' ? randomBytes(24).toString('base64url') : undefined;
@@ -465,6 +475,8 @@ export class TriggerService {
       } else {
         // New messages only; a reply in a thread is a conversation, not an event.
         if (ev.type !== 'message' || ev.channel !== s.channel || !ev.ts || ev.thread_ts) continue;
+        const bot = this.deps.slack?.botUserId?.();
+        if (bot && (ev.text ?? '').includes(`<@${bot}>`)) continue;
         channel = ev.channel;
         ts = ev.ts;
         text = ev.text ?? '';
@@ -519,12 +531,17 @@ export class TriggerService {
         this.putDeliverable({ ...d, status: 'failed', error: res.error, doneAt: this.now() });
         return;
       }
+      if (PASS_RE.test(res.reply)) {
+        this.putDeliverable({ ...d, status: 'skipped', error: `${worker.name} passed: nothing worth saying.`, doneAt: this.now() });
+        return;
+      }
       const links = [...new Set(res.reply.match(URL_RE) ?? [])].slice(0, 10);
       const deliveredTo: string[] = [];
       const summary = `*${worker.name}* handled _${item.title}_${item.url ? ` (<${item.url}|source>)` : ''}\n${res.reply.slice(0, 2800)}`;
+      const as = { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) };
       for (const dest of t.deliver) {
-        if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, summary))) deliveredTo.push(`Slack #${dest.channel}`);
-        if (dest.kind === 'thread' && thread && this.deps.slack && (await this.deps.slack.post(thread.channel, res.reply.slice(0, 2800), thread.ts))) deliveredTo.push('the Slack thread');
+        if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, summary, undefined, as))) deliveredTo.push(`Slack #${dest.channel}`);
+        if (dest.kind === 'thread' && thread && this.deps.slack && (await this.deps.slack.post(thread.channel, res.reply.slice(0, 2800), thread.ts, as))) deliveredTo.push('the Slack thread');
         if (dest.kind === 'worker') deliveredTo.push(dest.text);
         if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, summary))) deliveredTo.push('a DM');
       }
@@ -653,6 +670,7 @@ function eventPrompt(t: WorkerTrigger, item: WatchItem): string {
     ...(yourself.length ? ['', `When it's done: ${yourself.join(' ')}`] : []),
     '',
     'Reply with what you did and the result, briefly and with any links: your reply is shared with the team.',
+    'If this is not one for you, or there is nothing worth saying (chatter, an announcement, already answered), reply with only PASS: nothing is posted.',
   ].join('\n');
 }
 

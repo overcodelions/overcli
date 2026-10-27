@@ -28,6 +28,7 @@ import {
 } from '../../shared/org/process';
 import { nextOccurrenceAfter, type ScheduleTrigger } from '../../shared/flows/schedule';
 import { scheduleText } from './orgService';
+import { checkShortName, normalizeShortName, resolveShortNames } from '../../shared/shortName';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -121,6 +122,7 @@ function outline(def: ProcessDef): ProcessDef {
   return {
     id: def.id,
     name: def.name,
+    ...(def.shortName ? { shortName: def.shortName } : {}),
     ...(def.purpose ? { purpose: def.purpose } : {}),
     owner: person(def.owner),
     stages: def.stages.map((st) => ({
@@ -248,10 +250,17 @@ export class ProcessService {
   /// A process as this caller may see it: whole to its owner and admins;
   /// without the code's path to the others in it; as an outline to everyone
   /// else.
-  private shownTo(caller: OrgCaller, def: ProcessDef, all = this.seesAll(caller, def)): ProcessDef {
-    if (!all) return outline(def);
-    if (this.steers(caller, def) || !def.codeIn) return def;
-    return { ...def, codeIn: { name: def.codeIn.name, path: '' } };
+  private shownTo(caller: OrgCaller, def: ProcessDef, all = this.seesAll(caller, def), shortNames = this.shortNames()): ProcessDef {
+    const short = shortNames.get(def.id);
+    const named = short ? { ...def, shortName: short, ...(def.shortName ? {} : { shortNameAuto: true }) } : def;
+    if (!all) return outline(named);
+    if (this.steers(caller, def) || !def.codeIn) return named;
+    return { ...named, codeIn: { name: def.codeIn.name, path: '' } };
+  }
+
+  /// Every live process's short name: its own, or its initials while free.
+  private shortNames(): Map<string, string> {
+    return resolveShortNames(this.peek().processes.filter((p) => !p.archived).sort((a, b) => a.createdAt - b.createdAt));
   }
 
   private stageOwner(def: ProcessDef, stage: ProcessStage): ProcessPerson {
@@ -323,12 +332,14 @@ export class ProcessService {
 
   list(caller: OrgCaller): Array<ProcessDef & { active: number; byStage: number[]; canSteer: boolean; canStart: boolean }> {
     const s = this.peek();
+    // Once per listing, not once per row: the map sorts every process.
+    const shortNames = this.shortNames();
     return s.processes
       .filter((p) => !p.archived && this.seesProcess(caller, p))
       .map((p) => {
         const live = s.items.filter((i) => i.processId === p.id && i.status === 'active');
         return {
-          ...this.shownTo(caller, p),
+          ...this.shownTo(caller, p, undefined, shortNames),
           active: live.length,
           byStage: p.stages.map((_, n) => live.filter((i) => i.stageIndex === n).length),
           canSteer: this.steers(caller, p),
@@ -404,6 +415,8 @@ export class ProcessService {
       id?: string;
       localId?: string;
       name: string;
+      /// Absent: kept as it was; empty: cleared.
+      shortName?: string;
       purpose?: string;
       about?: string;
       templateId?: string;
@@ -443,9 +456,20 @@ export class ProcessService {
     if (refused) return { ok: false, error: refused };
     const access = input.access === undefined ? (existing ? existing.access : { who: 'private' as const }) : parseProcessAccess(input.access);
     if (typeof access === 'string') return { ok: false, error: access };
+    const shortName = input.shortName === undefined ? existing?.shortName : normalizeShortName(input.shortName);
+    if (shortName) {
+      const bad = checkShortName(shortName);
+      if (bad) return { ok: false, error: bad };
+      // What each live process goes by today, its own or its initials: a
+      // new name never takes over one people already type (`/idea dtpd …`).
+      const resolved = this.shortNames();
+      const taken = s.processes.find((p) => !p.archived && p.id !== existing?.id && (p.shortName === shortName || resolved.get(p.id) === shortName || p.name.trim().toLowerCase() === shortName));
+      if (taken) return { ok: false, error: `${taken.name} already goes by "${shortName}". Pick another short name.` };
+    }
     const def: ProcessDef = {
       id: existing?.id ?? randomUUID().slice(0, 12),
       name: input.name?.trim() ?? '',
+      ...(shortName ? { shortName } : {}),
       ...(input.purpose?.trim() ? { purpose: input.purpose.trim() } : {}),
       ...(input.about?.trim() ? { about: input.about.trim() } : {}),
       ...(input.codeIn === undefined ? (existing?.codeIn ? { codeIn: existing.codeIn } : {}) : input.codeIn ? { codeIn: input.codeIn } : {}),
@@ -638,7 +662,8 @@ export class ProcessService {
   find(nameOrId: string): ProcessDef | undefined {
     const key = nameOrId.trim().toLowerCase();
     const live = this.peek().processes.filter((p) => !p.archived);
-    return live.find((p) => p.id === nameOrId) ?? live.find((p) => p.name.toLowerCase() === key);
+    const short = this.shortNames();
+    return live.find((p) => p.id === nameOrId) ?? live.find((p) => p.name.toLowerCase() === key) ?? live.find((p) => short.get(p.id) === key);
   }
 
   // ---- ITEMS ------------------------------------------------------------

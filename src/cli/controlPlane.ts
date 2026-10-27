@@ -619,6 +619,7 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
       ...(code !== undefined ? { codeIn: code } : {}),
       ...(id ? { id } : {}),
       name: typeof b.name === 'string' ? b.name.slice(0, 120) : '',
+      ...(typeof b.shortName === 'string' ? { shortName: b.shortName.slice(0, 40) } : {}),
       ...(typeof b.purpose === 'string' ? { purpose: b.purpose.slice(0, 1000) } : {}),
       ...(typeof b.about === 'string' ? { about: b.about.slice(0, 3000) } : {}),
       ...(typeof b.templateId === 'string' && libraryProcess(b.templateId) ? { templateId: b.templateId } : {}),
@@ -1170,6 +1171,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
           ...(b.audience === null ? { audience: null } : (() => { const a = b.audience !== undefined ? parseAudience(b.audience) : null; return a?.ok ? { audience: a.audience } : {}; })()),
           ...(typeof b.budgetUSDPerTask === 'number' ? { budgetUSDPerTask: b.budgetUSDPerTask } : {}),
           ...(typeof b.guidance === 'string' ? { guidance: b.guidance } : {}),
+          ...(typeof b.shortName === 'string' ? { shortName: b.shortName.slice(0, 40) } : {}),
           ...(typeof b.avatarUrl === 'string' || b.avatarUrl === null ? { avatarUrl: b.avatarUrl as string | null } : {}),
         });
       },

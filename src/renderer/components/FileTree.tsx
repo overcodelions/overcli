@@ -4,6 +4,15 @@ import { useTerminalStore } from '../terminalStore';
 import { fileIconColor, folderIconColor, isTestFileName } from '../fileIcons';
 import type { FileTreeEntry } from '@shared/types';
 
+/// A path with one separator and no trailing one, so two can be compared
+/// by prefix. Done once per path, not once per pair.
+function normalizePath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+function pathsIntersect(x: string, y: string): boolean {
+  return x === y || x.startsWith(y + '/') || y.startsWith(x + '/');
+}
+
 /// Lazily-loaded file tree rooted at the current conversation's project
 /// (or worktree) directory. Reuses the main-process `fs:listFiles` IPC
 /// which already walks the tree skipping `node_modules`, `.git`, build
@@ -64,7 +73,10 @@ export const FileTree = memo(function FileTree({
   /// folders, filter and selection) on screen until the new one lands, so a
   /// background relist isn't visible beyond the row that appeared.
   const seqRef = useRef(0);
-  const loadDir = useCallback(async (dir: string) => {
+  // Keep changes from superseded refreshes until the newest refresh finishes.
+  // Otherwise a second event for B can cancel A's pending capped listing.
+  const pendingRefreshPaths = useRef<Set<string> | null>(new Set());
+  const loadDir = useCallback(async (dir: string, expectedSeq?: number) => {
     let listing: SubListing;
     try {
       const res = await window.overcli.invoke('fs:listFileEntries', dir);
@@ -72,10 +84,13 @@ export const FileTree = memo(function FileTree({
     } catch {
       listing = { entries: [], unlistedDirs: [] };
     }
-    setSubListings((cur) => new Map(cur).set(dir, listing));
+    if (expectedSeq === undefined || expectedSeq === seqRef.current) setSubListings((cur) => new Map(cur).set(dir, listing));
   }, []);
   const load = useCallback(
-    async (mode: 'initial' | 'refresh') => {
+    async (mode: 'initial' | 'refresh', changedPaths?: string[]) => {
+      if (mode === 'initial') pendingRefreshPaths.current = new Set();
+      else if (!changedPaths) pendingRefreshPaths.current = null;
+      else for (const changed of changedPaths) pendingRefreshPaths.current?.add(changed);
       const seq = ++seqRef.current;
       if (mode === 'initial') setLoading(true);
       else setRefreshing(true);
@@ -88,7 +103,14 @@ export const FileTree = memo(function FileTree({
         // Folders already opened past the cap relist with the root, or a
         // file written into one would never appear.
         if (mode === 'refresh') {
-          for (const dir of subListingsRef.current.keys()) void loadDir(dir);
+          const affected = pendingRefreshPaths.current;
+          const changed = affected ? [...affected].map(normalizePath) : null;
+          const dirs = [...subListingsRef.current.keys()].filter((dir) => { if (!changed) return true; const d = normalizePath(dir); return changed.some((c) => pathsIntersect(c, d)); });
+          for (const dir of dirs) {
+            if (seq !== seqRef.current) return;
+            await loadDir(dir, seq);
+          }
+          if (seq === seqRef.current) pendingRefreshPaths.current = new Set();
         } else {
           setSubListings(new Map());
         }
@@ -130,7 +152,7 @@ export const FileTree = memo(function FileTree({
     });
     const unsub = window.overcli.onMainEvent((e) => {
       if (e.type === 'fileTreeChanged' && watchedKey && e.root === watchedKey) {
-        void load('refresh');
+        void load('refresh', e.changedPaths);
       }
     });
     return () => {
@@ -154,7 +176,7 @@ export const FileTree = memo(function FileTree({
     setSearching(true);
     const timer = setTimeout(() => {
       void window.overcli
-        .invoke('fs:findFileEntries', rootPath, query)
+        .invoke('fs:findFileEntries', rootPath, query, 'tree')
         .then((res) => {
           if (!cancelled) setDiskMatches(res.entries);
         })
@@ -207,7 +229,7 @@ export const FileTree = memo(function FileTree({
   // An unopened folder lists itself the first time it's expanded.
   const expandUnlisted = useCallback(
     (dir: string) => {
-      if (!subListingsRef.current.has(dir)) void loadDir(dir);
+      if (!subListingsRef.current.has(dir)) void loadDir(dir, seqRef.current);
     },
     [loadDir],
   );

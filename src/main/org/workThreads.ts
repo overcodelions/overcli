@@ -412,7 +412,9 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
     );
     const asked = b ? approvedAt.get(b.id) : undefined;
     if (items.length && b) {
-      const autoStarted = !waiting.length && runs.length && !asked;
+      // A batch that says how it started is believed; an older one only has
+      // the journal, which marks any start as approved.
+      const autoStarted = !waiting.length && runs.length && (b.autoLaunched ? !b.approvedBy : !asked);
       progress.push(
         waiting.length
           ? { label: 'Your OK', state: 'need' }
@@ -420,7 +422,7 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
             ? { label: 'You skipped it', state: 'skipped' }
             : autoStarted
               ? { label: 'Started on its own', state: 'done', at: b.createdAt }
-              : { label: 'You approved', state: 'done', ...(asked ? { at: asked } : {}) },
+              : { label: b.approvedBy ? `${b.approvedBy} approved` : 'You approved', state: 'done', ...(asked ? { at: asked } : {}) },
       );
     }
     if (runs.length || queued.length || (waiting.length && items.length)) {

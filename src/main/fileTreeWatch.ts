@@ -60,9 +60,15 @@ interface WatchEntry {
   /// Milliseconds the last relist of this root took, reported by whoever
   /// serves the listing (see `noteRelistCost`). 0 until the first one lands.
   relistCostMs: number;
+  changedPaths: Set<string> | null;
 }
 
 const watchers = new Map<string, WatchEntry>();
+
+/// The most changed paths one event names. Past this (a branch checkout, an
+/// install) the renderer is told to relist its open folders instead: fewer
+/// bytes over IPC, and no matching of thousands of paths against each one.
+export const MAX_CHANGED_PATHS = 200;
 
 /// Report what listing `root` cost, so the watcher can pace itself to the
 /// tree it's actually watching rather than to a fixed guess.
@@ -80,7 +86,7 @@ function gapFor(entry: WatchEntry): number {
 /// without re-implementing path resolution.
 export function watchTree(
   root: string,
-  onChange: (key: string) => void,
+  onChange: (key: string, changedPaths?: string[]) => void,
 ): { ok: boolean; key: string } {
   const key = path.resolve(root);
   const existing = watchers.get(key);
@@ -94,6 +100,7 @@ export function watchTree(
     timer: null,
     lastFireAt: 0,
     relistCostMs: 0,
+    changedPaths: new Set(),
   };
   const schedule = () => {
     if (entry.timer) return;
@@ -101,11 +108,12 @@ export function watchTree(
     entry.timer = setTimeout(() => {
       entry.timer = null;
       entry.lastFireAt = Date.now();
-      onChange(key);
+      onChange(key, entry.changedPaths ? [...entry.changedPaths] : undefined);
+      entry.changedPaths = new Set();
     }, wait);
     entry.timer.unref?.();
   };
-  const attach = (dir: string): boolean => {
+  const attach = (dir: string, alias = dir): boolean => {
     let watcher: fs.FSWatcher;
     try {
       // persistent: false — a watcher must never be the reason the process
@@ -120,6 +128,11 @@ export function watchTree(
     watcher.on('change', (_event, filename) => {
       const name = typeof filename === 'string' ? filename : filename?.toString() ?? null;
       if (isIgnoredTreeChange(name, dirName)) return;
+      if (!name) entry.changedPaths = null;
+      else if (entry.changedPaths) {
+        entry.changedPaths.add(path.resolve(alias, name));
+        if (entry.changedPaths.size > MAX_CHANGED_PATHS) entry.changedPaths = null;
+      }
       schedule();
     });
     // A watcher that errors out (directory deleted, descriptor limit) is
@@ -138,32 +151,36 @@ export function watchTree(
   // but symlinks to the member projects — watching only the root would
   // report nothing the user cares about. Follow the links one level, which
   // is exactly how deep the workspace layout goes.
-  for (const target of linkedDirs(key)) {
+  for (const { target, alias } of linkedDirAliases(key)) {
     if (entry.watchers.length >= MAX_LINK_WATCHES) break;
-    attach(target);
+    attach(target, alias);
   }
   return { ok: true, key };
 }
 
 /// Absolute targets of the directory symlinks directly under `dir`.
 function linkedDirs(dir: string): string[] {
+  return linkedDirAliases(dir).map(({ target }) => target);
+}
+
+function linkedDirAliases(dir: string): Array<{ target: string; alias: string }> {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return [];
   }
-  const out = new Set<string>();
+  const out = new Map<string, string>();
   for (const e of entries) {
     if (!e.isSymbolicLink() || TREE_SKIP_DIRS.has(e.name)) continue;
     try {
       const target = fs.realpathSync(path.join(dir, e.name));
-      if (fs.statSync(target).isDirectory()) out.add(target);
+      if (fs.statSync(target).isDirectory()) out.set(`${target}\0${path.join(dir, e.name)}`, target);
     } catch {
       // Broken link — the walk skips it too.
     }
   }
-  return [...out];
+  return [...out].map(([key, target]) => ({ target, alias: key.slice(key.indexOf('\0') + 1) }));
 }
 
 /// Release one reference. The watcher closes when the last mount lets go.

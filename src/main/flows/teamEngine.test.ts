@@ -637,6 +637,25 @@ describe('TeamEngine', () => {
     expect(h.engine.list().teams[0].guidance).toBeUndefined();
   });
 
+  it('refuses a short name that is an older team\'s initials', () => {
+    const h = makeHarness({ seedTeams: [team({ name: 'Pricing Desk' })] });
+    h.engine.start();
+    const t = team();
+    expect(h.engine.save({ name: 'Another', shortName: 'pd', members: t.members, budgetUSDPerTask: 20, checkpoints: t.checkpoints })).toMatchObject({ ok: false, error: expect.stringContaining('already goes by "pd"') });
+    expect(h.engine.save({ id: t.id, name: 'Pricing Desk', shortName: 'pd', members: t.members, budgetUSDPerTask: 20, checkpoints: t.checkpoints })).toMatchObject({ ok: true });
+  });
+
+  it('keeps a team\'s short name unique, through an edit that leaves it out', () => {
+    const h = makeHarness({ seedTeams: [team({ shortName: 'pd' })] });
+    h.engine.start();
+    const t = team();
+    h.engine.save({ id: t.id, name: 'Renamed', members: t.members, budgetUSDPerTask: 20, checkpoints: t.checkpoints });
+    expect(h.engine.list().teams[0].shortName).toBe('pd');
+    expect(h.engine.save({ name: 'Another', shortName: 'PD', members: t.members, budgetUSDPerTask: 20, checkpoints: t.checkpoints })).toMatchObject({ ok: false, error: expect.stringContaining('already goes by') });
+    h.engine.save({ id: t.id, name: 'Renamed', shortName: '', members: t.members, budgetUSDPerTask: 20, checkpoints: t.checkpoints });
+    expect(h.engine.list().teams[0].shortName).toBeUndefined();
+  });
+
   it('plans by the team\'s guidance', async () => {
     const h = makeHarness({ seedTeams: [team({ guidance: 'Maya always drafts.' })], turns: [PLAN] });
     h.engine.start();

@@ -31,5 +31,8 @@ example-registry/
 # Design canvas working files (seeded into the published canvas, not app source)
 .design-*/
 
+# Release-readiness audit reports are working notes, not source.
+release-readiness-*.md
+
 # Deployment secrets
 deploy/.env

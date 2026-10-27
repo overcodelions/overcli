@@ -11,7 +11,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const TRIAGE: FrontDoorWorker = { id: 'w-triage', name: 'Triage', tagline: 'Fixes product bugs', job: 'Reproduce bugs in the web app, fix them, and open a pull request with tests.' };
 const VANTAGE: FrontDoorWorker = { id: 'w-vantage', name: 'Vantage', tagline: 'Competitive analyst', job: 'Research competitors and write competitive analysis reports on features, pricing and positioning.' };
 
-function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null; general?: (text: string) => string | null; replies?: Record<string, string>; dm?: boolean; now?: () => number; follow?: (item: string, on: boolean, workerId?: string, say?: (t: string) => void) => string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean } | Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>; following?: Array<{ item: string; status?: string; worker: string }>; slow?: boolean; continueRun?: (orchestrationId: string, text: string) => { ok: true; reply: string } | { ok: false; error: string } | null } = {}) {
+function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null | 'fail'; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null; general?: (text: string) => string | null; replies?: Record<string, string>; dm?: boolean; now?: () => number; follow?: (item: string, on: boolean, workerId?: string, say?: (t: string) => void) => string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean } | Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>; following?: Array<{ item: string; status?: string; worker: string }>; slow?: boolean; continueRun?: (orchestrationId: string, text: string) => { ok: true; reply: string } | { ok: false; error: string } | null } = {}) {
   const posts: string[] = [];
   const briefs: Array<{ teamId: string; brief: string }> = [];
   const items: Array<{ processId: string; brief: string }> = [];
@@ -123,6 +123,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
       routed++;
       related.push(rel);
       candidates.push(offered.map((w) => w.id));
+      if (opts.route === 'fail') throw new Error('No model is signed in.');
       return opts.route ?? null;
     },
     slack: {
@@ -264,11 +265,17 @@ describe('the front door', () => {
     expect(h.routed()).toBe(0);
   });
 
-  it('routes by job when the words point clearly at one worker, else asks a model, else asks the person', async () => {
-    const clear = harness();
+  it('asks a model, falls back on clear words when it cannot, else asks the person', async () => {
+    // Words that point at one worker don't outvote the model: same nouns, other intent.
+    const outvoted = harness({ route: { workerId: 'w-triage', why: 'it knows how the reports page works' } });
+    await outvoted.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> competitive analysis of pricing for the reports feature against competitors', dm: false });
+    expect(outvoted.routed()).toBe(1);
+    expect(outvoted.asks[0].workerId).toBe('w-triage');
+
+    const clear = harness({ route: 'fail' });
     await clear.door.onMessage({ channel: 'C0ACME', ts: '2.0', user: 'U1', text: '<@B0BOT> competitive analysis of pricing for the reports feature against competitors', dm: false });
     expect(clear.asks[0].workerId).toBe('w-vantage');
-    expect(clear.routed()).toBe(0);
+    expect(clear.posts[0]).toContain("it's the closest match for this");
 
     const modeled = harness({ route: { workerId: 'w-triage', why: 'it fixes the web app' } });
     await modeled.door.onMessage({ channel: 'C0ACME', ts: '3.0', user: 'U1', text: 'the login page looks off', dm: false });
@@ -289,6 +296,28 @@ describe('the front door', () => {
     await anyone.door.onMessage({ channel: 'C0ACME', ts: '6.1', threadTs: '6.0', user: 'U1', text: 'anyone', dm: false });
     expect(anyone.asks).toHaveLength(1);
     expect(anyone.posts.join('\n')).toContain('(you said anyone)');
+  });
+
+  it('gives a request in a home channel to its worker, or picks among several who share it', async () => {
+    const workers = (homes: Record<string, string[]>) => [TRIAGE, VANTAGE].map((w) => (homes[w.id] ? { ...w, homeChannels: homes[w.id] } : w));
+    const one = harness({ workers: workers({ 'w-triage': ['C0ACMEQS'] }), route: { workerId: 'w-vantage', why: 'market' } });
+    await one.door.onMessage({ channel: 'C0ACMEQS', ts: '1.0', user: 'U1', text: '<@B0BOT> competitive analysis of pricing against competitors', dm: false });
+    expect(one.routed()).toBe(0);
+    expect(one.asks[0].workerId).toBe('w-triage');
+    expect(one.posts[0]).toContain('(it answers in this channel)');
+
+    // Elsewhere it's routed as usual.
+    await one.door.onMessage({ channel: 'C0ACMEXX', ts: '2.0', user: 'U1', text: '<@B0BOT> competitive analysis of pricing against competitors', dm: false });
+    expect(one.asks[1].workerId).toBe('w-vantage');
+
+    // Naming someone still wins.
+    await one.door.onMessage({ channel: 'C0ACMEQS', ts: '3.0', user: 'U1', text: '<@B0BOT> Vantage, what changed on their pricing page?', dm: false });
+    expect(one.asks[2].workerId).toBe('w-vantage');
+
+    const shared = harness({ workers: workers({ 'w-triage': ['C0ACMEQS'], 'w-vantage': ['C0ACMEQS'] }), route: { workerId: 'w-vantage', why: 'market' } });
+    await shared.door.onMessage({ channel: 'C0ACMEQS', ts: '4.0', user: 'U1', text: '<@B0BOT> how are competitors pricing this', dm: false });
+    expect(shared.candidates[0]).toEqual(['w-triage', 'w-vantage']);
+    expect(shared.asks[0].workerId).toBe('w-vantage');
   });
 
   it('brings the thread and its screenshots along, and keeps a thread with its worker', async () => {
@@ -510,6 +539,22 @@ describe('reading a request', () => {
     expect(namedWorker('Banana bread', ws)).toBeNull();
   });
 
+  it('takes a short name as a whole first word', () => {
+    const ws = [{ id: 'team:t1', name: 'Pricing Desk', shortName: 'pd' }, { id: 'process:p1', name: 'Launch review board', shortName: 'lrb' }];
+    expect(namedWorker('lrb let customers export reports', ws)).toMatchObject({ worker: { id: 'process:p1' }, rest: 'let customers export reports' });
+    expect(namedWorker('PD: draft the PRFAQ', ws)).toMatchObject({ worker: { id: 'team:t1' }, rest: 'draft the PRFAQ' });
+    expect(namedWorker('ask pd draft the PRFAQ', ws)).toMatchObject({ worker: { id: 'team:t1' } });
+    expect(namedWorker('lrbx is broken', ws)).toBeNull();
+    expect(namedWorker('the pd is late', ws)).toBeNull();
+  });
+
+  it('never takes a message by initials nobody chose, except as a reply to "which one?"', () => {
+    const ws = [{ id: 'team:t2', name: 'Quality Review Crew', shortName: 'qrc', shortNameAuto: true }, { id: 'process:p1', name: 'Launch review board', shortName: 'lrb' }];
+    expect(namedWorker('qrc check the export on Safari', ws)).toBeNull();
+    expect(namedWorker('qrc check the export on Safari', ws, { initials: true })).toMatchObject({ worker: { id: 'team:t2' } });
+    expect(namedWorker('lrb let customers export', ws, { initials: true })).toMatchObject({ worker: { id: 'process:p1' } });
+  });
+
   it('ranks workers by the words of their job', () => {
     expect(rankByWords('fix the bug on the web app', [VANTAGE, TRIAGE])[0].worker.id).toBe('w-triage');
   });
@@ -578,6 +623,20 @@ describe('a conversation in a thread', () => {
 
 describe('teams at the front door', () => {
   const PRODUCT: FrontDoorTeam = { id: 'tm-product', name: 'Product', purpose: 'Writes PR/FAQs and product briefs for new features.', members: ['Vantage', 'Lena', 'Forge'] };
+
+  it('sends "see if the export still works" to the router, not to the team whose initials spell "see"', async () => {
+    const h = harness({
+      teams: [{ id: 'tm-see', name: 'Support Escalation Engineering', shortName: 'see', shortNameAuto: true, members: ['Ana'] }],
+      route: { workerId: 'w-triage', why: 'bugs' },
+    });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'see if the CSV export still works on Safari', dm: false });
+    expect(h.briefs).toEqual([]);
+    expect(h.asks.at(-1)).toMatchObject({ workerId: 'w-triage', text: expect.stringContaining('see if the CSV export') });
+    // A short name somebody set still works as a first word.
+    const chosen = harness({ teams: [{ id: 'tm-see', name: 'Support Escalation Engineering', shortName: 'see', members: ['Ana'] }] });
+    await chosen.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'see if the CSV export still works on Safari', dm: false });
+    expect(chosen.briefs).toEqual([{ teamId: 'tm-see', brief: 'if the CSV export still works on Safari' }]);
+  });
 
   it('gives a request that names a team to it as a team task, and says the questions come by DM', async () => {
     const h = harness({ teams: [PRODUCT] });
@@ -960,6 +1019,51 @@ describe('the front desk', () => {
 });
 
 describe('following a thread', () => {
+  it.each([
+    'unsubscribe me', 'please unsubscribe me', 'stop notifying me, thanks', 'stop pinging me about this, thanks!',
+    'ok stop pinging me', 'thanks, stop notifying me', 'stop pinging me please', 'stop notifying me thank you',
+    'unsubscribe, thank you', 'unsubscribe me from this thread please', 'Unsubscribe.', 'can you stop pinging me?',
+    "stop pinging me, I'll check myself", "unsubscribe, I've got it from here", 'stop notifying me, no need',
+  ])('stops notifications for "%s" without starting work', async (text) => {
+    const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
+    await h.door.subscribe('C0ACME', '1.0', 'U1', true);
+    const asks = h.asks.length;
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text, dm: false });
+    expect(h.state().subs).toEqual([]);
+    expect(h.asks).toHaveLength(asks);
+  });
+
+  it.each([
+    "let me know when it's fixed, thanks", 'let me know when the build and tests pass',
+    "ping me when it's merged and deployed", 'ping me when lint and build pass', 'ping me when config.yaml is updated',
+    'ping me when v1.2 ships', "let me know when it's done, thanks!", 'hey, can you ping me when the PR lands and CI goes green?',
+    "ping me when it's merged and deployed to staging", "ping me when it's reviewed and the build passes", "ping me when QA signs off and docs are updated",
+  ])('subscribes for "%s" without starting work', async (text) => {
+    const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
+    const asks = h.asks.length;
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text, dm: false });
+    expect(h.state().subs?.map(x => x.user)).toEqual(['U1']);
+    expect(h.asks).toHaveLength(asks);
+  });
+
+  it.each([
+    "ping me when it's done and bump the timeout to 30s if the export is slow", 'Let me know when it ships. Fix Firefox.',
+    "ping me when it's done and check Firefox", "let me know when it's merged, then deploy it to staging",
+    "ping me when it's merged and reopen ACME-9", "ping me when it's merged and shorten the timeout", "ping me when it's merged and embed the chart",
+    "ping me when it's merged and seed the staging db", "ping me when it's merged and make it work on Safari", "ping me when it's merged and have it run nightly",
+    "ping me when it's merged and see what breaks", "ping me when it's merged and tag the release", "ping me when it's merged and notify the team",
+  ])('preserves the work request in "%s"', async (text) => {
+    const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
+    const asks = h.asks.length;
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text, dm: false });
+    expect(h.state().subs?.map(x => x.user)).toEqual(['U1']);
+    expect(h.asks).toHaveLength(asks + 1);
+    expect(h.asks.at(-1)?.text).toContain(text);
+  });
+
   it('DMs whoever asked to be told when something is posted, until they stop', async () => {
     const h = harness({ dm: true, reply: 'Fixed in #412.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export button is broken', dm: false });
@@ -1009,6 +1113,53 @@ describe('following a thread', () => {
     expect(followed).toEqual([]);
     expect(h.state().subs?.map((x) => x.user)).toEqual(['U1']);
     expect(h.asks.map((a) => a.text)).toEqual(expect.arrayContaining([expect.stringContaining('unsubscribe link'), expect.stringContaining('stop tracking deleted users')]));
+  });
+
+  it('follows with "ping me when" and still passes on a second request after "and"', async () => {
+    const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export button is broken', dm: false });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: "ping me when it's done and bump the timeout to 30s", dm: false });
+    expect(h.state().subs?.map((x) => x.user)).toContain('U1');
+    expect(h.asks.at(-1)?.text).toContain('bump the timeout');
+  });
+
+  it('drops a followed ticket for "hey, stop following ACME-412"', async () => {
+    const followed: string[] = [];
+    const h = harness({
+      dm: true,
+      route: { workerId: 'w-triage', why: 'bugs' },
+      follow: (item, on) => {
+        followed.push(`${item}:${on}`);
+        return { worker: 'Watcher', trigger: 'Ticket moves', everyMinutes: 15 };
+      },
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U1', text: 'let me know when ACME-412 changes', dm: true });
+    const asks = h.asks.length;
+    await h.door.onMessage({ channel: 'D0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'hey, stop following ACME-412', dm: true });
+    expect(followed).toEqual(['ACME-412:true', 'ACME-412:false']);
+    expect(h.asks).toHaveLength(asks);
+    await h.door.onMessage({ channel: 'D0ACME', ts: '2.0', user: 'U1', text: 'let me know when ACME-7 changes', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '2.1', threadTs: '2.0', user: 'U1', text: 'unsubscribe me from this ticket ACME-7', dm: true });
+    expect(followed.slice(2)).toEqual(['ACME-7:true', 'ACME-7:false']);
+    expect(h.asks).toHaveLength(asks);
+  });
+
+  it('does not un-follow for "Unsubscribe link is broken on ACME-412"', async () => {
+    const followed: string[] = [];
+    const h = harness({
+      dm: true,
+      route: { workerId: 'w-triage', why: 'bugs' },
+      follow: (item, on) => {
+        followed.push(`${item}:${on}`);
+        return { worker: 'Watcher', trigger: 'Ticket moves', everyMinutes: 15 };
+      },
+    });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '3.0', user: 'U1', text: 'the export button is broken', dm: false });
+    await h.door.subscribe('C0ACME', '3.0', 'U1', true);
+    await h.door.onMessage({ channel: 'C0ACME', ts: '3.1', threadTs: '3.0', user: 'U1', text: 'Unsubscribe link is broken on ACME-412', dm: false });
+    expect(followed).toEqual([]);
+    expect(h.state().subs?.map((x) => x.user)).toEqual(['U1']);
+    expect(h.asks.map((a) => a.text)).toEqual(expect.arrayContaining([expect.stringContaining('Unsubscribe link')]));
   });
 
   it('leaves "keep me posted" in a DM to whoever is on it, with no ticket named', async () => {

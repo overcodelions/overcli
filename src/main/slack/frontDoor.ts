@@ -18,6 +18,7 @@ import { GREETING, GREETING_REPLY, SELF_ASK, STATUS_ASK, selfReply, withoutHello
 import type { Attachment } from '../../shared/types';
 import type { OrgCaller } from '../../shared/org/policy';
 import type { TeamRoom } from '../../shared/flows/team';
+import { usedShortName } from '../../shared/shortName';
 import type { ErrandProgress } from '../org/orgService';
 import type { SlackFile, SlackMessage } from './slackApi';
 import { deliverResults, deliverText, finishedText, slug, type DeliverIo, type PostAs } from './deliver';
@@ -40,6 +41,13 @@ export interface FrontDoorRequest {
 export interface FrontDoorWorker {
   id: string;
   name: string;
+  /// A team's or process's short name: "lrb" as the first word picks it.
+  shortName?: string;
+  /// The short name is its initials, given automatically, not one somebody
+  /// chose: it works after `/idea` and `/team`, and as a reply to "which
+  /// one?", but a message can't start with it. "See" is the initials of
+  /// Support Escalation Engineering, and "see if the export works" is not for it.
+  shortNameAuto?: boolean;
   tagline?: string;
   job?: string;
   /// Who approves what it proposes.
@@ -52,6 +60,8 @@ export interface FrontDoorWorker {
   /// The code it can read: its repo, or its workspace and the repos in it.
   /// How a module works is read from code, not from tickets about it.
   code?: string;
+  /// Slack channel IDs where it takes a request without being named.
+  homeChannels?: string[];
 }
 
 /// A team the person may give work to. It goes to the door as one more
@@ -59,6 +69,8 @@ export interface FrontDoorWorker {
 export interface FrontDoorTeam {
   id: string;
   name: string;
+  shortName?: string;
+  shortNameAuto?: boolean;
   purpose?: string;
   members: string[];
 }
@@ -72,6 +84,8 @@ const IDEA = /^(?:new\s+)?idea\s*[:\-–]\s*([\s\S]+)$/i;
 export interface FrontDoorProcess {
   id: string;
   name: string;
+  shortName?: string;
+  shortNameAuto?: boolean;
   purpose?: string;
   firstStage: string;
 }
@@ -82,6 +96,7 @@ export function processCandidate(p: FrontDoorProcess): FrontDoorWorker {
   return {
     id: `${PROCESS_ID}${p.id}`,
     name: p.name,
+    ...(p.shortName ? { shortName: p.shortName, ...(p.shortNameAuto ? { shortNameAuto: true } : {}) } : {}),
     tagline: `a process${p.purpose ? `: ${p.purpose}` : ''}`,
     job:
       `A PROCESS, not a worker: ${p.purpose ?? p.name}. A new item put into it moves through stages, starting at ${p.firstStage}. ` +
@@ -104,17 +119,46 @@ const OPEN_LINK = 'overcli_open_link';
 
 /// "Let me know when there's news": DM me when something is posted here.
 const SUBSCRIBE = /^(?:please\s+)?(?:let me know|keep me (?:posted|updated|in the loop)|notify me|ping me|dm me|remind me|give me a (?:heads[- ]up|shout)|subscribe|follow(?: this)?|watch(?: this)?)(?:\s+(?:when|if|once|on)\b.*)?[.!]?$/i;
-/// …and to stop.
-const UNSUBSCRIBE = /^(?:unsubscribe|unfollow|unwatch|stop (?:notifying|pinging|dm'?ing) me)[.!]?$/i;
+/// …and to stop. Said anywhere ("thanks, unsubscribe me please"): `onlyAsks`
+/// checks that nothing but filler surrounds it, so "the unsubscribe link is
+/// broken" stays a bug report.
+const UNSUBSCRIBE = /\b(?:unsubscribe|unfollow|unwatch)(?:\s+me)?(?:\s+(?:from\s+)?(?:(?:this|the)\s+(?:thread|ticket|one)(?:\s+[a-z][a-z0-9]*-\d+)?|this|it|that|here|[a-z][a-z0-9]*-\d+))?/i;
 /// The same said anywhere in a longer message: "that's it — can you let me
 /// know when the status changes?"
-const NOTIFY = /\b(?:let me know|keep me (?:posted|updated|in the loop)|notify me|ping me|dm me|alert me|tell me|remind me|give me a (?:heads[- ]up|shout))\b[^.!?]*\b(?:when|if|once|as soon as|whenever)\b/i;
-/// "Unfollow" only as what the message starts with: "the unsubscribe link
-/// is broken" is a bug report.
-const STOP_NOTIFY = /\b(?:stop|don'?t keep) (?:notifying|pinging|telling|dm'?ing|following|watching|tracking)\b|^(?:please\s+)?(?:unfollow|unsubscribe|unwatch)\b/i;
+const NOTIFY = /\b(?:let me know|keep me (?:posted|updated|in the loop)|notify me|ping me|dm me|alert me|tell me|remind me|give me a (?:heads[- ]up|shout))\b[^.!?]*?\b(?:when|if|once|as soon as|whenever)\b/i;
+/// "Stop pinging me", "stop following ACME-412", with whatever filler is
+/// said around it ("ok stop pinging me", "stop notifying me thank you");
+/// `onlyAsks` decides that it is all the message says, so "the digest
+/// should stop tracking deleted users" is a request.
+const STOP_NOTIFY = /\b(?:(?:stop|quit|don'?t keep|no longer)\s+(?:notifying|pinging|telling|dm'?ing|messaging|following|watching|tracking)(?:\s+me)?|(?:unfollow|unsubscribe|unwatch)(?:\s+me)?)(?:\s+(?:about\s+)?(?:from\s+|on\s+)?(?:(?:this|the)\s+(?:thread|ticket|one)(?:\s+[a-z][a-z0-9]*-\d+)?|this|it|that|here|[a-z][a-z0-9]*-\d+))?/i;
+/// What someone adds to a stop request about themselves, asking nothing:
+/// "stop pinging me, I'll check myself", "unsubscribe, I've got it".
+const SELF_TRAILER = /[,;.!\s]*\b(?:i(?:'ll| will| can|'m| am|'ve| have|'d| got| know| see)|no need|not needed|all good|got it)\b.*$/i;
 /// Words that ask nothing of their own around a "let me know": "can you",
 /// "thanks", "that's it".
-const FILLER = new Set('thats thanks thank thx okay great perfect cool also just hey yes yep yeah sure'.split(' '));
+const FILLER = new Set('thats it thanks thank thx okay great perfect cool also just hey yes yep yeah sure pls plz kindly now anymore more'.split(' '));
+/// A sentence end: punctuation followed by a space or the end, so
+/// "config.yaml" and "v1.2" stay one word.
+const SENTENCE_END = /[.!?]+(?=\s|$)/;
+/// What joins two conditions, or a condition and a second request, inside
+/// one sentence: "when it's merged and deployed", "when it's done and bump
+/// the timeout".
+const CONJUNCTION = /(?:,|;|\b(?:and|but|also|then|plus|or)\b)/i;
+/// A clause that reads as more of the condition, not a new request: one
+/// word ("deployed"), a subject with its verb ("tests pass", "config.yaml is
+/// updated", "v1.2 ships", "the PR lands"), or a state ("it's deployed to
+/// staging", "merged into main"). A request starts with an order ("bump the
+/// timeout", "reopen ACME-9", "make it work") and fits none of these: an
+/// order's first word is a verb, and what follows it is not another verb.
+const PREDICATE = '(?:is|are|was|were|has|have|gets?|got|goes|went|comes|came|lands?|landed|ships?|shipped|merges?|merged|deploys?|deployed|pass(?:es|ed)?|succeeds?|succeeded|finish(?:es|ed)?|completes?|completed|closes?|closed|resolves?|resolved|changes?|changed|moves?|moved|updates?|updated|arrives?|arrived|works?|worked|fails?|failed|breaks?|broke|returns?|returned|starts?|started|stops?|stopped|ends?|ended|opens?|opened|releases?|released|drops?|dropped|runs?|ran|builds?|built|clears?|cleared|settles?|settled|responds?|responded|replies|replied|answers?|answered|approves?|approved|signs?\\s+off|signed\\s+off|says?|said|looks?|reaches|reached|hits?|exceeds?|turns?|turned|becomes?|became)';
+const CONDITION_VERB = new RegExp(`^(?:(?:the|a|an|all|both|every|each|my|our|its|that|this)\\s+)?[^\\s]+\\s+${PREDICATE}\\b`, 'i');
+const CONDITION_STATE = /^(?:it(?:'s| is| has| was)|they(?:'re| are| have)|that(?:'s| is)|this(?:'s| is)|there(?:'s| is| are)|we(?:'re| are)|you(?:'re| are)|[^\s]+(?:ed|en)\s+(?:to|on|in|into|at|by|for|from|with|and|out|up|off|down)\b)/i;
+/// The verbs a request opens with. One of these first, with no predicate
+/// right after it ("build passes" is a condition, "build the docs" is not),
+/// makes the clause a request whatever else it looks like.
+const IMPERATIVE = new Set(('add bump change check close create delete deploy disable do drop email embed enable file find fix get give go have keep kill let look make merge move note open ping post pull push put read rebuild redeploy remove rename reopen rerun reset restart retry review revert run schedule seed see send set ship shorten show start stop switch tag take tell test try turn update use write ' +
+  'also please then just go ask bring call clean cut extend flag hold include install investigate link list mark migrate notify pin publish re-run rebase release reply report roll rollback shift ' +
+  'skip split squash sync tweak unblock upgrade validate verify wire').split(' '));
 /// "What am I following?"
 const FOLLOWING_ASK = /^(?:(?:so\s+)?what(?:'s| is| am| are)? (?:i|we|me) (?:following|watching|tracking)|(?:show |list )?(?:my )?(?:follows|followed tickets|tickets i(?:'m| am) following))[?.!]*$/i;
 /// A ticket named in a message: "ACME-412", "acme-412".
@@ -141,6 +185,7 @@ export function teamCandidate(t: FrontDoorTeam): FrontDoorWorker {
   return {
     id: `${TEAM_ID}${t.id}`,
     name: t.name,
+    ...(t.shortName ? { shortName: t.shortName, ...(t.shortNameAuto ? { shortNameAuto: true } : {}) } : {}),
     tagline: `a team${t.purpose ? `: ${t.purpose}` : ''}`,
     job:
       `A TEAM of ${t.members.join(', ')}, not one worker. ${t.purpose ?? ''} It asks what it needs to know up front, ` +
@@ -155,7 +200,7 @@ interface DoorThread {
   workerId?: string;
   workerName?: string;
   /// The request, held while the person picks who should take it.
-  pending?: { text: string; files: SlackFile[]; choices: Array<{ id: string; name: string }> };
+  pending?: { text: string; files: SlackFile[]; choices: Array<{ id: string; name: string; shortName?: string }> };
   /// Work that may already answer the request, offered before handing it to
   /// anyone: held until the person says which, or that it isn't.
   existing?: { text: string; files: SlackFile[]; hits: ExistingHit[]; related: Array<{ title: string; who: string }> };
@@ -378,6 +423,7 @@ export interface FrontDoorDeps {
   general?(caller: OrgCaller, text: string, context: string, workers: FrontDoorWorker[]): Promise<string | null>;
   /// A model's pick when the words alone don't settle it. Null: no one fits.
   /// `related`: recent work that may be what the request is about.
+  /// Null: nobody fits. Throws when the model can't be asked.
   route(text: string, workers: FrontDoorWorker[], related?: Array<{ title: string; who: string }>): Promise<{ workerId: string; why: string } | null>;
   slack: {
     post(channel: string, text: string, threadTs: string, as?: PostAs): Promise<boolean>;
@@ -434,15 +480,33 @@ function words(text: string): string[] {
 }
 
 /// A worker named at the start of the request: "Triage, fix …", "ask Triage
-/// to …", "@Triage …". Longest name first, so "Ana Lyst" beats "Ana".
-export function namedWorker(text: string, workers: FrontDoorWorker[]): { worker: FrontDoorWorker; rest: string } | null {
+/// to …", "@Triage …". Longest name first, so "Ana Lyst" beats "Ana". Then a
+/// team's or process's short name, as a whole first word: "lrb let…", "pd: …".
+/// Only a short name somebody set, unless `initials` says automatic ones
+/// count too: that is for a reply to "which one?", where they were offered.
+export function namedWorker(text: string, workers: FrontDoorWorker[], opts: { initials?: boolean } = {}): { worker: FrontDoorWorker; rest: string } | null {
   const t = text.trim();
   for (const w of [...workers].sort((a, b) => b.name.length - a.name.length)) {
-    const name = w.name.trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const name = escapeRe(w.name.trim().toLowerCase());
     const m = new RegExp(`^(?:ask\\s+|hey\\s+|get\\s+|have\\s+|let\\s+|@)?(?:the\\s+)?${name}(?:\\s+team)?(?:[,:\\s]+(?:to\\s+|please\\s+)?|$)`, 'i').exec(t);
     if (m) return { worker: w, rest: t.slice(m[0].length).trim() || t };
   }
+  for (const w of workers) {
+    if (!w.shortName || (w.shortNameAuto && !opts.initials)) continue;
+    const m = new RegExp(`^(?:ask\\s+|hey\\s+|@)?${escapeRe(w.shortName)}(?:\\s*:\\s*|\\s+|$)`, 'i').exec(t);
+    if (m) return { worker: w, rest: t.slice(m[0].length).trim() || t };
+  }
   return null;
+}
+
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/// "Next time, `/idea lrb …`": the short way in, for someone who came the long way.
+function shortTip(req: FrontDoorRequest, worker: FrontDoorWorker, command: '/idea' | '/team'): string {
+  const said = req.text.replace(/<@[^>]+>\s*/g, '').replace(/^(?:new\s+)?idea\s*[:\-–]\s*/i, '');
+  return worker.shortName && !usedShortName(said, worker.shortName) ? ` Next time, \`${command} ${worker.shortName} …\` goes straight there.` : '';
 }
 
 /// Each worker's overlap with the request's words, best first. A clear
@@ -470,9 +534,28 @@ export function onlyAsks(text: string, clauses: RegExp[]): boolean {
   for (const re of clauses) {
     const m = re.exec(text);
     if (!m) continue;
-    const to = text.slice(m.index).search(/[.!?](?:\s|$)/);
-    const rest = `${text.slice(0, m.index)} ${to < 0 ? '' : text.slice(m.index + to + 1)}`;
-    return words(rest).every((w) => FILLER.has(w));
+    const before = text.slice(0, m.index);
+    if (!words(before).every((w) => FILLER.has(w) || w === 'can' || w === 'you' || w === 'could' || w === 'would')) return false;
+    const after = text.slice(m.index + m[0].length);
+    if (re === NOTIFY) {
+      // "Let me know when it ships. Fix Firefox." — a second sentence that
+      // says anything is a second request.
+      const sentences = after.split(SENTENCE_END);
+      if (sentences.slice(1).some((sentence) => words(sentence).some((w) => !FILLER.has(w)))) return false;
+      // Inside the sentence, what follows "and", "," or "then" is either
+      // more of the condition ("merged and deployed", "lint and build pass")
+      // or a request of its own ("and bump the timeout to 30s").
+      const parts = sentences[0].split(CONJUNCTION);
+      return parts.slice(1).every((part) => {
+        const clause = part.trim().replace(/^(?:when|if|once|whenever|as soon as|after)\s+/i, '');
+        if (words(clause).every((w) => FILLER.has(w))) return true;
+        if (!/\s/.test(clause)) return true;
+        const first = clause.toLowerCase().split(/[^a-z0-9'-]+/)[0];
+        if (IMPERATIVE.has(first)) return new RegExp(`^[^\\s]+\\s+${PREDICATE}\\b`, 'i').test(clause);
+        return CONDITION_VERB.test(clause) || CONDITION_STATE.test(clause);
+      });
+    }
+    return words(after.replace(SELF_TRAILER, '')).every((w) => FILLER.has(w));
   }
   return false;
 }
@@ -744,7 +827,7 @@ export class FrontDoor {
 
     // Answering "who should take this?"
     if (known?.pending) {
-      const pick = namedWorker(text, known.pending.choices.map((c) => ({ id: c.id, name: c.name })))?.worker
+      const pick = namedWorker(text, known.pending.choices.map((c) => ({ id: c.id, name: c.name, ...(c.shortName ? { shortName: c.shortName } : {}) })), { initials: true })?.worker
         ?? known.pending.choices.find((c) => text.toLowerCase().includes(c.name.toLowerCase()));
       const { text: original, files, choices } = known.pending;
       let worker = pick && workers.find((w) => w.id === pick.id);
@@ -915,11 +998,11 @@ export class FrontDoor {
       const into = namedWorker(idea[1], choices);
       if (into) return this.hand(req, key, caller, into.worker, into.rest || idea[1], req.files ?? [], '');
       if (choices.length === 1) return this.hand(req, key, caller, choices[0], idea[1].trim(), req.files ?? [], '');
-      const pending = { text: idea[1].trim(), files: req.files ?? [], choices: choices.map((w) => ({ id: w.id, name: w.name })) };
+      const pending = { text: idea[1].trim(), files: req.files ?? [], choices: choices.map((w) => ({ id: w.id, name: w.name, ...(w.shortName ? { shortName: w.shortName } : {}) })) };
       if (known) Object.assign(known, { pending, at: this.now() });
       else this.state.threads.push({ key, pending, at: this.now() });
       this.save();
-      await say(`Which process should it go into? Reply with one of: ${choices.map((c) => `*${c.name}*`).join(', ')}.`);
+      await say(`Which process should it go into? Reply with one of: ${choices.map((c) => `*${c.name}*${c.shortName ? ` (\`${c.shortName}\`)` : ''}`).join(', ')}.`);
       return;
     }
     const named = namedWorker(text, workers);
@@ -983,10 +1066,10 @@ export class FrontDoor {
     ];
   }
 
-  /// Hand a new request to whoever fits: a clear match by words, the only
-  /// worker there is, a model's pick. When nobody fits, a question is
-  /// answered by the door itself (`desk`, unless the person asked for a
-  /// worker); anything else, the person picks.
+  /// Hand a new request to whoever fits: the worker whose home the channel
+  /// is, the only worker there is, a model's pick. When nobody fits, a
+  /// question is answered by the door itself (`desk`, unless the person
+  /// asked for a worker); anything else, the person picks.
   private async route(req: FrontDoorRequest, key: string, caller: OrgCaller, workers: FrontDoorWorker[], text: string, files: SlackFile[], related: Array<{ title: string; who: string }>, desk = true): Promise<void> {
     const lookup = isLookup(text);
     const declined = this.state.threads.find((t) => t.key === key)?.declined ?? [];
@@ -1002,20 +1085,31 @@ export class FrontDoor {
       await this.deps.slack.post(req.channel, `Nobody else here can take that. Start a new message and name who should, or ask someone to share a worker with you.`, req.threadTs ?? req.ts);
       return;
     }
+    // A channel that is some workers' home is theirs: one of them takes it,
+    // whatever the words.
+    const home = req.dm ? [] : workers.filter((w) => w.homeChannels?.includes(req.channel));
+    if (home.length === 1) return this.hand(req, key, caller, home[0], text, files, 'it answers in this channel');
+    if (home.length > 1) workers = home;
     const ranked = rankByWords(text, workers);
     const [first, second] = ranked;
-    if (first && first.score >= 3 && first.score >= 2 * (second?.score ?? 0)) {
-      return this.hand(req, key, caller, first.worker, text, files, `it's the closest match for this`);
-    }
     if (workers.length === 1 && !(canDesk && lookup && !first?.score)) return this.hand(req, key, caller, workers[0], text, files, '');
+    // Shared words say what a request is about, not what it wants: "how is
+    // the MDF deadline worked out" and "what is the market doing with MDF"
+    // share every noun. So a model picks; the words only stand in for it
+    // when it can't be reached.
     let routed: { workerId: string; why: string } | null = null;
+    let failed = false;
     try {
       routed = await this.deps.route(text, workers, related.length ? related : undefined);
     } catch (err) {
+      failed = true;
       this.deps.log(`Front door: routing failed: ${String(err)}`);
     }
     const chosen = routed && workers.find((w) => w.id === routed!.workerId);
     if (chosen) return this.hand(req, key, caller, chosen, text, files, routed!.why);
+    if (failed && first && first.score >= 3 && first.score >= 2 * (second?.score ?? 0)) {
+      return this.hand(req, key, caller, first.worker, text, files, `it's the closest match for this`);
+    }
     // Nobody's job covers it: a question, or a request whose words match no
     // one, is answered here rather than handed to a guess who'd say it isn't
     // theirs.
@@ -1296,7 +1390,7 @@ export class FrontDoor {
       else this.state.threads.push({ key, workerId: worker.id, workerName: res.process, at: this.now() });
       this.save();
       this.note(key, `Put into ${res.process}`, 'handed', undefined, { who: res.process, team: true });
-      await say(`In: _${res.title}_ goes into *${res.process}*${why ? ` (${why})` : ''}, starting at *${res.stage}*. You'll get a DM each time it moves; \`/idea\` shows where it is.`);
+      await say(`In: _${res.title}_ goes into *${res.process}*${why ? ` (${why})` : ''}, starting at *${res.stage}*. You'll get a DM each time it moves; \`/idea\` shows where it is.${shortTip(req, worker, '/idea')}`);
       return;
     }
     if (worker.id.startsWith(TEAM_ID)) {
@@ -1318,9 +1412,9 @@ export class FrontDoor {
       this.save();
       this.note(key, `${worker.name} took it as a team task`, 'handed', undefined, { who: worker.name });
       await say(
-        res.queued
+        (res.queued
           ? `*${worker.name}* will take this as a team task${why ? ` (${why})` : ''}. It's finishing another one first, so this is next in line. When it starts, its coordinator will DM you anything it needs to know, then a plan to approve.`
-          : `*${worker.name}* has this as a team task${why ? ` (${why})` : ''}. Before it starts, its coordinator will DM you anything it needs to know, then a plan to approve. You'll follow it there.`,
+          : `*${worker.name}* has this as a team task${why ? ` (${why})` : ''}. Before it starts, its coordinator will DM you anything it needs to know, then a plan to approve. You'll follow it there.`) + (followUp ? '' : shortTip(req, worker, '/team')),
       );
       return;
     }

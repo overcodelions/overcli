@@ -3,6 +3,9 @@
 // work it asked for is done.
 
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 vi.mock('./runsStore', () => ({
   loadAllRuns: () => [],
@@ -35,7 +38,7 @@ function run(state: FlowRun['state']): FlowRun {
       source: 'user',
       filePath: '/tmp/tally.yaml',
     },
-    projectPath: '/tmp/project',
+    projectPath: process.cwd(),
     userPrompt: 'count my tickets',
     conversationIds: { planner: 'conv-plan' as UUID, writer: 'conv-write' as UUID },
     artifacts: {},
@@ -66,6 +69,14 @@ function say(rt: FlowRuntimeImpl, conversationId: string, text: string): void {
 }
 
 describe('chatting with a finished run', () => {
+  it('refuses a swept folder before sending anything to the runner', async () => {
+    const { rt, sends } = harness({ kind: 'done', success: true });
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-swept-'));
+    (rt as unknown as { runs: Map<UUID, FlowRun> }).runs.get(RUN_ID)!.projectPath = folder;
+    fs.rmSync(folder, { recursive: true, force: true });
+    await expect(rt.chatWithRun({ runId: RUN_ID, text: 'continue' })).resolves.toEqual({ ok: false, error: 'That run’s folders were cleaned up.' });
+    expect(sends).toEqual([]);
+  });
   it('speaks to whoever ran the last step, and answers with what it said once its turn ends', async () => {
     const { rt, sends } = harness({ kind: 'done', success: true });
     const reply = rt.chatWithRun({ runId: RUN_ID, text: 'which month was worst?' });

@@ -129,6 +129,11 @@ export interface ProcessStage {
 export interface ProcessDef {
   id: string;
   name: string;
+  /// What `/idea` takes in place of its name: "lrb". Lowercase, unique
+  /// among processes.
+  shortName?: string;
+  /// Shown, never stored: `shortName` is its initials, not one someone set.
+  shortNameAuto?: boolean;
   purpose?: string;
   /// When to use it and the practice behind it.
   about?: string;

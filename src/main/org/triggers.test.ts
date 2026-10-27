@@ -10,13 +10,14 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
   const asked: string[] = [];
   const startsFlags: boolean[] = [];
   const posts: string[] = [];
+  const postedAs: Array<string | undefined> = [];
   const calls: unknown[] = [];
   let toolResult: unknown = opts.items ?? { issues: [{ key: 'ACME-1', fields: { summary: 'Export fails' } }] };
   let now = new Date(2026, 9, 20, 12).getTime();
   const svc = new TriggerService({
     store: { list: () => structuredClone(triggers), save: (all) => (triggers = structuredClone(all)) },
     deliverables: { list: () => structuredClone(deliverables), save: (all) => (deliverables = structuredClone(all)) },
-    worker: (id) => (id === 'triage' ? { id, name: 'Triage', enabled: !opts.paused } : null),
+    worker: (id) => (id === 'triage' ? { id, name: 'Triage', enabled: !opts.paused, avatarUrl: 'https://img.example/triage.png' } : null),
     ask: (_w, name, text, starts) => {
       asked.push(`${name}|${text}`);
       startsFlags.push(starts);
@@ -32,11 +33,13 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
       return { ok: true, text: JSON.stringify(toolResult), json: toolResult };
     },
     slack: {
-      post: async (channel, text, threadTs) => {
+      post: async (channel, text, threadTs, as) => {
+        postedAs.push(as && `${as.name}|${as.iconUrl}`);
         posts.push(`${channel}${threadTs ? '@' + threadTs : ''}:${text.split('\n')[0]}`);
         return true;
       },
       message: async () => ({ text: 'The export button does nothing', user: 'U0ACMEPAT' }),
+      botUserId: () => 'U0ACMEBOT',
       dm: async (user, text) => {
         posts.push(`dm:${user}:${text}`);
         return true;
@@ -50,6 +53,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
     asked,
     startsFlags,
     posts,
+    postedAs,
     calls,
     deliverables: () => deliverables,
     triggers: () => triggers,
@@ -171,6 +175,32 @@ describe('slack triggers', () => {
     expect(h.asked[0]).toContain('The export button does nothing');
     await tick();
     expect(h.posts).toEqual(['C0ACMESUP@1.1:Filed ACME-10.']);
+    expect(h.postedAs).toEqual(['Triage|https://img.example/triage.png']);
+  });
+
+  it('posts nothing when the worker passes, and says so on the deliverable', async () => {
+    const h = harness({ reply: ' **PASS.** ' });
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', ts: '3.1', text: 'lunch is here' });
+    await tick();
+    expect(h.asked[0]).toContain('reply with only PASS');
+    expect(h.posts).toEqual([]);
+    expect(h.deliverables()[0]).toMatchObject({ status: 'skipped', error: 'Triage passed: nothing worth saying.' });
+  });
+
+  it('leaves a message that @-mentions the bot to the front door', async () => {
+    const h = harness();
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
+    if (!made.ok) throw new Error(made.error);
+    expect(await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', ts: '4.1', text: '<@U0ACMEBOT> who owns billing?' })).toBe(false);
+    expect(h.asked).toHaveLength(0);
+  });
+
+  it('makes no new mention triggers: the front door answers those', () => {
+    const h = harness();
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'mention' }, deliver: [{ kind: 'thread' }] });
+    expect(made).toMatchObject({ ok: false });
   });
 
   it('reads new messages only, not thread replies or bots', async () => {

@@ -130,13 +130,17 @@ const SEARCH_MAX_DIRS = 200_000;
 /// Files under `root` whose path relative to it contains `query`
 /// (case-insensitive) — the tree filter's rule, applied to the whole folder
 /// rather than to a listing the cap already truncated.
-export async function findFileEntriesAsync(root: string, query: string, limit = 500): Promise<WalkResult> {
+export async function findFileEntriesAsync(root: string, query: string, limit = 500, signal?: AbortSignal): Promise<WalkResult> {
   const needle = query.trim().toLowerCase();
   if (!needle) return { entries: [], truncated: false, unlistedDirs: [] };
   // The same normalisation the walk's path.join gives every entry.
   const prefix = path.join(root, path.sep);
-  return walkAsync(root, limit, SEARCH_MAX_DIRS, (full) =>
-    (full.startsWith(prefix) ? full.slice(prefix.length) : full).toLowerCase().includes(needle),
+  return walkAsync(
+    root,
+    limit,
+    SEARCH_MAX_DIRS,
+    (full) => (full.startsWith(prefix) ? full.slice(prefix.length) : full).toLowerCase().includes(needle),
+    signal,
   );
 }
 
@@ -155,6 +159,7 @@ async function walkAsync(
   maxFiles: number,
   maxDirs: number,
   keep?: (full: string) => boolean,
+  signal?: AbortSignal,
 ): Promise<WalkResult> {
   const out: WalkEntry[] = [];
   const stack: string[] = [root];
@@ -162,6 +167,7 @@ async function walkAsync(
   let full = false;
   const stopped = (): WalkResult => ({ entries: out, truncated: true, unlistedDirs: keep ? [] : stack });
   while (stack.length) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     if (++dirsVisited > maxDirs) return stopped();
     const cur = stack.pop()!;
     let entries: fs.Dirent[];
@@ -170,11 +176,13 @@ async function walkAsync(
     } catch {
       continue;
     }
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     // One stat per non-directory entry, issued together rather than as a
     // serial chain of awaits — this is what keeps the async walk's
     // wall-clock in the same range as the sync one.
     const pending: Array<Promise<{ full: string; stat: fs.Stats } | null>> = [];
     for (const entry of entries) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       if (TREE_SKIP_DIRS.has(entry.name)) continue;
       const full = path.join(cur, entry.name);
       if (entry.isDirectory()) {
@@ -192,7 +200,9 @@ async function walkAsync(
           .catch(() => null),
       );
     }
-    for (const settled of await Promise.all(pending)) {
+    const stats = await Promise.all(pending);
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    for (const settled of stats) {
       if (!settled) continue;
       // A symlink to a directory (a workspace member) resolves here and gets
       // walked; a symlink to a file lands in the listing like any file.

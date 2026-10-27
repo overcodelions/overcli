@@ -101,5 +101,7 @@ export async function routeRequest(deps: DraftDeps, text: string, workers: Front
     timeouts: { timeoutMs: 60_000, idleTimeoutMs: 45_000 },
     permissionMode: 'plan',
   });
-  return res.ok ? readRoute(res.text, workers) : null;
+  // Couldn't ask is not "nobody fits": the door falls back on the words.
+  if (!res.ok) throw new Error(res.error);
+  return readRoute(res.text, workers);
 }

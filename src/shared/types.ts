@@ -1172,6 +1172,8 @@ export interface AppSettings {
   /// Which one-time moves of `defaultPermissionMode` this store has had.
   /// 1: the old built-in `plan` became `auto`. See migratePermissionDefault.
   permissionDefaultsVersion?: number;
+  /// Set when the one-time move from Plan to Auto changed the default.
+  permissionDefaultMovedFromPlan?: boolean;
   /// Fallback reasoning effort for backends with no explicit entry in
   /// `backendDefaultEfforts`.
   defaultEffort: EffortLevel;
@@ -1825,7 +1827,9 @@ export interface IPCInvokeMap {
   'fs:listFileEntries': (root: string) => { entries: FileTreeEntry[]; truncated: boolean; unlistedDirs: string[] };
   /// Files under `root` whose relative path contains `query`, searched on
   /// disk past the listing's cap. `truncated`: more matched than were returned.
-  'fs:findFileEntries': (root: string, query: string) => { entries: FileTreeEntry[]; truncated: boolean };
+  /// `caller` names who is asking (the tree's filter, the file finder): a
+  /// refined query cancels only that caller's earlier search.
+  'fs:findFileEntries': (root: string, query: string, caller?: string) => { entries: FileTreeEntry[]; truncated: boolean };
   /// Start watching `root` so the file tree can relist itself when an agent
   /// (or anything else) writes into the project. Refcounted in main — every
   /// `fs:watchTree` needs a matching `fs:unwatchTree`. `key` is the resolved
@@ -2874,7 +2878,7 @@ export interface IPCInvokeMap {
   /// Create (no `id`) or change one. Checked with `validateProcess`.
   /// Where a process's code can live: this app's workspaces and projects.
   'processes:places': () => Array<{ name: string; path: string; kind: 'workspace' | 'project' }>;
-  'processes:save': (args: { id?: string; name: string; purpose?: string; about?: string; templateId?: string; codeIn?: { name: string; path: string } | null; stages: ProcessStage[] }) =>
+  'processes:save': (args: { id?: string; name: string; shortName?: string; purpose?: string; about?: string; templateId?: string; codeIn?: { name: string; path: string } | null; stages: ProcessStage[] }) =>
     | { ok: true; process: ProcessDef; updated: boolean }
     | { ok: false; error: string };
   'processes:archive': (args: { id: string }) => { ok: true } | { ok: false; error: string };
@@ -4261,6 +4265,8 @@ export type MainToRendererEvent =
       /// `root` is the resolved path returned by `fs:watchTree`.
       type: 'fileTreeChanged';
       root: string;
+      /// Paths changed under root; absent means refresh the entire tree.
+      changedPaths?: string[];
     }
   | {
       /// An orchestration (batch) changed — an item launched, a child run

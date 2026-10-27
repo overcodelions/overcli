@@ -302,6 +302,12 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .banner { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; background: var(--bad-soft); border: 1px solid var(--bad-line); color: var(--ink); border-radius: 12px; padding: 14px 18px; }
 .banner > span { flex: 1 1 320px; }
 .btn.bad { background: var(--bad); border-color: var(--bad); color: var(--bad-ink); }
+.short-chip { font-family: var(--mono); font-size: 12px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+.short-pill { align-self: center; display: inline-flex; align-items: center; gap: 2px; flex: none; font: inherit; font-size: 12px; font-weight: 500; line-height: 1; color: var(--violet); background: var(--violet-soft); border: 1px solid color-mix(in srgb, var(--violet) 22%, transparent); border-radius: 6px; padding: 4px 7px; white-space: nowrap; cursor: pointer; transition: border-color .15s; }
+.short-pill:hover { border-color: color-mix(in srgb, var(--violet) 45%, transparent); }
+.short-pill .sp-slash { opacity: .55; }
+.short-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; margin-top: 6px; }
+.short-row input.short-input { width: 8em; min-height: 0; padding: 2px 8px; font-family: var(--mono); font-size: 12.5px; }
 .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
 .sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
 .sdot.working { background: var(--go); } .sdot.waiting { background: #d98a1c; } .sdot.stuck, .sdot.bad { background: var(--bad); } .sdot.ok { background: var(--go); }
@@ -3995,7 +4001,7 @@ export const CONSOLE_JS = String.raw`
 
   /// Every way to reach a worker or a team, with its own name filled in and
   /// a copy button on each: here, Slack, Claude (MCP) and a script.
-  function reachView(kind, name, who) {
+  function reachView(kind, name, who, short) {
     var base = location.origin.replace('//0.0.0.0', '//localhost');
     var copyBlock = function (text) {
       var b = h('button', { class: 'btn small', text: 'Copy' });
@@ -4013,13 +4019,42 @@ export const CONSOLE_JS = String.raw`
         : 'Anyone who manages someone on ' + name + ' can give it a task. Its questions and its plan come back to whoever asked, here and in Slack.' }),
       way('In Slack', 'If your admin connected Slack. Mention the app anywhere, DM it, or use the slash command.', isWorker
         ? ['@overgo ' + name + ', what changed on the competitor’s pricing page this week?', '/worker ' + lower + ' ask what changed on the competitor’s pricing page this week?']
-        : ['/team ' + name + ': what is the best thing on our roadmap?'],
+        : (short ? ['/team ' + short + ' what is the best thing on our roadmap?'] : []).concat(['/team ' + name + ': what is the best thing on our roadmap?']),
         h('p', { class: 'faint', style: 'font-size:13px', text: isWorker ? 'Name it and it takes the request; screenshots and the thread come along. Without a name, whoever fits best picks it up.' : 'The coordinator answers in the thread with its questions, then its plan for you to approve.' })),
       way('From Claude', 'Claude Code, Claude Desktop or Codex, once connected to your org on the Slack & Claude page. Then just say it:', [isWorker ? 'Ask ' + name + ' what changed on the competitor’s pricing page this week.' : 'Give ' + name + ' the task: what is the best thing on our roadmap?'],
         h('button', { class: 'linkish', style: 'color:var(--go);font-size:13.5px;align-self:flex-start', text: 'Connect Claude →', onclick: function () { go('connect'); } })),
       way('From a script', 'With a key from the Slack & Claude page. It answers at once with an id; the answer lands when it’s ready.', isWorker
         ? ['curl -s ' + base + '/api/ask \\\n  -H "Authorization: Bearer $OVERCLI_ORG_TOKEN" -H "Content-Type: application/json" \\\n  -d \'' + JSON.stringify({ worker: name, message: 'What changed this week?' }) + '\'', 'curl -s ' + base + '/api/asks/<id> -H "Authorization: Bearer $OVERCLI_ORG_TOKEN"']
         : ['curl -s ' + base + '/api/teams/brief \\\n  -H "Authorization: Bearer $OVERCLI_ORG_TOKEN" -H "Content-Type: application/json" \\\n  -d \'' + JSON.stringify({ team: name, text: 'What is the best thing on our roadmap?' }) + '\'']));
+  }
+
+  /// Slack channels where it answers "@overgo …" without being named. IDs or
+  /// channel links; the IDs are picked out of whatever is pasted.
+  function homeChannelsPanel(w) {
+    var ids = w.slackHomeChannels || [];
+    var sub = 'In these channels, "@overgo …" goes to ' + w.name + ' without naming it. A channel several workers share goes to whichever fits.';
+    var body;
+    if (w.youManage) {
+      var input = h('input', { type: 'text', placeholder: 'C012AB3CD, C034EF5GH or channel links', 'aria-label': 'Home channels', style: 'flex:1;min-width:220px' });
+      input.value = ids.join(', ');
+      var note = h('span', { 'aria-live': 'polite' });
+      var save = h('button', { class: 'btn small', text: 'Save' });
+      save.onclick = function () {
+        var next = (input.value.toUpperCase().match(/\b[CG][A-Z0-9]{6,}\b/g) || []).filter(function (c, i, all) { return all.indexOf(c) === i; });
+        var restore = busy(save, 'Saving…');
+        api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { slackHomeChannels: next.length ? next : null } }).then(function (x) {
+          restore(); note.textContent = ''; note.className = '';
+          if (x.ok === false) { note.appendChild(msg(x)); return; }
+          w.slackHomeChannels = next; input.value = next.join(', ');
+          note.className = 'msg ok'; note.textContent = 'Saved';
+        });
+      };
+      body = h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, input, save, note);
+    } else {
+      body = h('p', { text: ids.length ? ids.join(', ') : 'None yet.' });
+    }
+    return h('section', { class: 'panel pad stack', style: 'gap:10px' }, h('h2', { class: 'section-title', text: 'Home channels' }), h('p', { class: 'faint', text: sub }), body,
+      h('p', { class: 'faint', style: 'font-size:13px', text: 'Channel ID: in Slack, channel details → bottom. Invite the overgo bot there too (/invite @overgo).' }));
   }
 
   /// A coding worker: pointed at a repo or workspace, so its work lands as
@@ -4428,7 +4463,7 @@ export const CONSOLE_JS = String.raw`
           [['talk', 'Conversation'], ['runs', 'Runs'], ['files', 'Files'], ['journal', 'Journal'], ['triggers', 'Triggers' + ((d.triggers || []).length ? ' · ' + d.triggers.length : '')], ['job', 'Job'], ['reach', 'How to reach'], ['settings', 'Settings']].filter(Boolean).map(function (t) {
             return h('button', { role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', text: t[1], onclick: function () { state.workerTab = t[0]; render(); } });
           }))),
-        tab === 'reach' ? reachView('worker', w.name, VIS[w.visibility || 'private'])
+        tab === 'reach' ? h('div', { class: 'stack', style: 'gap:16px' }, homeChannelsPanel(w), reachView('worker', w.name, VIS[w.visibility || 'private']))
           : tab === 'runs' ? runsView(w)
           : tab === 'files' ? filesView(w)
           : tab === 'journal' ? journalView(w)
@@ -4678,11 +4713,40 @@ export const CONSOLE_JS = String.raw`
       slowest: slowest == null ? null : p.stages[slowest]
     };
   }
+  /// Its initials, offered as a short name: "Launch review board" → "lrb".
+  function shortSuggest(name) {
+    var words = String(name || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    return words.length < 2 ? '' : words.map(function (w) { return w[0]; }).join('').slice(0, 12);
+  }
+  /// A process's or team's short name box. Left empty, its initials are used.
+  /// change(v) on every edit.
+  function shortNameField(value, getName, command, change) {
+    var input = h('input', { type: 'text', class: 'short-input', value: value || '', maxlength: '12', spellcheck: 'false', 'aria-label': 'Short name' });
+    var hint = h('span', { class: 'faint' });
+    var draw = function () {
+      var v = input.value.trim(), s = v ? '' : shortSuggest(getName());
+      input.placeholder = s || 'optional';
+      fill(hint, v || s ? [s ? 'Automatic. ' : '', 'In Slack: ', h('code', { class: 'short-chip', text: command + ' ' + (v || s) + ' …' })] : 'so Slack takes a few letters instead of the whole name');
+    };
+    input.oninput = function () { input.value = input.value.toLowerCase().replace(/\s+/g, ''); change(input.value); draw(); };
+    draw();
+    return { node: h('div', { class: 'short-row' }, h('span', { class: 'faint', text: 'Short name' }), input, hint), redraw: draw };
+  }
+  /// A short name on a page's header: the letters, and how Slack takes them on hover.
+  function shortChip(command, short) {
+    if (!short) return null;
+    var label = h('span', { text: short });
+    return h('button', { type: 'button', class: 'short-pill', title: 'Reach it in Slack with ' + command + ' ' + short + ' …  Click to copy.', 'aria-label': 'Short name ' + short + '. Copy ' + command + ' ' + short,
+      onclick: function () {
+        if (!navigator.clipboard) return;
+        navigator.clipboard.writeText(command + ' ' + short + ' ').then(function () { label.textContent = 'copied'; setTimeout(function () { label.textContent = short; }, 1400); });
+      } }, h('span', { class: 'sp-slash', 'aria-hidden': 'true', text: '/' }), label);
+  }
   /// The ways work comes into a process: by hand, /idea, its schedules and intakes.
   function waysIn(p, r) {
     var out = [
       { short: 'page', long: 'this page', what: 'This page', detail: 'anyone who can see it', tone: 'go' },
-      { short: 'Slack', long: '/idea in Slack', what: '/idea in Slack, starting with “' + p.name + ':”', detail: 'anyone in the org', tone: 'violet' }
+      { short: 'Slack', long: '/idea in Slack', what: p.shortName ? '/idea ' + p.shortName + ' … in Slack, or starting with “' + p.name + ':”' : '/idea in Slack, starting with “' + p.name + ':”', detail: 'anyone in the org', tone: 'violet' }
     ];
     (r.schedules || []).forEach(function (s) {
       out.push({ short: 'schedule', long: 'a schedule', what: s.title, detail: s.when + (Number.isFinite(s.nextAt) ? ' · next ' + when(s.nextAt) : ''), tone: 'info' });
@@ -4879,7 +4943,7 @@ export const CONSOLE_JS = String.raw`
       var header = h('header', { class: 'page-head' },
         h('div', { style: 'min-width:0;flex:1 1 520px' },
           h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Processes', onclick: function () { go('processes'); } })),
-          h('h1', { class: 'page-title', text: p.name }),
+          h('div', { class: 'row', style: 'gap:10px;align-items:baseline;flex-wrap:nowrap;min-width:0' }, h('h1', { class: 'page-title', text: p.name }), shortChip('/idea', p.shortName)),
           p.purpose ? h('p', { class: 'page-sub', text: p.purpose }) : null,
           busyMode ? null : summary),
         h('div', { class: 'row' },
@@ -5048,7 +5112,7 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' }, h('b', { text: title }), sub), action || null);
     };
     var rows = [
-      way('slack', 'Slack, by anyone', h('span', { class: 'faint' }, h('code', { text: '/idea ' + p.name + ': …' }), ' or ', h('code', { text: '@overgo idea: …' }), '. ', h('code', { text: '/idea' }), ' alone shows where theirs are.')),
+      way('slack', 'Slack, by anyone', h('span', { class: 'faint' }, p.shortName ? [h('code', { text: '/idea ' + p.shortName + ' …' }), ', '] : null, h('code', { text: '/idea ' + p.name + ': …' }), ' or ', h('code', { text: '@overgo idea: …' }), '. ', h('code', { text: '/idea' }), ' alone shows where theirs are.')),
     ].concat((schedules || []).map(function (s) {
       return way('clock', s.title, h('span', { class: 'faint', text: s.when + '. Next: ' + (Number.isFinite(s.nextAt) ? new Date(s.nextAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never') + '.' }),
         p.canSteer ? h('button', { class: 'btn small quiet', text: 'Remove', onclick: remove('/api/processes/' + encodeURIComponent(p.id) + '/schedules/' + encodeURIComponent(s.id) + '/remove') }) : null);
@@ -6038,7 +6102,7 @@ export const CONSOLE_JS = String.raw`
       /// Who does each stage in the picture, by stage id, when none of
       /// yours clearly fit: shown in its doer picker.
       var roleHint = {};
-      if (p) model = JSON.parse(JSON.stringify({ name: p.name, purpose: p.purpose || '', about: p.about, templateId: p.templateId, owner: p.owner, stages: p.stages }));
+      if (p) model = JSON.parse(JSON.stringify({ name: p.name, shortName: p.shortNameAuto ? '' : p.shortName || '', purpose: p.purpose || '', about: p.about, templateId: p.templateId, owner: p.owner, stages: p.stages }));
       if (p) model.codeIn = p.codeIn ? p.codeIn.name : '';
       // Made before processes had an audience: open to everyone, as it was.
       if (p) model.access = p.access ? JSON.parse(JSON.stringify(p.access)) : { who: 'everyone' };
@@ -6087,7 +6151,8 @@ export const CONSOLE_JS = String.raw`
         return 'the start';
       };
 
-      var name = h('input', { type: 'text', class: 'pm-title', value: model.name, maxlength: '120', placeholder: 'Name the process', 'aria-label': 'Name', oninput: function () { model.name = name.value; } });
+      var name = h('input', { type: 'text', class: 'pm-title', value: model.name, maxlength: '120', placeholder: 'Name the process', 'aria-label': 'Name', oninput: function () { model.name = name.value; short.redraw(); } });
+      var short = shortNameField(model.shortName, function () { return model.name; }, '/idea', function (v) { model.shortName = v; });
       var purpose = h('input', { type: 'text', class: 'pm-purpose', value: model.purpose, maxlength: '300', placeholder: 'What it takes in and what comes out', 'aria-label': 'What it is for', oninput: function () { model.purpose = purpose.value; } });
       // A person shown as a chip, with Change to pick someone else.
       var personSlot = function (label, get, set, fallback) {
@@ -6393,7 +6458,7 @@ export const CONSOLE_JS = String.raw`
         h('header', { class: 'pm-head' },
           h('div', { style: 'flex:1 1 420px;min-width:0' },
             h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Processes', onclick: function () { go('processes'); } }), editing ? ' / ' + p.name : fromPicture ? ' / New, from a picture' : ' / New'),
-            name, purpose),
+            name, purpose, short.node),
           h('div', { class: 'stack', style: 'gap:8px;align-items:flex-end' },
             h('div', { class: 'pm-owner' }, h('span', { class: 'faint', text: 'Owner' }),
               personSlot('Change the owner', function () { return model.owner; }, function (x) { if (x) { model.owner = x; drawAccess(); } }, ''),
@@ -8218,6 +8283,24 @@ export const CONSOLE_JS = String.raw`
       out);
   }
 
+  // A team's short name: what /team and a message to the app take for its name.
+  function teamShort(t) {
+    var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+    var value = t.shortNameAuto ? '' : t.shortName || '';
+    var field = shortNameField(value, function () { return t.name; }, '/team', function (v) { value = v; });
+    var save = h('button', { class: 'btn small go', text: 'Save', onclick: function (e) {
+      var restore = busy(e.target, 'Saving…');
+      api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/settings', { shortName: value }).then(function (x) {
+        restore(); out.textContent = '';
+        out.appendChild(msg(x, value ? 'Saved. In Slack, /team ' + value + ' … reaches it.' : 'Saved. It goes by its initials.'));
+        if (x.ok !== false) { t.shortName = value || shortSuggest(t.name); t.shortNameAuto = !value; }
+      });
+    } });
+    return h('div', { class: 'stack', style: 'gap:10px' },
+      h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'A few letters people can type in Slack instead of its whole name: the first word of /team, or of a message to the app.' }),
+      field.node, h('div', { class: 'row', style: 'gap:8px' }, save, out));
+  }
+
   // Who may give a team tasks: its members' managers always can; beyond
   // them, everyone, or picked people, groups and roles.
   function teamWho(t) {
@@ -8250,8 +8333,9 @@ export const CONSOLE_JS = String.raw`
       ['who', 'Who can give it tasks', teamWho(t)],
       t.canChange ? ['how', 'How it works with you', teamSettings(t)] : null,
       t.canChange || t.guidance ? ['guide', 'How it should work', teamGuide(t), true] : null,
+      t.canChange ? ['short', 'Short name', teamShort(t)] : null,
       t.canChange ? ['picture', 'Picture', picturePicker(t, function (url) { return api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/settings', { avatarUrl: url }); })] : null,
-      ['reach', 'Reach ' + t.name, reachView('team', t.name)],
+      ['reach', 'Reach ' + t.name, reachView('team', t.name, undefined, t.shortName)],
       t.canChange ? ['end', 'Disband', teamEnd(t), true] : null,
     ].filter(Boolean);
     var jump = function (id) { var el = document.getElementById('ts-' + id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
@@ -8497,7 +8581,7 @@ export const CONSOLE_JS = String.raw`
       return [h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
             h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Teams', onclick: function () { go('teams'); } }), ' / ' + t.name),
-            h('div', { class: 'row', style: 'gap:12px;flex-wrap:nowrap' }, PICTURES[t.id] ? avatar(t.id, t.name, 'l') : null, h('h1', { class: 'page-title', text: t.name })),
+            h('div', { class: 'row', style: 'gap:12px;flex-wrap:nowrap' }, PICTURES[t.id] ? avatar(t.id, t.name, 'l') : null, h('h1', { class: 'page-title', text: t.name }), shortChip('/team', t.shortName)),
             t.purpose ? h('p', { class: 'page-sub', text: t.purpose }) : null),
           h('div', { class: 'page-actions' }, faces, t.canBrief ? h('button', { class: 'btn go', onclick: toComposer }, icon('plus', 16), 'Give it a task') : null)),
         nowSlot,
@@ -11546,14 +11630,14 @@ export const CONSOLE_JS = String.raw`
       hookReachNote(function () { kind = 'watch'; drawKinds(); sync(); }));
     // Slack
     var channel = h('input', { type: 'text', placeholder: 'C012AB3CD', 'aria-label': 'Channel ID' });
-    var on = h('select', { 'aria-label': 'On' }, h('option', { value: 'message', text: 'each new message' }), h('option', { value: 'reaction', text: 'an emoji reaction' }), h('option', { value: 'mention', text: 'a mention of the bot' }));
+    var on = h('select', { 'aria-label': 'On' }, h('option', { value: 'message', text: 'each new message' }), h('option', { value: 'reaction', text: 'an emoji reaction' }));
     var emoji = h('input', { type: 'text', placeholder: 'bug', 'aria-label': 'Emoji' });
     var contains = h('input', { type: 'text', placeholder: 'optional', 'aria-label': 'Only if it contains' });
     var emojiField = h('label', { class: 'field' }, 'Emoji', emoji);
     on.onchange = function () { emojiField.style.display = on.value === 'reaction' ? '' : 'none'; };
     on.onchange();
     parts.slack = h('div', { class: 'stack' }, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)),
-      h('p', { class: 'faint', text: 'Invite the overgo bot to the channel first (/invite @overgo).' }));
+      h('p', { class: 'faint', text: 'Invite the overgo bot to the channel first (/invite @overgo). On each new message it answers only when it has something worth saying, and passes on the rest. Mentions need no trigger: "@overgo" with a question reaches the right worker.' }));
     var KINDS = [['watch', 'Something new or changed in a tool', 'A new ticket, deal or row, or one whose status changes, checked every few minutes. Works anywhere, inside a VPC too.'],
       ['webhook', 'Another system tells us', 'Jira, GitHub, a CRM or Zapier posts each event to a secret address.'],
       ['slack', 'Something happens in Slack', 'A new message, a mention, or an emoji reaction in a channel.']];
@@ -11628,6 +11712,8 @@ export const CONSOLE_JS = String.raw`
         syncFire();
       }
       if (t.slack) {
+        // Mention triggers aren't offered any more; one made before still edits.
+        if (t.slack.on === 'mention') on.appendChild(h('option', { value: 'mention', text: 'a mention of the bot' }));
         channel.value = t.slack.channel || ''; on.value = t.slack.on || 'message'; emoji.value = t.slack.reaction || ''; contains.value = t.slack.contains || '';
         on.onchange();
       }

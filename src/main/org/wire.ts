@@ -176,6 +176,7 @@ export function createOrgService(
   flowRuntime.beforeFork = (paths) => repos.freshen(paths).then((problems) => problems.forEach((p) => log('warn', 'org.repos', p)));
   // The last storage measurement (storage.report).
   let storageCache: StorageReport | null = null;
+  let storageInFlight: Promise<StorageReport> | null = null;
   // When the connected repos last caught up with origin.
   let lastRefreshAt: number | undefined;
   // npx tools installed ahead of their first check or run, and a broken
@@ -264,8 +265,8 @@ export function createOrgService(
     snapshots: () => workerEngine.list().map((s) => ({ worker: s.worker, nextShiftAt: s.nextShiftAt })),
     batches: {
       list: () => engines.orchestrator.list(),
-      approve: (id, ids) =>
-        engines.orchestrator.approveBatch(ids === 'all' ? { id } : { id, approve: ids.map((candidateId) => ({ candidateId })), keepUnpicked: true }),
+      approve: (id, ids, by) =>
+        engines.orchestrator.approveBatch({ id, ...(ids === 'all' ? {} : { approve: ids.map((candidateId) => ({ candidateId })), keepUnpicked: true }), ...(by ? { by } : {}) }),
       reject: (id, candidateId) => engines.orchestrator.rejectItem({ id, candidateId }),
     },
     runNow: (id) => workerEngine.workShiftNow(id),
@@ -448,6 +449,8 @@ export function createOrgService(
       // Measuring 20 GB takes a while: once every few minutes is plenty.
       report: async () => {
         if (storageCache && Date.now() - storageCache.measuredAt < 5 * 60_000) return storageCache;
+        if (storageInFlight) return storageInFlight;
+        storageInFlight = (async () => {
         const home = os.homedir();
         const wtRoot = path.join(home, '.overcli', 'worktrees');
         let count = 0;
@@ -458,7 +461,9 @@ export function createOrgService(
         }
         const [checkoutBytes, repoBytes, cacheBytes] = await Promise.all([folderBytes(wtRoot), folderBytes(path.join(host().dataDir(), 'repos')), folderBytes(path.join(home, '.npm', '_npx'))]);
         storageCache = { volume: volumeOf(host().dataDir()), checkouts: { count, bytes: checkoutBytes }, repos: repoBytes, toolCache: cacheBytes, kept: keptCheckouts(), measuredAt: Date.now() };
-        return storageCache;
+        return storageCache!;
+        })().finally(() => { storageInFlight = null; });
+        return storageInFlight;
       },
       discard: async (runId) => {
         const run = flowRuntime.getRun(runId);

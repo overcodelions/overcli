@@ -5,6 +5,7 @@
 // requests, and the task re-renders when main says it moved.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ShortNameChip, teamShortNames } from "../ShortNameField";
 import { OrgNudge } from "../OrgNudge";
 
 import { Markdown } from "../../Markdown";
@@ -107,6 +108,8 @@ export function TeamDesk({
   taskId?: string;
 }) {
   const team = useTeamsStore((s) => (teamId ? s.teams[teamId] : undefined));
+  const allTeams = useTeamsStore((s) => s.teams);
+  const shortName = useMemo(() => (teamId ? teamShortNames(allTeams).get(teamId) : undefined), [allTeams, teamId]);
   const tasks = useTeamsStore((s) => s.tasks);
   const openTeamEditor = useWorkersStore((s) => s.openTeamEditor);
   const workers = useWorkersStore((s) => s.workers);
@@ -193,6 +196,7 @@ export function TeamDesk({
           <div className="flex min-w-0 flex-[1_1_420px] flex-col gap-0.5">
             <div className="flex min-w-0 items-baseline gap-2.5">
               <h1 className="truncate text-[19px] font-semibold tracking-tight text-ink">{team.name}</h1>
+              {shortName && <ShortNameChip command="/team" short={shortName} />}
               <span className="shrink-0 text-xs text-ink-faint">
                 team{team.projectPath ? ` · works in ${projectName(projectOptions, team.projectPath)}` : ""}
               </span>

@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import type { TeamComment } from '../../shared/flows/team';
 import { randomUUID } from 'node:crypto';
 import { log } from '../diagnostics';
+import { checkShortName, normalizeShortName, resolveShortNames } from '../../shared/shortName';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { AdoptedWorktrees } from '../../shared/flows/schema';
@@ -436,9 +437,22 @@ export class TeamEngine {
     if (projectPath && this.deps.projects && !this.deps.projects().some((p) => p.path === projectPath)) {
       return { ok: false, error: 'That project is no longer in Overcli. Pick another, or let members work in their own.' };
     }
+    // Absent from the input: kept; empty: cleared.
+    const shortName = input.shortName === undefined ? prior?.shortName : normalizeShortName(input.shortName);
+    if (shortName) {
+      const bad = checkShortName(shortName);
+      if (bad) return { ok: false, error: bad };
+      // What each live team goes by today, its own or its initials: a new
+      // name never takes over one people already type (`/team pd …`).
+      const live = [...this.teams.values()].filter((t) => !t.disbanded).sort((a, b) => a.createdAt - b.createdAt);
+      const resolved = resolveShortNames(live);
+      const taken = live.find((t) => t.id !== prior?.id && (t.shortName === shortName || resolved.get(t.id) === shortName || t.name.trim().toLowerCase() === shortName));
+      if (taken) return { ok: false, error: `${taken.name} already goes by "${shortName}". Pick another short name.` };
+    }
     const team: Team = {
       id: prior?.id ?? this.newId(),
       name: draft.name!,
+      ...(shortName ? { shortName } : {}),
       purpose: draft.purpose,
       // Absent from the input: an edit that didn't touch it keeps it.
       ...((input.guidance ?? prior?.guidance)?.trim() ? { guidance: (input.guidance ?? prior!.guidance)!.trim().slice(0, TEAM_GUIDANCE_MAX) } : {}),

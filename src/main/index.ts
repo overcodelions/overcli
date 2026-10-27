@@ -91,7 +91,8 @@ import { isSafeAwsName, readAwsAuthOverview } from './awsProfiles';
 import { awsEnv, awsSsoLoginCommand, resolveAwsBinary, runAwsSsoLogin } from './awsSsoLogin';
 import { backendNeedsShell, buildBackendEnv } from './backendPaths';
 import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './resolveFilePath';
-import { findFileEntriesAsync, listFileEntriesAsync, listFileEntriesSync, listFileTreeAsync, type WalkResult } from './fileWalk';
+import { listFileEntriesAsync, listFileEntriesSync, listFileTreeAsync, type WalkResult } from './fileWalk';
+import { FileSearchCoordinator } from './fileSearch';
 import { closeAllTreeWatchers, noteRelistCost, unwatchTree, watchTree } from './fileTreeWatch';
 import { HandoffInbox, defaultInboxDir } from './handoffInbox';
 import { ConnectionsInbox, defaultConnectionsDir } from './overdbInbox';
@@ -149,7 +150,7 @@ import {
   WEBHOOK_TOKEN_KEY,
 } from './webhookNotify';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
-import { teamHireJobDescription, teamPieceFlow, type TeamHireRequest } from '../shared/flows/team';
+import { answerOnlyFlow, teamHireJobDescription, teamPieceFlow, type TeamHireRequest } from '../shared/flows/team';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
 import { buildCiDeploy, buildFlowCiDeploy, type CiWorkspace } from '../shared/flows/ciDeploy';
 import { serializeFlow } from '../shared/flows/yaml';
@@ -773,55 +774,44 @@ export function registerIpc(): void {
       const saved = saveFlow({ flow: piece, target: 'generated' });
       return saved.ok ? { ok: true, flowId: piece.id } : saved;
     },
-    generatedFlow: async ({ worker, errand, request, runIn }) => {
+    generatedFlow: async ({ worker, errand, request, runIn, launch }) => {
       const drafted = await draftFlowFromPrompt(
         {
           description:
-            `${request}\n\nThis flow exists to ANSWER a question, so it must not change ` +
-            `anything — but it may do whatever it takes to find the answer. Give its ` +
-            `steps the tools to read files, search, query services, and run commands ` +
-            `whose only effect is reporting: the test suite, a build, a linter, a ` +
-            `type-check. Running a command is fine; changing the project is not — no ` +
-            `edits, no writes, no commits, no pushes. The final step must output a ` +
-            `written answer.`,
+            `${request}\n\nThis flow exists to ANSWER a question, so it only reads. Give its ` +
+            `steps the tools to read files, search the code and its history, and look ` +
+            `things up through the tools it has. No commands, edits, writes, commits or ` +
+            `pushes: those are taken away, and a step that tries one waits on a person. ` +
+            `The final step must output a written answer.`,
         },
         drafterDeps(),
       );
       if (!drafted.ok) return drafted;
-      // A distinct id per errand: these are single-use, and reusing one would
-      // have a later errand silently overwrite the flow an earlier run is
-      // still executing.
-      const flow = {
-        ...drafted.flow,
-        id: `generated-${randomUUID().slice(0, 8)}`,
-        source: 'generated' as const,
-      };
+      // Single-use, so a distinct id per errand: reusing one would have a
+      // later errand overwrite the flow an earlier run is still executing.
+      // Held to reads by its tools, whatever the draft gave it.
+      const flow = answerOnlyFlow({ ...drafted.flow, id: `generated-${randomUUID().slice(0, 8)}`, source: 'generated' as const });
       const saved = saveFlow({ flow, target: 'generated' });
       if (!saved.ok) return saved;
-      const launched = await orchestrator!.startBatch({
-        title: `[Errand] ${errand.split('\n')[0]?.trim().slice(0, 80) || 'Investigation'}`,
+      // Parked unless the worker's trust lets it start: on Asks first it waits
+      // for its manager like anything else it proposes.
+      const parked = await orchestrator!.parkDirect({
+        title: `[Errand] ${flow.name}`,
         projectPath: worker.projectPath,
+        prompt: errand,
+        flowId: flow.id,
         runIn,
         maxConcurrent: 1,
-        // The generated flow is drafted read-only, but `resolveStepEffect` is a
-        // heuristic over step text — a "report the answer" step can still read
-        // as external. Stamped through the shared helper for the same reason
-        // the shift and errand parks are, so one worker doesn't gate on path 3
-        // after being waived on paths 1 and 2.
+        // `resolveStepEffect` is a heuristic over step text — a "report the
+        // answer" step can still read as external. Stamped through the shared
+        // helper, as the shift and errand parks are, so one worker doesn't gate
+        // on path 3 after being waived on paths 1 and 2.
         origin: workerOrigin(worker, 'errand', errand),
-        items: [
-          {
-            candidate: { id: flow.id, title: flow.name, prompt: errand },
-            flowId: flow.id,
-          },
-        ],
+        note: `Investigate: ${request.replace(/\s+/g, ' ').slice(0, 300)}`,
+        autoLaunch: launch,
       });
-      if (!launched.ok) return launched;
-      return {
-        ok: true,
-        orchestrationId: launched.orchestrationId,
-        flowId: flow.id,
-      };
+      if (!parked.ok) return parked;
+      return { ok: true, orchestrationId: parked.orchestrationId, flowId: flow.id, queued: parked.queued };
     },
   });
   flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
@@ -1490,11 +1480,17 @@ export function registerIpc(): void {
     if (!isPathUnderRegisteredRoot(root)) return Promise.resolve({ entries: [], truncated: false, unlistedDirs: [] });
     return listFileEntriesShared(root);
   });
-  ipcMain.handle('fs:findFileEntries', (_e, root: string, query: string) => {
+  const fileSearch = new FileSearchCoordinator();
+  const fileSearchSenders = new Set<number>();
+  ipcMain.handle('fs:findFileEntries', (e, root: string, query: string, caller?: string) => {
     if (!isPathUnderRegisteredRoot(root) || typeof query !== 'string') {
       return Promise.resolve({ entries: [], truncated: false, unlistedDirs: [] });
     }
-    return findFileEntriesAsync(root, query);
+    if (!fileSearchSenders.has(e.sender.id)) {
+      fileSearchSenders.add(e.sender.id);
+      e.sender.once('destroyed', () => { fileSearch.clear(e.sender.id); fileSearchSenders.delete(e.sender.id); });
+    }
+    return fileSearch.find(e.sender.id, root, query, typeof caller === 'string' ? caller : '');
   });
   // Live tree watching. The renderer's file tree lists its root once per
   // mount; without this, a file the agent writes only appears after the pane
@@ -1502,12 +1498,12 @@ export function registerIpc(): void {
   // change events carry.
   ipcMain.handle('fs:watchTree', (_e, root: string) => {
     if (!isPathUnderRegisteredRoot(root)) return { ok: false, key: path.resolve(root) };
-    return watchTree(root, (key) => {
+    return watchTree(root, (key, changedPaths) => {
       // The walk's own cache would otherwise hand the renderer the same
       // stale listing it already has.
       fileListCache.delete(key);
       // Every window: an explorer popped out into its own window watches too.
-      emitToAllWindows({ type: 'fileTreeChanged', root: key });
+      emitToAllWindows({ type: 'fileTreeChanged', root: key, changedPaths });
     });
   });
   ipcMain.handle('fs:unwatchTree', (_e, root: string) => {
@@ -2745,13 +2741,13 @@ export function registerIpc(): void {
     const store = Store.load();
     return [...store.workspaces.map((w) => ({ name: w.name, path: w.rootPath, kind: 'workspace' as const })), ...store.projects.map((p) => ({ name: p.name, path: p.path, kind: 'project' as const }))];
   });
-  ipcMain.handle('processes:save', (_e, { id, name, purpose, about, templateId, codeIn, stages }) => {
+  ipcMain.handle('processes:save', (_e, { id, name, shortName, purpose, about, templateId, codeIn, stages }) => {
     if (!processService) return noProcesses;
     const me = desktopCaller();
     // A new process is yours; a changed one keeps its owner. The app has no
     // audience to pick, so one made here is open to whoever reaches it, as
     // before; published to an org, it starts private there.
-    return processService.save(me, { ...(id ? { id } : { owner: { name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, access: { who: 'everyone' } }), name, purpose, about, templateId, ...(codeIn !== undefined ? { codeIn } : {}), stages });
+    return processService.save(me, { ...(id ? { id } : { owner: { name: me.name, ...(me.slackUserId ? { slackUserId: me.slackUserId } : {}) }, access: { who: 'everyone' } }), name, shortName, purpose, about, templateId, ...(codeIn !== undefined ? { codeIn } : {}), stages });
   });
   // A process drafted from a picture of one (a data URL, or a file the
   // picker chose), matched against this app's teams and workers. Not saved:
@@ -2937,7 +2933,7 @@ export function registerIpc(): void {
   );
   ipcMain.handle('workers:runErrand', (_e, { id, instruction, attachments }) =>
     workerEngine
-      ? workerEngine.runErrand(id, instruction, attachments)
+      ? workerEngine.runErrand(id, instruction, attachments, { atDesk: true })
       : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
   ipcMain.handle('workers:reorder', (_e, { ids }) =>

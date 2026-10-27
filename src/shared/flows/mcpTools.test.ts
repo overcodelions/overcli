@@ -25,6 +25,9 @@ describe('isReadOnlyMcpTool', () => {
     'mcp__claude_ai_Google_Calendar__suggest_time',
     // Says both: the write wins.
     'mcp__claude_ai_Gmail__get_and_trash',
+    'mcp__x__find_and_replace',
+    'mcp__x__findAndReplace',
+    'mcp__x__getOrCreateUser',
     // Not an MCP tool at all.
     'Read',
   ])('does not read only: %s', (name) => {

@@ -116,7 +116,7 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
             <button
               onClick={() => void allowRestOfTurn(conversationId, 'safe')}
               className="px-3 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 border border-accent/40"
-              title="Allows this and every other request until the turn ends. Risky commands still ask."
+              title="Allows reads, edits inside the project, read-only tools and supported build/test commands until the turn ends. Network requests, other commands and tool writes still ask."
             >
               Allow rest of turn
             </button>

@@ -22,7 +22,7 @@ import { workerFilesDir } from '../main/flows/workerFiles';
 import { randomUUID } from 'node:crypto';
 import { projectIdFor } from '../main/projectIds';
 import { loadAllFlows, saveFlow } from '../main/flows/storage';
-import { teamPieceFlow } from '../shared/flows/team';
+import { answerOnlyFlow, teamPieceFlow } from '../shared/flows/team';
 import { draftFlowFromPrompt } from '../main/flows/drafter';
 import { workerOrigin } from '../shared/flows/worker';
 import { currentBranch } from '../main/git';
@@ -306,34 +306,40 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     },
     // A question no flow covers: draft a read-only flow to find out, as in the
     // app (index.ts), and launch it.
-    generatedFlow: async ({ worker, errand, request, runIn }) => {
+    generatedFlow: async ({ worker, errand, request, runIn, launch }) => {
       const drafted = await draftFlowFromPrompt(
         {
           description:
-            `${request}\n\nThis flow exists to ANSWER a question, so it must not change ` +
-            `anything — but it may do whatever it takes to find the answer. Give its ` +
-            `steps the tools to read files, search, query services, and run commands ` +
-            `whose only effect is reporting: the test suite, a build, a linter, a ` +
-            `type-check. Running a command is fine; changing the project is not — no ` +
-            `edits, no writes, no commits, no pushes. The final step must output a ` +
-            `written answer.`,
+            `${request}\n\nThis flow exists to ANSWER a question, so it only reads. Give its ` +
+            `steps the tools to read files, search the code and its history, and look ` +
+            `things up through the tools it has. No commands, edits, writes, commits or ` +
+            `pushes: those are taken away, and a step that tries one waits on a person. ` +
+            `The final step must output a written answer.`,
         },
         drafterDepsFor(runner),
       );
       if (!drafted.ok) return drafted;
-      const flow = { ...drafted.flow, id: `generated-${randomUUID().slice(0, 8)}`, source: 'generated' as const };
+      // Single-use, so a distinct id per errand: reusing one would have a
+      // later errand overwrite the flow an earlier run is still executing.
+      // Held to reads by its tools, whatever the draft gave it.
+      const flow = answerOnlyFlow({ ...drafted.flow, id: `generated-${randomUUID().slice(0, 8)}`, source: 'generated' as const });
       const saved = saveFlow({ flow, target: 'generated' });
       if (!saved.ok) return saved;
-      const launched = await orchestrator.startBatch({
-        title: `[Errand] ${errand.split('\n')[0]?.trim().slice(0, 80) || 'Investigation'}`,
+      // Parked unless the worker's trust lets it start: on Asks first it waits
+      // for its manager like anything else it proposes.
+      const parked = await orchestrator.parkDirect({
+        title: `[Errand] ${flow.name}`,
         projectPath: worker.projectPath,
+        prompt: errand,
+        flowId: flow.id,
         runIn,
         maxConcurrent: 1,
         origin: workerOrigin(worker, 'errand', errand),
-        items: [{ candidate: { id: flow.id, title: flow.name, prompt: errand }, flowId: flow.id }],
+        note: `Investigate: ${request.replace(/\s+/g, ' ').slice(0, 300)}`,
+        autoLaunch: launch,
       });
-      if (!launched.ok) return launched;
-      return { ok: true, orchestrationId: launched.orchestrationId, flowId: flow.id };
+      if (!parked.ok) return parked;
+      return { ok: true, orchestrationId: parked.orchestrationId, flowId: flow.id, queued: parked.queued };
     },
     // The shared reading, as the desktop uses: what each step recorded and
     // the files the run wrote. A copy here filed only the first, so an HTML

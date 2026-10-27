@@ -2182,7 +2182,7 @@ describe('WorkerEngine generated flows', () => {
         seed: [{ ...seedWorker(), writesCode }],
         generatedFlow: async (args) => {
           calls.push(args.runIn);
-          return { ok: true, orchestrationId: 'orch-gen', flowId: 'generated-abcd1234' };
+          return { ok: true, orchestrationId: 'orch-gen', flowId: 'generated-abcd1234', queued: 1 };
         },
       });
       h.engine.start();
@@ -2193,8 +2193,8 @@ describe('WorkerEngine generated flows', () => {
     }
   });
 
-  it('drafts and launches a flow when the worker asks for one', async () => {
-    const calls: Array<{ request: string; errand: string; runIn: string }> = [];
+  it('drafts a flow when the worker asks for one, and parks it on Asks first', async () => {
+    const calls: Array<{ request: string; errand: string; runIn: string; launch: boolean }> = [];
     const h = makeHarness({
       seed: [seedWorker()],
       generatedFlow: async (args) => {
@@ -2202,11 +2202,13 @@ describe('WorkerEngine generated flows', () => {
           request: args.request,
           errand: args.errand,
           runIn: args.runIn,
+          launch: args.launch,
         });
         return {
           ok: true,
           orchestrationId: 'orch-gen',
           flowId: 'generated-abcd1234',
+          queued: args.launch ? 1 : 0,
         };
       },
     });
@@ -2225,6 +2227,9 @@ describe('WorkerEngine generated flows', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].request).toBe('Read the CI logs and correlate.');
     expect(calls[0].runIn).toBe('cwd');
+    // Asked through the org on probation, it waits for its manager, as any other proposal does.
+    expect(calls[0].launch).toBe(false);
+    expect(h.journal.find((e) => e.kind === 'errand')?.note).toContain('waiting for an OK');
     // Reported as work launched, not as an empty errand.
     expect(res.ok && res.result).toMatchObject({
       orchestrationId: 'orch-gen',
@@ -2235,13 +2240,33 @@ describe('WorkerEngine generated flows', () => {
     expect(entry?.orchestrationId).toBe('orch-gen');
   });
 
+  it('starts a drafted flow at once only when trust allows and the ask is its manager\'s, or at the desktop desk', async () => {
+    const launches: boolean[] = [];
+    const generatedFlow: WorkerEngineDeps['generatedFlow'] = async (args) => {
+      launches.push(args.launch);
+      return { ok: true, orchestrationId: 'orch-gen', flowId: 'f', queued: args.launch ? 1 : 0 };
+    };
+    const ask = async (over: Partial<Worker>, opts: { untrusted?: boolean; atDesk?: boolean }) => {
+      const h = makeHarness({ seed: [seedWorker(over)], generatedFlow });
+      h.engine.start();
+      h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+      h.orchestrations.set('orch-1', replyRequesting('Read the CI logs and correlate.'));
+      await h.engine.runErrand('worker-1', 'why did CI get slower this month', undefined, opts);
+    };
+    await ask({ trust: 'trusted' }, {});
+    await ask({ trust: 'trusted' }, { untrusted: true });
+    // Its owner at the desktop desk: started as always, even on Asks first.
+    await ask({}, { atDesk: true });
+    expect(launches).toEqual([true, false, true]);
+  });
+
   it('ignores a flow request when the turn also proposed candidates', async () => {
     let called = 0;
     const h = makeHarness({
       seed: [seedWorker()],
       generatedFlow: async () => {
         called++;
-        return { ok: true, orchestrationId: 'orch-gen', flowId: 'f' };
+        return { ok: true, orchestrationId: 'orch-gen', flowId: 'f', queued: 1 };
       },
     });
     h.engine.start();

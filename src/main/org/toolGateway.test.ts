@@ -4,7 +4,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpServerConfig } from '../mcpConfig';
 import { bindToolGateway, boundGatewayTools, closeToolGateway, openToolGateway, type GatewayCaller, type ToolGateway } from './toolGateway';
 import { credentialRules } from './credentialGuard';
@@ -291,5 +291,27 @@ describe('credential guard', () => {
       expect(rules).toContain(`Edit(${p})`);
     }
     expect(rules.every((r) => !/\s/.test(r))).toBe(true);
+  });
+
+  it("denies the per-run MCP configs in the temp folder", () => {
+    const rules = credentialRules('/data');
+    const directories = new Set([os.tmpdir(), fs.realpathSync(os.tmpdir())]);
+    for (const dir of directories) {
+      const pattern = `/${path.resolve(dir, 'overcli-perm-*')}`;
+      expect(rules).toContain(`Read(${pattern})`);
+      expect(rules).toContain(`Edit(${pattern})`);
+    }
+  });
+
+  it('denies both temporary directory aliases when realpath differs', () => {
+    const realpath = vi.spyOn(fs, 'realpathSync').mockReturnValue('/canonical-temp');
+    try {
+      const rules = credentialRules('/data');
+      for (const dir of [os.tmpdir(), '/canonical-temp']) {
+        const pattern = `/${path.resolve(dir, 'overcli-perm-*')}`;
+        expect(rules).toContain(`Read(${pattern})`);
+        expect(rules).toContain(`Edit(${pattern})`);
+      }
+    } finally { realpath.mockRestore(); }
   });
 });

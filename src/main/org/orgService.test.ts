@@ -280,6 +280,19 @@ describe('a worker’s picture', () => {
   });
 });
 
+describe('a worker’s home channels', () => {
+  it('are channel IDs, deduped, set by its manager, and cleared with null', () => {
+    const { svc, roster } = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    expect(svc.update(sam, 'open', { slackHomeChannels: ['C0ACMEQS'] }).ok).toBe(false);
+    expect(svc.update(pat, 'open', { slackHomeChannels: ['#product-questions'] }).ok).toBe(false);
+    const set = svc.update(pat, 'open', { slackHomeChannels: ['c0acmeqs', 'C0ACMEQS', 'G0ACMEPRV'] });
+    if (!set.ok) throw new Error(set.error);
+    expect(set.worker.slackHomeChannels).toEqual(['C0ACMEQS', 'G0ACMEPRV']);
+    expect(svc.update(pat, 'open', { slackHomeChannels: null }).ok).toBe(true);
+    expect(roster.get('open')!.slackHomeChannels).toBeUndefined();
+  });
+});
+
 describe('a picture picked for a worker', () => {
   const setup = (pick: string | null, over: Partial<Worker> = {}) => {
     const h = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT }, ...over }), worker('other', { avatarUrl: 'https://img.acme.example/owl.png' })] });

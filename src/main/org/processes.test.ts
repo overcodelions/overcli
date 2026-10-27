@@ -167,6 +167,43 @@ describe('processes', () => {
     expect(h.svc.save({ name: 'Admin', admin: true }, { access: { who: 'everyone' }, id: made.process.id, name: 'Renamed', stages: made.process.stages }).ok).toBe(true);
   });
 
+  it('keeps a short name unique, through an edit that leaves it out, and clears it when emptied', () => {
+    const h = harness();
+    const made = h.make();
+    if (!made.ok) throw new Error(made.error);
+    const stages = made.process.stages;
+    expect(h.svc.save(owner, { id: made.process.id, name: made.process.name, shortName: ' LRB ', stages })).toMatchObject({ ok: true, process: { shortName: 'lrb' } });
+    expect(h.svc.find('lrb')?.id).toBe(made.process.id);
+    expect(h.svc.save(owner, { id: made.process.id, name: 'Renamed', stages })).toMatchObject({ ok: true, process: { shortName: 'lrb' } });
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'Another', shortName: 'lrb', stages })).toMatchObject({ ok: false, error: expect.stringContaining('already goes by') });
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'Another', shortName: 'bug', stages })).toMatchObject({ ok: false, error: expect.stringContaining('too common') });
+    const cleared = h.svc.save(owner, { id: made.process.id, name: 'Renamed', shortName: '', stages });
+    expect(cleared.ok && cleared.process.shortName).toBeUndefined();
+  });
+
+  it('goes by its initials until someone sets a short name', () => {
+    const h = harness();
+    const made = h.make();
+    if (!made.ok) throw new Error(made.error);
+    const renamed = h.svc.save(owner, { id: made.process.id, name: 'Launch review board', stages: made.process.stages });
+    expect(renamed.ok && renamed.process.shortName).toBeUndefined();
+    expect(h.svc.list(owner)[0]).toMatchObject({ shortName: 'lrb', shortNameAuto: true });
+    expect(h.svc.find('lrb')?.id).toBe(made.process.id);
+    h.svc.save(owner, { id: made.process.id, name: 'Launch review board', shortName: 'dual', stages: made.process.stages });
+    expect(h.svc.list(owner)[0].shortName).toBe('dual');
+    expect(h.svc.list(owner)[0].shortNameAuto).toBeUndefined();
+  });
+
+  it('refuses a short name that is an older process\'s initials', () => {
+    const h = harness();
+    const made = h.make();
+    if (!made.ok) throw new Error(made.error);
+    h.svc.save(owner, { id: made.process.id, name: 'Dual-track product delivery', stages: made.process.stages });
+    expect(h.svc.find('dtpd')?.id).toBe(made.process.id);
+    expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'Another', shortName: 'DTPD', stages: made.process.stages })).toMatchObject({ ok: false, error: expect.stringContaining('already goes by "dtpd"') });
+    expect(h.svc.find('dtpd')?.id).toBe(made.process.id);
+  });
+
   it('lets one worker take a stage, handing its answer on', () => {
     const h = harness();
     expect(h.svc.save(owner, { access: { who: 'everyone' }, name: 'Notes', stages: [{ id: 'w', name: 'Write notes', kind: 'worker' }] })).toMatchObject({ ok: false, error: 'Pick the worker for Write notes.' });

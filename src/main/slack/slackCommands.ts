@@ -31,6 +31,7 @@ import { HIRE_EDIT_VIEW, TEAM_EDIT_VIEW, WORKER_EDIT_VIEW, hireEditView, readHir
 import { DEFAULT_TEAM_CHECKPOINTS } from '../../shared/flows/team';
 import type { ProcessPerson } from '../../shared/org/process';
 import type { ProcessService } from '../org/processes';
+import { usedShortName } from '../../shared/shortName';
 import {
   PROC_ACTIONS,
   PROC_APPROVE_ACTION,
@@ -41,6 +42,7 @@ import {
   PROC_STOP_ACTION,
   decisionBlocks,
   fillView,
+  ideaExample,
   parseIdea,
   readDecisionValue,
   readFill,
@@ -294,18 +296,25 @@ export class SlackCommands {
     const procs = this.deps.processes?.();
     if (!procs) return this.respond(responseUrl, 'Processes are not running on this server.');
     const me: ProcessPerson = { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) };
-    const parsed = parseIdea(text, procs.list(caller));
+    const listed = procs.list(caller);
+    const parsed = parseIdea(text, listed);
     if (!parsed) {
       const mine = procs.mine(me);
-      if (!mine.length) return this.respond(responseUrl, 'You haven’t put any ideas in yet. `/idea what it is` starts one.');
+      // How to put one in, by short name where there is one: how people learn them.
+      const open = listed.filter((p) => p.stages.length && p.canStart);
+      const ways = open.length ? `Put one in: ${open.slice(0, 6).map(ideaExample).join(', ')}` : '';
+      if (!mine.length) return this.respond(responseUrl, `You haven’t put any ideas in yet. ${ways ? `${ways}.` : '`/idea what it is` starts one.'}`);
       return this.respond(responseUrl, 'Your ideas', [
         section(mine.map((m) => `• *${escapeMrkdwn(clip(m.item.title, 80))}* — ${escapeMrkdwn(m.process)} · ${m.item.status === 'active' ? `at *${escapeMrkdwn(m.stage)}*${m.item.stageNote ? ` (${escapeMrkdwn(m.item.stageNote)})` : ''}` : m.stage}`).join('\n')),
+        ...(ways ? [context(ways)] : []),
       ]);
     }
     if ('error' in parsed) return this.respond(responseUrl, parsed.error);
     const res = procs.submit(me, parsed.processId, { brief: parsed.brief, source: 'slack' });
     if (!res.ok) return this.respond(responseUrl, res.error);
-    return this.respond(responseUrl, `In: _${escapeMrkdwn(res.item.title)}_ starts at *${escapeMrkdwn(res.process.stages[0].name)}* in ${escapeMrkdwn(res.process.name)}. I’ll tell you as it moves. \`/idea\` shows where it is.`);
+    const short = res.process.shortName;
+    const tip = short && !usedShortName(text, short) ? ` Next time, \`/idea ${short} …\` goes straight there.` : '';
+    return this.respond(responseUrl, `In: _${escapeMrkdwn(res.item.title)}_ starts at *${escapeMrkdwn(res.process.stages[0].name)}* in ${escapeMrkdwn(res.process.name)}. I’ll tell you as it moves. \`/idea\` shows where it is.${tip}`);
   }
 
   /// A process telling someone something, with the decision buttons when a
@@ -398,24 +407,28 @@ export class SlackCommands {
       return this.respond(responseUrl, `${teams.length} teams`, [
         section(
           teams
-            .map((t) => `• *${escapeMrkdwn(t.name)}*${t.purpose ? ` — ${escapeMrkdwn(clip(t.purpose, 80))}` : ''}\n   ${escapeMrkdwn(t.members.map((m) => m.name).join(', '))} · ${now(t.id)}`)
+            .map((t) => `• *${escapeMrkdwn(t.name)}*${t.shortName ? ` \`${t.shortName}\`` : ''}${t.purpose ? ` — ${escapeMrkdwn(clip(t.purpose, 80))}` : ''}\n   ${escapeMrkdwn(t.members.map((m) => m.name).join(', '))} · ${now(t.id)}`)
             .join('\n'),
         ),
-        context('Give one a task: `/team <name>: what you want back`'),
+        context(teams.some((t) => t.shortName) ? 'Give one a task: `/team <name>: what you want back`, or by its short name: `/team pd what you want back`' : 'Give one a task: `/team <name>: what you want back`'),
       ]);
     }
     const made = /^new\b[:\s]*(.*)$/is.exec(text);
     if (made) return this.newTeam(caller, made[1].trim(), responseUrl);
+    // `/team pd what you want back`: a short name needs no colon.
+    const first = /^(\S+)\s+([\s\S]+)$/.exec(text);
+    const short = first ? org.teams(caller).find((t) => t.shortName === first[1].toLowerCase()) : undefined;
     const at = text.indexOf(':');
-    if (at <= 0) return this.respond(responseUrl, 'Name the team, then the task: `/team Pricing: review Q4 pricing against the three main competitors`. Or make one: `/team new writes PR/FAQs for new features`');
-    const res = org.briefTeam(caller, text.slice(0, at).trim(), text.slice(at + 1).trim());
+    if (!short && at <= 0) return this.respond(responseUrl, 'Name the team, then the task: `/team Pricing: review Q4 pricing against the three main competitors`. Or make one: `/team new writes PR/FAQs for new features`');
+    const res = short ? org.briefTeam(caller, short.id, first![2].trim()) : org.briefTeam(caller, text.slice(0, at).trim(), text.slice(at + 1).trim());
+    if (!res.ok) return this.respond(responseUrl, res.error);
+    const tipFor = org.teams(caller).find((t) => t.id === res.task.teamId)?.shortName;
+    const tip = tipFor && !usedShortName(text, tipFor) ? ` Next time, \`/team ${tipFor} …\` goes straight there.` : '';
     return this.respond(
       responseUrl,
-      !res.ok
-        ? res.error
-        : res.task.status === 'queued'
-          ? `${res.task.teamName} is busy on another task, so this one is next in line. Its coordinator will DM you when it starts.`
-          : `${res.task.teamName} is on it. Its coordinator will DM you with questions or a plan to approve.`,
+      (res.task.status === 'queued'
+        ? `${res.task.teamName} is busy on another task, so this one is next in line. Its coordinator will DM you when it starts.`
+        : `${res.task.teamName} is on it. Its coordinator will DM you with questions or a plan to approve.`) + tip,
     );
   }
 

@@ -41,11 +41,11 @@ describe('safe fetches', () => {
     on(['acme.atlassian.net', 'wiki.acme.lan']);
     expect(fetch('k', 'https://acme.atlassian.net/browse/ACME-1?x=1').allow).toBe(true);
     expect(fetch('k', 'https://wiki.acme.lan/page').allow).toBe(true);
-    for (const url of ['http://169.254.169.254/latest/meta-data/', 'http://localhost:8080/', 'http://127.0.0.1/', 'http://[::1]/', 'http://metadata.google.internal/']) {
+    for (const url of ['http://169.254.169.254/latest/meta-data/', 'http://localhost:8080/', 'http://127.0.0.1/', 'http://[::1]/', 'http://metadata.google.internal/', 'http://[::ffff:a9fe:a9fe]/latest/meta-data/', 'http://[::ffff:7f00:1]/']) {
       noteSeen('k', url);
       expect(fetch('k', url).allow).toBe(false);
     }
-    for (const url of ['http://10.0.0.5/', 'http://192.168.1.1/admin', 'http://intranet/', 'http://build.acme.internal/']) {
+    for (const url of ['http://10.0.0.5/', 'http://192.168.1.1/admin', 'http://intranet/', 'http://build.acme.internal/', 'http://[::ffff:a00:5]/']) {
       noteSeen('k', url);
       expect(fetch('k', url)).toMatchObject({ allow: false, why: expect.stringContaining('private') });
     }
