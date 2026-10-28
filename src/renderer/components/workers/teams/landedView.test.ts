@@ -128,6 +128,12 @@ describe('yourTurn', () => {
     expect(band.changes).toEqual(['Add the risk table.', 'State the range.']);
   });
 
+  it('offers only the review once the task continued in a new run', () => {
+    const band = yourTurn(task(debate(), { continuedAs: { taskId: 'task-2', at: 1 } }))!;
+    expect(band.detail).toBe('Version 2, 2 files. This task continued in a new run, where the team works now.');
+    expect(band.actions).toEqual([{ id: 'reviewPack', label: 'Review v2', primary: true }]);
+  });
+
   it('says review when the pack has everything, and nothing while someone answers or once filed', () => {
     const quiet = task([], { room: { messages: [] } });
     expect(yourTurn(quiet)?.actions).toEqual([{ id: 'reviewPack', label: 'Review v2', primary: true }]);

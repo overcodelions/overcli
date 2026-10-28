@@ -59,6 +59,21 @@ const pendingLines = new Map<string, string[]>();
 /// to a Start button under the user's cursor.
 const inFlightStarts = new Set<string>();
 
+/// A view from main, with any start still in flight kept as `starting`. Main
+/// reports `stopped` until its port and process checks are done — seconds on
+/// a machine running a dozen JVMs — and a reload in that window (the window
+/// regaining focus is enough) flipped the row back to Start. Pressed again,
+/// the second start was refused as already running.
+function withPressedStarts(view: StackView): StackView {
+  if (inFlightStarts.size === 0) return view;
+  const runtimes = view.runtimes.map((r) =>
+    r.status === 'stopped' && inFlightStarts.has(logKey(view.workspaceId, r.serviceId))
+      ? { ...r, status: 'starting' as const, stopping: undefined }
+      : r,
+  );
+  return { ...view, runtimes };
+}
+
 /// What an IPC rejection says, without Electron's "Error invoking remote
 /// method" wrapper in front of it.
 function reason(err: unknown): string {
@@ -357,7 +372,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   suggestions: {},
 
   async load(workspaceId) {
-    const view = await window.overcli.invoke('services:view', workspaceId);
+    const view = withPressedStarts(await window.overcli.invoke('services:view', workspaceId));
     set((s) => ({ stacks: { ...s.stacks, [workspaceId]: view } }));
     // Land on something rather than an empty pane.
     if (!get().selected[workspaceId] && view.services[0]) {
@@ -368,7 +383,7 @@ export const useServicesStore = create<ServicesState>((set, get) => ({
   async loadAll(workspaceIds) {
     const views = await window.overcli.invoke('services:viewAll', workspaceIds);
     set((s) => ({
-      stacks: { ...s.stacks, ...Object.fromEntries(views.map((v) => [v.workspaceId, v])) },
+      stacks: { ...s.stacks, ...Object.fromEntries(views.map((v) => [v.workspaceId, withPressedStarts(v)])) },
     }));
   },
 

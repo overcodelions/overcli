@@ -165,7 +165,7 @@ import {
 } from './flows/workerFiles';
 import { filedByWorker, recentlyFiled } from './flows/workerPublish';
 import { listToolCatalog } from './flows/toolCatalog';
-import { FlowRuntime } from './flows/runtime';
+import { FlowRuntime, forRenderer } from './flows/runtime';
 import type { SlackBridge } from './slack/slackBridge';
 import type { SlackCommands } from './slack/slackCommands';
 import { processScheduleText, type ProcessService } from './org/processes';
@@ -2629,9 +2629,12 @@ export function registerIpc(): void {
   ipcMain.handle('flows:startRun', (_e, args) =>
     flowRuntime ? flowRuntime.startRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
-  ipcMain.handle('flows:listRuns', () => ({ runs: flowRuntime ? flowRuntime.listRuns() : [] }));
+  ipcMain.handle('flows:listRuns', () => ({ runs: flowRuntime ? flowRuntime.listRuns().map(forRenderer) : [] }));
   ipcMain.handle('flows:listUnreviewedRuns', async () => (flowRuntime ? await flowRuntime.unreviewedDoneRunIds() : []));
-  ipcMain.handle('flows:getRun', (_e, { runId }) => (flowRuntime ? flowRuntime.getRun(runId) : null));
+  ipcMain.handle('flows:getRun', (_e, { runId }) => {
+    const run = flowRuntime?.getRun(runId);
+    return run ? forRenderer(run) : null;
+  });
   ipcMain.handle('flows:resumeRun', (_e, args) =>
     flowRuntime ? flowRuntime.resumeRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );

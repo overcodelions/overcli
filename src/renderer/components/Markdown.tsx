@@ -32,6 +32,11 @@ marked.setOptions({
 });
 
 const FILE_PATH_RE = /^[a-zA-Z0-9_.\-/]+\.(?:ts|tsx|js|jsx|py|rs|go|swift|kt|java|rb|md|json|yaml|yml|toml|html|css|scss|sh)(?::\d+(?:[-:]\d+)?)?$/i;
+/// Absolute or home-relative paths are unambiguous enough to link whatever
+/// the extension — `.env.chat`, `Dockerfile.dev`, `.overcli/config`. The last
+/// segment still needs a dot so a bare route like `/api/users` stays code.
+/// Spaces are allowed for macOS folders like `Application Support`.
+const ABS_FILE_PATH_RE = /^(?:\/|~\/)[\w.\-@+/ ]*\/[\w\-@+ ]*\.[\w.\-@+]+(?::\d+(?:[-:]\d+)?)?$/;
 
 /// Resolve a markdown link href to a local file path, or null when it's a real
 /// web link. Codex links files by absolute path (`[Plan](/Users/me/Library/
@@ -137,7 +142,7 @@ function renderMarkdownHtmlUncached(
   const renderer = new Renderer();
 
   renderer.codespan = ({ text }) => {
-    if (enableFilePathLinks && FILE_PATH_RE.test(text)) {
+    if (enableFilePathLinks && (FILE_PATH_RE.test(text) || ABS_FILE_PATH_RE.test(text))) {
       const escaped = escapeHtml(text);
       return `<code class="file-path" data-path="${escapeAttr(text)}">${escaped}</code>`;
     }

@@ -4872,7 +4872,7 @@ export class FlowRuntimeImpl {
   }
 
   private emitRunUpdate(run: FlowRun): void {
-    this.emit({ type: 'flowRunUpdate', run: structuredClone(run) });
+    this.emit({ type: 'flowRunUpdate', run: forRenderer(run) });
     // Notify the orchestrator (if any) so a batch child run's terminal
     // state can pump the next queued item. Isolated in a try so an
     // observer fault can never break the run's own update emission.
@@ -5744,7 +5744,7 @@ export function stepAllowsFileRef(
 async function computeRunDiffForRun(run: FlowRun): Promise<string | null> {
   if (run.baselineCommitsByMember) {
     const measured = await Promise.all(Object.entries(run.baselineCommitsByMember).map(async ([name, info]) => {
-      const d = await computeRunDiff(info.path, info.commit);
+      const d = await computeRunDiff(info.path, info.commit, run.baseBranch);
       return [name, d] as const;
     }));
     const blocks: string[] = [];
@@ -5765,7 +5765,7 @@ async function computeRunDiffForRun(run: FlowRun): Promise<string | null> {
     return blocks.join('\n');
   }
   if (run.baselineCommit) {
-    return computeRunDiff(run.projectPath, run.baselineCommit);
+    return computeRunDiff(run.projectPath, run.baselineCommit, run.baseBranch);
   }
   return null;
 }
@@ -5932,6 +5932,39 @@ export function treeChanged(incrementalDiff: string | null): boolean {
   return incrementalDiff !== null && incrementalDiff.trim().length > 0;
 }
 
+/// Where the run's diff should start. Normally the baseline commit, but when
+/// the branch has since taken in the base branch (a merge or fast-forward
+/// from main), diffing from the baseline sweeps in everyone else's merged
+/// work: one run's diff reached 41 MB, nearly all of it a teammate's
+/// committed data file. When the merge-base with the base branch has moved
+/// past the baseline, start there instead, so only this branch's own
+/// changes show. A base branch that can't be found keeps the baseline.
+export async function effectiveDiffBase(cwd: string, baselineCommit: string, baseBranch?: string): Promise<string> {
+  const ref = await resolveBaseRef(cwd, baseBranch);
+  if (!ref) return baselineCommit;
+  const mb = await runGitAsync(['merge-base', 'HEAD', ref], cwd);
+  const mergeBase = mb.exitCode === 0 ? mb.stdout.trim() : '';
+  if (!mergeBase) return baselineCommit;
+  const moved = await runGitAsync(['merge-base', '--is-ancestor', baselineCommit, mergeBase], cwd);
+  return moved.exitCode === 0 ? mergeBase : baselineCommit;
+}
+
+/// The base branch as a ref `merge-base` accepts: the run's own base when it
+/// recorded one, else the remote default, else a local main/master.
+async function resolveBaseRef(cwd: string, baseBranch?: string): Promise<string | null> {
+  const candidates: string[] = [];
+  if (baseBranch) candidates.push(`origin/${baseBranch}`, baseBranch);
+  const head = await runGitAsync(['rev-parse', '--abbrev-ref', 'origin/HEAD'], cwd);
+  const originHead = head.exitCode === 0 ? head.stdout.trim() : '';
+  if (originHead && originHead !== 'origin/HEAD') candidates.push(originHead);
+  candidates.push('origin/main', 'origin/master', 'main', 'master');
+  for (const ref of candidates) {
+    const ok = await runGitAsync(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd);
+    if (ok.exitCode === 0) return ref;
+  }
+  return null;
+}
+
 /// Compute the actual git diff between the run's baseline commit and the
 /// current working tree state in its cwd. Includes:
 ///   - tracked changes (committed + uncommitted) via `git diff <commit>`
@@ -5941,10 +5974,11 @@ export function treeChanged(incrementalDiff: string | null): boolean {
 /// command fails — callers should fall back to the model's `<output>`
 /// text. Returns an empty string when the working tree matches the
 /// baseline exactly.
-async function computeRunDiff(cwd: string, baselineCommit: string): Promise<string | null> {
+async function computeRunDiff(cwd: string, baselineCommit: string, baseBranch?: string): Promise<string | null> {
+  const from = await effectiveDiffBase(cwd, baselineCommit, baseBranch);
   // Tracked changes: working tree vs baseline. Catches edits, deletes,
   // and any new files that have already been `git add`-ed or committed.
-  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', baselineCommit], cwd);
+  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', from], cwd);
   if (tracked.exitCode !== 0) return null;
 
   // Untracked files: things the model created via Write/Edit without
@@ -6005,6 +6039,32 @@ async function computeRunDiff(cwd: string, baselineCommit: string): Promise<stri
 
   const combined = [tracked.stdout, ...newFileBlocks].filter(Boolean).join('');
   return filterNoiseFromDiff(combined).diff;
+}
+
+/// Largest artifact body sent to the renderer. A diff taken across many
+/// worktrees can reach tens of MB (one generated data file was 519k lines);
+/// every run update cloned it over IPC and the run pane re-split it, which
+/// froze the window. The full body stays here, on disk and in step inputs.
+export const RENDERER_ARTIFACT_MAX = 2 * 1024 * 1024;
+
+function capArtifact(a: FlowArtifact): FlowArtifact {
+  if (a.body.length <= RENDERER_ARTIFACT_MAX) return a;
+  const dropped = a.body.length - RENDERER_ARTIFACT_MAX;
+  return {
+    ...a,
+    body:
+      a.body.slice(0, RENDERER_ARTIFACT_MAX) +
+      `\n\n[…${dropped.toLocaleString()} more characters not shown — too large to display]\n`,
+  };
+}
+
+/// A copy of `run` safe to post to the renderer: artifact bodies capped so
+/// an oversized one can't stall the window.
+export function forRenderer(run: FlowRun): FlowRun {
+  const artifacts: Record<string, FlowArtifact> = {};
+  for (const [name, a] of Object.entries(run.artifacts)) artifacts[name] = capArtifact(a);
+  const attempts = run.attempts.map((at) => (at.artifact ? { ...at, artifact: capArtifact(at.artifact) } : at));
+  return structuredClone({ ...run, artifacts, attempts });
 }
 
 // Public alias used by main/index.ts — keeps a single import name whether

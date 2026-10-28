@@ -1945,6 +1945,11 @@ describe('TeamEngine continueAsNew', () => {
     const old = h.engine.list().tasks.find((t) => t.id === 'task-old')!;
     expect(old.continuedAs?.taskId).toBe(fresh.id);
     expect(h.engine.continueAsNew('task-old', 'again')).toEqual({ ok: false, error: 'This task was already continued in a new run.' });
+    // The old room takes nothing more: it all goes to the new task.
+    const there = { ok: false, error: 'This task continued in a new run. Ask there.' };
+    expect(h.engine.roomAsk('task-old', 'one more thing')).toEqual(there);
+    expect(h.engine.roomContinue('task-old')).toEqual(there);
+    expect(h.engine.updatePack('task-old')).toEqual(there);
   });
 
   it('leaves the conversation behind unless asked', async () => {

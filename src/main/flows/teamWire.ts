@@ -25,6 +25,7 @@ import {
   landTaskBranch,
   openTaskBranch,
   pushTaskBranch,
+  restoreTaskBranch,
   taskBranchAhead,
   taskRepos,
 } from './teamBranch';
@@ -221,6 +222,7 @@ export function createTeamEngine(deps: {
       land: (code, repo, subject) => landTaskBranch(code, repo, subject),
       push: (code, repo, subject) => pushTaskBranch(code, repo, subject),
       ahead: (code) => taskBranchAhead(code),
+      restore: (code) => restoreTaskBranch(code),
       close: (code) => closeTaskBranch(code),
     },
     projects: () => {

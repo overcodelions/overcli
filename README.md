@@ -31,13 +31,17 @@
 
 <p align="center">
   <a href="#why-overcli">Why Overcli</a> ·
-  <a href="#screenshots">Screenshots</a> ·
-  <a href="#features">Features</a> ·
+  <a href="#a-quick-tour">Tour</a> ·
   <a href="#download">Download</a> ·
   <a href="#quick-start">Quick Start</a> ·
+  <a href="#features">Features</a> ·
   <a href="docs/guide/README.md"><strong>Guide</strong></a> ·
   <a href="#security">Security</a> ·
   <a href="#a-fatherson-project">About</a>
+</p>
+
+<p align="center">
+  <img alt="Overcli — an agent's turn: thinking, edits as diffs, a markdown report, and the changes bar" src="docs/screenshots/chat.png" width="100%" />
 </p>
 
 ---
@@ -46,93 +50,76 @@
 
 ## Why Overcli
 
-Coding-agent workflows are powerful, but they usually live across half a dozen terminals, dashboards, and tabs. Overcli pulls them into one window so you can:
+Coding agents are powerful, but working with them usually means half a dozen terminals, dashboards and tabs. Overcli pulls them into one window:
 
-- Run the same prompt against multiple backends and **compare diffs side by side**.
-- See what the agent actually did — every edit as a **real diff**, every Bash call as a real terminal block.
-- Keep agents in **isolated git worktrees** until you like what you read, then merge.
-- **Loop a reviewer** (cross-backend if you want) onto the result without copy-pasting transcripts.
+- **See what the agent actually did.** Every edit is a real diff, every command a real terminal block. No guessing from a transcript.
+- **Use whichever model is best for the job.** Five backends, one UI, and the CLIs' own sign-in. No API keys.
+- **Keep your checkout clean.** Agents work in isolated git worktrees until you like what you read.
+- **Get a second opinion.** Loop a reviewer, on another backend if you like, onto every turn.
+- **Go beyond chat.** Chain models into flows, and hire workers that run on their own schedule.
 
-## Screenshots
+## A quick tour
 
-<p align="center">
-  <em>Welcome — pick a project, an agent, or a workspace and you're in.</em><br />
-  <img alt="Overcli welcome screen" src="docs/screenshots/welcome.png" width="920" />
-</p>
+### Every change, out in the open
 
-<p align="center">
-  <em>Chat (light) — thinking blocks stream live; the changes bar above the composer counts what the turn has touched.</em><br />
-  <img alt="Overcli chat — thinking" src="docs/screenshots/chat-light.png" width="920" />
-</p>
+Prompts, thinking, file writes and edits stream in as they happen. Edits render as real diffs, and the changes bar above the composer keeps a running `+/−` count for the turn.
 
 <p align="center">
-  <em>Side-by-side diff — file edits open inline without leaving the conversation.</em><br />
-  <img alt="Overcli chat with diff pane" src="docs/screenshots/chat-diff-light.png" width="920" />
+  <img alt="Chat in the light theme: the prompt, a thinking block, file writes and an inline edit diff" src="docs/screenshots/tools-light.png" width="100%" />
 </p>
+
+### Review before you merge
+
+Open the whole working-tree diff without leaving the conversation, then commit, merge the worktree, or throw it away.
 
 <p align="center">
-  <em>Same flow, dark theme — the agent's full report rendered with markdown, code, and lists.</em><br />
-  <img alt="Overcli chat result — dark" src="docs/screenshots/chat-result-dark.png" width="920" />
+  <img alt="Working-tree diff sheet over the conversation" src="docs/screenshots/diff.png" width="100%" />
 </p>
+
+### A second opinion on every turn
+
+**Rebound** sends each finished turn to a reviewer: a cheap check for half-finished work, a security pass, or a skeptical user asking *"did it do what I asked?"* In collab mode the two agents go back and forth until the reviewer has nothing left to flag.
 
 <p align="center">
-  <em>Colosseum — same prompt against every backend, in parallel git worktrees.</em><br />
-  <img alt="Overcli colosseum dialog" src="docs/screenshots/colosseum.png" width="920" />
+  <img alt="Rebound preset menu: half-finished work check, security review, skeptical user, design review and more" src="docs/screenshots/rebound.png" width="100%" />
 </p>
+
+### Flows: a chain of models, each with one job
+
+A premium model plans, a fast or local model builds, a premium model reviews, and if the review fails, the build step gets another try. Artifacts (`plan.md` → `diff` → `review.md`) pass from step to step. Edit flows visually or as YAML, start from a template, or describe what you want and let a model draft it.
 
 <p align="center">
-  <em>Rebound — pick a reviewer, a mode (review or collab), and a round budget.</em><br />
-  <img alt="Overcli rebound configuration" src="docs/screenshots/rebound-popover.png" width="920" />
+  <img alt="Flow builder: plan, build, review, tests and push steps with a retry edge, beside the YAML" src="docs/screenshots/flow.png" width="100%" />
 </p>
+
+### Workers: a job description with a clock
+
+Hire a persona that wakes on its own schedule, proposes work, and files what it produces. Every worker starts on probation and earns its autonomy. Put several on one brief as a **team** and get back a single finished pack.
 
 <p align="center">
-  <em>Collab mode — primary and reviewer ping-pong with their thinking on display, round after round, until the reviewer is satisfied or the budget runs out.</em><br />
-  <img alt="Overcli rebound collab transcript" src="docs/screenshots/rebound-collab-1.png" width="920" />
+  <img alt="Workers view: hire a worker from a template, or start a team" src="docs/screenshots/workers.png" width="100%" />
 </p>
+
+### Know what it costs
+
+Usage is counted straight from your CLIs' transcripts: limits, tokens, estimated cost over time, and which conversations it went to.
 
 <p align="center">
-  <em>Flow builder — design a pipeline visually: chain steps across models, hand off artifacts (<code>plan.md</code> → <code>diff</code> → <code>review.md</code>), add retry edges, and tune each step's role, tools, and checkpoints.</em><br />
-  <img alt="Overcli flow builder" src="docs/screenshots/flow-edit.png" width="920" />
+  <img alt="Usage dashboard: sessions, tokens, limit windows, and estimated cost per 15 minutes by session" src="docs/screenshots/usage.png" width="100%" />
 </p>
 
-<p align="center">
-  <em>Settings — toggle backends, override CLI paths, see live health badges.</em><br />
-  <img alt="Overcli settings — backends" src="docs/screenshots/settings-backends.png" width="920" />
-</p>
+### Skills, MCP servers and backends in one place
 
-<p align="center">
-  <em>About — the whole pitch in one panel: why it exists, and what's in the box.</em><br />
-  <img alt="Overcli about panel" src="docs/screenshots/about.png" width="920" />
-</p>
-
-## Features
-
-| # | Feature | What it does |
-|---|---|---|
-| 01 | **Multi-backend chat** | Claude, Codex, Gemini, Ollama, and Copilot — five stream parsers, one consistent UI. Markdown, syntax highlight, streaming tokens. Cloud or local, same window. |
-| 02 | **No API keys required** | Sits on top of the CLIs you already use. Whatever auth `claude` / `codex` / `gemini` / `ollama` / `copilot` have is the auth you get. No new billing. No new secrets on disk. |
-| 03 | **Workspaces** | Projects of projects. Group related repos and talk to them as one — the agent edits across repos, runs every test suite, shows one review. Polyrepo that feels like monorepo. Open a folder that holds several repos and Overcli offers to join them, or add another repo from the composer's project menu. |
-| 04 | **Silent agents** | Long-running background agents: a *doc-writer* that keeps `/docs` in sync, a *PR-reviewer* that comments the moment a PR opens. No Slack pings, no dashboards. |
-| 05 | **Rebound reviews** | After every turn, fire a second agent — on a different backend if you like — to review what just landed. Thinking blocks visible, round counter included. Collaboration mode loops until the reviewer is quiet. |
-| 06 | **Tool cards** | File edits render as diffs. Bash lives in a terminal block. Reads, writes, todos each get their own card — so you can actually see what the agent did. |
-| 07 | **Permission & approval** | Claude permission prompts and Codex approval cards (exec + apply_patch) are proper UI elements, not modal interruptions. |
-| 08 | **History from disk** | Reads prior transcripts straight out of `~/.claude/projects`, `~/.codex/sessions`, and `~/.gemini/tmp`. Nothing re-invented. |
-| 09 | **File editor** | Tabs, per-file view modes, syntax highlighting, line-range highlighting, HTML & Markdown preview with local CSS and images resolved, and live rendering of `.tsx`/`.jsx` components (Tailwind included, compiled with the project's own Tailwind). <kbd>⌘</kbd>-click a symbol to jump to its definition. Open files are remembered per conversation, flow run and explorer root — leave and come back and they're still there. No context-switch to VS Code. |
-| 10 | **Extensions browser** | Unified pane for slash commands, sub-agents, skills, plugins, MCP servers — across every backend. Copy an MCP server from one CLI to the others in a click. Rescan on demand. |
-| 11 | **Keyboard first** | <kbd>⌘P</kbd> file finder, <kbd>⌘\</kbd> sidebar, <kbd>⌘,</kbd> settings, <kbd>⌘K</kbd> quick switcher, <kbd>⌘1</kbd>–<kbd>⌘9</kbd> and <kbd>⌥⌘←/→</kbd> for editor tabs. |
-| 12 | **Agent worktrees** | Create, update, rebase, merge, push, or remove a git worktree from inside the conversation. Agents work in isolation; you merge when you like what you read. |
-| 13 | **Changes bar** | Live `+/−` rollup above the composer counting everything touched this turn. Click to expand, click a file to jump to it, click commit. |
-| 14 | **Local model dashboard** | A real UI for Ollama: catalog, filter by maker or country, pull & delete with one click, live server logs, GPU readout. Switched on in **Settings → Labs**. |
-| 15 | **Usage dashboard** | Rolling 5h / 24h / 7d stats, broken down by backend, model, and project. |
-| 16 | **Smart downgrades** | When a Codex model is unavailable, Overcli respawns on the next model down and retries the turn, so it still ships. On by default — **Settings → Advanced → Resilience**. |
-| 17 | **Health badges** | Per-backend status pills: *ready*, *unauthenticated*, *missing*, *error*. Know what's broken before you try to use it. |
-| 18 | **Colosseum** | Fire one prompt at Claude, Codex and Gemini in parallel. Compare the diffs side by side. Keep the winner, discard the rest. Switched on in **Settings → Labs** as *Compare models*. |
-| 19 | **Flows** | Chain LLM steps into a pipeline — each step its own model, tools, and role. A premium model plans and reviews, a local Ollama model executes, and artifacts (`plan.md`, `diff`, `review.md`) hand off step to step. Run in a worktree, pause before any step, or hijack a participant mid-flight. Start from a template or describe what you want and your signed-in backend drafts the YAML. |
-| 20 | **Standing Workers** | Hire a persona that wakes on its own clock, proposes work, and files what it produces. Describe the job and whichever backend you're signed into — Claude, Codex, Gemini or Copilot — drafts the contract and its flow. Every worker starts on probation — nothing launches until you approve the batch — and promotion is an explicit act. A shared monthly pot is paid down the roster in priority order, so the crew's total spend is a number you approve once. Each worker keeps a desk, a calendar, a filing cabinet, and a journal, and the whole job exports as a `.worker.yaml` you can hand to another team. On an everyday project a worker can put finished documents into the folder itself — added, never overwritten, with a version saved so you can undo them. Switched on in **Settings → Labs**. |
-| 21 | **Teams** | Put workers together on one task. Write a brief and a coordinator plans the stages — who contributes, who challenges — for you to approve, hiring any member the plan is missing. Members work in the team's project on one shared branch per task, files land in a shared folder, and the coordinator writes the final pack. Afterwards, ask the team follow-up questions in its room and hand work back to a member. Members keep their own permissions unless you say otherwise, and a budget per task caps the spend. Lives in the Workers view. |
-| 22 | **Documents projects** | Overcli without a repo. **Open a folder** of documents and Overcli offers the documents view, or **Start something new**: describe what you want and get a prepared folder in `~/Documents/Overcli Projects/` — one flat folder, deliberately no `inbox/` or `output/` — with an undo history it sets up for you, and starter flows for documents rather than code. |
-| 23 | **Headless CLI** | The same flows and workers, run from a command line instead of the app — one shot in CI or on a box you own, driving the same runtime the GUI does. Deploy a flow or a worker cadence straight to GitHub Actions or Jenkins as a generated pipeline. |
-| 24 | **overgo, the org server** *(alpha)* | The same workers, hosted for a whole org: asked from Slack, the web console or Claude, with managers approving what they do. Each worker has an Access tab (tools and their scope, how much it does alone, standing approvals), a history you can restore from, and notes from going through its own tools; admins keep one handbook every worker reads. Expired keys and retired tool APIs alert the admins, and a Monday digest tells managers how the week went. See [`deploy/docs/`](deploy/docs/README.md). |
+<table>
+  <tr>
+    <td width="50%"><img alt="Extensions browser with the curated skill catalog" src="docs/screenshots/extensions.png" /></td>
+    <td width="50%"><img alt="Settings → Backends with a health badge per CLI" src="docs/screenshots/backends.png" /></td>
+  </tr>
+  <tr>
+    <td><sub><b>Extensions.</b> Skills, sub-agents, slash commands, plugins and MCP servers across every backend. Install with one click.</sub></td>
+    <td><sub><b>Backends.</b> Turn CLIs on or off, override their paths, and see at a glance which ones are ready.</sub></td>
+  </tr>
+</table>
 
 ## Download
 
@@ -200,6 +187,37 @@ npm run dev
 | `npm test` | Run the Vitest suite. |
 | `npm run test:watch` | Vitest in watch mode. |
 | `npm run test:coverage` | Vitest with v8 coverage. |
+
+## Features
+
+Everything in the box:
+
+| # | Feature | What it does |
+|---|---|---|
+| 01 | **Multi-backend chat** | Claude, Codex, Gemini, Ollama, and Copilot — five stream parsers, one consistent UI. Markdown, syntax highlight, streaming tokens. Cloud or local, same window. |
+| 02 | **No API keys required** | Sits on top of the CLIs you already use. Whatever auth `claude` / `codex` / `gemini` / `ollama` / `copilot` have is the auth you get. No new billing. No new secrets on disk. |
+| 03 | **Workspaces** | Projects of projects. Group related repos and talk to them as one — the agent edits across repos, runs every test suite, shows one review. Polyrepo that feels like monorepo. Open a folder that holds several repos and Overcli offers to join them, or add another repo from the composer's project menu. |
+| 04 | **Silent agents** | Long-running background agents: a *doc-writer* that keeps `/docs` in sync, a *PR-reviewer* that comments the moment a PR opens. No Slack pings, no dashboards. |
+| 05 | **Rebound reviews** | After every turn, fire a second agent — on a different backend if you like — to review what just landed. Thinking blocks visible, round counter included. Collaboration mode loops until the reviewer is quiet. |
+| 06 | **Tool cards** | File edits render as diffs. Bash lives in a terminal block. Reads, writes, todos each get their own card — so you can actually see what the agent did. |
+| 07 | **Permission & approval** | Claude permission prompts and Codex approval cards (exec + apply_patch) are proper UI elements, not modal interruptions. |
+| 08 | **History from disk** | Reads prior transcripts straight out of `~/.claude/projects`, `~/.codex/sessions`, and `~/.gemini/tmp`. Nothing re-invented. |
+| 09 | **File editor** | Tabs, per-file view modes, syntax highlighting, line-range highlighting, HTML & Markdown preview with local CSS and images resolved, and live rendering of `.tsx`/`.jsx` components (Tailwind included, compiled with the project's own Tailwind). <kbd>⌘</kbd>-click a symbol to jump to its definition. Open files are remembered per conversation, flow run and explorer root — leave and come back and they're still there. No context-switch to VS Code. |
+| 10 | **Extensions browser** | Unified pane for slash commands, sub-agents, skills, plugins, MCP servers — across every backend. Copy an MCP server from one CLI to the others in a click. Rescan on demand. |
+| 11 | **Keyboard first** | <kbd>⌘P</kbd> file finder, <kbd>⌘\</kbd> sidebar, <kbd>⌘,</kbd> settings, <kbd>⌘K</kbd> quick switcher, <kbd>⌘1</kbd>–<kbd>⌘9</kbd> and <kbd>⌥⌘←/→</kbd> for editor tabs. |
+| 12 | **Agent worktrees** | Create, update, rebase, merge, push, or remove a git worktree from inside the conversation. Agents work in isolation; you merge when you like what you read. |
+| 13 | **Changes bar** | Live `+/−` rollup above the composer counting everything touched this turn. Click to expand, click a file to jump to it, click commit. |
+| 14 | **Local model dashboard** | A real UI for Ollama: catalog, filter by maker or country, pull & delete with one click, live server logs, GPU readout. Switched on in **Settings → Labs**. |
+| 15 | **Usage dashboard** | Rolling 5h / 24h / 7d stats, broken down by backend, model, and project. |
+| 16 | **Smart downgrades** | When a Codex model is unavailable, Overcli respawns on the next model down and retries the turn, so it still ships. On by default — **Settings → Advanced → Resilience**. |
+| 17 | **Health badges** | Per-backend status pills: *ready*, *unauthenticated*, *missing*, *error*. Know what's broken before you try to use it. |
+| 18 | **Colosseum** | Fire one prompt at Claude, Codex and Gemini in parallel. Compare the diffs side by side. Keep the winner, discard the rest. Switched on in **Settings → Labs** as *Compare models*. |
+| 19 | **Flows** | Chain LLM steps into a pipeline — each step its own model, tools, and role. A premium model plans and reviews, a local Ollama model executes, and artifacts (`plan.md`, `diff`, `review.md`) hand off step to step. Run in a worktree, pause before any step, or hijack a participant mid-flight. Start from a template or describe what you want and your signed-in backend drafts the YAML. |
+| 20 | **Standing Workers** | Hire a persona that wakes on its own clock, proposes work, and files what it produces. Describe the job and whichever backend you're signed into — Claude, Codex, Gemini or Copilot — drafts the contract and its flow. Every worker starts on probation — nothing launches until you approve the batch — and promotion is an explicit act. A shared monthly pot is paid down the roster in priority order, so the crew's total spend is a number you approve once. Each worker keeps a desk, a calendar, a filing cabinet, and a journal, and the whole job exports as a `.worker.yaml` you can hand to another team. On an everyday project a worker can put finished documents into the folder itself — added, never overwritten, with a version saved so you can undo them. Switched on in **Settings → Labs**. |
+| 21 | **Teams** | Put workers together on one task. Write a brief and a coordinator plans the stages — who contributes, who challenges — for you to approve, hiring any member the plan is missing. Members work in the team's project on one shared branch per task, files land in a shared folder, and the coordinator writes the final pack. Afterwards, ask the team follow-up questions in its room and hand work back to a member. Members keep their own permissions unless you say otherwise, and a budget per task caps the spend. Lives in the Workers view. |
+| 22 | **Documents projects** | Overcli without a repo. **Open a folder** of documents and Overcli offers the documents view, or **Start something new**: describe what you want and get a prepared folder in `~/Documents/Overcli Projects/` — one flat folder, deliberately no `inbox/` or `output/` — with an undo history it sets up for you, and starter flows for documents rather than code. |
+| 23 | **Headless CLI** | The same flows and workers, run from a command line instead of the app — one shot in CI or on a box you own, driving the same runtime the GUI does. Deploy a flow or a worker cadence straight to GitHub Actions or Jenkins as a generated pipeline. |
+| 24 | **overgo, the org server** *(alpha)* | The same workers, hosted for a whole org: asked from Slack, the web console or Claude, with managers approving what they do. Each worker has an Access tab (tools and their scope, how much it does alone, standing approvals), a history you can restore from, and notes from going through its own tools; admins keep one handbook every worker reads. Expired keys and retired tool APIs alert the admins, and a Monday digest tells managers how the week went. See [`deploy/docs/`](deploy/docs/README.md). |
 
 ## Build & package
 

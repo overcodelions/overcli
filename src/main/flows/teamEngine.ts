@@ -219,6 +219,10 @@ export interface TeamEngineDeps {
   store?: TeamStoreDeps;
 }
 
+/// Why a task picked up as a new run takes no more talk or work: it all
+/// goes to the new task, or the two would each build the same thing.
+const CONTINUED_ELSEWHERE = 'This task continued in a new run. Ask there.';
+
 /// The task branch's checkouts, as a piece adopts them.
 function taskWorktrees(code: TeamTaskCode): AdoptedWorktrees {
   return {
@@ -244,6 +248,8 @@ export interface TeamCodeDeps {
   push?(code: TeamTaskCode, repo: TeamTaskCode['repos'][number], subject: string): Result<{ message: string; compareUrl?: string }>;
   /// Commits on the task branch that each repo's base lacks (null: unknown).
   ahead?(code: TeamTaskCode): Array<number | null>;
+  /// Check the task branch out again where its checkout went from disk.
+  restore?(code: TeamTaskCode): Result<{ restored: string[] }>;
   close(code: TeamTaskCode): void;
 }
 
@@ -1459,6 +1465,14 @@ export class TeamEngine {
         : undefined;
       const workers = this.deps.workers();
       const project = task.projectPath ? { name: this.projectName(task.projectPath), path: task.projectPath } : undefined;
+      // A piece with the stage to itself works in the task's own checkout,
+      // which may have gone from disk since the last stage: check it out
+      // again from the task branch rather than fail the piece at launch.
+      if (task.code && stage.assignments.length === 1 && this.deps.code?.restore) {
+        const back = this.deps.code.restore(task.code);
+        if (!back.ok) log('warn', 'teams', `${task.title ?? taskId}: ${back.error}`);
+        else if (back.restored.length) log('info', 'teams', `${task.title ?? taskId}: checked ${task.code.branch} out again in ${back.restored.join(', ')}.`);
+      }
       for (const a of stage.assignments) {
         // Cancelled mid-launch: nothing more is commissioned.
         if (this.tasks.get(taskId) !== task || task.status !== 'running') break;
@@ -2179,6 +2193,8 @@ export class TeamEngine {
     const task = this.tasks.get(taskId);
     const question = text.trim();
     if (!question) return { ok: false, error: 'Ask the team something.' };
+    // Before the queue: a continued task's room takes nothing more.
+    if (task?.continuedAs) return { ok: false, error: CONTINUED_ELSEWHERE };
     // Someone is answering: it waits its turn rather than being refused.
     // Files can't wait, so a question with files still has to.
     if (task && this.roomTalking(task) && !attachments.length) {
@@ -2418,6 +2434,7 @@ export class TeamEngine {
 
   private roomReady(task: TeamTask | undefined, opts: { duringRoomWork?: boolean } = {}): string | null {
     if (!task) return 'That task no longer exists.';
+    if (task.continuedAs) return CONTINUED_ELSEWHERE;
     const talking = opts.duringRoomWork && !!this.roomWorkUnderway(task);
     if (task.status !== 'review' && task.status !== 'done' && !talking) return 'The team is still working on this task.';
     if (!task.pack) return 'There is no pack to talk about yet.';
@@ -2735,7 +2752,8 @@ export class TeamEngine {
     // Giving it the tool is the OK to use it: the re-run starts with that
     // approved, rather than stopping to ask you for what you just allowed.
     const grant = refused.tools.map((t) => t.toLowerCase().trim());
-    if (stage && ask) {
+    // A continued task keeps the tool allowed but offers no re-run here.
+    if (stage && ask && !task.continuedAs) {
       // A re-run of this stage you already started is joined while it runs,
       // rather than proposed again behind it: a proposal can't start while
       // work runs, so the second member you allowed waited on the first.

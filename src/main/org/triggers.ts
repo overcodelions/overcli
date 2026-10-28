@@ -20,6 +20,7 @@ import path from 'node:path';
 import type { McpServerConfig } from '../mcpConfig';
 import { at, itemsFrom, type ToolCall, type WatchItem } from './mcpDirect';
 import { escapeMrkdwn } from '../slack/slackApi';
+import { clip, slackMarkup } from '../slack/deliver';
 
 export type TriggerKind = 'watch' | 'webhook' | 'slack';
 
@@ -588,11 +589,13 @@ export class TriggerService {
       }
       const links = [...new Set(res.reply.match(URL_RE) ?? [])].slice(0, 10);
       const deliveredTo: string[] = [];
-      const summary = `*${worker.name}* handled _${item.title}_${item.url ? ` (<${item.url}|source>)` : ''}\n${res.reply.slice(0, 2800)}`;
+      // The worker writes Markdown; Slack reads its own markup (*bold*, •).
+      const said = clip(slackMarkup(res.reply.trim()), 2800);
+      const summary = `*${worker.name}* handled _${item.title}_${item.url ? ` (<${item.url}|source>)` : ''}\n${said}`;
       const as = { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) };
       for (const dest of t.deliver) {
         if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, summary, undefined, as))) deliveredTo.push(`Slack #${dest.channel}`);
-        if (dest.kind === 'thread' && thread && this.deps.slack && (await this.deps.slack.post(thread.channel, res.reply.slice(0, 2800), thread.ts, as))) deliveredTo.push('the Slack thread');
+        if (dest.kind === 'thread' && thread && this.deps.slack && (await this.deps.slack.post(thread.channel, said, thread.ts, as))) deliveredTo.push('the Slack thread');
         if (dest.kind === 'worker') deliveredTo.push(dest.text);
         if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, summary))) deliveredTo.push('a DM');
       }

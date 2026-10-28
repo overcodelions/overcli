@@ -1886,8 +1886,13 @@ function safeWebUrl(raw: string): string | null {
   }
 }
 
+// One element per line: past a few thousand, layout cost freezes the pane.
+const COLORIZE_DIFF_MAX_LINES = 5000;
+
 function colorizeDiff(body: string): React.ReactNode {
-  return body.split('\n').map((line, i) => {
+  const lines = body.split('\n');
+  const shown = lines.length > COLORIZE_DIFF_MAX_LINES ? lines.slice(0, COLORIZE_DIFF_MAX_LINES) : lines;
+  const rows = shown.map((line, i) => {
     let cls = 'text-ink';
     if (line.startsWith('+++') || line.startsWith('---')) cls = 'text-ink-muted';
     else if (line.startsWith('+')) cls = 'text-emerald-700 dark:text-emerald-300';
@@ -1900,6 +1905,14 @@ function colorizeDiff(body: string): React.ReactNode {
       </div>
     );
   });
+  if (shown.length < lines.length) {
+    rows.push(
+      <div key="more" className="text-ink-faint italic">
+        … {(lines.length - shown.length).toLocaleString()} more lines not shown.
+      </div>,
+    );
+  }
+  return rows;
 }
 
 // Hijack composer: sends turns directly to the participant's
