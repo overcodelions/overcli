@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Attachment } from '../../shared/types';
 import type { TeamRoom } from '../../shared/flows/team';
 import type { ErrandProgress } from '../org/orgService';
-import { FrontDoor, namedWorker, rankByWords, roomStatus, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
+import { FrontDoor, DOOR_SUBSCRIBE_ACTION, DOOR_TRACE_ACTION, DOOR_WRITEUP_ACTION, liveCard, namedWorker, traceView, rankByWords, roomStatus, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
 import { readRoute, routePrompt } from './frontDoorRoute';
 import type { SlackMessage } from './slackApi';
 
@@ -11,8 +11,22 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 const TRIAGE: FrontDoorWorker = { id: 'w-triage', name: 'Triage', tagline: 'Fixes product bugs', job: 'Reproduce bugs in the web app, fix them, and open a pull request with tests.' };
 const VANTAGE: FrontDoorWorker = { id: 'w-vantage', name: 'Vantage', tagline: 'Competitive analyst', job: 'Research competitors and write competitive analysis reports on features, pricing and positioning.' };
 
-function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null | 'fail'; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string } | { ok: false; error: string }> } | null; general?: (text: string) => string | null; replies?: Record<string, string>; dm?: boolean; now?: () => number; follow?: (item: string, on: boolean, workerId?: string, say?: (t: string) => void) => string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean } | Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>; following?: Array<{ item: string; status?: string; worker: string }>; slow?: boolean; continueRun?: (orchestrationId: string, text: string) => { ok: true; reply: string } | { ok: false; error: string } | null } = {}) {
+/// A Block Kit message as the words it shows, a block to a line.
+function flat(blocks: unknown[]): string {
+  return (blocks as Array<{ type: string; title?: string; tasks?: Array<{ title: string; status: string }>; text?: { text: string }; elements?: Array<{ text?: string | { text: string } }> }>)
+    .map((b) =>
+      b.type === 'plan'
+        ? [b.title, ...(b.tasks ?? []).map((t) => `[${t.status}] ${t.title}`)].join('\n')
+        : b.text?.text ?? (b.elements ?? []).map((e) => (typeof e.text === 'string' ? e.text : e.text?.text)).join(' '),
+    )
+    .join('\n');
+}
+
+function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?: number; orchestrationId?: string; route?: { workerId: string; why: string } | null | 'fail'; thread?: SlackMessage[]; progress?: ErrandProgress | null; owner?: string; workerFile?: (id: string, p: string) => Buffer | null; teams?: FrontDoorTeam[]; processes?: FrontDoorProcess[]; recent?: SlackMessage[]; track?: boolean; findExisting?: (text: string) => ExistingHit[]; askTeam?: boolean; plain?: (q: string, a: string) => string | null; answer?: (text: string) => { text: string; who: string; hits: ExistingHit[]; from: string[] } | null; room?: () => TeamRoom | undefined; blocks?: boolean; status?: (caller: { name: string }) => string; handBack?: (askId: string) => { done: Promise<{ ok: true; reply: string; choices?: string[] } | { ok: false; error: string }> } | null; general?: (text: string) => string | null; replies?: Record<string, string>; dm?: boolean; now?: () => number; follow?: (item: string, on: boolean, workerId?: string, say?: (t: string) => void) => string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean } | Promise<string | { worker: string; trigger: string; everyMinutes: number; status?: string; setUp?: boolean }>; following?: Array<{ item: string; status?: string; worker: string }>; slow?: boolean; gate?: boolean; downloads?: Record<string, string>; continueRun?: (orchestrationId: string, text: string) => { ok: true; reply: string } | { ok: false; error: string } | null; refusePlans?: boolean; gatherMs?: number } = {}) {
   const posts: string[] = [];
+  // gate: each answer waits for `release()`, in the order they were asked.
+  const gates: Array<() => void> = [];
+  const gated = <T,>(v: T): Promise<T> => (opts.gate ? new Promise<T>((r) => gates.push(() => r(v))) : Promise.resolve(v));
   const briefs: Array<{ teamId: string; brief: string }> = [];
   const items: Array<{ processId: string; brief: string }> = [];
   const tracks: string[] = [];
@@ -28,6 +42,10 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
   const audiences: boolean[] = [];
   const teamAsks: Array<{ taskId: string; text: string }> = [];
   const blocks: Array<{ text: string; blocks: unknown[] }> = [];
+  const removed: string[] = [];
+  const icons: string[] = [];
+  const cards: Array<{ ts: string; blocks: unknown[] }> = [];
+  const views: unknown[] = [];
   const dms: Array<{ user: string; text: string }> = [];
   const desked: string[] = [];
   const continued: Array<{ orchestrationId: string; text: string; conversation: string; said: string }> = [];
@@ -67,7 +85,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
     ask: (_c, workerId, text, attachments, conversation, said) => {
       asks.push({ workerId, text, attachments, conversation, said });
       if (opts.slow && asks.length > 1) return { ok: true, done: new Promise<never>(() => {}) };
-      return { ok: true, done: Promise.resolve({ ok: true as const, reply: opts.replies?.[workerId] ?? opts.reply ?? 'On it.', askId: 'ask-1', ...(opts.proposed ? { proposed: opts.proposed } : {}), ...(opts.orchestrationId ? { orchestrationId: opts.orchestrationId } : {}) }) };
+      return { ok: true, done: gated({ ok: true as const, reply: opts.replies?.[workerId] ?? opts.reply ?? 'On it.', askId: 'ask-1', ...(opts.proposed ? { proposed: opts.proposed } : {}), ...(opts.orchestrationId ? { orchestrationId: opts.orchestrationId } : {}) }) };
     },
     ...(opts.handBack ? { handBack: opts.handBack } : {}),
     ...(opts.continueRun
@@ -75,7 +93,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
           continueRun: (_c: unknown, orchestrationId: string, text: string, _a: Attachment[], conversation: string, said: string) => {
             continued.push({ orchestrationId, text, conversation, said });
             const res = opts.continueRun!(orchestrationId, text);
-            return res ? { ok: true as const, done: Promise.resolve(res.ok ? { ok: true as const, reply: res.reply } : res) } : null;
+            return res ? { ok: true as const, done: gated(res.ok ? { ok: true as const, reply: res.reply } : res) } : null;
           },
         }
       : {}),
@@ -116,6 +134,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
         }
       : {}),
     ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.gatherMs ? { gatherMs: opts.gatherMs } : {}),
     ...(opts.follow ? { follow: (_c: unknown, item: string, on: boolean, o: { workerId?: string; say(t: string): void }) => opts.follow!(item, on, o.workerId, o.say) } : {}),
     ...(opts.following ? { following: () => opts.following! } : {}),
     progress: () => progress,
@@ -131,17 +150,23 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
         posts.push(`${channel}@${threadTs}: ${as ? `[as ${as.name}${as.iconUrl ? ` ${as.iconUrl}` : ''}] ` : ''}${text}`);
         return true;
       },
-      postTs: async (channel, text, threadTs, as) => {
-        posts.push(`${channel}@${threadTs}: ${as ? `[as ${as.name}] ` : ''}${text}`);
-        return `status.${++statusN}`;
+      postTs: async (channel, text, threadTs, as, b) => {
+        if (opts.refusePlans && JSON.stringify(b ?? []).includes('"type":"plan"')) return null;
+        posts.push(`${channel}@${threadTs}: ${as ? `[as ${as.name}] ` : ''}${b ? flat(b) : text}`);
+        if (as?.iconUrl) icons.push(as.iconUrl);
+        const ts = `status.${++statusN}`;
+        if (b) cards.push({ ts, blocks: b });
+        return ts;
       },
-      update: async (_c, ts, text) => {
-        edits.push({ ts, text });
+      update: async (_c, ts, text, b) => {
+        if (opts.refusePlans && JSON.stringify(b ?? []).includes('"type":"plan"')) return false;
+        edits.push({ ts, text: b ? flat(b) : text });
         return true;
       },
+      remove: async (_c, ts) => (removed.push(ts), true),
       thread: async () => opts.thread ?? [],
       recent: async () => opts.recent ?? [],
-      download: async () => Buffer.from('png-bytes'),
+      download: async (url) => Buffer.from(opts.downloads?.[url] ?? 'png-bytes'),
       upload: async (_c, _t, filename) => {
         uploads.push(filename);
         return true;
@@ -161,6 +186,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
               blocks.push({ text, blocks: b });
               return true;
             },
+            openView: async (_t: string, v: unknown) => (views.push(v), true),
           }
         : {}),
     },
@@ -170,7 +196,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
     store: { load: () => structuredClone(state), save: (s) => (state = structuredClone(s)) },
     log: () => {},
   });
-  return { door, posts, uploads, edits, asks, continued, briefs, items, tracks, related, candidates, looked, audiences, teamAsks, blocks, dms, desked, routed: () => routed, setProgress: (p: ErrandProgress) => (progress = p), state: () => state };
+  return { door, release: () => gates.shift()?.(), posts, uploads, edits, removed, views, cards, icons, asks, continued, briefs, items, tracks, related, candidates, looked, audiences, teamAsks, blocks, dms, desked, routed: () => routed, setProgress: (p: ErrandProgress) => (progress = p), state: () => state };
 }
 
 describe('the front door', () => {
@@ -261,7 +287,9 @@ describe('the front door', () => {
     expect(h.asks).toHaveLength(1);
     expect(h.asks[0]).toMatchObject({ workerId: 'w-triage' });
     expect(h.asks[0].text).toContain('add an export button to the reports page');
-    expect(h.posts).toEqual(['D0ACME@1.0: *Triage* has this. I\'ll reply here.', 'D0ACME@1.0: [as Triage] Done — the button is in.']);
+    // The card it put up while working comes down for the answer.
+    expect(h.posts).toEqual(['D0ACME@1.0: [as Triage] _Looking into it…_', 'D0ACME@1.0: [as Triage] Done — the button is in.']);
+    expect(h.removed).toEqual(['status.1']);
     expect(h.routed()).toBe(0);
   });
 
@@ -281,7 +309,7 @@ describe('the front door', () => {
     await modeled.door.onMessage({ channel: 'C0ACME', ts: '3.0', user: 'U1', text: 'the login page looks off', dm: false });
     expect(modeled.routed()).toBe(1);
     expect(modeled.asks[0].workerId).toBe('w-triage');
-    expect(modeled.posts[0]).toContain('*Triage* has this (it fixes the web app)');
+    expect(modeled.posts[0]).toContain('[as Triage] Picked up · it fixes the web app');
 
     const unsure = harness({ route: null });
     await unsure.door.onMessage({ channel: 'C0ACME', ts: '4.0', user: 'U1', text: 'can someone look at this', dm: false });
@@ -295,7 +323,7 @@ describe('the front door', () => {
     await anyone.door.onMessage({ channel: 'C0ACME', ts: '6.0', user: 'U1', text: 'how are we doing today', dm: false });
     await anyone.door.onMessage({ channel: 'C0ACME', ts: '6.1', threadTs: '6.0', user: 'U1', text: 'anyone', dm: false });
     expect(anyone.asks).toHaveLength(1);
-    expect(anyone.posts.join('\n')).toContain('(you said anyone)');
+    expect(anyone.posts.join('\n')).toContain('you said anyone');
   });
 
   it('gives a request in a home channel to its worker, or picks among several who share it', async () => {
@@ -304,7 +332,7 @@ describe('the front door', () => {
     await one.door.onMessage({ channel: 'C0ACMEQS', ts: '1.0', user: 'U1', text: '<@B0BOT> competitive analysis of pricing against competitors', dm: false });
     expect(one.routed()).toBe(0);
     expect(one.asks[0].workerId).toBe('w-triage');
-    expect(one.posts[0]).toContain('(it answers in this channel)');
+    expect(one.posts[0]).toContain('Picked up · it answers in this channel');
 
     // Elsewhere it's routed as usual.
     await one.door.onMessage({ channel: 'C0ACMEXX', ts: '2.0', user: 'U1', text: '<@B0BOT> competitive analysis of pricing against competitors', dm: false });
@@ -327,6 +355,7 @@ describe('the front door', () => {
     ];
     const h = harness({ thread });
     await h.door.onMessage({ channel: 'C0ACME', ts: '5.1', threadTs: '5.0', user: 'U1', text: '<@B0BOT> Triage fix this', dm: false });
+    await tick();
     expect(h.asks[0].text).toContain('<@U2>: The export on the reports page is greyed out');
     expect(h.asks[0].attachments).toMatchObject([{ id: 'F1', mimeType: 'image/png', label: 'shot.png' }]);
     expect(h.door.owns('C0ACME', '5.0')).toBe(true);
@@ -341,8 +370,9 @@ describe('the front door', () => {
     await tick();
     expect(h.state().follows).toHaveLength(1);
     await h.door.poll();
-    // The two replies, then the status message.
-    expect(h.posts).toHaveLength(3);
+    // One card: the reply and the progress go on it rather than in messages of their own.
+    expect(h.posts).toHaveLength(1);
+    expect(h.edits.at(-1)!.text).toContain('Starting the fix.');
     h.setProgress({
       done: true,
       items: [{ title: 'Fix export', status: 'done' }],
@@ -351,8 +381,8 @@ describe('the front door', () => {
     });
     await h.door.poll();
     await tick();
-    expect(h.posts[3]).toContain('*Triage* finished:\n✓ Fix export\nPull request: https://github.com/acme/app/pull/77');
-    expect(h.posts[3]).toContain('https://overcli.acme.example');
+    expect(h.posts[1]).toContain('*Triage* finished:\n✓ Fix export\nPull request: https://github.com/acme/app/pull/77');
+    expect(h.posts[1]).toContain('https://overcli.acme.example');
     expect(h.uploads).toEqual(['report.html']);
     expect(h.state().follows).toHaveLength(0);
   });
@@ -380,6 +410,151 @@ describe('the front door', () => {
     expect(h.uploads).toEqual(['tickets.html']);
   });
 
+  it('offers the choices in the wrap-up too, once the work it started is done', async () => {
+    const h = harness({
+      reply: 'Fixing it now.',
+      orchestrationId: 'orch-11',
+      blocks: true,
+      handBack: () => ({ done: Promise.resolve({ ok: true as const, reply: 'Fixed. One call is yours.', choices: ['Leave it as is', 'Open a follow-up'] }) }),
+      progress: { done: true, items: [{ title: 'ACME-9', status: 'done' }], files: [], links: [] },
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.7', user: 'U1', text: 'Vantage fix ACME-9', dm: true });
+    await tick();
+    await h.door.poll();
+    await tick();
+    await tick();
+    const offered = h.blocks.find((b) => JSON.stringify(b).includes('Open a follow-up'));
+    expect(JSON.stringify(offered)).toContain('"value":"Leave it as is"');
+  });
+
+  it('takes the status down once the answer is in, and keeps the steps behind "Show the trace"', async () => {
+    const h = harness({
+      reply: 'Tracing where the sender is set.',
+      orchestrationId: 'orch-t',
+      blocks: true,
+      handBack: () => ({ done: Promise.resolve({ ok: true as const, reply: '**It moved to Email Configuration.**\n\nFull write-up: /data/worker-files/w-vantage/sender.md' }) }),
+      workerFile: () => Buffer.from('# Sender\nFalls back to the platform address.'),
+      progress: { done: false, items: [{ title: 'Trace the sender', status: 'running', startedAt: Date.now() }], files: [], links: [] },
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.8', user: 'U1', text: 'Vantage where is the from address set', dm: true });
+    await tick();
+    expect(h.asks[0].text).toContain('the first sentence is the answer');
+    expect(h.asks[0].text).toContain("Don't restate the request");
+    await h.door.poll();
+    h.setProgress({ done: true, items: [{ title: 'Trace the sender', status: 'done', said: 'The Default sender is read by every portal notification.' }], files: [{ name: 'notes.md', sourcePath: 'notifications/sender.ts', body: 'Falls back to the platform address.' }], links: [] });
+    await h.door.poll();
+    await tick();
+    await tick();
+    expect(h.removed).toEqual(['status.1']);
+    const footer = h.cards.find((c) => JSON.stringify(c.blocks).includes(DOOR_TRACE_ACTION))!;
+    expect(flat(footer.blocks)).toMatch(/^Worked out in \d+ min · 1 step · 1 source/);
+    expect(h.posts.at(-1)).toContain('[as Vantage] Worked out in');
+    expect(JSON.stringify(footer.blocks)).toContain('"value":"orch-t"');
+    // The write-up opens from the footer instead of unfolding under the answer.
+    expect(h.uploads).toEqual([]);
+    expect(h.posts.find((x) => x.includes('It moved'))).not.toContain('Full write-up');
+    const writeUp = (footer.blocks[1] as { elements: Array<{ action_id: string; value: string }> }).elements[1];
+    expect(writeUp.action_id).toBe(`${DOOR_WRITEUP_ACTION}_0`);
+    await h.door.showWriteUp('trig-0', writeUp.value);
+    expect(JSON.stringify(h.views[0])).toContain('Falls back to the platform address.');
+    h.views.length = 0;
+    await h.door.showTrace('trig-1', 'orch-t');
+    const view = JSON.stringify(h.views[0]);
+    expect(view).toContain('*1. Trace the sender* ✓');
+    expect(view).toContain('The Default sender is read by every portal notification.');
+    expect(view).toContain('notifications/sender.ts');
+  });
+
+  it('says so when a trace is asked for that is no longer kept, and escapes what the run wrote', () => {
+    expect(JSON.stringify(traceView(null))).toContain('no longer kept');
+    const v = JSON.stringify(traceView({ done: true, items: [{ title: 'Ping <!channel>', status: 'done' }], files: [], links: [] }));
+    expect(v).not.toContain('<!channel>');
+  });
+
+  it('takes a follow-up to handed-back work to the conversation that wrote the answer, not the run', async () => {
+    const h = harness({
+      reply: 'Pulling the counts, then I will write it up.',
+      orchestrationId: 'orch-10',
+      handBack: () => ({ done: Promise.resolve({ ok: true as const, reply: 'You closed 429 tickets. The write-up: /data/worker-files/w-vantage/tickets.md' }) }),
+      continueRun: () => ({ ok: true, reply: 'From the run step.' }),
+      progress: { done: true, items: [{ title: 'Ticket tally', status: 'done' }], files: [{ name: 'result.json', body: '{"total":429}' }], links: [] },
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.5', user: 'U1', text: 'Vantage write up my tickets', dm: true });
+    await tick();
+    await h.door.poll();
+    await tick();
+    await tick();
+    expect(h.state().threads[0].done).toBeUndefined();
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.6', threadTs: '7.5', user: 'U1', text: 'which month was worst?', dm: true });
+    await tick();
+    expect(h.continued).toHaveLength(0);
+    expect(h.asks.at(-1)).toMatchObject({ workerId: 'w-vantage', conversation: 'slack:D0ACME:7.5' });
+    expect(h.asks.at(-1)!.text).toContain('More from Pat on the same request:\nwhich month was worst?');
+  });
+
+  it('answers a /worker ask in the thread it opened and follows the work it starts', async () => {
+    const h = harness({ reply: 'Fixing it now.', orchestrationId: 'orch-20', progress: { done: false, items: [{ title: 'Fix export', status: 'running' }], files: [], links: [] } });
+    expect(await h.door.askIn('D0ACME', '30.0', 'U1', 'w-triage', 'fix the export')).toBe(true);
+    await tick();
+    expect(h.asks[0]).toMatchObject({ workerId: 'w-triage', conversation: 'slack:D0ACME:30.0', said: 'fix the export' });
+    // The command already said who has it.
+    expect(h.posts.join('\n')).not.toContain('has this');
+    expect(h.posts).toEqual(['D0ACME@30.0: [as Triage] Fixing it now.']);
+    expect(h.state().follows).toMatchObject([{ orchestrationId: 'orch-20', threadTs: '30.0' }]);
+    expect(await h.door.askIn('D0ACME', '31.0', 'U1', 'w-nobody', 'fix it')).toBe(false);
+  });
+
+  it('keeps what is said while it answers, and sends it together once the answer is posted', async () => {
+    const h = harness({ gate: true, reply: 'Looking.' });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '8.0', user: 'U1', text: 'Triage look at the export bug', dm: true });
+    await tick();
+    await h.door.onMessage({ channel: 'D0ACME', ts: '8.1', threadTs: '8.0', user: 'U1', text: 'it only breaks for CSV', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '8.2', threadTs: '8.0', user: 'U1', text: 'and only since Tuesday', dm: true });
+    await tick();
+    expect(h.asks).toHaveLength(1);
+    h.release();
+    await tick();
+    await tick();
+    expect(h.asks).toHaveLength(2);
+    expect(h.asks[1]).toMatchObject({ workerId: 'w-triage', conversation: 'slack:D0ACME:8.0' });
+    expect(h.asks[1].text).toContain('More from Pat on the same request:\nit only breaks for CSV\n\nand only since Tuesday');
+    // Nothing more waiting: the next message goes straight in.
+    h.release();
+    await tick();
+    await tick();
+    await h.door.onMessage({ channel: 'D0ACME', ts: '8.3', threadTs: '8.0', user: 'U1', text: 'thanks', dm: true });
+    await tick();
+    expect(h.asks).toHaveLength(3);
+  });
+
+  it('carries on finished work one message at a time, rather than sending the second elsewhere', async () => {
+    const h = harness({
+      gate: true,
+      reply: 'Pulling the counts.',
+      orchestrationId: 'orch-14',
+      progress: { done: true, items: [{ title: 'Ticket tally', status: 'done' }], files: [], links: [] },
+      continueRun: () => ({ ok: true, reply: 'September.' }),
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '9.0', user: 'U1', text: 'Vantage count my tickets', dm: true });
+    await tick();
+    h.release();
+    await tick();
+    await tick();
+    await h.door.poll();
+    await tick();
+    const asked = h.asks.length;
+    await h.door.onMessage({ channel: 'D0ACME', ts: '9.1', threadTs: '9.0', user: 'U1', text: 'which month was worst?', dm: true });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '9.2', threadTs: '9.0', user: 'U1', text: 'and best?', dm: true });
+    await tick();
+    expect(h.continued).toHaveLength(1);
+    h.release();
+    await tick();
+    await tick();
+    expect(h.continued).toHaveLength(2);
+    expect(h.continued[1].text).toContain('and best?');
+    expect(h.asks).toHaveLength(asked);
+  });
+
   it('carries a reply after finished work on with whoever ran its last step, like a chat', async () => {
     const h = harness({
       reply: 'Pulling the counts.',
@@ -402,6 +577,33 @@ describe('the front door', () => {
     // Not a new errand for the worker.
     expect(h.asks).toHaveLength(before);
     expect(h.posts.at(-1)).toBe('D0ACME@7.7: [as Vantage] September had 61 of them, mostly billing.');
+  });
+
+  it('reads the report posted in the thread into a follow-up, rather than naming a link the worker can\'t open', async () => {
+    const report = { id: 'F9', name: '2026-10-27-1233-errand-keep-partner-password.md', mimetype: 'text/plain', size: 40, url_private: 'https://files.slack.com/x/report.md', permalink: 'https://acme.slack.example/files/F9' };
+    const big = { id: 'F8', name: 'dump.csv', mimetype: 'text/csv', size: 9_000_000, url_private: 'https://files.slack.com/x/dump.csv', permalink: 'https://acme.slack.example/files/F8' };
+    const thread: SlackMessage[] = [
+      { ts: '7.7', user: 'U1', text: 'Vantage does multi-subscription keep partner passwords?' },
+      { ts: '7.8', bot_id: 'B1', text: 'Short answer: yes.', files: [report, big] },
+    ];
+    const h = harness({
+      thread,
+      downloads: { 'https://files.slack.com/x/report.md': 'Leads carry the supplier client_id.' },
+      reply: 'Looking.',
+      orchestrationId: 'orch-13',
+      progress: { done: true, items: [{ title: 'Answer', status: 'done' }], files: [], links: [] },
+      continueRun: () => ({ ok: true, reply: 'They stay with the supplier.' }),
+    });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.7', user: 'U1', text: 'Vantage does multi-subscription keep partner passwords?', dm: true });
+    await tick();
+    await h.door.poll();
+    await tick();
+    await h.door.onMessage({ channel: 'D0ACME', ts: '7.9', threadTs: '7.7', user: 'U1', text: 'what about leads?', dm: true });
+    await tick();
+    expect(h.continued[0].text).toContain(`--- ${report.name} ---\nLeads carry the supplier client_id.\n--- end of ${report.name} ---`);
+    expect(h.continued[0].text).not.toContain(report.permalink);
+    // Too big to read in: still named with its link.
+    expect(h.continued[0].text).toContain('Also shared there (not attached): dump.csv (https://acme.slack.example/files/F8)');
   });
 
   it('gives the follow-up to the worker when the finished work can\'t be carried on', async () => {
@@ -461,27 +663,64 @@ describe('the front door', () => {
     expect(h.posts.at(-1)).toBe('D0ACME@12.0: [as Triage https://api.dicebear.com/9.x/thumbs/png?seed=abc] Done.');
   });
 
-  it('keeps one status message in the thread up to date while the work runs, and settles it when it ends', async () => {
+  it('keeps one card in the thread up to date while the work runs, and settles it when it ends', async () => {
     const h = harness({ reply: 'Starting the audit.', orchestrationId: 'orch-s', progress: { done: false, items: [{ title: 'SEO audit', status: 'running', step: { index: 1, total: 2, name: 'crawl' }, startedAt: Date.now() - 6 * 60_000, said: 'Crawling 49 pages now.' }], files: [], links: [] } });
     await h.door.onMessage({ channel: 'D0ACME', ts: '13.0', user: 'U1', text: 'Vantage audit <http://acme.example|acme.example>', dm: true });
     await tick();
     expect(h.asks[0].said).toBe('audit acme.example');
+    expect(h.posts).toEqual(['D0ACME@13.0: [as Vantage] _Looking into it…_']);
     await h.door.poll();
-    const status = h.posts.find((p) => p.includes('Working on it'))!;
-    expect(status).toContain('[as Vantage]');
-    expect(status).toContain('*SEO audit* — step 1 of 2, crawl · 6 min');
-    expect(status).toContain('> _Crawling 49 pages now._');
+    const card = h.edits.at(-1)!;
+    expect(card.ts).toBe('status.1');
+    expect(card.text).toContain('Starting the audit.');
+    // One piece of work: what it said it's doing, not the request again or the flow's step names.
+    expect(card.text).toContain('Step 1 of 2 · 1 min so far\n[in_progress] Crawling 49 pages now.');
+    expect(card.text).not.toContain('SEO audit');
+    expect(card.text).not.toContain('crawl\n');
+    const n = h.edits.length;
     await h.door.poll();
-    expect(h.edits).toEqual([]);
-    h.setProgress({ done: false, items: [{ title: 'SEO audit', status: 'running', step: { index: 2, total: 2, name: 'audit report' }, startedAt: Date.now() - 9 * 60_000 }], files: [], links: [] });
+    expect(h.edits).toHaveLength(n);
+    h.setProgress({ done: false, items: [{ title: 'SEO audit', status: 'running', step: { index: 2, total: 2, name: 'audit report' }, startedAt: Date.now() - 9 * 60_000, said: 'Ranking the fixes.' }], files: [], links: [] });
     await h.door.poll();
     expect(h.edits.at(-1)).toMatchObject({ ts: 'status.1' });
-    expect(h.edits.at(-1)!.text).toContain('step 2 of 2, audit report');
-    expect(h.posts.filter((p) => p.includes('Working on it'))).toHaveLength(1);
+    expect(h.edits.at(-1)!.text).toContain('Step 2 of 2');
+    expect(h.edits.at(-1)!.text).toContain('[complete] Crawling 49 pages now.\n[in_progress] Ranking the fixes.');
+    expect(h.posts).toHaveLength(1);
     h.setProgress({ done: true, items: [{ title: 'SEO audit', status: 'done' }], files: [{ name: 'report.md', body: 'Ranked changes.' }], links: [] });
     await h.door.poll();
     await tick();
     expect(h.edits.some((e) => e.ts === 'status.1' && /Done in \d+ min/.test(e.text))).toBe(true);
+  });
+
+  it('lists each piece of work on the card when there are several, and keeps "Notify me" in a channel', () => {
+    const p: ErrandProgress = { done: false, items: [{ title: 'Read the docs', status: 'done' }, { title: 'Trace the code', status: 'running', step: { index: 3, total: 3, name: 'answer' } }, { title: 'Write it up', status: 'queued' }], files: [], links: [] };
+    const c = liveCard({ line: 'Checking both.', why: 'it answers in this channel', notify: true }, p, 0);
+    expect(flat(c.blocks)).toContain('Step 3 of 3\n[complete] Read the docs\n[in_progress] Trace the code — answer\n[pending] Write it up');
+    expect(JSON.stringify(c.blocks)).toContain(DOOR_SUBSCRIBE_ACTION);
+    expect(c.text).toBe('Checking both. · Step 3 of 3');
+    // Where Slack won't take a plan block: the same, in emoji.
+    const plain = JSON.stringify(liveCard({ line: 'Checking both.', plain: true }, p, 0).blocks);
+    expect(plain).toContain(':white_check_mark: Read the docs\\n:hourglass_flowing_sand: *Trace the code — answer*\\n:white_circle: Write it up');
+    expect(plain).toContain('▰▰▰▰▰▰▰▰▱▱  Step 3 of 3');
+  });
+
+  it('draws the card in emoji once Slack refuses the plan block, and keeps it that way', async () => {
+    const h = harness({ reply: 'Starting the audit.', orchestrationId: 'orch-p', refusePlans: true, progress: { done: false, items: [{ title: 'SEO audit', status: 'running', said: 'Crawling.' }], files: [], links: [] } });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '14.0', user: 'U1', text: 'Vantage audit the site', dm: true });
+    await tick();
+    expect(h.posts).toEqual(['D0ACME@14.0: [as Vantage] _Looking into it…_']);
+    await h.door.poll();
+    expect(h.edits.at(-1)!.text).toContain(':hourglass_flowing_sand: *Crawling.*');
+    expect(h.state().follows[0].card?.plain).toBe(true);
+  });
+
+  it('leaves a long routing reason and a one-step bar off the card', () => {
+    const c = liveCard({ line: 'Checking.', why: 'Question on how product code behaves; this worker reads the code including the stats service' }, { done: false, items: [{ title: 'q', status: 'running', step: { index: 1, total: 1, name: 'explore and answer' } }], files: [], links: [] }, 120_001, 1);
+    const text = JSON.stringify(c.blocks);
+    expect(text).not.toContain('Picked up');
+    expect(text).not.toContain('explore and answer');
+    expect(text).not.toContain('▰');
+    expect(text).toContain('"title":"Working on it · 2 min so far"');
   });
 
   it('takes requests only from the owner on a personal install', async () => {
@@ -504,15 +743,15 @@ describe('the front door', () => {
     await tick();
     await h.door.poll();
     await tick();
-    expect(h.posts[2]).toContain('Branch pushed. Open a pull request: https://bitbucket.org/acme/app/pull-requests/new?source=overcli/fix-export&dest=main');
-    expect(h.posts[3]).toContain('Changed the export button. Tests pass.');
+    expect(h.posts[1]).toContain('Branch pushed. Open a pull request: https://bitbucket.org/acme/app/pull-requests/new?source=overcli/fix-export&dest=main');
+    expect(h.posts[2]).toContain('Changed the export button. Tests pass.');
   });
 
   it('says when the work waits on its manager, and keeps following it', async () => {
     const h = harness({ workers: [{ ...TRIAGE, manager: 'Pat' }, VANTAGE], reply: 'I proposed the fix.', proposed: 1, orchestrationId: 'o-2' });
     await h.door.onMessage({ channel: 'C0ACME', ts: '10.0', user: 'U2', text: 'Triage fix the export', dm: false });
     await tick();
-    expect(h.posts[2]).toBe("C0ACME@10.0: Triage proposed one piece of work and is waiting for Pat's OK. I'll post the results here when it's done.");
+    expect(h.posts[1]).toBe("C0ACME@10.0: Triage proposed one piece of work and is waiting for Pat's OK. I'll post the results here when it's done.");
     expect(h.state().follows).toMatchObject([{ orchestrationId: 'o-2' }]);
   });
 
@@ -792,7 +1031,7 @@ describe('looking up existing work first', () => {
     expect(none.looked).toHaveLength(1);
     expect(none.routed()).toBe(1);
     expect(none.related[0]).toBeUndefined();
-    expect(none.posts[0]).toContain('*Vantage* has this (research)');
+    expect(none.posts[0]).toContain('Picked up · research');
 
     const close = harness({ findExisting: () => [{ ...ROADMAP, weak: true }], route: { workerId: 'w-vantage', why: 'research' } });
     await close.door.onMessage({ channel: 'D0ACME', ts: '3.1', user: 'U1', text: 'what is in the roadmap?', dm: true });
@@ -870,12 +1109,21 @@ describe('looking up existing work first', () => {
     await h.door.onMessage({ channel: 'D0ACME', ts: '9.0', user: 'U1', text: 'whats next on the roadmap', dm: true });
     expect(h.looked).toHaveLength(0);
     expect(h.routed()).toBe(0);
-    expect(h.posts).toEqual(["D0ACME@9.0: Checking what's already been worked out…", 'D0ACME@9.0: [as Product Team] Reporting ships first in Q1, then the mobile app.']);
-    expect(h.blocks[0].text).toBe("From Product Team's task and 1 more");
-    expect((h.blocks[0].blocks[1] as { elements: Array<{ text: { text: string } }> }).elements.map((b) => b.text.text)).toEqual(['Open it', 'Ask the team about it', "That's not it"]);
+    // "Checking…" comes down; the answer, its source and the buttons are one message.
+    expect(h.posts).toEqual(["D0ACME@9.0: Checking what's already been worked out…", "D0ACME@9.0: [as Product Team] Reporting ships first in Q1, then the mobile app.\nFrom Product Team's task and 1 more\nOpen it Ask the team about it That's not it"]);
+    expect(h.removed).toEqual(['status.1']);
+    expect(h.blocks).toEqual([]);
+    const answer = h.cards.at(-1)!.blocks;
+    expect((answer[2] as { elements: Array<{ text: { text: string } }> }).elements.map((b) => b.text.text)).toEqual(['Open it', 'Ask the team about it', "That's not it"]);
     // "Not it": to a worker, as before.
     await h.door.onMessage({ channel: 'D0ACME', ts: '9.1', threadTs: '9.0', user: 'U1', text: 'not it', dm: true });
     expect(h.asks[0].workerId).toBe('w-triage');
+
+    // A worker's answer goes under its own picture.
+    const pic = harness({ workers: [{ ...VANTAGE, avatarUrl: 'https://acme.example/ada.png' }, TRIAGE], answer: () => ({ text: 'Indexed on save.', who: 'Vantage', hits: [{ ...ROADMAP, kind: 'worker' as const, teamTaskId: undefined, workerId: 'w-vantage' }], from: ["Vantage's work"] }) });
+    await pic.door.onMessage({ channel: 'D0ACME', ts: '9.3', user: 'U1', text: 'how often does collateral get indexed?', dm: true });
+    expect(pic.posts.at(-1)).toContain('[as Vantage] Indexed on save.');
+    expect(pic.icons).toEqual(['https://acme.example/ada.png']);
 
     // Nothing known covers it: offered and routed as before.
     const none = harness({ findExisting: () => [], answer: () => null, route: { workerId: 'w-vantage', why: 'research' } });
@@ -1020,6 +1268,19 @@ describe('the front desk', () => {
 
 describe('following a thread', () => {
   it.each([
+    'stop pinging me, I have another one: reopen ACME-10', "unsubscribe, I've got another: please rerun the export",
+  ])('passes on the request in "%s" instead of dropping it', async (text) => {
+    const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
+    await tick();
+    await h.door.subscribe('C0ACME', '1.0', 'U1', true);
+    const asks = h.asks.length;
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text, dm: false });
+    expect(h.asks).toHaveLength(asks + 1);
+    expect(h.asks.at(-1)?.text).toContain(text);
+  });
+
+  it.each([
     'unsubscribe me', 'please unsubscribe me', 'stop notifying me, thanks', 'stop pinging me about this, thanks!',
     'ok stop pinging me', 'thanks, stop notifying me', 'stop pinging me please', 'stop notifying me thank you',
     'unsubscribe, thank you', 'unsubscribe me from this thread please', 'Unsubscribe.', 'can you stop pinging me?',
@@ -1057,6 +1318,7 @@ describe('following a thread', () => {
   ])('preserves the work request in "%s"', async (text) => {
     const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
+    await tick();
     const asks = h.asks.length;
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text, dm: false });
     expect(h.state().subs?.map(x => x.user)).toEqual(['U1']);
@@ -1086,10 +1348,12 @@ describe('following a thread', () => {
   it('follows a thread and still passes on the request said with "ping me when"', async () => {
     const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export button is broken', dm: false });
+    await tick();
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: "fix the Safari case and ping me when it's done", dm: false });
     expect(h.state().subs?.map((x) => x.user)).toEqual(['U1']);
     expect(h.asks.at(-1)?.text).toContain('fix the Safari case');
     expect(h.asks).toHaveLength(2);
+    await tick();
     // A second sentence asks for more too.
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.2', threadTs: '1.0', user: 'U2', text: 'Let me know when it ships. Also check Firefox.', dm: false });
     expect(h.asks.at(-1)?.text).toContain('check Firefox');
@@ -1107,8 +1371,10 @@ describe('following a thread', () => {
       },
     });
     await h.door.onMessage({ channel: 'C0ACME', ts: '2.0', user: 'U1', text: 'the export button is broken', dm: false });
+    await tick();
     await h.door.subscribe('C0ACME', '2.0', 'U1', true);
     await h.door.onMessage({ channel: 'C0ACME', ts: '2.1', threadTs: '2.0', user: 'U1', text: 'the unsubscribe link in ACME-412 is broken', dm: false });
+    await tick();
     await h.door.onMessage({ channel: 'C0ACME', ts: '2.2', threadTs: '2.0', user: 'U1', text: 'the digest should stop tracking deleted users', dm: false });
     expect(followed).toEqual([]);
     expect(h.state().subs?.map((x) => x.user)).toEqual(['U1']);
@@ -1118,6 +1384,7 @@ describe('following a thread', () => {
   it('follows with "ping me when" and still passes on a second request after "and"', async () => {
     const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export button is broken', dm: false });
+    await tick();
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: "ping me when it's done and bump the timeout to 30s", dm: false });
     expect(h.state().subs?.map((x) => x.user)).toContain('U1');
     expect(h.asks.at(-1)?.text).toContain('bump the timeout');
@@ -1155,6 +1422,7 @@ describe('following a thread', () => {
       },
     });
     await h.door.onMessage({ channel: 'C0ACME', ts: '3.0', user: 'U1', text: 'the export button is broken', dm: false });
+    await tick();
     await h.door.subscribe('C0ACME', '3.0', 'U1', true);
     await h.door.onMessage({ channel: 'C0ACME', ts: '3.1', threadTs: '3.0', user: 'U1', text: 'Unsubscribe link is broken on ACME-412', dm: false });
     expect(followed).toEqual([]);
@@ -1165,6 +1433,7 @@ describe('following a thread', () => {
   it('leaves "keep me posted" in a DM to whoever is on it, with no ticket named', async () => {
     const h = harness({ dm: true });
     await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U1', text: 'Triage, look at the export bug', dm: true });
+    await tick();
     await h.door.onMessage({ channel: 'D0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'keep me posted', dm: true });
     expect(h.asks.at(-1)?.text).toContain('keep me posted');
     expect(h.state().subs ?? []).toEqual([]);
@@ -1273,6 +1542,33 @@ describe('following a ticket nothing watches yet', () => {
   });
 });
 
+describe('a request typed over several messages', () => {
+  it('waits for the person to pause, then takes what they sent as one request', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ gatherMs: 5000, reply: 'Both answered.' });
+      await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U1', text: 'Triage how often does collateral get indexed?', dm: true });
+      await vi.advanceTimersByTimeAsync(3000);
+      await h.door.onMessage({ channel: 'D0ACME', ts: '1.1', user: 'U1', text: 'and how long till search finds it', dm: true });
+      // Someone else, or another place, is a request of its own.
+      await h.door.onMessage({ channel: 'D0ACME', ts: '1.2', user: 'U2', text: 'Vantage what are competitors charging', dm: true });
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(h.asks.filter((a) => a.workerId === 'w-triage')).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2000);
+      const triage = h.asks.filter((a) => a.workerId === 'w-triage');
+      expect(triage).toHaveLength(1);
+      expect(triage[0].text).toContain('how often does collateral get indexed? and how long till search finds it');
+      expect(triage[0].conversation).toBe('slack:D0ACME:1.0');
+      expect(h.asks.filter((a) => a.workerId === 'w-vantage')).toHaveLength(1);
+      // A reply in a thread isn't held: the thread gathers while it answers.
+      await h.door.onMessage({ channel: 'D0ACME', ts: '1.3', threadTs: '1.0', user: 'U1', text: 'thanks', dm: true });
+      expect(h.asks.at(-1)?.text).toContain('thanks');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('a follow-up the worker is slow to answer', () => {
   it('hands the thread to another worker named in a reply, with the thread so far', async () => {
     const h = harness();
@@ -1282,7 +1578,7 @@ describe('a follow-up the worker is slow to answer', () => {
     await h.door.onMessage({ channel: 'D0ACME', ts: '2.1', threadTs: '2.0', user: 'U1', text: 'Triage will need to scan the code', dm: true });
     await tick();
     expect(h.asks.at(-1)).toMatchObject({ workerId: TRIAGE.id, text: expect.stringContaining('brought you into this thread, after Vantage') });
-    expect(h.posts.join('\n')).toContain('*Triage* has this');
+    expect(h.posts.join('\n')).toContain('[as Triage] Picked up');
     // And the thread is Triage's now.
     await h.door.onMessage({ channel: 'D0ACME', ts: '2.2', threadTs: '2.0', user: 'U1', text: 'focus on sending', dm: true });
     await tick();
@@ -1298,7 +1594,7 @@ describe('a follow-up the worker is slow to answer', () => {
       await h.door.onMessage({ channel: 'D0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'you can look it up in the tracker right?', dm: true });
       const before = h.posts.length;
       await vi.advanceTimersByTimeAsync(9000);
-      expect(h.posts.slice(before)).toEqual(['D0ACME@1.0: _Triage is on it…_']);
+      expect(h.posts.slice(before)).toEqual(['D0ACME@1.0: [as Triage] _Looking into it…_']);
     } finally {
       vi.useRealTimers();
     }

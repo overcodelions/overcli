@@ -24,6 +24,11 @@ describe('trustReadiness', () => {
     expect(trustReadiness({ trust: 'probation' }, old, NOW).readyFor).toBeUndefined();
   });
 
+  it('never counts runs it brought from another server', () => {
+    const brought = done(12).map((e) => ({ ...e, imported: true }));
+    expect(trustReadiness({ trust: 'probation' }, brought, NOW)).toMatchObject({ clean: 0 });
+  });
+
   it('has nothing to suggest for an autonomous worker', () => {
     expect(trustReadiness({ trust: 'autonomous' }, done(50), NOW).readyFor).toBeUndefined();
   });

@@ -21,7 +21,7 @@
 // the sidebar but are otherwise normal Conversations that the existing
 // runner pipeline drives.
 
-import { resolveStepEffect, runGrantCovers, stepOutsideTools } from './stepEffect';
+import { resolveStepEffect, runGrantCovers, stepGrantAllows, stepOutsideTools } from './stepEffect';
 import { teamTaskDir } from './teamsStore';
 import { parseRunDigest, RUN_DIGEST_INSTRUCTION } from '../../shared/flows/runDigest';
 import { isReadOnlyMcpTool } from '../../shared/flows/mcpTools';
@@ -638,6 +638,9 @@ export class FlowRuntimeImpl {
   /// Reshapes the run's copy of a flow before it starts: the server ends a
   /// worker's flow on a connected repo with its own push (serverFlow.ts).
   reshapeFlow?: (flow: Flow, args: { projectPath: string; workerId?: string }) => Flow;
+  /// Said at the end of every step's instructions in this run: how the
+  /// server handles git for a connected repo (org/wire.ts). Absent: nothing.
+  runNote?: (run: FlowRun) => string | undefined;
 
   constructor(
     private runner: RunnerManager,
@@ -857,10 +860,10 @@ export class FlowRuntimeImpl {
             // (`git log`, `rg`, `ls`): nobody needs to approve a look.
             const roots = [run.projectPath, ...(run.workspaceWorktrees ?? []).map((m) => m.worktreePath)];
             const read = readsOnlyWithin(ev.kind.info.toolName, ev.kind.info.toolInput, run.projectPath, roots);
-            // A step the grant names may use the tools it lists by server
-            // (`mcp__tracker`): the ticket follow-up's tracker, nothing else.
-            const named = !!current && !!run.externalActionRunGrant?.includes(`step:${current.id}`) &&
-              current.tools.some((t) => /^mcp__[^_]+(?:_[^_]+)*$/.test(t) && !t.slice(5).includes('__') && ev.kind.type === 'permissionRequest' && ev.kind.info.toolName.startsWith(`${t}__`));
+            // A step the grant names may use the tools it lists, by name or
+            // by server (`mcp__tracker`): the ticket follow-up's tracker,
+            // nothing else.
+            const named = !!current && stepGrantAllows(run, current, ev.kind.info.toolName);
             const allow = approvedStep || read || named;
             log(
               'info',
@@ -4239,12 +4242,14 @@ export class FlowRuntimeImpl {
 
   private buildStepPrompt(run: FlowRun, step: FlowStep): string {
     const stepModel = resolveRunStepModel(run, step);
-    const systemPrompt = resolveSystemPrompt({
+    const resolved = resolveSystemPrompt({
       role: step.role,
       override: step.systemPromptOverride,
       outputName: step.output,
       allowFileRef: stepAllowsFileRef(step, stepModel.backend),
     });
+    const note = this.runNote?.(run)?.trim();
+    const systemPrompt = note ? `${resolved}\n\n${note}` : resolved;
 
     // Each input becomes either an inline body (small enough to live in
     // the prompt) or an on-disk attachment (referenced by absolute

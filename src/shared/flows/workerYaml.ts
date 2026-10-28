@@ -35,6 +35,12 @@
 //   - manager / reportsTo / visibility / avatarUrl. Who a worker answers to
 //     and who may ask it things are facts about the sender's org: a Slack
 //     member id from their workspace, a boss on their roster.
+//
+// What travels only on an EXPORT (a manager moving their worker to another
+// server, `WorkerCarried`): its tool scopes, its triggers, the tools' setup
+// minus every secret, and — when they tick the box — what it knows, its
+// notes and its journal. Imported journal entries are marked `imported`, so
+// they keep it from redoing old work but never count toward its trust.
 
 import { Scalar, parse as yamlParse, stringify as yamlStringify } from 'yaml';
 
@@ -42,6 +48,7 @@ import { flowFromDoc, flowToDoc } from './yaml';
 import type { Flow } from './schema';
 import type { ScheduleTrigger } from './schedule';
 import type { Backend } from '../types';
+import { parseToolScope, type ToolScopes } from './toolScope';
 import {
   WORKER_MAX_ITEMS_PER_SHIFT,
   WORKER_MIN_JOB_DESCRIPTION,
@@ -49,6 +56,7 @@ import {
   coerceCadence,
   type Worker,
   type WorkerCaps,
+  type WorkerJournalKind,
 } from './worker';
 
 /// Bumped only if an older overcli would MISREAD a newer file. Additive keys
@@ -91,7 +99,59 @@ export interface PortableWorker {
 export interface WorkerBundle {
   worker: PortableWorker;
   flows: Flow[];
+  carried?: WorkerCarried;
 }
+
+/// A trigger as it travels: what sets it off and what to do with it. Its id,
+/// the items it has seen and its webhook secret stay behind, and so does
+/// leave to start work on its own. A DM names a person here, so it stays too.
+export interface PortableTrigger {
+  name: string;
+  kind: 'watch' | 'webhook' | 'slack';
+  enabled: boolean;
+  instructions: string;
+  deliver: Array<{ kind: 'slack'; channel: string } | { kind: 'thread' } | { kind: 'worker'; text: string }>;
+  maxPerDay: number;
+  watch?: {
+    server: string;
+    tool: string;
+    args: Record<string, unknown>;
+    everyMinutes: number;
+    itemsPath?: string;
+    idPath?: string;
+    changes?: string;
+    tracked?: string[];
+  };
+  slack?: { channel: string; on: 'message' | 'mention' | 'reaction'; reaction?: string; contains?: string };
+  notifyOnly?: boolean;
+  webhookIdPath?: string;
+}
+
+/// One journal line as it travels: what happened and when, not which run.
+export interface PortableJournalEntry {
+  kind: WorkerJournalKind;
+  at: number;
+  title: string;
+  note?: string;
+}
+
+/// What an exported worker brings beyond its job. Never trust, authority
+/// or secret values. `tools` are raw templates; the server checks them.
+export interface WorkerCarried {
+  toolScopes?: ToolScopes;
+  triggers?: PortableTrigger[];
+  tools?: Array<Record<string, unknown>>;
+  knowledge?: string;
+  notes?: Array<{ at: number; note: string }>;
+  journal?: PortableJournalEntry[];
+}
+
+/// Caps on what a file may carry, so a hand-made one can't bloat a roster.
+export const CARRIED_LIMITS = { triggers: 30, tools: 30, notes: 50, journal: 1000, knowledge: 20_000, text: 2000 };
+
+/// Journal kinds worth carrying. A demotion and a compaction are about this
+/// install's copy, not about the work.
+const CARRIED_KINDS: WorkerJournalKind[] = ['shift', 'proposed', 'launched', 'approved', 'rejected', 'completed', 'failed', 'errand', 'delegated'];
 
 /// What an import did to the receiving flow library, in the words the
 /// importer needs before hiring: what arrived, what was already here, and
@@ -157,6 +217,7 @@ export function serializeWorker(args: {
   > & { autoRender?: string; mcpServers?: string[]; browser?: boolean };
   flows: Flow[];
   description?: string;
+  carried?: WorkerCarried;
 }): string {
   const { worker } = args;
   const doc: Record<string, unknown> = {
@@ -193,8 +254,46 @@ export function serializeWorker(args: {
     .filter((f): f is Flow => Boolean(f))
     .map((f) => ({ id: f.id, ...flowToDoc(f) }));
   if (embedded.length > 0) doc.flow_definitions = embedded;
+  if (args.carried) Object.assign(doc, serializeCarried(args.carried));
 
   return yamlStringify(doc, { lineWidth: 0, indent: 2 });
+}
+
+function serializeCarried(c: WorkerCarried): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (c.toolScopes && Object.keys(c.toolScopes).length) out.tool_scopes = c.toolScopes;
+  if (c.triggers?.length) {
+    out.triggers = c.triggers.map((t) => ({
+      name: t.name,
+      kind: t.kind,
+      enabled: t.enabled,
+      instructions: t.instructions,
+      deliver: t.deliver,
+      max_per_day: t.maxPerDay,
+      ...(t.watch
+        ? {
+            watch: {
+              server: t.watch.server,
+              tool: t.watch.tool,
+              args: t.watch.args,
+              every_minutes: t.watch.everyMinutes,
+              ...(t.watch.itemsPath ? { items_path: t.watch.itemsPath } : {}),
+              ...(t.watch.idPath ? { id_path: t.watch.idPath } : {}),
+              ...(t.watch.changes ? { changes: t.watch.changes } : {}),
+              ...(t.watch.tracked ? { tracked: t.watch.tracked } : {}),
+            },
+          }
+        : {}),
+      ...(t.slack ? { slack: t.slack } : {}),
+      ...(t.notifyOnly ? { notify_only: true } : {}),
+      ...(t.webhookIdPath ? { webhook_id_path: t.webhookIdPath } : {}),
+    }));
+  }
+  if (c.tools?.length) out.tools = c.tools;
+  if (c.knowledge?.trim()) out.knowledge = c.knowledge;
+  if (c.notes?.length) out.notes = c.notes;
+  if (c.journal?.length) out.journal = c.journal;
+  return out;
 }
 
 /// A filename that reads as the worker in a folder of them, and survives being
@@ -344,11 +443,107 @@ export function parseWorkerYaml(yaml: string): WorkerYamlResult {
   };
 
   const supplied = new Set(flows.map((f) => f.id));
+  const carried = coerceCarried(y);
   return {
     ok: true,
-    bundle: { worker, flows },
+    bundle: { worker, flows, ...(carried ? { carried } : {}) },
     missingFlowIds: worker.flowIds.filter((id) => !supplied.has(id)),
   };
+}
+
+const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+const text = (v: unknown, max = CARRIED_LIMITS.text): string => asString(v).slice(0, max);
+const time = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
+
+function coerceTrigger(raw: unknown): PortableTrigger | null {
+  const t = obj(raw);
+  if (!t) return null;
+  const name = text(t.name, 120).trim();
+  const kind = t.kind === 'webhook' || t.kind === 'slack' ? t.kind : t.kind === 'watch' ? 'watch' : null;
+  if (!name || !kind) return null;
+  const deliver = (Array.isArray(t.deliver) ? t.deliver : []).slice(0, 6).flatMap((d): PortableTrigger['deliver'] => {
+    const o = obj(d);
+    if (o?.kind === 'slack' && text(o.channel, 20).trim()) return [{ kind: 'slack', channel: text(o.channel, 20).trim() }];
+    if (o?.kind === 'thread') return [{ kind: 'thread' }];
+    if (o?.kind === 'worker' && text(o.text, 1000).trim()) return [{ kind: 'worker', text: text(o.text, 1000).trim() }];
+    return [];
+  });
+  const w = obj(t.watch);
+  const s = obj(t.slack);
+  const every = Number(w?.every_minutes ?? w?.everyMinutes);
+  const max = Number(t.max_per_day ?? t.maxPerDay);
+  return {
+    name,
+    kind,
+    enabled: t.enabled !== false,
+    instructions: text(t.instructions, 4000),
+    deliver,
+    maxPerDay: Number.isFinite(max) && max > 0 ? Math.min(500, Math.round(max)) : 50,
+    ...(w && text(w.server, 80) && text(w.tool, 120)
+      ? {
+          watch: {
+            server: text(w.server, 80),
+            tool: text(w.tool, 120),
+            args: obj(w.args) ?? {},
+            everyMinutes: Number.isFinite(every) && every > 0 ? Math.round(every) : 15,
+            ...(text(w.items_path ?? w.itemsPath, 200) ? { itemsPath: text(w.items_path ?? w.itemsPath, 200) } : {}),
+            ...(text(w.id_path ?? w.idPath, 200) ? { idPath: text(w.id_path ?? w.idPath, 200) } : {}),
+            ...(text(w.changes, 200) ? { changes: text(w.changes, 200) } : {}),
+            ...(Array.isArray(w.tracked) ? { tracked: w.tracked.filter((x): x is string => typeof x === 'string').slice(0, 200).map((x) => x.slice(0, 80)) } : {}),
+          },
+        }
+      : {}),
+    ...(s && text(s.channel, 20)
+      ? {
+          slack: {
+            channel: text(s.channel, 20),
+            on: s.on === 'mention' || s.on === 'reaction' ? s.on : 'message',
+            ...(text(s.reaction, 60) ? { reaction: text(s.reaction, 60) } : {}),
+            ...(text(s.contains, 200) ? { contains: text(s.contains, 200) } : {}),
+          },
+        }
+      : {}),
+    ...(t.notify_only === true || t.notifyOnly === true ? { notifyOnly: true } : {}),
+    ...(text(t.webhook_id_path ?? t.webhookIdPath, 200) ? { webhookIdPath: text(t.webhook_id_path ?? t.webhookIdPath, 200) } : {}),
+  };
+}
+
+/// The export-only keys, read as tolerantly as the rest: anything malformed
+/// is dropped, and a file without them carries nothing.
+function coerceCarried(y: Record<string, unknown>): WorkerCarried | undefined {
+  const out: WorkerCarried = {};
+  const scopes = obj(y.tool_scopes);
+  if (scopes) {
+    const parsed: ToolScopes = {};
+    for (const [name, raw] of Object.entries(scopes).slice(0, CARRIED_LIMITS.tools)) {
+      const scope = parseToolScope(raw);
+      if (scope && /^[A-Za-z0-9 ._-]{1,80}$/.test(name)) parsed[name] = scope;
+    }
+    if (Object.keys(parsed).length) out.toolScopes = parsed;
+  }
+  const triggers = (Array.isArray(y.triggers) ? y.triggers : []).slice(0, CARRIED_LIMITS.triggers).map(coerceTrigger).filter((t): t is PortableTrigger => Boolean(t));
+  if (triggers.length) out.triggers = triggers;
+  const tools = (Array.isArray(y.tools) ? y.tools : []).slice(0, CARRIED_LIMITS.tools).map(obj).filter((t): t is Record<string, unknown> => Boolean(t));
+  if (tools.length) out.tools = tools;
+  const knowledge = text(y.knowledge, CARRIED_LIMITS.knowledge).trim();
+  if (knowledge) out.knowledge = knowledge;
+  const notes = (Array.isArray(y.notes) ? y.notes : []).slice(-CARRIED_LIMITS.notes).flatMap((n) => {
+    const o = obj(n);
+    const at = time(o?.at);
+    const note = text(o?.note).trim();
+    return at && note ? [{ at, note }] : [];
+  });
+  if (notes.length) out.notes = notes;
+  const journal = (Array.isArray(y.journal) ? y.journal : []).slice(-CARRIED_LIMITS.journal).flatMap((e): PortableJournalEntry[] => {
+    const o = obj(e);
+    const at = time(o?.at);
+    const kind = CARRIED_KINDS.find((k) => k === o?.kind);
+    if (!at || !kind) return [];
+    const note = text(o?.note).trim();
+    return [{ kind, at, title: text(o?.title, 300), ...(note ? { note } : {}) }];
+  });
+  if (journal.length) out.journal = journal;
+  return Object.keys(out).length ? out : undefined;
 }
 
 /// An MCP allowlist off a share file. Undefined for an absent key (inherit

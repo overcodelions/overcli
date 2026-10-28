@@ -549,9 +549,11 @@ export function isRiskyCall(toolName: string, input: unknown): boolean {
 /// Files that decide what the allowed scripts run, so a write to one followed
 /// by `npm test` would run anything: the package manifest and the package
 /// managers' config, the runners' and linters' config (code, loaded on
-/// start), git's own files (hooks), and installed packages.
-const SCRIPT_CONFIG_FILES = /^(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|\.npmrc|\.yarnrc(?:\.yml)?|yarn\.lock|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.pnpmfile\.cjs|bun\.lockb?|bunfig\.toml|\.nvmrc|\.node-version|\.babelrc(?:\..*)?|babel\.config\..*|(?:vitest|vite|jest|playwright|cypress|mocha|ava|karma|webpack|rollup|esbuild|tsup|eslint|prettier|stylelint|lint-staged|commitlint|husky)\.config\..*|\.(?:mocharc|eslintrc|prettierrc|stylelintrc|lintstagedrc|huskyrc)(?:\..*)?)$/i;
-const SCRIPT_CONFIG_DIRS = new Set(['node_modules', '.git', '.husky', '.yarn', '.pnpm-store']);
+/// start), git's own files (hooks), and installed packages. Claude's own
+/// config goes with them: `.mcp.json` and `.claude/settings.json` (hooks)
+/// name commands the next launch runs.
+const SCRIPT_CONFIG_FILES = /^(?:\.mcp\.json|package\.json|package-lock\.json|npm-shrinkwrap\.json|\.npmrc|\.yarnrc(?:\.yml)?|yarn\.lock|pnpm-lock\.yaml|pnpm-workspace\.yaml|\.pnpmfile\.cjs|bun\.lockb?|bunfig\.toml|\.nvmrc|\.node-version|\.babelrc(?:\..*)?|babel\.config\..*|(?:vitest|vite|jest|playwright|cypress|mocha|ava|karma|webpack|rollup|esbuild|tsup|eslint|prettier|stylelint|lint-staged|commitlint|husky)\.config\..*|\.(?:mocharc|eslintrc|prettierrc|stylelintrc|lintstagedrc|huskyrc)(?:\..*)?)$/i;
+const SCRIPT_CONFIG_DIRS = new Set(['node_modules', '.git', '.husky', '.yarn', '.pnpm-store', '.claude']);
 
 /// Whether a path's name, or any folder on the way, is one `npm test` and
 /// the other allowed scripts read as code or configuration.

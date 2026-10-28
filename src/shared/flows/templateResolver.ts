@@ -72,7 +72,7 @@ function pickPremium(
   // Tier fallback ladder. 'frontier' drops to 'thinking' first (a backend
   // without Fable still gets its strongest reasoning model); 'thinking'
   // drops to 'standard' then 'fast'; 'fast' bumps up to 'standard' then
-  // 'thinking'. 'frontier' sits last on the non-frontier ladders so the
+  // 'thinking'; 'standard' tries 'fast' before 'thinking'. 'frontier' sits last on the non-frontier ladders so the
   // expensive model is only ever a last resort, never an auto-upgrade.
   // Always lands on *some* model from a healthy backend if any premium
   // backend is up.
@@ -83,7 +83,10 @@ function pickPremium(
       ? ['standard', 'fast', 'frontier']
       : tier === 'fast'
       ? ['standard', 'thinking', 'frontier']
-      : ['thinking', 'fast', 'frontier'];
+      // 'standard' steps down before up: a backend with no middle model
+      // (Claude files Sonnet as fast) gets Sonnet for a balanced step, not
+      // Opus at several times the price.
+      : ['fast', 'thinking', 'frontier'];
   for (const t of fallback) {
     for (const b of order) {
       const m = firstAtTier(b, t);

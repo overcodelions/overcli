@@ -21,7 +21,7 @@ import { SsoService, SSO_CLIENT_SECRET_ENV } from '../org/sso';
 import { ConnectionsService } from '../org/connections';
 import { ToolSignIn } from '../org/toolSignIn';
 import { installTool, installedToolUrl } from '../org/tools';
-import { downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, lookupByEmail, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
+import { downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
 import { answerGeneral, routeRequest } from './frontDoorRoute';
 import { libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
@@ -44,6 +44,12 @@ import { digestDue } from '../org/orgService';
 import { Store } from '../store';
 import { setProviderModels } from '../backends/providerModels';
 import { changesOfRun } from '../org/runChanges';
+
+/// How long someone's pause in typing is: past it, what they sent is one
+/// request. Asked directly, every request waits this long, so it's short; a
+/// watched channel answers unasked, and can wait for a slower typist.
+const QUIET_MS = 5000;
+const WATCHED_QUIET_MS = 12_000;
 
 /// Whoever else is in a channel: someone with no access of their own. What
 /// they can see is what a reply in the channel may draw on.
@@ -211,6 +217,7 @@ export function createOrgControl(
   commands = new SlackCommands({
     // Replies under a worker's results go to it (the door is made below).
     adoptThread: (channel, threadTs, worker) => frontDoor.adopt(channel, threadTs, worker),
+    askInThread: (channel, threadTs, user, workerId, text) => frontDoor.askIn(channel, threadTs, user, workerId, text),
     // The pack's summary, read against the pack itself: what the team found,
     // said for whoever asked, with its labels named.
     plainPack: async (task) => {
@@ -391,6 +398,8 @@ export function createOrgControl(
   processes.start();
   // Workers acting on business events: watches, webhooks, Slack channels.
   triggers = new TriggerService({
+    // A question typed over a few messages is answered once, as one.
+    quietMs: WATCHED_QUIET_MS,
     handTo: (hand, ev) => {
       const brief = ev.url ? `${ev.text}\n\nSource: ${ev.url}` : ev.text;
       if (hand.kind === 'process') {
@@ -413,7 +422,7 @@ export function createOrgControl(
     ask: (workerId, triggerName, text, startsOnItsOwn) => {
       const started = org.startAsk({ name: triggerName, admin: true }, workerId, text, 'trigger', undefined, undefined, undefined, undefined, false, startsOnItsOwn);
       return started.ok
-        ? { ok: true, askId: started.askId, done: started.done.then((r) => (r.ok ? { ok: true as const, reply: r.reply, launched: r.launched } : r)) }
+        ? { ok: true, askId: started.askId, done: started.done.then((r) => (r.ok ? { ok: true as const, reply: r.reply, launched: r.launched, ...(r.choices?.length ? { choices: r.choices } : {}) } : r)) }
         : started;
     },
     toolConfig: (name) => readClaudeMcpServers()[name] ?? null,
@@ -445,6 +454,26 @@ export function createOrgControl(
         return res.ok;
       },
       botUserId: () => slack.botUserId(),
+    },
+    tellOwner: async (workerId, text, choices) => {
+      const bot = configuredSlackToken('bot');
+      const to = org.managerSlackId(workerId);
+      const w = engines.workerEngine.roster().find((x) => x.id === workerId);
+      if (!bot || !to || !w) return false;
+      const im = await openIm(bot, to);
+      if (!im.ok) return false;
+      const icon = w.avatarUrl ?? initialsPicture(w.id, w.name);
+      let res = await postMessage(bot, { channel: im.data, text, username: w.name, ...(icon ? { iconUrl: icon } : {}) });
+      if (!res.ok && res.error === 'missing_scope') res = await postMessage(bot, { channel: im.data, text });
+      if (!res.ok) {
+        log('warn', 'slack', `A trigger could not tell ${w.name}'s manager: ${res.error}`);
+        return false;
+      }
+      // A reply in that DM is for the worker, with the DM as its context, and
+      // the answers it offered are one tap each there.
+      frontDoor.adopt(res.data.channel, res.data.ts, { id: w.id, name: w.name });
+      await frontDoor.offer(res.data.channel, res.data.ts, w.name, choices).catch(() => undefined);
+      return true;
     },
     log: (message) => log('info', 'org', message),
   });
@@ -517,6 +546,7 @@ export function createOrgControl(
     return team.members.some((m) => roster.find((w) => w.id === m.workerId)?.visibility === 'org');
   };
   const frontDoor = new FrontDoor({
+    gatherMs: QUIET_MS,
     // Only those the person may start: the router never offers one they can't.
     processes: (caller) =>
       processes.list(caller).filter((p) => p.stages.length && p.canStart).map((p) => ({ id: p.id, name: p.name, ...(p.shortName ? { shortName: p.shortName, ...(p.shortNameAuto ? { shortNameAuto: true } : {}) } : {}), ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),
@@ -685,18 +715,31 @@ export function createOrgControl(
         const res = await postMessage(token, { channel, text, blocks, threadTs });
         return res.ok;
       },
-      update: async (channel, ts, text) => {
+      update: async (channel, ts, text, blocks) => {
         const token = bot();
         if (!token) return false;
-        const res = await updateMessage(token, { channel, ts, text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] });
+        const res = await updateMessage(token, { channel, ts, text, blocks: blocks ?? [{ type: 'section', text: { type: 'mrkdwn', text } }] });
         return res.ok;
       },
-      postTs: async (channel, text, threadTs, as) => {
+      remove: async (channel, ts) => {
+        const token = bot();
+        if (!token) return false;
+        const res = await deleteMessage(token, { channel, ts });
+        return res.ok;
+      },
+      openView: async (triggerId, view) => {
+        const token = bot();
+        if (!token) return false;
+        const res = await openView(token, triggerId, view);
+        if (!res.ok) log('warn', 'slack', `The front door could not show a trace: ${res.error}`);
+        return res.ok;
+      },
+      postTs: async (channel, text, threadTs, as, blocks) => {
         const token = bot();
         if (!token) return null;
         const who = as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {};
-        let res = await postMessage(token, { channel, text, threadTs, ...who });
-        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(token, { channel, text, threadTs });
+        let res = await postMessage(token, { channel, text, threadTs, ...who, ...(blocks ? { blocks } : {}) });
+        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(token, { channel, text, threadTs, ...(blocks ? { blocks } : {}) });
         return res.ok ? res.data.ts : null;
       },
       upload: async (channel, threadTs, filename, bytes) => {

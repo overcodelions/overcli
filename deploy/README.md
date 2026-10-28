@@ -154,6 +154,20 @@ Plain folders, with no remote to push to, still work the old way:
 docker compose -f deploy/docker-compose.yml exec overcli overcli projects add /data/repos/app --name App
 ```
 
+### Toolchains: letting workers build and test
+
+The image has git and Node, nothing else a build needs. A worker that hits `java: command not found` stops to ask for one. The simplest fix is **Setup → Toolchains** in the console: install Java, Node, Python, Go or any archive onto the data volume, and pick versions per repo (or let each repo's `.nvmrc`, `.sdkmanrc`, `go.mod` and so on pick), with no rebuild (see [the admin guide](docs/admins.md#setup--toolchains)). To bake toolchains into the image instead, build it with what your repos use:
+
+```
+docker build -f deploy/Dockerfile -t overcli-org \
+  --build-arg JDKS="8 17" \
+  --build-arg EXTRA_APT_PACKAGES="maven" .
+```
+
+`JDKS` installs Amazon Corretto at `/opt/jdk/<version>`. The first one listed is `JAVA_HOME`. A repo that needs another one names it, for example `org.gradle.java.home=/opt/jdk/8` in its `gradle.properties`, or a test command that starts `JAVA_HOME=/opt/jdk/8 ./gradlew test`. Workers run what the console's Permissions let them (`--max-access shell` and the commands listed there). The repo's test command runs on the server before each push (see above).
+
+A worker can't fetch or push itself, because the host token stays in the server. Before each run the server fetches every branch, so a follow-up on an open pull request reads its branch from `origin/`, and the server pushes the result back onto it.
+
 ### Asking from Slack
 
 Anyone in your Slack can ask, with no names to learn:
@@ -272,6 +286,14 @@ Anyone who can hire can bring a worker they built in their own overcli app:
 - **In the console:** Hire → *Bring a worker you built yourself*, then paste its file.
 
 It's treated as a hire. The publisher becomes its manager, it starts on probation with a fresh journal, and anything over their allowance or asking for uncleared tools waits for an approver.
+
+## Moving a worker to another server
+
+To take a worker from one overgo server to another (from a trial on your laptop to the VPC, say), its manager presses **Export** on the worker's page and downloads its file. On the other server, **Hire → Bring a worker you built yourself** takes the file.
+
+Besides its job and flows, the file carries its triggers, how much of each tool it may use, and its tools' setup with the keys removed, so the Tools page offers them pre-filled. Two boxes add more: **what it knows and has learned** (its notes and what it found out about its tools), and **its journal**, so it doesn't pick up work it already did. Journal entries it brings never count toward its trust.
+
+It still arrives as a hire, on probation, with no leave to act on its own. Left behind: secret values, DMs on its triggers, "starts on its own" on a trigger, and a tool scope wider than the new org's default, which an admin can widen again. A webhook trigger gets a new address, shown once on import.
 
 ## Inside a VPC or behind a VPN
 

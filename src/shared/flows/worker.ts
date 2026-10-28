@@ -563,6 +563,9 @@ export interface WorkerJournalEntry {
   costUSD?: number;
   /// On a shift: started by hand (Run now) rather than by its schedule.
   manual?: boolean;
+  /// Came with it from another server (an export). It reads as history, so
+  /// it doesn't redo old work, but trust is earned here: never counted.
+  imported?: boolean;
 }
 
 // ---- Caps and trust -----------------------------------------------------
@@ -618,9 +621,11 @@ export function demotedTrust(level: WorkerTrustLevel): WorkerTrustLevel {
 /// This is the number the auto-demotion rule watches. An approval OR a
 /// prior demotion ends the streak — rejections that already cost a trust
 /// level are spent, or a worker would fall two rungs off one bad patch.
-export function rejectionStreak(entries: Array<Pick<WorkerJournalEntry, 'kind'>>): number {
+export function rejectionStreak(entries: Array<Pick<WorkerJournalEntry, 'kind' | 'imported'>>): number {
   let streak = 0;
   for (const e of entries) {
+    // Where it came from, its verdicts were on another server's record.
+    if (e.imported) return streak;
     if (e.kind === 'approved' || e.kind === 'demoted') return streak;
     if (e.kind === 'rejected') streak++;
   }

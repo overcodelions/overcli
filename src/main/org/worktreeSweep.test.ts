@@ -62,6 +62,18 @@ describe('cleaning up finished runs’ checkouts', () => {
     expect(fs.existsSync(fresh)).toBe(true);
   }, 30_000);
 
+  it("leaves a checkout alone when a newer run has taken over its folder", async () => {
+    const r = repo();
+    // The old run pushed long ago and its checkout went; a new run on the
+    // same ticket checked out into the same path and is still working.
+    const wt = r.wt('ACME-9');
+    const old = { ...run(r, wt, 'old', PUSHED_AFTER_MS * 3), createdAt: 1 } as FlowRun;
+    const live = { ...run(r, wt, 'live', 0, { kind: 'running' } as never), createdAt: 2 } as FlowRun;
+    const res = await sweepWorktrees([old, live], () => undefined);
+    expect(res.removed).toBe(0);
+    expect(fs.existsSync(wt)).toBe(true);
+  }, 30_000);
+
   it('says in Readiness how many checkouts there are, and flags old unpushed work', async () => {
     const r = repo();
     const wt = r.wt('old');

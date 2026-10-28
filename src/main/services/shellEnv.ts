@@ -29,15 +29,36 @@ const SHELL_ENV_TIMEOUT_MS = 10_000;
 const DROPPED = new Set(['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'PWD', 'OLDPWD', 'SHLVL', '_']);
 
 let cached: Promise<Record<string, string> | undefined> | undefined;
+let settled: Record<string, string> | undefined;
+
+/// What a worker's shell borrows from the user's: where the tools are, never
+/// what unlocks anything. A worker told `java: command not found` on a Mac
+/// that has three JDKs under sdkman stops to ask for one.
+const TOOLCHAIN = /^(JAVA_HOME|[A-Z0-9]+_HOME|SDKMAN_[A-Z_]+|NVM_[A-Z_]+|GOPATH|GOROOT|PYENV_ROOT|RBENV_ROOT|ASDF_[A-Z_]+)$/;
+const SECRETISH = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|^KEY$/;
 
 /// The login shell's environment, read once per app run. `undefined` where
 /// there is nothing to read (Windows, no shell) or it could not be read.
 export function shellEnv(): Promise<Record<string, string> | undefined> {
-  cached ??= readShellEnv().catch((error: unknown) => {
-    console.warn(`[services] could not read the login shell's environment: ${(error as Error)?.message ?? error}`);
-    return undefined;
-  });
+  cached ??= readShellEnv()
+    .then((env) => (settled = env))
+    .catch((error: unknown) => {
+      console.warn(`[services] could not read the login shell's environment: ${(error as Error)?.message ?? error}`);
+      return undefined;
+    });
   return cached;
+}
+
+/// `env` with the login shell's PATH in front and its toolchain homes added,
+/// once `shellEnv()` has answered; `env` as it is before then.
+export function withShellToolchain(env: NodeJS.ProcessEnv, shell: Record<string, string> | undefined = settled): NodeJS.ProcessEnv {
+  if (!shell) return env;
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const [key, value] of Object.entries(shell)) {
+    if (TOOLCHAIN.test(key) && !SECRETISH.test(key) && !(key in env)) out[key] = value;
+  }
+  if (shell.PATH) out.PATH = [...new Set([...shell.PATH.split(':'), ...(env.PATH ?? '').split(':')].filter(Boolean))].join(':');
+  return out;
 }
 
 export async function readShellEnv(

@@ -96,11 +96,23 @@ export async function sweepWorktrees(runs: FlowRun[], log: (level: 'info' | 'war
   let kept = 0;
   const keptRuns: typeof keptLast = [];
   try {
+    // A checkout's folder is named for its work ("ACME-412"), and once swept
+    // the name is free again: a later run on the same ticket checks out into
+    // the same path. Only the newest run that uses a path decides about it,
+    // or the old run's turn would sweep away the new run's live checkout.
+    const owner = new Map<string, FlowRun>();
+    for (const run of runs) {
+      for (const c of checkoutsOf(run)) {
+        const had = owner.get(c.worktreePath);
+        if (!had || (run.createdAt ?? 0) >= (had.createdAt ?? 0)) owner.set(c.worktreePath, run);
+      }
+    }
     for (const run of runs) {
       if (run.state.kind !== 'done' && run.state.kind !== 'aborted') continue;
       const age = now - endedAt(run);
       if (age < EMPTY_AFTER_MS) continue;
       for (const c of checkoutsOf(run)) {
+        if (owner.get(c.worktreePath) !== run) continue;
         if (!fs.existsSync(c.worktreePath) || !fs.existsSync(path.join(c.repoPath, '.git'))) continue;
         const state = await checkoutState(c);
         const due = state === 'empty' || (state === 'pushed' && age >= PUSHED_AFTER_MS);

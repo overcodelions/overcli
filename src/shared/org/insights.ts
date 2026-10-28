@@ -37,14 +37,15 @@ const NEXT: Record<WorkerTrustLevel, WorkerTrustLevel | undefined> = {
 /// since the last thing went wrong, not the total.
 export function trustReadiness(
   worker: Pick<Worker, 'trust'>,
-  journal: readonly Pick<WorkerJournalEntry, 'kind' | 'at'>[],
+  journal: readonly Pick<WorkerJournalEntry, 'kind' | 'at' | 'imported'>[],
   now: number,
 ): TrustReadiness {
   const level = worker.trust;
   const next = NEXT[level];
   if (!next || level === 'autonomous') return { level, clean: 0, reason: 'Already fully trusted.' };
   const needed = TRUST_CLEAN_RUNS[level];
-  const recent = journal.filter((e) => now - e.at <= TRUST_WINDOW_MS).sort((a, b) => a.at - b.at);
+  // Runs it did on another server don't count: trust is earned here.
+  const recent = journal.filter((e) => !e.imported && now - e.at <= TRUST_WINDOW_MS).sort((a, b) => a.at - b.at);
   let clean = 0;
   for (const e of recent) {
     if (e.kind === 'failed' || e.kind === 'rejected' || e.kind === 'demoted') clean = 0;

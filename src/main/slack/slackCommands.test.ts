@@ -188,6 +188,33 @@ describe('/worker', () => {
     await cmds.onSlash(slash('/worker', 'vantage, what do you know about acme'));
     expect(asked).toEqual(['what do you know about acme']);
   });
+
+  it('asks through the front door in the DM thread it opens, so the work it starts is followed there', async () => {
+    const asked: string[] = [];
+    const door: unknown[][] = [];
+    const { cmds, posts } = harness(
+      {
+        resolve: (_c, name) => (name.toLowerCase() === 'vantage' ? ({ id: 'w', name: 'Vantage' } as never) : null),
+        ask: async (_c, _id, text) => {
+          asked.push(text);
+          return { ok: true, reply: 'Plenty.' } as never;
+        },
+      },
+      undefined,
+      {
+        askInThread: async (...args) => {
+          door.push(args);
+          return true;
+        },
+      },
+    );
+    await cmds.onSlash(slash('/worker', 'vantage, fix the export'));
+    const root = posts.find((p) => p.url.endsWith('chat.postMessage'))!;
+    expect(door).toEqual([['D0PAT', root.body.ts ?? '200.1', PAT, 'w', 'fix the export']]);
+    expect(asked).toEqual([]);
+    // Nothing more from here: the door answers in the thread.
+    expect(posts.filter((p) => p.url.endsWith('chat.postMessage'))).toHaveLength(1);
+  });
 });
 
 describe('/hire', () => {

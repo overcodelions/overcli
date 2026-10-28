@@ -309,6 +309,11 @@ export async function updateMessage(
   );
 }
 
+/// Take down a message the app posted.
+export async function deleteMessage(botToken: string, args: { channel: string; ts: string }, fetchImpl?: FetchLike): Promise<SlackResult<object>> {
+  return slackCall<object>('chat.delete', botToken, { channel: args.channel, ts: args.ts }, fetchImpl);
+}
+
 /// Open a pop-up form (a modal) in answer to a button press, within the
 /// three seconds its trigger lasts.
 export async function openView(botToken: string, triggerId: string, view: unknown, fetchImpl?: FetchLike): Promise<SlackResult<object>> {

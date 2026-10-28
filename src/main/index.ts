@@ -135,6 +135,7 @@ import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew'
 import { host } from './host';
 import { ServicesManager, fsRepoReader, importFile as importServicesFile } from './services/manager';
 import { detectServices } from './services/detect';
+import { parseSharedStack } from './services/stackShare';
 import { clearCache, controlMachineService, listMachineServices } from './services/machineServices';
 import { splitSuggestedCommand, tidySuggestion } from './services/askModel';
 import { shellEnv } from './services/shellEnv';
@@ -2147,6 +2148,50 @@ export function registerIpc(): void {
     if (res.canceled || res.filePaths.length === 0) return null;
     const file = res.filePaths[0];
     return { file, ...importServicesFile(file) };
+  });
+  ipcMain.handle('services:shareStack', (_e, { workspaceId, name, projects, serviceIds, includePins }) =>
+    services().shareStack(workspaceId, { name, projects, serviceIds, includePins }),
+  );
+  ipcMain.handle('services:saveShare', async (_e, { text, name }: { text: string; name: string }) => {
+    if (!mainWindow) return false;
+    const res = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save shared stack',
+      defaultPath: `${String(name).replace(/[^A-Za-z0-9_-]+/g, '-') || 'stack'}.overcli-stack.json`,
+      filters: [{ name: 'Shared stack', extensions: ['json'] }],
+    });
+    if (res.canceled || !res.filePath) return false;
+    fs.writeFileSync(res.filePath, String(text), 'utf8');
+    return true;
+  });
+  ipcMain.handle('services:readShared', async () => {
+    if (!mainWindow) return null;
+    const res = await dialog.showOpenDialog(mainWindow, {
+      title: 'Import a shared stack',
+      properties: ['openFile'],
+      filters: [{ name: 'Shared stack', extensions: ['json'] }],
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+    const file = res.filePaths[0];
+    try {
+      return { file, ...parseSharedStack(fs.readFileSync(file, 'utf8')) };
+    } catch (error: unknown) {
+      return { file, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle('services:matchShared', (_e, { stack, projects }) =>
+    services().matchSharedRepos(stack, projects),
+  );
+  ipcMain.handle('services:pickFolder', async (_e, { title }: { title: string }) => {
+    if (!mainWindow) return null;
+    const res = await dialog.showOpenDialog(mainWindow, { title, properties: ['openDirectory'] });
+    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0];
+  });
+  // Checked again here, not trusted from the sheet: what it holds becomes
+  // commands this machine runs.
+  ipcMain.handle('services:importShared', (_e, { workspaceId, stack, places }) => {
+    const parsed = parseSharedStack(JSON.stringify(stack));
+    if ('error' in parsed) throw new Error(parsed.error);
+    return services().importShared(workspaceId, parsed.stack, places);
   });
   ipcMain.handle('services:import', (_e, { workspaceId, projectId, projectPath, projectName, services: imported, siblings }) =>
     services().importServices(workspaceId, { projectId, projectPath, projectName, services: imported, siblings }),

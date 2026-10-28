@@ -35,6 +35,8 @@ export interface LandDeps {
   log(message: string): void;
   /// What every pushed branch starts with (the console's setting). Absent: `overcli/`.
   branchPrefix?(): string;
+  /// Open (or find) the pull request for a pushed branch. Null: links only.
+  openPr?(repo: ConnectedRepo, branch: string, title: string, body: string): Promise<{ url: string; draft: boolean } | { error: string } | null>;
   /// After a run's branches are pushed: the ticket follow-up hangs off this.
   onLanded?(run: FlowRun, landed: Landed[]): void;
 }
@@ -45,6 +47,12 @@ export interface Landed {
   url?: string;
   /// Why nothing was pushed: no changes, the tests failed, or tests are turned off here.
   skipped?: string;
+  /// Pushed onto a branch an earlier run pushed, so its pull request has it.
+  updated?: true;
+  /// The server opened the pull request (or found it open): `url` is it.
+  pr?: 'draft' | 'open';
+  /// Why the pull request couldn't be opened; the link to open one stands.
+  prError?: string;
   error?: string;
 }
 
@@ -107,7 +115,11 @@ export class BranchLander {
     for (const place of places) {
       const repo = this.deps.repos().find((r) => r.path === place.projectPath);
       // One repo going wrong must not cost the others their links.
-      out.push(await this.landOne(place, repo, branch, title, body).catch((err: unknown) => ({ repo: place.name, error: err instanceof Error ? err.message : String(err) })));
+      out.push(
+        await this.landOne(place, repo, branch, title, body)
+          .then((l) => this.withPr(l, repo, title, body))
+          .catch((err: unknown) => ({ repo: place.name, error: err instanceof Error ? err.message : String(err) })),
+      );
     }
     this.deps.attach(run.id, LANDED_ARTIFACT, describe(out));
     if (out.some((l) => l.url || (l.branch && !l.error))) this.deps.onLanded?.(run, out);
@@ -143,11 +155,60 @@ export class BranchLander {
       if (!tested.ok && tested.refused) return { repo: place.name, skipped: `repo tests are turned off on this server, so nothing was pushed. ${tested.error}` };
       if (!tested.ok) return { repo: place.name, skipped: `its tests failed, so nothing was pushed:\n${tested.error.slice(-1500)}` };
     }
+    // Built on a branch this server pushed before (a follow-up to a change
+    // whose pull request is open): the new commits go on that branch, so the
+    // pull request has them. Never forced: if it has moved, a branch of its own.
+    const onto = await this.builtOn(git, base);
+    if (onto) {
+      const added = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${onto}`]);
+      if (added.ok) return { repo: place.name, branch: onto, updated: true };
+      this.deps.log(`Could not add to ${onto}, so pushing a branch of its own: ${added.error.slice(-300)}`);
+    }
     const pushed = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${branch}`]);
     if (!pushed.ok) return { repo: place.name, error: pushed.error.slice(-800) };
     const url = (repo && newPullRequestLink(repo, branch)) ?? /https?:\/\/\S+(?:pull\/new|compare|pull-requests\/new|merge_requests\/new)\S*/.exec(pushed.stdout)?.[0];
     return { repo: place.name, branch, ...(url ? { url } : {}) };
   }
+
+  /// A pushed branch's pull request, opened through the host when the Repos
+  /// page says so. Failing that, the link to open one stays.
+  private async withPr(l: Landed, repo: ConnectedRepo | undefined, title: string, body: string): Promise<Landed> {
+    if (!repo || !l.branch || l.error || l.skipped || !this.deps.openPr) return l;
+    const pr = await this.deps.openPr(repo, l.branch, title, body).catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }));
+    if (!pr) return l;
+    if ('error' in pr) {
+      this.deps.log(`Couldn't open the pull request for ${l.repo} ${l.branch}: ${pr.error}`);
+      return { ...l, prError: pr.error };
+    }
+    return { ...l, url: pr.url, pr: pr.draft ? 'draft' : 'open' };
+  }
+
+  /// The branch with the server's prefix that HEAD was built on and the
+  /// default branch doesn't have yet, nearest first. Null: none.
+  private async builtOn(git: (args: string[]) => ReturnType<LandDeps['git']>, base: string): Promise<string | null> {
+    const prefix = `origin/${this.deps.branchPrefix?.() || 'overcli/'}`;
+    const under = await git(['for-each-ref', '--merged', 'HEAD', '--no-merged', `origin/${base}`, '--format=%(refname:short)', 'refs/remotes/origin']);
+    if (!under.ok) return null;
+    let best: { name: string; behind: number } | null = null;
+    for (const ref of under.stdout.split('\n').map((s) => s.trim()).filter((s) => s.startsWith(prefix))) {
+      const count = await git(['rev-list', '--count', `${ref}..HEAD`]);
+      const n = count.ok ? Number(count.stdout.trim()) : NaN;
+      if (Number.isFinite(n) && (!best || n < best.behind)) best = { name: ref.slice('origin/'.length), behind: n };
+    }
+    return best?.name ?? null;
+  }
+}
+
+/// The branches a run's push went to, read back from its artifact. One
+/// line each; a line written before it named the branch has its link's.
+export function landedBranches(text: string): string[] {
+  return text.split('\n').flatMap((line) => {
+    const m =
+      /\(branch ([^\s)]+)\)|pushed branch (\S+)|added to (\S+), so/.exec(line) ??
+      /[?&]source=([^&\s]+)|\/compare\/[^\s]+?\.\.\.([^?\s]+)|merge_requests\/new\?merge_request%5Bsource_branch%5D=([^&\s]+)/.exec(line);
+    const branch = m?.slice(1).find(Boolean);
+    return branch ? [decodeURIComponent(branch)] : [];
+  });
 }
 
 /// One line per repo, as the run's artifact: what the front door, the
@@ -161,10 +222,14 @@ export function describe(landed: Landed[]): string {
   if (!told.length) return 'Nothing to push: no repo changed.';
   return told
     .map((l) =>
-      l.url
-        ? `Open a pull request for ${l.repo}: ${l.url}`
+      l.updated
+        ? `${l.repo}: added to ${l.branch}, so its open pull request has the new commits${l.pr ? `: ${l.url}` : ''}`
+        : l.pr
+        ? `${l.pr === 'draft' ? 'Opened a draft pull request' : 'Opened a pull request'} for ${l.repo}: ${l.url} (branch ${l.branch})`
+        : l.url
+        ? `Open a pull request for ${l.repo}: ${l.url} (branch ${l.branch})${l.prError ? ` (it couldn't be opened for you: ${l.prError})` : ''}`
         : l.branch
-          ? `${l.repo}: pushed branch ${l.branch}`
+          ? `${l.repo}: pushed branch ${l.branch}${l.prError ? ` (no pull request: ${l.prError})` : ''}`
           : l.skipped
             ? `${l.repo}: not pushed — ${l.skipped}`
             : `${l.repo}: could not push — ${pushAdvice(l.error ?? '')}`,

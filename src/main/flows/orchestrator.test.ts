@@ -673,6 +673,29 @@ describe('OrchestratorImpl runIn', () => {
     expect(h.started.map((s) => s.baseBranch)).toEqual(['main', 'main']);
   });
 
+  it('starts a worker\'s follow-up on the branch its change was pushed to', async () => {
+    const h = makeHarness();
+    const asked: unknown[] = [];
+    h.engine.continueBranch = async (args) => {
+      asked.push(args);
+      return args.title.includes('ACME-7') ? 'overcli/fix-acme-7-abc123' : null;
+    };
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 2,
+      origin: { kind: 'worker', workerId: 'w1', workerName: 'Triage' },
+      items: [
+        { candidate: { id: 'c0', title: 'ACME-7: soften the wording', prompt: 'do it' }, flowId: 'flow-a' },
+        { candidate: { id: 'c1', title: 'Something else', prompt: 'do that' }, flowId: 'flow-a' },
+      ],
+    });
+    expect(asked[0]).toEqual({ projectPath: '/proj', workerId: 'w1', title: 'ACME-7: soften the wording', prompt: 'do it' });
+    expect(h.started.map((s) => s.baseBranch)).toEqual(['overcli/fix-acme-7-abc123', undefined]);
+    expect(h.started[0].prompt).toContain('This follows up overcli/fix-acme-7-abc123');
+    expect(h.started[1].prompt).toBe('do that');
+  });
+
   it('launches cwd items in the project tree, with no base branch to fork from', async () => {
     const h = makeHarness();
     // A base branch is meaningless in the main tree — it must not leak through

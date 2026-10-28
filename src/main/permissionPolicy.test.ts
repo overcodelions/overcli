@@ -414,6 +414,13 @@ describe('safeForRestOfTurn', () => {
       expect(safeForRestOfTurn('Edit', { file_path: `/repo/${file}` }, '/repo')).toBe(false);
     }
     expect(safeForRestOfTurn('Write', { file_path: 'src/package.json.ts' }, '/repo')).toBe(true);
+    expect(safeForRestOfTurn('Write', { file_path: 'docs/claude-notes.md' }, '/repo')).toBe(true);
+  });
+  it("asks for writes to Claude's own tool and hook config", () => {
+    for (const file of ['.mcp.json', 'packages/app/.mcp.json', '.claude/settings.json', '.claude/settings.local.json', 'packages/app/.claude/commands/x.md']) {
+      expect(safeForRestOfTurn('Write', { file_path: file }, '/repo')).toBe(false);
+      expect(safeForRestOfTurn('Edit', { file_path: `/repo/${file}` }, '/repo')).toBe(false);
+    }
     expect(safeForRestOfTurn('Write', { file_path: 'src/a.test.ts' }, '/repo')).toBe(true);
   });
   it('refuses a write through a link to nowhere', () => {

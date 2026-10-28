@@ -157,7 +157,8 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .setup-rail .light.need { background: var(--need); }
 .setup-pick { display: none; }
 .setup-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
-.picked { display: flex; flex-wrap: wrap; gap: 8px; }
+/* The chips someone picked. Not tr.picked: a ticked table row keeps its cells. */
+.picked:not(tr) { display: flex; flex-wrap: wrap; gap: 8px; }
 .picked .chip { cursor: default; gap: 8px; padding: 0 6px 0 4px; }
 .picked .chip button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 4px; border-radius: 50%; display: inline-flex; }
 .picked .chip button:hover { color: var(--ink); background: var(--panel); }
@@ -243,10 +244,10 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .badge.waiting { background: var(--need-soft); color: var(--need); }
 .badge.bad, .badge.stuck { background: var(--bad-soft); color: var(--bad); }
 .badge.ok { background: var(--ok-soft); color: var(--ok); }
-.badge.t-probation { background: var(--need-soft); color: var(--need); }
-.badge.t-trusted { background: var(--info-soft); color: var(--info); }
-.badge.t-autonomous { background: var(--ok-soft); color: var(--ok); }
-.badge[class*="t-"]::before { display: none; }
+.trust { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); white-space: nowrap; }
+.trust-bars { display: inline-flex; flex-direction: row; align-items: center; gap: 2px; }
+.trust-bars b { display: block; width: 4px; height: 11px; border-radius: 1px; background: var(--line-2); }
+.trust-bars b.on { background: var(--muted); }
 .badge.plain { background: none; border: 1px solid var(--line-2); color: var(--muted); font-weight: 500; }
 .badge.plain::before { display: none; }
 .spendcell { display: flex; align-items: center; gap: 10px; min-width: 170px; }
@@ -921,8 +922,15 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .sel-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: var(--r); background: var(--go-soft); border: 1px solid var(--go); font-size: 13.5px; }
 .repo-table th.tick, .repo-table td.tick { width: 18px; padding-right: 0; }
 .repo-table tr.picked td { background: var(--go-soft); }
-.ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
-.ws-foot { border-top: 1px solid var(--line); padding-top: 12px; align-items: center; }
+.ship-grid { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px 24px; margin: 14px 0 4px; padding-top: 14px; border-top: 1px solid var(--line); }
+.ship-grid dt { font-size: 13.5px; font-weight: 600; padding-top: 6px; }
+.ship-grid dd { margin: 0; min-width: 0; }
+.ship-grid select { max-width: 320px; }
+@media (max-width: 640px) { .ship-grid { grid-template-columns: 1fr; gap: 4px; } .ship-grid dd { margin-bottom: 12px; } }
+.ws-list > .ws-row { padding: 14px 16px; }
+.ws-list > .ws-row + .ws-row { border-top: 1px solid var(--line); }
+.ws-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 16px; max-height: 340px; overflow: auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); }
+.ws-pick-item[hidden] { display: none; }
 .panel.dashed { border-style: dashed; background: none; box-shadow: none; }
 .msg { font-size: 13px; padding: 8px 12px; border-radius: var(--r-sm); }
 .msg.ok { background: var(--go-soft); color: var(--go); }
@@ -2482,10 +2490,18 @@ export const CONSOLE_JS = String.raw`
       };
       send.onclick = function () { answer(input.value); };
       input.onkeydown = function (e) { if (e.key === 'Enter') answer(input.value); };
+      // No answer worth giving: end it here instead of leaving it waiting.
+      var stop = h('button', { class: 'btn quiet', text: 'Stop the run' });
+      stop.onclick = function () {
+        if (!window.confirm('Stop ' + it.workerName + '’s run? What it has written so far stays; nothing it was about to do happens.')) return;
+        var restore = busy(stop, 'Stopping…');
+        send.disabled = input.disabled = true;
+        api('POST', '/api/runs/' + encodeURIComponent(it.runId) + '/stop', {}).then(done('Stopped. ' + it.workerName + ' won’t carry on with it.')).then(function (r) { if (r.ok === false) { restore(); send.disabled = input.disabled = false; } });
+      };
       body = [h('div', { class: 'quote', text: it.question || 'The run needs your input before it can go on.' }),
         it.why ? h('div', { class: 'why', text: it.why }) : null,
         it.options ? h('div', { class: 'row' }, it.options.map(function (o) { return h('button', { class: 'chip', text: o, onclick: function () { answer(o); } }); })) : null,
-        h('div', { class: 'inline-form' }, input, send)];
+        h('div', { class: 'inline-form' }, input, send, stop)];
     } else {
       // Later steps needing only the same tools: one OK for all of them.
       var later = it.coversLater || 0;
@@ -3054,6 +3070,15 @@ export const CONSOLE_JS = String.raw`
 
   var TRUST_RUNG = { probation: 'Asks first', trusted: 'Trusted', autonomous: 'On its own' };
 
+  /// How much a worker does alone, as three bars: one asks first, all three
+  /// acts on its own. Neutral, since asking first isn't a warning.
+  function trustMeter(level) {
+    var at = ['probation', 'trusted', 'autonomous'].indexOf(level);
+    return h('span', { class: 'trust', title: 'Autonomy: ' + (TRUST_RUNG[level] || level) },
+      h('span', { class: 'trust-bars', 'aria-hidden': 'true' }, [0, 1, 2].map(function (i) { return h('b', { class: i <= at ? 'on' : null }); })),
+      h('span', { text: TRUST_RUNG[level] || level }));
+  }
+
   /// A worker's state as a badge: the class says how loudly, the text what.
   function workerBadge(w) {
     var st = workerStatus(w);
@@ -3094,7 +3119,7 @@ export const CONSOLE_JS = String.raw`
           var tr = h('tr', { class: 'link', tabindex: '0', onclick: function () { openWorker(w.id); }, onkeydown: function (e) { if (e.key === 'Enter') openWorker(w.id); } },
             h('td', null, h('div', { class: 'who' }, avatar(w.id, w.name, 's'), h('div', { style: 'min-width:0' }, h('b', { text: w.name }), h('span', { class: 'sub', text: w.tagline })))),
             h('td', null, workerBadge(w)),
-            h('td', null, h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, h('span', { class: 'badge t-' + w.trust, text: TRUST_RUNG[w.trust] || w.trust }), w.coding ? codingTag() : null)),
+            h('td', null, h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, trustMeter(w.trust), w.coding ? codingTag() : null)),
             h('td', { class: 'muted', text: w.manager || '—' }),
             h('td', { class: 'muted' }, w.schedule, w.enabled && w.nextRunAt ? h('span', { class: 'sub', text: 'Next ' + when(w.nextRunAt) }) : null),
             h('td', null, spendCell(w.spentThisMonthUSD, w.budgetUSDPerMonth)));
@@ -3994,7 +4019,14 @@ export const CONSOLE_JS = String.raw`
       if (!el.isConnected) { window.removeEventListener('resize', measure); return; }
       el.style.setProperty('--wl-top', Math.round(el.getBoundingClientRect().top + window.scrollY) + 'px');
     };
-    requestAnimationFrame(function () { requestAnimationFrame(measure); });
+    // The worker's pinned head grows when the now bar or a banner shows up
+    // after the page is drawn, pushing the panes down: measure again then.
+    var grows = window.ResizeObserver ? new ResizeObserver(function () { if (el.isConnected) measure(); else grows.disconnect(); }) : null;
+    requestAnimationFrame(function () { requestAnimationFrame(function () {
+      measure();
+      var head = document.querySelector('.wk-sticky');
+      if (grows && head) grows.observe(head);
+    }); });
     window.addEventListener('resize', measure);
     return el;
   }
@@ -4275,7 +4307,7 @@ export const CONSOLE_JS = String.raw`
         append(box, text);
         return h('div', { class: 'split' }, h('div', { class: 'wide' },
             h('section', { class: 'sec', 'aria-labelledby': 'jobh' }, h('div', { class: 'sec-head' }, h('h2', { id: 'jobh', class: 'label', text: 'The job it was hired for' }), edit), box)),
-          h('aside', { class: 'narrow' }, knowsCard(w, d), card('learned', 'What it has learned', null, [
+          h('aside', { class: 'narrow' }, knowsCard(w, d), w.youManage ? modelsCard(w) : null, card('learned', 'What it has learned', null, [
             h('p', { class: 'faint', text: 'From your ratings and notes. It reads these alongside its job before every run.' }),
             d.learned.length ? h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
               : h('p', { class: 'muted', style: 'font-size:13.5px', text: 'Nothing yet.' })])));
@@ -4304,7 +4336,7 @@ export const CONSOLE_JS = String.raw`
         d.value && d.value.handled ? h('p', { class: 'faint', text: plural(d.value.handled, 'event', 'events') + ' handled this month' + (d.value.medianMinutes != null ? ', typically in ' + (d.value.medianMinutes < 1 ? 'under a minute' : Math.round(d.value.medianMinutes) + ' min') : '') + '.' }) : null]);
       var toAccess = function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); };
       var accessBits = h('div', { class: 'stack', style: 'gap:8px;padding:12px 18px 6px' }, [
-        h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'badge t-' + rd.level, text: RUNG[rd.level] }),
+        h('div', { class: 'row', style: 'gap:8px' }, trustMeter(rd.level),
           rd.readyFor && rd.readyFor !== rd.level ? h('span', { class: 'faint', style: 'font-size:12.5px', text: 'ready for ' + RUNG[rd.readyFor].toLowerCase() }) : null),
         (w.tools || []).length ? h('div', { class: 'stack', style: 'gap:4px' }, w.tools.map(function (t) {
           return h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;font-size:13.5px' }, h('span', { class: 'sdot ' + (t.ok ? 'ok' : 'bad') }),
@@ -4412,11 +4444,12 @@ export const CONSOLE_JS = String.raw`
             h('div', { class: 'row', style: 'gap:16px;flex-wrap:nowrap' }, avatar(w.id, w.name, 'xl'),
               h('div', { style: 'min-width:0;display:flex;flex-direction:column;gap:6px' },
                 h('h1', { class: 'page-title', text: w.name }),
-                h('div', { class: 'row', style: 'gap:8px' }, workerBadge(w), w.coding ? codingTag() : null, w.tagline ? h('span', { class: 'muted', style: 'font-size:13.5px', text: w.tagline }) : null),
+                h('div', { class: 'row', style: 'gap:8px' }, workerBadge(w), trustMeter(w.trust), w.coding ? codingTag() : null, w.tagline ? h('span', { class: 'muted', style: 'font-size:13.5px', text: w.tagline }) : null),
                 h('div', { class: 'faint', style: 'font-size:13px' },
-                  [w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'Works when asked', TRUST_RUNG[w.trust] || w.trust, money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) + ' this month', plural((w.tools || []).length, 'tool', 'tools')].join(' · '),
+                  [w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'Works when asked', money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) + ' this month', plural((w.tools || []).length, 'tool', 'tools')].join(' · '),
                   w.youManage ? [' · ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Settings', onclick: function () { state.workerTab = 'settings'; render(); } })] : null)))),
           h('div', { class: 'page-actions' },
+            w.youManage ? h('button', { class: 'btn', text: 'Export', 'aria-expanded': 'false', onclick: function (e) { exportPanel(w, e.target); } }) : null,
             w.youManage ? h('button', { class: 'btn', text: w.enabled ? 'Pause' : 'Resume', onclick: pause }) : null,
             w.youManage && w.enabled ? h('button', { class: 'btn', text: 'Run now', onclick: function (e) {
               // Starting a run takes a few seconds; say so at once rather
@@ -8882,19 +8915,28 @@ export const CONSOLE_JS = String.raw`
     var ta = h('textarea', { placeholder: 'Paste a worker file here (in the overcli app: the worker’s Share card, Copy YAML)', 'aria-label': 'Worker file', style: 'min-height:90px;font-family:var(--mono);font-size:12.5px' });
     var out = h('div');
     var btn = h('button', { class: 'btn', text: 'Bring it to the org' });
+    // An exported worker arrives as a file: read it into the box.
+    var file = h('input', { type: 'file', accept: '.yaml,.yml,text/yaml', 'aria-label': 'Worker file to upload', style: 'font-size:13px' });
+    file.onchange = function () {
+      var f = file.files && file.files[0];
+      if (!f) return;
+      f.text().then(function (t) { ta.value = t; });
+    };
     btn.onclick = function () {
       if (!ta.value.trim()) { ta.focus(); return; }
       var restore = busy(btn, 'Checking…');
       api('POST', '/api/publish', { yaml: ta.value }).then(function (r) {
         restore(); out.textContent = '';
         out.appendChild(r.ok === false ? msg(r) : msg({}, r.hired ? r.hired.name + ' is on the roster. You’re its manager.' : 'Sent for approval: ' + (r.hire.reasons || []).join(' ')));
-        if (r.ok !== false) ta.value = '';
+        if (r.ok !== false && r.brought && r.brought.length) out.appendChild(h('div', { style: 'margin-top:8px;font-size:13px' }, h('span', { class: 'faint', text: 'It brought:' }),
+          h('ul', { style: 'margin:4px 0 0;padding-left:18px' }, r.brought.map(function (l) { return h('li', { text: l }); }))));
+        if (r.ok !== false) { ta.value = ''; file.value = ''; }
       });
     };
     return h('details', { class: 'panel pad' }, h('summary', { text: 'Bring a worker you built yourself' }),
       h('div', { class: 'stack', style: 'margin-top:12px' },
-        h('p', { class: 'muted', style: 'font-size:13.5px', text: 'A worker you built in the overcli app can join the org. Its history stays on your machine; it arrives on probation with you as its manager. In the app, use Publish to your org on its Share card, or paste its file here.' }),
-        ta, h('div', null, btn), out));
+        h('p', { class: 'muted', style: 'font-size:13.5px', text: 'A worker you built in the overcli app, or exported from another overgo server, can join the org. It arrives on probation with you as its manager. In the app, use Publish to your org on its Share card. On another server, use Export on the worker’s page, then choose the file here or paste it.' }),
+        file, ta, h('div', null, btn), out));
   }
 
   // ---- connect ---------------------------------------------------------
@@ -10316,6 +10358,39 @@ export const CONSOLE_JS = String.raw`
     return { holders: holders, rules: rules };
   }
 
+  /// A worker as a file to take to another server: its job, flows, triggers
+  /// and tool scopes, and, if ticked, what it learned and its journal. The
+  /// other server's Hire page takes it. Opens under the page head.
+  function exportPanel(w, btn) {
+    var note = document.getElementById('run-note');
+    if (!note) return;
+    var close = function () { note.textContent = ''; btn.setAttribute('aria-expanded', 'false'); };
+    if (btn.getAttribute('aria-expanded') === 'true') return close();
+    btn.setAttribute('aria-expanded', 'true');
+    var learned = h('input', { type: 'checkbox', checked: true });
+    var journal = h('input', { type: 'checkbox', checked: true });
+    var out = h('div', { 'aria-live': 'polite' });
+    var go_ = h('button', { class: 'btn go small', text: 'Download' });
+    go_.onclick = function () {
+      var restore = busy(go_, 'Exporting…');
+      api('GET', '/api/workers/' + encodeURIComponent(w.id) + '/export?learned=' + (learned.checked ? 1 : 0) + '&journal=' + (journal.checked ? 1 : 0)).then(function (r) {
+        restore(); out.textContent = '';
+        if (r.ok === false) { out.appendChild(msg(r)); return; }
+        var a = h('a', { href: URL.createObjectURL(new Blob([r.yaml], { type: 'text/yaml' })), download: r.filename });
+        document.body.appendChild(a); a.click(); a.remove();
+        append(out, [h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Downloaded ' + r.filename + '. On the other server, open Hire → Bring a worker you built yourself. What stays behind:' }),
+          h('ul', { style: 'margin:4px 0 0;padding-left:18px;font-size:13px' }, r.left.map(function (l) { return h('li', { class: 'faint', text: l }); }))]);
+      });
+    };
+    note.replaceChildren(h('div', { class: 'panel pad stack', style: 'gap:8px;margin:8px 0' },
+      h('b', { text: 'Export ' + w.name }),
+      h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: 'A file that brings it to another server: its job, flows, triggers, how much of each tool it may use, and its tools’ setup without the keys.' }),
+      h('label', { class: 'row', style: 'gap:8px;font-size:13.5px' }, learned, 'What it knows and has learned'),
+      h('label', { class: 'row', style: 'gap:8px;font-size:13.5px' }, journal, 'Its journal, so it skips work it already did'),
+      h('div', { class: 'row', style: 'gap:8px' }, go_, h('button', { class: 'btn quiet small', text: 'Cancel', onclick: close })),
+      out));
+  }
+
   /// One tool on a worker's card: whether the server has it, how much of it
   /// the worker may use, and for its manager a way to narrow that: the whole
   /// tool, only calls that read, or calls picked by name.
@@ -11637,7 +11712,7 @@ export const CONSOLE_JS = String.raw`
     on.onchange = function () { emojiField.style.display = on.value === 'reaction' ? '' : 'none'; };
     on.onchange();
     parts.slack = h('div', { class: 'stack' }, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)),
-      h('p', { class: 'faint', text: 'Invite the overgo bot to the channel first (/invite @overgo). On each new message it answers only when it has something worth saying, and passes on the rest. Mentions need no trigger: "@overgo" with a question reaches the right worker.' }));
+      h('p', { class: 'faint', text: 'Invite the overgo bot to the channel first (/invite @overgo). On each new message it answers only when it has something worth saying, and passes on the rest. It waits until the person stops typing, so a question sent as a few messages is answered once. Mentions need no trigger: "@overgo" with a question reaches the right worker.' }));
     var KINDS = [['watch', 'Something new or changed in a tool', 'A new ticket, deal or row, or one whose status changes, checked every few minutes. Works anywhere, inside a VPC too.'],
       ['webhook', 'Another system tells us', 'Jira, GitHub, a CRM or Zapier posts each event to a secret address.'],
       ['slack', 'Something happens in Slack', 'A new message, a mention, or an emoji reaction in a channel.']];
@@ -11869,6 +11944,7 @@ export const CONSOLE_JS = String.raw`
     { group: 'Connections', pages: [
       ['tools', 'Tools', 'The MCP servers workers here can use, and which workers have each.'],
       ['secrets', 'Secrets', 'Keys the tools and the server use. Changes apply at once, no restart.'],
+      ['toolchains', 'Toolchains', 'Java, Node, Python, Go or any archive, for workers and repo tests. Downloaded onto the server: no rebuild, no restart.'],
       ['repos', 'Repos & workspaces', 'Repos workers can change, and workspaces that group them.'],
       ['databases', 'Databases', 'Databases published from overdb that workers can read through the overdb tool. Read-only, with every query logged.'],
       ['offers', 'From desktops', 'Setups people published from the overcli app, to connect and install.'],
@@ -11877,7 +11953,7 @@ export const CONSOLE_JS = String.raw`
   // The old Rules tab's address opens its first page.
   var SETUP_OLD = { rules: 'general' };
   var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
-  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', secrets: 'setup--secrets', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
   function viewSetup() {
     if (SETUP_OLD[state.setupTab]) state.setupTab = SETUP_OLD[state.setupTab];
     var tab = state.setupTab || 'ready', page = null, group = null;
@@ -11907,7 +11983,7 @@ export const CONSOLE_JS = String.raw`
     var learn = SETUP_LEARN[tab] || 'setup--rules-spending-and-sign-in';
     var headNode = head(page[1], page[2],
       h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), group ? 'Setup · ' + group : 'Setup');
-    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'secrets' ? viewSecrets() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
+    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
     return body.then(function (nodes) {
       return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, headNode, tab === 'ready' ? nodes : nodes.slice(1)))];
     });
@@ -12147,15 +12223,20 @@ export const CONSOLE_JS = String.raw`
       if (data.ok === false) return [top, msg(data)];
       var admin = state.me && state.me.admin;
       var repos = data.repos || [], spaces = data.workspaces || [];
+      // Repos and workspaces on tabs of their own: a 30-repo table above
+      // the workspaces left them a scroll away and cramped.
+      var tab = state.reposTab === 'workspaces' ? 'workspaces' : 'repos';
+      var toWorkspaces = function () { state.reposTab = 'workspaces'; render(); };
+      var tabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Repos and workspaces' },
+        [['repos', 'Repos', repos.length], ['workspaces', 'Workspaces', spaces.length]].map(function (t) {
+          return h('button', { role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', onclick: function () { state.reposTab = t[0]; render(); } }, t[1], h('span', { class: 'c', text: String(t[2]) }));
+        }));
       var connect = admin ? connectRepoPanel(data, !repos.length) : null;
-      var form = admin ? workspaceForm(repos) : null;
       var openConnect = function () { connect.hidden = false; connect.scrollIntoView({ block: 'nearest' }); connect.querySelector('input').focus(); };
       var connectBtn = admin ? h('button', { class: 'btn go', onclick: openConnect }, icon('plus', 16), repos.length ? 'Connect a repo' : 'Connect your first repo') : null;
       var q = repos.length > 5 ? h('input', { type: 'search', placeholder: 'Filter repos', 'aria-label': 'Filter repos', style: 'width:200px' }) : null;
       var listHead = h('div', { class: 'spread', style: 'align-items:flex-end' },
-        h('div', { class: 'stack', style: 'gap:4px' },
-          h('h2', { class: 'section-title' }, 'Repos', h('span', { class: 'faint', style: 'font-weight:500', text: '· ' + repos.length })),
-          h('p', { class: 'faint', text: 'Code workers may change. They push a branch and a person opens the pull request; never the default branch.' })),
+        h('p', { class: 'faint', style: 'margin:0', text: 'Code workers may change. They push a branch and a person opens the pull request; never the default branch.' }),
         h('div', { class: 'page-actions' }, q, connectBtn));
 
       var picked = {};
@@ -12166,7 +12247,7 @@ export const CONSOLE_JS = String.raw`
         fill(selBar, [
           h('span', null, h('b', { text: plural(names.length, 'repo', 'repos') + ' ticked' }), ' · ' + names.join(', ')),
           h('div', { class: 'row', style: 'gap:10px' },
-            h('button', { class: 'btn go small', text: 'Group into a workspace', disabled: names.length < 2, title: names.length < 2 ? 'Tick at least two' : null, onclick: function () { form.open(names); } }),
+            h('button', { class: 'btn go small', text: 'Group into a workspace', disabled: names.length < 2, title: names.length < 2 ? 'Tick at least two' : null, onclick: function () { state.reposTab = 'workspaces'; state.wsNew = names; render(); } }),
             h('button', { class: 'linkish', style: 'font-size:13px', text: 'Clear', onclick: function () { picked = {}; draw(); } }))]);
       };
 
@@ -12187,7 +12268,7 @@ export const CONSOLE_JS = String.raw`
               toggle('token', function () { return h('div', { class: 'stack', style: 'gap:8px;max-width:640px' }, h('p', { class: 'faint', text: 'Paste ' + repo.tokenEnv + '. It’s kept in the server’s secrets and never shown again.' }), secretField(repo.tokenEnv)); });
             } })
           : h('span', { class: 'tag need', text: 'Can’t push', title: 'An admin adds ' + (repo.tokenEnv || 'the host’s token') + ' on Setup → Secrets, or reconnects it with its git@ address.' });
-        var tests = !repo.testCommand ? h('span', { class: 'faint', text: 'No tests' })
+        var tests = !repo.testCommand ? null
           : data.testsOff ? h('span', { class: 'tag bad', text: 'Tests off on server', title: 'Nothing is pushed from here until repo tests are on. ' + data.testsOff })
           : h('code', { class: 'tag', text: repo.testCommand });
         var addWorker = h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: repo.workers.length ? '+' : '+ Add', 'aria-label': 'Add a worker to ' + repo.name, onclick: function () {
@@ -12203,7 +12284,7 @@ export const CONSOLE_JS = String.raw`
             h('span', { class: 'sub', text: repo.url.replace(/^https?:\/\//, '').replace(/\.git$/, '') + ' · branches off ' + repo.defaultBranch }))),
           h('td', null, h('div', { class: 'row', style: 'gap:6px' }, push, tests)),
           h('td', { class: 'wrap' }, h('div', { class: 'row', style: 'gap:6px' }, workerTags(repo.workers, workers), addWorker)),
-          h('td', { class: 'wrap' }, ws.length ? h('div', { class: 'row', style: 'gap:6px' }, ws.map(function (w) { return h('span', { class: 'tag go', text: w.name }); })) : h('span', { class: 'faint', text: '—' })),
+          h('td', { class: 'wrap' }, ws.length ? h('div', { class: 'row', style: 'gap:6px' }, ws.map(function (w) { return h('button', { class: 'tag go', style: 'cursor:pointer', title: 'Open the Workspaces tab', text: w.name, onclick: toWorkspaces }); })) : h('span', { class: 'faint', text: '—' })),
           admin ? h('td', { class: 'r' }, h('button', { class: 'linkish', text: 'Disconnect', onclick: function (e) {
             var restore = busy(e.target, 'Disconnecting…');
             api('POST', '/api/repos/' + encodeURIComponent(repo.name) + '/remove', {}).then(function (x) {
@@ -12233,33 +12314,64 @@ export const CONSOLE_JS = String.raw`
         : emptyState('No repos connected yet.', admin ? 'Connect one and point a worker at it.' : 'Ask an admin to connect one.');
       draw();
 
-      // The repos' two settings, in one strip: what a worker's branches
-      // start with, and catching up with origin. Admins only.
-      var settingsStrip = admin && repos.length ? (function () {
-        var input = h('input', { type: 'text', value: data.branchPrefix || '', 'aria-label': 'Branch prefix', style: 'width:130px;height:30px' });
-        var said = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
-        var when_ = h('span', { class: 'faint', style: 'font-size:13px', text: 'Follows origin hourly' + (data.lastRefreshedAt ? ' · last ' + ago(data.lastRefreshedAt) : '') });
-        var save = h('button', { class: 'btn small', text: 'Save', onclick: function (e) {
-          var restore = busy(e.target, 'Saving…');
-          api('POST', '/api/repos/branch-prefix', { prefix: input.value }).then(function (x) { restore(); said.textContent = ''; said.appendChild(msg(x, 'Saved. New runs use it.')); });
-        } });
-        var refresh = h('button', { class: 'btn small quiet', text: 'Refresh now', onclick: function (e) {
+      // How workers' code leaves the server, admins only: one line saying how
+      // it's set, and a panel to change it, one setting per row. Each saves
+      // on its own and draws the page again, the panel staying open.
+      var shipPanel = admin && repos.length ? (function () {
+        var said = h('div', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+        var saved = function (x, text) { said.textContent = ''; said.appendChild(msg(x, text)); if (x.ok !== false) setTimeout(render, 700); };
+        var prLabel = { draft: 'opened as drafts', open: 'opened for review', link: 'link only' }[data.prMode] || '';
+        var ciLabel = data.ciRounds === undefined ? '' : data.ciRounds ? 'worker fixes, up to ' + data.ciRounds : 'manager told';
+        var originLabel = 'origin followed hourly' + (data.lastRefreshedAt ? ', last ' + ago(data.lastRefreshedAt) : '');
+        var bit = function (label, value) { return value ? h('span', null, h('span', { class: 'faint', text: label + ' ' }), h('b', { style: 'font-weight:600', text: value })) : null; };
+        var dot = function () { return h('span', { class: 'faint', 'aria-hidden': 'true', text: '·' }); };
+        var parts = [
+          data.branchPrefix ? bit('Branches', data.branchPrefix + '…') : null,
+          prLabel ? bit('Pull requests', prLabel) : null,
+          ciLabel ? bit('CI failures', ciLabel) : null,
+        ].filter(Boolean);
+        var summary = h('div', { class: 'row', style: 'gap:8px 10px;font-size:13px;flex-wrap:wrap;min-width:0' }, parts.reduce(function (acc, p, i) { return i ? acc.concat([dot(), p]) : [p]; }, []));
+        var refresh = h('button', { class: 'btn small quiet', text: 'Refresh now', title: 'Bring every repo up to date with origin now', onclick: function (e) {
           var restore = busy(e.target, 'Refreshing…');
           api('POST', '/api/repos/refresh', {}).then(function (x) {
-            restore(); said.textContent = '';
-            if (x.ok === false) { said.appendChild(msg(x)); return; }
-            when_.textContent = 'Follows origin hourly · last just now';
+            restore();
+            if (x.ok === false) { saved(x); return; }
+            said.textContent = '';
             said.appendChild(msg({ ok: !(x.problems && x.problems.length) }, x.problems && x.problems.length ? x.problems.join(' ') : 'All ' + x.repos + ' up to date.'));
           });
         } });
-        return h('div', { class: 'panel', style: 'display:flex;flex-wrap:wrap;align-items:center;gap:10px 28px;padding:10px 16px' },
-          data.branchPrefix ? h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, h('span', { class: 'faint', style: 'font-size:13px', text: 'Worker branches start with' }), input, save) : null,
-          data.branchPrefix ? h('span', { 'aria-hidden': 'true', style: 'width:1px;height:22px;background:var(--line)' }) : null,
-          h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, when_, refresh),
+        var open = !!state.shipOpen;
+        var toggle = h('button', { class: 'btn small', text: open ? 'Done' : 'Change', 'aria-expanded': open ? 'true' : 'false', onclick: function () { state.shipOpen = !state.shipOpen; render(); } });
+
+        var rows = [];
+        var row = function (label, control, hint) { rows.push(h('dt', { text: label }), h('dd', null, control, hint ? h('div', { class: 'faint', style: 'font-size:12.5px;margin-top:4px', text: hint }) : null)); };
+        if (open) {
+          if (data.branchPrefix) {
+            var prefix = h('input', { type: 'text', value: data.branchPrefix, 'aria-label': 'Branch prefix', style: 'width:160px' });
+            var savePrefix = function (e) { var restore = busy(e.target, 'Saving…'); api('POST', '/api/repos/branch-prefix', { prefix: prefix.value }).then(function (x) { restore(); saved(x, 'Saved. New runs use it.'); }); };
+            prefix.addEventListener('keydown', function (e) { if (e.key === 'Enter') savePrefix({ target: e.target.nextSibling }); });
+            row('Branch names', h('div', { class: 'inline-form', style: 'max-width:280px' }, prefix, h('button', { class: 'btn small', text: 'Save', onclick: savePrefix })), 'Every branch a worker pushes starts with this. Never the default branch.');
+          }
+          if (data.prMode) {
+            var pr = h('select', { 'aria-label': 'Pull requests', onchange: function () { pr.disabled = true; api('POST', '/api/repos/pr-mode', { mode: pr.value }).then(function (x) { pr.disabled = false; saved(x, 'Saved. The next push uses it.'); }); } },
+              [['draft', 'Open as a draft'], ['open', 'Open for review'], ['link', 'Link only']].map(function (o) { return h('option', { value: o[0], text: o[1], selected: data.prMode === o[0] }); }));
+            row('Pull requests', pr, 'After pushing, open the pull request on Bitbucket or GitHub with the worker’s title and description. A draft waits for a person to mark it ready. Needs pull request write access on the token.');
+          }
+          if (data.ciRounds !== undefined) {
+            var ci = h('select', { 'aria-label': 'When CI fails', onchange: function () { ci.disabled = true; api('POST', '/api/repos/ci-rounds', { rounds: Number(ci.value) }).then(function (x) { ci.disabled = false; saved(x, 'Saved.'); }); } },
+              [3, 1, 2, 5, 0].map(function (n) { return h('option', { value: String(n), text: n ? 'The worker fixes it, up to ' + n + (n === 1 ? ' time' : ' times') : 'Tell the manager straight away', selected: data.ciRounds === n }); }));
+            row('When CI fails', ci, 'overcli reads the repo’s own CI result for each pushed commit. A failure goes back to the same worker with the failing tests and log, to fix on the same branch; after that, its manager hears in Slack.');
+          }
+          row('Origin', h('div', { class: 'row', style: 'gap:10px' }, h('span', { text: originLabel.charAt(0).toUpperCase() + originLabel.slice(1) }), refresh), 'Every branch is fetched before each run, so workers start from origin as it is.');
+        }
+        return h('section', { class: 'panel', style: 'padding:12px 16px' },
+          h('div', { class: 'spread', style: 'gap:12px;align-items:center' }, summary, h('div', { class: 'row', style: 'gap:8px;flex:none' }, open ? null : refresh, toggle)),
+          open ? h('dl', { class: 'ship-grid' }, rows) : null,
           said);
       })() : null;
-      return [top, listHead, settingsStrip, connect, data.testsOff && repos.some(function (x) { return x.testCommand; }) ? h('div', { class: 'msg err', text: 'Repos with a test command push nothing yet: repo tests are turned off on this server. ' + data.testsOff }) : null,
-        selBar, table].concat(workspacesSection(repos, spaces, workers, admin, form, openConnect));
+      if (tab === 'workspaces') return [top, tabs].concat(workspacesSection(repos, spaces, workers, admin, function () { state.reposTab = 'repos'; render(); }));
+      return [top, tabs, listHead, shipPanel, connect, data.testsOff && repos.some(function (x) { return x.testCommand; }) ? h('div', { class: 'msg err', text: 'Repos with a test command push nothing yet: repo tests are turned off on this server. ' + data.testsOff }) : null,
+        selBar, table];
     });
   }
 
@@ -12319,85 +12431,117 @@ export const CONSOLE_JS = String.raw`
       said);
   }
 
-  /// Make a workspace: shut until opened, from New workspace or from repos
-  /// ticked in the list.
-  function workspaceForm(repos) {
-    var name = h('input', { type: 'text', placeholder: 'Storefront', 'aria-label': 'Workspace name' });
-    var notes = h('textarea', { placeholder: 'What every run should know: which repo owns what, what must stay in step (the API is the source of truth for prices…)', 'aria-label': 'Workspace instructions', style: 'min-height:70px' });
-    var picks = repos.map(function (r) { return { name: r.name, box: h('input', { type: 'checkbox', 'aria-label': 'Include ' + r.name }) }; });
+  /// The repos a workspace takes, picked from a grid: filterable, with select
+  /// all / none and a running count, so thirty repos stay manageable.
+  function repoPicker(repos, chosen) {
+    var picks = repos.map(function (r) {
+      var box = h('input', { type: 'checkbox', 'aria-label': 'Include ' + r.name });
+      box.checked = chosen.indexOf(r.name) >= 0;
+      return { name: r.name, box: box, label: h('label', { class: 'toggle ws-pick-item' }, box, h('code', { text: r.name })) };
+    });
+    var count = h('span', { class: 'faint', style: 'font-size:13px' });
+    var q = h('input', { type: 'search', placeholder: 'Filter repos', 'aria-label': 'Filter repos', style: 'width:200px' });
+    var shown = function () { var s = q.value.trim().toLowerCase(); return picks.filter(function (p) { return !s || p.name.toLowerCase().indexOf(s) >= 0; }); };
+    var update = function () {
+      var vis = shown();
+      picks.forEach(function (p) { p.label.hidden = vis.indexOf(p) < 0; });
+      count.textContent = picks.filter(function (p) { return p.box.checked; }).length + ' of ' + picks.length + ' chosen';
+    };
+    picks.forEach(function (p) { p.box.onchange = update; });
+    q.oninput = update;
+    // On what the filter shows, so "svc" then Select all takes just those.
+    var all = function (on) { return function () { shown().forEach(function (p) { p.box.checked = on; }); update(); }; };
+    update();
+    return {
+      el: h('div', { class: 'stack', style: 'gap:8px' },
+        h('div', { class: 'row', style: 'gap:14px;align-items:center' }, q,
+          h('button', { class: 'linkish', style: 'font-size:13px', text: 'Select all', onclick: all(true) }),
+          h('button', { class: 'linkish', style: 'font-size:13px', text: 'None', onclick: all(false) }), count),
+        h('div', { class: 'ws-pick' }, picks.map(function (p) { return p.label; }))),
+      chosen: function () { return picks.filter(function (p) { return p.box.checked; }).map(function (p) { return p.name; }); },
+      set: function (names) { picks.forEach(function (p) { p.box.checked = names.indexOf(p.name) >= 0; }); q.value = ''; update(); }
+    };
+  }
+
+  /// A new workspace, or an existing one's repos and instructions: one
+  /// full-width form for both.
+  function workspaceEditor(repos, ws, onCancel) {
+    var name = ws ? null : h('input', { type: 'text', placeholder: 'Storefront', 'aria-label': 'Workspace name' });
+    var notes = h('textarea', { placeholder: 'What every run should know: which repo owns what, what must stay in step (the API is the source of truth for prices…)', 'aria-label': 'Workspace instructions', style: 'min-height:90px' });
+    notes.value = ws ? ws.instructions || '' : '';
+    var picker = repoPicker(repos, ws ? ws.repos : []);
     var said = h('div');
-    var el = h('section', { class: 'panel pad stack', hidden: true },
-      h('div', { class: 'spread' }, h('h2', { class: 'section-title', text: 'New workspace' }), h('button', { class: 'linkish', text: 'Cancel', onclick: function () { el.hidden = true; } })),
-      h('label', { class: 'field' }, 'Name', name),
-      h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Repos (two or more)' }),
-        h('div', { class: 'row', style: 'gap:14px' }, picks.map(function (p) { return h('label', { class: 'toggle' }, p.box, h('code', { text: p.name })); }))),
-      h('label', { class: 'field' }, 'Instructions (optional)', notes),
-      h('div', null, h('button', { class: 'btn go', text: 'Make the workspace', onclick: function (e) {
-        var chosen = picks.filter(function (p) { return p.box.checked; }).map(function (p) { return p.name; });
-        var restore = busy(e.target, 'Making…');
-        api('POST', '/api/workspaces', { name: name.value, repos: chosen, instructions: notes.value }).then(function (x) {
-          restore(); said.textContent = ''; said.appendChild(msg(x, (x.workspace ? x.workspace.name : 'The workspace') + ' is ready. Point a worker at it below.'));
-          if (x.ok !== false) setTimeout(render, 1200);
-        });
-      } })), said);
-    return { el: el, open: function (names) {
-      picks.forEach(function (p) { p.box.checked = names.indexOf(p.name) >= 0; });
-      el.hidden = false; el.scrollIntoView({ block: 'nearest' }); name.focus();
-    } };
+    var save = h('button', { class: 'btn go', text: ws ? 'Save' : 'Make the workspace', onclick: function (e) {
+      var restore = busy(e.target, ws ? 'Saving…' : 'Making…');
+      var call = ws ? api('POST', '/api/workspaces/' + encodeURIComponent(ws.id), { repos: picker.chosen(), instructions: notes.value })
+        : api('POST', '/api/workspaces', { name: name.value, repos: picker.chosen(), instructions: notes.value });
+      call.then(function (x) {
+        restore();
+        fill(said, msg(x, ws ? 'Saved. Workers in it use the new setup from their next run.' : (x.workspace ? x.workspace.name : 'The workspace') + ' is ready. Point a worker at it below.'));
+        if (x.ok !== false) setTimeout(render, 1200);
+      });
+    } });
+    var el = h('section', { class: 'panel pad stack', style: 'gap:14px' },
+      h('div', { class: 'spread' }, h('h2', { class: 'section-title', text: ws ? 'Edit ' + ws.name : 'New workspace' }), h('button', { class: 'linkish', text: 'Cancel', onclick: onCancel })),
+      name ? h('label', { class: 'field', style: 'max-width:360px' }, 'Name', name) : null,
+      h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Repos (two or more)' }), picker.el),
+      h('label', { class: 'field' }, ws ? 'Instructions every run reads' : 'Instructions (optional)', notes),
+      h('div', null, save), said);
+    return { el: el, set: picker.set, focus: function () { (name || notes).focus(); } };
   }
 
   /// Repos grouped so one worker or team changes them together. Each run
   /// gets its own worktree of every repo, side by side, and pushes a branch in
-  /// each repo it changed.
-  function workspacesSection(repos, spaces, workers, admin, form, openConnect) {
-    var intro = h('div', { class: 'spread', style: 'align-items:flex-end;margin-top:16px' },
-      h('div', { class: 'stack', style: 'gap:4px' },
-        h('h2', { class: 'section-title' }, 'Workspaces', h('span', { class: 'faint', style: 'font-weight:500', text: '· ' + spaces.length })),
-        h('p', { class: 'faint', style: 'max-width:720px', text: 'Group repos that change together, like an API and the app that uses it. A worker or team in a workspace plans across all of them; each run gets its own worktree of every repo, runs each repo’s tests, and pushes a branch in each repo it changed, with one pull request link per repo.' })),
-      admin && repos.length >= 2 ? h('button', { class: 'btn', onclick: function () { form.open([]); } }, icon('plus', 16), 'New workspace') : null);
+  /// each repo it changed. One row per workspace; one editor open at a time.
+  function workspacesSection(repos, spaces, workers, admin, toRepos) {
+    var slot = h('div');
+    var openEditor = function (ws, names) {
+      var ed = workspaceEditor(repos, ws, function () { slot.textContent = ''; });
+      if (names) ed.set(names);
+      fill(slot, ed.el);
+      setTimeout(function () { ed.el.scrollIntoView({ block: 'nearest' }); ed.focus(); }, 0);
+    };
+    var intro = h('div', { class: 'spread', style: 'align-items:flex-end' },
+      h('p', { class: 'faint', style: 'max-width:720px;margin:0', text: 'Group repos that change together, like an API and the app that uses it. A worker or team in a workspace plans across all of them; each run gets its own worktree of every repo, runs each repo’s tests, and pushes a branch in each repo it changed, with one pull request link per repo.' }),
+      admin && repos.length >= 2 ? h('button', { class: 'btn go', onclick: function () { openEditor(null, []); } }, icon('plus', 16), 'New workspace') : null);
     if (repos.length < 2 && !spaces.length) {
       return [intro, h('div', { class: 'panel pad dashed stack', style: 'gap:8px' },
         h('b', { text: 'A workspace needs at least two repos' }),
         h('p', { class: 'faint', text: repos.length ? 'You have one connected. Connect another and you can group them here.' : 'Connect two repos and you can group them here.' }),
-        admin && openConnect ? h('div', null, h('button', { class: 'btn', text: repos.length ? 'Connect another repo' : 'Connect a repo', onclick: openConnect })) : null)];
+        admin ? h('div', null, h('button', { class: 'btn', text: repos.length ? 'Connect another repo' : 'Connect a repo', onclick: toRepos })) : null)];
     }
-    var cards = spaces.map(function (ws) {
+    // Ticked on the Repos tab and sent here to be grouped.
+    if (state.wsNew) { openEditor(null, state.wsNew); delete state.wsNew; }
+    var SHOW = 8;
+    var tag = function (r) { return h('code', { class: 'tag', text: r }); };
+    var rows = spaces.map(function (ws) {
       var said = h('div');
       var adding = h('div', { hidden: true });
-      var notes = h('textarea', { 'aria-label': 'Instructions for ' + ws.name, style: 'min-height:70px' });
-      notes.value = ws.instructions || '';
-      var boxes = repos.map(function (r) { var b = h('input', { type: 'checkbox', 'aria-label': 'Include ' + r.name }); b.checked = ws.repos.indexOf(r.name) >= 0; return { name: r.name, box: b }; });
-      var editor = h('div', { class: 'stack', hidden: true },
-        h('div', { class: 'row', style: 'gap:14px' }, boxes.map(function (p) { return h('label', { class: 'toggle' }, p.box, h('code', { text: p.name })); })),
-        h('label', { class: 'field' }, 'Instructions', notes),
-        h('div', null, h('button', { class: 'btn go small', text: 'Save', onclick: function (e) {
-          var restore = busy(e.target, 'Saving…');
-          api('POST', '/api/workspaces/' + encodeURIComponent(ws.id), { repos: boxes.filter(function (p) { return p.box.checked; }).map(function (p) { return p.name; }), instructions: notes.value }).then(function (x) {
-            restore(); said.textContent = ''; said.appendChild(msg(x, 'Saved. Workers in it use the new setup from their next run.'));
-            if (x.ok !== false) setTimeout(render, 1200);
-          });
-        } })));
-      return h('article', { class: 'panel pad stack', style: 'gap:12px' },
-        h('div', { class: 'spread' },
-          h('div', { class: 'stack', style: 'gap:2px' }, h('h3', { text: ws.name }), h('span', { class: 'faint', text: plural(ws.repos.length, 'repo', 'repos') + (ws.instructions ? ' · has instructions' : '') })),
-          admin ? h('div', { class: 'row', style: 'gap:12px' },
-            h('button', { class: 'linkish', text: 'Edit', onclick: function () { editor.hidden = !editor.hidden; } }),
-            h('button', { class: 'linkish', text: 'Remove', onclick: function () {
-              api('POST', '/api/workspaces/' + encodeURIComponent(ws.id) + '/remove', {}).then(function (x) { said.textContent = ''; said.appendChild(msg(x, 'Removed.')); if (x.ok !== false) setTimeout(render, 800); });
-            } })) : null),
-        h('div', { class: 'row', style: 'gap:6px' }, ws.repos.map(function (r) { return h('code', { class: 'tag', text: r }); })),
-        ws.instructions ? h('details', null, h('summary', { text: 'Instructions every run reads' }), h('div', { style: 'white-space:pre-wrap;margin-top:6px;font-size:13.5px', text: ws.instructions })) : null,
-        editor,
-        h('div', { class: 'spread ws-foot' },
-          ws.workers.length ? h('div', { class: 'row', style: 'gap:6px' }, workerTags(ws.workers, workers)) : h('span', { class: 'faint', text: 'No worker yet' }),
-          h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: '+ Add worker', onclick: function () {
-            if (adding.hidden) fill(adding, placeWorker(ws.name, workers, true));
-            adding.hidden = !adding.hidden;
-          } })),
+      var more = ws.repos.length - SHOW;
+      var repoTags = h('div', { class: 'row', style: 'gap:6px' }, ws.repos.slice(0, SHOW).map(tag),
+        more > 0 ? h('button', { class: 'linkish', style: 'font-size:13px', text: '+' + more + ' more', onclick: function () { fill(repoTags, ws.repos.map(tag)); } }) : null);
+      return h('div', { class: 'ws-row stack', style: 'gap:10px' },
+        h('div', { class: 'spread', style: 'align-items:center' },
+          h('div', { class: 'stack', style: 'gap:2px' }, h('b', { text: ws.name }),
+            h('span', { class: 'faint', style: 'font-size:13px', text: plural(ws.repos.length, 'repo', 'repos') + (ws.instructions ? ' · has instructions' : '') })),
+          h('div', { class: 'row', style: 'gap:14px;align-items:center' },
+            ws.workers.length ? h('div', { class: 'row', style: 'gap:6px' }, workerTags(ws.workers, workers)) : h('span', { class: 'faint', style: 'font-size:13px', text: 'No worker yet' }),
+            h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: '+ Add worker', onclick: function () {
+              if (adding.hidden) fill(adding, placeWorker(ws.name, workers, true));
+              adding.hidden = !adding.hidden;
+            } }),
+            admin ? h('button', { class: 'linkish', text: 'Edit', onclick: function () { openEditor(ws); } }) : null,
+            admin ? h('button', { class: 'linkish', text: 'Remove', onclick: function () {
+              if (!window.confirm('Remove the workspace ' + ws.name + '? Its repos stay connected; workers in it go back to having no place to work.')) return;
+              api('POST', '/api/workspaces/' + encodeURIComponent(ws.id) + '/remove', {}).then(function (x) { fill(said, msg(x, 'Removed.')); if (x.ok !== false) setTimeout(render, 800); });
+            } }) : null)),
+        repoTags,
+        ws.instructions ? h('details', null, h('summary', { class: 'faint', style: 'font-size:13px', text: 'Instructions every run reads' }), h('div', { style: 'white-space:pre-wrap;margin-top:6px;font-size:13.5px', text: ws.instructions })) : null,
         adding, said);
     });
-    if (!cards.length) cards = [h('div', { class: 'panel pad dashed faint', text: 'No workspaces yet. Tick two or more repos above and group them, or start a new one.' })];
-    return [intro, form ? form.el : null, h('div', { class: 'ws-grid' }, cards)];
+    var list = rows.length ? h('section', { class: 'panel ws-list' }, rows)
+      : h('div', { class: 'panel pad dashed faint', text: 'No workspaces yet. Start one here, or tick two or more repos on the Repos tab and group them.' });
+    return [intro, slot, list];
   }
 
   /// One secret's value, pasted and saved; never read back. A text field
@@ -12518,6 +12662,109 @@ export const CONSOLE_JS = String.raw`
     });
   }
 
+  /// Build tools the server downloads for workers and repo tests (Java, Node,
+  /// Python, Go, and custom archives), and which version each repo uses.
+  /// Drawn again every few seconds while one downloads.
+  function viewToolchains() {
+    return api('GET', '/api/toolchains').then(function (data) {
+      var top = head('Toolchains');
+      if (data.ok === false) return [top, msg(data)];
+      var problem = h('div', { hidden: true });
+      var post = function (btn, label, url, body) {
+        var restore = busy(btn, label);
+        api('POST', url, body || {}).then(function (x) { restore(); if (x.ok === false) { problem.hidden = false; fill(problem, msg(x)); problem.scrollIntoView({ block: 'nearest' }); } else render(); });
+      };
+      var find = function (kit, v) { return data.toolchains.filter(function (t) { return t.kit === kit && t.version === v; })[0]; };
+      var readyOf = function (kit) { return data.toolchains.filter(function (t) { return t.kit === kit && t.status === 'ready'; }).map(function (t) { return t.version; }); };
+      var chipOf = function (t) {
+        return !t ? h('span', { class: 'faint', text: 'Not installed' })
+          : t.status === 'installing' ? h('span', { class: 'tag need', text: 'Downloading…' })
+          : t.status === 'failed' ? h('span', { class: 'tag bad', text: 'Failed', title: t.error || '' })
+          : h('span', { class: 'tag go', text: t.detail || 'Installed' });
+      };
+      var failure = function (t) { return t && t.status === 'failed' && t.error ? h('div', { class: 'msg err', style: 'grid-column:1/-1', text: t.error }) : null; };
+      var removeBtn = function (t) { return t && t.status !== 'installing' ? h('button', { class: 'linkish', text: 'Remove', onclick: function (e) { post(e.target, 'Removing…', '/api/toolchains/' + encodeURIComponent(t.id) + '/remove'); } }) : null; };
+
+      var kitSections = data.kits.map(function (k) {
+        var rows = k.versions.map(function (v) {
+          var t = find(k.id, v);
+          var isDefault = t && t.status === 'ready' && data.defaults[k.id] === v;
+          return h('div', { class: 'srow' + (t ? '' : ' quiet') },
+            h('div', { class: 'srow-name' }, h('b', { text: k.label + ' ' + v })),
+            chipOf(t),
+            h('div', { class: 'row', style: 'gap:10px;justify-content:flex-end' },
+              isDefault ? h('span', { class: 'tag go', text: 'Default' }) : null,
+              t && t.status === 'ready' && !isDefault ? h('button', { class: 'linkish', text: 'Make default', onclick: function (e) { post(e.target, 'Saving…', '/api/toolchains/default', { kit: k.id, version: v }); } }) : null,
+              removeBtn(t),
+              !t || t.status === 'failed' ? h('button', { class: 'btn small', text: t ? 'Try again' : 'Install', onclick: function (e) { post(e.target, 'Starting…', '/api/toolchains', { kit: k.id, version: v }); } }) : null),
+            failure(t));
+        });
+        return h('section', { class: 'panel stack', style: 'gap:0' },
+          h('div', { class: 'pad', style: 'padding-bottom:4px' }, h('h2', { class: 'section-title', text: k.label }),
+            h('span', { class: 'faint', style: 'font-size:13px', text: 'From ' + k.source + (k.homeVar ? '. Sets ' + k.homeVar + '.' : '.') })),
+          h('div', { class: 'srows' }, rows));
+      });
+
+      var customs = data.toolchains.filter(function (t) { return t.kit === 'custom'; });
+      var customRows = customs.map(function (t) {
+        return h('div', { class: 'srow' },
+          h('div', { class: 'srow-name' }, h('b', { text: t.version }), h('span', { class: 'faint', style: 'word-break:break-all', text: t.custom ? t.custom.url : '' })),
+          chipOf(t),
+          h('div', { class: 'row', style: 'gap:10px;justify-content:flex-end' },
+            removeBtn(t),
+            t.status === 'failed' && t.custom ? h('button', { class: 'btn small', text: 'Try again', onclick: function (e) {
+              post(e.target, 'Starting…', '/api/toolchains', { kit: 'custom', version: t.version, url: t.custom.url, sha256: t.custom.sha256 || '', bin: t.custom.bin, env: t.custom.env });
+            } }) : null),
+          failure(t));
+      });
+      var cName = h('input', { type: 'text', placeholder: 'terraform', 'aria-label': 'Name', spellcheck: 'false' });
+      var cUrl = h('input', { type: 'url', placeholder: 'https://…/tool-linux-arm64.tar.gz', 'aria-label': 'Archive address', spellcheck: 'false' });
+      var cSum = h('input', { type: 'text', placeholder: 'sha256 (recommended)', 'aria-label': 'sha256', spellcheck: 'false' });
+      var cBin = h('input', { type: 'text', value: 'bin', 'aria-label': 'Folder to put on PATH', spellcheck: 'false' });
+      var cEnv = h('textarea', { rows: '2', placeholder: 'NAME=value, one per line. {home} is where it unpacks.', 'aria-label': 'Variables', spellcheck: 'false' });
+      var customForm = h('div', { class: 'stack', style: 'gap:8px;max-width:640px' },
+        h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, cName, cBin),
+        cUrl, cSum, cEnv,
+        h('div', null, h('button', { class: 'btn small', text: 'Install', onclick: function (e) {
+          var env = {};
+          cEnv.value.split('\n').forEach(function (l) { var i = l.indexOf('='); if (i > 0) env[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
+          post(e.target, 'Starting…', '/api/toolchains', { kit: 'custom', version: cName.value.trim(), url: cUrl.value.trim(), sha256: cSum.value.trim(), bin: cBin.value.trim() || 'bin', env: env });
+        } })));
+      var customSection = h('section', { class: 'panel stack', style: 'gap:0' },
+        h('div', { class: 'pad stack', style: 'gap:6px' }, h('h2', { class: 'section-title', text: 'Custom' }),
+          h('p', { class: 'faint', style: 'font-size:13px', text: 'Anything else a build needs, from a .tar.gz or .tar.xz: Terraform, a Maven, another runtime. Pick the build for this server’s OS and CPU (' + (data.platform || 'see Readiness') + '). It runs on the server like any other tool here, so give its sha256 when the publisher lists one; a download that doesn’t match is never installed. Every custom kit is on every run’s PATH.' })),
+        customRows.length ? h('div', { class: 'srows' }, customRows) : null,
+        h('div', { class: 'pad' }, customForm));
+
+      var usedKits = data.kits.filter(function (k) { return readyOf(k.id).length; });
+      var repoTable = !data.repos.length ? h('p', { class: 'faint', text: 'No repos connected yet. Each one you connect can pick its versions here.' })
+        : !usedKits.length ? h('p', { class: 'faint', text: 'Install something above, then pick versions per repo here.' })
+        : h('div', { class: 'tscroll' }, h('table', { class: 'data' },
+            h('thead', null, h('tr', null, h('th', { text: 'Repo' }), usedKits.map(function (k) { return h('th', { text: k.label }); }))),
+            h('tbody', null, data.repos.map(function (r) {
+              return h('tr', null, h('td', null, h('b', { text: r.name })), usedKits.map(function (k) {
+                var ready = readyOf(k.id), asks = r.asks[k.id];
+                var auto = asks && ready.indexOf(asks) >= 0 ? 'As the repo asks (' + k.label + ' ' + asks + ')'
+                  : 'Default (' + k.label + ' ' + data.defaults[k.id] + ')' + (asks ? ' · repo asks ' + asks + ', not installed' : '');
+                return h('td', null, h('select', { 'aria-label': k.label + ' for ' + r.name, onchange: function (e) { post(e.target, 'Saving…', '/api/repos/' + encodeURIComponent(r.name) + '/toolchain', { kit: k.id, version: e.target.value }); } },
+                  h('option', { value: '', text: auto, selected: !r.picks[k.id] }),
+                  ready.map(function (v) { return h('option', { value: v, text: k.label + ' ' + v, selected: r.picks[k.id] === v }); })));
+              }));
+            }))));
+
+      var installing = data.toolchains.some(function (t) { return t.status === 'installing'; });
+      var page = h('div', { class: 'stack', 'data-toolchains': '1' },
+        h('section', { class: 'panel pad stack', style: 'gap:10px' },
+          h('p', { class: 'faint', text: 'Downloaded onto the server’s data volume and checked against their published checksums, so they survive restarts and upgrades. Every worker’s shell and every repo’s test command gets one version of each kit on PATH: the repo’s pick below, else what the repo asks for in .nvmrc, .python-version, .sdkmanrc, go.mod or .tool-versions when that’s installed, else the default. From the next run on, no restart.' }),
+          problem),
+        kitSections, customSection,
+        h('section', { class: 'panel pad stack', style: 'gap:10px' }, h('h2', { class: 'section-title', text: 'Versions each repo uses' }), repoTable));
+      // Still on this page a few seconds on: see how the download is going.
+      if (installing) setTimeout(function () { if (document.querySelector('[data-toolchains]')) render(); }, 4000);
+      return [top, page];
+    });
+  }
+
   /// Rechecked: drawn again by Check again, so the header says it just ran.
   function readiness(rechecked) {
     return Promise.all([api('GET', '/api/admin/health'), api('GET', '/api/tools'), api('GET', '/api/projects'), api('GET', '/api/admin/people'), api('GET', '/api/admin/requests')]).then(function (r) {
@@ -12597,7 +12844,12 @@ export const CONSOLE_JS = String.raw`
           h('div', null,
             line('Run checkouts', size(s.checkouts.bytes), plural(s.checkouts.count, 'checkout', 'checkouts') + '. Removed by themselves once nothing in them can be lost.'),
             line('Connected repos', size(s.repos), 'The server’s own copy of each repo, kept up to date hourly.'),
-            line('Tools’ package cache', size(s.toolCache), 'What npx-run tools downloaded. Clear it if a tool won’t start with “Cannot find module”.', clear)),
+            line('Tools’ package cache', size(s.toolCache), 'What npx-run tools downloaded. Clear it if a tool won’t start with “Cannot find module”.', clear),
+            s.buildCache !== undefined ? line('Build caches', size(s.buildCache), 'What builds downloaded: Gradle, Maven, npm, pip, uv and Go, shared by every run so each build doesn’t fetch it all again. Clear it if a build keeps failing on a corrupt download.', h('button', { class: 'btn small quiet', text: 'Clear', onclick: function (e) {
+              if (!window.confirm('Empty the build caches? The next build of each repo downloads its dependencies again, which can take a while.')) return;
+              var restore = busy(e.target, 'Clearing…');
+              api('POST', '/api/admin/storage/clear-build-cache', {}).then(function (x) { restore(); if (x.ok === false) alert(x.error); draw(); });
+            } })) : null),
           s.kept.length ? h('div', { class: 'stack', style: 'gap:6px' },
             h('span', { style: 'font-weight:550', text: 'Kept for work that was never pushed' }),
             s.kept.map(function (k) {
@@ -12757,6 +13009,59 @@ export const CONSOLE_JS = String.raw`
 
   // Its onboarding: what it found out going through its own tools, read
   // before every run. Learn (again), correct it, or stop the weekly refresh.
+  /// Newer models for its manager to take: its planning model and each flow,
+  /// each moved only within its own line. Also what runs on another backend
+  /// here, and who else a flow change would move. Nothing moves unasked.
+  var BACKEND_NAME = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', copilot: 'Copilot', ollama: 'Ollama' };
+  function modelsCard(w) {
+    var body = h('div', { class: 'stack', style: 'gap:8px;font-size:13px' }, thinking('Checking its models…'));
+    var draw = function (p) {
+      body.textContent = '';
+      if (p.ok === false) { body.appendChild(msg(p)); return; }
+      var picks = [];
+      var row = function (key, title, change, notes) {
+        var box = change ? h('input', { type: 'checkbox', checked: true }) : null;
+        if (box) picks.push({ key: key, box: box });
+        return h('div', { class: 'stack', style: 'gap:2px' },
+          h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, box, h('span', null, h('b', { style: 'font-weight:600', text: title }), change ? h('span', { text: ' · ' + change }) : null)),
+          notes.map(function (n) { return h('span', { class: 'faint', style: 'font-size:12.5px;padding-left:' + (box ? '22px' : '0'), text: n }); }));
+      };
+      var rows = [];
+      if (p.planning) rows.push(row('planning', 'Planning', p.planning.change || '', [p.planning.change ? '' : p.planning.model, p.planning.runsHere || ''].filter(Boolean)));
+      p.flows.forEach(function (f) {
+        var change = f.changes.map(function (c) { return c.change; }).join(', ');
+        rows.push(row('flow:' + f.id, f.name, change, [
+          f.changes.length ? 'In ' + [].concat.apply([], f.changes.map(function (c) { return c.where; })).join(', ') : 'On the newest models.',
+          f.sharedWith.length ? 'Also used by ' + f.sharedWith.join(', ') + ': they move too.' : '',
+          f.runsHere.length ? 'On this server, ' + f.runsHere.join('; ') + ': ' + (f.missing || []).map(function (b) { return BACKEND_NAME[b] || b; }).join(' and ') + ' isn’t signed in here. Sign it in on the Admin page to run it as written.' : ''].filter(Boolean)));
+      });
+      if (!p.healthy.length) rows.push(h('span', { class: 'faint', text: 'No model CLI is signed in on this server.' }));
+      var out = h('div', { 'aria-live': 'polite' });
+      var go_ = picks.length ? h('button', { class: 'btn small go', text: 'Upgrade the ones ticked' }) : null;
+      if (go_) go_.onclick = function () {
+        var on = picks.filter(function (x) { return x.box.checked; });
+        if (!on.length) return;
+        var restore = busy(go_, 'Upgrading…');
+        api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/models', {
+          planning: on.some(function (x) { return x.key === 'planning'; }),
+          flows: on.filter(function (x) { return x.key.indexOf('flow:') === 0; }).map(function (x) { return x.key.slice(5); })
+        }).then(function (r) {
+          restore();
+          if (r.ok === false) { out.textContent = ''; out.appendChild(msg(r)); return; }
+          load(function () {
+            append(out, [r.changed.length ? msg({}, 'Moved: ' + r.changed.join('; ') + '. Its next run uses them.') : null].concat(r.errors.map(function (e) { return msg({ ok: false, error: e }); })));
+          });
+        });
+      };
+      append(body, [h('p', { class: 'faint', style: 'margin:0', text: picks.length ? 'Newer models in the same line. Nothing moves until you say so.' : 'Everything is on the newest model in its line.' })].concat(rows, [go_, out]));
+    };
+    var load = function (then) {
+      api('GET', '/api/workers/' + encodeURIComponent(w.id) + '/models').then(function (p) { draw(p); if (then) then(); }, function () { draw({ ok: false, error: 'Couldn’t check its models.' }); });
+    };
+    load();
+    return card('models', 'Models', null, [body]);
+  }
+
   function knowsCard(w, d) {
     var k = d.knowledge || null;
     var out = h('div', { 'aria-live': 'polite', style: 'font-size:13px' });

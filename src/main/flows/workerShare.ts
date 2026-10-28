@@ -23,6 +23,7 @@ import {
   serializeWorker,
   workerShareFilename,
   type WorkerBundle,
+  type WorkerCarried,
   type WorkerImportNotes,
 } from '../../shared/flows/workerYaml';
 
@@ -39,6 +40,8 @@ export function buildWorkerShare(args: {
   worker: Worker;
   library: Flow[];
   description?: string;
+  /// An export's extras: its triggers, scopes, and what it learned.
+  carried?: WorkerCarried;
 }): WorkerShareFile {
   const byId = new Map(args.library.map((f) => [f.id, f]));
   const flows = args.worker.flowIds
@@ -53,6 +56,7 @@ export function buildWorkerShare(args: {
       // worker exists, and a share with a blank description makes the
       // receiver guess at what they are hiring.
       description: args.description ?? args.worker.tagline,
+      ...(args.carried ? { carried: args.carried } : {}),
     }),
     filename: workerShareFilename(args.worker.name),
     missingFlowIds: args.worker.flowIds.filter((id) => !byId.has(id)),
