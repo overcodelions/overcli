@@ -15,6 +15,10 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Pull requests opened for you.** A pushed branch's pull request is opened on Bitbucket or GitHub with the worker's title and description, as a draft by default, for review, or as a link only.
 - **Move a worker to another server.** **Export** on a worker's page downloads its job, flows, triggers and tool setup (keys removed), optionally with what it knows and its journal; **Hire → Bring a worker you built yourself** takes the file on the other server.
 - **Share a stack as a file.** The Services pane exports some or all of a stack, with typed credentials turned into named blanks and repos named by remote, and imports one onto the matching checkouts on another machine.
+- **Follow-ups add to the open pull request.** A follow-up on a change the server already pushed (same worker, repo and ticket) starts on that branch while it is open and unmerged, so its push lands in the same pull request.
+- **Newer models for a worker.** A worker's manager is offered planning and each flow's next model in one list, and only what's ticked moves.
+- **A request typed over several messages is one request.** A new Slack request waits for its sender to pause, and what's said in a thread while its answer is being written is sent together once it's posted.
+- **One status card while a worker works.** The worker's message in the thread is edited in place with what it's checking and how far it has got, then replaced by the answer. **Show the trace** and **Full write-up** open pop-ups, and text files shared in a thread are read into the request.
 
 ### Fixed
 - **A CI fix that changed nothing no longer ends the loop silently.** When a fix lands no new commit (the worker judged the failure flaky), or nothing is pushed within 6 hours, the manager is told.
@@ -26,6 +30,13 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Shared stacks:** the home folder becomes `${HOME}` only where it ends (`/home/alex` stays when home is `/home/al`), and a file with a broken ready check or options is refused on import instead of crashing it.
 - **A branch name with a quote in it** is not put into the Bitbucket pull request lookup.
 - **The server image sets `JAVA_HOME` only when it has a JDK** (`--build-arg JDKS`).
+- **A step grant that names a single tool lets its calls through.** A step listing one tool by full name started, then had every call refused; only tools listed by server matched.
+- **A ticket transition that requires fields is made.** The worker reads the transition's fields, sets rule-checked ones with an edit first, fills them from the run's pull request, plan and review, and names any it couldn't fill instead of guessing.
+- **Workers on a connected repo don't ask for git tokens.** Every step ends with a note that the server handles git, and the server's copy keeps every branch for follow-ups to read.
+- **A Gradle app left by its daemon is seen as stale on its port** when no `gradlew` for the service's task is still running.
+- **Worker shells find installed toolchains.** They get the login shell's `PATH` and toolchain homes (`JAVA_HOME`, `SDKMAN_*`, `NVM_*` and the like), never anything secret-shaped.
+- **The worktree sweep no longer removes a newer run's checkout.** Only the newest run that uses a path decides about it.
+- **A balanced model step doesn't jump to the frontier model.** `standard` tries `fast` before `thinking`, so a backend with no middle model gets Sonnet, not Opus.
 
 ## [0.23.0] - 2026-10-26
 
