@@ -118,7 +118,7 @@ describe('closing the loop', () => {
   it('waits for every repo a push touched, then sends one fix for all the red ones', async () => {
     let webState: 'pending' | 'failure' = 'pending';
     const both = fakeFetch((url) => {
-      if (url.startsWith('https://api.github.com')) {
+      if (new URL(url).host === 'api.github.com') {
         if (url.includes('/check-runs')) return { check_runs: [{ id: 5, name: 'unit', status: webState === 'pending' ? 'in_progress' : 'completed', conclusion: webState === 'pending' ? null : 'failure' }] };
         if (url.endsWith('/status')) return { statuses: [] };
         return undefined;
@@ -127,7 +127,7 @@ describe('closing the loop', () => {
     });
     // Bitbucket answers as in the other tests; GitHub as above.
     const bbFetch = bitbucket(['FAILED']);
-    const f = (async (url: string, init?: { headers?: Record<string, string> }) => (url.startsWith('https://api.github.com') ? both(url, init) : bbFetch(url, init))) as unknown as typeof fetch;
+    const f = (async (url: string, init?: { headers?: Record<string, string> }) => (new URL(url).host === 'api.github.com' ? both(url, init) : bbFetch(url, init))) as unknown as typeof fetch;
     const h = harness({ fetchImpl: f });
     h.watch('billing');
     h.watch('web', 'eee1111');
