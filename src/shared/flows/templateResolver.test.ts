@@ -173,4 +173,10 @@ describe('rebindMissingBackends', () => {
     expect(rebindMissingBackends(flow, { healthyBackends: ['claude', 'codex'] })).toEqual({ flow, moved: [] });
     expect(rebindMissingBackends(flow, { healthyBackends: [] })).toEqual({ flow, moved: [] });
   });
+
+  it('steps a balanced model down to Sonnet on Claude, not up to Opus', () => {
+    // GPT-5.4 is a standard-tier model, and Claude has nothing filed at standard.
+    const res = rebindMissingBackends(flow, { healthyBackends: ['claude'] });
+    expect(modelOf(res.flow, 'review')).toMatchObject({ backend: 'claude', model: 'claude-sonnet-5-5' });
+  });
 });

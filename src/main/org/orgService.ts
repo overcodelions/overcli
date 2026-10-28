@@ -7,11 +7,16 @@
 // worker engine, runs in the runtime; this is a policy gate in front of both,
 // returning plain data each surface renders in its own way.
 
+import { KITS, type KitDef, type KitId, type Toolchain, type ToolchainService } from './toolchains';
 import { scrubOutbound } from '../secretScrub';
 import type { LoginResult } from './toolLogin';
 import { generalize, readShape, readToolCall, setupPrompt } from './watchSetup';
 import { randomUUID } from 'node:crypto';
-import type { FlowRun, FlowRunState } from '../../shared/flows/schema';
+import type { Flow, FlowRun, FlowRunState } from '../../shared/flows/schema';
+import { applyFlowModelUpgrade, planFlowModelUpgrade, shortModelChangeLabel } from '../../shared/flows/modelUpgrade';
+import { rebindMissingBackends } from '../../shared/flows/templateResolver';
+import { pickDrafterBackend } from '../../shared/flows/drafterBackend';
+import { friendlyModelLabel, newestInFamily, type FlowModelDefaults } from '../../shared/modelCatalog';
 import type { RunChanges } from './runChanges';
 import { ticketFlowId, ticketFlowYaml, trackerOf } from './ticketFollowUp';
 import { flowRunTitle } from '../../shared/flows/schema';
@@ -48,11 +53,11 @@ import { answerOptions, projectMonthEnd, trustReadiness, workerState, type Trust
 import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, TeamStageKind, TeamTask } from '../../shared/flows/team';
 import { resolveShortNames } from '../../shared/shortName';
 import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive } from '../../shared/flows/team';
-import { parseWorkerYaml } from '../../shared/flows/workerYaml';
-import type { Attachment, UUID } from '../../shared/types';
+import { CARRIED_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
+import type { Attachment, Backend, UUID } from '../../shared/types';
 import type { DraftedHire, HireDraftResult } from './hireDraft';
 import type { ToolInput, ToolSummary, ToolTemplate } from './tools';
-import { TOOL_NAME } from './tools';
+import { TOOL_NAME, parseTemplates } from './tools';
 import { OverdbOrg, type OverdbDeps } from './overdb';
 import { catalogFor, connectorTitle, connectorTool, TOOL_CATALOG, type CatalogTool } from './toolCatalog';
 import type { Discovery, SignInSummary } from './toolSignIn';
@@ -68,6 +73,7 @@ import { classifyServer, fileTitle, isText, listFolder, linkFrom, mimeFor, pickU
 import { buildZip, type ZipEntry } from './zip';
 import { personKey } from './connections';
 import type { ServerVersion } from './updateCheck';
+import { SLACK_BUDGET } from '../slack/deliver';
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -438,6 +444,24 @@ export interface TodayView {
   spend: { spentUSD: number; projectedUSD: number; allowanceUSD?: number; committedUSD?: number };
 }
 
+/// What moving a worker onto newer models would change (`modelUpgrades`).
+export interface ModelUpgradePlan {
+  /// The model CLIs signed in on this server.
+  healthy: Backend[];
+  planning?: { model: string; to?: string; change?: string; runsHere?: string };
+  flows: Array<{
+    id: string;
+    name: string;
+    changes: Array<{ backend: Backend; from: string; to: string; where: string[]; change: string }>;
+    /// Other workers that run it: an upgrade moves them too.
+    sharedWith: string[];
+    /// Models that run on another backend here, theirs not signed in.
+    runsHere: string[];
+    /// The backends it was written for that aren't signed in here.
+    missing: Backend[];
+  }>;
+}
+
 export type TriggerView = Omit<WorkerTrigger, 'webhook' | 'seen' | 'followers'> & {
   webhook?: { idPath?: string };
   seenCount: number;
@@ -771,6 +795,9 @@ export interface OrgServiceDeps extends OverdbDeps {
   orchestration?(id: UUID): Orchestration | null;
   /// Stop a batch: what's queued or proposed never starts, what runs stops.
   stopBatch?(id: UUID): { ok: true } | { ok: false; error: string };
+  /// JDKs downloaded onto the server for workers and repo tests (Setup →
+  /// Toolchains). Absent: not offered here.
+  toolchains?: Pick<ToolchainService, 'state' | 'install' | 'remove' | 'setDefault' | 'setRepoPick' | 'askedByRepos'>;
   /// Repos workers may change, landing work as pull requests. Absent: none.
   repos?: {
     list(): ConnectedRepo[];
@@ -782,6 +809,12 @@ export interface OrgServiceDeps extends OverdbDeps {
     tokenFor(repo: ConnectedRepo): string | null;
     /// Why this server won't run repo tests, or undefined when it will.
     testsOff?(): string | undefined;
+    /// Whether the server opens pull requests: link only, a draft, or open.
+    prMode?(): 'link' | 'draft' | 'open';
+    setPrMode?(mode: string): Result;
+    /// Fixes a red CI build gets from its worker before its manager hears.
+    ciRounds?(): number;
+    setCiRounds?(n: number): Result;
     /// What every branch a worker pushes starts with (`agent/`).
     branchPrefix?(): string;
     setBranchPrefix?(prefix: string): void;
@@ -824,6 +857,19 @@ export interface OrgServiceDeps extends OverdbDeps {
     yaml: string,
     opts: { projectPath?: string; mcpServers: string[]; extra: Partial<Pick<Worker, 'manager' | 'reportsTo' | 'visibility'>> },
   ): { ok: true; worker: Worker } | { ok: false; error: string };
+  /// One of its workers as a share file, with an export's extras. Absent:
+  /// workers can't be exported from here.
+  shareWorker?(worker: Worker, carried: WorkerCarried): { yaml: string; filename: string; missingFlowIds: string[] };
+  /// Its flows as saved, a way to save one back, and the model CLIs signed
+  /// in here: for moving a worker onto newer models. Absent: not offered.
+  models?: {
+    flows(ids: string[]): Flow[];
+    save(flow: Flow): Result;
+    healthy(): Promise<Backend[]>;
+    /// What a run here falls back on: the preferred backend and model
+    /// defaults, so the card names what the run would actually use.
+    fallback?(): { preferredBackend?: Backend; modelDefaults?: FlowModelDefaults };
+  };
   audit?: AuditStore;
   ratings?: RatingStore;
   /// The MCP servers installed on this server. Absent: the Tools page is off.
@@ -831,6 +877,8 @@ export interface OrgServiceDeps extends OverdbDeps {
     list(roster: Worker[], statuses?: Record<string, string>): { tools: ToolSummary[]; missing: Array<{ name: string; workers: string[]; template?: ToolTemplate }> };
     /// How a published worker's tools were set up where it came from.
     remember?(templates: ToolTemplate[], onlyNew?: boolean): void;
+    /// How an installed tool is set up, minus every value (`templateFrom`).
+    template?(name: string): ToolTemplate | null;
     install(input: ToolInput): { ok: true; fixed?: string[] } | { ok: false; error: string };
     /// Change some of a tool's settings in place (`updateToolSettings`).
     update?(name: string, values: Record<string, string>): { ok: true; changed: string[]; fixed?: string[] } | { ok: false; error: string };
@@ -898,6 +946,7 @@ export interface OrgServiceDeps extends OverdbDeps {
     report(): Promise<StorageReport>;
     discard(runId: string): Promise<{ ok: true; removed: number } | { ok: false; error: string }>;
     clearToolCache(): Promise<void>;
+    clearBuildCache?(): Promise<void>;
   };
   /// Each worker's setup over time, to see and restore. Absent: in memory.
   workerVersions?: WorkerVersionStore;
@@ -1705,9 +1754,9 @@ export class OrgService {
     /// Taken as a proposal whoever asks: for a caller who may reach the
     /// worker but isn't speaking for its manager (a process stage).
     proposal = false,
-    /// A trigger its manager let start on its own: what it finds starts as the
-    /// manager's ask would, while the worker works on its own (autonomous).
-    triggerStarts = false,
+    /// The trigger's own "starts on its own". No longer decides anything: an
+    /// autonomous worker's triggers always start alone (see `startsAlone`).
+    _triggerStarts = false,
   ): Result<{ askId: string; done: Promise<Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }>> }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
@@ -1718,8 +1767,9 @@ export class OrgService {
     // its manager: nothing it can do needs the manager's say.
     const readsOnly = !manages && via !== 'trigger' && !proposal && (this.deps.workers.changesOf?.(w.id) ?? ['unknown']).length === 0;
     // Still `untrusted` on the record: the event's details came from outside,
-    // so nothing in them is remembered as the manager's word.
-    const startsAlone = via === 'trigger' && triggerStarts && w.trust === 'autonomous';
+    // so nothing in them is remembered as the manager's word. An autonomous
+    // worker's triggers start alone; one on probation or trusted proposes.
+    const startsAlone = via === 'trigger' && w.trust === 'autonomous';
     const from = manages
       ? ''
       : startsAlone
@@ -1816,7 +1866,8 @@ export class OrgService {
       '',
       `Now finish what you told ${a.by} you would do, written for a business reader: the answer first, in plain words, with the few numbers that matter. No raw JSON, field names or query syntax. If you said you would build something (a chart, a report, a page), build it now in your own files folder and name its full path in your reply. Mention a caveat only if it changes what the numbers mean. Don't start more work unless this result can't be used.`,
       `Your reply is posted where ${a.by} asked, with any file you name attached, for you. Don't message anyone yourself, and don't mention how it's delivered or anything that failed to send. If you attach a file with the full write-up, keep the reply to a short summary of it rather than repeating it.`,
-    ].join('\n');
+      a.via === 'slack' ? SLACK_BUDGET : '',
+    ].filter(Boolean).join('\n');
     const record: AskRecord = {
       id: randomUUID(),
       workerId: w.id,
@@ -3394,7 +3445,7 @@ export class OrgService {
   }
 
   /// Hire it — now, or once an approver says yes.
-  confirmHire(caller: OrgCaller, hireId: string, options?: HireOptions): Result<{ hired?: WorkerSummary; hire: HireSummary }> {
+  confirmHire(caller: OrgCaller, hireId: string, options?: HireOptions): Result<{ hired?: WorkerSummary; hire: HireSummary; brought?: string[] }> {
     const hire = this.hire(hireId);
     if (!hire) return { ok: false, error: 'No hire in progress with that id — drafts expire after a day.' };
     if (!this.mayTouchHire(caller, hire)) return { ok: false, error: 'That hire belongs to someone else.' };
@@ -3435,10 +3486,10 @@ export class OrgService {
     const made = this.make(hire, cleared);
     if (!made.ok) return made;
     this.record(caller, `Hired ${made.worker.name} ($${made.worker.budgetUSDPerMonth}/month).`);
-    return { ok: true, hired: made.summary, hire: this.summarize(hire) };
+    return { ok: true, hired: made.summary, hire: this.summarize(hire), ...(made.brought?.length ? { brought: made.brought } : {}) };
   }
 
-  private make(hire: PendingHire, mcpServers: string[]): Result<{ worker: Worker; summary: WorkerSummary }> {
+  private make(hire: PendingHire, mcpServers: string[]): Result<{ worker: Worker; summary: WorkerSummary; brought?: string[] }> {
     const by = hire.requestedBy;
     if (hire.imported) {
       if (!this.deps.importWorker) return { ok: false, error: 'This server cannot take published workers.' };
@@ -3454,8 +3505,10 @@ export class OrgService {
       if (!landed.ok) return landed;
       this.putHire(null, hire.id);
       if (hire.imported.localId) this.landedPublished(hire.imported.localId, hire.id, landed.worker.id);
+      const parsed = parseWorkerYaml(hire.imported.yaml);
+      const brought = parsed.ok && parsed.bundle.carried ? this.landCarried(landed.worker, parsed.bundle.carried, by.name) : [];
       const summary = this.summaryFor({ name: 'admin', admin: true }, landed.worker.id)!;
-      return { ok: true, worker: landed.worker, summary };
+      return { ok: true, worker: landed.worker, summary, brought };
     }
     const saved = this.deps.saveHire(hire.drafted!, {
       projectPath: hire.options.projectPath,
@@ -4299,6 +4352,84 @@ export class OrgService {
 
   /// Have a worker go through its own tools for its job, read only, and
   /// write down what it found (`Worker.knowledge`). Its manager or an admin.
+  /// Newer models for a worker: its planning model and each of its flows,
+  /// each moved only within its own line and tier (`newestInFamily`), never
+  /// on its own. Also what runs on another backend here because its own
+  /// isn't signed in, and who else uses a flow it would change. Manager's.
+  async modelUpgrades(caller: OrgCaller, idOrName: string): Promise<Result<ModelUpgradePlan>> {
+    if (!this.deps.models) return { ok: false, error: 'Model upgrades aren’t offered on this server.' };
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const w = found.worker;
+    const healthy = await this.deps.models.healthy().catch((): Backend[] => []);
+    const label = (b: Backend, m: string) => friendlyModelLabel(b, m);
+    let planning: ModelUpgradePlan['planning'];
+    if (w.heartbeatModel) {
+      const b = w.heartbeatBackend;
+      const to = b && b !== 'ollama' ? newestInFamily(b, w.heartbeatModel) : w.heartbeatModel;
+      const here = b && !healthy.includes(b) ? pickDrafterBackend({ preferred: b, isHealthy: (x) => healthy.includes(x), isEnabled: () => true }) : null;
+      planning = {
+        model: b ? label(b, w.heartbeatModel) : w.heartbeatModel,
+        ...(b && to !== w.heartbeatModel ? { to: label(b, to), change: shortModelChangeLabel({ backend: b, from: w.heartbeatModel, to }) } : {}),
+        ...(b && !healthy.includes(b) && healthy.length ? { runsHere: here ? `${b} isn’t signed in here, so it plans on ${here} at the same tier.` : `${b} isn’t signed in here.` } : {}),
+      };
+    }
+    const ids = [...new Set([...w.flowIds, ...(w.wrapUpFlowId ? [w.wrapUpFlowId] : [])])];
+    const roster = this.deps.workers.roster();
+    const flows = this.deps.models.flows(ids).map((f) => {
+      const changes = planFlowModelUpgrade(f).map((c) => ({ ...c, change: shortModelChangeLabel(c) }));
+      const moved = healthy.length ? rebindMissingBackends(f, { healthyBackends: healthy, ...this.deps.models!.fallback?.() }).moved : [];
+      return {
+        id: f.id,
+        name: f.name,
+        changes,
+        sharedWith: roster.filter((x) => x.id !== w.id && (x.flowIds.includes(f.id) || x.wrapUpFlowId === f.id)).map((x) => x.name),
+        runsHere: [...new Set(moved.map((m) => `${m.from} runs as ${m.to}`))],
+        // Which backends those steps were written for, to name what to sign in.
+        missing: [...new Set([...f.participants.map((p) => p.backend), ...f.steps.flatMap((s) => (s.model ? [s.model.backend] : []))].filter((b) => !healthy.includes(b)))],
+      };
+    });
+    return { ok: true, healthy, ...(planning ? { planning } : {}), flows };
+  }
+
+  /// Move what was picked onto its newer model. A flow other workers use
+  /// moves for them too, so it needs their manager as well (or an admin).
+  async upgradeModels(caller: OrgCaller, idOrName: string, pick: { planning?: boolean; flows?: string[] }): Promise<Result<{ changed: string[]; errors: string[] }>> {
+    if (!this.deps.models) return { ok: false, error: 'Model upgrades aren’t offered on this server.' };
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const w = found.worker;
+    const changed: string[] = [];
+    const errors: string[] = [];
+    const b = w.heartbeatBackend;
+    if (pick.planning && b && b !== 'ollama' && w.heartbeatModel) {
+      const to = newestInFamily(b, w.heartbeatModel);
+      if (to !== w.heartbeatModel) {
+        const saved = this.deps.workers.save({ ...structuredClone(w), heartbeatModel: to });
+        if (saved.ok) changed.push(`Planning: ${shortModelChangeLabel({ backend: b, from: w.heartbeatModel, to })}`);
+        else errors.push(`Planning: ${saved.error}`);
+      }
+    }
+    const wanted = new Set((pick.flows ?? []).filter((id) => w.flowIds.includes(id) || w.wrapUpFlowId === id));
+    const roster = this.deps.workers.roster();
+    const policy = this.policy();
+    for (const f of this.deps.models.flows([...wanted])) {
+      const changes = planFlowModelUpgrade(f);
+      if (!changes.length) continue;
+      const others = roster.filter((x) => x.id !== w.id && (x.flowIds.includes(f.id) || x.wrapUpFlowId === f.id));
+      const notYours = others.filter((x) => !canManage(policy, roster, x.id, caller));
+      if (notYours.length) {
+        errors.push(`${f.name}: ${notYours.map((x) => x.name).join(', ')} use${notYours.length === 1 ? 's' : ''} it too, and ${notYours.length === 1 ? 'isn’t' : 'aren’t'} yours. Their manager or an admin can.`);
+        continue;
+      }
+      const saved = this.deps.models.save(applyFlowModelUpgrade(f, changes));
+      if (saved.ok) changed.push(`${f.name}: ${changes.map((c) => shortModelChangeLabel(c)).join(', ')}`);
+      else errors.push(`${f.name}: ${saved.error}`);
+    }
+    if (changed.length) this.record(caller, `Moved ${w.name} onto newer models: ${changed.join('; ')}.`);
+    return { ok: true, changed, errors };
+  }
+
   learnWorker(caller: OrgCaller, idOrName: string): Result<{ name: string }> {
     const found = this.managed(caller, idOrName);
     if (!found.ok) return found;
@@ -4386,6 +4517,14 @@ export class OrgService {
   }
 
   /// Empty the tools' package cache; they install again in the background.
+  async clearBuildCache(caller: OrgCaller): Promise<Result> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can do that.' };
+    if (!this.deps.storage?.clearBuildCache) return { ok: false, error: 'Storage isn’t managed on this server.' };
+    await this.deps.storage.clearBuildCache();
+    this.record(caller, 'Cleared the build caches.');
+    return { ok: true };
+  }
+
   async clearToolCache(caller: OrgCaller): Promise<Result> {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can do that.' };
     if (!this.deps.storage) return { ok: false, error: 'Storage isn’t managed on this server.' };
@@ -4794,7 +4933,7 @@ export class OrgService {
   // ---- REPOS ------------------------------------------------------------
 
   /// Connected repos, and who works in each.
-  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; branchPrefix?: string; lastRefreshedAt?: number }> {
+  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; ciRounds?: number; prMode?: 'link' | 'draft' | 'open'; branchPrefix?: string; lastRefreshedAt?: number }> {
     if (!this.deps.repos) return { ok: false, error: 'Repos are not available on this server.' };
     if (!canHire(this.policy(), caller)) return { ok: false, error: 'Only people who may hire workers can see the repos.' };
     const roster = this.deps.workers.roster();
@@ -4808,6 +4947,8 @@ export class OrgService {
       }),
       workspaces: repos.workspaces().map((ws) => ({ ...ws, workers: roster.filter((w) => w.projectPath === ws.rootPath).map((w) => w.name) })),
       ...(testsOff ? { testsOff } : {}),
+      ...(repos.ciRounds ? { ciRounds: repos.ciRounds() } : {}),
+      ...(repos.prMode ? { prMode: repos.prMode() } : {}),
       ...(repos.branchPrefix ? { branchPrefix: repos.branchPrefix() } : {}),
       ...(repos.lastRefreshed?.() ? { lastRefreshedAt: repos.lastRefreshed!() } : {}),
     };
@@ -4850,6 +4991,34 @@ export class OrgService {
     this.record(caller, `Connected the repo ${res.repo.name} (${res.repo.url})${res.repo.testCommand ? `, tests: ${res.repo.testCommand}` : ''}.`);
     const testsOff = res.repo.testCommand ? this.deps.repos.testsOff?.() : undefined;
     return testsOff ? { ...res, warning: `Repo tests are turned off on this server, so nothing is pushed from ${res.repo.name} until they're on. ${testsOff}` } : res;
+  }
+
+  /// Whether the server opens the pull request for a branch it pushed.
+  prMode(): 'link' | 'draft' | 'open' {
+    return this.deps.repos?.prMode?.() ?? 'link';
+  }
+
+  setPrMode(caller: OrgCaller, mode: string): Result {
+    const repos = this.deps.repos;
+    if (!repos?.setPrMode) return { ok: false, error: 'Repos are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can change how pull requests are opened.' };
+    const res = repos.setPrMode(mode);
+    if (res.ok) this.record(caller, mode === 'link' ? 'Set pushed branches to come with a link to open a pull request.' : `Set pushed branches to open ${mode === 'draft' ? 'a draft' : 'a'} pull request.`);
+    return res;
+  }
+
+  /// How many fixes a red CI build gets from its worker (ciWatch.ts).
+  ciRounds(): number {
+    return this.deps.repos?.ciRounds?.() ?? 3;
+  }
+
+  setCiRounds(caller: OrgCaller, n: number): Result {
+    const repos = this.deps.repos;
+    if (!repos?.setCiRounds) return { ok: false, error: 'Repos are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can change how CI failures are handled.' };
+    const res = repos.setCiRounds(n);
+    if (res.ok) this.record(caller, n ? `Set CI failures to go back to the worker up to ${n} ${n === 1 ? 'time' : 'times'}.` : 'Set CI failures to go straight to the manager.');
+    return res;
   }
 
   disconnectRepo(caller: OrgCaller, name: string): Result {
@@ -4961,6 +5130,76 @@ export class OrgService {
   // ---- SECRETS ----------------------------------------------------------
 
   /// Every secret the server uses: which are set and where, never a value.
+  /// Setup → Toolchains: the catalog, what's installed, the defaults, and
+  /// each repo's picks beside what its own files ask for.
+  toolchainList(caller: OrgCaller): Result<{
+    kits: readonly KitDef[];
+    toolchains: Toolchain[];
+    defaults: Partial<Record<KitId, string>>;
+    repos: Array<{ name: string; picks: Partial<Record<KitId, string>>; asks: Partial<Record<KitId, string>> }>;
+    /// What a custom kit's archive must be built for: `linux/arm64`.
+    platform: string;
+  }> {
+    const tc = this.deps.toolchains;
+    if (!tc) return { ok: false, error: 'Toolchains are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can see the toolchains.' };
+    const s = tc.state();
+    const asked = tc.askedByRepos();
+    // The default a run falls back to: the one picked, else the first ready.
+    const defaults: Partial<Record<KitId, string>> = {};
+    for (const k of KITS) {
+      const first = s.toolchains.find((t) => t.kit === k.id && t.status === 'ready')?.version;
+      const d = s.defaults[k.id] ?? first;
+      if (d) defaults[k.id] = d;
+    }
+    return {
+      ok: true,
+      kits: KITS,
+      toolchains: s.toolchains,
+      defaults,
+      repos: (this.deps.repos?.list() ?? []).map((r) => ({ name: r.name, picks: s.repoPicks[r.name] ?? {}, asks: asked[r.name] ?? {} })),
+      platform: `${process.platform}/${process.arch}`,
+    };
+  }
+
+  installToolchain(caller: OrgCaller, input: { kit: string; version: string; url?: string; sha256?: string; bin?: string; env?: Record<string, string> }): Result<{ toolchain: Toolchain }> {
+    const tc = this.deps.toolchains;
+    if (!tc) return { ok: false, error: 'Toolchains are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can install toolchains.' };
+    const res = tc.install(input.kit, input.version, caller.name, input.kit === 'custom' ? { url: input.url, sha256: input.sha256, bin: input.bin, env: input.env } : undefined);
+    if (!res.ok) return res;
+    const t = res.toolchain;
+    this.record(caller, t.custom ? `Started installing the custom toolchain ${t.version} from ${t.custom.url}${t.custom.sha256 ? '' : ' (no sha256 given)'}.` : `Started installing ${t.id} for workers and repo tests.`);
+    return { ok: true, toolchain: t };
+  }
+
+  removeToolchain(caller: OrgCaller, id: string): Result {
+    const tc = this.deps.toolchains;
+    if (!tc) return { ok: false, error: 'Toolchains are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can remove toolchains.' };
+    const res = tc.remove(id);
+    if (res.ok) this.record(caller, `Removed the toolchain ${id}.`);
+    return res;
+  }
+
+  setToolchainDefault(caller: OrgCaller, kit: string, version: string): Result {
+    const tc = this.deps.toolchains;
+    if (!tc) return { ok: false, error: 'Toolchains are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can change the default toolchains.' };
+    const res = tc.setDefault(kit, version);
+    if (res.ok) this.record(caller, `Made ${kit} ${version} the default for workers and repo tests.`);
+    return res;
+  }
+
+  setRepoToolchain(caller: OrgCaller, repo: string, kit: string, version: string | null): Result {
+    const tc = this.deps.toolchains;
+    if (!tc) return { ok: false, error: 'Toolchains are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can pick a repo\'s toolchains.' };
+    const res = tc.setRepoPick(repo, kit, version);
+    if (res.ok) this.record(caller, version ? `Set ${repo} to use ${kit} ${version}.` : `Set ${repo} back to the default ${kit}.`);
+    return res;
+  }
+
   secretList(caller: OrgCaller): Result<{ store: { kind: string; where: string; readOnly: boolean; warning?: string }; secrets: SecretStatus[]; error: string | null; model?: ModelProvider }> {
     if (!this.deps.secrets) return { ok: false, error: 'This server keeps its secrets in its environment only.' };
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can see the secrets.' };
@@ -4990,17 +5229,19 @@ export class OrgService {
   /// Take a worker someone built on their own install (its share file) onto
   /// the org's roster, under the same rules as a hire: the publisher becomes
   /// its manager, and anything over their allowance waits for an approver.
-  publishWorker(caller: OrgCaller, yaml: string, options: HireOptions = {}, tools: ToolTemplate[] = [], localId?: string): Result<{ hired?: WorkerSummary; hire: HireSummary }> {
+  publishWorker(caller: OrgCaller, yaml: string, options: HireOptions = {}, tools: ToolTemplate[] = [], localId?: string): Result<{ hired?: WorkerSummary; hire: HireSummary; brought?: string[] }> {
     if (!this.deps.importWorker) return { ok: false, error: 'This server cannot take published workers.' };
-    // What its tools looked like where it was built: the Tools page offers
-    // them pre-filled. Only names, commands and setting names — no secrets.
-    if (tools.length && canHire(this.policy(), caller)) this.deps.tools?.remember?.(tools);
     if (!canHire(this.policy(), caller)) {
       return { ok: false, error: 'You are not on the list of people who may hire workers. Ask an admin to add you to the org policy.' };
     }
     if (yaml.length > 2_000_000) return { ok: false, error: 'That worker file is too large.' };
     const parsed = parseWorkerYaml(yaml);
     if (!parsed.ok) return { ok: false, error: `That is not a worker file overcli can read: ${parsed.error}` };
+    // What its tools looked like where it was built: the Tools page offers
+    // them pre-filled. Only names, commands and setting names — no secrets.
+    // An exported file carries its own.
+    const templates = [...tools, ...parseTemplates(parsed.bundle.carried?.tools)];
+    if (templates.length) this.deps.tools?.remember?.(templates);
     const w = parsed.bundle.worker;
     const hire: PendingHire = {
       id: randomUUID(),
@@ -5024,6 +5265,106 @@ export class OrgService {
     };
     this.putHire(hire);
     return this.confirmHire(caller, hire.id);
+  }
+
+  // ---- EXPORT A WORKER --------------------------------------------------
+
+  /// One of its workers as a file to bring to another server: its job and
+  /// flows as any share, plus its triggers, tool scopes and its tools' setup
+  /// minus secrets, and, when asked, what it knows, its notes and its
+  /// journal. For its manager or an admin. `left`: what stays behind.
+  exportWorker(caller: OrgCaller, idOrName: string, opts: { learned?: boolean; journal?: boolean } = {}): Result<{ yaml: string; filename: string; left: string[] }> {
+    if (!this.deps.shareWorker) return { ok: false, error: 'Workers can’t be exported from this server.' };
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const w = found.worker;
+    const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+    const left = ['Secret values: enter its tools’ keys on the new server.', 'Its trust: it starts on probation there.'];
+    const carried: WorkerCarried = {};
+    if (w.toolScopes && Object.keys(w.toolScopes).length) carried.toolScopes = structuredClone(w.toolScopes);
+    const tools = (w.mcpServers ?? []).flatMap((name) => this.deps.tools?.template?.(name) ?? []);
+    if (tools.length) carried.tools = tools.map((t) => ({ ...t }));
+    let dms = 0;
+    let onOwn = 0;
+    const triggers: PortableTrigger[] = (this.triggerSvc()?.list(w.id) ?? []).map((t) => {
+      if (t.startsOnItsOwn) onOwn++;
+      return {
+        name: t.name,
+        kind: t.kind,
+        enabled: t.enabled,
+        instructions: t.instructions,
+        deliver: t.deliver.flatMap((d) => (d.kind === 'dm' ? (dms++, []) : [d])),
+        maxPerDay: t.maxPerDay,
+        ...(t.watch ? { watch: structuredClone(t.watch) } : {}),
+        ...(t.slack ? { slack: { ...t.slack } } : {}),
+        ...(t.notifyOnly ? { notifyOnly: true } : {}),
+        ...(t.webhook?.idPath ? { webhookIdPath: t.webhook.idPath } : {}),
+      };
+    });
+    if (triggers.length) carried.triggers = triggers;
+    if (dms) left.push(`${n(dms, 'DM destination', 'DM destinations')} on its triggers: a DM names a person here.`);
+    if (onOwn) left.push(`“Starts on its own” on ${n(onOwn, 'trigger', 'triggers')}: its new manager turns that on.`);
+    const journal = this.deps.workers.journalFor(w.id);
+    if (opts.learned) {
+      if (w.knowledge?.body) carried.knowledge = w.knowledge.body;
+      const notes = journal.filter((e) => e.kind === 'note' && e.note).sort((a, b) => a.at - b.at).slice(-CARRIED_LIMITS.notes);
+      if (notes.length) carried.notes = notes.map((e) => ({ at: e.at, note: e.note! }));
+    } else left.push('What it knows and its notes.');
+    if (opts.journal) {
+      const history = journal.filter((e) => e.kind !== 'note' && e.kind !== 'demoted' && e.kind !== 'compacted').sort((a, b) => a.at - b.at);
+      if (history.length > CARRIED_LIMITS.journal) left.push(`Its oldest ${history.length - CARRIED_LIMITS.journal} journal entries: only the newest ${CARRIED_LIMITS.journal} go.`);
+      const kept = history.slice(-CARRIED_LIMITS.journal);
+      if (kept.length) carried.journal = kept.map((e) => ({ kind: e.kind, at: e.at, title: e.title, ...(e.note ? { note: e.note } : {}) }));
+    } else left.push('Its journal: without it, it may pick up work it already did.');
+    const file = this.deps.shareWorker(w, carried);
+    if (file.missingFlowIds.length) left.push(`Flows it uses that aren’t here: ${file.missingFlowIds.join(', ')}.`);
+    this.record(caller, `Exported ${w.name}${opts.learned ? ', with what it has learned' : ''}${opts.journal ? ', with its journal' : ''}.`);
+    return { ok: true, yaml: file.yaml, filename: file.filename, left };
+  }
+
+  /// An exported worker's setup, onto the worker it landed as: scopes no
+  /// wider than this org's defaults, and its triggers. Its notes and journal
+  /// landed with it. Says what came, and what couldn't.
+  private landCarried(landed: Worker, c: WorkerCarried, by: string): string[] {
+    const said: string[] = [];
+    const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+    const has = new Set(landed.mcpServers ?? []);
+    if (c.toolScopes) {
+      const defaults = this.policy().toolDefaults ?? {};
+      const scopes: ToolScopes = {};
+      const wider: string[] = [];
+      for (const [name, scope] of Object.entries(c.toolScopes)) {
+        if (!has.has(name)) continue;
+        // An import never widens a tool: past the default is an admin's call.
+        if (!withinScope(scope, defaults[name], name)) wider.push(name);
+        else if (scope.mode !== 'full' || defaults[name]) scopes[name] = scope;
+      }
+      const w = this.deps.workers.get(landed.id);
+      if (w && Object.keys(scopes).length && this.deps.workers.save({ ...structuredClone(w), toolScopes: scopes }).ok) {
+        said.push(`How much of ${Object.keys(scopes).join(', ')} it may use.`);
+      }
+      if (wider.length) said.push(`Its scope for ${wider.join(', ')} was wider than this org’s default, so it uses the default. An admin can widen it.`);
+    }
+    if (c.triggers?.length) {
+      const s = this.triggerSvc();
+      if (!s) said.push(`Its ${n(c.triggers.length, 'trigger', 'triggers')} stayed behind: triggers run on the org server.`);
+      else {
+        const made: string[] = [];
+        for (const t of c.triggers) {
+          const { webhookIdPath, ...rest } = t;
+          const res = s.create({ ...rest, workerId: landed.id, createdBy: by, ...(t.kind === 'webhook' ? { webhook: webhookIdPath ? { idPath: webhookIdPath } : {} } : {}) });
+          if (!res.ok) { said.push(`The trigger ${t.name} didn’t come: ${res.error}`); continue; }
+          made.push(t.name);
+          if (res.token) said.push(`${t.name} has a new address: /hooks/${res.trigger.id}/${res.token}. Point the sender at it; it is shown once.`);
+          if (t.watch && !has.has(t.watch.server)) said.push(`${t.name} watches ${t.watch.server}, which it doesn’t have here yet.`);
+        }
+        if (made.length) said.unshift(`${n(made.length, 'trigger', 'triggers')}: ${made.join(', ')}.`);
+      }
+    }
+    if (c.knowledge) said.push('What it knows about its tools.');
+    if (c.notes?.length) said.push(`${n(c.notes.length, 'note', 'notes')} it was left.`);
+    if (c.journal?.length) said.push(`${n(c.journal.length, 'journal entry', 'journal entries')}, so it skips work it already did. They don’t count toward its trust.`);
+    return said;
   }
 
   // ---- PUBLISH A TEAM ---------------------------------------------------
@@ -6577,6 +6918,8 @@ export interface StorageReport {
   checkouts: { count: number; bytes: number | null };
   repos: number | null;
   toolCache: number | null;
+  /// What builds downloaded (buildCacheDirs): Gradle, Maven, npm, pip, uv, Go.
+  buildCache?: number | null;
   kept: Array<{ runId: string; title: string; worker?: string; workerId?: string; since: number }>;
   measuredAt: number;
 }

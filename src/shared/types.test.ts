@@ -9,7 +9,7 @@ describe('DEFAULT_SETTINGS', () => {
       flowModelDefaults: {},
       disabledBackends: {},
       defaultPermissionMode: 'auto',
-      permissionDefaultsVersion: 1,
+      permissionDefaultsVersion: 2,
       defaultEffort: '',
       backendDefaultEfforts: {},
       agentBranchPrefix: 'agent/',

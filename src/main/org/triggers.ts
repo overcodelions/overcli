@@ -121,7 +121,7 @@ export interface TriggerDeps {
   /// Hand the worker a task; the answer arrives on `done`. `startsOnItsOwn`:
   /// the trigger's manager let what it finds start without an OK.
   ask(workerId: string, triggerName: string, text: string, startsOnItsOwn: boolean):
-    | { ok: true; askId: string; done: Promise<{ ok: true; reply: string; launched: number } | { ok: false; error: string }> }
+    | { ok: true; askId: string; done: Promise<{ ok: true; reply: string; launched: number; choices?: string[] } | { ok: false; error: string }> }
     | { ok: false; error: string };
   toolConfig(name: string): McpServerConfig | null;
   callTool(config: McpServerConfig, tool: string, args: Record<string, unknown>): Promise<ToolCall>;
@@ -135,8 +135,16 @@ export interface TriggerDeps {
     /// door's, not a trigger's.
     botUserId?(): string | null;
   };
+  /// Tell whoever answers for the worker (its manager, up the chain) what it
+  /// did on an event, in a DM whose thread goes back to the worker: "the
+  /// tests fail" said there reaches it. False: no one to tell, or it failed.
+  tellOwner?(workerId: string, text: string, choices?: string[]): Promise<boolean>;
   log(message: string): void;
   now?(): number;
+  /// On each new message: how long to wait for the person to stop typing.
+  /// What they send meanwhile is one event. Each message starts the wait
+  /// again. Absent or 0: each message is its own.
+  quietMs?: number;
 }
 
 export const MIN_WATCH_MINUTES = 5;
@@ -146,11 +154,17 @@ const MAX_SEEN = 5000;
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const URL_RE = /https?:\/\/[^\s<>)"'\]]+/g;
 /// The worker's whole reply when there was nothing for it: nothing is posted.
-const PASS_RE = /^\W*pass\W*$/i;
+/// Also PASS with its reason after a dash or colon: "PASS — just chatter".
+const PASS_RE = /^\W*pass\b(?:\W*$|\W*?\s*[—–:-]\s)/i;
+const MENTION_REFUSED = "Mentions need no trigger: \"@overgo\" with the worker's name, or a question in its line of work, reaches it and it answers in the thread. To have it answer unasked, use each new message.";
 
 export class TriggerService {
   private timer: ReturnType<typeof setInterval> | null = null;
   private polling = new Set<string>();
+
+  /// Messages in a watched channel from someone still typing, by trigger,
+  /// channel and person: handed on as one once they pause.
+  private quiet = new Map<string, { triggerId: string; channel: string; ts: string; user?: string; texts: string[]; ids: string[]; timer?: ReturnType<typeof setTimeout> }>();
 
   constructor(private readonly deps: TriggerDeps) {}
 
@@ -198,7 +212,7 @@ export class TriggerService {
     const { webhook: hook, ...rest } = input;
     // The front door already answers "@overgo …" as the right worker, in the
     // thread, follow-ups included; a trigger would take the mention from it.
-    if (rest.kind === 'slack' && rest.slack?.on === 'mention') return { ok: false, error: "Mentions need no trigger: \"@overgo\" with the worker's name, or a question in its line of work, reaches it and it answers in the thread. To have it answer unasked, use each new message." };
+    if (rest.kind === 'slack' && rest.slack?.on === 'mention') return { ok: false, error: MENTION_REFUSED };
     const invalid = this.validate(rest);
     if (invalid) return { ok: false, error: invalid };
     const token = input.kind === 'webhook' ? randomBytes(24).toString('base64url') : undefined;
@@ -220,6 +234,8 @@ export class TriggerService {
     const i = all.findIndex((t) => t.id === id);
     if (i < 0) return { ok: false, error: 'No such trigger.' };
     const next: WorkerTrigger = { ...all[i], ...patch };
+    // Same rule as create(); one made before it keeps working as it is.
+    if (next.kind === 'slack' && next.slack?.on === 'mention' && all[i].slack?.on !== 'mention') return { ok: false, error: MENTION_REFUSED };
     // A changed watch query is a new question: start over on what's been
     // seen. Tracking one more item is not: what is known of the rest stays.
     const query = (w?: WorkerTrigger['watch']) => (w ? JSON.stringify({ ...w, tracked: undefined }) : '');
@@ -481,6 +497,15 @@ export class TriggerService {
         ts = ev.ts;
         text = ev.text ?? '';
       }
+      // Someone typing a question over a few messages is one event, taken
+      // once they pause. A burst under way takes the rest whatever they say.
+      if (s.on === 'message' && this.deps.quietMs) {
+        const k = `${t.id}:${channel}:${ev.user ?? ''}`;
+        if (!this.quiet.has(k) && s.contains && !text.toLowerCase().includes(s.contains.toLowerCase())) continue;
+        took = true;
+        this.gather(k, t, channel!, ts!, ev.user, text);
+        continue;
+      }
       if (s.contains && !text.toLowerCase().includes(s.contains.toLowerCase())) continue;
       took = true;
       const id = `${channel}:${ts}`;
@@ -489,6 +514,31 @@ export class TriggerService {
       this.fire(t, { id, title: text.split('\n')[0].slice(0, 140) || 'A Slack message', data: { channel, ts, text, user: ev.user } }, { channel: channel!, ts: ts! });
     }
     return took;
+  }
+
+  private gather(k: string, t: WorkerTrigger, channel: string, ts: string, user: string | undefined, text: string): void {
+    const id = `${channel}:${ts}`;
+    const g = this.quiet.get(k) ?? { triggerId: t.id, channel, ts, ...(user ? { user } : {}), texts: [], ids: [] };
+    if ((t.seen ?? []).includes(id) || g.ids.includes(id)) return;
+    g.texts.push(text);
+    g.ids.push(id);
+    if (g.timer) clearTimeout(g.timer);
+    g.timer = setTimeout(() => this.settle(k), this.deps.quietMs);
+    g.timer.unref?.();
+    this.quiet.set(k, g);
+  }
+
+  /// They've paused: what they said goes to the worker as one message, its
+  /// answer in the thread of the first.
+  private settle(k: string): void {
+    const g = this.quiet.get(k);
+    if (!g) return;
+    this.quiet.delete(k);
+    const t = this.get(g.triggerId);
+    if (!t?.enabled) return;
+    this.patchState(t.id, { seen: [...(t.seen ?? []), ...g.ids].slice(-MAX_SEEN) });
+    const text = g.texts.join('\n');
+    this.fire(t, { id: g.ids[0], title: text.split('\n')[0].slice(0, 140) || 'A Slack message', data: { channel: g.channel, ts: g.ts, text, user: g.user } }, { channel: g.channel, ts: g.ts });
   }
 
   // ---- FIRING --------------------------------------------------------------
@@ -529,6 +579,7 @@ export class TriggerService {
     void started.done.then(async (res) => {
       if (!res.ok) {
         this.putDeliverable({ ...d, status: 'failed', error: res.error, doneAt: this.now() });
+        await this.deps.tellOwner?.(t.workerId, `*${worker.name}* could not finish _${item.title}_${item.url ? ` (<${item.url}|source>)` : ''} from _${t.name}_: ${res.error}\nReply here to have it try again.`);
         return;
       }
       if (PASS_RE.test(res.reply)) {
@@ -545,6 +596,7 @@ export class TriggerService {
         if (dest.kind === 'worker') deliveredTo.push(dest.text);
         if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, summary))) deliveredTo.push('a DM');
       }
+      if (await this.deps.tellOwner?.(t.workerId, `${summary}\n_From ${t.name}. Reply here if something's off, failing tests, a change to make, and ${worker.name} picks it up._`, res.choices)) deliveredTo.push('its manager');
       this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, deliveredTo, doneAt: this.now() });
     });
     return d;

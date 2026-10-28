@@ -176,12 +176,24 @@ export function applyPlacesDefault(settings: AppSettings): AppSettings {
 /// Move that to Auto once. Runs on the stored settings before defaults are
 /// merged in, since the marker is in the defaults: a store without it is one
 /// written before this, and a user who picks Plan afterwards keeps it.
+///
+/// Version 2: the 87eabb3 nightly made the move without the notice, so a
+/// version-1 store on Auto that never had the notice (`undefined`, where
+/// one dismissed reads `false`) gets it once now.
 export function migratePermissionDefault(stored: Partial<AppSettings>): Partial<AppSettings> {
-  if ((stored.permissionDefaultsVersion ?? 0) >= 1) return stored;
+  const version = stored.permissionDefaultsVersion ?? 0;
+  if (version >= 2) return stored;
+  if (version === 1) {
+    return {
+      ...stored,
+      permissionDefaultsVersion: 2,
+      ...(stored.defaultPermissionMode === 'auto' && stored.permissionDefaultMovedFromPlan === undefined ? { permissionDefaultMovedFromPlan: true } : {}),
+    };
+  }
   return {
     ...stored,
     defaultPermissionMode: stored.defaultPermissionMode === 'plan' ? 'auto' : stored.defaultPermissionMode,
-    permissionDefaultsVersion: 1,
+    permissionDefaultsVersion: 2,
     ...(stored.defaultPermissionMode === 'plan' ? { permissionDefaultMovedFromPlan: true } : {}),
   };
 }

@@ -94,6 +94,11 @@ In Slack, `/worker Ada edit` opens a form with the job, **Or say what should cha
 
 Every worker also reads your org's **handbook**, which an admin keeps on Setup → Handbook, after its own job.
 
+**Models** (a card on the Job tab) moves the worker onto newer models once your server knows them (a newer release of the server image brings newer models). It lists the model it plans with and each of its flows, with the newer model in the same line: Sonnet 5 → Sonnet 5.5, never Sonnet → Opus. Tick what to move and press **Upgrade the ones ticked**; its next run uses them. Nothing moves on its own.
+
+- **A flow other workers use** moves for them too, so the card says who. If one of them isn't yours, their manager or an admin moves it.
+- **"Here: … runs as …"** means that model's CLI isn't signed in on this server, so the step runs on one that is, at the same tier. Sign that CLI in (Admin page) to run it as written.
+
 ## Settings
 
 - **Picture:** its face on the console and on what it posts in Slack.

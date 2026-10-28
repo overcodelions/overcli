@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { itemsFrom } from './mcpDirect';
 import { TriggerService, eventItem, type Deliverable, type WorkerTrigger } from './triggers';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail?: string } = {}) {
+function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail?: string; owner?: boolean; quietMs?: number } = {}) {
   let triggers: WorkerTrigger[] = [];
   let deliverables: Deliverable[] = [];
   const asked: string[] = [];
@@ -15,6 +15,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
   let toolResult: unknown = opts.items ?? { issues: [{ key: 'ACME-1', fields: { summary: 'Export fails' } }] };
   let now = new Date(2026, 9, 20, 12).getTime();
   const svc = new TriggerService({
+    ...(opts.quietMs ? { quietMs: opts.quietMs } : {}),
     store: { list: () => structuredClone(triggers), save: (all) => (triggers = structuredClone(all)) },
     deliverables: { list: () => structuredClone(deliverables), save: (all) => (deliverables = structuredClone(all)) },
     worker: (id) => (id === 'triage' ? { id, name: 'Triage', enabled: !opts.paused, avatarUrl: 'https://img.example/triage.png' } : null),
@@ -45,6 +46,14 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
         return true;
       },
     },
+    ...(opts.owner
+      ? {
+          tellOwner: async (workerId: string, text: string) => {
+            posts.push(`owner:${workerId}:${text.split('\n')[0]}`);
+            return true;
+          },
+        }
+      : {}),
     log: () => {},
     now: () => now,
   });
@@ -106,6 +115,22 @@ describe('watch triggers', () => {
     expect(d.deliveredTo).toEqual(['Slack #C0ACMEENG', 'Comment your triage on the ticket.']);
     expect(h.posts[0]).toBe('C0ACMEENG:*Triage* handled _ACME-2: Login loops_');
     expect(h.svc.stats('triage', 0)).toMatchObject({ handled: 1, failed: 0 });
+  });
+
+  it("tells the worker's manager what it did, or that it could not finish", async () => {
+    for (const fail of [undefined, 'Out of turns']) {
+      const h = harness({ owner: true, ...(fail ? { fail } : {}) });
+      const made = h.svc.create(watch());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.poll(made.trigger.id);
+      h.setItems({ issues: [{ key: 'ACME-2', fields: { summary: 'Login loops' } }] });
+      await h.svc.poll(made.trigger.id);
+      await tick();
+      await tick();
+      const told = h.posts.filter((p) => p.startsWith('owner:'));
+      expect(told).toEqual([fail ? 'owner:triage:*Triage* could not finish _ACME-2: Login loops_ from _New bugs_: Out of turns' : 'owner:triage:*Triage* handled _ACME-2: Login loops_']);
+      if (!fail) expect(h.deliverables()[0].deliveredTo).toContain('its manager');
+    }
   });
 
   it('says when its tool is missing, and keeps to its daily limit', async () => {
@@ -178,6 +203,31 @@ describe('slack triggers', () => {
     expect(h.postedAs).toEqual(['Triage|https://img.example/triage.png']);
   });
 
+  it('waits for someone to stop typing, then takes their messages as one', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ reply: 'Answered.', quietMs: 5000 });
+      const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message', contains: 'index' }, deliver: [{ kind: 'thread' }] });
+      if (!made.ok) throw new Error(made.error);
+      expect(await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '4.1', text: 'how often does collateral get indexed?' })).toBe(true);
+      await vi.advanceTimersByTimeAsync(3000);
+      // Part of the burst, though it doesn't say "index".
+      expect(await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '4.2', text: 'and how long till search finds it' })).toBe(true);
+      // Someone else, not saying it: not for this trigger.
+      expect(await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U2', ts: '4.3', text: 'lunch is here' })).toBe(false);
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(h.asked).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.asked).toHaveLength(1);
+      expect(h.asked[0]).toContain('how often does collateral get indexed?');
+      expect(h.asked[0]).toContain('and how long till search finds it');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.posts).toEqual(['C0ACMESUP@4.1:Answered.']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('posts nothing when the worker passes, and says so on the deliverable', async () => {
     const h = harness({ reply: ' **PASS.** ' });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
@@ -187,6 +237,24 @@ describe('slack triggers', () => {
     expect(h.asked[0]).toContain('reply with only PASS');
     expect(h.posts).toEqual([]);
     expect(h.deliverables()[0]).toMatchObject({ status: 'skipped', error: 'Triage passed: nothing worth saying.' });
+  });
+
+  it.each(['PASS — just chatter', 'pass: an announcement', 'PASS - already answered'])('passes on "%s" too', async (reply) => {
+    const h = harness({ reply });
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', ts: '3.1', text: 'lunch is here' });
+    await tick();
+    expect(h.posts).toEqual([]);
+  });
+
+  it.each(['Passed the export through the new parser: ACME-10.', 'Password reset is broken: filed ACME-11.'])('still posts "%s"', async (reply) => {
+    const h = harness({ reply });
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', ts: '3.1', text: 'the export is broken' });
+    await tick();
+    expect(h.posts).toHaveLength(1);
   });
 
   it('leaves a message that @-mentions the bot to the front door', async () => {
@@ -201,6 +269,10 @@ describe('slack triggers', () => {
     const h = harness();
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'mention' }, deliver: [{ kind: 'thread' }] });
     expect(made).toMatchObject({ ok: false });
+    const message = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
+    if (!message.ok) throw new Error(message.error);
+    expect(h.svc.update(message.trigger.id, { slack: { channel: 'C0ACMESUP', on: 'mention' } })).toMatchObject({ ok: false });
+    expect(h.svc.update(message.trigger.id, { name: 'Renamed' })).toMatchObject({ ok: true });
   });
 
   it('reads new messages only, not thread replies or bots', async () => {

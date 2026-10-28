@@ -83,6 +83,8 @@ import { watchServiceFiles } from './fileWatch';
 import type { CaughtException } from '../../shared/exceptions';
 import { Supervisor, type SupervisorEvent } from './supervisor';
 import { taskPresets } from './taskPresets';
+import { buildSharedStack, matchRepos, specsFromShared, type SharePlace } from './stackShare';
+import type { SharePreview, SharedRepoMatch, SharedStack } from '../../shared/stackShare';
 import { normalizeWatchPatterns, startOrder } from './types';
 import type {
   MachineEntry,
@@ -1648,6 +1650,51 @@ export class ServicesManager {
     return { added, lifted, skipped, needsCommand };
   }
 
+  /// Some or all of a stack as a file someone else can run. See `stackShare.ts`
+  /// for what is left out and why.
+  shareStack(
+    workspaceId: string,
+    args: { name: string; projects: readonly SharePlace[]; serviceIds?: readonly string[]; includePins?: boolean },
+  ): SharePreview {
+    const stack = this.stack(workspaceId);
+    return buildSharedStack({
+      name: args.name,
+      services: stack.services,
+      bindings: stack.bindings,
+      projects: args.projects,
+      serviceIds: args.serviceIds,
+      includePins: args.includePins,
+      remoteOf: originUrl,
+      home: os.homedir(),
+    });
+  }
+
+  /// Where each repo of an incoming stack is on this machine, if anywhere.
+  matchSharedRepos(stack: SharedStack, projects: readonly SharePlace[]): SharedRepoMatch[] {
+    return matchRepos(stack, projects, originUrl);
+  }
+
+  /// Add an incoming stack, each service bound to the checkout its repo was
+  /// matched to. Stopped: adding is not asking to run. What it still needs —
+  /// the values only the importer has — is the pane's machine-values prompt.
+  importShared(
+    workspaceId: string,
+    stack: SharedStack,
+    places: Record<string, { projectId?: string; path: string } | undefined>,
+  ): { added: string[]; skipped: { name: string; reason: string }[] } {
+    const { specs, skipped } = specsFromShared({
+      stack,
+      places,
+      existing: this.stack(workspaceId).services,
+      home: os.homedir(),
+      idFor: serviceIdFor,
+    });
+    for (const { spec, path: checkout } of specs) {
+      this.addService(workspaceId, spec, { ref: this.readRef(checkout), path: checkout });
+    }
+    return { added: specs.map((s) => s.spec.id), skipped };
+  }
+
   /// Where a service's own config lives — the directory whose contents are
   /// injected or linked into whichever worktree it is bound to.
   configDir(workspaceId: string, serviceId: string): string {
@@ -2126,6 +2173,29 @@ export function daemonOff(spec: ServiceSpec): ServiceSpec {
 
 const DAEMON_ON = '-Dorg.gradle.daemon=true';
 const DAEMON_OFF = '-Dorg.gradle.daemon=false';
+
+/// The checkout's `origin` url, as git has it. Undefined for a folder that is
+/// not a repo or has no origin — a shared stack then names it by folder.
+/// Remembered for a minute: the share sheet asks again on every tick of its
+/// picker, and a remote does not move while someone is ticking.
+function originUrl(checkout: string): string | undefined {
+  if (!checkout) return undefined;
+  const known = originUrls.get(checkout);
+  if (known && Date.now() - known.at < 60_000) return known.url;
+  let url: string | undefined;
+  try {
+    url = execFileSync('git', ['remote', 'get-url', 'origin'], {
+      cwd: checkout,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    url = undefined;
+  }
+  originUrls.set(checkout, { url, at: Date.now() });
+  return url;
+}
+const originUrls = new Map<string, { url: string | undefined; at: number }>();
 
 /// Whether a ref resolves in this checkout. Distinguishes "check that branch
 /// out" from "make a local branch tracking that remote one".

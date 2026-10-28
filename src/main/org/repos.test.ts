@@ -8,9 +8,9 @@ import { validateFlow } from '../../shared/flows/validation';
 import { enabledToolsFor, resolveStepEffect } from '../flows/runtime';
 import { setTrustedCommands } from '../flows/trustedCommands';
 import { applyRepoGrants, bindAllowList } from './repoGrants';
-import { BranchLander, PR_STEP_OUTPUT, testUserRefusal } from './landBranches';
+import { BranchLander, PR_STEP_OUTPUT, describe as describeLanded, landedBranches, testUserRefusal } from './landBranches';
 import type { FlowRun } from '../../shared/flows/schema';
-import { RepoService, checkTestCommand, credentialHelper, newPullRequestLink, parseRepoUrl, prFlowId, prFlowYaml, prePushHook, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
+import { RepoService, serverGitNote, checkTestCommand, credentialHelper, newPullRequestLink, parseRepoUrl, prFlowId, prFlowYaml, prePushHook, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
 
 const repo: ConnectedRepo = { name: 'app', url: 'https://github.com/acme/app.git', path: '/data/repos/app', defaultBranch: 'main', testCommand: 'npm test', addedBy: 'Bo', at: 0 };
 
@@ -20,13 +20,14 @@ afterEach(() => {
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function service(env: Record<string, string> = {}) {
+function service(env: Record<string, string | undefined> = {}, stored: { testsAsServer?: boolean; repos?: ConnectedRepo[] } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-repos-'));
   dirs.push(root);
-  let state: { repos: ConnectedRepo[]; workspaces?: OrgWorkspace[] } = { repos: [] };
+  let state: { repos: ConnectedRepo[]; workspaces?: OrgWorkspace[]; testsAsServer?: boolean } = { repos: [], ...stored };
   const calls: string[] = [];
   const projects: string[] = [];
   const workspaces: string[] = [];
+  const logged: string[] = [];
   const svc = new RepoService({
     store: { load: () => structuredClone(state), save: (s) => (state = structuredClone(s)) },
     reposDir: path.join(root, 'repos'),
@@ -42,9 +43,10 @@ function service(env: Record<string, string> = {}) {
       return { ok: true, rootPath: 'remove' in ws ? '' : path.join(root, 'workspaces', ws.id) };
     },
     env: (name) => env[name],
+    log: (m) => logged.push(m),
     now: () => 1,
   });
-  return { svc, root, calls, projects, workspaces };
+  return { svc, root, calls, projects, workspaces, env, logged, state: () => state };
 }
 
 describe('connecting a repo', () => {
@@ -193,14 +195,14 @@ describe('workspaces', () => {
 });
 
 describe('bringing clones up to date before a run forks', () => {
-  it('fetches only connected repos, and moves the default branch to origin\'s', async () => {
+  it('fetches every branch of connected repos only, and moves the default branch to origin\'s', async () => {
     const h = service({ GH_TOKEN: 'ghs_test' });
     await h.svc.connect({ url: 'https://github.com/acme/app' }, 'Bo');
     const app = h.svc.list()[0];
     h.calls.length = 0;
     expect(await h.svc.freshen([app.path, '/somewhere/else'])).toEqual([]);
     // Not checked out here (the fake HEAD is elsewhere): only the branch moves.
-    expect(h.calls).toEqual(['fetch --prune origin trunk', 'rev-parse --abbrev-ref HEAD', 'fetch origin trunk:trunk']);
+    expect(h.calls).toEqual(['fetch --prune origin', 'rev-parse --abbrev-ref HEAD', 'fetch origin trunk:trunk']);
   });
 });
 
@@ -427,11 +429,100 @@ describe('the server pushing a single-repo run', () => {
   });
 });
 
+describe('the server pushing a follow-up', () => {
+  function setUp() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-land2-'));
+    dirs.push(root);
+    const run = (args: string[], cwd: string) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@acme.example', ...args], { cwd, stdio: 'pipe' }).toString();
+    run(['init', '-q', '--bare', '-b', 'trunk', 'app.git'], root);
+    run(['clone', '-q', 'app.git', 'app'], root);
+    const app = path.join(root, 'app');
+    fs.writeFileSync(path.join(app, 'README.md'), '# app\n');
+    run(['checkout', '-q', '-b', 'trunk'], app);
+    run(['add', '-A'], app);
+    run(['commit', '-qm', 'init'], app);
+    run(['push', '-q', 'origin', 'trunk'], app);
+    // The first run's change, pushed by the server, its pull request open.
+    run(['checkout', '-q', '-b', 'first'], app);
+    fs.appendFileSync(path.join(app, 'README.md'), 'First.\n');
+    run(['commit', '-qam', 'First change'], app);
+    run(['push', '-q', 'origin', 'HEAD:refs/heads/overcli/first-change-111111'], app);
+    run(['checkout', '-q', 'trunk'], app);
+    // The follow-up's checkout, started from that branch.
+    run(['worktree', 'add', '-q', '-b', 'agent/z', path.join(root, 'wt'), 'origin/overcli/first-change-111111'], app);
+    fs.appendFileSync(path.join(root, 'wt', 'README.md'), 'Softer.\n');
+    const lander = new BranchLander({
+      git: async (args, cwd) => {
+        try {
+          return { ok: true, stdout: execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@acme.example', ...args], { cwd, stdio: 'pipe' }).toString() };
+        } catch (err) {
+          return { ok: false, error: String((err as { stderr?: Buffer }).stderr ?? err) };
+        }
+      },
+      repos: () => [{ name: 'app', url: 'git@bitbucket.org:acme/app.git', path: app, defaultBranch: 'trunk', addedBy: 'Bo', at: 0 }],
+      attach: () => {},
+      log: () => {},
+    });
+    const followUp = { id: '222333444', flowId: 'org-pr-app', projectPath: app, worktreePath: path.join(root, 'wt'), userPrompt: 'Soften the wording', artifacts: {} } as unknown as FlowRun;
+    return { root, app, run, lander, followUp };
+  }
+
+  it('adds its commits to the branch it was built on, so the open pull request has them', async () => {
+    const { root, run, lander, followUp } = setUp();
+    const landed = await lander.land(followUp);
+    expect(landed).toEqual([{ repo: 'app', branch: 'overcli/first-change-111111', updated: true }]);
+    expect(run(['log', '--format=%s', 'overcli/first-change-111111'], path.join(root, 'app.git')).trim().split('\n')).toEqual(['Soften the wording', 'First change', 'init']);
+    expect(run(['branch', '--list'], path.join(root, 'app.git'))).not.toContain('soften');
+    expect(describeLanded(landed)).toBe('- app: added to overcli/first-change-111111, so its open pull request has the new commits');
+    expect(landedBranches(describeLanded(landed))).toEqual(['overcli/first-change-111111']);
+  });
+
+  it('reads the branch back from a link written before the line named it', () => {
+    expect(landedBranches('- Open a pull request for app: https://bitbucket.org/acme/app/pull-requests/new?source=feature/fix-it-abc123&dest=trunk')).toEqual(['feature/fix-it-abc123']);
+    expect(landedBranches('- Open a pull request for app: https://github.com/acme/app/compare/main...overcli/fix-it-abc123?expand=1')).toEqual(['overcli/fix-it-abc123']);
+    expect(landedBranches('- app: not pushed — its tests failed')).toEqual([]);
+  });
+
+  it('pushes a branch of its own when the one it was built on has moved, never forcing it', async () => {
+    const { root, app, run, lander, followUp } = setUp();
+    run(['checkout', '-q', 'first'], app);
+    fs.appendFileSync(path.join(app, 'README.md'), 'Someone else.\n');
+    run(['commit', '-qam', 'Pushed meanwhile'], app);
+    run(['push', '-q', 'origin', 'HEAD:refs/heads/overcli/first-change-111111'], app);
+    const landed = await lander.land(followUp);
+    expect(landed).toEqual([{ repo: 'app', branch: 'overcli/soften-the-wording-222333', url: 'https://bitbucket.org/acme/app/pull-requests/new?source=overcli/soften-the-wording-222333&dest=trunk' }]);
+    expect(run(['log', '-1', '--format=%s', 'overcli/first-change-111111'], path.join(root, 'app.git')).trim()).toBe('Pushed meanwhile');
+    expect(landedBranches(describeLanded(landed))).toEqual(['overcli/soften-the-wording-222333']);
+  });
+});
+
 describe('a repo address as the host hands it out', () => {
   it('drops the account name a clone address carries, and still refuses a token', () => {
     expect(parseRepoUrl('https://pat@bitbucket.org/acme/app.git')).toMatchObject({ ok: true, url: 'https://bitbucket.org/acme/app.git', host: 'bitbucket', name: 'app' });
     expect(parseRepoUrl('https://pat:sekrit@bitbucket.org/acme/app.git')).toMatchObject({ ok: false });
     expect(parseRepoUrl('https://ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/acme/app')).toMatchObject({ ok: false });
     expect(parseRepoUrl('https://x-token-auth@bitbucket.org/acme/app.git')).toMatchObject({ ok: false });
+  });
+});
+
+describe('the note every step of a repo run ends with', () => {
+  it('tells a run on a connected repo not to fetch, and which tests guard the push', () => {
+    const note = serverGitNote(['./gradlew test']);
+    expect(note).toContain('Do not run git fetch, pull');
+    expect(note).toContain('origin/<branch> is current');
+    expect(note).toContain('runs ./gradlew test and refuses a failing push');
+    expect(serverGitNote([])).not.toContain('refuses a failing push');
+  });
+});
+
+describe('repo tests no longer turned on from the Repos page', () => {
+  it('clears what the old switch turned on, and the commands beside it, once', () => {
+    const repo = { name: 'app', url: 'https://github.com/acme/app', path: '/r/app', defaultBranch: 'main', testCommand: './gradlew test', addedBy: 'Bo', at: 1 } as ConnectedRepo;
+    const h = service({}, { testsAsServer: true, repos: [repo] });
+    expect(h.state().testsAsServer).toBeUndefined();
+    expect(h.state().repos[0].testCommand).toBeUndefined();
+    expect(h.logged[0]).toContain('Cleared the test commands of app');
+    const untouched = service({}, { repos: [repo] });
+    expect(untouched.state().repos[0].testCommand).toBe('./gradlew test');
   });
 });

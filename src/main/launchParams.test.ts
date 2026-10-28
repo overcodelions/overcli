@@ -32,6 +32,7 @@ const BASE: LaunchParams = {
   launchNarrate: false,
   launchNetwork: false,
   launchSandbox: false,
+  launchRelayKey: '',
   launchEffort: 'medium',
   cwd: '/repo',
 };
@@ -49,6 +50,7 @@ const CHANGED: { [K in keyof LaunchParams]-?: LaunchParams[K] } = {
   launchNarrate: true,
   launchNetwork: true,
   launchSandbox: true,
+  launchRelayKey: 'a1b2c3',
   launchEffort: 'high',
   cwd: '/other-repo',
 };

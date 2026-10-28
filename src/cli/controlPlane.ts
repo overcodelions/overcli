@@ -1042,6 +1042,12 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'GET', path: /^\/api\/tool-requests$/, handle: (c) => org.toolRequests(c) },
     { method: 'GET', path: /^\/api\/handbook$/, handle: (c) => org.handbook(c) },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/learn$/, handle: (c, _b, [id]) => org.learnWorker(c, decodeURIComponent(id)) },
+    { method: 'GET', path: /^\/api\/workers\/([^/]+)\/models$/, handle: (c, _b, [id]) => org.modelUpgrades(c, decodeURIComponent(id)) },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/models$/,
+      handle: (c, b, [id]) => org.upgradeModels(c, decodeURIComponent(id), { planning: b.planning === true, flows: Array.isArray(b.flows) ? b.flows.filter((f: unknown): f is string => typeof f === 'string').slice(0, 50) : [] }),
+    },
     {
       method: 'POST',
       path: /^\/api\/workers\/([^/]+)\/knowledge$/,
@@ -1112,11 +1118,26 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'GET', path: /^\/api\/admin\/storage$/, handle: (c) => org.storage(c) },
     { method: 'POST', path: /^\/api\/admin\/storage\/discard$/, handle: (c, b) => org.discardCheckouts(c, str(b.runId)) },
     { method: 'POST', path: /^\/api\/admin\/storage\/clear-cache$/, handle: (c) => org.clearToolCache(c) },
+    { method: 'POST', path: /^\/api\/admin\/storage\/clear-build-cache$/, handle: (c) => org.clearBuildCache(c) },
     { method: 'POST', path: /^\/api\/workspaces$/, handle: (c, b) => org.createWorkspace(c, { name: str(b.name), repos: Array.isArray(b.repos) ? b.repos.map(String) : [], instructions: str(b.instructions) || undefined }) },
     { method: 'POST', path: /^\/api\/workspaces\/([^/]+)$/, handle: (c, b, [id]) => org.updateWorkspace(c, decodeURIComponent(id), { ...(Array.isArray(b.repos) ? { repos: b.repos.map(String) } : {}), ...(typeof b.instructions === 'string' ? { instructions: b.instructions } : {}) }) },
     { method: 'POST', path: /^\/api\/workspaces\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeWorkspace(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/push$/, handle: (c, _b, [id]) => org.pushTeamCode(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/repos$/, handle: (c, b) => org.connectRepo(c, { url: str(b.url), name: str(b.name) || undefined, testCommand: str(b.testCommand) || undefined }) },
+    { method: 'GET', path: /^\/api\/toolchains$/, handle: (c) => org.toolchainList(c) },
+    {
+      method: 'POST',
+      path: /^\/api\/toolchains$/,
+      handle: (c, b) => {
+        const env = b.env && typeof b.env === 'object' && !Array.isArray(b.env) ? Object.fromEntries(Object.entries(b.env as Record<string, unknown>).map(([k, v]) => [k, str(v)])) : undefined;
+        return org.installToolchain(c, { kit: str(b.kit), version: str(b.version), url: str(b.url) || undefined, sha256: str(b.sha256) || undefined, bin: str(b.bin) || undefined, ...(env ? { env } : {}) });
+      },
+    },
+    { method: 'POST', path: /^\/api\/toolchains\/default$/, handle: (c, b) => org.setToolchainDefault(c, str(b.kit), str(b.version)) },
+    { method: 'POST', path: /^\/api\/toolchains\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeToolchain(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/repos\/pr-mode$/, handle: (c, b) => org.setPrMode(c, str(b.mode)) },
+    { method: 'POST', path: /^\/api\/repos\/ci-rounds$/, handle: (c, b) => org.setCiRounds(c, Number(b.rounds)) },
+    { method: 'POST', path: /^\/api\/repos\/([^/]+)\/toolchain$/, handle: (c, b, [name]) => org.setRepoToolchain(c, decodeURIComponent(name), str(b.kit), str(b.version) || null) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.disconnectRepo(c, decodeURIComponent(name)) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/workers$/, handle: (c, b, [name]) => org.letWorkOnRepo(c, str(b.worker), decodeURIComponent(name)) },
     { method: 'GET', path: /^\/api\/teams$/, handle: (c) => org.teams(c) },
@@ -1298,6 +1319,11 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/admin\/tools\/([^/]+)\/scope$/, handle: (c, b, [name]) => org.setToolDefault(c, decodeURIComponent(name), b.default ?? null) },
     { method: 'GET', path: /^\/api\/tools\/([^/]+)\/calls$/, handle: (c, _b, [name]) => org.serverTools(c, decodeURIComponent(name)) },
     { method: 'GET', path: /^\/api\/workers\/([^/]+)\/triggers$/, handle: (c, _b, [id]) => org.triggers(c, decodeURIComponent(id)) },
+    {
+      method: 'GET',
+      path: /^\/api\/workers\/([^/]+)\/export$/,
+      handle: (c, _b, [id], url) => org.exportWorker(c, decodeURIComponent(id), { learned: url.searchParams.get('learned') === '1', journal: url.searchParams.get('journal') === '1' }),
+    },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/triggers$/, handle: (c, b, [id]) => org.createTrigger(c, decodeURIComponent(id), triggerInput(b.trigger)) },
     { method: 'POST', path: /^\/api\/triggers\/test$/, handle: (c, b) => org.testWatch(c, triggerInput({ kind: 'watch', watch: b.watch }).watch!) },
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/check$/, handle: (c, _b, [id]) => org.checkTriggerNow(c, decodeURIComponent(id)) },

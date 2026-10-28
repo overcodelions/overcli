@@ -27,7 +27,7 @@ import { authTest, escapeMrkdwn, openIm, postMessage, updateMessage, type FetchL
 import { SocketModeClient, type SocketCtor, type SocketEnvelope } from './socketMode';
 import { threadKey, type SlackThread, type SlackThreadKind, type ThreadStore } from './threadStore';
 import type { SlackCommands } from './slackCommands';
-import { DOOR_CHOICE_ACTION, DOOR_SUBSCRIBE_ACTION, type FrontDoor } from './frontDoor';
+import { DOOR_CHOICE_ACTION, DOOR_SUBSCRIBE_ACTION, DOOR_TRACE_ACTION, DOOR_WRITEUP_ACTION, type FrontDoor } from './frontDoor';
 import { stepOutsideTools, stepsARunGrantCovers } from '../flows/stepEffect';
 import { changesAsDiff, changesSummary, type RunChanges } from '../org/runChanges';
 import type { FlowStep } from '../../shared/flows/schema';
@@ -480,9 +480,9 @@ export class SlackBridge {
 
   /// "@overgo …" and DMs that aren't answers to anything: requests for
   /// whichever worker fits. See frontDoor.ts.
-  private frontDoor: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice' | 'subscribe' | 'adopt'> | null = null;
+  private frontDoor: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice' | 'subscribe' | 'adopt' | 'showTrace' | 'showWriteUp'> | null = null;
 
-  setFrontDoor(door: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice' | 'subscribe' | 'adopt'> | null): void {
+  setFrontDoor(door: Pick<FrontDoor, 'onMessage' | 'owns' | 'onChoice' | 'subscribe' | 'adopt' | 'showTrace' | 'showWriteUp'> | null): void {
     this.frontDoor = door;
   }
 
@@ -697,6 +697,18 @@ export class SlackBridge {
       const ts = m.message?.ts;
       const user = p.user?.id;
       if (channel && ts && user) await this.frontDoor.subscribe(channel, m.message?.thread_ts ?? ts, user, true);
+      return;
+    }
+    // "Show the trace" under an answer: a pop-up for the presser.
+    if (action?.action_id === DOOR_TRACE_ACTION && this.frontDoor) {
+      const trigger = (payload as { trigger_id?: string }).trigger_id;
+      if (trigger && action.value) await this.frontDoor.showTrace(trigger, action.value);
+      return;
+    }
+    // "Full write-up" under an answer: the document, in a pop-up.
+    if (action?.action_id?.startsWith(DOOR_WRITEUP_ACTION) && this.frontDoor) {
+      const trigger = (payload as { trigger_id?: string }).trigger_id;
+      if (trigger && action.value) await this.frontDoor.showWriteUp(trigger, action.value);
       return;
     }
     // A one-tap answer under a worker's reply in a front-door thread.

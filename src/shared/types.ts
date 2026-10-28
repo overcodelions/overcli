@@ -9,6 +9,7 @@ import type { LandingAudit, LandingUpdateResult } from './flows/landingAudit';
 import type { Schedule } from './flows/schedule';
 import type { FlowRiskFinding } from './flows/riskScan';
 import type { ImportSet, ImportedService } from './servicesImport';
+import type { SharePreview, SharedRepoMatch, SharedStack } from './stackShare';
 import type { WorktreeChoice } from './worktrees';
 import type { BranchChoice } from './refChoices';
 import type { MachineValueForm } from './machineValues';
@@ -3489,6 +3490,32 @@ export interface IPCInvokeMap {
   /// Pick one configuration file anywhere on disk and read it. Null when the
   /// dialog was cancelled.
   'services:importFile': () => ({ file: string } & ({ set: ImportSet } | { error: string })) | null;
+  /// Some or all of a stack as a file someone else can run: repos by remote,
+  /// credentials as `${NAME}`, nothing that only means something here.
+  'services:shareStack': (args: {
+    workspaceId: string;
+    name: string;
+    projects: { id: string; name: string; path: string }[];
+    serviceIds?: string[];
+    includePins?: boolean;
+  }) => SharePreview;
+  /// Save a share's text where the user picks. False when they cancelled.
+  'services:saveShare': (args: { text: string; name: string }) => boolean;
+  /// Pick a shared stack file and read it. Null when the dialog was cancelled.
+  'services:readShared': () => ({ file: string } & ({ stack: SharedStack } | { error: string })) | null;
+  /// Where each of an incoming stack's repos is on this machine.
+  'services:matchShared': (args: {
+    stack: SharedStack;
+    projects: { id: string; name: string; path: string }[];
+  }) => SharedRepoMatch[];
+  /// Pick a folder for a repo the match did not find. Null when cancelled.
+  'services:pickFolder': (args: { title: string }) => string | null;
+  /// Add an incoming stack, each repo's services bound where it was placed.
+  'services:importShared': (args: {
+    workspaceId: string;
+    stack: SharedStack;
+    places: Record<string, { projectId?: string; path: string } | undefined>;
+  }) => { added: string[]; skipped: { name: string; reason: string }[] };
   /// Daemons installed on this machine rather than in a checkout — mariadb,
   /// memcached, redis — from brew, systemd or Windows services. Empty where
   /// none of those exist.
@@ -4446,7 +4473,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   flowModelDefaults: {},
   disabledBackends: {},
   defaultPermissionMode: 'auto',
-  permissionDefaultsVersion: 1,
+  permissionDefaultsVersion: 2,
   defaultEffort: '',
   backendDefaultEfforts: {},
   agentBranchPrefix: 'agent/',

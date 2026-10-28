@@ -168,6 +168,8 @@ describe('trust ladder helpers', () => {
     expect(rejectionStreak([e('proposed'), e('completed'), e('rejected')])).toBe(1);
     // A demotion spends the streak — older rejections don't count again.
     expect(rejectionStreak([e('rejected'), e('demoted'), e('rejected'), e('rejected')])).toBe(1);
+    // Verdicts from another server, brought on an export, aren't held against it here.
+    expect(rejectionStreak([e('rejected'), { kind: 'rejected', imported: true }, { kind: 'rejected', imported: true }])).toBe(1);
     // An errand records a request, not a verdict, so it does not reset the
     // rejection streak that drives trust demotion.
     expect(rejectionStreak([e('rejected'), e('errand'), e('rejected')])).toBe(2);

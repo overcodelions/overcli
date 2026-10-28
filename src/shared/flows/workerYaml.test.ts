@@ -1,4 +1,4 @@
-import { parse } from 'yaml';
+import { parse, stringify } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import type { Flow } from './schema';
@@ -350,5 +350,47 @@ describe('org fields stay home', () => {
       }),
     );
     expect(yaml).not.toMatch(/U0ACME01|Pat Acme|chief-1|acme\.example|visibility/);
+  });
+});
+
+describe('what an export carries', () => {
+  const carried = {
+    toolScopes: { tracker: { mode: 'only' as const, calls: ['search'] } },
+    triggers: [
+      {
+        name: 'New tickets',
+        kind: 'watch' as const,
+        enabled: false,
+        instructions: 'Triage it.',
+        deliver: [{ kind: 'thread' as const }],
+        maxPerDay: 20,
+        watch: { server: 'tracker', tool: 'search', args: { q: 'open' }, everyMinutes: 30, idPath: 'key' },
+      },
+    ],
+    knowledge: 'Tickets live on board 215.',
+    notes: [{ at: 5, note: 'Skip ACME-9' }],
+    journal: [{ kind: 'completed' as const, at: 7, title: 'ACME-1 fix login' }],
+  };
+
+  it('round-trips its setup, notes and journal', () => {
+    const parsed = parseWorkerYaml(serializeWorker({ worker: worker(), flows: [], carried }));
+    expect(parsed.ok && parsed.bundle.carried).toEqual(carried);
+  });
+
+  it('is absent from a plain share', () => {
+    const parsed = parseWorkerYaml(shareOf());
+    expect(parsed.ok && parsed.bundle.carried).toBeUndefined();
+  });
+
+  it('drops what a hand-made file shouldn’t bring', () => {
+    const doc = parse(serializeWorker({ worker: worker(), flows: [] }));
+    doc.journal = [{ kind: 'demoted', at: 1, title: '' }, { kind: 'completed', at: 'soon', title: 'x' }, { kind: 'completed', at: 2, title: 'kept' }];
+    doc.triggers = [{ name: 'DM me', kind: 'watch', deliver: [{ kind: 'dm', slackUserId: 'U0X' }] }, { kind: 'slack' }];
+    doc.tool_scopes = { tracker: { mode: 'everything' } };
+    const parsed = parseWorkerYaml(stringify(doc));
+    const c = parsed.ok ? parsed.bundle.carried : null;
+    expect(c?.journal).toEqual([{ kind: 'completed', at: 2, title: 'kept' }]);
+    expect(c?.triggers).toEqual([{ name: 'DM me', kind: 'watch', enabled: true, instructions: '', deliver: [], maxPerDay: 50 }]);
+    expect(c?.toolScopes).toBeUndefined();
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseShellEnv, readShellEnv, shellFlags } from './shellEnv';
+import { parseShellEnv, readShellEnv, shellFlags, withShellToolchain } from './shellEnv';
 
 describe('parseShellEnv', () => {
   const mark = '__m__';
@@ -61,5 +61,19 @@ describe.skipIf(process.platform === 'win32')('readShellEnv', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('a worker borrowing the shell\'s toolchain', () => {
+  it('puts the shell\'s PATH first and adds tool homes, never secrets or what the app already has', () => {
+    const shell = { PATH: '/home/acme/.sdkman/candidates/java/current/bin:/usr/bin', JAVA_HOME: '/jdk8', SDKMAN_DIR: '/sdk', GH_TOKEN: 'ghp_x', ACME_API_KEY: 'k', VAULT_HOME_TOKEN: 't', EDITOR: 'vim', HOME: '/elsewhere' };
+    const out = withShellToolchain({ PATH: '/usr/bin:/bin', HOME: '/home/acme' }, shell);
+    expect(out.PATH).toBe('/home/acme/.sdkman/candidates/java/current/bin:/usr/bin:/bin');
+    expect(out).toMatchObject({ JAVA_HOME: '/jdk8', SDKMAN_DIR: '/sdk', HOME: '/home/acme' });
+    for (const k of ['GH_TOKEN', 'ACME_API_KEY', 'VAULT_HOME_TOKEN', 'EDITOR']) expect(out[k]).toBeUndefined();
+  });
+  it('leaves the environment alone until the shell has answered', () => {
+    const env = { PATH: '/usr/bin' };
+    expect(withShellToolchain(env, undefined)).toBe(env);
   });
 });

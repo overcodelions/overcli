@@ -4,6 +4,29 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Security
+- **"Allow rest of turn" asks before a run writes Claude's own config.** A write to `.mcp.json` or anything in `.claude/` (settings with hooks, commands) gets a card, as writes to `package.json` already did: both name commands the next launch runs.
+- **A secret read counts however it was approved.** Once a turn reads a credential-shaped file (`.env`, a key), the safe grant asks for tool calls, whether the read was let through by the grant, a card, a remembered rule or the CLI's own rules, and also when the grant is turned on after the read.
+- **Shared stacks leave out credentials passed as arguments** (`-Ddb.password=…`), and a password with a `$` in it (`Pa$sword1`) is no longer taken for a reference and exported as typed.
+
+### Added
+- **Toolchains.** Setup → Toolchains installs Java, Node.js, Python, Go or any archive onto the server's data volume, checked against the publisher's checksum, and picks a version per repo (or lets the repo's `.nvmrc`, `.sdkmanrc`, `go.mod` and the like pick), with no image rebuild.
+- **CI closes the loop.** After the server pushes a worker's branch, it reads the repo's own CI result through Bitbucket or GitHub. A red build goes back to the same worker, with the failing checks, tests and the end of the log, to fix on the same branch; after a few rounds still red, its manager hears.
+- **Pull requests opened for you.** A pushed branch's pull request is opened on Bitbucket or GitHub with the worker's title and description, as a draft by default, for review, or as a link only.
+- **Move a worker to another server.** **Export** on a worker's page downloads its job, flows, triggers and tool setup (keys removed), optionally with what it knows and its journal; **Hire → Bring a worker you built yourself** takes the file on the other server.
+- **Share a stack as a file.** The Services pane exports some or all of a stack, with typed credentials turned into named blanks and repos named by remote, and imports one onto the matching checkouts on another machine.
+
+### Fixed
+- **A CI fix that changed nothing no longer ends the loop silently.** When a fix lands no new commit (the worker judged the failure flaky), or nothing is pushed within 6 hours, the manager is told.
+- **A failed toolchain reinstall keeps the working one.** The installed version is set aside, not deleted, until the new one runs. Downloads are capped at 1 GB and 30 minutes, and a catalog version whose checksum can't be read is not installed.
+- **Relayed tools keep working after a run's folders change.** A new jail profile gave the run's tools a new relay token the running process didn't have; the process now restarts with it.
+- **Nightly users get the Plan-to-Auto notice.** Stores the 0.22.1 nightly moved to Auto without the notice show it once.
+- **"Stop pinging me, I have another one: reopen ACME-10"** passes the request on instead of dropping it.
+- **A trigger reply of "PASS — just chatter" posts nothing**, like a bare PASS. Switching a trigger to mentions is refused on edit, as it is on create.
+- **Shared stacks:** the home folder becomes `${HOME}` only where it ends (`/home/alex` stays when home is `/home/al`), and a file with a broken ready check or options is refused on import instead of crashing it.
+- **A branch name with a quote in it** is not put into the Bitbucket pull request lookup.
+- **The server image sets `JAVA_HOME` only when it has a JDK** (`--build-arg JDKS`).
+
 ## [0.23.0] - 2026-10-26
 
 ### Security
@@ -63,9 +86,9 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **"Ping me when it's done and bump the timeout" passes the second request on** as well as following the thread, while "ping me when it's merged and deployed", "…when lint and build pass" and "…when config.yaml is updated" only follow it. A second request that opens with an order ("and reopen ACME-9", "and make it work on Safari", "and see what breaks") is passed on too.
 - **Initials nobody chose don't claim a message.** A team or process goes by its initials after `/idea` and `/team` and as a reply to "Which process?", but a Slack message that starts with them ("see if the export still works", for Support Escalation Engineering) goes to the router as before. Initials that spell a common first word ("see", "add", "run") are not offered at all, and such words can't be set as short names.
 - **A new short name can't take over one in use.** Setting a process's or team's short name to another live one's initials ("dtpd", which `/idea dtpd …` already reaches) is refused, as a name already set would be.
-- File search, the storage report and file-tree refreshes no longer run duplicate walks. The file tree's filter and the file finder no longer cancel each other's search.
-- A branch checkout no longer hands the file tree thousands of changed paths: past 200, the open folders are relisted.
-- A tool reply over 8 MB fails that one call instead of ending the tool's session, and large replies are no longer rescanned as they arrive.
+- **File walks run once.** File search, the storage report and file-tree refreshes no longer run duplicate walks. The file tree's filter and the file finder no longer cancel each other's search.
+- **A big branch checkout doesn't flood the file tree.** A checkout no longer hands it thousands of changed paths: past 200, the open folders are relisted.
+- **An oversized tool reply fails only that call.** A reply over 8 MB fails that one call instead of ending the tool's session, and large replies are no longer rescanned as they arrive.
 - **An npx tool cut off on its first download stayed broken**, failing every start with "Cannot find module". The server now installs npx tools in the background at startup, every 30 minutes and after one is installed, and removes and reinstalls a broken install.
 - **"Thanks" in a Slack thread a team's room answered went to the room as another question.** It now ends the exchange. A "yes" still goes to the room, which may have asked one.
 - **A question answered from known work could wait two minutes before being routed.** The answer gets 45 seconds, and the matching work is read once rather than again when it comes back empty.

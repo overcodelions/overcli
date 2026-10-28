@@ -96,7 +96,7 @@ import {
   isInsideAllowedDirs,
   normalizeAllowedDirs,
 } from './permissionRules';
-import { alwaysAllowRule, decideBeforeAsking, riskNote, safeForRestOfTurn, noteRestOfTurn, type RestOfTurnState, riskyAskRules } from './permissionPolicy';
+import { alwaysAllowRule, decideBeforeAsking, riskNote, safeForRestOfTurn, noteRestOfTurn, readsSecretShaped, type RestOfTurnState, riskyAskRules } from './permissionPolicy';
 import { summarizeToolUse } from './toolDescription';
 import { CommandChangeTracker } from './commandFileChanges';
 import { collapsePartialAssistants } from './streamSnapshot';
@@ -123,6 +123,8 @@ import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
 import { isSafeIdSegment } from '../shared/flows/safeId';
 import { stripSecrets } from './org/secrets';
+import { withShellToolchain } from './services/shellEnv';
+import { runEnv } from './runEnv';
 import { credentialDenyRules } from './org/credentialGuard';
 import { bindToolGateway, boundGatewayTools } from './org/toolGateway';
 import { overdbToolsForRun } from './org/overdbBinding';
@@ -734,6 +736,13 @@ export function selectedClaudeMcpConfig(
   return Object.keys(bound).length ? JSON.stringify({ mcpServers: bindRunTools(bound, args.conversationId, relayLaunchFor(args, profileDir)) }) : '';
 }
 
+/// What the relay token a spawn's env carries is, without keeping the token:
+/// a changed one means the resident process holds a dead token.
+function relayKeyOf(conversationId: string): string {
+  const token = runToolRelayEnv(conversationId).OVERCLI_TOOL_RELAY_TOKEN;
+  return token ? createHash('sha256').update(token).digest('hex').slice(0, 16) : '';
+}
+
 export function claudeMcpLaunchFingerprint(
   args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'skipGlobalMcp' | 'turbo' | 'cwd'>,
   selectedConfig: string,
@@ -944,6 +953,8 @@ interface ActiveProcess {
   /// is fixed at exec time, so toggling `sandboxFlowWrites`, or a chat
   /// process being reused by a flow step, must respawn.
   launchSandbox: boolean;
+  /// Digest of the tool relay token in this process's env (LaunchParams).
+  launchRelayKey: string;
   launchPermissionMode: PermissionMode;
   launchAllowedTools: string;
   launchMcpFingerprint?: string;
@@ -2150,7 +2161,7 @@ export class RunnerManager {
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.
-      env: { ...stripSecrets(process.env), ...claudeArtifactEnv(this.artifactsFor('claude')), ...this.claudeBrokerEnvByConv.get(convId), ...runToolRelayEnv(convId) },
+      env: { ...stripSecrets(runEnv(withShellToolchain(process.env), args.cwd)), ...claudeArtifactEnv(this.artifactsFor('claude')), ...this.claudeBrokerEnvByConv.get(convId), ...runToolRelayEnv(convId) },
       // We don't ship the SDK's bundled binary; point it at the user's
       // installed `claude` (the same one the cli transport spawns).
       pathToClaudeCodeExecutable: claudeSdkExecutablePath(
@@ -2522,7 +2533,9 @@ export class RunnerManager {
   /// the user switches back before sending.
   allowRestOfTurn(conversationId: UUID, allow: 'everything' | 'safe' | 'off'): void {
     const active = this.procs.get(conversationId);
-    if (active) { active.allowRestOfTurn = allow === 'off' ? undefined : allow; active.restOfTurn = {}; }
+    // A secret read earlier in the turn still counts: it was read whoever
+    // approved it.
+    if (active) { active.allowRestOfTurn = allow === 'off' ? undefined : allow; active.restOfTurn = active.restOfTurn?.readSecret ? { readSecret: true } : {}; }
   }
 
   /// ExitPlanMode is never swept up: approving it means "go build the
@@ -4045,7 +4058,7 @@ export class RunnerManager {
 
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
-    const env = { ...this.buildEnv(binary, args.backend), ...(args.backend === 'claude' ? { ...this.claudeBrokerEnvByConv.get(args.conversationId), ...runToolRelayEnv(args.conversationId) } : {}) };
+    const env = { ...this.buildEnv(binary, args.backend, args.cwd), ...(args.backend === 'claude' ? { ...this.claudeBrokerEnvByConv.get(args.conversationId), ...runToolRelayEnv(args.conversationId) } : {}) };
     if (shouldSandboxSpawn(args)) {
       const scratch = sandboxScratchDir(args.conversationId);
       try {
@@ -4226,6 +4239,10 @@ export class RunnerManager {
             for (const t of e.kind.info.toolUses) {
               const line = summarizeToolUse(t.name, t.inputJSON, t.filePath);
               if (line) active.currentToolActivity.push(line);
+              // Every call the turn makes, however it was approved (the CLI's
+              // own rules, a remembered one, a card): a credential-shaped read
+              // makes the safe grant ask for tool calls from here on.
+              if (readsSecretShaped(t.name, t.inputJSON)) (active.restOfTurn ??= {}).readSecret = true;
             }
           }
           if (e.kind.info.toolUses.length > 0) nextActivity = 'Running tools…';
@@ -5098,6 +5115,8 @@ export class RunnerManager {
       launchNetwork: this.networkFor(args),
       launchEffort: effortLevel,
       launchSandbox: shouldSandboxSpawn(args),
+      // Read after `selectedMcpConfig` has (re)bound the run's tools.
+      launchRelayKey: relayKeyOf(args.conversationId),
       cwd: args.cwd,
     };
   }
@@ -5131,8 +5150,8 @@ export class RunnerManager {
   /// Environment for a spawned backend. `backend` is optional because the
   /// codex/gemini call sites only want PATH resolution; naming it opts the
   /// spawn into Claude-specific env (today: the artifact gate).
-  private buildEnv(binary: string, backend?: Backend): NodeJS.ProcessEnv {
-    const base = buildBackendEnv(stripSecrets(process.env), binary);
+  private buildEnv(binary: string, backend?: Backend, cwd?: string): NodeJS.ProcessEnv {
+    const base = buildBackendEnv(stripSecrets(runEnv(withShellToolchain(process.env), cwd)), binary);
     if (backend !== 'claude') return base;
     return { ...base, ...claudeArtifactEnv(this.artifactsFor(backend)) };
   }

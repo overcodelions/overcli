@@ -89,6 +89,10 @@ export interface SlackCommandsDeps {
   /// Hands replies in a thread this posted a worker's work into to that
   /// worker (FrontDoor.adopt).
   adoptThread?(channel: string, threadTs: string, worker: { id: string; name: string }): void;
+  /// `/worker Ada ask` answered in the DM thread it opens, by the front door
+  /// (FrontDoor.askIn): the work it starts is followed there to the end.
+  /// False, or absent: answered here, without that.
+  askInThread?(channel: string, threadTs: string, user: string, workerId: string, text: string): Promise<boolean>;
   /// Invites and `/overgo join`. Absent: the access commands are not offered.
   access?: AccessService;
   policy(): OrgPolicy;
@@ -622,9 +626,14 @@ export class SlackCommands {
       // answer can take minutes, and a DM that stays empty until then reads
       // as nobody being there. The answer lands in its thread.
       const asked = escapeMrkdwn(clip(rest, 200));
+      const door = !!this.deps.askInThread;
       const onIt = await this.dm(caller.slackUserId!, `${worker.name} is on it: ${clip(rest, 200)}`, {
-        blocks: [section(`:hourglass_flowing_sand: *${escapeMrkdwn(worker.name)}* is working on _${asked}_`), context('The answer comes in this thread.')],
+        blocks: [
+          section(`:hourglass_flowing_sand: *${escapeMrkdwn(worker.name)}* is working on _${asked}_`),
+          context(door ? 'The answer comes in this thread, and if it starts work, how that is going and what it delivers.' : 'The answer comes in this thread.'),
+        ],
       });
+      if (onIt && door && (await this.deps.askInThread!(onIt.channel, onIt.ts, caller.slackUserId!, worker.id, rest))) return;
       if (onIt) this.deps.adoptThread?.(onIt.channel, onIt.ts, { id: worker.id, name: worker.name });
       const res = await org.ask(caller, worker.id, rest, 'slack');
       await this.dm(

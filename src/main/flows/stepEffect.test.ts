@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowStep } from '../../shared/flows/schema';
-import { resolveStepEffect, runGrantCovers, stepOutsideTools, stepsARunGrantCovers } from './stepEffect';
+import { resolveStepEffect, runGrantCovers, stepGrantAllows, stepOutsideTools, stepsARunGrantCovers } from './stepEffect';
 
 const step = (id: string, tools: string[], extra: Partial<FlowStep> = {}): FlowStep =>
   ({ id, role: 'researcher', output: `${id}.md`, tools, systemPromptOverride: 'Count the issues by month.', ...extra }) as unknown as FlowStep;
@@ -35,5 +35,25 @@ describe('approving for the run', () => {
     expect(runGrantCovers(run, steps[3])).toBe(false);
     expect(runGrantCovers(run, steps[4])).toBe(false);
     expect(runGrantCovers({}, steps[1])).toBe(false);
+  });
+});
+
+describe('a grant that names the step', () => {
+  const file = step('file-proposals', ['mcp__atlassian__jira_add_comment'], { effect: 'external' });
+  const run = { externalActionRunGrant: ['step:file-proposals'] };
+
+  it('lets through a tool the step lists by name', () => {
+    expect(stepGrantAllows(run, file, 'mcp__atlassian__jira_add_comment')).toBe(true);
+  });
+
+  it('lets through any tool of a server the step lists', () => {
+    expect(stepGrantAllows(run, step('file-proposals', ['mcp__atlassian']), 'mcp__atlassian__jira_add_comment')).toBe(true);
+  });
+
+  it('refuses a tool the step does not list, or a step the grant does not name', () => {
+    expect(stepGrantAllows(run, file, 'mcp__atlassian__jira_transition_issue')).toBe(false);
+    expect(stepGrantAllows(run, step('file-proposals', ['mcp__atlassian']), 'mcp__atlassian_admin__delete')).toBe(false);
+    expect(stepGrantAllows({ externalActionRunGrant: ['step:assess'] }, file, 'mcp__atlassian__jira_add_comment')).toBe(false);
+    expect(stepGrantAllows({}, file, 'mcp__atlassian__jira_add_comment')).toBe(false);
   });
 });

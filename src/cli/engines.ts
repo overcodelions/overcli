@@ -58,20 +58,24 @@ import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraf
 import { bindAllowList, refreshAllowList } from '../main/org/repoGrants';
 import { baseAllowList, configureAccess, noteRefusal } from '../main/org/workerAccess';
 import type { AccessLevel } from '../shared/org/access';
-import { BranchLander, describe as describeLanded } from '../main/org/landBranches';
+import { BranchLander, LANDED_ARTIFACT, describe as describeLanded, landedBranches, type Landed } from '../main/org/landBranches';
+import { flowRunTitle, type FlowRun } from '../shared/flows/schema';
 import { runRepoTests } from './repoTests';
 import { credentialGitEnv, type ConnectedRepo } from '../main/org/repos';
 import { execFile } from 'node:child_process';
 import { setSafeFetch } from '../main/safeFetch';
 import { setWebReadsTrusted } from '../main/flows/trustedCommands';
-import { loadOrgPolicy, orgDir, fileHandbook } from '../main/org/orgStores';
+import { loadOrgPolicy, orgDir, fileHandbook, jsonOrgStore } from '../main/org/orgStores';
+import { CiWatcher, continueBranchOf, type CiWatch } from '../main/org/ciWatch';
+import { openPullRequest } from '../main/org/prOpen';
+import { openIm, postMessage } from '../main/slack/slackApi';
 import { guardCredentials } from '../main/org/credentialGuard';
 import { closeToolGateway, openToolGateway, type ToolGateway } from '../main/org/toolGateway';
 import { useRemoteToolVault } from '../main/org/tools';
 import { readClaudeMcpServers, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
 import { log } from '../main/diagnostics';
 import { serverShapedFlow } from '../main/org/serverFlow';
-import { ticketFlowId, ticketFlowYaml, ticketOf, ticketPrompt, trackerOf } from '../main/org/ticketFollowUp';
+import { ticketFlowId, ticketFlowYaml, ticketKey, ticketOf, ticketPrompt, trackerOf } from '../main/org/ticketFollowUp';
 import { parseFlowYaml } from '../shared/flows/yaml';
 import type { SecretsService } from '../main/org/secrets/service';
 import { teamHireJobDescription } from '../shared/flows/team';
@@ -546,20 +550,109 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     if (shaped) log('info', 'flows', `"${flow.name}" runs here with the server's push in place of ${flow.steps.length - shaped.steps.length + 1} shipping step(s).`);
     return shaped ?? flow;
   };
+  const serverGit = (args: string[], cwd: string) =>
+    new Promise<{ ok: true; stdout: string } | { ok: false; error: string }>((resolve) => {
+      execFile('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: gitEnv() }, (err, stdout, stderr) =>
+        resolve(err ? { ok: false, error: `${stderr}${stdout}`.trim() || err.message } : { ok: true, stdout: `${stdout}${stderr}` }),
+      );
+    });
+  const connectedRepos = (): ConnectedRepo[] => {
+    const list = org.repoList({ name: 'overcli', admin: true });
+    return list.ok ? (list as { repos: ConnectedRepo[] }).repos : [];
+  };
+  // A follow-up on a change the server already pushed (the same worker, repo
+  // and ticket) starts on that change's branch, and its push adds to it
+  // (BranchLander.builtOn), so the open pull request gets the new commits.
+  // Not once the branch is merged or gone: then it starts fresh.
+  orchestrator.continueBranch = async ({ projectPath, workerId, title, prompt }) => {
+    const list = org.repoList({ name: 'overcli', admin: true });
+    const all = list.ok ? (list as { repos: ConnectedRepo[] }).repos : [];
+    const spaces = list.ok ? (list as { workspaces: Array<{ rootPath: string; repos: string[] }> }).workspaces : [];
+    // Still there on origin, and not merged yet: worth building on.
+    const open = async (repo: ConnectedRepo, branch: string) => {
+      await serverGit(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], repo.path);
+      const there = await serverGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`], repo.path);
+      if (!there.ok) return false;
+      const merged = await serverGit(['merge-base', '--is-ancestor', `refs/remotes/origin/${branch}`, `refs/remotes/origin/${repo.defaultBranch}`], repo.path);
+      return !merged.ok;
+    };
+    // A CI fix names its branch outright (ciWatch.ts). In a workspace each
+    // repo starts on it where it has it, and from its default branch where not.
+    const named = continueBranchOf(prompt);
+    const ws = spaces.find((w) => w.rootPath === projectPath);
+    if (ws) {
+      if (!named) return null;
+      for (const r of all.filter((x) => ws.repos.includes(x.name))) if (await open(r, named)) return named;
+      return null;
+    }
+    const repo = all.find((r) => r.path === projectPath);
+    if (!repo) return null;
+    let branch = named ?? undefined;
+    if (!branch) {
+      // Otherwise the ticket finds the branch an earlier run pushed for it.
+      const ticket = ticketKey(`${title}\n${prompt}`);
+      if (!ticket) return null;
+      const earlier = flowRuntime
+        .listRuns()
+        .find((r) => r.workerId === workerId && r.projectPath === projectPath && !r.workspaceWorktrees?.length && !!r.artifacts?.[LANDED_ARTIFACT] && ticketOf(r) === ticket);
+      branch = earlier ? landedBranches(earlier.artifacts![LANDED_ARTIFACT]!.body ?? '')[0] : undefined;
+    }
+    return branch && (await open(repo, branch)) ? branch : null;
+  };
+  // What the repo's own CI says about each pushed commit: a red build goes
+  // back to the worker to fix on the same branch, a few rounds at most.
+  const tellManager = async (workerId: string, text: string): Promise<boolean> => {
+    const bot = configuredSlackToken('bot');
+    const to = org.managerSlackId(workerId);
+    const w = workerEngine.get(workerId);
+    if (!bot || !to || !w) return false;
+    const im = await openIm(bot, to);
+    if (!im.ok) return false;
+    const res = await postMessage(bot, { channel: im.data, text, username: w.name, ...(w.avatarUrl ? { iconUrl: w.avatarUrl } : {}) }).then((r) => (!r.ok && r.error === 'missing_scope' ? postMessage(bot, { channel: im.data, text }) : r));
+    if (!res.ok) return false;
+    // A reply in that DM goes to the worker, with the DM as its context.
+    frontDoor.adopt(res.data.channel, res.data.ts, { id: w.id, name: w.name });
+    return true;
+  };
+  const ci = new CiWatcher({
+    store: jsonOrgStore<{ watches: CiWatch[] }>('ci-watches.json', () => ({ watches: [] })),
+    repo: (name) => connectedRepos().find((r) => r.name === name),
+    env: (name) => process.env[name],
+    rounds: () => org.ciRounds(),
+    followUp: ({ workerId, flowId, title, prompt }) => workerEngine.followUp(workerId, { title, prompt, flowId }),
+    tell: tellManager,
+    attach: (runId, name, body) => void flowRuntime.attachArtifact(runId, name, body),
+    log: (message) => log('info', 'org.ci', message),
+  });
+  ci.start();
+  const watchCi = async (run: FlowRun, landed: Landed[]) => {
+    const w = run.workerId ? workerEngine.get(run.workerId) : undefined;
+    if (!w || run.flowId.startsWith('org-ticket-')) return;
+    for (const l of landed) {
+      if (!l.branch || l.skipped || l.error) continue;
+      const place = run.workspaceWorktrees?.find((m: { name: string; worktreePath: string }) => m.name === l.repo)?.worktreePath ?? run.worktreePath;
+      const head = place ? await serverGit(['rev-parse', 'HEAD'], place) : null;
+      if (!head?.ok) continue;
+      ci.watch({ runId: run.id, workerId: w.id, workerName: w.name, flowId: run.flowId, title: flowRunTitle(run), repo: l.repo, branch: l.branch, sha: head.stdout.trim() });
+    }
+  };
   const lander = new BranchLander({
     test: (command, cwd) => runRepoTests(command, cwd),
-    git: (args, cwd) =>
-      new Promise((resolve) => {
-        execFile('git', ['-c', 'core.hooksPath=/dev/null', ...args], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: gitEnv() }, (err, stdout, stderr) =>
-          resolve(err ? { ok: false, error: `${stderr}${stdout}`.trim() || err.message } : { ok: true, stdout: `${stdout}${stderr}` }),
-        );
-      }),
-    repos: () => org.repoList({ name: 'overcli', admin: true }).ok ? (org.repoList({ name: 'overcli', admin: true }) as { repos: ConnectedRepo[] }).repos : [],
+    git: serverGit,
+    repos: connectedRepos,
     attach: (runId, name, body) => void flowRuntime.attachArtifact(runId, name, body),
     log: (message) => options.onNotify?.({ title: 'Push', body: message }),
     branchPrefix: () => Store.load().settings.agentBranchPrefix || 'agent/',
+    // The pull request itself, as a draft unless the Repos page says otherwise.
+    openPr: async (repo, branch, title, body) => {
+      const mode = org.prMode();
+      if (mode === 'link') return null;
+      const opened = await openPullRequest(repo, { branch, title, body, draft: mode === 'draft' }, { env: (n) => process.env[n] });
+      return opened.ok ? { url: opened.url, draft: mode === 'draft' } : { error: opened.error };
+    },
     // Pushed: the ticket it was for gets the link, from its worker's tracker.
     onLanded: (run, landed) => {
+      void watchCi(run, landed).catch((err: unknown) => log('warn', 'org.ci', `Couldn't start watching CI: ${String(err)}`));
       const w = run.workerId ? workerEngine.get(run.workerId) : undefined;
       const ticket = ticketOf(run);
       const server = trackerOf(w?.mcpServers);

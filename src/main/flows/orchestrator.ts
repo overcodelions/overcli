@@ -246,6 +246,9 @@ function buildProducerPrompt(args: {
 const WRITES_FILES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 export class OrchestratorImpl {
+  /// A worker's run that follows up a change already pushed starts on that
+  /// change's branch (the server's, see engines). Null: the usual base.
+  continueBranch?: (args: { projectPath: string; workerId: string; title: string; prompt: string }) => Promise<string | null>;
   private batches = new Map<UUID, Orchestration>();
   /// childRunId → orchestrationId, so `onRunUpdate` can route a terminal
   /// run back to its batch in O(1).
@@ -912,11 +915,16 @@ export class OrchestratorImpl {
         // were all worktree batches, so that's the default. A shared batch's
         // runs are worktree runs that adopt rather than fork.
         const runIn: 'cwd' | 'worktree' = o.runIn === 'cwd' ? 'cwd' : 'worktree';
-        const baseBranch = runIn === 'cwd' ? undefined : (next.baseBranch ?? o.baseBranch);
+        let baseBranch = runIn === 'cwd' ? undefined : (next.baseBranch ?? o.baseBranch);
         // A team piece forks off its task branch; name it after that branch
         // rather than whatever ticket key the member's prompt happens to quote.
         const worker = o.origin?.kind === 'worker' ? o.origin : undefined;
         const adoptWorktrees = runIn === 'cwd' ? undefined : o.adoptWorktrees;
+        const continued =
+          runIn === 'worktree' && !baseBranch && !adoptWorktrees && worker && !worker.team && this.continueBranch
+            ? await this.continueBranch({ projectPath: o.projectPath, workerId: worker.workerId, title: next.candidate.title, prompt: next.candidate.prompt }).catch(() => null)
+            : null;
+        if (continued) baseBranch = continued;
         const worktreeName =
           !adoptWorktrees && worker?.team && baseBranch?.startsWith('team/')
             ? teamPieceSlug(baseBranch, worker.team.stage, worker.workerName)
@@ -927,7 +935,9 @@ export class OrchestratorImpl {
           userPrompt:
             o.runIn === 'shared' && adoptWorktrees
               ? next.candidate.prompt + sharedBranchInstruction(adoptWorktrees.branch)
-              : next.candidate.prompt,
+              : continued
+                ? `${next.candidate.prompt}\n\nThis follows up ${continued}, already pushed with its pull request open: your checkout starts from it, so its commits are here. Build on them; the server adds what you change to that branch.`
+                : next.candidate.prompt,
           runIn,
           baseBranch,
           ...(worktreeName ? { worktreeName } : {}),

@@ -75,8 +75,29 @@ RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i -e "s#deb.debian.org/debian-security
 ARG CLAUDE_CODE_VERSION=latest
 ARG INSTALL_CODEX=0
 ARG CODEX_VERSION=latest
+# JDKs for repos that build on the JVM, so a worker (and the repo's test
+# command) can run their tests: Amazon Corretto, any of 8 11 17 21, e.g.
+# --build-arg JDKS="8 17". Each lands at /opt/jdk/<version>; the first is
+# JAVA_HOME and `java` on PATH. Empty: no JDK.
+ARG JDKS=
+# Anything else the repos' builds need from Debian: --build-arg
+# EXTRA_APT_PACKAGES="maven python3-venv".
+ARG EXTRA_APT_PACKAGES=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git openssh-client ca-certificates tini \
+ && apt-get install -y --no-install-recommends git openssh-client ca-certificates tini curl gnupg ${EXTRA_APT_PACKAGES} \
+ && if [ -n "$JDKS" ]; then \
+      curl -fsSL https://apt.corretto.aws/corretto.key | gpg --dearmor -o /usr/share/keyrings/corretto.gpg \
+      && echo "deb [signed-by=/usr/share/keyrings/corretto.gpg] https://apt.corretto.aws stable main" > /etc/apt/sources.list.d/corretto.list \
+      && apt-get update \
+      && mkdir -p /opt/jdk \
+      && for v in $JDKS; do \
+           if [ "$v" = 8 ]; then pkg=java-1.8.0-amazon-corretto-jdk; dir=java-1.8.0-amazon-corretto; else pkg=java-$v-amazon-corretto-jdk; dir=java-$v-amazon-corretto; fi; \
+           apt-get install -y --no-install-recommends "$pkg" \
+           && ln -s "$(ls -d /usr/lib/jvm/$dir* | head -1)" "/opt/jdk/$v" || exit 1; \
+         done \
+      && ln -s "/opt/jdk/$(echo $JDKS | cut -d' ' -f1)" /opt/jdk/default \
+      && ln -sf /opt/jdk/default/bin/java /usr/local/bin/java; \
+    fi \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && if [ "$INSTALL_CODEX" = "1" ]; then npm install -g "@openai/codex@${CODEX_VERSION}"; fi \
@@ -106,6 +127,7 @@ ENV OVERCLI_HOME=/data \
     HOME=/data/home \
     OVERCLI_CONTROL=0.0.0.0:7420 \
     OVERCLI_TOOL_GATEWAY=1 \
+    JAVA_HOME=${JDKS:+/opt/jdk/default} \
     OVERDB_HEADLESS=/opt/overdb/dist/mcp/headless.js
 RUN mkdir -p /data/home \
  && chown -R node:node /data \

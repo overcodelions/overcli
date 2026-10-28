@@ -5,6 +5,7 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { testUserRefusal } from '../main/org/repos';
 import { stripSecrets } from '../main/org/secrets';
+import { runEnv } from '../main/runEnv';
 
 export type RepoTestResult = { ok: true } | { ok: false; error: string; refused?: true };
 
@@ -29,7 +30,7 @@ export function runRepoTests(command: string, cwd: string, deps: RepoTestDeps = 
     const uid = deps.env.OVERCLI_TEST_UID?.trim();
     const gid = deps.env.OVERCLI_TEST_GID?.trim() || uid;
     try {
-      deps.execFile('/bin/sh', ['-c', command], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: stripSecrets(deps.env),
+      deps.execFile('/bin/sh', ['-c', command], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: stripSecrets(runEnv(deps.env, cwd)),
         ...(uid ? { uid: Number(uid), gid: Number(gid) } : {}) }, (err, stdout, stderr) =>
         resolve(err ? { ok: false, error: `${stdout}${stderr}`.trim() || err.message } : { ok: true }),
       );

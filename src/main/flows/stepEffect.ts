@@ -106,6 +106,20 @@ export function runGrantCovers(
   return !!outside && outside.length > 0 && outside.every((t) => grant.includes(t));
 }
 
+/// Whether a grant naming the step (`step:file-proposals`) lets `tool`
+/// through: one the step lists by name, or by its server (`mcp__tracker`).
+/// The step gate lets a named step start, so its calls must match: a step
+/// listing `mcp__atlassian__jira_add_comment` started, then had every
+/// comment refused.
+export function stepGrantAllows(
+  run: Pick<FlowRun, 'externalActionRunGrant'>,
+  step: Pick<FlowStep, 'id' | 'tools'>,
+  tool: string,
+): boolean {
+  if (!run.externalActionRunGrant?.includes(`step:${step.id}`)) return false;
+  return (step.tools ?? []).some((t) => t === tool || (/^mcp__[^_]+(?:_[^_]+)*$/.test(t) && tool.startsWith(`${t}__`)));
+}
+
 /// The later steps approving `stepId` "for this run" would let through:
 /// those that would otherwise ask, and need only the same outside tools.
 export function stepsARunGrantCovers(steps: FlowStep[], stepId: string): string[] {

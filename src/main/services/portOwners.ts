@@ -90,7 +90,34 @@ export function classifyOwner(pid: number, ctx: OwnerContext, facts: ProcessFact
   if (!inService) return 'other';
 
   const top = serviceRoot(pid, ctx.servicePath!, facts, ctx.tokens);
-  return facts.parents.get(top) === 1 ? 'stale' : 'other';
+  const parent = facts.parents.get(top);
+  if (parent === 1) return 'stale';
+  // With `-Dorg.gradle.daemon=true` the app JVM is a child of the shared
+  // daemon, and the daemon is launchd's from the moment it starts — there is
+  // no wrapper above it to be orphaned. What says the run was abandoned is
+  // that no `gradlew` for this task is still waiting on it: the client lives
+  // as long as the build it asked for, in overcli or in a terminal.
+  if (parent !== undefined && orphanedDaemon(parent, facts) && !gradleClientFor(ctx.tokens, facts)) return 'stale';
+  return 'other';
+}
+
+const GRADLE_DAEMON = 'org.gradle.launcher.daemon.bootstrap.GradleDaemon';
+
+function orphanedDaemon(pid: number, facts: ProcessFacts): boolean {
+  return (facts.args?.get(pid) ?? '').includes(GRADLE_DAEMON) && facts.parents.get(pid) === 1;
+}
+
+/// Whether a Gradle client is still running the task this service launches.
+/// Unknown — no launch tokens, no command lines, no task among the tokens —
+/// counts as yes: a JVM nobody can account for stays somebody else's.
+function gradleClientFor(tokens: readonly string[] | undefined, facts: ProcessFacts): boolean {
+  const task = tokens?.slice(1).find((t) => !t.startsWith('-'));
+  if (!task || !facts.args) return true;
+  for (const args of facts.args.values()) {
+    if (!/\b(GradleWrapperMain|GradleMain)\b/.test(args)) continue;
+    if (args.split(/\s+/).includes(task)) return true;
+  }
+  return false;
 }
 
 /// The highest ancestor of `pid` still working in the checkout — the process

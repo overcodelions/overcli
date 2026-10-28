@@ -7,12 +7,17 @@ import type { ErrandProgress } from '../org/orgService';
 import { escapeMrkdwn } from './slackApi';
 
 export const SLACK_TEXT_MAX = 2800;
+/// How long an answer in a Slack thread runs: past this nobody reads it, and
+/// the detail belongs in a file or the trace.
+export const SLACK_BUDGET = 'Write for Slack: the first sentence is the answer, in bold. Then at most three short bullets, about 90 words in all. Leave out how you found it; the steps are kept for anyone who asks. Longer detail goes in a file.';
 /// Past this a reply is summarized in the thread and attached whole; up to
 /// it, posted whole (Slack folds a long message behind "Show more").
 export const SLACK_LONG_REPLY = 10_000;
 const MAX_UPLOAD_BYTES = 10_000_000;
 const MAX_UPLOADS = 5;
 /// What Slack previews or people open: documents, pages, data and images.
+/// A document written to be read, rather than data or a page to open.
+const WRITTEN = /\.(md|markdown|txt)$/i;
 const UPLOADABLE = /\.(md|markdown|txt|csv|json|html?|pdf|png|jpe?g|svg|docx|pptx|xlsx)$/i;
 
 /// Who a message is posted as: a worker's own name and picture, rather than
@@ -124,14 +129,30 @@ export function finishedText(workerName: string, p: ErrandProgress, library: str
 /// and a copy of the reply beside it is the same thing twice.
 ///
 /// `as`: post it as the worker itself, under its name and picture.
-export async function deliverText(io: DeliverIo, channel: string, threadTs: string, workerName: string, text: string, filename: string, workerId?: string, as?: PostAs): Promise<void> {
-  const files = workerId && io.workerFile
+///
+/// `hold`: a written document (Markdown, text) isn't attached, and the line
+/// pointing at it goes: Slack unfolds it whole under the answer it repeats.
+/// Returned, for a button that opens it instead.
+export async function deliverText(io: DeliverIo, channel: string, threadTs: string, workerName: string, text: string, filename: string, workerId?: string, as?: PostAs, hold = false): Promise<Array<{ path: string; name: string }>> {
+  const found = workerId && io.workerFile
     ? pathsInReply(text).slice(0, MAX_UPLOADS).flatMap((p) => {
         const bytes = io.workerFile!(workerId, p, MAX_UPLOAD_BYTES);
         return bytes ? [{ path: p, name: p.split('/').pop() ?? 'file', bytes }] : [];
       })
     : [];
+  const held = hold ? found.filter((f) => WRITTEN.test(f.name)) : [];
+  const files = found.filter((f) => !held.includes(f));
   let body = text.trim() || 'Done.';
+  for (const f of held) {
+    body = body
+      .split('\n')
+      // "Full write-up: <path>" says nothing once the file isn't there; a
+      // sentence that only mentions it in passing keeps its name.
+      .map((l) => (!l.includes(f.path) ? l : l.split(f.path).join('').trim().length < 40 ? null : l.split(f.path).join(f.name)))
+      .filter((l): l is string => l !== null)
+      .join('\n')
+      .trim();
+  }
   for (const f of files) body = body.split(f.path).join(`${f.name} (attached)`);
   const lead = as ? '' : `*${workerName}:* `;
   if (body.length <= SLACK_LONG_REPLY) await io.post(channel, `${lead}${slackMarkup(body)}`, threadTs, as);
@@ -141,6 +162,7 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
     await io.upload(channel, threadTs, filename, Buffer.from(body, 'utf8'));
   }
   for (const f of files) await io.upload(channel, threadTs, f.name, f.bytes);
+  return held.map((f) => ({ path: f.path, name: f.name }));
 }
 
 /// Into the thread under the finished message: the answer itself (the last

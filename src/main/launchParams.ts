@@ -27,6 +27,10 @@ export interface LaunchParams {
   launchNarrate: boolean;
   launchNetwork: boolean;
   launchSandbox: boolean;
+  /// A digest of the tool relay token the process was given in its env. A
+  /// new jail profile (allowedDirs changed) re-registers the run's tools
+  /// under a new token, and only a respawn hands it over.
+  launchRelayKey: string;
   launchEffort?: EffortLevel;
   cwd: string;
 }
@@ -44,6 +48,7 @@ export const LAUNCH_PARAM_KEYS = [
   'launchNarrate',
   'launchNetwork',
   'launchSandbox',
+  'launchRelayKey',
   'launchEffort',
   'cwd',
 ] as const satisfies readonly (keyof LaunchParams)[];

@@ -13,8 +13,12 @@ export const TICKET_STEP = 'ticket-update';
 
 /// The first ticket key a run names in its title or ask (ACME-412).
 export function ticketOf(run: Pick<FlowRun, 'userPrompt'> & Parameters<typeof flowRunTitle>[0]): string | null {
-  const m = /\b([A-Z][A-Z0-9]{1,9}-\d+)\b/.exec(`${flowRunTitle(run)}\n${run.userPrompt ?? ''}`);
-  return m ? m[1] : null;
+  return ticketKey(`${flowRunTitle(run)}\n${run.userPrompt ?? ''}`);
+}
+
+/// The first ticket key in some text.
+export function ticketKey(text: string): string | null {
+  return /\b([A-Z][A-Z0-9]{1,9}-\d+)\b/.exec(text)?.[1] ?? null;
 }
 
 /// Its tracker: the first of its tools that looks like Jira.
@@ -52,9 +56,21 @@ export function ticketFlowYaml(server: string): string {
       '- a comment: post it as asked, in plain words, with any links exactly as given;',
       '- an assignee: look the account up first, by the name or email given; if no account',
       '  matches, say so and leave the assignee as it is rather than guess;',
-      '- a status: look up the ticket\'s transitions first and use the one that fits; if none',
-      '  does, say so and leave it.',
-      'Change nothing the request doesn\'t ask for: no other fields, no other tickets, no code.',
+      '- a status: look up the ticket\'s transitions first, with their fields (Jira: expand',
+      '  transitions.fields), and use the one that fits; if none does, say so and leave it.',
+      'A transition may require fields (a root cause, when the bug was introduced, a problem type,',
+      'a yes/no). Where they go depends on the transition:',
+      '- it has a screen (fields come back with it): send them in the transition call itself;',
+      '- it has none (no fields come back, or Jira refuses with "requires …"): its rule only',
+      '  checks the ticket, so set them with an edit first, then transition. Read the ticket\'s',
+      '  edit metadata (Jira: expand editmeta) for each field\'s id, which differs by project, and',
+      '  its allowed values; a field missing from it can\'t be set by you, so say so.',
+      'Fill each from what the request says, what the run found and your job\'s rules for these',
+      'fields; for an option field, use one of its allowed values exactly ("No", not "N"). Never',
+      'invent a value nothing here supports: name each field you couldn\'t fill and why, and',
+      'leave the status as it is.',
+      'Change nothing else: no fields beyond those the request or a transition needs, no other',
+      'tickets, no code.',
       'End with one line per change you made, and one per change you couldn\'t.',
     ].map((l) => `      ${l}`),
     '    output: ticket-update.md',
@@ -63,16 +79,26 @@ export function ticketFlowYaml(server: string): string {
 }
 
 /// What the worker is asked: the ticket, what the run found, and the links.
+/// The run's plan and review ride along, not only its pull request, because
+/// a transition into review often asks for the root cause and when the bug
+/// came in, and that is where the run wrote them down.
 export function ticketPrompt(run: FlowRun, ticket: string, landed: Landed[]): string {
   const links = landed.filter((l) => l.url || l.branch).map((l) => `- ${l.repo}: ${l.url ?? `branch ${l.branch}`}`);
-  const summary = (run.artifacts?.['pull-request.md']?.body ?? run.artifacts?.['review.md']?.body ?? '').trim().slice(0, 3000);
+  const said = (name: string, max: number) => (run.artifacts?.[name]?.body ?? '').trim().slice(0, max);
+  const found = [
+    ['The pull request it wrote', said('pull-request.md', 4000)],
+    ['Its plan, with what it found', said('plan.md', 3000)],
+    ['Its review', said('review.md', 1500)],
+  ].filter(([, body]) => body);
   return [
     `On ${ticket}: add one comment, two or three sentences on what changed and why, then the`,
     'link (or links) a person follows to review it, exactly as below. Then move the ticket to the',
-    'status that means it is in review (often "Code Review" or "In Review").',
+    'status that means it is in review (often "Code Review" or "In Review"). If that transition',
+    'requires fields such as a root cause (RCA), the date the bug was introduced or a problem type,',
+    'fill them in the transition from what the run found below.',
     '',
     `The work "${flowRunTitle(run)}" was pushed for review:`,
     ...links,
-    ...(summary ? ['', 'What the run wrote about it:', summary] : []),
+    ...found.flatMap(([head, body]) => ['', `${head}:`, body]),
   ].join('\n');
 }

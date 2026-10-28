@@ -23,6 +23,7 @@ import {
   type CandidateGroup,
 } from '../addCandidates';
 import { AddServiceSheet, type AddTarget } from './AddServiceSheet';
+import { ImportStackSheet } from './StackShareSheets';
 
 export interface AddStack {
   id: string;
@@ -67,6 +68,7 @@ export function AddServicesSheet({
   const [skipped, setSkipped] = useState<{ name: string; reason: string }[]>([]);
   const [needsCommand, setNeedsCommand] = useState<string[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [sharedImport, setSharedImport] = useState(false);
   const field = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -304,6 +306,11 @@ export function AddServicesSheet({
         <button className="svc-btn" disabled={sweep === null} onClick={() => void importFromFile()}>
           Import from file…
         </button>
+        {/* A teammate's whole setup, not one project's run configurations. */}
+        <button className="svc-btn" onClick={() => setSharedImport(true)}>
+          Import shared stack…
+        </button>
+        {sharedImport && <ImportStackSheet stacks={stacks} onClose={() => setSharedImport(false)} />}
         {fileError && (
           <span className="min-w-0 truncate text-[11px] text-amber-700 dark:text-amber-300" title={fileError}>
             {fileError}

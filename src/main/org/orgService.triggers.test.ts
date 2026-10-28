@@ -258,10 +258,10 @@ describe('a trigger starting work on its own', () => {
     expect(got.text).toContain('lets start on its own');
   });
 
-  it('still proposes when the trigger did not opt in', () => {
+  it('launches for an autonomous worker even when the trigger did not opt in', () => {
     const got = fire('autonomous', false);
-    expect(got.mayLaunch).toBe(false);
-    expect(got.text).toContain('Treat the request as a proposal');
+    expect(got).toMatchObject({ untrusted: true, mayLaunch: true });
+    expect(got.text).toContain('lets start on its own');
   });
 
   it('still proposes for a worker that is not autonomous, opted in or not', () => {

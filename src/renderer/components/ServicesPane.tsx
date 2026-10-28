@@ -21,7 +21,7 @@
 // the checkbox a row's dot becomes on hover. Removing does not ask first; it
 // offers an undo.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 
 import type {
@@ -101,6 +101,7 @@ import { ServiceAskDemo, StackSpecimen } from './onboarding/specimens';
 import { chatTargetFor, flowTargetFor, outputPrompt } from '../askAboutOutput';
 import { ResizableDivider } from './ResizableDivider';
 import { AddServicesSheet, type AddStack } from './AddServicesSheet';
+import { ImportStackSheet, ShareStackSheet } from './StackShareSheets';
 import { optionsToText, parseOptionText } from './optionText';
 import { parseCommandLine } from '../commandLine';
 import { joinSteps, splitSteps } from '../commandSteps';
@@ -201,6 +202,7 @@ export function ServicesPane() {
     ...loose.map((p) => ({ id: p.id, name: p.name })),
   ];
   const withServices = owners.filter((o) => (stacks[o.id]?.services.length ?? 0) > 0);
+  const shareable = addStacks(workspaces, projects, loose).filter((t) => (stacks[t.id]?.services.length ?? 0) > 0);
   // Nothing until the projects and workspaces this is derived from are in.
   // Both start empty in the store because `store:load` has not answered yet,
   // not because the machine has none — see `storeLoaded`.
@@ -219,7 +221,7 @@ export function ServicesPane() {
     <div className="flex min-h-0 flex-1 flex-col">
       <MachineValuesHost />
       <SharedValuesHost />
-      <Toolbar stacks={stacks} choices={choices} />
+      <Toolbar stacks={stacks} choices={choices} shareable={shareable} />
       <HandoffBanner stacks={stacks} choices={choices} />
       <div className="flex min-h-0 flex-1">
         {!listHidden && (
@@ -265,11 +267,14 @@ export function ServicesPane() {
 function Toolbar({
   stacks,
   choices,
+  shareable,
 }: {
   stacks: Record<string, StackView>;
   choices: Record<string, WorktreeChoice[]>;
+  shareable: AddStack[];
 }) {
   const stop = useServicesStore((s) => s.stop);
+  const [sharing, setSharing] = useState(false);
   const runtimes = Object.values(stacks).flatMap((s) => s.runtimes);
   const running = runtimes.filter((r) => isServiceLive(r.status)).length;
   const stopped = Object.values(stacks).flatMap((s) => s.services).length - running;
@@ -294,6 +299,10 @@ function Toolbar({
       <div className="flex-1" />
       <MoveEverything stacks={stacks} choices={choices} />
       <MachineValuesButton />
+      <button className="svc-btn" title="Save this stack as a file a teammate can import" onClick={() => setSharing(true)}>
+        Share…
+      </button>
+      {sharing && <ShareStackSheet stacks={shareable} onClose={() => setSharing(false)} />}
       {running > 0 && (
         <button
           className="svc-btn"
@@ -875,14 +884,18 @@ function ListHeader({ item, ticking, nested }: { item: HeaderItem; ticking: bool
   );
 }
 
-/// One service on one line. The dot says how it is; hovering turns it into a
-/// checkbox, and once anything is ticked every row shows one.
+/// One service on one line. The dot says how it is, always: the checkbox has
+/// the gutter left of the group's guide to itself, shown on the row you point
+/// at and on every row once anything is ticked. It used to take the dot's
+/// place, so the one row you were looking at was the one whose state you could
+/// not see.
 ///
 /// At rest a row is its state, its name and — while it runs — its port. Its
-/// actions sit over the port on the row you point at (or have open, or have
-/// tabbed into): thirty-odd rows each drawing four buttons put a hundred
-/// controls on screen to act on one service, and the name, the one thing a
-/// scan is for, got whatever width was left.
+/// actions appear just before the port on the row you point at (or have open,
+/// or have tabbed into), laid over the end of the name rather than over the
+/// port: thirty-odd rows each drawing four buttons put a hundred controls on
+/// screen to act on one service, and the name, the one thing a scan is for,
+/// got whatever width was left.
 function Row({
   item,
   ticking,
@@ -933,15 +946,19 @@ function Row({
         aria-hidden
         className={'absolute inset-y-0 w-px bg-card-strong ' + (nested ? 'left-[26px]' : 'left-[20px]')}
       />
-      <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">
-        <span className={ticking ? 'hidden' : 'flex group-hover:hidden'}>
-          <StatusDot status={blocked ? 'blocked' : runtime.status} adopted={runtime.adopted} />
-        </span>
+      <span
+        className={
+          'absolute inset-y-0 flex w-3.5 items-center justify-center ' + (nested ? 'left-[8px]' : 'left-[3px]')
+        }
+      >
         <Checkbox
           on={checked}
           onClick={() => setChecked([item.key], !checked)}
           className={ticking ? 'flex' : 'hidden group-hover:flex'}
         />
+      </span>
+      <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center">
+        <StatusDot status={blocked ? 'blocked' : runtime.status} adopted={runtime.adopted} />
       </span>
 
       <button
@@ -1028,6 +1045,34 @@ function Row({
         <span className="flex-1" />
       </button>
 
+      {!ticking && (
+        // A zero-width anchor just before the port: the actions grow leftward
+        // from it over the end of the name, so the port stays readable and
+        // pointing at a row never re-truncates anything. Opacity, not
+        // display: the buttons stay in the tab order, and tabbing to one
+        // shows them all. The selected row too — a row that lost its controls
+        // the moment you clicked it read as broken.
+        <span className="relative -ml-2 w-0 flex-shrink-0 self-stretch">
+          <span
+            className={
+              'absolute inset-y-0 right-0 z-[1] flex items-center gap-1.5 pl-1.5 transition-opacity ' +
+              'pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100'
+            }
+            // Opaque — the list's own shade — and tinted the way the row under
+            // it is, so what it covers does not show through.
+            style={{ background: 'var(--c-surface-muted)' }}
+          >
+            <span aria-hidden className={'absolute inset-0 ' + (selected && !menuOn && !checked ? 'bg-accent/15' : 'bg-card-strong')} />
+            {/* Uptime is worth a look at the row you point at, not a column. */}
+            {live && runtime.startedAt && (
+              <span className="relative whitespace-nowrap text-[10.5px] text-ink-faint">up {since(runtime.startedAt)}</span>
+            )}
+            <span className="relative flex">
+              <Actions workspaceId={item.workspaceId} spec={spec} binding={binding} live={live} />
+            </span>
+          </span>
+        </span>
+      )}
       {runtime.debugKind && runtime.debugPort && (
         <span className="flex-shrink-0 font-mono text-[10px] text-amber-700 dark:text-amber-300">
           dbg :{runtime.debugPort}
@@ -1038,36 +1083,14 @@ function Row({
           :{runtime.port}
         </span>
       )}
-      {!ticking && (
-        // Laid OVER the row's right end rather than beside it, so pointing at
-        // a row never re-truncates its name. Opacity, not display: the
-        // buttons stay in the tab order, and tabbing to one shows them all.
-        <span
-          className={
-            'absolute inset-y-0 right-0 z-[1] flex items-center pl-1.5 pr-2 transition-opacity ' +
-            // The selected row too: the detail header has the same buttons,
-            // but the row is where the pointer is, and a row that lost its
-            // controls the moment you clicked it read as broken. Hover-only,
-            // so the port is covered only while you point at it.
-            'pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100'
-          }
-          // Opaque — the list's own shade — and tinted the way the row under
-          // it is, so what it covers does not show through.
-          style={{ background: 'var(--c-surface-muted)' }}
-        >
-          <span aria-hidden className={'absolute inset-0 ' + (selected && !menuOn && !checked ? 'bg-accent/15' : 'bg-card-strong')} />
-          <span className="relative flex">
-            <Actions workspaceId={item.workspaceId} spec={spec} binding={binding} live={live} />
-          </span>
-        </span>
-      )}
     </div>
   );
 }
 
 /// Takes the footer's place while anything is ticked.
-function SelectionBar() {
+function SelectionBar({ shareable }: { shareable: AddStack[] }) {
   const stacks = useServicesStore((s) => s.stacks);
+  const [sharing, setSharing] = useState(false);
   const checked = useServicesStore((s) => s.checked);
   const startMany = useServicesStore((s) => s.startMany);
   const stopMany = useServicesStore((s) => s.stopMany);
@@ -1076,6 +1099,8 @@ function SelectionBar() {
   const [editing, setEditing] = useState(false);
 
   const keys = Object.keys(checked);
+  const owners = [...new Set(keys.map((key) => splitKey(key).workspaceId))];
+  const oneStack = owners.length === 1 ? owners[0] : undefined;
   const live = keys.filter((key) => {
     const { workspaceId, serviceId } = splitKey(key);
     const runtime = stacks[workspaceId]?.runtimes.find((r) => r.serviceId === serviceId);
@@ -1093,6 +1118,14 @@ function SelectionBar() {
       <div className="flex-1" />
       <button className="svc-btn" onClick={() => setEditing(true)}>
         Edit…
+      </button>
+      <button
+        className="svc-btn"
+        disabled={!oneStack}
+        title={oneStack ? 'Save these as a file a teammate can import' : 'Select services from one stack to share them'}
+        onClick={() => setSharing(true)}
+      >
+        Share…
       </button>
       <button className="svc-btn-go" disabled={live === keys.length} onClick={() => void startMany(keys)}>
         Start
@@ -1112,6 +1145,13 @@ function SelectionBar() {
         <path d="M4 4l8 8M12 4l-8 8" />
       </IconButton>
       {editing && <ServicesBulkEditSheet keys={keys} onClose={() => setEditing(false)} />}
+      {sharing && oneStack && (
+        <ShareStackSheet
+          stacks={shareable}
+          selection={{ workspaceId: oneStack, serviceIds: keys.map((key) => splitKey(key).serviceId) }}
+          onClose={() => setSharing(false)}
+        />
+      )}
     </div>
   );
 }
@@ -2250,6 +2290,7 @@ function Detail() {
           />
           {binding && (
             <RebindMenu
+              key={`${stack.workspaceId}:${spec.id}`}
               workspaceId={stack.workspaceId}
               serviceId={spec.id}
               binding={binding}
@@ -3025,6 +3066,7 @@ function Settings({
                     {binding.path}
                   </span>
                   <RebindMenu
+                    key={`${workspaceId}:${spec.id}`}
                     workspaceId={workspaceId}
                     serviceId={spec.id}
                     binding={binding}
@@ -5177,6 +5219,20 @@ export function parseMachineValues(text: string): MachineValues {
 
 // ── rebind ──────────────────────────────────────────────────────────────────
 
+const switchesInFlight = new Map<string, string>();
+const switchListeners = new Set<() => void>();
+
+function subscribeSwitches(listener: () => void): () => void {
+  switchListeners.add(listener);
+  return () => switchListeners.delete(listener);
+}
+
+function setSwitchInFlight(key: string, ref: string | null): void {
+  if (ref === null) switchesInFlight.delete(key);
+  else switchesInFlight.set(key, ref);
+  for (const listener of switchListeners) listener();
+}
+
 function RebindMenu({
   workspaceId,
   serviceId,
@@ -5204,7 +5260,11 @@ function RebindMenu({
   // The ref being moved to, from the click until the service is back up. The
   // move waits on the stop, the checkout AND the relaunch, and the button
   // naming the old branch all that time read as if the click had done nothing.
-  const [switching, setSwitching] = useState<string | null>(null);
+  // Held per service outside the component: one service's slow relaunch must
+  // not lock the switcher of the next service selected, and coming back to it
+  // mid-move should still say it is moving.
+  const switchKey = `${workspaceId}:${serviceId}`;
+  const switching = useSyncExternalStore(subscribeSwitches, () => switchesInFlight.get(switchKey) ?? null);
   const field = useRef<HTMLInputElement>(null);
   const projectPath = useStore((s) => s.projects.find((p) => p.id === projectId)?.path);
   // True when the bound folder is gone and the choices came from the project's
@@ -5257,12 +5317,12 @@ function RebindMenu({
   }
 
   async function switchTo(target: string, move: () => Promise<void>): Promise<void> {
-    setSwitching(target);
+    setSwitchInFlight(switchKey, target);
     close();
     try {
       await move();
     } finally {
-      setSwitching(null);
+      setSwitchInFlight(switchKey, null);
     }
   }
 
@@ -5790,20 +5850,26 @@ function Footer({
   );
 
   const ticking = useServicesStore((s) => Object.keys(s.checked).length > 0);
+  const [importing, setImporting] = useState(false);
+  const shareable = targets.filter((t) => (stacks[t.id]?.services.length ?? 0) > 0);
 
   return (
     <>
       {ticking ? (
-        <SelectionBar />
+        <SelectionBar shareable={shareable} />
       ) : (
         <div className="flex h-[40px] flex-shrink-0 items-center border-t border-card px-3.5">
           <button className="text-[10.5px] text-ink-faint hover:text-ink" onClick={() => setOpen(true)}>
             + Add services
           </button>
+          <button className="ml-3 text-[10.5px] text-ink-faint hover:text-ink" onClick={() => setImporting(true)}>
+            Import shared stack…
+          </button>
           <span className="flex-1" />
           <span className="text-[10.5px] text-ink-faint">⌘-click to select several</span>
         </div>
       )}
+      {importing && <ImportStackSheet stacks={targets} onClose={() => setImporting(false)} />}
       {open && (
         <AddServicesSheet
           stacks={targets}
@@ -5957,13 +6023,22 @@ function StatusDot({
   /// here. Drawn hollow and dashed — live, but not ours yet.
   adopted?: boolean;
 }) {
+  // A green centre in a dashed ring: running, but not ours yet. A dashed ring
+  // alone read as the hollow ring a stopped service now has.
   if (adopted && status === 'ready') {
     return (
       <span
         aria-hidden
-        className="h-2 w-2 flex-shrink-0 rounded-full border border-dashed border-green-500 dark:border-green-400"
-      />
+        className="flex h-2.5 w-2.5 flex-shrink-0 items-center justify-center rounded-full border border-dashed border-green-500 dark:border-green-400"
+      >
+        <span className="h-1 w-1 rounded-full bg-green-500 dark:bg-green-400" />
+      </span>
     );
+  }
+  // Hollow, not a faint fill: a stopped row has to read as stopped, not as a
+  // dot that failed to draw.
+  if (status === 'stopped') {
+    return <span aria-hidden className="h-1.5 w-1.5 flex-shrink-0 rounded-full border border-ink-faint" />;
   }
   const tone =
     status === 'blocked'

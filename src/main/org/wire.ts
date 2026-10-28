@@ -16,7 +16,8 @@ import { runDeliverablesFor } from '../flows/teamWire';
 import { listWorkerFiles, readWorkerFileBytes } from '../flows/workerFiles';
 import { loadAllFlows, saveFlow } from '../flows/storage';
 import { loadRunSummaries } from '../flows/runSummaryLog';
-import { importWorkerYaml } from '../flows/workerShare';
+import { buildWorkerShare, importWorkerYaml } from '../flows/workerShare';
+import { appendWorkerJournalEntry } from '../flows/workerJournal';
 import { healthyBackends, resolveBackendPath } from '../health';
 import { Store } from '../store';
 import { isEverydayProject } from '../../shared/everydayProjects';
@@ -31,7 +32,7 @@ import { rewriteJob } from './jobRewrite';
 import { pickPicture } from './pickPicture';
 import { oneShotDraftText } from '../flows/drafter';
 import { resolveWorkPlace } from './defaultProject';
-import { installTool, listTools, loadToolTemplates, rememberToolTemplates, toolTemplatesFile, uninstallTool, updateToolSettings } from './tools';
+import { installTool, listTools, loadToolTemplates, rememberToolTemplates, templateFrom, toolTemplatesFile, uninstallTool, updateToolSettings } from './tools';
 import { host } from '../host';
 import { readClaudeInit } from '../flows/mcpProbe';
 import { readClaudeMcpServers } from '../mcpConfig';
@@ -40,7 +41,7 @@ import { checkLogin, checkLoginByCall, type LoginResult } from './toolLogin';
 import { callTool, listServerTools } from './mcpDirect';
 import type { TriggerService } from './triggers';
 import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileToolRequestStore, fileToolHealthStore, fileWorkerVersionStore, fileHandbook, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy, orgDir } from './orgStores';
-import { RepoService, type RepoState } from './repos';
+import { RepoService, serverGitNote, type RepoState } from './repos';
 import { projectIdFor, repairProjectIds } from '../projectIds';
 import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from '../workspace';
 import { applyRepoGrants } from './repoGrants';
@@ -50,13 +51,15 @@ import type { SecretsService } from './secrets/service';
 import type { ConnectionsService } from './connections';
 import type { ToolSignIn } from './toolSignIn';
 import { parseFlowYaml } from '../../shared/flows/yaml';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { ToolchainService, type ToolchainState } from './toolchains';
+import { addRunEnv } from '../runEnv';
 import fs from 'node:fs';
 import path from 'node:path';
 
 export interface OrgEngines {
   runner: RunnerManager;
-  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork' | 'chatWithRun'>;
+  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork' | 'runNote' | 'chatWithRun'>;
   orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem' | 'list' | 'approveBatch'>;
   workerEngine: WorkerEngine;
   /// A getter: the app builds teams after the plane.
@@ -119,7 +122,8 @@ function importSharedWorker(
   if (!place.ok) return place;
   const projectPath = place.path;
   const everyday = store.projects.find((p) => p.path === projectPath)?.everyday;
-  return workerEngine.save({
+  const carried = landed.result.bundle.carried;
+  const saved = workerEngine.save({
     name: w.name,
     ...(w.description ? { tagline: w.description } : {}),
     jobDescription: w.jobDescription,
@@ -138,9 +142,20 @@ function importSharedWorker(
     flowIds,
     mcpServers: opts.mcpServers,
     ...(w.autoRender ? { autoRender: w.autoRender } : {}),
+    ...(carried?.knowledge ? { knowledge: { status: 'ready' as const, body: carried.knowledge, updatedAt: Date.now(), refresh: 'weekly' as const } } : {}),
     ...opts.extra,
     enabled: true,
   });
+  if (!saved.ok || !carried) return saved;
+  // Its notes and history from where it was, under its new id. Marked
+  // imported: they stop it redoing old work, never count toward trust.
+  const id = saved.worker.id;
+  const lines = [
+    ...(carried.journal ?? []).map((e) => ({ ...e })),
+    ...(carried.notes ?? []).map((n) => ({ kind: 'note' as const, at: n.at, title: '', note: n.note })),
+  ];
+  lines.forEach((e, i) => appendWorkerJournalEntry({ ...e, id: `imported-${id}-${i}`, workerId: id, imported: true }));
+  return saved;
 }
 
 /// Decline a paused worker run the way the desk does: settle its batch item
@@ -148,7 +163,7 @@ function importSharedWorker(
 /// and a failed item cannot be rejected, so the journal would never learn the
 /// idea was turned down.
 export function rejectWorkerRun(
-  engines: { flowRuntime: Omit<OrgEngines['flowRuntime'], 'chatWithRun' | 'beforeFork'>; orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem'> },
+  engines: { flowRuntime: Omit<OrgEngines['flowRuntime'], 'chatWithRun' | 'beforeFork' | 'runNote'>; orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem'> },
   runId: string,
 ): { ok: true } | { ok: false; error: string } {
   const { flowRuntime, orchestrator } = engines;
@@ -162,6 +177,22 @@ export function rejectWorkerRun(
   return flowRuntime.abortRun({ runId });
 }
 
+/// Where builds keep what they download, under the server's home (on the
+/// data volume in the image), shared by every run: Gradle, Maven, npm, pip,
+/// uv and Go. Only the downloads: never settings files beside them.
+export function buildCacheDirs(home: string): string[] {
+  return [
+    path.join(home, '.gradle', 'caches'),
+    path.join(home, '.gradle', 'wrapper', 'dists'),
+    path.join(home, '.m2', 'repository'),
+    path.join(home, '.npm', '_cacache'),
+    path.join(home, '.cache', 'pip'),
+    path.join(home, '.cache', 'uv'),
+    path.join(home, '.cache', 'go-build'),
+    path.join(home, 'go', 'pkg', 'mod'),
+  ];
+}
+
 export function createOrgService(
   engines: OrgEngines,
   hooks: Pick<OrgServiceDeps, 'onHireAwaitingApproval' | 'onHireDecided' | 'onToolsWanted' | 'onAskDone' | 'onToolRequest' | 'onToolRequestDecided'> & {
@@ -172,8 +203,28 @@ export function createOrgService(
   const { runner, flowRuntime, workerEngine } = engines;
   const repos = createRepoService();
   applyRepoGrants(repos);
+  // Java, Node, Python, Go and custom kits on the data volume: on every
+  // worker's PATH, the version per repo.
+  const toolchains = new ToolchainService({
+    dir: path.join(host().dataDir(), 'toolchains'),
+    store: jsonOrgStore<ToolchainState>('toolchains.json', () => ({ toolchains: [], defaults: {}, repoPicks: {} })),
+    repos: () => repos.list(),
+    log: (message) => log('info', 'org.toolchains', message),
+  });
+  toolchains.recover();
+  addRunEnv((env, cwd) => toolchains.env(env, cwd));
   // Runs on a connected repo start from its default branch as origin has it.
   flowRuntime.beforeFork = (paths) => repos.freshen(paths).then((problems) => problems.forEach((p) => log('warn', 'org.repos', p)));
+  // ...and every step of a worker's run there is told so, and not to fetch.
+  flowRuntime.runNote = (run) => {
+    if (!run.workerId) return undefined;
+    const at = run.sourceProjectPath ?? run.projectPath;
+    const repo = repos.list().find((r) => r.path === at);
+    const ws = repo ? undefined : repos.workspaces().find((x) => x.rootPath === at);
+    if (!repo && !ws) return undefined;
+    const members = repo ? [repo] : repos.list().filter((r) => ws!.repos.includes(r.name));
+    return serverGitNote(members.filter((r) => r.testCommand).map((r) => (members.length > 1 ? `${r.testCommand} (in ${r.name})` : r.testCommand!)));
+  };
   // The last storage measurement (storage.report).
   let storageCache: StorageReport | null = null;
   let storageInFlight: Promise<StorageReport> | null = null;
@@ -352,6 +403,7 @@ export function createOrgService(
           };
         })()
       : {}),
+    toolchains,
     repos: {
       list: () => repos.list(),
       connect: (input, by) => repos.connect(input, by),
@@ -363,6 +415,10 @@ export function createOrgService(
       updateWorkspace: (id, patch) => repos.updateWorkspace(id, patch),
       removeWorkspace: (id) => repos.removeWorkspace(id),
       testsOff: () => repos.testsOff(),
+      ciRounds: () => repos.ciRounds(),
+      prMode: () => repos.prMode(),
+      setPrMode: (mode) => repos.setPrMode(mode),
+      setCiRounds: (n) => repos.setCiRounds(n),
       branchPrefix: () => Store.load().settings.agentBranchPrefix || 'agent/',
       freshen: (paths) => repos.freshen(paths).then((problems) => { lastRefreshAt = Date.now(); return problems; }),
       lastRefreshed: () => lastRefreshAt,
@@ -395,6 +451,25 @@ export function createOrgService(
       }
     },
     importWorker: (yaml, opts) => importSharedWorker(workerEngine, yaml, opts),
+    models: {
+      flows: (ids) => loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) }).filter((f) => ids.includes(f.id)),
+      save: (flow) => {
+        // Written back to the layer it came from, as the desktop's upgrade does.
+        const projectPath = flow.source === 'project' ? Store.load().projects.find((p) => flow.filePath.startsWith(p.path + path.sep))?.path : undefined;
+        if (flow.source === 'project' && !projectPath) return { ok: false, error: 'Couldn’t find the project it lives in.' };
+        const saved = saveFlow({ flow, target: flow.source, ...(projectPath ? { projectPath } : {}) });
+        return saved.ok ? { ok: true } : saved;
+      },
+      healthy: async () => [...(await healthyBackends(Store.load().settings.backendPaths))],
+      fallback: () => {
+        const s = Store.load().settings;
+        return { preferredBackend: s.preferredBackend, modelDefaults: s.flowModelDefaults };
+      },
+    },
+    shareWorker: (worker, carried) => {
+      const library = loadAllFlows({ projectPaths: Store.load().projects.map((p) => p.path) });
+      return buildWorkerShare({ worker, library, carried });
+    },
     audit: fileAuditStore,
     asks: fileAskStore,
     triggers: engines.triggers,
@@ -417,6 +492,10 @@ export function createOrgService(
     tools: {
       list: (roster, statuses) => listTools(roster, statuses, loadToolTemplates(toolTemplatesFile(host().dataDir()))),
       remember: (templates, onlyNew) => rememberToolTemplates(toolTemplatesFile(host().dataDir()), templates, onlyNew),
+      template: (name) => {
+        const config = readClaudeMcpServers()[name];
+        return config ? templateFrom(name, config) : null;
+      },
       install: installTool,
       uninstall: uninstallTool,
       update: updateToolSettings,
@@ -459,8 +538,9 @@ export function createOrgService(
         } catch {
           // none yet
         }
-        const [checkoutBytes, repoBytes, cacheBytes] = await Promise.all([folderBytes(wtRoot), folderBytes(path.join(host().dataDir(), 'repos')), folderBytes(path.join(home, '.npm', '_npx'))]);
-        storageCache = { volume: volumeOf(host().dataDir()), checkouts: { count, bytes: checkoutBytes }, repos: repoBytes, toolCache: cacheBytes, kept: keptCheckouts(), measuredAt: Date.now() };
+        const [checkoutBytes, repoBytes, cacheBytes, ...builds] = await Promise.all([folderBytes(wtRoot), folderBytes(path.join(host().dataDir(), 'repos')), folderBytes(path.join(home, '.npm', '_npx')), ...buildCacheDirs(home).map((d) => folderBytes(d))]);
+        const buildBytes = builds.some((b) => b !== null) ? builds.reduce<number>((sum, b) => sum + (b ?? 0), 0) : null;
+        storageCache = { volume: volumeOf(host().dataDir()), checkouts: { count, bytes: checkoutBytes }, repos: repoBytes, toolCache: cacheBytes, buildCache: buildBytes, kept: keptCheckouts(), measuredAt: Date.now() };
         return storageCache!;
         })().finally(() => { storageInFlight = null; });
         return storageInFlight;
@@ -475,6 +555,19 @@ export function createOrgService(
       },
       clearToolCache: async () => {
         fs.rmSync(path.join(os.homedir(), '.npm', '_npx'), { recursive: true, force: true });
+        storageCache = null;
+        warm();
+      },
+      clearBuildCache: async () => {
+        for (const d of buildCacheDirs(os.homedir())) {
+          try {
+            fs.rmSync(d, { recursive: true, force: true });
+          } catch {
+            // Go keeps its module cache read-only: make it writable, then again.
+            spawnSync('chmod', ['-R', 'u+w', d]);
+            fs.rmSync(d, { recursive: true, force: true });
+          }
+        }
         storageCache = null;
         warm();
       },
@@ -533,6 +626,7 @@ function createRepoService(): RepoService {
       ]);
     },
     env: (name) => process.env[name],
+    log: (message) => log('info', 'org.repos', message),
     registerWorkspace: (ws) => {
       const store = Store.load();
       const others = store.workspaces.filter((w) => w.id !== ws.id);

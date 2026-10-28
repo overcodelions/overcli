@@ -115,6 +115,10 @@ Protect the default branch on your git host as well (required reviews, no force 
 - **What a run does:** each run gets its own worktree of every repo. The server pushes one branch per changed repo, each past that repo's tests, and the reply has one pull request link per repo.
 - **Changing or removing it:** **Change** edits the repos or instructions, and workers in it use the new setup from their next run. A workspace can't be removed while a worker works there.
 
+- **Pull requests:** what the server does after pushing a worker's branch. **Open as a draft** (the default) opens the pull request on Bitbucket or GitHub with the title and description the worker wrote, as a draft a person marks ready; **open for review** opens it ready; **link only** hands back the link to open one, as before. A fix pushed onto a branch whose pull request is open goes into that pull request. The token needs pull request write access (Bitbucket: Pull requests: Write; GitHub: Pull requests: Read and write); without it the run says why and the link stands.
+- **When CI fails:** after the server pushes a worker's branch, it reads the repo's own CI result for that commit through the git host's API, with the same token it pushes with: Bitbucket commit statuses (and, for Pipelines, the failed step's test cases and log), or GitHub check runs and commit statuses (with annotations and the Actions job log). A red build goes back to the same worker with the failing checks, tests and the end of the log, to fix on the same branch, so the open pull request gets the fix and CI runs again. After the number of rounds set in the strip (3 by default; "tell the manager" for none), or a build still running after 3 hours, the worker's manager gets a Slack DM, and a reply there goes to the worker. Each run's result is attached to it as `ci.md`. A repo whose CI reports nothing within 20 minutes isn't watched. A Bitbucket access token needs read access to pipelines for the detail; without it the worker still gets the failing checks and their links.
+- **Workers don't fetch or push.** Before each run the server fetches every branch of the repo, and every step of a worker's run is told so: work from `origin/<branch>` (an open pull request's branch included), never `git fetch` or `git push`, and the server pushes when the run ends.
+
 ## Setup → Databases
 
 Databases people published from [overdb](https://github.com/overcodelions/overdb), for workers to read. In overdb, someone opens a connection's Read-only menu and chooses **Publish to your org's server**; their overcli app sends it here. What arrives is where the database is and which login to use, never a password.
@@ -149,6 +153,32 @@ Every secret the server uses, with why it's needed and how to get one. Values go
 
 - **The environment wins.** A secret set in the server's environment (`deploy/.env` or the task definition) shows as "set by the environment" and is changed there.
 - **Read-only mode:** with `OVERCLI_SECRETS_READONLY=1`, for secrets managed in Terraform, the page lists them and changes nothing. The server re-reads them every five minutes either way.
+
+## Setup → Toolchains
+
+Build tools for workers and repo tests, without rebuilding the image. The server downloads each one for its own OS and CPU into `toolchains/` on the data volume, checks it against the publisher's checksum, runs it once to show its version, and keeps it across restarts and upgrades. A restart during a download marks it failed; install it again.
+
+| Kit | From | Versions | Also sets |
+|---|---|---|---|
+| Java | Amazon Corretto | 8, 11, 17, 21, 25 | `JAVA_HOME` |
+| Node.js | nodejs.org (latest of each major) | 18 to 26 | |
+| Python | python-build-standalone, through `uv` (in the image) | 3.9 to 3.14 | |
+| Go | go.dev | 1.22 to 1.26 | `GOROOT` |
+| Custom | any `.tar.gz` or `.tar.xz` you give | | the variables you name |
+
+**Which version a run gets**, per kit, from the next run on:
+
+1. the repo's pick under *Versions each repo uses*;
+2. else what the repo asks for itself, if that version is installed: `.nvmrc` or `.node-version`, `.python-version`, `.sdkmanrc` or `.java-version`, the `go` line in `go.mod`, or `.tool-versions`;
+3. else the kit's **default** (the first one installed, until you make another the default).
+
+Every worker's shell and every repo's test command gets that version's `bin` first on `PATH`. A repo whose files already say `java=8.0.422-amzn` or `20` needs no setting at all once that version is installed.
+
+**Custom kits** are for anything the catalog doesn't carry (Terraform, a Maven, another runtime). Give a name, an https address of the archive built for the server's OS and CPU (the section shows which), the folder inside it to put on `PATH` (`bin` by default, counted from the archive's one top folder if it has one), and any variables, with `{home}` for where it unpacks. Give its **sha256** when the publisher lists one: a download that doesn't match is never installed. A custom kit can't set `PATH`, `HOME`, `LD_*`, `DYLD_*`, `NODE_OPTIONS` or `OVERCLI_*`. It runs on the server like any other tool workers have, so it's admin-only and recorded in the decision log with its address.
+
+**Remove** deletes it from the volume. A version a repo is set to can't be removed until that repo picks another.
+
+Baked-in toolchains (`--build-arg JDKS=…` or `EXTRA_APT_PACKAGES`, see the [deploy README](../README.md)) still work; whatever is installed here comes first on `PATH`.
 
 ## Setup → Handbook
 

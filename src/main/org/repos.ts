@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { stripSecrets } from './secrets';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
+import { DEFAULT_PR_MODE, PR_MODES, type PrMode } from './prOpen';
 
 export type RepoHost = 'github' | 'bitbucket' | 'other';
 
@@ -66,7 +67,18 @@ export interface OrgWorkspace {
 export interface RepoState {
   repos: ConnectedRepo[];
   workspaces?: OrgWorkspace[];
+  /// Left by a build whose Repos page could turn repo tests on. Cleared, with
+  /// the test commands set beside it, when the server starts (RepoService).
+  testsAsServer?: boolean;
+  /// How many times a red CI build goes back to the worker before its
+  /// manager hears (ciWatch.ts). Absent: DEFAULT_CI_ROUNDS. 0: tell at once.
+  ciRounds?: number;
+  /// Whether the server opens the pull request for a pushed branch
+  /// (prOpen.ts). Absent: a draft.
+  prMode?: PrMode;
 }
+
+export const DEFAULT_CI_ROUNDS = 3;
 
 export interface RepoDeps {
   store: { load(): RepoState; save(state: RepoState): void };
@@ -78,6 +90,7 @@ export interface RepoDeps {
   /// store so runs fork a worktree per repo. Null removes it.
   registerWorkspace(ws: { id: string; name: string; repos: Array<{ name: string; path: string }>; instructions?: string } | { id: string; remove: true }): { ok: true; rootPath: string } | { ok: false; error: string };
   env(name: string): string | undefined;
+  log?(message: string): void;
   now?(): number;
 }
 
@@ -209,8 +222,53 @@ export function newPullRequestLink(repo: Pick<ConnectedRepo, 'url' | 'defaultBra
   return null;
 }
 
+/// The note every step of a run on a connected repo or workspace ends with:
+/// a worker has no git credentials (the token stays in the server), so
+/// without it a worker reaches for `git fetch`, fails, and asks its manager
+/// for a token it was never meant to have.
+export function serverGitNote(tests: string[]): string {
+  return [
+    'How git works for this run: overcli fetched origin, every branch, just before the run started, so',
+    'origin/<branch> is current, including the branch of any open pull request. Do not run git fetch, pull',
+    'or push, and do not ask for git credentials: this run has none on purpose. To build on an open pull',
+    'request, start from its origin/ branch. When the run ends, overcli commits your change and pushes it.',
+    tests.length ? `Before it pushes, it runs ${tests.join(', ')} and refuses a failing push, so run them yourself first if you can.` : '',
+  ].filter(Boolean).join('\n');
+}
+
 export class RepoService {
-  constructor(private readonly deps: RepoDeps) {}
+  constructor(private readonly deps: RepoDeps) {
+    // CI checks each push now (ciWatch.ts), so the Repos page no longer turns
+    // repo tests on. What it turned on goes, test commands with it: left
+    // alone, a command would hold every push back with "tests are off here".
+    const state = deps.store.load();
+    if (state.testsAsServer) {
+      const had = state.repos.filter((x) => x.testCommand).map((x) => x.name);
+      const { testsAsServer: _was, ...rest } = state;
+      deps.store.save({ ...rest, repos: state.repos.map(({ testCommand: _cmd, ...x }) => x) });
+      deps.log?.(`Repo tests are no longer turned on from the Repos page; CI checks pushes instead.${had.length ? ` Cleared the test commands of ${had.join(', ')}.` : ''}`);
+    }
+  }
+
+  prMode(): PrMode {
+    return this.deps.store.load().prMode ?? DEFAULT_PR_MODE;
+  }
+
+  setPrMode(mode: string): Result {
+    if (!(PR_MODES as readonly string[]).includes(mode)) return { ok: false, error: 'Say link, draft or open.' };
+    this.save({ prMode: mode as PrMode });
+    return { ok: true };
+  }
+
+  ciRounds(): number {
+    return this.deps.store.load().ciRounds ?? DEFAULT_CI_ROUNDS;
+  }
+
+  setCiRounds(n: number): Result {
+    if (!Number.isInteger(n) || n < 0 || n > 10) return { ok: false, error: 'Pick 0 to 10 rounds.' };
+    this.save({ ciRounds: n });
+    return { ok: true };
+  }
 
   list(): ConnectedRepo[] {
     return this.deps.store.load().repos;
@@ -304,7 +362,9 @@ export class RepoService {
 
   private save(patch: Partial<RepoState>): void {
     const state = this.deps.store.load();
-    this.deps.store.save({ repos: patch.repos ?? state.repos, workspaces: patch.workspaces ?? state.workspaces ?? [] });
+    const ciRounds = patch.ciRounds ?? state.ciRounds;
+    const prMode = patch.prMode ?? state.prMode;
+    this.deps.store.save({ repos: patch.repos ?? state.repos, workspaces: patch.workspaces ?? state.workspaces ?? [], ...(ciRounds !== undefined ? { ciRounds } : {}), ...(prMode ? { prMode } : {}) });
   }
 
   // ---- WORKSPACES ----
@@ -406,7 +466,9 @@ export class RepoService {
     const problems = await Promise.all(
       repos.map(async (r): Promise<string | null> => {
         const git = (args: string[]) => this.deps.git(args, r.path);
-        const fetched = await within(FRESHEN_MS, git(['fetch', '--prune', 'origin', r.defaultBranch]));
+        // Every branch, not just the default: a follow-up on an open pull
+        // request reads its branch from here, since a worker can't fetch.
+        const fetched = await within(FRESHEN_MS, git(['fetch', '--prune', 'origin']));
         if (!fetched) return `${r.name}: fetching origin took too long; forking from the clone as it is.`;
         if (!fetched.ok) return `${r.name}: couldn't fetch origin (${fetched.error}); forking from the clone as it is.`;
         // The clone is the server's own and nobody works in it, so its
@@ -456,7 +518,9 @@ export function pullRequestPrompt(what: string): string[] {
     'commits, branches or pushes, that part is not yours: overcli does it after you, from your words.',
     'Write the pull request, and nothing else. The first line is its title: what',
     'changed, under 70 characters, no prefix. Then a blank line, then the description: what changed',
-    `and why, which ${what} it touches, and how it was checked. Plain markdown; no attribution lines.`,
+    `and why, which ${what} it touches, and how it was checked. When it fixes a bug, add a short "Root`,
+    'cause" section: what was wrong and, if the run found it, when and in which commit it came in',
+    '(from the git history it read). Plain markdown; no attribution lines.',
     'Run no commands. Once you finish and the change is approved, overcli commits it and pushes a',
     'branch in each repo that changed. Git runs each repo\'s tests first and refuses a push that',
     'fails, so say plainly if you expect a test to fail.',

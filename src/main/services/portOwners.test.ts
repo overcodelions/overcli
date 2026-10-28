@@ -104,6 +104,43 @@ describe('classifyOwner', () => {
     expect(classifyOwner(58676, ctx, facts)).toBe('stale');
   });
 
+  // `-Dorg.gradle.daemon=true`: the daemon is launchd's from the start, so
+  // there is no wrapper above it — what is left of an abandoned run is the
+  // daemon and its app JVM, with no client waiting on either.
+  const daemonTree = (client?: string): ProcessFacts => ({
+    selfPid: 44090,
+    parents: new Map([[32209, 87671], [87671, 1], ...(client ? ([[70500, 900]] as [number, number][]) : [])]),
+    cwds: new Map([
+      [32209, '/src/acme-orders'],
+      [87671, '/Users/me/.gradle/daemon/4.10.3'],
+    ]),
+    args: new Map([
+      [32209, 'java -Dspring.profiles.active=local -cp app.jar acme.OrdersApp'],
+      [87671, 'java -Xmx4g -cp gradle-launcher.jar org.gradle.launcher.daemon.bootstrap.GradleDaemon 4.10.3'],
+      ...(client ? ([[70500, client]] as [number, string][]) : []),
+    ]),
+  });
+  const daemonCtx = {
+    servicePath: '/src/acme-orders',
+    tokens: ['./gradlew', ':orders:bootRun', '-Dorg.gradle.daemon=true', '-Dspring.profiles.active=local'],
+  };
+
+  it('takes an app JVM under a shared daemon once no client waits on it', () => {
+    expect(classifyOwner(32209, daemonCtx, daemonTree())).toBe('stale');
+  });
+
+  it('leaves it alone while a gradlew for the same task is still running', () => {
+    const client = 'java -Dorg.gradle.appname=gradlew -classpath gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :orders:bootRun';
+    expect(classifyOwner(32209, daemonCtx, daemonTree(client))).toBe('other');
+    // A client for some other task is no claim on this one.
+    const other = 'java -classpath gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain :billing:bootRun';
+    expect(classifyOwner(32209, daemonCtx, daemonTree(other))).toBe('stale');
+  });
+
+  it('cannot call it stale without knowing the task', () => {
+    expect(classifyOwner(32209, { servicePath: '/src/acme-orders' }, daemonTree())).toBe('other');
+  });
+
   it('still leaves a Gradle service started from a terminal alone', () => {
     // Same shape, but the wrapper's parent is a shell in the checkout rather
     // than launchd, and the shell's parent is the terminal.
