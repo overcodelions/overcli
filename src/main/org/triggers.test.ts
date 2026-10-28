@@ -228,6 +228,15 @@ describe('slack triggers', () => {
     }
   });
 
+  it('posts what the worker wrote in Slack\'s markup, not raw Markdown', async () => {
+    const h = harness({ reply: '- **Searched:** the `main.py` fix & its repo' });
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', ts: '5.1', text: 'the export is broken' });
+    await tick();
+    expect(h.posts).toEqual(['C0ACMESUP@5.1:• *Searched:* the `main.py` fix &amp; its repo']);
+  });
+
   it('posts nothing when the worker passes, and says so on the deliverable', async () => {
     const h = harness({ reply: ' **PASS.** ' });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });

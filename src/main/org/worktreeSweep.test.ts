@@ -74,6 +74,16 @@ describe('cleaning up finished runs’ checkouts', () => {
     expect(fs.existsSync(wt)).toBe(true);
   }, 30_000);
 
+  it("leaves a team task's checkout alone after a piece that borrowed it ends", async () => {
+    const r = repo();
+    const wt = r.wt('team-task');
+    const piece = { ...run(r, wt, 'piece', EMPTY_AFTER_MS * 10), adoptedWorktree: true } as FlowRun;
+    const res = await sweepWorktrees([piece], () => undefined);
+    expect(res.removed).toBe(0);
+    expect(fs.existsSync(wt)).toBe(true);
+    expect(git(r.main, 'branch', '--list', 'run/team-task')).not.toBe('');
+  }, 30_000);
+
   it('says in Readiness how many checkouts there are, and flags old unpushed work', async () => {
     const r = repo();
     const wt = r.wt('old');

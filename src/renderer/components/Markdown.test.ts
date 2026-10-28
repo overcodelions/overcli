@@ -41,6 +41,27 @@ describe('renderMarkdownHtml', () => {
   });
 });
 
+describe('inline code file paths', () => {
+  it('links an absolute path to a dotfile with an unlisted extension', () => {
+    const html = renderMarkdownHtml('put them in `/Users/me/.overcli/worktrees/acme/WOW-1/.env.chat`:');
+    expect(html).toContain('data-path="/Users/me/.overcli/worktrees/acme/WOW-1/.env.chat"');
+  });
+
+  it('links an absolute path with spaces', () => {
+    const html = renderMarkdownHtml('in `/Users/me/Library/Application Support/Overcli/coordinators/abc-1/WOW-1-steps.md`.');
+    expect(html).toContain('data-path="/Users/me/Library/Application Support/Overcli/coordinators/abc-1/WOW-1-steps.md"');
+  });
+
+  it('links a home-relative path with a line suffix', () => {
+    expect(renderMarkdownHtml('`~/acme/Dockerfile.dev:12`')).toContain('class="file-path"');
+  });
+
+  it('leaves routes and bare names as plain code', () => {
+    expect(renderMarkdownHtml('`/api/users`')).not.toContain('file-path');
+    expect(renderMarkdownHtml('`.env.chat`')).not.toContain('file-path');
+  });
+});
+
 describe('local file links from codex', () => {
   it('turns an absolute path link with spaces into a file chip', () => {
     const html = renderMarkdownHtml('[Open the plan](</Users/me/Library/Application Support/x/plan.md>)');

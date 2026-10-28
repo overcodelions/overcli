@@ -109,6 +109,9 @@ export async function sweepWorktrees(runs: FlowRun[], log: (level: 'info' | 'war
     }
     for (const run of runs) {
       if (run.state.kind !== 'done' && run.state.kind !== 'aborted') continue;
+      // A team piece borrowed the task's own checkout: the task closes it
+      // when it ends, and a later stage or handoff works in it again.
+      if (run.adoptedWorktree === true) continue;
       const age = now - endedAt(run);
       if (age < EMPTY_AFTER_MS) continue;
       for (const c of checkoutsOf(run)) {

@@ -1,42 +1,34 @@
 # Screenshots
 
-The top-level `README.md` references these images. Drop PNG captures at these paths and they'll render on GitHub.
+The top-level `README.md` shows these images. They're generated, not hand-captured, so they can be refreshed whenever the UI changes.
 
-| Path | Shows |
+| File | Shows |
 |---|---|
-| `welcome.png` | Welcome screen — Projects / Agents / Workspaces cards (dark) |
-| `chat-light.png` | Chat with thinking block streaming + changes bar (light) |
-| `chat-diff-light.png` | Chat + side-by-side file diff pane (light) |
-| `chat-result-dark.png` | Chat with full markdown result rendered (dark) |
-| `colosseum.png` | New Colosseum modal with two contenders (dark) |
-| `rebound-popover.png` | Rebound config popover — reviewer + mode + rounds (light) |
-| `rebound-collab-1.png` | Codex ↔ Claude collab transcript, mid-rounds (dark) |
-| `rebound-collab-2.png` | Codex ↔ Claude collab transcript, later rounds (dark) |
-| `flows-edit.png` | Flow builder — pipeline diagram, participants, per-step config (dark) |
-| `settings-backends.png` | Settings → Backends pane with health badges (dark) |
-| `about.png` | About panel scrolled to the multi-agent flows section (dark) |
+| `chat.png` | Hero: a finished turn with its markdown report, steps summary and changes bar (dark) |
+| `tools-light.png` | The same turn from the top: prompt, thinking, file writes and an inline edit diff (light) |
+| `diff.png` | Working-tree diff sheet over the conversation (dark) |
+| `rebound.png` | Rebound preset menu (dark) |
+| `flow.png` | Flow builder on the *Solve a ticket* template, beside its YAML (dark) |
+| `workers.png` | Workers view, with templates and teams (dark) |
+| `usage.png` | Usage dashboard (dark) |
+| `extensions.png` | Extensions browser, skill catalog (dark) |
+| `backends.png` | Settings → Backends with health badges (dark) |
 
-All images are sized at 920px in the README. Source captures are typically 2× that on Retina displays.
-
-## Capture recipe
-
-On macOS, the cleanest captures come from `Cmd+Shift+4` → `Space` → click the Overcli window. Hold `Option` while clicking to drop the drop-shadow.
+## Regenerating
 
 ```bash
-# Quick save directly into this folder (macOS):
-screencapture -o -W ~/git-services/overcli/docs/screenshots/<name>.png
+npm run build
+npm i --no-save playwright-core
+pip3 install pillow   # once, for framing
+node scripts/readme-screenshots/capture.mjs
 ```
 
-`-W` lets you click the window to select it; `-o` omits the window shadow so the PNG is a clean rectangle.
+[`scripts/readme-screenshots/`](../../scripts/readme-screenshots/) does the whole job:
 
-## Before capturing
+- **`seed.mjs`** builds a throwaway HOME in your temp dir: fictional `acme-*` git repos with real history and uncommitted edits, plus Claude transcripts the app replays as conversation history.
+- **`capture.mjs`** runs the built app against that HOME and a separate `readme-shots` profile, so none of your own projects, paths or conversations can appear in an image. Backends are faked as ready with `OVERCLI_FAKE_HEALTH`, and no CLI is ever called. It clicks through each scene at 1600×1000 and 2× scale, then deletes the profile.
+- **`frame.py`** adds macOS window chrome (traffic lights, rounded corners, soft shadow) on a transparent background, so the images work in GitHub's light and dark themes.
 
-- Pick a theme intentionally (the README mixes light and dark on purpose).
-- Use `~1440 × 960` logical (Retina captures double to `2880 × 1920`).
-- Seed a workspace with realistic-looking projects and a short conversation — no real customer data, internal repo names, or PII in file paths.
-- Expand the active project in the sidebar; collapse the rest.
-- For rebound/collab shots, run a real prompt long enough for a few rounds to land.
+## Adding a shot
 
-## Adding more
-
-Drop new PNGs here and add a row to the table above + a `<p align="center">…</p>` block in the top-level README. Use `kebab-case.png`.
+Add a scene to `capture.mjs`, add any data it needs to `seed.mjs`, then add a row above and an image to the README. Keep names `kebab-case.png`, and keep everything fictional: acme names only, no real people, companies or paths.

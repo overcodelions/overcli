@@ -158,6 +158,15 @@ export function yourTurn(task: TeamTask): TurnBand | null {
       const version = task.pack?.version ?? 1;
       const files = task.pack?.files.length ?? 0;
       const head = `Version ${version}, ${plural(files, 'file')}.`;
+      // Picked up as a new run: the pack can still be reviewed, but more
+      // debate or a rewrite belongs to the new task.
+      if (task.continuedAs) {
+        return {
+          title: 'Your turn: the pack is ready to review',
+          detail: `${head} This task continued in a new run, where the team works now.`,
+          actions: [{ id: 'reviewPack', label: `Review v${version}`, primary: true }],
+        };
+      }
       const changes = pendingChanges(task);
       const debate: TurnBand['actions'][number] = { id: 'keepDebating', label: 'Keep debating' };
       if (changes.length > 0) {

@@ -1430,6 +1430,20 @@ function ContinuationLinks({ task }: { task: TeamTask }) {
 
 const ROLLOVER_KEY = "overcli.teamRolloverDismissed";
 
+/// In place of the composer once a task was picked up as a new run: what
+/// you'd ask here belongs there, or both tasks build the same thing.
+function ContinuedNotice({ task }: { task: TeamTask }) {
+  const next = task.continuedAs!;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-card bg-surface-elevated px-4 py-3 text-[13px] text-ink-muted">
+      <span>This task continued in a new run. Ask the team there; this conversation is kept as it is.</span>
+      <button className={primaryBtn} onClick={() => useWorkersStore.getState().selectTeam(task.teamId, next.taskId)}>
+        Open the new run →
+      </button>
+    </div>
+  );
+}
+
 /// Follow-up stages since you last said "keep going here", so the band comes
 /// back only once the task has grown again.
 function readRolloverDismissed(taskId: string): number | null {
@@ -3390,6 +3404,10 @@ function TeamRoom({
             {arrived} new · jump to latest
           </button>
         )}
+        {task.continuedAs ? (
+          <ContinuedNotice task={task} />
+        ) : (
+          <>
         {(canDebate || unfolded > 0) && !workingOn && (
           <div className="flex flex-wrap gap-2">
             {canDebate && (
@@ -3429,6 +3447,8 @@ function TeamRoom({
           }
           onSend={send}
         />
+          </>
+        )}
       </div>
       {/* The very end of the column, below the composer: in view only when
           you have scrolled all the way down. */}
@@ -3717,7 +3737,8 @@ function HandoffCard({ message, task, onOpenFile }: { message: TeamMessage; task
           </button>
         </div>
       )}
-      {handoff.status === "proposed" && (
+      {handoff.status === "proposed" && task.continuedAs && <AskInNewRun message={message} task={task} />}
+      {handoff.status === "proposed" && !task.continuedAs && (
         <div className="flex flex-wrap items-center gap-2">
           <button
             className={primaryBtn}
@@ -3736,6 +3757,28 @@ function HandoffCard({ message, task, onOpenFile }: { message: TeamMessage; task
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+/// Work proposed here before the task was picked up as a new run can't start
+/// here any more: what you asked goes to the new run's composer instead.
+function AskInNewRun({ message, task }: { message: TeamMessage; task: TeamTask }) {
+  const setDraft = useStore((s) => s.setDraft);
+  const next = task.continuedAs!;
+  const asked = task.room?.messages.find((m) => m.exchange === message.exchange && m.speaker.kind === "you")?.text ?? "";
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        className={primaryBtn}
+        onClick={() => {
+          if (asked.trim()) setDraft(`team-room:${next.taskId}`, asked);
+          useWorkersStore.getState().selectTeam(task.teamId, next.taskId);
+        }}
+      >
+        Ask in the new run →
+      </button>
+      <span className="text-[11px] text-ink-faint">This task continued in a new run; your request goes into its message box to send there.</span>
     </div>
   );
 }

@@ -5,6 +5,8 @@ release/
 docs/*
 # The user guide ships in the repo; the rest of docs/ is scratch.
 !docs/guide/
+# The README's screenshots ship too — see docs/screenshots/README.md.
+!docs/screenshots/
 # The org docs ship in the repo and the image; only scratch docs/ stays out.
 !deploy/docs/
 .mender/
