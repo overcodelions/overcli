@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-28
+
 ### Security
 - **"Allow rest of turn" asks before a run writes Claude's own config.** A write to `.mcp.json` or anything in `.claude/` (settings with hooks, commands) gets a card, as writes to `package.json` already did: both name commands the next launch runs.
 - **A secret read counts however it was approved.** Once a turn reads a credential-shaped file (`.env`, a key), the safe grant asks for tool calls, whether the read was let through by the grant, a card, a remembered rule or the CLI's own rules, and also when the grant is turned on after the read.
@@ -1100,7 +1102,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/overcodelions/overcli/compare/v0.22.0...v0.24.0
 [0.23.0]: https://github.com/overcodelions/overcli/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/overcodelions/overcli/compare/v0.21.2...v0.22.0
 [0.21.2]: https://github.com/overcodelions/overcli/compare/v0.21.1...v0.21.2
