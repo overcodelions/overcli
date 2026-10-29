@@ -17,6 +17,7 @@
 import path from 'node:path';
 import type { FlowRun } from '../../shared/flows/schema';
 import { newPullRequestLink, type ConnectedRepo } from './repos';
+import { ticketOf } from './ticketFollowUp';
 
 export { testUserRefusal } from './repos';
 
@@ -39,6 +40,8 @@ export interface LandDeps {
   openPr?(repo: ConnectedRepo, branch: string, title: string, body: string): Promise<{ url: string; draft: boolean } | { error: string } | null>;
   /// After a run's branches are pushed: the ticket follow-up hangs off this.
   onLanded?(run: FlowRun, landed: Landed[]): void;
+  /// Nothing pushed anywhere: a CI fix that changed nothing hangs off this.
+  onNothing?(run: FlowRun, landed: Landed[]): void;
 }
 
 export interface Landed {
@@ -58,6 +61,18 @@ export interface Landed {
 
 function slugify(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'change';
+}
+
+/// The branch a run's change goes on: the ticket key first, where the run
+/// is for one, so the tracker links it.
+export function branchFor(prefix: string, title: string, ticket: string | null, runId: string): string {
+  const words = ticket ? title.replace(new RegExp(`\\b${ticket}\\b:?`, 'g'), ' ') : title;
+  return `${prefix}${ticket ? `${ticket}-` : ''}${slugify(words)}-${runId.slice(0, 6)}`;
+}
+
+/// The pull request's title names the ticket, whatever its writer left out.
+export function ticketed(text: { title: string; body: string }, ticket: string | null): { title: string; body: string } {
+  return ticket && !text.title.includes(ticket) ? { ...text, title: `${ticket}: ${text.title}` } : text;
 }
 
 /// The title (first line) and description (the rest) a run's last step wrote.
@@ -109,20 +124,24 @@ export class BranchLander {
       : run.worktreePath
         ? [{ name: path.basename(run.projectPath), projectPath: run.projectPath, worktreePath: run.worktreePath }]
         : [];
-    const { title, body } = pullRequestText(run);
-    const branch = `${this.deps.branchPrefix?.() || 'overcli/'}${slugify(title)}-${run.id.slice(0, 6)}`;
+    const { title, body } = ticketed(pullRequestText(run), ticketOf(run));
+    // Named from what the run was launched as (a worker's proposal, which
+    // carries the ticket's words), not from what its writer called it after.
+    const branch = branchFor(this.deps.branchPrefix?.() || 'overcli/', run.orchestrationItemTitle?.trim() || title, ticketOf(run), run.id);
     const out: Landed[] = [];
     for (const place of places) {
       const repo = this.deps.repos().find((r) => r.path === place.projectPath);
+      const baseline = run.workspaceWorktrees?.length ? run.baselineCommitsByMember?.[place.name]?.commit : run.baselineCommit;
       // One repo going wrong must not cost the others their links.
       out.push(
-        await this.landOne(place, repo, branch, title, body)
+        await this.landOne(place, repo, branch, title, body, baseline)
           .then((l) => this.withPr(l, repo, title, body))
           .catch((err: unknown) => ({ repo: place.name, error: err instanceof Error ? err.message : String(err) })),
       );
     }
     this.deps.attach(run.id, LANDED_ARTIFACT, describe(out));
     if (out.some((l) => l.url || (l.branch && !l.error))) this.deps.onLanded?.(run, out);
+    else this.deps.onNothing?.(run, out);
     return out;
   }
 
@@ -132,6 +151,7 @@ export class BranchLander {
     branch: string,
     title: string,
     body: string,
+    baseline?: string,
   ): Promise<Landed> {
     const git = (args: string[]) => this.deps.git(args, place.worktreePath);
     const status = await git(['status', '--porcelain']);
@@ -141,6 +161,11 @@ export class BranchLander {
       if (!added.ok) return { repo: place.name, error: added.error };
       const committed = await git(['commit', '--no-verify', '-m', title, ...(body ? ['-m', body] : [])]);
       if (!committed.ok) return { repo: place.name, error: committed.error };
+    } else if (baseline) {
+      // Nothing this run made: a checkout that started on someone else's
+      // branch is already ahead of the default branch, and that's not ours.
+      const head = await git(['rev-parse', 'HEAD']);
+      if (head.ok && head.stdout.trim() === baseline) return { repo: place.name, skipped: 'no changes' };
     }
     const base = repo?.defaultBranch ?? 'main';
     const ahead = await git(['rev-list', '--count', `origin/${base}..HEAD`]);

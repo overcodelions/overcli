@@ -966,9 +966,10 @@ export interface OrgServiceDeps extends OverdbDeps {
 function pauseKind(run: FlowRun): 'question' | 'approval' | null {
   if (run.state.kind !== 'paused' || !run.workerId) return null;
   if (run.state.reason === 'needsInput') return 'question';
-  // A flow's own "look before this step" waits on a person just the same:
-  // left off this list, a run stopped there sat silent in every inbox.
-  if (run.state.reason === 'externalAction' || run.state.reason === 'preStep') return 'approval';
+  // A flow's own "look before this step", and a step whose words look risky,
+  // wait on a person just the same: left off this list, a run stopped there
+  // showed as waiting with nothing anyone could press.
+  if (run.state.reason === 'externalAction' || run.state.reason === 'preStep' || run.state.reason === 'riskyStep') return 'approval';
   return null;
 }
 

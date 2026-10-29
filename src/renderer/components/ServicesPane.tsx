@@ -84,6 +84,7 @@ import {
 import { LogView } from './ServiceLogView';
 import { reloadModeOf, watchForMode } from '../serviceReloadMode';
 import { ServicesBulkEditSheet } from './ServicesBulkEditSheet';
+import { ServicesBranchesSheet } from './ServicesBranchesSheet';
 import { MachineServicesSection } from './MachineServicesSection';
 import { ServiceOutputSearch } from './ServiceOutputSearch';
 import {
@@ -335,6 +336,7 @@ function MoveEverything({
 }) {
   const rebindAll = useServicesStore((s) => s.rebindAll);
   const [ref, setRef] = useState('');
+  const [perService, setPerService] = useState(false);
   const options = useMemo(() => bulkRefOptions(choices), [choices]);
 
   // Where most of the stack sits, and how many services are somewhere else.
@@ -364,13 +366,23 @@ function MoveEverything({
   }, [ref, stacks, choices]);
   const moving = plans.reduce((n, p) => n + p.plan.targets.length, 0);
 
+  const sheet = perService && <ServicesBranchesSheet onClose={() => setPerService(false)} />;
+
   if (options.length === 0) {
-    // Nothing to switch to, but still worth saying where things are.
+    // No checkout every service could share, but each can still be checked
+    // out to a branch of its own — which is what the sheet is for.
     return where ? (
-      <span className="flex items-center gap-1 font-mono text-[11px] text-ink-muted" title={where.ref}>
-        <BranchIcon />
-        {summary}
-      </span>
+      <>
+        <button
+          className="flex items-center gap-1 rounded px-1 font-mono text-[11px] text-ink-muted hover:text-ink"
+          title={`${where.ref} — pick a branch for each service`}
+          onClick={() => setPerService(true)}
+        >
+          <BranchIcon />
+          {summary}
+        </button>
+        {sheet}
+      </>
     ) : null;
   }
   return (
@@ -381,7 +393,9 @@ function MoveEverything({
         label={ref || summary}
         title={`${where ? `Most services are on ${where.ref}. ` : ''}Switch every service, in every workspace, to another branch. Pinned ones stay.`}
         onPick={setRef}
+        more={{ label: 'Pick a branch per service…', onClick: () => setPerService(true) }}
       />
+      {sheet}
       {ref && (
         <button className="px-1 text-[11px] text-ink-faint hover:text-ink" onClick={() => setRef('')}>
           Cancel
@@ -1201,6 +1215,7 @@ function BulkRefPicker({
   title,
   quiet,
   onPick,
+  more,
 }: {
   choices: Record<string, WorktreeChoice[]>;
   total: number;
@@ -1208,6 +1223,9 @@ function BulkRefPicker({
   title: string;
   quiet?: boolean;
   onPick: (ref: string, pin: boolean) => void;
+  /// A way out at the foot of the menu, for when one ref for all is not the
+  /// question.
+  more?: { label: string; onClick: () => void };
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -1312,6 +1330,17 @@ function BulkRefPicker({
                 </div>
               ))}
             </div>
+            {more && (
+              <button
+                className="flex w-full items-center gap-2 border-t border-card px-3.5 py-2 text-left text-[11.5px] text-accent hover:bg-card-strong"
+                onClick={() => {
+                  close();
+                  more.onClick();
+                }}
+              >
+                {more.label}
+              </button>
+            )}
           </div>
         </>,
         document.body,

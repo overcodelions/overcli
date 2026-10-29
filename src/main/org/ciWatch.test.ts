@@ -181,6 +181,45 @@ describe('closing the loop', () => {
     expect(h.attached.at(-1)).toContain('Handed to its manager.');
   });
 
+  it('also tells the manager when the fix pushed nothing at all', async () => {
+    const h = harness({ fetchImpl: bitbucket(['FAILED']) });
+    h.watch();
+    await h.ci.poll();
+    h.ci.landedNothing('billing', 'someothersha');
+    expect(h.all()[0].status).toBe('failed');
+    h.ci.landedNothing('billing', SHA);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.all()[0].status).toBe('gave-up');
+    expect(h.told[0]).toContain("Triage's fix added no new commit");
+  });
+
+  it('watches a commit CI pushed on top of a green one, and hands its red build back', async () => {
+    const BUMP = 'bump0000000001';
+    const state: Record<string, string> = { [SHA]: 'SUCCESSFUL', [BUMP]: 'FAILED' };
+    let tip: { hash: string; parents: Array<{ hash: string }> } = { hash: BUMP, parents: [{ hash: SHA }] };
+    const f = fakeFetch((url) => {
+      const statuses = /\/commit\/([^/]+)\/statuses/.exec(url);
+      if (statuses) return { values: [{ state: state[statuses[1]], name: 'Pipeline', url: 'https://ci.example/p' }] };
+      if (url.endsWith('/refs/branches/feature/acme-9')) return { target: tip };
+      return undefined;
+    });
+    const h = harness({ fetchImpl: f });
+    h.watch();
+    await h.ci.poll();
+    expect(h.all().map((w) => [w.sha, w.status])).toEqual([[SHA, 'passed'], [BUMP, 'waiting']]);
+    expect(h.attached[0]).toContain('bump000000 was pushed on top of it');
+    await h.ci.poll();
+    expect(h.all().find((w) => w.sha === BUMP)).toMatchObject({ status: 'failed', followedUp: true, round: 0, runId: 'run-1' });
+    expect(h.asked).toHaveLength(1);
+    // A branch that has moved some other way (not straight on top) is not followed.
+    const other = harness({ fetchImpl: f });
+    tip = { hash: 'unrelated0001', parents: [{ hash: 'elsewhere' }] };
+    other.watch();
+    await other.ci.poll();
+    expect(other.all().map((w) => w.status)).toEqual(['passed']);
+    expect(other.attached[0]).toContain('Passed.');
+  });
+
   it('tells the manager when no fix is pushed in time, but not once one is', async () => {
     const h = harness({ fetchImpl: bitbucket(['FAILED']) });
     h.watch();

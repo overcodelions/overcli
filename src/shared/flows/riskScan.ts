@@ -95,7 +95,9 @@ const EGRESS: Array<{ re: RegExp; what: string }> = [
   // character blocks the match, so "Inc ", "sync ", "func " are all safe.
   { re: /\bnc\s+/i, what: 'nc (netcat)' },
   { re: /\bscp\b/i, what: 'scp' },
-  { re: /\bwebhook\b/i, what: 'a webhook' },
+  // Sending to one, not naming one: "is it triggered by a webhook?" moves
+  // nothing anywhere.
+  { re: /\b(?:post|posts|posting|send|sends|sending|call|calls|calling|hit|notify|deliver|push)\b[^\n.]{0,40}\bwebhooks?\b|\bwebhook\b[^\n]{0,20}\bhttps?:\/\//i, what: 'a webhook' },
   // An HTTP POST to a URL, in either word order. The bounded gap keeps
   // "post a summary" and an unrelated URL two paragraphs later apart.
   { re: /\bPOST\b[^\n]{0,60}\bhttps?:\/\//i, what: 'an HTTP POST' },

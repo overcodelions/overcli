@@ -91,6 +91,12 @@ describe('scanFlowRisks — true positives', () => {
     }
   });
 
+  it('flags sending to a webhook, not naming one', () => {
+    for (const prompt of ['Post the results to the Slack webhook.', 'Send the summary to webhook https://hooks.example/x.']) {
+      expect(categories(scanStepRisks(step({ id: 'tell', effect: 'local', systemPromptOverride: prompt }))), prompt).toEqual(['egress-effect-mismatch']);
+    }
+  });
+
   it('downgrades egress to medium when the step declares no effect at all', () => {
     const found = scanStepRisks(step({ id: 'fetch', systemPromptOverride: 'Use wget to grab the file.' }));
     expect(found).toHaveLength(1);
@@ -176,6 +182,8 @@ describe('scanFlowRisks — true negatives on real, benign flows', () => {
       'Do not read any credentials; work only from the diff.',
       'Check that .env is listed in .gitignore.',
       'Incorporate the reviewer feedback before finishing.',
+      'What triggers the sync: login, a schedule, a webhook, or a batch?',
+      'Find the webhook handler that receives the CRM events.',
     ];
     for (const prompt of benign) {
       expect(scanStepRisks(step({ id: 'benign', effect: 'local', systemPromptOverride: prompt })), prompt).toEqual([]);

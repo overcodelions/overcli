@@ -632,11 +632,19 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   const watchCi = async (run: FlowRun, landed: Landed[]) => {
     const w = run.workerId ? workerEngine.get(run.workerId) : undefined;
     if (!w || run.flowId.startsWith('org-ticket-')) return;
+    const fixing = !!continueBranchOf(run.userPrompt);
     for (const l of landed) {
-      if (!l.branch || l.skipped || l.error) continue;
+      const unchanged = l.skipped === 'no changes';
+      if (unchanged ? !fixing : !l.branch || l.skipped || l.error) continue;
       const place = run.workspaceWorktrees?.find((m: { name: string; worktreePath: string }) => m.name === l.repo)?.worktreePath ?? run.worktreePath;
       const head = place ? await serverGit(['rev-parse', 'HEAD'], place) : null;
       if (!head?.ok) continue;
+      // A CI fix that changed nothing in a repo: if that repo was the red one, its manager hears.
+      if (unchanged) {
+        ci.landedNothing(l.repo, head.stdout.trim());
+        continue;
+      }
+      if (!l.branch) continue;
       ci.watch({ runId: run.id, workerId: w.id, workerName: w.name, flowId: run.flowId, title: flowRunTitle(run), repo: l.repo, branch: l.branch, sha: head.stdout.trim() });
     }
   };
@@ -654,6 +662,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       const opened = await openPullRequest(repo, { branch, title, body, draft: mode === 'draft' }, { env: (n) => process.env[n] });
       return opened.ok ? { url: opened.url, draft: mode === 'draft' } : { error: opened.error };
     },
+    onNothing: (run, landed) => void watchCi(run, landed).catch((err: unknown) => log('warn', 'org.ci', `Couldn't check the CI fix: ${String(err)}`)),
     // Pushed: the ticket it was for gets the link, from its worker's tracker.
     onLanded: (run, landed) => {
       void watchCi(run, landed).catch((err: unknown) => log('warn', 'org.ci', `Couldn't start watching CI: ${String(err)}`));

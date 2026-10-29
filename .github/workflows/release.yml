@@ -203,8 +203,18 @@ jobs:
           draft: true
           generate_release_notes: true
           body_path: notes.md
+          # Named, not artifacts/*: the download step takes every artifact in
+          # the run, so a rerun after the server image finished would also
+          # attach its .dockerbuild record and the SBOM action's own copy.
           files: |
-            artifacts/*
+            artifacts/*.dmg
+            artifacts/*.zip
+            artifacts/*.exe
+            artifacts/*.AppImage
+            artifacts/*.deb
+            artifacts/latest*.yml
+            artifacts/SHA256SUMS.txt
+            artifacts/overcli-sbom.cyclonedx.json
             stable/*
 
   npm:
