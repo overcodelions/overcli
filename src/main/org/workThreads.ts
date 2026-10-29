@@ -88,6 +88,8 @@ export interface WorkThread {
   lastAt: number;
   /// Set when it was a piece of a team's task.
   team?: { id: UUID; name: string; taskId: UUID };
+  /// A follow-up overcli started after a push: which kind.
+  followUp?: 'ci' | 'ticket';
 }
 
 export interface ThreadInputs {
@@ -318,6 +320,7 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
     batch?: Orchestration;
     extraRuns?: FlowRun[];
     choices?: string[];
+    followUp?: 'ci' | 'ticket';
   }): WorkThread => {
     const b = base.batch;
     if (b) usedBatches.add(b.id);
@@ -480,6 +483,7 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
       ...(base.note ? { note: base.note } : {}),
       ...(base.choices?.length ? { choices: base.choices } : {}),
       ...(team ? { team } : {}),
+      ...(base.followUp ? { followUp: base.followUp } : {}),
       lastAt: at,
     };
   };
@@ -569,12 +573,14 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
   for (const b of input.batches) {
     if (usedBatches.has(b.id) || b.origin?.kind !== 'worker' || b.origin.task !== 'errand') continue;
     const from = (b.origin as { from?: { workerName?: string } }).from;
-    const followUp = b.origin.followUp === true || (b.items.length === 1 && b.items[0].candidate.note === FOLLOW_UP_NOTE);
+    // One started before the kind was recorded: a CI fix is titled so.
+    const followUp = b.origin.followUp ?? (b.items.length === 1 && b.items[0].candidate.note === FOLLOW_UP_NOTE ? (/: fix CI\b/.test(b.title) ? 'ci' : 'ticket') : undefined);
     const triggered = (b.origin.errand ?? '').startsWith(TRIGGER_STARTS);
     threads.push(
       make({
         id: `batch:${b.id}`,
         at: b.createdAt,
+        ...(followUp ? { followUp } : {}),
         source: from ? 'colleague' : followUp ? 'followUp' : triggered ? 'trigger' : 'ask',
         prompt: askedWords(b.origin.errand || b.title),
         ...(from?.workerName ? { by: from.workerName } : {}),

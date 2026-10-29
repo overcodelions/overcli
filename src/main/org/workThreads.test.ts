@@ -68,14 +68,19 @@ describe('work threads', () => {
   });
 
   it('says what started work no question covers: a follow-up, a trigger, without the preface', () => {
-    const followUp = { ...batch('f1', 1_000, [], 'errand', 'ACME-412: comment the pull request and move it to review'), origin: { kind: 'worker', workerId: 'w', workerName: 'Marta', task: 'errand', errand: 'ACME-412: comment the pull request and move it to review', followUp: true } } as Orchestration;
+    const followUp = { ...batch('f1', 1_000, [], 'errand', 'ACME-412: comment the pull request and move it to review'), origin: { kind: 'worker', workerId: 'w', workerName: 'Marta', task: 'errand', errand: 'ACME-412: comment the pull request and move it to review', followUp: 'ticket' } } as Orchestration;
+    const fix = { ...batch('c1', 1_050, [], 'errand', 'ACME-412: Fix totals: fix CI on overcli/acme-412'), origin: { kind: 'worker', workerId: 'w', workerName: 'Marta', task: 'errand', errand: 'ACME-412: Fix totals: fix CI on overcli/acme-412', followUp: 'ci' } } as Orchestration;
+    // Started before the kind was recorded: told apart by its note and title.
     const older = { ...batch('f0', 900, [], 'errand', 'ACME-398: comment the pull request'), items: [{ candidate: { id: 'c', title: 't', prompt: 'x', note: FOLLOW_UP_NOTE }, status: 'done' }] } as unknown as Orchestration;
+    const olderFix = { ...batch('c0', 950, [], 'errand', 'ACME-398: Fix: fix CI on overcli/acme-398'), title: 'ACME-398: Fix: fix CI on overcli/acme-398', items: [{ candidate: { id: 'c', title: 't', prompt: 'x', note: FOLLOW_UP_NOTE }, status: 'done' }] } as unknown as Orchestration;
     const triggered = batch('t1', 1_100, [], 'errand', `${TRIGGER_STARTS}\nTriage the ticket`);
-    const threads = buildThreads(input({ batches: [followUp, older, triggered] }));
-    expect(Object.fromEntries(threads.map((t) => [t.id, [t.source, t.prompt]]))).toEqual({
-      'batch:f1': ['followUp', 'ACME-412: comment the pull request and move it to review'],
-      'batch:f0': ['followUp', 'ACME-398: comment the pull request'],
-      'batch:t1': ['trigger', 'Triage the ticket'],
+    const threads = buildThreads(input({ batches: [followUp, fix, older, olderFix, triggered] }));
+    expect(Object.fromEntries(threads.map((t) => [t.id, [t.source, t.followUp ?? null, t.prompt]]))).toEqual({
+      'batch:f1': ['followUp', 'ticket', 'ACME-412: comment the pull request and move it to review'],
+      'batch:c1': ['followUp', 'ci', 'ACME-412: Fix totals: fix CI on overcli/acme-412'],
+      'batch:f0': ['followUp', 'ticket', 'ACME-398: comment the pull request'],
+      'batch:c0': ['followUp', 'ci', 'ACME-398: Fix: fix CI on overcli/acme-398'],
+      'batch:t1': ['trigger', null, 'Triage the ticket'],
     });
   });
 

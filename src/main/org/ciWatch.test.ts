@@ -104,7 +104,11 @@ describe('closing the loop', () => {
   it('hands a red build back to the worker on the same branch, then says when it goes green', async () => {
     const h = harness({ fetchImpl: bitbucket(['FAILED']) });
     h.watch();
+    // Asked for by the time the fix starts, which is when its branch is picked.
+    let askedAtStart: boolean | undefined;
+    h.onAsk(() => (askedAtStart = h.ci.fixAskedOn('triage', 'feature/acme-9')));
     await h.ci.poll();
+    expect(askedAtStart).toBe(true);
     expect(h.all()[0]).toMatchObject({ status: 'failed', followedUp: true, round: 0 });
     expect(h.asked).toHaveLength(1);
     const ask = h.asked[0];

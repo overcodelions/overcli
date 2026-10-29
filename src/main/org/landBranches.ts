@@ -38,7 +38,7 @@ export interface LandDeps {
   /// What every pushed branch starts with (the console's setting). Absent: `overcli/`.
   branchPrefix?(): string;
   /// Open (or find) the pull request for a pushed branch. Null: links only.
-  openPr?(repo: ConnectedRepo, branch: string, title: string, body: string): Promise<{ url: string; draft: boolean } | { error: string } | null>;
+  openPr?(repo: ConnectedRepo, branch: string, title: string, body: string): Promise<{ url: string; draft: boolean; existed?: true } | { error: string } | null>;
   /// After a run's branches are pushed: the ticket follow-up hangs off this.
   onLanded?(run: FlowRun, landed: Landed[]): void;
   /// Nothing pushed anywhere: a CI fix that changed nothing hangs off this.
@@ -55,6 +55,8 @@ export interface Landed {
   updated?: true;
   /// The server opened the pull request (or found it open): `url` is it.
   pr?: 'draft' | 'open';
+  /// It was open already: found, left as it was, not opened now.
+  existed?: true;
   /// Why the pull request couldn't be opened; the link to open one stands.
   prError?: string;
   error?: string;
@@ -224,7 +226,7 @@ export class BranchLander {
       this.deps.log(`Couldn't open the pull request for ${l.repo} ${l.branch}: ${pr.error}`);
       return { ...l, prError: pr.error };
     }
-    return { ...l, url: pr.url, pr: pr.draft ? 'draft' : 'open' };
+    return { ...l, url: pr.url, pr: pr.draft ? 'draft' : 'open', ...(pr.existed ? { existed: true as const } : {}) };
   }
 }
 
@@ -253,6 +255,8 @@ export function describe(landed: Landed[]): string {
     .map((l) =>
       l.updated
         ? `${l.repo}: added to ${l.branch}, so its open pull request has the new commits${l.pr ? `: ${l.url}` : ''}`
+        : l.existed
+        ? `${l.repo}: its pull request was already open, left as it was: ${l.url} (branch ${l.branch})`
         : l.pr
         ? `${l.pr === 'draft' ? 'Opened a draft pull request' : 'Opened a pull request'} for ${l.repo}: ${l.url} (branch ${l.branch})`
         : l.url

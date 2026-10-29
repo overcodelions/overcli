@@ -1680,17 +1680,22 @@ export class WorkerEngine {
   /// A small run the server hands a worker after its own work, like updating
   /// the ticket once its branch is pushed: the flow given, in place, started
   /// now. What it may do outside follows the worker's trust (workerOrigin).
-  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
+  /// `kind`: a ticket update only holds the tracker's tools, so it runs in
+  /// place. A CI fix changes code, so it gets worktrees of its own (started on
+  /// the red branch, see continueBranch): in place, its project is the
+  /// workspace whose repos are the shared clones every run forks from, and a
+  /// fix that checked its branch out there left them on it.
+  async followUp(id: UUID, args: { title: string; prompt: string; flowId: string; kind: 'ci' | 'ticket' }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     const res = await this.deps.parker.parkDirect({
-      origin: { ...workerOrigin(w, 'errand', args.title), followUp: true },
+      origin: { ...workerOrigin(w, 'errand', args.title), followUp: args.kind },
       projectPath: w.projectPath,
       prompt: args.prompt,
       title: args.title,
       flowId: args.flowId,
-      runIn: 'cwd',
+      runIn: args.kind === 'ci' ? 'worktree' : 'cwd',
       maxConcurrent: 1,
       autoLaunch: true,
       note: FOLLOW_UP_NOTE,

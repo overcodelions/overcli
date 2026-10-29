@@ -585,6 +585,10 @@ export class CiWatcher {
         await this.deps.tell(first.workerId, `CI failed for _${first.title}_${round ? ` after ${round} ${round === 1 ? 'fix' : 'fixes'} by *${first.workerName}*` : ''}: ${where}. ${link}\nReply here to have ${first.workerName} look again.`.trim());
         continue;
       }
+      // Marked as asked before it starts, and on disk: its run starts inside
+      // followUp, and only on a branch a fix was asked for (fixAskedOn), so
+      // marked after, it started on the default branch instead.
+      for (const w of group) this.put({ ...w, followedUp: true });
       this.flush();
       const res = await this.deps.followUp({
         workerId: first.workerId,

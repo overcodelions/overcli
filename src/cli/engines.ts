@@ -626,7 +626,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     repo: (name) => connectedRepos().find((r) => r.name === name),
     env: (name) => process.env[name],
     rounds: () => org.ciRounds(),
-    followUp: ({ workerId, flowId, title, prompt }) => workerEngine.followUp(workerId, { title, prompt, flowId }),
+    followUp: ({ workerId, flowId, title, prompt }) => workerEngine.followUp(workerId, { title, prompt, flowId, kind: 'ci' }),
     tell: tellManager,
     attach: (runId, name, body) => void flowRuntime.attachArtifact(runId, name, body),
     log: (message) => log('info', 'org.ci', message),
@@ -663,7 +663,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       const mode = org.prMode();
       if (mode === 'link') return null;
       const opened = await openPullRequest(repo, { branch, title, body, draft: mode === 'draft' }, { env: (n) => process.env[n] });
-      return opened.ok ? { url: opened.url, draft: mode === 'draft' } : { error: opened.error };
+      return opened.ok ? { url: opened.url, draft: mode === 'draft', ...(opened.existed ? { existed: true as const } : {}) } : { error: opened.error };
     },
     onNothing: (run, landed) => void watchCi(run, landed).catch((err: unknown) => log('warn', 'org.ci', `Couldn't check the CI fix: ${String(err)}`)),
     // Pushed: the ticket it was for gets the link, from its worker's tracker.
@@ -673,10 +673,14 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       const ticket = ticketOf(run);
       const server = trackerOf(w?.mcpServers);
       if (!w || !ticket || !server || run.flowId.startsWith('org-ticket-')) return;
+      // Only a pull request opened just now is news to the ticket: commits
+      // added to one already open (a CI fix, a follow-up) were told when it
+      // opened, and telling again is a second comment saying the same.
+      if (!landed.some((l) => l.branch && !l.error && !l.skipped && !l.updated && !l.existed)) return;
       const flow = parseFlowYaml({ yaml: ticketFlowYaml(server), id: ticketFlowId(server), source: 'user', filePath: '' });
       const saved = flow ? saveFlow({ flow, target: 'user' }) : { ok: false as const, error: 'the flow did not parse' };
       if (!flow || !saved.ok) return log('warn', 'org.repos', `Couldn't set up the ticket update for ${ticket}: ${saved.ok ? '' : saved.error}`);
-      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to review`, prompt: ticketPrompt(run, ticket, landed), flowId: flow.id }).then((res) => {
+      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to review`, prompt: ticketPrompt(run, ticket, landed), flowId: flow.id, kind: 'ticket' }).then((res) => {
         if (!res.ok) log('warn', 'org.repos', `Couldn't start the ticket update for ${ticket}: ${res.error}`);
       });
     },

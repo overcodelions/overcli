@@ -235,11 +235,11 @@ export interface Orchestration {
         /// handing — so each side of a handoff can link to the other. Absent
         /// on handoffs sent before it was recorded.
         from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
-        /// Set on an errand overcli started itself after a push (the ticket
-        /// update, a CI fix): nobody asked it, so the desk says "follow-up".
-        /// Absent on ones started before it was recorded, which carry
-        /// FOLLOW_UP_NOTE on their one candidate instead.
-        followUp?: true;
+        /// Set on an errand overcli started itself after a push: the ticket
+        /// update, or a fix for the CI that push turned red. Nobody asked it,
+        /// so the desk says which. Absent on ones started before it was
+        /// recorded, which carry FOLLOW_UP_NOTE on their one candidate instead.
+        followUp?: 'ci' | 'ticket';
         /// Set on the batch that runs a worker's wrap-up flow: the id of the
         /// shift batch whose results it combines. Its presence is also what
         /// stops a wrap-up from ever triggering a wrap-up of its own.

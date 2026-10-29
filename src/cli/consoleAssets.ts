@@ -3362,7 +3362,7 @@ export const CONSOLE_JS = String.raw`
     if (t.source === 'runNow') return t.by ? (me ? 'You' : t.by) + ' pressed Run now' : 'Run now';
     if (t.source === 'schedule') return 'Scheduled check';
     if (t.source === 'colleague') return (t.by || 'A colleague') + ' passed this on';
-    if (t.source === 'followUp') return 'A follow-up';
+    if (t.source === 'followUp') return t.followUp === 'ci' ? 'CI failed, so a fix started' : 'Ticket update after a push';
     return 'Run';
   }
 
@@ -3946,7 +3946,7 @@ export const CONSOLE_JS = String.raw`
       if (t.source === 'runNow') return 'Run now';
       if (t.source === 'schedule') return 'Scheduled';
       if (t.source === 'colleague') return 'From ' + (t.by || 'a colleague');
-      if (t.source === 'followUp') return 'Follow-up';
+      if (t.source === 'followUp') return t.followUp === 'ci' ? 'CI fix' : 'Ticket update';
       return 'Run';
     };
     var DOT = { deciding: 'live', running: 'live', waiting: 'need', needsYou: 'need', done: 'ok', answered: 'ok', failed: 'bad', stopped: 'bad', nothing: 'quiet', declined: 'quiet' };
