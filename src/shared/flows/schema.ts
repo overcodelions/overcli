@@ -578,6 +578,10 @@ export interface FlowRun {
   /// candidate's title). Display only — lets a run surfaced on its own
   /// (sidebar, run pane) show which ask spawned it.
   orchestrationItemTitle?: string;
+  /// The pushed branch this run was started on to add to (a CI fix, a
+  /// follow-up for the same ticket), its pull request open. The only branch
+  /// the server adds this run's commits to; any other run gets its own.
+  continues?: string;
   /// Set when a Schedule fired this run rather than the user launching it.
   /// The scheduler uses it to route the run's terminal state home; the UI
   /// uses `scheduleName` to say so out loud, because a run the user has no

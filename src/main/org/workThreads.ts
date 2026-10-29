@@ -8,9 +8,10 @@
 
 import type { FlowRun } from '../../shared/flows/schema';
 import { flowRunTitle } from '../../shared/flows/schema';
-import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
+import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem } from '../../shared/flows/orchestration';
 import type { WorkerJournalEntry } from '../../shared/flows/worker';
 import type { AskRecord } from './orgStores';
+import { TRIGGER_STARTS, withoutPreface } from './askPreface';
 
 type UUID = string;
 
@@ -58,7 +59,7 @@ export interface WorkThread {
   at: number;
   /// When anything in it last moved: the thread list's order for live work.
   updatedAt: number;
-  source: 'ask' | 'runNow' | 'schedule' | 'trigger' | 'colleague' | 'run';
+  source: 'ask' | 'runNow' | 'schedule' | 'trigger' | 'colleague' | 'followUp' | 'run';
   /// What set it off, as it should read: the question, or a short label.
   prompt: string;
   by?: string;
@@ -87,6 +88,8 @@ export interface WorkThread {
   lastAt: number;
   /// Set when it was a piece of a team's task.
   team?: { id: UUID; name: string; taskId: UUID };
+  /// A follow-up overcli started after a push: which kind.
+  followUp?: 'ci' | 'ticket';
 }
 
 export interface ThreadInputs {
@@ -240,9 +243,10 @@ export function slackPlain(text: string): string {
 }
 
 /// What was asked, out of the errand a worker was handed: without the
-/// directions overcli adds after it (where the answer goes, how to send a
-/// file) or the Slack thread quoted under it.
+/// directions overcli adds around it (how far it may act, where the answer
+/// goes, how to send a file) or the Slack thread quoted under it.
 export function askedWords(errand: string): string {
+  errand = withoutPreface(errand);
   const cut = errand.search(/\n(?:Your reply is posted back in that Slack thread|The Slack thread this came from|The last messages in the channel before this request|Also shared there)/);
   return slackPlain((cut > 0 ? errand.slice(0, cut) : errand).replace(/^More from .+ on the same request:\n/, '').trim());
 }
@@ -276,21 +280,28 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
   // words too, and matching by words alone handed this ask its work.
   const errandBatches = input.batches.filter((b) => b.origin?.kind === 'worker' && b.origin.task === 'errand').sort((x, y) => x.createdAt - y.createdAt);
   const claimed = new Set(input.asks.flatMap((a) => (a.orchestrationId ? [a.orchestrationId] : [])));
-  const batchForAsk = (a: AskRecord): Orchestration | undefined => {
-    if (a.orchestrationId) return batchById.get(a.orchestrationId);
+  // Free, made while the ask was being answered, and carrying its words.
+  const answering = (a: AskRecord) => {
     const until = (a.doneAt ?? input.now) + 60_000;
-    return errandBatches.find(
-      (b) =>
-        !usedBatches.has(b.id) &&
-        !claimed.has(b.id) &&
-        b.createdAt >= a.at - 1000 &&
-        b.createdAt <= until &&
-        b.origin?.kind === 'worker' &&
-        // By what was asked, or by what the worker was handed: a turn overcli
-        // asks for itself (finishing up handed-off work) is labelled in words
-        // its prompt never uses.
-        ((b.origin.errand ?? '').includes(a.text.slice(0, 200)) || (!!a.prompt && (b.origin.errand ?? '').includes(a.prompt.slice(0, 200)))),
-    );
+    return (b: Orchestration): boolean =>
+      !usedBatches.has(b.id) &&
+      !claimed.has(b.id) &&
+      b.createdAt >= a.at - 1000 &&
+      b.createdAt <= until &&
+      b.origin?.kind === 'worker' &&
+      // By what was asked, or by what the worker was handed: a turn overcli
+      // asks for itself (finishing up handed-off work) is labelled in words
+      // its prompt never uses.
+      ((b.origin.errand ?? '').includes(a.text.slice(0, 200)) || (!!a.prompt && (b.origin.errand ?? '').includes(a.prompt.slice(0, 200))));
+  };
+  const batchForAsk = (a: AskRecord): Orchestration | undefined => (a.orchestrationId ? batchById.get(a.orchestrationId) : errandBatches.find(answering(a)));
+  // An ask that had a flow drafted for it decided in one batch and runs in
+  // another, the one it records. The deciding one, with nothing in it, is
+  // the ask's too, not an errand of its own titled with the raw prompt.
+  const decidedIn = (a: AskRecord): Orchestration | undefined => {
+    if (!a.orchestrationId) return undefined;
+    const free = answering(a);
+    return errandBatches.find((b) => b.items.length === 0 && free(b));
   };
 
   const make = (base: {
@@ -309,6 +320,7 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
     batch?: Orchestration;
     extraRuns?: FlowRun[];
     choices?: string[];
+    followUp?: 'ci' | 'ticket';
   }): WorkThread => {
     const b = base.batch;
     if (b) usedBatches.add(b.id);
@@ -360,7 +372,7 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
                     ? finished.length
                       ? 'done'
                       : 'failed'
-                    : base.source === 'ask' || base.source === 'trigger' || base.source === 'colleague'
+                    : base.source === 'ask' || base.source === 'trigger' || base.source === 'colleague' || base.source === 'followUp'
                       ? base.reply
                         ? 'answered'
                         : 'nothing'
@@ -471,6 +483,7 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
       ...(base.note ? { note: base.note } : {}),
       ...(base.choices?.length ? { choices: base.choices } : {}),
       ...(team ? { team } : {}),
+      ...(base.followUp ? { followUp: base.followUp } : {}),
       lastAt: at,
     };
   };
@@ -493,6 +506,8 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
     // reply comes back, and that batch is this ask's, not an errand of its
     // own titled with the raw prompt.
     const b = batchForAsk(a);
+    const decided = decidedIn(a);
+    if (decided) usedBatches.add(decided.id);
     const parent = parentOf(a);
     (parent ? (t: WorkThread) => replies.push({ parent, thread: t }) : (t: WorkThread) => threads.push(t))(
       make({
@@ -553,15 +568,20 @@ export function buildThreads(input: ThreadInputs): WorkThread[] {
     );
   }
 
-  // Errands no ask covers: a colleague's handoff, or one sent from elsewhere.
+  // Errands no ask covers: a colleague's handoff, a follow-up overcli started
+  // after a push, a trigger's, or one sent from elsewhere.
   for (const b of input.batches) {
     if (usedBatches.has(b.id) || b.origin?.kind !== 'worker' || b.origin.task !== 'errand') continue;
     const from = (b.origin as { from?: { workerName?: string } }).from;
+    // One started before the kind was recorded: a CI fix is titled so.
+    const followUp = b.origin.followUp ?? (b.items.length === 1 && b.items[0].candidate.note === FOLLOW_UP_NOTE ? (/: fix CI\b/.test(b.title) ? 'ci' : 'ticket') : undefined);
+    const triggered = (b.origin.errand ?? '').startsWith(TRIGGER_STARTS);
     threads.push(
       make({
         id: `batch:${b.id}`,
         at: b.createdAt,
-        source: from ? 'colleague' : 'ask',
+        ...(followUp ? { followUp } : {}),
+        source: from ? 'colleague' : followUp ? 'followUp' : triggered ? 'trigger' : 'ask',
         prompt: askedWords(b.origin.errand || b.title),
         ...(from?.workerName ? { by: from.workerName } : {}),
         deciding: false,

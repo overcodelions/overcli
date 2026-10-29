@@ -475,11 +475,20 @@ export class RepoService {
         // default branch simply moves to origin's. Checked out, it moves
         // with its files; otherwise only the branch moves.
         const head = await git(['rev-parse', '--abbrev-ref', 'HEAD']);
-        const moved =
-          head.ok && head.stdout.trim() === r.defaultBranch
-            ? await git(['merge', '--ff-only', `origin/${r.defaultBranch}`])
-            : await git(['fetch', 'origin', `${r.defaultBranch}:${r.defaultBranch}`]);
-        return moved.ok ? null : `${r.name}: couldn't move ${r.defaultBranch} to origin's (${moved.error}).`;
+        const onDefault = head.ok && head.stdout.trim() === r.defaultBranch;
+        const moved = onDefault
+          ? await git(['merge', '--ff-only', `origin/${r.defaultBranch}`])
+          : await git(['fetch', 'origin', `${r.defaultBranch}:${r.defaultBranch}`]);
+        if (!moved.ok) return `${r.name}: couldn't move ${r.defaultBranch} to origin's (${moved.error}).`;
+        if (onDefault || !head.ok || !head.stdout.trim()) return null;
+        // Left on another branch (a run that worked here in place): a run
+        // forks from what's checked out, so it would start on that branch's
+        // commits and count them as its own. Back to the default, unless
+        // something uncommitted would be lost.
+        const dirty = await git(['status', '--porcelain']);
+        if (!dirty.ok || dirty.stdout.trim()) return `${r.name}: left on ${head.stdout.trim()} with uncommitted changes, so runs fork from there.`;
+        const back = await git(['checkout', '--quiet', r.defaultBranch]);
+        return back.ok ? null : `${r.name}: couldn't go back to ${r.defaultBranch} from ${head.stdout.trim()} (${back.error}).`;
       }),
     );
     return problems.filter((p): p is string => !!p);

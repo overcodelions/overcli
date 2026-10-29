@@ -3,7 +3,9 @@
 // ever removed them: two days of a busy server came to 720 checkouts and
 // 18 GB. A checkout goes when its run has ended and it holds nothing that
 // isn't somewhere else: no changes at all, or changes already pushed. One
-// with unpushed work is kept, however old.
+// with unpushed work is kept, however old, and so is one someone has worked
+// in since its run ended: a person carrying on in a finished run's checkout
+// must not have it vanish under them.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,10 +13,18 @@ import { execFile } from 'node:child_process';
 import os from 'node:os';
 import { flowRunTitle, type FlowRun } from '../../shared/flows/schema';
 
-/// A run that changed nothing: its checkouts go soon after it ends.
-export const EMPTY_AFTER_MS = 10 * 60_000;
-/// One whose changes were pushed: kept a while for "see its changes".
-export const PUSHED_AFTER_MS = 2 * 60 * 60_000;
+/// A run that changed nothing: its checkouts go two hours after it ends, so
+/// a follow-up question about it can still look at what it saw.
+export const EMPTY_AFTER_MS = 2 * 60 * 60_000;
+/// One whose changes were pushed: kept two days for "see its changes".
+export const PUSHED_AFTER_MS = 48 * 60 * 60_000;
+/// A checkout touched after its run ended is kept until it has sat this long.
+export const TOUCHED_KEEP_MS = 2 * 86_400_000;
+/// Slack past a run's end for its own last writes (landing, a final commit).
+const AFTER_END_SLACK_MS = 5 * 60_000;
+/// Folders too big to walk and never where someone's edits are.
+const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', 'out', '.next', 'coverage', 'target', '.venv', 'vendor']);
+const MAX_WALK = 20_000;
 
 function git(cwd: string, args: string[]): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
@@ -54,7 +64,8 @@ export function checkoutsOf(run: FlowRun): Checkout[] {
 /// What a checkout holds: nothing beyond where it started, work that is on a
 /// remote branch, or work only here.
 export async function checkoutState(c: Checkout): Promise<'empty' | 'pushed' | 'unpushed'> {
-  const status = await git(c.worktreePath, ['status', '--porcelain']);
+  // No index refresh: that write would read as someone being here.
+  const status = await git(c.worktreePath, ['--no-optional-locks', 'status', '--porcelain']);
   if (status.code !== 0 || status.out.trim()) return 'unpushed';
   if (c.baseline) {
     const ahead = await git(c.worktreePath, ['rev-list', '--count', `${c.baseline}..HEAD`]);
@@ -62,6 +73,43 @@ export async function checkoutState(c: Checkout): Promise<'empty' | 'pushed' | '
   }
   const remote = await git(c.worktreePath, ['branch', '-r', '--contains', 'HEAD']);
   return remote.code === 0 && remote.out.trim() ? 'pushed' : 'unpushed';
+}
+
+/// When anything in a checkout last changed: its files, or its git state
+/// (index, HEAD, reflog — a commit, a checkout, even `git status`).
+export async function lastTouched(c: Checkout): Promise<number> {
+  let latest = 0;
+  const mtime = async (p: string) => {
+    try {
+      latest = Math.max(latest, (await fs.promises.stat(p)).mtimeMs);
+    } catch {
+      // not there
+    }
+  };
+  const gitDir = await git(c.worktreePath, ['rev-parse', '--absolute-git-dir']);
+  if (gitDir.code === 0 && gitDir.out.trim()) {
+    for (const f of ['index', 'HEAD', path.join('logs', 'HEAD')]) await mtime(path.join(gitDir.out.trim(), f));
+  }
+  let seen = 0;
+  const walk = async (dir: string): Promise<void> => {
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (++seen > MAX_WALK) return;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) await walk(p);
+      } else if (e.isFile()) {
+        await mtime(p);
+      }
+    }
+  };
+  await walk(c.worktreePath);
+  return latest;
 }
 
 async function remove(c: Checkout): Promise<boolean> {
@@ -119,7 +167,10 @@ export async function sweepWorktrees(runs: FlowRun[], log: (level: 'info' | 'war
         if (!fs.existsSync(c.worktreePath) || !fs.existsSync(path.join(c.repoPath, '.git'))) continue;
         const state = await checkoutState(c);
         const due = state === 'empty' || (state === 'pushed' && age >= PUSHED_AFTER_MS);
-        if (!due) {
+        // Someone kept going here after the run finished.
+        const touched = due ? await lastTouched(c) : 0;
+        const inUse = touched > endedAt(run) + AFTER_END_SLACK_MS && now - touched < TOUCHED_KEEP_MS;
+        if (!due || inUse) {
           if (state === 'unpushed') {
             kept++;
             const title = titleOf(run);

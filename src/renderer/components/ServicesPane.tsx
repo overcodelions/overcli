@@ -84,6 +84,7 @@ import {
 import { LogView } from './ServiceLogView';
 import { reloadModeOf, watchForMode } from '../serviceReloadMode';
 import { ServicesBulkEditSheet } from './ServicesBulkEditSheet';
+import { ServicesBranchesSheet } from './ServicesBranchesSheet';
 import { MachineServicesSection } from './MachineServicesSection';
 import { ServiceOutputSearch } from './ServiceOutputSearch';
 import {
@@ -335,6 +336,7 @@ function MoveEverything({
 }) {
   const rebindAll = useServicesStore((s) => s.rebindAll);
   const [ref, setRef] = useState('');
+  const [perService, setPerService] = useState(false);
   const options = useMemo(() => bulkRefOptions(choices), [choices]);
 
   // Where most of the stack sits, and how many services are somewhere else.
@@ -364,13 +366,23 @@ function MoveEverything({
   }, [ref, stacks, choices]);
   const moving = plans.reduce((n, p) => n + p.plan.targets.length, 0);
 
+  const sheet = perService && <ServicesBranchesSheet onClose={() => setPerService(false)} />;
+
   if (options.length === 0) {
-    // Nothing to switch to, but still worth saying where things are.
+    // No checkout every service could share, but each can still be checked
+    // out to a branch of its own — which is what the sheet is for.
     return where ? (
-      <span className="flex items-center gap-1 font-mono text-[11px] text-ink-muted" title={where.ref}>
-        <BranchIcon />
-        {summary}
-      </span>
+      <>
+        <button
+          className="flex items-center gap-1 rounded px-1 font-mono text-[11px] text-ink-muted hover:text-ink"
+          title={`${where.ref} — pick a branch for each service`}
+          onClick={() => setPerService(true)}
+        >
+          <BranchIcon />
+          {summary}
+        </button>
+        {sheet}
+      </>
     ) : null;
   }
   return (
@@ -381,7 +393,9 @@ function MoveEverything({
         label={ref || summary}
         title={`${where ? `Most services are on ${where.ref}. ` : ''}Switch every service, in every workspace, to another branch. Pinned ones stay.`}
         onPick={setRef}
+        more={{ label: 'Pick a branch per service…', onClick: () => setPerService(true) }}
       />
+      {sheet}
       {ref && (
         <button className="px-1 text-[11px] text-ink-faint hover:text-ink" onClick={() => setRef('')}>
           Cancel
@@ -1201,6 +1215,7 @@ function BulkRefPicker({
   title,
   quiet,
   onPick,
+  more,
 }: {
   choices: Record<string, WorktreeChoice[]>;
   total: number;
@@ -1208,6 +1223,9 @@ function BulkRefPicker({
   title: string;
   quiet?: boolean;
   onPick: (ref: string, pin: boolean) => void;
+  /// A way out at the foot of the menu, for when one ref for all is not the
+  /// question.
+  more?: { label: string; onClick: () => void };
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -1312,6 +1330,17 @@ function BulkRefPicker({
                 </div>
               ))}
             </div>
+            {more && (
+              <button
+                className="flex w-full items-center gap-2 border-t border-card px-3.5 py-2 text-left text-[11.5px] text-accent hover:bg-card-strong"
+                onClick={() => {
+                  close();
+                  more.onClick();
+                }}
+              >
+                {more.label}
+              </button>
+            )}
           </div>
         </>,
         document.body,
@@ -2460,11 +2489,12 @@ function Failure({
   const [shown, setShown] = useState<string | null>(null);
 
   return (
-    <div className="flex-shrink-0 border-b border-red-500/30 bg-red-500/10">
-      <div className="flex items-center gap-2 px-4 py-2 text-xs">
-        <span className="flex-1">
+    <div className="max-h-[45%] flex-shrink-0 overflow-y-auto border-b border-red-500/30 bg-red-500/10">
+      <div className="flex items-center gap-2 px-4 py-2 text-[13px]">
+        <span aria-hidden className="h-2 w-2 flex-shrink-0 rounded-full bg-red-500" />
+        <span className="flex-1 font-medium text-ink">
           {runtime.lastError ?? 'It stopped on its own.'}
-          {findings.length === 0 && ' The output says why.'}
+          {findings.length === 0 && <span className="font-normal text-ink-muted"> The output says why.</span>}
         </span>
         {missingNamesFrom(runtime.lastError).length > 0 && (
           <button
@@ -2480,14 +2510,16 @@ function Failure({
       </div>
 
       {findings.map((finding) => (
-        <div key={finding.id} className="border-t border-red-500/20 px-4 py-2">
-          <div className="flex items-center gap-2">
-            <span className="text-[11.5px] font-medium">{finding.title}</span>
+        <div key={finding.id} className="border-t border-red-500/20 px-4 py-2.5">
+          <div className="flex items-center gap-2.5">
+            <span className="text-[13px] font-semibold text-ink dark:text-white">
+              <WithCode text={finding.title} />
+            </span>
             <button
-              className="text-[10px] text-ink-faint hover:text-ink"
+              className="text-[11px] text-ink-muted underline decoration-dotted underline-offset-2 hover:text-ink"
               onClick={() => setShown((s) => (s === finding.id ? null : finding.id))}
             >
-              {shown === finding.id ? 'Hide' : 'Why?'}
+              {shown === finding.id ? 'Hide evidence' : 'Why?'}
             </button>
             <div className="flex-1" />
             <FindingAction
@@ -2497,11 +2529,13 @@ function Failure({
               port={finding.port ?? spec.port}
             />
           </div>
-          <p className="mt-0.5 text-[10.5px] leading-4 text-ink-muted">{finding.detail}</p>
+          <div className="mt-1">
+            <Prose text={finding.detail} />
+          </div>
           {shown === finding.id && (
-            <div className="mt-1.5 flex flex-col gap-0.5">
+            <div className="mt-2 flex flex-col gap-1 rounded-md bg-black/25 px-2.5 py-2">
               {finding.evidence.map((line, i) => (
-                <div key={i} className="truncate font-mono text-[10px] text-ink-faint">
+                <div key={i} className="whitespace-pre-wrap break-all font-mono text-[12px] leading-[18px] text-ink">
                   {line}
                 </div>
               ))}
@@ -2540,7 +2574,7 @@ function AskAi({
   if (!state) {
     return (
       <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-1.5">
-        <span className="text-[10.5px] text-ink-faint">
+        <span className="text-[12px] text-ink-muted">
           {ruled ? 'Not it?' : 'Nothing here recognised this one.'}
         </span>
         <button className="svc-btn" onClick={() => void askAi(workspaceId, serviceId)}>
@@ -2553,7 +2587,7 @@ function AskAi({
   if (state.status === 'asking') {
     return (
       <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-1.5">
-        <span className="text-[10.5px] text-ink-muted">Reading the output and the checkout…</span>
+        <span className="text-[12px] text-ink-muted">Reading the output and the checkout…</span>
         <div className="flex-1" />
         <button className="svc-btn" onClick={() => void cancelAskAi(workspaceId, serviceId)}>
           Stop
@@ -2565,7 +2599,7 @@ function AskAi({
   if (state.status === 'failed') {
     return (
       <div className="flex items-center gap-2 border-t border-red-500/20 px-4 py-1.5">
-        <span className="text-[10.5px] text-ink-faint">{state.error}</span>
+        <span className="text-[12px] text-ink-muted">{state.error}</span>
         <button className="svc-btn" onClick={() => void askAi(workspaceId, serviceId)}>
           Try again
         </button>
@@ -2574,27 +2608,67 @@ function AskAi({
   }
 
   return (
-    <div className="border-t border-red-500/20 px-4 py-2">
+    <div className="border-t border-red-500/20 px-4 py-2.5">
       <div className="flex items-center gap-2">
         {/* Labelled every time. A guess presented like a finding is how people
             stop trusting the findings. */}
-        <span className="rounded border border-card-strong px-1 py-px text-[9.5px] leading-none text-ink-faint">
+        <span className="rounded border border-card-strong px-1.5 py-0.5 text-[10.5px] leading-none text-ink-muted">
           a guess · {state.backend}
         </span>
         <div className="flex-1" />
         <button
-          className="text-[10px] text-ink-faint hover:text-ink"
+          className="text-[11px] text-ink-muted hover:text-ink"
           onClick={() => void askAi(workspaceId, serviceId)}
         >
           Ask again
         </button>
       </div>
-      <p className="mt-1 whitespace-pre-wrap text-[10.5px] leading-4 text-ink-muted">
-        {state.text}
-      </p>
+      <div className="mt-1.5">
+        <Prose text={state.text} />
+      </div>
       {state.command && (
         <SuggestedCommand workspaceId={workspaceId} serviceId={serviceId} command={state.command} />
       )}
+    </div>
+  );
+}
+
+/// Prose with `backticked` names in it, the way both the rules and the models
+/// write them. Shown as code rather than as literal backticks, which turned a
+/// sentence naming three properties into a thicket of punctuation.
+function WithCode({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/`([^`\n]+)`/).map((part, i) =>
+        i % 2 === 1 ? (
+          <code key={i} className="rounded-sm bg-black/25 px-[3px] font-mono text-[0.9em] text-ink dark:text-white">
+            {part}
+          </code>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
+/// An explanation, a line per thought. Models write one sentence per line;
+/// shown as space-separated paragraphs they read as steps, and the line that
+/// says what to do gets its label in bold so it is found without reading the
+/// rest.
+function Prose({ text }: { text: string }) {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  return (
+    <div className="flex max-w-[120ch] flex-col gap-1.5 text-[13px] leading-[1.55] text-ink dark:text-white">
+      {lines.map((line, i) => {
+        const label = /^(Fix|To fix|Try|Cause|Likely cause):\s*/i.exec(line);
+        return (
+          <p key={i} className="m-0">
+            {label && <span className="font-semibold">{label[1]}: </span>}
+            <WithCode text={label ? line.slice(label[0].length) : line} />
+          </p>
+        );
+      })}
     </div>
   );
 }

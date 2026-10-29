@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { EMPTY_AFTER_MS, PUSHED_AFTER_MS, STALE_UNPUSHED_MS, checkoutHealth, sweepWorktrees } from './worktreeSweep';
+import { EMPTY_AFTER_MS, PUSHED_AFTER_MS, STALE_UNPUSHED_MS, TOUCHED_KEEP_MS, checkoutHealth, sweepWorktrees } from './worktreeSweep';
 import type { FlowRun } from '../../shared/flows/schema';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -29,6 +29,18 @@ function repo() {
   return { main, base, wt };
 }
 
+/// Backdate everything in a checkout, its git state too, as if nobody had
+/// been in it for `msAgo`.
+function untouchedFor(wt: string, msAgo: number) {
+  const t = new Date(Date.now() - msAgo);
+  const walk = (p: string) => {
+    if (fs.statSync(p).isDirectory()) for (const e of fs.readdirSync(p)) walk(path.join(p, e));
+    fs.utimesSync(p, t, t);
+  };
+  walk(wt);
+  walk(git(wt, 'rev-parse', '--absolute-git-dir'));
+}
+
 const run = (r: ReturnType<typeof repo>, wt: string, name: string, endedMsAgo: number, state: FlowRun['state'] = { kind: 'done', success: true }) =>
   ({ id: name, state, createdAt: 0, attempts: [{ endedAt: Date.now() - endedMsAgo }], workspaceWorktrees: [{ name: 'main', projectPath: r.main, worktreePath: wt, branchName: `run/${name}` }], baselineCommitsByMember: { main: { commit: r.base } } }) as unknown as FlowRun;
 
@@ -46,6 +58,8 @@ describe('cleaning up finished runs’ checkouts', () => {
     fs.writeFileSync(path.join(unpushed, 'c.txt'), 'c');
     const paused = r.wt('paused');
     const fresh = r.wt('fresh');
+    untouchedFor(empty, EMPTY_AFTER_MS + 60_000);
+    untouchedFor(pushed, PUSHED_AFTER_MS + 60_000);
     const runs = [
       run(r, empty, 'empty', EMPTY_AFTER_MS + 1000),
       run(r, pushed, 'pushed', PUSHED_AFTER_MS + 1000),
@@ -60,6 +74,20 @@ describe('cleaning up finished runs’ checkouts', () => {
     expect(fs.existsSync(unpushed)).toBe(true);
     expect(fs.existsSync(paused)).toBe(true);
     expect(fs.existsSync(fresh)).toBe(true);
+  }, 30_000);
+
+  it('keeps a finished checkout someone worked in since, until it has sat two days', async () => {
+    const r = repo();
+    const recent = r.wt('recent');
+    const stale = r.wt('stale');
+    untouchedFor(recent, PUSHED_AFTER_MS * 10);
+    untouchedFor(stale, TOUCHED_KEEP_MS + 60_000);
+    // Carried on in the chat after the run ended: a file opened and saved.
+    fs.utimesSync(path.join(recent, 'a.txt'), new Date(), new Date());
+    const res = await sweepWorktrees([run(r, recent, 'recent', PUSHED_AFTER_MS * 20), run(r, stale, 'stale', TOUCHED_KEEP_MS * 2)], () => undefined);
+    expect(res.removed).toBe(1);
+    expect(fs.existsSync(recent)).toBe(true);
+    expect(fs.existsSync(stale)).toBe(false);
   }, 30_000);
 
   it("leaves a checkout alone when a newer run has taken over its folder", async () => {

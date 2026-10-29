@@ -593,8 +593,11 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     if (!repo) return null;
     let branch = named ?? undefined;
     if (!branch) {
-      // Otherwise the ticket finds the branch an earlier run pushed for it.
-      const ticket = ticketKey(`${title}\n${prompt}`);
+      // Otherwise the ticket finds the branch an earlier run pushed for it:
+      // the ticket its title names, never one its ask only mentions (a
+      // duplicate, the ticket it was cloned from), whose pull request this
+      // run's work would land in.
+      const ticket = ticketKey(title);
       if (!ticket) return null;
       const earlier = flowRuntime
         .listRuns()
@@ -623,7 +626,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     repo: (name) => connectedRepos().find((r) => r.name === name),
     env: (name) => process.env[name],
     rounds: () => org.ciRounds(),
-    followUp: ({ workerId, flowId, title, prompt }) => workerEngine.followUp(workerId, { title, prompt, flowId }),
+    followUp: ({ workerId, flowId, title, prompt }) => workerEngine.followUp(workerId, { title, prompt, flowId, kind: 'ci' }),
     tell: tellManager,
     attach: (runId, name, body) => void flowRuntime.attachArtifact(runId, name, body),
     log: (message) => log('info', 'org.ci', message),
@@ -632,11 +635,19 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   const watchCi = async (run: FlowRun, landed: Landed[]) => {
     const w = run.workerId ? workerEngine.get(run.workerId) : undefined;
     if (!w || run.flowId.startsWith('org-ticket-')) return;
+    const fixing = !!continueBranchOf(run.userPrompt);
     for (const l of landed) {
-      if (!l.branch || l.skipped || l.error) continue;
+      const unchanged = l.skipped === 'no changes';
+      if (unchanged ? !fixing : !l.branch || l.skipped || l.error) continue;
       const place = run.workspaceWorktrees?.find((m: { name: string; worktreePath: string }) => m.name === l.repo)?.worktreePath ?? run.worktreePath;
       const head = place ? await serverGit(['rev-parse', 'HEAD'], place) : null;
       if (!head?.ok) continue;
+      // A CI fix that changed nothing in a repo: if that repo was the red one, its manager hears.
+      if (unchanged) {
+        ci.landedNothing(l.repo, head.stdout.trim());
+        continue;
+      }
+      if (!l.branch) continue;
       ci.watch({ runId: run.id, workerId: w.id, workerName: w.name, flowId: run.flowId, title: flowRunTitle(run), repo: l.repo, branch: l.branch, sha: head.stdout.trim() });
     }
   };
@@ -652,8 +663,9 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       const mode = org.prMode();
       if (mode === 'link') return null;
       const opened = await openPullRequest(repo, { branch, title, body, draft: mode === 'draft' }, { env: (n) => process.env[n] });
-      return opened.ok ? { url: opened.url, draft: mode === 'draft' } : { error: opened.error };
+      return opened.ok ? { url: opened.url, draft: mode === 'draft', ...(opened.existed ? { existed: true as const } : {}) } : { error: opened.error };
     },
+    onNothing: (run, landed) => void watchCi(run, landed).catch((err: unknown) => log('warn', 'org.ci', `Couldn't check the CI fix: ${String(err)}`)),
     // Pushed: the ticket it was for gets the link, from its worker's tracker.
     onLanded: (run, landed) => {
       void watchCi(run, landed).catch((err: unknown) => log('warn', 'org.ci', `Couldn't start watching CI: ${String(err)}`));
@@ -661,10 +673,14 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       const ticket = ticketOf(run);
       const server = trackerOf(w?.mcpServers);
       if (!w || !ticket || !server || run.flowId.startsWith('org-ticket-')) return;
+      // Only a pull request opened just now is news to the ticket: commits
+      // added to one already open (a CI fix, a follow-up) were told when it
+      // opened, and telling again is a second comment saying the same.
+      if (!landed.some((l) => l.branch && !l.error && !l.skipped && !l.updated && !l.existed)) return;
       const flow = parseFlowYaml({ yaml: ticketFlowYaml(server), id: ticketFlowId(server), source: 'user', filePath: '' });
       const saved = flow ? saveFlow({ flow, target: 'user' }) : { ok: false as const, error: 'the flow did not parse' };
       if (!flow || !saved.ok) return log('warn', 'org.repos', `Couldn't set up the ticket update for ${ticket}: ${saved.ok ? '' : saved.error}`);
-      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to review`, prompt: ticketPrompt(run, ticket, landed), flowId: flow.id }).then((res) => {
+      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to review`, prompt: ticketPrompt(run, ticket, landed), flowId: flow.id, kind: 'ticket' }).then((res) => {
         if (!res.ok) log('warn', 'org.repos', `Couldn't start the ticket update for ${ticket}: ${res.error}`);
       });
     },

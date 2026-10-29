@@ -241,6 +241,22 @@ export async function readVerdict(repo: ConnectedRepo, sha: string, deps: Pick<C
   return { state, checks };
 }
 
+/// Where the branch is on the host now, and what that commit was made on.
+/// Null: the host didn't say.
+export async function readTip(repo: ConnectedRepo, branch: string, deps: Pick<CiDeps, 'env' | 'fetchImpl'>): Promise<{ sha: string; parents: string[] } | null> {
+  const slug = slugOf(repo);
+  const auth = authFor(repo, deps.env);
+  if (!slug || !auth) return null;
+  const f = deps.fetchImpl ?? fetch;
+  const name = branch.split('/').map(encodeURIComponent).join('/');
+  if (slug.host === 'bitbucket') {
+    const res = await getJson<{ target?: { hash?: string; parents?: Array<{ hash?: string }> } }>(f, `${BB}/${slug.owner}/${slug.name}/refs/branches/${name}`, auth);
+    return res.target?.hash ? { sha: res.target.hash, parents: (res.target.parents ?? []).map((p) => p.hash ?? '').filter(Boolean) } : null;
+  }
+  const res = await getJson<{ commit?: { sha?: string; parents?: Array<{ sha?: string }> } }>(f, `${GH}/${slug.owner}/${slug.name}/branches/${name}`, { ...auth, 'X-GitHub-Api-Version': '2022-11-28' });
+  return res.commit?.sha ? { sha: res.commit.sha, parents: (res.commit.parents ?? []).map((p) => p.sha ?? '').filter(Boolean) } : null;
+}
+
 /// What a red build says, for the worker: failing tests and the end of the
 /// failing step's log, where the host gives them. Best effort: empty when
 /// the host has nothing more than the checks' names.
@@ -389,6 +405,26 @@ export class CiWatcher {
     return this.load();
   }
 
+  /// A run that pushed nothing to this repo, whose checkout sits on this
+  /// commit: if a fix was asked for on it, the fix changed nothing.
+  landedNothing(repo: string, sha: string): void {
+    const all = this.load();
+    const same = all.find((w) => w.repo === repo && w.sha === sha);
+    if (same && this.fixPending(all, same)) void this.noFix(same, `${same.workerName}'s fix added no new commit, so CI has nothing new to run`);
+  }
+
+  /// Green, but the branch has moved on by one commit someone else pushed
+  /// on top (a pipeline that bumps the version and commits it): the build
+  /// that counts is that commit's, so it's watched as part of the same run.
+  private async followOn(w: CiWatch, repo: ConnectedRepo): Promise<CiWatch | null> {
+    const tip = await readTip(repo, w.branch, this.deps).catch(() => null);
+    if (!tip || tip.sha === w.sha || !tip.parents.includes(w.sha)) return null;
+    if (this.load().some((x) => x.repo === w.repo && x.sha === tip.sha)) return null;
+    const next: CiWatch = { id: randomUUID(), runId: w.runId, workerId: w.workerId, workerName: w.workerName, flowId: w.flowId, title: w.title, repo: w.repo, branch: w.branch, sha: tip.sha, round: w.round, status: 'waiting', startedAt: this.now() };
+    this.put(next);
+    return next;
+  }
+
   /// Red, a fix asked for, and no push on its branch since.
   private fixPending(all: CiWatch[], w: CiWatch): boolean {
     return !!w.followedUp && w.status === 'failed' && !all.some((x) => x.repo === w.repo && x.branch === w.branch && x.startedAt > w.startedAt);
@@ -502,6 +538,12 @@ export class CiWatcher {
     }
     if (verdict.state === 'passed') {
       this.put({ ...at, status: 'passed' });
+      const next = await this.followOn(w, repo);
+      if (next) {
+        this.record(w, [`Passed, but ${next.sha.slice(0, 10)} was pushed on top of it, so that commit's build is watched too.`, '', ...list(verdict.checks)]);
+        this.deps.log(`CI passed on ${w.repo} ${w.sha.slice(0, 10)}; watching ${next.sha.slice(0, 10)} pushed on top of it.`);
+        return;
+      }
       this.record(w, ['Passed.', '', ...list(verdict.checks)]);
       if (w.round > 0) {
         this.flush();
@@ -543,6 +585,10 @@ export class CiWatcher {
         await this.deps.tell(first.workerId, `CI failed for _${first.title}_${round ? ` after ${round} ${round === 1 ? 'fix' : 'fixes'} by *${first.workerName}*` : ''}: ${where}. ${link}\nReply here to have ${first.workerName} look again.`.trim());
         continue;
       }
+      // Marked as asked before it starts, and on disk: its run starts inside
+      // followUp, and only on a branch a fix was asked for (fixAskedOn), so
+      // marked after, it started on the default branch instead.
+      for (const w of group) this.put({ ...w, followedUp: true });
       this.flush();
       const res = await this.deps.followUp({
         workerId: first.workerId,

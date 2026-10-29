@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
-import type { Orchestration } from '../../shared/flows/orchestration';
+import { FOLLOW_UP_NOTE, type Orchestration } from '../../shared/flows/orchestration';
+import { TRIGGER_STARTS } from './askPreface';
 import type { WorkerJournalEntry } from '../../shared/flows/worker';
 import type { AskRecord } from './orgStores';
 import { askedWords, buildThreads, nowLine, summarize, type ThreadInputs } from './workThreads';
@@ -53,6 +54,34 @@ describe('work threads', () => {
     expect(threads.map((t) => t.id).sort()).toEqual(['ask:a1', 'ask:a2']);
     expect(threads.find((t) => t.id === 'ask:a1')!.runs).toEqual([]);
     expect(threads.find((t) => t.id === 'ask:a2')!.runs.map((r) => r.runId)).toEqual(['r1']);
+  });
+
+  it('keeps the batch a question decided in on that question when it had a flow drafted to run elsewhere', () => {
+    const errand = `${TRIGGER_STARTS}\nTriage the ticket, solve it end to end`;
+    const asked = ask({ id: 'a1', via: 'trigger', by: 'New bugs', text: 'Triage the ticket, solve it end to end', prompt: errand, at: 1_000, doneAt: 3_000, orchestrationId: 'built' });
+    const decided = { ...batch('decided', 1_100, [], 'errand', errand), producer: { prompt: 'p', reply: "I'm not launching a solve run. <flow_request>x</flow_request>" } } as Orchestration;
+    const built = batch('built', 2_900, [{ id: 'c1', status: 'running', runId: 'r1' }], 'errand', 'Investigate the upload');
+    const threads = buildThreads(input({ asks: [asked], batches: [decided, built], runs: [run('r1', { kind: 'running', currentStepId: 's1' } as FlowRun['state'], 2_950)] }));
+    expect(threads.map((t) => t.id)).toEqual(['ask:a1']);
+    expect(threads[0]).toMatchObject({ source: 'trigger', prompt: 'Triage the ticket, solve it end to end' });
+    expect(threads[0].runs.map((r) => r.runId)).toEqual(['r1']);
+  });
+
+  it('says what started work no question covers: a follow-up, a trigger, without the preface', () => {
+    const followUp = { ...batch('f1', 1_000, [], 'errand', 'ACME-412: comment the pull request and move it to review'), origin: { kind: 'worker', workerId: 'w', workerName: 'Marta', task: 'errand', errand: 'ACME-412: comment the pull request and move it to review', followUp: 'ticket' } } as Orchestration;
+    const fix = { ...batch('c1', 1_050, [], 'errand', 'ACME-412: Fix totals: fix CI on overcli/acme-412'), origin: { kind: 'worker', workerId: 'w', workerName: 'Marta', task: 'errand', errand: 'ACME-412: Fix totals: fix CI on overcli/acme-412', followUp: 'ci' } } as Orchestration;
+    // Started before the kind was recorded: told apart by its note and title.
+    const older = { ...batch('f0', 900, [], 'errand', 'ACME-398: comment the pull request'), items: [{ candidate: { id: 'c', title: 't', prompt: 'x', note: FOLLOW_UP_NOTE }, status: 'done' }] } as unknown as Orchestration;
+    const olderFix = { ...batch('c0', 950, [], 'errand', 'ACME-398: Fix: fix CI on overcli/acme-398'), title: 'ACME-398: Fix: fix CI on overcli/acme-398', items: [{ candidate: { id: 'c', title: 't', prompt: 'x', note: FOLLOW_UP_NOTE }, status: 'done' }] } as unknown as Orchestration;
+    const triggered = batch('t1', 1_100, [], 'errand', `${TRIGGER_STARTS}\nTriage the ticket`);
+    const threads = buildThreads(input({ batches: [followUp, fix, older, olderFix, triggered] }));
+    expect(Object.fromEntries(threads.map((t) => [t.id, [t.source, t.followUp ?? null, t.prompt]]))).toEqual({
+      'batch:f1': ['followUp', 'ticket', 'ACME-412: comment the pull request and move it to review'],
+      'batch:c1': ['followUp', 'ci', 'ACME-412: Fix totals: fix CI on overcli/acme-412'],
+      'batch:f0': ['followUp', 'ticket', 'ACME-398: comment the pull request'],
+      'batch:c0': ['followUp', 'ci', 'ACME-398: Fix: fix CI on overcli/acme-398'],
+      'batch:t1': ['trigger', null, 'Triage the ticket'],
+    });
   });
 
   it('finds the errand of a turn overcli asked for itself by its prompt, so it hangs on its question', () => {

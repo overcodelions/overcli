@@ -157,7 +157,7 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
   return { svc, roster, calls, awaiting, decided, wanted, teams, teamTasks, hires: () => hires };
 }
 
-const paused = (reason: 'needsInput' | 'externalAction', workerId = 'chief'): FlowRun =>
+const paused = (reason: 'needsInput' | 'externalAction' | 'riskyStep', workerId = 'chief'): FlowRun =>
   ({
     id: 'run-1',
     workerId,
@@ -459,6 +459,14 @@ describe('OrgService runs', () => {
     expect(svc.answer(pat, 'run-1', 'x').ok).toBe(false);
     expect(svc.decideRun(pat, 'run-1', false).ok).toBe(true);
     expect(calls).toEqual(['reject:run-1']);
+  });
+
+  it('puts a risky step in front of the manager, and lets them approve it', () => {
+    const { svc, calls } = harness({ roster, runs: [paused('riskyStep')] });
+    expect(svc.listWaiting(pat)).toMatchObject([{ runId: 'run-1', kind: 'approval' }]);
+    expect(svc.listWaiting(sam)).toEqual([]);
+    expect(svc.decideRun(pat, 'run-1', true).ok).toBe(true);
+    expect(calls).toEqual(['resume:run-1']);
   });
 });
 

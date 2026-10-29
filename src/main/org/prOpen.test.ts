@@ -21,17 +21,19 @@ function host(answer: (c: Call) => { status: number; json?: unknown }) {
 
 describe('opening the pull request for a pushed branch', () => {
   it('opens a Bitbucket draft with the worker\'s title and description', async () => {
-    const h = host(() => ({ status: 201, json: { links: { html: { href: 'https://bitbucket.org/acme/billing/pull-requests/7' } } } }));
+    const h = host((c) => (c.method === 'POST' ? { status: 201, json: { links: { html: { href: 'https://bitbucket.org/acme/billing/pull-requests/7' } } } } : { status: 200, json: { values: [] } }));
     const res = await openPullRequest(bb, { branch: 'feature/acme-9', title: 'Fix totals', body: 'Why and how.', draft: true }, { env, fetchImpl: h.fetchImpl });
     expect(res).toEqual({ ok: true, url: 'https://bitbucket.org/acme/billing/pull-requests/7' });
-    expect(h.calls[0]).toMatchObject({ method: 'POST', url: 'https://api.bitbucket.org/2.0/repositories/acme/billing/pullrequests' });
-    expect(h.calls[0].body).toMatchObject({ title: 'Fix totals', description: 'Why and how.', draft: true, source: { branch: { name: 'feature/acme-9' } }, destination: { branch: { name: 'master' } } });
+    expect(h.calls[1]).toMatchObject({ method: 'POST', url: 'https://api.bitbucket.org/2.0/repositories/acme/billing/pullrequests' });
+    expect(h.calls[1].body).toMatchObject({ title: 'Fix totals', description: 'Why and how.', draft: true, source: { branch: { name: 'feature/acme-9' } }, destination: { branch: { name: 'master' } } });
   });
 
-  it('hands back the one already open for the branch instead of a second', async () => {
-    const h = host((c) => (c.method === 'POST' ? { status: 400, json: { error: { message: 'There are no changes to be pulled' } } } : { status: 200, json: { values: [{ links: { html: { href: 'https://bitbucket.org/acme/billing/pull-requests/3' } } }] } }));
+  it('hands back the one already open for the branch as it is, never sending a create over it', async () => {
+    const h = host((c) => (c.method === 'POST' ? { status: 201, json: {} } : { status: 200, json: { values: [{ links: { html: { href: 'https://bitbucket.org/acme/billing/pull-requests/3' } } }] } }));
     expect(await openPullRequest(bb, { branch: 'feature/acme-9', title: 't', body: '', draft: true }, { env, fetchImpl: h.fetchImpl })).toEqual({ ok: true, url: 'https://bitbucket.org/acme/billing/pull-requests/3', existed: true });
-    expect(decodeURIComponent(h.calls[1].url)).toContain('source.branch.name="feature/acme-9" AND state="OPEN"');
+    expect(decodeURIComponent(h.calls[0].url)).toContain('source.branch.name="feature/acme-9" AND state="OPEN"');
+    // A create for a branch with one open edits that one's title and description.
+    expect(h.calls.map((c) => c.method)).toEqual(['GET']);
   });
 
   it("doesn't look up a branch whose name would change the query", async () => {

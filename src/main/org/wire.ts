@@ -30,7 +30,7 @@ import { draftHire, drafterDepsFor, saveDraftedHire } from './hireDraft';
 import { findOverlap } from './hireOverlap';
 import { rewriteJob } from './jobRewrite';
 import { pickPicture } from './pickPicture';
-import { oneShotDraftText } from '../flows/drafter';
+import { oneShotDraftText, reviseFlowFromPrompt } from '../flows/drafter';
 import { resolveWorkPlace } from './defaultProject';
 import { installTool, listTools, loadToolTemplates, rememberToolTemplates, templateFrom, toolTemplatesFile, uninstallTool, updateToolSettings } from './tools';
 import { host } from '../host';
@@ -50,7 +50,7 @@ import { log } from '../diagnostics';
 import type { SecretsService } from './secrets/service';
 import type { ConnectionsService } from './connections';
 import type { ToolSignIn } from './toolSignIn';
-import { parseFlowYaml } from '../../shared/flows/yaml';
+import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
 import { execFile, spawnSync } from 'node:child_process';
 import { ToolchainService, type ToolchainState } from './toolchains';
 import { addRunEnv } from '../runEnv';
@@ -293,6 +293,7 @@ export function createOrgService(
     draft: (args) => draftHire({ runner, ...args }),
     overlap: (job, workers) => findOverlap(drafterDepsFor(runner), job, workers),
     rewriteJob: (args) => rewriteJob(drafterDepsFor(runner), args),
+    reviseFlow: ({ flow, ask }) => reviseFlowFromPrompt({ yaml: serializeFlow(flow), instruction: ask, id: flow.id }, drafterDepsFor(runner)),
     pickPicture: (worker, taken) =>
       pickPicture(
         (system, message) =>
