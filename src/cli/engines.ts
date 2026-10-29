@@ -593,8 +593,11 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     if (!repo) return null;
     let branch = named ?? undefined;
     if (!branch) {
-      // Otherwise the ticket finds the branch an earlier run pushed for it.
-      const ticket = ticketKey(`${title}\n${prompt}`);
+      // Otherwise the ticket finds the branch an earlier run pushed for it:
+      // the ticket its title names, never one its ask only mentions (a
+      // duplicate, the ticket it was cloned from), whose pull request this
+      // run's work would land in.
+      const ticket = ticketKey(title);
       if (!ticket) return null;
       const earlier = flowRuntime
         .listRuns()

@@ -22,6 +22,13 @@ describe('the ticket follow-up', () => {
     expect(prompt).toContain('fill them in the transition');
   });
 
+  it('takes the ticket its title names over one its ask mentions first', () => {
+    const cloned = { ...run, orchestrationItemTitle: 'ACME-412: Fix the upload timeout', userPrompt: 'Cloned from ACME-398. Fix ACME-412 end to end.' } as unknown as FlowRun;
+    expect(ticketOf(cloned)).toBe('ACME-412');
+    // A title with no ticket in it: the ask's, as before.
+    expect(ticketOf({ ...run, orchestrationItemTitle: 'Fix the upload timeout', userPrompt: 'Cloned from ACME-398.' } as unknown as FlowRun)).toBe('ACME-398');
+  });
+
   it('fills the fields a transition requires where Jira takes them, and never invents them', () => {
     const yaml = ticketFlowYaml('atlassian');
     expect(yaml).toContain('send them in the transition call itself');

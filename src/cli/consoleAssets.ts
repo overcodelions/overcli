@@ -3362,6 +3362,7 @@ export const CONSOLE_JS = String.raw`
     if (t.source === 'runNow') return t.by ? (me ? 'You' : t.by) + ' pressed Run now' : 'Run now';
     if (t.source === 'schedule') return 'Scheduled check';
     if (t.source === 'colleague') return (t.by || 'A colleague') + ' passed this on';
+    if (t.source === 'followUp') return 'A follow-up';
     return 'Run';
   }
 
@@ -3664,7 +3665,7 @@ export const CONSOLE_JS = String.raw`
   /// What a thread (or one reply in it) came to: where it stands, its
   /// lifecycle, the worker's words, what it proposed and its runs.
   function threadBody(t, w, ctx, isReply) {
-    var asked = t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague';
+    var asked = t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp';
     var ended = t.stage === 'done' || t.stage === 'answered';
     var hasWork = (t.proposal && t.proposal.items.length) || t.runs.length;
     // Opened in full: one timeline holds the steps and what belongs to each;
@@ -3738,7 +3739,7 @@ export const CONSOLE_JS = String.raw`
     var badge = STAGE_BADGE[t.stage] || ['', t.stage];
     var cls = t.stage === 'deciding' || t.stage === 'running' ? ' live' : t.stage === 'waiting' || t.stage === 'needsYou' ? ' need' : t.stage === 'failed' || t.stage === 'stopped' ? ' bad' : '';
     var own = t.followUps ? Object.assign({}, t, { stage: t.selfStage, headline: t.selfHeadline }) : t;
-    var asked = t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague';
+    var asked = t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp';
     // A finished thread's result says what it found; its title says what it was.
     var ended = own.stage === 'done' || own.stage === 'answered';
     var title = asked ? t.prompt : ended && t.runs.length ? t.runs[0].title + (t.runs.length > 1 ? ' and ' + plural(t.runs.length - 1, 'more', 'more') : '') : own.headline;
@@ -3934,7 +3935,7 @@ export const CONSOLE_JS = String.raw`
 
     var titleOf = function (t) {
       // A title, not the whole request: the rest is in the thread.
-      if (t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague') { var p = plainSlack(t.prompt); return p.length > 200 ? p.slice(0, 199).trim() + '…' : p; }
+      if (t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp') { var p = plainSlack(t.prompt); return p.length > 200 ? p.slice(0, 199).trim() + '…' : p; }
       if (t.runs.length) return t.runs[0].title;
       return t.source === 'runNow' ? 'Run now' : 'Scheduled check';
     };
@@ -3945,6 +3946,7 @@ export const CONSOLE_JS = String.raw`
       if (t.source === 'runNow') return 'Run now';
       if (t.source === 'schedule') return 'Scheduled';
       if (t.source === 'colleague') return 'From ' + (t.by || 'a colleague');
+      if (t.source === 'followUp') return 'Follow-up';
       return 'Run';
     };
     var DOT = { deciding: 'live', running: 'live', waiting: 'need', needsYou: 'need', done: 'ok', answered: 'ok', failed: 'bad', stopped: 'bad', nothing: 'quiet', declined: 'quiet' };
@@ -4010,7 +4012,7 @@ export const CONSOLE_JS = String.raw`
       var liveRun = t.runs.filter(function (r) { return r.state === 'working' || r.state === 'paused'; })[0];
       // One run: its title says what the work is; what was asked sits under it.
       var one = t.runs.length === 1 ? t.runs[0] : null;
-      var asked = t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague';
+      var asked = t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp';
       var heading = one ? one.title : titleOf(t);
       var ask = asked && one && plainSlack(t.prompt) !== heading ? plainSlack(t.prompt) : '';
       var fresh = h('div', { class: 'wl-detail-in' },
@@ -4358,7 +4360,8 @@ export const CONSOLE_JS = String.raw`
         };
         append(box, text);
         return h('div', { class: 'split' }, h('div', { class: 'wide' },
-            h('section', { class: 'sec', 'aria-labelledby': 'jobh' }, h('div', { class: 'sec-head' }, h('h2', { id: 'jobh', class: 'label', text: 'The job it was hired for' }), edit), box)),
+            h('section', { class: 'sec', 'aria-labelledby': 'jobh' }, h('div', { class: 'sec-head' }, h('h2', { id: 'jobh', class: 'label', text: 'The job it was hired for' }), edit), box),
+            howItWorksCard(w)),
           h('aside', { class: 'narrow' }, knowsCard(w, d), w.youManage ? modelsCard(w) : null, card('learned', 'What it has learned', null, [
             h('p', { class: 'faint', text: 'From your ratings and notes. It reads these alongside its job before every run.' }),
             d.learned.length ? h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px' }, d.learned.map(function (l) { return h('li', { text: l.note }); }))
@@ -11309,7 +11312,7 @@ export const CONSOLE_JS = String.raw`
       var badge = (t && STAGE_BADGE[t.stage]) || RUN_BADGE[r.state] || ['', r.state];
       var going = r.state === 'running' || r.state === 'paused';
       // What was asked, when it says more than the run's title does.
-      var ask = t && (t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague') && plainSlack(t.prompt) !== r.title ? plainSlack(t.prompt) : '';
+      var ask = t && (t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp') && plainSlack(t.prompt) !== r.title ? plainSlack(t.prompt) : '';
       var took = r.endedAt ? 'took ' + secs(r.endedAt - r.startedAt) : going ? secs(Date.now() - r.startedAt) + ' so far' : '';
       var link = h('button', { class: 'btn small', text: 'Copy link' });
       link.onclick = function () {
@@ -13218,6 +13221,90 @@ export const CONSOLE_JS = String.raw`
     return card('models', 'Models', null, [body]);
   }
 
+  // A flow's steps in plain words: where it stops for someone, what asks.
+  function flowStepList(steps) {
+    return h('ol', { class: 'ntflow' }, steps.map(function (s, i) {
+      var notes = [];
+      if (s.checkpoint) notes.push('Stops for someone first');
+      if (s.external) notes.push('Asks before acting outside');
+      if (s.onlyIfChanged) notes.push('Skipped when nothing changed');
+      return h('li', { title: s.tools.length ? 'Uses ' + s.tools.join(', ') : '' }, h('span', { class: 'ntnum' + (s.checkpoint ? ' you' : ''), text: String(i + 1) }),
+        h('span', { class: 'stack', style: 'gap:1px' }, h('b', { text: s.label }), notes.length ? h('span', { class: 'faint', text: notes.join(' · ') }) : null));
+    }));
+  }
+
+  // How its work goes, step by step; its manager says what should change
+  // and reads the new steps before they're used.
+  function howItWorksCard(w) {
+    var body = h('div', { class: 'stack', style: 'gap:22px' }, thinking('Reading how it works…'));
+    var block = function (f, many, canChange) {
+      var box = h('div', { class: 'stack', style: 'gap:10px' });
+      var out = h('div', { 'aria-live': 'polite', style: 'font-size:13px' });
+      var proposal = h('div', { class: 'stack', style: 'gap:10px' });
+      var pending = null;
+      var tag = f.wrapUp ? ' · after a team’s work' : many && f.usual ? ' · its usual' : '';
+      append(box, [h('div', { class: 'stack', style: 'gap:2px' },
+          many ? h('b', { style: 'font-size:14px', text: f.name + tag }) : null,
+          f.description ? h('span', { class: 'faint', style: 'font-size:13px', text: f.description }) : null,
+          f.sharedWith.length ? h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Also run by ' + f.sharedWith.join(', ') + '.' }) : null),
+        flowStepList(f.steps)]);
+      if (!canChange) return box;
+      var ask = h('input', { type: 'text', 'aria-label': 'What should change in ' + f.name, placeholder: 'Say what should change, e.g. “run the tests before you push”', style: 'flex:1;min-width:220px' });
+      var rewrite = h('button', { class: 'btn', text: 'Rewrite it' });
+      var clear = function () { pending = null; proposal.textContent = ''; };
+      rewrite.onclick = function () {
+        if (!ask.value.trim()) { ask.focus(); return; }
+        var restore = busy(rewrite, 'Rewriting…');
+        out.textContent = '';
+        api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/how-it-works/suggest', { flowId: f.id, ask: ask.value, yaml: pending ? pending.yaml : undefined }).then(function (x) {
+          restore();
+          if (x.ok === false) { out.appendChild(msg(x)); return; }
+          pending = x; ask.value = '';
+          var everyone = null, share = null;
+          if (f.sharedWith.length) {
+            var mine = !f.othersNotYours.length;
+            everyone = h('input', { type: 'checkbox' });
+            everyone.disabled = !mine;
+            share = h('div', { class: 'stack', style: 'gap:2px' },
+              h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;font-size:13px' }, everyone, h('span', { text: 'Change it for ' + f.sharedWith.join(', ') + ' too' })),
+              h('span', { class: 'faint', style: 'font-size:12.5px;padding-left:22px', text: mine ? 'Left unticked, ' + w.name + ' gets its own copy and the others keep theirs.' : 'Only their manager or an admin can change it for ' + f.othersNotYours.join(', ') + ', so ' + w.name + ' gets its own copy.' }));
+          }
+          var use = h('button', { class: 'btn go', text: 'Use this' });
+          use.onclick = function () {
+            var done = busy(use, 'Saving…');
+            api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/how-it-works', { flowId: f.id, yaml: pending.yaml, everyone: !!(everyone && everyone.checked) }).then(function (r) {
+              done();
+              if (r.ok === false) { out.textContent = ''; out.appendChild(msg(r)); return; }
+              load(r.copied ? 'Saved as ' + w.name + '’s own copy. Its next run works this way.' : 'Saved. Its next run works this way.');
+            });
+          };
+          fill(proposal, [
+            h('div', { class: 'grid2', style: 'gap:16px;align-items:start' },
+              h('div', { class: 'stack', style: 'gap:8px' }, h('span', { class: 'label', text: 'Now' }), flowStepList(f.steps)),
+              h('div', { class: 'stack', style: 'gap:8px' }, h('span', { class: 'label', text: 'After the change' }), flowStepList(x.steps))),
+            h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:13.5px' }, x.changes.map(function (c) { return h('li', { text: c }); })),
+            share,
+            h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, use, h('button', { class: 'btn quiet', text: 'Keep the old one', onclick: clear }),
+              h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Say more above to change it further.' }))]);
+        });
+      };
+      ask.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); rewrite.click(); } };
+      append(box, [h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, ask, rewrite), out, proposal]);
+      return box;
+    };
+    var load = function (note) {
+      api('GET', '/api/workers/' + encodeURIComponent(w.id) + '/how-it-works').then(function (r) {
+        body.textContent = '';
+        if (r.ok === false) { body.appendChild(msg(r)); return; }
+        if (note) body.appendChild(msg({}, note));
+        if (!r.flows.length) { body.appendChild(h('p', { class: 'faint', text: 'It plans each piece of work as it comes.' })); return; }
+        r.flows.forEach(function (f) { body.appendChild(block(f, r.flows.length > 1, r.canChange)); });
+      }, function () { body.textContent = ''; body.appendChild(msg({ ok: false, error: 'Couldn’t read how it works.' })); });
+    };
+    load();
+    return card('howh', 'How it works', null, [h('p', { class: 'faint', style: 'margin:0 0 14px', text: 'The steps its work goes through. Anything that acts outside the server still asks first.' }), body]);
+  }
+
   function knowsCard(w, d) {
     var k = d.knowledge || null;
     var out = h('div', { 'aria-live': 'polite', style: 'font-size:13px' });
@@ -13266,9 +13353,10 @@ export const CONSOLE_JS = String.raw`
         append(box, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:baseline' },
           h('span', { style: 'font-size:13px;min-width:120px', text: when(v.at) }),
           h('span', { style: 'font-size:13px;flex:1;min-width:180px', text: (v.changed || []).join(', ') + ' · ' + v.by }),
-          h('details', null, h('summary', { class: 'linkish', style: 'font-size:12.5px', text: 'The job then' }), h('div', { class: 'quote', style: 'font-size:13px;margin-top:6px;white-space:pre-wrap;max-height:260px;overflow:auto', text: v.job })),
+          v.flow ? h('details', null, h('summary', { class: 'linkish', style: 'font-size:12.5px', text: 'How it worked then' }), h('div', { style: 'margin-top:6px' }, h('span', { class: 'faint', style: 'font-size:12.5px', text: v.flow.name }), flowStepList(v.flow.steps)))
+            : h('details', null, h('summary', { class: 'linkish', style: 'font-size:12.5px', text: 'The job then' }), h('div', { class: 'quote', style: 'font-size:13px;margin-top:6px;white-space:pre-wrap;max-height:260px;overflow:auto', text: v.job })),
           i === 0 ? h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Now' }) : w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Restore', onclick: function (e) {
-            if (!window.confirm('Put ' + w.name + ' back to how it was ' + when(v.at) + '? Its job, tools, trust and settings go back; its history keeps today’s too.')) return;
+            if (!window.confirm('Put ' + w.name + ' back to how it was ' + when(v.at) + '? Its job, tools, trust and settings go back' + (v.flow ? ', and how it works' : '') + '; its history keeps today’s too.')) return;
             var restore = busy(e.target, 'Restoring…');
             api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/restore', { versionId: v.id }).then(function (x) { restore(); if (x.ok === false) { out.textContent = x.error; } else render(); });
           } }) : null, out));

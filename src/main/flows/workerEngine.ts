@@ -40,7 +40,7 @@ import {
 } from '../../shared/responseDirectives';
 import type { NotifyArgs } from '../host';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
-import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
+import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem } from '../../shared/flows/orchestration';
 import { flowRunTitle, type AdoptedWorktrees, type FlowRun } from '../../shared/flows/schema';
 import {
   evaluateSchedule,
@@ -1685,7 +1685,7 @@ export class WorkerEngine {
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     const res = await this.deps.parker.parkDirect({
-      origin: workerOrigin(w, 'errand', args.title),
+      origin: { ...workerOrigin(w, 'errand', args.title), followUp: true },
       projectPath: w.projectPath,
       prompt: args.prompt,
       title: args.title,
@@ -1693,7 +1693,7 @@ export class WorkerEngine {
       runIn: 'cwd',
       maxConcurrent: 1,
       autoLaunch: true,
-      note: 'Follow-up after its branch was pushed.',
+      note: FOLLOW_UP_NOTE,
     });
     return res.ok ? { ok: true, orchestrationId: res.orchestrationId } : res;
   }

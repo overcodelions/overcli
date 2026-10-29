@@ -11,9 +11,12 @@ import type { Landed } from './landBranches';
 /// The step id a trusted coding worker's grant names (TICKET_STEP_GRANT).
 export const TICKET_STEP = 'ticket-update';
 
-/// The first ticket key a run names in its title or ask (ACME-412).
+/// The ticket a run is for (ACME-412): the first its title names, else the
+/// first its ask does. Title first, because an ask for one ticket often names
+/// another before it ("like ACME-398", the ticket it was cloned from), and
+/// that one would get this run's pull request and comment.
 export function ticketOf(run: Pick<FlowRun, 'userPrompt'> & Parameters<typeof flowRunTitle>[0]): string | null {
-  return ticketKey(`${flowRunTitle(run)}\n${run.userPrompt ?? ''}`);
+  return ticketKey(flowRunTitle(run)) ?? ticketKey(run.userPrompt ?? '');
 }
 
 /// The first ticket key in some text.

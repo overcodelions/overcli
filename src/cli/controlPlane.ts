@@ -1073,6 +1073,17 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       path: /^\/api\/workers\/([^/]+)\/suggest-job$/,
       handle: (c, b, [id]) => org.suggestJob(c, decodeURIComponent(id), str(b.ask), typeof b.job === 'string' ? b.job : undefined),
     },
+    { method: 'GET', path: /^\/api\/workers\/([^/]+)\/how-it-works$/, handle: (c, _b, [id]) => org.workerFlows(c, decodeURIComponent(id)) },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/how-it-works\/suggest$/,
+      handle: (c, b, [id]) => org.suggestFlow(c, decodeURIComponent(id), str(b.flowId), str(b.ask), typeof b.yaml === 'string' ? b.yaml : undefined),
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/how-it-works$/,
+      handle: (c, b, [id]) => org.saveFlowEdit(c, decodeURIComponent(id), str(b.flowId), str(b.yaml), b.everyone === true),
+    },
     { method: 'GET', path: /^\/api\/roles$/, handle: (c) => org.roles(c) },
     { method: 'POST', path: /^\/api\/roles\/hire$/, handle: (c, b) => org.hireRole(c, str(b.role), str(b.extra)) },
     { method: 'POST', path: /^\/api\/publish$/, handle: (c, b) => org.publishWorker(c, str(b.yaml), hireOptions(b.options), parseTemplates(b.tools), str(b.localId) || undefined) },

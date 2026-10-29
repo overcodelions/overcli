@@ -18,6 +18,7 @@ import path from 'node:path';
 import type { FlowRun } from '../../shared/flows/schema';
 import { newPullRequestLink, type ConnectedRepo } from './repos';
 import { ticketOf } from './ticketFollowUp';
+import { withoutPreface } from './askPreface';
 
 export { testUserRefusal } from './repos';
 
@@ -76,11 +77,14 @@ export function ticketed(text: { title: string; body: string }, ticket: string |
 }
 
 /// The title (first line) and description (the rest) a run's last step wrote.
-export function pullRequestText(run: Pick<FlowRun, 'artifacts' | 'userPrompt'>): { title: string; body: string } {
+/// Unwritten: what the run was launched as, else its ask's first line, never
+/// the preface overcli put in front of it ("(Set off by a trigger…").
+export function pullRequestText(run: Pick<FlowRun, 'artifacts' | 'userPrompt' | 'orchestrationItemTitle'>): { title: string; body: string } {
   const written = run.artifacts?.[PR_STEP_OUTPUT]?.body?.trim() ?? '';
   const lines = written.split('\n');
   const first = lines.findIndex((l) => l.trim());
-  const title = (first >= 0 ? lines[first] : run.userPrompt.split('\n')[0] ?? 'A change')
+  const asked = run.orchestrationItemTitle?.trim() || withoutPreface(run.userPrompt).split('\n').find((l) => l.trim()) || 'A change';
+  const title = (first >= 0 ? lines[first] : asked)
     .replace(/^#+\s*/, '')
     .replace(/^title:\s*/i, '')
     .trim()
@@ -134,7 +138,7 @@ export class BranchLander {
       const baseline = run.workspaceWorktrees?.length ? run.baselineCommitsByMember?.[place.name]?.commit : run.baselineCommit;
       // One repo going wrong must not cost the others their links.
       out.push(
-        await this.landOne(place, repo, branch, title, body, baseline)
+        await this.landOne(place, repo, branch, title, body, baseline, run.createdAt, run.continues)
           .then((l) => this.withPr(l, repo, title, body))
           .catch((err: unknown) => ({ repo: place.name, error: err instanceof Error ? err.message : String(err) })),
       );
@@ -152,6 +156,8 @@ export class BranchLander {
     title: string,
     body: string,
     baseline?: string,
+    startedAt?: number,
+    continues?: string,
   ): Promise<Landed> {
     const git = (args: string[]) => this.deps.git(args, place.worktreePath);
     const status = await git(['status', '--porcelain']);
@@ -161,11 +167,21 @@ export class BranchLander {
       if (!added.ok) return { repo: place.name, error: added.error };
       const committed = await git(['commit', '--no-verify', '-m', title, ...(body ? ['-m', body] : [])]);
       if (!committed.ok) return { repo: place.name, error: committed.error };
-    } else if (baseline) {
+    } else {
       // Nothing this run made: a checkout that started on someone else's
       // branch is already ahead of the default branch, and that's not ours.
-      const head = await git(['rev-parse', 'HEAD']);
-      if (head.ok && head.stdout.trim() === baseline) return { repo: place.name, skipped: 'no changes' };
+      if (baseline) {
+        const head = await git(['rev-parse', 'HEAD']);
+        if (head.ok && head.stdout.trim() === baseline) return { repo: place.name, skipped: 'no changes' };
+      }
+      // Nor is a HEAD older than the run: one told to work from an earlier
+      // branch checked it out itself and changed nothing. Landed, it would
+      // have that branch's pull request rewritten and its CI watched again.
+      if (startedAt) {
+        const made = await git(['log', '-1', '--format=%ct', 'HEAD']);
+        const at = made.ok ? Number(made.stdout.trim()) : 0;
+        if (at > 0 && (at + 1) * 1000 <= startedAt) return { repo: place.name, skipped: 'no changes' };
+      }
     }
     const base = repo?.defaultBranch ?? 'main';
     const ahead = await git(['rev-list', '--count', `origin/${base}..HEAD`]);
@@ -180,14 +196,17 @@ export class BranchLander {
       if (!tested.ok && tested.refused) return { repo: place.name, skipped: `repo tests are turned off on this server, so nothing was pushed. ${tested.error}` };
       if (!tested.ok) return { repo: place.name, skipped: `its tests failed, so nothing was pushed:\n${tested.error.slice(-1500)}` };
     }
-    // Built on a branch this server pushed before (a follow-up to a change
-    // whose pull request is open): the new commits go on that branch, so the
-    // pull request has them. Never forced: if it has moved, a branch of its own.
-    const onto = await this.builtOn(git, base);
-    if (onto) {
-      const added = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${onto}`]);
-      if (added.ok) return { repo: place.name, branch: onto, updated: true };
-      this.deps.log(`Could not add to ${onto}, so pushing a branch of its own: ${added.error.slice(-300)}`);
+    // Started on a branch this server pushed, to add to it (a CI fix, a
+    // follow-up for the same ticket): the new commits go on that branch, so
+    // its pull request has them. Only that one: a run whose checkout merely
+    // sits on someone else's commits gets a branch of its own, or its work
+    // lands in another ticket's pull request. Never forced: if the branch has
+    // moved, or this repo doesn't have it, a branch of its own.
+    if (continues) {
+      const on = await git(['merge-base', '--is-ancestor', `origin/${continues}`, 'HEAD']);
+      const added = on.ok ? await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${continues}`]) : on;
+      if (added.ok) return { repo: place.name, branch: continues, updated: true };
+      this.deps.log(`Could not add to ${continues}, so pushing a branch of its own: ${added.error.slice(-300)}`);
     }
     const pushed = await git(['push', '--no-verify', 'origin', `HEAD:refs/heads/${branch}`]);
     if (!pushed.ok) return { repo: place.name, error: pushed.error.slice(-800) };
@@ -206,21 +225,6 @@ export class BranchLander {
       return { ...l, prError: pr.error };
     }
     return { ...l, url: pr.url, pr: pr.draft ? 'draft' : 'open' };
-  }
-
-  /// The branch with the server's prefix that HEAD was built on and the
-  /// default branch doesn't have yet, nearest first. Null: none.
-  private async builtOn(git: (args: string[]) => ReturnType<LandDeps['git']>, base: string): Promise<string | null> {
-    const prefix = `origin/${this.deps.branchPrefix?.() || 'overcli/'}`;
-    const under = await git(['for-each-ref', '--merged', 'HEAD', '--no-merged', `origin/${base}`, '--format=%(refname:short)', 'refs/remotes/origin']);
-    if (!under.ok) return null;
-    let best: { name: string; behind: number } | null = null;
-    for (const ref of under.stdout.split('\n').map((s) => s.trim()).filter((s) => s.startsWith(prefix))) {
-      const count = await git(['rev-list', '--count', `${ref}..HEAD`]);
-      const n = count.ok ? Number(count.stdout.trim()) : NaN;
-      if (Number.isFinite(n) && (!best || n < best.behind)) best = { name: ref.slice('origin/'.length), behind: n };
-    }
-    return best?.name ?? null;
   }
 }
 

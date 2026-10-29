@@ -225,9 +225,16 @@ export function splitSuggestedCommand(text: string): { text: string; command?: s
 
 /// Trim a model's answer down to what the pane can show. Models add a
 /// greeting and a sign-off however firmly you ask them not to.
+///
+/// A model that narrates before reading a file ("Checking how the library
+/// loads profiles.") has that line glued straight onto its answer — the text
+/// blocks either side of a tool call arrive with nothing between them. Split
+/// where a sentence end runs into the next capital, and drop the narration.
 export function tidySuggestion(text: string): string {
   const lines = text
+    .replace(/([a-z)][.!?])([A-Z][a-z])/g, '$1\n$2')
     .split('\n')
+    .filter((l, i) => i > 0 || !/^\s*(let me|i'll|i will|checking|looking|reading|now i)\b/i.test(l))
     .map((l) => l.replace(/^\s*[-*]\s+/, '').trimEnd())
     .filter((l) => l.trim() !== '')
     .filter((l) => !/^#{1,6}\s/.test(l))

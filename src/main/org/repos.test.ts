@@ -8,7 +8,8 @@ import { validateFlow } from '../../shared/flows/validation';
 import { enabledToolsFor, resolveStepEffect } from '../flows/runtime';
 import { setTrustedCommands } from '../flows/trustedCommands';
 import { applyRepoGrants, bindAllowList } from './repoGrants';
-import { BranchLander, PR_STEP_OUTPUT, branchFor, ticketed, describe as describeLanded, landedBranches, testUserRefusal } from './landBranches';
+import { BranchLander, PR_STEP_OUTPUT, branchFor, pullRequestText, ticketed, describe as describeLanded, landedBranches, testUserRefusal } from './landBranches';
+import { TRIGGER_STARTS } from './askPreface';
 import type { FlowRun } from '../../shared/flows/schema';
 import { RepoService, serverGitNote, checkTestCommand, credentialHelper, newPullRequestLink, parseRepoUrl, prFlowId, prFlowYaml, prePushHook, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
 
@@ -332,6 +333,12 @@ describe('the server pushing a finished run', () => {
     expect(ticketed({ title: 'ACME-5568: Replace LEFT JOIN', body: '' }, 'ACME-5568').title).toBe('ACME-5568: Replace LEFT JOIN');
   });
 
+  it('titles an unwritten pull request by what the run was launched as, never the preface in front of its ask', () => {
+    const asked = { artifacts: {}, userPrompt: `${TRIGGER_STARTS}\nTriage the ticket, solve it end to end` };
+    expect(pullRequestText(asked).title).toBe('Triage the ticket, solve it end to end');
+    expect(pullRequestText({ ...asked, orchestrationItemTitle: 'ACME-412: Fix the upload timeout' }).title).toBe('ACME-412: Fix the upload timeout');
+  });
+
   it("doesn't push a repo whose checkout started on another branch and that the run never touched", async () => {
     const pushed: string[][] = [];
     const lander = new BranchLander({
@@ -521,9 +528,24 @@ describe('the server pushing a follow-up', () => {
       attach: () => {},
       log: () => {},
     });
-    const followUp = { id: '222333444', flowId: 'org-pr-app', projectPath: app, worktreePath: path.join(root, 'wt'), userPrompt: 'Soften the wording', artifacts: {} } as unknown as FlowRun;
+    const followUp = { id: '222333444', flowId: 'org-pr-app', projectPath: app, worktreePath: path.join(root, 'wt'), userPrompt: 'Soften the wording', artifacts: {}, continues: 'overcli/first-change-111111' } as unknown as FlowRun;
     return { root, app, run, lander, followUp };
   }
+
+  it("never adds to a branch it wasn't started on to add to, whatever its checkout sits on", async () => {
+    const { root, run, lander, followUp } = setUp();
+    // Unrelated work whose checkout happened to start on the earlier run's commits.
+    const landed = await lander.land({ ...followUp, continues: undefined } as unknown as FlowRun);
+    expect(landed).toEqual([{ repo: 'app', branch: 'overcli/soften-the-wording-222333', url: 'https://bitbucket.org/acme/app/pull-requests/new?source=overcli/soften-the-wording-222333&dest=trunk' }]);
+    expect(run(['log', '-1', '--format=%s', 'overcli/first-change-111111'], path.join(root, 'app.git')).trim()).toBe('First change');
+  });
+
+  it("pushes a branch of its own when the branch it continues isn't in this repo", async () => {
+    const { lander, followUp } = setUp();
+    const [landed] = await lander.land({ ...followUp, continues: 'overcli/somewhere-else-999999' } as unknown as FlowRun);
+    expect(landed).toMatchObject({ branch: 'overcli/soften-the-wording-222333' });
+    expect(landed.updated).toBeUndefined();
+  });
 
   it('adds its commits to the branch it was built on, so the open pull request has them', async () => {
     const { root, run, lander, followUp } = setUp();
@@ -533,6 +555,17 @@ describe('the server pushing a follow-up', () => {
     expect(run(['branch', '--list'], path.join(root, 'app.git'))).not.toContain('soften');
     expect(describeLanded(landed)).toBe('- app: added to overcli/first-change-111111, so its open pull request has the new commits');
     expect(landedBranches(describeLanded(landed))).toEqual(['overcli/first-change-111111']);
+  });
+
+  it('lands nothing when the run checked out an earlier branch itself and changed nothing', async () => {
+    const { root, run, lander, followUp } = setUp();
+    // Started on trunk, told to work from that branch, checked it out, found nothing to change.
+    run(['checkout', '-q', '--', 'README.md'], path.join(root, 'wt'));
+    const trunk = run(['rev-parse', 'origin/trunk'], path.join(root, 'wt')).trim();
+    const later = { ...followUp, baselineCommit: trunk, createdAt: Date.now() + 5_000 } as FlowRun;
+    expect(await lander.land(later)).toEqual([{ repo: 'app', skipped: 'no changes' }]);
+    // Without a recorded start, as before: what origin already has is its branch.
+    expect((await lander.land({ ...later, createdAt: undefined } as unknown as FlowRun))[0]).toMatchObject({ branch: 'overcli/first-change-111111' });
   });
 
   it('reads the branch back from a link written before the line named it', () => {

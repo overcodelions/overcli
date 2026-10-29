@@ -174,3 +174,18 @@ describe('tidying the answer', () => {
     expect(out.split('\n')).toHaveLength(8);
   });
 });
+
+describe('tidySuggestion, narration glued to the answer', () => {
+  it('splits the run-together sentence and drops the narration', () => {
+    const out = tidySuggestion(
+      'Checking how the library loads profiles.The service starts with no profile.\nFix: set it to `local`.',
+    );
+    expect(out).toBe('The service starts with no profile.\nFix: set it to `local`.');
+  });
+
+  it('leaves dotted names alone', () => {
+    expect(tidySuggestion('Set spring.profiles.active in application.yml.')).toBe(
+      'Set spring.profiles.active in application.yml.',
+    );
+  });
+});

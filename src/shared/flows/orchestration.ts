@@ -23,6 +23,9 @@ import type { PendingLandingUpdate } from './landingAudit';
 /// working in it in turn (see Orchestration.runIn). A single run never is.
 export type RunIn = 'cwd' | 'worktree' | 'shared';
 
+/// The note on a follow-up's one candidate (see the origin's `followUp`).
+export const FOLLOW_UP_NOTE = 'Follow-up after its branch was pushed.';
+
 /// One ask surfaced by the producer turn, before the user maps it to a
 /// flow. The producer is instructed to end its reply with a
 /// `<candidates>[…]</candidates>` block of these (minus the client-side
@@ -232,6 +235,11 @@ export interface Orchestration {
         /// handing — so each side of a handoff can link to the other. Absent
         /// on handoffs sent before it was recorded.
         from?: { workerId: UUID; workerName: string; orchestrationId?: UUID };
+        /// Set on an errand overcli started itself after a push (the ticket
+        /// update, a CI fix): nobody asked it, so the desk says "follow-up".
+        /// Absent on ones started before it was recorded, which carry
+        /// FOLLOW_UP_NOTE on their one candidate instead.
+        followUp?: true;
         /// Set on the batch that runs a worker's wrap-up flow: the id of the
         /// shift batch whose results it combines. Its presence is also what
         /// stops a wrap-up from ever triggering a wrap-up of its own.

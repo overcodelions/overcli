@@ -73,6 +73,7 @@ export interface FlowLauncher {
     adoptWorktrees?: AdoptedWorktrees;
     parentOrchestrationId?: UUID;
     orchestrationItemTitle?: string;
+    continues?: string;
     scheduleId?: UUID;
     scheduleName?: string;
     /// Chain provenance for a run fired by an `onFlowComplete` schedule. The
@@ -944,6 +945,8 @@ export class OrchestratorImpl {
           ...(adoptWorktrees ? { adoptWorktrees } : {}),
           parentOrchestrationId: o.id,
           orchestrationItemTitle: next.candidate.title,
+          // Its push adds to that branch, and to no other (BranchLander).
+          ...(continued ? { continues: continued } : {}),
           // Stamp the worker on child runs of a worker's batch — the run
           // summary's `workerId` is what the monthly budget rollup groups by,
           // and nothing can reconstruct the tag after launch.

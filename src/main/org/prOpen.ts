@@ -48,6 +48,14 @@ export async function openPullRequest(
   const title = pr.title.slice(0, 250);
   if (slug.host === 'bitbucket') {
     const base = `${BB}/${slug.owner}/${slug.name}/pullrequests`;
+    // One already open from this branch: that's the one, as it is. Asked
+    // first, because a second create for the same branch edits the open
+    // one, putting this run's title and description over its own. A branch
+    // name with a quote in it would change the query, so it isn't looked up.
+    const q = encodeURIComponent(`source.branch.name="${pr.branch}" AND state="OPEN"`);
+    const found = /["\\]/.test(pr.branch) ? null : await f(`${base}?q=${q}`, { headers }).then((r) => (r.ok ? (r.json() as Promise<{ values?: Array<{ links?: { html?: { href?: string } } }> }>) : null)).catch(() => null);
+    const href = found?.values?.[0]?.links?.html?.href;
+    if (href) return { ok: true, url: href, existed: true };
     const res = await f(base, {
       method: 'POST',
       headers,
@@ -58,12 +66,6 @@ export async function openPullRequest(
       if (j.links?.html?.href) return { ok: true, url: j.links.html.href };
     }
     const why = res.ok ? '' : await said(res);
-    // One already open from this branch: that's the one. A branch name with
-    // a quote in it would change the query, so it isn't looked up.
-    const q = encodeURIComponent(`source.branch.name="${pr.branch}" AND state="OPEN"`);
-    const found = /["\\]/.test(pr.branch) ? null : await f(`${base}?q=${q}`, { headers }).then((r) => (r.ok ? (r.json() as Promise<{ values?: Array<{ links?: { html?: { href?: string } } }> }>) : null)).catch(() => null);
-    const href = found?.values?.[0]?.links?.html?.href;
-    if (href) return { ok: true, url: href, existed: true };
     return { ok: false, error: `Bitbucket said ${res.status}${why ? `: ${why}` : ''}.${scopeHint('bitbucket', res.status)}` };
   }
   const gh = { ...headers, 'X-GitHub-Api-Version': '2022-11-28' };

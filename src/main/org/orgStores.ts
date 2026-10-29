@@ -448,6 +448,9 @@ export interface WorkerVersion {
   /// What this version changed, in words: "its job", "its tools".
   changed: string[];
   config: WorkerConfig;
+  /// A version made by changing one of its flows: that flow as it was then,
+  /// and the flows it ran, so restoring puts both back.
+  flow?: { id: string; name: string; yaml: string; flowIds: string[]; wrapUpFlowId?: string };
 }
 
 /// Kept per worker; older ones go.
