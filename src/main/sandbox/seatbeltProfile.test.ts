@@ -161,7 +161,9 @@ describe('sandboxRootsFor', () => {
       path.join(memberCommon, 'hooks'),
       path.join(memberCommon, 'config'),
       path.join(wt, '.mcp.json'),
+      path.join(wt, '.claude'),
       path.join(member, '.mcp.json'),
+      path.join(member, '.claude'),
     ]);
   });
 
@@ -169,8 +171,8 @@ describe('sandboxRootsFor', () => {
     const wt = mk('plain');
     const roots = sandboxRootsFor({ backend: 'claude', cwd: wt, home: mk('h2'), gitCommonDirFor: () => null });
     expect(roots.writable[0]).toBe(wt);
-    // Only the project's tool definitions stay off-limits.
-    expect(roots.denied).toEqual([path.join(wt, '.mcp.json')]);
+    // Only the project's tool definitions and Claude config stay off-limits.
+    expect(roots.denied).toEqual([path.join(wt, '.mcp.json'), path.join(wt, '.claude')]);
   });
 });
 

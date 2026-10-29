@@ -138,15 +138,20 @@ const STOP_NOTIFY = /\b(?:(?:stop|quit|don'?t keep|no longer)\s+(?:notifying|pin
 /// "stop pinging me, I'll check myself", "unsubscribe, I've got it".
 const SELF_TRAILER = /[,;.!\s]*\b(?:i(?:'ll| will| can|'m| am|'ve| have|'d| got| know| see)|no need|not needed|all good|got it)\b.*$/i;
 /// A trailer that goes on to ask for something is a request, not a trailer:
-/// "stop pinging me, I have another one: reopen ACME-10". A clause after the
-/// first that opens with an order ("I'll check myself" opens with "I'll").
+/// "stop pinging me, I have another one: reopen ACME-10". A clause that
+/// opens with an order, or one that asks in the person's own voice ("I'd
+/// like you to reopen ACME-10", "I need you to rerun it"); "I'll check
+/// myself" and "I'd like to check it myself" are neither.
+const ASKING_VOICE = /^i(?:'d|'ll| would| will)?\s+(?:also\s+)?(?:like|love|want|need|prefer|ask)\s+you\s+(?:to\s+)?/i;
 function trailerAsks(trailer: string): boolean {
   const softeners = new Set(['also', 'please', 'then', 'just', 'can', 'you', 'could']);
   return trailer
     .replace(/^[,;.!\s]+/, '')
     .split(/[:;,.!?]|\b(?:and|but|then|so)\b/i)
-    .slice(1)
-    .some((clause) => IMPERATIVE.has(clause.toLowerCase().split(/[^a-z0-9'-]+/).filter((w) => w && !softeners.has(w))[0] ?? ''));
+    .some((clause) => {
+      const words = clause.trim().replace(ASKING_VOICE, '').toLowerCase().split(/[^a-z0-9'-]+/).filter((w) => w && !softeners.has(w));
+      return IMPERATIVE.has(words[0] ?? '');
+    });
 }
 /// Words that ask nothing of their own around a "let me know": "can you",
 /// "thanks", "that's it".
@@ -165,7 +170,10 @@ const CONJUNCTION = /(?:,|;|\b(?:and|but|also|then|plus|or)\b)/i;
 /// timeout", "reopen ACME-9", "make it work") and fits none of these: an
 /// order's first word is a verb, and what follows it is not another verb.
 const PREDICATE = '(?:is|are|was|were|has|have|gets?|got|goes|went|comes|came|lands?|landed|ships?|shipped|merges?|merged|deploys?|deployed|pass(?:es|ed)?|succeeds?|succeeded|finish(?:es|ed)?|completes?|completed|closes?|closed|resolves?|resolved|changes?|changed|moves?|moved|updates?|updated|arrives?|arrived|works?|worked|fails?|failed|breaks?|broke|returns?|returned|starts?|started|stops?|stopped|ends?|ended|opens?|opened|releases?|released|drops?|dropped|runs?|ran|builds?|built|clears?|cleared|settles?|settled|responds?|responded|replies|replied|answers?|answered|approves?|approved|signs?\\s+off|signed\\s+off|says?|said|looks?|reaches|reached|hits?|exceeds?|turns?|turned|becomes?|became)';
-const CONDITION_VERB = new RegExp(`^(?:(?:the|a|an|all|both|every|each|my|our|its|that|this)\\s+)?[^\\s]+\\s+${PREDICATE}\\b`, 'i');
+/// The subject is one word ("tests pass"), or up to three after a
+/// determiner ("the integration tests pass", "the Safari login fix lands"):
+/// without one, "kick off the release" would read as a subject and a verb.
+const CONDITION_VERB = new RegExp(`^(?:(?:the|a|an|all|both|every|each|my|our|its|that|this)\\s+[^\\s]+(?:\\s+[^\\s]+){0,2}|[^\\s]+)\\s+${PREDICATE}\\b`, 'i');
 const CONDITION_STATE = /^(?:it(?:'s| is| has| was)|they(?:'re| are| have)|that(?:'s| is)|this(?:'s| is)|there(?:'s| is| are)|we(?:'re| are)|you(?:'re| are)|[^\s]+(?:ed|en)\s+(?:to|on|in|into|at|by|for|from|with|and|out|up|off|down)\b)/i;
 /// The verbs a request opens with. One of these first, with no predicate
 /// right after it ("build passes" is a condition, "build the docs" is not),

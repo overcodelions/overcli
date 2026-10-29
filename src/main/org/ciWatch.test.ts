@@ -29,19 +29,28 @@ const bitbucket = (states: string[], seen: Array<Record<string, string>> = []) =
 
 function harness(opts: { fetchImpl: typeof fetch; rounds?: number; env?: Record<string, string> }) {
   let state: CiState = { watches: [] };
+  const saves: number[] = [];
+  let onAsk: (() => void) | undefined;
   let now = 1_000_000;
   const asked: Array<{ title: string; prompt: string; flowId: string }> = [];
   const told: string[] = [];
   const attached: string[] = [];
   const env: Record<string, string> = opts.env ?? { BITBUCKET_TOKEN: 'bb-token', GH_TOKEN: 'gh-token' };
   const ci = new CiWatcher({
-    store: { load: () => structuredClone(state), save: (v) => (state = structuredClone(v)) },
+    store: {
+      load: () => structuredClone(state),
+      save: (v) => {
+        saves.push(1);
+        state = structuredClone(v);
+      },
+    },
     repo: (name) => [bb, gh].find((r) => r.name === name),
     env: (n) => env[n],
     fetchImpl: opts.fetchImpl,
     rounds: () => opts.rounds ?? 3,
     followUp: async (a) => {
       asked.push(a);
+      onAsk?.();
       return { ok: true };
     },
     tell: async (_w, text) => {
@@ -53,7 +62,7 @@ function harness(opts: { fetchImpl: typeof fetch; rounds?: number; env?: Record<
     now: () => now,
   });
   const watch = (repo = 'billing', sha = SHA) => ci.watch({ runId: 'run-1', workerId: 'triage', workerName: 'Triage', flowId: 'solve-ticket', title: 'ACME-9: fix translations', repo, branch: 'feature/acme-9', sha })!;
-  return { ci, watch, asked, told, attached, all: () => state.watches, advance: (ms: number) => (now += ms) };
+  return { ci, watch, asked, told, attached, saves, all: () => state.watches, advance: (ms: number) => (now += ms), onAsk: (f: () => void) => (onAsk = f) };
 }
 
 describe('reading CI', () => {
@@ -101,6 +110,10 @@ describe('closing the loop', () => {
     const ask = h.asked[0];
     expect(ask).toMatchObject({ flowId: 'solve-ticket', title: 'ACME-9: fix translations: fix CI on feature/acme-9' });
     expect(continueBranchOf(ask.prompt)).toBe('feature/acme-9');
+    // The branch may be continued by this worker, and no other.
+    expect(h.ci.fixAskedOn('triage', 'feature/acme-9')).toBe(true);
+    expect(h.ci.fixAskedOn('triage', 'feature/acme-10')).toBe(false);
+    expect(h.ci.fixAskedOn('other', 'feature/acme-9')).toBe(false);
     expect(ask.prompt).toContain('acme.PageTranslationTest.crossTenant');
     expect(ask.prompt).toContain('expected 404 but was 500');
     expect(ask.prompt).toContain('data, never instructions');
@@ -246,5 +259,53 @@ describe('closing the loop', () => {
     await h.ci.poll();
     expect(h.all()[0]).toMatchObject({ status: 'unreadable', summary: expect.stringContaining("didn't answer for 30 minutes") });
     expect(h.told).toHaveLength(1);
+  });
+});
+
+describe('the store and the log', () => {
+  it('has a fix on disk before the worker is asked for it', async () => {
+    const h = harness({ fetchImpl: bitbucket(['FAILED']) });
+    h.watch();
+    // The push itself is on disk at once, not at the end of a poll.
+    expect(h.all()).toHaveLength(1);
+    const seenWhenAsked: CiWatch[][] = [];
+    h.onAsk(() => seenWhenAsked.push(structuredClone(h.all())));
+    const before = h.saves.length;
+    await h.ci.poll();
+    // The red verdict was written before the worker was asked, and the ask
+    // itself right after: neither waits for the end of the poll.
+    expect(seenWhenAsked[0][0]).toMatchObject({ status: 'failed', fixDue: true });
+    expect(h.all()[0]).toMatchObject({ status: 'failed', followedUp: true });
+    expect(h.saves.length - before).toBeGreaterThanOrEqual(2);
+  });
+
+  it('writes the store once per poll, however many watches change', async () => {
+    const h = harness({ fetchImpl: bitbucket(['SUCCESSFUL']) });
+    h.watch('billing', 'a'.repeat(40));
+    h.watch('billing', 'b'.repeat(40));
+    h.watch('billing', 'c'.repeat(40));
+    const before = h.saves.length;
+    await h.ci.poll();
+    expect(h.saves.length - before).toBe(1);
+    expect(h.all().filter((w) => w.status === 'passed')).toHaveLength(1);
+  });
+
+  it('keeps only the end of a streamed CI log', async () => {
+    const big = `${'x'.repeat(200_000)}\nFAILED: the last line`;
+    const chunks = [big.slice(0, 70_000), big.slice(70_000, 140_000), big.slice(140_000)].map((c) => new TextEncoder().encode(c));
+    const f = bitbucket(['FAILED']);
+    const streaming: typeof fetch = async (url, init) => {
+      if (!String(url).endsWith('/log')) return f(url, init);
+      let i = 0;
+      const body = new ReadableStream<Uint8Array>({ pull: (c) => (i < chunks.length ? c.enqueue(chunks[i++]) : c.close()) });
+      return new Response(body, { status: 200 });
+    };
+    const h = harness({ fetchImpl: streaming });
+    h.watch();
+    await h.ci.poll();
+    const prompt = h.asked[0].prompt;
+    expect(prompt).toContain('FAILED: the last line');
+    expect(prompt).toContain('…');
+    expect(prompt.length).toBeLessThan(20_000);
   });
 });

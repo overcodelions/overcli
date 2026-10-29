@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readClaudeMcpServers, removeMcpServer, writeMcpServer, type McpServerConfig } from '../mcpConfig';
+import { isSecretName } from '../../shared/machineValues';
 
 export const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -210,16 +211,90 @@ export interface ToolTemplate {
   headerKeys: string[];
 }
 
+/// A path segment or argument that reads as a token: long, one run of
+/// letters, digits, `-` and `_`, with a digit in it (or very long). "mcp",
+/// "v1" and "sse" are not; "a8f3…" and a signed key are.
+const TOKEN_SHAPED = /^(?=.*\d)[A-Za-z0-9_-]{16,}$|^[A-Za-z0-9_.-]{32,}$/;
+/// An address: `scheme://…`.
+const ADDRESS = /^[a-z][a-z0-9+.-]*:\/\//i;
+/// A flag whose value is the next argument: `--token`, `-p`.
+const FLAG = /^-{1,2}[A-Za-z_][\w.-]*$/;
+/// `--db.password=hunter2`, `-Dapi.key=…`, `TOKEN=…`: a name and its value.
+const KEY_VALUE_ARG = /^(-{0,2}[A-Za-z_][\w.-]*)=([\s\S]*)$/;
+/// A header given as one argument (`--header "Authorization: Bearer …"`).
+const HEADER_ARG = /^([A-Za-z][A-Za-z0-9-]*)\s*:\s*([\s\S]*)$/;
+/// A word that says a value is a credential, wherever it sits in it.
+const SECRET_WORD = /authorization|bearer|token|api[-_]?key|secret|passw(?:or)?d|credential/i;
+/// Longest argument exported as it is, unless it is an address: a token or
+/// a signed key is longer, a package name or a flag is not.
+const ARG_MAX = 80;
+
+/// Whether an address can be exported as it is: no user:password, no
+/// query string, no token-shaped path segment (`/s/<secret>/sse`). A
+/// malformed address is not exportable either.
+function addressExportable(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.username || u.password || u.search) return false;
+    return !u.pathname.split('/').some((segment) => TOKEN_SHAPED.test(segment));
+  } catch {
+    return false;
+  }
+}
+
+/// A command's arguments with every possible credential taken out, for a
+/// template: package names, flags and plain paths stay. Dropped: an address
+/// with a user:password, a query string or a token-shaped path segment
+/// (`postgresql://app:pw@db/prod`); a `name=value` whose name is
+/// secret-shaped or whose value is token-shaped; a token-shaped argument;
+/// the argument after a secret-named flag (`--token <value>`, the flag
+/// itself stays so the install form shows where the value goes); a header
+/// whose name or value is credential-shaped (`Authorization: Bearer …`);
+/// any value with a credential word in it; and anything over 80 characters
+/// that isn't an address.
+export function exportableArgs(args: unknown): string[] {
+  if (!Array.isArray(args)) return [];
+  const out: string[] = [];
+  let valueOfSecretFlag = false;
+  for (const raw of args.map(String)) {
+    if (valueOfSecretFlag) {
+      valueOfSecretFlag = false;
+      if (!FLAG.test(raw)) continue;
+    }
+    if (TOKEN_SHAPED.test(raw)) continue;
+    if (ADDRESS.test(raw)) {
+      if (raw.length > 500 || !addressExportable(raw)) continue;
+    } else {
+      if (raw.length > ARG_MAX) continue;
+      const kv = KEY_VALUE_ARG.exec(raw);
+      const header = kv ? null : HEADER_ARG.exec(raw);
+      if (kv) {
+        if (isSecretName(kv[1]) || SECRET_WORD.test(kv[2]) || TOKEN_SHAPED.test(kv[2]) || (ADDRESS.test(kv[2]) && !addressExportable(kv[2]))) continue;
+      } else if (header) {
+        if (isSecretName(header[1]) || SECRET_WORD.test(header[1]) || SECRET_WORD.test(header[2]) || header[2].split(/\s+/).some((part) => TOKEN_SHAPED.test(part))) continue;
+      } else if (FLAG.test(raw)) {
+        if (isSecretName(raw)) valueOfSecretFlag = true;
+      } else if (SECRET_WORD.test(raw)) {
+        continue;
+      }
+    }
+    out.push(raw);
+  }
+  return out;
+}
+
 /// Strip a desktop MCP config down to a template. Values go; names stay.
 export function templateFrom(name: string, config: McpServerConfig): ToolTemplate | null {
   if (!TOOL_NAME.test(name)) return null;
   const keys = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.keys(v as object).slice(0, 30) : []);
   if (typeof config.url === 'string') {
-    // A URL can carry a key in its query string: keep only where it points.
+    // A URL can carry a key in its query string, its user:password or a
+    // path segment (`/s/<secret>/sse`): keep where it points, and only
+    // the path when nothing in it reads as a token.
     let url: string;
     try {
       const u = new URL(config.url);
-      url = `${u.origin}${u.pathname}`;
+      url = u.username || u.password || u.pathname.split('/').some((segment) => TOKEN_SHAPED.test(segment)) ? u.origin : `${u.origin}${u.pathname}`;
     } catch {
       return null;
     }
@@ -230,9 +305,9 @@ export function templateFrom(name: string, config: McpServerConfig): ToolTemplat
     name,
     kind: 'command',
     command: config.command,
-    // Arguments are where a careless config hides a token: keep the ones that
-    // look like package names or flags, drop anything long and opaque.
-    args: (Array.isArray(config.args) ? config.args.map(String) : []).filter((a) => a.length <= 80 && !/^[A-Za-z0-9_\-]{32,}$/.test(a)),
+    // Arguments are where a careless config hides a token: a connection
+    // string with its password, `--token <value>`, `key=value`.
+    args: exportableArgs(config.args),
     envKeys: keys(config.env),
     headerKeys: [],
   };

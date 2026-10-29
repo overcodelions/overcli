@@ -281,13 +281,22 @@ describe('a worker’s picture', () => {
 });
 
 describe('a worker’s home channels', () => {
-  it('are channel IDs, deduped, set by its manager, and cleared with null', () => {
+  it('are channel IDs, deduped, claimed by an admin, let go by its manager, and cleared with null', () => {
     const { svc, roster } = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT } })] });
+    const admin: OrgCaller = { slackUserId: 'U0ADMIN', name: 'Ada', admin: true };
     expect(svc.update(sam, 'open', { slackHomeChannels: ['C0ACMEQS'] }).ok).toBe(false);
-    expect(svc.update(pat, 'open', { slackHomeChannels: ['#product-questions'] }).ok).toBe(false);
-    const set = svc.update(pat, 'open', { slackHomeChannels: ['c0acmeqs', 'C0ACMEQS', 'G0ACMEPRV'] });
+    expect(svc.update(admin, 'open', { slackHomeChannels: ['#product-questions'] }).ok).toBe(false);
+    // Every request in a home channel goes to the worker: its manager can't claim one.
+    const claim = svc.update(pat, 'open', { slackHomeChannels: ['C0ACMEQS'] });
+    expect(claim.ok).toBe(false);
+    if (!claim.ok) expect(claim.error).toContain('admin');
+    const set = svc.update(admin, 'open', { slackHomeChannels: ['c0acmeqs', 'C0ACMEQS', 'G0ACMEPRV'] });
     if (!set.ok) throw new Error(set.error);
     expect(set.worker.slackHomeChannels).toEqual(['C0ACMEQS', 'G0ACMEPRV']);
+    // Its manager can let one go, and keep the rest.
+    const drop = svc.update(pat, 'open', { slackHomeChannels: ['G0ACMEPRV'] });
+    if (!drop.ok) throw new Error(drop.error);
+    expect(drop.worker.slackHomeChannels).toEqual(['G0ACMEPRV']);
     expect(svc.update(pat, 'open', { slackHomeChannels: null }).ok).toBe(true);
     expect(roster.get('open')!.slackHomeChannels).toBeUndefined();
   });

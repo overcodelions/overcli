@@ -115,19 +115,22 @@ describe('buildSharedStack', () => {
     const one = spec({
       id: 'p-billing-api',
       name: 'billing-api',
-      command: ['java', '-Ddb.password=Pa$sword1', '-Dapi.key=ak_live_9', '--spring.profiles.active=local', `--logs=${HOME}/logs`],
-      options: [{ key: '-Ddb.password', value: 'Pa$sword1' }, { key: '-Dtoken', value: 'Bearer ${API_TOKEN}' }, { key: '-Dsecret', value: '$SECRET' }],
+      command: ['java', '-Ddb.password=Pa$sword1', '-Dapi.key=ak_live_9', '--spring.profiles.active=local', `--logs=${HOME}/logs`, '--admin-password', 'hunter2', '--port', '8080'],
+      options: [{ key: '-Ddb.password', value: 'Pa$sword1' }, { key: '-Dtoken', value: 'Bearer ${API_TOKEN}' }, { key: '-Dsecret', value: '$SECRET' }, { key: '-Dsmtp.password', value: '$ecretPass1' }],
     });
     const { stack, text } = buildSharedStack({ name: 'acme', services: [one], bindings: [], projects, remoteOf, home: HOME });
     expect(text).not.toContain('Pa$sword1');
     expect(text).not.toContain('ak_live_9');
-    expect(stack.services[0].command).toEqual(['java', '-Ddb.password=${DB_PASSWORD}', '-Dapi.key=${API_KEY}', '--spring.profiles.active=local', '--logs=${HOME}/logs']);
+    expect(text).not.toContain('hunter2');
+    expect(text).not.toContain('$ecretPass1');
+    expect(stack.services[0].command).toEqual(['java', '-Ddb.password=${DB_PASSWORD}', '-Dapi.key=${API_KEY}', '--spring.profiles.active=local', '--logs=${HOME}/logs', '--admin-password', '${ADMIN_PASSWORD}', '--port', '8080']);
     // The same password as an argument and an option is one blank; a value
     // that is or holds a reference is left as it is.
     expect(stack.services[0].options).toEqual([
       { key: '-Ddb.password', value: '${DB_PASSWORD}' },
       { key: '-Dtoken', value: 'Bearer ${API_TOKEN}' },
       { key: '-Dsecret', value: '$SECRET' },
+      { key: '-Dsmtp.password', value: '${SMTP_PASSWORD}' },
     ]);
   });
 

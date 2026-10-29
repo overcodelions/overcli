@@ -237,3 +237,38 @@ describe('delivered work from a run without a completed entry', () => {
     expect(h.svc.rate(pat, { entryId: 'run:nope', useful: true })).toEqual({ ok: false, error: 'No finished work with that id that you can see.' });
   });
 });
+
+describe('OrgService.runDetail', () => {
+  const runs = [
+    flowRun('r0', 'ana', NOW - DAY),
+    flowRun('r1', 'ana', NOW - 2 * DAY, { state: { kind: 'done', success: false }, attempts: [{ stepId: 's', startedAt: NOW - 2 * DAY, endedAt: NOW - 2 * DAY + 60_000, outcome: 'error', errorMessage: 'acme API timed out' }] }),
+    flowRun('live', 'ana', NOW - 1000, { state: { kind: 'running', currentStepId: 's' } }),
+    flowRun('hid', 'cal', NOW - DAY),
+  ];
+
+  it('gives the run, its worker and the worker’s last ended runs, newest first', () => {
+    const { svc } = harness({ runs });
+    const res = svc.runDetail(pat, 'r1');
+    if (!res.ok) throw new Error(res.error);
+    expect(res.worker).toEqual({ id: 'ana', name: 'Ana', enabled: true, manager: 'Pat' });
+    expect(res.run).toMatchObject({ id: 'r1', state: 'failed', startedAt: NOW - 2 * DAY, endedAt: NOW - 2 * DAY + 60_000, error: 'acme API timed out' });
+    expect(res.youManage).toBe(true);
+    expect(res.recent.map((r) => [r.runId, r.outcome])).toEqual([['r0', 'done'], ['r1', 'failed']]);
+  });
+
+  it('keeps a run going open-ended, and finds the thread it belongs to', () => {
+    const { svc } = harness({ runs });
+    const res = svc.runDetail(pat, 'live');
+    if (!res.ok) throw new Error(res.error);
+    expect(res.run.state).toBe('running');
+    expect(res.run.endedAt).toBeUndefined();
+    expect(res.thread?.runs.some((r) => r.runId === 'live')).toBe(true);
+  });
+
+  it('refuses a run whose worker the caller can’t see, and one that isn’t there', () => {
+    const { svc } = harness({ runs });
+    expect(svc.runDetail(pat, 'hid').ok).toBe(false);
+    expect(svc.runDetail(pat, 'nope').ok).toBe(false);
+    expect(svc.runDetail(sam, 'hid').ok).toBe(true);
+  });
+});

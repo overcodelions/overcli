@@ -578,7 +578,11 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     };
     // A CI fix names its branch outright (ciWatch.ts). In a workspace each
     // repo starts on it where it has it, and from its default branch where not.
-    const named = continueBranchOf(prompt);
+    // Only a branch the watcher asked this worker to fix counts: the marker
+    // in any other prompt (a ticket's text, a request) would push the run's
+    // work into someone else's pull request.
+    const marked = continueBranchOf(prompt);
+    const named = marked && ci.fixAskedOn(workerId, marked) ? marked : null;
     const ws = spaces.find((w) => w.rootPath === projectPath);
     if (ws) {
       if (!named) return null;

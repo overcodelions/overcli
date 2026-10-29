@@ -3147,6 +3147,10 @@ export class OrgService {
       const ids = [...new Set((patch.slackHomeChannels ?? []).map((c) => String(c).trim().toUpperCase()))];
       if (ids.some((c) => !/^[CG][A-Z0-9]{6,}$/.test(c))) return { ok: false, error: 'A home channel is a Slack channel ID (it looks like C012AB3CD; in Slack: channel details → bottom).' };
       if (ids.length > 20) return { ok: false, error: 'At most 20 home channels.' };
+      // A home channel's every request goes to this worker, whoever is in
+      // it: claiming one is an admin's call. Letting one go is its manager's.
+      const claimed = ids.filter((c) => !(w.slackHomeChannels ?? []).includes(c));
+      if (claimed.length && !admin) return { ok: false, error: `Making ${claimed.join(', ')} ${w.name}'s home channel needs an admin: every request there goes to it.` };
       if (ids.length) next.slackHomeChannels = ids;
       else delete next.slackHomeChannels;
     }
@@ -3919,6 +3923,48 @@ export class OrgService {
     if (!r?.workerId || !canSee(this.policy(), this.deps.workers.roster(), r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
     const files = (this.deps.runDeliverables?.(runId) ?? []).filter((f) => f.sourcePath).map((f) => ({ name: f.name, ...(f.bytes ? { bytes: f.bytes } : {}) }));
     return { ok: true, files };
+  }
+
+  /// One run on a page of its own, for whoever can see its worker: the run,
+  /// the thread it belongs to (what set it off, follow-ups after it), what
+  /// waits on it, and the worker's last runs beside it, so one that went
+  /// wrong stands out. What a link from Slack, a ticket or the Library opens.
+  runDetail(caller: OrgCaller, runId: UUID): Result<{
+    worker: { id: UUID; name: string; enabled: boolean; manager?: string };
+    run: { id: UUID; title: string; state: string; startedAt: number; endedAt?: number; steps: number; costUSD?: number; error?: string };
+    thread: WorkThread | null;
+    waiting: WaitingItem[];
+    youManage: boolean;
+    recent: Array<{ runId: UUID; title: string; at: number; minutes: number; outcome: RunPast['outcome'] }>;
+  }> {
+    const r = this.deps.runs.getRun(runId);
+    const roster = this.deps.workers.roster();
+    if (!r?.workerId || !canSee(this.policy(), roster, r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
+    const w = roster.find((x) => x.id === r.workerId);
+    if (!w) return { ok: false, error: 'No run with that id that you can see.' };
+    const ended = r.state.kind === 'done' || r.state.kind === 'aborted';
+    const past = ended ? this.runPast(r) : null;
+    const manager = managerFor(roster, w.id);
+    return {
+      ok: true,
+      worker: { id: w.id, name: w.name, enabled: w.enabled, ...(manager ? { manager: manager.name } : {}) },
+      run: {
+        id: r.id,
+        title: flowRunTitle(r),
+        state: past ? past.outcome : r.state.kind,
+        startedAt: r.createdAt,
+        ...(ended ? { endedAt: OrgService.runEndedAt(r) } : {}),
+        steps: r.flowSnapshot.steps.length,
+        ...(r.costUSD ? { costUSD: r.costUSD } : {}),
+        ...(past?.error ? { error: past.error } : {}),
+      },
+      thread: this.threadsFor(caller, w, false).find((t) => t.runs.some((x) => x.runId === r.id) || (t.followUps ?? []).some((f) => f.runs.some((x) => x.runId === r.id))) ?? null,
+      waiting: this.listWaiting(caller).filter((x) => x.runId === r.id),
+      youManage: canManage(this.policy(), roster, w.id, caller),
+      recent: this.endedRuns(w.id)
+        .slice(0, 12)
+        .map((x) => ({ runId: x.id, title: flowRunTitle(x), at: x.createdAt, minutes: Math.max(0, Math.round((OrgService.runEndedAt(x) - x.createdAt) / 60_000)), outcome: OrgService.runOutcome(x) })),
+    };
   }
 
   /// What a run has changed so far, repo by repo, for whoever can see its

@@ -99,6 +99,8 @@ export const UNREACHABLE_CHECKS = 30;
 export const FIX_WAIT_MS = 6 * 60 * 60_000;
 const WARN_EVERY_MS = 24 * 60 * 60_000;
 const LOG_TAIL = 6000;
+/// How long a CI log is read for before its tail is taken as it is.
+const LOG_READ_MS = 30_000;
 const KEEP = 500;
 export const CI_ARTIFACT = 'ci.md';
 
@@ -158,9 +160,43 @@ export function cantRead(repo: ConnectedRepo, env: (n: string) => string | undef
   return undefined;
 }
 
-async function getText(fetchImpl: Fetch, url: string, headers: Record<string, string>): Promise<string> {
-  const res = await fetchImpl(url, { headers, redirect: 'follow' });
-  return res.ok ? res.text() : '';
+/// The end of a text body, read as it arrives: a CI log can run to tens of
+/// MB, and only its last `n` characters are kept, so what is held at any
+/// moment is about twice that. A body still coming after LOG_READ_MS is cut
+/// there. A fetch whose body isn't a stream (a test's) is read whole.
+async function getTail(fetchImpl: Fetch, url: string, headers: Record<string, string>, n = LOG_TAIL): Promise<string> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), LOG_READ_MS);
+  try {
+    const res = await fetchImpl(url, { headers, redirect: 'follow', signal: ctl.signal });
+    if (!res.ok) return '';
+    const body = res.body as { getReader?: () => ReadableStreamDefaultReader<Uint8Array> } | null;
+    if (!body || typeof body.getReader !== 'function') return tail(await res.text(), n);
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let kept = '';
+    let cut = false;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        kept += decoder.decode(value, { stream: true });
+        if (kept.length > n * 2) {
+          kept = kept.slice(-n);
+          cut = true;
+        }
+      }
+      kept += decoder.decode();
+    } catch {
+      // Cut off (the timer) or dropped mid-way: what came is kept.
+      cut = true;
+    }
+    return cut || kept.length > n ? `…${kept.slice(-n)}` : kept;
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const BB = 'https://api.bitbucket.org/2.0/repositories';
@@ -228,8 +264,8 @@ export async function readFailure(repo: ConnectedRepo, sha: string, deps: Pick<C
         const cases = await getJson<{ values?: Array<{ name?: string; fully_qualified_name?: string; status?: string }> }>(f, `${base}/${pid}/steps/${sid}/test_reports/test_cases?pagelen=30`, auth).catch(() => ({ values: [] }));
         const failed = (cases.values ?? []).filter((c) => !c.status || /FAIL|ERROR/i.test(c.status)).map((c) => c.fully_qualified_name ?? c.name).filter(Boolean);
         if (failed.length) out.push(`Failing tests:\n${failed.slice(0, 20).map((n) => `- ${n}`).join('\n')}`);
-        const log = await getText(f, `${base}/${pid}/steps/${sid}/log`, auth);
-        if (log.trim()) out.push(`End of its log:\n${tail(log)}`);
+        const log = await getTail(f, `${base}/${pid}/steps/${sid}/log`, auth);
+        if (log.trim()) out.push(`End of its log:\n${log}`);
       }
     } else {
       const h = { ...auth, 'X-GitHub-Api-Version': '2022-11-28' };
@@ -245,8 +281,8 @@ export async function readFailure(repo: ConnectedRepo, sha: string, deps: Pick<C
         const notes = await getJson<Array<{ path?: string; start_line?: number; message?: string }>>(f, `${GH}/${slug.owner}/${slug.name}/check-runs/${r.id}/annotations?per_page=30`, h).catch(() => []);
         if (notes.length) out.push(`Annotations:\n${notes.slice(0, 20).map((a) => `- ${a.path ?? ''}${a.start_line ? `:${a.start_line}` : ''} ${a.message ?? ''}`.trim()).join('\n')}`);
         if (r.app?.slug === 'github-actions') {
-          const log = await getText(f, `${GH}/${slug.owner}/${slug.name}/actions/jobs/${r.id}/logs`, h);
-          if (log.trim()) out.push(`End of its log:\n${tail(log)}`);
+          const log = await getTail(f, `${GH}/${slug.owner}/${slug.name}/actions/jobs/${r.id}/logs`, h);
+          if (log.trim()) out.push(`End of its log:\n${log}`);
         }
       }
     }
@@ -286,6 +322,10 @@ export function fixPrompt(group: CiWatch[], rounds: number): string {
 export class CiWatcher {
   private timer: NodeJS.Timeout | null = null;
   private polling = false;
+  /// The store as a poll is changing it: every change lands here and the
+  /// file is written once at the end, not once per watch touched.
+  private batch: CiState | null = null;
+  private dirty = false;
 
   constructor(private readonly deps: CiDeps) {}
 
@@ -293,15 +333,41 @@ export class CiWatcher {
     return this.deps.now?.() ?? Date.now();
   }
 
+  private state(): CiState {
+    return this.batch ?? this.deps.store.load();
+  }
+
+  private write(next: CiState): void {
+    if (this.batch) {
+      this.batch = next;
+      this.dirty = true;
+    } else this.deps.store.save(next);
+  }
+
+  /// What the poll has changed so far, on disk: called before a fix is
+  /// asked for or a manager told, so a quit mid-poll can't ask twice.
+  private flush(): void {
+    if (!this.batch || !this.dirty) return;
+    this.deps.store.save(this.batch);
+    this.dirty = false;
+  }
+
   private load(): CiWatch[] {
-    return this.deps.store.load().watches ?? [];
+    return this.state().watches ?? [];
   }
 
   private put(w: CiWatch): void {
-    const state = this.deps.store.load();
+    const state = this.state();
     const all = (state.watches ?? []).filter((x) => x.id !== w.id);
     all.push(w);
-    this.deps.store.save({ ...state, watches: all.slice(-KEEP) });
+    this.write({ ...state, watches: all.slice(-KEEP) });
+  }
+
+  /// Whether a fix was asked of this worker on this branch: the one case a
+  /// run may be started on an existing branch by name (engines.ts). Any
+  /// other prompt naming a branch starts fresh.
+  fixAskedOn(workerId: string, branch: string): boolean {
+    return this.load().some((w) => w.workerId === workerId && w.branch === branch && !!w.followedUp);
   }
 
   /// CI can't be read for this repo: said on the run every time, to the
@@ -311,10 +377,11 @@ export class CiWatcher {
     this.put({ ...rest, status: 'unreadable', summary: why, checkedAt: this.now() });
     this.record(w, [`Not watched: ${why}`, '', 'The branch and its pull request are pushed as usual; check the build on the host.']);
     this.deps.log(`CI for ${w.repo} can't be read: ${why}`);
-    const state = this.deps.store.load();
+    const state = this.state();
     const last = state.warned?.[w.repo] ?? 0;
     if (last && this.now() - last < WARN_EVERY_MS) return;
-    this.deps.store.save({ ...state, warned: { ...(state.warned ?? {}), [w.repo]: this.now() } });
+    this.write({ ...state, warned: { ...(state.warned ?? {}), [w.repo]: this.now() } });
+    this.flush();
     await this.deps.tell(w.workerId, `I can't read CI for ${w.repo}, so *${w.workerName}*'s pushes there aren't checked: ${why} The pushes and pull requests still go through.`);
   }
 
@@ -333,6 +400,7 @@ export class CiWatcher {
     this.record(w, [`Still failing: ${why}. Handed to its manager.`, '', ...(w.failing ?? []).map((c) => `- FAILED: ${c.name}${c.url ? ` (${c.url})` : ''}`)]);
     this.deps.log(`CI fix for "${w.title}" on ${w.repo} ${w.branch}: ${why}; told the manager.`);
     const link = (w.failing ?? []).find((c) => c.url)?.url ?? '';
+    this.flush();
     await this.deps.tell(w.workerId, `CI is still failing on \`${w.branch}\` (${w.repo}) for _${w.title}_: ${why}.${link ? ` ${link}` : ''}\nReply here to have ${w.workerName} look again.`);
   }
 
@@ -354,6 +422,8 @@ export class CiWatcher {
     for (const w of all.filter((x) => x.repo === args.repo && x.branch === args.branch && x.status === 'waiting')) this.put({ ...w, status: 'timed-out', summary: 'Superseded by a newer push.' });
     const w: CiWatch = { id: randomUUID(), ...args, round: before ? before.round + 1 : 0, status: 'waiting', startedAt: this.now() };
     this.put(w);
+    // A push lands whenever it lands: never only in a poll's memory.
+    this.flush();
     return w;
   }
 
@@ -371,6 +441,7 @@ export class CiWatcher {
   async poll(): Promise<void> {
     if (this.polling) return;
     this.polling = true;
+    this.batch = this.deps.store.load();
     try {
       for (const w of this.load().filter((x) => x.status === 'waiting')) await this.check(w);
       const all = this.load();
@@ -379,6 +450,9 @@ export class CiWatcher {
       }
       await this.settle();
     } finally {
+      const changed = this.batch;
+      this.batch = null;
+      if (changed) this.deps.store.save(changed);
       this.polling = false;
     }
   }
@@ -421,6 +495,7 @@ export class CiWatcher {
       if (age > CI_TIMEOUT_MS) {
         this.put({ ...at, status: 'timed-out', summary: 'CI was still running after 3 hours.' });
         this.record(w, ['Still running after 3 hours; overcli stopped waiting.', '', ...list(verdict.checks)]);
+        this.flush();
         await this.deps.tell(w.workerId, `*${w.workerName}*'s push to \`${w.branch}\` (${w.repo}) has had CI running for over 3 hours, so I stopped watching it. ${verdict.checks.find((c) => c.url)?.url ?? ''}`.trim());
       } else this.put(at);
       return;
@@ -428,7 +503,10 @@ export class CiWatcher {
     if (verdict.state === 'passed') {
       this.put({ ...at, status: 'passed' });
       this.record(w, ['Passed.', '', ...list(verdict.checks)]);
-      if (w.round > 0) await this.deps.tell(w.workerId, `CI is green on \`${w.branch}\` (${w.repo}) for _${w.title}_, after ${w.round} ${w.round === 1 ? 'fix' : 'fixes'} by *${w.workerName}*. The pull request is ready for review.`);
+      if (w.round > 0) {
+        this.flush();
+        await this.deps.tell(w.workerId, `CI is green on \`${w.branch}\` (${w.repo}) for _${w.title}_, after ${w.round} ${w.round === 1 ? 'fix' : 'fixes'} by *${w.workerName}*. The pull request is ready for review.`);
+      }
       return;
     }
     // Red: what it says is kept, and the fix waits for the run's other repos.
@@ -456,12 +534,16 @@ export class CiWatcher {
           this.put({ ...rest, ...patch });
           this.record(w, [line, '', ...(w.failing ?? []).map((c) => `- FAILED: ${c.name}${c.url ? ` (${c.url})` : ''}`)]);
         }
+        // On disk at once: a fix asked for is one a restart must not ask for again.
+        this.flush();
       };
       if (round >= rounds) {
         done({ status: 'gave-up' }, rounds ? `Failed again after ${round} ${round === 1 ? 'fix' : 'fixes'}; handed to its manager.` : 'Failed. Fixing CI failures is off, so its manager was told.');
+        this.flush();
         await this.deps.tell(first.workerId, `CI failed for _${first.title}_${round ? ` after ${round} ${round === 1 ? 'fix' : 'fixes'} by *${first.workerName}*` : ''}: ${where}. ${link}\nReply here to have ${first.workerName} look again.`.trim());
         continue;
       }
+      this.flush();
       const res = await this.deps.followUp({
         workerId: first.workerId,
         flowId: first.flowId,
@@ -470,6 +552,7 @@ export class CiWatcher {
       });
       if (!res.ok) {
         done({ status: 'gave-up' }, `Failed, and the fix couldn't start: ${res.error}`);
+        this.flush();
         await this.deps.tell(first.workerId, `CI failed for _${first.title}_: ${where}. I couldn't hand it back to *${first.workerName}*: ${res.error}`);
         continue;
       }

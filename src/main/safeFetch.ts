@@ -10,11 +10,14 @@
 // going to them stays home. Loopback, private and cloud-metadata addresses
 // never are: those are the server's own insides, not the web.
 //
-// Not covered: a public name that resolves to a private address (checking
-// would mean resolving it here, and the fetch resolves it again later), and
-// the sliver a worker could signal by which of the links it was shown it
-// opens. Neither moves a ticket's text out.
+// A public name is resolved before it is trusted (`judgeFetchResolved`): one
+// that points at a private address is refused like the address. The fetch
+// resolves it again later, so a name whose answer changes between the two
+// (a DNS rebind) is not covered, nor is the sliver a worker could signal by
+// which of the links it was shown it opens. Neither moves a ticket's text out.
 
+import dns from 'node:dns';
+import net from 'node:net';
 import type { WebFetchMode } from '../shared/org/policy';
 
 let rules: { mode(): WebFetchMode; ownDomains(): string[] } | null = null;
@@ -124,6 +127,48 @@ export interface FetchVerdict {
   why: string;
   /// What a refusal tells the model.
   note?: string;
+  /// A name to resolve before the allow stands (see `judgeFetchResolved`).
+  lookup?: string;
+}
+
+/// How long a name lookup gets before the fetch is refused.
+const LOOKUP_MS = 5000;
+let lookupImpl: (host: string) => Promise<string[]> = async (host) => (await dns.promises.lookup(host, { all: true, verbatim: true })).map((a) => a.address);
+
+/// For tests: what names resolve to.
+export function setLookup(impl: ((host: string) => Promise<string[]>) | null): void {
+  lookupImpl = impl ?? (async (host) => (await dns.promises.lookup(host, { all: true, verbatim: true })).map((a) => a.address));
+}
+
+/// The private or internal address a public name points at, if any; null
+/// when every address is on the web. A name that can't be resolved is
+/// reported as such: the fetch would fail anyway, and a refusal says why.
+async function resolvesInside(host: string): Promise<string | null> {
+  let addresses: string[];
+  try {
+    addresses = await Promise.race([
+      lookupImpl(host),
+      new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error('timed out')), LOOKUP_MS).unref?.()),
+    ]);
+  } catch (err) {
+    return `could not be resolved (${err instanceof Error ? err.message : String(err)})`;
+  }
+  if (!addresses.length) return 'resolves to nothing';
+  for (const a of addresses) if (neverHost(a) || privateHost(a)) return a;
+  return null;
+}
+
+/// A verdict with its name resolved: an allow for a public name stands only
+/// when every address the name points at is on the web.
+export async function judgeFetchResolved(verdict: FetchVerdict): Promise<FetchVerdict> {
+  if (!verdict.allow || !verdict.lookup) return verdict;
+  const inside = await resolvesInside(verdict.lookup);
+  if (!inside) return verdict;
+  return {
+    allow: false,
+    why: `${verdict.lookup} ${/^[\d.:a-f]+$/i.test(inside) ? `points at ${inside}, a private address` : inside}`,
+    note: `Refused by policy, not by a person: ${verdict.lookup} ${/^[\d.:a-f]+$/i.test(inside) ? 'points at a private network address' : inside}. This is not a file-permission or access problem; do not retry it or work around it. Say plainly in your reply what you could not open.`,
+  };
 }
 
 /// Whether a WebFetch call may go, for the run or turn under `key`.
@@ -148,7 +193,11 @@ export function judgeFetch(key: string, input: unknown): FetchVerdict {
   if (ownSite(host, rules?.ownDomains() ?? [])) return { allow: true, why: `${host} is one of the org’s own sites` };
   if (privateHost(host)) return refuse(`${host} is a private address`, `${host} is a private network address. An admin can list it among the org’s own sites if workers should read it.`);
   const k = urlKey(raw);
-  if (k && seen.get(key)?.urls.has(k)) return { allow: true, why: 'it was in the ask, a search result or a page it read' };
+  if (k && seen.get(key)?.urls.has(k)) {
+    // An address written as a name is trusted once resolved; one written
+    // as an address was checked above.
+    return { allow: true, why: 'it was in the ask, a search result or a page it read', ...(net.isIP(host.replace(/^\[|\]$/g, '')) ? {} : { lookup: host }) };
+  }
   return refuse(
     `${host}: an address it wrote itself`,
     `safe fetches only: ${u.host}${u.pathname.slice(0, 60)} didn’t come from the request, a search result or a page you read. Search the web for it, then open a link from the results.`,

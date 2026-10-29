@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { fetchesChecked, judgeFetch, noteSeen, seedOnce, setSafeFetch, urlKey } from './safeFetch';
+import { fetchesChecked, judgeFetch, judgeFetchResolved, noteSeen, seedOnce, setLookup, setSafeFetch, urlKey } from './safeFetch';
 
 const on = (ownDomains: string[] = []) => setSafeFetch({ mode: () => 'safe', ownDomains: () => ownDomains });
 const fetch = (key: string, url: string) => judgeFetch(key, { url, prompt: 'summarize' });
 
-afterEach(() => setSafeFetch(null));
+afterEach(() => {
+  setSafeFetch(null);
+  setLookup(null);
+});
 
 describe('safe fetches', () => {
   it('only checks on a server that asked for it', () => {
@@ -51,6 +54,21 @@ describe('safe fetches', () => {
     }
     expect(fetch('k', 'https://user:pw@vendor.example/').allow).toBe(false);
     expect(fetch('k', 'file:///etc/passwd').allow).toBe(false);
+  });
+
+  it('resolves a public name before trusting it, and refuses one that points inside', async () => {
+    on(['wiki.acme.lan']);
+    setLookup(async (host) => ({ 'vendor.example': ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'], 'rebind.example': ['93.184.216.34', '10.0.0.5'], 'meta.example': ['169.254.169.254'], 'wiki.acme.lan': ['10.1.1.1'] })[host] ?? Promise.reject(new Error('ENOTFOUND')));
+    for (const url of ['https://vendor.example/a', 'https://rebind.example/a', 'https://meta.example/a', 'https://gone.example/a', 'http://93.184.216.34/a']) noteSeen('r', url);
+    expect(await judgeFetchResolved(fetch('r', 'https://vendor.example/a'))).toMatchObject({ allow: true });
+    expect(await judgeFetchResolved(fetch('r', 'https://rebind.example/a'))).toMatchObject({ allow: false, why: expect.stringContaining('10.0.0.5') });
+    expect(await judgeFetchResolved(fetch('r', 'https://meta.example/a'))).toMatchObject({ allow: false, why: expect.stringContaining('169.254.169.254') });
+    expect(await judgeFetchResolved(fetch('r', 'https://gone.example/a'))).toMatchObject({ allow: false, why: expect.stringContaining('resolved') });
+    // An address is checked as written; the org's own sites are its own wherever they point.
+    expect(fetch('r', 'http://93.184.216.34/a').lookup).toBeUndefined();
+    expect(await judgeFetchResolved(fetch('r', 'https://wiki.acme.lan/page'))).toMatchObject({ allow: true });
+    // A refusal is never resolved.
+    expect(await judgeFetchResolved(fetch('r', 'https://own.example/made-up'))).toMatchObject({ allow: false });
   });
 
   it('compares addresses without scheme, fragment or trailing slash, keeping the query', () => {
