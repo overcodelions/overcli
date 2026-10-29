@@ -229,12 +229,14 @@ export function sandboxRootsFor(input: SandboxRootsInput): SeatbeltRoots {
     ...(userTmpParent ? [userTmpParent] : []),
     ...backendStateDirs(input.backend, home, input.cwd),
   ]);
-  // The project's `.mcp.json` is re-denied too: it names the tools the
-  // run's own next launch (and the user's later, unjailed `claude`) starts,
-  // so a planted entry is a way out of the jail, as a hook is.
+  // The project's `.mcp.json` and `.claude/` are re-denied too: they name
+  // the tools and hooks the run's own next launch (and the user's later,
+  // unjailed `claude`) starts, so a planted entry is a way out of the jail,
+  // as a git hook is. The app writes the project's always-allow rules from
+  // outside the jail (runner.ts), so nothing of the run's needs to.
   const denied = canonicalRoots([
     ...commonDirs.flatMap((d) => [path.join(d, 'hooks'), path.join(d, 'config')]),
-    ...repoDirs.map((d) => path.join(d, '.mcp.json')),
+    ...repoDirs.flatMap((d) => [path.join(d, '.mcp.json'), path.join(d, '.claude')]),
   ]);
   return { writable, denied };
 }

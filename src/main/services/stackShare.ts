@@ -32,11 +32,14 @@ const BUILT_IN = new Set(['SERVICE_CONFIG_DIR', 'HOME']);
 const REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 /// A value that is already a reference, or holds one: `${DB_PASSWORD}`,
 /// `$DB_PASSWORD`, `Bearer ${TOKEN}`. A `$` inside a typed password
-/// (`Pa$sword1`) is not one.
-const IS_REFERENCE = /^\$[A-Za-z_][A-Za-z0-9_]*$|\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
+/// (`Pa$sword1`) is not one, and neither is one that starts with it
+/// (`$ecretPass1`): a bare `$NAME` is a reference only in upper snake case.
+const IS_REFERENCE = /^\$[A-Z_][A-Z0-9_]*$|\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
 /// `--db.password=hunter2`, `-Dapi.key=…`, `TOKEN=…`: an argument that is a
 /// name and its value.
 const KEY_VALUE_ARG = /^(-{0,2}[A-Za-z_][\w.-]*)=([\s\S]*)$/;
+/// `--db-password hunter2`: a flag whose value is the next argument.
+const FLAG_ARG = /^-{1,2}[A-Za-z_][\w.-]*$/;
 
 /// `git@github.com:acme/billing.git` and `https://github.com/acme/billing` are
 /// one repo. Host and path, lower case, no scheme, user or `.git`.
@@ -169,9 +172,13 @@ export function buildSharedStack(args: {
       ...rest,
       repo: repoOf(spec),
       ...(pinnedRef && args.includePins ? { pinnedRef } : {}),
-      command: command.map((arg) => {
+      command: command.map((arg, i) => {
         const kv = KEY_VALUE_ARG.exec(arg);
-        return kv ? `${kv[1]}=${scrub(spec.name, kv[1], kv[2])}` : unhome(arg);
+        if (kv) return `${kv[1]}=${scrub(spec.name, kv[1], kv[2])}`;
+        // The value after `--password`: scrubbed under the flag's name.
+        const flag = i > 0 ? command[i - 1] : '';
+        if (FLAG_ARG.test(flag) && !FLAG_ARG.test(arg) && isSecretName(flag)) return scrub(spec.name, flag, arg);
+        return unhome(arg);
       }),
       config: {
         ...keptConfig,
@@ -247,8 +254,12 @@ export function parseSharedStack(text: string): { stack: SharedStack } | { error
     if (typeof s.runner !== 'string') return { error: `${s.name} has no runner.` };
     const nested = nestedError(s);
     if (nested) return { error: `${s.name} ${nested}.` };
+    // Only a service's own fields come in: anything else in the file is
+    // not a service's to set (an id, a project, a debug switch).
+    const own: Partial<SharedService> = {};
+    for (const key of SHARED_SERVICE_FIELDS) if (s[key] !== undefined) (own as Record<string, unknown>)[key] = s[key];
     services.push({
-      ...(s as SharedService),
+      ...(own as SharedService),
       ready: s.ready && typeof s.ready === 'object' ? s.ready : { kind: 'none' },
       selfReloads: s.selfReloads === true,
       config: s.config && typeof s.config === 'object' ? s.config : {},
@@ -267,6 +278,14 @@ export function parseSharedStack(text: string): { stack: SharedStack } | { error
 }
 
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+/// What a shared service may carry: a service's fields minus what is this
+/// machine's (`SharedService`), listed so an import takes nothing else.
+const SHARED_SERVICE_FIELDS = [
+  'name', 'repo', 'subpath', 'runner', 'command', 'commandEdited', 'port', 'ready', 'readyTimeoutSec', 'selfReloads',
+  'watch', 'deps', 'task', 'restartDependents', 'config', 'pinnedRef', 'group', 'copyOf', 'options', 'optionStyle',
+  'debugKind', 'debugPort',
+] as const satisfies readonly (keyof SharedService)[];
 
 /// What a service's nested fields get wrong, if anything: they become a
 /// probe, flags and variables here, so a missing one is a refusal now rather

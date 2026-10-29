@@ -4,7 +4,7 @@
 // supplied at construction, and buffers a writer handle on stdin so we can
 // feed new user turns without respawning.
 
-import { fetchesChecked, judgeFetch, noteSeen, seedOnce } from './safeFetch';
+import { fetchesChecked, judgeFetch, judgeFetchResolved, noteSeen, seedOnce } from './safeFetch';
 import { watchToolEvents } from './toolWatch';
 import { isAccountConnector } from '../shared/flows/mcpTools';
 import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -1785,9 +1785,11 @@ export class RunnerManager {
         // Safe fetches: what the turn was shown is what it may open.
         if (ev.kind.type === 'toolResult' && fetchesChecked()) for (const r of ev.kind.results) noteSeen(cid, r.content);
         if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided && ev.kind.info.toolName === 'WebFetch' && fetchesChecked()) {
-          const verdict = judgeFetch(cid, ev.kind.info.toolInput);
-          log('info', 'runner.permission', `${verdict.allow ? 'allowed' : 'refused'} WebFetch in a hidden turn (safe fetch: ${verdict.why})`);
-          this.respondPermission(cid, ev.kind.info.requestId, verdict.allow, undefined, 'once', undefined, verdict.allow ? undefined : verdict.note);
+          const { requestId } = ev.kind.info;
+          void judgeFetchResolved(judgeFetch(cid, ev.kind.info.toolInput)).then((verdict) => {
+            log('info', 'runner.permission', `${verdict.allow ? 'allowed' : 'refused'} WebFetch in a hidden turn (safe fetch: ${verdict.why})`);
+            this.respondPermission(cid, requestId, verdict.allow, undefined, 'once', undefined, verdict.allow ? undefined : verdict.note);
+          });
           continue;
         }
         if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {

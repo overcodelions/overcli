@@ -752,6 +752,36 @@ export function ImportStackSheet({ stacks, onClose }: { stacks: AddStack[]; onCl
             )}
           </div>
 
+          <div className="flex flex-col gap-1.5">
+            <Label>What each one runs · {incoming.stack.services.length}</Label>
+            <div className="overflow-hidden rounded-md border border-card">
+              {incoming.stack.services.map((s) => {
+                const command = s.command.join(' ');
+                const check = s.ready.kind === 'command' ? s.ready.command.join(' ') : '';
+                return (
+                  <div key={`${s.repo}/${s.name}`} className="flex min-h-[32px] items-start gap-2.5 border-t border-card px-3 py-1.5 first:border-t-0">
+                    <span className="w-[140px] flex-shrink-0 truncate font-mono text-[11.5px] text-ink" title={s.name}>
+                      {s.name}
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="break-all font-mono text-[11px] text-ink-muted" title={command}>
+                        {command}
+                      </span>
+                      {check && (
+                        <span className="break-all font-mono text-[11px] text-ink-faint" title={check}>
+                          ready when: {check}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="text-[11.5px] text-ink-muted">
+              These run on your machine when you start the service. Check them as you would a script someone sent you.
+            </div>
+          </div>
+
           {incoming.stack.values.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <Label>Values only you have · {incoming.stack.values.length}</Label>

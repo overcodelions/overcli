@@ -556,13 +556,20 @@ const SCRIPT_CONFIG_FILES = /^(?:\.mcp\.json|package\.json|package-lock\.json|np
 const SCRIPT_CONFIG_DIRS = new Set(['node_modules', '.git', '.husky', '.yarn', '.pnpm-store', '.claude']);
 
 /// Whether a path's name, or any folder on the way, is one `npm test` and
-/// the other allowed scripts read as code or configuration.
+/// the other allowed scripts read as code or configuration. Compared
+/// without regard to case: on a case-insensitive disk (APFS, NTFS)
+/// `.Claude/settings.json` is `.claude/settings.json`.
 function configuresScripts(relative: string): boolean {
   const parts = relative.split(/[\\/]+/).filter(Boolean);
   if (!parts.length) return true;
-  if (parts.slice(0, -1).some((part) => SCRIPT_CONFIG_DIRS.has(part))) return true;
+  if (parts.slice(0, -1).some((part) => SCRIPT_CONFIG_DIRS.has(part.toLowerCase()))) return true;
   return SCRIPT_CONFIG_FILES.test(parts[parts.length - 1]);
 }
+
+/// Read-only tools whose arguments leave the machine or the turn: a web
+/// search carries its query to the search service, and a subagent's prompt
+/// goes to the model as a new turn. After a credential read, these ask.
+const CARRIES_OUT = new Set(['WebSearch', 'Task', 'Agent']);
 
 /// What the `safe` grant has already let through this turn. A write makes
 /// the allowed scripts ask again (a test file can hold anything, and `npm
@@ -646,6 +653,7 @@ export function safeForRestOfTurn(toolName: string, input: unknown, cwd: string,
     return !parsed.opaque && !parsed.writes && parsed.commands.length === 1 && allowed.has(parsed.commands[0].trim());
   }
   if (Object.prototype.hasOwnProperty.call(FILE_READ_FIELDS, toolName)) return !!cwd && fileReadWithin(toolName, input, cwd, [cwd]);
+  if (state.readSecret && CARRIES_OUT.has(toolName)) return false;
   return READ_ONLY_TOOLS.has(toolName);
 }
 

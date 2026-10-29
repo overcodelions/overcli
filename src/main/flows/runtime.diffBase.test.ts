@@ -92,6 +92,17 @@ describe('effectiveDiffBase', () => {
     expect(await effectiveDiffBase(dir, root, 'release')).toBe(rel);
   });
 
+  it('keeps the baseline for a run working on the base branch itself', async () => {
+    const { dir, git, commit, root } = repo();
+    // A run in the project folder, on main: its commits are main's, and the
+    // merge-base with main is HEAD.
+    git('checkout', 'main');
+    commit('mine.ts', 'my work on main');
+    commit('more.ts', 'more of it');
+
+    expect(await effectiveDiffBase(dir, root)).toBe(root);
+  });
+
   it('keeps the baseline when no base branch can be found', async () => {
     const { dir, git, root } = repo();
     git('branch', '-m', 'main', 'trunk');

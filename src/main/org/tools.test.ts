@@ -45,6 +45,24 @@ describe('what a published worker brings', () => {
     expect(JSON.stringify([t, r])).not.toContain('sekrit');
   });
 
+  it('leaves out a credential in a tool argument or an address path', () => {
+    const db = templateFrom('db', { command: 'npx', args: ['-y', '@acme/server-postgres', 'postgresql://app:S3cret@db.acme.example/prod', '--token', 'tok_9f8e7d6c5b4a', '--pool-size', '4', '--password=hunter2', 'https://api.acme.example/v1?key=sekrit'] });
+    expect(db).toEqual({ name: 'db', kind: 'command', command: 'npx', args: ['-y', '@acme/server-postgres', '--token', '--pool-size', '4'], envKeys: [], headerKeys: [] });
+    const sse = templateFrom('crm', { type: 'http', url: 'https://mcp.acme.example/s/a8f3k2m9x1q7w4e6r5t0/sse', headers: {} });
+    expect(sse).toEqual({ name: 'crm', kind: 'http', url: 'https://mcp.acme.example', envKeys: [], headerKeys: [] });
+    const basic = templateFrom('wiki', { type: 'http', url: 'https://app:S3cret@wiki.acme.example/mcp' });
+    expect(basic?.url).toBe('https://wiki.acme.example');
+    expect(JSON.stringify([db, sse, basic])).not.toMatch(/S3cret|tok_9f8e|hunter2|sekrit|a8f3k2m9/);
+    // A header holding a key, of any length, and a bare value with a credential word in it.
+    const key = `sk_live_${'a1b2c3d4'.repeat(12)}`;
+    const remote = templateFrom('remote', { command: 'npx', args: ['-y', 'mcp-remote', 'https://mcp.acme.example/sse', '--header', `Authorization: Bearer ${key}`, '--header', 'X-Api-Key: ak_live_9', '--header', 'Accept: text/event-stream', 'Bearer abc', `token-${'x'.repeat(76)}`, 'x'.repeat(81)] });
+    expect(remote?.args).toEqual(['-y', 'mcp-remote', 'https://mcp.acme.example/sse', '--header', '--header', '--header', 'Accept: text/event-stream']);
+    expect(JSON.stringify(remote)).not.toMatch(/sk_live|ak_live|Bearer abc/);
+    // A plain address keeps its path; a flag's value that is another flag is not swallowed.
+    expect(templateFrom('docs', { type: 'http', url: 'https://mcp.acme.example/v1/mcp' })?.url).toBe('https://mcp.acme.example/v1/mcp');
+    expect(templateFrom('x', { command: 'uvx', args: ['acme-mcp', '--token', '--verbose'] })?.args).toEqual(['acme-mcp', '--token', '--verbose']);
+  });
+
   it('offers it on the missing list, pre-filled', () => {
     const template = parseTemplates([{ name: 'acme-crm', kind: 'command', command: 'uvx', args: ['acme-crm-mcp'], envKeys: ['CRM_TOKEN'] }, { name: '../bad' }]);
     expect(template).toHaveLength(1);

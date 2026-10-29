@@ -417,7 +417,8 @@ describe('safeForRestOfTurn', () => {
     expect(safeForRestOfTurn('Write', { file_path: 'docs/claude-notes.md' }, '/repo')).toBe(true);
   });
   it("asks for writes to Claude's own tool and hook config", () => {
-    for (const file of ['.mcp.json', 'packages/app/.mcp.json', '.claude/settings.json', '.claude/settings.local.json', 'packages/app/.claude/commands/x.md']) {
+    // Whatever the case: on a case-insensitive disk `.Claude/` is `.claude/`.
+    for (const file of ['.mcp.json', 'packages/app/.mcp.json', '.claude/settings.json', '.claude/settings.local.json', 'packages/app/.claude/commands/x.md', '.Claude/settings.json', '.GIT/hooks/pre-commit', 'NODE_MODULES/.bin/vitest', '.MCP.JSON']) {
       expect(safeForRestOfTurn('Write', { file_path: file }, '/repo')).toBe(false);
       expect(safeForRestOfTurn('Edit', { file_path: `/repo/${file}` }, '/repo')).toBe(false);
     }
@@ -465,6 +466,12 @@ describe('safeForRestOfTurn', () => {
     expect(safeForRestOfTurn('mcp__acme__list_issues', {}, '/repo', state)).toBe(false);
     expect(safeForRestOfTurn('mcp__vendor__search_docs', { query: 'x' }, '/repo', state)).toBe(false);
     expect(safeForRestOfTurn('Read', { file_path: '/repo/a.ts' }, '/repo', state)).toBe(true);
+    // A search carries its query out, and a subagent's prompt is a new turn.
+    for (const tool of ['WebSearch', 'Task', 'Agent']) {
+      expect(safeForRestOfTurn(tool, { query: 'x', prompt: 'x' }, '/repo', {})).toBe(true);
+      expect(safeForRestOfTurn(tool, { query: 'x', prompt: 'x' }, '/repo', state)).toBe(false);
+    }
+    expect(safeForRestOfTurn('Grep', { pattern: 'x' }, '/repo', state)).toBe(true);
   });
   it('knows a credential-shaped read', () => {
     for (const [tool, input] of [

@@ -34,7 +34,7 @@ import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { log } from '../diagnostics';
 import { rebindMissingBackends } from '../../shared/flows/templateResolver';
 import { readsOnlyWithin, writesOnlyIn } from '../permissionPolicy';
-import { fetchesChecked, judgeFetch, noteSeen, seedOnce } from '../safeFetch';
+import { fetchesChecked, judgeFetch, judgeFetchResolved, noteSeen, seedOnce, type FetchVerdict } from '../safeFetch';
 import { workerFilesDir } from './workerFiles';
 
 /// The file tools a reader's run checks call by call (`FlowRun.readsOnly`).
@@ -839,12 +839,22 @@ export class FlowRuntimeImpl {
           if (ev.kind.type === 'toolResult') for (const r of ev.kind.results) noteSeen(runId, r.content);
           if (ev.kind.type !== 'permissionRequest' || ev.kind.info.decided || ev.kind.info.toolName !== 'WebFetch') continue;
           const approved = !!run.externalActionApprovedStepId && run.externalActionApprovedStepId === currentStepId;
-          const verdict = approved ? { allow: true, why: 'its step was approved' } : judgeFetch(runId, ev.kind.info.toolInput);
-          log('info', 'flows.permission', `${verdict.allow ? 'allowed' : 'refused'} WebFetch for run ${runId} (safe fetch: ${verdict.why})`);
-          this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, verdict.allow, undefined, undefined, undefined, verdict.allow ? undefined : verdict.note);
-          ev.kind.info.decided = verdict.allow ? 'allow' : 'deny';
-          ev.kind.info.decidedBy = 'policy';
-          ev.kind.info.decisionNote = verdict.allow ? `Allowed: ${verdict.why}.` : `Refused: ${verdict.why}.`;
+          const verdict: FetchVerdict = approved ? { allow: true, why: 'its step was approved' } : judgeFetch(runId, ev.kind.info.toolInput);
+          const info = ev.kind.info;
+          info.decided = verdict.allow ? 'allow' : 'deny';
+          info.decidedBy = 'policy';
+          info.decisionNote = verdict.allow ? `Allowed: ${verdict.why}${verdict.lookup ? ', once its name resolves' : ''}.` : `Refused: ${verdict.why}.`;
+          // A public name is resolved before the allow is sent: one that
+          // points inside is refused after all, and the record says so.
+          const { conversationId } = event;
+          void judgeFetchResolved(verdict).then((v) => {
+            if (v.allow !== verdict.allow) {
+              info.decided = v.allow ? 'allow' : 'deny';
+              info.decisionNote = v.allow ? `Allowed: ${v.why}.` : `Refused: ${v.why}.`;
+            }
+            log('info', 'flows.permission', `${v.allow ? 'allowed' : 'refused'} WebFetch for run ${runId} (safe fetch: ${v.why})`);
+            this.runner.respondPermission(conversationId, info.requestId, v.allow, undefined, undefined, undefined, v.allow ? undefined : v.note);
+          });
         }
       }
       if (run.workerId && !run.allowExternalActions) {
@@ -2040,7 +2050,7 @@ export class FlowRuntimeImpl {
         this.emit({
           type: 'flowArtifactProduced',
           runId,
-          artifact: run.artifacts[prior.output],
+          artifact: capArtifact(run.artifacts[prior.output]),
         });
         this.advanceToStep(runId, nextStepId);
         return;
@@ -2120,7 +2130,7 @@ export class FlowRuntimeImpl {
         this.emit({
           type: 'flowArtifactProduced',
           runId,
-          artifact: run.artifacts[prior.output],
+          artifact: capArtifact(run.artifacts[prior.output]),
         });
       }
     }
@@ -3469,7 +3479,7 @@ export class FlowRuntimeImpl {
       if (!existing || existing.body === liveDiff) continue;
       const refreshed = { ...existing, body: liveDiff, producedAt };
       run.artifacts[ref] = refreshed;
-      this.emit({ type: 'flowArtifactProduced', runId: run.id, artifact: refreshed });
+      this.emit({ type: 'flowArtifactProduced', runId: run.id, artifact: capArtifact(refreshed) });
     }
   }
 
@@ -3683,7 +3693,8 @@ export class FlowRuntimeImpl {
       producedAt: Date.now(),
     };
     run.artifacts[step.output] = artifact;
-    this.emit({ type: 'flowArtifactProduced', runId, artifact });
+    // Capped like every run update: the full body stays in `run.artifacts`.
+    this.emit({ type: 'flowArtifactProduced', runId, artifact: capArtifact(artifact) });
     // Per-step display copy. Same as `artifact` for everything except
     // diffs, where the body is this step's increment (see above).
     const displayArtifact: FlowArtifact =
@@ -5938,10 +5949,17 @@ export function treeChanged(incrementalDiff: string | null): boolean {
 /// work: one run's diff reached 41 MB, nearly all of it a teammate's
 /// committed data file. When the merge-base with the base branch has moved
 /// past the baseline, start there instead, so only this branch's own
-/// changes show. A base branch that can't be found keeps the baseline.
+/// changes show. A base branch that can't be found keeps the baseline. A run
+/// working on the base branch itself (`runIn: 'cwd'` on main) has HEAD as the
+/// merge-base: moving there would drop the run's own commits, so the baseline
+/// stays. (A feature branch fast-forwarded onto main has HEAD there too, but
+/// nothing of its own before it: there the merge-base is right.)
 export async function effectiveDiffBase(cwd: string, baselineCommit: string, baseBranch?: string): Promise<string> {
   const ref = await resolveBaseRef(cwd, baseBranch);
   if (!ref) return baselineCommit;
+  const current = await runGitAsync(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd);
+  const branch = current.exitCode === 0 ? current.stdout.trim() : '';
+  if (branch && (branch === ref || `origin/${branch}` === ref)) return baselineCommit;
   const mb = await runGitAsync(['merge-base', 'HEAD', ref], cwd);
   const mergeBase = mb.exitCode === 0 ? mb.stdout.trim() : '';
   if (!mergeBase) return baselineCommit;
@@ -5949,9 +5967,23 @@ export async function effectiveDiffBase(cwd: string, baselineCommit: string, bas
   return moved.exitCode === 0 ? mergeBase : baselineCommit;
 }
 
+/// Which ref a folder's base resolved to, kept a minute: a diff is taken
+/// after every step, and the answer (up to seven git calls) rarely changes.
+const baseRefCache = new Map<string, { ref: string | null; at: number }>();
+const BASE_REF_CACHE_MS = 60_000;
+
 /// The base branch as a ref `merge-base` accepts: the run's own base when it
 /// recorded one, else the remote default, else a local main/master.
 async function resolveBaseRef(cwd: string, baseBranch?: string): Promise<string | null> {
+  const key = `${cwd}\0${baseBranch ?? ''}`;
+  const cached = baseRefCache.get(key);
+  if (cached && Date.now() - cached.at < BASE_REF_CACHE_MS) return cached.ref;
+  const ref = await findBaseRef(cwd, baseBranch);
+  baseRefCache.set(key, { ref, at: Date.now() });
+  return ref;
+}
+
+async function findBaseRef(cwd: string, baseBranch?: string): Promise<string | null> {
   const candidates: string[] = [];
   if (baseBranch) candidates.push(`origin/${baseBranch}`, baseBranch);
   const head = await runGitAsync(['rev-parse', '--abbrev-ref', 'origin/HEAD'], cwd);

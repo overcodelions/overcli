@@ -248,7 +248,7 @@ describe('slack triggers', () => {
     expect(h.deliverables()[0]).toMatchObject({ status: 'skipped', error: 'Triage passed: nothing worth saying.' });
   });
 
-  it.each(['PASS — just chatter', 'pass: an announcement', 'PASS - already answered'])('passes on "%s" too', async (reply) => {
+  it.each(['PASS — just chatter', 'pass: an announcement', 'PASS - already answered', 'PASS. Nothing to add', 'PASS: all 12 checks green'])('passes on "%s" too', async (reply) => {
     const h = harness({ reply });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
     if (!made.ok) throw new Error(made.error);
@@ -257,7 +257,7 @@ describe('slack triggers', () => {
     expect(h.posts).toEqual([]);
   });
 
-  it.each(['Passed the export through the new parser: ACME-10.', 'Password reset is broken: filed ACME-11.'])('still posts "%s"', async (reply) => {
+  it.each(['Passed the export through the new parser: ACME-10.', 'Password reset is broken: filed ACME-11.', 'Pass. All 12 smoke checks are green on staging.'])('still posts "%s"', async (reply) => {
     const h = harness({ reply });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
     if (!made.ok) throw new Error(made.error);

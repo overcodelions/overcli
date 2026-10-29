@@ -1169,6 +1169,8 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         };
       },
     },
+    // One run in full: its thread, what waits on it, its worker's last runs.
+    { method: 'GET', path: /^\/api\/runs\/([^/]+)$/, handle: (c, _b, [id]) => org.runDetail(c, decodeURIComponent(id)) },
     // What each step of a run did: what it wrote, and its activity.
     { method: 'GET', path: /^\/api\/runs\/([^/]+)\/steps$/, handle: (c, _b, [id]) => org.runSteps(c, decodeURIComponent(id)) },
     // Push a finished run again, once what refused it is put right.

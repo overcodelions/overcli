@@ -722,6 +722,23 @@ mark { background: color-mix(in srgb, var(--need) 28%, transparent); color: inhe
 mark.on { background: var(--need); color: var(--need-ink); }
 .findbar { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; align-items: center; padding: 8px 12px; margin-bottom: 12px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--panel); font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
 .findbar > span:nth-child(2) { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-page { display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+.run-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.run-side { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.run-thread > .thread .t-top:first-child .t-src { display: none; }
+.run-facts { margin: 0; padding: 4px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 16px; font-size: 13px; }
+.run-facts dt, .run-facts dd { margin: 0; padding: 9px 0; border-top: 1px solid var(--line); }
+.run-facts dt { color: var(--faint); }
+.run-facts dd { text-align: right; overflow-wrap: anywhere; }
+.run-facts dt:first-of-type, .run-facts dd:first-of-type { border-top: 0; }
+.run-spark { display: flex; gap: 4px; align-items: flex-end; height: 40px; }
+.rs-bar { flex: 1; min-width: 6px; padding: 0; border: 0; border-radius: 2px; background: var(--line-2); cursor: pointer; opacity: 0.55; }
+.rs-bar.ok { background: var(--ok); }
+.rs-bar.bad { background: var(--bad); opacity: 0.8; }
+.rs-bar:hover, .rs-bar.on { opacity: 1; }
+.rs-bar.on { outline: 2px solid var(--ink); outline-offset: 1px; }
+.camepeek { padding: 0 16px 14px 54px; display: flex; flex-direction: column; gap: 10px; }
+.camerow[aria-expanded="true"] { background: var(--panel-2); }
 .camerow { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 12px 16px; border: 0; background: none; text-align: left; font: inherit; color: inherit; cursor: pointer; }
 .camerow:hover { background: var(--panel-2); }
 .camerow .libkind { width: 28px; height: 28px; border-radius: 7px; flex: none; margin-top: 1px; }
@@ -1825,6 +1842,7 @@ export const CONSOLE_JS = String.raw`
     if (state.tab === 'processedit') return 'processedit' + (state.processId ? '/' + encodeURIComponent(state.processId) : '');
     if ((state.tab === 'teamtask' || state.tab === 'teamfiles') && state.taskId) return state.tab + '/' + encodeURIComponent(state.taskId);
     if (state.tab === 'read' && state.readId) return 'read/' + encodeURIComponent(state.readId);
+    if (state.tab === 'run' && state.runId) return 'run/' + encodeURIComponent(state.runId);
     if (state.tab === 'file' && state.fileLink) return 'file/' + state.fileLink + '/' + encodeURIComponent(state.fileName || '');
     if (state.tab === 'setup') return 'setup/' + (state.setupTab || 'ready');
     return state.tab;
@@ -1838,6 +1856,7 @@ export const CONSOLE_JS = String.raw`
     state.tab = parts[0];
     if (parts[0] === 'worker') { state.workerId = decodeURIComponent(parts[1] || ''); state.workerTab = parts[2] || 'talk'; if (!state.workerId) state.tab = 'workers'; }
     if (parts[0] === 'read') { state.readId = decodeURIComponent(parts[1] || ''); if (!state.readId) state.tab = 'library'; }
+    if (parts[0] === 'run') { state.runId = decodeURIComponent(parts[1] || ''); if (!state.runId) state.tab = 'today'; }
     if (parts[0] === 'file') { state.fileLink = parts[1] || ''; state.fileName = decodeURIComponent(parts[2] || ''); if (!state.fileLink) state.tab = 'library'; }
     if (parts[0] === 'team') { state.teamId = decodeURIComponent(parts[1] || ''); if (!state.teamId) state.tab = 'teams'; }
     if (parts[0] === 'process') { state.processId = decodeURIComponent(parts[1] || ''); state.processItem = parts[2] ? decodeURIComponent(parts[2]) : null; if (!state.processId) state.tab = 'processes'; }
@@ -2143,6 +2162,7 @@ export const CONSOLE_JS = String.raw`
     render(); window.scrollTo(0, 0);
   }
   function openWorker(id) { go('worker', { workerId: id, workerTab: 'talk' }); }
+  function openRun(runId) { go('run', { runId: runId }); }
 
   // ---- sign in ---------------------------------------------------------
 
@@ -2226,7 +2246,7 @@ export const CONSOLE_JS = String.raw`
 
   /// Which nav item a page belongs under.
   function navFor(tab) {
-    return { process: 'processes', processedit: 'processes', proclib: 'processes', worker: 'workers', team: 'teams', newteam: 'teams', teamtask: 'teams', teamfiles: 'teams', read: 'library', chart: 'workers', work: 'today', tools: 'setup', rules: 'setup', log: 'admin' }[tab] || tab;
+    return { process: 'processes', processedit: 'processes', proclib: 'processes', worker: 'workers', team: 'teams', newteam: 'teams', teamtask: 'teams', teamfiles: 'teams', read: 'library', run: 'workers', chart: 'workers', work: 'today', tools: 'setup', rules: 'setup', log: 'admin' }[tab] || tab;
   }
 
   function refreshCounts() {
@@ -2462,7 +2482,7 @@ export const CONSOLE_JS = String.raw`
       h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main)));
     refreshCounts();
     if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
-    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
+    var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, run: viewRun, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
     view().then(function (node) { main.textContent = ''; append(main, node); })
       .catch(function (e) { main.textContent = ''; main.appendChild(h('div', { class: 'msg err', text: String(e.message || e) })); });
   }
@@ -2908,12 +2928,44 @@ export const CONSOLE_JS = String.raw`
         }, function () { put([x.body ? md(x.body) : null]); });
       }, 'read/' + encodeURIComponent(x.id));
     };
-    return h('button', { class: 'camerow', onclick: open },
+    var row = h('button', { class: 'camerow', onclick: open },
       h('span', { class: 'kpi-ic libkind ' + k[1], 'aria-hidden': 'true' }, icon(k[0], 15)),
       h('span', { class: 'stack', style: 'gap:2px;min-width:0' },
         h('b', { class: 'cametitle', text: nameOf(x) }),
         h('span', { class: 'libsrc' }, h('span', { class: 'libtag ' + k[1], text: src[0] }), h('span', { text: src[1] })),
         h('span', { class: 'faint', text: ago(x.at) + (x.kind === 'task' && x.pack ? ' · ' + plural(x.pack.files.length, 'deliverable', 'deliverables') : '') })));
+    if (!x.runId || x.kind === 'task' || x.kind === 'file') return row;
+    // Came from a run: open in place on what it found and the steps it took,
+    // the whole run a click on.
+    var peek = h('div', { class: 'camepeek', hidden: true });
+    var filled = false;
+    row.setAttribute('aria-expanded', 'false');
+    row.onclick = function () {
+      peek.hidden = !peek.hidden;
+      row.setAttribute('aria-expanded', peek.hidden ? 'false' : 'true');
+      if (filled || peek.hidden) return;
+      filled = true;
+      var steps = h('div');
+      var preview = x.body ? previewOf(x.body) : '';
+      append(peek, [
+        x.error ? h('div', { class: 'msg err', text: x.error }) : null,
+        preview && preview !== x.title ? h('p', { class: 'libsum', text: preview }) : null,
+        steps,
+        runFiles(x.runId, [x.workerName, x.title].join(' · ')),
+        h('div', { class: 'row', style: 'gap:8px' },
+          h('button', { class: 'btn small go', text: 'Open the run', onclick: function () { openRun(x.runId); } }),
+          x.body ? h('button', { class: 'btn small', text: 'Read it', onclick: open }) : null,
+          x.minutes != null ? h('span', { class: 'faint', style: 'font-size:12.5px', text: x.minutes ? 'took ' + x.minutes + ' min' : 'took under a minute' }) : null)]);
+      var hit = runStepsCache[x.runId];
+      if (!hit || Date.now() - hit.at > 60000) hit = runStepsCache[x.runId] = { at: Date.now(), p: api('GET', '/api/runs/' + encodeURIComponent(x.runId) + '/steps') };
+      hit.p.then(function (y) {
+        if (!y || y.ok === false || y.steps.length < 2) return;
+        steps.appendChild(segs(y.steps.map(function (st) {
+          return { label: st.id.charAt(0).toUpperCase() + st.id.slice(1).replace(/[-_]+/g, ' '), state: st.outcome === 'success' ? 'done' : st.outcome === 'question' ? 'need' : st.outcome ? 'failed' : 'next', detail: st.startedAt && st.endedAt ? secs(st.endedAt - st.startedAt) : '' };
+        })));
+      });
+    };
+    return h('div', null, row, peek);
   }
 
   function viewToday() {
@@ -3184,13 +3236,13 @@ export const CONSOLE_JS = String.raw`
     var MARK = { done: ['Finished', 'ok'], failed: ['Failed', 'bad'], stopped: ['Stopped', ''] };
     var row = function (r) {
       var isMd = r.result && /\.(md|markdown|txt)$/i.test(r.result.name);
-      // Its whole story is on the Conversation tab: every step, its activity,
-      // what it changed.
-      var openRun = h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go);margin-bottom:8px', text: 'Open the run →', onclick: function (e) {
-        e.stopPropagation(); state.wlFindRun = { worker: w.id, runId: r.runId }; state.workerTab = 'talk'; render();
+      // Its whole story is on its own page: every step, its activity, what
+      // it changed.
+      var openIt = h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go);margin-bottom:8px', text: 'Open the run →', onclick: function (e) {
+        e.stopPropagation(); openRun(r.runId);
       } });
       var detail = h('tr', { class: 'run-detail', hidden: true }, h('td', { colspan: '6' },
-        h('div', null, openRun),
+        h('div', null, openIt),
         r.error ? h('div', { class: 'msg err', style: 'margin-bottom:10px', text: r.error }) : null,
         r.result ? h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint' }, 'What it produced: ', h('code', { text: r.result.name })),
           h('div', { class: 'wc-out', style: 'margin-top:0' }, isMd ? md(r.result.body) : h('pre', { text: r.result.body })),
@@ -11234,9 +11286,113 @@ export const CONSOLE_JS = String.raw`
           h('div', { style: 'min-width:0' },
             h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Library', onclick: function () { go('library'); } }), ' / ' + x.workerName),
             h('h1', { class: 'page-title', style: 'font-size:26px', text: x.title }),
-            h('p', { class: 'page-sub', text: [x.workerName, ago(x.at)].join(' · ') }))),
+            h('p', { class: 'page-sub', text: [x.workerName, ago(x.at)].join(' · ') })),
+          x.runId ? h('button', { class: 'btn small', text: 'See the run', onclick: function () { openRun(x.runId); } }) : null),
         h('article', { class: 'panel pad read-page' }, x.runId ? runFiles(x.runId, [x.workerName, x.title].join(' · ')) : null, x.body ? md(x.body) : h('p', { class: 'muted', text: 'Nothing written.' }))];
     });
+  }
+
+  /// One run on a page of its own: what it found, every step it took (each
+  /// opens on what it wrote and the tools it used), what it changed, and the
+  /// thread around it. What a link from the Inbox, the Library, a worker's
+  /// runs or Slack opens. Polled while it's going, so it can be watched here.
+  var RUN_BADGE = { running: ['working', 'Running'], paused: ['waiting', 'Paused'], done: ['ok', 'Done'], failed: ['bad', 'Failed'], stopped: ['bad', 'Stopped'] };
+  function viewRun() {
+    var id = state.runId;
+    var page = h('div', { class: 'stack', style: 'gap:20px' });
+    var drawn = '';
+    var draw = function (x) {
+      var w = x.worker, r = x.run, t = x.thread;
+      var key = JSON.stringify([r, t, x.waiting.length]);
+      if (key === drawn) return;
+      drawn = key;
+      var badge = (t && STAGE_BADGE[t.stage]) || RUN_BADGE[r.state] || ['', r.state];
+      var going = r.state === 'running' || r.state === 'paused';
+      // What was asked, when it says more than the run's title does.
+      var ask = t && (t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague') && plainSlack(t.prompt) !== r.title ? plainSlack(t.prompt) : '';
+      var took = r.endedAt ? 'took ' + secs(r.endedAt - r.startedAt) : going ? secs(Date.now() - r.startedAt) + ' so far' : '';
+      var link = h('button', { class: 'btn small', text: 'Copy link' });
+      link.onclick = function () {
+        var url = location.origin + location.pathname + '#run/' + encodeURIComponent(r.id);
+        (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject()).then(function () { link.textContent = 'Copied'; setTimeout(function () { link.textContent = 'Copy link'; }, 1500); }, function () { window.prompt('Link to this run', url); });
+      };
+      var ctx = { waiting: x.waiting, youManage: x.youManage, merge: true };
+      var main = t ? h('div', { class: 'run-thread' }, threadCard(t, w, ctx)) : runStepsList(r, w);
+      var facts = [
+        ['Worker', h('button', { class: 'linkish', style: 'color:var(--go)', text: w.name, onclick: function () { openWorker(w.id); } })],
+        t ? ['Why it ran', threadSource(t)] : null,
+        t && t.team ? ['For', h('button', { class: 'linkish', style: 'color:var(--go)', text: t.team.name, onclick: function () { openTask(t.team.taskId); } })] : null,
+        ['Started', when(r.startedAt) + ', ' + clock(r.startedAt)],
+        took ? ['Took', took.replace(/^took /, '')] : null,
+        ['Steps', String(r.steps)],
+        ['Cost', r.costUSD ? money(r.costUSD) : '—'],
+        w.manager ? ['Manager', w.manager] : null
+      ].filter(Boolean);
+      var longest = Math.max.apply(null, [1].concat(x.recent.map(function (y) { return y.minutes; })));
+      var spark = x.recent.slice().reverse().map(function (y) {
+        var tone = y.outcome === 'done' ? 'ok' : y.outcome === 'failed' ? 'bad' : '';
+        return h('button', { class: 'rs-bar ' + tone + (y.runId === r.id ? ' on' : ''), style: 'height:' + Math.max(18, Math.round(100 * Math.max(1, y.minutes) / longest)) + '%',
+          title: y.title + ' · ' + when(y.at) + ' · ' + (y.minutes ? y.minutes + ' min' : '<1 min') + ' · ' + y.outcome,
+          'aria-label': y.title + ', ' + y.outcome + ', ' + when(y.at), 'aria-current': y.runId === r.id ? 'page' : null,
+          onclick: function () { if (y.runId !== r.id) openRun(y.runId); } });
+      });
+      var done = x.recent.filter(function (y) { return y.outcome === 'done'; }).length;
+      page.replaceChildren(
+        h('header', { class: 'page-head' },
+          h('div', { style: 'min-width:0' },
+            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: w.name, onclick: function () { openWorker(w.id); } }), ' / Run'),
+            h('h1', { class: 'page-title', style: 'font-size:26px', text: r.title }),
+            h('p', { class: 'page-sub row', style: 'gap:10px' }, h('span', { class: 'badge ' + badge[0], text: badge[1] }),
+              h('span', { text: [t ? threadSource(t) : '', when(r.startedAt), took, plural(r.steps, 'step', 'steps'), r.costUSD ? money(r.costUSD) : ''].filter(Boolean).join(' · ') })),
+            ask ? h('p', { class: 'wl-detail-ask', style: 'margin-top:6px', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null),
+          h('div', { class: 'row', style: 'gap:8px' },
+            going && x.youManage ? stopRunButton(r.id, w) : null,
+            link)),
+        h('div', { class: 'run-page' },
+          h('div', { class: 'run-main' }, r.error && !t ? h('div', { class: 'msg err', text: r.error }) : null, main),
+          h('aside', { class: 'run-side', 'aria-label': 'About this run' },
+            h('dl', { class: 'panel run-facts' }, facts.map(function (f) { return [h('dt', { text: f[0] }), h('dd', null, f[1])]; })),
+            h('div', { class: 'row', style: 'gap:8px' },
+              h('button', { class: 'btn small', text: 'Open in ' + w.name + '’s conversation', onclick: function () { state.wlFindRun = { worker: w.id, runId: r.id }; openWorker(w.id); } })),
+            x.recent.length > 1 ? h('section', { class: 'stack', style: 'gap:8px' },
+              h('h2', { class: 'label', text: w.name + '’s last runs' }),
+              h('div', { class: 'run-spark' }, spark),
+              h('span', { class: 'faint', style: 'font-size:12.5px' }, done + ' of ' + x.recent.length + ' finished · ',
+                h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px', text: 'All runs', onclick: function () { go('worker', { workerId: w.id, workerTab: 'runs' }); } }))) : null)));
+      var moving = function (y) { return y.stage === 'deciding' || y.stage === 'running'; };
+      return going || (t && (moving(t) || (t.followUps || []).some(moving)));
+    };
+    var poll = function () {
+      if (!page.isConnected || state.tab !== 'run' || state.runId !== id) return;
+      api('GET', '/api/runs/' + encodeURIComponent(id)).then(function (x) {
+        if (!page.isConnected || x.ok === false) return;
+        setTimeout(poll, draw(x) ? 3000 : 30000);
+      }, function () { setTimeout(poll, 10000); });
+    };
+    return api('GET', '/api/runs/' + encodeURIComponent(id)).then(function (x) {
+      if (x.ok === false) return [msg(x)];
+      var moving = draw(x);
+      setTimeout(poll, moving ? 3000 : 30000);
+      return page;
+    });
+  }
+
+  /// A run with no thread to show it in (one a team task started): its steps,
+  /// each a click from what it wrote and did, then what it made and changed.
+  function runStepsList(r, w) {
+    var box = h('div', { class: 'panel pad stack', style: 'gap:12px' }, thinking('Loading its steps…'));
+    api('GET', '/api/runs/' + encodeURIComponent(r.id) + '/steps').then(function (x) {
+      if (x.ok === false) { box.replaceChildren(msg(x)); return; }
+      box.replaceChildren(
+        h('ol', { class: 'stack', style: 'gap:12px;margin:0;padding-left:20px' }, x.steps.map(function (s) {
+          return h('li', null, h('div', { class: 'row', style: 'gap:8px' }, h('b', { text: s.id }),
+            s.outcome ? h('span', { class: 'faint', text: s.outcome + (s.startedAt && s.endedAt ? ' · ' + secs(s.endedAt - s.startedAt) : '') }) : h('span', { class: 'faint', text: 'Not reached' })),
+            s.startedAt ? stepDetail(r.id, s.id) : null);
+        })),
+        runFiles(r.id, w.name + ' · ' + r.title),
+        runChangesBox(r.id));
+    });
+    return box;
   }
 
   /// One run file on a page of its own: what Pop out opens.
@@ -11494,7 +11650,7 @@ export const CONSOLE_JS = String.raw`
         } else {
           parts.push(h('div', { class: 'row' },
             x.body ? h('button', { class: 'btn small go', text: 'Read', onclick: reader }) : null,
-            x.runId ? h('button', { class: 'btn small', text: 'See the run', onclick: function () { watchRun(x.runId, x.workerName + ' · ' + x.title); } }) : null,
+            x.runId ? h('button', { class: 'btn small', text: 'See the run', onclick: function () { openRun(x.runId); } }) : null,
             x.source && x.source.url ? h('a', { class: 'btn small quiet', href: x.source.url, target: '_blank', rel: 'noopener', text: 'What set it off ↗' }) : null,
             (x.links || []).slice(0, 4).map(function (l) {
               var label = /\/pull\/\d+/.test(l) ? 'PR #' + l.split('/pull/')[1].split(/[/?#]/)[0] : /docs\.google|notion\.so|confluence/.test(l) ? 'Doc' : l.replace(/^https?:\/\//, '').split('/')[0];
@@ -12857,7 +13013,7 @@ export const CONSOLE_JS = String.raw`
               return h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' },
                 h('span', { style: 'flex:1;min-width:200px;font-size:13.5px', text: (k.worker ? k.worker + ': ' : '') + k.title }),
                 h('span', { class: 'faint', style: 'font-size:12.5px', text: 'since ' + when(k.since) }),
-                k.workerId ? h('button', { class: 'btn small quiet', text: 'Open the run', onclick: function () { state.wlFindRun = { worker: k.workerId, runId: k.runId }; go('worker', { workerId: k.workerId, workerTab: 'talk' }); } }) : null,
+                k.workerId ? h('button', { class: 'btn small quiet', text: 'Open the run', onclick: function () { openRun(k.runId); } }) : null,
                 h('button', { class: 'btn small bad', text: 'Delete it', onclick: function (e) {
                   if (!window.confirm('Delete the checkouts of “' + k.title + '”? Its changes were never pushed, so they’re lost for good.')) return;
                   var restore = busy(e.target, 'Deleting…');

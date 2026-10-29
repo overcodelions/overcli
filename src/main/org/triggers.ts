@@ -155,8 +155,10 @@ const MAX_SEEN = 5000;
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const URL_RE = /https?:\/\/[^\s<>)"'\]]+/g;
 /// The worker's whole reply when there was nothing for it: nothing is posted.
-/// Also PASS with its reason after a dash or colon: "PASS — just chatter".
-const PASS_RE = /^\W*pass\b(?:\W*$|\W*?\s*[—–:-]\s)/i;
+/// Also PASS with its reason after a dash or colon: "PASS — just chatter",
+/// "pass: an announcement". After a full stop only when written PASS in
+/// capitals ("PASS. Nothing to add"): "Pass. All checks are green" is a reply.
+const PASS_RE = /^\W*(?:[Pp][Aa][Ss][Ss]\b(?:\W*$|\W*?\s*[—–:-]\s)|PASS\.\s)/;
 const MENTION_REFUSED = "Mentions need no trigger: \"@overgo\" with the worker's name, or a question in its line of work, reaches it and it answers in the thread. To have it answer unasked, use each new message.";
 
 export class TriggerService {

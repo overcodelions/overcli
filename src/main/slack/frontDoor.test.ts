@@ -1269,6 +1269,7 @@ describe('the front desk', () => {
 describe('following a thread', () => {
   it.each([
     'stop pinging me, I have another one: reopen ACME-10', "unsubscribe, I've got another: please rerun the export",
+    "stop pinging me, I'd like you to reopen ACME-10", 'unsubscribe, I need you to rerun the export',
   ])('passes on the request in "%s" instead of dropping it', async (text) => {
     const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
@@ -1285,6 +1286,7 @@ describe('following a thread', () => {
     'ok stop pinging me', 'thanks, stop notifying me', 'stop pinging me please', 'stop notifying me thank you',
     'unsubscribe, thank you', 'unsubscribe me from this thread please', 'Unsubscribe.', 'can you stop pinging me?',
     "stop pinging me, I'll check myself", "unsubscribe, I've got it from here", 'stop notifying me, no need',
+    "stop pinging me, I'd like to check it myself", "unsubscribe, I'd like to follow it myself",
   ])('stops notifications for "%s" without starting work', async (text) => {
     const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
@@ -1297,6 +1299,7 @@ describe('following a thread', () => {
 
   it.each([
     "let me know when it's fixed, thanks", 'let me know when the build and tests pass',
+    'let me know when the build and the integration tests pass', 'ping me when the Safari login fix lands',
     "ping me when it's merged and deployed", 'ping me when lint and build pass', 'ping me when config.yaml is updated',
     'ping me when v1.2 ships', "let me know when it's done, thanks!", 'hey, can you ping me when the PR lands and CI goes green?',
     "ping me when it's merged and deployed to staging", "ping me when it's reviewed and the build passes", "ping me when QA signs off and docs are updated",
@@ -1315,6 +1318,7 @@ describe('following a thread', () => {
     "ping me when it's merged and reopen ACME-9", "ping me when it's merged and shorten the timeout", "ping me when it's merged and embed the chart",
     "ping me when it's merged and seed the staging db", "ping me when it's merged and make it work on Safari", "ping me when it's merged and have it run nightly",
     "ping me when it's merged and see what breaks", "ping me when it's merged and tag the release", "ping me when it's merged and notify the team",
+    "ping me when it's merged and kick off the release", "ping me when it's merged and trigger a new build",
   ])('preserves the work request in "%s"', async (text) => {
     const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
