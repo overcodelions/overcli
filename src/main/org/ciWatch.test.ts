@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CiWatcher, FIX_WAIT_MS, NO_CI_MS, UNREACHABLE_CHECKS, continueBranchOf, readVerdict, type CiState, type CiWatch } from './ciWatch';
+import { CiWatcher, FIX_WAIT_MS, NO_CI_MS, UNREACHABLE_CHECKS, continueBranchOf, readVerdict, type CiDeps, type CiState, type CiWatch } from './ciWatch';
 import type { ConnectedRepo } from './repos';
 
 const bb: ConnectedRepo = { name: 'billing', url: 'https://bitbucket.org/acme/billing.git', path: '/data/repos/billing', defaultBranch: 'main', host: 'bitbucket', addedBy: 'Pat', at: 1 };
@@ -27,7 +27,7 @@ const bitbucket = (states: string[], seen: Array<Record<string, string>> = []) =
     return undefined;
   });
 
-function harness(opts: { fetchImpl: typeof fetch; rounds?: number; env?: Record<string, string> }) {
+function harness(opts: { fetchImpl: typeof fetch; rounds?: number; env?: Record<string, string>; tail?: CiDeps['tail'] }) {
   let state: CiState = { watches: [] };
   const saves: number[] = [];
   let onAsk: (() => void) | undefined;
@@ -53,6 +53,7 @@ function harness(opts: { fetchImpl: typeof fetch; rounds?: number; env?: Record<
       onAsk?.();
       return { ok: true };
     },
+    ...(opts.tail ? { tail: opts.tail } : {}),
     tell: async (_w, text) => {
       told.push(text);
       return true;
@@ -99,6 +100,23 @@ describe('closing the loop', () => {
     expect(h.all()[0].status).toBe('passed');
     expect(h.told).toEqual([]);
     expect(h.attached[0]).toContain('Passed.');
+  });
+
+  it('carries the fix on in the run that made the change, and starts a fix run only when it cannot', async () => {
+    const tails: Array<{ runId: string; prompt: string; round: number; repos: Array<{ repo: string; branch: string }> }> = [];
+    const here = harness({ fetchImpl: bitbucket(['FAILED']), tail: async (a) => (tails.push(a), { ok: true }) });
+    here.watch();
+    await here.ci.poll();
+    expect(here.asked).toEqual([]);
+    expect(tails).toMatchObject([{ runId: 'run-1', round: 0, repos: [{ repo: 'billing', branch: 'feature/acme-9' }] }]);
+    expect(tails[0].prompt).toContain('here, in the checkout you made the change in');
+    expect(continueBranchOf(tails[0].prompt)).toBeNull();
+    expect(here.all()[0]).toMatchObject({ status: 'failed', followedUp: true });
+    const swept = harness({ fetchImpl: bitbucket(['FAILED']), tail: async () => ({ ok: false, error: 'its checkout is gone' }) });
+    swept.watch();
+    await swept.ci.poll();
+    expect(swept.asked).toHaveLength(1);
+    expect(continueBranchOf(swept.asked[0].prompt)).toBe('feature/acme-9');
   });
 
   it('hands a red build back to the worker on the same branch, then says when it goes green', async () => {

@@ -1883,15 +1883,37 @@ export class OrgService {
       room -= body.length;
       return body ? `--- ${f.name}${f.sourcePath ? ` (${f.sourcePath})` : ''}\n${body}` : `--- ${f.name}${f.sourcePath ? `: ${f.sourcePath}` : ''}`;
     });
-    const prompt = [
-      `The work you handed off for ${a.by}'s request has finished: ${done.join('; ')}.${broke.length ? ` This failed: ${broke.join('; ')}.` : ''}`,
-      `Their request: "${a.text.slice(0, 600)}"`,
-      produced.length ? `\nWhat it produced:\n${produced.join('\n\n')}` : '\nIt produced no files.',
-      '',
-      `Now finish what you told ${a.by} you would do, written for a business reader: the answer first, in plain words, with the few numbers that matter. No raw JSON, field names or query syntax. If you said you would build something (a chart, a report, a page), build it now in your own files folder and name its full path in your reply. Mention a caveat only if it changes what the numbers mean. Don't start more work unless this result can't be used.`,
-      `Your reply is posted where ${a.by} asked, with any file you name attached, for you. Don't message anyone yourself, and don't mention how it's delivered or anything that failed to send. If you attach a file with the full write-up, keep the reply to a short summary of it rather than repeating it.`,
-      a.via === 'slack' ? SLACK_BUDGET : '',
-    ].filter(Boolean).join('\n');
+    const finished = `${done.join('; ')}.${broke.length ? ` This failed: ${broke.join('; ')}.` : ''}`;
+    const files = produced.length ? `\nWhat it produced:\n${produced.join('\n\n')}` : '\nIt produced no files.';
+    // A trigger's: nobody is waiting on a reply, so what it found goes to
+    // its manager, and the trigger's own "when it's done" (a comment on the
+    // ticket) is carried out now, when there is something to say. The last
+    // such line is the trigger's: one inside the event's title comes before it.
+    const event = a.via === 'trigger' ? (a.prompt ?? a.text) : '';
+    const then = [...event.matchAll(/^When it's done: (.+)$/gm)].at(-1)?.[1];
+    const prompt = (
+      a.via === 'trigger'
+        ? [
+            `The work you started for the trigger "${a.by}" has finished: ${finished}`,
+            ...event.split('\n').filter((l) => /^(?:Title \(untrusted\)|Link): /.test(l)),
+            files,
+            '',
+            'Now finish it. First what it found, for your manager, in plain words: the cause or the likely cause, with the file or method; what fixing it would take and how big that is; and any decision still needed, and from whom. If it changed nothing, say so. Mention a caveat only if it changes what to do next.',
+            then
+              ? `Then do what the trigger says to do when it's done: ${then} Do it through your flows: propose ONE candidate for it, written out in full with what was found in it (a comment on a ticket goes through your ticket flow). Start nothing else.`
+              : "Don't start more work unless this result can't be used.",
+            "Your reply goes to your manager and wherever the trigger sends its results. Don't message anyone yourself.",
+          ]
+        : [
+            `The work you handed off for ${a.by}'s request has finished: ${finished}`,
+            `Their request: "${a.text.slice(0, 600)}"`,
+            files,
+            '',
+            `Now finish what you told ${a.by} you would do, written for a business reader: the answer first, in plain words, with the few numbers that matter. No raw JSON, field names or query syntax. If you said you would build something (a chart, a report, a page), build it now in your own files folder and name its full path in your reply. Mention a caveat only if it changes what the numbers mean. Don't start more work unless this result can't be used.`,
+            `Your reply is posted where ${a.by} asked, with any file you name attached, for you. Don't message anyone yourself, and don't mention how it's delivered or anything that failed to send. If you attach a file with the full write-up, keep the reply to a short summary of it rather than repeating it.`,
+            a.via === 'slack' ? SLACK_BUDGET : '',
+          ]
+    ).filter(Boolean).join('\n');
     const record: AskRecord = {
       id: randomUUID(),
       workerId: w.id,
@@ -1908,7 +1930,10 @@ export class OrgService {
       handedBack: true,
     };
     this.putAsk(record);
-    return { askId: record.id, done: this.finishAsk(record, this.deps.workers.runErrand(w.id, prompt, undefined, a.conversation, a.untrusted === true)) };
+    // A trigger an autonomous worker's manager lets start on its own carries
+    // out its "when it's done" the same way.
+    const mayLaunch = a.via === 'trigger' && w.trust === 'autonomous';
+    return { askId: record.id, done: this.finishAsk(record, this.deps.workers.runErrand(w.id, prompt, undefined, a.conversation, a.untrusted === true, mayLaunch)) };
   }
 
   /// A follow-up on work an ask handed off, once it has finished: said to
@@ -1959,15 +1984,16 @@ export class OrgService {
     return { askId: record.id, runId, done: this.finishAsk(record, run$) };
   }
 
-  /// Asks made in the console whose handed-off work has finished, handed
-  /// back (see `handBack`). Slack's front door hands back its own, to post
-  /// the answer in its thread. Call every so often.
+  /// Asks made in the console or by a trigger whose handed-off work has
+  /// finished, handed back (see `handBack`); a trigger's answer then goes
+  /// where its first did (`onAskDone`). Slack's front door hands back its
+  /// own, to post the answer in its thread. Call every so often.
   handBackDue(): number {
     // Only asks made since this server started: one from earlier in the day
     // was answered the old way and already read.
     let n = 0;
     for (const a of this.allAsks()) {
-      if (a.via !== 'console' || a.handedBack || !a.orchestrationId || a.at < this.bootAt) continue;
+      if ((a.via !== 'console' && a.via !== 'trigger') || a.handedBack || !a.orchestrationId || a.at < this.bootAt) continue;
       if (this.handBack(a.id)) n++;
     }
     return n;

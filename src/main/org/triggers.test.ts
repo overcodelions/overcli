@@ -117,6 +117,28 @@ describe('watch triggers', () => {
     expect(h.svc.stats('triage', 0)).toMatchObject({ handled: 1, failed: 0 });
   });
 
+  it('sends what the worker found, once the work it started is done, where its first answer went', async () => {
+    const h = harness({ owner: true, reply: "I'm not launching a solve run; an investigation will find the cause." });
+    const made = h.svc.create(watch());
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.poll(made.trigger.id);
+    h.setItems({ issues: [{ key: 'ACME-2', fields: { summary: 'Login loops' } }] });
+    await h.svc.poll(made.trigger.id);
+    await tick();
+    await tick();
+    const before = h.posts.length;
+    await h.svc.handedBack('a1', { ok: true, reply: 'Cause: the session token expires after 60 s. Fix: refresh it. Report: https://acme.example/report' });
+    expect(h.posts.slice(before)).toEqual(['C0ACMEENG:*Triage* finished _ACME-2: Login loops_', 'owner:triage:*Triage* finished _ACME-2: Login loops_']);
+    const d = h.deliverables()[0];
+    expect(d.result).toContain("I'm not launching");
+    expect(d.result).toContain('token expires after 60 s');
+    expect(d.links).toContain('https://acme.example/report');
+    // An ask no trigger made, or a write-up that failed: nothing posted, or its manager hears.
+    await h.svc.handedBack('zz', { ok: true, reply: 'x' });
+    await h.svc.handedBack('a1', { ok: false, error: 'Out of turns' });
+    expect(h.posts.slice(before + 2)).toEqual(["owner:triage:*Triage* finished the work for _ACME-2: Login loops_ but couldn't write up what it found: Out of turns"]);
+  });
+
   it("tells the worker's manager what it did, or that it could not finish", async () => {
     for (const fail of [undefined, 'Out of turns']) {
       const h = harness({ owner: true, ...(fail ? { fail } : {}) });

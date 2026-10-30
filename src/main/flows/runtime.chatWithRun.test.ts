@@ -96,6 +96,16 @@ describe('chatting with a finished run', () => {
     expect(await rt.chatWithRun({ runId: RUN_ID, text: 'two' })).toMatchObject({ ok: false, error: 'It is still answering the last message.' });
   });
 
+  it('speaks to whoever ran the step it is asked for, and says beforehand whether it can', async () => {
+    const { rt, sends } = harness({ kind: 'done', success: true });
+    expect(rt.canChatWithRun(RUN_ID, 'plan')).toEqual({ ok: true });
+    expect(rt.canChatWithRun(RUN_ID, 'nope')).toMatchObject({ ok: false, error: 'Step "nope" of that run has no conversation to continue.' });
+    void rt.chatWithRun({ runId: RUN_ID, stepId: 'plan', text: 'CI failed: fix it here' });
+    expect(sends[0]).toMatchObject({ conversationId: 'conv-plan', prompt: 'CI failed: fix it here', model: 'claude-sonnet-5-5' });
+    // Busy answering: said up front, before anything else starts on it.
+    expect(rt.canChatWithRun(RUN_ID, 'plan')).toMatchObject({ ok: false, error: 'It is still answering the last message.' });
+  });
+
   it('says so when the turn ends without a word', async () => {
     const { rt } = harness({ kind: 'done', success: true });
     const reply = rt.chatWithRun({ runId: RUN_ID, text: 'hello?' });

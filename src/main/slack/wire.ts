@@ -197,7 +197,13 @@ export function createOrgControl(
     onToolRequest: (r, admins) => commands?.notifyToolRequest(r, admins),
     onToolRequestDecided: (r) => commands?.notifyToolRequestDecided(r),
     onToolTrouble: (t, admins) => commands?.notifyToolTrouble(t, admins),
-    onAskDone: (ask) => commands?.askAnswered(ask),
+    onAskDone: (ask) => {
+      commands?.askAnswered(ask);
+      // A trigger's work finished and written up: out where its first answer went.
+      if (ask.via === 'trigger' && ask.handedBack && ask.replyTo?.startsWith('ask:')) {
+        void triggers?.handedBack(ask.replyTo.slice('ask:'.length), ask.status === 'answered' ? { ok: true, reply: ask.reply ?? '' } : { ok: false, error: ask.error ?? 'it could not answer.' });
+      }
+    },
   });
   // The Monday digest: to everyone who manages a worker, and the admins.
   const digestTimer = setInterval(() => {

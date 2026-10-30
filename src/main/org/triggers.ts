@@ -590,21 +590,56 @@ export class TriggerService {
         return;
       }
       const links = [...new Set(res.reply.match(URL_RE) ?? [])].slice(0, 10);
-      const deliveredTo: string[] = [];
-      // The worker writes Markdown; Slack reads its own markup (*bold*, •).
-      const said = clip(slackMarkup(res.reply.trim()), 2800);
-      const summary = `*${worker.name}* handled _${item.title}_${item.url ? ` (<${item.url}|source>)` : ''}\n${said}`;
-      const as = { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) };
-      for (const dest of t.deliver) {
-        if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, summary, undefined, as))) deliveredTo.push(`Slack #${dest.channel}`);
-        if (dest.kind === 'thread' && thread && this.deps.slack && (await this.deps.slack.post(thread.channel, said, thread.ts, as))) deliveredTo.push('the Slack thread');
-        if (dest.kind === 'worker') deliveredTo.push(dest.text);
-        if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, summary))) deliveredTo.push('a DM');
-      }
-      if (await this.deps.tellOwner?.(t.workerId, `${summary}\n_From ${t.name}. Reply here if something's off, failing tests, a change to make, and ${worker.name} picks it up._`, res.choices)) deliveredTo.push('its manager');
+      const deliveredTo = await this.deliver(t, worker, 'handled', item.title, item.url, res.reply, thread, res.choices);
       this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, deliveredTo, doneAt: this.now() });
     });
     return d;
+  }
+
+  /// The work an event's ask started has finished, and the worker has said
+  /// what it found (OrgService.handBack): that goes where its first answer
+  /// went, as the rest of the same story, since the first only said what it
+  /// was about to do. Not to a Slack thread: one isn't kept past the event.
+  async handedBack(askId: string, res: { ok: true; reply: string } | { ok: false; error: string }): Promise<void> {
+    const d = this.deps.deliverables.list().find((x) => x.askId === askId);
+    const t = d?.source.triggerId ? this.get(d.source.triggerId) : undefined;
+    const worker = d ? this.deps.worker(d.workerId) : null;
+    if (!d || !t || !worker) return;
+    if (!res.ok) {
+      await this.deps.tellOwner?.(t.workerId, `*${worker.name}* finished the work for _${d.title}_${d.source.url ? ` (<${d.source.url}|source>)` : ''} but couldn't write up what it found: ${res.error}\nReply here to have it try again.`);
+      return;
+    }
+    if (PASS_RE.test(res.reply)) return;
+    const deliveredTo = await this.deliver(t, worker, 'finished', d.title, d.source.url, res.reply);
+    const links = [...new Set([...d.links, ...(res.reply.match(URL_RE) ?? [])])].slice(0, 10);
+    this.putDeliverable({ ...d, result: d.result ? `${d.result}\n\n---\n\n${res.reply}` : res.reply, links, deliveredTo: [...new Set([...d.deliveredTo, ...deliveredTo])], doneAt: this.now() });
+  }
+
+  /// A worker's answer to an event, out to where the trigger sends it and to
+  /// its manager. Says where it went.
+  private async deliver(
+    t: WorkerTrigger,
+    worker: { name: string; avatarUrl?: string },
+    did: 'handled' | 'finished',
+    title: string,
+    url: string | undefined,
+    reply: string,
+    thread?: { channel: string; ts: string },
+    choices?: string[],
+  ): Promise<string[]> {
+    const deliveredTo: string[] = [];
+    // The worker writes Markdown; Slack reads its own markup (*bold*, •).
+    const said = clip(slackMarkup(reply.trim()), 2800);
+    const summary = `*${worker.name}* ${did} _${title}_${url ? ` (<${url}|source>)` : ''}\n${said}`;
+    const as = { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) };
+    for (const dest of t.deliver) {
+      if (dest.kind === 'slack' && this.deps.slack && (await this.deps.slack.post(dest.channel, summary, undefined, as))) deliveredTo.push(`Slack #${dest.channel}`);
+      if (dest.kind === 'thread' && thread && this.deps.slack && (await this.deps.slack.post(thread.channel, said, thread.ts, as))) deliveredTo.push('the Slack thread');
+      if (dest.kind === 'worker') deliveredTo.push(dest.text);
+      if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, summary))) deliveredTo.push('a DM');
+    }
+    if (await this.deps.tellOwner?.(t.workerId, `${summary}\n_From ${t.name}. Reply here if something's off, failing tests, a change to make, and ${worker.name} picks it up._`, choices)) deliveredTo.push('its manager');
+    return deliveredTo;
   }
 
   /// An event for a team or a process: handed straight on, no worker turn.

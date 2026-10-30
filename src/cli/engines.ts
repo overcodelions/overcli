@@ -627,6 +627,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     env: (name) => process.env[name],
     rounds: () => org.ciRounds(),
     followUp: ({ workerId, flowId, title, prompt }) => workerEngine.followUp(workerId, { title, prompt, flowId, kind: 'ci' }),
+    tail: (args) => tailRun(args),
     tell: tellManager,
     attach: (runId, name, body) => void flowRuntime.attachArtifact(runId, name, body),
     log: (message) => log('info', 'org.ci', message),
@@ -685,6 +686,44 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       });
     },
   });
+
+  // A CI fix carried on in the run that made the change: whoever ran its
+  // implementer step, in its own checkout, with its plan and work in front
+  // of it. What that turn changes is committed onto the same branch, and CI
+  // is watched again on it, as the same run. Refused when its checkout is
+  // gone or it has no such step: the watcher starts a fix run instead.
+  const tailRun = async ({ runId, prompt, round, repos }: { runId: string; prompt: string; round: number; repos: Array<{ repo: string; branch: string }> }): Promise<{ ok: true } | { ok: false; error: string }> => {
+    const run = flowRuntime.getRun(runId);
+    const step = run && [...run.flowSnapshot.steps].reverse().find((s) => s.role === 'implementer');
+    if (!run || !step) return { ok: false, error: 'that run has no step that changes code' };
+    const can = flowRuntime.canChatWithRun(run.id, step.id);
+    if (!can.ok) return can;
+    const checkout = (repo: string) => run.workspaceWorktrees?.find((m) => m.name === repo)?.worktreePath ?? run.worktreePath;
+    const onto: Array<{ repo: string; branch: string; head: string }> = [];
+    for (const r of repos) {
+      const place = checkout(r.repo);
+      const head = place ? await serverGit(['rev-parse', 'HEAD'], place) : null;
+      if (!head?.ok) return { ok: false, error: `${r.repo}'s checkout is gone` };
+      onto.push({ ...r, head: head.stdout.trim() });
+    }
+    void (async () => {
+      const said = await flowRuntime.chatWithRun({ runId, stepId: step.id, text: prompt, timeoutMs: 45 * 60_000 });
+      void flowRuntime.attachArtifact(runId, `ci-fix-${round + 1}.md`, said.ok ? said.reply : `The fix didn't finish: ${said.error}`);
+      const landed = await lander.landAgain(run, onto, `${flowRunTitle(run)}: fix CI`);
+      const who = run.workerName ?? 'The worker';
+      for (const l of landed) {
+        const o = onto.find((x) => x.repo === l.repo)!;
+        const head = l.branch && !l.error && !l.skipped ? await serverGit(['rev-parse', 'HEAD'], checkout(l.repo)!) : null;
+        if (head?.ok && l.branch) {
+          ci.watch({ runId, workerId: run.workerId ?? '', workerName: who, flowId: run.flowId, title: flowRunTitle(run), repo: l.repo, branch: l.branch, sha: head.stdout.trim() });
+          continue;
+        }
+        const why = l.skipped && l.skipped !== 'no changes' ? l.skipped : l.error;
+        ci.landedNothing(l.repo, o.head, why ? `${who}'s fix wasn't pushed: ${why}` : undefined);
+      }
+    })().catch((err: unknown) => log('warn', 'org.ci', `The CI fix in run ${runId} stopped: ${String(err)}`));
+    return { ok: true };
+  };
 
   // "Push again" on a run whose push was refused, once that's put right.
   org.setRelander(async (runId) => {
