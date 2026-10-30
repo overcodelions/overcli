@@ -4,6 +4,37 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-10-29
+
+### Added
+- **Change how a worker works by saying so.** A worker's page has a **How it works** card that lists its flows as plain steps and takes a sentence like "run the tests before you push". The revised flow is held to what it could already do (no new tools, the same models, outside steps still ask, only an admin removes a checkpoint), shown as a list of changes before saving, and kept as a version you can go back to. A flow other workers share changes for them only when asked; otherwise the worker gets its own copy.
+- **Answer-first conversation.** A finished run leads with what it found, its report in the answer box and its pull requests as pills and a card; the step timeline follows under "How it got there", grouped into plain lines with exact commands behind an expander. One message box replies to the thread or starts a new task.
+- **Run list filters** for Triggers, Follow-ups and Pull requests, an outcome mark per row, and trigger runs titled by their ticket.
+- **Pick a branch per service.** A Services sheet collects a branch for each service, shows which share a folder and would clash, and applies them together.
+
+### Changed
+- **A CI fix is made by the run that made the change**, in its own checkout, committed onto the same branch and watched again; a swept checkout gets a fix run of its own, started on the red branch in worktrees of its own, never in the shared clones.
+- **Branches and pull request titles lead with the ticket key.**
+- **The desk says what a follow-up is**: a ticket update or a CI fix.
+- **Handed-off asks come back** when their work finishes; a trigger's result goes where its first answer went.
+- **Services failure findings are readable**: larger text, names shown as code, evidence wrapped.
+
+### Fixed
+- **A follow-up finds its branch by the ticket its title names**, not one its ask mentions ("like ACME-398"), so its work no longer lands in another ticket's pull request.
+- **A run adds only to the branch it was started on.** One whose checkout sat on someone else's pushed commits, or that changed nothing, no longer lands in or rewrites their pull request. An open pull request is looked up before creating one, so its title and description stay.
+- **A ticket hears about a pull request once**, when it opens, not again for each CI fix or follow-up.
+- **A CI fix starts on the red branch**, not the default one.
+- **Pull request titles, run titles and thread labels never carry overcli's trigger preface.**
+- **Model narration before a tool call is dropped** from answers instead of glued onto them.
+- **A clone left on another branch is put back on its default branch** when freshened, so later runs don't fork from it.
+- **A risky-step pause shows as an approval** in the manager's inbox.
+- **The worktree sweep keeps checkouts still being worked in**, with longer windows.
+- **The risk scan flags sending to a webhook**, not naming one.
+- **Slack posts convert the worker's Markdown**, and branch slugs never leave `--` before the run id.
+
+### Security
+- **Releases upload only the named installer, feed, checksum and SBOM files.**
+
 ## [0.24.0] - 2026-10-28
 
 ### Security
@@ -1102,7 +1133,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/overcodelions/overcli/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/overcodelions/overcli/compare/v0.22.0...v0.24.0
 [0.23.0]: https://github.com/overcodelions/overcli/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/overcodelions/overcli/compare/v0.21.2...v0.22.0
