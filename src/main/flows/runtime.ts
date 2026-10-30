@@ -3204,21 +3204,13 @@ export class FlowRuntimeImpl {
   /// that conversation rather than a new errand planned from scratch. Same
   /// permissions as the step had; the run's own rules for its tools apply as
   /// they did. Resolves with what it said, once its turn has ended.
-  async chatWithRun(args: { runId: UUID; text: string; attachments?: Attachment[]; timeoutMs?: number }): Promise<{ ok: true; reply: string } | { ok: false; error: string }> {
-    const run = this.runs.get(args.runId);
-    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
-    if (run.state.kind !== 'done' && run.state.kind !== 'archived') return { ok: false, error: 'That run is not finished.' };
-    const step = [...run.flowSnapshot.steps].reverse().find((s) => run.conversationIds[stepParticipantKey(s)]);
-    if (!step) return { ok: false, error: 'Nobody in that run has a conversation to continue.' };
-    const participantId = stepParticipantKey(step);
-    const participant = run.flowSnapshot.participants.find((p) => p.id === participantId);
-    const convId = run.conversationIds[participantId];
-    if (!participant || !convId) return { ok: false, error: 'Nobody in that run has a conversation to continue.' };
-    // A finished run's checkouts may already be swept: refuse, and the
-    // front door hands the follow-up to the worker instead.
-    if (![run.projectPath, ...this.runAllowedDirs(run)].every((d) => !d || existsSync(d))) return { ok: false, error: 'That run’s folders were cleaned up.' };
-    const key = `${run.id}:${participantId}`;
-    if (this.finalizeWaiters.has(key)) return { ok: false, error: 'It is still answering the last message.' };
+  /// `stepId`: whoever ran that step instead, e.g. the one that changed the
+  /// code, carrying on a CI fix in the run's own checkout.
+  async chatWithRun(args: { runId: UUID; text: string; attachments?: Attachment[]; timeoutMs?: number; stepId?: string }): Promise<{ ok: true; reply: string } | { ok: false; error: string }> {
+    const target = this.chatTarget(args.runId, args.stepId);
+    if (!target.ok) return target;
+    const { run, step, participant, convId, key } = target;
+    const participantId = participant.id;
     // Its events route back to this run again: a finished run's
     // conversations may have been let go.
     this.convIdToRun.set(convId, run.id);
@@ -3263,6 +3255,36 @@ export class FlowRuntimeImpl {
     await drained;
     const reply = this.latestAssistantTextByParticipant.get(key)?.trim();
     return reply ? { ok: true, reply } : { ok: false, error: 'It ended without saying anything.' };
+  }
+
+  /// Whether a finished run can be spoken to now (`chatWithRun`), asked
+  /// before anything else is started on the strength of it.
+  canChatWithRun(runId: UUID, stepId?: string): { ok: true } | { ok: false; error: string } {
+    const target = this.chatTarget(runId, stepId);
+    return target.ok ? { ok: true } : target;
+  }
+
+  private chatTarget(
+    runId: UUID,
+    stepId?: string,
+  ): { ok: true; run: FlowRun; step: FlowStep; participant: FlowRun['flowSnapshot']['participants'][number]; convId: UUID; key: string } | { ok: false; error: string } {
+    const run = this.runs.get(runId);
+    if (!run) return { ok: false, error: `Run ${runId} not found.` };
+    if (run.state.kind !== 'done' && run.state.kind !== 'archived') return { ok: false, error: 'That run is not finished.' };
+    const step = stepId
+      ? run.flowSnapshot.steps.find((s) => s.id === stepId && run.conversationIds[stepParticipantKey(s)])
+      : [...run.flowSnapshot.steps].reverse().find((s) => run.conversationIds[stepParticipantKey(s)]);
+    if (!step) return { ok: false, error: stepId ? `Step "${stepId}" of that run has no conversation to continue.` : 'Nobody in that run has a conversation to continue.' };
+    const participantId = stepParticipantKey(step);
+    const participant = run.flowSnapshot.participants.find((p) => p.id === participantId);
+    const convId = run.conversationIds[participantId];
+    if (!participant || !convId) return { ok: false, error: 'Nobody in that run has a conversation to continue.' };
+    // A finished run's checkouts may already be swept: refuse, and the
+    // front door hands the follow-up to the worker instead.
+    if (![run.projectPath, ...this.runAllowedDirs(run)].every((d) => !d || existsSync(d))) return { ok: false, error: 'That run’s folders were cleaned up.' };
+    const key = `${run.id}:${participantId}`;
+    if (this.finalizeWaiters.has(key)) return { ok: false, error: 'It is still answering the last message.' };
+    return { ok: true, run, step, participant, convId, key };
   }
 
   private async executeStep(runId: UUID, stepId: string): Promise<void> {

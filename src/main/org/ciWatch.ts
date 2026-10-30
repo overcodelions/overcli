@@ -79,6 +79,10 @@ export interface CiDeps {
   /// How many fixes to ask for before telling the manager. 0: watch only.
   rounds(): number;
   followUp(args: { workerId: string; flowId: string; title: string; prompt: string }): Promise<Result>;
+  /// Carry the fix on in the run that made the change: its own checkout,
+  /// plan and conversation. Refused (its checkout swept, no step to carry
+  /// on): a fix run of its own instead (`followUp`). Resolves once started.
+  tail?(args: { runId: string; prompt: string; round: number; repos: Array<{ repo: string; branch: string }> }): Promise<Result>;
   /// Tell whoever answers for the worker. False: no one to tell.
   tell(workerId: string, text: string): Promise<boolean>;
   attach?(runId: string, name: string, body: string): void;
@@ -311,14 +315,18 @@ export async function readFailure(repo: ConnectedRepo, sha: string, deps: Pick<C
 // ---- the loop ---------------------------------------------------------------
 
 /// One fix for everything a run's push broke: every red repo, with what CI
-/// said about each, on the branch it was pushed to.
-export function fixPrompt(group: CiWatch[], rounds: number): string {
+/// said about each, on the branch it was pushed to. `here`: said to the run
+/// that made the change, in its own checkout (CiDeps.tail), rather than to a
+/// fix run of its own started on the branch.
+export function fixPrompt(group: CiWatch[], rounds: number, here = false): string {
   const first = group[0];
   const round = Math.max(...group.map((w) => w.round));
   const where = group.map((w) => `${w.branch} in ${w.repo} (commit ${w.sha.slice(0, 10)})`).join('; ');
   return [
-    `CI failed on what overcli pushed for "${first.title}": ${where}. This is fix ${round + 1} of at most ${rounds}.`,
-    `[continue-branch: ${first.branch}]`,
+    here
+      ? `CI failed on what you changed, pushed for "${first.title}": ${where}. This is fix ${round + 1} of at most ${rounds}.`
+      : `CI failed on what overcli pushed for "${first.title}": ${where}. This is fix ${round + 1} of at most ${rounds}.`,
+    ...(here ? [] : [`[continue-branch: ${first.branch}]`]),
     ...group.flatMap((w) => [
       '',
       group.length > 1 ? `## ${w.repo}` : '',
@@ -330,7 +338,9 @@ export function fixPrompt(group: CiWatch[], rounds: number): string {
         : 'CI gave no more detail than that; open the links above if you can, or reproduce it locally.',
     ].filter((l, i) => l !== '' || i > 0)),
     '',
-    `Fix what made CI fail, on the same branch${group.length > 1 ? ' in each repo' : ''}: work from origin/<that branch>, which is already fetched. Don't fetch or push; overcli pushes your fix onto it, the pull request gets it, and CI runs again.`,
+    here
+      ? `Fix what made CI fail, here, in the checkout you made the change in: it is that branch, with your commits. Don't commit, fetch or push, and don't switch branches; overcli commits what you change, adds it to the branch, the pull request gets it, and CI runs again.`
+      : `Fix what made CI fail, on the same branch${group.length > 1 ? ' in each repo' : ''}: work from origin/<that branch>, which is already fetched. Don't fetch or push; overcli pushes your fix onto it, the pull request gets it, and CI runs again.`,
     'Run the failing tests yourself first if you can. If a failure isn\'t caused by the change (CI itself broken, a flaky or unrelated test, credentials CI lacks), change nothing for it and say so plainly, with what you saw.',
   ].join('\n');
 }
@@ -407,10 +417,11 @@ export class CiWatcher {
 
   /// A run that pushed nothing to this repo, whose checkout sits on this
   /// commit: if a fix was asked for on it, the fix changed nothing.
-  landedNothing(repo: string, sha: string): void {
+  /// `why`: when it wasn't that nothing changed (its tests failed).
+  landedNothing(repo: string, sha: string, why?: string): void {
     const all = this.load();
     const same = all.find((w) => w.repo === repo && w.sha === sha);
-    if (same && this.fixPending(all, same)) void this.noFix(same, `${same.workerName}'s fix added no new commit, so CI has nothing new to run`);
+    if (same && this.fixPending(all, same)) void this.noFix(same, why ?? `${same.workerName}'s fix added no new commit, so CI has nothing new to run`);
   }
 
   /// Green, but the branch has moved on by one commit someone else pushed
@@ -590,20 +601,26 @@ export class CiWatcher {
       // marked after, it started on the default branch instead.
       for (const w of group) this.put({ ...w, followedUp: true });
       this.flush();
-      const res = await this.deps.followUp({
-        workerId: first.workerId,
-        flowId: first.flowId,
-        title: `${first.title}: fix CI${group.length > 1 ? ` in ${group.length} repos` : ` on ${first.branch}`}`,
-        prompt: fixPrompt(group, rounds),
-      });
+      // In the run that made the change, where it can be; else a run of its own.
+      const tailed = this.deps.tail ? await this.deps.tail({ runId: first.runId, prompt: fixPrompt(group, rounds, true), round, repos: group.map((w) => ({ repo: w.repo, branch: w.branch })) }).catch((err: unknown) => ({ ok: false as const, error: String(err) })) : null;
+      if (tailed && !tailed.ok) this.deps.log(`CI fix for "${first.title}" can't carry on in its run (${tailed.error}); starting a fix run of its own.`);
+      const res = tailed?.ok
+        ? tailed
+        : await this.deps.followUp({
+            workerId: first.workerId,
+            flowId: first.flowId,
+            title: `${first.title}: fix CI${group.length > 1 ? ` in ${group.length} repos` : ` on ${first.branch}`}`,
+            prompt: fixPrompt(group, rounds),
+          });
       if (!res.ok) {
         done({ status: 'gave-up' }, `Failed, and the fix couldn't start: ${res.error}`);
         this.flush();
         await this.deps.tell(first.workerId, `CI failed for _${first.title}_: ${where}. I couldn't hand it back to *${first.workerName}*: ${res.error}`);
         continue;
       }
-      done({ followedUp: true, followedUpAt: this.now() }, `Failed; ${first.workerName} is fixing it (fix ${round + 1} of ${rounds}).`);
-      this.deps.log(`CI failed for "${first.title}" (${where}); ${first.workerName} is fixing it, round ${round + 1} of ${rounds}.`);
+      const how = tailed?.ok ? 'in the run that made the change' : 'in a fix run of its own';
+      done({ followedUp: true, followedUpAt: this.now() }, `Failed; ${first.workerName} is fixing it ${how} (fix ${round + 1} of ${rounds}).`);
+      this.deps.log(`CI failed for "${first.title}" (${where}); ${first.workerName} is fixing it ${how}, round ${round + 1} of ${rounds}.`);
     }
   }
 }

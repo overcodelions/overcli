@@ -329,6 +329,8 @@ describe('the server pushing a finished run', () => {
     expect(branchFor('feature/', 'Replace LEFT JOIN in the member spec', 'ACME-5568', 'abcdef123')).toBe('feature/ACME-5568-replace-left-join-in-the-member-spec-abcdef');
     expect(branchFor('feature/', 'ACME-5568: Replace LEFT JOIN', 'ACME-5568', 'abcdef123')).toBe('feature/ACME-5568-replace-left-join-abcdef');
     expect(branchFor('feature/', 'Tidy the docs', null, 'abcdef123')).toBe('feature/tidy-the-docs-abcdef');
+    // Cut where a dash falls: never "--" before the run id.
+    expect(branchFor('feature/', 'ACME-77: allow large non-CSV uploads on /private and show upload errors', 'ACME-77', '7b222e58')).toBe('feature/ACME-77-allow-large-non-csv-uploads-on-private-7b222e');
     expect(ticketed({ title: 'Replace LEFT JOIN', body: 'b' }, 'ACME-5568')).toEqual({ title: 'ACME-5568: Replace LEFT JOIN', body: 'b' });
     expect(ticketed({ title: 'ACME-5568: Replace LEFT JOIN', body: '' }, 'ACME-5568').title).toBe('ACME-5568: Replace LEFT JOIN');
   });
@@ -531,6 +533,20 @@ describe('the server pushing a follow-up', () => {
     const followUp = { id: '222333444', flowId: 'org-pr-app', projectPath: app, worktreePath: path.join(root, 'wt'), userPrompt: 'Soften the wording', artifacts: {}, continues: 'overcli/first-change-111111' } as unknown as FlowRun;
     return { root, app, run, lander, followUp };
   }
+
+  it('adds what a landed run changed when carried on in its checkout to its branch, and nothing when it changed nothing', async () => {
+    const { root, run, lander, followUp } = setUp();
+    await lander.land(followUp);
+    const wt = path.join(root, 'wt');
+    const head = run(['rev-parse', 'HEAD'], wt).trim();
+    fs.appendFileSync(path.join(wt, 'README.md'), 'Fixed for CI.\n');
+    const onto = [{ repo: 'app', branch: 'overcli/first-change-111111', head }];
+    expect(await lander.landAgain(followUp, onto, 'Soften the wording: fix CI')).toEqual([{ repo: 'app', branch: 'overcli/first-change-111111', updated: true }]);
+    expect(run(['log', '--format=%s', 'overcli/first-change-111111'], path.join(root, 'app.git')).trim().split('\n')).toEqual(['Soften the wording: fix CI', 'Soften the wording', 'First change', 'init']);
+    const after = run(['rev-parse', 'HEAD'], wt).trim();
+    expect(await lander.landAgain(followUp, [{ ...onto[0], head: after }], 'x')).toEqual([{ repo: 'app', skipped: 'no changes' }]);
+    expect(await lander.landAgain(followUp, [{ repo: 'web', branch: 'b', head: after }], 'x')).toEqual([{ repo: 'web', error: 'its checkout is not part of that run' }]);
+  });
 
   it("never adds to a branch it wasn't started on to add to, whatever its checkout sits on", async () => {
     const { root, run, lander, followUp } = setUp();

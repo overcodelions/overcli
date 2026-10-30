@@ -63,7 +63,9 @@ export interface Landed {
 }
 
 function slugify(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'change';
+  const s = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  // Cut at a word: not mid-word, and never a dash left before the run id ("on--7b222e").
+  return (s.length > 40 ? s.slice(0, 40).replace(/-[^-]*$/, '') : s) || 'change';
 }
 
 /// The branch a run's change goes on: the ticket key first, where the run
@@ -124,12 +126,39 @@ export class BranchLander {
     return places.some((p) => repos.has(p));
   }
 
-  async land(run: FlowRun): Promise<Landed[]> {
-    const places = run.workspaceWorktrees?.length
+  private placesOf(run: FlowRun): Array<{ name: string; projectPath: string; worktreePath: string }> {
+    return run.workspaceWorktrees?.length
       ? run.workspaceWorktrees.map((m) => ({ name: m.name, projectPath: m.projectPath, worktreePath: m.worktreePath }))
       : run.worktreePath
         ? [{ name: path.basename(run.projectPath), projectPath: run.projectPath, worktreePath: run.worktreePath }]
         : [];
+  }
+
+  /// A landed run carried on in its own checkout (a CI fix): what that turn
+  /// changed, committed as `message` and added to the branch each repo's
+  /// change is already on, so its pull request has it. `head`: where the
+  /// checkout stood before the turn, so a turn that changed nothing lands
+  /// nothing. The branch moved meanwhile: a branch of its own beside it.
+  async landAgain(run: FlowRun, onto: Array<{ repo: string; branch: string; head: string }>, message: string): Promise<Landed[]> {
+    const out: Landed[] = [];
+    for (const o of onto) {
+      const place = this.placesOf(run).find((p) => p.name === o.repo);
+      if (!place) {
+        out.push({ repo: o.repo, error: 'its checkout is not part of that run' });
+        continue;
+      }
+      const repo = this.deps.repos().find((r) => r.path === place.projectPath);
+      out.push(
+        await this.landOne(place, repo, `${o.branch}-fix`, message, '', o.head, undefined, o.branch)
+          .then((l) => (l.updated ? l : this.withPr(l, repo, message, '')))
+          .catch((err: unknown) => ({ repo: o.repo, error: err instanceof Error ? err.message : String(err) })),
+      );
+    }
+    return out;
+  }
+
+  async land(run: FlowRun): Promise<Landed[]> {
+    const places = this.placesOf(run);
     const { title, body } = ticketed(pullRequestText(run), ticketOf(run));
     // Named from what the run was launched as (a worker's proposal, which
     // carries the ticket's words), not from what its writer called it after.
