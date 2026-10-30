@@ -835,14 +835,46 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .watch-item.now > span:last-child > span:first-child { color: var(--go); font-weight: 600; }
 .watch-raw { margin: 0; padding: 6px 8px; background: var(--panel-2); border-radius: 6px; font: 11.5px/1.5 var(--mono, ui-monospace, Menlo, monospace); color: var(--muted); white-space: pre-wrap; word-break: break-all; }
 .wl-detail-ask { margin: 0; font-size: 13.5px; color: var(--muted); }
-.wl-ask { display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 5px 5px 5px 14px; }
+.wl-kind { display: inline-block; vertical-align: 3px; margin-right: 8px; padding: 2px 7px; border-radius: 4px; background: var(--go-soft); color: var(--go); font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.wl-original > summary { font-size: 12.5px; }
+.wl-original pre { max-height: none; }
+.wl-compose { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 14px; border-top: 1px solid var(--line); background: var(--panel); border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.wl-compose .seg { align-self: flex-start; }
+.wl-compose-row { display: flex; gap: 8px; align-items: flex-end; }
+.wl-compose textarea { flex: 1; min-width: 0; resize: none; font: inherit; line-height: 1.45; min-height: 44px; max-height: 160px; }
+.wl-compose .btn { min-height: 44px; }
+.wl-detail-in > .wl-empty { border: 0; height: auto; flex: 1; background: none; }
+.chip.need:not([aria-pressed="true"]) { color: var(--need); border-color: color-mix(in srgb, var(--need) 40%, transparent); }
+.wl-oc { grid-row: span 2; align-self: start; width: 24px; height: 24px; margin-top: 1px; border-radius: 6px; display: flex; align-items: center; justify-content: center; background: var(--panel-2); color: var(--muted); }
+.wl-oc.ok { background: var(--ok-soft); color: var(--ok); } .wl-oc.go { background: var(--go-soft); color: var(--go); }
+.wl-oc.need { background: var(--need-soft); color: var(--need); } .wl-oc.bad { background: var(--bad-soft); color: var(--bad); }
+.wl-pr-pills { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.wl-pr-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--go) 45%, transparent); background: var(--go-soft); color: var(--ink); font: inherit; font-size: 12.5px; font-weight: 600; text-decoration: none; white-space: nowrap; cursor: pointer; }
+.wl-pr-pill > svg { color: var(--go); }
+.wl-pr-pill:hover { border-color: var(--go); }
+.wl-pr-st { font-weight: 500; font-size: 11.5px; color: var(--muted); }
+.wl-pr-pill.ok .wl-pr-st { color: var(--ok); } .wl-pr-pill.waiting .wl-pr-st { color: var(--need); }
+.wl-pr-pill.plain { background: var(--panel-2); border-color: var(--line); color: var(--muted); }
+.t-prs { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.t-pr { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); color: var(--ink); text-decoration: none; min-height: 44px; box-sizing: border-box; }
+.t-pr:hover { border-color: var(--go); }
+.t-pr > svg { color: var(--go); flex: none; }
+.t-pr-name { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: baseline; overflow: hidden; }
+.t-pr-name code { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-pr-go { color: var(--go); font-size: 13px; white-space: nowrap; }
+.t-how { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.t-answer-report { margin-top: 0; font-size: 14px; }
+.watch-cmds > summary { cursor: pointer; font-size: 12px; color: var(--faint); }
+.wk-budget { display: inline-block; width: 96px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.wk-budget > span { display: block; height: 100%; background: var(--go); }
+.wk-budget.need > span { background: var(--need); }
 .wl { display: flex; flex-wrap: wrap; gap: 16px; align-items: stretch; }
 .wl-left { flex: 1 1 300px; max-width: 400px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; display: flex; flex-direction: column; height: calc(100vh - var(--wl-top, 320px) - 20px); min-height: 420px; }
 .wl-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .chip.small { min-height: 28px; font-size: 12.5px; padding: 0 10px; }
 .wl-list { overflow-y: auto; flex: 1; }
 .wl-day { padding: 10px 14px 4px; font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
-.wl-row { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 3px 10px; align-items: center; width: 100%; padding: 9px 14px; border: 0; border-left: 3px solid transparent; border-top: 1px solid var(--line); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.wl-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 3px 10px; align-items: center; width: 100%; padding: 9px 14px; border: 0; border-left: 3px solid transparent; border-top: 1px solid var(--line); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .wl-day + .wl-row { border-top: 0; }
 .wl-row:hover { background: var(--panel-2); }
 .wl-row.on { background: var(--go-soft); border-left-color: var(--go); }
@@ -865,6 +897,7 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .wl-detail { flex: 999 1 520px; min-width: 0; display: flex; }
 .wl-detail-in { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); display: flex; flex-direction: column; height: calc(100vh - var(--wl-top, 320px) - 20px); min-height: 420px; }
 .wl-detail-body .watch-list.boxed { max-height: 46vh; }
+.wl-detail-body .wc-out { max-height: none; }
 @media (max-width: 960px) { .wl-left { max-width: none; height: auto; max-height: 50vh; } .wl-detail-in { height: auto; } }
 .wl-detail-head { padding: 16px 20px 10px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--line); }
 .wl-detail-title { margin: 0; font-size: 19px; font-weight: 600; }
@@ -1943,7 +1976,9 @@ export const CONSOLE_JS = String.raw`
     search: [['circle', 11, 11, 7], ['path', 'M20 20l-3.5-3.5']],
     bell: [['path', 'M6 9a6 6 0 1 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9'], ['path', 'M10 20.5h4']],
     slack: [['path', 'M4 6h16v10H9l-5 4z']],
-    image: [['rect', 3, 5, 18, 14], ['circle', 9, 10, 1.6], ['path', 'M21 16l-5-5-9 8']]
+    image: [['rect', 3, 5, 18, 14], ['circle', 9, 10, 1.6], ['path', 'M21 16l-5-5-9 8']],
+    branch: [['circle', 6, 6, 2.5], ['circle', 6, 18, 2.5], ['circle', 18, 18, 2.5], ['path', 'M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4']],
+    minus: [['circle', 12, 12, 9], ['path', 'M8 12h8']]
   };
   function icon(name, size) {
     var s = document.createElementNS(SVG, 'svg');
@@ -3540,10 +3575,14 @@ export const CONSOLE_JS = String.raw`
           facts ? h('span', { class: 'faint', text: facts }) : null,
           st.error ? h('div', { class: 'msg err', text: st.error }) : null,
           st.body ? h('div', { class: 'stack', style: 'gap:4px' }, h('span', { class: 't-kind', text: 'What it wrote' + (st.output ? ' · ' + st.output : '') }),
-            /^diff --git|^--- a\//m.test(st.body) ? diffView(st.body) : h('div', { class: 'wc-out', style: 'margin-top:0;max-height:420px;overflow:auto' }, md(st.body))) : null,
+            /^diff --git|^--- a\//m.test(st.body) ? diffView(st.body) : h('div', { class: 'wc-out', style: 'margin-top:0' }, md(st.body))) : null,
+          // In words, runs of the same kind as one line; the page scrolls, not a box in it.
           st.activity.length ? h('div', { class: 'stack', style: 'gap:4px' }, h('span', { class: 't-kind', text: 'What it did' }),
-            h('ol', { class: 'watch-list boxed', style: 'max-height:320px;overflow:auto' }, st.activity.map(function (a) {
-              return h('li', { class: 'watch-item ' + a.kind }, h('span', { class: 'faint', style: 'min-width:64px', text: clock(a.at) }), h('span', { text: a.text }));
+            h('ol', { class: 'watch-list' }, groupActivity(st.activity).map(function (g) {
+              var item = h('li', { class: 'watch-item ' + g.cls }, h('span', { class: 'faint watch-at', text: clock(g.at) }),
+                h('span', { class: 'stack', style: 'gap:4px;min-width:0' }, h('span', { class: g.cls === 'said' ? 'watch-said' : '', text: g.text }),
+                  !g.cls && (g.raw.length > 1 || g.raw[0] !== g.text) ? h('details', { class: 'watch-cmds' }, h('summary', null, g.raw.length > 1 ? plural(g.raw.length, 'line', 'lines') : 'exact'), h('pre', { class: 'watch-raw', text: g.raw.join('\n') })) : null));
+              return item;
             }))) : null,
           !st.body && !st.activity.length && !st.error ? h('p', { class: 'faint', text: 'Nothing recorded for this step.' }) : null,
         ]);
@@ -3649,17 +3688,72 @@ export const CONSOLE_JS = String.raw`
     var slot = h('div');
     var isMd = r.result && /\.(md|markdown|txt)$/i.test(r.result.name);
     var ok = r.state === 'done';
+    // Opened in full, the report it wrote is the answer: shown in place, what
+    // landing its branches came to a quiet line under it. The lander's own
+    // note, when that's all there is, is a sentence, not a report.
+    var reportIsAnswer = ok && ctx.merge && r.result && isMd && r.result.name !== 'pull-requests.md';
     return h('div', { class: 't-run' },
       t.runs.length > 1 ? head : null,
       ok ? h('div', { class: 't-answer' }, h('span', { class: 't-kind', text: 'What it found' }),
-          r.summary ? h('p', { style: 'margin:0', text: r.summary }) : h('p', { class: 'muted', style: 'margin:0', text: r.result ? 'It wrote ' + r.result.name + '.' : 'It finished without writing a file.' }))
+          reportIsAnswer ? h('div', { class: 'wc-out t-answer-report' }, md(r.result.body))
+            : r.summary ? h('p', { style: 'margin:0', text: r.summary }) : h('p', { class: 'muted', style: 'margin:0', text: r.result ? 'It wrote ' + r.result.name + '.' : 'It finished without writing a file.' }),
+          reportIsAnswer ? h('span', { class: 'faint', style: 'font-size:12.5px', text: r.result.name + (r.landed && !(r.pullRequests && r.pullRequests.length) ? ' · ' + r.landed.replace(/\.$/, '') : '') }) : null)
         : h('div', { class: 'msg err', text: r.state === 'stopped' ? 'It was stopped before it finished.' : 'It failed' + (r.error ? ': ' + r.error : '.') }),
+      ok && r.pullRequests && r.pullRequests.length ? pullRequestCard(r.pullRequests) : null,
       r.runId && r.state !== 'stopped' ? runFiles(r.runId, w.name + ' · ' + r.title) : null,
       h('div', { class: 't-top' },
-        r.result ? h('details', { class: 't-report' }, h('summary', null, 'Read the full report · ', h('code', { text: r.result.name })),
+        r.result && !reportIsAnswer ? h('details', { class: 't-report' }, h('summary', null, 'Read the full report · ', h('code', { text: r.result.name })),
           h('div', { class: 'wc-out' }, isMd ? md(r.result.body) : h('pre', { text: r.result.body }))) : h('span'),
         ok && r.entryId ? h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Was this useful?' }), rateButtons({ entryId: r.entryId, workerName: w.name, rating: r.rating }, slot)) : null),
       slot);
+  }
+
+  /// The pull requests a run's landing opened or updated, each a link out,
+  /// with where it stands: opened, a draft, updated, already open, or only a
+  /// link for you to open it.
+  var PR_STATE = { open: ['ok', 'Opened'], draft: ['plain', 'Draft'], updated: ['working', 'Updated'], existing: ['plain', 'Already open'], unopened: ['waiting', 'Not opened yet'] };
+  /// Every pull request a thread came to, its replies' runs too, once each
+  /// (the last word on one wins: a later run that updated it says Updated).
+  function prsOf(t) {
+    var byUrl = {}, order = [];
+    [t].concat(t.followUps || []).forEach(function (x) {
+      (x.runs || []).forEach(function (r) {
+        (r.pullRequests || []).forEach(function (p) { if (!byUrl[p.url]) order.push(p.url); byUrl[p.url] = p; });
+      });
+    });
+    return order.map(function (u) { return byUrl[u]; });
+  }
+  function prLabel(p) {
+    var num = /\/(?:pull-requests|pull)\/(\d+)/.exec(p.url);
+    return p.repo + (num ? ' #' + num[1] : '');
+  }
+  /// The thread's pull requests as pills at the top of the open thread, so
+  /// they're seen before the reasoning; the full card stays under the answer.
+  function prPills(t, scope) {
+    var prs = prsOf(t);
+    if (!prs.length) return null;
+    var shown = prs.length > 3 ? prs.slice(0, 2) : prs;
+    return h('div', { class: 'wl-pr-pills', role: 'group', 'aria-label': plural(prs.length, 'pull request', 'pull requests') },
+      shown.map(function (p) {
+        var st = PR_STATE[p.state] || ['plain', p.state];
+        return h('a', { class: 'wl-pr-pill ' + st[0], href: p.url, target: '_blank', rel: 'noopener', title: st[1] + ' · ' + (p.branch || '') },
+          icon('branch', 13), h('span', { text: prLabel(p) }), h('span', { class: 'wl-pr-st', text: st[1] }));
+      }),
+      prs.length > shown.length ? h('button', { class: 'wl-pr-pill plain', type: 'button', text: '+' + (prs.length - shown.length) + ' more', onclick: function () {
+        var card = scope.querySelector('.t-prs');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } }) : null);
+  }
+  function pullRequestCard(prs) {
+    return h('div', { class: 't-prs' }, h('span', { class: 't-kind', text: prs.length === 1 ? 'Pull request' : prs.length + ' pull requests' }),
+      prs.map(function (p) {
+        var st = PR_STATE[p.state] || ['plain', p.state];
+        return h('a', { class: 't-pr', href: p.url, target: '_blank', rel: 'noopener' },
+          icon('branch', 15),
+          h('span', { class: 't-pr-name' }, h('b', { text: prLabel(p) }), p.branch ? h('code', { text: p.branch }) : null),
+          h('span', { class: 'badge ' + st[0], text: st[1] }),
+          h('span', { class: 't-pr-go', text: p.state === 'unopened' ? 'Open one ↗' : 'Open ↗' }));
+      }));
   }
 
   /// What a thread (or one reply in it) came to: where it stands, its
@@ -3671,12 +3765,14 @@ export const CONSOLE_JS = String.raw`
     // Opened in full: one timeline holds the steps and what belongs to each;
     // what finished runs found follows it.
     if (ctx.merge && t.progress && t.progress.length > 1 && (!isReply || hasWork)) {
-      return [
-        threadTimeline(t, w, ctx),
-        // A broken run's reason and files are in its step already.
-        t.runs.filter(function (r) { return r.state === 'done' || r.state === 'interrupted' || ((r.state === 'failed' || r.state === 'stopped') && t.runs.length > 1); }).map(function (r) { return threadRun(r, t, w, ctx); }),
-        t.stage === 'nothing' && t.note && t.note !== t.headline ? h('p', { class: 'muted', text: t.note }) : null
-      ];
+      // A broken run's reason and files are in its step already.
+      var found = t.runs.filter(function (r) { return r.state === 'done' || r.state === 'interrupted' || ((r.state === 'failed' || r.state === 'stopped') && t.runs.length > 1); }).map(function (r) { return threadRun(r, t, w, ctx); });
+      var note = t.stage === 'nothing' && t.note && t.note !== t.headline ? h('p', { class: 'muted', text: t.note }) : null;
+      // Once it has an answer and nothing is still moving, the answer leads
+      // and how it got there follows; while it works, the steps lead.
+      var settled = t.runs.some(function (r) { return r.state === 'done'; }) && !t.runs.some(function (r) { return r.state === 'working' || r.state === 'paused' || r.state === 'question' || r.state === 'approval'; });
+      if (settled) return [found, note, h('section', { class: 't-how', 'aria-label': 'How it got there' }, h('span', { class: 't-kind', text: 'How it got there' }), threadTimeline(t, w, ctx))];
+      return [threadTimeline(t, w, ctx), found, note];
     }
     return [
       asked && !ended && t.stage !== 'deciding' && !(isReply && t.stage === 'nothing') && !(ctx.merge && mergedRail(t) !== t.progress) ? h('p', { class: 't-head', text: t.headline }) : null,
@@ -3698,7 +3794,7 @@ export const CONSOLE_JS = String.raw`
   /// Reply in the thread: the worker's one-tap answers, and a box for your own.
   /// While the worker is still answering, a reply waits behind that answer
   /// (the worker takes its asks in order), as it does on the desktop.
-  function threadComposer(t, w, last) {
+  function threadComposer(t, w, last, ctx) {
     if (!w.enabled) return null;
     var deciding = last.stage === 'deciding';
     var out = h('div', { 'aria-live': 'polite' });
@@ -3731,6 +3827,7 @@ export const CONSOLE_JS = String.raw`
       b.onclick = function () { send(c, b); };
       return b;
     });
+    if (ctx && ctx.merge) return choices.length ? h('div', { class: 't-replybar' }, h('div', { class: 'row', style: 'gap:8px' }, choices), out) : null;
     return h('div', { class: 't-replybar' },
       h('div', { class: 'row', style: 'gap:8px' }, choices, open), form, out);
   }
@@ -3765,7 +3862,7 @@ export const CONSOLE_JS = String.raw`
               queued ? null : threadBody(f, w, ctx, true));
           });
         })(),
-        threadComposer(t, w, follow.length ? follow[follow.length - 1] : own)));
+        threadComposer(t, w, follow.length ? follow[follow.length - 1] : own, ctx)));
   }
 
   /// A brief, short enough for a line under a title. A process stage's brief
@@ -3786,6 +3883,21 @@ export const CONSOLE_JS = String.raw`
     if (p.kind === 'workspace') return p.name + (p.repos && p.repos.length ? ' (' + p.repos.join(', ') + ')' : '');
     return (p.kind === 'repo' ? 'Repo ' : 'Folder ') + p.name;
   }
+  /// A request a trigger set off, taken apart: the instructions, what set it
+  /// off and the item, so a title names the item rather than the plumbing
+  /// (the preface, the untrusted-data fence). Null when it isn't one.
+  function triggerParts(prompt) {
+    var p = stripPreface(prompt);
+    var m = /This was set off by ([^\n]*?) \("([^"\n]*)"\):\n/.exec(p);
+    if (!m) return null;
+    var rest = p.slice(m.index);
+    var title = ((/\nTitle \(untrusted\): ([^\n]*)/.exec(rest) || [])[1] || '').trim();
+    var key = /^([A-Z][A-Z0-9]+-\d+)\b[:\s\u2013-]*/.exec(title);
+    return { instructions: p.slice(0, m.index).trim(), via: m[1], trigger: m[2],
+      key: key ? key[1] : '', title: key ? title.slice(key[0].length).trim() : title, link: (/\nLink: (\S+)/.exec(rest) || [])[1] || '' };
+  }
+  /// The note overcli puts in front of a trigger's ask, which no one typed.
+  function stripPreface(prompt) { return plainSlack(prompt).replace(/^\(Set off by a trigger[^)]*\)\s*/, ''); }
   function plainSlack(s) { return String(s || '').replace(/<((?:https?|mailto):[^|>]+)\|([^>]+)>/g, '$2').replace(/<((?:https?|mailto):[^>]+)>/g, '$1'); }
 
   /// Set by the bar above the tabs: hides it while the thread it tells of is
@@ -3903,23 +4015,47 @@ export const CONSOLE_JS = String.raw`
     })[0] || null;
   }
   function conversation(w) {
-    var input = h('input', { type: 'text', placeholder: 'Ask ' + w.name + ' something, or give it a task…', 'aria-label': 'Message for ' + w.name, style: 'flex:1;min-width:0;border:0;outline:none;background:transparent;font:inherit;min-height:36px' });
+    // One box to talk to it, under the thread that's open: a reply to that
+    // thread, or a new task. Built once and moved into each redraw, so what's
+    // typed survives the thread changing under it.
+    var cur = null;
+    var mode = state.wlMode || 'reply';
+    var input = h('textarea', { rows: '2', 'aria-label': 'Message for ' + w.name });
     var out = h('div', { 'aria-live': 'polite' });
-    var send = h('button', { class: 'btn go small', text: 'Send' });
+    var send = h('button', { class: 'btn go', text: 'Send' });
+    var modeSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Where it goes' });
+    var drawComposer = function () {
+      var canReply = !!cur;
+      var m = canReply ? mode : 'new';
+      modeSeg.hidden = !canReply;
+      modeSeg.replaceChildren.apply(modeSeg, [['reply', 'Reply to this'], ['new', 'New task']].map(function (c) {
+        return h('button', { type: 'button', 'aria-pressed': m === c[0] ? 'true' : 'false', text: c[1], onclick: function () { mode = state.wlMode = c[0]; drawComposer(); input.focus(); } });
+      }));
+      var deciding = cur && (cur.stage === 'deciding' || (cur.followUps || []).some(function (f) { return f.stage === 'deciding'; }));
+      input.placeholder = m === 'new' ? 'Give ' + w.name + ' a new task, or ask it something…'
+        : deciding ? 'Add to it — ' + w.name + ' takes this once it has answered…' : 'Reply about this, or ask a follow-up…';
+    };
     var submit = function () {
       var text = input.value.trim();
       if (!text) { input.focus(); return; }
+      var reply = cur && mode === 'reply';
+      var queued = reply && cur.stage === 'deciding';
       var restore = busy(send, 'Sending…');
-      api('POST', '/api/ask', { worker: w.id, message: text }).then(function (r) {
+      api('POST', '/api/ask', reply ? { worker: w.id, message: text, replyTo: cur.id } : { worker: w.id, message: text }).then(function (r) {
         restore(); out.textContent = '';
         if (r.ok === false) { out.appendChild(msg(r)); return; }
         input.value = '';
-        sel = 'ask:' + r.askId; state.wlSel = state.wlSel || {}; state.wlSel[w.id] = sel;
+        if (reply) { if (queued) out.appendChild(msg(r, 'Queued: ' + w.name + ' takes it once this answer is in.')); }
+        else { sel = 'ask:' + r.askId; state.wlSel = state.wlSel || {}; state.wlSel[w.id] = sel; }
         livePoke(w.id, 150);
       }, function () { restore(); });
     };
     send.onclick = submit;
-    input.onkeydown = function (e) { if (e.key === 'Enter') submit(); };
+    input.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!send.disabled) submit(); } };
+    var composer = w.enabled
+      ? h('div', { class: 'wl-compose' }, modeSeg, h('div', { class: 'wl-compose-row' }, input, send), out)
+      : h('div', { class: 'wl-compose' }, h('p', { class: 'muted', style: 'margin:0', text: w.name + ' is paused. Resume it to ask it things.' }));
+    drawComposer();
 
     state.wlSel = state.wlSel || {};
     var sel = state.wlSel[w.id] || null;
@@ -3928,14 +4064,19 @@ export const CONSOLE_JS = String.raw`
     var data = null;
     var list = h('div', { class: 'wl-list', role: 'listbox', 'aria-label': w.name + '’s work' });
     var detail = h('div', { class: 'wl-detail' });
-    var chips = h('div', { class: 'row', role: 'group', 'aria-label': 'Show', style: 'gap:4px' });
+    var chips = h('div', { class: 'row', role: 'group', 'aria-label': 'Show', style: 'gap:4px;flex-wrap:wrap' });
     var q = h('input', { type: 'search', placeholder: 'Search its work', 'aria-label': 'Search its work', style: 'width:170px;font-size:13px' });
     var more = h('button', { class: 'wl-more', text: 'Show older' });
     more.onclick = function () { var l = liveFor(w.id); l.limit = (l.limit || 20) + 30; busy(more, 'Loading…'); livePoke(w.id, 0); };
 
     var titleOf = function (t) {
       // A title, not the whole request: the rest is in the thread.
-      if (t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp') { var p = plainSlack(t.prompt); return p.length > 200 ? p.slice(0, 199).trim() + '…' : p; }
+      if (t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp') {
+        var tp = triggerParts(t.prompt);
+        if (tp && (tp.key || tp.title)) return (tp.key ? tp.key + ' · ' : '') + (tp.title || tp.trigger);
+        if (t.runs.length === 1 && t.source !== 'ask') return t.runs[0].title.replace(/^\[[^\]]+\]\s*/, '');
+        var p = stripPreface(t.prompt); return p.length > 200 ? p.slice(0, 199).trim() + '…' : p;
+      }
       if (t.runs.length) return t.runs[0].title;
       return t.source === 'runNow' ? 'Run now' : 'Scheduled check';
     };
@@ -3949,11 +4090,31 @@ export const CONSOLE_JS = String.raw`
       if (t.source === 'followUp') return t.followUp === 'ci' ? 'CI fix' : 'Ticket update';
       return 'Run';
     };
-    var DOT = { deciding: 'live', running: 'live', waiting: 'need', needsYou: 'need', done: 'ok', answered: 'ok', failed: 'bad', stopped: 'bad', nothing: 'quiet', declined: 'quiet' };
+    /// What a thread came to, as a mark: a pull request, a comment, a report,
+    /// nothing changed. The stage alone was a green dot on nearly every row.
+    var threadPrs = prsOf;
+    var outcomeMark = function (t) {
+      var said = [t.headline].concat(t.runs.map(function (r) { return (r.summary || '') + ' ' + (r.landed || ''); })).join(' ');
+      var wrote = t.runs.some(function (r) { return r.result && r.result.name !== 'pull-requests.md'; });
+      var k = t.stage === 'deciding' || t.stage === 'running' ? null
+        : t.stage === 'waiting' || t.stage === 'needsYou' ? ['alert', 'need', 'Needs you']
+        : t.stage === 'failed' || t.stage === 'stopped' ? ['x', 'bad', t.stage === 'failed' ? 'Failed' : 'Stopped']
+        : t.stage === 'nothing' || t.stage === 'declined' ? ['dots', '', 'Nothing to do']
+        : threadPrs(t).length ? ['branch', 'go', plural(threadPrs(t).length, 'pull request', 'pull requests')]
+        : /comment/i.test(said) ? ['slack', '', 'Commented']
+        : wrote ? ['doc', 'ok', 'Wrote a report']
+        : /nothing to push|no repo changed|no changes/i.test(said) ? ['minus', '', 'No changes']
+        : ['tick', 'ok', 'Done'];
+      if (!k) return h('span', { class: 'wl-oc' }, h('span', { class: 'wl-dot live', role: 'img', 'aria-label': 'Working' }));
+      return h('span', { class: 'wl-oc ' + k[1], role: 'img', 'aria-label': k[2], title: k[2] }, icon(k[0], 14));
+    };
     var inFilter = function (t) {
       if (filter === 'mine') return t.source === 'ask' && !t.team && (!t.by || t.by === me);
       if (filter === 'team') return !!t.team;
       if (filter === 'scheduled') return t.source === 'schedule' || t.source === 'runNow';
+      if (filter === 'prs') return threadPrs(t).length > 0;
+      if (filter === 'triggers') return t.source === 'trigger' && !t.team;
+      if (filter === 'followUps') return t.source === 'followUp' && !t.team;
       if (filter === 'needs') return t.stage === 'waiting' || t.stage === 'needsYou';
       return true;
     };
@@ -3966,24 +4127,31 @@ export const CONSOLE_JS = String.raw`
       var meta = t.stage === 'running' || t.stage === 'deciding' ? secs(Date.now() - t.at) : t.stage === 'failed' || t.stage === 'stopped' ? (t.stage === 'failed' ? 'Failed' : 'Stopped') : t.stage === 'waiting' || t.stage === 'needsYou' ? 'Needs you' : t.costUSD ? money(t.costUSD) : '';
       var sub = whoFor(t) + ' · ' + (t.stage === 'running' ? 'running' : t.stage === 'deciding' ? 'deciding' : t.headline);
       return h('button', { class: 'wl-row' + (on ? ' on' : '') + (t.stage === 'nothing' || t.stage === 'declined' ? ' quiet' : ''), role: 'option', 'aria-selected': on ? 'true' : 'false', onclick: function () { sel = t.id; state.wlSel[w.id] = sel; drawList(); drawDetail(true); } },
-        h('span', { class: 'wl-dot ' + (DOT[t.stage] || '') }),
+        outcomeMark(t),
         h('span', { class: 'wl-title', text: titleOf(t) }),
         h('span', { class: 'wl-meta' + (t.stage === 'failed' || t.stage === 'stopped' ? ' bad' : t.stage === 'waiting' || t.stage === 'needsYou' ? ' need' : ''), text: meta }),
-        h('span'),
         h('span', { class: 'wl-sub', text: sub }),
         h('span', { class: 'wl-meta', text: dayLabel(t.lastAt || t.at) === 'Today' ? clock(t.lastAt || t.at) : new Date(t.lastAt || t.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }));
     };
     var drawList = function () {
       if (!data) return;
-      var counts = { all: data.threads.length, needs: 0, mine: 0, team: 0, scheduled: 0 };
+      var counts = { all: data.threads.length, needs: 0, prs: 0, triggers: 0, followUps: 0, mine: 0, team: 0, scheduled: 0 };
       data.threads.forEach(function (t) {
         if (t.stage === 'waiting' || t.stage === 'needsYou') counts.needs++;
+        if (threadPrs(t).length) counts.prs++;
+        if (t.source === 'trigger' && !t.team) counts.triggers++;
+        if (t.source === 'followUp' && !t.team) counts.followUps++;
         if (t.source === 'ask' && !t.team && (!t.by || t.by === me)) counts.mine++;
         if (t.team) counts.team++;
         if (t.source === 'schedule' || t.source === 'runNow') counts.scheduled++;
       });
-      chips.replaceChildren.apply(chips, [['all', 'All'], ['needs', 'Needs you'], ['mine', 'Asked by me'], ['team', 'Team work'], ['scheduled', 'Scheduled']].filter(function (c) { return c[0] === 'all' || counts[c[0]]; }).map(function (c) {
-        return h('button', { class: 'chip small', 'aria-pressed': filter === c[0] ? 'true' : 'false', text: c[1] + ' · ' + counts[c[0]], onclick: function () { filter = c[0]; state.wlFilter = c[0]; drawList(); } });
+      // Only the kinds it has; a filter left on one that has emptied goes back to All.
+      if (filter !== 'all' && !counts[filter]) { filter = 'all'; state.wlFilter = 'all'; }
+      var shownChips = [['all', 'All'], ['needs', 'Needs you'], ['prs', 'Pull requests'], ['triggers', 'Triggers'], ['followUps', 'Follow-ups'], ['mine', 'Asked by me'], ['team', 'Team work'], ['scheduled', 'Scheduled']].filter(function (c) { return c[0] === 'all' || counts[c[0]]; });
+      // All on its own filters nothing.
+      chips.hidden = shownChips.length < 2;
+      chips.replaceChildren.apply(chips, shownChips.map(function (c) {
+        return h('button', { class: 'chip small' + (c[0] === 'needs' ? ' need' : ''), 'aria-pressed': filter === c[0] ? 'true' : 'false', text: c[1] + ' · ' + counts[c[0]], onclick: function () { filter = c[0]; state.wlFilter = c[0]; drawList(); } });
       }));
       var shown = data.threads.filter(function (t) { return inFilter(t) && matches(t); });
       var keepScroll = list.scrollTop;
@@ -3993,7 +4161,7 @@ export const CONSOLE_JS = String.raw`
         if (day !== lastDay) { nodes.push(h('div', { class: 'wl-day', text: day })); lastDay = day; }
         nodes.push(row(t));
       });
-      if (!nodes.length) nodes.push(h('p', { class: 'muted', style: 'padding:24px 16px;text-align:center', text: data.threads.length ? 'Nothing matches.' : 'Nothing yet. Ask ' + w.name + ' something above, or press Run now.' }));
+      if (!nodes.length) nodes.push(h('p', { class: 'muted', style: 'padding:24px 16px;text-align:center', text: data.threads.length ? 'Nothing matches.' : 'Nothing yet. Ask ' + w.name + ' something, or press Run now.' }));
       if (data.nextBefore) nodes.push(more);
       list.replaceChildren.apply(list, nodes);
       list.scrollTop = keepScroll;
@@ -4003,9 +4171,13 @@ export const CONSOLE_JS = String.raw`
       if (!data) return;
       var t = threadFor(data.threads, sel) || data.threads[0];
       if (t && sel && t.id !== sel) { sel = t.id; state.wlSel[w.id] = sel; drawList(); }
-      if (!t) { detail.replaceChildren(h('div', { class: 'wl-empty muted', text: 'Pick something on the left to see it in full.' })); return; }
+      if (!t) {
+        cur = null; drawComposer();
+        detail.replaceChildren(h('div', { class: 'wl-detail-in' }, h('div', { class: 'wl-empty muted', text: data.threads.length ? 'Pick something on the left to see it in full.' : 'Nothing between you yet. Ask ' + w.name + ' something below, or press Run now.' }), composer));
+        return;
+      }
       if (!sel) { sel = t.id; state.wlSel[w.id] = sel; }
-      var key = JSON.stringify([t.id, t.stage, t.selfStage, t.headline, t.progress, t.reply && t.reply.text.length, t.choices, t.proposal, (t.followUps || []).length, t.runs.map(function (r) { return [r.state, r.step.index, r.summary, r.rating]; })]);
+      var key = JSON.stringify([t.id, t.stage, t.selfStage, t.headline, t.progress, t.reply && t.reply.text.length, t.choices, t.proposal, (t.followUps || []).length, prsOf(t), t.runs.map(function (r) { return [r.state, r.step.index, r.summary, r.rating]; })]);
       if (!force && key === detailKey) return;
       detailKey = key;
       var ctx = { waiting: data.waiting, youManage: data.youManage, merge: true };
@@ -4013,24 +4185,45 @@ export const CONSOLE_JS = String.raw`
       // One run: its title says what the work is; what was asked sits under it.
       var one = t.runs.length === 1 ? t.runs[0] : null;
       var asked = t.source === 'ask' || t.source === 'trigger' || t.source === 'colleague' || t.source === 'followUp';
+      // A kind in brackets ("[Errand] …") is a tag, not part of the title.
       var heading = one ? one.title : titleOf(t);
-      var ask = asked && one && plainSlack(t.prompt) !== heading ? plainSlack(t.prompt) : '';
+      var kindTag = /^\[([^\]]{1,20})\]\s*/.exec(heading);
+      if (kindTag) heading = heading.slice(kindTag[0].length);
+      // What a trigger brought, in a line; the request as sent (the preface,
+      // the fenced data) a click away rather than under the title.
+      var tp = asked ? triggerParts(t.prompt) : null;
+      var plain = asked ? stripPreface(t.prompt) : '';
+      var ask = asked && one && !tp && plain !== heading ? plain : '';
+      var source = tp ? h('div', { class: 'row', style: 'gap:8px;font-size:12.5px' },
+        h('span', { class: 'faint', text: 'Set off by ' + tp.via + ' · “' + tp.trigger + '”' }),
+        tp.key ? (/^https?:\/\//.test(tp.link) ? h('a', { class: 'tag', href: tp.link, target: '_blank', rel: 'noopener', text: tp.key + ' ↗' }) : h('span', { class: 'tag', text: tp.key })) : null) : null;
+      var original = tp ? h('details', { class: 't-report wl-original' }, h('summary', null, 'Original request'), h('pre', { class: 'watch-raw', text: plain })) : null;
+      cur = t; drawComposer();
+      var hadFocus = document.activeElement === input, caret = [input.selectionStart, input.selectionEnd];
+      var pills = h('span', { style: 'display:contents' });
       var fresh = h('div', { class: 'wl-detail-in' },
         h('div', { class: 'wl-detail-head' },
           h('div', { class: 'row', style: 'gap:10px;flex-wrap:nowrap' },
             h('span', { class: 'row', style: 'gap:8px;flex:1;min-width:0;font-size:12.5px' },
               h('span', { class: 'badge ' + (STAGE_BADGE[t.stage] || [''])[0], text: (STAGE_BADGE[t.stage] || ['', t.stage])[1] }),
               h('span', { class: 'faint' }, t.team ? ['For ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px', text: t.team.name, onclick: function () { go('team', { teamId: t.team.id }); } })] : whoFor(t), ' · ' + when(t.at) + (t.costUSD ? ' · ' + money(t.costUSD) : ''))),
+            pills,
             liveRun && data.youManage ? stopRunButton(liveRun.runId, w) : null,
             liveRun ? h('button', { class: 'btn small', text: 'Watch live', onclick: function () { watchRun(liveRun.runId, w.name + ' · ' + liveRun.title); } }) : null),
-          h('h2', { class: 'wl-detail-title', text: heading }),
-          ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null),
+          h('h2', { class: 'wl-detail-title' }, kindTag ? h('span', { class: 'wl-kind', text: kindTag[1] }) : null, heading),
+          source,
+          ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null,
+          original),
         // The live activity sits inside the timeline's running step.
         h('div', { class: 'wl-detail-body' }, threadCard(t, w, ctx),
           liveRun && !(t.progress && t.progress.length > 1) ? h('section', { class: 'stack', style: 'gap:8px;margin-top:14px' }, h('div', { class: 't-kind', text: 'What it’s doing' }), liveRunView(liveRun.runId, true)) : null),
         h('div', { class: 'wl-detail-foot' },
-          t.team ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Open the team task', onclick: function () { go('team', { teamId: t.team.id }); } }) : null));
+          t.team ? h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Open the team task', onclick: function () { go('team', { teamId: t.team.id }); } }) : null),
+        composer);
+      var pp = prPills(t, fresh);
+      if (pp) pills.replaceWith(pp); else pills.remove();
       detail.replaceChildren(keepPlace(detail.firstChild, fresh));
+      if (hadFocus) { input.focus(); input.setSelectionRange(caret[0], caret[1]); }
       if (nowBarSync) nowBarSync();
     };
     q.oninput = drawList;
@@ -4057,11 +4250,19 @@ export const CONSOLE_JS = String.raw`
       drawList(); drawDetail(false);
     }, { alive: function () { return list.isConnected; } }));
     return h('section', { class: 'stack', style: 'gap:12px', 'aria-label': w.name + '’s work' },
-      w.enabled ? h('div', { class: 'stack', style: 'gap:6px' }, h('div', { class: 'wl-ask' }, input, send), out)
-        : h('p', { class: 'muted', text: w.name + ' is paused. Resume it to ask it things.' }),
       fitToWindow(h('div', { class: 'wl' },
         h('div', { class: 'wl-left' }, h('div', { class: 'wl-tools' }, chips, q), list),
         detail)));
+  }
+
+  /// This month's spend against its budget, as a short bar and the two sums.
+  function budgetMeter(spent, budget) {
+    spent = spent || 0;
+    if (!(budget > 0)) return h('span', { text: money(spent) + ' this month' });
+    var pct = Math.min(100, Math.round(100 * spent / budget));
+    return h('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' },
+      h('span', { class: 'wk-budget' + (pct >= 90 ? ' need' : ''), role: 'img', 'aria-label': pct + '% of this month’s budget used' }, h('span', { style: 'width:' + pct + '%' })),
+      h('span', { text: money(spent) + ' of ' + money(budget) + ' this month' }));
   }
 
   /// The list and the thread end at the window's bottom edge, however tall
@@ -4500,13 +4701,14 @@ export const CONSOLE_JS = String.raw`
               h('div', { style: 'min-width:0;display:flex;flex-direction:column;gap:6px' },
                 h('h1', { class: 'page-title', text: w.name }),
                 h('div', { class: 'row', style: 'gap:8px' }, workerBadge(w), trustMeter(w.trust), w.coding ? codingTag() : null, w.tagline ? h('span', { class: 'muted', style: 'font-size:13.5px', text: w.tagline }) : null),
-                h('div', { class: 'faint', style: 'font-size:13px' },
-                  [w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'Works when asked', money(w.spentThisMonthUSD) + ' of ' + money(w.budgetUSDPerMonth) + ' this month', plural((w.tools || []).length, 'tool', 'tools')].join(' · '),
-                  w.youManage ? [' · ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:13px', text: 'Settings', onclick: function () { state.workerTab = 'settings'; render(); } })] : null)))),
+                // Settings is a tab below; the spend is a meter, not a third number in a sentence.
+                h('div', { class: 'row faint', style: 'gap:12px;font-size:13px' },
+                  h('span', { text: [w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'Works when asked', plural((w.tools || []).length, 'tool', 'tools')].join(' · ') }),
+                  budgetMeter(w.spentThisMonthUSD, w.budgetUSDPerMonth))))),
           h('div', { class: 'page-actions' },
-            w.youManage ? h('button', { class: 'btn', text: 'Export', 'aria-expanded': 'false', onclick: function (e) { exportPanel(w, e.target); } }) : null,
+            w.youManage ? h('button', { class: 'btn quiet', text: 'Export', 'aria-expanded': 'false', onclick: function (e) { exportPanel(w, e.target); } }) : null,
             w.youManage ? h('button', { class: 'btn', text: w.enabled ? 'Pause' : 'Resume', onclick: pause }) : null,
-            w.youManage && w.enabled ? h('button', { class: 'btn', text: 'Run now', onclick: function (e) {
+            w.youManage && w.enabled ? h('button', { class: 'btn go', text: 'Run now', onclick: function (e) {
               // Starting a run takes a few seconds; say so at once rather
               // than leave the button looking unpressed.
               var restore = busy(e.target, 'Starting…');
@@ -10136,6 +10338,7 @@ export const CONSOLE_JS = String.raw`
       return { key: 'cmd', line: function (n) { return n_(n, 'Ran a command in its workspace', 'Ran # commands in its workspace'); } };
     }
     if (/^Updated its to-do list/.test(t)) return { key: 'todo', line: function () { return 'Updated its plan'; } };
+    if (t === 'ToolSearch') return { key: 'tools', line: function () { return 'Loaded its tools'; } };
     var tool = /^([^:]{1,40}): /.exec(t);
     if (tool) return { key: 'tool:' + tool[1], line: function (n) { return 'Used ' + tool[1] + (n > 1 ? ' · ' + n + ' calls' : ''); } };
     return { key: 'other:' + a.at, line: t };

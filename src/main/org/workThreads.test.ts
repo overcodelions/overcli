@@ -171,6 +171,30 @@ describe('work threads', () => {
     expect(nowLine(t, 'Marta')).toBeNull();
   });
 
+  it('keeps what the run wrote as its result when the lander attaches its note after', () => {
+    const r = run('r1', { kind: 'done', success: true } as FlowRun['state'], 3_000, {
+      artifacts: {
+        'feasibility.md': { name: 'feasibility.md', kind: 'text', body: '# Feasibility\n\nFeasible: certification events already reach the automation runner.', producedByStepId: 'report', producedAt: 120_000 },
+        'pull-requests.md': { name: 'pull-requests.md', kind: 'text', body: 'Nothing to push: no repo changed.', producedByStepId: 'land', producedAt: 130_000 },
+      } as unknown as FlowRun['artifacts'],
+    });
+    const t = buildThreads(input({ runs: [r], filed: new Map([['r1', { entryId: 'e1', title: 'Nothing to push: no repo changed.' }]]) }));
+    expect(t[0].runs[0]).toMatchObject({
+      result: { name: 'feasibility.md' },
+      summary: 'Feasible: certification events already reach the automation runner.',
+      landed: 'Nothing to push: no repo changed.',
+    });
+    expect(t[0].runs[0].pullRequests).toBeUndefined();
+  });
+
+  it('carries the pull requests a run opened', () => {
+    const r = run('r1', { kind: 'done', success: true } as FlowRun['state'], 3_000, {
+      artifacts: { 'pull-requests.md': { name: 'pull-requests.md', kind: 'text', body: '- Opened a pull request for acme-api: https://github.com/acme/acme-api/pull/41 (branch overcli/ACME-1-fix)', producedByStepId: 'land', producedAt: 130_000 } } as unknown as FlowRun['artifacts'],
+    });
+    const t = buildThreads(input({ runs: [r] }));
+    expect(t[0].runs[0].pullRequests).toEqual([{ repo: 'acme-api', url: 'https://github.com/acme/acme-api/pull/41', branch: 'overcli/ACME-1-fix', state: 'open' }]);
+  });
+
   it('prefers the line the run filed in the journal when it says more than the title', () => {
     const r = run('r1', { kind: 'done', success: true } as FlowRun['state'], 3_000);
     const t = buildThreads(input({ runs: [r], filed: new Map([['r1', { entryId: 'e1', title: 'Acme hides its prices behind a form' }]]) }));

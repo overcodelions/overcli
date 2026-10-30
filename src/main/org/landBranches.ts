@@ -280,3 +280,27 @@ function pushAdvice(error: string): string {
   }
   return error;
 }
+
+/// A pull request a run's landing note names, read back out of describe()'s lines.
+export interface LandedPullRequest {
+  repo: string;
+  url: string;
+  branch?: string;
+  /// open/draft: opened now; updated: new commits on one already open;
+  /// existing: found open, left alone; unopened: only a link to open one.
+  state: 'open' | 'draft' | 'updated' | 'existing' | 'unopened';
+}
+
+/// The pull requests in a landing note (describe()'s output), in order.
+export function pullRequestsIn(body: string): LandedPullRequest[] {
+  const out: LandedPullRequest[] = [];
+  for (const raw of body.split('\n')) {
+    const l = raw.replace(/^-\s+/, '');
+    let m: RegExpExecArray | null;
+    if ((m = /^Opened a (draft )?pull request for (.+?): (https?:\/\/\S+) \(branch ([^)]+)\)/.exec(l))) out.push({ repo: m[2], url: m[3], branch: m[4], state: m[1] ? 'draft' : 'open' });
+    else if ((m = /^(.+?): its pull request was already open, left as it was: (https?:\/\/\S+) \(branch ([^)]+)\)/.exec(l))) out.push({ repo: m[1], url: m[2], branch: m[3], state: 'existing' });
+    else if ((m = /^(.+?): added to (\S+), so its open pull request has the new commits: (https?:\/\/\S+)/.exec(l))) out.push({ repo: m[1], url: m[3], branch: m[2], state: 'updated' });
+    else if ((m = /^Open a pull request for (.+?): (https?:\/\/\S+) \(branch ([^)]+)\)/.exec(l))) out.push({ repo: m[1], url: m[2], branch: m[3], state: 'unopened' });
+  }
+  return out;
+}

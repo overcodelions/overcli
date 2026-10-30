@@ -12,6 +12,7 @@ import { FOLLOW_UP_NOTE, type Orchestration, type OrchestrationItem } from '../.
 import type { WorkerJournalEntry } from '../../shared/flows/worker';
 import type { AskRecord } from './orgStores';
 import { TRIGGER_STARTS, withoutPreface } from './askPreface';
+import { LANDED_ARTIFACT, pullRequestsIn, type LandedPullRequest } from './landBranches';
 
 type UUID = string;
 
@@ -40,6 +41,11 @@ export interface ThreadRun {
   /// What it found, in a sentence or two, and the file it wrote.
   summary?: string;
   result?: { name: string; body: string };
+  /// What landing its branches came to ("Opened a pull request…", "Nothing
+  /// to push…"), when it also wrote something else: a footnote to the result.
+  landed?: string;
+  /// The pull requests landing it opened, updated or left a link for.
+  pullRequests?: LandedPullRequest[];
   error?: string;
   /// The journal entry its result was filed under, for "was this useful?".
   entryId?: string;
@@ -172,11 +178,18 @@ function threadRun(r: FlowRun, filed: ThreadInputs['filed']): ThreadRun {
           : s.kind === 'aborted' && !failedAttempt
             ? 'stopped'
             : 'failed';
-  const artifact = Object.values(r.artifacts ?? {}).sort((a, b) => b.producedAt - a.producedAt)[0];
+  // The lander attaches its note after the run ends, so it is always the
+  // newest file; what the run itself wrote is the result, the note a footnote.
+  const landedFile = r.artifacts?.[LANDED_ARTIFACT];
+  const artifact = Object.values(r.artifacts ?? {}).filter((a) => a.name !== LANDED_ARTIFACT).sort((a, b) => b.producedAt - a.producedAt)[0] ?? landedFile;
+  const landed = landedFile && artifact !== landedFile ? summarize(landedFile.body, 160) : undefined;
+  const pullRequests = landedFile ? pullRequestsIn(landedFile.body ?? '') : [];
   const endedAt = ended ? Math.max(r.createdAt, ...r.attempts.map((a) => a.endedAt ?? a.startedAt)) : undefined;
   const f = filed.get(r.id);
   const title = flowRunTitle(r);
-  const summary = f && f.title && f.title !== title ? f.title : artifact && /\.(md|markdown|txt)$/i.test(artifact.name) ? summarize(artifact.body) : undefined;
+  // A journal line that only says nothing was pushed doesn't say what it found.
+  const filedSays = f && f.title && f.title !== title && !(landed && /^nothing to push\b/i.test(f.title)) ? f.title : undefined;
+  const summary = filedSays ?? (artifact && /\.(md|markdown|txt)$/i.test(artifact.name) ? summarize(artifact.body) : undefined);
   return {
     runId: r.id,
     title,
@@ -203,6 +216,8 @@ function threadRun(r: FlowRun, filed: ThreadInputs['filed']): ThreadRun {
     ...(r.costUSD ? { costUSD: r.costUSD } : {}),
     ...(summary ? { summary } : {}),
     ...(artifact ? { result: { name: artifact.name, body: artifact.body.slice(0, 20_000) } } : {}),
+    ...(landed ? { landed } : {}),
+    ...(pullRequests.length ? { pullRequests } : {}),
     ...(state === 'failed' && failedAttempt?.errorMessage ? { error: failedAttempt.errorMessage.slice(0, 400) } : {}),
     ...(f ? { entryId: f.entryId, ...(f.rating ? { rating: f.rating } : {}) } : {}),
   };
