@@ -44,6 +44,14 @@ docker compose -f deploy/docker-compose.yml pull
 
 Each release publishes one image, the same for every org: `ghcr.io/overcodelions/overcli-server`, for Intel and ARM, with Claude Code and Codex inside. Nothing about your org is in it; that all lives on the `/data` volume. Tags: the exact version (`0.22.0`), the minor version (`0.22`, which takes fixes), and `latest`. Pick one with `OVERCLI_VERSION` in `.env`.
 
+**The image is private for now**, while overgo is in alpha: only people given read access to the `overcli-server` package can pull it. Log in once with a GitHub token that has the `read:packages` scope, then `pull` works:
+
+```sh
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+```
+
+Without access, `pull` answers `unauthorized`. Ask an overcodelions admin for read access to the package, or build the image yourself from this repo (`docker build -f deploy/Dockerfile -t overcli-server .`) and point `image:` in `docker-compose.yml` at it. A build of your own isn't signed by the release workflow.
+
 Each image is signed (keyless, by this repo's release workflow) and carries an SBOM and build provenance. Check one before you run it, or before you mirror it into your own registry:
 
 ```sh
