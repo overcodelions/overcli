@@ -4,6 +4,24 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.24.2] - 2026-10-30
+
+### Added
+- **Test a model id before a worker runs on it.** Setup → Model ids has Test on each row and Test all: one tiny prompt per id through the Claude Code CLI on the server, the way workers reach the model. A failure says why: needs an inference profile, no working credentials, not enabled in this region, the identity isn't allowed, or the id is unknown, with the provider's own words underneath. Bedrock and Vertex only; admins only.
+- **Pull requests in Reports.** Pull requests opened and spend per pull request in the totals, and PRs and Per PR columns by worker and in the CSV. A worker's page has a "This month" line under its budget: runs, pull requests, failed and cost per PR.
+- **Pull requests on the Runs tab**, as pills on each run that opened one.
+- **Where a ticket moves after its pull request.** Setup → Repos takes the status as the tracker names it ("Ready for QA"); the ticket update takes the fewest transitions there. Left empty, it moves to whichever status means in review, as before.
+- **A worker's tagline is editable** from its Settings, and kept in its history.
+
+### Changed
+- **Time saved counts pull requests.** A run that opened one counts at 6× its agent time, and at least an hour; other work stays at 1.5×. Both are set on Setup → Spending, and Reports say how the number was reached.
+- **How it works shows what each step uses**, and a proposed change is one panel marking new, changed and removed steps, with the full list folded away.
+- **"Every few hours" schedules can run on weekdays only.**
+
+### Fixed
+- **Rewriting a flow can use the tools of servers the worker already has**, instead of refusing them with no way for an admin to grant them.
+- **A rewritten step that names no tools is kept to reading** instead of failing the rewrite; the drafter lists tools on every step.
+
 ## [0.24.1] - 2026-10-29
 
 ### Added
@@ -1133,7 +1151,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.2...HEAD
+[0.24.2]: https://github.com/overcodelions/overcli/compare/v0.24.1...v0.24.2
 [0.24.1]: https://github.com/overcodelions/overcli/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/overcodelions/overcli/compare/v0.22.0...v0.24.0
 [0.23.0]: https://github.com/overcodelions/overcli/compare/v0.22.0...v0.23.0
