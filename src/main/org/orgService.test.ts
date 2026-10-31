@@ -291,6 +291,19 @@ describe('a worker’s tagline', () => {
     expect(svc.update(pat, 'open', { tagline: '   ' }).ok).toBe(true);
     expect(roster.get('open')!.tagline).toBeUndefined();
   });
+
+  it('shows in its history, and comes back with the version it was in', () => {
+    const { svc, roster } = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT }, tagline: 'reviews acme deploys' })] });
+    expect(svc.update(pat, 'open', { tagline: 'files acme exceptions' }).ok).toBe(true);
+    const hist = svc.workerHistory(pat, 'open');
+    if (!hist.ok) throw new Error(hist.error);
+    const changed = hist.versions.find((v) => v.changed.includes('its tagline'));
+    expect(changed).toBeTruthy();
+    const before = hist.versions.find((v) => v.tagline === 'reviews acme deploys');
+    expect(before).toBeTruthy();
+    expect(svc.restoreWorker(pat, 'open', before!.id).ok).toBe(true);
+    expect(roster.get('open')!.tagline).toBe('reviews acme deploys');
+  });
 });
 
 describe('a worker’s home channels', () => {

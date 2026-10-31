@@ -13704,7 +13704,9 @@ export const CONSOLE_JS = String.raw`
           h('span', { style: 'font-size:13px;min-width:120px', text: when(v.at) }),
           h('span', { style: 'font-size:13px;flex:1;min-width:180px', text: (v.changed || []).join(', ') + ' · ' + v.by }),
           v.flow ? h('details', null, h('summary', { class: 'linkish', style: 'font-size:12.5px', text: 'How it worked then' }), h('div', { style: 'margin-top:6px' }, h('span', { class: 'faint', style: 'font-size:12.5px', text: v.flow.name }), flowStepList(v.flow.steps)))
-            : h('details', null, h('summary', { class: 'linkish', style: 'font-size:12.5px', text: 'The job then' }), h('div', { class: 'quote', style: 'font-size:13px;margin-top:6px;white-space:pre-wrap;max-height:260px;overflow:auto', text: v.job })),
+            : h('details', null, h('summary', { class: 'linkish', style: 'font-size:12.5px', text: 'The job then' }),
+              v.tagline ? h('div', { class: 'faint', style: 'font-size:12.5px;margin-top:6px', text: 'Tagline: ' + v.tagline }) : null,
+              h('div', { class: 'quote', style: 'font-size:13px;margin-top:6px;white-space:pre-wrap;max-height:260px;overflow:auto', text: v.job })),
           i === 0 ? h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Now' }) : w.youManage ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Restore', onclick: function (e) {
             if (!window.confirm('Put ' + w.name + ' back to how it was ' + when(v.at) + '? Its job, tools, trust and settings go back' + (v.flow ? ', and how it works' : '') + '; its history keeps today’s too.')) return;
             var restore = busy(e.target, 'Restoring…');

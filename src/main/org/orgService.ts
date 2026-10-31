@@ -4884,6 +4884,7 @@ export class OrgService {
   private configOf(w: Worker): WorkerConfig {
     return {
       jobDescription: w.jobDescription,
+      tagline: w.tagline ?? '',
       mcpServers: [...(w.mcpServers ?? [])],
       ...(w.toolScopes ? { toolScopes: structuredClone(w.toolScopes) as Record<string, unknown> } : {}),
       trust: w.trust,
@@ -4903,7 +4904,7 @@ export class OrgService {
     const was = this.configOf(before);
     const now = this.configOf(after);
     const WORDS: Record<keyof WorkerConfig, string> = {
-      jobDescription: 'its job', mcpServers: 'its tools', toolScopes: 'how much of its tools', trust: 'its trust', visibility: 'who can ask it',
+      jobDescription: 'its job', tagline: 'its tagline', mcpServers: 'its tools', toolScopes: 'how much of its tools', trust: 'its trust', visibility: 'who can ask it',
       budgetUSDPerMonth: 'its budget', cadence: 'when it runs', preferredFlowId: 'its usual flow', answersAtOnce: 'answers at once',
       skipCheckpoints: 'checkpoints', alwaysAllow: 'what it may always do',
     };
@@ -4972,13 +4973,13 @@ export class OrgService {
   }
 
   /// A worker's setup over time, newest first. Whoever can see it.
-  workerHistory(caller: OrgCaller, idOrName: string): Result<{ versions: Array<Omit<WorkerVersion, 'config' | 'flow'> & { job: string; tools: string[]; trust: string; flow?: { name: string; steps: FlowStepView[] } }> }> {
+  workerHistory(caller: OrgCaller, idOrName: string): Result<{ versions: Array<Omit<WorkerVersion, 'config' | 'flow'> & { job: string; tagline?: string; tools: string[]; trust: string; flow?: { name: string; steps: FlowStepView[] } }> }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
     const versions = this.versionList().filter((v) => v.workerId === w.id).reverse()
       .map(({ config, flow, ...v }) => {
         const f = flow ? parseFlowYaml({ yaml: flow.yaml, id: flow.id, source: 'user', filePath: '' }) : null;
-        return { ...v, job: config.jobDescription, tools: config.mcpServers, trust: config.trust, ...(flow ? { flow: { name: flow.name, steps: f ? stepsOf(f) : [] } } : {}) };
+        return { ...v, job: config.jobDescription, ...(config.tagline !== undefined ? { tagline: config.tagline } : {}), tools: config.mcpServers, trust: config.trust, ...(flow ? { flow: { name: flow.name, steps: f ? stepsOf(f) : [] } } : {}) };
       });
     return { ok: true, versions };
   }
@@ -4998,6 +4999,7 @@ export class OrgService {
     }
     const res = this.update(caller, found.worker.id, {
       jobDescription: c.jobDescription,
+      ...(c.tagline !== undefined ? { tagline: c.tagline } : {}),
       mcpServers: c.mcpServers,
       toolScopes: Object.fromEntries([...new Set([...Object.keys(found.worker.toolScopes ?? {}), ...Object.keys(c.toolScopes ?? {})])].map((k) => [k, (c.toolScopes ?? {})[k] ?? null])),
       visibility: (c.visibility ?? 'private') as WorkerVisibility,
