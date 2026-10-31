@@ -61,3 +61,32 @@ export function isGatedDesignCommand(
   if (opts.backend !== 'claude' || opts.artifactsOn) return false;
   return DESIGN_COMMAND_RE.test(text);
 }
+
+// The same pages also go out through the claude-artifacts MCP server, and
+// newer `/design` runs publish that way rather than through the built-in
+// Artifact tool. Every card, visibility and provenance rule was keyed on the
+// name `Artifact`, so those publishes fell through to the generic tool card —
+// hidden with tool activity off, and with no "Open in Overcli" for the file
+// behind them. These are the calls that leave a page behind; reads, lists and
+// comment tools on the same server are lookups and stay generic.
+const MCP_ARTIFACT_PUBLISH_RE = /^mcp__[A-Za-z0-9_-]*artifacts__(?:publish_version|publish_files|edit_version)$/;
+
+export function isMcpArtifactPublish(name: string | undefined): boolean {
+  return !!name && MCP_ARTIFACT_PUBLISH_RE.test(name);
+}
+
+/// Either way of publishing an artifact: the built-in tool or the MCP server.
+export function isArtifactPublishTool(name: string | undefined): boolean {
+  return name === 'Artifact' || isMcpArtifactPublish(name);
+}
+
+/// The local file a tool call is about. `file_path` for everything but the
+/// MCP `publish_files`, which takes a list of `{ as, path }` — the page is the
+/// one served as index.html, so that's the file worth opening.
+export function toolInputFilePath(name: string | undefined, input: any): string | undefined {
+  if (typeof input?.file_path === 'string') return input.file_path;
+  if (!isMcpArtifactPublish(name) || !Array.isArray(input?.files)) return undefined;
+  const files = input.files.filter((f: any) => typeof f?.path === 'string');
+  const page = files.find((f: any) => f.as === 'index.html') ?? files[0];
+  return page?.path;
+}

@@ -4,6 +4,9 @@ import {
   claudeArtifactEnv,
   isDesignUnavailableNotice,
   isGatedDesignCommand,
+  isArtifactPublishTool,
+  isMcpArtifactPublish,
+  toolInputFilePath,
 } from './claudeArtifacts';
 
 describe('claudeArtifactEnv', () => {
@@ -59,5 +62,38 @@ describe('isGatedDesignCommand', () => {
   it('ignores other commands and prose', () => {
     expect(isGatedDesignCommand('/designer', off)).toBe(false);
     expect(isGatedDesignCommand('please /design this', off)).toBe(false);
+  });
+});
+
+describe('MCP artifact publishes', () => {
+  it('recognises the publishing calls on the claude-artifacts server', () => {
+    expect(isMcpArtifactPublish('mcp__claude-artifacts__publish_files')).toBe(true);
+    expect(isMcpArtifactPublish('mcp__claude-artifacts__publish_version')).toBe(true);
+    expect(isMcpArtifactPublish('mcp__claude-artifacts__edit_version')).toBe(true);
+    expect(isArtifactPublishTool('Artifact')).toBe(true);
+  });
+
+  it('leaves lookups and unrelated tools alone', () => {
+    expect(isMcpArtifactPublish('mcp__claude-artifacts__read_artifact')).toBe(false);
+    expect(isMcpArtifactPublish('mcp__claude-artifacts__guide')).toBe(false);
+    expect(isArtifactPublishTool('Write')).toBe(false);
+    expect(isArtifactPublishTool(undefined)).toBe(false);
+  });
+
+  it('takes the index.html file from publish_files as the source path', () => {
+    const input = {
+      files: [
+        { as: 'css/site.css', path: '/tmp/s/site.css' },
+        { as: 'index.html', path: '/tmp/s/workers.html' },
+      ],
+    };
+    expect(toolInputFilePath('mcp__claude-artifacts__publish_files', input)).toBe('/tmp/s/workers.html');
+    expect(toolInputFilePath('mcp__claude-artifacts__publish_files', { files: [{ as: 'a.html', path: '/a' }] })).toBe('/a');
+  });
+
+  it('keeps file_path as the answer for every other tool', () => {
+    expect(toolInputFilePath('Write', { file_path: '/x.ts' })).toBe('/x.ts');
+    expect(toolInputFilePath('Write', { files: [{ as: 'index.html', path: '/a' }] })).toBeUndefined();
+    expect(toolInputFilePath('mcp__claude-artifacts__publish_version', { content: '<html>' })).toBeUndefined();
   });
 });

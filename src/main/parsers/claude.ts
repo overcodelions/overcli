@@ -14,6 +14,7 @@
 
 import { StreamEvent, StreamEventKind, ToolUseBlock } from '../../shared/types';
 import { randomUUID } from 'node:crypto';
+import { toolInputFilePath } from '../../shared/claudeArtifacts';
 
 type StreamBlock =
   | { type: 'text'; text: string }
@@ -369,7 +370,7 @@ function parseClaudeLineInto(
             id: block.id ?? randomUUID(),
             name: block.name ?? 'tool',
             inputJSON,
-            filePath: typeof input?.file_path === 'string' ? input.file_path : undefined,
+            filePath: toolInputFilePath(block.name, input),
             oldString: typeof input?.old_string === 'string' ? input.old_string : undefined,
             newString: typeof input?.new_string === 'string' ? input.new_string : undefined,
           });
@@ -604,7 +605,7 @@ function snapshotAssistantEvent(
         id: b.id,
         name: b.name,
         inputJSON: b.partialJSON,
-        filePath: typeof input?.file_path === 'string' ? input.file_path : undefined,
+        filePath: toolInputFilePath(b.name, input),
         oldString: typeof input?.old_string === 'string' ? input.old_string : undefined,
         newString: typeof input?.new_string === 'string' ? input.new_string : undefined,
       });

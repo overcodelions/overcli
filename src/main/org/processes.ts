@@ -12,6 +12,7 @@ import type { OrgCaller } from '../../shared/org/policy';
 import {
   sendBackIndex,
   accessOf,
+  type ProcessAudience,
   answersText,
   checkAnswers,
   parseProcessAccess,
@@ -330,7 +331,7 @@ export class ProcessService {
 
   // ---- PROCESSES --------------------------------------------------------
 
-  list(caller: OrgCaller): Array<ProcessDef & { active: number; byStage: number[]; canSteer: boolean; canStart: boolean }> {
+  list(caller: OrgCaller): Array<ProcessDef & { active: number; byStage: number[]; canSteer: boolean; canStart: boolean; whoStarts: { who: ProcessAudience; groups: string[] } }> {
     const s = this.peek();
     // Once per listing, not once per row: the map sorts every process.
     const shortNames = this.shortNames();
@@ -344,6 +345,9 @@ export class ProcessService {
           byStage: p.stages.map((_, n) => live.filter((i) => i.stageIndex === n).length),
           canSteer: this.steers(caller, p),
           canStart: this.mayStart(caller, p),
+          // Who may put work in, for its card: the kind and the teams, never
+          // the people named, which the outline keeps from most callers.
+          whoStarts: { who: accessOf(p).who, groups: (accessOf(p).groups ?? []).map((g) => g.name) },
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));

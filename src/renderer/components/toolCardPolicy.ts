@@ -1,4 +1,5 @@
 import { ToolResultBlock, ToolUseBlock } from '@shared/types';
+import { isMcpArtifactPublish } from '@shared/claudeArtifacts';
 
 /// Which tool cards survive the "show tool activity" toggle, and which the
 /// transient flash slot is allowed to show.
@@ -56,6 +57,9 @@ const ALWAYS_VISIBLE = new Set([...PERSISTENT_TOOLS, ...INTERACTIVE_TOOLS]);
 /// see BashCard's `changesOnly`.
 export function rendersWhenToolActivityHidden(use: ToolUseBlock, result?: ToolResultBlock): boolean {
   if (use.name === 'Artifact') return isArtifactPublish(use);
+  // The MCP server splits actions into separate tools, so the name already
+  // says this one is a publish.
+  if (isMcpArtifactPublish(use.name)) return true;
   if (result?.fileChanges?.length) return true;
   return ALWAYS_VISIBLE.has(use.name);
 }
@@ -101,7 +105,7 @@ export function isArtifactPublish(use: ToolUseBlock): boolean {
 /// resolves away, which is the flicker this policy exists to prevent — and a
 /// lookup against claude.ai is not what the slot is for.
 export function shouldFlash(name: string): boolean {
-  return !ALWAYS_VISIBLE.has(name);
+  return !ALWAYS_VISIBLE.has(name) && !isMcpArtifactPublish(name);
 }
 
 /// Does this turn hold a card that must survive `filterRendered`?

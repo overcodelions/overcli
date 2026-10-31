@@ -589,6 +589,16 @@ describe('who can see and start a process', () => {
     expect(h.svc.submit(from(someone), made.process.id, { brief: 'Plan next quarter', source: 'slack' }).ok).toBe(false);
   });
 
+  it('says on its card who may put work in: the kind, and a team by name', () => {
+    const h = harness();
+    const team = h.svc.save(owner, { name: 'Roadmap', stages, access: { who: 'team', groups: [{ id: 'team:Product leads', name: 'Product leads' }] } });
+    if (!team.ok) throw new Error(team.error);
+    expect(h.svc.list(ana)[0].whoStarts).toEqual({ who: 'team', groups: ['Product leads'] });
+    const people = h.svc.save(owner, { id: team.process.id, name: 'Roadmap', stages, access: { who: 'people', people: [{ name: 'Riley', slackUserId: 'U0RILEY' }] } });
+    if (!people.ok) throw new Error(people.error);
+    expect(h.svc.list(someone)[0].whoStarts).toEqual({ who: 'people', groups: [] });
+  });
+
   it('opens a process to named people, and to everyone', () => {
     const h = harness();
     const made = h.svc.save(owner, { name: 'Roadmap', stages, access: { who: 'people', people: [{ name: 'Riley', slackUserId: 'U0RILEY' }] } });

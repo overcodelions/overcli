@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import { validateFlow } from '../../shared/flows/validation';
 import { enabledToolsFor, resolveStepEffect } from '../flows/runtime';
@@ -12,6 +12,10 @@ import { BranchLander, PR_STEP_OUTPUT, branchFor, pullRequestText, ticketed, des
 import { TRIGGER_STARTS } from './askPreface';
 import type { FlowRun } from '../../shared/flows/schema';
 import { RepoService, serverGitNote, checkTestCommand, credentialHelper, newPullRequestLink, parseRepoUrl, prFlowId, prFlowYaml, prePushHook, workspaceFlowYaml, type ConnectedRepo, type OrgWorkspace } from './repos';
+
+// These tests run real git — clones, branches and pushes into temp repos —
+// and on a slow CI runner one can pass the 5s default, so they get longer.
+vi.setConfig({ testTimeout: 20_000 });
 
 const repo: ConnectedRepo = { name: 'app', url: 'https://github.com/acme/app.git', path: '/data/repos/app', defaultBranch: 'main', testCommand: 'npm test', addedBy: 'Bo', at: 0 };
 

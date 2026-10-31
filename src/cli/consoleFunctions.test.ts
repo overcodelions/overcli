@@ -57,3 +57,54 @@ describe('what a run did, in plain words', () => {
     expect(groups[0].raw).toHaveLength(5);
   });
 });
+
+describe('the inbox, as pieces of work', () => {
+  // The grouping and step order alone, cut from the script and run here.
+  const part = (from: string, to: string) => {
+    const a = CONSOLE_JS.indexOf(from), b = CONSOLE_JS.indexOf(to, a);
+    if (a < 0 || b < 0) throw new Error('moved: ' + from);
+    return CONSOLE_JS.slice(a, b);
+  };
+  type Item = { title: string; at: number; minutes?: number; kind?: string };
+  const code = part('  function startOf(', '  /// A row whose title is the button') + part("  /// A ticket's key at the head", '  /// One step of a piece of work');
+  const { workGroups, workSteps } = new Function('nameOf', 'when', `${code}; return { workGroups, workSteps };`)((x: Item) => x.title, () => '') as {
+    workGroups: (items: Item[]) => Array<{ key?: string; title?: string; items: Item[] }>;
+    workSteps: (items: Item[]) => { steps: Item[]; began: number; ended: number };
+  };
+  const H = 3600000, NOW = 100 * H;
+  const at = (hoursAgo: number, title: string, more: Partial<Item> = {}): Item => ({ title, at: NOW - hoursAgo * H, ...more });
+  const shape = (items: Item[]) => workGroups(items).map((g) => g.items.map((x) => x.title));
+
+  it('keeps a ticket’s trigger, runs and follow-ups together, the key anywhere in a title', () => {
+    expect(shape([
+      at(1, 'ACME-5: comment the pull request'),
+      at(2, 'Fix ACME-5'),
+      at(30, 'ACME-5: Sandbox copies drop fields', { kind: 'event' }),
+      at(3, 'ACME-6: Something else'),
+    ])).toEqual([['ACME-5: comment the pull request', 'Fix ACME-5', 'ACME-5: Sandbox copies drop fields'], ['ACME-6: Something else']]);
+  });
+
+  it('leaves a title naming several tickets to itself', () => {
+    expect(shape([at(1, 'Move ACME-1, ACME-2 to QA'), at(2, 'ACME-1: fix it')])).toEqual([['Move ACME-1, ACME-2 to QA'], ['ACME-1: fix it']]);
+  });
+
+  it('puts a wrap-up with the work it finishes', () => {
+    expect(shape([at(1, 'Finishing up now that "Pull partner campaigns" is done'), at(1.2, 'Pull partner campaigns')]))
+      .toEqual([['Finishing up now that "Pull partner campaigns" is done', 'Pull partner campaigns']]);
+  });
+
+  it('keeps the same scheduled job on different days apart, and a burst of it together', () => {
+    expect(shape([at(1, 'Daily exception filing'), at(25, 'Daily exception filing')])).toEqual([['Daily exception filing'], ['Daily exception filing']]);
+    expect(shape([at(1, 'Daily exception filing'), at(1.5, 'Daily exception filing', { minutes: 20 })])).toEqual([['Daily exception filing', 'Daily exception filing']]);
+  });
+
+  it('reads the steps from what set it off, and spans first start to last finish', () => {
+    // A trigger's time is when its work was done; its minutes run from when it fired.
+    const fired = at(1, 'ACME-5: bug', { kind: 'event', minutes: 12 });
+    const fix = at(1.1, 'ACME-5: fix', { minutes: 5 });
+    const note = at(1, 'ACME-5: comment', { minutes: 1 });
+    const ws = workSteps([note, fired, fix]);
+    expect(ws.steps.map((x) => x.title)).toEqual(['ACME-5: bug', 'ACME-5: fix', 'ACME-5: comment']);
+    expect((ws.ended - ws.began) / 60000).toBe(12);
+  });
+});

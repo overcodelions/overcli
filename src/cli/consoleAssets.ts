@@ -53,6 +53,8 @@ const DARK = `
   --ink: #ececf1; --muted: #b0b0ba; --faint: #8e8e98; --solid: #ececf1; --solid-ink: #17171c;
   --go: #7c8bff; --go-ink: #10121f; --go-soft: rgba(124, 139, 255, 0.16);
   --ok: #4ccf8f; --ok-soft: rgba(76, 207, 143, 0.13);
+  --chip-ink-l: 84%; --chip-bg-a: 0.22;
+  --chart: #6b7af0;
   --info: #7cb4ff; --info-soft: rgba(124, 180, 255, 0.14);
   --violet: #b896ff; --violet-soft: rgba(184, 150, 255, 0.14);
   --need: #f2b04a; --need-ink: #241700; --need-soft: rgba(242, 176, 74, 0.14);
@@ -66,6 +68,8 @@ const LIGHT = `
   --ink: #17171c; --muted: #4a4a52; --faint: #6b6b74; --solid: #17171c; --solid-ink: #ffffff;
   --go: #4355e0; --go-ink: #ffffff; --go-soft: rgba(93, 114, 255, 0.11);
   --ok: #17784a; --ok-soft: #e2f4ea;
+  --chip-ink-l: 30%; --chip-bg-a: 0.14;
+  --chart: #4355e0;
   --info: #1d5fa8; --info-soft: #e7f0fb;
   --violet: #6d28d9; --violet-soft: #f1e8fd;
   --need: #8a4a07; --need-ink: #ffffff; --need-soft: #fbefdd;
@@ -250,9 +254,29 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .trust-bars b.on { background: var(--muted); }
 .badge.plain { background: none; border: 1px solid var(--line-2); color: var(--muted); font-weight: 500; }
 .badge.plain::before { display: none; }
-.spendcell { display: flex; align-items: center; gap: 10px; min-width: 170px; }
+.spendcell { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 170px; }
+/* Spend day by day: a column a day, the day's biggest spenders on hover. */
+.tcard.spendchart { overflow: visible; }
+.spendchart { padding: 12px 18px; display: flex; align-items: center; gap: 12px 24px; flex-wrap: wrap; }
+.sc-head { flex: 0 0 210px; display: flex; flex-direction: column; gap: 2px; }
+.sc-chart { flex: 1 1 360px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sc-plot { position: relative; height: 48px; display: flex; align-items: flex-end; gap: 2px; border-bottom: 1px solid var(--line); }
+.sc-col { flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; padding: 0; border: 0; background: none; cursor: default; }
+.sc-col > span { width: 100%; background: var(--chart); border-radius: 4px 4px 0 0; }
+.sc-col.some > span { min-height: 2px; }
+.sc-col:hover > span, .sc-col:focus-visible > span { background: var(--go); }
+.sc-axis { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--faint); }
+.sc-tip { position: absolute; bottom: calc(100% + 6px); transform: translateX(-50%); z-index: 3; pointer-events: none; display: flex; flex-direction: column; gap: 3px; min-width: 150px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); font-size: 12.5px; white-space: nowrap; }
+.sc-tip-row { display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The teams a worker belongs to, beside its name. */
+.teamtag { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); font-size: 11.5px; font-weight: 500; line-height: 18px; }
 .spendcell .meter { flex: 1; }
-.spendcell span { font-size: 12.5px; color: var(--muted); min-width: 92px; text-align: right; }
+/* The bar compares workers; the amount sits beside it. A worker near or
+   past its own budget gets one more line saying so, and only then. */
+.spendcell > .sc-line { display: flex; align-items: center; gap: 12px; }
+.spendcell > .sc-line > b { min-width: 64px; text-align: right; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.spendcell > .sc-warn { align-self: flex-end; font-size: 11.5px; font-weight: 600; color: var(--need); white-space: nowrap; }
+.spendcell > .sc-warn.over { color: var(--bad); }
 .meter.over > span { background: var(--bad); }
 .seg { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
 .seg button { border: 0; background: none; padding: 4px 12px; border-radius: 6px; font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; }
@@ -704,7 +728,8 @@ table.files tr.picked td { background: var(--go-soft); }
 .librow:hover, .librow[aria-expanded="true"] { background: var(--panel-2); }
 .librow > .badge { justify-self: start; }
 .libkind { grid-row: auto; width: 32px; height: 32px; border-radius: 8px; }
-.libtag { flex: none; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--go); }
+.libtag { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--go); }
+.libtag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .libtag.info { color: var(--info); } .libtag.violet { color: var(--violet); } .libtag.need { color: var(--need); } .libtag.ok { color: var(--ok); }
 .libmain { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .libtitle { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -738,12 +763,51 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .rs-bar:hover, .rs-bar.on { opacity: 1; }
 .rs-bar.on { outline: 2px solid var(--ink); outline-offset: 1px; }
 .camepeek { padding: 0 16px 14px 54px; display: flex; flex-direction: column; gap: 10px; }
-.camerow[aria-expanded="true"] { background: var(--panel-2); }
-.camerow { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 12px 16px; border: 0; background: none; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.camerow.open { background: var(--panel-2); }
+.camerow { position: relative; display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 12px 16px; cursor: pointer; }
+/* The title is the row's button and covers the row; a worker's chip sits
+   above it and opens the worker instead. */
+.came-open { border: 0; background: none; padding: 0; margin: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.came-open::after { content: ""; position: absolute; inset: 0; }
+.came-open:focus-visible { outline: none; }
+.camerow:has(.came-open:focus-visible) { outline: 2px solid var(--go); outline-offset: -2px; }
+.wchip { position: relative; z-index: 1; flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 2px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--ink); font: inherit; font-size: 12px; font-weight: 500; line-height: 18px; cursor: pointer; }
+.wchip[style*="--wh"] { background: hsl(var(--wh) 50% 50% / var(--chip-bg-a)); border-color: hsl(var(--wh) 50% 55% / 0.45); color: hsl(var(--wh) 65% var(--chip-ink-l)); }
+.wchip:hover { border-color: var(--go); color: var(--go); }
+.avatar.xs { width: 18px; height: 18px; font-size: 8.5px; }
 .camerow:hover { background: var(--panel-2); }
 .camerow .libkind { width: 28px; height: 28px; border-radius: 7px; flex: none; margin-top: 1px; }
 .cametitle { font-weight: 600; font-size: 13.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .camemore { display: block; padding: 10px 16px; color: var(--go); font-size: 12.5px; }
+/* Title and time share the first line; where it came from is the second. */
+.came-top { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
+.came-top .cametitle { flex: 1; min-width: 0; }
+.came-at { flex: none; font-size: 12.5px; white-space: nowrap; }
+/* One ticket's updates as one row: its key, who, and the steps in order. */
+.came-key { flex: none; font-family: var(--mono); font-size: 12px; color: var(--faint); }
+.came-sep { flex: none; width: 1px; height: 12px; background: var(--line-2); }
+.came-path > span + span::before { content: "→"; margin: 0 6px; color: var(--faint); }
+.came-path > .came-last { color: var(--ok); }
+.came-chev { flex: none; margin-top: 3px; color: var(--faint); display: inline-flex; transform: rotate(-90deg); transition: transform 0.12s; }
+.camegroup.open .came-chev { transform: none; }
+.came-steps { position: relative; padding: 0 0 6px 38px; background: var(--panel-2); }
+/* Opened, the steps hang on one line from what set it off down to a dot
+   for done. It draws down as it opens, then a glow keeps running down it
+   so the direction reads at a glance. */
+.came-steps::before { content: ""; position: absolute; left: 67px; top: 26px; bottom: 22px; width: 2px; border-radius: 1px;
+  background: linear-gradient(to bottom, var(--line-2) 0 42%, var(--ok) 50%, var(--line-2) 58% 100%) 0 100% / 100% 300% no-repeat, var(--line-2);
+  transform-origin: top; animation: came-draw 0.45s ease-out both, came-flow 2.6s linear 0.45s infinite; }
+.came-step { position: relative; }
+/* Solid icons, so the line passes behind them rather than through. */
+.came-steps .camerow .libkind { position: relative; z-index: 1; background: color-mix(in srgb, currentColor 18%, var(--panel-2)); box-shadow: 0 0 0 3px var(--panel-2); }
+.came-steps .camerow:hover .libkind, .came-steps .camerow.open .libkind { box-shadow: 0 0 0 3px var(--panel); }
+.came-span { position: relative; margin: 0; padding: 6px 16px 8px 54px; font-size: 12.5px; color: var(--faint); }
+.came-span::before { content: ""; position: absolute; left: 24px; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); animation: came-done 0.25s ease-out 0.4s both; }
+@keyframes came-draw { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes came-flow { from { background-position: 0 100%, 0 0; } to { background-position: 0 0, 0 0; } }
+@keyframes came-done { from { transform: scale(0); } to { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .came-steps::before, .came-span::before { animation: none; } }
+.came-steps .camerow:hover, .came-steps .camerow.open { background: var(--panel); }
 .libsum { margin: 0; font-size: 13.5px; color: var(--muted); max-width: 90ch; }
 .libfiles { display: flex; flex-direction: column; gap: 6px; max-width: 760px; }
 .libfile { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); font: inherit; color: inherit; cursor: pointer; text-align: left; }
@@ -1004,13 +1068,19 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .avatar.xl { width: 64px; height: 64px; font-size: 22px; }
 .avatar.pic { background: var(--panel-2); overflow: hidden; border-radius: 22%; }
 .avatar.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.picgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 10px; }
+.picgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 8px; }
 .picgrid button { border: 2px solid transparent; border-radius: 26%; padding: 2px; background: none; cursor: pointer; justify-self: center; }
 .picgrid button:hover, .picgrid button[aria-pressed="true"] { border-color: var(--go); }
 .tones { gap: 6px; }
 .tone { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--panel); box-shadow: 0 0 0 1px var(--line); cursor: pointer; padding: 0; }
 .tone[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--go); }
-.picgrid img { width: 56px; height: 56px; border-radius: 22%; display: block; background: var(--panel-2); }
+.picgrid img { width: 44px; height: 44px; border-radius: 22%; display: block; background: var(--panel-2); }
+/* Changing a picture is rare: the picker stays shut until asked for. */
+.picpanel { display: flex; flex-direction: column; gap: 12px; max-width: 640px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel-2); }
+.picpanel details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.picpanel details[open] > summary { margin-bottom: 10px; }
+.face-btn { flex: none; border: 0; padding: 0; background: none; border-radius: 22%; cursor: pointer; }
+.face-btn:hover { outline: 2px solid var(--go); outline-offset: 2px; }
 .avatar.person { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line-2); }
 .avatar svg { flex: none; width: 15px; height: 15px; min-width: 15px; }
 .meter { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
@@ -1842,11 +1912,17 @@ button.pi-file:hover, a.pi-file:hover { background: var(--panel-2); }
 .cm-about { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
 
 /* The Inbox: what needs you, everything in flight in one list, what finished. */
-.if-sum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; font-size: 13px; color: var(--muted); margin: -4px 0 6px; }
+.if-flight { gap: 8px; }
+.if-flight-label { flex: 1; }
+.if-none { margin: 0; padding: 16px; color: var(--muted); }
+/* Nothing in flight: one line, not an empty box. */
+.if-flight.quiet { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 10px 16px; border: 1px solid var(--line); border-radius: var(--r-lg); }
+.if-flight.quiet > .row { display: contents; }
+.if-flight.quiet .if-flight-label { flex: none; }
+.if-flight.quiet .if-rows { order: 1; border: 0; background: none; }
+.if-flight.quiet .if-none { padding: 0; font-size: 13px; }
+.if-flight.quiet .if-next { order: 2; margin-left: auto; }
 .if-next { font-size: 12.5px; text-align: right; min-width: 0; }
-.if-sum b { font-size: 16px; color: var(--ink); margin-right: 2px; }
-.if-sum b.need { color: var(--need); }
-.if-sum b.ok { color: var(--ok); }
 .if-needlabel { color: var(--need); }
 .if-need { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--need); background: var(--need-soft); border-radius: var(--r-lg); }
 .if-rows { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
@@ -2964,15 +3040,52 @@ export const CONSOLE_JS = String.raw`
       });
     };
     text.onkeydown = function (e) { if (e.key === 'Enter') send(); };
-    return h('div', { class: 'stack', style: 'gap:6px;flex:0 1 460px;min-width:280px' },
-      h('div', { class: 'panel row', style: 'gap:8px;padding:6px 6px 6px 12px;flex-wrap:nowrap;border-color:var(--line-2)' },
+    return h('div', { class: 'stack', style: 'gap:6px' },
+      h('div', { class: 'panel row', style: 'gap:8px;padding:6px 6px 6px 12px;flex-wrap:nowrap;border-color:var(--line-2);min-height:46px' },
         h('span', { class: 'faint', style: 'flex:none;display:flex' }, icon('arrow', 16)), who, text, h('button', { class: 'btn go small', text: 'Ask', onclick: send })),
       out);
   }
 
   /// One thing that came in, as a line that opens it: a team task's page, a
   /// kept file in its folder, or anything else in the reader, in full.
-  function cameInRow(x) {
+  /// When an item's work began: it finished at its time, after its minutes.
+  /// A trigger's minutes run from when it fired to when its work was done.
+  function startOf(x) { return x.at - (x.minutes || 0) * 60000; }
+  function clock(ms) {
+    var d = new Date(ms);
+    return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : when(ms);
+  }
+  /// A piece of work's steps in the order they started (what set it off
+  /// first), when it began, and when its last step finished.
+  function workSteps(items) {
+    var steps = items.slice().sort(function (a, b) { return startOf(a) - startOf(b) || a.at - b.at; });
+    return { steps: steps, began: startOf(steps[0]), ended: Math.max.apply(null, steps.map(function (x) { return x.at; })) };
+  }
+  function took(ms) {
+    var m = Math.round(ms / 60000);
+    if (m < 1) return 'under a minute';
+    return m < 60 ? m + ' min' : Math.floor(m / 60) + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '');
+  }
+
+  /// A row whose title is the button: the whole row clicks through to it,
+  /// and a worker's chip on the second line opens the worker instead.
+  function cameRow(k, title, at, line, onclick, chev) {
+    var btn = h('button', { type: 'button', class: 'cametitle came-open', text: title, onclick: onclick });
+    var row = h('div', { class: 'camerow' + (chev ? ' camegroup' : '') },
+      h('span', { class: 'kpi-ic libkind ' + k[1], 'aria-hidden': 'true' }, icon(k[0], 15)),
+      h('span', { class: 'stack', style: 'gap:2px;min-width:0;flex:1' },
+        h('span', { class: 'came-top' }, btn, h('span', { class: 'faint came-at', text: at })),
+        h('span', { class: 'libsrc' }, line)),
+      chev ? h('span', { class: 'came-chev', 'aria-hidden': 'true' }, icon('chevron', 16)) : null);
+    return { row: row, btn: btn };
+  }
+  function setCameOpen(r, open) { r.btn.setAttribute('aria-expanded', open ? 'true' : 'false'); r.row.classList.toggle('open', open); }
+  /// Who did it, as a chip that opens them.
+  function workerChip(id, name) {
+    return h('button', { type: 'button', class: 'wchip', style: '--wh:' + hue((id || '') + name), title: 'Open ' + name, onclick: function () { openWorker(id); } }, avatar(id || '', name, 'xs'), h('span', { text: name }));
+  }
+
+  function cameInRow(x, opts) {
     var k = LIB_KIND[x.kind] || ['doc', '', 'Item'];
     var src = libSource(x);
     var o = libOrigin(x);
@@ -2986,21 +3099,23 @@ export const CONSOLE_JS = String.raw`
         }, function () { put([x.body ? md(x.body) : null]); });
       }, 'read/' + encodeURIComponent(x.id));
     };
-    var row = h('button', { class: 'camerow', onclick: open },
-      h('span', { class: 'kpi-ic libkind ' + k[1], 'aria-hidden': 'true' }, icon(k[0], 15)),
-      h('span', { class: 'stack', style: 'gap:2px;min-width:0' },
-        h('b', { class: 'cametitle', text: nameOf(x) }),
-        h('span', { class: 'libsrc' }, h('span', { class: 'libtag ' + k[1], text: src[0] }), h('span', { text: src[1] })),
-        h('span', { class: 'faint', text: ago(x.at) + (x.kind === 'task' && x.pack ? ' · ' + plural(x.pack.files.length, 'deliverable', 'deliverables') : '') })));
+    // The worker as a chip, then what it did: the playbook, the trigger, or
+    // who asked. A team's work keeps its line as it was.
+    var rest = o.kind === 'run' ? o.flowName || '' : o.kind === 'event' ? o.triggerName || '' : o.kind === 'errand' ? 'asked by ' + (o.askedBy && o.askedBy !== (state.me && state.me.name) ? o.askedBy : 'you') : '';
+    var line = x.workerName && o.kind !== 'task'
+      ? [h('span', { class: 'libtag ' + k[1], text: src[0] }), workerChip(x.workerId, x.workerName), rest ? h('span', { text: rest }) : null]
+      : [h('span', { class: 'libtag ' + k[1], text: src[0] }), h('span', { text: src[1] + (x.kind === 'task' && x.pack ? ' · ' + plural(x.pack.files.length, 'deliverable', 'deliverables') : '') })];
+    var r = cameRow(k, nameOf(x), (opts && opts.when) || ago(x.at) + (x.minutes != null ? ' · took ' + took(x.minutes * 60000) : ''), line, open);
+    var row = r.row;
     if (!x.runId || x.kind === 'task' || x.kind === 'file') return row;
     // Came from a run: open in place on what it found and the steps it took,
     // the whole run a click on.
     var peek = h('div', { class: 'camepeek', hidden: true });
     var filled = false;
-    row.setAttribute('aria-expanded', 'false');
-    row.onclick = function () {
+    setCameOpen(r, false);
+    r.btn.onclick = function () {
       peek.hidden = !peek.hidden;
-      row.setAttribute('aria-expanded', peek.hidden ? 'false' : 'true');
+      setCameOpen(r, !peek.hidden);
       if (filled || peek.hidden) return;
       filled = true;
       var steps = h('div');
@@ -3026,6 +3141,93 @@ export const CONSOLE_JS = String.raw`
     return h('div', null, row, peek);
   }
 
+  /// A ticket's key at the head of a title, as triggers and the runs they set
+  /// off write it: "ACME-5405: Sandbox copies…".
+  var TICKET_KEY = /^([A-Z][A-Z0-9]+-\d+)\b\s*[:·—-]?\s*/;
+  /// A worker's wrap-up names the work it closes: Finishing up now that "…" is done.
+  var WRAP_UP = /^Finishing up now that [“"](.+)[”"] is done$/;
+  /// Any ticket key in a title: "Fix ACME-5595" is about ACME-5595 too.
+  var ANY_KEY = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+
+  /// What an item is about: a ticket by its key, when its title names just
+  /// one; anything else by its title; a wrap-up by the title of what it wraps
+  /// up. Items about the same thing are one piece of work.
+  function subjectOf(x) {
+    var t = nameOf(x) || '', w = WRAP_UP.exec(t);
+    if (w) t = w[1];
+    var keys = (t.match(ANY_KEY) || []).filter(function (k, i, all) { return all.indexOf(k) === i; });
+    return keys.length === 1 ? { id: 'key:' + keys[0], key: keys[0] } : { id: 't:' + t.trim().toLowerCase(), title: t.trim() };
+  }
+
+  /// Finished items as pieces of work, newest first, in the order the newest
+  /// of each came in. A ticket's updates are one piece of work whenever they
+  /// came; items matched by title only while they're close together, so the
+  /// same scheduled job a day later is new work, not a second step.
+  var SAME_WORK_MS = 2 * 3600000;
+  function workGroups(items) {
+    var groups = [], open = {};
+    items.forEach(function (x) {
+      var sub = subjectOf(x), g = open[sub.id];
+      // Newest first: the group's last item is its earliest so far.
+      var near = g && (sub.key || startOf(g.items[g.items.length - 1]) - x.at <= SAME_WORK_MS);
+      if (!near) { g = open[sub.id] = { key: sub.key, title: sub.title, items: [] }; groups.push(g); }
+      g.items.push(x);
+    });
+    return groups;
+  }
+
+  /// One step of a piece of work, in a word or two: the trigger that set it
+  /// off, the playbook a run followed, or what kind of thing it was.
+  function stepName(x) {
+    var o = libOrigin(x);
+    if (o.kind === 'event') return o.triggerName || 'Trigger';
+    if (WRAP_UP.test(nameOf(x) || '')) return 'Wrapped up';
+    return o.flowName || libSource(x)[0];
+  }
+
+  /// One piece of work: its key, who worked on it, and its steps in order
+  /// with the last in green. Opens on the steps, each a row as before.
+  function cameInGroup(g) {
+    if (g.items.length < 2) return cameInRow(g.items[0]);
+    var newest = g.items[0];
+    var ws = workSteps(g.items), steps = ws.steps, began = ws.began, ended = ws.ended;
+    var work = steps.filter(function (x) { return x.kind !== 'event' && !WRAP_UP.test(nameOf(x) || ''); });
+    // A ticket's trigger names the problem, else a step titled by the key;
+    // otherwise the work's own title.
+    var keyed = g.key ? steps.filter(function (x) { var m = TICKET_KEY.exec(nameOf(x) || ''); return m && m[1] === g.key; }) : [];
+    var lead = g.key ? keyed[0] || steps[0] : work[0] || steps[0];
+    var title = g.title || nameOf(lead).replace(TICKET_KEY, '') || nameOf(lead);
+    var k = LIB_KIND[(work[0] || newest).kind] || ['doc', '', 'Item'];
+    var who = steps.filter(function (x, i) { return x.workerName && steps.findIndex(function (y) { return y.workerName === x.workerName; }) === i; });
+    // The same step twice in a row reads once, with a count.
+    var names = [];
+    steps.forEach(function (x) {
+      var n = stepName(x), last = names[names.length - 1];
+      if (last && last.name === n) last.times++; else names.push({ name: n, times: 1 });
+    });
+    var trail = names.map(function (n, i) {
+      return h('span', { class: i === names.length - 1 ? 'came-last' : null, text: n.name + (n.times > 1 ? ' ×' + n.times : '') });
+    });
+    // Opened, the steps read in the trail's order, each at the time it
+    // started and with how long it took; a trigger just says when it fired.
+    var list = h('div', { class: 'came-steps', hidden: true },
+      steps.map(function (x) {
+        return h('div', { class: 'came-step' }, cameInRow(x, { when: clock(startOf(x)) + (x.kind !== 'event' && x.minutes != null ? ' · took ' + took(x.minutes * 60000) : '') }));
+      }),
+      h('p', { class: 'came-span', text: 'Started ' + clock(began) + ' · finished ' + clock(ended) + ' · ' + took(ended - began) + ' start to finish' }));
+    var r = cameRow(k, title, ago(newest.at) + ' · took ' + took(ended - began), [
+      g.key ? [h('span', { class: 'came-key', text: g.key }), h('span', { class: 'came-sep', 'aria-hidden': 'true' })] : null,
+      who.map(function (x) { return workerChip(x.workerId, x.workerName); }),
+      who.length ? h('span', { class: 'came-sep', 'aria-hidden': 'true' }) : null,
+      h('span', { class: 'came-path' }, trail)], function () {
+      list.hidden = !list.hidden;
+      setCameOpen(r, !list.hidden);
+    }, true);
+    setCameOpen(r, false);
+    var row = r.row;
+    return h('div', null, row, list);
+  }
+
   function viewToday() {
     return Promise.all([api('GET', '/api/today'), api('GET', '/api/tools').catch(function () { return { ok: false }; }), api('GET', '/api/workers'), api('GET', '/api/library').catch(function () { return []; }), api('GET', '/api/inflight').catch(function () { return { ok: false }; })]).then(function (r) {
       var t = r[0], tl = r[1], workers = r[2].filter(function (w) { return w.enabled; });
@@ -3047,9 +3249,13 @@ export const CONSOLE_JS = String.raw`
         : needs ? 'Nothing new came in since yesterday.' : 'All quiet. Ask a worker for something, or check back after its next run.';
       var date = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
       var pct = t.spend.allowanceUSD ? Math.min(100, (t.spend.spentUSD / t.spend.allowanceUSD) * 100) : 0;
+      // The day's numbers live in the sentence and the section labels, not a
+      // row of counts that are mostly zero.
+      var spent = money(t.spend.spentUSD) + ' spent this month' + (t.spend.allowanceUSD != null ? ' of ' + money(t.spend.allowanceUSD) : '') + '.';
       var nodes = [h('header', { class: 'page-head' },
-        h('div', null, h('div', { class: 'eyebrow', text: date }), h('h1', { class: 'page-title', text: title }), h('p', { class: 'page-sub', text: sub })),
-        quickAsk(workers))];
+        h('div', null, h('div', { class: 'eyebrow', text: date }), h('h1', { class: 'page-title', text: title }), h('p', { class: 'page-sub', text: sub + ' ' + spent })))];
+      var ask = quickAsk(workers);
+      if (ask) nodes.push(ask);
       var upcoming = t.crew.filter(function (w) { return w.nextShiftAt; }).sort(function (a, b) { return a.nextShiftAt - b.nextShiftAt; }).slice(0, 4);
       // Everything in flight, from workers, teams and processes, in one list;
       // what waits on you is in Needs you instead.
@@ -3084,11 +3290,11 @@ export const CONSOLE_JS = String.raw`
               })),
               h('span', { class: 'if-now' + (x.stuck ? ' bad' : ''), text: x.now })),
             h('span', { class: 'faint if-age', text: ago(x.since) }));
-        }) : [h('p', { class: 'muted', style: 'margin:0;padding:16px', text: moving.length ? 'Nothing of this kind in flight.' : 'Nothing running right now.' })]);
+        }) : [h('p', { class: 'if-none', text: moving.length ? 'Nothing of this kind in flight.' : 'Nothing running' })]);
       };
       drawFlight();
-      var flightCount = h('b', { text: String(moving.length) });
-      var flightLabel = h('span', { class: 'label', style: 'flex:1', text: 'In flight · ' + moving.length });
+      var flightLabel = h('span', { class: 'label if-flight-label', text: moving.length ? 'In flight · ' + moving.length : 'In flight' });
+      var flightSec = null;
       // The bar's live list polls; when what's moving there changes, fetch
       // in flight again so the two agree without a reload.
       var seenNow = null;
@@ -3099,8 +3305,8 @@ export const CONSOLE_JS = String.raw`
         api('GET', '/api/inflight').then(function (y) {
           if (!y || y.ok === false) return;
           moving = movingOf(y.items || []);
-          flightCount.textContent = String(moving.length);
-          flightLabel.textContent = 'In flight · ' + moving.length;
+          flightLabel.textContent = moving.length ? 'In flight · ' + moving.length : 'In flight';
+          if (flightSec) flightSec.classList.toggle('quiet', !moving.length);
           drawFlight();
         });
       });
@@ -3116,11 +3322,24 @@ export const CONSOLE_JS = String.raw`
       var finished = cameIn.slice().sort(function (a, b) { return b.at - a.at; });
       // The title's count now includes process decisions.
       nodes[0].querySelector('.page-title').textContent = (WORDS[needs] || plural(needs, 'thing', 'things')) + (needs === 1 || needs === 0 ? ' needs you' : ' need you');
-      nodes.push(h('div', { class: 'if-sum' },
-        h('span', null, h('b', { class: needs ? 'need' : '', text: String(needs) }), ' need you'),
-        h('span', null, flightCount, ' in flight'),
-        h('span', null, h('b', { class: 'ok', text: String(finished.length) }), ' finished since yesterday'),
-        h('span', { class: 'faint' }, money(t.spend.spentUSD) + ' this month' + (t.spend.allowanceUSD != null ? ' of ' + money(t.spend.allowanceUSD) : ''))));
+      // Updates about the same thing as one row, unless asked for every update.
+      var groups = workGroups(finished);
+      var flat = !!state.inboxFlat || groups.length === finished.length;
+      var rows = flat ? finished.map(function (x) { return cameInRow(x); }) : groups.map(cameInGroup);
+      // Enough rows to fill the window below the header (a row is about
+      // 54px), never fewer than 8; the rest a click on.
+      var fits = Math.max(8, Math.ceil((window.innerHeight - 300) / 54));
+      var shown = state.inboxAll ? rows : rows.slice(0, fits);
+      var finishedTabs = groups.length < finished.length ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Show' }, [[false, 'Grouped'], [true, 'Every update']].map(function (o) {
+        return h('button', { type: 'button', 'aria-pressed': flat === o[0] ? 'true' : 'false', onclick: function () { state.inboxFlat = o[0]; render(); } }, o[1]);
+      })) : null;
+      flightSec = h('section', { class: 'stack if-flight' + (moving.length ? '' : ' quiet'), 'aria-label': 'In flight' },
+        h('div', { class: 'row', style: 'gap:12px' }, flightLabel,
+          upcoming.length ? h('span', { class: 'faint if-next' }, 'Up next: ', upcoming.map(function (w, i) {
+            return [i ? ' · ' : '', h('button', { class: 'linkish', style: 'font-size:12.5px', text: w.name, onclick: function () { openWorker(w.id); } }), ' ' + when(w.nextShiftAt)];
+          })) : null,
+          moving.length ? flightTabs : null),
+        flightBody);
       nodes.push(h('div', { class: 'stack', style: 'gap:22px' },
         // Needs you shows only when something does: the title already says
         // when nothing does. A crew of nobody gets the way to hire one.
@@ -3130,16 +3349,16 @@ export const CONSOLE_JS = String.raw`
           : !t.crew.length ? h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'Nobody to hear from yet.' }),
               h('p', { text: 'Hire a worker and what it needs from you lands here.' }),
               state.me.canHire ? h('div', { style: 'margin-top:14px' }, h('button', { class: 'btn go', text: 'Hire your first worker', onclick: function () { go('hire'); } })) : null) : null,
-        h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'In flight' },
-          h('div', { class: 'row', style: 'gap:12px' }, flightLabel,
-            upcoming.length ? h('span', { class: 'faint if-next' }, 'Up next: ', upcoming.map(function (w, i) {
-              return [i ? ' · ' : '', h('button', { class: 'linkish', style: 'font-size:12.5px', text: w.name, onclick: function () { openWorker(w.id); } }), ' ' + when(w.nextShiftAt)];
-            })) : null,
-            moving.length ? flightTabs : null),
-          flightBody),
+        flightSec,
         h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Finished since yesterday' },
-          h('div', { class: 'row', style: 'gap:12px' }, h('span', { class: 'label', style: 'flex:1', text: 'Finished since yesterday · ' + finished.length }), h('button', { class: 'linkish', text: 'Library →', onclick: function () { go('library'); } })),
-          finished.length ? h('div', { class: 'panel if-done' }, finished.slice(0, 8).map(cameInRow)) : h('p', { class: 'muted', style: 'margin:0', text: 'Nothing finished since yesterday.' }))));
+          h('div', { class: 'row', style: 'gap:12px' },
+            h('span', { class: 'label', text: 'Finished since yesterday' }),
+            h('span', { class: 'faint', style: 'flex:1;font-size:13px', text: !finished.length ? '' : groups.length < finished.length ? plural(finished.length, 'update', 'updates') + ' on ' + plural(groups.length, 'piece', 'pieces') + ' of work' : String(finished.length) }),
+            finishedTabs,
+            h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: 'Library →', onclick: function () { go('library'); } })),
+          finished.length ? h('div', { class: 'panel if-done' }, shown,
+            rows.length > shown.length ? h('button', { class: 'linkish camemore', text: 'Show ' + (rows.length - shown.length) + ' more', onclick: function () { state.inboxAll = true; render(); } }) : null)
+            : h('p', { class: 'muted', style: 'margin:0', text: 'Nothing finished since yesterday.' }))));
       return nodes;
     });
   }
@@ -3197,19 +3416,71 @@ export const CONSOLE_JS = String.raw`
     return h('span', { class: 'badge ' + cls, title: st.text, text: short });
   }
 
-  function spendCell(spent, budget) {
-    var pct = budget ? Math.min(100, (spent / budget) * 100) : 0;
+  /// A worker's spend: a bar against the most anyone spent, so the rows
+  /// compare, and the amount beside it. Its own budget is mentioned only
+  /// when it's at 80% or past it.
+  function spendCell(spent, budget, most) {
+    spent = spent || 0;
+    var pct = budget ? (spent / budget) * 100 : 0;
+    var level = budget && pct >= 100 ? 'over' : budget && pct >= 80 ? 'high' : '';
     return h('div', { class: 'spendcell' },
-      h('div', { class: 'meter' + (pct >= 100 ? ' over' : pct >= 85 ? ' high' : '') }, h('span', { style: 'width:' + pct.toFixed(0) + '%' })),
-      h('span', { text: money(spent) + ' / ' + money(budget) }));
+      h('div', { class: 'sc-line' },
+        h('div', { class: 'meter', style: 'flex:1' }, h('span', { style: 'width:' + (most > 0 ? (spent / most) * 100 : 0).toFixed(1) + '%' })),
+        h('b', { text: money(spent) })),
+      level ? h('span', { class: 'sc-warn ' + level, text: Math.round(pct) + '% of ' + money(budget) + ' budget' }) : null);
+  }
+
+  /// The roster's spend day by day, a column a day; hovering or focusing a
+  /// day names who spent it. Null when the report isn't there to draw from.
+  function spendChart(rep) {
+    var report = rep && rep.ok !== false ? rep.report : null;
+    if (!report || !report.daily || !report.daily.length) return null;
+    var days = report.daily, rows = report.byWorker || [];
+    var most = days.reduce(function (n, d) { return Math.max(n, d.costUSD || 0); }, 0);
+    var total = days.reduce(function (n, d) { return n + (d.costUSD || 0); }, 0);
+    var dayName = function (key) { var p = key.split('-'); return new Date(+p[0], p[1] - 1, +p[2]).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); };
+    var tip = h('div', { class: 'sc-tip', hidden: true });
+    var plot = h('div', { class: 'sc-plot' });
+    days.forEach(function (d, i) {
+      var usd = d.costUSD || 0;
+      var top = rows.map(function (r) { return { name: r.name, usd: ((r.daily || [])[i] || {}).costUSD || 0 }; })
+        .filter(function (x) { return x.usd > 0; }).sort(function (a, b) { return b.usd - a.usd; }).slice(0, 3);
+      var col;
+      var show = function () {
+        fill(tip, [h('b', { text: dayName(d.day) + ' · ' + money(usd) }),
+          top.length ? top.map(function (x) { return h('span', { class: 'sc-tip-row' }, h('span', { text: x.name }), h('span', { text: money(x.usd) })); }) : h('span', { class: 'faint', text: 'Nothing spent' })]);
+        tip.hidden = false;
+        var x = col.offsetLeft + col.offsetWidth / 2;
+        tip.style.left = Math.max(80, Math.min(plot.clientWidth - 80, x)) + 'px';
+      };
+      var hide = function () { tip.hidden = true; };
+      col = h('button', { type: 'button', class: 'sc-col' + (usd > 0 ? ' some' : ''), 'aria-label': dayName(d.day) + ', ' + money(usd) + (top.length ? ', mostly ' + top.map(function (x) { return x.name; }).join(', ') : ''), onmouseenter: show, onfocus: show, onmouseleave: hide, onblur: hide },
+        h('span', { style: 'height:' + (most ? (usd / most) * 100 : 0).toFixed(1) + '%' }));
+      plot.appendChild(col);
+    });
+    plot.appendChild(tip);
+    return h('section', { class: 'tcard spendchart', 'aria-label': 'Spend day by day' },
+      h('div', { class: 'sc-head' },
+        h('span', { class: 'label', text: 'Last ' + days.length + ' days' }),
+        h('span', { style: 'font-size:13px' }, h('b', { text: money(total) }), h('span', { class: 'faint', text: ' · busiest day ' + money(most) })),
+        h('button', { class: 'linkish', style: 'font-size:12.5px;color:var(--go)', text: 'Reports →', onclick: function () { go('reports'); } })),
+      h('div', { class: 'sc-chart' }, plot,
+        h('div', { class: 'sc-axis' }, h('span', { text: dayName(days[0].day) }), h('span', { text: 'Today' }))));
   }
 
   function viewWorkers() {
-    return api('GET', '/api/workers').then(function (list) {
+    return Promise.all([api('GET', '/api/workers'), api('GET', '/api/report?days=30').catch(function () { return null; }), api('GET', '/api/teams').catch(function () { return []; })]).then(function (res) {
+      var list = res[0], chart = spendChart(res[1]);
+      // Which teams each worker sits on, by name, as the teams list them.
+      var teamsOf = {};
+      (Array.isArray(res[2]) ? res[2] : []).forEach(function (t) {
+        (t.members || []).forEach(function (m) { (teamsOf[m.name] = teamsOf[m.name] || []).push(t.shortName || t.name); });
+      });
+      var inTeam = function (w) { return !!teamsOf[w.name]; };
       if (!list.length) return [head('Workers', null, hireButton(), 'Workspace'), emptyState('No workers you can see yet.', 'Hire one, or ask your admin to make a team’s workers visible to you.', hireButton())];
       var filter = state.workersFilter || 'all';
       var attention = function (w) { return workerStatus(w).cls === 'bad' || w.waiting > 0 || w.state === 'stuck'; };
-      var counts = { all: list.length, mine: list.filter(function (w) { return w.youManage; }).length, attention: list.filter(attention).length };
+      var counts = { all: list.length, mine: list.filter(function (w) { return w.youManage; }).length, teams: list.filter(inTeam).length, solo: list.filter(function (w) { return !inTeam(w); }).length, attention: list.filter(attention).length };
       var body = h('tbody');
       var shown = h('span');
       var query = h('input', { type: 'search', placeholder: 'Filter by name', 'aria-label': 'Filter workers', value: state.workersQuery || '' });
@@ -3222,20 +3493,27 @@ export const CONSOLE_JS = String.raw`
         var rows = list.filter(function (w) {
           if (filter === 'mine' && !w.youManage) return false;
           if (filter === 'attention' && !attention(w)) return false;
+          if (filter === 'teams' && !inTeam(w)) return false;
+          if (filter === 'solo' && inTeam(w)) return false;
           if (trust.value && w.trust !== trust.value) return false;
           return !q || (w.name + ' ' + w.tagline + ' ' + (w.manager || '')).toLowerCase().indexOf(q) >= 0;
-        });
+        }).sort(function (a, b) { return (b.spentThisMonthUSD || 0) - (a.spentThisMonthUSD || 0); });
+        // Bars against the biggest spender, so who's doing the most stands out.
+        var most = rows.reduce(function (n, w) { return Math.max(n, w.spentThisMonthUSD || 0); }, 0);
         rows.forEach(function (w) {
           var tr = h('tr', { class: 'link', tabindex: '0', onclick: function () { openWorker(w.id); }, onkeydown: function (e) { if (e.key === 'Enter') openWorker(w.id); } },
-            h('td', null, h('div', { class: 'who' }, avatar(w.id, w.name, 's'), h('div', { style: 'min-width:0' }, h('b', { text: w.name }), h('span', { class: 'sub', text: w.tagline })))),
+            h('td', null, h('div', { class: 'who' }, avatar(w.id, w.name, 's'), h('div', { style: 'min-width:0' },
+              h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, h('b', { text: w.name }), (teamsOf[w.name] || []).map(function (t) { return h('span', { class: 'teamtag', title: 'On the ' + t + ' team' }, icon('team', 12), t); })),
+              h('span', { class: 'sub', text: w.tagline })))),
             h('td', null, workerBadge(w)),
             h('td', null, h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, trustMeter(w.trust), w.coding ? codingTag() : null)),
             h('td', { class: 'muted', text: w.manager || '—' }),
+            h('td', { class: 'muted', text: askers(w) }),
             h('td', { class: 'muted' }, w.schedule, w.enabled && w.nextRunAt ? h('span', { class: 'sub', text: 'Next ' + when(w.nextRunAt) }) : null),
-            h('td', null, spendCell(w.spentThisMonthUSD, w.budgetUSDPerMonth)));
+            h('td', null, spendCell(w.spentThisMonthUSD, w.budgetUSDPerMonth, most)));
           body.appendChild(tr);
         });
-        if (!rows.length) body.appendChild(h('tr', null, h('td', { colspan: '6', class: 'muted', style: 'padding:28px 16px;text-align:center', text: 'No workers match.' })));
+        if (!rows.length) body.appendChild(h('tr', null, h('td', { colspan: '7', class: 'muted', style: 'padding:28px 16px;text-align:center', text: 'No workers match.' })));
         shown.textContent = 'Showing ' + rows.length + ' of ' + list.length;
       };
       query.oninput = draw;
@@ -3255,12 +3533,13 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'kpi' }, kpiIcon('inbox', 'need'), h('span', { class: 'k', text: 'Waiting on you' }), h('span', { class: 'v' + (waitingN ? ' need' : ''), text: String(waitingN) }), waitingN ? h('button', { class: 'n', text: 'Open inbox →', onclick: function () { go('today'); } }) : h('span', { class: 'n', text: 'All clear' })),
           h('div', { class: 'kpi' }, kpiIcon('bolt', 'ok'), h('span', { class: 'k', text: 'Working now' }), h('span', { class: 'v', text: String(working) }), h('span', { class: 'n', text: broken ? plural(broken, 'can’t reach a tool', 'can’t reach a tool') : 'Every tool reachable' })),
           h('div', { class: 'kpi' }, kpiIcon('bars', 'violet'), h('span', { class: 'k', text: 'Spend this month' }), h('span', { class: 'v', text: money(spent) }), h('button', { class: 'n', text: 'of ' + money(budget) + ' budgeted · Reports →', onclick: function () { go('reports'); } }))),
+        chart,
         h('section', { class: 'tcard', 'aria-label': 'Workers' },
           h('div', { class: 'tbar' },
-            h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' }, tab('all', 'All'), tab('mine', 'Managed by me'), tab('attention', 'Needs attention')),
+            h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' }, tab('all', 'All'), tab('mine', 'Managed by me'), counts.teams ? [tab('teams', 'In a team'), tab('solo', 'Solo')] : null, tab('attention', 'Needs attention')),
             h('div', { class: 'tools' }, query, trust)),
           h('div', { class: 'tscroll' }, h('table', { class: 'data' },
-            h('thead', null, h('tr', null, ['Worker', 'Status', 'Trust', 'Manager', 'Schedule', 'Spend this month'].map(function (t) { return h('th', { text: t }); }))),
+            h('thead', null, h('tr', null, ['Worker', 'Status', 'Trust', 'Manager', 'Who can ask', 'Schedule', 'Spend this month'].map(function (t) { return h('th', { text: t }); }))),
             body)),
           h('div', { class: 'tfoot' }, shown, h('button', { class: 'linkish', style: 'color:var(--go)', text: 'View as org chart →', onclick: function () { go('chart'); } })))];
     });
@@ -4743,13 +5022,15 @@ export const CONSOLE_JS = String.raw`
       return [h('div', { class: 'wk-sticky' }, h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
             h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Workers', onclick: function () { go('workers'); } }), ' / ' + w.name),
-            h('div', { class: 'row', style: 'gap:16px;flex-wrap:nowrap' }, avatar(w.id, w.name, 'xl'),
+            h('div', { class: 'row', style: 'gap:16px;flex-wrap:nowrap' },
+              w.youManage ? h('button', { type: 'button', class: 'face-btn', title: 'Change picture', 'aria-label': 'Change ' + w.name + '’s picture', onclick: function () { state.openPicker = w.id; state.workerTab = 'settings'; state.settingsSection = 'general'; render(); } }, avatar(w.id, w.name, 'xl')) : avatar(w.id, w.name, 'xl'),
               h('div', { style: 'min-width:0;display:flex;flex-direction:column;gap:6px' },
                 h('h1', { class: 'page-title', text: w.name }),
                 h('div', { class: 'row', style: 'gap:8px' }, workerBadge(w), trustMeter(w.trust), w.coding ? codingTag() : null, w.tagline ? h('span', { class: 'muted', style: 'font-size:13.5px', text: w.tagline }) : null),
                 // Settings is a tab below; the spend is a meter, not a third number in a sentence.
                 h('div', { class: 'row faint', style: 'gap:12px;font-size:13px' },
                   h('span', { text: [w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'Works when asked', plural((w.tools || []).length, 'tool', 'tools')].join(' · ') }),
+                  h('button', { class: 'linkish', style: 'font-size:13px', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } }),
                   budgetMeter(w.spentThisMonthUSD, w.budgetUSDPerMonth)),
                 monthLine(w)))),
           h('div', { class: 'page-actions' },
@@ -4832,7 +5113,8 @@ export const CONSOLE_JS = String.raw`
         return openCard('tmcard prc', 'Open ' + p.name, function () { go('process', { processId: p.id, processItem: null }); },
           h('div', { style: 'min-width:0' },
             h('span', { class: 'tmname', text: p.name }),
-            p.purpose ? h('p', { class: 'tmpurpose', text: p.purpose }) : null),
+            p.purpose ? h('p', { class: 'tmpurpose', text: p.purpose }) : null,
+            h('p', { class: 'faint', style: 'margin:4px 0 0;font-size:12.5px', text: processStarters(p) })),
           h('ol', { class: 'prc-strip', 'aria-label': 'Stages' }, p.stages.map(function (s, i) {
             return h('li', { class: s.kind + (p.byStage[i] ? ' busy' : ''), title: s.name + (p.byStage[i] ? ': ' + p.byStage[i] + ' here' : '') },
               h('span', { class: 'prc-ic', 'aria-hidden': 'true' }, icon(s.kind === 'people' ? 'person' : 'team', 13)),
@@ -6857,6 +7139,7 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'tmmeta' },
             h('span', { class: 'faces', title: t.members.map(function (m) { return m.name; }).join(', ') }, t.members.slice(0, 6).map(function (m) { return avatar(m.name, m.name, 's'); })),
             h('span', { class: 'faint tmstats', text: [plural(t.members.length, 'member', 'members'), plural(mine.length, 'task', 'tasks'), money(spent) + ' spent'].concat(last ? ['delivered ' + ago(last)] : []).join(' · ') }),
+            h('span', { class: 'faint tmstats', text: teamBriefers(t) }),
             running ? h('span', { class: 'tmlive' }, h('span', { class: 'livedot' }), running + ' running') : null),
           t.canBrief ? h('div', { class: 'tmfoot' },
             h('button', { class: 'btn small go', text: 'Give it a task', onclick: function (e) { e.stopPropagation(); go('team', { teamId: t.id, teamFocusBrief: true }); } })) : null);
@@ -10900,6 +11183,33 @@ export const CONSOLE_JS = String.raw`
   /// a public https image, which is why it's a link, not an upload.
   /// \x60who\x60: { id, name, avatarUrl }; \x60put(url|null)\x60 saves and returns the reply;
   /// \x60pick()\x60, when given, has one picked for it from its job.
+  /// Who may ask a worker things, in a word or two: the same rule the
+  /// server uses, people who can see it.
+  function askers(w) {
+    var a = w.audience;
+    var picked = a && ((a.people || []).length + (a.groups || []).length + (a.roles || []).length);
+    return picked ? 'Picked people' : w.visibility === 'org' ? 'Anyone' : w.visibility === 'team' ? 'Its team' : 'Only ' + (w.youManage ? 'you' : w.manager || 'its manager');
+  }
+  /// The same, as a line, with where it answers on its own.
+  function whoCanAsk(w) {
+    var ch = (w.slackHomeChannels || []).length;
+    return askers(w) + ' can ask' + (ch ? ' · ' + plural(ch, 'home channel', 'home channels') : '');
+  }
+  /// Who may give a team tasks.
+  function teamBriefers(t) {
+    if (t.picked) return 'Picked people can give it tasks';
+    return t.whoCanBrief === 'org' ? 'Anyone can give it tasks' : t.whoCanBrief === 'team' ? 'Its members’ teams can give it tasks' : 'Its members’ managers can give it tasks';
+  }
+  /// Who may put work into a process. One made before processes had a
+  /// say in this is open to everyone, as it was.
+  function processStarters(p) {
+    var a = p.whoStarts || { who: 'everyone', groups: [] };
+    if (a.who === 'everyone') return 'Anyone can put work in';
+    if (a.who === 'private') return 'Only its owner can put work in';
+    if (a.who === 'team' && a.groups.length) return a.groups.join(', ') + ' can put work in';
+    return 'Picked people can put work in';
+  }
+
   function picturePicker(who, put, pick) {
     var out = h('div', { 'aria-live': 'polite' });
     var now = h('div', { class: 'row', style: 'gap:12px' });
@@ -10919,17 +11229,28 @@ export const CONSOLE_JS = String.raw`
     };
     var drawNow = function () {
       // setChildren, not replaceChildren: that writes a null out as "null".
-      setChildren(now, [avatar(who.id, who.name, 'xl'),
-        h('span', { class: 'faint', text: who.avatarUrl ? 'Its picture now.' : 'Its initials, here and on its Slack messages.' }),
-        who.avatarUrl ? h('button', { class: 'btn small', text: 'Use initials', title: 'Its initials here, and on an initials tile in Slack', onclick: function (e) { save(null, e.target); } }) : null].filter(Boolean));
+      setChildren(now, [avatar(who.id, who.name, 'l'), toggle,
+        who.avatarUrl ? h('button', { class: 'linkish', style: 'font-size:13px', text: 'Use initials', title: 'Its initials here, and on an initials tile in Slack', onclick: function (e) { save(null, e.target); } })
+          : h('span', { class: 'faint', style: 'font-size:13px', text: 'Its initials, here and on its Slack messages.' })].filter(Boolean));
       // Every other place on the page it's drawn: the header, its rows.
       [].forEach.call(document.querySelectorAll('[data-face="' + who.id + '"]'), function (el) {
         if (now.contains(el)) return;
-        var size = (el.className.match(/\b(s|m|l|xl)\b/) || [])[1] || 'm';
+        var size = (el.className.match(/\b(xs|s|m|l|xl)\b/) || [])[1] || 'm';
         el.replaceWith(avatar(who.id, who.name, size));
       });
     };
-    var q = h('input', { type: 'search', placeholder: 'Search pictures: owl, detective, rocket, scientist…', 'aria-label': 'Search pictures', style: 'max-width:360px' });
+    var q = h('input', { type: 'search', placeholder: 'Search pictures: owl, detective, rocket, scientist…', 'aria-label': 'Search pictures', style: 'flex:1;min-width:200px' });
+    // Shut until asked for; the pictures load the first time it opens.
+    var panel = null, loaded = false;
+    var toggle = h('button', { type: 'button', class: 'btn small', 'aria-expanded': 'false', text: 'Change picture' });
+    var setOpen = function (open) {
+      panel.hidden = !open;
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.textContent = open ? 'Done' : 'Change picture';
+      if (open && !loaded) { loaded = true; drawTones(); load(); }
+      if (open) q.focus();
+    };
+    toggle.onclick = function () { setOpen(panel.hidden); };
     var timer = null, asked = 0;
     // Fluent's people come in five skin tones besides the default yellow.
     var tone = '';
@@ -10975,13 +11296,18 @@ export const CONSOLE_JS = String.raw`
       if (!/^https:\/\/\S+$/.test(url)) { out.replaceChildren(h('div', { class: 'msg err', text: 'Use an https:// link to an image Slack can reach.' })); return; }
       save(url, useLink).then(function () { link.value = ''; });
     };
-    drawNow(); drawTones(); load();
-    return h('div', { class: 'stack', style: 'gap:12px' }, now,
-      h('div', { class: 'row', style: 'gap:8px' }, q, tones, drawn, auto),
+    panel = h('div', { class: 'picpanel', hidden: true },
+      h('div', { class: 'row', style: 'gap:8px' }, q, tones),
+      h('div', { class: 'row', style: 'gap:8px' }, auto, drawn),
       grid,
-      h('div', { class: 'row', style: 'gap:8px' }, link, useLink),
-      h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Pictures: Fluent Emoji, © Microsoft, MIT licence. Drawn avatars: DiceBear, from random seeds. No names are sent.' }),
-      out);
+      h('details', null, h('summary', null, 'Use your own image…'),
+        h('div', { class: 'stack', style: 'gap:8px' },
+          h('div', { class: 'row', style: 'gap:8px' }, link, useLink),
+          h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Pictures: Fluent Emoji, © Microsoft, MIT licence. Drawn avatars: DiceBear, from random seeds. No names are sent.' }))));
+    drawNow();
+    // Its face in a page's header opens straight onto the picker.
+    if (state.openPicker === who.id) { state.openPicker = null; setOpen(true); }
+    return h('div', { class: 'stack', style: 'gap:12px' }, now, panel, out);
   }
 
   /// Its journal: the notes it keeps (standing instructions, from people and

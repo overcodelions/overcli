@@ -115,3 +115,20 @@ describe('commands that changed files', () => {
     expect(hasAlwaysVisibleTool([use('Bash', { command: 'x' })])).toBe(false);
   });
 });
+
+// `/design` publishes through the claude-artifacts MCP server now. Those calls
+// are the turn's deliverable just like an Artifact publish, so they keep their
+// card with tool activity hidden and never flash.
+describe('claude-artifacts MCP publishes', () => {
+  it('render inline and do not flash', () => {
+    for (const name of ['mcp__claude-artifacts__publish_files', 'mcp__claude-artifacts__publish_version']) {
+      expect(rendersWhenToolActivityHidden(use(name, { title: 'Workers' }))).toBe(true);
+      expect(shouldFlash(name)).toBe(false);
+    }
+  });
+
+  it('leave lookups on the same server as ordinary tools', () => {
+    expect(rendersWhenToolActivityHidden(use('mcp__claude-artifacts__read_artifact', { slug: 'x' }))).toBe(false);
+    expect(shouldFlash('mcp__claude-artifacts__read_artifact')).toBe(true);
+  });
+});

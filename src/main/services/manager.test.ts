@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ServicesManager, daemonOff, fsRepoReader } from './manager';
+import { ServicesManager as RealServicesManager, daemonOff, fsRepoReader } from './manager';
 import { loadStack, saveStack } from './store';
 import type { ServiceSpec } from './types';
 
@@ -15,13 +15,25 @@ beforeEach(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-repo-'));
 });
 
-afterEach(() => {
+// Every manager a test makes, so cleanup can wait for its log writes.
+const live = new Set<RealServicesManager>();
+class ServicesManager extends RealServicesManager {
+  constructor(...args: ConstructorParameters<typeof RealServicesManager>) {
+    super(...args);
+    live.add(this);
+  }
+}
+
+afterEach(async () => {
   // A service's state can still be landing on disk as the test ends — the
   // log sink's write() is fire-and-forget, so a rebind's "rebound x -> y"
   // line can still be mkdir'ing/appending under dataDir/services/<id> after
-  // the awaited call that queued it has already returned. Node retries a
-  // removal that meets ENOTEMPTY/EBUSY instead of failing the run; a loaded
-  // CI runner needs a longer budget than a local machine does.
+  // the awaited call that queued it has already returned. Retrying the
+  // removal loses to a write that makes the folder again, so wait for every
+  // manager's writes first; the retries stay for anything else on a loaded
+  // CI runner.
+  await Promise.all([...live].map((m) => m.flushLogs()));
+  live.clear();
   const gone = { recursive: true, force: true, maxRetries: 20, retryDelay: 100 } as const;
   fs.rmSync(dataDir, gone);
   fs.rmSync(repo, gone);
