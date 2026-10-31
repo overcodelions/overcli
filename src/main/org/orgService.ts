@@ -6753,7 +6753,7 @@ export class OrgService {
   /// The teams someone can see: those with a member they can see. A
   /// disbanded team only with `disbanded`, for what it delivered (the
   /// Library, its task pages): it takes no work and lists nowhere.
-  teams(caller: OrgCaller, opts: { disbanded?: boolean } = {}): Array<{ id: UUID; name: string; shortName?: string; shortNameAuto?: boolean; purpose?: string; avatarUrl?: string; members: Array<{ name: string; role: string }>; canBrief: boolean }> {
+  teams(caller: OrgCaller, opts: { disbanded?: boolean } = {}): Array<{ id: UUID; name: string; shortName?: string; shortNameAuto?: boolean; purpose?: string; avatarUrl?: string; members: Array<{ name: string; role: string }>; canBrief: boolean; whoCanBrief: NonNullable<Team['whoCanBrief']>; picked?: true }> {
     if (!this.deps.teams) return [];
     const policy = this.policy();
     const roster = this.deps.workers.roster();
@@ -6770,6 +6770,10 @@ export class OrgService {
         ...(t.avatarUrl ? { avatarUrl: t.avatarUrl } : {}),
         members: t.members.map((m) => ({ name: names.get(m.workerId) ?? 'a former worker', role: m.role })),
         canBrief: this.mayBrief(caller, t),
+        // Who may give it tasks, for its card: the kind only. The people a
+        // picked audience names stay on the team's own settings.
+        whoCanBrief: t.whoCanBrief ?? 'managers',
+        ...(t.audience && ((t.audience.people ?? []).length + (t.audience.groups ?? []).length + (t.audience.roles ?? []).length) ? { picked: true as const } : {}),
       }));
   }
 
