@@ -4,6 +4,24 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.24.3] - 2026-10-31
+
+### Added
+- **The Inbox shows pieces of work, not every update.** A ticket's trigger, runs and follow-ups are one row, as are a wrap-up and the work it finishes, or the same title within two hours. The row gives the key, who worked on it and the steps in order. Opened, it reads as a timeline from what set it off to a done marker, each step with its start time and how long it took. Grouped / Every update switches back to the flat list.
+- **Workers in the Inbox are chips** in their own colour that open the worker.
+- **A 30-day spend chart on the Workers page**, one column a day, with the day's top spenders on hover.
+- **Team tags on the Workers page**, with In a team and Solo filters.
+- **Who can ask, everywhere.** A worker's page says who can ask it and how many home channels it answers in, linking to its access settings; the Workers list has a Who can ask column; team cards say who can give a team tasks, and process cards who can put work in.
+
+### Changed
+- **A quieter Inbox.** Counts are in the headline and section labels, nothing running is one line, the ask bar runs full width, rows are two lines with the time on the right, Run and Trigger labels are readable, and the first load fills the window.
+- **Workers spend reads by worker.** Sorted by spend, bars measured against the biggest spender, the amount beside the bar, and the budget mentioned only at 80% or past it.
+- **The picture picker stays closed** behind Change picture in a worker's or team's settings; a worker's picture in its page header opens it.
+- **Pages published through the claude-artifacts MCP server** show in the desktop app as artifact cards, stay visible with tool activity off, and open in Overcli.
+
+### Fixed
+- **Spend bars on the Workers page were at least 92px wide**, so 27¢ and $12 looked the same.
+
 ## [0.24.2] - 2026-10-30
 
 ### Added
@@ -1151,7 +1169,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.2...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.3...HEAD
+[0.24.3]: https://github.com/overcodelions/overcli/compare/v0.24.2...v0.24.3
 [0.24.2]: https://github.com/overcodelions/overcli/compare/v0.24.1...v0.24.2
 [0.24.1]: https://github.com/overcodelions/overcli/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/overcodelions/overcli/compare/v0.22.0...v0.24.0
