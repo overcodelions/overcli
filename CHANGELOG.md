@@ -4,6 +4,15 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.24.4] - 2026-10-31
+
+### Security
+- **`qs` 6.17.1 on the server**, for an uncaught TypeError when a query string is built with the comma array format.
+
+### Changed
+- **Dependency patches:** the MCP SDK 1.32.2, Electron 41.10.7, and transitive fixes from `npm audit fix`. Electron's open advisories need Electron 42 and come in a later release.
+- **The deploy guide says the server image is private** while overgo is in alpha, and how to log in to pull it or build your own.
+
 ## [0.24.3] - 2026-10-31
 
 ### Added
@@ -1169,7 +1178,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.3...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.4...HEAD
+[0.24.4]: https://github.com/overcodelions/overcli/compare/v0.24.3...v0.24.4
 [0.24.3]: https://github.com/overcodelions/overcli/compare/v0.24.2...v0.24.3
 [0.24.2]: https://github.com/overcodelions/overcli/compare/v0.24.1...v0.24.2
 [0.24.1]: https://github.com/overcodelions/overcli/compare/v0.24.0...v0.24.1
