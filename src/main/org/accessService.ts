@@ -119,7 +119,7 @@ export interface AccessDeps {
 /// people are set from People; the Slack workspace only with `org init`.
 export const EDITABLE_RULES = [
   'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
-  'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'retentionDays', 'sso', 'people', 'fleet',
+  'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'prSavedMultiplier', 'prSavedMinHours', 'retentionDays', 'sso', 'people', 'fleet',
   'redactSecrets', 'providerModels', 'workerAccess',
 ] as const;
 
@@ -140,6 +140,8 @@ export interface EditableRules {
   roles: OrgRole[];
   orgBudgetUSD: number | null;
   alertAtPercent: number;
+  prSavedMultiplier: number;
+  prSavedMinHours: number;
   retentionDays: number | null;
   sso: OrgSso | null;
   people: Record<string, string>;
@@ -516,6 +518,8 @@ export class AccessService {
         roles: p.roles,
         orgBudgetUSD: p.orgBudgetUSD ?? null,
         alertAtPercent: p.alertAtPercent,
+        prSavedMultiplier: p.prSavedMultiplier,
+        prSavedMinHours: p.prSavedMinHours,
         retentionDays: p.retentionDays ?? null,
         sso: p.sso ?? null,
         people: p.people,

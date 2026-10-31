@@ -280,6 +280,32 @@ describe('a worker’s picture', () => {
   });
 });
 
+describe('a worker’s tagline', () => {
+  it('is set by its manager as one line, refused when too long, and cleared when empty', () => {
+    const { svc, roster } = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT }, tagline: 'old line' })] });
+    expect(svc.update(sam, 'open', { tagline: 'not yours' }).ok).toBe(false);
+    expect(svc.update(pat, 'open', { tagline: '  watches logs\n and files tickets  ' }).ok).toBe(true);
+    expect(roster.get('open')!.tagline).toBe('watches logs and files tickets');
+    expect(svc.update(pat, 'open', { tagline: 'x'.repeat(161) }).ok).toBe(false);
+    expect(roster.get('open')!.tagline).toBe('watches logs and files tickets');
+    expect(svc.update(pat, 'open', { tagline: '   ' }).ok).toBe(true);
+    expect(roster.get('open')!.tagline).toBeUndefined();
+  });
+
+  it('shows in its history, and comes back with the version it was in', () => {
+    const { svc, roster } = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT }, tagline: 'reviews acme deploys' })] });
+    expect(svc.update(pat, 'open', { tagline: 'files acme exceptions' }).ok).toBe(true);
+    const hist = svc.workerHistory(pat, 'open');
+    if (!hist.ok) throw new Error(hist.error);
+    const changed = hist.versions.find((v) => v.changed.includes('its tagline'));
+    expect(changed).toBeTruthy();
+    const before = hist.versions.find((v) => v.tagline === 'reviews acme deploys');
+    expect(before).toBeTruthy();
+    expect(svc.restoreWorker(pat, 'open', before!.id).ok).toBe(true);
+    expect(roster.get('open')!.tagline).toBe('reviews acme deploys');
+  });
+});
+
 describe('a worker’s home channels', () => {
   it('are channel IDs, deduped, claimed by an admin, let go by its manager, and cleared with null', () => {
     const { svc, roster } = harness({ roster: [worker('open', { manager: { name: 'Pat', slackUserId: PAT } })] });

@@ -38,3 +38,5 @@ release-readiness-*.md
 
 # Deployment secrets
 deploy/.env
+# Local overrides (mounted AWS profiles and the like)
+deploy/docker-compose.override.yml

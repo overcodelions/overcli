@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { FlowRun } from '../../shared/flows/schema';
 import type { Worker } from '../../shared/flows/worker';
 import { buildWorkerReport, WORKER_HUMAN_TIME_SAVED_MULTIPLIER, type WorkerReport, type WorkerRunFact } from '../../shared/flows/workerReport';
 import { DEFAULT_ORG_POLICY, type OrgCaller } from '../../shared/org/policy';
@@ -33,7 +34,7 @@ function run(workerId: string, costUSD: number, at = NOW - 60_000): WorkerRunFac
   return { workerId, completed: true, turns: 1, inputTokens: 10, outputTokens: 5, costUSD, wallClockMs: 120_000, terminalAt: at };
 }
 
-function harness(opts: { withReport?: boolean; facts?: WorkerRunFact[] } = {}) {
+function harness(opts: { withReport?: boolean; facts?: WorkerRunFact[]; flowRuns?: FlowRun[] } = {}) {
   const roster = [
     worker('ana', { manager: { name: 'Pat', slackUserId: PAT }, budgetUSDPerMonth: 15 }),
     worker('ben', { manager: { name: 'Sam', slackUserId: SAM }, visibility: 'org' }),
@@ -57,7 +58,7 @@ function harness(opts: { withReport?: boolean; facts?: WorkerRunFact[] } = {}) {
       spentThisMonth: () => new Map(),
       workerNames: () => roster.map((w) => w.name),
     },
-    runs: { listRuns: () => [], getRun: () => null, steerRun: () => ({ ok: true }), resumeRun: () => ({ ok: true }) },
+    runs: { listRuns: () => opts.flowRuns ?? [], getRun: () => null, steerRun: () => ({ ok: true }), resumeRun: () => ({ ok: true }) },
     rejectRun: () => ({ ok: true }),
     policy: () => ({ ...DEFAULT_ORG_POLICY }),
     draft: async () => ({ ok: false, error: 'not in this test' }),
@@ -70,6 +71,59 @@ function harness(opts: { withReport?: boolean; facts?: WorkerRunFact[] } = {}) {
 }
 
 describe('OrgService.report', () => {
+  it('counts the pull requests runs opened in the window, by worker and in total', () => {
+    const landed = (id: string, workerId: string, createdAt: number, lines: string[]) =>
+      ({ id, workerId, createdAt, state: { kind: 'done', success: true }, attempts: [], flowSnapshot: { name: 'f', steps: [] }, artifacts: { 'pull-requests.md': { name: 'pull-requests.md', body: lines.join('\n'), producedAt: createdAt } } }) as unknown as FlowRun;
+    const open = (n: number) => `- Opened a pull request for acme-api: https://bitbucket.org/acme/acme-api/pull-requests/${n} (branch fix/acme-${n})`;
+    const { svc } = harness({
+      flowRuns: [
+        landed('a1', 'ana', NOW - 3_600_000, [open(1)]),
+        // A draft counts; one it only added commits to, or found open, doesn't.
+        landed('a2', 'ana', NOW - 7_200_000, ['- Opened a draft pull request for acme-web: https://bitbucket.org/acme/acme-web/pull-requests/2 (branch fix/acme-web)', '- acme-api: added to fix/acme-1, so its open pull request has the new commits: https://bitbucket.org/acme/acme-api/pull-requests/1']),
+        landed('a3', 'ana', NOW - 60 * 86_400_000, [open(3)]),
+        landed('c1', 'cal', NOW - 3_600_000, [open(4)]),
+      ],
+    });
+    const month = svc.report(pat, 30);
+    if (!month.ok) throw new Error(month.error);
+    expect(month.report.byWorker.map((r) => [r.workerId, r.pullRequests])).toEqual([['ana', 2], ['ben', 0]]);
+    expect(month.report.totals.pullRequests).toBe(2);
+    const all = svc.report(admin, 0);
+    expect(all.ok && all.report.totals.pullRequests).toBe(4);
+  });
+
+  it('counts time saved at 1.5× agent time, and a run that opened a pull request at 6× or 1 hour, whichever is more', () => {
+    const minute = 60_000;
+    const pr = (id: string, workerId: string, ms: number) =>
+      ({ id, workerId, createdAt: NOW - 3_600_000, state: { kind: 'done', success: true }, flowSnapshot: { name: 'f', steps: [] },
+        attempts: [{ startedAt: NOW - 3_600_000, endedAt: NOW - 3_600_000 + ms }],
+        artifacts: { 'pull-requests.md': { name: 'pull-requests.md', body: `- Opened a pull request for acme-api: https://bitbucket.org/acme/acme-api/pull-requests/${id} (branch fix/${id})`, producedAt: NOW } } }) as unknown as FlowRun;
+    // Facts: 2 minutes of agent time each for ana and ben (the run() helper), and hidden cal.
+    const { svc } = harness({ flowRuns: [pr('1', 'ana', 20 * minute), pr('2', 'ana', 3 * minute), pr('3', 'cal', 30 * minute)] });
+    const res = svc.report(pat, 30);
+    if (!res.ok) throw new Error(res.error);
+    const base = res.report.totals.workedMs * 1.5;
+    // 20 min → 120 min (6×) less the 30 it already had; 3 min → 60 min (the floor) less 4.5. Cal's is hidden.
+    expect(res.saved).toEqual({ ms: base + (120 - 30) * minute + (60 - 4.5) * minute, prRuns: 2, prMultiplier: 6, prMinHours: 1 });
+  });
+
+  it('gives each worker its month so far: runs started, runs failed, pull requests opened', () => {
+    const at = (id: string, createdAt: number, state: Record<string, unknown>, body = '') =>
+      ({ id, workerId: 'ana', createdAt, state, attempts: [], flowSnapshot: { name: 'f', steps: [] }, artifacts: body ? { 'pull-requests.md': { name: 'pull-requests.md', body, producedAt: createdAt } } : {} }) as unknown as FlowRun;
+    const { svc } = harness({
+      flowRuns: [
+        at('m1', NOW - 3_600_000, { kind: 'done', success: true }, '- Opened a pull request for acme-api: https://bitbucket.org/acme/acme-api/pull-requests/9 (branch fix/acme-9)'),
+        at('m2', NOW - 7_200_000, { kind: 'done', success: false }),
+        at('m3', NOW - 60_000, { kind: 'running', currentStepId: 's' }),
+        // Last month: not counted.
+        at('m4', new Date(2026, 7, 20).getTime(), { kind: 'done', success: true }, '- Opened a pull request for acme-api: https://bitbucket.org/acme/acme-api/pull-requests/8 (branch fix/acme-8)'),
+      ],
+    });
+    const ana = svc.listWorkers(admin).find((w) => w.id === 'ana')!;
+    expect(ana.month).toEqual({ runs: 3, failed: 1, pullRequests: 1 });
+    expect(svc.listWorkers(admin).find((w) => w.id === 'ben')!.month).toEqual({ runs: 0, failed: 0, pullRequests: 0 });
+  });
+
   it('shows only the workers the caller can see, and leaves the hidden ones out of the totals', () => {
     const { svc } = harness();
     const res = svc.report(pat, 30);

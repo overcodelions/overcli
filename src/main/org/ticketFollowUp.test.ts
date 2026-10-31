@@ -22,6 +22,15 @@ describe('the ticket follow-up', () => {
     expect(prompt).toContain('fill them in the transition');
   });
 
+  it('moves the ticket to the status the org names, taking the fewest transitions there', () => {
+    const named = ticketPrompt(run, 'ACME-412', [{ repo: 'app', branch: 'b', url: 'https://example.test/pr/1' }], 'Ready for QA');
+    expect(named).toContain('"Ready for QA"');
+    expect(named).toContain('fewest');
+    expect(named).not.toContain('Code Review');
+    const unnamed = ticketPrompt(run, 'ACME-412', [{ repo: 'app', branch: 'b', url: 'https://example.test/pr/1' }]);
+    expect(unnamed).toContain('the status that means it is in review');
+  });
+
   it('takes the ticket its title names over one its ask mentions first', () => {
     const cloned = { ...run, orchestrationItemTitle: 'ACME-412: Fix the upload timeout', userPrompt: 'Cloned from ACME-398. Fix ACME-412 end to end.' } as unknown as FlowRun;
     expect(ticketOf(cloned)).toBe('ACME-412');

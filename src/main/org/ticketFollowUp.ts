@@ -85,7 +85,9 @@ export function ticketFlowYaml(server: string): string {
 /// The run's plan and review ride along, not only its pull request, because
 /// a transition into review often asks for the root cause and when the bug
 /// came in, and that is where the run wrote them down.
-export function ticketPrompt(run: FlowRun, ticket: string, landed: Landed[]): string {
+/// `status` is where the org moves a ticket once its pull request is pushed
+/// (Setup → Repos); absent, whichever status means it is in review.
+export function ticketPrompt(run: FlowRun, ticket: string, landed: Landed[], status?: string): string {
   const links = landed.filter((l) => l.url || l.branch).map((l) => `- ${l.repo}: ${l.url ?? `branch ${l.branch}`}`);
   const said = (name: string, max: number) => (run.artifacts?.[name]?.body ?? '').trim().slice(0, max);
   const found = [
@@ -95,10 +97,15 @@ export function ticketPrompt(run: FlowRun, ticket: string, landed: Landed[]): st
   ].filter(([, body]) => body);
   return [
     `On ${ticket}: add one comment, two or three sentences on what changed and why, then the`,
-    'link (or links) a person follows to review it, exactly as below. Then move the ticket to the',
-    'status that means it is in review (often "Code Review" or "In Review"). If that transition',
-    'requires fields such as a root cause (RCA), the date the bug was introduced or a problem type,',
-    'fill them in the transition from what the run found below.',
+    'link (or links) a person follows to review it, exactly as below. Then move the ticket to',
+    ...(status
+      ? [
+          `"${status}". If that isn't one of its transitions from where it is now, take the fewest`,
+          `transitions that reach it (often In Progress first); if none reach it, say so and leave it.`,
+        ]
+      : ['the status that means it is in review (often "Code Review" or "In Review").']),
+    'If a transition requires fields such as a root cause (RCA), the date the bug was introduced or',
+    'a problem type, fill them in the transition from what the run found below.',
     '',
     `The work "${flowRunTitle(run)}" was pushed for review:`,
     ...links,

@@ -114,6 +114,19 @@ describe('OrgService.workerRuns', () => {
     expect(seen).toEqual(['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'stop']);
   });
 
+  it('carries the pull requests a run landed, and none for a run that landed nothing', () => {
+    const body = '- Opened a pull request for acme-api: https://bitbucket.org/acme/acme-api/pull-requests/42 (branch fix/acme-null)\n- acme-web: its pull request was already open, left as it was: https://bitbucket.org/acme/acme-web/pull-requests/7 (branch fix/acme-web)';
+    const landed = flowRun('pr', 'ana', NOW - 3600_000, { artifacts: { 'pull-requests.md': { name: 'pull-requests.md', body, producedAt: NOW } } } as unknown as Partial<FlowRun>);
+    const { svc } = harness({ runs: [...runs, landed] });
+    const res = svc.workerRuns(pat, 'ana', { limit: 2 });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.runs[0].pullRequests).toEqual([
+      { repo: 'acme-api', url: 'https://bitbucket.org/acme/acme-api/pull-requests/42', branch: 'fix/acme-null', state: 'open' },
+      { repo: 'acme-web', url: 'https://bitbucket.org/acme/acme-web/pull-requests/7', branch: 'fix/acme-web', state: 'existing' },
+    ]);
+    expect(res.runs[1].pullRequests).toBeUndefined();
+  });
+
   it('defaults to 50, clamps the limit, and gives null when nothing is left', () => {
     const { svc } = harness({ runs });
     const all = svc.workerRuns(pat, 'ana');

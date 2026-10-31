@@ -605,3 +605,63 @@ describe('bearer', () => {
     expect(Date.now() - started).toBeLessThan(200);
   });
 });
+
+describe('model id test', () => {
+  let mserver: http.Server;
+  let mbase: string;
+  const asked: string[][] = [];
+  let release: (() => void) | null = null;
+
+  beforeAll(async () => {
+    mserver = createControlPlane({
+      org: {} as OrgService,
+      testModelIds: async (models) => {
+        asked.push(models);
+        if (models[0] === 'slow') await new Promise<void>((r) => (release = r));
+        return models.map((model) => ({ model, ok: model !== 'anthropic.claude-nope', verdict: model === 'anthropic.claude-nope' ? 'unknown-id' : 'ok', message: 'x' }));
+      },
+      log: () => {},
+      authenticate: (t) => (t === 'ocli_admin' ? { slackUserId: 'U0ACMEADM', name: 'Ada', admin: true } : t === 'ocli_good' ? PAT : null),
+    });
+    await listenControlPlane(mserver, { host: '127.0.0.1', port: 0 });
+    mbase = `http://127.0.0.1:${(mserver.address() as AddressInfo).port}`;
+  });
+
+  afterAll(() => {
+    mserver.close();
+  });
+
+  const post = (body: unknown, token = 'ocli_admin') =>
+    fetch(`${mbase}/api/admin/models/test`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+
+  it('tests the ids an admin names, trimmed', async () => {
+    expect(await post({ models: [' us.anthropic.claude-opus-5-5 ', 'anthropic.claude-nope', 7] })).toEqual({
+      ok: true,
+      results: [
+        { model: 'us.anthropic.claude-opus-5-5', ok: true, verdict: 'ok', message: 'x' },
+        { model: 'anthropic.claude-nope', ok: false, verdict: 'unknown-id', message: 'x' },
+      ],
+    });
+  });
+
+  it('refuses non-admins, nothing to test, too many, and a second batch at once', async () => {
+    const before = asked.length;
+    expect(await post({ models: ['m'] }, 'ocli_good')).toEqual({ ok: false, error: expect.stringMatching(/Only admins/) });
+    expect(await post({ models: [] })).toEqual({ ok: false, error: expect.stringMatching(/Name a model/) });
+    expect(await post({ models: Array.from({ length: 41 }, (_, i) => `m${i}`) })).toEqual({ ok: false, error: expect.stringMatching(/at most 40/) });
+    expect(asked.length).toBe(before);
+    const first = post({ models: ['slow'] });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await post({ models: ['m'] })).toEqual({ ok: false, error: expect.stringMatching(/already running/) });
+    release!();
+    expect(await first).toMatchObject({ ok: true });
+  });
+
+  it('says so when the server can’t test', async () => {
+    const bare = createControlPlane({ org: {} as OrgService, log: () => {}, authenticate: () => ({ slackUserId: 'U0ACMEADM', name: 'Ada', admin: true }) });
+    await listenControlPlane(bare, { host: '127.0.0.1', port: 0 });
+    const res = await fetch(`http://127.0.0.1:${(bare.address() as AddressInfo).port}/api/admin/models/test`, { method: 'POST', headers: { Authorization: 'Bearer x', 'Content-Type': 'application/json' }, body: '{"models":["m"]}' }).then((r) => r.json());
+    bare.close();
+    expect(res).toEqual({ ok: false, error: expect.stringMatching(/isn’t set up/) });
+  });
+});

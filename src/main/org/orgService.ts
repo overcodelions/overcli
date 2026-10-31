@@ -45,6 +45,7 @@ import {
   type OrgPolicy,
   type OrgRole, inAudience, type Audience } from '../../shared/org/policy';
 import { buildThreads, nowLine, summarize, type WorkThread } from './workThreads';
+import { LANDED_ARTIFACT, pullRequestsIn, type LandedPullRequest } from './landBranches';
 import { isReadOnlyMcpTool, parseMcpToolName } from '../../shared/flows/mcpTools';
 import { stepsARunGrantCovers } from '../flows/stepEffect';
 import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
@@ -185,6 +186,8 @@ export interface WorkerSummary {
   avatarUrl?: string;
   budgetUSDPerMonth: number;
   spentThisMonthUSD: number;
+  /// This month so far: runs started, runs that failed, pull requests opened.
+  month: { runs: number; failed: number; pullRequests: number };
   waiting: number;
   youManage: boolean;
   /// What it is doing now: working, waiting on a person, paused, stuck, idle.
@@ -677,13 +680,25 @@ export type OrgReportRow = WorkerReportRow & {
   manager?: string;
   youManage: boolean;
   budgetUSDPerMonth: number;
+  /// Pull requests its runs opened in the window.
+  pullRequests: number;
 };
 
-export type OrgReport = Omit<WorkerReport, 'byWorker'> & {
+export type OrgReport = Omit<WorkerReport, 'byWorker' | 'totals'> & {
   /// The window asked for: 7, 30, or 0 for all time.
   days: number;
   byWorker: OrgReportRow[];
+  totals: WorkerReport['totals'] & { pullRequests: number };
 };
+
+/// The report's estimate of a person's time saved, and how it was reached.
+export interface ReportSaved {
+  ms: number;
+  /// Runs counted at the pull-request rate.
+  prRuns: number;
+  prMultiplier: number;
+  prMinHours: number;
+}
 
 const REPORT_WINDOWS = new Set([7, 30, 0]);
 
@@ -831,6 +846,9 @@ export interface OrgServiceDeps extends OverdbDeps {
     /// Whether the server opens pull requests: link only, a draft, or open.
     prMode?(): 'link' | 'draft' | 'open';
     setPrMode?(mode: string): Result;
+    /// The status a ticket moves to once its pull request is pushed.
+    ticketStatus?(): string | undefined;
+    setTicketStatus?(status: string): Result;
     /// Fixes a red CI build gets from its worker before its manager hears.
     ciRounds?(): number;
     setCiRounds?(n: number): Result;
@@ -1132,6 +1150,8 @@ export interface RunPast {
   /// What it produced last: the answer, or the last step's output.
   result?: { name: string; body: string };
   error?: string;
+  /// The pull requests its branches went to, from the landing note.
+  pullRequests?: LandedPullRequest[];
 }
 
 /// How long a look-up to set up a watch may take, and how often it's checked.
@@ -1314,6 +1334,7 @@ export class OrgService {
           ...(w.avatarUrl ? { avatarUrl: w.avatarUrl } : {}),
           budgetUSDPerMonth: w.budgetUSDPerMonth,
           spentThisMonthUSD: spent.get(w.id) ?? 0,
+          month: this.monthOf(runsBy.get(w.id) ?? []),
           waiting: waiting.get(w.id) ?? 0,
           youManage: canManage(policy, roster, w.id, caller),
           schedule: scheduleText(w.cadence),
@@ -1413,7 +1434,7 @@ export class OrgService {
   /// narrowed to the workers the caller can see. Totals and the day-by-day
   /// are re-added from the visible rows only, so a hidden worker's cost never
   /// shows up in a number the caller can read.
-  report(caller: OrgCaller, days: number): Result<{ report: OrgReport; savedMultiplier: number }> {
+  report(caller: OrgCaller, days: number): Result<{ report: OrgReport; savedMultiplier: number; saved: ReportSaved }> {
     if (!this.deps.report) return { ok: false, error: 'Reports are not available on this server.' };
     const span = Number.isFinite(days) ? days : 30;
     if (!REPORT_WINDOWS.has(span)) return { ok: false, error: 'Pick 7 days, 30 days or all time (0).' };
@@ -1427,6 +1448,16 @@ export class OrgService {
       sinceMs = from.getTime();
     }
     const full = this.deps.report(sinceMs);
+    const prs = new Map<UUID, number>();
+    // Runs that opened a pull request, with their agent time, for time saved.
+    const prRuns: Array<{ workerId: UUID; ms: number }> = [];
+    for (const r of this.deps.runs.listRuns()) {
+      if (!r.workerId || r.createdAt < sinceMs) continue;
+      const opened = OrgService.prsOpened(r);
+      if (!opened) continue;
+      prs.set(r.workerId, (prs.get(r.workerId) ?? 0) + opened);
+      prRuns.push({ workerId: r.workerId, ms: OrgService.agentMs(r) });
+    }
     const roster = this.deps.workers.roster();
     const policy = this.policy();
     const byId = new Map(roster.map((w) => [w.id, w]));
@@ -1440,6 +1471,7 @@ export class OrgService {
         ...(manager ? { manager: manager.name } : {}),
         youManage: canManage(policy, roster, w.id, caller),
         budgetUSDPerMonth: w.budgetUSDPerMonth,
+        pullRequests: prs.get(w.id) ?? 0,
       });
     }
     // All time starts at the first thing that ever happened — on the whole
@@ -1460,10 +1492,19 @@ export class OrgService {
       }
     }
     const { totals, daily } = rollUpWorkerReport(byWorker, axis);
+    // Everything at the usual rate, then each run that opened a pull request
+    // topped up to the larger of its multiple and the floor. Visible workers only.
+    const shown = new Set(byWorker.map((r) => r.workerId));
+    const base = WORKER_HUMAN_TIME_SAVED_MULTIPLIER;
+    const floorMs = policy.prSavedMinHours * 3_600_000;
+    const counted = prRuns.filter((x) => shown.has(x.workerId));
+    const topUp = counted.reduce((n, x) => n + Math.max(0, Math.max(x.ms * policy.prSavedMultiplier, floorMs) - x.ms * base), 0);
+    const saved: ReportSaved = { ms: totals.workedMs * base + topUp, prRuns: counted.length, prMultiplier: policy.prSavedMultiplier, prMinHours: policy.prSavedMinHours };
     return {
       ok: true,
-      report: { generatedAt: full.generatedAt, sinceMs: full.sinceMs, days: span, byWorker, totals, daily },
+      report: { generatedAt: full.generatedAt, sinceMs: full.sinceMs, days: span, byWorker, totals: { ...totals, pullRequests: byWorker.reduce((n, r) => n + r.pullRequests, 0) }, daily },
       savedMultiplier: WORKER_HUMAN_TIME_SAVED_MULTIPLIER,
+      saved,
     };
   }
 
@@ -3049,6 +3090,8 @@ export class OrgService {
       budgetUSDPerMonth?: number;
       cadence?: ScheduleTrigger | null;
       jobDescription?: string;
+      /// The line under its name. Empty clears it.
+      tagline?: string;
       /// The MCP servers it may use, by name.
       mcpServers?: string[];
       /// How much of each it may use, by tool name: `{ mode: 'read' }`,
@@ -3203,6 +3246,12 @@ export class OrgService {
       if (claimed.length && !admin) return { ok: false, error: `Making ${claimed.join(', ')} ${w.name}'s home channel needs an admin: every request there goes to it.` };
       if (ids.length) next.slackHomeChannels = ids;
       else delete next.slackHomeChannels;
+    }
+    if (patch.tagline !== undefined) {
+      const line = String(patch.tagline).replace(/\s+/g, ' ').trim();
+      if (line.length > 160) return { ok: false, error: 'Keep the tagline to a line (160 characters).' };
+      if (line) next.tagline = line;
+      else delete next.tagline;
     }
     if (patch.jobDescription !== undefined) {
       const job = String(patch.jobDescription).trim();
@@ -4164,6 +4213,30 @@ export class OrgService {
   }
 
   /// Every run of this worker that has ended, newest first, unmapped.
+  /// A run's agent time: its attempts end to end, not the waits between them.
+  private static agentMs(r: FlowRun): number {
+    return (r.attempts ?? []).reduce((n, a) => n + Math.max(0, (a.endedAt ?? a.startedAt) - a.startedAt), 0);
+  }
+
+  /// Pull requests a run opened (not ones it only added to, or found open).
+  private static prsOpened(r: FlowRun): number {
+    return pullRequestsIn(r.artifacts?.[LANDED_ARTIFACT]?.body ?? '').filter((p) => p.state === 'open' || p.state === 'draft').length;
+  }
+
+  /// A worker's month so far, from its runs: started, failed, PRs opened.
+  private monthOf(runs: FlowRun[]): WorkerSummary['month'] {
+    const start = new Date(this.now());
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+    const mine = runs.filter((r) => r.createdAt >= start.getTime());
+    const ended = mine.filter((r) => r.state.kind === 'done' || r.state.kind === 'aborted');
+    return {
+      runs: mine.length,
+      failed: ended.filter((r) => OrgService.runOutcome(r) === 'failed').length,
+      pullRequests: mine.reduce((n, r) => n + OrgService.prsOpened(r), 0),
+    };
+  }
+
   private endedRuns(workerId: UUID): FlowRun[] {
     return this.deps.runs
       .listRuns()
@@ -4188,6 +4261,7 @@ export class OrgService {
     const failedAt = r.attempts.filter((a) => a.outcome === 'error' || a.outcome === 'reboundExhausted').pop();
     const answer = OrgService.newestArtifact(r);
     const outcome = OrgService.runOutcome(r);
+    const prs = pullRequestsIn(r.artifacts?.[LANDED_ARTIFACT]?.body ?? '');
     return {
       runId: r.id,
       title: flowRunTitle(r),
@@ -4198,6 +4272,7 @@ export class OrgService {
       ...(r.costUSD ? { costUSD: r.costUSD } : {}),
       ...(answer ? { result: { name: answer.name, body: answer.body.slice(0, 6000) } } : {}),
       ...(outcome === 'failed' && failedAt?.errorMessage ? { error: failedAt.errorMessage.slice(0, 400) } : {}),
+      ...(prs.length ? { pullRequests: prs } : {}),
     };
   }
 
@@ -4490,13 +4565,13 @@ export class OrgService {
     const admin = isAdmin(this.policy(), caller);
     let base = flow.flow;
     if (yaml) {
-      const held = this.readFlowEdit(flow.flow, yaml, admin);
+      const held = this.readFlowEdit(flow.flow, yaml, admin, found.worker.mcpServers);
       if (!held.ok) return held;
       base = held.flow;
     }
     const revised = await this.deps.reviseFlow({ flow: base, ask: change.slice(0, 2000) }).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }));
     if (!revised.ok) return { ok: false, error: `Couldn’t write a new version just now: ${revised.error}` };
-    const held = holdFlowEdit(flow.flow, revised.flow, { admin });
+    const held = holdFlowEdit(flow.flow, revised.flow, { admin, servers: found.worker.mcpServers });
     if (!held.ok) return held;
     const changes = describeFlowEdit(flow.flow, held.flow);
     if (!changes.length) return { ok: false, error: 'That didn’t change any of its steps. Try saying it another way.' };
@@ -4513,7 +4588,7 @@ export class OrgService {
     const w = found.worker;
     const flow = this.ownFlow(w, flowId);
     if (!flow.ok) return flow;
-    const held = this.readFlowEdit(flow.flow, yaml, isAdmin(this.policy(), caller));
+    const held = this.readFlowEdit(flow.flow, yaml, isAdmin(this.policy(), caller), w.mcpServers);
     if (!held.ok) return held;
     const changes = describeFlowEdit(flow.flow, held.flow);
     if (!changes.length) return { ok: false, error: 'Nothing changed.' };
@@ -4551,11 +4626,11 @@ export class OrgService {
   }
 
   /// A flow sent back from the console, held to what `before` allowed.
-  private readFlowEdit(before: Flow, yaml: string, admin: boolean): Result<{ flow: Flow }> {
+  private readFlowEdit(before: Flow, yaml: string, admin: boolean, servers?: string[]): Result<{ flow: Flow }> {
     if (yaml.length > 200_000) return { ok: false, error: 'That flow is too long.' };
     const parsed = parseFlowYaml({ yaml, id: before.id, source: before.source, filePath: before.filePath });
     if (!parsed) return { ok: false, error: 'That flow didn’t read. Ask for the change again.' };
-    return holdFlowEdit(before, parsed, { admin });
+    return holdFlowEdit(before, parsed, { admin, servers });
   }
 
   // ---- ONBOARDING -------------------------------------------------------
@@ -4809,6 +4884,7 @@ export class OrgService {
   private configOf(w: Worker): WorkerConfig {
     return {
       jobDescription: w.jobDescription,
+      tagline: w.tagline ?? '',
       mcpServers: [...(w.mcpServers ?? [])],
       ...(w.toolScopes ? { toolScopes: structuredClone(w.toolScopes) as Record<string, unknown> } : {}),
       trust: w.trust,
@@ -4828,7 +4904,7 @@ export class OrgService {
     const was = this.configOf(before);
     const now = this.configOf(after);
     const WORDS: Record<keyof WorkerConfig, string> = {
-      jobDescription: 'its job', mcpServers: 'its tools', toolScopes: 'how much of its tools', trust: 'its trust', visibility: 'who can ask it',
+      jobDescription: 'its job', tagline: 'its tagline', mcpServers: 'its tools', toolScopes: 'how much of its tools', trust: 'its trust', visibility: 'who can ask it',
       budgetUSDPerMonth: 'its budget', cadence: 'when it runs', preferredFlowId: 'its usual flow', answersAtOnce: 'answers at once',
       skipCheckpoints: 'checkpoints', alwaysAllow: 'what it may always do',
     };
@@ -4875,7 +4951,7 @@ export class OrgService {
     if (!parsed) return { ok: false, error: 'That version’s flow didn’t read.' };
     let flow = parsed;
     if (current) {
-      const held = holdFlowEdit(current, parsed, { admin: isAdmin(this.policy(), caller) });
+      const held = holdFlowEdit(current, parsed, { admin: isAdmin(this.policy(), caller), servers: w.mcpServers });
       if (!held.ok) return held;
       flow = held.flow;
       const roster = this.deps.workers.roster();
@@ -4897,13 +4973,13 @@ export class OrgService {
   }
 
   /// A worker's setup over time, newest first. Whoever can see it.
-  workerHistory(caller: OrgCaller, idOrName: string): Result<{ versions: Array<Omit<WorkerVersion, 'config' | 'flow'> & { job: string; tools: string[]; trust: string; flow?: { name: string; steps: FlowStepView[] } }> }> {
+  workerHistory(caller: OrgCaller, idOrName: string): Result<{ versions: Array<Omit<WorkerVersion, 'config' | 'flow'> & { job: string; tagline?: string; tools: string[]; trust: string; flow?: { name: string; steps: FlowStepView[] } }> }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
     const versions = this.versionList().filter((v) => v.workerId === w.id).reverse()
       .map(({ config, flow, ...v }) => {
         const f = flow ? parseFlowYaml({ yaml: flow.yaml, id: flow.id, source: 'user', filePath: '' }) : null;
-        return { ...v, job: config.jobDescription, tools: config.mcpServers, trust: config.trust, ...(flow ? { flow: { name: flow.name, steps: f ? stepsOf(f) : [] } } : {}) };
+        return { ...v, job: config.jobDescription, ...(config.tagline !== undefined ? { tagline: config.tagline } : {}), tools: config.mcpServers, trust: config.trust, ...(flow ? { flow: { name: flow.name, steps: f ? stepsOf(f) : [] } } : {}) };
       });
     return { ok: true, versions };
   }
@@ -4923,6 +4999,7 @@ export class OrgService {
     }
     const res = this.update(caller, found.worker.id, {
       jobDescription: c.jobDescription,
+      ...(c.tagline !== undefined ? { tagline: c.tagline } : {}),
       mcpServers: c.mcpServers,
       toolScopes: Object.fromEntries([...new Set([...Object.keys(found.worker.toolScopes ?? {}), ...Object.keys(c.toolScopes ?? {})])].map((k) => [k, (c.toolScopes ?? {})[k] ?? null])),
       visibility: (c.visibility ?? 'private') as WorkerVisibility,
@@ -5201,7 +5278,7 @@ export class OrgService {
   // ---- REPOS ------------------------------------------------------------
 
   /// Connected repos, and who works in each.
-  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; ciRounds?: number; prMode?: 'link' | 'draft' | 'open'; branchPrefix?: string; lastRefreshedAt?: number }> {
+  repoList(caller: OrgCaller): Result<{ repos: Array<ConnectedRepo & { workers: string[]; canPush: boolean; tokenEnv?: string }>; workspaces: Array<OrgWorkspace & { workers: string[] }>; testsOff?: string; ciRounds?: number; prMode?: 'link' | 'draft' | 'open'; ticketStatus?: string; branchPrefix?: string; lastRefreshedAt?: number }> {
     if (!this.deps.repos) return { ok: false, error: 'Repos are not available on this server.' };
     if (!canHire(this.policy(), caller)) return { ok: false, error: 'Only people who may hire workers can see the repos.' };
     const roster = this.deps.workers.roster();
@@ -5217,6 +5294,7 @@ export class OrgService {
       ...(testsOff ? { testsOff } : {}),
       ...(repos.ciRounds ? { ciRounds: repos.ciRounds() } : {}),
       ...(repos.prMode ? { prMode: repos.prMode() } : {}),
+      ...(repos.setTicketStatus ? { ticketStatus: repos.ticketStatus?.() ?? '' } : {}),
       ...(repos.branchPrefix ? { branchPrefix: repos.branchPrefix() } : {}),
       ...(repos.lastRefreshed?.() ? { lastRefreshedAt: repos.lastRefreshed!() } : {}),
     };
@@ -5272,6 +5350,22 @@ export class OrgService {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can change how pull requests are opened.' };
     const res = repos.setPrMode(mode);
     if (res.ok) this.record(caller, mode === 'link' ? 'Set pushed branches to come with a link to open a pull request.' : `Set pushed branches to open ${mode === 'draft' ? 'a draft' : 'a'} pull request.`);
+    return res;
+  }
+
+  /// The status a ticket moves to once its pull request is pushed; absent,
+  /// whichever means it is in review.
+  ticketStatus(): string | undefined {
+    return this.deps.repos?.ticketStatus?.();
+  }
+
+  setTicketStatus(caller: OrgCaller, status: string): Result {
+    const repos = this.deps.repos;
+    if (!repos?.setTicketStatus) return { ok: false, error: 'Repos are not available on this server.' };
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only admins can change where tickets move.' };
+    const res = repos.setTicketStatus(status);
+    const s = status.trim();
+    if (res.ok) this.record(caller, s ? `Set tickets to move to "${s}" once their pull request is pushed.` : 'Set tickets to move to whichever status means in review once their pull request is pushed.');
     return res;
   }
 

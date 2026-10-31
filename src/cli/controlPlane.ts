@@ -21,6 +21,7 @@ import { PROCESS_LIBRARY, libraryProcess, suggestTeamFor } from '../shared/org/p
 import type { ProcessField, ProcessPerson, ProcessStage } from '../shared/org/process';
 import { processScheduleText, type ItemAction, type ProcessService } from '../main/org/processes';
 import { imageFromDataUrl, type ProcessDraftResult, type ProcessImageInput } from '../main/org/processDraft';
+import type { ModelIdResult } from '../main/backends/modelIdTest';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -85,6 +86,9 @@ export interface ControlPlaneDeps {
   /// Read a picture of a process into a draft (processDraft.ts). Absent:
   /// "From an image" says it isn't set up here.
   draftProcess?: (input: ProcessImageInput) => Promise<ProcessDraftResult>;
+  /// Setup → Model ids' Test: one tiny prompt per id on the server's model
+  /// provider (modelIdTest.ts). Absent: the page says it can't test here.
+  testModelIds?: (models: string[]) => Promise<ModelIdResult[]>;
   log: (line: string) => void;
   /// Injected for tests; production reads the token file.
   authenticate?: (token: string | undefined) => OrgCaller | null;
@@ -956,6 +960,36 @@ function slackRoutes(convos?: SlackConversations): Array<{ method: string; path:
   ];
 }
 
+/// Setup → Model ids' Test. Each id is a real model call, so admins only,
+/// one batch at a time each, and a few batches a minute.
+const MAX_MODEL_TESTS = 40;
+function modelTestRoutes(testModelIds?: ControlPlaneDeps['testModelIds']): Array<{ method: string; path: RegExp; handle: Handler }> {
+  const testing = new Set<string>();
+  const allow = rateLimiter(6);
+  return [
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/models\/test$/,
+      handle: async (c, b) => {
+        if (!isAdmin(loadOrgPolicy().policy, c)) return { ok: false, error: 'Only admins can test model ids.' };
+        if (!testModelIds) return { ok: false, error: 'Testing model ids isn’t set up on this server.' };
+        const models = Array.isArray(b.models) ? b.models.filter((m): m is string => typeof m === 'string').map((m) => m.trim()).filter(Boolean) : [];
+        if (!models.length) return { ok: false, error: 'Name a model id to test.' };
+        if (models.length > MAX_MODEL_TESTS) return { ok: false, error: `Test at most ${MAX_MODEL_TESTS} at once.` };
+        const who = c.slackUserId ?? c.name;
+        if (testing.has(who)) return { ok: false, error: 'A test is already running. Wait for it to finish.' };
+        if (!allow(who)) return { ok: false, error: 'Too many tests. Wait a minute.' };
+        testing.add(who);
+        try {
+          return { ok: true, results: await testModelIds(models) };
+        } finally {
+          testing.delete(who);
+        }
+      },
+    },
+  ];
+}
+
 function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => Promise<SlackPerson[]>, links: FileLinks = new FileLinks()): Array<{ method: string; path: RegExp; handle: Handler }> {
   const str = (v: unknown): string => (typeof v === 'string' ? v : '');
   const TRUST = new Set(['probation', 'trusted', 'autonomous']);
@@ -1147,6 +1181,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'POST', path: /^\/api\/toolchains\/default$/, handle: (c, b) => org.setToolchainDefault(c, str(b.kit), str(b.version)) },
     { method: 'POST', path: /^\/api\/toolchains\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeToolchain(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/repos\/pr-mode$/, handle: (c, b) => org.setPrMode(c, str(b.mode)) },
+    { method: 'POST', path: /^\/api\/repos\/ticket-status$/, handle: (c, b) => org.setTicketStatus(c, str(b.status)) },
     { method: 'POST', path: /^\/api\/repos\/ci-rounds$/, handle: (c, b) => org.setCiRounds(c, Number(b.rounds)) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/toolchain$/, handle: (c, b, [name]) => org.setRepoToolchain(c, decodeURIComponent(name), str(b.kit), str(b.version) || null) },
     { method: 'POST', path: /^\/api\/repos\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.disconnectRepo(c, decodeURIComponent(name)) },
@@ -1504,6 +1539,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
     ...(deps.connections ? connectionRoutes(deps.connections) : []),
     ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess) : []),
     ...slackRoutes(deps.slackConversations),
+    ...modelTestRoutes(deps.testModelIds),
   ];
   const open = [
     ...(deps.access ? publicRoutes(deps.access) : []),

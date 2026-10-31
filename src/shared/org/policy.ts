@@ -110,6 +110,11 @@ export interface OrgPolicy {
   /// Tell a worker's manager (and the admins, for the org cap) when spend
   /// passes this share of a budget. 0 turns the warnings off.
   alertAtPercent: number;
+  /// Reports' time saved: a run that opened a pull request counts as this
+  /// many times its agent time, and at least `prSavedMinHours`. Other work
+  /// counts at the report's usual 1.5×.
+  prSavedMultiplier: number;
+  prSavedMinHours: number;
   /// Keep the decision log and finished runs this many days. Absent: forever.
   retentionDays?: number;
   /// Sign in with the company's identity provider (OpenID Connect).
@@ -148,6 +153,8 @@ export const DEFAULT_ORG_POLICY: OrgPolicy = {
   openJoin: false,
   redactSecrets: true,
   alertAtPercent: 80,
+  prSavedMultiplier: 6,
+  prSavedMinHours: 1,
   people: {},
   fleet: [],
 };
@@ -259,6 +266,17 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
   const orgBudget = r.orgBudgetUSD === undefined ? undefined : num('orgBudgetUSD', 0) || undefined;
   const alertAt = num('alertAtPercent', 80);
   if (alertAt > 100) warnings.push('alertAtPercent must be between 0 and 100.');
+  const between = (key: string, fallback: number, max: number, what: string): number => {
+    const v = r[key];
+    if (v === undefined) return fallback;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0 || v > max) {
+      warnings.push(`${key} must be ${what} above 0 and at most ${max}.`);
+      return fallback;
+    }
+    return v;
+  };
+  const prSavedMultiplier = between('prSavedMultiplier', 6, 50, 'a multiple');
+  const prSavedMinHours = between('prSavedMinHours', 1, 24, 'a number of hours');
   let retentionDays: number | undefined;
   if (r.retentionDays !== undefined) {
     const v = r.retentionDays;
@@ -364,6 +382,8 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
       })(),
       ...(orgBudget ? { orgBudgetUSD: orgBudget } : {}),
       alertAtPercent: Math.min(alertAt, 100),
+      prSavedMultiplier,
+      prSavedMinHours,
       ...(retentionDays ? { retentionDays } : {}),
       ...(sso ? { sso } : {}),
       people,

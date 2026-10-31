@@ -29,6 +29,10 @@ import { nodeHost } from '../main/hostNode';
 import { SECRETS_ENV, SecretsService, createSecretStore, parseSecretsSpec, type SecretStore } from '../main/org/secrets';
 import { autonomousWithoutGrant } from '../main/org/orgService';
 import { draftProcessFromImage } from '../main/org/processDraft';
+import { testModelIds } from '../main/backends/modelIdTest';
+import { modelProvider } from '../main/backends/providerModels';
+import { buildBackendEnv, resolveBackendPath } from '../main/backendPaths';
+import { Store } from '../main/store';
 import { drafterDepsFor } from '../main/org/hireDraft';
 
 /// Node's timer ceiling is 2^31-1 ms; stay comfortably under it.
@@ -224,7 +228,11 @@ export function startDaemon(
     deps.out(`control: not started — $OVERCLI_CONTROL: ${controlAt.error}`);
   } else if (controlAt) {
     const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, processes: engines.processes, slackConversations: engines.slackConversations,
-      draftProcess: (input) => draftProcessFromImage(drafterDepsFor(engines.runner), input), slackPeople: slackDirectory(), log: deps.out });
+      draftProcess: (input) => draftProcessFromImage(drafterDepsFor(engines.runner), input), slackPeople: slackDirectory(), log: deps.out,
+      testModelIds: (models) => {
+        const bin = resolveBackendPath('claude', Store.load().settings.backendPaths.claude);
+        return testModelIds(models, { bin, env: buildBackendEnv(process.env, bin), provider: modelProvider() });
+      } });
     control = server;
     listenControlPlane(server, controlAt).then(
       () => {

@@ -76,6 +76,10 @@ export interface RepoState {
   /// Whether the server opens the pull request for a pushed branch
   /// (prOpen.ts). Absent: a draft.
   prMode?: PrMode;
+  /// The status a ticket moves to once its pull request is pushed
+  /// (ticketFollowUp.ts), as the tracker names it: "Ready for QA". Absent:
+  /// whichever means it is in review.
+  ticketStatus?: string;
 }
 
 export const DEFAULT_CI_ROUNDS = 3;
@@ -260,6 +264,22 @@ export class RepoService {
     return { ok: true };
   }
 
+  ticketStatus(): string | undefined {
+    return this.deps.store.load().ticketStatus || undefined;
+  }
+
+  /// Empty goes back to "whichever means in review".
+  setTicketStatus(status: string): Result {
+    const s = status.replace(/\s+/g, ' ').trim();
+    if (s.length > 60) return { ok: false, error: 'Name the status as the tracker shows it, in 60 characters or fewer.' };
+    if (s) this.save({ ticketStatus: s });
+    else {
+      const { ticketStatus: _was, ...rest } = this.deps.store.load();
+      this.deps.store.save(rest);
+    }
+    return { ok: true };
+  }
+
   ciRounds(): number {
     return this.deps.store.load().ciRounds ?? DEFAULT_CI_ROUNDS;
   }
@@ -364,7 +384,8 @@ export class RepoService {
     const state = this.deps.store.load();
     const ciRounds = patch.ciRounds ?? state.ciRounds;
     const prMode = patch.prMode ?? state.prMode;
-    this.deps.store.save({ repos: patch.repos ?? state.repos, workspaces: patch.workspaces ?? state.workspaces ?? [], ...(ciRounds !== undefined ? { ciRounds } : {}), ...(prMode ? { prMode } : {}) });
+    const ticketStatus = patch.ticketStatus ?? state.ticketStatus;
+    this.deps.store.save({ repos: patch.repos ?? state.repos, workspaces: patch.workspaces ?? state.workspaces ?? [], ...(ciRounds !== undefined ? { ciRounds } : {}), ...(prMode ? { prMode } : {}), ...(ticketStatus ? { ticketStatus } : {}) });
   }
 
   // ---- WORKSPACES ----

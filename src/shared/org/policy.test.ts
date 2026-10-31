@@ -152,3 +152,15 @@ describe('who a worker, team or idea is open to, when picked', () => {
     expect(parseAudience({ roles: ['owner'] }).ok).toBe(false);
   });
 });
+
+describe('pull request time saved', () => {
+  it('defaults to 6× and 1 hour, takes sensible values, and refuses the rest', () => {
+    expect(parseOrgPolicy({}).policy).toMatchObject({ prSavedMultiplier: 6, prSavedMinHours: 1 });
+    expect(parseOrgPolicy({ prSavedMultiplier: 4, prSavedMinHours: 0.5 }).policy).toMatchObject({ prSavedMultiplier: 4, prSavedMinHours: 0.5 });
+    for (const bad of [{ prSavedMultiplier: 0 }, { prSavedMultiplier: 51 }, { prSavedMinHours: -1 }, { prSavedMinHours: 25 }, { prSavedMultiplier: 'six' }]) {
+      const { policy, warnings } = parseOrgPolicy(bad as Record<string, unknown>);
+      expect(warnings.some((w) => /^prSaved(Multiplier|MinHours) must be/.test(w))).toBe(true);
+      expect(policy).toMatchObject({ prSavedMultiplier: 6, prSavedMinHours: 1 });
+    }
+  });
+});

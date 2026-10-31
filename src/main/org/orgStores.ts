@@ -428,6 +428,9 @@ export const fileToolRequestStore: ToolRequestStore = {
 /// What a worker is set up to do, as one version: what restoring brings back.
 export interface WorkerConfig {
   jobDescription: string;
+  /// The line under its name; '' for none. Absent in versions kept before
+  /// taglines were, which leave the current one alone when restored.
+  tagline?: string;
   mcpServers: string[];
   toolScopes?: Record<string, unknown>;
   trust: string;

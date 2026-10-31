@@ -681,7 +681,8 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       const flow = parseFlowYaml({ yaml: ticketFlowYaml(server), id: ticketFlowId(server), source: 'user', filePath: '' });
       const saved = flow ? saveFlow({ flow, target: 'user' }) : { ok: false as const, error: 'the flow did not parse' };
       if (!flow || !saved.ok) return log('warn', 'org.repos', `Couldn't set up the ticket update for ${ticket}: ${saved.ok ? '' : saved.error}`);
-      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to review`, prompt: ticketPrompt(run, ticket, landed), flowId: flow.id, kind: 'ticket' }).then((res) => {
+      const status = org.ticketStatus();
+      void workerEngine.followUp(w.id, { title: `${ticket}: comment the pull request and move it to ${status ?? 'review'}`, prompt: ticketPrompt(run, ticket, landed, status), flowId: flow.id, kind: 'ticket' }).then((res) => {
         if (!res.ok) log('warn', 'org.repos', `Couldn't start the ticket update for ${ticket}: ${res.error}`);
       });
     },
