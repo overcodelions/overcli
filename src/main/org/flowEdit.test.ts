@@ -43,8 +43,17 @@ describe('a flow changed by saying so', () => {
     expect(holdFlowEdit(before, after, { admin: false })).toEqual({ ok: false, error: expect.stringContaining('WebFetch') });
   });
 
-  it('refuses a step that names no tools', () => {
-    expect(holdFlowEdit(before, flow([step('plan', { tools: [] }), step('change'), push]), { admin: false }).ok).toBe(false);
+  it('takes up tools from servers the worker already holds, and names the server it lacks', () => {
+    const after = flow([step('plan', { tools: ['Read', 'mcp__cloudwatch__execute_log_insights_query'] }), step('file', { tools: ['mcp__atlassian'] }), push]);
+    expect(holdFlowEdit(before, after, { admin: false, servers: ['cloudwatch', 'atlassian'] }).ok).toBe(true);
+    expect(holdFlowEdit(before, after, { admin: false, servers: ['cloudwatch'] })).toEqual({ ok: false, error: expect.stringMatching(/needs the atlassian tool\. Give it that on Setup → Tools/) });
+    expect(holdFlowEdit(before, after, { admin: true })).toEqual({ ok: false, error: expect.stringMatching(/needs the cloudwatch tool\./) });
+  });
+
+  it('keeps a step that names no tools to reading, rather than letting it use any', () => {
+    const held = holdFlowEdit(before, flow([step('plan'), step('change'), step('report', { tools: [] }), push]), { admin: false });
+    if (!held.ok) throw new Error(held.error);
+    expect(held.flow.steps.find((s) => s.id === 'report')!.tools).toEqual(['Read']);
   });
 
   it('keeps an outside step asking, and the models it had', () => {

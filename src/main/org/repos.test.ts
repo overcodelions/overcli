@@ -633,3 +633,19 @@ describe('repo tests no longer turned on from the Repos page', () => {
     expect(untouched.state().repos[0].testCommand).toBe('./gradlew test');
   });
 });
+
+describe('where a ticket moves after its pull request', () => {
+  it('keeps the status as the tracker names it, one line, and empty goes back to in review', () => {
+    const { svc } = service();
+    expect(svc.ticketStatus()).toBeUndefined();
+    expect(svc.setTicketStatus('  Ready  for QA ').ok).toBe(true);
+    expect(svc.ticketStatus()).toBe('Ready for QA');
+    // Another repo setting saved later keeps it.
+    expect(svc.setPrMode('open').ok).toBe(true);
+    expect(svc.ticketStatus()).toBe('Ready for QA');
+    expect(svc.setTicketStatus('x'.repeat(61)).ok).toBe(false);
+    expect(svc.ticketStatus()).toBe('Ready for QA');
+    expect(svc.setTicketStatus('').ok).toBe(true);
+    expect(svc.ticketStatus()).toBeUndefined();
+  });
+});

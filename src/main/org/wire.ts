@@ -419,6 +419,8 @@ export function createOrgService(
       ciRounds: () => repos.ciRounds(),
       prMode: () => repos.prMode(),
       setPrMode: (mode) => repos.setPrMode(mode),
+      ticketStatus: () => repos.ticketStatus(),
+      setTicketStatus: (status) => repos.setTicketStatus(status),
       setCiRounds: (n) => repos.setCiRounds(n),
       branchPrefix: () => Store.load().settings.agentBranchPrefix || 'agent/',
       freshen: (paths) => repos.freshen(paths).then((problems) => { lastRefreshAt = Date.now(); return problems; }),

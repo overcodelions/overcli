@@ -48,7 +48,10 @@ const sameModel = (a: FlowModelRef, b: FlowModelRef) => a.backend === b.backend 
 
 /// `after` kept within what `before` allowed. Errors say what to ask for
 /// instead; quiet repairs (models, permission modes, approvals) are made.
-export function holdFlowEdit(before: Flow, after: Flow, opts: { admin: boolean }): Held {
+/// `servers` are the MCP servers the worker already holds: its flow may take
+/// up their tools, since whoever gave it the server already said it may use
+/// them. Anything else new is refused.
+export function holdFlowEdit(before: Flow, after: Flow, opts: { admin: boolean; servers?: string[] }): Held {
   if (!after.steps.length) return { ok: false, error: 'It needs at least one step.' };
   if (after.steps.length > FLOW_EDIT_MAX_STEPS) return { ok: false, error: `Keep it to ${FLOW_EDIT_MAX_STEPS} steps or fewer.` };
   const was = new Map(before.steps.map((s) => [s.id, s]));
@@ -62,6 +65,9 @@ export function holdFlowEdit(before: Flow, after: Flow, opts: { admin: boolean }
   const people = new Set(before.steps.flatMap((s) => s.handsOff ?? []));
   const participants = new Set(before.participants.map((p) => p.id));
   const primary = before.participants[0]?.id;
+  const servers = new Set(opts.servers ?? []);
+  // An MCP tool is `mcp__<server>__<tool>`; `mcp__<server>` alone is all of them.
+  const held = (t: string) => [...servers].some((n) => t === `mcp__${n}` || t.startsWith(`mcp__${n}__`));
 
   if (!opts.admin) {
     const stops = before.steps.filter((s, i) => i > 0 && s.pauseBefore);
@@ -73,16 +79,23 @@ export function holdFlowEdit(before: Flow, after: Flow, opts: { admin: boolean }
   const steps: FlowStep[] = [];
   for (const s of after.steps) {
     const old = was.get(s.id);
-    const list = s.tools ?? [];
-    // No tools listed lets a step use any.
-    if (!list.length && !anyUntooled) return { ok: false, error: `“${stepLabel(s)}” doesn’t say which tools it uses. Say what it needs.` };
-    const extra = [...new Set(list.filter((t) => !tools.has(t)))];
+    // No tools listed lets a step use any. A flow that had no such step gets
+    // none: an empty step is one that only writes up what came before it
+    // (a report, a summary), so it reads and nothing else.
+    const readOnly = !(s.tools ?? []).length && !anyUntooled;
+    const list = readOnly ? ['Read'] : (s.tools ?? []);
+    const extra = readOnly ? [] : [...new Set(list.filter((t) => !tools.has(t) && !held(t)))];
+    const missing = [...new Set(extra.flatMap((t) => /^mcp__(.+?)(?:__|$)/.exec(t)?.slice(1, 2) ?? []))];
+    if (missing.length) {
+      return { ok: false, error: `That needs the ${missing.join(' and ')} tool${missing.length === 1 ? '' : 's'}. Give it ${missing.length === 1 ? 'that' : 'those'} on Setup → Tools first.` };
+    }
     if (extra.length) {
-      return { ok: false, error: `That needs ${extra.join(', ')}, which none of its steps can use now. An admin can give its flow that.` };
+      return { ok: false, error: `That needs ${extra.join(', ')}, which none of its steps can use now.` };
     }
     const { model: _model, rebound, ...rest } = s;
     const step: FlowStep = {
       ...rest,
+      ...(readOnly ? { tools: list } : {}),
       ...(old?.model ? { model: old.model } : {}),
       participantId: participants.has(s.participantId) ? s.participantId : (old?.participantId ?? primary ?? s.participantId),
     };

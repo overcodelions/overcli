@@ -854,6 +854,8 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .wl-pr-pill:hover { border-color: var(--go); }
 .wl-pr-st { font-weight: 500; font-size: 11.5px; color: var(--muted); }
 .wl-pr-pill.ok .wl-pr-st { color: var(--ok); } .wl-pr-pill.waiting .wl-pr-st { color: var(--need); }
+table.data .wl-pr-pills { justify-content: flex-start; margin-top: 6px; }
+table.data .wl-pr-pill { min-height: 24px; padding: 0 8px; font-size: 12px; }
 .wl-pr-pill.plain { background: var(--panel-2); border-color: var(--line); color: var(--muted); }
 .t-prs { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .t-pr { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); color: var(--ink); text-decoration: none; min-height: 44px; box-sizing: border-box; }
@@ -957,7 +959,12 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .access-opt.off { opacity: 0.55; cursor: default; }
 .access-opt input { margin-top: 3px; }
 .model-rows { display: grid; gap: 6px; }
-.model-row { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); gap: 12px; align-items: center; }
+.model-row { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.model-test { grid-column: 2 / -1; font-size: 12.5px; }
+.model-test:empty { display: none; }
+.model-test.ok { color: var(--ok); }
+.model-test.bad { color: var(--bad); }
+.model-test .faint { display: block; margin-top: 2px; overflow-wrap: anywhere; }
 .model-row code { font-size: 12.5px; color: var(--muted); }
 @media (max-width: 640px) { .model-row { grid-template-columns: 1fr; gap: 4px; } }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 20px; }
@@ -1207,6 +1214,13 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .ntflow { list-style: none; margin: 0; display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
 .ntflow li { display: flex; gap: 10px; align-items: flex-start; }
 .ntflow b { font-size: 13.5px; font-weight: 600; }
+.ntflow .ntools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.ntflow .ntools .tag { font-size: 11.5px; padding: 1px 8px; }
+.ntflow li.added .ntnum { background: var(--go-soft); color: var(--go); }
+.ntflow li.gone { opacity: 0.6; }
+.ntflow li.gone b { text-decoration: line-through; font-weight: 500; }
+.flow-draft { border: 1px solid color-mix(in srgb, var(--go) 35%, transparent); background: color-mix(in srgb, var(--go) 5%, transparent); border-radius: var(--r-lg); padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
+.flow-draft summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
 .signbox { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel-2); display: flex; flex-direction: column; gap: 10px; }
 section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
 .rechecked { color: var(--ok) !important; }
@@ -2816,7 +2830,7 @@ export const CONSOLE_JS = String.raw`
   /// trigger it describes (null is "when asked"). A cron schedule set by hand
   /// in the app is kept as it is unless someone picks something else.
   function scheduleEditor(cadence) {
-    var mode = 'asked', time = '09:00', day = 1, hours = 4, start = '08:00', end = '18:00';
+    var mode = 'asked', time = '09:00', day = 1, hours = 4, start = '08:00', end = '18:00', hourDays = 'all';
     var keep = null;
     if (cadence && cadence.kind === 'daily') {
       time = cadence.time;
@@ -2824,8 +2838,14 @@ export const CONSOLE_JS = String.raw`
       mode = !d.length || d.length === 7 ? 'daily' : d.length === 5 && d.join() === '1,2,3,4,5' ? 'weekdays' : d.length === 1 ? 'weekly' : 'daily';
       if (d.length === 1) day = d[0];
     } else if (cadence && cadence.kind === 'interval') {
-      mode = 'hours'; hours = Math.max(1, Math.round(cadence.everyMinutes / 60));
-      if (cadence.window) { start = cadence.window.start; end = cadence.window.end; }
+      var hd = cadence.days || [];
+      // Days this editor can't show (Mon, Wed, Fri) stay as the app set them.
+      if (hd.length && hd.length !== 7 && hd.join() !== '1,2,3,4,5') { mode = 'keep'; keep = cadence; }
+      else {
+        mode = 'hours'; hours = Math.max(1, Math.round(cadence.everyMinutes / 60));
+        if (hd.length === 5) hourDays = 'weekdays';
+        if (cadence.window) { start = cadence.window.start; end = cadence.window.end; }
+      }
     } else if (cadence) { mode = 'keep'; keep = cadence; }
     var modeSel = h('select', { 'aria-label': 'How often' },
       keep ? h('option', { value: 'keep', text: 'As set in the app', selected: true }) : null,
@@ -2835,11 +2855,12 @@ export const CONSOLE_JS = String.raw`
     var timeIn = h('input', { type: 'time', value: time, 'aria-label': 'At', style: 'width:130px' });
     var daySel = h('select', { 'aria-label': 'On', style: 'width:auto' }, DAY_NAMES.map(function (n, i) { return h('option', { value: String(i), text: n, selected: i === day }); }));
     var hoursSel = h('select', { 'aria-label': 'Every', style: 'width:auto' }, [1, 2, 3, 4, 6, 12].map(function (n) { return h('option', { value: String(n), text: plural(n, 'hour', 'hours'), selected: n === hours }); }));
+    var hourDaysSel = h('select', { 'aria-label': 'Which days', style: 'width:auto' }, [['all', 'every day'], ['weekdays', 'weekdays']].map(function (o) { return h('option', { value: o[0], text: o[1], selected: o[0] === hourDays }); }));
     var startIn = h('input', { type: 'time', value: start, 'aria-label': 'From', style: 'width:120px' });
     var endIn = h('input', { type: 'time', value: end, 'aria-label': 'Until', style: 'width:120px' });
     var at = h('span', { class: 'row' }, h('span', { class: 'faint', text: 'at' }), timeIn);
     var on = h('span', { class: 'row' }, h('span', { class: 'faint', text: 'on' }), daySel);
-    var every = h('span', { class: 'row' }, h('span', { class: 'faint', text: 'every' }), hoursSel, h('span', { class: 'faint', text: 'from' }), startIn, h('span', { class: 'faint', text: 'to' }), endIn);
+    var every = h('span', { class: 'row' }, h('span', { class: 'faint', text: 'every' }), hoursSel, h('span', { class: 'faint', text: 'from' }), startIn, h('span', { class: 'faint', text: 'to' }), endIn, hourDaysSel);
     var hint = h('span', { class: 'faint' });
     var sync = function () {
       var m = modeSel.value;
@@ -2860,7 +2881,9 @@ export const CONSOLE_JS = String.raw`
         if (m === 'daily') return { kind: 'daily', time: timeIn.value || '09:00' };
         if (m === 'weekdays') return { kind: 'daily', time: timeIn.value || '09:00', days: [1, 2, 3, 4, 5] };
         if (m === 'weekly') return { kind: 'daily', time: timeIn.value || '09:00', days: [Number(daySel.value)] };
-        return { kind: 'interval', everyMinutes: Number(hoursSel.value) * 60, window: { start: startIn.value || '08:00', end: endIn.value || '18:00' } };
+        var iv = { kind: 'interval', everyMinutes: Number(hoursSel.value) * 60, window: { start: startIn.value || '08:00', end: endIn.value || '18:00' } };
+        if (hourDaysSel.value === 'weekdays') iv.days = [1, 2, 3, 4, 5];
+        return iv;
       }
     };
   }
@@ -3286,7 +3309,14 @@ export const CONSOLE_JS = String.raw`
       var open = true;
       var tr = h('tr', { class: open ? 'link' : null, tabindex: open ? '0' : null, 'aria-expanded': open ? 'false' : null },
         h('td', { class: 'muted', text: when(r.at) }),
-        h('td', null, h('b', { style: 'font-weight:600', text: r.title }), r.result ? h('span', { class: 'sub', text: r.result.name }) : null),
+        h('td', null, h('b', { style: 'font-weight:600', text: r.title }), r.result ? h('span', { class: 'sub', text: r.result.name }) : null,
+          // Its pull requests, to open straight from the list.
+          (r.pullRequests || []).length ? h('div', { class: 'wl-pr-pills', role: 'group', 'aria-label': plural(r.pullRequests.length, 'pull request', 'pull requests') },
+            r.pullRequests.map(function (p) {
+              var st = PR_STATE[p.state] || ['plain', p.state];
+              return h('a', { class: 'wl-pr-pill ' + st[0], href: p.url, target: '_blank', rel: 'noopener', title: st[1] + (p.branch ? ' · ' + p.branch : ''), onclick: function (e) { e.stopPropagation(); } },
+                icon('branch', 12), h('span', { text: prLabel(p) }), h('span', { class: 'wl-pr-st', text: st[1] }));
+            })) : null),
         h('td', null, h('span', { class: 'badge ' + MARK[r.outcome][1], text: MARK[r.outcome][0] })),
         h('td', { class: 'r', text: String(r.steps) }),
         h('td', { class: 'r', text: r.minutes ? r.minutes + ' min' : '<1 min' }),
@@ -4255,6 +4285,19 @@ export const CONSOLE_JS = String.raw`
         detail)));
   }
 
+  /// This month in a line: runs, pull requests, failures, cost per PR. PRs
+  /// only for a worker that opens them; nothing before its first run.
+  function monthLine(w) {
+    var m = w.month;
+    if (!m || !m.runs) return null;
+    var n = function (v, one, many) { return h('span', null, h('b', { style: 'font-weight:600;color:var(--ink)', text: String(v) }), ' ' + (v === 1 ? one : many)); };
+    return h('div', { class: 'row faint', style: 'gap:14px;font-size:13px' },
+      h('span', { text: 'This month' }), n(m.runs, 'run', 'runs'),
+      m.pullRequests ? n(m.pullRequests, 'pull request', 'pull requests') : null,
+      n(m.failed, 'failed', 'failed'),
+      m.pullRequests ? h('span', null, h('b', { style: 'font-weight:600;color:var(--ink)', text: money(w.spentThisMonthUSD / m.pullRequests) }), ' per PR') : null,
+      h('button', { class: 'linkish', style: 'font-size:13px', text: 'Reports →', onclick: function () { go('reports'); } }));
+  }
   /// This month's spend against its budget, as a short bar and the two sums.
   function budgetMeter(spent, budget) {
     spent = spent || 0;
@@ -4398,6 +4441,7 @@ export const CONSOLE_JS = String.raw`
           onChange: function () { later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
         });
         var budget = h('input', { type: 'number', min: '1', step: '1', value: String(Math.round(w.budgetUSDPerMonth * 100) / 100), 'aria-label': 'Monthly budget' });
+        var tagline = h('input', { type: 'text', value: w.tagline || '', maxlength: '160', placeholder: 'What it does, in a line', 'aria-label': 'Tagline', style: 'max-width:480px' });
         var sched = scheduleEditor(w.cadence);
         var saved = h('div');
         // Where it works: one repo or one workspace of repos. Moving it swaps
@@ -4475,6 +4519,7 @@ export const CONSOLE_JS = String.raw`
         };
         atOnce.onchange = function () { saveNow('slack', { answersAtOnce: Number(atOnce.value) }); };
         if (usual) usual.onchange = function () { saveNow('flow', { preferredFlowId: usual.value || null }); };
+        tagline.onchange = function () { saveNow('tagline', { tagline: tagline.value }); };
         budget.onchange = function () {
           var n = Number(budget.value);
           if (!(n > 0)) { budget.value = String(Math.round(w.budgetUSDPerMonth * 100) / 100); return; }
@@ -4492,6 +4537,7 @@ export const CONSOLE_JS = String.raw`
         settings = h('div', { class: 'stack', style: 'gap:16px' },
           group('Picture', 'Its face here and on what it posts in Slack. Pick one, or use a link to your own image.', [picturePicker(w, function (url) { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { avatarUrl: url } }); },
             function () { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/picture/pick', {}); })]),
+          group('Tagline', 'The line under its name, here and wherever it is listed.', [tagline], 'tagline'),
           group('When it runs', 'On its own schedule, or only when someone asks.', [sched.node], 'when'),
           group('Who it answers to', 'Its questions and approvals go here, climbing the chain if its boss can’t answer.', [
             h('div', { class: 'grid2' }, mgr ? h('label', { class: 'field' }, 'Manager', mgr) : h('div', { class: 'field' }, h('span', { text: 'Manager' }), h('span', { style: 'color:var(--ink)', text: w.manager || 'Nobody yet' })),
@@ -4704,7 +4750,8 @@ export const CONSOLE_JS = String.raw`
                 // Settings is a tab below; the spend is a meter, not a third number in a sentence.
                 h('div', { class: 'row faint', style: 'gap:12px;font-size:13px' },
                   h('span', { text: [w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'Works when asked', plural((w.tools || []).length, 'tool', 'tools')].join(' · ') }),
-                  budgetMeter(w.spentThisMonthUSD, w.budgetUSDPerMonth))))),
+                  budgetMeter(w.spentThisMonthUSD, w.budgetUSDPerMonth)),
+                monthLine(w)))),
           h('div', { class: 'page-actions' },
             w.youManage ? h('button', { class: 'btn quiet', text: 'Export', 'aria-expanded': 'false', onclick: function (e) { exportPanel(w, e.target); } }) : null,
             w.youManage ? h('button', { class: 'btn', text: w.enabled ? 'Pause' : 'Resume', onclick: pause }) : null,
@@ -10082,9 +10129,15 @@ export const CONSOLE_JS = String.raw`
       // Spending.
       var cap = h('input', { type: 'number', min: '1', step: '1', value: R.orgBudgetUSD == null ? '' : String(R.orgBudgetUSD), placeholder: 'No cap' });
       var alertAt = h('input', { type: 'number', min: '0', max: '100', step: '5', value: String(R.alertAtPercent) });
+      // How Reports value a pull request: a multiple of the agent time, with a floor.
+      var prMult = h('input', { type: 'number', min: '1', max: '50', step: '0.5', value: String(R.prSavedMultiplier) });
+      var prMin = h('input', { type: 'number', min: '0.25', max: '24', step: '0.25', value: String(R.prSavedMinHours) });
       var spending = ruleSection('Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.',
-        h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Org-wide budget (USD a month)', cap), h('label', { class: 'field' }, 'Warn at (% of a budget; 0 for never)', alertAt)),
-        function () { return { orgBudgetUSD: numOrNull(cap), alertAtPercent: Number(alertAt.value || 0) }; });
+        h('div', { class: 'stack', style: 'gap:14px' },
+          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Org-wide budget (USD a month)', cap), h('label', { class: 'field' }, 'Warn at (% of a budget; 0 for never)', alertAt)),
+          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Time saved by a pull request (× its agent time)', prMult), h('label', { class: 'field' }, 'At least (hours per pull request)', prMin)),
+          h('p', { class: 'faint', style: 'font-size:13px', text: 'Reports estimate a person’s time saved at 1.5× agent time. A run that opened a pull request counts at the multiple above instead, and never less than the hours. Opened, not merged: a declined one still counts.' })),
+        function () { return { orgBudgetUSD: numOrNull(cap), alertAtPercent: Number(alertAt.value || 0), prSavedMultiplier: Number(prMult.value) || null, prSavedMinHours: Number(prMin.value) || null }; });
 
       // Records.
       var keep = h('input', { type: 'number', min: '7', step: '1', value: R.retentionDays == null ? '' : String(R.retentionDays), placeholder: 'Forever' });
@@ -10162,18 +10215,62 @@ export const CONSOLE_JS = String.raw`
         if (p) return p.indexOf('{id}') >= 0 ? p.replace('{id}', id) : p + id;
         return prov === 'bedrock' ? 'anthropic.' + id : id;
       };
+      // Test: one tiny prompt per id on the server's provider, so a wrong id
+      // shows up here rather than in a worker's failed run. Nothing to test
+      // on the Anthropic API, where these ids don't apply.
+      var testable = prov !== 'anthropic';
+      var showTest = function (slot, r) {
+        slot.textContent = '';
+        if (!r) return;
+        slot.className = 'model-test' + (r.pending ? '' : r.ok ? ' ok' : ' bad');
+        append(slot, [h('span', { text: r.pending ? 'Testing ' + r.model + '…' : (r.ok ? '✓ ' : '✗ ') + r.message + (r.ok && r.ms ? ' (' + (r.ms / 1000).toFixed(1) + 's)' : '') }),
+          r.detail ? h('span', { class: 'faint', text: r.detail }) : null]);
+      };
+      // [{ model, slot }]: every slot gets its id's result, or the refusal.
+      var runTests = function (items) {
+        if (!items.length) return;
+        items.forEach(function (t) { showTest(t.slot, { pending: true, model: t.model }); });
+        api('POST', '/api/admin/models/test', { models: items.map(function (t) { return t.model; }) }).then(function (x) {
+          var by = {};
+          (x.results || []).forEach(function (r) { by[r.model] = r; });
+          items.forEach(function (t) { showTest(t.slot, x.ok === false ? { ok: false, message: x.error } : by[t.model] || { ok: false, message: 'No result came back.' }); });
+        }).catch(function (e) {
+          items.forEach(function (t) { showTest(t.slot, { ok: false, message: e.message }); });
+        });
+      };
       var modelRows = catalog.map(function (id) {
         var input = h('input', { type: 'text', value: pm[id] || '', 'aria-label': id });
-        return { id: id, input: input, row: h('div', { class: 'model-row' }, h('code', { text: id }), input) };
+        var slot = h('div', { class: 'model-test', role: 'status' });
+        var m = { id: id, input: input, slot: slot };
+        input.addEventListener('input', function () { showTest(slot, null); });
+        m.row = h('div', { class: 'model-row' }, h('code', { text: id }), input,
+          testable ? h('button', { type: 'button', class: 'btn quiet small', text: 'Test', 'aria-label': 'Test ' + id, onclick: function () { runTests([{ model: idOf(m), slot: slot }]); } }) : null,
+          slot);
+        return m;
       });
+      var idOf = function (m) { return m.input.value.trim() || fallback(m.id); };
       // Models overcli doesn't list (a new one, an ARN for one of your own
       // profiles): one per line, typed as overcli will be asked for it.
       var others = h('textarea', { rows: '3', placeholder: 'claude-opus-5-6 = us.anthropic.claude-opus-5-6', 'aria-label': 'Other models' });
       others.value = Object.keys(pm).filter(function (k) { return k !== '*' && catalog.indexOf(k) < 0; }).map(function (k) { return k + ' = ' + pm[k]; }).join('\n');
+      var othersTest = h('div', { class: 'stack', style: 'gap:6px' });
+      // Each "overcli id = provider id" line's provider id, with a slot of its own.
+      var testAll = h('button', { type: 'button', class: 'btn small', text: 'Test all', onclick: function () {
+        othersTest.textContent = '';
+        var extra = others.value.split('\n').map(function (line) { var i = line.indexOf('='); return i > 0 ? line.slice(i + 1).trim() : ''; }).filter(Boolean).map(function (model) {
+          var slot = h('div', { class: 'model-test', role: 'status' });
+          othersTest.appendChild(slot);
+          return { model: model, slot: slot };
+        });
+        runTests(modelRows.map(function (m) { return { model: idOf(m), slot: m.slot }; }).concat(extra));
+      } });
+      var clearTests = function () { modelRows.forEach(function (m) { showTest(m.slot, null); }); othersTest.textContent = ''; };
+      pattern.addEventListener('input', clearTests);
+      others.addEventListener('input', function () { othersTest.textContent = ''; });
       var reset = h('button', { class: 'btn quiet small', text: 'Reset to defaults', onclick: function () {
         pattern.value = ''; others.value = '';
         modelRows.forEach(function (m) { m.input.value = ''; });
-        placeholders();
+        placeholders(); clearTests();
       } });
       var placeholders = function () { modelRows.forEach(function (m) { m.input.setAttribute('placeholder', fallback(m.id)); }); };
       pattern.addEventListener('input', placeholders); placeholders();
@@ -10184,7 +10281,9 @@ export const CONSOLE_JS = String.raw`
           h('label', { class: 'field' }, 'Every model not set below ({id} stands for its id, e.g. us.anthropic.{id})', pattern),
           h('div', { class: 'model-rows' }, modelRows.map(function (m) { return m.row; })),
           h('label', { class: 'field' }, 'Other models, one per line: overcli id = provider id', others),
-          h('div', null, reset),
+          othersTest,
+          h('div', { class: 'row', style: 'gap:8px' }, testable ? testAll : null, reset),
+          testable ? h('p', { class: 'faint', style: 'font-size:13px', text: 'Test sends each id a one-line prompt from this server, the way workers reach the model, and says what went wrong. It tests what is typed, saved or not, and costs well under a cent an id.' }) : null,
           h('p', { class: 'faint', style: 'font-size:13px', text: 'Use your Bedrock inference profile ids (us., eu., apac. or global.) when the account calls models through one, as they appear in the Bedrock console. The server’s own ANTHROPIC_DEFAULT_*_MODEL settings still apply to the opus, sonnet and haiku aliases.' })),
         function () {
           var out = {};
@@ -11175,10 +11274,10 @@ export const CONSOLE_JS = String.raw`
   }
 
   function reportCsv(rows) {
-    var cols = ['Worker', 'Jobs finished', 'Jobs failed', 'Shifts', 'Quiet shifts', 'Failed shifts', 'Agent minutes', 'Tokens', 'Spend USD', 'Spend per job USD'];
+    var cols = ['Worker', 'Jobs finished', 'Jobs failed', 'Pull requests', 'Shifts', 'Quiet shifts', 'Failed shifts', 'Agent minutes', 'Tokens', 'Spend USD', 'Spend per job USD', 'Spend per pull request USD'];
     return [cols].concat(rows.map(function (r) {
-      var pj = perJob(r);
-      return [r.name, r.itemsDone, r.itemsFailed, r.shifts, r.quietShifts, r.failedShifts, Math.round(r.workedMs / 60000), r.inputTokens + r.outputTokens, r.costUSD.toFixed(2), pj == null ? '' : pj.toFixed(2)];
+      var pj = perJob(r), prs = r.pullRequests || 0;
+      return [r.name, r.itemsDone, r.itemsFailed, prs, r.shifts, r.quietShifts, r.failedShifts, Math.round(r.workedMs / 60000), r.inputTokens + r.outputTokens, r.costUSD.toFixed(2), pj == null ? '' : pj.toFixed(2), prs ? (r.costUSD / prs).toFixed(2) : ''];
     })).map(function (row) { return row.map(csvCell).join(','); }).join('\n');
   }
 
@@ -11212,6 +11311,8 @@ export const CONSOLE_JS = String.raw`
         cost: function (x) { return x.costUSD; },
         perJob: function (x) { var p = perJob(x); return p == null ? -1 : p; },
         done: function (x) { return x.itemsDone; },
+        prs: function (x) { return x.pullRequests || 0; },
+        perPr: function (x) { return x.pullRequests ? x.costUSD / x.pullRequests : -1; },
         shifts: function (x) { return x.shifts; },
         time: function (x) { return x.workedMs; },
         tokens: function (x) { return x.inputTokens + x.outputTokens; }
@@ -11223,7 +11324,10 @@ export const CONSOLE_JS = String.raw`
       var median = rates.length ? rates[Math.floor(rates.length / 2)] : 0;
       var dear = median > 0 ? median * 2 : Infinity;
 
-      var savedMin = (t.workedMs / 60000) * multiplier;
+      var sv = r.saved;
+      var savedMin = sv ? sv.ms / 60000 : (t.workedMs / 60000) * multiplier;
+      var savedHow = 'Estimated at ' + multiplier + '× measured agent time: one active agent hour stands in for about ' + multiplier + ' hours of a person’s.' +
+        (sv && sv.prRuns ? ' The ' + plural(sv.prRuns, 'run', 'runs') + ' that opened a pull request count at ' + sv.prMultiplier + '×, and at least ' + plural(sv.prMinHours, 'hour', 'hours') + ' each (Setup → Spending).' : '');
       var econ = function (k, v) { return h('div', null, h('span', { class: 'muted', text: k }), h('b', { text: v })); };
       var th = function (key, label, right) {
         return h('th', { class: right ? 'r' : null, 'aria-sort': sortKey === key ? 'descending' : null },
@@ -11240,6 +11344,7 @@ export const CONSOLE_JS = String.raw`
             h('div', { class: 'big', text: plural(t.itemsDone, 'finished job', 'finished jobs') }),
             h('p', { class: 'muted', style: 'font-size:13px', text: plural(t.shifts, 'shift', 'shifts') + ' run, ' + t.quietShifts + ' of them quiet checks that found nothing to do. Quiet is a success, not idle time.' }),
             h('div', { class: 'econ' },
+              t.pullRequests ? econ('Pull requests opened', String(t.pullRequests)) : null,
               econ('Agent time', workedTime(t.workedMs)),
               econ('Recorded spend', cents(t.costUSD)),
               econ('Tokens', tokens(t.inputTokens + t.outputTokens)),
@@ -11247,8 +11352,9 @@ export const CONSOLE_JS = String.raw`
               t.skippedShifts ? econ('Shifts that never ran', String(t.skippedShifts)) : null)]),
           card('ev', 'Estimated value', null, [
             h('div', { class: 'big', text: savedMin >= 1 ? '≈' + workedTime(savedMin * 60000) + ' saved' : 'Nothing measured yet' }),
-            h('p', { class: 'muted', style: 'font-size:13px', text: 'Estimated at ' + multiplier + '× measured agent time: one active agent hour stands in for about ' + multiplier + ' hours of a person’s.' }),
+            h('p', { class: 'muted', style: 'font-size:13px', text: savedHow }),
             h('div', { class: 'econ' },
+              t.pullRequests ? econ('Spend per pull request', cents(t.costUSD / t.pullRequests)) : null,
               econ('Spend per finished job', t.itemsDone ? cents(t.costUSD / t.itemsDone) : '—'),
               econ('Spend per agent hour', t.workedMs ? cents(t.costUSD / (t.workedMs / 3600000)) : '—'),
               econ('Spend per hour saved', savedMin ? cents(t.costUSD / (savedMin / 60)) : '—'))])),
@@ -11256,24 +11362,26 @@ export const CONSOLE_JS = String.raw`
         h('section', { class: 'tcard', 'aria-label': 'By worker' },
           h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'By worker' }), h('span', { class: 'faint', text: 'Click a column to sort' })),
           h('div', { class: 'tscroll' }, h('table', { class: 'data' },
-            h('thead', null, h('tr', null, th(null, 'Worker'), th('done', 'Jobs', true), th('shifts', 'Shifts', true), th('time', 'Agent time', true), th('tokens', 'Tokens', true), th('cost', 'Spend', true), th('perJob', 'Per job', true), th(null, 'Last shift', true))),
+            h('thead', null, h('tr', null, th(null, 'Worker'), th('done', 'Jobs', true), th('prs', 'PRs', true), th('shifts', 'Shifts', true), th('time', 'Agent time', true), th('tokens', 'Tokens', true), th('cost', 'Spend', true), th('perJob', 'Per job', true), th('perPr', 'Per PR', true), th(null, 'Last shift', true))),
             h('tbody', null, rows.map(function (x) {
               var pj = perJob(x);
               var split = [x.quietShifts && x.quietShifts + ' quiet', x.workingShifts && x.workingShifts + ' spawned work', x.failedShifts && x.failedShifts + ' failed'].filter(Boolean).join(' · ');
               return h('tr', { class: 'link', tabindex: '0', onclick: function () { openWorker(x.workerId); }, onkeydown: function (e) { if (e.key === 'Enter') openWorker(x.workerId); } },
                 h('td', null, h('div', { class: 'who' }, avatar(x.workerId, x.name, 's'), h('div', { style: 'min-width:0' }, h('b', { text: x.name }), h('span', { class: 'sub', text: (x.manager ? x.manager + ' · ' : '') + (x.enabled ? '' : 'Paused · ') + (split || 'No shifts') })))),
                 h('td', { class: 'r', text: String(x.itemsDone) + (x.itemsFailed ? ' (' + x.itemsFailed + ' failed)' : '') }),
+                h('td', { class: 'r' + (x.pullRequests ? '' : ' muted'), text: x.pullRequests ? String(x.pullRequests) : '—' }),
                 h('td', { class: 'r', text: String(x.shifts) }),
                 h('td', { class: 'r', text: workedTime(x.workedMs) }),
                 h('td', { class: 'r', text: tokens(x.inputTokens + x.outputTokens) }),
                 h('td', { class: 'r', text: cents(x.costUSD) }),
                 h('td', { class: 'r' + (pj != null && pj > dear ? ' dear' : ''), title: pj != null && pj > dear ? 'More than twice the roster’s median cost per job' : null, text: pj == null ? '—' : cents(pj) }),
+                h('td', { class: 'r' + (x.pullRequests ? '' : ' muted'), text: x.pullRequests ? cents(x.costUSD / x.pullRequests) : '—' }),
                 h('td', { class: 'r muted', text: x.lastShiftAt ? ago(x.lastShiftAt) : '—' }));
             })),
             h('tfoot', null, h('tr', null,
-              h('td', { text: 'All workers' }), h('td', { class: 'r', text: String(t.itemsDone) }), h('td', { class: 'r', text: String(t.shifts) }),
+              h('td', { text: 'All workers' }), h('td', { class: 'r', text: String(t.itemsDone) }), h('td', { class: 'r', text: t.pullRequests ? String(t.pullRequests) : '—' }), h('td', { class: 'r', text: String(t.shifts) }),
               h('td', { class: 'r', text: workedTime(t.workedMs) }), h('td', { class: 'r', text: tokens(t.inputTokens + t.outputTokens) }), h('td', { class: 'r', text: cents(t.costUSD) }),
-              h('td', { class: 'r', text: t.itemsDone ? cents(t.costUSD / t.itemsDone) : '—' }), h('td')))))),
+              h('td', { class: 'r', text: t.itemsDone ? cents(t.costUSD / t.itemsDone) : '—' }), h('td', { class: 'r', text: t.pullRequests ? cents(t.costUSD / t.pullRequests) : '—' }), h('td')))))),
         h('p', { class: 'faint', text: 'Spend is each run’s model cost as its backend reports it; backends that don’t report a price count as $0, and planning and chat turns aren’t included. Only workers you can see are counted.' })];
     });
   }
@@ -12690,6 +12798,7 @@ export const CONSOLE_JS = String.raw`
         var parts = [
           data.branchPrefix ? bit('Branches', data.branchPrefix + '…') : null,
           prLabel ? bit('Pull requests', prLabel) : null,
+          data.ticketStatus ? bit('Tickets move to', data.ticketStatus) : null,
           ciLabel ? bit('CI failures', ciLabel) : null,
         ].filter(Boolean);
         var summary = h('div', { class: 'row', style: 'gap:8px 10px;font-size:13px;flex-wrap:wrap;min-width:0' }, parts.reduce(function (acc, p, i) { return i ? acc.concat([dot(), p]) : [p]; }, []));
@@ -12718,6 +12827,12 @@ export const CONSOLE_JS = String.raw`
             var pr = h('select', { 'aria-label': 'Pull requests', onchange: function () { pr.disabled = true; api('POST', '/api/repos/pr-mode', { mode: pr.value }).then(function (x) { pr.disabled = false; saved(x, 'Saved. The next push uses it.'); }); } },
               [['draft', 'Open as a draft'], ['open', 'Open for review'], ['link', 'Link only']].map(function (o) { return h('option', { value: o[0], text: o[1], selected: data.prMode === o[0] }); }));
             row('Pull requests', pr, 'After pushing, open the pull request on Bitbucket or GitHub with the worker’s title and description. A draft waits for a person to mark it ready. Needs pull request write access on the token.');
+          }
+          if (data.ticketStatus !== undefined) {
+            var tstatus = h('input', { type: 'text', value: data.ticketStatus, placeholder: 'In review', 'aria-label': 'Move tickets to', style: 'width:200px' });
+            var saveStatus = function (e) { var restore = busy(e.target, 'Saving…'); api('POST', '/api/repos/ticket-status', { status: tstatus.value }).then(function (x) { restore(); saved(x, 'Saved. The next pull request uses it.'); }); };
+            row('Then move the ticket to', h('div', { class: 'inline-form', style: 'max-width:320px' }, tstatus, h('button', { class: 'btn small', text: 'Save', onclick: saveStatus })),
+              'The status, as Jira names it (“Ready for QA”), that a ticket moves to once its pull request is pushed. Left empty, whichever status means it is in review.');
           }
           if (data.ciRounds !== undefined) {
             var ci = h('select', { 'aria-label': 'When CI fails', onchange: function () { ci.disabled = true; api('POST', '/api/repos/ci-rounds', { rounds: Number(ci.value) }).then(function (x) { ci.disabled = false; saved(x, 'Saved.'); }); } },
@@ -13424,16 +13539,36 @@ export const CONSOLE_JS = String.raw`
     return card('models', 'Models', null, [body]);
   }
 
-  // A flow's steps in plain words: where it stops for someone, what asks.
-  function flowStepList(steps) {
-    return h('ol', { class: 'ntflow' }, steps.map(function (s, i) {
+  // What a step's tools reach, in a few words: an MCP server by its name, the
+  // rest by what they do. The exact tool ids are on hover.
+  var TOOL_WORDS = { Read: 'reads files', Grep: 'reads files', Glob: 'reads files', LS: 'reads files', Edit: 'edits files', Write: 'edits files', MultiEdit: 'edits files', NotebookEdit: 'edits files',
+    WebFetch: 'the web', WebSearch: 'the web', Task: 'helpers', Artifact: 'Claude Design', read_file: 'reads files', list_dir: 'reads files', grep: 'reads files' };
+  function toolWords(tools) {
+    var by = {}, order = [];
+    tools.forEach(function (t) {
+      var m = /^mcp__(.+?)(?:__|$)/.exec(t), b = /^Bash\(([^\s:)]+)/.exec(t);
+      var word = m ? m[1] : b ? b[1] : t === 'Bash' ? 'shell' : TOOL_WORDS[t] || t;
+      if (!by[word]) { by[word] = []; order.push(word); }
+      by[word].push(t);
+    });
+    return order.map(function (w) { return { word: w, tools: by[w] }; });
+  }
+  // A flow's steps in plain words: where it stops for someone, what asks,
+  // and what it uses. mark(step) tags a proposal's steps against the old
+  // ones ('added', 'changed'); gone lists the steps it takes out.
+  function flowStepList(steps, mark, gone) {
+    var row = function (s, n, kind) {
       var notes = [];
       if (s.checkpoint) notes.push('Stops for someone first');
       if (s.external) notes.push('Asks before acting outside');
       if (s.onlyIfChanged) notes.push('Skipped when nothing changed');
-      return h('li', { title: s.tools.length ? 'Uses ' + s.tools.join(', ') : '' }, h('span', { class: 'ntnum' + (s.checkpoint ? ' you' : ''), text: String(i + 1) }),
-        h('span', { class: 'stack', style: 'gap:1px' }, h('b', { text: s.label }), notes.length ? h('span', { class: 'faint', text: notes.join(' · ') }) : null));
-    }));
+      var tag = kind === 'added' ? h('span', { class: 'tag go', text: 'New' }) : kind === 'changed' ? h('span', { class: 'tag', text: 'Changed' }) : kind === 'gone' ? h('span', { class: 'tag', text: 'Taken out' }) : null;
+      var tools = kind === 'gone' || !(s.tools || []).length ? null : h('span', { class: 'ntools' }, toolWords(s.tools).map(function (t) { return h('span', { class: 'tag', title: t.tools.join(', '), text: t.word }); }));
+      return h('li', { class: kind || '' }, h('span', { class: 'ntnum' + (s.checkpoint ? ' you' : ''), text: kind === 'gone' ? '–' : String(n) }),
+        h('span', { class: 'stack', style: 'gap:1px' }, h('span', { class: 'row', style: 'gap:8px' }, h('b', { text: s.label }), tag),
+          notes.length && kind !== 'gone' ? h('span', { class: 'faint', text: notes.join(' · ') }) : null, tools));
+    };
+    return h('ol', { class: 'ntflow' }, steps.map(function (s, i) { return row(s, i + 1, mark ? mark(s) : ''); }).concat((gone || []).map(function (s) { return row(s, 0, 'gone'); })));
   }
 
   // How its work goes, step by step; its manager says what should change
@@ -13481,14 +13616,26 @@ export const CONSOLE_JS = String.raw`
               load(r.copied ? 'Saved as ' + w.name + '’s own copy. Its next run works this way.' : 'Saved. Its next run works this way.');
             });
           };
-          fill(proposal, [
-            h('div', { class: 'grid2', style: 'gap:16px;align-items:start' },
-              h('div', { class: 'stack', style: 'gap:8px' }, h('span', { class: 'label', text: 'Now' }), flowStepList(f.steps)),
-              h('div', { class: 'stack', style: 'gap:8px' }, h('span', { class: 'label', text: 'After the change' }), flowStepList(x.steps))),
-            h('ul', { style: 'margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:13.5px' }, x.changes.map(function (c) { return h('li', { text: c }); })),
+          // The proposal against the steps shown above: what's new, what
+          // changed, what goes. The full list of changes folds away.
+          var was = {};
+          f.steps.forEach(function (s) { was[s.id] = s; });
+          var kept = {};
+          x.steps.forEach(function (s) { if (was[s.id]) kept[s.id] = true; });
+          var same = function (a, b) { return a.label === b.label && a.checkpoint === b.checkpoint && a.external === b.external && a.onlyIfChanged === b.onlyIfChanged && (a.tools || []).join() === (b.tools || []).join(); };
+          var mark = function (s) { var o = was[s.id]; return !o ? 'added' : same(o, s) ? '' : 'changed'; };
+          var goneSteps = f.steps.filter(function (s) { return !kept[s.id]; });
+          var list = flowStepList(x.steps, mark, goneSteps);
+          var added = x.steps.filter(function (s) { return !was[s.id]; }).length, removed = goneSteps.length;
+          var sum = [plural(x.steps.length, 'step', 'steps'), added ? added + ' new' : '', removed ? removed + ' taken out' : ''].filter(Boolean).join(' · ');
+          fill(proposal, [h('div', { class: 'flow-draft' },
+            h('div', { class: 'row', style: 'gap:10px' }, h('span', { class: 'label', text: 'Proposed' }), h('span', { class: 'faint', style: 'font-size:12.5px', text: sum })),
+            list,
+            x.changes.length ? h('details', null, h('summary', { text: 'Every change (' + x.changes.length + ')' }),
+              h('ul', { style: 'margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:13px' }, x.changes.map(function (c) { return h('li', { text: c }); }))) : null,
             share,
             h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, use, h('button', { class: 'btn quiet', text: 'Keep the old one', onclick: clear }),
-              h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Say more above to change it further.' }))]);
+              h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Say more above to change it further.' })))]);
         });
       };
       ask.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); rewrite.click(); } };
