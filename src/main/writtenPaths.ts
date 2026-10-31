@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import type { StreamEvent } from '../shared/types';
+import { isArtifactPublishTool } from '../shared/claudeArtifacts';
 
 /// Tools whose invocation means "this file now exists because the agent made
 /// it". Read/Grep/Glob are absent on purpose — naming a file is not creating
@@ -51,13 +52,13 @@ const WRITING_TOOLS = new Set([
 /// running `seed-canvas.mjs` through Bash — never through Write — so the
 /// writing-tool rule above never sees it, and the file lands in the session
 /// scratchpad rather than under a registered root. The Artifact call that
-/// publishes it is the only event that names the path.
-const PUBLISHING_TOOLS = new Set(['Artifact']);
+/// publishes it is the only event that names the path — through the built-in
+/// tool or the claude-artifacts MCP server.
 
 /// Tools whose `file_path` earns that path a place in the readable set,
 /// whether it was written locally or published outward.
 function recordsProvenance(name: string | undefined): boolean {
-  return isWritingTool(name) || (!!name && PUBLISHING_TOOLS.has(name));
+  return isWritingTool(name) || isArtifactPublishTool(name);
 }
 
 /// Enough for a long map/reduce shift; small enough that the set stays cheap

@@ -7,6 +7,7 @@ import { Diff } from './DiffView';
 import { Markdown } from './Markdown';
 import { CopyActions } from './CopyActions';
 import { toolActivityLine, trimDetail } from './toolActivity';
+import { isArtifactPublishTool } from '@shared/claudeArtifacts';
 import { isBackgroundLaunch, subagentStatus } from './subagentStatus';
 
 /// Generic card for a single tool_use block. Specialized renderings (file
@@ -81,7 +82,7 @@ export function ToolUseCard({
   if (use.name === 'Workflow') {
     return <WorkflowCard use={use} args={args} result={result} conversationId={conversationId} />;
   }
-  if (use.name === 'Artifact') {
+  if (isArtifactPublishTool(use.name)) {
     // An artifact is a finished page, not source. It opens rendered no matter
     // what `fileViewModeByExt` remembers for .html — that memory is recorded
     // from files the user was *editing*, and applying it here lands the one

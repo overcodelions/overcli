@@ -1,6 +1,8 @@
 // The one-line "what is it doing right now" for a tool call — shared by the
 // subagent card and the Workers tab's Now cards, so both say it the same way.
 
+import { isMcpArtifactPublish, toolInputFilePath } from '@shared/claudeArtifacts';
+
 /// Produce the "currently doing" one-liner from a tool call. Each tool
 /// gets a hand-picked detail field (file_path for Read, command for
 /// Bash, pattern for Grep, …). Unknown tools fall back to truncating
@@ -11,6 +13,11 @@ export function toolActivityLine(use: { name: string; inputJSON: string }): { na
     input = JSON.parse(use.inputJSON);
   } catch {
     // ignore — incomplete partial JSON during streaming
+  }
+  // An MCP publish carries the whole page in `content`; truncating the raw
+  // input would lead with markup.
+  if (isMcpArtifactPublish(use.name)) {
+    return { name: 'Artifact', detail: trimDetail(input.title || toolInputFilePath(use.name, input) || '') };
   }
   switch (use.name) {
     case 'Bash':
