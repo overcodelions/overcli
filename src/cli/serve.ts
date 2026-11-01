@@ -26,6 +26,8 @@ import { ensureDefaultProject } from '../main/org/defaultProject';
 import { parseControlAddress, type ServeOptions } from './args';
 import { EXIT } from './run';
 import { nodeHost } from '../main/hostNode';
+import { enableWorkerUser } from '../main/org/workerUser';
+import os from 'node:os';
 import { SECRETS_ENV, SecretsService, createSecretStore, parseSecretsSpec, type SecretStore } from '../main/org/secrets';
 import { autonomousWithoutGrant } from '../main/org/orgService';
 import { draftProcessFromImage } from '../main/org/processDraft';
@@ -350,6 +352,19 @@ export async function serveCommand(opts: ServeOptions, deps: ServeDeps): Promise
     process.stderr.write(`${secrets.error}\n`);
     return EXIT.BAD_INPUT;
   }
+  // Before anything spawns a worker: as a user of their own, when the
+  // operator asked for that and the check passes; otherwise not at all.
+  const workerUser = await enableWorkerUser({
+    env: process.env,
+    dataDir: nodeHost({ dataDir: opts.stateDir }).dataDir(),
+    home: os.homedir(),
+    cli: resolveBackendPath('claude') ?? undefined,
+  });
+  if (!workerUser.ok) {
+    for (const line of workerUser.lines) process.stderr.write(`${line}\n`);
+    return EXIT.BAD_INPUT;
+  }
+  for (const line of workerUser.lines) deps.out(line);
   const started = startDaemon(opts, deps, secrets.service);
   if (!started.ok) {
     process.stderr.write(`${started.error}\n`);

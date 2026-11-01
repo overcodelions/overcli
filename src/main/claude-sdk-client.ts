@@ -37,6 +37,8 @@ export interface ClaudeSdkStartOptions {
   /// `claude`). We don't bundle the SDK's own native binary — see
   /// claudeSdkExecutable.ts. Undefined lets the SDK self-resolve (dev only).
   pathToClaudeCodeExecutable?: string;
+  /// Spawns the CLI in place of the SDK's own spawn (the worker user).
+  spawnClaudeCodeProcess?: Options['spawnClaudeCodeProcess'];
   /// Direct permission callback. Replaces the MCP permission-prompt-tool
   /// round-trip used by the CLI transport — the runner registers a
   /// pending-permission resolver and emits the same permissionRequest
@@ -125,6 +127,7 @@ export class ClaudeSdkClient extends EventEmitter {
       ...(o.effortLevel ? { effort: o.effortLevel as Options['effort'] } : {}),
       ...(o.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(o.env ? { env: o.env } : {}),
+      ...(o.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: o.spawnClaudeCodeProcess } : {}),
       ...(o.chrome ? { extraArgs: { chrome: null } } : {}),
       ...(o.mcpServers && Object.keys(o.mcpServers).length ? { mcpServers: o.mcpServers } : {}),
       ...(o.appendSystemPrompt

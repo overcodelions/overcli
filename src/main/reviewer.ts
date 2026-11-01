@@ -9,6 +9,8 @@
 import { resolveClaudeModel } from './backends/providerModels';
 import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { stripSecrets } from './org/secrets';
+import { workerLaunch } from './org/workerUser';
 import {
   Backend,
   EffortLevel,
@@ -381,9 +383,11 @@ export class ReviewerManager {
         resolve(info);
         return;
       }
-      const env = buildBackendEnv(process.env, bin);
+      const env = buildBackendEnv(stripSecrets(process.env), bin);
       const shell = backendNeedsShell(bin);
-      const proc = spawn(bin, childArgs, {
+      // As the worker user when there is one, like every other worker CLI.
+      const launch = workerLaunch(bin, childArgs);
+      const proc = spawn(launch.command, launch.args, {
         cwd: args.cwd,
         env,
         shell,

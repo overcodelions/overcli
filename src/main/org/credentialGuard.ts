@@ -12,9 +12,9 @@
 // rights.
 //
 // A guard, not a wall: the rules don't reach Claude's shell, Codex or Gemini
-// get none, and Linux has no OS sandbox yet, so a worker running shell
-// commands unasked can still read these as the server's user. The deploy
-// docs (security.md) say so.
+// get none, and on Linux workers run as the server unless OVERCLI_WORKER_UID
+// is set (workerUser.ts), so a worker running shell commands unasked can
+// still read these as the server's user. The deploy docs (security.md) say so.
 
 import fs from 'node:fs';
 import os from 'node:os';

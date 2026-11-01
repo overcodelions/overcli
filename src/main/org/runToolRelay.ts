@@ -11,6 +11,7 @@ import { JSONRPCMessageSchema, type JSONRPCMessage } from '@modelcontextprotocol
 import type { McpServerConfig } from '../mcpConfig';
 import { sandboxedCommand } from '../sandbox/seatbeltProfile';
 import { stripSecrets } from './secrets';
+import { shareWithWorkers } from './workerUser';
 
 /// How a run's relayed tools are started: in the run's folder, and inside
 /// the run's write jail when the run itself is jailed. The relay runs in the
@@ -41,7 +42,18 @@ function ensureServer(): void {
     if (server === listener) closeRunToolRelay();
   });
   server = listener;
-  listener.listen(address);
+  const at = address;
+  listener.listen(at, () => {
+    // Workers connect as their own user when there is one. Every call still
+    // needs its run's token.
+    if (process.platform !== 'win32') {
+      try {
+        shareWithWorkers(at);
+      } catch {
+        // A relay workers can't reach fails its tools' calls, and says so there.
+      }
+    }
+  });
 }
 
 function strings(value: unknown): Record<string, string> {

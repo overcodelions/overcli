@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { UUID } from '../shared/types';
+import { shareWithWorkers } from './org/workerUser';
 
 export interface ApprovalRequest {
   conversationId: UUID;
@@ -91,6 +92,8 @@ export class ClaudePermissionBroker {
       },
     };
     fs.writeFileSync(configPath, JSON.stringify(config), { encoding: 'utf8', mode: 0o600 });
+    // The worker's CLI reads it, as the worker user when there is one.
+    shareWithWorkers(configPath);
     const session: Session = { conversationId, token, configPath };
     this.sessionsByToken.set(token, session);
     this.sessionsByConvId.set(conversationId, session);

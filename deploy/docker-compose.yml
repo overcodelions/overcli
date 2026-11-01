@@ -10,6 +10,10 @@ services:
     image: ghcr.io/overcodelions/overcli-server:${OVERCLI_VERSION:-latest}
     restart: unless-stopped
     env_file: .env
+    # Uncomment with OVERCLI_WORKER_UID (or OVERCLI_TEST_UID) in .env. The
+    # server still runs as `node`; starting as root lets the entrypoint give
+    # it leave to run workers (or tests) as another user. See .env.example.
+    # user: "0"
     environment:
       OVERCLI_SLACK_ENABLED: "1"
       # Goes with the loopback port below: browsers on this host reach the

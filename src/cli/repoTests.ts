@@ -3,9 +3,11 @@
 // no server secrets in its environment.
 
 import { execFile as nodeExecFile } from 'node:child_process';
+import fs from 'node:fs';
 import { testUserRefusal } from '../main/org/repos';
 import { stripSecrets } from '../main/org/secrets';
 import { runEnv } from '../main/runEnv';
+import { SETPRIV, asWorkerUser } from '../main/org/workerUser';
 
 export type RepoTestResult = { ok: true } | { ok: false; error: string; refused?: true };
 
@@ -18,6 +20,11 @@ export interface RepoTestDeps {
     options: { cwd: string; timeout: number; maxBuffer: number; env: NodeJS.ProcessEnv; uid?: number; gid?: number },
     callback: (err: Error | null, stdout: string, stderr: string) => void,
   ) => unknown;
+  /// Switch user through setpriv rather than execFile's uid option. On by
+  /// default on Linux where it is installed: a server that holds capabilities
+  /// (the worker-user entrypoint) would otherwise pass them to the tests, since
+  /// a switch between two non-root users keeps ambient capabilities.
+  setpriv?: boolean;
 }
 
 /// Run `command` in `cwd` through the shell. Refused, without running, when
@@ -30,8 +37,12 @@ export function runRepoTests(command: string, cwd: string, deps: RepoTestDeps = 
     const uid = deps.env.OVERCLI_TEST_UID?.trim();
     const gid = deps.env.OVERCLI_TEST_GID?.trim() || uid;
     try {
-      deps.execFile('/bin/sh', ['-c', command], { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: stripSecrets(runEnv(deps.env, cwd)),
-        ...(uid ? { uid: Number(uid), gid: Number(gid) } : {}) }, (err, stdout, stderr) =>
+      const viaSetpriv = !!uid && (deps.setpriv ?? (process.platform === 'linux' && fs.existsSync(SETPRIV)));
+      const launch = viaSetpriv
+        ? asWorkerUser({ uid: Number(uid), gid: Number(gid) }, '/bin/sh', ['-c', command])
+        : { command: '/bin/sh', args: ['-c', command] };
+      deps.execFile(launch.command, launch.args, { cwd, timeout: 15 * 60_000, maxBuffer: 8 * 1024 * 1024, env: stripSecrets(runEnv(deps.env, cwd)),
+        ...(uid && !viaSetpriv ? { uid: Number(uid), gid: Number(gid) } : {}) }, (err, stdout, stderr) =>
         resolve(err ? { ok: false, error: `${stdout}${stderr}`.trim() || err.message } : { ok: true }),
       );
     } catch (err) {

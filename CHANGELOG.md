@@ -4,6 +4,11 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Security
+- **Workers can run as a user of their own.** On Linux and in Docker, set `OVERCLI_WORKER_UID=1001` and start the container as root (`user: "0"`), and every worker CLI, and every shell command it runs, runs as that user with no capabilities. It can no longer read the server's secrets key, the tool gateway's key and vault, people's tokens or the server's environment. The server still runs as `node`. It checks at start, as the worker, that the secrets are out of reach and the shared folders writable, and won't start if not. Off by default; the image behaves as before unless it's set. Not covered yet: the model's credentials, and the cloud identity on EC2 and Compute Engine. See the security page.
+- **Repo tests switch user through `setpriv`** where it's installed, so a test command gets none of the server's capabilities. Starting the container as root now lets `OVERCLI_TEST_UID` work in Docker.
+- **The reviewer's CLI gets none of the server's secrets in its environment,** like every other worker CLI.
+
 ## [0.24.4] - 2026-10-31
 
 ### Security
