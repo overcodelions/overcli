@@ -442,6 +442,8 @@ export function progressText(p: ErrandProgress, now: number, since?: number): st
 export interface LiveCard {
   /// What it said it is checking. Absent: it hasn't said yet.
   line?: string;
+  /// What the card says until then: one of OPENERS, picked once per thread.
+  opener?: string;
   /// Why it has this ("it answers in this channel").
   why?: string;
   /// The "Notify me" button: in a channel, where others may want to hear.
@@ -450,6 +452,33 @@ export interface LiveCard {
   trail?: string[];
   /// Slack refused the plan block here once: drawn with emoji from then on.
   plain?: boolean;
+}
+
+/// What a card says before the worker has said what it is checking. One per
+/// thread, so the same words don't open every answer in a busy channel.
+export const OPENERS = [
+  '_Looking into it…_',
+  '_On it…_',
+  '_Taking a look…_',
+  '_Digging in…_',
+  '_Checking now…_',
+  '_Give me a moment…_',
+  '_Let me find out…_',
+  '_Pulling that up…_',
+  '_One sec, checking…_',
+  '_Having a look…_',
+];
+
+/// The opener for a thread: fixed by its id, so every edit of the card
+/// keeps the same words.
+export function openerFor(seed: string): string {
+  // FNV-1a, then mixed: without the mixing the low bit is just the parity
+  // of the characters, and "% 10" lands on half the lines.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 0x01000193);
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+  h ^= h >>> 13;
+  return OPENERS[(h >>> 0) % OPENERS.length];
 }
 
 /// Past this a reason reads as the router thinking aloud, not a label.
@@ -468,7 +497,7 @@ export function trailLine(said: string): string {
 export function liveCard(c: LiveCard, p: ErrandProgress | null, now: number, since?: number): { text: string; blocks: unknown[] } {
   const section = (text: string) => ({ type: 'section', text: { type: 'mrkdwn', text: clip(text, 2900) } });
   const context = (text: string) => ({ type: 'context', elements: [{ type: 'mrkdwn', text: clip(text, 2900) }] });
-  const line = c.line ?? '_Looking into it…_';
+  const line = c.line ?? c.opener ?? OPENERS[0];
   const blocks: unknown[] = [];
   if (c.why && c.why.length <= WHY_MAX) blocks.push(context(`Picked up · ${escapeMrkdwn(c.why)}`));
   blocks.push(section(line));
@@ -1731,7 +1760,7 @@ export class FrontDoor {
     // The worker's own message, posted as it picks this up and edited as it
     // goes: what it is checking, then how far along. In a channel, others in
     // the thread can ask to hear when it's done.
-    const card: LiveCard = { ...(why && !followUp ? { why } : {}), notify: !req.dm && !!this.deps.slack.dm };
+    const card: LiveCard = { ...(why && !followUp ? { why } : {}), opener: openerFor(`${req.channel}:${root}`), notify: !req.dm && !!this.deps.slack.dm };
     let live: Promise<string | null> | null = null;
     const showCard = () => this.postCard(req.channel, root, as, card, null);
     if (!followUp && !announced) {

@@ -66,11 +66,11 @@ function fakeTriggers(start: WorkerTrigger[] = []) {
   };
 }
 
-function harness(triggers = fakeTriggers(), extra: Partial<ConstructorParameters<typeof OrgService>[0]> = {}) {
+function harness(triggers = fakeTriggers(), extra: Partial<ConstructorParameters<typeof OrgService>[0]> = {}, others: Worker[] = []) {
   const audit: string[] = [];
   const svc = new OrgService({
     workers: {
-      roster: () => [triage],
+      roster: () => [triage, ...others],
       get: (id) => (id === triage.id ? triage : null),
       save: (w) => ({ ok: true, worker: w }),
       setEnabled: () => ({ ok: true }),
@@ -267,5 +267,38 @@ describe('a trigger starting work on its own', () => {
   it('still proposes for a worker that is not autonomous, opted in or not', () => {
     expect(fire('trusted', true).mayLaunch).toBe(false);
     expect(fire('probation', true).mayLaunch).toBe(false);
+  });
+});
+
+describe('a Slack trigger where something else already listens', () => {
+  const northwind: Worker = { ...triage, id: 'northwind', name: 'Northwind', slackHomeChannels: ['C0ACMEQS'] };
+  const msgTrigger = (o: Partial<WorkerTrigger>): WorkerTrigger =>
+    ({ id: 't9', workerId: 'northwind', name: 'Northwind watches', kind: 'slack', instructions: 'Answer what you can.', deliver: [{ kind: 'thread' }], maxPerDay: 50, enabled: true, createdBy: 'Sam', slack: { channel: 'C0ACMEQS', on: 'message' }, ...o }) as WorkerTrigger;
+  const input = (channel: string, on: 'message' | 'reaction' = 'message', reaction?: string) =>
+    ({ name: 'Questions', kind: 'slack' as const, instructions: 'Answer product questions.', deliver: [{ kind: 'thread' as const }], maxPerDay: 50, slack: { channel, on, ...(reaction ? { reaction } : {}) } });
+
+  it('says when another worker already answers each new message there, and saves anyway', () => {
+    const h = harness(fakeTriggers([msgTrigger({})]), {}, [northwind]);
+    const res = h.svc.createTrigger(pat, 'Triage', input('C0ACMEQS'));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.notes).toEqual([expect.stringContaining('Northwind already has a trigger on each new message'), expect.stringContaining('Northwind’s home')]);
+    expect(h.triggers.all).toHaveLength(2);
+  });
+
+  it('says nothing about the worker’s own home channel, a paused trigger, or a different emoji', () => {
+    const own = { ...triage, slackHomeChannels: ['C0ACMEQS'] };
+    const h = harness(fakeTriggers([msgTrigger({ enabled: false }), msgTrigger({ id: 't8', slack: { channel: 'C0ACMEQS', on: 'reaction', reaction: 'bug' } })]), {}, [own]);
+    const res = h.svc.createTrigger(pat, 'Triage', input('C0ACMEQS'));
+    expect(res.ok && res.notes).toBeFalsy();
+    const r2 = h.svc.createTrigger(pat, 'Triage', input('C0ACMEQS', 'reaction', 'eyes'));
+    expect(r2.ok && r2.notes).toBeFalsy();
+  });
+
+  it('says it again when a trigger is moved onto a busy channel', () => {
+    const h = harness(fakeTriggers([msgTrigger({}), msgTrigger({ id: 't1', workerId: 'triage', name: 'Mine', slack: { channel: 'C0ACMEOTHER', on: 'message' } })]), {}, [northwind]);
+    const res = h.svc.updateTrigger(pat, 't1', { slack: { channel: 'C0ACMEQS', on: 'message' } });
+    expect(res.ok && res.notes).toHaveLength(2);
+    expect(h.svc.updateTrigger(pat, 't1', { name: 'Renamed' })).not.toHaveProperty('notes');
   });
 });

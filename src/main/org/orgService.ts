@@ -2493,7 +2493,7 @@ export class OrgService {
     caller: OrgCaller,
     idOrName: string,
     input: Pick<WorkerTrigger, 'name' | 'kind' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly' | 'startsOnItsOwn'> & { webhook?: { idPath?: string } },
-  ): Result<{ trigger: TriggerView; webhookPath?: string }> {
+  ): Result<{ trigger: TriggerView; webhookPath?: string; notes?: string[] }> {
     const s = this.triggerSvc();
     if (!s) return { ok: false, error: 'Triggers run on the org server.' };
     const found = this.managed(caller, idOrName);
@@ -2503,7 +2503,8 @@ export class OrgService {
     const res = s.create({ ...input, deliver: deliver.deliver, workerId: found.worker.id, enabled: true, createdBy: caller.name });
     if (!res.ok) return res;
     this.record(caller, `Gave ${found.worker.name} a trigger: ${res.trigger.name}.`);
-    return { ok: true, trigger: this.showTrigger(res.trigger, s), ...(res.token ? { webhookPath: `/hooks/${res.trigger.id}/${res.token}` } : {}) };
+    const notes = this.slackOverlaps(res.trigger, s);
+    return { ok: true, trigger: this.showTrigger(res.trigger, s), ...(res.token ? { webhookPath: `/hooks/${res.trigger.id}/${res.token}` } : {}), ...(notes.length ? { notes } : {}) };
   }
 
   private managedTrigger(caller: OrgCaller, id: string): Result<{ trigger: WorkerTrigger; s: TriggerService }> {
@@ -2515,7 +2516,7 @@ export class OrgService {
     return { ok: true, trigger: t, s };
   }
 
-  updateTrigger(caller: OrgCaller, id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly' | 'startsOnItsOwn'>>): Result<{ trigger: TriggerView }> {
+  updateTrigger(caller: OrgCaller, id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly' | 'startsOnItsOwn'>>): Result<{ trigger: TriggerView; notes?: string[] }> {
     const found = this.managedTrigger(caller, id);
     if (!found.ok) return found;
     if (patch.deliver) {
@@ -2526,7 +2527,38 @@ export class OrgService {
     const res = found.s.update(id, patch);
     if (!res.ok) return res;
     this.record(caller, `${patch.enabled === false ? 'Paused' : patch.enabled === true ? 'Resumed' : 'Changed'} the trigger ${res.trigger.name}.`);
-    return { ok: true, trigger: this.showTrigger(res.trigger, found.s) };
+    const notes = patch.slack || patch.enabled === true ? this.slackOverlaps(res.trigger, found.s) : [];
+    return { ok: true, trigger: this.showTrigger(res.trigger, found.s), ...(notes.length ? { notes } : {}) };
+  }
+
+  /// What else is listening where a Slack trigger listens. Said when it's
+  /// saved, not refused: two workers covering different ground in one
+  /// channel, each passing on what isn't theirs, is a fair setup.
+  /// - Another trigger set off the same way in the same channel: both run on
+  ///   each message, and both may reply in its thread.
+  /// - The channel is another worker's home: plain messages go to this
+  ///   trigger's worker, "@overgo …" goes to the other one.
+  /// The worker's own home channel is fine: the trigger takes plain
+  /// messages, the front door takes mentions, and nothing is answered twice.
+  private slackOverlaps(t: WorkerTrigger, s: TriggerService): string[] {
+    if (t.kind !== 'slack' || !t.slack || !t.enabled) return [];
+    const { channel, on, reaction } = t.slack;
+    const roster = this.deps.workers.roster();
+    const nameOf = (id: string) => roster.find((w) => w.id === id)?.name ?? 'another worker';
+    const notes: string[] = [];
+    const same = s.list().filter((o) => o.id !== t.id && o.enabled && o.kind === 'slack' && o.slack?.channel === channel && o.slack.on === on && (on !== 'reaction' || o.slack.reaction === reaction));
+    for (const o of same) {
+      const who = o.workerId === t.workerId ? 'This worker' : o.hand ? 'Another trigger' : nameOf(o.workerId);
+      const what = on === 'reaction' ? `a :${reaction}: reaction` : 'each new message';
+      notes.push(`${who} already has a trigger on ${what} in this channel (“${o.name}”). Both run each time, and both may reply in the same thread.`);
+    }
+    if (on === 'message') {
+      for (const w of roster) {
+        if (w.id === t.workerId || !w.slackHomeChannels?.includes(channel)) continue;
+        notes.push(`This channel is ${w.name}’s home: plain messages go to this trigger, but “@overgo …” there goes to ${w.name}.`);
+      }
+    }
+    return notes;
   }
 
   /// A DM goes to the person setting it up, never someone they name: a DM

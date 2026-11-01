@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Attachment } from '../../shared/types';
 import type { TeamRoom } from '../../shared/flows/team';
 import type { ErrandProgress } from '../org/orgService';
-import { FrontDoor, DOOR_SUBSCRIBE_ACTION, DOOR_TRACE_ACTION, DOOR_WRITEUP_ACTION, liveCard, namedWorker, traceView, rankByWords, roomStatus, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
+import { FrontDoor, DOOR_SUBSCRIBE_ACTION, DOOR_TRACE_ACTION, DOOR_WRITEUP_ACTION, liveCard, namedWorker, OPENERS, openerFor, traceView, rankByWords, roomStatus, toSlack, type ExistingHit, type FrontDoorState, type FrontDoorProcess, type FrontDoorTeam, type FrontDoorWorker } from './frontDoor';
 import { readRoute, routePrompt } from './frontDoorRoute';
 import type { SlackMessage } from './slackApi';
 
@@ -288,7 +288,7 @@ describe('the front door', () => {
     expect(h.asks[0]).toMatchObject({ workerId: 'w-triage' });
     expect(h.asks[0].text).toContain('add an export button to the reports page');
     // The card it put up while working comes down for the answer.
-    expect(h.posts).toEqual(['D0ACME@1.0: [as Triage] _Looking into it…_', 'D0ACME@1.0: [as Triage] Done — the button is in.']);
+    expect(h.posts).toEqual([`D0ACME@1.0: [as Triage] ${openerFor('D0ACME:1.0')}`, 'D0ACME@1.0: [as Triage] Done — the button is in.']);
     expect(h.removed).toEqual(['status.1']);
     expect(h.routed()).toBe(0);
   });
@@ -668,7 +668,7 @@ describe('the front door', () => {
     await h.door.onMessage({ channel: 'D0ACME', ts: '13.0', user: 'U1', text: 'Vantage audit <http://acme.example|acme.example>', dm: true });
     await tick();
     expect(h.asks[0].said).toBe('audit acme.example');
-    expect(h.posts).toEqual(['D0ACME@13.0: [as Vantage] _Looking into it…_']);
+    expect(h.posts).toEqual([`D0ACME@13.0: [as Vantage] ${openerFor('D0ACME:13.0')}`]);
     await h.door.poll();
     const card = h.edits.at(-1)!;
     expect(card.ts).toBe('status.1');
@@ -708,7 +708,7 @@ describe('the front door', () => {
     const h = harness({ reply: 'Starting the audit.', orchestrationId: 'orch-p', refusePlans: true, progress: { done: false, items: [{ title: 'SEO audit', status: 'running', said: 'Crawling.' }], files: [], links: [] } });
     await h.door.onMessage({ channel: 'D0ACME', ts: '14.0', user: 'U1', text: 'Vantage audit the site', dm: true });
     await tick();
-    expect(h.posts).toEqual(['D0ACME@14.0: [as Vantage] _Looking into it…_']);
+    expect(h.posts).toEqual([`D0ACME@14.0: [as Vantage] ${openerFor('D0ACME:14.0')}`]);
     await h.door.poll();
     expect(h.edits.at(-1)!.text).toContain(':hourglass_flowing_sand: *Crawling.*');
     expect(h.state().follows[0].card?.plain).toBe(true);
@@ -767,6 +767,18 @@ describe('the front door', () => {
     expect(h.posts[1].length).toBeLessThan(1400);
     expect(h.posts[1]).toContain('The full answer is attached.');
     expect(h.uploads).toEqual(['compare-pricing-for-company-a.md']);
+  });
+});
+
+describe('the card\'s opening line', () => {
+  it('varies by thread, keeps one line per thread, and gives way to what the worker says', () => {
+    expect(OPENERS.length).toBe(10);
+    expect(openerFor('C1:1.0')).toBe(openerFor('C1:1.0'));
+    const seen = new Set(Array.from({ length: 200 }, (_, n) => openerFor(`C1:${1700000000 + n}.000${n}`)));
+    expect(seen.size).toBe(OPENERS.length);
+    expect(liveCard({ opener: '_On it…_' }, null, 0).text).toBe('_On it…_');
+    expect(liveCard({ opener: '_On it…_', line: 'Checking the code.' }, null, 0).text).toBe('Checking the code.');
+    expect(liveCard({}, null, 0).text).toBe(OPENERS[0]);
   });
 });
 
@@ -1598,7 +1610,7 @@ describe('a follow-up the worker is slow to answer', () => {
       await h.door.onMessage({ channel: 'D0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'you can look it up in the tracker right?', dm: true });
       const before = h.posts.length;
       await vi.advanceTimersByTimeAsync(9000);
-      expect(h.posts.slice(before)).toEqual(['D0ACME@1.0: [as Triage] _Looking into it…_']);
+      expect(h.posts.slice(before)).toEqual([`D0ACME@1.0: [as Triage] ${openerFor('D0ACME:1.0')}`]);
     } finally {
       vi.useRealTimers();
     }
