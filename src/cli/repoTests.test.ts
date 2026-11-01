@@ -29,11 +29,19 @@ describe('running a repo\'s tests', () => {
 
   it('runs as the test user, with the group defaulting to the user\'s id', async () => {
     const exec = fakeExec({});
-    expect(await runRepoTests('npm test', '/repos/acme-app', { env: { OVERCLI_TEST_UID: ' 1001 ' }, execFile: exec.execFile })).toEqual({ ok: true });
+    expect(await runRepoTests('npm test', '/repos/acme-app', { env: { OVERCLI_TEST_UID: ' 1001 ' }, execFile: exec.execFile, setpriv: false })).toEqual({ ok: true });
     expect(exec.calls[0]).toMatchObject({ file: '/bin/sh', args: ['-c', 'npm test'], options: { cwd: '/repos/acme-app', uid: 1001, gid: 1001 } });
 
-    await runRepoTests('npm test', '/repos/acme-app', { env: { OVERCLI_TEST_UID: '1001', OVERCLI_TEST_GID: '2002' }, execFile: exec.execFile });
+    await runRepoTests('npm test', '/repos/acme-app', { env: { OVERCLI_TEST_UID: '1001', OVERCLI_TEST_GID: '2002' }, execFile: exec.execFile, setpriv: false });
     expect(exec.calls[1].options).toMatchObject({ uid: 1001, gid: 2002 });
+  });
+
+  it('switches user through setpriv where it can, so no capability of the server reaches the tests', async () => {
+    const exec = fakeExec({});
+    await runRepoTests('npm test', '/repos/acme-app', { env: { OVERCLI_TEST_UID: '1001', OVERCLI_TEST_GID: '2002' }, execFile: exec.execFile, setpriv: true });
+    expect(exec.calls[0].file).toBe('/usr/bin/setpriv');
+    expect(exec.calls[0].args).toEqual(expect.arrayContaining(['--reuid=1001', '--regid=2002', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', 'npm test']));
+    expect(exec.calls[0].options).not.toHaveProperty('uid');
   });
 
   it('runs as the server, with no uid or gid, when the operator accepts that', async () => {
@@ -59,11 +67,11 @@ describe('running a repo\'s tests', () => {
 
   it('says what went wrong when the run throws before it starts, naming the user only when there is one', async () => {
     const bad = fakeExec({ throws: new RangeError('The value of "options.uid" is out of range') });
-    expect(await runRepoTests('npm test', '/x', { env: { OVERCLI_TEST_UID: '99999999999' }, execFile: bad.execFile })).toEqual({
+    expect(await runRepoTests('npm test', '/x', { env: { OVERCLI_TEST_UID: '99999999999' }, execFile: bad.execFile, setpriv: false })).toEqual({
       ok: false,
       error: 'Could not run the tests as user 99999999999: The value of "options.uid" is out of range',
     });
-    expect(await runRepoTests('npm test', '/x', { env: { OVERCLI_TEST_UID: '1001', OVERCLI_TEST_GID: '2002' }, execFile: bad.execFile })).toEqual({
+    expect(await runRepoTests('npm test', '/x', { env: { OVERCLI_TEST_UID: '1001', OVERCLI_TEST_GID: '2002' }, execFile: bad.execFile, setpriv: false })).toEqual({
       ok: false,
       error: 'Could not run the tests as user 1001 (group 2002): The value of "options.uid" is out of range',
     });

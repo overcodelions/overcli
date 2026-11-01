@@ -118,6 +118,9 @@ COPY deploy/README.md deploy/aws.md deploy/gcp.md ./deploy/
 # overdb's headless MCP server; Setup → Databases installs the overdb tool on it.
 COPY --from=overdb /overdb /opt/overdb
 RUN ln -s /app/dist/cli/index.js /usr/local/bin/overcli && chmod +x /app/dist/cli/index.js
+# Starts the server as node whichever user the container starts as; started
+# as root with OVERCLI_WORKER_UID, it runs workers as a user of their own.
+COPY deploy/entrypoint.sh /usr/local/bin/overcli-entrypoint
 
 # All state — workers, journals, runs, tokens, the org policy, cloned repos —
 # lives on this volume. Lose it and the org loses its workers.
@@ -132,7 +135,13 @@ ENV OVERCLI_HOME=/data \
 RUN mkdir -p /data/home \
  && chown -R node:node /data \
  && git config --system user.name "overcli workers" \
- && git config --system user.email "workers@overcli.invalid" 
+ && git config --system user.email "workers@overcli.invalid" \
+ && chmod 755 /usr/local/bin/overcli-entrypoint \
+ && groupadd -g 1001 overcli-work \
+ && useradd -r -u 1001 -g 1001 -M -d /data/home -s /usr/sbin/nologin overcli-worker \
+ && usermod -aG overcli-work node
+# The user workers run as when OVERCLI_WORKER_UID=1001 is set (see
+# deploy/entrypoint.sh). Nothing runs as it otherwise.
 USER node
 VOLUME ["/data"]
 EXPOSE 7420
@@ -140,7 +149,7 @@ EXPOSE 7420
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD node -e "const p=(process.env.OVERCLI_CONTROL||'7420').split(':').pop();fetch('http://127.0.0.1:'+p+'/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
-ENTRYPOINT ["/usr/bin/tini", "--", "node", "/app/dist/cli/index.js"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/overcli-entrypoint"]
 # Permissions: deny is the safe default, and a worker that can use no tools
 # can do little. Override CMD (see docker-compose.yml) with an allow-list.
 CMD ["serve", "--permissions", "deny"]

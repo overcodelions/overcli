@@ -117,12 +117,13 @@ import {
   sandboxSupported,
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
-import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers, type McpServerConfig } from './mcpConfig';
+import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers, sealedClaudeTools, type McpServerConfig } from './mcpConfig';
 import { knownMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
 import { isSafeIdSegment } from '../shared/flows/safeId';
 import { stripSecrets } from './org/secrets';
+import { activeWorkerUser, shareWithWorkers, workerLaunch } from './org/workerUser';
 import { withShellToolchain } from './services/shellEnv';
 import { runEnv } from './runEnv';
 import { credentialDenyRules } from './org/credentialGuard';
@@ -730,6 +731,9 @@ export function selectedClaudeMcpConfig(
   }
   if (args.skipGlobalMcp || args.turbo) return '';
   const bound = {
+    // Command tools whose env the server keeps sealed: the config's entry has
+    // no credentials, so the run gets the real tool through the relay.
+    ...sealedClaudeTools(readClaudeMcpServers(args.cwd)),
     ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId),
     ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), args.conversationId),
   };
@@ -2157,6 +2161,7 @@ export class RunnerManager {
       // This transport loads the whole config, so its gateway tools get the
       // conversation's own key, as the cli transport's do.
       mcpServers: bindRunTools({
+        ...sealedClaudeTools(readClaudeMcpServers(args.cwd)),
         ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId),
         ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), convId),
       }, convId, relayLaunchFor(args)) as ClaudeSdkStartOptions['mcpServers'],
@@ -2169,6 +2174,9 @@ export class RunnerManager {
       pathToClaudeCodeExecutable: claudeSdkExecutablePath(
         this.settingsProvider().backendPaths.claude,
       ),
+      // The SDK spawns the CLI itself; as the worker user when there is one,
+      // the same as the cli transport's launchCommand.
+      ...(activeWorkerUser() ? { spawnClaudeCodeProcess: spawnAsWorker } : {}),
     });
     active.claudeSdk = client;
     client.on('line', (line: string) => {
@@ -4048,7 +4056,8 @@ export class RunnerManager {
     argv: string[],
   ): { command: string; args: string[] } {
     const jail = seatbeltProfileFor(args);
-    if (!jail) return { command: binary, args: argv };
+    // Seatbelt is macOS-only; the worker user is Linux-only. Never both.
+    if (!jail) return workerLaunch(binary, argv);
     const { profile, roots } = jail;
     log(
       'info',
@@ -5253,13 +5262,21 @@ export function safeAttachmentBase(id: string | undefined, dir: string, ext: str
   return file;
 }
 
+/// The Claude Agent SDK's spawn hook, for runs as the worker user.
+function spawnAsWorker(o: { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal: AbortSignal }) {
+  const launch = workerLaunch(o.command, o.args);
+  return spawn(launch.command, launch.args, { cwd: o.cwd, env: o.env, signal: o.signal, stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
 export function writeAttachmentFile(a: Attachment): string {
   const dir = path.join(os.homedir(), '.overcli', 'attachments');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  shareWithWorkers(dir);
   sweepOldAttachments(dir);
   const ext = attachmentExtension(a);
   const file = safeAttachmentBase(a.id, dir, ext);
   fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'), { mode: 0o600 });
+  shareWithWorkers(file);
   return file;
 }
 
@@ -5493,9 +5510,11 @@ function ollamaFriendlyError(raw: string): string {
 function writeAttachmentToTemp(a: Attachment): string {
   const dir = path.join(os.homedir(), '.overcli', 'attachments');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  shareWithWorkers(dir);
   const ext = mimeToExt(a.mimeType);
   const file = safeAttachmentBase(a.id, dir, ext);
   fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'), { mode: 0o600 });
+  shareWithWorkers(file);
   return file;
 }
 
