@@ -72,7 +72,8 @@ describe('launching as the worker user', () => {
 });
 
 describe('the startup check', () => {
-  const linux = { platform: 'linux' as const, exists: () => true, dataDir: '/data', home: '/data/home' };
+  // The server's uid is fixed, so a host whose own user is 1001 (CI runners are) can't change the outcome.
+  const linux = { platform: 'linux' as const, exists: () => true, dataDir: '/data', home: '/data/home', serverUid: 1000 };
   const capsLine = (hex: string) => `Name:\tnode\nCapEff:\t${hex}\n`;
 
   it('reads capabilities and names what is missing', () => {

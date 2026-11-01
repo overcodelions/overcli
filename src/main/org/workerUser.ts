@@ -221,12 +221,14 @@ export async function enableWorkerUser(opts: {
   dataDir: string;
   home: string;
   cli?: string;
+  /// The server's own uid; tests pass one so the host running them doesn't matter.
+  serverUid?: number;
   readStatus?: () => string;
   exists?: (p: string) => boolean;
   platform?: NodeJS.Platform;
   exec?: ExecFile;
 }): Promise<{ ok: boolean; lines: string[] }> {
-  const parsed = workerUserFrom(opts.env);
+  const parsed = workerUserFrom(opts.env, 'serverUid' in opts ? opts.serverUid : process.getuid?.());
   if (parsed === undefined) {
     setActiveWorkerUser(null);
     return { ok: true, lines: [] };
