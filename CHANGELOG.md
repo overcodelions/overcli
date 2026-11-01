@@ -10,6 +10,9 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Repo tests switch user through `setpriv`** where it's installed, so a test command gets none of the server's capabilities. Starting the container as root now lets `OVERCLI_TEST_UID` work in Docker.
 - **The reviewer's CLI gets none of the server's secrets in its environment,** like every other worker CLI.
 
+### Fixed
+- **Command tools that print a line that isn't JSON when they start work through the relay.** The relay hung up on the first such line ("Server running on stdio"), so a worker on an allowlist lost tools like Productboard's. It now reads on, as Claude Code does.
+
 ## [0.24.4] - 2026-10-31
 
 ### Security

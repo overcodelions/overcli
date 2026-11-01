@@ -155,7 +155,13 @@ function serve(socket: net.Socket): void {
             if (line) socket.write(line + '\n');
           };
           upstream.onclose = () => void close();
-          upstream.onerror = () => void close();
+          // A stdio tool that prints a line that isn't JSON ("Server running
+          // on stdio") is still running: the SDK reports the line here and
+          // reads on, as Claude Code does when it starts the tool itself. Its
+          // exit closes the session through onclose. Any other transport's
+          // error ends the session.
+          const stdio = typeof run.tools[hello.tool].command === 'string';
+          upstream.onerror = () => { if (!stdio) void close(); };
           await upstream.start();
           if (closed) { await upstream.close(); return; }
           socket.write('{"type":"ready"}\n');

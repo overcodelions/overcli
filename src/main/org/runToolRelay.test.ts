@@ -78,6 +78,17 @@ describe('run tool relay', () => {
     expect(runToolRelayEnv('one')).toEqual({});
   });
 
+  it('keeps a stdio tool that prints lines that aren\'t JSON, as tools often do on start', async () => {
+    const chatty = { command: process.execPath, args: ['-e', `console.log('Connecting server to transport...');console.log('Acme MCP Server running on stdio');${echo}`], env: { PASSWORD: 'tool-secret' } };
+    const config = bindRunTools({ notes: chatty }, 'chatty');
+    const client = await connect(config.notes, 'chatty', 'notes');
+    expect(await client.next()).toEqual({ type: 'ready' });
+    client.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list' } });
+    const reply = await client.next();
+    expect(reply.id).toBe(1);
+    expect(JSON.parse(reply.result.content[0].text)).toMatchObject({ password: 'tool-secret' });
+  });
+
   it('starts a stdio tool in the run\'s folder and inside the run\'s jail, and rebinds when the jail changes', async () => {
     const plain = relayLaunch({ command: 'npx', args: ['acme-mcp'], env: { KEY: 'k' } }, { cwd: '/repo' });
     expect(plain).toMatchObject({ command: 'npx', args: ['acme-mcp'], cwd: '/repo', env: expect.objectContaining({ KEY: 'k' }) });
