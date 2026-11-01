@@ -1701,6 +1701,7 @@ export class OrgService {
           : undefined;
       out.push({
         runId: run.id,
+        ...(run.number ? { runNumber: run.number } : {}),
         workerId: run.workerId,
         workerName: run.workerName ?? roster.find((w) => w.id === run.workerId)?.name ?? 'A worker',
         kind,
@@ -3846,6 +3847,8 @@ export class OrgService {
         at,
         ...(cost != null ? { costUSD: cost } : {}),
         runId: r.id,
+      ...(r.number ? { runNumber: r.number } : {}),
+        ...(r.number ? { runNumber: r.number } : {}),
         ...(rating ? { rating: { useful: rating.useful, by: rating.by, ...(rating.note ? { note: rating.note } : {}) } } : {}),
         ...(answer ? { body: answer.body.slice(0, 6000) } : {}),
       });
@@ -4081,6 +4084,7 @@ export class OrgService {
       worker: { id: w.id, name: w.name, enabled: w.enabled, ...(manager ? { manager: manager.name } : {}) },
       run: {
         id: r.id,
+        ...(r.number ? { number: r.number } : {}),
         title: flowRunTitle(r),
         state: past ? past.outcome : r.state.kind,
         startedAt: r.createdAt,
@@ -4296,6 +4300,7 @@ export class OrgService {
     const prs = pullRequestsIn(r.artifacts?.[LANDED_ARTIFACT]?.body ?? '');
     return {
       runId: r.id,
+      ...(r.number ? { runNumber: r.number } : {}),
       title: flowRunTitle(r),
       at: r.createdAt,
       minutes: Math.max(0, Math.round((ended - r.createdAt) / 60_000)),
@@ -4517,6 +4522,9 @@ export class OrgService {
         const reason = r.state.kind === 'paused' ? r.state.reason : undefined;
         return {
           runId: r.id,
+          ...(r.number ? { runNumber: r.number } : {}),
+      ...(r.number ? { runNumber: r.number } : {}),
+        ...(r.number ? { runNumber: r.number } : {}),
           title: flowRunTitle(r),
           startedAt: r.createdAt,
           step: { index: index + 1, total: steps.length, name: steps[index]?.id ?? '' },

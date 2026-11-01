@@ -607,6 +607,9 @@ export interface FlowRun {
   /// say which worker started work nobody watched.
   workerId?: UUID;
   workerName?: string;
+  /// The worker's own run number, #1, #2, … — what people read and say.
+  /// Display only: the id stays the key. Runs from before numbering have none.
+  number?: number;
   /// Set when a team commissioned this run as a piece of one of its tasks.
   /// Lets the Work view fold every piece of a task into one entry, even after
   /// the batch that launched it is gone.

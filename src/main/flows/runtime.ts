@@ -95,6 +95,8 @@ import {
   type WorkspaceMemberRef,
 } from '../../shared/flows/workspaceMembers';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
+import { nextRunNumber } from './runNumbers';
+import { host } from '../host';
 import { getWatchSource, parseWatchReport, type WatchTickReport } from './watch/source';
 import { notifyWatch } from './watch/notify';
 // Importing this registers the bundled watch source(s) with the registry as a
@@ -1338,6 +1340,7 @@ export class FlowRuntimeImpl {
       chainDepth: args.chainDepth,
       chainParentRunId: args.chainParentRunId,
       workerId: args.workerId,
+      ...(args.workerId ? { number: nextRunNumber(join(host().dataDir(), 'run-numbers.json'), args.workerId, this.runs.values()) } : {}),
       workerName: args.workerName,
       ...(args.team ? { team: args.team } : {}),
       ...(args.allowExternalActions ? { allowExternalActions: true } : {}),

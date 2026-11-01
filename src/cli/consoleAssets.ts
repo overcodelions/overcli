@@ -48,7 +48,7 @@ export const CONSOLE_HTML = `<!doctype html>
 // the indigo accent, so the console and the desktop app read as one product.
 // The frame sits a step darker than the page, so the chrome reads as chrome.
 const DARK = `
-  --bg: #161619; --side: #111114; --panel: #1b1b20; --panel-2: #23232a; --line: #2c2c33; --line-2: #3a3a43;
+  --bg: #161619; --side: #0d0d10; --head: #202026; --panel: #1b1b20; --panel-2: #23232a; --line: #2c2c33; --line-2: #3a3a43;
   --field: #121215; --field-line: #686874;
   --ink: #ececf1; --muted: #b0b0ba; --faint: #8e8e98; --solid: #ececf1; --solid-ink: #17171c;
   --go: #7c8bff; --go-ink: #10121f; --go-soft: rgba(124, 139, 255, 0.16);
@@ -63,7 +63,7 @@ const DARK = `
   color-scheme: dark;`;
 
 const LIGHT = `
-  --bg: #f6f6f8; --side: #ffffff; --panel: #ffffff; --panel-2: #f3f3f6; --line: #e1e1e7; --line-2: #c8c8d0;
+  --bg: #f6f6f8; --side: #ffffff; --head: #f3f3f6; --panel: #ffffff; --panel-2: #f3f3f6; --line: #e1e1e7; --line-2: #c8c8d0;
   --field: #ffffff; --field-line: #8e8e99;
   --ink: #17171c; --muted: #4a4a52; --faint: #6b6b74; --solid: #17171c; --solid-ink: #ffffff;
   --go: #4355e0; --go-ink: #ffffff; --go-soft: rgba(93, 114, 255, 0.11);
@@ -86,7 +86,7 @@ export const CONSOLE_CSS = `
   --serif: "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
   --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
-  --r-sm: 7px; --r: 8px; --r-lg: 10px;
+  --r-sm: 6px; --r: 6px; --r-lg: 6px;
 }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {${LIGHT} } }
 :root[data-theme="light"] {${LIGHT} }
@@ -103,23 +103,63 @@ a { color: var(--go); }
 code, pre { font-family: var(--mono); font-size: 12.5px; }
 
 /* ---- frame ---- */
-.frame { display: grid; grid-template-columns: 232px minmax(0, 1fr); grid-template-rows: 56px minmax(0, 1fr); min-height: 100vh; }
+.frame { display: flex; flex-direction: column; min-height: 100vh; }
+:root { --chrome-h: 103px; }
+.chrome { position: sticky; top: 0; z-index: 5; }
+.chrome .topbar { position: static; }
 .topbar { grid-column: 1 / -1; position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 16px; padding: 0 16px; background: var(--side); border-bottom: 1px solid var(--line); }
-.topbar .brand { width: 200px; padding: 0; flex: none; }
+.topbar .brand { width: auto; padding: 0; flex: none; }
+.topbar { min-height: 56px; }
 .topbar .brand-slash { flex: none; margin: 0 -2px; font-size: 20px; font-weight: 400; line-height: 1; color: var(--faint); }
-.topbar .org { min-width: 0; font-weight: 600; font-size: 16px; letter-spacing: -0.01em; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.topbar .org { min-width: 0; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .search { flex: 1 1 auto; max-width: 520px; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--line); color: var(--faint); }
 .search:focus-within { border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
 .search input { border: 0 !important; background: transparent !important; box-shadow: none !important; padding: 0; min-height: 0; font-size: 13.5px; }
 .search kbd { font: 600 11px var(--sans); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 6px; color: var(--faint); }
 .top-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-.top-link { background: none; border: 0; text-decoration: none; color: var(--muted); font-size: 13px; padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.top-link { background: none; border: 1px solid var(--line-2); min-height: 34px; text-decoration: none; color: var(--ink); font-size: 13px; font-weight: 600; padding: 0 11px; border-radius: var(--r-sm); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 .top-link:hover { background: var(--panel); color: var(--ink); }
+.top-right { gap: 8px; }
+.top-link.only-icon { width: 34px; padding: 0; justify-content: center; color: var(--muted); }
+.top-link.only-icon .lbl, .top-link.me .lbl { display: none; }
+.top-link.me { border: 0; padding: 0 2px; gap: 4px; color: var(--faint); }
+.top-link.me:hover { background: none; color: var(--ink); }
+.top-bell { width: 34px; padding: 0; justify-content: center; color: var(--muted); }
 .top-bell { position: relative; }
-.top-bell .count { position: absolute; top: 2px; right: 0; min-width: 16px; padding: 0 4px; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; background: var(--need); color: var(--need-ink); }
-.side { background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; position: sticky; top: 56px; height: calc(100vh - 56px); overflow-y: auto; }
-.side-hire { width: 100%; margin-top: auto; flex: none; justify-content: center; min-height: 40px; background: var(--panel); }
-.side-hire[aria-current="page"] { border-color: var(--go); color: var(--go); }
+.top-bell .count { position: absolute; top: -6px; right: -6px; min-width: 16px; padding: 0 4px; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; background: var(--need); color: var(--need-ink); }
+/* Sections: a row of tabs in the chrome under the top bar. It scrolls away
+   with the page (only the top bar is pinned), so every sticky offset stays 56px. */
+.topnav { display: flex; align-items: stretch; gap: 2px; padding: 0 clamp(4px, calc(2vw - 12px), 20px); background: var(--side); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.topnav::-webkit-scrollbar { display: none; }
+.topnav button { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 12px; border: 0; background: none; color: var(--muted); font-size: 14px; font-weight: 500; white-space: nowrap; cursor: pointer; box-shadow: inset 0 -2px 0 transparent; }
+.topnav button svg { flex: none; opacity: 0.85; }
+.topnav button:hover { color: var(--ink); box-shadow: inset 0 -2px 0 var(--line-2); }
+.topnav button[aria-current="page"] { color: var(--ink); font-weight: 700; box-shadow: inset 0 -2px 0 var(--go); }
+.topnav button[aria-current="page"] svg { opacity: 1; }
+.topnav button:focus-visible { outline-offset: -2px; }
+.topnav .count { min-width: 20px; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 800; text-align: center; line-height: 19px; background: var(--need); color: var(--need-ink); font-variant-numeric: tabular-nums; }
+.topnav .total { min-width: 20px; padding: 0 7px; border-radius: 999px; font: 700 11.5px/19px var(--sans); text-align: center; background: var(--panel-2); color: var(--ink); font-variant-numeric: tabular-nums; }
+.topnav .issue { font-size: 12px; font-weight: 700; color: var(--bad); }
+.tn-sep { flex: 1 0 16px; }
+.tn-group { flex: none; align-self: center; padding: 0 6px 0 14px; border-left: 1px solid var(--line-2); font-size: 11px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+.btn.top-hire { min-height: 34px; padding: 0 12px; font-weight: 800; }
+.btn.top-hire[aria-current="page"] { box-shadow: 0 0 0 3px var(--go-soft); }
+.top-link.me.has-new { position: relative; }
+.top-link.me.has-new::after { content: ""; position: absolute; top: 2px; left: 26px; width: 9px; height: 9px; border-radius: 50%; background: var(--need); border: 2px solid var(--side); }
+.menu .side-by { margin: 0; padding: 12px 16px; }
+.crumbs { display: contents; }
+.crumb, .crumb-link { min-width: 0; font-size: 16px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crumb[aria-current="page"] { font-weight: 700; }
+button.crumb-link { border: 0; background: none; padding: 2px 4px; margin: 0 -4px; border-radius: var(--r-sm); cursor: pointer; font: inherit; font-size: 16px; }
+button.crumb-link:hover { background: var(--panel); }
+.topbar .org.crumb-link { font-weight: 700; }
+.topbar .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sections-wrap .menu { left: 0; right: auto; }
+.sections-menu .menu-item[aria-current="page"] { background: var(--panel-2); font-weight: 700; }
+.sections-menu .menu-item .count, .sections-menu .menu-item .issue { margin-left: auto; }
+.sections-menu .menu-item .count { min-width: 20px; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 800; line-height: 19px; text-align: center; background: var(--need); color: var(--need-ink); }
+.sections-menu .menu-item .issue { font-size: 12px; font-weight: 700; color: var(--bad); }
+.sm-group { padding: 10px 0 4px; font-size: 11px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
 .side-by { margin-top: auto; flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 14px 8px 2px; font-size: 12px; line-height: 1.3; color: var(--faint); }
 .side-by a { color: var(--faint); text-decoration: none; }
 .side-by a:hover, .side-by a:hover code { color: var(--ink); }
@@ -127,7 +167,6 @@ code, pre { font-family: var(--mono); font-size: 12.5px; }
 .side-by-ver { font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .side-by-ver a { color: var(--need); }
 .side-by-name b { font-weight: 600; }
-.side-hire + .side-by { margin-top: 10px; }
 .side-by code { font-size: 12px; color: var(--muted); }
 .menu-wrap { position: relative; }
 .menu { position: absolute; right: 0; top: calc(100% + 6px); width: 280px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28); z-index: 20; overflow: hidden; }
@@ -144,21 +183,24 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .nav button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; padding: 6px 10px; border: 0; background: none; border-radius: var(--r-sm); color: var(--muted); cursor: pointer; text-align: left; font-size: 13.5px; font-weight: 500; }
 .nav button svg { flex: none; opacity: 0.85; }
 .nav button:hover { background: var(--panel); color: var(--ink); }
-.nav button[aria-current="page"] { background: var(--go-soft); color: var(--go); font-weight: 600; }
+.nav button[aria-current="page"] { background: var(--head); color: var(--ink); font-weight: 700; box-shadow: inset 3px 0 0 var(--go); }
 .nav button[aria-current="page"] svg { opacity: 1; }
 .nav .count { margin-left: auto; min-width: 20px; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 700; text-align: center; line-height: 19px; background: var(--need); color: var(--need-ink); font-variant-numeric: tabular-nums; }
+.nav .total { margin-left: auto; font: 600 12px var(--mono); color: var(--faint); }
+.nav button[aria-current="page"] .total { color: var(--muted); }
 .nav .issue { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--bad); }
 .nav button[aria-current="page"] .issue { color: inherit; opacity: 0.85; }
 .nav .sep { height: 1px; background: var(--line); margin: 10px 6px; }
-.nav .group { padding: 4px 10px 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+.nav .group { padding: 4px 10px 6px; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink); font-weight: 800; }
 .setup { display: flex; gap: 36px; align-items: flex-start; }
-.setup-rail { flex: 0 0 200px; position: sticky; top: 72px; max-height: calc(100vh - 88px); overflow-y: auto; }
+.setup-rail { flex: 0 0 200px; position: sticky; top: calc(var(--chrome-h) + 16px); max-height: calc(100vh - var(--chrome-h) - 32px); overflow-y: auto; }
 /* The rail's sections: brighter than their pages, a rule between them. */
 .setup-rail .group { margin-top: 16px; padding: 16px 10px 8px; border-top: 1px solid var(--line-2); color: var(--ink); font-size: 11.5px; letter-spacing: 0.1em; font-weight: 700; }
 .setup-rail .group:first-child { margin-top: 0; padding-top: 4px; border-top: 0; }
 .setup-rail button { min-height: 32px; font-size: 13.5px; }
 .setup-rail .light { margin-left: auto; }
 .setup-rail .light.need { background: var(--need); }
+.setup-rail.wk-rail { flex: 0 0 170px; top: calc(var(--chrome-h) + var(--wk-head, 190px) + 16px); }
 .setup-pick { display: none; }
 .setup-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
 /* The chips someone picked. Not tr.picked: a ticked table row keeps its cells. */
@@ -180,7 +222,7 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .main { min-width: 0; padding: 28px 36px 64px; }
 /* A worker's name and tabs stay under the top bar while its page scrolls,
    painted out to the page's own edges and no further. */
-.wk-sticky { position: sticky; top: 56px; z-index: 4; background: var(--bg); margin: 0 calc(-1 * var(--pad-x, 32px)); padding: 0 var(--pad-x, 32px); }
+.wk-sticky { position: sticky; top: var(--chrome-h); z-index: 4; background: var(--bg); margin: 0 calc(-1 * var(--pad-x, 32px)); padding: 0 var(--pad-x, 32px); }
 .wk-sticky .page-head { padding-top: 6px; }
 /* Data pages use the whole width; pages you read or write on keep a measure.
    Both sit against the sidebar rather than floating in the middle. */
@@ -188,27 +230,27 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .page.narrow { max-width: 880px; }
 .page-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; }
 .eyebrow { color: var(--faint); font-size: 12.5px; margin-bottom: 4px; }
-.page-title { font-family: var(--serif); font-size: 30px; font-weight: 600; line-height: 1.15; letter-spacing: -0.02em; font-variation-settings: "opsz" 96, "wdth" 100; }
+.page-title { font-family: var(--serif); font-size: 34px; font-weight: 800; line-height: 1.1; letter-spacing: -0.03em; font-variation-settings: "opsz" 96, "wdth" 100; }
 .page-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* ---- data: figures, tables, badges ---- */
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
-.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: center; min-width: 0; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.kpi { background: var(--panel); border: 0; border-radius: 0; padding: 14px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: center; min-width: 0; }
 .kpi > :not(.kpi-ic) { grid-column: 2; }
 .kpi-ic { grid-row: 1 / span 3; width: 38px; height: 38px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; background: var(--go-soft); color: var(--go); }
 .kpi-ic.need { background: var(--need-soft); color: var(--need); }
 .kpi-ic.ok { background: var(--ok-soft); color: var(--ok); }
 .kpi-ic.info { background: var(--info-soft); color: var(--info); }
 .kpi-ic.violet { background: var(--violet-soft); color: var(--violet); }
-.kpi .k { font-size: 12px; font-weight: 600; color: var(--faint); }
-.kpi .v { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.kpi .k { font-size: 11.5px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.kpi .v { font-family: var(--mono); font-size: 24px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 .kpi .v.need { color: var(--need); } .kpi .v.bad { color: var(--bad); }
 .kpi .n { font-size: 12px; color: var(--faint); }
 .kpi button.n { background: none; border: 0; padding: 0; text-align: left; color: var(--go); cursor: pointer; }
 /* A titled section: its title lives in the card's own header bar, so cards in
    neighbouring columns start on the same line and share edges. */
 .sec { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); min-width: 0; overflow: hidden; }
-.sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 0 18px; border-bottom: 1px solid var(--line); }
+.sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--head); }
 .sec-head .label { font-size: 12px; }
 .sec-head .linkish { color: var(--go); font-size: 13px; }
 .sec-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
@@ -220,14 +262,14 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .sec-body.flush > .ask.fix { background: var(--bad-soft); }
 .split > .wide, .split > .narrow { gap: 16px; }
 .tcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
-.tbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+.tbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--head); }
 .tbar .tools { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; }
 .tbar .tools input, .tbar .tools select { min-height: 34px; padding: 5px 11px; font-size: 13px; width: auto; }
 .tbar .tools select { padding-right: 32px; }
-.tabs button .c { color: var(--faint); font-weight: 500; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.tabs button .c { display: inline-block; min-width: 20px; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--panel-2); color: var(--ink); font-size: 11.5px; font-weight: 700; line-height: 19px; text-align: center; font-variant-numeric: tabular-nums; }
 .tscroll { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; }
-table.data th { font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.data th { font-size: 11.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 table.data th.r, table.data td.r { text-align: right; }
 table.data th button { all: unset; cursor: pointer; }
 table.data th button:hover, table.data th button[aria-pressed="true"] { color: var(--ink); }
@@ -236,6 +278,13 @@ table.data tr:last-child td { border-bottom: 0; }
 table.data tbody tr.link { cursor: pointer; }
 table.data tbody tr.link:hover td { background: var(--panel-2); }
 table.data td.wrap { white-space: normal; }
+table.data td.r { font-family: var(--mono); font-size: 12.5px; }
+table.data td.r button, table.data td.r .btn { font-family: var(--sans); }
+table.data th.run-mark, table.data td.run-mark { width: 22px; padding-right: 0; }
+table.data td.run-mark .jl-mark { margin-top: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.run-word { margin-left: 8px; font-size: 12px; font-weight: 700; color: var(--muted); }
+.run-word.bad { color: var(--bad); }
 table.data tr.run-detail td { white-space: normal; background: var(--panel-2); padding: 14px 16px 16px; }
 table.data .sub { display: block; font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
 table.data .who { display: flex; align-items: center; gap: 12px; min-width: 0; }
@@ -248,6 +297,16 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .badge.waiting { background: var(--need-soft); color: var(--need); }
 .badge.bad, .badge.stuck { background: var(--bad-soft); color: var(--bad); }
 .badge.ok { background: var(--ok-soft); color: var(--ok); }
+.run-no { font-family: var(--mono); font-size: 12.5px; font-weight: 500; color: var(--faint); margin-right: 8px; }
+.run-no.big { font-size: 22px; margin: 0; }
+.state-disc { flex: none; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--line-2); color: var(--ink); }
+.state-disc svg { stroke-width: 3; }
+.state-disc.ok { background: var(--ok); color: #0d2117; }
+.state-disc.bad, .state-disc.stuck { background: var(--bad); color: var(--bad-ink); }
+.state-disc.waiting { background: var(--need); color: var(--need-ink); }
+.state-disc.working { background: var(--go-soft); box-shadow: inset 0 0 0 2px var(--go); }
+.state-disc > i { width: 10px; height: 10px; border-radius: 50%; background: var(--go); animation: pulse 1.4s infinite; }
+@media (prefers-reduced-motion: reduce) { .state-disc > i { animation: none; } }
 .trust { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); white-space: nowrap; }
 .trust-bars { display: inline-flex; flex-direction: row; align-items: center; gap: 2px; }
 .trust-bars b { display: block; width: 4px; height: 11px; border-radius: 1px; background: var(--line-2); }
@@ -298,8 +357,8 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .econ > div:last-child { border-bottom: 0; }
 .econ b { font-variant-numeric: tabular-nums; }
 .dear { color: var(--need); font-weight: 600; }
-.serif, .ask-name, .item .t, .who-name, .card-name, .person-name, .role h3, .offer-name, .dialog h2, .solo h1, .big, .brand-name, .place b { letter-spacing: -0.02em; font-weight: 500; }
-.label { margin: 0; font-size: 12.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.serif, .ask-name, .item .t, .who-name, .card-name, .person-name, .role h3, .offer-name, .dialog h2, .solo h1, .big, .brand-name, .place b { letter-spacing: -0.02em; font-weight: 700; }
+.label { margin: 0; font-size: 12.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink); }
 .main { --pad-x: clamp(16px, 2vw, 32px); padding: 24px var(--pad-x) 40px; }
 .page-sub { margin-top: 6px; color: var(--muted); max-width: 66ch; }
 .section-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
@@ -457,7 +516,7 @@ table.data tfoot td { font-weight: 600; border-top: 1px solid var(--line-2); bor
 .brief-hints { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12.5px; }
 .bh { display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 99px; background: var(--panel-2); color: var(--muted); font-size: 12px; transition: background .2s, color .2s; }
 .bh.on { background: var(--ok-soft); color: var(--ok); font-weight: 600; }
-.hire-ideas { flex: 1 1 340px; max-width: 460px; display: flex; flex-direction: column; gap: 12px; position: sticky; top: 72px; }
+.hire-ideas { flex: 1 1 340px; max-width: 460px; display: flex; flex-direction: column; gap: 12px; position: sticky; top: calc(var(--chrome-h) + 16px); }
 .hk-schedule { --hk: var(--info); --hk-soft: var(--info-soft); }
 .hk-slack { --hk: var(--violet); --hk-soft: var(--violet-soft); }
 .hk-event { --hk: var(--need); --hk-soft: var(--need-soft); }
@@ -652,15 +711,16 @@ pre.diff .da { color: var(--ok); } pre.diff .dd { color: var(--bad); } pre.diff 
 .tmcard.clickable:hover { transform: translateY(-2px); border-color: var(--line-2); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16); }
 .tmcard.clickable:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .tmcard.clickable { transition: none; } .tmcard.clickable:hover { transform: none; } }
-.tmname { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--ink); text-align: left; }
+.tmname { font-family: var(--serif); font-size: 18px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink); text-align: left; }
 .tmpurpose { margin: 2px 0 0; font-size: 13px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tmmeta { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; font-size: 12.5px; }
 .tmmeta .faces { flex: none; }
 .tmstats { flex: 1 1 160px; min-width: 0; }
 .tmlive { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--go); }
 .tmlive .livedot { width: 7px; height: 7px; }
-.tmfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
-.tmcard.add .tmfoot { border-top-style: dashed; border-top-color: var(--line-2); }
+.tmfoot { margin: auto -16px -16px; display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--head); }
+.tmcard.add .tmfoot { border-top-style: dashed; border-top-color: var(--line-2); background: none; }
+.tmcard { overflow: hidden; }
 .tsegs .next { background: var(--line); }
 .tsum { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 .tsum.live { border-color: var(--go); } .tsum.need { border-color: var(--need); }
@@ -703,7 +763,7 @@ table.files tr.picked td { background: var(--go-soft); }
 .steps-plain { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; }
 .steps-plain code { font-size: 12px; overflow-wrap: anywhere; }
 .deststrip .dest { display: inline-flex; gap: 8px; align-items: center; }
-.drawer { position: fixed; top: 56px; right: 0; bottom: 0; width: min(760px, 94vw); z-index: 30; background: var(--panel); border-left: 1px solid var(--line-2); box-shadow: -18px 0 40px rgba(0, 0, 0, 0.18); display: flex; flex-direction: column; animation: drawerin .18s ease-out; }
+.drawer { position: fixed; top: var(--chrome-h); right: 0; bottom: 0; width: min(760px, 94vw); z-index: 30; background: var(--panel); border-left: 1px solid var(--line-2); box-shadow: -18px 0 40px rgba(0, 0, 0, 0.18); display: flex; flex-direction: column; animation: drawerin .18s ease-out; }
 @keyframes drawerin { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .drawer { animation: none; } }
 .drawer-head { display: flex; gap: 12px; align-items: flex-start; padding: 14px 18px; border-bottom: 1px solid var(--line); }
@@ -722,8 +782,10 @@ table.files tr.picked td { background: var(--go-soft); }
 /* The Library: one dense row per deliverable, opening in place. */
 .lib-search { flex: 0 1 460px; height: 40px; }
 .libhead, .librow { display: grid; grid-template-columns: 40px minmax(0, 1fr) 170px 130px 90px 80px; gap: 14px; align-items: center; padding: 0 16px; }
-.libhead { padding-top: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.libhead { padding-top: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); background: var(--head); font-size: 11.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
 .libhead .r, .libwhen, .librate { text-align: right; }
+.libwhen { font-family: var(--mono); font-size: 12px; }
+.libmain .libtitle { font-weight: 600; }
 .librow { width: 100%; padding-top: 10px; padding-bottom: 10px; border: 0; border-bottom: 1px solid var(--line); background: var(--panel); text-align: left; font: inherit; color: inherit; cursor: pointer; }
 .librow:hover, .librow[aria-expanded="true"] { background: var(--panel-2); }
 .librow > .badge { justify-self: start; }
@@ -751,6 +813,20 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .run-main { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .run-side { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
 .run-thread > .thread .t-top:first-child .t-src { display: none; }
+/* On a run's own page the header already says its state, time and cost, so
+   the thread's card opens up: no outer frame, no repeated status line, and
+   each part (what it found, pull requests, how it got there) is its own box. */
+.run-thread > .thread { background: none; border: 0; border-radius: 0; box-shadow: none; overflow: visible; }
+.run-thread > .thread > .t-main { padding: 0; gap: 16px; }
+.run-thread > .thread > .t-main > .t-top:first-child { display: none; }
+.run-thread .t-run { gap: 16px; }
+.run-thread .t-answer { padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--ok) 32%, transparent); border-radius: var(--r-lg); }
+.run-thread .t-prs, .run-thread .t-how { margin-top: 0; padding-top: 0; gap: 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); overflow: hidden; }
+.run-thread .t-prs > .t-kind, .run-thread .t-how > .t-kind { display: flex; align-items: center; min-height: 44px; padding: 0 16px; background: var(--head); border-bottom: 1px solid var(--line); color: var(--ink); font-weight: 800; letter-spacing: 0.08em; }
+.run-thread .t-prs > .t-pr { border: 0; border-radius: 0; border-top: 1px solid var(--line); background: none; }
+.run-thread .t-prs > .t-kind + .t-pr { border-top: 0; }
+.run-thread .t-prs > .t-pr:hover { background: var(--panel-2); }
+.run-thread .t-how > :not(.t-kind) { margin: 16px; }
 .run-facts { margin: 0; padding: 4px 16px; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 16px; font-size: 13px; }
 .run-facts dt, .run-facts dd { margin: 0; padding: 9px 0; border-top: 1px solid var(--line); }
 .run-facts dt { color: var(--faint); }
@@ -782,7 +858,7 @@ mark.on { background: var(--need); color: var(--need-ink); }
 /* Title and time share the first line; where it came from is the second. */
 .came-top { display: flex; gap: 12px; align-items: baseline; min-width: 0; }
 .came-top .cametitle { flex: 1; min-width: 0; }
-.came-at { flex: none; font-size: 12.5px; white-space: nowrap; }
+.came-at { flex: none; font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 /* One ticket's updates as one row: its key, who, and the steps in order. */
 .came-key { flex: none; font-family: var(--mono); font-size: 12px; color: var(--faint); }
 .came-sep { flex: none; width: 1px; height: 12px; background: var(--line-2); }
@@ -949,7 +1025,44 @@ table.data .wl-pr-pill { min-height: 24px; padding: 0 8px; font-size: 12px; }
 .wl-sub { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wl-meta { font-size: 12px; color: var(--faint); white-space: nowrap; text-align: right; }
 .wl-meta.bad { color: var(--bad); } .wl-meta.need { color: var(--need); }
-.jl-row { grid-template-columns: 120px minmax(0, 1fr) auto; align-items: start; cursor: default; }
+.jl-row { grid-template-columns: 22px minmax(0, 1fr) 76px 76px; gap: 2px 14px; align-items: start; padding: 10px 18px; cursor: default; }
+.jl-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.jl-main .wl-title { font-weight: 600; }
+.jl-mono { font-family: var(--mono); font-size: 12px; color: var(--faint); text-align: right; white-space: nowrap; padding-top: 2px; }
+.jl-mark { width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--panel-2); color: var(--muted); }
+.jl-mark svg { stroke-width: 3; }
+.jl-mark.ok { background: var(--ok-soft); color: var(--ok); }
+.jl-mark.bad { background: var(--bad-soft); color: var(--bad); }
+.jl-mark.working { background: var(--go-soft); color: var(--go); }
+.jl-mark > i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.jl-row .jl-reply.clamp { -webkit-line-clamp: 1; font-size: 13px; color: var(--muted); }
+.jl-row .jl-reply:not(.clamp) { max-width: 92ch; }
+.jl-day + .jl-day { border-top: 1px solid var(--line); }
+.jl-day .wl-day { padding: 12px 18px 4px; }
+.jl-more { padding: 12px; text-align: center; border-top: 1px solid var(--line); }
+.jl-more:empty { display: none; }
+.jl-notelist > * + * { border-top: 1px solid var(--line); }
+.jl-note { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 16px; align-items: center; padding: 12px 18px; }
+.jl-note-text { max-width: 92ch; font-size: 13.5px; line-height: 1.5; }
+.jl-add { display: flex; flex-direction: column; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 50%, var(--panel)); }
+.jl-add textarea { max-width: 92ch; }
+.journal-notes > [aria-live]:not(:empty) { padding: 0 18px 14px; }
+.sec-count:not(:empty) { min-width: 20px; padding: 0 7px; border-radius: 999px; background: var(--panel-2); font-size: 11.5px; font-weight: 700; line-height: 19px; text-align: center; }
+/* A worker's header: who it is on one line, what it is under that, then its facts as a strip. */
+.wk-body { display: contents; }
+.wk-head { align-items: flex-start; padding-top: 18px; padding-bottom: 14px; }
+.wk-head .page-actions { padding-top: 6px; }
+.wk-id { display: flex; gap: 16px; align-items: flex-start; min-width: 0; }
+.wk-id-main { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.wk-name-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wk-name-row .page-title { margin-right: 4px; }
+.wk-tagline { margin: 0; color: var(--muted); font-size: 14.5px; max-width: 80ch; }
+.wk-facts { display: flex; flex-wrap: wrap; align-items: stretch; width: fit-content; max-width: 100%; margin-top: 2px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); font-size: 13px; overflow: hidden; }
+.wk-fact { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 14px; border-left: 1px solid var(--line); white-space: nowrap; color: var(--ink); }
+.wk-fact:first-child { border-left: 0; }
+.wk-fact > .k { font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.wk-fact > .v { font-family: var(--mono); font-weight: 600; }
+.wk-fact .row.faint { gap: 10px !important; }
 .jl-row.clickable { cursor: pointer; }
 .jl-row:not(.clickable):hover { background: transparent; }
 .jl-reply { font-size: 13px; line-height: 1.5; color: var(--muted); }
@@ -1101,6 +1214,16 @@ details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 /* ---- items ---- */
 .ask { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px 16px; padding: 20px 22px; }
 .ask.fix { border-color: var(--bad-line); }
+.ask.need { border-color: color-mix(in srgb, var(--need) 38%, var(--line)); }
+.ask.framed { display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden; }
+.ask-top { display: flex; align-items: center; gap: 12px; padding: 10px 18px; background: var(--head); border-bottom: 1px solid var(--line); }
+.ask-top > .avatar { width: 30px; height: 30px; font-size: 11px; }
+.ask-top .ask-head { flex: 1; min-width: 0; align-items: center; }
+.ask.framed > .ask-body { padding: 16px 18px; }
+.ask.framed > .ask-body:empty { display: none; }
+.ask-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 55%, var(--panel)); }
+.ask.need .ask-top { background: color-mix(in srgb, var(--need) 9%, var(--panel)); border-bottom-color: color-mix(in srgb, var(--need) 26%, var(--line)); }
+.ask.fix .ask-top { background: color-mix(in srgb, var(--bad) 9%, var(--panel)); border-bottom-color: var(--bad-line); }
 .ask.done { opacity: 0.6; }
 .tag.bad { background: var(--bad-soft); border-color: transparent; color: var(--bad); font-weight: 600; }
 .ask-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
@@ -1213,7 +1336,7 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .tabs { display: flex; gap: 22px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
 .tabs button { border: 0; background: none; padding: 12px 2px; font-size: 13.5px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 .tabs button:hover { color: var(--ink); }
-.tabs button[aria-selected="true"], .tabs button[aria-pressed="true"] { color: var(--ink); border-bottom-color: var(--go); }
+.tabs button[aria-selected="true"], .tabs button[aria-pressed="true"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--go); }
 .tbar .tabs { border-bottom: 0; }
 
 /* ---- people ---- */
@@ -1235,7 +1358,7 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .dialog.small p { margin: 0; }
 .ntwrap { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
 .ntmain { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
-.ntside { flex: 1 1 300px; max-width: 400px; position: sticky; top: 72px; }
+.ntside { flex: 1 1 300px; max-width: 400px; position: sticky; top: calc(var(--chrome-h) + 16px); }
 .ntbar { position: sticky; bottom: 0; z-index: 5; margin: 4px -4px 0; padding: 10px 4px 14px; background: linear-gradient(to bottom, transparent, var(--bg) 14px); display: flex; flex-direction: column; gap: 8px; }
 .ntbar-inner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px 10px 16px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r-lg); box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.35); }
 .ntbar-sum { flex: 1 1 240px; font-size: 13.5px; color: var(--muted); }
@@ -1333,10 +1456,13 @@ section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
   .topbar .brand { width: auto; }
   .search { order: 3; flex-basis: 100%; max-width: none; }
   .search kbd, .top-link .lbl { display: none; }
-  .side-hire { display: none; }
-  .side { min-width: 0; position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px; border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; }
   .brand { padding: 0 8px 0 0; }
-  .brand-sub, .nav .sep, .side-by { display: none; }
+  .brand-sub, .nav .sep { display: none; }
+  .topnav { padding: 0 4px; }
+  .chrome { position: static; }
+  :root { --chrome-h: 0px !important; }
+  .crumbs .crumb:not([aria-current]), .crumbs .crumb-link, .crumbs .brand-slash { display: none; }
+  .tn-sep { flex: 0 0 8px; }
   .nav { flex-direction: row; overflow-x: auto; width: 100%; min-width: 0; order: 3; scrollbar-width: none; }
   .nav button { white-space: nowrap; width: auto; }
   .nav button[aria-current="page"] { box-shadow: inset 0 -2px 0 var(--go); }
@@ -1357,7 +1483,7 @@ section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
 
 /* Processes: a board of stages, an item's story beside it, the editor. */
 .prc-strip { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
-.prc-strip li { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--muted); max-width: 100%; }
+.prc-strip li { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line-2); font-size: 12px; color: var(--muted); max-width: 100%; }
 .prc-strip li.people { border-style: dashed; }
 .prc-strip li.busy { border-color: var(--go); color: var(--ink); background: var(--go-soft); }
 .prc-sn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
@@ -1517,7 +1643,7 @@ section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
 .pi-pic { flex: none; width: 96px; height: 72px; padding: 0; border: 1px solid var(--line); border-radius: var(--r); background: #fff; cursor: zoom-in; overflow: hidden; }
 .pi-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .pi-notes { margin: 0; padding-left: 18px; font-size: 13px; color: var(--ink); display: flex; flex-direction: column; gap: 2px; }
-.pi-viewer { position: fixed; top: 72px; right: 16px; bottom: 16px; width: min(40vw, 520px); z-index: 6; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.5); }
+.pi-viewer { position: fixed; top: calc(var(--chrome-h) + 16px); right: 16px; bottom: 16px; width: min(40vw, 520px); z-index: 6; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.5); }
 .pi-viewbody { flex: 1; min-height: 0; overflow: auto; }
 .pi-viewbody img { width: 100%; height: auto; display: block; border-radius: var(--r); background: #fff; }
 body.pi-open .main { padding-right: calc(min(40vw, 520px) + 32px); }
@@ -1945,6 +2071,10 @@ button.pi-file:hover, a.pi-file:hover { background: var(--panel-2); }
 .if-now.bad { color: var(--bad); }
 .if-age { width: 64px; text-align: right; font-size: 12.5px; flex: none; }
 .if-done { padding: 4px 0; }
+.if-flight:not(.quiet) { gap: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.if-flight:not(.quiet) > .row { min-height: 46px; padding: 0 16px; background: var(--head); border-bottom: 1px solid var(--line); }
+.if-flight:not(.quiet) > .if-rows { border: 0; border-radius: 0; }
+.if-flight.quiet { background: var(--panel); }
 `;
 
 export const CONSOLE_JS = String.raw`
@@ -2355,9 +2485,9 @@ export const CONSOLE_JS = String.raw`
     var t = [
       { id: 'today', label: 'Inbox', icon: 'inbox', count: 'today' },
       { id: 'library', label: 'Library', icon: 'library' },
-      { id: 'workers', label: 'Workers', icon: 'people' },
-      { id: 'teams', label: 'Teams', icon: 'team' },
-      { id: 'processes', label: 'Processes', icon: 'arrow' },
+      { id: 'workers', label: 'Workers', icon: 'people', total: 'workers' },
+      { id: 'teams', label: 'Teams', icon: 'team', total: 'teams' },
+      { id: 'processes', label: 'Processes', icon: 'arrow', total: 'processes' },
       { id: 'reports', label: 'Reports', icon: 'bars' },
       { id: 'slack', label: 'Slack', icon: 'slack' }
     ];
@@ -2370,12 +2500,103 @@ export const CONSOLE_JS = String.raw`
     return t;
   }
 
+  // ---- the chrome's context ---------------------------------------------
+  //
+  // On a section page the row under the top bar holds the sections. Inside
+  // one thing (a worker, its run, a team) the top bar says where you are as
+  // crumbs, and the row holds that thing's own tabs instead: one row of tabs,
+  // never two. The sections stay one click away in the ☰ menu and the crumbs.
+  var chromeCtx = null;
+  function ctxKey() {
+    return state.tab === 'worker' ? 'w:' + state.workerId : state.tab === 'run' ? 'r:' + state.runId : state.tab === 'team' ? 't:' + state.teamId : 'h:' + state.tab + '|' + hashFor();
+  }
+  /// A view inside one thing names it: crumbs [[label, onclick], …, [label]]
+  /// and its tabs [{ id, label, count }], the open one from current().
+  function setChrome(crumbs, tabs, current, pick, label) {
+    chromeCtx = { key: ctxKey(), crumbs: crumbs, tabs: tabs, current: current, pick: pick, label: label };
+    var c = document.querySelector('.topbar .crumbs'), row = document.querySelector('.chrome .topnav');
+    if (c) { c.textContent = ''; append(c, chromeCrumbs()); }
+    if (row) row.replaceWith(chromeRow());
+  }
+  function liveCtx() { return chromeCtx && chromeCtx.key && chromeCtx.key === ctxKey() ? chromeCtx : null; }
+  function chromeCrumbs() {
+    var x = liveCtx();
+    if (!x) return [];
+    return x.crumbs.map(function (c, i) {
+      var last = i === x.crumbs.length - 1;
+      return [h('span', { class: 'brand-slash', 'aria-hidden': 'true', text: '/' }),
+        last || !c[1] ? h('span', { class: 'crumb', 'aria-current': last ? 'page' : null, text: c[0] }) : h('button', { class: 'crumb crumb-link', text: c[0], onclick: c[1] })];
+    });
+  }
+  function chromeRow(activeTab) {
+    var x = liveCtx();
+    if (x && x.tabs) {
+      var on = x.current();
+      return h('nav', { class: 'topnav ctx', 'aria-label': x.label }, x.tabs.map(function (t) {
+        return h('button', { 'aria-current': on === t.id ? 'page' : null, onclick: function () { x.pick(t.id); } },
+          t.icon ? icon(t.icon) : null, t.label, t.count ? h('span', { class: 'total', text: String(t.count) }) : null);
+      }));
+    }
+    activeTab = activeTab || navFor(state.tab);
+    return h('nav', { class: 'topnav', 'aria-label': 'Sections' }, tabs().map(function (t) {
+      if (t === 'sep') return h('span', { class: 'tn-sep', 'aria-hidden': 'true' });
+      if (t.group) return h('span', { class: 'tn-group', text: t.group });
+      return h('button', { 'aria-current': activeTab === t.id ? 'page' : null, onclick: function () { go(t.id); } },
+        icon(t.icon), t.label,
+        t.count ? h('span', { class: 'count', 'data-count': t.count, hidden: !state.counts[t.count], text: state.counts[t.count] ? String(state.counts[t.count]) : '' }) : null,
+        t.total ? h('span', { class: 'total', 'data-total': t.total, hidden: !(state.totals || {})[t.total], text: String((state.totals || {})[t.total] || '') }) : null,
+        t.issue ? h('span', { class: 'issue', 'data-issue': t.issue, hidden: !state.counts[t.issue], text: state.counts[t.issue] ? plural(state.counts[t.issue], 'issue', 'issues') : '' }) : null);
+    }));
+  }
+  /// ☰: every section from anywhere, with the same live counts.
+  function sectionsMenu() {
+    var active = navFor(state.tab);
+    var pop = h('div', { class: 'menu sections-menu', role: 'menu', hidden: true }, h('div', { class: 'menu-sec' }, tabs().map(function (t) {
+      if (t === 'sep') return null;
+      if (t.group) return h('div', { class: 'sm-group', text: t.group });
+      return h('button', { class: 'menu-item', role: 'menuitem', 'aria-current': active === t.id ? 'page' : null, onclick: function () { close(); go(t.id); } }, icon(t.icon, 16), t.label,
+        t.count ? h('span', { class: 'count', 'data-count': t.count, hidden: !state.counts[t.count], text: state.counts[t.count] ? String(state.counts[t.count]) : '' }) : null,
+        t.issue ? h('span', { class: 'issue', 'data-issue': t.issue, hidden: !state.counts[t.issue], text: state.counts[t.issue] ? plural(state.counts[t.issue], 'issue', 'issues') : '' }) : null);
+    })));
+    var btn = h('button', { class: 'top-link only-icon', 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': 'All sections', title: 'All sections' }, icon('list', 16));
+    function outside(e) { if (!wrap.contains(e.target)) close(); }
+    function esc(e) { if (e.key === 'Escape') { close(); btn.focus(); } }
+    function close() {
+      pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('mousedown', outside); document.removeEventListener('keydown', esc);
+    }
+    btn.onclick = function () {
+      if (!pop.hidden) { close(); return; }
+      pop.hidden = false; btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('mousedown', outside); document.addEventListener('keydown', esc);
+    };
+    var wrap = h('div', { class: 'menu-wrap sections-wrap' }, btn, pop);
+    return wrap;
+  }
+  var WORKER_TABS = [['talk', 'Conversation', 'inbox'], ['runs', 'Runs', 'clock'], ['files', 'Files', 'doc'], ['journal', 'Journal', 'library'], ['triggers', 'Triggers', 'bolt'], ['job', 'Job', 'list'], ['reach', 'How to reach', 'arrow'], ['settings', 'Settings', 'gear']];
+  function workerChrome(w, counts, current, pick, last) {
+    setChrome([['Workers', function () { go('workers'); }], [w.name, last ? function () { openWorker(w.id); } : null]].concat(last ? [[last]] : []),
+      WORKER_TABS.map(function (t) { return { id: t[0], label: t[1], icon: HAS_ICON(t[2]) ? t[2] : null, count: (counts || {})[t[0]] }; }),
+      current, pick, w.name);
+  }
+
   /// Which nav item a page belongs under.
   function navFor(tab) {
     return { process: 'processes', processedit: 'processes', proclib: 'processes', worker: 'workers', team: 'teams', newteam: 'teams', teamtask: 'teams', teamfiles: 'teams', read: 'library', run: 'workers', chart: 'workers', work: 'today', tools: 'setup', rules: 'setup', log: 'admin' }[tab] || tab;
   }
 
   function refreshCounts() {
+    // How many workers, teams and processes there are: at most once a minute,
+    // not on every render.
+    if (state.me && (!state.totalsAt || Date.now() - state.totalsAt > 60000)) {
+      state.totalsAt = Date.now(); state.totals = state.totals || {};
+      Promise.all([api('GET', '/api/workers').catch(function () { return null; }), api('GET', '/api/teams').catch(function () { return null; }), api('GET', '/api/processes').catch(function () { return null; })]).then(function (r) {
+        if (Array.isArray(r[0])) state.totals.workers = r[0].length;
+        if (Array.isArray(r[1])) state.totals.teams = r[1].length;
+        if (r[2] && Array.isArray(r[2].processes)) state.totals.processes = r[2].processes.length;
+        document.querySelectorAll('[data-total]').forEach(function (el) { var n = state.totals[el.getAttribute('data-total')]; el.textContent = n ? String(n) : ''; el.hidden = !n; });
+      });
+    }
     if (state.me && state.me.admin) {
       api('GET', '/api/admin/requests').then(function (r) {
         state.counts.people = r.ok === false ? 0 : r.requests.length;
@@ -2411,11 +2632,15 @@ export const CONSOLE_JS = String.raw`
     return h('header', { class: 'topbar' },
       // The org is the name here; overgo is the mark beside it and the foot
       // of the menu.
-      h('div', { class: 'brand' }, brandMark(28), h('span', { class: 'brand-slash', 'aria-hidden': 'true', text: '/' }), h('span', { class: 'org', text: me.org })),
+      sectionsMenu(),
+      h('div', { class: 'brand' }, brandMark(28), h('span', { class: 'brand-slash', 'aria-hidden': 'true', text: '/' }),
+        h('button', { class: 'org crumb-link', text: me.org, title: 'Inbox', onclick: function () { go('today'); } }),
+        h('span', { class: 'crumbs' }, chromeCrumbs())),
       h('label', { class: 'search' }, icon('search', 15), find, h('kbd', { text: mac ? '⌘K' : 'Ctrl K' })),
       h('div', { class: 'top-right' },
         workingPill(),
-        h('a', { class: 'top-link', href: '/docs', target: '_blank', rel: 'noopener', 'aria-label': 'Docs' }, icon('help', 16), h('span', { class: 'lbl', text: 'Docs' })),
+        me.canHire ? h('button', { class: 'btn go top-hire', 'aria-current': state.tab === 'hire' ? 'page' : null, onclick: function () { go('hire'); } }, icon('plus', 15), h('span', { class: 'lbl', text: 'Hire a worker' })) : null,
+        h('a', { class: 'top-link only-icon', href: '/docs', target: '_blank', rel: 'noopener', 'aria-label': 'Docs', title: 'Docs' }, icon('help', 16), h('span', { class: 'lbl', text: 'Docs' })),
         h('button', { class: 'top-link', onclick: function () { go('connect'); } }, icon('slack', 16), h('span', { class: 'lbl', text: 'Slack & Claude' })),
         h('button', { class: 'top-link top-bell', 'aria-label': 'Inbox', onclick: function () { go('today'); } }, icon('bell', 17),
           h('span', { class: 'count', 'data-count': 'today', hidden: !state.counts.today, text: state.counts.today ? String(state.counts.today) : '' })),
@@ -2504,8 +2729,13 @@ export const CONSOLE_JS = String.raw`
         h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { close(); go('connections'); } }, icon('plug', 16), 'Your connections'),
         h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { close(); go('connect'); } }, icon('slack', 16), 'Use from Slack or Claude'),
         h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { close(); window.open('/docs', '_blank', 'noopener'); } }, icon('help', 16), 'Help & docs'),
-        h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { var done = function () { store(TOKEN_KEY, null); state.me = null; render(); }; api('POST', '/api/signout').then(done, done); } }, icon('back', 16), 'Sign out')));
-    var btn = h('button', { class: 'top-link', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, avatar('', me.name, 's'), h('span', { class: 'lbl', text: me.name }));
+        h('button', { class: 'menu-item', role: 'menuitem', onclick: function () { var done = function () { store(TOKEN_KEY, null); state.me = null; render(); }; api('POST', '/api/signout').then(done, done); } }, icon('back', 16), 'Sign out')),
+      h('div', { class: 'side-by menu-sec' },
+        h('span', { class: 'side-by-name' }, h('b', { text: 'overgo' }), h('span', { class: 'alpha', title: 'Org workers are an early alpha: expect rough edges and changes.', text: 'alpha' })),
+        h('a', { href: 'https://github.com/overcodelions/overcli', target: '_blank', rel: 'noopener' }, 'powered by ', h('code', { text: 'overcli' })),
+        me.version ? h('span', { class: 'side-by-ver' }, 'v' + me.version,
+          me.newer ? h('a', { href: me.newer.url, target: '_blank', rel: 'noopener', title: 'A newer release is out. Setup → Readiness says how to upgrade.', text: ' · ' + me.newer.version + ' is out' }) : null) : null));
+    var btn = h('button', { class: 'top-link me' + (me.newer ? ' has-new' : ''), 'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': 'Your account: ' + me.name + (me.newer ? ', ' + me.newer.version + ' is out' : ''), title: me.name + (me.newer ? ' · ' + me.newer.version + ' is out' : '') }, avatar('', me.name, 's'), h('span', { class: 'lbl', text: me.name }), icon('chevron', 12));
     function outside(e) { if (!wrap.contains(e.target)) close(); }
     function esc(e) { if (e.key === 'Escape') { close(); btn.focus(); } }
     function close() {
@@ -2588,24 +2818,12 @@ export const CONSOLE_JS = String.raw`
     var main = h('div', { class: 'page' + (state.tab === 'connect' || (state.tab === 'hire' && state.hire) ? ' narrow' : '') }, thinking('Loading…'));
     var activeTab = navFor(state.tab);
     app.appendChild(h('div', { class: 'frame' },
-      topBar(me),
-      h('aside', { class: 'side' },
-        h('nav', { class: 'nav', 'aria-label': 'Sections' }, tabs().map(function (t) {
-          if (t === 'sep') return h('div', { class: 'sep', 'aria-hidden': 'true' });
-          if (t.group) return h('div', { class: 'group', text: t.group });
-          return h('button', { 'aria-current': activeTab === t.id ? 'page' : null, onclick: function () { go(t.id); } },
-            icon(t.icon), t.label,
-            t.count ? h('span', { class: 'count', 'data-count': t.count, hidden: !state.counts[t.count], text: state.counts[t.count] ? String(state.counts[t.count]) : '' }) : null,
-            t.issue ? h('span', { class: 'issue', 'data-issue': t.issue, hidden: !state.counts[t.issue], text: state.counts[t.issue] ? plural(state.counts[t.issue], 'issue', 'issues') : '' }) : null);
-        })),
-        // At the foot of the menu: always to hand, never louder than the page.
-        me.canHire ? h('button', { class: 'btn side-hire', 'aria-current': state.tab === 'hire' ? 'page' : null, onclick: function () { go('hire'); } }, icon('plus', 16), 'Hire a worker') : null,
-        h('div', { class: 'side-by' },
-          h('span', { class: 'side-by-name' }, h('b', { text: 'overgo' }), h('span', { class: 'alpha', title: 'Org workers are an early alpha: expect rough edges and changes.', text: 'alpha' })),
-          h('a', { href: 'https://github.com/overcodelions/overcli', target: '_blank', rel: 'noopener' }, 'powered by ', h('code', { text: 'overcli' })),
-          me.version ? h('span', { class: 'side-by-ver' }, 'v' + me.version,
-            me.newer ? h('a', { href: me.newer.url, target: '_blank', rel: 'noopener', title: 'A newer release is out. Setup → Readiness says how to upgrade.', text: ' · ' + me.newer.version + ' is out' }) : null) : null)),
+      h('div', { class: 'chrome' }, topBar(me),
+      chromeRow(activeTab)),
       h('main', { class: 'main' }, state.viewAs ? viewAsBar() : null, main)));
+    // Pinned things sit under the chrome, whatever height it wrapped to.
+    var chromeEl = app.querySelector('.chrome');
+    if (chromeEl && window.getComputedStyle(chromeEl).position === 'sticky') document.documentElement.style.setProperty('--chrome-h', chromeEl.offsetHeight + 'px');
     refreshCounts();
     if (state.tab === 'tools' || state.tab === 'rules') { state.setupTab = state.tab; state.tab = 'setup'; }
     var view = { today: viewToday, work: viewWork, workers: viewWorkers, worker: viewWorker, teams: viewTeams, processes: viewProcesses, proclib: viewProcLibrary, process: viewProcess, processedit: viewProcessEdit, newteam: viewNewTeam, team: viewTeam, teamtask: viewTeamTask, teamfiles: viewTeamFiles, connections: viewConnections, read: viewRead, run: viewRun, file: viewFile, chart: viewChart, hire: viewHire, people: viewPeople, admin: viewAdmin, connect: viewConnect, rules: viewRules, log: viewLog, tools: viewTools, setup: viewSetup, library: viewLibrary, reports: viewReports, slack: viewSlack }[state.tab] || viewToday;
@@ -2614,6 +2832,25 @@ export const CONSOLE_JS = String.raw`
   }
 
   // ---- shared pieces ---------------------------------------------------
+
+  /// An Inbox card as a box: who and what in a header bar, the body, then
+  /// its buttons in a footer. Moves the card's own nodes, so every handler
+  /// and later update (done, messages) still reaches them.
+  function framed(card) {
+    var body = card && card.querySelector && card.querySelector(':scope > .ask-body');
+    if (!body || card.classList.contains('framed')) return card;
+    var face = body.previousElementSibling, head = body.querySelector(':scope > .ask-head');
+    var top = h('header', { class: 'ask-top' });
+    if (face) top.appendChild(face);
+    if (head) top.appendChild(head);
+    card.insertBefore(top, body);
+    var kids = Array.prototype.slice.call(body.children);
+    for (var i = kids.length - 1; i >= 0; i--) {
+      if (kids[i].classList.contains('row') && kids[i].querySelector(':scope > .btn')) { card.appendChild(h('footer', { class: 'ask-foot' }, kids[i])); break; }
+    }
+    card.classList.add('framed');
+    return card;
+  }
 
   function waitingCard(it) {
     var card = h('article', { class: 'panel ask need' });
@@ -3082,8 +3319,25 @@ export const CONSOLE_JS = String.raw`
   }
   function setCameOpen(r, open) { r.btn.setAttribute('aria-expanded', open ? 'true' : 'false'); r.row.classList.toggle('open', open); }
   /// Who did it, as a chip that opens them.
-  function workerChip(id, name) {
-    return h('button', { type: 'button', class: 'wchip', style: '--wh:' + hue((id || '') + name), title: 'Open ' + name, onclick: function () { openWorker(id); } }, avatar(id || '', name, 'xs'), h('span', { text: name }));
+  function workerChip(id, name, find) {
+    return h('button', { type: 'button', class: 'wchip', style: '--wh:' + hue((id || '') + name), title: find ? 'Open this in ' + name + '’s conversation' : 'Open ' + name, onclick: function (e) { e.stopPropagation(); openConversation(id, find); } }, avatar(id || '', name, 'xs'), h('span', { text: name }));
+  }
+  /// A worker's Conversation tab, opened on one piece of work: found by its
+  /// run, else by what was asked, else by when it happened.
+  function openConversation(workerId, find) {
+    if (find && (find.runId || find.title || find.at)) state.wlFindRun = Object.assign({ worker: workerId }, find);
+    openWorker(workerId);
+  }
+  function thoughtFor(threads, want) {
+    var byRun = want.runId ? threads.filter(function (t) { return (t.runs || []).some(function (rr) { return rr.runId === want.runId; }); })[0] : null;
+    if (byRun) return byRun;
+    var said = function (v) { return plainSlack(String(v || '')).replace(/\s+/g, ' ').trim().toLowerCase(); };
+    var byAsk = want.title ? threads.filter(function (t) { return t.prompt && said(t.prompt) === said(want.title); })[0] : null;
+    if (byAsk) return byAsk;
+    if (!want.at) return null;
+    var near = threads.filter(function (t) { return Math.abs((t.at || 0) - want.at) < 15 * 60000; })
+      .sort(function (a, b) { return Math.abs(a.at - want.at) - Math.abs(b.at - want.at); });
+    return near[0] || null;
   }
 
   function cameInRow(x, opts) {
@@ -3104,10 +3358,15 @@ export const CONSOLE_JS = String.raw`
     // who asked. A team's work keeps its line as it was.
     var rest = o.kind === 'run' ? o.flowName || '' : o.kind === 'event' ? o.triggerName || '' : o.kind === 'errand' ? 'asked by ' + (o.askedBy && o.askedBy !== (state.me && state.me.name) ? o.askedBy : 'you') : '';
     var line = x.workerName && o.kind !== 'task'
-      ? [h('span', { class: 'libtag ' + k[1], text: src[0] }), workerChip(x.workerId, x.workerName), rest ? h('span', { text: rest }) : null]
+      ? [h('span', { class: 'libtag ' + k[1], text: src[0] }), workerChip(x.workerId, x.workerName, { runId: x.runId, title: x.title, at: x.at }), rest ? h('span', { text: rest }) : null]
       : [h('span', { class: 'libtag ' + k[1], text: src[0] }), h('span', { text: src[1] + (x.kind === 'task' && x.pack ? ' · ' + plural(x.pack.files.length, 'deliverable', 'deliverables') : '') })];
     var r = cameRow(k, nameOf(x), (opts && opts.when) || ago(x.at) + (x.minutes != null ? ' · took ' + took(x.minutes * 60000) : ''), line, open);
     var row = r.row;
+    if (x.kind === 'answer' && x.workerId) {
+      r.btn.onclick = function () { openConversation(x.workerId, { runId: x.runId, title: x.title, at: x.at }); };
+      r.btn.title = 'Open in ' + (x.workerName || 'its') + '’s conversation';
+      return row;
+    }
     if (!x.runId || x.kind === 'task' || x.kind === 'file') return row;
     // Came from a run: open in place on what it found and the steps it took,
     // the whole run a click on.
@@ -3218,7 +3477,7 @@ export const CONSOLE_JS = String.raw`
       h('p', { class: 'came-span', text: 'Started ' + clock(began) + ' · finished ' + clock(ended) + ' · ' + took(ended - began) + ' start to finish' }));
     var r = cameRow(k, title, ago(newest.at) + ' · took ' + took(ended - began), [
       g.key ? [h('span', { class: 'came-key', text: g.key }), h('span', { class: 'came-sep', 'aria-hidden': 'true' })] : null,
-      who.map(function (x) { return workerChip(x.workerId, x.workerName); }),
+      who.map(function (x) { return workerChip(x.workerId, x.workerName, { runId: x.runId, title: x.title, at: x.at }); }),
       who.length ? h('span', { class: 'came-sep', 'aria-hidden': 'true' }) : null,
       h('span', { class: 'came-path' }, trail)], function () {
       list.hidden = !list.hidden;
@@ -3346,20 +3605,20 @@ export const CONSOLE_JS = String.raw`
         // when nothing does. A crew of nobody gets the way to hire one.
         needs ? h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Needs you' },
           h('span', { class: 'label if-needlabel', text: 'Needs you · ' + needs }),
-          h('div', { class: 'stack', style: 'gap:8px' }, fixes.map(fixCard), (t.toolTrouble || []).map(troubleCard), t.waiting.map(waitingCard), decisions.map(decisionCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), (t.toolRequests || []).map(toolRequestCard), mineTasks.map(teamTaskCard)))
+          h('div', { class: 'stack', style: 'gap:12px' }, [fixes.map(fixCard), (t.toolTrouble || []).map(troubleCard), t.waiting.map(waitingCard), decisions.map(decisionCard), t.proposals.map(proposalCard), t.hireApprovals.map(hireApprovalCard), (t.toolRequests || []).map(toolRequestCard), mineTasks.map(teamTaskCard)].map(function (cards) { return cards.map(framed); })))
           : !t.crew.length ? h('div', { class: 'empty' }, h('div', { class: 'quote', text: 'Nobody to hear from yet.' }),
               h('p', { text: 'Hire a worker and what it needs from you lands here.' }),
               state.me.canHire ? h('div', { style: 'margin-top:14px' }, h('button', { class: 'btn go', text: 'Hire your first worker', onclick: function () { go('hire'); } })) : null) : null,
         flightSec,
-        h('section', { class: 'stack', style: 'gap:8px', 'aria-label': 'Finished since yesterday' },
-          h('div', { class: 'row', style: 'gap:12px' },
+        h('section', { class: 'sec', 'aria-label': 'Finished since yesterday' },
+          h('div', { class: 'sec-head', style: 'justify-content:flex-start;flex-wrap:wrap' },
             h('span', { class: 'label', text: 'Finished since yesterday' }),
             h('span', { class: 'faint', style: 'flex:1;font-size:13px', text: !finished.length ? '' : groups.length < finished.length ? plural(finished.length, 'update', 'updates') + ' on ' + plural(groups.length, 'piece', 'pieces') + ' of work' : String(finished.length) }),
             finishedTabs,
             h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', text: 'Library →', onclick: function () { go('library'); } })),
-          finished.length ? h('div', { class: 'panel if-done' }, shown,
+          finished.length ? h('div', { class: 'if-done' }, shown,
             rows.length > shown.length ? h('button', { class: 'linkish camemore', text: 'Show ' + (rows.length - shown.length) + ' more', onclick: function () { state.inboxAll = true; render(); } }) : null)
-            : h('p', { class: 'muted', style: 'margin:0', text: 'Nothing finished since yesterday.' }))));
+            : h('p', { class: 'muted', style: 'margin:0;padding:16px 18px', text: 'Nothing finished since yesterday.' }))));
       return nodes;
     });
   }
@@ -3410,6 +3669,18 @@ export const CONSOLE_JS = String.raw`
   }
 
   /// A worker's state as a badge: the class says how loudly, the text what.
+  /// A solid disc before a title that says the state before anything else.
+  function HAS_ICON(name) { return Object.prototype.hasOwnProperty.call(ICONS, name); }
+  /// A list row's state as a small icon; its word is the label.
+  function rowMark(cls, word) {
+    return h('span', { class: 'jl-mark ' + (cls || 'plain'), role: 'img', 'aria-label': word, title: word },
+      cls === 'ok' ? icon('check', 13) : cls === 'bad' ? icon('x', 13) : h('i'));
+  }
+  function stateDisc(cls, label) {
+    var ic = { ok: 'check', bad: 'x', stuck: 'x', waiting: 'clock', working: null }[cls];
+    return h('span', { class: 'state-disc ' + (cls || 'idle'), role: 'img', 'aria-label': label, title: label }, ic ? icon(ic, 15) : h('i'));
+  }
+
   function workerBadge(w) {
     var st = workerStatus(w);
     var cls = st.cls || (w.state === 'working' ? 'working' : w.enabled ? 'ok' : '');
@@ -3588,8 +3859,10 @@ export const CONSOLE_JS = String.raw`
           : !r.error ? h('span', { class: 'faint', text: 'It produced no file.' }) : null));
       var open = true;
       var tr = h('tr', { class: open ? 'link' : null, tabindex: open ? '0' : null, 'aria-expanded': open ? 'false' : null },
-        h('td', { class: 'muted', text: when(r.at) }),
-        h('td', null, h('b', { style: 'font-weight:600', text: r.title }), r.result ? h('span', { class: 'sub', text: r.result.name }) : null,
+        h('td', { class: 'run-mark' }, rowMark(MARK[r.outcome][1], MARK[r.outcome][0])),
+        h('td', { class: 'wrap' }, r.runNumber ? h('span', { class: 'run-no', text: '#' + r.runNumber }) : null, h('b', { style: 'font-weight:600', text: r.title }),
+          r.outcome !== 'done' ? h('span', { class: 'run-word ' + MARK[r.outcome][1], text: MARK[r.outcome][0] }) : null,
+          r.result ? h('span', { class: 'sub', text: r.result.name }) : null,
           // Its pull requests, to open straight from the list.
           (r.pullRequests || []).length ? h('div', { class: 'wl-pr-pills', role: 'group', 'aria-label': plural(r.pullRequests.length, 'pull request', 'pull requests') },
             r.pullRequests.map(function (p) {
@@ -3597,10 +3870,10 @@ export const CONSOLE_JS = String.raw`
               return h('a', { class: 'wl-pr-pill ' + st[0], href: p.url, target: '_blank', rel: 'noopener', title: st[1] + (p.branch ? ' · ' + p.branch : ''), onclick: function (e) { e.stopPropagation(); } },
                 icon('branch', 12), h('span', { text: prLabel(p) }), h('span', { class: 'wl-pr-st', text: st[1] }));
             })) : null),
-        h('td', null, h('span', { class: 'badge ' + MARK[r.outcome][1], text: MARK[r.outcome][0] })),
         h('td', { class: 'r', text: String(r.steps) }),
         h('td', { class: 'r', text: r.minutes ? r.minutes + ' min' : '<1 min' }),
-        h('td', { class: 'r', text: r.costUSD ? money(r.costUSD) : '—' }));
+        h('td', { class: 'r', text: r.costUSD ? money(r.costUSD) : '—' }),
+        h('td', { class: 'r', text: when(r.at) }));
       if (open) {
         var toggle = function () { detail.hidden = !detail.hidden; tr.setAttribute('aria-expanded', detail.hidden ? 'false' : 'true'); };
         tr.onclick = toggle; tr.onkeydown = function (e) { if (e.key === 'Enter') toggle(); };
@@ -3627,7 +3900,7 @@ export const CONSOLE_JS = String.raw`
     var node = h('section', { class: 'tcard', 'aria-label': 'Runs' },
       h('div', { class: 'tbar' }, h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' }, tab('', 'All'), tab('done', 'Finished'), tab('failed', 'Failed'), tab('stopped', 'Stopped'))),
       h('div', { class: 'tscroll' }, h('table', { class: 'data' },
-        h('thead', null, h('tr', null, h('th', { text: 'Started' }), h('th', { text: 'Run' }), h('th', { text: 'Outcome' }), h('th', { class: 'r', text: 'Steps' }), h('th', { class: 'r', text: 'Took' }), h('th', { class: 'r', text: 'Cost' }))),
+        h('thead', null, h('tr', null, h('th', { class: 'run-mark' }, h('span', { class: 'sr-only', text: 'Outcome' })), h('th', { text: 'Run' }), h('th', { class: 'r', text: 'Steps' }), h('th', { class: 'r', text: 'Took' }), h('th', { class: 'r', text: 'Cost' }), h('th', { class: 'r', text: 'Started' }))),
         body)),
       foot);
     append(foot, [count, more]);
@@ -4547,8 +4820,7 @@ export const CONSOLE_JS = String.raw`
       data = x;
       // Opened from a row on the Runs tab: the thread that run belongs to.
       if (state.wlFindRun && state.wlFindRun.worker === w.id) {
-        var want = state.wlFindRun.runId;
-        var hit = x.threads.filter(function (t) { return (t.runs || []).some(function (rr) { return rr.runId === want; }); })[0];
+        var hit = thoughtFor(x.threads, state.wlFindRun);
         if (hit) { sel = hit.id; state.wlSel[w.id] = sel; state.wlFindRun = null; }
       }
       // Opened from "working now": the live thread, once it's in the list.
@@ -5002,11 +5274,21 @@ export const CONSOLE_JS = String.raw`
         parts.push(['access', 'Access', accessView()]);
         if (w.youManage) parts.push(['history', 'History', h('section', { class: 'panel pad stack', style: 'gap:10px' },
           h('p', { class: 'faint', style: 'font-size:13px;margin:0', text: 'Every change to its job, tools, trust and settings. Restore one to go back to it.' }), workerHistory(w))]);
-        var jump = function (id) { var el = document.getElementById('ws-' + id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
-        var nav = h('nav', { 'aria-label': 'Settings sections', style: 'position:sticky;top:calc(56px + var(--wk-head, 190px) + 16px);display:flex;flex-direction:column;gap:4px;min-width:130px' },
-          parts.map(function (p) { return h('button', { class: 'linkish', style: 'text-align:left;font-size:14px;padding:4px 0', text: p[1], onclick: function () { jump(p[0]); } }); }));
+        var railBtns = {};
+        var mark = function (id) { Object.keys(railBtns).forEach(function (k) { railBtns[k].setAttribute('aria-current', k === id ? 'page' : 'false'); }); };
+        var jump = function (id) { mark(id); var el = document.getElementById('ws-' + id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+        // The same rail as Setup's: the section you're in is marked, and
+        // follows you as you scroll.
+        var nav = h('nav', { class: 'nav setup-rail wk-rail', 'aria-label': 'Settings sections' },
+          parts.map(function (p, i) { return (railBtns[p[0]] = h('button', { 'aria-current': i === 0 ? 'page' : 'false', text: p[1], onclick: function () { jump(p[0]); } })); }));
+        if (window.IntersectionObserver) setTimeout(function () {
+          var seen = new window.IntersectionObserver(function (es) {
+            es.forEach(function (e) { if (e.isIntersecting && nav.isConnected) mark(e.target.id.replace(/^ws-/, '')); });
+          }, { rootMargin: '-30% 0px -60% 0px' });
+          parts.forEach(function (p) { var el = document.getElementById('ws-' + p[0]); if (el) seen.observe(el); });
+        }, 0);
         var body = h('div', { class: 'stack', style: 'gap:32px;flex:1;min-width:0' }, parts.map(function (p) {
-          return h('div', { id: 'ws-' + p[0], class: 'stack', style: 'gap:12px;scroll-margin-top:calc(56px + var(--wk-head, 190px) + 16px)' }, h('h2', { class: 'label', text: p[1] }), p[2]);
+          return h('div', { id: 'ws-' + p[0], class: 'stack', style: 'gap:12px;scroll-margin-top:calc(var(--chrome-h) + var(--wk-head, 190px) + 16px)' }, h('h2', { class: 'label', text: p[1] }), p[2]);
         }));
         // How tall the pinned head is, so the list and a jump land below it.
         setTimeout(function () { var head = document.querySelector('.wk-sticky'); if (head) document.documentElement.style.setProperty('--wk-head', head.offsetHeight + 'px'); }, 0);
@@ -5020,20 +5302,42 @@ export const CONSOLE_JS = String.raw`
           if (x.ok === false) { var note = document.getElementById('run-note'); if (note) { note.textContent = ''; note.appendChild(msg(x)); } } else render();
         });
       };
-      return [h('div', { class: 'wk-sticky' }, h('header', { class: 'page-head' },
+      // A tab switch swaps only what's under the header: the worker isn't
+      // fetched again and its header isn't redrawn. Each tab loads its own.
+      var bodyFor = function (t) {
+        return t === 'reach' ? h('div', { class: 'stack', style: 'gap:16px' }, homeChannelsPanel(w), reachView('worker', w.name, VIS[w.visibility || 'private']))
+          : t === 'runs' ? runsView(w)
+          : t === 'files' ? filesView(w)
+          : t === 'journal' ? journalView(w)
+          : t === 'triggers' ? triggersView(w, d)
+          : t === 'job' ? h('div', { class: 'stack', style: 'gap:16px' }, jobView(), w.youManage ? null : aside)
+          : t === 'settings' ? settingsView()
+          : conversation(w);
+      };
+      var tabBody = h('div', { class: 'wk-body' }, bodyFor(tab));
+      var pickTab = function (id) {
+        if (id === tab && tabBody.isConnected) return;
+        tab = id; state.workerTab = id;
+        try { history.pushState(null, '', '#' + hashFor()); } catch (e) {}
+        tabBody.textContent = ''; append(tabBody, bodyFor(id));
+        var row = document.querySelector('.chrome .topnav');
+        if (row) row.replaceWith(chromeRow());
+      };
+      return [h('div', { class: 'wk-sticky' }, h('header', { class: 'page-head wk-head' },
           h('div', { style: 'min-width:0' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Workers', onclick: function () { go('workers'); } }), ' / ' + w.name),
-            h('div', { class: 'row', style: 'gap:16px;flex-wrap:nowrap' },
+            h('div', { class: 'wk-id' },
               w.youManage ? h('button', { type: 'button', class: 'face-btn', title: 'Change picture', 'aria-label': 'Change ' + w.name + '’s picture', onclick: function () { state.openPicker = w.id; state.workerTab = 'settings'; state.settingsSection = 'general'; render(); } }, avatar(w.id, w.name, 'xl')) : avatar(w.id, w.name, 'xl'),
-              h('div', { style: 'min-width:0;display:flex;flex-direction:column;gap:6px' },
-                h('h1', { class: 'page-title', text: w.name }),
-                h('div', { class: 'row', style: 'gap:8px' }, workerBadge(w), trustMeter(w.trust), w.coding ? codingTag() : null, w.tagline ? h('span', { class: 'muted', style: 'font-size:13.5px', text: w.tagline }) : null),
-                // Settings is a tab below; the spend is a meter, not a third number in a sentence.
-                h('div', { class: 'row faint', style: 'gap:12px;font-size:13px' },
-                  h('span', { text: [w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'Works when asked', plural((w.tools || []).length, 'tool', 'tools')].join(' · ') }),
-                  h('button', { class: 'linkish', style: 'font-size:13px', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } }),
-                  budgetMeter(w.spentThisMonthUSD, w.budgetUSDPerMonth)),
-                monthLine(w)))),
+              h('div', { class: 'wk-id-main' },
+                h('div', { class: 'wk-name-row' }, h('h1', { class: 'page-title', text: w.name }), workerBadge(w), trustMeter(w.trust), w.coding ? codingTag() : null),
+                w.tagline ? h('p', { class: 'wk-tagline', text: w.tagline }) : null,
+                // The facts as one strip: how it starts, what it holds, who
+                // can ask, and the month so far, each a cell of its own.
+                h('div', { class: 'wk-facts' },
+                  h('span', { class: 'wk-fact' }, h('span', { class: 'k', text: 'Runs' }), h('span', { text: w.cadence ? w.schedule + (w.nextRunAt ? ' · next ' + when(w.nextRunAt) : '') : 'When asked' })),
+                  h('span', { class: 'wk-fact' }, h('span', { class: 'k', text: 'Tools' }), h('b', { class: 'v', text: String((w.tools || []).length) })),
+                  h('span', { class: 'wk-fact' }, h('span', { class: 'k', text: 'Who can ask' }), h('button', { class: 'linkish', style: 'font-size:13px;color:var(--go)', title: 'Who can ask and where: its access settings', text: whoCanAsk(w), onclick: function () { state.workerTab = 'settings'; state.settingsSection = 'access'; render(); } })),
+                  h('span', { class: 'wk-fact' }, h('span', { class: 'k', text: 'Spend' }), budgetMeter(w.spentThisMonthUSD, w.budgetUSDPerMonth)),
+                  monthLine(w) ? h('span', { class: 'wk-fact' }, monthLine(w)) : null)))),
           h('div', { class: 'page-actions' },
             w.youManage ? h('button', { class: 'btn quiet', text: 'Export', 'aria-expanded': 'false', onclick: function (e) { exportPanel(w, e.target); } }) : null,
             w.youManage ? h('button', { class: 'btn', text: w.enabled ? 'Pause' : 'Resume', onclick: pause }) : null,
@@ -5078,18 +5382,8 @@ export const CONSOLE_JS = String.raw`
               state.me.admin && !stand ? h('button', { class: 'btn bad', text: 'Install ' + missing[0], onclick: function () { go('setup', { setupTab: 'tools' }); } }) : null,
               !w.youManage && !state.me.admin ? h('span', { class: 'faint', text: 'Ask an admin to install it.' }) : null));
         })() : null,
-        h('div', { class: 'tabs', role: 'tablist', 'aria-label': w.name },
-          [['talk', 'Conversation'], ['runs', 'Runs'], ['files', 'Files'], ['journal', 'Journal'], ['triggers', 'Triggers' + ((d.triggers || []).length ? ' · ' + d.triggers.length : '')], ['job', 'Job'], ['reach', 'How to reach'], ['settings', 'Settings']].filter(Boolean).map(function (t) {
-            return h('button', { role: 'tab', 'aria-selected': tab === t[0] ? 'true' : 'false', text: t[1], onclick: function () { state.workerTab = t[0]; render(); } });
-          }))),
-        tab === 'reach' ? h('div', { class: 'stack', style: 'gap:16px' }, homeChannelsPanel(w), reachView('worker', w.name, VIS[w.visibility || 'private']))
-          : tab === 'runs' ? runsView(w)
-          : tab === 'files' ? filesView(w)
-          : tab === 'journal' ? journalView(w)
-          : tab === 'triggers' ? triggersView(w, d)
-          : tab === 'job' ? h('div', { class: 'stack', style: 'gap:16px' }, jobView(), w.youManage ? null : aside)
-          : tab === 'settings' ? settingsView()
-          : conversation(w)];
+        (workerChrome(w, { triggers: (d.triggers || []).length }, function () { return tab; }, pickTab), null)),
+        tabBody];
     });
   }
 
@@ -5562,7 +5856,7 @@ export const CONSOLE_JS = String.raw`
 
       var header = h('header', { class: 'page-head' },
         h('div', { style: 'min-width:0;flex:1 1 520px' },
-          h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Processes', onclick: function () { go('processes'); } })),
+          (setChrome([['Processes', function () { go('processes'); }], [p.name]]), null),
           h('div', { class: 'row', style: 'gap:10px;align-items:baseline;flex-wrap:nowrap;min-width:0' }, h('h1', { class: 'page-title', text: p.name }), shortChip('/idea', p.shortName)),
           p.purpose ? h('p', { class: 'page-sub', text: p.purpose }) : null,
           busyMode ? null : summary),
@@ -6679,8 +6973,7 @@ export const CONSOLE_JS = String.raw`
       return [
         h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Processes', onclick: function () { go('processes'); } }), ' / ',
-              h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Library', onclick: function () { go('proclib', { libId: null }); } }), ' / ' + p.category),
+            (setChrome([['Processes', function () { go('processes'); }], ['Library', function () { go('proclib', { libId: null }); }], [p.category]]), null),
             h('h1', { class: 'page-title', text: p.name }),
             h('p', { class: 'page-sub', text: p.summary })),
           use),
@@ -7077,7 +7370,7 @@ export const CONSOLE_JS = String.raw`
       return [
         h('header', { class: 'pm-head' },
           h('div', { style: 'flex:1 1 420px;min-width:0' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Processes', onclick: function () { go('processes'); } }), editing ? ' / ' + p.name : fromPicture ? ' / New, from a picture' : ' / New'),
+            (setChrome([['Processes', function () { go('processes'); }], [editing ? p.name : fromPicture ? 'New, from a picture' : 'New']]), null),
             name, purpose, short.node),
           h('div', { class: 'stack', style: 'gap:8px;align-items:flex-end' },
             h('div', { class: 'pm-owner' }, h('span', { class: 'faint', text: 'Owner' }),
@@ -8713,8 +9006,7 @@ export const CONSOLE_JS = String.raw`
       })));
       return [h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: x.team.name, onclick: function () { go('team', { teamId: x.team.id }); } }), ' / ',
-              h('button', { class: 'linkish', style: 'font-size:12.5px', text: task.title || task.brief, onclick: function () { openTask(task.id); } }), ' / Shared folder'),
+            (setChrome([['Teams', function () { go('teams'); }], [x.team.name, function () { go('team', { teamId: x.team.id }); }], [task.title || task.brief, function () { openTask(task.id); }], ['Shared folder']]), null),
             h('h1', { class: 'page-title', text: 'Shared folder' }),
             h('p', { class: 'page-sub', text: plural(fx.files.length, 'file', 'files') + ' the team wrote for this task. Keep what’s worth keeping.' })),
           h('div', { class: 'page-actions' }, zip)),
@@ -9201,16 +9493,13 @@ export const CONSOLE_JS = String.raw`
       var teamTab = state.teamTab === 'settings' ? 'settings' : 'tasks';
       return [h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Teams', onclick: function () { go('teams'); } }), ' / ' + t.name),
             h('div', { class: 'row', style: 'gap:12px;flex-wrap:nowrap' }, PICTURES[t.id] ? avatar(t.id, t.name, 'l') : null, h('h1', { class: 'page-title', text: t.name }), shortChip('/team', t.shortName)),
             t.purpose ? h('p', { class: 'page-sub', text: t.purpose }) : null),
           h('div', { class: 'page-actions' }, faces, t.canBrief ? h('button', { class: 'btn go', onclick: toComposer }, icon('plus', 16), 'Give it a task') : null)),
         nowSlot,
         kpiSlot,
-        h('div', { class: 'tabs', role: 'tablist', 'aria-label': t.name },
-          [['tasks', 'Tasks'], ['settings', 'Settings']].map(function (x_) {
-            return h('button', { role: 'tab', 'aria-selected': teamTab === x_[0] ? 'true' : 'false', text: x_[1], onclick: function () { state.teamTab = x_[0]; render(); } });
-          })),
+        (setChrome([['Teams', function () { go('teams'); }], [t.name]], [{ id: 'tasks', label: 'Tasks', icon: 'list', count: x.tasks.length }, { id: 'settings', label: 'Settings', icon: HAS_ICON('gear') ? 'gear' : null }],
+          function () { return teamTab; }, function (id) { state.teamTab = id; render(); }, t.name), null),
         teamTab === 'settings' ? teamSettingsView(t)
           : h('div', { class: 'split quarters' },
             h('div', { class: 'wide stack', style: 'gap:16px' }, x.tasks.length ? [list, earlier, composer] : [composer, list]),
@@ -11321,8 +11610,9 @@ export const CONSOLE_JS = String.raw`
   var JOURNAL_STEP_WORD = { proposed: 'Proposed', approved: 'you OK’d', rejected: 'turned down', launched: 'started', completed: 'finished', failed: 'failed' };
   function journalView(w) {
     var box = h('div', { class: 'stack', style: 'gap:16px' }, thinking('Loading its journal…'));
-    var notesBox = h('div', { class: 'stack', style: 'gap:0' });
-    var list = h('div', { class: 'stack', style: 'gap:14px' });
+    var notesBox = h('div', { class: 'jl-notelist' });
+    var notesCount = h('span', { class: 'sec-count' });
+    var list = h('div', { class: 'jl-list' });
     var more = h('div');
     var out = h('div', { 'aria-live': 'polite' });
     var entries = [];
@@ -11332,16 +11622,17 @@ export const CONSOLE_JS = String.raw`
           var restore = busy(forget, 'Removing…');
           api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/journal/forget', { entryId: n.id }).then(function (r) { restore(); if (r.ok === false) { out.replaceChildren(msg(r)); return; } load(); });
         } }) : null;
-        return h('div', { class: 'wl-row', style: 'grid-template-columns:1fr auto auto;align-items:center' },
-          h('span', { class: 'wl-title', style: 'white-space:normal', text: n.note }), h('span', { class: 'wl-meta', text: when(n.at) }), forget);
-      }) : []);
+        return h('div', { class: 'jl-note' },
+          h('span', { class: 'jl-note-text', text: n.note }), h('span', { class: 'jl-mono', text: when(n.at) }), forget);
+      }) : [h('p', { class: 'muted', style: 'margin:0;padding:14px 18px', text: 'No notes yet.' })]);
+      notesCount.textContent = x.notes.length ? String(x.notes.length) : '';
     };
     // A piece of work leaves up to four entries (proposed, approved, started,
     // finished); they read as one row with its steps on a line, in the order
     // they happen, whatever order they were written in within a minute.
     var drawEntries = function () {
       list.textContent = '';
-      if (!entries.length) { list.appendChild(h('p', { class: 'muted', text: 'Nothing yet. Its check-ins, questions and runs land here.' })); return; }
+      if (!entries.length) { list.appendChild(h('p', { class: 'muted', style: 'margin:0;padding:16px 18px', text: 'Nothing yet. Its check-ins, questions and runs land here.' })); return; }
       var rows = [];
       var groups = {};
       entries.forEach(function (e) {
@@ -11355,7 +11646,7 @@ export const CONSOLE_JS = String.raw`
       rows.sort(function (a, b) { return b.at - a.at; });
       var show = state.jlFilter || 'all';
       rows = rows.filter(function (r) { return show === 'all' || (show === 'work' ? !!r.steps : r.one && r.one.kind === 'errand'); });
-      if (!rows.length) { list.appendChild(h('p', { class: 'muted', text: show === 'work' ? 'No work in what’s loaded.' : 'No answers in what’s loaded.' })); return; }
+      if (!rows.length) { list.appendChild(h('p', { class: 'muted', style: 'margin:0;padding:16px 18px', text: show === 'work' ? 'No work in what’s loaded.' : 'No answers in what’s loaded.' })); return; }
       var days = [];
       rows.forEach(function (r) {
         var day = dayLabel(r.at);
@@ -11364,7 +11655,7 @@ export const CONSOLE_JS = String.raw`
         last.items.push(r);
       });
       days.forEach(function (d) {
-        list.appendChild(h('section', { class: 'panel', 'aria-label': d.day }, h('div', { class: 'wl-day', text: d.day }),
+        list.appendChild(h('section', { class: 'jl-day', 'aria-label': d.day }, h('div', { class: 'wl-day', text: d.day }),
           d.items.map(function (r) { return r.one ? journalOne(r.one) : journalWork(r.steps); })));
       });
     };
@@ -11406,12 +11697,13 @@ export const CONSOLE_JS = String.raw`
       var run = steps.filter(function (e) { return e.runId; })[0];
       var hint = run ? 'run:' + run.runId : last.orchestrationId ? 'batch:' + last.orchestrationId : null;
       return row(hint, last.title, [
-        h('span', { class: 'badge' + (bad ? ' bad' : last.kind === 'completed' ? ' ok' : ''), style: 'justify-self:start', text: JOURNAL_KIND[last.kind] }),
-        h('span', { class: 'stack', style: 'gap:2px;min-width:0' },
-          h('span', { class: 'wl-title', style: 'white-space:normal', text: last.title }),
-          h('span', { class: 'wl-sub', style: 'white-space:normal', text: track }),
-          note ? h('span', { class: 'wl-sub', style: 'white-space:normal', text: note.note }) : null),
-        h('span', { class: 'wl-meta', text: clock(last.at) + (cost ? ' · ' + money(cost) : '') })]);
+        jlMark(bad ? 'bad' : last.kind === 'completed' ? 'ok' : last.kind === 'launched' ? 'working' : '', JOURNAL_KIND[last.kind]),
+        h('span', { class: 'jl-main' },
+          h('span', { class: 'wl-title', text: last.title }),
+          h('span', { class: 'wl-sub', text: (last.kind === 'completed' ? '' : JOURNAL_KIND[last.kind] + ' · ') + track }),
+          note ? h('span', { class: 'wl-sub', text: note.note }) : null),
+        h('span', { class: 'jl-mono', text: cost ? money(cost) : '' }),
+        h('span', { class: 'jl-mono', text: clock(last.at) })]);
     };
     // One entry of its own: a check-in, an answer, a handoff. An answer is
     // the worker's own words, so it renders as it does in Conversation, two
@@ -11428,7 +11720,7 @@ export const CONSOLE_JS = String.raw`
         // Conversation.
         var short = h('p', { class: 'jl-reply clamp', text: said.replace(/[\x60*_#>]/g, '').replace(/\s+/g, ' ').trim() });
         var full = h('div', { class: 'jl-reply', hidden: true }, md(said));
-        var toggle = said.length > 160 ? h('button', { class: 'linkish', style: 'font-size:12.5px;color:var(--go);justify-self:start', text: 'Show more', onclick: function () {
+        var toggle = said.length > 110 ? h('button', { class: 'linkish', style: 'font-size:12.5px;color:var(--go);justify-self:start', text: 'Show more', onclick: function () {
           var open = full.hidden;
           full.hidden = !open; short.hidden = open;
           toggle.textContent = open ? 'Show less' : 'Show more';
@@ -11436,18 +11728,26 @@ export const CONSOLE_JS = String.raw`
         reply = [short, full, toggle];
       }
       var hint = e.kind === 'shift' ? 'shift:' + e.id : e.runId ? 'run:' + e.runId : e.orchestrationId ? 'batch:' + e.orchestrationId : null;
-      return row(hint, e.title || JOURNAL_KIND[e.kind] || e.kind, [
-        h('span', { class: 'badge' + (bad ? ' bad' : ''), style: 'justify-self:start', text: said ? 'Answered' : JOURNAL_KIND[e.kind] || e.kind }),
-        h('span', { class: 'stack', style: 'gap:2px;min-width:0' },
-          e.title ? h('span', { class: 'wl-title', style: 'white-space:normal', text: e.title }) : null,
-          reply || (e.note ? h('span', { class: 'wl-sub', style: 'white-space:normal', text: e.note }) : null)),
-        h('span', { class: 'wl-meta', text: clock(e.at) + (e.costUSD ? ' · ' + money(e.costUSD) : '') })]);
+      var word = said ? 'Answered' : JOURNAL_KIND[e.kind] || e.kind;
+      return row(hint, e.title || word, [
+        jlMark(bad ? 'bad' : said ? 'ok' : '', word),
+        h('span', { class: 'jl-main' },
+          h('span', { class: 'wl-title', text: e.title || word }),
+          reply || (e.note ? h('span', { class: 'wl-sub', text: (said || !e.title ? '' : word + ' · ') + e.note }) : !said && e.title ? h('span', { class: 'wl-sub', text: word }) : null)),
+        h('span', { class: 'jl-mono', text: e.costUSD ? money(e.costUSD) : '' }),
+        h('span', { class: 'jl-mono', text: clock(e.at) })]);
+    };
+    // A row's state as an icon; its word is its label, and shows in the row
+    // only when it isn't the usual ending.
+    var jlMark = function (cls, word) {
+      return h('span', { class: 'jl-mark ' + (cls || 'plain'), role: 'img', 'aria-label': word, title: word },
+        cls === 'ok' ? icon('check', 13) : cls === 'bad' ? icon('x', 13) : h('i'));
     };
     var page = function (before) {
       return api('GET', '/api/workers/' + encodeURIComponent(w.id) + '/journal' + (before ? '?before=' + before : ''));
     };
     var showMore = function (x) {
-      fill(more, x.nextBefore ? h('div', { style: 'text-align:center' }, h('button', { class: 'btn small', text: 'Show older', onclick: function (ev) {
+      fill(more, x.nextBefore ? h('div', { class: 'jl-more' }, h('button', { class: 'btn small', text: 'Show older', onclick: function (ev) {
         var restore = busy(ev.target, 'Loading…');
         page(x.nextBefore).then(function (y) { restore(); if (y.ok === false) return; entries = entries.concat(y.entries); drawEntries(); showMore(y); });
       } })) : null);
@@ -11467,18 +11767,16 @@ export const CONSOLE_JS = String.raw`
         };
         input.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) add.click(); };
         box.replaceChildren(
-          // Laid out like a Settings row: what notes are on the left, the
-          // notes and a box for another on the right.
-          (function () {
-            var r = settingRow('Notes it keeps', 'Standing instructions every turn it plans reads. Tell ' + w.name + ' how to work differently, here or in a conversation, and it lands here.', [
-              h('div', { class: 'jl-notes' }, notesBox),
-              x.canChange ? h('div', { class: 'stack', style: 'gap:8px' }, input, h('div', { class: 'row', style: 'gap:10px' }, add, h('span', { class: 'faint', style: 'font-size:12.5px', text: '⌘ Enter adds it' }))) : null,
-              out]);
-            r.classList.add('journal-notes');
-            return r;
-          })(),
-          h('div', { class: 'spread', style: 'align-items:center' }, h('div', { class: 't-kind', text: 'What it did' }), filterSeg()),
-          list, more);
+          // Notes: a box of its own, each note a row, a box for another under them.
+          h('section', { class: 'sec journal-notes', 'aria-label': 'Notes it keeps' },
+            h('div', { class: 'sec-head' }, h('span', { class: 'row', style: 'gap:8px' }, h('h2', { class: 'label', text: 'Notes it keeps' }), notesCount),
+              h('span', { class: 'faint', style: 'font-size:12.5px;text-align:right', text: 'Every turn it plans reads these. Tell ' + w.name + ' how to work differently, here or in a conversation.' })),
+            notesBox,
+            x.canChange ? h('div', { class: 'jl-add' }, input, h('div', { class: 'row', style: 'gap:10px' }, add, h('span', { class: 'faint', style: 'font-size:12.5px', text: '⌘ Enter adds it' }))) : null,
+            out),
+          h('section', { class: 'sec', 'aria-label': 'What it did' },
+            h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: 'What it did' }), filterSeg()),
+            list, more));
       });
     };
     load();
@@ -11925,7 +12223,7 @@ export const CONSOLE_JS = String.raw`
       var x = r.item;
       return [h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Library', onclick: function () { go('library'); } }), ' / ' + x.workerName),
+            (setChrome([['Library', function () { go('library'); }], [x.workerName]]), null),
             h('h1', { class: 'page-title', style: 'font-size:26px', text: x.title }),
             h('p', { class: 'page-sub', text: [x.workerName, ago(x.at)].join(' · ') })),
           x.runId ? h('button', { class: 'btn small', text: 'See the run', onclick: function () { openRun(x.runId); } }) : null),
@@ -11978,11 +12276,11 @@ export const CONSOLE_JS = String.raw`
           onclick: function () { if (y.runId !== r.id) openRun(y.runId); } });
       });
       var done = x.recent.filter(function (y) { return y.outcome === 'done'; }).length;
+      workerChrome(w, null, function () { return 'runs'; }, function (tabId) { go('worker', { workerId: w.id, workerTab: tabId }); }, r.number ? 'Run #' + r.number : 'Run');
       page.replaceChildren(
         h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: w.name, onclick: function () { openWorker(w.id); } }), ' / Run'),
-            h('h1', { class: 'page-title', style: 'font-size:26px', text: r.title }),
+            h('div', { class: 'row', style: 'gap:12px;flex-wrap:nowrap;align-items:center' }, stateDisc(badge[0], badge[1]), h('h1', { class: 'page-title', style: 'font-size:28px', text: r.title }), r.number ? h('span', { class: 'run-no big', text: '#' + r.number }) : null),
             h('p', { class: 'page-sub row', style: 'gap:10px' }, h('span', { class: 'badge ' + badge[0], text: badge[1] }),
               h('span', { text: [t ? threadSource(t) : '', when(r.startedAt), took, plural(r.steps, 'step', 'steps'), r.costUSD ? money(r.costUSD) : ''].filter(Boolean).join(' · ') })),
             ask ? h('p', { class: 'wl-detail-ask', style: 'margin-top:6px', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null),
@@ -12043,7 +12341,7 @@ export const CONSOLE_JS = String.raw`
     return fileView(f, true).then(function (nodes) {
       return [h('header', { class: 'page-head' },
           h('div', { style: 'min-width:0' },
-            h('div', { class: 'eyebrow' }, h('button', { class: 'linkish', style: 'font-size:12.5px', text: 'Library', onclick: function () { go('library'); } }), ' / a file a worker made'),
+            (setChrome([['Library', function () { go('library'); }], ['A file a worker made']]), null),
             h('h1', { class: 'page-title', style: 'font-size:26px', text: base }))),
         h('article', { class: 'panel pad read-page' }, nodes)];
     });
@@ -12786,7 +13084,8 @@ export const CONSOLE_JS = String.raw`
     });
     var learn = SETUP_LEARN[tab] || 'setup--rules-spending-and-sign-in';
     var headNode = head(page[1], page[2],
-      h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), group ? 'Setup · ' + group : 'Setup');
+      h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), null);
+    setChrome([['Setup', function () { go('setup', { setupTab: 'ready' }); }]].concat(group ? [[group]] : [], [[page[1]]]));
     var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
     return body.then(function (nodes) {
       return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, headNode, tab === 'ready' ? nodes : nodes.slice(1)))];
