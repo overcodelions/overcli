@@ -37,6 +37,133 @@ export type McpCli = Extract<Backend, 'claude' | 'codex' | 'gemini'>;
 
 const claudeMcpFileCache = new Map<string, { mtimeMs: number; servers: Record<string, McpServerConfig> }>();
 
+/// Where command tools' env is kept when the server seals it out of
+/// ~/.claude.json (org/toolEnvVault.ts). Null: in the file, as written.
+export interface ClaudeEnvVault {
+  seal(name: string, env: Record<string, string>): void;
+  envFor(name: string): Record<string, string> | undefined;
+  has(name: string): boolean;
+  forget(name: string): void;
+  names(): string[];
+}
+
+let envVault: ClaudeEnvVault | null = null;
+
+/// Seal command tools' env out of the Claude config from now on. Only the
+/// server's own reads see it again; a CLI reading the file does not.
+export function useClaudeEnvVault(v: ClaudeEnvVault | null): void {
+  envVault = v;
+}
+
+function isUserClaudeFile(file: string, paths: Paths): boolean {
+  return path.resolve(file) === path.resolve(paths.claude);
+}
+
+function stringEnv(env: unknown): Record<string, string> {
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return {};
+  return Object.fromEntries(Object.entries(env as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
+}
+
+/// A command tool's entry as it goes in the file: its env sealed and left out.
+function sealedEntry(name: string, config: McpServerConfig): McpServerConfig {
+  if (!envVault || typeof config.command !== 'string') return config;
+  const env = stringEnv(config.env);
+  if (!Object.keys(env).length) {
+    envVault.forget(name);
+    return config;
+  }
+  envVault.seal(name, env);
+  const { env: _sealed, ...rest } = config;
+  return rest;
+}
+
+/// A command tool's entry as the server sees it: with its sealed env back.
+function unsealedEntry(name: string, config: McpServerConfig): McpServerConfig {
+  if (!envVault || typeof config.command !== 'string') return config;
+  const env = envVault.envFor(name);
+  return env ? { ...config, env: { ...stringEnv(config.env), ...env } } : config;
+}
+
+/// Move every command tool's env in the Claude config into the vault, and
+/// take it out of the config's own backups (`<file>.*` beside it). Returns the
+/// tools sealed this time.
+export function sealClaudeStdioEnv(paths: Paths = defaultPaths()): string[] {
+  if (!envVault) return [];
+  const sealed: string[] = [];
+  let parsed: { mcpServers?: Record<string, McpServerConfig> } & Record<string, unknown>;
+  try {
+    parsed = JSON.parse(fs.readFileSync(paths.claude, 'utf-8') || '{}');
+  } catch {
+    return [];
+  }
+  for (const [name, config] of Object.entries(parsed.mcpServers ?? {})) {
+    if (typeof config.command !== 'string' || !Object.keys(stringEnv(config.env)).length) continue;
+    writeJsonServer(paths.claude, name, config, paths);
+    sealed.push(name);
+  }
+  scrubClaudeBackups(paths);
+  return sealed;
+}
+
+/// Older copies of the config beside it (`.claude.json.bak`, the CLI's
+/// `.claude.json.backup.<n>`, any a person made) still hold tools' env. Drop
+/// the env of every command tool in them; leave anything that isn't JSON.
+function scrubClaudeBackups(paths: Paths): void {
+  const dir = path.dirname(paths.claude);
+  const base = path.basename(paths.claude);
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir).filter((n) => n.startsWith(`${base}.`));
+  } catch {
+    return;
+  }
+  for (const n of names) {
+    const file = path.join(dir, n);
+    try {
+      if (!fs.statSync(file).isFile()) continue;
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as { mcpServers?: Record<string, McpServerConfig> };
+      let changed = false;
+      for (const config of Object.values(parsed.mcpServers ?? {})) {
+        if (typeof config.command === 'string' && config.env !== undefined) {
+          delete config.env;
+          changed = true;
+        }
+      }
+      if (changed) fs.writeFileSync(file, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+    } catch {
+      // Not a JSON copy of the config; not ours to change.
+    }
+  }
+}
+
+/// The vault is off: put every sealed env back in the Claude config, so the
+/// tools keep working without the server in between.
+export function restoreClaudeStdioEnv(vault: ClaudeEnvVault, paths: Paths = defaultPaths()): string[] {
+  const restored: string[] = [];
+  let parsed: { mcpServers?: Record<string, McpServerConfig> };
+  try {
+    parsed = JSON.parse(fs.readFileSync(paths.claude, 'utf-8') || '{}');
+  } catch {
+    return [];
+  }
+  for (const name of vault.names()) {
+    const config = parsed.mcpServers?.[name];
+    const env = vault.envFor(name);
+    if (!config || typeof config.command !== 'string' || !env) continue;
+    writeJsonServer(paths.claude, name, { ...config, env: { ...stringEnv(config.env), ...env } }, paths);
+    vault.forget(name);
+    restored.push(name);
+  }
+  return restored;
+}
+
+/// The command tools among `servers` whose env is sealed: each one a run must
+/// get through the relay, since the config's own entry has no credentials.
+export function sealedClaudeTools(servers: Record<string, McpServerConfig>): Record<string, McpServerConfig> {
+  if (!envVault) return {};
+  return Object.fromEntries(Object.entries(servers).filter(([name, c]) => typeof c.command === 'string' && envVault!.has(name)));
+}
+
 export function isMcpCli(cli: Backend): cli is McpCli {
   return cli === 'claude' || cli === 'codex' || cli === 'gemini';
 }
@@ -61,7 +188,8 @@ export function readMcpServer(
   paths: Paths = defaultPaths(),
 ): McpServerConfig | null {
   if (cli === 'codex') return readCodexServer(paths.codex, name);
-  return readJsonServer(paths[cli], name);
+  const config = readJsonServer(paths[cli], name);
+  return config && cli === 'claude' ? unsealedEntry(name, config) : config;
 }
 
 export function writeMcpServer(
@@ -71,7 +199,7 @@ export function writeMcpServer(
   paths: Paths = defaultPaths(),
 ): void {
   if (cli === 'codex') return writeCodexServer(paths.codex, name, config);
-  return writeJsonServer(paths[cli], name, config);
+  return writeJsonServer(paths[cli], name, config, paths);
 }
 
 export type AddMcpResult =
@@ -117,7 +245,7 @@ export function removeMcpServer(
   paths: Paths = defaultPaths(),
 ): void {
   if (cli === 'codex') return removeCodexServer(paths.codex, name);
-  return removeJsonServer(paths[cli], name);
+  return removeJsonServer(paths[cli], name, paths);
 }
 
 export type RemoveMcpResult =
@@ -165,7 +293,8 @@ function readJsonServer(file: string, name: string): McpServerConfig | null {
   return parsed?.mcpServers?.[name] ?? null;
 }
 
-function writeJsonServer(file: string, name: string, config: McpServerConfig): void {
+function writeJsonServer(file: string, name: string, config: McpServerConfig, paths: Paths = defaultPaths()): void {
+  if (isUserClaudeFile(file, paths)) config = sealedEntry(name, config);
   ensureDir(path.dirname(file));
   let parsed: { mcpServers?: Record<string, McpServerConfig> } & Record<string, unknown> = {};
   if (fs.existsSync(file)) {
@@ -178,7 +307,8 @@ function writeJsonServer(file: string, name: string, config: McpServerConfig): v
   fs.writeFileSync(file, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
 }
 
-function removeJsonServer(file: string, name: string): void {
+function removeJsonServer(file: string, name: string, paths: Paths = defaultPaths()): void {
+  if (envVault && isUserClaudeFile(file, paths)) envVault.forget(name);
   if (!fs.existsSync(file)) return;
   const parsed = JSON.parse(fs.readFileSync(file, 'utf-8') || '{}') as {
     mcpServers?: Record<string, McpServerConfig>;
@@ -490,7 +620,11 @@ export function readClaudeMcpServers(
         cached = { mtimeMs, servers: parsed?.mcpServers ?? {} };
         claudeMcpFileCache.set(absolute, cached);
       }
-      Object.assign(out, cached.servers);
+      if (isUserClaudeFile(file, paths)) {
+        for (const [name, config] of Object.entries(cached.servers)) out[name] = unsealedEntry(name, config);
+      } else {
+        Object.assign(out, cached.servers);
+      }
     } catch {
       if (file) claudeMcpFileCache.delete(path.resolve(file));
       // A hand-broken config is the CLI's problem to report, not ours to

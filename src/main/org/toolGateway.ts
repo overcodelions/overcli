@@ -108,6 +108,12 @@ export function boundGatewayTools(configured: () => Record<string, McpServerConf
   return out;
 }
 
+/// The gateway's root key, made on first use. Other sealed stores derive
+/// their own keys from it (toolEnvVault.ts).
+export function toolGatewayRootKey(dir: string): Buffer {
+  return loadKey(dir);
+}
+
 function loadKey(dir: string): Buffer {
   const file = path.join(dir, 'tool-gateway.key');
   try {

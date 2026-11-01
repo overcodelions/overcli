@@ -3,6 +3,8 @@ import fs, { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mcpMocks = vi.hoisted(() => ({
+  installed: {} as Record<string, Record<string, unknown>>,
+  sealed: [] as string[],
   credential: '',
   blockedMcpServerTools: vi.fn((..._args: unknown[]): string[] => []),
   knownMcpServers: vi.fn((): string[] => []),
@@ -19,6 +21,10 @@ vi.mock('./mcpConfig', () => ({
     return resolved.length ? JSON.stringify({ mcpServers: Object.fromEntries(resolved.map((name) => [name, server(name)])) }) : null;
   },
   blockedMcpServerTools: mcpMocks.blockedMcpServerTools,
+  readClaudeMcpServers: () => mcpMocks.installed,
+  // The real one, against the mock's notion of what is sealed.
+  sealedClaudeTools: (servers: Record<string, { command?: string }>) =>
+    Object.fromEntries(Object.entries(servers).filter(([name, c]) => typeof c.command === 'string' && mcpMocks.sealed.includes(name))),
 }));
 vi.mock('./flows/mcpToolCache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./flows/mcpToolCache')>()),
@@ -1120,6 +1126,26 @@ describe('selectedClaudeMcpConfig', () => {
     }
     // An address with nothing to hide is left for the CLI to sign in to.
     expect(selected['open-docs']).toEqual({ url: 'https://open-docs.acme.example/mcp' });
+  });
+
+  it('relays every command tool whose env the server sealed on a whole-config run, with no token in the run config', () => {
+    mcpMocks.installed = {
+      jira: { command: 'npx', args: ['acme-jira-mcp'], env: { JIRA_API_TOKEN: 'acme-sealed-token' } },
+      browser: { command: 'npx', args: ['acme-browser-mcp'] },
+    };
+    mcpMocks.sealed = ['jira'];
+    try {
+      const selected = JSON.parse(selectedClaudeMcpConfig({ ...args, conversationId: 'conv-whole' })).mcpServers;
+      // The sealed tool overrides the config's credential-less entry; the rest load from the config as before.
+      expect(Object.keys(selected)).toEqual(['jira']);
+      expect(selected.jira.command).toBe(process.execPath);
+      expect(selected.jira.args[0]).toMatch(/runToolRelayHelper\.js$/);
+      expect(selected.jira.args.slice(2)).toEqual(['conv-whole', 'jira']);
+      expect(JSON.stringify(selected)).not.toContain('acme-sealed-token');
+    } finally {
+      mcpMocks.installed = {};
+      mcpMocks.sealed = [];
+    }
   });
 
   it('knows which configs can hold a credential', () => {

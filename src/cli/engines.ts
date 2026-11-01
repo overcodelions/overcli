@@ -71,8 +71,9 @@ import { openPullRequest } from '../main/org/prOpen';
 import { openIm, postMessage } from '../main/slack/slackApi';
 import { guardCredentials } from '../main/org/credentialGuard';
 import { closeToolGateway, openToolGateway, type ToolGateway } from '../main/org/toolGateway';
+import { ToolEnvVault, toolEnvVaultExists } from '../main/org/toolEnvVault';
 import { useRemoteToolVault } from '../main/org/tools';
-import { readClaudeMcpServers, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
+import { readClaudeMcpServers, restoreClaudeStdioEnv, sealClaudeStdioEnv, useClaudeEnvVault, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
 import { log } from '../main/diagnostics';
 import { serverShapedFlow } from '../main/org/serverFlow';
 import { ticketFlowId, ticketFlowYaml, ticketKey, ticketOf, ticketPrompt, trackerOf } from '../main/org/ticketFollowUp';
@@ -501,6 +502,15 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // Whose run the overdb tool is serving, for its query log (overdbBinding.ts).
   useOverdbWorkerLookup((id) => flowRuntime.workerForConversation(id)?.workerName);
   if (process.env.OVERCLI_TOOL_GATEWAY === '1') {
+    // Command tools' env too: sealed now, before any run starts, so no
+    // worker's CLI finds a token in the config (toolEnvVault.ts).
+    try {
+      useClaudeEnvVault(new ToolEnvVault(orgDir()));
+      const sealed = sealClaudeStdioEnv();
+      if (sealed.length) log('info', 'org.tools', `sealed the settings of ${sealed.join(', ')} out of the CLIs' config`);
+    } catch (err) {
+      log('error', 'org.tools', `could not seal command tools' settings: ${err instanceof Error ? err.message : String(err)}`);
+    }
     openToolGateway(
       {
         dir: orgDir,
@@ -517,6 +527,14 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       (err) => log('error', 'org.tools', `tool gateway did not start: ${err instanceof Error ? err.message : String(err)}`),
     );
   } else {
+    try {
+      if (toolEnvVaultExists(orgDir())) {
+        const restored = restoreClaudeStdioEnv(new ToolEnvVault(orgDir()));
+        if (restored.length) log('info', 'org.tools', `put the settings of ${restored.join(', ')} back in the CLIs' config`);
+      }
+    } catch (err) {
+      log('error', 'org.tools', `could not put command tools' settings back: ${err instanceof Error ? err.message : String(err)}`);
+    }
     try {
       closeToolGateway(orgDir(), toolFile);
     } catch (err) {
@@ -782,6 +800,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
         // already down
       }
       useRemoteToolVault(null);
+      useClaudeEnvVault(null);
       gateway?.stop();
       try {
         scheduler.dispose();

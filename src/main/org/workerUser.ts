@@ -198,6 +198,7 @@ export function probeTargets(dataDir: string, home: string): Pick<WorkerProbe, '
       path.join(dataDir, 'org.json'),
       path.join(org, 'tool-gateway.key'),
       path.join(org, 'tool-gateway.json'),
+      path.join(org, 'tool-env.json'),
       path.join(org, 'connections.key'),
       path.join(org, 'connections.json'),
       path.join(org, 'tool-signins.json'),

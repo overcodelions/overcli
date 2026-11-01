@@ -117,7 +117,7 @@ import {
   sandboxSupported,
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
-import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers, type McpServerConfig } from './mcpConfig';
+import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers, sealedClaudeTools, type McpServerConfig } from './mcpConfig';
 import { knownMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
@@ -731,6 +731,9 @@ export function selectedClaudeMcpConfig(
   }
   if (args.skipGlobalMcp || args.turbo) return '';
   const bound = {
+    // Command tools whose env the server keeps sealed: the config's entry has
+    // no credentials, so the run gets the real tool through the relay.
+    ...sealedClaudeTools(readClaudeMcpServers(args.cwd)),
     ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId),
     ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), args.conversationId),
   };
@@ -2158,6 +2161,7 @@ export class RunnerManager {
       // This transport loads the whole config, so its gateway tools get the
       // conversation's own key, as the cli transport's do.
       mcpServers: bindRunTools({
+        ...sealedClaudeTools(readClaudeMcpServers(args.cwd)),
         ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId),
         ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), convId),
       }, convId, relayLaunchFor(args)) as ClaudeSdkStartOptions['mcpServers'],
