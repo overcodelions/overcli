@@ -10,16 +10,20 @@ services:
     image: ghcr.io/overcodelions/overcli-server:${OVERCLI_VERSION:-latest}
     restart: unless-stopped
     env_file: .env
-    # Uncomment with OVERCLI_WORKER_UID (or OVERCLI_TEST_UID) in .env. The
-    # server still runs as `node`; starting as root lets the entrypoint give
-    # it leave to run workers (or tests) as another user. See .env.example.
-    # user: "0"
+    # The server still runs as `node`. Starting as root lets the entrypoint
+    # give it leave to run workers (and repo tests) as another user, and
+    # nothing more. See deploy/docs/security.md.
+    user: "0"
     environment:
       OVERCLI_SLACK_ENABLED: "1"
       # Goes with the loopback port below: browsers on this host reach the
       # container from Docker's gateway, so tell it they're local and it takes
       # passwords over plain http. Remove it if you open the port up.
       OVERCLI_PUBLISHED_ON_LOOPBACK: "1"
+      # Workers run as user 1001, which can't read the server's secrets; the
+      # server checks that at every start. Set OVERCLI_WORKER_UID= (empty) in
+      # .env to run them as the server instead.
+      OVERCLI_WORKER_UID: ${OVERCLI_WORKER_UID-1001}
     # What a worker's run may do without a person. Widen deliberately; external
     # actions (push, send, publish) still stop for the manager's approval in
     # Slack unless the worker is trusted with them.
