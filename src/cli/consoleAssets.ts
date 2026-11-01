@@ -1056,6 +1056,7 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .msg { font-size: 13px; padding: 8px 12px; border-radius: var(--r-sm); }
 .msg.ok { background: var(--go-soft); color: var(--go); }
 .msg.err { background: var(--bad-soft); color: var(--bad); }
+.msg.warn { background: var(--need-soft); color: var(--need); }
 .quote { font-size: 15.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .why { color: var(--muted); font-size: 13px; border-left: 2px solid var(--line-2); padding-left: 10px; white-space: pre-line; }
 .empty { padding: 48px 24px; text-align: center; }
@@ -12630,6 +12631,7 @@ export const CONSOLE_JS = String.raw`
         api('POST', '/api/triggers/' + encodeURIComponent(t.id), { patch: patch }).then(function (x) {
           restore(); out.textContent = '';
           if (x.ok === false) { out.appendChild(msg(x)); return; }
+          if (x.notes && x.notes.length) { showNotes(x.notes); return; }
           done();
         });
         return;
@@ -12644,8 +12646,14 @@ export const CONSOLE_JS = String.raw`
             h('button', { class: 'btn', text: 'Done', onclick: done })]);
           return;
         }
+        if (x.notes && x.notes.length) { showNotes(x.notes); return; }
         done();
       });
+    };
+    // Saved, but something else listens in the same channel: say so before
+    // leaving, so a double reply in a thread isn't a surprise later.
+    var showNotes = function (notes) {
+      append(out, [msg({}, 'Saved. Worth knowing:')].concat(notes.map(function (n) { return h('div', { class: 'msg warn', text: n }); }), [h('button', { class: 'btn', text: 'Done', onclick: done })]));
     };
     // Laid out like the worker's Settings, one row per question, but in the
     // order a trigger is read: when, what, who decides, where, how many.
