@@ -1037,6 +1037,15 @@ export class FlowRuntimeImpl {
       )?.[0];
       if (participantId) {
         const waiter = this.finalizeWaiters.get(`${runId}:${participantId}`);
+        // Same rule as a step's end, below: a "turn over" while the runner
+        // still owes the conversation a turn is a relaunched process's
+        // leftovers. Taken as the end of a finished run's follow-up (a CI
+        // fix, a reply), it was read as "said nothing, changed nothing" 70 ms
+        // in, while the worker went on working unheard.
+        if (waiter && this.runner.isTurnPending?.(event.conversationId)) {
+          log('info', 'flows.runtime', `run=${runId} conv=${event.conversationId} follow-up idle ignored: a turn is still pending`);
+          return;
+        }
         if (waiter) {
           this.finalizeWaiters.delete(`${runId}:${participantId}`);
           waiter();
@@ -1078,8 +1087,19 @@ export class FlowRuntimeImpl {
       // would be discarded and the run would hang on it forever.
       const currentConvId = run.conversationIds[stepParticipantKey(currentStep)];
       if (currentConvId !== event.conversationId) return;
+      // A "turn over" while the runner still owes this conversation a turn
+      // (a send preparing its launch, or a process mid-turn) is not about
+      // the step's turn: it is a relaunched process's leftovers, or an earlier
+      // turn's. Taken as the step's end, it fails the step off an empty buffer
+      // a moment after the send ("produced no <output>"), and the real reply
+      // lands on a paused run. The step's own end comes with its result.
+      if (this.runner.isTurnPending?.(event.conversationId)) {
+        log('info', 'flows.runtime', `run=${runId} step=${currentStepId} conv=${event.conversationId} idle ignored: a turn is still pending`);
+        return;
+      }
       const completionKey = `${runId}:${currentStepId}`;
       if (this.completingSteps.has(completionKey)) return;
+      log('info', 'flows.runtime', `run=${runId} step=${currentStepId} conv=${event.conversationId} finished by idle; buffer=${this.stepBuffers.get(runId)?.assistantText.length ?? 0} chars`);
       this.completingSteps.add(completionKey);
       void this.onStepFinished(runId, currentStepId).catch((err) => {
         log('error', 'flows.runtime', `Failed to finish run ${runId} step ${currentStepId}: ${(err as Error).message}`);
@@ -3465,25 +3485,7 @@ export class FlowRuntimeImpl {
       // `review` mode ignores this by design — its round count is fixed
       // (see the round gate in runner.sendClaude and friends).
       collabMaxTurns: step.rebound?.maxIters ?? null,
-      // The allowlist the approval gate classifies by is the allowlist the
-      // process gets: Ollama enforces it in-dispatcher, claude via
-      // --allowedTools (see backends/claude.ts). See resolveStepEffect.
-      // `step.tools` is never undefined (schema.ts) and a bare `[]` must stay
-      // an empty allowlist rather than becoming "no restriction" — Ollama
-      // reads `undefined` as its own read-only default (runner.ts), and
-      // claude.ts emits --allowedTools '' for [], so an empty declared set pre-authorises nothing and every call routes to the broker.
-      // An unattended run may only use the intersection of what the step asked
-      // for and what the caller allowed — see `unattendedAllowedTools`.
-      // A scoped worker's out-of-scope calls are never pre-approved, and the
-      // ones the server has seen are refused by the CLI outright.
-      enabledTools: (() => {
-        // A reader's edits and shell lines are each checked as they come,
-        // so none is approved ahead.
-        const tools = enabledToolsFor(run, step).filter((t) => !run.readsOnly || !(READER_CHECKED.has(t) || t === 'Bash' || t.startsWith('Bash(')));
-        const scopes = this.scopesOf(run);
-        return scopes ? tools.filter((t) => inToolScope(scopes, t)) : tools;
-      })(),
-      ...this.scopeDeniedArgs(run),
+      ...this.stepToolArgs(run, step),
     });
     if (!sendResult.ok) {
       this.finishAttempt(run, step.id, { outcome: 'error', errorMessage: sendResult.error });
@@ -3588,6 +3590,9 @@ export class FlowRuntimeImpl {
       reviewMode: null,
       reviewModel: null,
       reviewPersona: null,
+      // The same tools the step's send will carry, so the send finds a
+      // process launched exactly as it would launch one, and reuses it.
+      ...this.stepToolArgs(run, next),
     });
   }
 
@@ -3688,7 +3693,13 @@ export class FlowRuntimeImpl {
       // narrated in the reply — and only the wrapper is missing, so pausing
       // the run here spends the user's attention on something the model can
       // fix in one cheap turn.
-      if (this.reaskMissingOutput(run, step, text)) return;
+      const reasked = this.reaskMissingOutput(run, step, text);
+      log(
+        'info',
+        'flows.runtime',
+        `run=${runId} step=${step.id} conv=${run.conversationIds[stepParticipantKey(step)] ?? '-'} no <output name="${step.output}"> in ${text.length} chars; ${reasked ? 'asked for it again' : 'failing the step'}`,
+      );
+      if (reasked) return;
       // No <output> block — treat as failure so onFail policy decides.
       this.finishAttempt(run, step.id, {
         outcome: 'error',
@@ -4110,10 +4121,14 @@ export class FlowRuntimeImpl {
       reviewMode: null,
       reviewModel: null,
       reviewPersona: null,
+      // Launched as the step was: its turbo and its tools. Any difference is
+      // a launch-param change, so the nudge would kill the step's process
+      // and relaunch it, and run outside the step's allowlist and scope.
+      turbo: step.turbo,
       // Ollama dispatches tools itself, and this turn wants prose only —
       // a local model handed tools here tends to go back to work instead
       // of answering.
-      enabledTools: stepModel.backend === 'ollama' ? [] : undefined,
+      ...(stepModel.backend === 'ollama' ? { enabledTools: [] } : this.stepToolArgs(run, step)),
     });
     if (!sendResult.ok) {
       // Put the original text back so the caller fails against what the
@@ -4697,6 +4712,34 @@ export class FlowRuntimeImpl {
     if (!run?.workerId) return undefined;
     const scopes = this.scopesOf(run);
     return { workerName: run.workerName ?? 'A worker', ...(scopes ? { scopes } : {}) };
+  }
+
+  /// The tool arguments a step's send carries: its allowlist and the scope
+  /// denials. The prewarm builds its launch from the same call — any
+  /// difference is a launch-param change, and the real send then kills the
+  /// warm process and spawns another, which is exactly the cold start the
+  /// warm-up was meant to save.
+  private stepToolArgs(run: FlowRun, step: FlowStep): { enabledTools: string[]; mcpDeniedTools?: string[] } {
+    // The allowlist the approval gate classifies by is the allowlist the
+    // process gets: Ollama enforces it in-dispatcher, claude via
+    // --allowedTools (see backends/claude.ts). See resolveStepEffect.
+    // `step.tools` is never undefined (schema.ts) and a bare `[]` must stay
+    // an empty allowlist rather than becoming "no restriction" — Ollama
+    // reads `undefined` as its own read-only default (runner.ts), and
+    // claude.ts emits --allowedTools '' for [], so an empty declared set
+    // pre-authorises nothing and every call routes to the broker.
+    // An unattended run may only use the intersection of what the step asked
+    // for and what the caller allowed — see `unattendedAllowedTools`.
+    // A scoped worker's out-of-scope calls are never pre-approved, and the
+    // ones the server has seen are refused by the CLI outright.
+    // A reader's edits and shell lines are each checked as they come, so
+    // none is approved ahead.
+    const tools = enabledToolsFor(run, step).filter((t) => !run.readsOnly || !(READER_CHECKED.has(t) || t === 'Bash' || t.startsWith('Bash(')));
+    const scopes = this.scopesOf(run);
+    return {
+      enabledTools: scopes ? tools.filter((t) => inToolScope(scopes, t)) : tools,
+      ...this.scopeDeniedArgs(run),
+    };
   }
 
   private scopeDeniedArgs(run: Pick<FlowRun, 'workerId'>): { mcpDeniedTools?: string[] } {

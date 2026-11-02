@@ -119,9 +119,11 @@ Workers on the server can use only the MCP servers installed **on the server**. 
   ```sh
   docker compose -f deploy/docker-compose.yml exec overcli claude mcp add --scope user jira -e JIRA_API_TOKEN=… -- npx -y <package>
   ```
+  Prefer the console while workers run as their own user (the compose default). A tool added this way isn't sealed until it's saved in **Tools**: its settings stay in `~/.claude.json`, which workers can read, and it runs as the worker. Open it in **Tools** and save it once to pin and seal it.
+- **Files a tool reads itself** (`~/.aws`, `~/.kube`, gcloud config) go in `/data/tool-home`, the HOME saved tools start with, not `/data/home`. See [Security](docs/security.md#workers-as-a-user-of-their-own).
 - **What doesn't work:** connectors that sign in through a browser, such as claude.ai connectors or OAuth pop-ups. A server has nobody to click "Allow". Use servers that take an API token or a service account.
 
-Tools are kept in `/data/home/.claude.json` (and `.codex/config.toml`), so they survive restarts and upgrades.
+Tools are kept in `/data/home/.claude.json` (and `.codex/config.toml`), with a saved command tool's settings sealed in `/data/org/tool-env.json`, so they survive restarts and upgrades.
 
 ## 4. Give it work to do
 

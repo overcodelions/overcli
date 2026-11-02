@@ -79,9 +79,11 @@ describe('the startup check', () => {
 
   it('reads capabilities and names what is missing', () => {
     expect(effectiveCaps(capsLine('00000000000000c2'))).toBe(0xc2n);
-    expect(missingServerCaps(0xc2n)).toBeUndefined();
-    expect(missingServerCaps(0xc0n)).toBe('dac_override');
-    expect(missingServerCaps(0n)).toBe('setuid, setgid, dac_override');
+    expect(missingServerCaps(0xe2n)).toBeUndefined();
+    expect(missingServerCaps(0xe0n)).toBe('dac_override');
+    // What the server held before kill was handed over: it couldn't stop a worker.
+    expect(missingServerCaps(0xc2n)).toBe('kill');
+    expect(missingServerCaps(0n)).toBe('setuid, setgid, dac_override, kill');
   });
 
   it('fails only when every line is ok', () => {
@@ -115,7 +117,7 @@ describe('the startup check', () => {
       calls.push({ file, args, env: o.env });
       cb(null, 'ok has no capabilities\nok cannot read /data/secrets.key\n');
     };
-    const res = await enableWorkerUser({ ...linux, env: { OVERCLI_WORKER_UID: '1001' }, readStatus: () => capsLine('00000000000000c2'), exec: passing, cli: 'claude' });
+    const res = await enableWorkerUser({ ...linux, env: { OVERCLI_WORKER_UID: '1001' }, readStatus: () => capsLine('00000000000000e2'), exec: passing, cli: 'claude' });
     expect(res.ok).toBe(true);
     expect(activeWorkerUser()).toEqual({ uid: 1001, gid: 1001 });
     expect(calls[0].file).toBe('/usr/bin/setpriv');
@@ -127,7 +129,7 @@ describe('the startup check', () => {
 
     setActiveWorkerUser(null);
     const failing = (_f: string, _a: string[], _o: unknown, cb: (e: Error | null, out: string) => void) => cb(null, 'ok has no capabilities\nFAIL can read /data/org/tool-gateway.key\n');
-    const bad = await enableWorkerUser({ ...linux, env: { OVERCLI_WORKER_UID: '1001' }, readStatus: () => capsLine('00000000000000c2'), exec: failing });
+    const bad = await enableWorkerUser({ ...linux, env: { OVERCLI_WORKER_UID: '1001' }, readStatus: () => capsLine('00000000000000e2'), exec: failing });
     expect(bad.ok).toBe(false);
     expect(bad.lines.join('\n')).toContain('FAIL can read /data/org/tool-gateway.key');
     expect(activeWorkerUser()).toBeNull();

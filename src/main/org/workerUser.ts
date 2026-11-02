@@ -118,6 +118,9 @@ export function shareWithWorkers(target: string): void {
 
 /// Linux capability bits the server needs to launch and look after workers.
 const CAP_DAC_OVERRIDE = 1;
+/// To stop a worker's process: it runs as another user, so without this a
+/// SIGTERM fails with EPERM and the process outlives its turn.
+const CAP_KILL = 5;
 const CAP_SETGID = 6;
 const CAP_SETUID = 7;
 
@@ -129,7 +132,7 @@ export function effectiveCaps(status: string): bigint {
 
 /// What the server lacks to run workers as another user, or undefined.
 export function missingServerCaps(caps: bigint): string | undefined {
-  const need: Array<[number, string]> = [[CAP_SETUID, 'setuid'], [CAP_SETGID, 'setgid'], [CAP_DAC_OVERRIDE, 'dac_override']];
+  const need: Array<[number, string]> = [[CAP_SETUID, 'setuid'], [CAP_SETGID, 'setgid'], [CAP_DAC_OVERRIDE, 'dac_override'], [CAP_KILL, 'kill']];
   const missing = need.filter(([bit]) => (caps & (1n << BigInt(bit))) === 0n).map(([, name]) => name);
   return missing.length ? missing.join(', ') : undefined;
 }

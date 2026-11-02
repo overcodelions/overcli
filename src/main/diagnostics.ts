@@ -111,6 +111,24 @@ export function log(level: LogLevel, scope: string, message: string, err?: unkno
   }
 }
 
+/// The last `limit` lines of the session log (the rotated file, then the
+/// current one) that `match` keeps. For a run's Logs view, which picks out
+/// the lines naming its id and its conversations.
+export function readSessionLog(match: (line: string) => boolean, limit: number): string[] {
+  const filePath = getLogFilePath();
+  const out: string[] = [];
+  for (const f of [`${filePath}${ROTATED_SESSION_LOG_SUFFIX}`, filePath]) {
+    let text = '';
+    try {
+      text = fs.readFileSync(f, 'utf-8');
+    } catch {
+      continue;
+    }
+    for (const line of text.split('\n')) if (line && match(line)) out.push(line);
+  }
+  return out.slice(-limit);
+}
+
 /// Back-compat shim: records an error at 'error' level with its stack.
 export function logSilent(scope: string, err: unknown): void {
   log('error', scope, '', err);

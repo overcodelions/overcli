@@ -106,9 +106,11 @@ import { withBatchingDirective, resolveTurboEffort } from './backends/turbo';
 import { claudeSystemPromptAppend } from './backends/claude';
 import {
   BROKER_LAUNCH_PARAM_KEYS,
+  changedLaunchParams,
   LaunchParams,
   launchParamsChanged,
 } from './launchParams';
+import { collectKnownSecretValues, redactSecrets } from './secretScrub';
 import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
 import {
@@ -448,6 +450,53 @@ export function resumeSessionAfterParamChange(
   liveSessionId: string | undefined,
 ): string | undefined {
   return callerSessionId || liveSessionId;
+}
+
+/// Whether `active` is still the process a conversation runs on. Output and
+/// exits from any other process (one killed to respawn) must not touch the
+/// conversation: not its running state, not its errors, not its retries.
+export function isCurrentProcess<T>(registered: T | undefined, active: T): boolean {
+  return registered === active;
+}
+
+/// Whether a child process's 'error' is a signal that couldn't be delivered
+/// (Node emits it from `kill()`, with `syscall: 'kill'`), rather than the
+/// process failing to start or dying.
+export function isSignalError(err: NodeJS.ErrnoException): boolean {
+  return err.syscall === 'kill';
+}
+
+/// The frames that emitted a conversation's "idle", for the session log.
+/// A flow reads that event as its step finishing, so when a step ends early
+/// this line is what says which code path ended it.
+export function idleSourceFrames(stack: string | undefined): string {
+  return (stack ?? '')
+    .split('\n')
+    .slice(1)
+    .map((l) => l.trim().replace(/^at /, ''))
+    // The emit wrapper and this logger are always on top; skip them.
+    .filter((l) => l && !/logIdleSource|RunnerManager\.emit|this\.emit/.test(l))
+    .slice(0, 3)
+    .map((l) => l.replace(/\(?(?:[^()\s]*[\\/])?([^\\/()\s]+:\d+):\d+\)?$/, '($1)'))
+    .join(' < ');
+}
+
+function logIdleSource(conversationId: UUID): void {
+  log('info', 'runner.idle', `conv=${conversationId} from ${idleSourceFrames(new Error().stack)}`);
+}
+
+/// The end of a CLI's stderr, for the session log: redacted, one line,
+/// capped. The log is shown to managers in the console (run Logs).
+export function stderrTailForLog(stderr: string, max = 400): string {
+  const tail = stderr.trim().slice(-max).replace(/\s+/g, ' ');
+  return redactSecrets(tail, collectKnownSecretValues(process.env)).text;
+}
+
+/// A conversation's turn is still owed: a send is preparing its launch, or
+/// its current process took a turn that hasn't returned a result. While it
+/// is, a "turn over" for the conversation can't be about that turn.
+export function turnPending(args: { sendPending: boolean; turnInFlight: boolean | undefined }): boolean {
+  return args.sendPending || args.turnInFlight === true;
 }
 
 /// Whether a closing process may report its conversation idle (running:false).
@@ -1326,6 +1375,7 @@ export class RunnerManager {
     // hidden conversations have no UI and shouldn't create phantom runner
     // state or fire completion notifications. A no-op for normal convs.
     this.emit = (event) => {
+      if (event.type === 'running' && event.isRunning === false) logIdleSource(event.conversationId);
       watchToolEvents(event);
       if (this.tapOneShot(event)) return;
       this.trackRunning(event);
@@ -2229,6 +2279,9 @@ export class RunnerManager {
       // superseded client's late error must not stop a turn that has since
       // started on the same conversation (see the close handler below).
       if (this.procs.get(convId) === active) {
+        // The turn is over: a flow only takes "idle" as a step's end once
+        // no turn is owed (see isTurnPending).
+        active.turnInFlight = false;
         this.emit({ type: 'running', conversationId: convId, isRunning: false });
       }
     });
@@ -2498,7 +2551,13 @@ export class RunnerManager {
         // real send that arrived during the await either already has its
         // process here (we bail) or will find ours (it reuses it).
         if (this.procs.has(convId)) return;
-        this.spawnFor(warmArgs).prewarmed = true;
+        const warm = this.spawnFor(warmArgs);
+        warm.prewarmed = true;
+        // Stamped the way `sendSubprocess` stamps a fresh spawn: with the
+        // configured tier, '' when there is none. `spawnFor` leaves it
+        // undefined, which never equals the '' the first send compares, so
+        // every warm process was respawned on the turn it was warmed for.
+        warm.launchEffort = warmArgs.effortLevel ?? '';
         log('info', 'runner.prewarm', `${args.backend} conv=${convId} warmed`);
       } catch (err) {
         log('warn', 'runner.prewarm', `${args.backend} conv=${convId} prewarm failed`, err);
@@ -2511,6 +2570,15 @@ export class RunnerManager {
   /// (a run aborted, a branch not taken), so the process doesn't linger to
   /// the idle reap. A process that has taken a real turn is left alone —
   /// this must never be a back door to killing a live session.
+  /// Whether the conversation still owes a turn (see `turnPending`). A flow
+  /// asks before reading a "turn over" as its step finishing.
+  isTurnPending(conversationId: UUID): boolean {
+    return turnPending({
+      sendPending: this.claudeSendPending.has(conversationId),
+      turnInFlight: this.procs.get(conversationId)?.turnInFlight,
+    });
+  }
+
   dropIfPrewarmed(conversationId: UUID): void {
     if (this.procs.get(conversationId)?.prewarmed) this.killProc(conversationId);
   }
@@ -2732,6 +2800,11 @@ export class RunnerManager {
   private killProc(conversationId: UUID, opts: { respawning?: boolean } = {}): void {
     const active = this.procs.get(conversationId);
     if (!active) return;
+    // Unregistered before it's signalled: anything the signal sets off
+    // synchronously (a failed kill's 'error', an already-exited process's
+    // close) then reads it as superseded, and can't end the conversation's
+    // turn or release what the relaunch is about to use.
+    this.procs.delete(conversationId);
     if (active.codexMode === 'app-server' && active.codexAppServer) {
       active.codexAppServer.kill();
     } else if (active.claudeSdk) {
@@ -2748,7 +2821,6 @@ export class RunnerManager {
         active.proc.kill('SIGTERM');
       } catch {}
     }
-    this.procs.delete(conversationId);
     if (shouldReleaseClaudeBroker({ backend: active.backend, respawning: opts.respawning ?? false })) {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
@@ -2803,6 +2875,11 @@ export class RunnerManager {
         existing.codexMode === 'app-server' &&
         !launchParamsChanged(existing, this.launchParamsFor(args, configuredEffort), ['launchSandbox']);
       if (paramsChanged && !canHotSwap) {
+        log(
+          'info',
+          'runner.respawn',
+          `${args.backend} conv=${convId} pid=${existing?.proc?.pid ?? '-'} changed=${changedLaunchParams(existing!, this.launchParamsFor(args, configuredEffort)).join(',') || '(none)'}`,
+        );
         // killProc drops the live process *and* its in-memory sessionId,
         // so the respawn below must be told to --resume or it starts a
         // brand-new, context-free session. See resumeSessionAfterParamChange.
@@ -4201,6 +4278,15 @@ export class RunnerManager {
     // hangs forever. Surface a clean error and run the normal close cleanup.
     let spawnFailed = false;
     proc.on('error', (err: NodeJS.ErrnoException) => {
+      // A signal that couldn't be delivered (EPERM: the process runs as the
+      // worker user and the server lacks CAP_KILL) is not the process going
+      // away. Node raises it synchronously from inside `proc.kill()`; read as
+      // a close, it ended the conversation's live turn and released its
+      // broker and MCP config, so the relaunch came up without them.
+      if (isSignalError(err)) {
+        log('warn', 'runner.kill', `${args.backend} conv=${args.conversationId} pid=${proc.pid ?? '-'} couldn't be signalled (${err.code ?? err.message}); the server needs CAP_KILL to stop worker processes`);
+        return;
+      }
       spawnFailed = true;
       const message = spawnFailureMessage(
         { backend: args.backend, binary, cwd: args.cwd },
@@ -4209,11 +4295,11 @@ export class RunnerManager {
       this.emit({ type: 'error', conversationId: args.conversationId, message });
       this.handleActiveClose(args.conversationId, active, null);
     });
-    proc.on('close', (code) => {
+    proc.on('close', (code, signal) => {
       // A failed spawn emits both `error` and `close` on Node. The error
       // handler already cleaned up and surfaced the useful cause; processing
       // close too would overwrite it with "exited with status -2".
-      if (!spawnFailed) this.handleActiveClose(args.conversationId, active, code);
+      if (!spawnFailed) this.handleActiveClose(args.conversationId, active, code, signal);
     });
     return active;
   }
@@ -4228,6 +4314,8 @@ export class RunnerManager {
   }
 
   private handleStdout(convId: UUID, active: ActiveProcess, chunk: string): void {
+    // See handleParsedEvents: a superseded process's last words are dropped.
+    if (!isCurrentProcess(this.procs.get(convId), active)) return;
     const spec = getBackendSpec(active.backend);
     if (!spec.parseChunk) return;
     const result = spec.parseChunk(chunk, active.parserState);
@@ -4261,6 +4349,13 @@ export class RunnerManager {
     emitted: StreamEvent[],
     sessionConfigured?: { sessionId: string; rolloutPath?: string },
   ): void {
+    // A superseded process (killed to relaunch with changed params, e.g. a
+    // prewarm the real send respawned) can still flush output on its way
+    // out: the CLI answers SIGTERM / stdin EOF with a final `result`. That
+    // result belongs to no turn, and passing it on would end the live
+    // turn's running state — which a flow reads as its step finishing, off
+    // an empty buffer. Only the conversation's current process speaks.
+    if (!isCurrentProcess(this.procs.get(convId), active)) return;
     if (emitted.length) {
       let turnEnded = false;
       let nextActivity: string | undefined;
@@ -4369,7 +4464,7 @@ export class RunnerManager {
     }
   }
 
-  private handleActiveClose(conversationId: UUID, active: ActiveProcess, code: number | null): void {
+  private handleActiveClose(conversationId: UUID, active: ActiveProcess, code: number | null, signal: NodeJS.Signals | null = null): void {
     // A superseded proc (param change / quick resend spawned a replacement)
     // can fire its async 'close' AFTER the new proc registered a fresh broker
     // session + temp mcp-config for the same conversation. Only tear down
@@ -4391,6 +4486,12 @@ export class RunnerManager {
       backend: active.backend,
       claudeSendPending: this.claudeSendPending.has(conversationId),
     });
+    log(
+      code === 0 || code === 143 || signal === 'SIGTERM' ? 'info' : 'warn',
+      'runner.close',
+      `${active.backend} conv=${conversationId} pid=${active.proc?.pid ?? '-'} code=${code ?? '-'} signal=${signal ?? '-'} current=${isCurrent} idle=${skipRunningFalse ? 'skipped' : 'emitted'}` +
+        (active.recentStderr.trim() ? ` stderr="${stderrTailForLog(active.recentStderr)}"` : ''),
+    );
     // Codex exec close fires the reviewer right below for code===0 — keep
     // the running indicator on (as "Rebounding…") so the sidebar doesn't
     // flicker idle between primary close and reviewer launch.
@@ -4454,7 +4555,11 @@ export class RunnerManager {
         }
       }
     }
-    if (code != null && code !== 0 && code !== 143) {
+    // A superseded process exits nonzero as a matter of course (it was
+    // killed mid-launch). Its exit is not the conversation's failure: retrying
+    // would tear down the live process's broker and relaunch over it, and
+    // the error would land on a turn that is going fine.
+    if (isCurrent && code != null && code !== 0 && code !== 143) {
       if (this.maybeRetryStaleSession(conversationId, active)) {
         return;
       }
@@ -4857,6 +4962,8 @@ export class RunnerManager {
       if (this.maybeRetryCodexModelDowngrade(convId, active, args.model, message)) {
         return;
       }
+      // The turn failed and is over (see isTurnPending).
+      active.turnInFlight = false;
       this.emit({ type: 'error', conversationId: convId, message });
       this.emit({ type: 'running', conversationId: convId, isRunning: false });
     }

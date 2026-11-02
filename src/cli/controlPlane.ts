@@ -1219,6 +1219,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     { method: 'GET', path: /^\/api\/runs\/([^/]+)$/, handle: (c, _b, [id]) => org.runDetail(c, decodeURIComponent(id)) },
     // What each step of a run did: what it wrote, and its activity.
     { method: 'GET', path: /^\/api\/runs\/([^/]+)\/steps$/, handle: (c, _b, [id]) => org.runSteps(c, decodeURIComponent(id)) },
+    { method: 'GET', path: /^\/api\/runs\/([^/]+)\/logs$/, handle: (c, _b, [id]) => org.runLogs(c, decodeURIComponent(id)) },
     // Push a finished run again, once what refused it is put right.
     { method: 'POST', path: /^\/api\/runs\/([^/]+)\/push$/, handle: (c, _b, [id]) => org.pushRunAgain(c, decodeURIComponent(id)) },
     // What a run has changed so far; `?diff=1` adds the diff itself.

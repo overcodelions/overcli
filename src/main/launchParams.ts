@@ -91,3 +91,14 @@ export function launchParamsChanged(
 ): boolean {
   return keys.some((key) => existing[key] !== requested[key]);
 }
+
+/// Which launch params differ, by name, for the respawn log line. Names
+/// only: a value can be a model id, a folder or a tool list, and the log is
+/// shown to managers in the console.
+export function changedLaunchParams(
+  existing: LaunchParams,
+  requested: LaunchParams,
+  keys: readonly (keyof LaunchParams)[] = LAUNCH_PARAM_KEYS,
+): string[] {
+  return keys.filter((key) => existing[key] !== requested[key]);
+}
