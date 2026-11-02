@@ -64,8 +64,17 @@ export function isReadOnlyMcpTool(name: string): boolean {
   const parsed = parseMcpToolName(name);
   if (!parsed) return false;
   const w = words(parsed.tool);
-  return w.some((x) => READ_WORDS.has(x)) && !w.some((x) => WRITE_WORDS.has(x));
+  // Running a query over logs, metrics or traces only reads them:
+  // `execute_log_insights_query`, `run_metrics_query`. Only there do
+  // "execute" and "run" not count as writes. A database's
+  // `execute_sql_query` can still change rows, so it stays a write.
+  const telemetryQuery = w.includes('query') && w.some((x) => TELEMETRY_WORDS.has(x));
+  const writes = w.filter((x) => WRITE_WORDS.has(x) && !(telemetryQuery && QUERY_RUNNER_WORDS.has(x)));
+  return w.some((x) => READ_WORDS.has(x)) && writes.length === 0;
 }
+
+const TELEMETRY_WORDS = new Set(['log', 'logs', 'insight', 'insights', 'metric', 'metrics', 'trace', 'traces']);
+const QUERY_RUNNER_WORDS = new Set(['execute', 'run']);
 
 /// The MCP tools the flow designer may grant, grouped by server, one line per
 /// server so a long catalog stays readable. Read-only tools are marked, since

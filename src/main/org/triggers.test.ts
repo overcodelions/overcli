@@ -250,6 +250,42 @@ describe('slack triggers', () => {
     }
   });
 
+  describe('listening in a channel', () => {
+    const listen = (instructions = '') => ({ ...watch(), instructions, kind: 'slack' as const, watch: undefined, slack: { channel: 'C0ACMESUP', on: 'listen' as const }, deliver: [] });
+
+    it('needs no instructions, and always answers in the thread', () => {
+      const h = harness();
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      expect(made.trigger.deliver).toEqual([{ kind: 'thread' }]);
+      const changed = h.svc.update(made.trigger.id, { deliver: [{ kind: 'dm', slackUserId: 'U0ACMEPAT' }] });
+      if (!changed.ok) throw new Error(changed.error);
+      expect(changed.trigger.deliver).toEqual([{ kind: 'dm', slackUserId: 'U0ACMEPAT' }, { kind: 'thread' }]);
+    });
+
+    it('tells the worker to answer only what it can, with the manager’s extras after', async () => {
+      const h = harness({ reply: 'Every 15 minutes, from the indexer schedule.' });
+      const made = h.svc.create(listen('For setup questions, link the docs page too.'));
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'how often does collateral get indexed?' });
+      await tick();
+      expect(h.asked[0]).toContain('|You are listening in this Slack channel, not taking part in it.');
+      expect(h.asked[0]).toContain('Also: For setup questions, link the docs page too.');
+      expect(h.asked[0]).toContain('how often does collateral get indexed?');
+      expect(h.posts).toEqual(['C0ACMESUP@6.1:Every 15 minutes, from the indexer schedule.']);
+    });
+
+    it('posts nothing on what it passes', async () => {
+      const h = harness({ reply: 'PASS' });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '7.1', text: 'lunch is here' });
+      await tick();
+      expect(h.asked).toHaveLength(1);
+      expect(h.posts).toEqual([]);
+    });
+  });
+
   it('posts what the worker wrote in Slack\'s markup, not raw Markdown', async () => {
     const h = harness({ reply: '- **Searched:** the `main.py` fix & its repo' });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });

@@ -68,6 +68,7 @@ On the worker's page:
   - **Webhook:** a secret address for GitHub, Jira automation or Zapier to post to.
     The sender posts from the internet, so it can't reach a console that only answers inside your network, even on an https address. When the console's address only resolves to private addresses, the form says so and offers a watch instead, which only calls out.
   - **Slack:** a new message, a mention, or an emoji reaction (🐛) in a channel.
+    - **Listen and answer questions:** the worker sits in the channel and stays quiet, answering in the thread only when someone asks something it can answer well. The rules for that are built in, so there's nothing to write: instructions are only for extras. Invite the bot first (`/invite @overgo`).
 
   Each trigger has instructions (what to do with each item), a destination (a channel, a DM to you, the thread it came from, or "comment on the ticket"), and a daily limit.
 - **The value strip** on the Triggers tab shows items handled this month, typical time, cost per item, and the share people rated useful.

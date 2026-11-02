@@ -157,7 +157,7 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
   return { svc, roster, calls, awaiting, decided, wanted, teams, teamTasks, hires: () => hires };
 }
 
-const paused = (reason: 'needsInput' | 'externalAction' | 'riskyStep', workerId = 'chief'): FlowRun =>
+const paused = (reason: 'needsInput' | 'externalAction' | 'riskyStep' | 'failure', workerId = 'chief'): FlowRun =>
   ({
     id: 'run-1',
     workerId,
@@ -864,6 +864,27 @@ describe('a run\u2019s logs', () => {
     const log = (res as { log: string[] }).log;
     expect(log).toHaveLength(1);
     expect(log[0]).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
+  });
+});
+
+describe('a run, live', () => {
+  it('says whether you can act on it, and what failed when it stopped on a failure', () => {
+    const failed = {
+      ...paused('failure'),
+      attempts: [{ stepId: 'write', startedAt: 1, endedAt: 2, outcome: 'error', errorMessage: 'Step "write" produced no <output name="report.md"> block.' }],
+    } as unknown as FlowRun;
+    const h = harness({ roster: [worker('chief', { manager: { name: 'Pat', slackUserId: PAT } })], runs: [failed] });
+    const res = h.svc.runLive({ slackUserId: PAT, name: 'Pat', admin: false }, 'run-1');
+    expect(res).toMatchObject({ ok: true, run: { state: 'paused: failure', workerId: expect.any(String), youManage: true, error: expect.stringContaining('produced no <output') } });
+    const admin = h.svc.runLive({ slackUserId: SAM, name: 'Sam', admin: true }, 'run-1');
+    expect(admin).toMatchObject({ ok: true, run: { youManage: true } });
+  });
+
+  it('carries no error when it is only waiting for an OK', () => {
+    const h = harness({ roster: [worker('chief', { manager: { name: 'Pat', slackUserId: PAT } })], runs: [paused('externalAction')] });
+    const res = h.svc.runLive({ slackUserId: PAT, name: 'Pat', admin: false }, 'run-1') as { run: { state: string; error?: string } };
+    expect(res.run.state).toBe('paused: externalAction');
+    expect(res.run.error).toBeUndefined();
   });
 });
 

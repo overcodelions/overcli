@@ -10,6 +10,10 @@ describe('isReadOnlyMcpTool', () => {
     'mcp__atlassian__getJiraIssue',
     'mcp__atlassian__searchJiraIssuesUsingJql',
     'mcp__claude_ai_Google_Drive__download_file_content',
+    // Running a query over logs, metrics or traces only reads them.
+    'mcp__acme_logs__execute_log_insights_query',
+    'mcp__acme_logs__get_logs_insight_query_results',
+    'mcp__acme_metrics__run_metrics_query',
   ])('reads: %s', (name) => {
     expect(isReadOnlyMcpTool(name)).toBe(true);
   });
@@ -28,6 +32,12 @@ describe('isReadOnlyMcpTool', () => {
     'mcp__x__find_and_replace',
     'mcp__x__findAndReplace',
     'mcp__x__getOrCreateUser',
+    // A database query can change rows; only telemetry queries read.
+    'mcp__acme_db__execute_sql_query',
+    'mcp__acme_db__run_query',
+    // A log tool that writes is still a write.
+    'mcp__acme_logs__delete_log_group',
+    'mcp__acme_logs__put_log_events',
     // Not an MCP tool at all.
     'Read',
   ])('does not read only: %s', (name) => {
