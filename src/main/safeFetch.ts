@@ -145,13 +145,19 @@ export function setLookup(impl: ((host: string) => Promise<string[]>) | null): v
 /// reported as such: the fetch would fail anyway, and a refusal says why.
 async function resolvesInside(host: string): Promise<string | null> {
   let addresses: string[];
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     addresses = await Promise.race([
       lookupImpl(host),
-      new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error('timed out')), LOOKUP_MS).unref?.()),
+      new Promise<string[]>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timed out')), LOOKUP_MS);
+        timer.unref?.();
+      }),
     ]);
   } catch (err) {
     return `could not be resolved (${err instanceof Error ? err.message : String(err)})`;
+  } finally {
+    clearTimeout(timer);
   }
   if (!addresses.length) return 'resolves to nothing';
   for (const a of addresses) if (neverHost(a) || privateHost(a)) return a;

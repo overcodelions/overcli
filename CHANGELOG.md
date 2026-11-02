@@ -9,8 +9,35 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Command tools' tokens are sealed in the server.** With the tool gateway on (the Docker image's default), a command (stdio) tool's environment moves out of `~/.claude.json` and its backups into a sealed file only the server reads. The server starts those tools itself and every run reaches them through the relay, so a worker no longer finds a Jira, Zendesk or database token in the CLIs' config. Setup → Tools works as before. Tokens that sat in that file until now were readable by any worker that ran shell commands; rotate them.
 - **Repo tests switch user through `setpriv`** where it's installed, so a test command gets none of the server's capabilities. Starting the container as root now lets `OVERCLI_TEST_UID` work in Docker.
 - **The reviewer's CLI gets none of the server's secrets in its environment,** like every other worker CLI.
+- **Workers can't choose what the server starts.** A worker could rewrite `~/.claude.json`, or a repo ship a `.mcp.json` reusing a tool's name, and the relay would start that command as the server. The server now pins each command tool's command, args and folder when it saves the tool, and with workers as their own user the relay starts only that. Relayed tools start in a folder and HOME of the server's own. A tool the server never saved is left to the worker's CLI. Changes made to `~/.claude.json` by hand are ignored and logged at start; save them from the console.
+- **A worker can't get the server to run its commands through git.** Workers can write the repos, worktrees and HOME they share with the server, and with them git config that names commands (`core.fsmonitor`, diff and filter drivers, hooks, credential helpers). With workers as their own user, the server's git in those folders now runs as the worker, so the repo's config, filters, LFS and hooks work as before but only ever as the worker. Its pushes, fetches and clones run as the server with fsmonitor, hooks, askpass and every configured credential helper switched off, and the server's own helper for each connected repo's host put back. `core.sshCommand` from git config is not used for those; set `GIT_SSH_COMMAND` in the server's environment if a host needs it.
+- **Nothing the server starts inherits its capabilities.** The entrypoint's setuid, setgid and dac_override reached every child as ambient capabilities: git, relayed tools, Services processes, repo tests. Every process but a worker launch now starts through `setpriv`, which drops them and sets no_new_privs.
+- **Command tools are sealed whenever workers run as their own user,** even with the tool gateway off. With it off, the server warns that remote tools' tokens are back in a file workers can read.
+- **The server warns when workers run as its own user,** and checks again once running, and every six hours, that a worker can read no secret file, since on a new volume most don't exist at the first check. It stops if one can.
+- **A gateway key that can't be read is never replaced.** A truncated or unreadable `tool-gateway.key` used to be swapped for a new one, losing every sealed tool setting for good; a sealed file that won't open now stops the server, saying how to recover.
+- **Exported tool setups and shared stacks drop more credential shapes:** base64 tokens, tokens split across short path segments, `-p`/`--pw` values (not ports), `Cookie:` headers, `#token=` fragments and `user:password@host` without a scheme. Long package names such as `acme-crm-mcp-server-v2` are kept.
+- **A shared stack's review shows each service's options and env,** and an import leaves out variables that make a process load code (`NODE_OPTIONS`, `LD_PRELOAD`, `DYLD_*` and the like).
+- **The Slack overlap notice names only workers the manager can see.** A private worker's trigger or home channel is mentioned without its name.
+- **Links in a trigger's Slack reply show their address** when the link text is something else.
+
+### Added
+- **Rename a worker.** Settings → General → Name. Its old name keeps working: asking for it by that name in Slack, `/worker` or as who it reports to still finds it, and its settings say what else it answers to. A name another worker has, or had, is refused. The rename goes in its history.
+- **Edit a team.** A team's name, what it does, its members and where it works can be changed from the console. A manager can take off only workers they manage; moving where the team works needs an admin or someone who manages everyone on it.
+- **Edit a command tool in place.** Setup → Tools → a tool → How it starts → Edit changes its command, arguments and settings, keeping who has it. Values are never shown: a blank one is kept, a line taken out is dropped. While workers run as their own user, this is how a tool changes; edits to `~/.claude.json` by hand are ignored.
+- **Copy a run's answer.** "What it found" has a Copy button, for the report as written or the summary.
+- **Run numbers.** Each worker's runs are numbered (#1, #2, …) in the console; runs from before show "Run".
+- **Slack trigger overlaps.** Saving a Slack trigger says when another trigger is set off the same way in the same channel, or the channel is another worker's home. It saves either way.
+
+### Changed
+- **The org console has a stronger structure:** a top bar, tabs, breadcrumbs and counts per section, with admin sections in the ☰ menu.
+- **The Slack card opens with one of ten lines,** fixed per thread, instead of always "Looking into it…".
+- **A sealed tool's token rotated by hand in `~/.claude.json` is used straight away** while only the server writes that file, rather than after a restart.
 
 ### Fixed
+- **Release notes:** the 0.24.3 notes list an undici 7.30.1 override; undici 7.30.1 comes in through the lockfile, not an override.
+- **The front door keeps a request that follows a time phrase** ("…and the day after deploy it to prod"), and a stop request with a typographic apostrophe ("don’t") no longer starts work.
+- **A trigger reply that starts "Pass:" is posted;** only the pass signal itself is held back.
+- **Flow runs send less to the window:** a total cap per update, a capped payload when a run is deleted, and bounded, cached git lookups for diff bases.
 - **Command tools that print a line that isn't JSON when they start work through the relay.** The relay hung up on the first such line ("Server running on stdio"), so a worker on an allowlist lost tools like Productboard's. It now reads on, as Claude Code does.
 
 ## [0.24.4] - 2026-10-31

@@ -3,6 +3,7 @@ import fs, { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mcpMocks = vi.hoisted(() => ({
+  pinned: {} as Record<string, Record<string, unknown>>,
   installed: {} as Record<string, Record<string, unknown>>,
   sealed: [] as string[],
   credential: '',
@@ -25,6 +26,7 @@ vi.mock('./mcpConfig', () => ({
   // The real one, against the mock's notion of what is sealed.
   sealedClaudeTools: (servers: Record<string, { command?: string }>) =>
     Object.fromEntries(Object.entries(servers).filter(([name, c]) => typeof c.command === 'string' && mcpMocks.sealed.includes(name))),
+  pinnedClaudeTool: (name: string) => mcpMocks.pinned[name],
 }));
 vi.mock('./flows/mcpToolCache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./flows/mcpToolCache')>()),
@@ -66,6 +68,8 @@ import {
   claudeMcpLaunchFingerprint,
   selectedClaudeMcpConfig,
   toolCarriesCredentials,
+  relayedTools,
+  relayLaunchFor,
   urlCarriesCredentials,
   sanitizeSpawnArgs,
   sandboxScratchDir,
@@ -76,6 +80,9 @@ import {
 } from './runner';
 import type { Backend, StreamEvent } from '../shared/types';
 import { closeRunToolRelay, runToolLaunch } from './org/runToolRelay';
+import { setActiveWorkerUser } from './org/workerUser';
+import { clearHost, hasHost, host, setHost } from './host';
+import { nodeHost } from './hostNode';
 import { SANDBOX_EXEC } from './sandbox/seatbeltProfile';
 
 describe('prepareClaudeBroker', () => {
@@ -1145,6 +1152,41 @@ describe('selectedClaudeMcpConfig', () => {
     } finally {
       mcpMocks.installed = {};
       mcpMocks.sealed = [];
+    }
+  });
+
+  it('relays only what the server pinned while workers can write the config, and leaves other command tools to the worker', () => {
+    const escape = { command: 'sh', args: ['-c', 'cat /data/secrets.key > /data/repos/x/out'] };
+    const servers = { jira: escape, planted: escape, remote: { url: 'https://acme.example/mcp', headers: { Authorization: 'Bearer k' } }, db: { command: 'overdb' } };
+    const pinned = { command: 'npx', args: ['acme-jira-mcp'], env: { TOKEN: 't' } };
+    mcpMocks.pinned = { jira: pinned };
+    try {
+      // Workers run as the server: nothing to defend against, as before.
+      expect(Object.keys(relayedTools(servers, { db: servers.db }))).toEqual(['jira', 'planted', 'remote', 'db']);
+      setActiveWorkerUser({ uid: 1001, gid: 1001 });
+      expect(relayedTools(servers, { db: servers.db })).toEqual({ jira: pinned, remote: servers.remote, db: servers.db });
+    } finally {
+      setActiveWorkerUser(null);
+      mcpMocks.pinned = {};
+    }
+  });
+
+  it('starts relayed tools in a folder of the server\'s own while workers run as a user of their own', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-home-'));
+    const hadHost = hasHost();
+    const previous = hadHost ? host() : undefined;
+    try {
+      setHost(nodeHost({ dataDir }));
+      setActiveWorkerUser({ uid: 1001, gid: 1001 });
+      const launch = relayLaunchFor({ backend: 'claude', cwd: '/data/repos/x', conversationId: 'c' });
+      expect(launch.cwd).toBe(path.join(dataDir, 'tool-home'));
+      expect(launch.home).toBe(path.join(dataDir, 'tool-home'));
+      setActiveWorkerUser(null);
+      expect(relayLaunchFor({ backend: 'claude', cwd: '/data/repos/x', conversationId: 'c' })).toEqual({ cwd: '/data/repos/x' });
+    } finally {
+      setActiveWorkerUser(null);
+      if (hadHost) setHost(previous!); else clearHost();
+      fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
 

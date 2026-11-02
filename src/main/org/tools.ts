@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readClaudeMcpServers, removeMcpServer, writeMcpServer, type McpServerConfig } from '../mcpConfig';
-import { isSecretName } from '../../shared/machineValues';
+import { holdsAddressCredential, isSecretFlagValue, isSecretName } from '../../shared/machineValues';
 
 export const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -26,6 +26,9 @@ export interface ToolSummary {
   kind: 'command' | 'http';
   /// The command and its arguments, or the URL. Never a secret.
   target: string;
+  /// A command tool's command and arguments apart, for editing them.
+  command?: string;
+  args?: string[];
   /// Names of the environment variables or headers it sets, values hidden.
   secrets: string[];
   usedBy: string[];
@@ -87,6 +90,7 @@ export function listTools(
         name,
         kind: http ? 'http' : 'command',
         target: real ? real.url : http ? String(c.url) : [String(c.command ?? ''), ...(Array.isArray(c.args) ? c.args.map(String) : [])].join(' ').trim(),
+        ...(http ? {} : { command: String(c.command ?? ''), args: Array.isArray(c.args) ? c.args.map(String) : [] }),
         secrets: [...env, ...headers],
         usedBy: users(name),
         ...(statuses[name] ? { status: statuses[name] } : {}),
@@ -184,6 +188,45 @@ export function updateToolSettings(name: string, values: Record<string, string>)
   return { ok: true, changed: Object.keys(given), ...(touched.length ? { fixed: touched } : {}) };
 }
 
+/// A command tool changed as a whole: its command, arguments and settings,
+/// keeping who has it. `env` lists every setting it keeps; a blank value
+/// keeps that one's current value (secrets never go to the browser), and a
+/// setting left out is dropped. Saved the way an install is, so the server's
+/// pin and seal follow it (toolEnvVault.ts).
+export function editTool(name: string, input: { command: string; args: string[]; env: Record<string, string> }): { ok: true; changed: string[]; fixed?: string[] } | { ok: false; error: string } {
+  const current = readClaudeMcpServers()[name];
+  if (!TOOL_NAME.test(name) || !current) return { ok: false, error: 'No tool by that name.' };
+  if (typeof current.command !== 'string') return { ok: false, error: 'Only a command tool is edited here. A remote one signs in again, or is removed and added back.' };
+  const command = input.command.trim();
+  if (!command) return { ok: false, error: 'Say what command starts it, e.g. npx.' };
+  const before = current.env && typeof current.env === 'object' && !Array.isArray(current.env) ? (current.env as Record<string, string>) : {};
+  const bad = Object.keys(input.env).filter((k) => !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(k.trim()));
+  if (bad.length) return { ok: false, error: `${bad.join(', ')} isn't a setting name: letters, numbers and underscores.` };
+  const empty = Object.entries(input.env).filter(([k, v]) => !v.trim() && !(k.trim() in before)).map(([k]) => k.trim());
+  if (empty.length) return { ok: false, error: `Give ${empty.join(', ')} a value: it's new.` };
+  const merged = Object.fromEntries(Object.entries(input.env).map(([k, v]) => [k.trim(), v.trim() ? v : before[k.trim()]]));
+  const { env, fixed } = fixAddresses(merged);
+  const args = input.args.map(String).filter((a) => a.length);
+  const config: McpServerConfig = { ...current, command, args, ...(Object.keys(env).length ? { env } : {}) };
+  if (!Object.keys(env).length) delete config.env;
+  const oldArgs = Array.isArray(current.args) ? current.args.map(String) : [];
+  const changed = [
+    ...(command !== current.command || args.join('\u0000') !== oldArgs.join('\u0000') ? ['command'] : []),
+    ...Object.keys(env).filter((k) => env[k] !== before[k]),
+    ...Object.keys(before).filter((k) => !(k in env)),
+  ];
+  if (!changed.length) return { ok: false, error: 'Nothing changed.' };
+  try {
+    writeMcpServer('claude', name, config);
+    if (codexInstalled()) writeMcpServer('codex', name, config);
+    void warmNpxTools({ [name]: { command, args } }, (level, msg) => log(level, 'org.tools', msg));
+  } catch (err) {
+    return { ok: false, error: `Could not write the config: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const touched = fixed.filter((k) => input.env[k]?.trim());
+  return { ok: true, changed, ...(touched.length ? { fixed: touched } : {}) };
+}
+
 export function uninstallTool(name: string): { ok: true } | { ok: false; error: string } {
   if (!TOOL_NAME.test(name)) return { ok: false, error: 'No tool by that name.' };
   try {
@@ -211,10 +254,57 @@ export interface ToolTemplate {
   headerKeys: string[];
 }
 
-/// A path segment or argument that reads as a token: long, one run of
-/// letters, digits, `-` and `_`, with a digit in it (or very long). "mcp",
-/// "v1" and "sse" are not; "a8f3…" and a signed key are.
-const TOKEN_SHAPED = /^(?=.*\d)[A-Za-z0-9_-]{16,}$|^[A-Za-z0-9_.-]{32,}$/;
+/// A run of letters, digits, `-` and `_` that reads as a token: long, with a
+/// digit in it (or very long). "mcp", "v1" and "sse" are not; "a8f3…" and a
+/// signed key are.
+const TOKEN_RUN = /^(?=.*\d)[A-Za-z0-9_-]{16,}$|^[A-Za-z0-9_.-]{32,}$/;
+/// Base64, standard or url-safe, long enough to be a key.
+const BASE64 = /^[A-Za-z0-9+/_-]{16,}={0,2}$/;
+/// One part of a name: a word, a version or a short number, with at most one
+/// run of digits (`acme`, `v2`, `server2`, `2024`, `oauth2`). A token's
+/// letters and digits alternate (`a8f3`), so it never reads as one.
+const WORD = /^(?=.{1,20}$)[A-Za-z]*\d{0,4}[A-Za-z]*$/;
+
+/// Whether every `-`, `_` or `.`-separated part of a value is a word.
+function wordy(value: string): boolean {
+  return value.split(/[-_.]+/).every((part) => part === '' || WORD.test(part));
+}
+
+/// A package name, scoped or not, with an optional version: `acme-crm-mcp`,
+/// `acme-crm-mcp-server-v2`, `@acme/jira-mcp@1.2.0`. Made of words, so long
+/// is not a reason to drop it.
+function packageNamed(value: string): boolean {
+  const m = /^(?:@([\w.-]+)\/)?([\w.-]+?)(?:@[\w.^~<>=*-]+)?$/.exec(value);
+  return !!m && (m[1] === undefined || wordy(m[1])) && wordy(m[2]);
+}
+
+/// Whether a value reads as a token: a long run with digits in it, base64,
+/// or a path one of whose segments, or a run of adjacent ones, is. A package
+/// name or an ordinary path of words is not.
+function tokenShaped(value: string): boolean {
+  if (packageNamed(value)) return false;
+  if (TOKEN_RUN.test(value)) return true;
+  // Base64: `+`, `/` and `=` are what give it away, but a path has `/` too,
+  // so mixed case and digits only count where it is not one.
+  if (BASE64.test(value) && (/[+]|=$/.test(value) || (/\d/.test(value) && /[a-z]/.test(value) && /[A-Z]/.test(value) && !/^[./~]/.test(value)))) return true;
+  return value.includes('/') && pathHoldsToken(value);
+}
+
+/// A token split over a path (`/s/a8f3k2m9x1/q7w4e6r5t0/sse`): each segment
+/// is too short to tell, the run of non-words together is not.
+function pathHoldsToken(path: string): boolean {
+  let run = '';
+  for (const segment of path.split('/')) {
+    if (segment === '' || wordy(segment)) {
+      run = '';
+      continue;
+    }
+    if (tokenShaped(segment)) return true;
+    run += segment;
+    if (run.length >= 12 && /[\d+=]/.test(run)) return true;
+  }
+  return false;
+}
 /// An address: `scheme://…`.
 const ADDRESS = /^[a-z][a-z0-9+.-]*:\/\//i;
 /// A flag whose value is the next argument: `--token`, `-p`.
@@ -235,8 +325,8 @@ const ARG_MAX = 80;
 function addressExportable(raw: string): boolean {
   try {
     const u = new URL(raw);
-    if (u.username || u.password || u.search) return false;
-    return !u.pathname.split('/').some((segment) => TOKEN_SHAPED.test(segment));
+    if (u.username || u.password || u.search || u.hash) return false;
+    return !pathHoldsToken(u.pathname);
   } catch {
     return false;
   }
@@ -244,36 +334,36 @@ function addressExportable(raw: string): boolean {
 
 /// A command's arguments with every possible credential taken out, for a
 /// template: package names, flags and plain paths stay. Dropped: an address
-/// with a user:password, a query string or a token-shaped path segment
-/// (`postgresql://app:pw@db/prod`); a `name=value` whose name is
-/// secret-shaped or whose value is token-shaped; a token-shaped argument;
-/// the argument after a secret-named flag (`--token <value>`, the flag
-/// itself stays so the install form shows where the value goes); a header
+/// with a user:password, a query string, a fragment or a token-shaped path
+/// (`postgresql://app:pw@db/prod`), and a `user:pw@host` without a scheme;
+/// a `name=value` whose name is secret-shaped or whose value is
+/// token-shaped; a token-shaped or base64 argument; the argument after a
+/// secret-named flag or a `-p` that is not a port (`--token <value>`, the
+/// flag itself stays so the install form shows where the value goes); a header
 /// whose name or value is credential-shaped (`Authorization: Bearer …`);
 /// any value with a credential word in it; and anything over 80 characters
 /// that isn't an address.
 export function exportableArgs(args: unknown): string[] {
   if (!Array.isArray(args)) return [];
   const out: string[] = [];
-  let valueOfSecretFlag = false;
+  let flag = '';
   for (const raw of args.map(String)) {
-    if (valueOfSecretFlag) {
-      valueOfSecretFlag = false;
-      if (!FLAG.test(raw)) continue;
-    }
-    if (TOKEN_SHAPED.test(raw)) continue;
+    const before = flag;
+    flag = '';
+    if (before && !FLAG.test(raw) && isSecretFlagValue(before, raw)) continue;
+    if (tokenShaped(raw)) continue;
     if (ADDRESS.test(raw)) {
       if (raw.length > 500 || !addressExportable(raw)) continue;
     } else {
-      if (raw.length > ARG_MAX) continue;
+      if (raw.length > ARG_MAX || holdsAddressCredential(raw)) continue;
       const kv = KEY_VALUE_ARG.exec(raw);
       const header = kv ? null : HEADER_ARG.exec(raw);
       if (kv) {
-        if (isSecretName(kv[1]) || SECRET_WORD.test(kv[2]) || TOKEN_SHAPED.test(kv[2]) || (ADDRESS.test(kv[2]) && !addressExportable(kv[2]))) continue;
+        if (isSecretName(kv[1]) || SECRET_WORD.test(kv[2]) || tokenShaped(kv[2]) || (ADDRESS.test(kv[2]) && !addressExportable(kv[2]))) continue;
       } else if (header) {
-        if (isSecretName(header[1]) || SECRET_WORD.test(header[1]) || SECRET_WORD.test(header[2]) || header[2].split(/\s+/).some((part) => TOKEN_SHAPED.test(part))) continue;
+        if (isSecretName(header[1]) || SECRET_WORD.test(header[1]) || SECRET_WORD.test(header[2]) || header[2].split(/\s+/).some((part) => tokenShaped(part))) continue;
       } else if (FLAG.test(raw)) {
-        if (isSecretName(raw)) valueOfSecretFlag = true;
+        flag = raw;
       } else if (SECRET_WORD.test(raw)) {
         continue;
       }
@@ -294,7 +384,7 @@ export function templateFrom(name: string, config: McpServerConfig): ToolTemplat
     let url: string;
     try {
       const u = new URL(config.url);
-      url = u.username || u.password || u.pathname.split('/').some((segment) => TOKEN_SHAPED.test(segment)) ? u.origin : `${u.origin}${u.pathname}`;
+      url = u.username || u.password || pathHoldsToken(u.pathname) ? u.origin : `${u.origin}${u.pathname}`;
     } catch {
       return null;
     }

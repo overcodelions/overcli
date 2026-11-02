@@ -2512,6 +2512,8 @@ export interface IPCInvokeMap {
   /// expensive — see `unreviewedDoneRunIds`.
   'flows:listUnreviewedRuns': () => UUID[];
   'flows:getRun': (args: { runId: UUID }) => FlowRun | null;
+  /// The uncapped body of a step's output (run updates carry a capped copy).
+  'flows:artifactBody': (args: { runId: UUID; stepId: string }) => string | null;
   'flows:resumeRun': (args: {
     runId: UUID;
     /// Optional per-artifact overrides. Each key/value replaces the

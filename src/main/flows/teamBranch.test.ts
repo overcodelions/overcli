@@ -245,7 +245,7 @@ describe('a team task branch across a workspace', () => {
     expect(git(remote, ['rev-parse', code.branch])).toBe(git(overcli, ['rev-parse', code.branch]));
   });
 
-  it("checks the task branch out again where its checkout went, from here or origin", () => {
+  it("checks the task branch out again where its checkout went, from here or origin", async () => {
     const remote = path.join(sandbox, 'remote.git');
     git(sandbox, ['init', '--bare', remote]);
     git(overcli, ['remote', 'add', 'origin', remote]);
@@ -267,11 +267,11 @@ describe('a team task branch across a workspace', () => {
     git(overcli, ['worktree', 'remove', '--force', cli.worktreePath]);
     git(overcli, ['branch', '-D', code.branch]);
     fs.rmSync(gitRepo.worktreePath, { recursive: true, force: true });
-    expect(restoreTaskBranch(code)).toEqual({ ok: true, restored: ['overcli', 'overgit'] });
+    expect(await restoreTaskBranch(code)).toEqual({ ok: true, restored: ['overcli', 'overgit'] });
     expect(fs.readFileSync(path.join(cli.worktreePath, 'a.txt'), 'utf8')).toBe('a\n');
     expect(git(gitRepo.worktreePath, ['branch', '--show-current'])).toBe(code.branch);
     // Nothing missing: nothing to do.
-    expect(restoreTaskBranch(code)).toEqual({ ok: true, restored: [] });
+    expect(await restoreTaskBranch(code)).toEqual({ ok: true, restored: [] });
 
     // Gone everywhere, but the task never committed in overgit: start again
     // from its base.
@@ -281,13 +281,13 @@ describe('a team task branch across a workspace', () => {
       git(overgit, ['branch', '-D', code.branch]);
     };
     goneEverywhere();
-    expect(restoreTaskBranch(code)).toEqual({ ok: true, restored: ['overgit'] });
+    expect(await restoreTaskBranch(code)).toEqual({ ok: true, restored: ['overgit'] });
     expect(git(gitRepo.worktreePath, ['rev-parse', 'HEAD'])).toBe(git(overgit, ['rev-parse', 'master']));
 
     // One whose work was on it: says so rather than carry on without it.
     goneEverywhere();
     const withWork = { ...code, repos: [cli, { ...gitRepo, ahead: 2 }] };
-    expect(restoreTaskBranch(withWork)).toEqual({ ok: false, error: `The ${code.branch} branch is gone from overgit, here and on origin.` });
+    expect(await restoreTaskBranch(withWork)).toEqual({ ok: false, error: `The ${code.branch} branch is gone from overgit, here and on origin.` });
   });
 
   it('does not run a hook planted in the repo when it merges a piece', () => {

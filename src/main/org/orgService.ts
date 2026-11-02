@@ -172,6 +172,8 @@ export interface HireOptions {
 export interface WorkerSummary {
   id: UUID;
   name: string;
+  /// Names it went by before; asking by one still finds it.
+  formerNames?: string[];
   tagline: string;
   enabled: boolean;
   trust: Worker['trust'];
@@ -232,6 +234,8 @@ export interface ProposalBatch {
 
 export interface WaitingItem {
   runId: UUID;
+  /// The run's number for its worker, shown as "#12".
+  runNumber?: number;
   workerId: UUID;
   workerName: string;
   kind: 'question' | 'approval';
@@ -265,6 +269,8 @@ export interface WorkItem {
   at: number;
   costUSD?: number;
   runId?: UUID;
+  /// The run's number for its worker, shown as "#12".
+  runNumber?: number;
   rating?: { useful: boolean; by: string; note?: string };
   /// What a run produced, when the item comes from the run itself rather
   /// than a journal entry: its newest artifact.
@@ -917,6 +923,8 @@ export interface OrgServiceDeps extends OverdbDeps {
     /// How an installed tool is set up, minus every value (`templateFrom`).
     template?(name: string): ToolTemplate | null;
     install(input: ToolInput): { ok: true; fixed?: string[] } | { ok: false; error: string };
+    /// Change a command tool as a whole (`editTool`).
+    edit?(name: string, input: { command: string; args: string[]; env: Record<string, string> }): { ok: true; changed: string[]; fixed?: string[] } | { ok: false; error: string };
     /// Change some of a tool's settings in place (`updateToolSettings`).
     update?(name: string, values: Record<string, string>): { ok: true; changed: string[]; fixed?: string[] } | { ok: false; error: string };
     /// Whether its stored keys sign in (`toolLogin.ts`). Null: can't tell.
@@ -1112,6 +1120,8 @@ const YOUR_DRIVE = 'Your Google Drive';
 
 export interface RunNow {
   runId: UUID;
+  /// The run's number for its worker, shown as "#12".
+  runNumber?: number;
   title: string;
   startedAt: number;
   /// 1-based: "step 2 of 4, capture".
@@ -1141,6 +1151,8 @@ export interface ShiftPast {
 
 export interface RunPast {
   runId: UUID;
+  /// The run's number for its worker, shown as "#12".
+  runNumber?: number;
   title: string;
   at: number;
   minutes: number;
@@ -1248,7 +1260,8 @@ export class OrgService {
   resolve(caller: OrgCaller, idOrName: string): Worker | null {
     const roster = this.deps.workers.roster();
     const key = idOrName.trim().toLowerCase();
-    const w = roster.find((x) => x.id === idOrName) ?? roster.find((x) => x.name.trim().toLowerCase() === key);
+    const w = roster.find((x) => x.id === idOrName) ?? roster.find((x) => x.name.trim().toLowerCase() === key)
+      ?? roster.find((x) => (x.formerNames ?? []).some((n) => n.trim().toLowerCase() === key));
     if (!w || !canSee(this.policy(), roster, w.id, caller)) return null;
     return w;
   }
@@ -1324,6 +1337,7 @@ export class OrgService {
           id: w.id,
           name: w.name,
           tagline: workerTagline(w),
+          ...(w.formerNames?.length ? { formerNames: [...w.formerNames] } : {}),
           enabled: w.enabled,
           trust: w.trust,
           ...(manager ? { manager: display(manager) } : {}),
@@ -2382,6 +2396,18 @@ export class OrgService {
     return { ...res, ...(login ? { login } : {}) };
   }
 
+  /// A command tool's command, arguments and settings, changed in place.
+  /// Only what changed goes in the record, by name, never a value.
+  async editTool(caller: OrgCaller, name: string, input: { command: string; args: string[]; env: Record<string, string> }): Promise<Result<{ changed: string[]; fixed?: string[]; login?: LoginResult }>> {
+    if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can change a tool.' };
+    if (!this.deps.tools?.edit) return { ok: false, error: 'Tools cannot be changed on this server.' };
+    const res = this.deps.tools.edit(name, input);
+    if (!res.ok) return res;
+    this.record(caller, `Changed ${res.changed.join(', ')} on the ${name} tool.`);
+    const login = await this.checkLoginOf(name);
+    return { ...res, ...(login ? { login } : {}) };
+  }
+
   uninstallTool(caller: OrgCaller, name: string): Result {
     if (!isAdmin(this.policy(), caller)) return { ok: false, error: 'Only an admin can remove tools from the server.' };
     if (!this.deps.tools) return { ok: false, error: 'Tools cannot be managed on this server.' };
@@ -2504,7 +2530,7 @@ export class OrgService {
     const res = s.create({ ...input, deliver: deliver.deliver, workerId: found.worker.id, enabled: true, createdBy: caller.name });
     if (!res.ok) return res;
     this.record(caller, `Gave ${found.worker.name} a trigger: ${res.trigger.name}.`);
-    const notes = this.slackOverlaps(res.trigger, s);
+    const notes = this.slackOverlaps(caller, res.trigger, s);
     return { ok: true, trigger: this.showTrigger(res.trigger, s), ...(res.token ? { webhookPath: `/hooks/${res.trigger.id}/${res.token}` } : {}), ...(notes.length ? { notes } : {}) };
   }
 
@@ -2528,7 +2554,7 @@ export class OrgService {
     const res = found.s.update(id, patch);
     if (!res.ok) return res;
     this.record(caller, `${patch.enabled === false ? 'Paused' : patch.enabled === true ? 'Resumed' : 'Changed'} the trigger ${res.trigger.name}.`);
-    const notes = patch.slack || patch.enabled === true ? this.slackOverlaps(res.trigger, found.s) : [];
+    const notes = patch.slack || patch.enabled === true ? this.slackOverlaps(caller, res.trigger, found.s) : [];
     return { ok: true, trigger: this.showTrigger(res.trigger, found.s), ...(notes.length ? { notes } : {}) };
   }
 
@@ -2541,22 +2567,31 @@ export class OrgService {
   ///   trigger's worker, "@overgo …" goes to the other one.
   /// The worker's own home channel is fine: the trigger takes plain
   /// messages, the front door takes mentions, and nothing is answered twice.
-  private slackOverlaps(t: WorkerTrigger, s: TriggerService): string[] {
+  /// A worker the caller can't see is still mentioned, but never named.
+  private slackOverlaps(caller: OrgCaller, t: WorkerTrigger, s: TriggerService): string[] {
     if (t.kind !== 'slack' || !t.slack || !t.enabled) return [];
     const { channel, on, reaction } = t.slack;
     const roster = this.deps.workers.roster();
-    const nameOf = (id: string) => roster.find((w) => w.id === id)?.name ?? 'another worker';
+    const policy = this.policy();
+    const sees = (id: string) => canSee(policy, roster, id, caller);
+    const nameOf = (id: string) => roster.find((w) => w.id === id)?.name ?? 'Another worker';
     const notes: string[] = [];
     const same = s.list().filter((o) => o.id !== t.id && o.enabled && o.kind === 'slack' && o.slack?.channel === channel && o.slack.on === on && (on !== 'reaction' || o.slack.reaction === reaction));
     for (const o of same) {
-      const who = o.workerId === t.workerId ? 'This worker' : o.hand ? 'Another trigger' : nameOf(o.workerId);
       const what = on === 'reaction' ? `a :${reaction}: reaction` : 'each new message';
+      if (!sees(o.workerId)) {
+        notes.push(`Another worker already has a trigger on ${what} in this channel. Both run each time, and both may reply in the same thread.`);
+        continue;
+      }
+      const who = o.workerId === t.workerId ? 'This worker' : o.hand ? 'Another trigger' : nameOf(o.workerId);
       notes.push(`${who} already has a trigger on ${what} in this channel (“${o.name}”). Both run each time, and both may reply in the same thread.`);
     }
     if (on === 'message') {
       for (const w of roster) {
         if (w.id === t.workerId || !w.slackHomeChannels?.includes(channel)) continue;
-        notes.push(`This channel is ${w.name}’s home: plain messages go to this trigger, but “@overgo …” there goes to ${w.name}.`);
+        notes.push(sees(w.id)
+          ? `This channel is ${w.name}’s home: plain messages go to this trigger, but “@overgo …” there goes to ${w.name}.`
+          : 'This channel is another worker’s home: plain messages go to this trigger, but “@overgo …” there goes to that worker.');
       }
     }
     return notes;
@@ -3123,6 +3158,8 @@ export class OrgService {
       budgetUSDPerMonth?: number;
       cadence?: ScheduleTrigger | null;
       jobDescription?: string;
+      /// A new name. The old one is kept as an alias (Worker.formerNames).
+      name?: string;
       /// The line under its name. Empty clears it.
       tagline?: string;
       /// The MCP servers it may use, by name.
@@ -3280,6 +3317,21 @@ export class OrgService {
       if (ids.length) next.slackHomeChannels = ids;
       else delete next.slackHomeChannels;
     }
+    let renamedFrom: string | null = null;
+    if (patch.name !== undefined) {
+      const name = String(patch.name).replace(/\s+/g, ' ').trim();
+      if (!name || name.length > 40) return { ok: false, error: 'A name is 1 to 40 characters.' };
+      if (name !== w.name) {
+        const key = name.toLowerCase();
+        const clash = this.deps.workers.roster().find((x) => x.id !== w.id && (x.name.trim().toLowerCase() === key || (x.formerNames ?? []).some((n) => n.trim().toLowerCase() === key)));
+        if (clash) return { ok: false, error: clash.name.trim().toLowerCase() === key ? `There’s already a worker called ${clash.name}.` : `${clash.name} used to be called ${name}, and people may still ask for it by that name. Pick another.` };
+        // The old name keeps finding it; going back to an old name drops that alias.
+        const former = [...(w.formerNames ?? []).filter((n) => n.trim().toLowerCase() !== key && n.trim().toLowerCase() !== w.name.trim().toLowerCase()), w.name].slice(-5);
+        next.name = name;
+        next.formerNames = former;
+        renamedFrom = w.name;
+      }
+    }
     if (patch.tagline !== undefined) {
       const line = String(patch.tagline).replace(/\s+/g, ' ').trim();
       if (line.length > 160) return { ok: false, error: 'Keep the tagline to a line (160 characters).' };
@@ -3298,7 +3350,9 @@ export class OrgService {
     const saved = this.deps.workers.save(next);
     if (!saved.ok) return saved;
     this.version(caller, w, next);
-    this.record(caller, `Changed ${w.name}: ${Object.keys(patch).join(', ')}.`);
+    if (renamedFrom) this.record(caller, `Renamed ${renamedFrom} to ${next.name}. Asking for ${renamedFrom} still finds it.`);
+    const rest = Object.keys(patch).filter((k) => k !== 'name');
+    if (rest.length) this.record(caller, `Changed ${next.name}: ${rest.join(', ')}.`);
     // Re-read through the caller's eyes: moving a worker to another manager
     // can take it out of the caller's sight.
     const summary = this.summaryFor(caller, w.id);
@@ -3847,7 +3901,6 @@ export class OrgService {
         at,
         ...(cost != null ? { costUSD: cost } : {}),
         runId: r.id,
-      ...(r.number ? { runNumber: r.number } : {}),
         ...(r.number ? { runNumber: r.number } : {}),
         ...(rating ? { rating: { useful: rating.useful, by: rating.by, ...(rating.note ? { note: rating.note } : {}) } } : {}),
         ...(answer ? { body: answer.body.slice(0, 6000) } : {}),
@@ -4523,8 +4576,6 @@ export class OrgService {
         return {
           runId: r.id,
           ...(r.number ? { runNumber: r.number } : {}),
-      ...(r.number ? { runNumber: r.number } : {}),
-        ...(r.number ? { runNumber: r.number } : {}),
           title: flowRunTitle(r),
           startedAt: r.createdAt,
           step: { index: index + 1, total: steps.length, name: steps[index]?.id ?? '' },
@@ -6135,9 +6186,82 @@ export class OrgService {
     return { ok: true };
   }
 
+  /// Change what a team is: its name, what it does, who is on it and where
+  /// its tasks run. Whoever may change the team may; anyone added must be a
+  /// worker they manage (or they're an admin). Applies to tasks that start
+  /// after it; a task already running keeps the roster it began with.
+  editTeam(caller: OrgCaller, teamId: UUID, patch: { name?: string; purpose?: string; members?: Array<{ workerId: UUID; role: string }>; workIn?: string | null }): Result {
+    if (!this.deps.teams?.save) return { ok: false, error: 'Teams are not running on this server.' };
+    const team = this.deps.teams.list().teams.find((t) => t.id === teamId);
+    if (!team || team.disbanded) return { ok: false, error: 'That team no longer exists.' };
+    if (!this.canChangeTeam(caller, team)) return { ok: false, error: `Only people who manage someone on ${team.name}, or an admin, can change it.` };
+    if (patch.name !== undefined && !patch.name.trim()) return { ok: false, error: 'Give the team a name.' };
+    let members = team.members;
+    if (patch.members) {
+      const before = new Set(team.members.map((m) => m.workerId));
+      const refused = this.teamMembersRefused(caller, patch.members.filter((m) => !before.has(m.workerId)));
+      if (refused) return { ok: false, error: refused };
+      // Taking a worker off is its manager's call too, not any member's.
+      const kept = new Set(patch.members.map((m) => m.workerId));
+      const removedOthers = team.members.filter((m) => !kept.has(m.workerId) && !this.managesOrAdmin(caller, m.workerId));
+      if (removedOthers.length) return { ok: false, error: `Only ${removedOthers.length === 1 ? 'its' : 'their'} manager or an admin can take ${removedOthers.map((m) => this.deps.workers.get(m.workerId)?.name ?? 'a worker').join(', ')} off ${team.name}.` };
+      if (patch.members.some((m) => !m.role.trim())) return { ok: false, error: 'Say what each member does on the team.' };
+      if (patch.members.length < 2) return { ok: false, error: 'A team needs at least two members.' };
+      if (new Set(patch.members.map((m) => m.workerId)).size !== patch.members.length) return { ok: false, error: 'Each worker can be on a team once.' };
+      members = patch.members.map((m) => ({ workerId: m.workerId, role: m.role.trim().slice(0, 200) }));
+    }
+    let projectPath = team.projectPath;
+    if (patch.workIn !== undefined && (patch.workIn ?? '').trim() !== this.teamWorkIn(team)) {
+      // Where the whole team works: everyone's manager, or an admin.
+      if (!team.members.every((m) => this.managesOrAdmin(caller, m.workerId))) return { ok: false, error: `Only an admin, or someone who manages everyone on ${team.name}, can change where it works.` };
+    }
+    if (patch.workIn !== undefined) {
+      const want = (patch.workIn ?? '').trim();
+      if (!want) projectPath = undefined;
+      else {
+        const repo = this.deps.repos?.list().find((r) => r.name === want);
+        const ws = this.deps.repos?.workspaces().find((w) => w.id === want || w.name.toLowerCase() === want.toLowerCase());
+        projectPath = repo?.path ?? ws?.rootPath;
+        if (!projectPath) return { ok: false, error: 'No connected repo or workspace by that name.' };
+      }
+    }
+    const { projectPath: _was, ...rest } = team;
+    const saved = this.deps.teams.save({
+      ...rest,
+      ...(patch.name !== undefined ? { name: patch.name.trim().slice(0, 80) } : {}),
+      ...(patch.purpose !== undefined ? { purpose: patch.purpose.trim().slice(0, 1000) } : {}),
+      members,
+      ...(projectPath ? { projectPath } : {}),
+    });
+    if (!saved.ok) return saved;
+    const what = [
+      patch.name !== undefined && patch.name.trim() !== team.name ? `renamed it ${patch.name.trim()}` : '',
+      patch.purpose !== undefined && patch.purpose.trim() !== (team.purpose ?? '') ? 'changed what it does' : '',
+      patch.members ? 'changed its members' : '',
+      patch.workIn !== undefined && projectPath !== team.projectPath ? 'changed where it works' : '',
+    ].filter(Boolean);
+    if (what.length) this.record(caller, `${team.name}: ${what.join(', ')}.`);
+    return { ok: true };
+  }
+
   /// Every team's short name: its own, or its initials while free.
   private teamShortNames(): Map<string, string> {
     return resolveShortNames((this.deps.teams?.list().teams ?? []).filter((t) => !t.disbanded).sort((a, b) => a.createdAt - b.createdAt));
+  }
+
+  private managesOrAdmin(caller: OrgCaller, workerId: UUID): boolean {
+    const policy = this.policy();
+    return isAdmin(policy, caller) || canManage(policy, this.deps.workers.roster(), workerId, caller);
+  }
+
+  /// Where a team works, as its edit form names it: the repo's name or the
+  /// workspace's id, '' for nowhere in particular.
+  private teamWorkIn(team: Team): string {
+    if (!team.projectPath) return '';
+    const repo = this.deps.repos?.list().find((r) => r.path === team.projectPath);
+    if (repo) return repo.name;
+    const ws = this.deps.repos?.workspaces().find((w) => w.rootPath === team.projectPath);
+    return ws ? ws.id : '';
   }
 
   private canChangeTeam(caller: OrgCaller, team: Team): boolean {
@@ -6278,7 +6402,7 @@ export class OrgService {
   /// approval it waits on) and the pack. `now` says what the team is doing
   /// this moment, in a sentence.
   teamPage(caller: OrgCaller, teamIdOrName: string): Result<{
-    team: { id: UUID; name: string; shortName?: string; shortNameAuto?: boolean; purpose?: string; guidance?: string; avatarUrl?: string; budgetUSDPerTask: number; canBrief: boolean; canChange: boolean; checkpoints: TeamCheckpoints; piecesAskFirst: boolean; whoCanBrief: NonNullable<Team['whoCanBrief']>; audience?: Audience; members: TeamMemberRow[]; knowledge?: { status: 'learning' | 'ready' | 'failed'; updatedAt?: number; taskId?: UUID; error?: string; words?: number; refresh: 'weekly' | 'off' } };
+    team: { id: UUID; name: string; shortName?: string; shortNameAuto?: boolean; purpose?: string; workIn?: string; workInLabel?: string; guidance?: string; avatarUrl?: string; budgetUSDPerTask: number; canBrief: boolean; canChange: boolean; checkpoints: TeamCheckpoints; piecesAskFirst: boolean; whoCanBrief: NonNullable<Team['whoCanBrief']>; audience?: Audience; members: TeamMemberRow[]; knowledge?: { status: 'learning' | 'ready' | 'failed'; updatedAt?: number; taskId?: UUID; error?: string; words?: number; refresh: 'weekly' | 'off' } };
     tasks: TeamTaskDetail[];
     now: { sentence: string; taskId: UUID; waitingOnYou: boolean } | null;
   }> {
@@ -6310,6 +6434,12 @@ export class OrgService {
         ...(team.purpose ? { purpose: team.purpose } : {}),
         ...(team.guidance ? { guidance: team.guidance } : {}),
         ...(team.avatarUrl ? { avatarUrl: team.avatarUrl } : {}),
+        ...(() => {
+          if (!team.projectPath) return {};
+          const repo = this.deps.repos?.list().find((r) => r.path === team.projectPath);
+          const ws = this.deps.repos?.workspaces().find((w) => w.rootPath === team.projectPath);
+          return repo ? { workIn: repo.name, workInLabel: 'Repo: ' + repo.name } : ws ? { workIn: ws.id, workInLabel: 'Workspace: ' + ws.name } : { workInLabel: team.projectPath };
+        })(),
         budgetUSDPerTask: team.budgetUSDPerTask,
         canBrief: seen.canBrief,
         canChange: this.canChangeTeam(caller, team),

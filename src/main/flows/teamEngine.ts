@@ -249,7 +249,7 @@ export interface TeamCodeDeps {
   /// Commits on the task branch that each repo's base lacks (null: unknown).
   ahead?(code: TeamTaskCode): Array<number | null>;
   /// Check the task branch out again where its checkout went from disk.
-  restore?(code: TeamTaskCode): Result<{ restored: string[] }>;
+  restore?(code: TeamTaskCode): Promise<Result<{ restored: string[] }>>;
   close(code: TeamTaskCode): void;
 }
 
@@ -1469,7 +1469,7 @@ export class TeamEngine {
       // which may have gone from disk since the last stage: check it out
       // again from the task branch rather than fail the piece at launch.
       if (task.code && stage.assignments.length === 1 && this.deps.code?.restore) {
-        const back = this.deps.code.restore(task.code);
+        const back = await this.deps.code.restore(task.code);
         if (!back.ok) log('warn', 'teams', `${task.title ?? taskId}: ${back.error}`);
         else if (back.restored.length) log('info', 'teams', `${task.title ?? taskId}: checked ${task.code.branch} out again in ${back.restored.join(', ')}.`);
       }

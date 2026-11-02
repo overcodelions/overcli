@@ -8,7 +8,7 @@
 // Pure, like the importers: git is asked by the caller and handed in as
 // `remoteOf`, so every rule here can be pinned in a test.
 
-import { isSecretName } from '../../shared/machineValues';
+import { holdsAddressCredential, isSecretFlagValue, isSecretName, loadsCode } from '../../shared/machineValues';
 import {
   SHARED_STACK_FORMAT,
   type SharePreview,
@@ -133,8 +133,10 @@ export function buildSharedStack(args: {
   // Where each blank was taken from, so the sheet can say: a key that only
   // looks like a credential (`jwt.key=local-unused`) is then easy to spot.
   const origins = new Map<string, { service: string; key: string }[]>();
+  /// Secret by its name, or by holding a password in an address
+  /// (`DATABASE_URL=postgresql://app:pw@db/prod`).
   const scrub = (service: string, key: string, value: string): string => {
-    if (!value || IS_REFERENCE.test(value) || !isSecretName(key)) return unhome(value);
+    if (!value || IS_REFERENCE.test(value) || !(isSecretName(key) || holdsAddressCredential(value))) return unhome(value);
     const identity = `${key}\u0000${value}`;
     let name = scrubbedBy.get(identity);
     if (!name) {
@@ -175,9 +177,14 @@ export function buildSharedStack(args: {
       command: command.map((arg, i) => {
         const kv = KEY_VALUE_ARG.exec(arg);
         if (kv) return `${kv[1]}=${scrub(spec.name, kv[1], kv[2])}`;
-        // The value after `--password`: scrubbed under the flag's name.
+        // The value after `--password` or `-p`: scrubbed under the flag's
+        // name. A `-p 5432` is a port and stays.
         const flag = i > 0 ? command[i - 1] : '';
-        if (FLAG_ARG.test(flag) && !FLAG_ARG.test(arg) && isSecretName(flag)) return scrub(spec.name, flag, arg);
+        if (FLAG_ARG.test(flag) && !FLAG_ARG.test(arg) && isSecretFlagValue(flag, arg)) {
+          return scrub(spec.name, flag === '-p' ? 'password' : flag, arg);
+        }
+        // An address with its password in it, on its own.
+        if (holdsAddressCredential(arg)) return scrub(spec.name, 'connection-url', arg);
         return unhome(arg);
       }),
       config: {
@@ -389,8 +396,15 @@ export function specsFromShared(args: {
       command: command.map(rehome),
       config: {
         ...config,
+        // A variable that loads code (`NODE_OPTIONS=--require …`,
+        // `LD_PRELOAD`) would run it on Start without it showing in the
+        // command: never added. The import sheet says which were left out.
         ...(config.inject
-          ? { inject: Object.fromEntries(Object.entries(config.inject).map(([k, v]) => [k, rehome(String(v))])) }
+          ? {
+              inject: Object.fromEntries(
+                Object.entries(config.inject).filter(([k]) => !loadsCode(k)).map(([k, v]) => [k, rehome(String(v))]),
+              ),
+            }
           : {}),
       },
       ...(options

@@ -26,7 +26,8 @@ import { ensureDefaultProject } from '../main/org/defaultProject';
 import { parseControlAddress, type ServeOptions } from './args';
 import { EXIT } from './run';
 import { nodeHost } from '../main/hostNode';
-import { enableWorkerUser } from '../main/org/workerUser';
+import { activeWorkerUser, enableWorkerUser, reprobeWorkerSecrets } from '../main/org/workerUser';
+import { guardChildCaps } from '../main/org/childCaps';
 import os from 'node:os';
 import { SECRETS_ENV, SecretsService, createSecretStore, parseSecretsSpec, type SecretStore } from '../main/org/secrets';
 import { autonomousWithoutGrant } from '../main/org/orgService';
@@ -346,6 +347,14 @@ export function startDaemon(
 
 /// The command as `main` calls it: start, wire real signals, wait forever.
 export async function serveCommand(opts: ServeOptions, deps: ServeDeps): Promise<number> {
+  // Before anything is spawned: the capabilities the entrypoint hands the
+  // server stay with the server (childCaps.ts).
+  const caps = guardChildCaps();
+  if (!caps.ok) {
+    process.stderr.write(`${caps.error}\n`);
+    return EXIT.BAD_INPUT;
+  }
+  if (caps.dropping) deps.out('the server\'s capabilities are dropped from every process it starts');
   // Secrets first: the engines, Slack and git read them from the environment.
   const secrets = await loadSecrets(opts, deps);
   if (!secrets.ok) {
@@ -377,7 +386,23 @@ export async function serveCommand(opts: ServeOptions, deps: ServeDeps): Promise
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => started.handle.shutdown(signal));
   }
+  watchWorkerSecrets(nodeHost({ dataDir: opts.stateDir }).dataDir(), () => started.handle.shutdown('SIGTERM'));
   return started.handle.done;
+}
+
+/// The startup check skips secret files that don't exist yet, which on a new
+/// volume is most of them. Once the server has made them, and every few
+/// hours after, check again that a worker can read none; stop when it can.
+function watchWorkerSecrets(dataDir: string, stop: () => void): void {
+  if (!activeWorkerUser()) return;
+  const check = () => void reprobeWorkerSecrets({ dataDir, home: os.homedir() }).then((res) => {
+    if (res.ok) return;
+    for (const line of res.lines) process.stderr.write(`worker user: ${line}\n`);
+    process.stderr.write('A worker can read a secret file, so the server is stopping. See deploy/docs/security.md.\n');
+    stop();
+  });
+  setTimeout(check, 60_000).unref();
+  setInterval(check, 6 * 3_600_000).unref();
 }
 
 /// Worker runs a restart cut short (a deploy, an upgrade, a crash) pick up

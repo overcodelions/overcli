@@ -174,6 +174,11 @@ const PREDICATE = '(?:is|are|was|were|has|have|gets?|got|goes|went|comes|came|la
 /// determiner ("the integration tests pass", "the Safari login fix lands"):
 /// without one, "kick off the release" would read as a subject and a verb.
 const CONDITION_VERB = new RegExp(`^(?:(?:the|a|an|all|both|every|each|my|our|its|that|this)\\s+[^\\s]+(?:\\s+[^\\s]+){0,2}|[^\\s]+)\\s+${PREDICATE}\\b`, 'i');
+/// When, said ahead of a clause: "the day after", "an hour later",
+/// "tomorrow". What follows is a clause of its own, so "…and the day after
+/// deploy it to prod" asks to deploy rather than reading "the day after
+/// deploy" as a subject and its verb.
+const TIME_LEAD = /^(?:(?:the\s+)?(?:day|week|morning|night|hour)\s+after(?:\s+that)?|the\s+next\s+(?:day|morning|week)|(?:a|an|one|two|three|\d+)\s+(?:minutes?|hours?|days?|weeks?)\s+(?:later|after(?:\s+that)?)|tomorrow|tonight|later(?:\s+on)?|afterwards?|after\s+that|next\s+(?:day|week|morning))\b[,\s]*/i;
 const CONDITION_STATE = /^(?:it(?:'s| is| has| was)|they(?:'re| are| have)|that(?:'s| is)|this(?:'s| is)|there(?:'s| is| are)|we(?:'re| are)|you(?:'re| are)|[^\s]+(?:ed|en)\s+(?:to|on|in|into|at|by|for|from|with|and|out|up|off|down)\b)/i;
 /// The verbs a request opens with. One of these first, with no predicate
 /// right after it ("build passes" is a condition, "build the docs" is not),
@@ -737,10 +742,17 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
+/// Typographic quotes as typed ones, so "I’ll" and "don’t" read as the
+/// patterns spell them.
+function straightQuotes(text: string): string {
+  return text.replace(/[’‘]/g, "'").replace(/[“”]/g, '"');
+}
+
 /// Whether a "let me know when…" (or "stop following…") is all the message
 /// says: nothing is left once that sentence is taken out but filler. "Fix
 /// the Safari case and ping me when it's done" still asks for a fix.
 export function onlyAsks(text: string, clauses: RegExp[]): boolean {
+  text = straightQuotes(text);
   for (const re of clauses) {
     const m = re.exec(text);
     if (!m) continue;
@@ -757,7 +769,7 @@ export function onlyAsks(text: string, clauses: RegExp[]): boolean {
       // or a request of its own ("and bump the timeout to 30s").
       const parts = sentences[0].split(CONJUNCTION);
       return parts.slice(1).every((part) => {
-        const clause = part.trim().replace(/^(?:when|if|once|whenever|as soon as|after)\s+/i, '');
+        const clause = part.trim().replace(/^(?:when|if|once|whenever|as soon as|after)\s+/i, '').replace(TIME_LEAD, '');
         if (words(clause).every((w) => FILLER.has(w))) return true;
         if (!/\s/.test(clause)) return true;
         const first = clause.toLowerCase().split(/[^a-z0-9'-]+/)[0];
@@ -1043,7 +1055,8 @@ export class FrontDoor {
     // it's for whoever is on it. Said beside a request ("fix it and ping me
     // when it's done"), it's followed and the request still goes on; a
     // "stop following" is only ever one said on its own.
-    const stopNews = !!text && (UNSUBSCRIBE.test(text) || STOP_NOTIFY.test(text)) && onlyAsks(text, [STOP_NOTIFY, UNSUBSCRIBE]);
+    const plain = straightQuotes(text);
+    const stopNews = !!text && (UNSUBSCRIBE.test(plain) || STOP_NOTIFY.test(plain)) && onlyAsks(text, [STOP_NOTIFY, UNSUBSCRIBE]);
     const wantsNews = !!text && !stopNews && (SUBSCRIBE.test(text) || NOTIFY.test(text));
     if (wantsNews || stopNews) {
       const alone = stopNews || onlyAsks(text, [NOTIFY, SUBSCRIBE]);

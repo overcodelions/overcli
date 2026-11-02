@@ -259,6 +259,15 @@ describe('slack triggers', () => {
     expect(h.posts).toEqual(['C0ACMESUP@5.1:• *Searched:* the `main.py` fix &amp; its repo']);
   });
 
+  it('shows the address behind a link whose words could pass for another', async () => {
+    const h = harness({ reply: 'Reset it at [https://login.acme.test](https://acme-login.evil.test/reset), see [acme.test](https://acme.test/docs).' });
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
+    if (!made.ok) throw new Error(made.error);
+    await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', ts: '5.2', text: 'how do I reset my password?' });
+    await tick();
+    expect(h.posts).toEqual(['C0ACMESUP@5.2:Reset it at https://login.acme.test (<https://acme-login.evil.test/reset>), see <https://acme.test/docs|acme.test>.']);
+  });
+
   it('posts nothing when the worker passes, and says so on the deliverable', async () => {
     const h = harness({ reply: ' **PASS.** ' });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
@@ -279,7 +288,7 @@ describe('slack triggers', () => {
     expect(h.posts).toEqual([]);
   });
 
-  it.each(['Passed the export through the new parser: ACME-10.', 'Password reset is broken: filed ACME-11.', 'Pass. All 12 smoke checks are green on staging.'])('still posts "%s"', async (reply) => {
+  it.each(['Passed the export through the new parser: ACME-10.', 'Password reset is broken: filed ACME-11.', 'Pass. All 12 smoke checks are green on staging.', 'Pass: all 12 smoke checks are green on staging.'])('still posts "%s"', async (reply) => {
     const h = harness({ reply });
     const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' }, deliver: [{ kind: 'thread' }] });
     if (!made.ok) throw new Error(made.error);

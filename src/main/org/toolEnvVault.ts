@@ -14,6 +14,12 @@
 //            (runToolRelay.ts), which wins over the config's entry of the same
 //            name. The server starts the real tool, with its env, as its own
 //            user; the worker's CLI talks to it through the relay.
+//   launch   each command tool's command, args and cwd are pinned here too,
+//            whenever the server writes the tool. When workers run as a user
+//            of their own they can write ~/.claude.json, so from then on the
+//            relay starts only what is pinned: a worker that rewrites the
+//            file, or a repo whose .mcp.json reuses the name, can't choose
+//            what the server runs.
 //
 // Turning the gateway off puts the env back in the config on the next start.
 
@@ -24,7 +30,16 @@ import { toolGatewayRootKey } from './toolGateway';
 
 const AAD = Buffer.from('overcli-tool-env-v1');
 
-type Doc = { env: Record<string, Record<string, string>> };
+/// How a command tool starts, as the server last wrote it.
+export interface ToolLaunch {
+  command: string;
+  args: string[];
+  cwd?: string;
+}
+
+/// `pinned`: launches have been taken from the config once (the first start
+/// with pins). After that, only the server's own writes pin a launch.
+type Doc = { env: Record<string, Record<string, string>>; launch: Record<string, ToolLaunch>; pinned?: true };
 
 export const TOOL_ENV_FILE = 'tool-env.json';
 
@@ -45,15 +60,23 @@ export class ToolEnvVault {
     let raw: string;
     try {
       raw = fs.readFileSync(this.file(), 'utf8');
-    } catch {
-      return { env: {} };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { env: {}, launch: {} };
+      throw err;
     }
-    const sealed = JSON.parse(raw) as { iv: string; tag: string; data: string };
-    const decipher = createDecipheriv('aes-256-gcm', this.key, Buffer.from(sealed.iv, 'base64'));
-    decipher.setAAD(AAD);
-    decipher.setAuthTag(Buffer.from(sealed.tag, 'base64'));
-    const doc = JSON.parse(Buffer.concat([decipher.update(Buffer.from(sealed.data, 'base64')), decipher.final()]).toString('utf8')) as Doc;
-    return { env: doc.env ?? {} };
+    let doc: Partial<Doc>;
+    try {
+      const sealed = JSON.parse(raw) as { iv: string; tag: string; data: string };
+      const decipher = createDecipheriv('aes-256-gcm', this.key, Buffer.from(sealed.iv, 'base64'));
+      decipher.setAAD(AAD);
+      decipher.setAuthTag(Buffer.from(sealed.tag, 'base64'));
+      doc = JSON.parse(Buffer.concat([decipher.update(Buffer.from(sealed.data, 'base64')), decipher.final()]).toString('utf8')) as Partial<Doc>;
+    } catch {
+      // Never start over on top of it: the next write would lose every
+      // sealed token for good.
+      throw new Error(`${this.file()} can't be opened with ${path.join(this.dir, 'tool-gateway.key')}. Restore the key that sealed it, or move the file aside to start without the sealed tool settings.`);
+    }
+    return { env: doc.env ?? {}, launch: doc.launch ?? {}, ...(doc.pinned ? { pinned: true as const } : {}) };
   }
 
   private write(): void {
@@ -67,10 +90,43 @@ export class ToolEnvVault {
     fs.renameSync(tmp, this.file());
   }
 
-  /// Keep a tool's env. An empty env forgets the tool.
+  /// Keep a tool's env. An empty env drops the env, and keeps its launch.
+  /// The same env again writes nothing.
   seal(name: string, env: Record<string, string>): void {
-    if (!Object.keys(env).length) return this.forget(name);
-    this.doc = { env: { ...this.doc.env, [name]: { ...env } } };
+    const had = this.doc.env[name];
+    if (had && Object.keys(had).length === Object.keys(env).length && Object.entries(env).every(([k, v]) => had[k] === v)) return;
+    if (!Object.keys(env).length) {
+      if (!(name in this.doc.env)) return;
+      const { [name]: _gone, ...rest } = this.doc.env;
+      this.doc = { ...this.doc, env: rest };
+    } else {
+      this.doc = { ...this.doc, env: { ...this.doc.env, [name]: { ...env } } };
+    }
+    this.write();
+  }
+
+  /// Keep how a tool starts, as the server wrote it.
+  pin(name: string, launch: ToolLaunch): void {
+    const next: ToolLaunch = { command: launch.command, args: [...launch.args], ...(launch.cwd ? { cwd: launch.cwd } : {}) };
+    if (JSON.stringify(this.doc.launch[name]) === JSON.stringify(next)) return;
+    this.doc = { ...this.doc, launch: { ...this.doc.launch, [name]: next } };
+    this.write();
+  }
+
+  launchFor(name: string): ToolLaunch | undefined {
+    const launch = this.doc.launch[name];
+    return launch ? { ...launch, args: [...launch.args] } : undefined;
+  }
+
+  /// Whether launches were already taken from the config once. A new vault,
+  /// or one from before pins, hasn't.
+  pinsTaken(): boolean {
+    return this.doc.pinned === true;
+  }
+
+  markPinsTaken(): void {
+    if (this.doc.pinned) return;
+    this.doc = { ...this.doc, pinned: true };
     this.write();
   }
 
@@ -83,10 +139,12 @@ export class ToolEnvVault {
     return name in this.doc.env;
   }
 
+  /// Drop a tool's env and its launch.
   forget(name: string): void {
-    if (!(name in this.doc.env)) return;
-    const { [name]: _gone, ...rest } = this.doc.env;
-    this.doc = { env: rest };
+    if (!(name in this.doc.env) && !(name in this.doc.launch)) return;
+    const { [name]: _env, ...env } = this.doc.env;
+    const { [name]: _launch, ...launch } = this.doc.launch;
+    this.doc = { ...this.doc, env, launch };
     this.write();
   }
 

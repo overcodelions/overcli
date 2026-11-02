@@ -99,6 +99,9 @@ export interface Worker {
   /// `workerTagline` derives a stand-in from the job description rather than
   /// leaving those rows blank. Not used for planning: this is a label for the
   /// human, and nothing in a shift prompt reads it.
+  /// Names it went by before a rename, newest last. Asking for it by one
+  /// still finds it, unless another worker has since taken that name.
+  formerNames?: string[];
   tagline?: string;
   /// Two or three example errands, in the user's own voice, offered as
   /// one-click starters at the worker's desk.

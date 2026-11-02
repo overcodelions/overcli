@@ -2635,6 +2635,7 @@ export function registerIpc(): void {
     const run = flowRuntime?.getRun(runId);
     return run ? forRenderer(run) : null;
   });
+  ipcMain.handle('flows:artifactBody', (_e, { runId, stepId }) => flowRuntime?.artifactBody(runId, stepId) ?? null);
   ipcMain.handle('flows:resumeRun', (_e, args) =>
     flowRuntime ? flowRuntime.resumeRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );

@@ -72,6 +72,7 @@ import { openIm, postMessage } from '../main/slack/slackApi';
 import { guardCredentials } from '../main/org/credentialGuard';
 import { closeToolGateway, openToolGateway, type ToolGateway } from '../main/org/toolGateway';
 import { ToolEnvVault, toolEnvVaultExists } from '../main/org/toolEnvVault';
+import { activeWorkerUser } from '../main/org/workerUser';
 import { useRemoteToolVault } from '../main/org/tools';
 import { readClaudeMcpServers, restoreClaudeStdioEnv, sealClaudeStdioEnv, useClaudeEnvVault, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
 import { log } from '../main/diagnostics';
@@ -501,16 +502,30 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   let gateway: ToolGateway | null = null;
   // Whose run the overdb tool is serving, for its query log (overdbBinding.ts).
   useOverdbWorkerLookup((id) => flowRuntime.workerForConversation(id)?.workerName);
-  if (process.env.OVERCLI_TOOL_GATEWAY === '1') {
-    // Command tools' env too: sealed now, before any run starts, so no
-    // worker's CLI finds a token in the config (toolEnvVault.ts).
+  // Command tools' env is sealed, and their launches pinned, with the gateway
+  // on, and always while workers run as a user of their own: they can read
+  // and write ~/.claude.json, so it must hold no token and say nothing the
+  // server starts (toolEnvVault.ts).
+  const gatewayOn = process.env.OVERCLI_TOOL_GATEWAY === '1';
+  if (gatewayOn || activeWorkerUser()) {
+    // A vault that can't be opened stops the server: starting without it
+    // would run every command tool without its settings, and the next write
+    // would replace what it holds.
+    useClaudeEnvVault(new ToolEnvVault(orgDir()));
+    const sealed = sealClaudeStdioEnv(undefined, (ignored) =>
+      log('warn', 'org.tools', `${ignored.join(', ')} changed in ~/.claude.json outside overcli; runs keep the settings overcli saved. Save the change from the console to use it.`));
+    if (sealed.length) log('info', 'org.tools', `sealed the settings of ${sealed.join(', ')} out of the CLIs' config`);
+  } else {
     try {
-      useClaudeEnvVault(new ToolEnvVault(orgDir()));
-      const sealed = sealClaudeStdioEnv();
-      if (sealed.length) log('info', 'org.tools', `sealed the settings of ${sealed.join(', ')} out of the CLIs' config`);
+      if (toolEnvVaultExists(orgDir())) {
+        const restored = restoreClaudeStdioEnv(new ToolEnvVault(orgDir()));
+        if (restored.length) log('info', 'org.tools', `put the settings of ${restored.join(', ')} back in the CLIs' config`);
+      }
     } catch (err) {
-      log('error', 'org.tools', `could not seal command tools' settings: ${err instanceof Error ? err.message : String(err)}`);
+      log('error', 'org.tools', `could not put command tools' settings back: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+  if (gatewayOn) {
     openToolGateway(
       {
         dir: orgDir,
@@ -527,13 +542,8 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
       (err) => log('error', 'org.tools', `tool gateway did not start: ${err instanceof Error ? err.message : String(err)}`),
     );
   } else {
-    try {
-      if (toolEnvVaultExists(orgDir())) {
-        const restored = restoreClaudeStdioEnv(new ToolEnvVault(orgDir()));
-        if (restored.length) log('info', 'org.tools', `put the settings of ${restored.join(', ')} back in the CLIs' config`);
-      }
-    } catch (err) {
-      log('error', 'org.tools', `could not put command tools' settings back: ${err instanceof Error ? err.message : String(err)}`);
+    if (activeWorkerUser()) {
+      log('warn', 'org.tools', 'the tool gateway is off (OVERCLI_TOOL_GATEWAY), so remote tools\' tokens go back in ~/.claude.json, where workers can read them. Turn it on to keep them in the server.');
     }
     try {
       closeToolGateway(orgDir(), toolFile);
@@ -600,8 +610,9 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     // in any other prompt (a ticket's text, a request) would push the run's
     // work into someone else's pull request.
     const marked = continueBranchOf(prompt);
-    const named = marked && ci.fixAskedOn(workerId, marked) ? marked : null;
     const ws = spaces.find((w) => w.rootPath === projectPath);
+    const here = ws ? ws.repos : all.filter((r) => r.path === projectPath).map((r) => r.name);
+    const named = marked && ci.fixAskedOn(workerId, marked, here) ? marked : null;
     if (ws) {
       if (!named) return null;
       for (const r of all.filter((x) => ws.repos.includes(x.name))) if (await open(r, named)) return named;

@@ -44,7 +44,9 @@ export function clip(text: string, max: number): string {
 /// Markdown as the model writes it, in Slack's own markup: **bold** is
 /// *bold* there, # headings have no equivalent, and links are <url|text>.
 /// Code spans and fences pass through; Slack reads those the same.
-export function toSlack(text: string): string {
+/// `showUrls`: a link whose text isn't its own address reads "text (<url>)",
+/// so words from untrusted input can't pass off one address as another.
+export function toSlack(text: string, opts: { showUrls?: boolean } = {}): string {
   return text
     .split(/(```[\s\S]*?```)/g)
     .map((part) =>
@@ -54,10 +56,17 @@ export function toSlack(text: string): string {
             .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
             .replace(/\*\*(.+?)\*\*/g, '*$1*')
             .replace(/__(.+?)__/g, '*$1*')
-            .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>')
+            .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label: string, url: string) => (opts.showUrls && !namesUrl(label, url) ? `${label} (<${url}>)` : `<${url}|${label}>`))
             .replace(/^(\s*)[-*]\s+/gm, '$1• '),
     )
     .join('');
+}
+
+/// Whether a link's text is its address, or that address's host.
+function namesUrl(label: string, url: string): boolean {
+  const bare = (s: string) => s.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
+  const host = bare(url).split(/[/?#]/)[0];
+  return bare(label) === bare(url) || bare(label) === host;
 }
 
 /// Slack has no tables: the header row in bold, each row after it a bullet
@@ -81,8 +90,8 @@ function tables(text: string): string {
 
 /// A worker's words for a Slack message: escaped (a stray `<` or `&` would
 /// otherwise be read as Slack markup), then its Markdown in Slack's.
-export function slackMarkup(text: string): string {
-  return toSlack(escapeMrkdwn(text));
+export function slackMarkup(text: string, opts: { showUrls?: boolean } = {}): string {
+  return toSlack(escapeMrkdwn(text), opts);
 }
 
 /// Files a reply names by absolute path, in the order named. Whether each

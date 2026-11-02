@@ -19,6 +19,8 @@ import { shareWithWorkers } from './workerUser';
 /// back, or a run could plant a tool definition and have it run free.
 export interface RunLaunch {
   cwd?: string;
+  /// HOME for the tool, when the server's own (shared with workers) won't do.
+  home?: string;
   sandboxProfile?: string;
 }
 
@@ -71,7 +73,7 @@ export function relayLaunch(config: McpServerConfig, launch: RunLaunch): { comma
   const spawn = launch.sandboxProfile ? sandboxedCommand(config.command, args, launch.sandboxProfile) : { command: config.command, args };
   const env = Object.fromEntries(Object.entries(stripSecrets(process.env)).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
   const cwd = typeof config.cwd === 'string' ? config.cwd : launch.cwd;
-  return { ...spawn, ...(cwd ? { cwd } : {}), env: { ...env, ...strings(config.env) } };
+  return { ...spawn, ...(cwd ? { cwd } : {}), env: { ...env, ...(launch.home ? { HOME: launch.home } : {}), ...strings(config.env) } };
 }
 
 function transport(config: McpServerConfig, launch: RunLaunch): Transport {

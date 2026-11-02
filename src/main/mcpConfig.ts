@@ -27,6 +27,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import type { ToolLaunch } from './org/toolEnvVault';
+import { activeWorkerUser } from './org/workerUser';
 import type { Backend } from '../shared/types';
 
 export type McpScalar = string | number | boolean;
@@ -45,6 +47,10 @@ export interface ClaudeEnvVault {
   has(name: string): boolean;
   forget(name: string): void;
   names(): string[];
+  pin(name: string, launch: ToolLaunch): void;
+  launchFor(name: string): ToolLaunch | undefined;
+  pinsTaken(): boolean;
+  markPinsTaken(): void;
 }
 
 let envVault: ClaudeEnvVault | null = null;
@@ -64,44 +70,104 @@ function stringEnv(env: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(env as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
 }
 
-/// A command tool's entry as it goes in the file: its env sealed and left out.
+/// Whether ~/.claude.json is the server's alone to write. When workers run
+/// as a user of their own (workerUser.ts) they can write it too, so the
+/// server goes by what it pinned, not by the file.
+function claudeFileTrusted(): boolean {
+  return !activeWorkerUser();
+}
+
+function launchOf(config: McpServerConfig): ToolLaunch {
+  return {
+    command: String(config.command),
+    args: Array.isArray(config.args) ? config.args.map(String) : [],
+    ...(typeof config.cwd === 'string' && config.cwd ? { cwd: config.cwd } : {}),
+  };
+}
+
+function sameLaunch(a: ToolLaunch | undefined, b: ToolLaunch): boolean {
+  return !!a && a.command === b.command && (a.cwd ?? '') === (b.cwd ?? '') && a.args.length === b.args.length && a.args.every((v, i) => v === b.args[i]);
+}
+
+/// A command tool's entry as it goes in the file: its launch pinned, its env
+/// sealed and left out.
 function sealedEntry(name: string, config: McpServerConfig): McpServerConfig {
   if (!envVault || typeof config.command !== 'string') return config;
+  envVault.pin(name, launchOf(config));
   const env = stringEnv(config.env);
-  if (!Object.keys(env).length) {
-    envVault.forget(name);
-    return config;
-  }
   envVault.seal(name, env);
+  if (!Object.keys(env).length) return config;
   const { env: _sealed, ...rest } = config;
   return rest;
 }
 
 /// A command tool's entry as the server sees it: with its sealed env back.
+/// While the file is the server's alone, an env written there by hand (a
+/// token rotated in place) is newer than the vault's and wins; the next
+/// start seals it. Once workers can write the file, the server takes the
+/// tool's launch and env from the vault only (pinnedClaudeTool).
 function unsealedEntry(name: string, config: McpServerConfig): McpServerConfig {
   if (!envVault || typeof config.command !== 'string') return config;
+  if (!claudeFileTrusted()) {
+    const pinned = pinnedClaudeTool(name);
+    if (!pinned) return config;
+    const { env: _file, cwd: _cwd, ...rest } = config;
+    return { ...rest, ...pinned };
+  }
   const env = envVault.envFor(name);
-  return env ? { ...config, env: { ...stringEnv(config.env), ...env } } : config;
+  return env ? { ...config, env: { ...env, ...stringEnv(config.env) } } : config;
 }
 
-/// Move every command tool's env in the Claude config into the vault, and
-/// take it out of the config's own backups (`<file>.*` beside it). Returns the
-/// tools sealed this time.
-export function sealClaudeStdioEnv(paths: Paths = defaultPaths()): string[] {
+/// A command tool as the server last wrote it: its pinned command, args and
+/// cwd, and its sealed env. Undefined when the server never wrote it, or no
+/// vault is in use. The only form of a tool the relay may start while
+/// workers can write the config (runner.ts).
+export function pinnedClaudeTool(name: string): McpServerConfig | undefined {
+  const launch = envVault?.launchFor(name);
+  if (!launch) return undefined;
+  const env = envVault!.envFor(name);
+  return { command: launch.command, args: launch.args, ...(launch.cwd ? { cwd: launch.cwd } : {}), ...(env ? { env } : {}) };
+}
+
+/// Move every command tool's env in the Claude config into the vault, pin
+/// its launch, and take the env out of the config's own backups (`<file>.*`
+/// beside it). Returns the tools sealed this time.
+///
+/// The config is trusted for that while only the server writes it, and on
+/// the first start with pins. After that, with workers able to write it, a
+/// command tool whose entry no longer matches its pin (or carries an env
+/// again) is left as the worker's own: the relay keeps starting the pinned
+/// one, and `onIgnored` hears its name. A new tool, or a token rotated by
+/// hand, has to be saved through the server instead.
+export function sealClaudeStdioEnv(paths: Paths = defaultPaths(), onIgnored?: (names: string[]) => void): string[] {
   if (!envVault) return [];
   const sealed: string[] = [];
+  const ignored: string[] = [];
   let parsed: { mcpServers?: Record<string, McpServerConfig> } & Record<string, unknown>;
   try {
     parsed = JSON.parse(fs.readFileSync(paths.claude, 'utf-8') || '{}');
   } catch {
     return [];
   }
+  const trustFile = claudeFileTrusted() || !envVault.pinsTaken();
   for (const [name, config] of Object.entries(parsed.mcpServers ?? {})) {
-    if (typeof config.command !== 'string' || !Object.keys(stringEnv(config.env)).length) continue;
+    if (typeof config.command !== 'string') continue;
+    const hasEnv = Object.keys(stringEnv(config.env)).length > 0;
+    if (!trustFile) {
+      const pinned = envVault.launchFor(name);
+      if (pinned && (hasEnv || !sameLaunch(pinned, launchOf(config)))) ignored.push(name);
+      continue;
+    }
+    if (!hasEnv) {
+      envVault.pin(name, launchOf(config));
+      continue;
+    }
     writeJsonServer(paths.claude, name, config, paths);
     sealed.push(name);
   }
+  envVault.markPinsTaken();
   scrubClaudeBackups(paths);
+  if (ignored.length) onIgnored?.(ignored);
   return sealed;
 }
 
@@ -159,9 +225,23 @@ export function restoreClaudeStdioEnv(vault: ClaudeEnvVault, paths: Paths = defa
 
 /// The command tools among `servers` whose env is sealed: each one a run must
 /// get through the relay, since the config's own entry has no credentials.
+///
+/// While workers can write the config, each is the tool as the server pinned
+/// it, whatever the config or the project's `.mcp.json` now says under that
+/// name; one with no pin is left out (the worker's CLI starts it, as the worker).
 export function sealedClaudeTools(servers: Record<string, McpServerConfig>): Record<string, McpServerConfig> {
   if (!envVault) return {};
-  return Object.fromEntries(Object.entries(servers).filter(([name, c]) => typeof c.command === 'string' && envVault!.has(name)));
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, c] of Object.entries(servers)) {
+    if (!envVault.has(name)) continue;
+    if (claudeFileTrusted()) {
+      if (typeof c.command === 'string') out[name] = c;
+      continue;
+    }
+    const pinned = pinnedClaudeTool(name);
+    if (pinned) out[name] = pinned;
+  }
+  return out;
 }
 
 export function isMcpCli(cli: Backend): cli is McpCli {

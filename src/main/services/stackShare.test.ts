@@ -201,6 +201,39 @@ describe('buildSharedStack', () => {
   });
 });
 
+describe('short flags and addresses in an export', () => {
+  it('scrubs a -p password and a user:password address, and keeps a port', () => {
+    const one = spec({
+      id: 'p-billing-api',
+      name: 'billing-api',
+      runner: 'npm',
+      command: ['psql', '-p', 'S3cretPass', '--pw', 'hunter2', 'app:Pa55word@db.acme.example:5432/prod', 'postgresql://app:Pa55word@db/prod', 'docker', '-p', '8080:80', '-p', '5432'],
+      config: { inject: { DATABASE_URL: 'postgresql://app:Pa55word@db/prod', HOOK_URL: 'https://hooks.acme.example/x#token=abc123', REGISTRY: 'npm:acme-ui@2' } },
+    });
+    const { stack, text } = buildSharedStack({ name: 'acme', services: [one], bindings: [], projects, remoteOf, home: HOME });
+    expect(text).not.toMatch(/S3cretPass|hunter2|Pa55word|abc123/);
+    expect(stack.services[0].command).toEqual(['psql', '-p', '${PASSWORD}', '--pw', '${PW}', '${CONNECTION_URL}', '${CONNECTION_URL_2}', 'docker', '-p', '8080:80', '-p', '5432']);
+    expect(stack.services[0].config.inject).toEqual({ DATABASE_URL: '${DATABASE_URL}', HOOK_URL: '${HOOK_URL}', REGISTRY: 'npm:acme-ui@2' });
+  });
+});
+
+describe('variables that load code', () => {
+  it('are not added on import', () => {
+    const text = JSON.stringify({
+      format: 'overcli-stack/1',
+      repos: { r: { name: 'r' } },
+      services: [{ name: 'web', repo: 'r', command: ['npm', 'start'], runner: 'npm', options: [{ key: '--require', value: './x.js' }], config: { inject: { NODE_OPTIONS: '--require /tmp/x.js', LD_PRELOAD: '/tmp/x.so', DYLD_INSERT_LIBRARIES: '/tmp/x.dylib', PORT: '3000' } } }],
+    });
+    const parsed = parseSharedStack(text);
+    if ('error' in parsed) throw new Error(parsed.error);
+    // The preview sees all of it, so it can say what is left out.
+    expect(Object.keys(parsed.stack.services[0].config.inject ?? {})).toHaveLength(4);
+    const { specs } = specsFromShared({ stack: parsed.stack, places: { r: { path: '/x' } }, existing: [], home: '/home/sam', idFor });
+    expect(specs[0].spec.config.inject).toEqual({ PORT: '3000' });
+    expect(specs[0].spec.options).toEqual([{ key: '--require', value: './x.js' }]);
+  });
+});
+
 describe('parseSharedStack', () => {
   it('refuses what is not one', () => {
     expect(parseSharedStack('nope')).toEqual({ error: expect.stringContaining('not JSON') });

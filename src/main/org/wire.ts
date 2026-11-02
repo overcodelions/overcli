@@ -32,7 +32,7 @@ import { rewriteJob } from './jobRewrite';
 import { pickPicture } from './pickPicture';
 import { oneShotDraftText, reviseFlowFromPrompt } from '../flows/drafter';
 import { resolveWorkPlace } from './defaultProject';
-import { installTool, listTools, loadToolTemplates, rememberToolTemplates, templateFrom, toolTemplatesFile, uninstallTool, updateToolSettings } from './tools';
+import { installTool, listTools, loadToolTemplates, rememberToolTemplates, templateFrom, toolTemplatesFile, uninstallTool, updateToolSettings, editTool } from './tools';
 import { host } from '../host';
 import { readClaudeInit } from '../flows/mcpProbe';
 import { readClaudeMcpServers } from '../mcpConfig';
@@ -41,7 +41,8 @@ import { checkLogin, checkLoginByCall, type LoginResult } from './toolLogin';
 import { callTool, listServerTools } from './mcpDirect';
 import type { TriggerService } from './triggers';
 import { updateOrgFile, fileAskStore, fileAuditStore, fileHireStore, filePublishedStore, fileRatingStore, fileToolRequestStore, fileToolHealthStore, fileWorkerVersionStore, fileHandbook, fileTeamFileStore, jsonOrgStore, listTokens, loadOrgPolicy, orgDir } from './orgStores';
-import { RepoService, serverGitNote, type RepoState } from './repos';
+import { RepoService, credentialHelper, parseRepoUrl, serverGitNote, type RepoState } from './repos';
+import { useTrustedGitCredentials } from './serverGit';
 import { projectIdFor, repairProjectIds } from '../projectIds';
 import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from '../workspace';
 import { applyRepoGrants } from './repoGrants';
@@ -203,6 +204,17 @@ export function createOrgService(
   const { runner, flowRuntime, workerEngine } = engines;
   const repos = createRepoService();
   applyRepoGrants(repos);
+  // The credential helpers the server's own git trusts while workers can
+  // write the repos' config: each connected repo's host, from the server's
+  // record, never from the repo (serverGit.ts).
+  useTrustedGitCredentials(() => {
+    const out = new Map<string, string>();
+    for (const r of repos.list()) {
+      const parsed = parseRepoUrl(r.url, { allowLocal: true });
+      if (parsed.ok && !parsed.ssh) out.set(`credential.https://${parsed.hostname}.helper`, credentialHelper(parsed.host));
+    }
+    return [...out];
+  });
   // Java, Node, Python, Go and custom kits on the data volume: on every
   // worker's PATH, the version per repo.
   const toolchains = new ToolchainService({
@@ -502,6 +514,7 @@ export function createOrgService(
       install: installTool,
       uninstall: uninstallTool,
       update: updateToolSettings,
+      edit: editTool,
       login: async (name) => {
         const config = readClaudeMcpServers()[name];
         if (!config) return null;

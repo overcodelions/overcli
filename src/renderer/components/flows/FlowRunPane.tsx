@@ -1392,7 +1392,7 @@ function ParticipantBody({
           thread" strip that used to sit here now lives next to the
           produces/reads line in the header. */}
       {producedArtifacts.length > 0 && (
-        <ArtifactsPanel items={producedArtifacts} forceCollapsed={isTyping} startOpen={producedOpen} />
+        <ArtifactsPanel runId={run.id} items={producedArtifacts} forceCollapsed={isTyping} startOpen={producedOpen} />
       )}
 
       {/* Faint separator between the top block (watch banner + outputs) and
@@ -1513,10 +1513,12 @@ function WorkerExchangeBubble({
 // code fences for everything else). Each artifact starts collapsed if
 // the body is large so the panel doesn't shove the chat off-screen.
 function ArtifactsPanel({
+  runId,
   items,
   forceCollapsed = false,
   startOpen = false,
 }: {
+  runId: string;
   items: Array<{ step: FlowStep; artifact: import('@shared/flows/schema').FlowArtifact }>;
   /// Open the panel on first render instead of as a slim header bar.
   startOpen?: boolean;
@@ -1545,8 +1547,13 @@ function ArtifactsPanel({
       return next;
     });
   }
-  function copyBody(key: string, body: string) {
-    void navigator.clipboard.writeText(body);
+  /// The run update carries a capped body; copy and open want all of it.
+  async function fullBody(stepId: string, shown: string): Promise<string> {
+    const full = await window.overcli.invoke('flows:artifactBody', { runId, stepId }).catch(() => null);
+    return full ?? shown;
+  }
+  async function copyBody(key: string, body: string) {
+    await navigator.clipboard.writeText(await fullBody(key, body));
     setCopiedKey(key);
     setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 1200);
   }
@@ -1602,7 +1609,7 @@ function ArtifactsPanel({
                 </button>
                 <div className="ml-auto flex items-center gap-1 pr-2 shrink-0">
                   <button
-                    onClick={() => copyBody(step.id, artifact.body)}
+                    onClick={() => void copyBody(step.id, artifact.body)}
                     className="px-1.5 py-0.5 text-[10px] text-ink-faint hover:text-ink"
                     title="Copy the output to the clipboard"
                   >
@@ -1610,11 +1617,11 @@ function ArtifactsPanel({
                   </button>
                   {artifact.kind !== 'url' && (
                     <button
-                      onClick={() =>
+                      onClick={async () =>
                         void window.overcli.invoke('flows:openArtifact', {
                           name: artifact.name,
                           kind: artifact.kind,
-                          body: artifact.body,
+                          body: await fullBody(step.id, artifact.body),
                         })
                       }
                       className="px-1.5 py-0.5 text-[10px] text-ink-faint hover:text-ink"

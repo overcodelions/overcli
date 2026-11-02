@@ -102,6 +102,8 @@ export const UNREACHABLE_CHECKS = 30;
 /// its own tests did, so nothing landed): give up and tell the manager.
 export const FIX_WAIT_MS = 6 * 60 * 60_000;
 const WARN_EVERY_MS = 24 * 60 * 60_000;
+/// How long a fix asked for still lets a run continue its branch by name.
+export const FIX_ASK_MS = 7 * 24 * 60 * 60_000;
 const LOG_TAIL = 6000;
 /// How long a CI log is read for before its tail is taken as it is.
 const LOG_READ_MS = 30_000;
@@ -391,9 +393,19 @@ export class CiWatcher {
 
   /// Whether a fix was asked of this worker on this branch: the one case a
   /// run may be started on an existing branch by name (engines.ts). Any
-  /// other prompt naming a branch starts fresh.
-  fixAskedOn(workerId: string, branch: string): boolean {
-    return this.load().some((w) => w.workerId === workerId && w.branch === branch && !!w.followedUp);
+  /// other prompt naming a branch starts fresh. Only lately (FIX_ASK_MS), and,
+  /// given `repos`, only in one of them: a fix asked a month ago, or in
+  /// another repo with a branch of the same name, opens nothing.
+  fixAskedOn(workerId: string, branch: string, repos?: string[]): boolean {
+    const now = this.now();
+    return this.load().some(
+      (w) =>
+        w.workerId === workerId &&
+        w.branch === branch &&
+        !!w.followedUp &&
+        (!repos || repos.includes(w.repo)) &&
+        now - (w.followedUpAt ?? w.checkedAt ?? w.startedAt) <= FIX_ASK_MS,
+    );
   }
 
   /// CI can't be read for this repo: said on the run every time, to the

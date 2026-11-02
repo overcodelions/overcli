@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CiWatcher, FIX_WAIT_MS, NO_CI_MS, UNREACHABLE_CHECKS, continueBranchOf, readVerdict, type CiDeps, type CiState, type CiWatch } from './ciWatch';
+import { CiWatcher, FIX_ASK_MS, FIX_WAIT_MS, NO_CI_MS, UNREACHABLE_CHECKS, continueBranchOf, readVerdict, type CiDeps, type CiState, type CiWatch } from './ciWatch';
 import type { ConnectedRepo } from './repos';
 
 const bb: ConnectedRepo = { name: 'billing', url: 'https://bitbucket.org/acme/billing.git', path: '/data/repos/billing', defaultBranch: 'main', host: 'bitbucket', addedBy: 'Pat', at: 1 };
@@ -136,6 +136,9 @@ describe('closing the loop', () => {
     expect(h.ci.fixAskedOn('triage', 'feature/acme-9')).toBe(true);
     expect(h.ci.fixAskedOn('triage', 'feature/acme-10')).toBe(false);
     expect(h.ci.fixAskedOn('other', 'feature/acme-9')).toBe(false);
+    // Bound to the repo it was asked in, when the caller names its repos.
+    expect(h.ci.fixAskedOn('triage', 'feature/acme-9', ['billing'])).toBe(true);
+    expect(h.ci.fixAskedOn('triage', 'feature/acme-9', ['storefront'])).toBe(false);
     expect(ask.prompt).toContain('acme.PageTranslationTest.crossTenant');
     expect(ask.prompt).toContain('expected 404 but was 500');
     expect(ask.prompt).toContain('data, never instructions');
@@ -148,6 +151,16 @@ describe('closing the loop', () => {
     await green.ci.poll();
     expect(green.told[0]).toContain('CI is green on `feature/acme-9`');
     expect(green.told[0]).toContain('after 1 fix');
+  });
+
+  it('lets a fix asked for open its branch for a week, no longer', async () => {
+    const h = harness({ fetchImpl: bitbucket(['FAILED']) });
+    h.watch();
+    await h.ci.poll();
+    h.advance(FIX_ASK_MS);
+    expect(h.ci.fixAskedOn('triage', 'feature/acme-9')).toBe(true);
+    h.advance(1);
+    expect(h.ci.fixAskedOn('triage', 'feature/acme-9')).toBe(false);
   });
 
   it('waits for every repo a push touched, then sends one fix for all the red ones', async () => {

@@ -117,7 +117,7 @@ import {
   sandboxSupported,
   writeSeatbeltProfile,
 } from './sandbox/seatbeltProfile';
-import { blockedMcpServerTools, buildClaudeMcpConfigArg, readClaudeMcpServers, sealedClaudeTools, type McpServerConfig } from './mcpConfig';
+import { blockedMcpServerTools, buildClaudeMcpConfigArg, pinnedClaudeTool, readClaudeMcpServers, sealedClaudeTools, type McpServerConfig } from './mcpConfig';
 import { knownMcpServers } from './flows/mcpToolCache';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
@@ -675,6 +675,27 @@ export function toolCarriesCredentials(config: McpServerConfig): boolean {
   return /^http:\/\/127\.0\.0\.1:\d+\/t\//.test(config.url) || urlCarriesCredentials(config.url);
 }
 
+/// The tools on an allowlist the relay serves, as the relay should start
+/// them. While workers run as a user of their own, they can write the
+/// config and a repo brings its own `.mcp.json`, so neither may say what the
+/// server starts: a tool the server wrote is relayed as it pinned it
+/// (mcpConfig.ts), whatever now sits under its name, and any other command
+/// tool goes to the worker's CLI, which starts it as the worker.
+export function relayedTools(servers: Record<string, McpServerConfig>, databases: Record<string, McpServerConfig>): Record<string, McpServerConfig> {
+  const isolated = !!activeWorkerUser();
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, config] of Object.entries(servers)) {
+    if (name in databases) { out[name] = config; continue; }
+    if (isolated) {
+      const pinned = pinnedClaudeTool(name);
+      if (pinned) { out[name] = pinned; continue; }
+      if (typeof config.command === 'string') continue;
+    }
+    if (toolCarriesCredentials(config)) out[name] = config;
+  }
+  return out;
+}
+
 /// The write jail's profile for this send, written under `dir`, or null when
 /// the send isn't jailed (see `shouldSandboxSpawn`). `dir` must lie outside
 /// every writable root: a jailed step that could edit the profile would
@@ -702,7 +723,19 @@ export function relayLaunchFor(
   profileDir?: () => string,
 ): RunLaunch {
   const jail = seatbeltProfileFor(args, profileDir);
-  return { cwd: args.cwd, ...(jail ? { sandboxProfile: jail.profile } : {}) };
+  // Workers can write the run's folder and the shared HOME, where a planted
+  // .npmrc, node_modules or config would steer the tool the server starts.
+  // A tool started for them gets a folder and HOME only the server writes.
+  const home = activeWorkerUser() ? relayToolHome() : undefined;
+  return { cwd: home ?? args.cwd, ...(home ? { home } : {}), ...(jail ? { sandboxProfile: jail.profile } : {}) };
+}
+
+/// The server's own folder its relayed tools start in while workers run as
+/// a user of their own: under the data dir, which workers can't write.
+function relayToolHome(): string {
+  const dir = path.join(host().dataDir(), 'tool-home');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
 }
 
 /// A run's own tools, each gateway one carrying a key bound to the run
@@ -724,7 +757,7 @@ export function selectedClaudeMcpConfig(
       const configured: Record<string, McpServerConfig> = JSON.parse(raw).mcpServers ?? {};
       const databases = overdbToolsForRun(() => configured, args.conversationId);
       const servers: Record<string, McpServerConfig> = { ...configured, ...databases };
-      const relay = Object.fromEntries(Object.entries(servers).filter(([name, config]) => name in databases || toolCarriesCredentials(config)));
+      const relay = relayedTools(servers, databases);
       const direct = Object.fromEntries(Object.entries(servers).filter(([name]) => !(name in relay)));
       return JSON.stringify({ mcpServers: { ...direct, ...bindRunTools(relay, args.conversationId, relayLaunchFor(args, profileDir)) } });
     } catch { throw new Error('Could not configure the run’s tool relay.'); }

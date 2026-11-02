@@ -200,6 +200,11 @@ svg.mark { flex: none; filter: drop-shadow(0 1px 1.5px rgba(16, 20, 31, 0.16)); 
 .setup-rail button { min-height: 32px; font-size: 13.5px; }
 .setup-rail .light { margin-left: auto; }
 .setup-rail .light.need { background: var(--need); }
+.tm-edit { display: grid; grid-template-columns: minmax(160px, 220px) minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; }
+.tm-who { display: flex; align-items: center; gap: 10px; min-width: 0; border: 0; background: none; padding: 0; color: var(--ink); cursor: pointer; text-align: left; font: inherit; }
+.tm-who:hover b { color: var(--go); }
+.tm-add { display: grid; grid-template-columns: minmax(160px, 220px) minmax(0, 1fr) auto; gap: 12px; align-items: center; padding-top: 12px; border-top: 1px dashed var(--line-2); }
+@media (max-width: 640px) { .tm-edit, .tm-add { grid-template-columns: minmax(0, 1fr); } }
 .setup-rail.wk-rail { flex: 0 0 170px; top: calc(var(--chrome-h) + var(--wk-head, 190px) + 16px); }
 .setup-pick { display: none; }
 .setup-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
@@ -684,6 +689,7 @@ pre.diff .da { color: var(--ok); } pre.diff .dd { color: var(--bad); } pre.diff 
 .reader-body > .file-frame { flex: 1; height: auto; min-height: 0; }
 .t-answer { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: var(--r); background: var(--ok-soft); font-size: 15px; }
 .t-answer .t-kind { color: var(--ok); }
+.t-answer-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .thread .dayhead, .stack > .dayhead { display: flex; align-items: center; gap: 12px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); margin-top: 6px; }
 .stack > .dayhead::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .t-turn { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; border-top: 1px dashed var(--line); }
@@ -4277,7 +4283,7 @@ export const CONSOLE_JS = String.raw`
     var reportIsAnswer = ok && ctx.merge && r.result && isMd && r.result.name !== 'pull-requests.md';
     return h('div', { class: 't-run' },
       t.runs.length > 1 ? head : null,
-      ok ? h('div', { class: 't-answer' }, h('span', { class: 't-kind', text: 'What it found' }),
+      ok ? h('div', { class: 't-answer' }, h('div', { class: 't-answer-head' }, h('span', { class: 't-kind', text: 'What it found' }), answerCopy(reportIsAnswer ? r.result.body : r.summary)),
           reportIsAnswer ? h('div', { class: 'wc-out t-answer-report' }, md(r.result.body))
             : r.summary ? h('p', { style: 'margin:0', text: r.summary }) : h('p', { class: 'muted', style: 'margin:0', text: r.result ? 'It wrote ' + r.result.name + '.' : 'It finished without writing a file.' }),
           reportIsAnswer ? h('span', { class: 'faint', style: 'font-size:12.5px', text: r.result.name + (r.landed && !(r.pullRequests && r.pullRequests.length) ? ' · ' + r.landed.replace(/\.$/, '') : '') }) : null)
@@ -4289,6 +4295,15 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'wc-out' }, isMd ? md(r.result.body) : h('pre', { text: r.result.body }))) : h('span'),
         ok && r.entryId ? h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Was this useful?' }), rateButtons({ entryId: r.entryId, workerName: w.name, rating: r.rating }, slot)) : null),
       slot);
+  }
+
+  /// Copy for a run's answer: the report as it wrote it (markdown), or its
+  /// summary. Nothing to copy, no button.
+  function answerCopy(text) {
+    if (!text) return null;
+    var b = h('button', { class: 'btn small', text: 'Copy' });
+    b.onclick = function () { copyText(text, b, 'Copy'); };
+    return b;
   }
 
   /// The pull requests a run's landing opened or updated, each a link out,
@@ -4993,6 +5008,7 @@ export const CONSOLE_JS = String.raw`
           onChange: function () { later('who', function () { var v = whoAsks.value(); return { visibility: v.kind === 'everyone' ? 'org' : 'private', audience: v.audience }; }); },
         });
         var budget = h('input', { type: 'number', min: '1', step: '1', value: String(Math.round(w.budgetUSDPerMonth * 100) / 100), 'aria-label': 'Monthly budget' });
+        var nameBox = h('input', { type: 'text', value: w.name, maxlength: '40', 'aria-label': 'Name', style: 'max-width:280px' });
         var tagline = h('input', { type: 'text', value: w.tagline || '', maxlength: '160', placeholder: 'What it does, in a line', 'aria-label': 'Tagline', style: 'max-width:480px' });
         var sched = scheduleEditor(w.cadence);
         var saved = h('div');
@@ -5072,6 +5088,12 @@ export const CONSOLE_JS = String.raw`
         atOnce.onchange = function () { saveNow('slack', { answersAtOnce: Number(atOnce.value) }); };
         if (usual) usual.onchange = function () { saveNow('flow', { preferredFlowId: usual.value || null }); };
         tagline.onchange = function () { saveNow('tagline', { tagline: tagline.value }); };
+        // A new name shows everywhere at once, so the page is drawn again.
+        nameBox.onchange = function () {
+          var to = nameBox.value.trim();
+          if (!to || to === w.name) { nameBox.value = w.name; return; }
+          saveNow('name', { name: to }).then(function (x) { if (x && x.ok !== false) setTimeout(render, 700); else nameBox.value = w.name; });
+        };
         budget.onchange = function () {
           var n = Number(budget.value);
           if (!(n > 0)) { budget.value = String(Math.round(w.budgetUSDPerMonth * 100) / 100); return; }
@@ -5089,6 +5111,7 @@ export const CONSOLE_JS = String.raw`
         settings = h('div', { class: 'stack', style: 'gap:16px' },
           group('Picture', 'Its face here and on what it posts in Slack. Pick one, or use a link to your own image.', [picturePicker(w, function (url) { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { avatarUrl: url } }); },
             function () { return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/picture/pick', {}); })]),
+          group('Name', 'What people call it, in Slack and here. Its old name keeps working.' + (w.formerNames && w.formerNames.length ? ' Also answers to ' + w.formerNames.join(', ') + '.' : ''), [nameBox], 'name'),
           group('Tagline', 'The line under its name, here and wherever it is listed.', [tagline], 'tagline'),
           group('When it runs', 'On its own schedule, or only when someone asks.', [sched.node], 'when'),
           group('Who it answers to', 'Its questions and approvals go here, climbing the chain if its boss can’t answer.', [
@@ -9243,21 +9266,119 @@ export const CONSOLE_JS = String.raw`
   // to each section.
   function teamSettingsView(t) {
     var parts = [
+      t.canChange ? ['team', 'Team', teamBasics(t)] : null,
+      ['members', 'Members · ' + t.members.length, teamMembersEdit(t)],
       ['who', 'Who can give it tasks', teamWho(t)],
       t.canChange ? ['how', 'How it works with you', teamSettings(t)] : null,
-      t.canChange || t.guidance ? ['guide', 'How it should work', teamGuide(t), true] : null,
+      // Its own box carries its title, so no second one above it.
+      t.canChange || t.guidance ? ['guide', 'How it should work', teamGuide(t), true, true] : null,
       t.canChange ? ['short', 'Short name', teamShort(t)] : null,
       t.canChange ? ['picture', 'Picture', picturePicker(t, function (url) { return api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/settings', { avatarUrl: url }); })] : null,
       ['reach', 'Reach ' + t.name, reachView('team', t.name, undefined, t.shortName)],
       t.canChange ? ['end', 'Disband', teamEnd(t), true] : null,
     ].filter(Boolean);
-    var jump = function (id) { var el = document.getElementById('ts-' + id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
-    var nav = h('nav', { 'aria-label': 'Team settings sections', style: 'position:sticky;top:72px;display:flex;flex-direction:column;gap:4px;min-width:150px' },
-      parts.map(function (p) { return h('button', { class: 'linkish', style: 'text-align:left;font-size:14px;padding:4px 0', text: p[1], onclick: function () { jump(p[0]); } }); }));
+    // The same rail as Setup's and a worker's: the section in view is marked.
+    var railBtns = {};
+    var mark = function (id) { Object.keys(railBtns).forEach(function (k) { railBtns[k].setAttribute('aria-current', k === id ? 'page' : 'false'); }); };
+    var jump = function (id) { mark(id); var el = document.getElementById('ts-' + id); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    var nav = h('nav', { class: 'nav setup-rail', 'aria-label': 'Team settings sections' },
+      parts.map(function (p, i) { return (railBtns[p[0]] = h('button', { 'aria-current': i === 0 ? 'page' : 'false', text: p[1].replace(/ · \d+$/, ''), onclick: function () { jump(p[0]); } })); }));
+    if (window.IntersectionObserver) setTimeout(function () {
+      var seen = new window.IntersectionObserver(function (es) {
+        es.forEach(function (e) { if (e.isIntersecting && nav.isConnected) mark(e.target.id.replace(/^ts-/, '')); });
+      }, { rootMargin: '-30% 0px -60% 0px' });
+      parts.forEach(function (p) { var el = document.getElementById('ts-' + p[0]); if (el) seen.observe(el); });
+    }, 0);
     var body = h('div', { class: 'stack', style: 'gap:28px;flex:1;min-width:0' }, parts.map(function (p) {
-      return h('div', { id: 'ts-' + p[0], class: 'stack', style: 'gap:10px;scroll-margin-top:72px' }, h('h2', { class: 'label', text: p[1] }), p[3] ? p[2] : h('section', { class: 'panel pad stack' }, p[2]));
+      return h('div', { id: 'ts-' + p[0], class: 'stack', style: 'gap:10px;scroll-margin-top:calc(var(--chrome-h) + 16px)' }, p[4] ? null : h('h2', { class: 'label', text: p[1] }), p[3] ? p[2] : h('section', { class: 'panel pad stack' }, p[2]));
     }));
     return h('div', { style: 'display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap' }, nav, body);
+  }
+
+  /// What a team is: its name, what it does, its budget and where it works.
+  function teamBasics(t) {
+    var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+    var field = function (label, input, hint) {
+      return h('label', { class: 'stack', style: 'gap:6px;min-width:0' }, h('span', { style: 'font-weight:600;font-size:13px', text: label }), input, hint ? h('span', { class: 'faint', style: 'font-size:12.5px', text: hint }) : null);
+    };
+    var name = h('input', { type: 'text', maxlength: '80', value: t.name });
+    var purpose = h('textarea', { maxlength: '1000', rows: '3', placeholder: 'What this team does, and for whom, in a sentence or two.', style: 'min-height:76px' });
+    purpose.value = t.purpose || '';
+    var budget = h('input', { type: 'number', min: '1', step: '1', value: String(t.budgetUSDPerTask), style: 'max-width:140px' });
+    var where = h('select', null, h('option', { value: '', text: 'Where each member usually works' }));
+    if (t.workIn) where.appendChild(h('option', { value: t.workIn, text: t.workInLabel || t.workIn }));
+    where.value = t.workIn || '';
+    api('GET', '/api/repos').then(function (r) {
+      if (!r || r.ok === false) return;
+      (r.repos || []).forEach(function (x) { if (x.name !== t.workIn) where.appendChild(h('option', { value: x.name, text: 'Repo: ' + x.name })); });
+      (r.workspaces || []).forEach(function (x) { if (x.id !== t.workIn) where.appendChild(h('option', { value: x.id, text: 'Workspace: ' + x.name })); });
+      where.value = t.workIn || '';
+    }).catch(function () {});
+    var save = h('button', { class: 'btn go', text: 'Save', onclick: function (e) {
+      var restore = busy(e.target, 'Saving…');
+      var b = Number(budget.value);
+      var edits = { name: name.value, purpose: purpose.value, workIn: where.value || null };
+      api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/edit', edits).then(function (x) {
+        if (x.ok === false || b === t.budgetUSDPerTask) return x;
+        return api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/settings', { budgetUSDPerTask: b });
+      }).then(function (x) {
+        restore(); out.replaceChildren(msg(x, 'Saved. Tasks that start from now on use it.'));
+        if (x.ok !== false) setTimeout(render, 700);
+      });
+    } });
+    return h('div', { class: 'stack', style: 'gap:14px' },
+      h('div', { style: 'display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px' },
+        field('Name', name), field('Budget per task ($)', budget, 'Its coordinator plans each task to stay under this.')),
+      field('What it does', purpose, 'Its mandate. The coordinator reads it when it plans, and people see it under the team’s name.'),
+      field('Where it works', where, 'A repo or workspace gives its code changes a branch in each repo.'),
+      h('div', { class: 'row', style: 'gap:10px' }, save, out));
+  }
+
+  /// Who is on a team and what each does on it: change a role, take someone
+  /// off, add a worker. Saved together; a team keeps at least two.
+  function teamMembersEdit(t) {
+    var rows = t.members.map(function (m) { return { workerId: m.workerId, name: m.name, role: m.role || '' }; });
+    var list = h('div', { class: 'jl-notelist' });
+    var out = h('span', { 'aria-live': 'polite', style: 'font-size:12.5px' });
+    var dirty = h('span', { class: 'unsaved', hidden: true, text: 'Unsaved changes' });
+    var pick = h('select', { 'aria-label': 'Worker to add' }, h('option', { value: '', text: 'Add a worker…' }));
+    var newRole = h('input', { type: 'text', maxlength: '200', placeholder: 'What it does on this team', 'aria-label': 'Its role on the team' });
+    var crew = [];
+    var fillPick = function () {
+      var on = {}; rows.forEach(function (r) { on[r.workerId] = 1; });
+      pick.replaceChildren(h('option', { value: '', text: 'Add a worker…' }));
+      crew.filter(function (w) { return !on[w.id]; }).forEach(function (w) { pick.appendChild(h('option', { value: w.id, text: w.name })); });
+    };
+    var draw = function () {
+      list.replaceChildren.apply(list, rows.map(function (r, i) {
+        var role = h('input', { type: 'text', maxlength: '200', value: r.role, 'aria-label': r.name + '’s role on the team', disabled: !t.canChange });
+        role.oninput = function () { r.role = role.value; dirty.hidden = false; };
+        var off = t.canChange ? h('button', { class: 'btn small', text: 'Remove', disabled: rows.length <= 2, title: rows.length <= 2 ? 'A team needs at least two members.' : null, onclick: function () { rows.splice(i, 1); dirty.hidden = false; draw(); fillPick(); } }) : null;
+        return h('div', { class: 'tm-edit' },
+          h('button', { class: 'tm-who', type: 'button', onclick: function () { openWorker(r.workerId); } }, avatar(r.workerId, r.name, 's'), h('b', { text: r.name })),
+          role, off);
+      }));
+    };
+    draw();
+    if (!t.canChange) return list;
+    api('GET', '/api/workers').then(function (ws) { if (Array.isArray(ws)) { crew = ws; fillPick(); } }).catch(function () {});
+    var add = h('button', { class: 'btn small', text: 'Add', onclick: function () {
+      var w = crew.filter(function (x) { return x.id === pick.value; })[0];
+      if (!w) { pick.focus(); return; }
+      if (!newRole.value.trim()) { newRole.focus(); return; }
+      rows.push({ workerId: w.id, name: w.name, role: newRole.value.trim() });
+      newRole.value = ''; dirty.hidden = false; draw(); fillPick();
+    } });
+    var save = h('button', { class: 'btn go', text: 'Save members', onclick: function (e) {
+      var restore = busy(e.target, 'Saving…');
+      api('POST', '/api/teams/' + encodeURIComponent(t.id) + '/edit', { members: rows.map(function (r) { return { workerId: r.workerId, role: r.role }; }) }).then(function (x) {
+        restore(); out.replaceChildren(msg(x, 'Saved. Tasks that start from now on use this team.'));
+        if (x.ok !== false) { dirty.hidden = true; setTimeout(render, 700); }
+      });
+    } });
+    return h('div', { class: 'stack', style: 'gap:12px' }, list,
+      h('div', { class: 'tm-add' }, pick, newRole, add),
+      h('div', { class: 'row', style: 'gap:10px' }, save, dirty, out));
   }
 
   /// Retiring a team: disband it (its work stays in the Library, its members
@@ -13675,6 +13796,44 @@ export const CONSOLE_JS = String.raw`
   /// one. One row each; values go in and never come back out.
   /// A tool's settings by name, values never shown; an admin can set new
   /// values for some and keep the rest, and who has the tool stays as it is.
+  /// A command tool's command and settings, edited in place. A setting's
+  /// value never comes back to the browser: each shows as KEY= and a blank
+  /// keeps it, a line taken out drops it, a new line adds one.
+  function toolEdit(t, reopen) {
+    var out = h('div', { 'aria-live': 'polite' });
+    var box = h('div', { class: 'stack', style: 'gap:10px' });
+    var quote = function (a) { return /\s/.test(a) ? '"' + a + '"' : a; };
+    var shut = function () {
+      fill(box, [h('div', { class: 'row', style: 'gap:8px' },
+        h('code', { style: 'font-size:12.5px;overflow-wrap:anywhere;flex:1 1 auto;min-width:0', text: t.target }),
+        h('button', { class: 'btn small', text: 'Edit', onclick: open_ })), out]);
+    };
+    var open_ = function () {
+      var cmd = h('input', { type: 'text', class: 'tp-ctl', value: [t.command || ''].concat(t.args || []).map(quote).join(' '), 'aria-label': 'Command', spellcheck: 'false' });
+      var env = h('textarea', { class: 'tp-ctl', 'aria-label': 'Settings', spellcheck: 'false', style: 'min-height:70px;font-family:var(--mono, monospace)' });
+      env.value = t.secrets.map(function (k) { return k + '='; }).join('\n');
+      var save = h('button', { class: 'btn small go', text: 'Save and check' });
+      save.onclick = function () {
+        var parts = splitArgs(cmd.value.trim());
+        if (!parts[0]) { cmd.focus(); return; }
+        var restore = busy(save, 'Saving…');
+        api('POST', '/api/admin/tools/' + encodeURIComponent(t.name) + '/edit', { command: parts[0], args: parts.slice(1), env: kvLines(env.value, '=') }).then(function (x) {
+          restore();
+          if (x.ok === false) { fill(out, [msg(x)]); return; }
+          fill(out, [msg(x, 'Saved ' + x.changed.join(', ') + '. Workers use it from their next run.')]);
+          if (reopen) setTimeout(reopen, 900); else shut();
+        });
+      };
+      fill(box, [h('label', { class: 'field' }, 'Command', cmd),
+        h('label', { class: 'field' }, 'Settings (one KEY=value a line)', env),
+        h('span', { class: 'faint', style: 'font-size:12px', text: 'Values are never shown. Leave one blank to keep it, take its line out to drop it, add a line for a new one.' }),
+        h('div', { class: 'row', style: 'gap:8px' }, save, h('button', { class: 'btn small quiet', text: 'Cancel', onclick: shut })), out]);
+      cmd.focus();
+    };
+    shut();
+    return h('section', { class: 'tp-sec' }, h('div', { class: 'tp-head' }, h('h3', { class: 't-kind', text: 'How it starts' })), h('div', { class: 'tp-card' }, box));
+  }
+
   function toolKeys(t, canEdit, reopen) {
     var command = t.kind !== 'http';
     var out = h('div', { 'aria-live': 'polite' });
@@ -14781,6 +14940,7 @@ export const CONSOLE_JS = String.raw`
             parts.holders,
             parts.rules,
             t.secrets.length && !t.signIn ? toolKeys(t, r.canEdit, reopen) : null,
+            r.canEdit && t.kind !== 'http' ? toolEdit(t, reopen) : null,
             r.canEdit ? h('section', { class: 'tp-foot' }, h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Removing it takes it from every worker that has it.' }), removeBtn) : null,
             out)]);
         });
