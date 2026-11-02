@@ -47,7 +47,7 @@ import { projectIdFor, repairProjectIds } from '../projectIds';
 import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from '../workspace';
 import { applyRepoGrants } from './repoGrants';
 import { changesOfRun } from './runChanges';
-import { log } from '../diagnostics';
+import { log, readSessionLog } from '../diagnostics';
 import type { SecretsService } from './secrets/service';
 import type { ConnectionsService } from './connections';
 import type { ToolSignIn } from './toolSignIn';
@@ -378,6 +378,7 @@ export function createOrgService(
     },
     published: filePublishedStore,
     runActivity: (runId, after) => engines.runActivity?.list(runId, after) ?? [],
+    sessionLog: (needles, limit) => readSessionLog((line) => needles.some((n) => line.includes(n)), limit),
     setupOffers: jsonOrgStore<{ offers: SetupOffer[] }>('setup-offers.json', () => ({ offers: [] })),
     overdbOffers: jsonOrgStore<{ offers: OverdbOffer[] }>('overdb-offers.json', () => ({ offers: [] })),
     overdbConnections: jsonOrgStore<OverdbConnectionsFile>(OVERDB_CONNECTIONS_FILE, () => ({ version: OVERDB_FILE_VERSION, connections: [] })),

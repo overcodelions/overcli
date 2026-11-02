@@ -836,6 +836,37 @@ describe('stopping a worker’s run', () => {
   });
 });
 
+describe('a run\u2019s logs', () => {
+  it('are for its manager or an admin, with secrets taken out', () => {
+    const failed = {
+      ...paused('needsInput'),
+      conversationIds: { primary: 'conv-acme' },
+      attempts: [{ stepId: 'write', startedAt: 1, endedAt: 2, outcome: 'error', conversationId: 'conv-acme', errorMessage: 'Step "write" produced no <output name="report.md"> block.' }],
+    } as unknown as FlowRun;
+    const h = harness({ roster: [worker('chief', { manager: { name: 'Pat', slackUserId: PAT } })], runs: [failed] });
+    const asked: string[][] = [];
+    const deps = (h.svc as unknown as { deps: Record<string, unknown> }).deps;
+    deps.sessionLog = (needles: string[]) => {
+      asked.push(needles);
+      return ['[2026-11-02T11:27:09.909Z] INFO runner.close: claude conv=conv-acme code=1 stderr="Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789"'];
+    };
+    deps.runActivity = () => [{ at: 3, kind: 'error', text: 'tool failed' }];
+
+    expect(h.svc.runLogs({ slackUserId: SAM, name: 'Sam', admin: false }, 'run-1')).toMatchObject({ ok: false });
+    const res = h.svc.runLogs({ slackUserId: PAT, name: 'Pat', admin: false }, 'run-1');
+    expect(res).toMatchObject({
+      ok: true,
+      attempts: [{ stepId: 'write', outcome: 'error', error: expect.stringContaining('produced no <output') }],
+      activity: [{ kind: 'error', text: 'tool failed' }],
+    });
+    // The run's id and every conversation it used.
+    expect(asked[0]).toEqual(expect.arrayContaining(['run-1', 'conv-acme']));
+    const log = (res as { log: string[] }).log;
+    expect(log).toHaveLength(1);
+    expect(log[0]).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
+  });
+});
+
 describe('a run\'s last word, as progress', () => {
   it('drops the output contract and the markdown', async () => {
     const { plainSaid } = await import('./orgService');

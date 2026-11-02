@@ -85,6 +85,8 @@ function run(f: Flow, conversationIds: Record<string, UUID> = {}): FlowRun {
 
 interface WarmCall {
   conversationId: UUID;
+  enabledTools?: string[];
+  mcpDeniedTools?: string[];
   backend: string;
   model: string;
   permissionMode: string;
@@ -96,11 +98,11 @@ interface WarmCall {
 /// `dropIfPrewarmed` records too, so teardown is observable.
 function harness() {
   const warms: WarmCall[] = [];
-  const sends: Array<{ conversationId: UUID }> = [];
+  const sends: Array<{ conversationId: UUID; enabledTools?: string[]; mcpDeniedTools?: string[] }> = [];
   const dropped: UUID[] = [];
   const runner = {
-    send: (args: { conversationId: UUID }) => {
-      sends.push({ conversationId: args.conversationId });
+    send: (args: { conversationId: UUID; enabledTools?: string[]; mcpDeniedTools?: string[] }) => {
+      sends.push({ conversationId: args.conversationId, enabledTools: args.enabledTools, mcpDeniedTools: args.mcpDeniedTools });
       return { ok: true as const };
     },
     prewarm: (args: WarmCall) => warms.push(args),
@@ -153,6 +155,29 @@ describe('prewarmNextParticipant', () => {
 
     execute(rt, r, 'build');
     expect(sends.at(-1)?.conversationId).toBe(warmedConv);
+  });
+
+  it('warms with the tools the step will be sent with', () => {
+    // The tool allowlist is a launch param. A warm process launched without
+    // it is respawned by the real send, and the killed warm process's exit
+    // used to end the new step's turn before it began.
+    const { rt, warms, sends } = harness();
+    const r = run(
+      flow({
+        steps: [
+          step({ id: 'plan', participantId: 'planner', role: 'planner' }),
+          step({ id: 'build', participantId: 'builder', inputs: ['plan.md'], tools: ['Read', 'Grep'] }),
+        ],
+      }),
+    );
+
+    execute(rt, r, 'plan');
+    execute(rt, r, 'build');
+
+    const send = sends.at(-1)!;
+    expect(send.enabledTools).toEqual(['Read', 'Grep']);
+    expect(warms[0].enabledTools).toEqual(send.enabledTools);
+    expect(warms[0].mcpDeniedTools).toEqual(send.mcpDeniedTools);
   });
 
   it('skips a participant that already has a conversation', () => {

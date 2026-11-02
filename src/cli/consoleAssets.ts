@@ -4121,6 +4121,9 @@ export const CONSOLE_JS = String.raw`
       if (i === failedAt) {
         var why = t.error || (broke && (broke.error || (broke.state === 'stopped' ? 'It was stopped before it finished.' : '')));
         if (why) inside.push(h('div', { class: 'msg err', text: why }));
+        // The run's own record says which step failed and why; show it, so
+        // "Failed" never stands alone.
+        if (broke && broke.runId) inside.push(failedStepWhy(broke.runId, why));
         if (broke && broke.runId) inside.push(runFiles(broke.runId, w.name + ' · ' + broke.title));
       }
       var cls = s.state + (i === steps.length - 1 && s.state === 'next' ? ' last' : '');
@@ -4143,6 +4146,22 @@ export const CONSOLE_JS = String.raw`
   /// One finished step, folded: open it to read what it wrote and the
   /// tools it used, from /steps (asked once per run, then kept).
   var runStepsCache = {};
+
+  /// The step a run failed at and its error, from /steps, under the failed
+  /// row of a thread. Nothing when the run's record has no error, or it's
+  /// the same words the thread already shows.
+  function failedStepWhy(runId, shown) {
+    var box = h('div');
+    var hit = runStepsCache[runId];
+    if (!hit || Date.now() - hit.at > 60000) hit = runStepsCache[runId] = { at: Date.now(), p: api('GET', '/api/runs/' + encodeURIComponent(runId) + '/steps') };
+    hit.p.then(function (x) {
+      if (!x || x.ok === false) return;
+      var bad = (x.steps || []).filter(function (s) { return s.error; }).pop();
+      if (!bad || bad.error === shown) return;
+      append(box, [h('div', { class: 'msg err' }, h('b', { text: bad.id.replace(/[-_]+/g, ' ') + ': ' }), bad.error)]);
+    });
+    return box;
+  }
   function stepDetail(runId, stepId) {
     var body = h('div', { class: 'stack', style: 'gap:10px;margin-top:6px', hidden: true });
     var toggle = h('button', { class: 'linkish', style: 'font-size:12.5px;color:var(--go)', text: 'What it did', 'aria-expanded': 'false' });
@@ -4807,7 +4826,9 @@ export const CONSOLE_JS = String.raw`
               h('span', { class: 'faint' }, t.team ? ['For ', h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px', text: t.team.name, onclick: function () { go('team', { teamId: t.team.id }); } })] : whoFor(t), ' · ' + when(t.at) + (t.costUSD ? ' · ' + money(t.costUSD) : ''))),
             pills,
             liveRun && data.youManage ? stopRunButton(liveRun.runId, w) : null,
-            liveRun ? h('button', { class: 'btn small', text: 'Watch live', onclick: function () { watchRun(liveRun.runId, w.name + ' · ' + liveRun.title); } }) : null),
+            liveRun ? h('button', { class: 'btn small', text: 'Watch live', onclick: function () { watchRun(liveRun.runId, w.name + ' · ' + liveRun.title); } }) : null,
+            // Its logs, for whoever may stop it: how each step ended and why.
+            one && one.runId && data.youManage ? h('button', { class: 'btn small quiet', text: 'Logs', onclick: function () { runLogs(one.runId, w.name + ' · ' + one.title); } }) : null),
           h('h2', { class: 'wl-detail-title' }, kindTag ? h('span', { class: 'wl-kind', text: kindTag[1] }) : null, heading),
           source,
           ask ? h('p', { class: 'wl-detail-ask', text: '“' + (ask.length > 300 ? ask.slice(0, 299).trim() + '…' : ask) + '”' }) : null,
@@ -11247,6 +11268,40 @@ export const CONSOLE_JS = String.raw`
   }
   function watchRun(runId, title) {
     openReader(title || 'Run', 'Live', function (put) { put([liveRunView(runId)]); });
+  }
+
+  /// A run's logs, for its manager or an admin: every attempt at every step
+  /// (how it ended, and the error when it failed), what the run did, and the
+  /// server's own lines for the run and its conversations, secrets taken out.
+  function runLogs(runId, title) {
+    openReader(title || 'Run', 'Logs', function (put) {
+      api('GET', '/api/runs/' + encodeURIComponent(runId) + '/logs').then(function (x) {
+        if (!x || x.ok === false) { put([msg(x)]); return; }
+        var label = function (t) { return h('span', { class: 't-kind', text: t }); };
+        var attempts = x.attempts.length ? h('ol', { class: 'watch-list' }, x.attempts.map(function (a) {
+          var failed = a.outcome === 'error';
+          return h('li', { class: 'watch-item' + (failed ? ' bad' : '') }, h('span', { class: 'faint watch-at', text: clock(a.startedAt) }),
+            h('span', { class: 'stack', style: 'gap:4px;min-width:0' },
+              h('span', null, h('b', { text: a.stepId.replace(/[-_]+/g, ' ') }),
+                ' · ' + (a.outcome || 'running') + (a.endedAt ? ' · took ' + secs(a.endedAt - a.startedAt) : '') + (a.costUSD ? ' · ' + money(a.costUSD) : '')),
+              a.error ? h('div', { class: 'msg err', text: a.error }) : null));
+        })) : h('p', { class: 'faint', text: 'No step has started.' });
+        var activity = x.activity.length ? h('ol', { class: 'watch-list' }, x.activity.map(function (a) {
+          var cls = a.kind === 'said' ? 'said' : a.kind === 'error' || a.kind === 'denied' ? 'bad' : '';
+          return h('li', { class: 'watch-item ' + cls }, h('span', { class: 'faint watch-at', text: clock(a.at) }),
+            h('span', { class: a.kind === 'said' ? 'watch-said' : '', text: (a.kind === 'error' ? 'Error: ' : a.kind === 'denied' ? 'Refused: ' : '') + a.text }));
+        })) : h('p', { class: 'faint', text: 'Nothing recorded.' });
+        var copy = h('button', { class: 'btn small', text: 'Copy' });
+        copy.onclick = function () { copyText(x.log.join('\n'), copy, 'Copy'); };
+        var server = x.log.length ? h('pre', { class: 'watch-raw', text: x.log.join('\n') }) : h('p', { class: 'faint', text: 'No server lines name this run. Older lines roll off the log.' });
+        put([
+          h('p', { class: 'faint', style: 'margin:0', text: 'Run ' + x.run.id + ' · ' + x.run.state + ' · started ' + when(x.run.startedAt) }),
+          h('div', { class: 'stack', style: 'gap:6px' }, label('Steps'), attempts),
+          h('div', { class: 'stack', style: 'gap:6px' }, label('What it did'), activity),
+          h('div', { class: 'stack', style: 'gap:6px' }, h('div', { class: 'row', style: 'gap:8px;justify-content:space-between' }, label('Server log'), x.log.length ? copy : null), server),
+        ]);
+      });
+    });
   }
 
   /// A side panel that reads one thing in full: a Library item, fetched

@@ -8,13 +8,13 @@
 #   Started as root, with OVERCLI_WORKER_UID: workers run as that user (see
 #     src/main/org/workerUser.ts). The shared folders are opened to the
 #     worker's group, and the server keeps only the capabilities it needs to
-#     launch workers and look after what they write: setuid, setgid and
-#     dac_override. Workers get none. They have to be ambient for node to
-#     keep them across exec, so every child would inherit them: the server
+#     launch workers, look after what they write and stop them: setuid,
+#     setgid, dac_override and kill. Workers get none. They have to be
+#     ambient for node to keep them across exec, so every child would inherit them: the server
 #     starts everything else through setpriv, which drops them
 #     (src/main/org/childCaps.ts), and won't start holding them without it.
 #   Started as root, with only OVERCLI_TEST_UID: repo tests run as that user;
-#     the server keeps setuid and setgid.
+#     the server keeps setuid, setgid and kill (to stop a test that runs over).
 set -eu
 
 SERVER=/app/dist/cli/index.js
@@ -64,10 +64,10 @@ if [ -n "${OVERCLI_WORKER_UID:-}" ]; then
   done
   # Each side runs git in folders the other made; git refuses those otherwise.
   git config --system --get-all safe.directory 2>/dev/null | grep -qx '\*' || git config --system --add safe.directory '*'
-  CAPS=+setuid,+setgid,+dac_override
+  CAPS=+setuid,+setgid,+dac_override,+kill
   umask 002
 elif [ -n "${OVERCLI_TEST_UID:-}" ]; then
-  CAPS=+setuid,+setgid
+  CAPS=+setuid,+setgid,+kill
 fi
 
 if [ -z "$CAPS" ]; then

@@ -8,7 +8,7 @@
 // returning plain data each surface renders in its own way.
 
 import { KITS, type KitDef, type KitId, type Toolchain, type ToolchainService } from './toolchains';
-import { scrubOutbound } from '../secretScrub';
+import { collectKnownSecretValues, redactSecrets, scrubOutbound } from '../secretScrub';
 import type { LoginResult } from './toolLogin';
 import { generalize, readShape, readToolCall, setupPrompt } from './watchSetup';
 import { randomUUID } from 'node:crypto';
@@ -828,6 +828,9 @@ export interface OrgServiceDeps extends OverdbDeps {
   published?: PublishedStore;
   /// What a run has done so far, step by step (see flows/runActivity.ts).
   runActivity?(runId: UUID, after: number): Array<{ at: number; kind: 'tool' | 'said' | 'error' | 'denied'; text: string }>;
+  /// The server log's lines that name any of `needles` (a run's id, its
+  /// conversations), the last `limit` of them. For a run's Logs view.
+  sessionLog?(needles: string[], limit: number): string[];
   /// Setups people published from their desktops, waiting on an admin.
   /// Absent: kept in memory only.
   setupOffers?: { load(): { offers: SetupOffer[] }; save(value: { offers: SetupOffer[] }): void };
@@ -4077,6 +4080,41 @@ export class OrgService {
   /// What each of a run's steps did: what it wrote, and the activity in the
   /// time it ran, for whoever can see its worker. For a finished run, where
   /// the live view has nothing left to show.
+  /// A run's logs, for its manager or an admin (who may stop it): each step
+  /// attempt with how it ended and why, what the run did, and the server's
+  /// log lines for the run and its conversations. Secrets are taken out of
+  /// all of it, whatever the org's rule for answers.
+  runLogs(caller: OrgCaller, runId: UUID): Result<{
+    run: { id: UUID; title: string; state: string; workerName?: string; startedAt: number };
+    attempts: Array<{ stepId: string; startedAt: number; endedAt?: number; outcome?: string; error?: string; conversationId?: string; costUSD?: number }>;
+    activity: Array<{ at: number; kind: string; text: string }>;
+    log: string[];
+  }> {
+    const r = this.deps.runs.getRun(runId);
+    if (!r?.workerId) return { ok: false, error: 'No worker run by that id.' };
+    const policy = this.policy();
+    if (!isAdmin(policy, caller) && !canManage(policy, this.deps.workers.roster(), r.workerId, caller)) return { ok: false, error: 'Only its manager or an admin can see its logs.' };
+    const known = collectKnownSecretValues(process.env);
+    const clean = (t: string) => redactSecrets(scrubOutbound(t), known).text;
+    const convs = new Set<string>([...Object.values(r.conversationIds ?? {}), ...r.attempts.map((a) => a.conversationId).filter((c): c is UUID => !!c)]);
+    const state = r.state.kind === 'paused' ? `paused: ${r.state.reason}` : r.state.kind === 'done' ? (r.state.success ? 'done' : 'failed') : r.state.kind;
+    return {
+      ok: true,
+      run: { id: r.id, title: flowRunTitle(r), state, ...(r.workerName ? { workerName: r.workerName } : {}), startedAt: r.createdAt },
+      attempts: r.attempts.map((a) => ({
+        stepId: a.stepId,
+        startedAt: a.startedAt,
+        ...(a.endedAt ? { endedAt: a.endedAt } : {}),
+        ...(a.outcome ? { outcome: a.outcome } : {}),
+        ...(a.errorMessage ? { error: clean(a.errorMessage).slice(0, 2000) } : {}),
+        ...(a.conversationId ? { conversationId: a.conversationId } : {}),
+        ...(a.costUSD ? { costUSD: a.costUSD } : {}),
+      })),
+      activity: (this.deps.runActivity?.(runId, 0) ?? []).slice(-500).map((a) => ({ at: a.at, kind: a.kind, text: clean(a.text) })),
+      log: (this.deps.sessionLog?.([r.id, ...convs], 500) ?? []).map((l) => clean(l).slice(0, 4000)),
+    };
+  }
+
   runSteps(caller: OrgCaller, runId: UUID): Result<{ steps: Array<{ id: string; output?: string; body?: string; startedAt?: number; endedAt?: number; outcome?: string; costUSD?: number; error?: string; activity: Array<{ at: number; kind: string; text: string }> }> }> {
     const r = this.deps.runs.getRun(runId);
     if (!r?.workerId || !canSee(this.policy(), this.deps.workers.roster(), r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };

@@ -4,6 +4,12 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Upgrading
+- **Taking the new `deploy/docker-compose.yml` turns on workers as a user of their own.** It starts the container as root (`user: "0"`) and sets `OVERCLI_WORKER_UID=1001`. Keeping your old compose file and pulling only the image changes nothing. Set `OVERCLI_WORKER_UID=` (empty) in `.env` to keep running workers as the server.
+- **Move a tool's credential files from `/data/home` to `/data/tool-home`.** Saved tools now start with `HOME=/data/tool-home`, so a mount like `~/.aws-overcli:/data/home/.aws:ro` is no longer seen, and the tool fails as if the file were missing. Mount it at `/data/tool-home/.aws` instead.
+- **The first start opens up the shared folders to the workers' group** (HOME, repo clones, workspaces). With large clones it takes a while, once.
+- **Don't bind-mount `/data` from a Mac.** Docker Desktop makes every file in it readable, so the start check finds the secrets readable and the server stops. Use the named volume.
+
 ### Security
 - **Workers run as a user of their own.** On in `deploy/docker-compose.yml`; elsewhere set `OVERCLI_WORKER_UID=1001` and start the container as root. Every worker CLI, and every shell command it runs, runs as that user with no capabilities. It can no longer read the server's secrets key, the tool gateway's key and vault, people's tokens or the server's environment. The server still runs as `node`. It checks at start, as the worker, that the secrets are out of reach and the shared folders writable, and won't start if not. Set `OVERCLI_WORKER_UID=` (empty) in `.env` to turn it off. The image alone still starts as `node` and behaves as before. Not covered yet: the model's credentials, and the cloud identity on EC2 and Compute Engine. See the security page.
 - **Command tools' tokens are sealed in the server.** With the tool gateway on (the Docker image's default), a command (stdio) tool's environment moves out of `~/.claude.json` and its backups into a sealed file only the server reads. The server starts those tools itself and every run reaches them through the relay, so a worker no longer finds a Jira, Zendesk or database token in the CLIs' config. Setup → Tools works as before. Tokens that sat in that file until now were readable by any worker that ran shell commands; rotate them.
@@ -21,6 +27,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Links in a trigger's Slack reply show their address** when the link text is something else.
 
 ### Added
+- **A run's logs in the console.** On a worker's Conversation tab, **Logs** beside Stop shows each step's attempts (when, outcome, how long, cost, error), the run's activity, and the server's log lines for that run, redacted, with Copy. Managers and admins only. A failed run also shows its error under "Stopped · Failed".
 - **Rename a worker.** Settings → General → Name. Its old name keeps working: asking for it by that name in Slack, `/worker` or as who it reports to still finds it, and its settings say what else it answers to. A name another worker has, or had, is refused. The rename goes in its history.
 - **Edit a team.** A team's name, what it does, its members and where it works can be changed from the console. A manager can take off only workers they manage; moving where the team works needs an admin or someone who manages everyone on it.
 - **Edit a command tool in place.** Setup → Tools → a tool → How it starts → Edit changes its command, arguments and settings, keeping who has it. Values are never shown: a blank one is kept, a line taken out is dropped. While workers run as their own user, this is how a tool changes; edits to `~/.claude.json` by hand are ignored.
@@ -34,6 +41,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **A sealed tool's token rotated by hand in `~/.claude.json` is used straight away** while only the server writes that file, rather than after a restart.
 
 ### Fixed
+- **A flow step no longer fails before it starts.** The process started early for a step's participant was always relaunched on the step's first send, and the replaced process's last output was taken as the step finishing with nothing to show: "produced no output block", with the real answer arriving seconds later and ignored. Output from a replaced process is now ignored, and the early start launches the way the step does, so it's used rather than replaced.
+- **The server can stop workers' processes again** while workers run as their own user. It had no leave to signal another user's process, so every stop failed, and the failure was read as the live process closing: a step, or a CI fix handed back to its run, ended a moment after it started, and the relaunch came up without its tools or permission prompts. The image's entrypoint now hands the server `kill` as well, the start check requires it, and a turn still in progress is never ended by a stray "turn over".
 - **Release notes:** the 0.24.3 notes list an undici 7.30.1 override; undici 7.30.1 comes in through the lockfile, not an override.
 - **The front door keeps a request that follows a time phrase** ("…and the day after deploy it to prod"), and a stop request with a typographic apostrophe ("don’t") no longer starts work.
 - **A trigger reply that starts "Pass:" is posted;** only the pass signal itself is held back.
