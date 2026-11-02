@@ -27,6 +27,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Links in a trigger's Slack reply show their address** when the link text is something else.
 
 ### Added
+- **Sit in a Slack channel and answer questions.** On a new Slack trigger, **Sit in a channel and answer questions →** fills in the usual setup: each new message, answers in the thread, and instructions to stay quiet unless it can answer well. Then invite the bot and paste the channel's ID.
 - **A run's logs in the console.** On a worker's Conversation tab, **Logs** beside Stop shows each step's attempts (when, outcome, how long, cost, error), the run's activity, and the server's log lines for that run, redacted, with Copy. Managers and admins only. A failed run also shows its error under "Stopped · Failed".
 - **Rename a worker.** Settings → General → Name. Its old name keeps working: asking for it by that name in Slack, `/worker` or as who it reports to still finds it, and its settings say what else it answers to. A name another worker has, or had, is refused. The rename goes in its history.
 - **Edit a team.** A team's name, what it does, its members and where it works can be changed from the console. A manager can take off only workers they manage; moving where the team works needs an admin or someone who manages everyone on it.
