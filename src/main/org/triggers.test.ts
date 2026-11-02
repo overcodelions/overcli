@@ -4,14 +4,18 @@ import { TriggerService, eventItem, type Deliverable, type WorkerTrigger } from 
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail?: string; owner?: boolean; quietMs?: number } = {}) {
+function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail?: string; owner?: boolean; quietMs?: number; launched?: number; reviewer?: boolean } = {}) {
   let triggers: WorkerTrigger[] = [];
   let deliverables: Deliverable[] = [];
   const asked: string[] = [];
   const startsFlags: boolean[] = [];
   const posts: string[] = [];
+  const fullPosts: string[] = [];
   const postedAs: Array<string | undefined> = [];
   const calls: unknown[] = [];
+  const reviews: Array<{ id: string; text: string; inThread?: string }> = [];
+  let reply = opts.reply;
+  const notices: string[] = [];
   let toolResult: unknown = opts.items ?? { issues: [{ key: 'ACME-1', fields: { summary: 'Export fails' } }] };
   let now = new Date(2026, 9, 20, 12).getTime();
   const svc = new TriggerService({
@@ -25,7 +29,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
       return {
         ok: true,
         askId: `a${asked.length}`,
-        done: Promise.resolve(opts.fail ? { ok: false as const, error: opts.fail } : { ok: true as const, reply: opts.reply ?? 'Triaged. Fix in https://github.com/acme/app/pull/42', launched: 0 }),
+        done: Promise.resolve(opts.fail ? { ok: false as const, error: opts.fail } : { ok: true as const, reply: reply ?? 'Triaged. Fix in https://github.com/acme/app/pull/42', launched: opts.launched ?? 0 }),
       };
     },
     toolConfig: (name) => (name === 'jira' ? { command: 'npx' } : null),
@@ -36,10 +40,16 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
     slack: {
       post: async (channel, text, threadTs, as) => {
         postedAs.push(as && `${as.name}|${as.iconUrl}`);
+        fullPosts.push(text);
         posts.push(`${channel}${threadTs ? '@' + threadTs : ''}:${text.split('\n')[0]}`);
         return true;
       },
       message: async () => ({ text: 'The export button does nothing', user: 'U0ACMEPAT' }),
+      thread: async () => [
+        { user: 'U1', text: 'how often does collateral get indexed?' },
+        { name: 'Triage', text: 'Every 15 minutes, from the indexer schedule.' },
+        { user: 'U1', text: 'and for partner uploads too?' },
+      ],
       botUserId: () => 'U0ACMEBOT',
       dm: async (user, text) => {
         posts.push(`dm:${user}:${text}`);
@@ -54,6 +64,14 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
           },
         }
       : {}),
+    limitNotice: async (_w, triggerId, text) => {
+      notices.push(`${triggerId}|${text.split('\n')[0]}`);
+      return true;
+    },
+    review: async (_w, id, text, inThread) => {
+      reviews.push({ id, text, ...(inThread ? { inThread: inThread.ts } : {}) });
+      return opts.reviewer === false ? null : { channel: 'D0ACMEMGR', ts: inThread ? inThread.ts : `9.${reviews.length}` };
+    },
     log: () => {},
     now: () => now,
   });
@@ -62,8 +80,12 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
     asked,
     startsFlags,
     posts,
+    fullPosts,
     postedAs,
     calls,
+    reviews,
+    notices,
+    setReply: (r: string) => (reply = r),
     deliverables: () => deliverables,
     triggers: () => triggers,
     setItems: (v: unknown) => (toolResult = v),
@@ -275,6 +297,112 @@ describe('slack triggers', () => {
       expect(h.posts).toEqual(['C0ACMESUP@6.1:Every 15 minutes, from the indexer schedule.']);
     });
 
+    it('hears a follow-up in a thread it answered in, with the thread so far, and answers there', async () => {
+      const h = harness({ reply: 'Yes, partner uploads too.' });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'how often does collateral get indexed?' });
+      await tick();
+      expect(h.triggers()[0].threads).toEqual(['C0ACMESUP:6.1']);
+      expect(h.asked[0]).not.toContain('a reply in a Slack thread you already answered in');
+      expect(await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.3', thread_ts: '6.1', text: 'and for partner uploads too?' })).toBe(true);
+      await tick();
+      expect(h.asked).toHaveLength(2);
+      expect(h.asked[1]).toContain('a reply in a Slack thread you already answered in');
+      expect(h.asked[1]).toContain('"from": "Triage"');
+      expect(h.asked[1]).toContain('and for partner uploads too?');
+      expect(h.posts).toEqual(['C0ACMESUP@6.1:Yes, partner uploads too.', 'C0ACMESUP@6.1:Yes, partner uploads too.']);
+      // The same reply delivered twice is taken once.
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.3', thread_ts: '6.1', text: 'and for partner uploads too?' });
+      await tick();
+      expect(h.asked).toHaveLength(2);
+    });
+
+    it('posts the finished work in the thread too, when its first answer only said it was looking', async () => {
+      const h = harness({ reply: "I'm sending one read-only code run to find where the templates live.", launched: 1 });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'where is the deal approved email template?' });
+      await tick();
+      expect(h.deliverables()[0].thread).toEqual({ channel: 'C0ACMESUP', ts: '6.1' });
+      await h.svc.handedBack('a1', { ok: true, reply: 'The approve and decline emails are fixed HTML files in the deal service.' });
+      expect(h.posts).toEqual([
+        "C0ACMESUP@6.1:I'm sending one read-only code run to find where the templates live.",
+        'C0ACMESUP@6.1:The approve and decline emails are fixed HTML files in the deal service.',
+      ]);
+      expect(h.deliverables()[0].result).not.toContain('Working on it');
+      expect(h.deliverables()[0].deliveredTo).toContain('the Slack thread');
+      expect(h.triggers()[0].threads).toEqual(['C0ACMESUP:6.1']);
+    });
+
+    it('says it is working when it started a run, and says so in the thread if the run fails', async () => {
+      const h = harness({ reply: 'Looking in the code.', launched: 1 });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'where is the template?' });
+      await tick();
+      expect(h.posts).toEqual(['C0ACMESUP@6.1:Looking in the code.']);
+      expect(h.fullPosts[0]).toContain("⏳ Working on it. I'll post the answer in this thread");
+      await h.svc.handedBack('a1', { ok: false, error: 'Out of turns' });
+      expect(h.posts[1]).toMatch(/^C0ACMESUP@6\.1:_I couldn't finish looking into this/);
+    });
+
+    it('adds no working note when it answered straight away', async () => {
+      const h = harness({ reply: 'Every 15 minutes.' });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'how often?' });
+      await tick();
+      expect(h.asked).toHaveLength(1);
+      expect(h.posts).toEqual(['C0ACMESUP@6.1:Every 15 minutes.']);
+      expect(h.fullPosts[0]).not.toContain('Working on it');
+    });
+
+    it('stays out of threads it has not answered in, and of ones it passed on', async () => {
+      const h = harness({ reply: 'PASS' });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      expect(await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.2', thread_ts: '8.1', text: 'any update?' })).toBe(false);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '9.1', text: 'lunch is here' });
+      await tick();
+      expect(h.triggers()[0].threads).toBeUndefined();
+      expect(await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U2', ts: '9.2', thread_ts: '9.1', text: 'thanks!' })).toBe(false);
+      expect(h.asked).toHaveLength(1);
+    });
+
+    it('leaves a follow-up that @-mentions the bot to the front door', async () => {
+      const h = harness({ reply: 'Every 15 minutes.' });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'how often does collateral get indexed?' });
+      await tick();
+      expect(await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.2', thread_ts: '6.1', text: '<@U0ACMEBOT> and partners?' })).toBe(false);
+    });
+
+    it('waits for a pause in a follow-up too, then answers in the thread, apart from top-level messages', async () => {
+      vi.useFakeTimers();
+      try {
+        const h = harness({ reply: 'Yes.', quietMs: 5000 });
+        const made = h.svc.create(listen());
+        if (!made.ok) throw new Error(made.error);
+        await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'how often does collateral get indexed?' });
+        await vi.advanceTimersByTimeAsync(6000);
+        expect(h.posts).toEqual(['C0ACMESUP@6.1:Yes.']);
+        await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.4', thread_ts: '6.1', text: 'and partner uploads' });
+        await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.5', thread_ts: '6.1', text: 'too?' });
+        // The same person, top level: its own question, not part of the follow-up.
+        await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '7.1', text: 'who owns billing?' });
+        await vi.advanceTimersByTimeAsync(6000);
+        expect(h.asked).toHaveLength(3);
+        const followUp = h.asked.find((a) => a.includes('and partner uploads'))!;
+        expect(followUp).toContain('too?');
+        expect(followUp).not.toContain('who owns billing?');
+        expect([...h.posts].sort()).toEqual(['C0ACMESUP@6.1:Yes.', 'C0ACMESUP@6.1:Yes.', 'C0ACMESUP@7.1:Yes.']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('posts nothing on what it passes', async () => {
       const h = harness({ reply: 'PASS' });
       const made = h.svc.create(listen());
@@ -283,6 +411,140 @@ describe('slack triggers', () => {
       await tick();
       expect(h.asked).toHaveLength(1);
       expect(h.posts).toEqual([]);
+    });
+  });
+
+  describe('the daily limit', () => {
+    const channel = () => ({ ...watch(), kind: 'slack' as const, watch: undefined, slack: { channel: 'C0ACMESUP', on: 'message' as const }, deliver: [{ kind: 'thread' as const }], maxPerDay: 1 });
+    const say = (h: ReturnType<typeof harness>, ts: string, text: string) => h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts, text });
+
+    it('tells its manager once a day, and what it skips doesn’t count', async () => {
+      const h = harness({ reply: 'Answered.' });
+      const made = h.svc.create(channel());
+      if (!made.ok) throw new Error(made.error);
+      await say(h, '9.1', 'first question');
+      await say(h, '9.2', 'second question');
+      await say(h, '9.3', 'third question');
+      await tick();
+      expect(h.asked).toHaveLength(1);
+      expect(h.notices).toEqual([`${made.trigger.id}|*Triage* hit _New bugs_'s limit of 1 today, so it's skipping new ones until midnight. The first it skipped: _second question_.`]);
+      // Raised to 2: the two skipped didn't use it up, so the next one runs.
+      h.svc.update(made.trigger.id, { maxPerDay: 2 });
+      await say(h, '9.4', 'fourth question');
+      await tick();
+      expect(h.asked).toHaveLength(2);
+    });
+
+    it('tries what it skipped when its manager says so, once', async () => {
+      const h = harness({ reply: 'Answered.' });
+      const made = h.svc.create(channel());
+      if (!made.ok) throw new Error(made.error);
+      await say(h, '9.5', 'first question');
+      await say(h, '9.6', 'where do I change the partner email?');
+      await tick();
+      expect(h.svc.retrySkipped(made.trigger.id)).toBe(1);
+      await tick();
+      expect(h.asked).toHaveLength(2);
+      expect(h.asked[1]).toContain('where do I change the partner email?');
+      // Into the thread it came from.
+      expect(h.posts).toContain('C0ACMESUP@9.6:Answered.');
+      expect(h.svc.retrySkipped(made.trigger.id)).toBe(0);
+    });
+  });
+
+  describe('test mode', () => {
+    const rehearsing = () => ({ ...watch(), instructions: '', kind: 'slack' as const, watch: undefined, slack: { channel: 'C0ACMESUP', on: 'listen' as const }, deliver: [], rehearse: true });
+
+    it('holds each answer for its manager, and posts it to the thread once they say so', async () => {
+      const h = harness({ reply: 'Every 15 minutes.', owner: true });
+      const made = h.svc.create(rehearsing());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.1', text: 'how often does collateral get indexed?' });
+      await tick();
+      expect(h.posts).toEqual([]);
+      expect(h.reviews).toHaveLength(1);
+      expect(h.reviews[0].text).toContain('Every 15 minutes.');
+      const held = h.deliverables().find((d) => d.id === h.reviews[0].id)!;
+      expect(held.status).toBe('held');
+
+      expect(await h.svc.release(held.id)).toEqual({ ok: true });
+      // Into the thread it came from, and its manager isn't told a second time.
+      expect(h.posts).toEqual(['C0ACMESUP@8.1:Every 15 minutes.']);
+      expect(h.deliverables().find((d) => d.id === held.id)!.status).toBe('delivered');
+      // A second press does nothing.
+      expect(await h.svc.release(held.id)).toEqual({ ok: false, error: 'That answer was already posted or set aside.' });
+      expect(h.posts).toHaveLength(1);
+    });
+
+    it('sets an answer aside when its manager says not to post it', async () => {
+      const h = harness({ reply: 'Every 15 minutes.' });
+      const made = h.svc.create(rehearsing());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.2', text: 'how often?' });
+      await tick();
+      expect(h.svc.drop(h.reviews[0].id)).toBe(true);
+      expect(h.deliverables().find((d) => d.id === h.reviews[0].id)!.status).toBe('skipped');
+      expect((await h.svc.release(h.reviews[0].id)).ok).toBe(false);
+      expect(h.posts).toEqual([]);
+    });
+
+    it('tells its manager what it stayed quiet on', async () => {
+      const h = harness({ reply: 'PASS', owner: true });
+      const made = h.svc.create(rehearsing());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.3', text: 'lunch is here' });
+      await tick();
+      expect(h.reviews).toEqual([]);
+      expect(h.posts).toEqual(['owner:triage:_Test mode · New bugs:_ *Triage* would stay quiet on _lunch is here_.']);
+    });
+
+    it('rewrites the answer from its manager’s reply under the card, and posts the latest', async () => {
+      const h = harness({ reply: 'Collateral is indexed every 15 minutes by the scheduled indexer job, which also picks up partner uploads.' });
+      const made = h.svc.create(rehearsing());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.5', text: 'how often does collateral get indexed?' });
+      await tick();
+      const held = h.svc.heldIn('D0ACMEMGR', '9.1');
+      expect(held?.id).toBe(h.reviews[0].id);
+      // A reply under some other DM message isn't a revision.
+      expect(h.svc.heldIn('D0ACMEMGR', '1.0')).toBeUndefined();
+
+      h.setReply('Every 15 minutes.');
+      await h.svc.revise(held!.id, 'make it one line');
+      const prompt = h.asked[h.asked.length - 1];
+      expect(prompt).toContain('how often does collateral get indexed?');
+      expect(prompt).toContain('Your answer so far:\nCollateral is indexed every 15 minutes');
+      expect(prompt).toContain('Your manager says:\nmake it one line');
+      // The new draft goes under the first card, which still takes replies.
+      expect(h.reviews[1]).toMatchObject({ id: held!.id, inThread: '9.1' });
+      expect(h.reviews[1].text).toContain('Every 15 minutes.');
+      expect(h.svc.heldIn('D0ACMEMGR', '9.1')?.result).toBe('Every 15 minutes.');
+
+      expect(await h.svc.release(held!.id)).toEqual({ ok: true });
+      expect(h.posts).toEqual(['C0ACMESUP@8.5:Every 15 minutes.']);
+    });
+
+    it('sets the answer aside when its manager says it shouldn’t answer', async () => {
+      const h = harness({ reply: 'Every 15 minutes.' });
+      const made = h.svc.create(rehearsing());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.6', text: 'how often?' });
+      await tick();
+      h.setReply('PASS');
+      await h.svc.revise(h.reviews[0].id, 'leave this one, the indexer team owns it');
+      expect(h.deliverables().find((d) => d.id === h.reviews[0].id)!.status).toBe('skipped');
+      expect(h.posts).toEqual(["D0ACMEMGR@9.1:_Understood: I won't answer this one. Nothing was posted._"]);
+    });
+
+    it('fails rather than posting when there is no one to check with', async () => {
+      const h = harness({ reply: 'Every 15 minutes.', reviewer: false });
+      const made = h.svc.create(rehearsing());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.4', text: 'how often?' });
+      await tick();
+      expect(h.posts).toEqual([]);
+      expect(h.deliverables()[0].status).toBe('failed');
+      expect(h.deliverables()[0].error).toContain('no one to check it with');
     });
   });
 

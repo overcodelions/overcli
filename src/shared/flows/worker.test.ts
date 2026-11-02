@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  flowWritesCode,
+  isCodingWorker,
   hireAnswerText,
   parseHireQuestions,
   computeWorkerScorecard,
@@ -1052,5 +1054,33 @@ describe('validateWorker wrap-up', () => {
     expect(validateWorker({ ...base, flowIds: ['a'], wrapUpFlowId: 'a' })).toMatch(/wrap-up/);
     expect(validateWorker({ ...base, flowIds: ['a'], wrapUpFlowId: 'b' })).toBeNull();
     expect(validateWorker({ ...base, flowIds: ['a'] })).toBeNull();
+  });
+});
+
+describe('isCodingWorker', () => {
+  const solveTicket = { stepTools: [{ role: 'planner' }, { role: 'implementer' }, { role: 'reviewer' }, { role: 'test-writer' }, { role: 'shipper' }] };
+  const research = { stepTools: [{ role: 'researcher' }, { role: 'technical-writer' }, { role: 'shipper' }] };
+
+  it('counts a worker whose flow has a step that changes code', () => {
+    expect(isCodingWorker({ flowIds: ['solve-ticket'] }, [solveTicket])).toBe(true);
+  });
+
+  it('leaves a worker whose flows only read or write documents as one that reads', () => {
+    expect(isCodingWorker({ flowIds: ['research-topic'] }, [research])).toBe(false);
+    expect(isCodingWorker({ flowIds: ['solve-ticket'] })).toBe(false);
+  });
+
+  it('lets the worker say so outright, either way', () => {
+    expect(isCodingWorker({ flowIds: ['solve-ticket'], writesCode: false }, [solveTicket])).toBe(false);
+    expect(isCodingWorker({ flowIds: ['research-topic'], writesCode: true }, [research])).toBe(true);
+  });
+
+  it('still counts the server PR flows by name', () => {
+    expect(isCodingWorker({ flowIds: ['org-pr-fix'] })).toBe(true);
+  });
+
+  it('reads code-writing off the step roles', () => {
+    expect(flowWritesCode([{ role: 'debugger' }])).toBe(true);
+    expect(flowWritesCode([{ role: 'editor' }, {}])).toBe(false);
   });
 });

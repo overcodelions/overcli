@@ -70,7 +70,9 @@ On the worker's page:
   - **Slack:** a new message, a mention, or an emoji reaction (🐛) in a channel.
     - **Listen and answer questions:** the worker sits in the channel and stays quiet, answering in the thread only when someone asks something it can answer well. The rules for that are built in, so there's nothing to write: instructions are only for extras. Invite the bot first (`/invite @overgo`).
 
-  Each trigger has instructions (what to do with each item), a destination (a channel, a DM to you, the thread it came from, or "comment on the ticket"), and a daily limit.
+    - **Test mode** (Slack triggers): each answer comes to you by DM first, with **Post it to the thread** and **Don't post**, and you hear what it stayed quiet on too. Reply under an answer to change it ("shorter", "link the docs", "leave this one"): the new version comes back with the same buttons. Nothing reaches the channel until you post it. Turn it off once you trust it.
+
+  Each trigger has instructions (what to do with each item), a destination (a channel, a DM to you, the thread it came from, or "comment on the ticket"), and a daily limit. The first time a trigger hits its limit in a day, you get a DM saying what it skipped, with **Try the skipped ones now**. What it skips doesn't count towards the limit, so raising it takes effect at once.
 - **The value strip** on the Triggers tab shows items handled this month, typical time, cost per item, and the share people rated useful.
 
 ## Code

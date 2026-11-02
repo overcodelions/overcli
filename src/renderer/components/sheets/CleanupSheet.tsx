@@ -17,19 +17,21 @@ import { OrphanTranscriptEntry, UUID, WorktreeSweepEntry } from '@shared/types';
 import { useStore } from '../../store';
 import { useAllRunners } from '../../runnersStore';
 import { SheetActionButton } from './settingsChrome';
+import { DEFAULT_CLEANUP_RULES, describeRules, runawayProducers } from '@shared/cleanupRules';
 import {
-  DEFAULT_CLEANUP_RULES,
-  describeRules,
-  retirable,
-  runawayProducers,
-} from '@shared/cleanupRules';
+  describeAutoTidy,
+  pruneRemoved,
+  removeUnits,
+  ruleSelection,
+  setCleanupSelection,
+  startScan,
+  useCleanupScan,
+} from './cleanupScan';
 import {
   CleanupGroup,
   CleanupGroupKind,
   CleanupGroupMode,
-  conversationClaims,
   entryAgeAt,
-  groupKeyFor,
   filterEntries,
   formatAge,
   formatSize,
@@ -46,48 +48,29 @@ const AGE_CHOICES = [0, 7, 30, 90] as const;
 /// that fills the pane is not a warning.
 const RUNAWAY_SHOWN = 3;
 
-/// The last scan, kept alive across sheet opens.
-///
-/// A full scan reads git status and `du` for every idle worktree and takes
-/// minutes on a big install. Reviewing a diff before deciding closes this
-/// sheet (sheets are singular), so without this cache the price of looking at
-/// one row would be re-paying for the whole scan — which in practice means
-/// people don't look, and tick things they haven't read.
-let scanCache: {
-  entries: WorktreeSweepEntry[];
-  scannedAt: number;
-  selected: string[];
-  measuredSizes: boolean;
-} | null = null;
-
-/// What arrives pre-ticked: the auto-tidy rules' answer, or every safe row
-/// when the rules are off.
-function ruleSelection(entries: WorktreeSweepEntry[], rules: typeof DEFAULT_CLEANUP_RULES): string[] {
-  if (rules.retireAfterDays <= 0) {
-    return entries.filter((e) => e.bucket === 'reclaimable').map((e) => e.worktreePath);
-  }
-  return retirable(entries, rules, (e) => groupKeyFor(e).key, entryAgeAt, Date.now()).map(
-    (e) => e.worktreePath,
-  );
-}
-
 export function CleanupSheet() {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const runners = useAllRunners();
   const openSheet = useStore((s) => s.openSheet);
-  const removeAgent = useStore((s) => s.removeAgent);
-  const removeConversation = useStore((s) => s.removeConversation);
   const releaseWorktree = useStore((s) => s.releaseWorktree);
   const setConversationHidden = useStore((s) => s.setConversationHidden);
   const rules = useStore((s) => s.settings.cleanup) ?? DEFAULT_CLEANUP_RULES;
 
-  const [entries, setEntries] = useState<WorktreeSweepEntry[] | null>(scanCache?.entries ?? null);
-  const [scannedAt, setScannedAt] = useState<number>(scanCache?.scannedAt ?? 0);
-  const [selected, setSelected] = useState<Set<string>>(new Set(scanCache?.selected ?? []));
+  // The scan and its selection live outside the sheet so they survive it
+  // closing — see cleanupScan.ts.
+  const entries = useCleanupScan((s) => s.entries);
+  const scannedAt = useCleanupScan((s) => s.scannedAt);
+  const selectedList = useCleanupScan((s) => s.selected);
+  const selected = useMemo(() => new Set(selectedList), [selectedList]);
+  const scanning = useCleanupScan((s) => s.scanning);
+  const progress = useCleanupScan((s) => s.progress);
+  const measuredSizes = useCleanupScan((s) => s.measuredSizes);
+  const leftovers = useCleanupScan((s) => s.leftovers);
+  const scanError = useCleanupScan((s) => s.error);
+  const lastAutoTidy = useCleanupScan((s) => s.lastAutoTidy);
+  const autoTidying = useCleanupScan((s) => s.autoTidying);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [scanning, setScanning] = useState(false);
-  const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
   const [query, setQuery] = useState('');
   const [minAgeDays, setMinAgeDays] = useState(0);
   const [bucket, setBucket] = useState<'all' | 'reclaimable' | 'has-work' | 'live' | 'foreign'>(
@@ -100,12 +83,10 @@ export function CleanupSheet() {
   /// worth it and reports counts on the ones where it isn't — see
   /// `SIZE_MEASURE_LIMIT` in worktreeSweep.
   const [measureSizes, setMeasureSizes] = useState<boolean | 'auto'>('auto');
-  const [measuredSizes, setMeasuredSizes] = useState(scanCache?.measuredSizes ?? false);
   /// Transcript folders left behind by worktrees that are already gone.
   /// Kept apart from the worktree selection on purpose: it is a different
   /// unit (folders, not worktrees), and folding it into "N selected" would
   /// make that number mean two things at once.
-  const [leftovers, setLeftovers] = useState<OrphanTranscriptEntry[]>([]);
   const [view, setView] = useState<'list' | 'confirm'>('list');
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,65 +98,19 @@ export function CleanupSheet() {
     return out;
   }, [runners]);
 
-  useEffect(() => {
-    return window.overcli.onMainEvent((event) => {
-      if (event.type === 'worktreeScanProgress') {
-        setProgress({ completed: event.completed, total: event.total });
-      }
-    });
-  }, []);
-
   const runScan = async (opts?: { measureSizes?: boolean | 'auto' }) => {
-    const sizes = opts?.measureSizes ?? measureSizes;
-    setScanning(true);
-    setProgress(null);
     setError(null);
     setResult(null);
     setView('list');
-    try {
-      // Claims are read at call time from live store state rather than from
-      // `overcli.json`, which lags in-memory state by a save — a stale read
-      // would report a live tree as an orphan and offer to delete it.
-      const { projects: ps, workspaces: ws } = useStore.getState();
-      const res = await window.overcli.invoke('git:scanWorktrees', {
-        projects: ps.map((p) => ({ path: p.path, name: p.name })),
-        claims: conversationClaims([...ps, ...ws], runningById),
-        measureSizes: sizes,
-      });
-      setEntries(res.entries);
-      setScannedAt(res.scannedAt);
-      setMeasuredSizes(res.measuredSizes);
-      // Pre-select what the auto-tidy rules would retire — which is provably
-      // safe work, minus the newest few per producer that stay reopenable.
-      // With the rules off it falls back to everything provably safe. Either
-      // way nothing holding work is ever pre-ticked: that is opted into per
-      // row, after reading what it holds.
-      // Cheap enough to ride along with every scan: a handful of file stats
-      // per folder, no git and no `du`.
-      void window.overcli
-        .invoke('transcripts:scanOrphans')
-        .then((r) => setLeftovers(r.entries))
-        .catch(() => setLeftovers([]));
-      const preselect = ruleSelection(res.entries, rules);
-      setSelected(new Set(preselect));
-      scanCache = {
-        entries: res.entries,
-        scannedAt: res.scannedAt,
-        selected: preselect,
-        measuredSizes: res.measuredSizes,
-      };
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setScanning(false);
-      setProgress(null);
-    }
+    await startScan({ measureSizes: opts?.measureSizes ?? measureSizes });
   };
 
-  // Scan on open. This is the only thing the sheet does, and making people
-  // click a button to see an empty page first helps nobody.
+  // Scan on open — or, if one is already running (started before the sheet
+  // was last closed, or by auto-tidy), just show it. This is the only thing
+  // the sheet does, and making people click a button to see an empty page
+  // first helps nobody.
   useEffect(() => {
-    if (!entries && !scanning) void runScan();
+    if (!entries) void runScan();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -207,9 +142,8 @@ export function CleanupSheet() {
   }, [entries, visible, selected]);
 
   const setSelection = (next: Set<string>) => {
-    setSelected(next);
+    setCleanupSelection(next);
     setView('list');
-    if (scanCache) scanCache = { ...scanCache, selected: [...next] };
   };
 
   const toggle = (worktreePath: string) => {
@@ -229,84 +163,22 @@ export function CleanupSheet() {
     setSelection(next);
   };
 
-  /// Drop what we just removed from the list, keeping everything else.
-  ///
-  /// Deliberately NOT a rescan. On a large install the scan costs minutes,
-  /// and paying that again to confirm a removal we already have the result of
-  /// would make clearing three groups an afternoon. Anything that failed is
-  /// passed in as `keptPaths` and stays on the list, which is the case where
-  /// showing stale rows would actually mislead.
-  const pruneRemoved = (removedPaths: string[], keptPaths: string[] = []) => {
-    const gone = new Set(removedPaths.filter((p) => !keptPaths.includes(p)));
-    setEntries((cur) => {
-      const next = (cur ?? []).filter((e) => !gone.has(e.worktreePath));
-      if (scanCache) scanCache = { ...scanCache, entries: next, selected: [] };
-      return next;
-    });
-    setSelection(new Set());
-  };
-
   /// Remove whole units. Each producer has its own teardown and using the
   /// wrong one strands half a unit — see `planCleanup`.
   const runRemove = async () => {
     setWorking(true);
     setError(null);
     setResult(null);
-    const warnings: string[] = [];
-    // A unit that fails must stay on the list — that is the case where a
-    // pruned row would lie about what is on disk.
-    const kept: string[] = [];
-    const attempted = selectedEntries.filter(isActionable).map((e) => e.worktreePath);
-    const pathsFor = (match: (e: WorktreeSweepEntry) => boolean) =>
-      selectedEntries.filter(match).map((e) => e.worktreePath);
     try {
-      for (const runId of plan.removeRunIds) {
-        // `force` bypasses the flow runtime's own guard against deleting a run
-        // whose worktrees hold unreviewed work. It is only ours to pass when
-        // every tree that run owns is in this selection — the user has then
-        // seen each one, with its "holds work" badge, and confirmed. When the
-        // run owns trees beyond the selection (a workspace run holds one per
-        // member repo), the guard gets the final say instead.
-        const force = !plan.runsHoldingMore.includes(runId);
-        const res = await window.overcli.invoke('flows:deleteRun', { runId, force });
-        if (!res.ok) {
-          const title = selectedEntries.find((e) => e.claim?.runId === runId)?.claim?.title ?? runId;
-          warnings.push(
-            'needsConfirm' in res
-              ? `${title}: kept — it owns ${res.dirty.length} worktree${res.dirty.length === 1 ? '' : 's'} with unreviewed work that this selection did not cover. Open the run to review, or tick every one of its rows.`
-              : `${title}: ${'error' in res ? res.error : 'delete refused'}`,
-          );
-          kept.push(...pathsFor((e) => e.claim?.runId === runId));
-        }
-      }
-      for (const convId of plan.removeAgentIds) {
-        const res = await removeAgent(convId, { keepBranch });
-        if (!res.ok) {
-          if (res.error) warnings.push(res.error);
-          kept.push(...pathsFor((e) => e.claim?.convId === convId));
-        } else if (res.warning) warnings.push(res.warning);
-      }
-      for (const convId of plan.removeAdoptedIds) await removeConversation(convId);
-      if (plan.sweepEntries.length > 0) {
-        const res = await window.overcli.invoke('git:sweepWorktrees', {
-          entries: plan.sweepEntries.map((e) => ({
-            ...e,
-            branchName: keepBranch ? null : e.branchName,
-          })),
-        });
-        for (const f of res.failures) {
-          warnings.push(`${f.worktreePath}: ${f.error}`);
-          kept.push(f.worktreePath);
-        }
-      }
-      const removedCount = plan.worktreeCount - new Set(kept).size;
+      const res = await removeUnits({ selected: selectedEntries, all: entries ?? [], keepBranch });
       setResult(
-        `Removed ${removedCount} worktree${removedCount === 1 ? '' : 's'}` +
-          (plan.freedKb > 0 && measuredSizes ? `, freed ${formatSize(plan.freedKb)}` : '') +
+        `Removed ${res.removed} worktree${res.removed === 1 ? '' : 's'}` +
+          (res.freedKb > 0 && measuredSizes ? `, freed ${formatSize(res.freedKb)}` : '') +
           '.',
       );
-      if (warnings.length > 0) setError(`Finished with warnings:\n${warnings.join('\n')}`);
-      pruneRemoved(attempted, kept);
+      if (res.warnings.length > 0) setError(`Finished with warnings:\n${res.warnings.join('\n')}`);
+      pruneRemoved(res.attempted, res.kept);
+      setCleanupSelection([]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -426,6 +298,13 @@ export function CleanupSheet() {
               ? `Scanned ${formatAge(scannedAt, now) ?? 'just now'} · ${entries.length} worktrees across ${projects.length} projects${measuredSizes ? ` · ${formatSize(totals.totalKb)}` : ' · sizes not measured'}`
               : 'Not scanned yet.'}
           {entries && !scanning && <span className="ml-2">· {describeRules(rules)}</span>}
+          {autoTidying && <span className="ml-2">· Auto-tidy is running…</span>}
+          {!autoTidying && lastAutoTidy && (
+            <span className="ml-2">
+              · {describeAutoTidy(lastAutoTidy, measuredSizes)} ({formatAge(lastAutoTidy.at, now) ?? 'just now'})
+            </span>
+          )}
+          {scanError && <span className="ml-2 text-red-600 dark:text-red-300">· Scan failed: {scanError}</span>}
         </div>
         {scanning && progress && progress.total > 0 && (
           <div className="h-1 rounded bg-card-strong overflow-hidden mb-3">
@@ -587,8 +466,8 @@ export function CleanupSheet() {
                 }
                 void window.overcli
                   .invoke('transcripts:scanOrphans')
-                  .then((r) => setLeftovers(r.entries))
-                  .catch(() => setLeftovers([]));
+                  .then((r) => useCleanupScan.setState({ leftovers: r.entries }))
+                  .catch(() => useCleanupScan.setState({ leftovers: [] }));
               }}
             />
           )}

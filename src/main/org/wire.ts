@@ -79,6 +79,26 @@ export interface OrgEngines {
   toolSignIn?: ToolSignIn;
   /// What each run is doing, step by step. `overcli serve` only.
   runActivity?: { list(runId: string, after?: number): Array<{ at: number; kind: 'tool' | 'said' | 'error' | 'denied'; text: string }> };
+  /// Remove finished runs' checkouts on a timer, without asking.
+  /// `overcli serve` only: on the desktop, a finished run's worktree goes
+  /// through Clean up, under the Auto-tidy rules and a confirm step.
+  sweepCheckouts?: boolean;
+}
+
+/// Start the unattended checkout sweep when the host asked for it. Off
+/// unless asked: the desktop promises nothing is deleted in the background.
+export function scheduleCheckoutSweep(
+  enabled: boolean | undefined,
+  sweep: () => void,
+  timers: { setTimeout: (fn: () => void, ms: number) => unknown; setInterval: (fn: () => void, ms: number) => unknown } = {
+    setTimeout: (fn, ms) => setTimeout(fn, ms).unref?.(),
+    setInterval: (fn, ms) => setInterval(fn, ms).unref?.(),
+  },
+): boolean {
+  if (enabled !== true) return false;
+  timers.setTimeout(sweep, 60_000);
+  timers.setInterval(sweep, 10 * 60_000);
+  return true;
 }
 
 /// Which model CLIs are signed in, re-checked every few minutes — a probe
@@ -255,10 +275,9 @@ export function createOrgService(
   const refresh = () => void repos.freshen(repos.list().map((r) => r.path)).then((problems) => { lastRefreshAt = Date.now(); problems.forEach((p) => log('warn', 'org.repos', p)); }).catch(() => undefined);
   setTimeout(refresh, 2 * 60_000).unref?.();
   setInterval(refresh, 60 * 60_000).unref?.();
-  // Finished runs' checkouts, once nothing in them can be lost.
-  const sweep = () => void sweepWorktrees(flowRuntime.listRuns(), (level, msg) => log(level, 'org.worktrees', msg));
-  setTimeout(sweep, 60_000).unref?.();
-  setInterval(sweep, 10 * 60_000).unref?.();
+  // Finished runs' checkouts, once nothing in them can be lost: the server
+  // only. The desktop leaves them to Clean up.
+  scheduleCheckoutSweep(engines.sweepCheckouts, () => void sweepWorktrees(flowRuntime.listRuns(), (level, msg) => log(level, 'org.worktrees', msg)));
   // Every tool call's outcome, from any run or answer: an expired key or a
   // retired API reaches the admins instead of hiding in run logs.
   const toolHealth = new ToolHealth({
@@ -278,6 +297,10 @@ export function createOrgService(
       remove: (id) => workerEngine.remove(id),
       runErrand: (id, text, attachments, conversation, untrusted, mayLaunch) => workerEngine.runErrand(id, text, attachments, { ...(conversation ? { conversation } : {}), ...(untrusted ? { untrusted: true } : {}), ...(mayLaunch ? { mayLaunch: true } : {}) }),
       changesOf: (id) => workerEngine.changesOf(id),
+      writesCode: (id) => {
+        const w = workerEngine.get(id);
+        return !!w && workerEngine.writesCode(w);
+      },
       flowsOf: (id) => workerEngine.flowsOf(id),
       lookup: (id, args) => workerEngine.lookup(id, args),
       journalFor: (id) => workerEngine.journalFor(id),
@@ -593,7 +616,8 @@ export function createOrgService(
     ...(engines.version ? { version: engines.version } : {}),
     health: (() => {
       const models = backendProbe();
-      return () => [...(engines.health?.() ?? []), models(), checkoutHealth()];
+      // "Run checkouts" describes the sweep, so only where it runs.
+      return () => [...(engines.health?.() ?? []), models(), ...(engines.sweepCheckouts ? [checkoutHealth()] : [])];
     })(),
     people: () =>
       listTokens().map((t) => ({

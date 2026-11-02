@@ -24,6 +24,12 @@ export interface CleanupRules {
   /// Warn on a producer's desk once it is holding this many worktrees.
   /// 0 means never warn.
   warnAtCount: number;
+  /// Apply the rules on a timer, without opening Clean up. Retires only
+  /// what `retirable` returns; a chat's tree is released, never the chat.
+  /// Absent means "ask first": the timer finds what is due and asks before
+  /// removing anything, and saying yes is what sets this to true. Nothing is
+  /// ever deleted unattended on a default.
+  autoRun?: boolean;
 }
 
 export const DEFAULT_CLEANUP_RULES: CleanupRules = {
@@ -103,5 +109,11 @@ export function describeRules(rules: CleanupRules): string {
   if (rules.retireAfterDays <= 0) return 'Auto-tidy is off — nothing retires on its own.';
   const age =
     rules.retireAfterDays === 1 ? 'a day old' : `${rules.retireAfterDays} days old`;
-  return `Finished, merged worktrees retire once they are ${age}, keeping the newest ${rules.keepPerProducer} per worker or flow.`;
+  const when =
+    rules.autoRun === true
+      ? ' automatically'
+      : rules.autoRun === false
+        ? ' when you apply the rule in Clean up'
+        : ' automatically once you confirm the first batch';
+  return `Finished, merged worktrees retire${when} once they are ${age}, keeping the newest ${rules.keepPerProducer} per worker or flow.`;
 }

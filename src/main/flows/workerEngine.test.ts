@@ -86,6 +86,7 @@ function makeHarness(
     runHandoffOutputs?: WorkerEngineDeps['runHandoffOutputs'];
     runIdForConversation?: WorkerEngineDeps['runIdForConversation'];
     flowsFor?: WorkerEngineDeps['flowsFor'];
+    readsInPlace?: boolean;
     sharedMcpServers?: WorkerEngineDeps['sharedMcpServers'];
     activeRuns?: WorkerEngineDeps['activeRuns'];
     pieceFlow?: WorkerEngineDeps['pieceFlow'];
@@ -236,6 +237,7 @@ function makeHarness(
     },
     generatedFlow: opts.generatedFlow,
     flowsFor: opts.flowsFor,
+    ...(opts.readsInPlace ? { readsInPlace: true } : {}),
     sharedMcpServers: opts.sharedMcpServers,
     activeRuns: opts.activeRuns,
     pieceFlow: opts.pieceFlow,
@@ -550,7 +552,7 @@ describe('WorkerEngine on-demand workers', () => {
       expect(h.direct[0]).toMatchObject({
         projectPath: '/repo',
         flowId: 'fix-it',
-        runIn: 'cwd',
+        runIn: 'worktree',
         origin: { kind: 'worker', workerId: 'worker-1', task: 'errand' },
       });
       // The work itself, verbatim and last, under its own heading.
@@ -1411,7 +1413,7 @@ describe('WorkerEngine errands', () => {
       title: `[Errand] ${instruction}`,
       origin: { kind: 'worker', workerId: 'worker-1', workerName: 'Scout' },
       allowedFlowIds: ['fix-it'],
-      runIn: 'cwd',
+      runIn: 'worktree',
       maxItems: 3,
     });
     expect(h.parked[0].prompt).toContain('Find the most valuable maintenance work');
@@ -2226,7 +2228,7 @@ describe('WorkerEngine generated flows', () => {
     expect(res.ok).toBe(true);
     expect(calls).toHaveLength(1);
     expect(calls[0].request).toBe('Read the CI logs and correlate.');
-    expect(calls[0].runIn).toBe('cwd');
+    expect(calls[0].runIn).toBe('worktree');
     // Asked through the org on probation, it waits for its manager, as any other proposal does.
     expect(calls[0].launch).toBe(false);
     expect(h.journal.find((e) => e.kind === 'errand')?.note).toContain('waiting for an OK');
@@ -3370,6 +3372,42 @@ describe('WorkerEngine re-running and deleting one shift', () => {
 
     expect(res).toMatchObject({ ok: true });
     expect((res as { files: number }).files).toBeGreaterThan(0);
+  });
+});
+
+describe('where a worker runs', () => {
+  const solveTicket: WorkerEngineDeps['flowsFor'] = (ids) =>
+    ids.map((id) => ({ id, name: id, steps: ['plan', 'build', 'push'], stepTools: [{ role: 'planner' }, { role: 'implementer' }, { role: 'shipper' }] }));
+  const custom: WorkerEngineDeps['flowsFor'] = (ids) =>
+    ids.map((id) => ({ id, name: id, steps: ['fix'], stepTools: [{ role: 'custom', tools: ['Read', 'Edit', 'Bash'] }] }));
+  const readsOnly: WorkerEngineDeps['flowsFor'] = (ids) =>
+    ids.map((id) => ({ id, name: id, steps: ['look'], stepTools: [{ role: 'researcher' }] }));
+
+  async function errandRunIn(over: Partial<Worker>, opts: { flowsFor: WorkerEngineDeps['flowsFor']; readsInPlace?: boolean }) {
+    const h = makeHarness({ seed: [seedWorker({ trust: 'autonomous', ...over })], ...opts });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'Fix the reviewer save bug.');
+    return h.parked[0].runIn;
+  }
+
+  it('honours a worker asking for a worktree where nothing holds it to reads', async () => {
+    // The desktop: no guard refuses a worker's writes, so guessing it only
+    // reads would land its edits on the checked-out branch.
+    expect(await errandRunIn({ flowIds: ['solve-ticket'] }, { flowsFor: solveTicket })).toBe('worktree');
+    expect(await errandRunIn({ flowIds: ['my-fix'] }, { flowsFor: custom })).toBe('worktree');
+    expect(await errandRunIn({ flowIds: ['look-up'] }, { flowsFor: readsOnly })).toBe('worktree');
+  });
+
+  it('reads in place where the host refuses a reading worker its writes', async () => {
+    expect(await errandRunIn({ flowIds: ['look-up'] }, { flowsFor: readsOnly, readsInPlace: true })).toBe('cwd');
+  });
+
+  it('still gives a worker whose flow edits code a worktree there', async () => {
+    expect(await errandRunIn({ flowIds: ['solve-ticket'] }, { flowsFor: solveTicket, readsInPlace: true })).toBe('worktree');
+  });
+
+  it('reads in place anywhere when the worker says it only reads', async () => {
+    expect(await errandRunIn({ flowIds: ['solve-ticket'], writesCode: false }, { flowsFor: solveTicket })).toBe('cwd');
   });
 });
 

@@ -9,7 +9,7 @@ import { collectKnownSecretValues, redactSecrets, setOutboundScrub } from '../se
 import type { FlowRuntimeImpl } from '../flows/runtime';
 import type { OrchestratorImpl } from '../flows/orchestrator';
 import type { WorkerEngine } from '../flows/workerEngine';
-import { SlackBridge, type SlackBridgeStatus } from './slackBridge';
+import { SlackBridge, TRIGGER_DROP_ACTION, TRIGGER_POST_ACTION, TRIGGER_RETRY_ACTION, type SlackBridgeStatus } from './slackBridge';
 import { configuredSlackToken } from './slackSettings';
 import { fileThreadStore } from './threadStore';
 import { createOrgService, rejectWorkerRun, type OrgEngines } from '../org/wire';
@@ -450,6 +450,12 @@ export function createOrgControl(
         const res = await fetchMessage(bot, channel, ts);
         return res.ok ? res.data : null;
       },
+      thread: async (channel, threadTs) => {
+        const bot = configuredSlackToken('bot');
+        if (!bot) return null;
+        const res = await fetchThread(bot, channel, threadTs);
+        return res.ok ? res.data.map((m) => ({ ...(m.user ? { user: m.user } : {}), ...(m.username ? { name: m.username } : {}), text: m.text })) : null;
+      },
       dm: async (slackUserId, text) => {
         const bot = configuredSlackToken('bot');
         if (!bot) return false;
@@ -481,9 +487,97 @@ export function createOrgControl(
       await frontDoor.offer(res.data.channel, res.data.ts, w.name, choices).catch(() => undefined);
       return true;
     },
+    limitNotice: async (workerId, triggerId, text) => {
+      const bot = configuredSlackToken('bot');
+      const to = org.managerSlackId(workerId);
+      const w = engines.workerEngine.roster().find((x) => x.id === workerId);
+      if (!bot || !to || !w) return false;
+      const im = await openIm(bot, to);
+      if (!im.ok) return false;
+      const icon = w.avatarUrl ?? initialsPicture(w.id, w.name);
+      const blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: text.slice(0, 2990) } },
+        { type: 'actions', elements: [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Try the skipped ones now' }, action_id: TRIGGER_RETRY_ACTION, value: triggerId }] },
+      ];
+      let res = await postMessage(bot, { channel: im.data, text, blocks, username: w.name, ...(icon ? { iconUrl: icon } : {}) });
+      if (!res.ok && res.error === 'missing_scope') res = await postMessage(bot, { channel: im.data, text, blocks });
+      if (!res.ok) log('warn', 'slack', `A trigger's limit notice could not reach ${w.name}'s manager: ${res.error}`);
+      return res.ok;
+    },
+    review: async (workerId, deliverableId, text, inThread) => {
+      const bot = configuredSlackToken('bot');
+      const to = org.managerSlackId(workerId);
+      const w = engines.workerEngine.roster().find((x) => x.id === workerId);
+      if (!bot || !to || !w) return null;
+      const im = await openIm(bot, to);
+      if (!im.ok) return null;
+      const icon = w.avatarUrl ?? initialsPicture(w.id, w.name);
+      const thread = inThread ? { threadTs: inThread.ts } : {};
+      const blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: text.slice(0, 2990) } },
+        { type: 'actions', elements: [
+          { type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Post it to the thread' }, action_id: TRIGGER_POST_ACTION, value: deliverableId },
+          { type: 'button', text: { type: 'plain_text', text: 'Don’t post' }, action_id: TRIGGER_DROP_ACTION, value: deliverableId },
+        ] },
+      ];
+      let res = await postMessage(bot, { channel: im.data, text, blocks, ...thread, username: w.name, ...(icon ? { iconUrl: icon } : {}) });
+      if (!res.ok && res.error === 'missing_scope') res = await postMessage(bot, { channel: im.data, text, blocks, ...thread });
+      if (!res.ok) {
+        log('warn', 'slack', `A test-mode answer could not reach ${w.name}'s manager: ${res.error}`);
+        return null;
+      }
+      // Replies under the card change the answer (setReviewReply below).
+      return { channel: res.data.channel, ts: inThread ? inThread.ts : res.data.ts };
+    },
     log: (message) => log('info', 'org', message),
   });
   slack.setEventTap((ev) => triggers?.slackEvent(ev) ?? false);
+  // Try the skipped ones now: only the worker's manager, and the button
+  // gives way to how many it took up. Pressed again later in the day, it
+  // takes whatever was skipped since.
+  slack.setTriggerRetry(async ({ triggerId, user, channel, ts }) => {
+    const bot = configuredSlackToken('bot');
+    const t = triggers?.get(triggerId);
+    if (!bot || !triggers || !t || org.managerSlackId(t.workerId) !== user) return;
+    const n = triggers.retrySkipped(triggerId);
+    const text = n ? `Trying the ${n === 1 ? 'one' : n} it skipped on _${t.name}_ now, at <@${user}>'s word.` : `Nothing left to try on _${t.name}_: what it skipped has been tried already.`;
+    await updateMessage(bot, { channel, ts, text, blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text } },
+      { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Try any skipped since' }, action_id: TRIGGER_RETRY_ACTION, value: triggerId }] },
+    ] }).catch(() => undefined);
+  });
+  // A reply under a test-mode card: its manager changing the answer.
+  slack.setReviewReply(async ({ channel, threadTs, user, text }) => {
+    const d = triggers?.heldIn(channel, threadTs);
+    if (!triggers || !d || org.managerSlackId(d.workerId) !== user) return false;
+    void triggers.revise(d.id, text).catch((err) => log('warn', 'slack', `A test-mode revision failed: ${String(err)}`));
+    return true;
+  });
+  // Post it / Don't post under a test-mode answer: only the worker's manager
+  // decides, and the buttons give way to what was decided.
+  slack.setTriggerReview(async ({ post, deliverableId, user, channel, ts }) => {
+    const bot = configuredSlackToken('bot');
+    const d = triggers?.deliverables().find((x) => x.id === deliverableId);
+    if (!bot || !triggers || !d || org.managerSlackId(d.workerId) !== user) return;
+    const said = (d.result ?? '').trim();
+    const head = `_Test mode · ${d.source.triggerName ?? 'trigger'}:_ *${d.workerName}* on _${d.title}_`;
+    let outcome: string;
+    if (post) {
+      const res = await triggers.release(deliverableId);
+      outcome = res.ok ? `✅ Posted to the thread by <@${user}>.` : `⚠️ ${res.error}`;
+    } else {
+      outcome = triggers.drop(deliverableId) ? `Not posted. Set aside by <@${user}>.` : 'That answer was already posted or set aside.';
+    }
+    const body = `${head}\n${said.slice(0, 2600)}\n\n${outcome}`;
+    const still = triggers.deliverables().find((x) => x.id === deliverableId)?.status === 'held';
+    const blocks: unknown[] = [{ type: 'section', text: { type: 'mrkdwn', text: body.slice(0, 2990) } }];
+    // It couldn't be posted: keep the buttons, to try again.
+    if (still) blocks.push({ type: 'actions', elements: [
+      { type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Post it to the thread' }, action_id: TRIGGER_POST_ACTION, value: deliverableId },
+      { type: 'button', text: { type: 'plain_text', text: 'Don’t post' }, action_id: TRIGGER_DROP_ACTION, value: deliverableId },
+    ] });
+    await updateMessage(bot, { channel, ts, text: body, blocks }).catch(() => undefined);
+  });
   // "@overgo …" and DMs: whichever worker fits takes the request.
   const names = new Map<string, string>();
   const bot = () => (slack.teamId() ? configuredSlackToken('bot') : undefined);

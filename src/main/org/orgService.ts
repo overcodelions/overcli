@@ -182,6 +182,9 @@ export interface WorkerSummary {
   managerInherited?: boolean;
   /// Its own manager's Slack member ID, when it has one.
   managerSlackUserId?: string;
+  /// Its manager, own or through its boss, can be reached in Slack: where
+  /// its questions, approvals and test-mode answers go.
+  managerOnSlack?: boolean;
   reportsTo?: { id: UUID; name: string };
   visibility: WorkerVisibility;
   /// Its picture, when it has one; initials otherwise.
@@ -275,6 +278,19 @@ export interface WorkItem {
   /// What a run produced, when the item comes from the run itself rather
   /// than a journal entry: its newest artifact.
   body?: string;
+}
+
+export interface WorkSearchHit {
+  runId: UUID;
+  runNumber?: number;
+  workerId: UUID;
+  workerName: string;
+  title: string;
+  at: number;
+  status: 'running' | 'waiting' | 'done' | 'failed' | 'stopped';
+  /// The words around the first match outside the title, when the match is
+  /// in the request, the summary or what the run produced.
+  snippet?: string;
 }
 
 export interface TeamTaskSummary {
@@ -725,6 +741,9 @@ export interface OrgServiceDeps extends OverdbDeps {
     /// What its work could change; empty when it only reads. Absent: every
     /// worker counts as one that could change something.
     changesOf?(id: UUID): string[];
+    /// Whether its work changes code, its flows' steps included
+    /// (`WorkerEngine.writesCode`). Absent: judged from the worker alone.
+    writesCode?(id: UUID): boolean;
     /// Its flows by name, its usual one first.
     flowsOf?(id: UUID): Array<{ id: string; name: string }>;
     /// One look-up run with the worker's tools, nothing to approve
@@ -1346,6 +1365,7 @@ export class OrgService {
           ...(manager ? { manager: display(manager) } : {}),
           ...(manager && !w.manager ? { managerInherited: true } : {}),
           ...(w.manager?.slackUserId ? { managerSlackUserId: w.manager.slackUserId } : {}),
+          ...(manager?.slackUserId ? { managerOnSlack: true } : {}),
           ...(boss ? { reportsTo: { id: boss.id, name: boss.name } } : {}),
           visibility: w.visibility ?? 'private',
           ...(w.avatarUrl ? { avatarUrl: w.avatarUrl } : {}),
@@ -1363,7 +1383,7 @@ export class OrgService {
           ...(w.caps.skipCheckpoints ? { skipCheckpoints: true } : {}),
           ...(w.caps.alwaysAllow?.length ? { alwaysAllow: [...w.caps.alwaysAllow] } : {}),
           ...(w.projectPath ? { place: placeOf(w.projectPath) } : {}),
-          ...(isCodingWorker(w) ? { coding: true } : {}),
+          ...((this.deps.workers.writesCode?.(w.id) ?? isCodingWorker(w)) ? { coding: true } : {}),
           ...(w.writesCode !== undefined ? { writesCode: w.writesCode } : {}),
           ...(w.audience ? { audience: w.audience } : {}),
           ...(w.slackHomeChannels?.length ? { slackHomeChannels: [...w.slackHomeChannels] } : {}),
@@ -2522,7 +2542,7 @@ export class OrgService {
   createTrigger(
     caller: OrgCaller,
     idOrName: string,
-    input: Pick<WorkerTrigger, 'name' | 'kind' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly' | 'startsOnItsOwn'> & { webhook?: { idPath?: string } },
+    input: Pick<WorkerTrigger, 'name' | 'kind' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly' | 'startsOnItsOwn' | 'rehearse'> & { webhook?: { idPath?: string } },
   ): Result<{ trigger: TriggerView; webhookPath?: string; notes?: string[] }> {
     const s = this.triggerSvc();
     if (!s) return { ok: false, error: 'Triggers run on the org server.' };
@@ -2546,7 +2566,7 @@ export class OrgService {
     return { ok: true, trigger: t, s };
   }
 
-  updateTrigger(caller: OrgCaller, id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly' | 'startsOnItsOwn'>>): Result<{ trigger: TriggerView; notes?: string[] }> {
+  updateTrigger(caller: OrgCaller, id: string, patch: Partial<Pick<WorkerTrigger, 'name' | 'enabled' | 'instructions' | 'deliver' | 'maxPerDay' | 'watch' | 'slack' | 'notifyOnly' | 'startsOnItsOwn' | 'rehearse'>>): Result<{ trigger: TriggerView; notes?: string[] }> {
     const found = this.managedTrigger(caller, id);
     if (!found.ok) return found;
     if (patch.deliver) {
@@ -3924,6 +3944,82 @@ export class OrgService {
     );
     const days = Math.min(90, Math.max(1, opts.days ?? 14));
     return this.workItems(workers, this.now() - days * 86_400_000, Math.min(200, opts.limit ?? 60));
+  }
+
+  /// Recent runs the caller can see that mention every word of `query` in
+  /// their title, request, summary, branch or output: a ticket number, a
+  /// customer, a repo. Newest first, and running ones too.
+  searchWork(caller: OrgCaller, query: string, opts: { days?: number; limit?: number } = {}): WorkSearchHit[] {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
+    if (!words.length) return [];
+    const policy = this.policy();
+    const roster = this.deps.workers.roster();
+    const visible = new Map(roster.filter((w) => canSee(policy, roster, w.id, caller)).map((w) => [w.id, w]));
+    const since = this.now() - Math.min(365, Math.max(1, opts.days ?? 90)) * 86_400_000;
+    const limit = Math.min(50, Math.max(1, opts.limit ?? 20));
+    const runs = this.deps.runs
+      .listRuns()
+      .filter((r) => r.workerId && visible.has(r.workerId) && r.createdAt >= since)
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const hits: WorkSearchHit[] = [];
+    for (const r of runs) {
+      const w = visible.get(r.workerId!)!;
+      const title = r.digest?.headline || flowRunTitle(r);
+      // What the row already shows, and what it doesn't: a match in the
+      // second gets a snippet so you can see why the run came up.
+      const shown = [title, flowRunTitle(r), r.number ? `#${r.number}` : '', w.name].join('\n');
+      const hidden = [
+        r.branchName ?? '',
+        r.userPrompt ?? '',
+        r.digest?.summary ?? '',
+        ...(r.digest?.points ?? []),
+        ...Object.values(r.artifacts ?? {}).map((a) => (a.body ?? '').slice(0, 200_000)),
+      ].join('\n');
+      const hay = `${shown}\n${hidden}`.toLowerCase();
+      if (!words.every((x) => hay.includes(x))) continue;
+      const snippet = OrgService.snippet(hidden, words.filter((x) => !shown.toLowerCase().includes(x)).concat(words));
+      hits.push({
+        runId: r.id,
+        ...(r.number ? { runNumber: r.number } : {}),
+        workerId: w.id,
+        workerName: w.name,
+        title,
+        at: r.createdAt,
+        status: OrgService.searchStatus(r),
+        ...(snippet ? { snippet } : {}),
+      });
+      if (hits.length >= limit) break;
+    }
+    return hits;
+  }
+
+  private static searchStatus(r: FlowRun): WorkSearchHit['status'] {
+    switch (r.state.kind) {
+      case 'running':
+        return 'running';
+      case 'paused':
+        return 'waiting';
+      case 'aborted':
+        return 'stopped';
+      case 'done':
+        return r.state.success ? 'done' : 'failed';
+      default:
+        return 'done';
+    }
+  }
+
+  /// About a line of `text` around the first of `words` it contains.
+  private static snippet(text: string, words: string[]): string | undefined {
+    const lower = text.toLowerCase();
+    for (const w of words) {
+      const i = lower.indexOf(w);
+      if (i < 0) continue;
+      const start = Math.max(0, i - 60);
+      const end = Math.min(text.length, i + w.length + 100);
+      const body = text.slice(start, end).replace(/\s+/g, ' ').trim();
+      return (start > 0 ? '…' : '') + body + (end < text.length ? '…' : '');
+    }
+    return undefined;
   }
 
   /// Useful or not, on one piece of finished work. It lands in the worker's
