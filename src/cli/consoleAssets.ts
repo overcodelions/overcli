@@ -13062,7 +13062,15 @@ export const CONSOLE_JS = String.raw`
       if (listening) thread.checked = true;
       thread.disabled = listening;
       if (instructions) instructions.placeholder = listening ? 'Optional. e.g. For setup questions, link the docs page too.' : instructionsHint;
+      // The row reads as a must otherwise: say it's only for extras.
+      if (instrStep) {
+        var head = instrStep.querySelector('h2'), sub = instrStep.querySelector('p.faint');
+        if (!instrTexts) instrTexts = [head.firstChild.textContent, sub ? sub.textContent : ''];
+        head.firstChild.textContent = listening ? 'Anything else it should know (optional)' : instrTexts[0];
+        if (sub) sub.textContent = listening ? 'Leave it empty and it just listens and answers. Anything here is added to how it answers.' : instrTexts[1];
+      }
     };
+    var instrTexts = null;
     var sync = function () { kindBody.textContent = ''; kindBody.appendChild(parts[kind]); threadRow.style.display = kind === 'slack' ? '' : 'none'; syncListen(); };
     drawKinds(); sync();
     var instructionsHint = 'e.g. Triage the ticket: reproduce it if you can, label it, and say who owns it. If it’s small and clear, fix it and open a PR.';
@@ -13072,6 +13080,7 @@ export const CONSOLE_JS = String.raw`
     // more say than its manager's own ask would.
     var mayStart = w.trust === 'autonomous';
     var instrStep = settingRow('What it does with each one', mayStart ? 'It gets the event’s details with this, marked as coming from outside your org.' : 'It gets the event’s details with this, and proposes what it would do for you to OK. Set ' + w.name + ' to On its own to let a trigger start work without asking.', [instructions]);
+    syncListen();
     var alone = false;
     // The same control as "Who can ask it" on Settings: one question, two answers.
     var decides = h('div', { class: 'seg', role: 'group', 'aria-label': 'Who decides whether the work starts' });
