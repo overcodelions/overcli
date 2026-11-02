@@ -157,7 +157,7 @@ function harness(opts: { roster?: Worker[]; runs?: FlowRun[]; policy?: Partial<O
   return { svc, roster, calls, awaiting, decided, wanted, teams, teamTasks, hires: () => hires };
 }
 
-const paused = (reason: 'needsInput' | 'externalAction' | 'riskyStep', workerId = 'chief'): FlowRun =>
+const paused = (reason: 'needsInput' | 'externalAction' | 'riskyStep' | 'failure', workerId = 'chief'): FlowRun =>
   ({
     id: 'run-1',
     workerId,
