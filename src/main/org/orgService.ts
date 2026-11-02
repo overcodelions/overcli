@@ -2574,12 +2574,14 @@ export class OrgService {
   private slackOverlaps(caller: OrgCaller, t: WorkerTrigger, s: TriggerService): string[] {
     if (t.kind !== 'slack' || !t.slack || !t.enabled) return [];
     const { channel, on, reaction } = t.slack;
+    // Listening is each new message too: the two answer the same messages.
+    const plain = (x: string) => (x === 'listen' ? 'message' : x);
     const roster = this.deps.workers.roster();
     const policy = this.policy();
     const sees = (id: string) => canSee(policy, roster, id, caller);
     const nameOf = (id: string) => roster.find((w) => w.id === id)?.name ?? 'Another worker';
     const notes: string[] = [];
-    const same = s.list().filter((o) => o.id !== t.id && o.enabled && o.kind === 'slack' && o.slack?.channel === channel && o.slack.on === on && (on !== 'reaction' || o.slack.reaction === reaction));
+    const same = s.list().filter((o) => o.id !== t.id && o.enabled && o.kind === 'slack' && o.slack?.channel === channel && plain(o.slack.on) === plain(on) && (on !== 'reaction' || o.slack.reaction === reaction));
     for (const o of same) {
       const what = on === 'reaction' ? `a :${reaction}: reaction` : 'each new message';
       if (!sees(o.workerId)) {
@@ -2589,7 +2591,7 @@ export class OrgService {
       const who = o.workerId === t.workerId ? 'This worker' : o.hand ? 'Another trigger' : nameOf(o.workerId);
       notes.push(`${who} already has a trigger on ${what} in this channel (“${o.name}”). Both run each time, and both may reply in the same thread.`);
     }
-    if (on === 'message') {
+    if (plain(on) === 'message') {
       for (const w of roster) {
         if (w.id === t.workerId || !w.slackHomeChannels?.includes(channel)) continue;
         notes.push(sees(w.id)
@@ -4060,19 +4062,25 @@ export class OrgService {
   /// One run, live: where it is and what it has done so far, step by step,
   /// for whoever can see its worker. `after` returns only what's new.
   runLive(caller: OrgCaller, runId: UUID, after = 0): Result<{
-    run: { id: UUID; title: string; workerName?: string; state: string; step: { index: number; total: number; name: string }; startedAt: number; costUSD?: number };
+    run: { id: UUID; title: string; workerId: string; workerName?: string; state: string; step: { index: number; total: number; name: string }; startedAt: number; costUSD?: number; youManage: boolean; error?: string };
     activity: Array<{ at: number; kind: 'tool' | 'said' | 'error' | 'denied'; text: string }>;
   }> {
     const r = this.deps.runs.getRun(runId);
     const roster = this.deps.workers.roster();
-    if (!r?.workerId || !canSee(this.policy(), roster, r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
+    const policy = this.policy();
+    if (!r?.workerId || !canSee(policy, roster, r.workerId, caller)) return { ok: false, error: 'No run with that id that you can see.' };
+    // Whether the caller may act on it (stop it, carry it on, read its logs),
+    // so the live view offers only what will work. The same rule as stopRun.
+    const youManage = isAdmin(policy, caller) || canManage(policy, roster, r.workerId, caller);
+    // Stopped on a failure: what failed, for whoever can act on it.
+    const failed = r.state.kind === 'paused' && r.state.reason === 'failure' ? [...r.attempts].reverse().find((a) => a.outcome === 'error')?.errorMessage : undefined;
     const steps = r.flowSnapshot.steps;
     const at = r.state.kind === 'running' ? r.state.currentStepId : r.state.kind === 'paused' ? r.state.nextStepId : undefined;
     const i = Math.max(0, steps.findIndex((s) => s.id === at));
     const state = r.state.kind === 'paused' ? `paused: ${r.state.reason}` : r.state.kind === 'done' ? (r.state.success ? 'done' : 'failed') : r.state.kind;
     return {
       ok: true,
-      run: { id: r.id, title: flowRunTitle(r), ...(r.workerName ? { workerName: r.workerName } : {}), state, step: { index: i + 1, total: steps.length, name: steps[i]?.id ?? '' }, startedAt: r.createdAt, ...(r.costUSD ? { costUSD: r.costUSD } : {}) },
+      run: { id: r.id, title: flowRunTitle(r), workerId: r.workerId, ...(r.workerName ? { workerName: r.workerName } : {}), state, step: { index: i + 1, total: steps.length, name: steps[i]?.id ?? '' }, startedAt: r.createdAt, ...(r.costUSD ? { costUSD: r.costUSD } : {}), youManage, ...(youManage && failed ? { error: failed } : {}) },
       activity: this.deps.runActivity?.(runId, after) ?? [],
     };
   }

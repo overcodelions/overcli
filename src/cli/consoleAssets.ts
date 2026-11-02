@@ -11212,6 +11212,53 @@ export const CONSOLE_JS = String.raw`
     var raw = h('button', { class: 'linkish', style: 'color:var(--go);font-size:12.5px' });
     var items = [];
     var ended = false;
+    // What you can do about it, in the side panel: why it's paused, the OK
+    // it's waiting for, carrying on after a restart, Stop and Logs. Drawn
+    // again only when its state changes, so a half-typed answer survives
+    // the poll.
+    var acts = h('div', { class: 'stack', style: 'gap:10px;margin:10px 0' });
+    var actsKey = '';
+    var PAUSED = {
+      externalAction: 'Waiting for your OK: its next step reaches outside overgo.',
+      riskyStep: 'Waiting for your OK: its next step’s instructions need a look first.',
+      preStep: 'Waiting for your OK before this step, as its flow asks.',
+      needsInput: 'Waiting for an answer.',
+      failure: 'Stopped: a step failed.',
+      interrupted: 'Stopped when the server restarted. Nothing was lost.',
+      held: 'Held before its next step, because its batch was paused.'
+    };
+    var drawActs = function (r) {
+      var reason = /^paused: /.test(r.state) ? r.state.slice(8) : '';
+      var key = r.state + '|' + r.step.name + '|' + (r.error || '') + '|' + !!r.youManage;
+      if (key === actsKey) return;
+      actsKey = key;
+      var w = { id: r.workerId, name: r.workerName || 'the worker' };
+      var parts = [];
+      if (reason) parts.push(h('p', { class: 'muted', style: 'margin:0', text: PAUSED[reason] || 'Paused: ' + reason }));
+      if (reason === 'failure' && r.error) parts.push(h('div', { class: 'msg err', text: r.error }));
+      if (/^(externalAction|riskyStep|preStep|needsInput)$/.test(reason)) {
+        var slot = h('div');
+        parts.push(slot);
+        api('GET', '/api/waiting').then(function (x) {
+          var list = Array.isArray(x) ? x : (x && (x.items || x.waiting)) || [];
+          var it = list.filter(function (i) { return i.runId === runId; })[0];
+          if (it) fill(slot, [waitingCard(it)]);
+        });
+      }
+      var buttons = [];
+      if (reason === 'interrupted' && r.youManage) {
+        var carry = h('button', { class: 'btn go small', text: 'Carry on now' });
+        carry.onclick = function () {
+          var restore = busy(carry, 'Starting…');
+          api('POST', '/api/runs/' + encodeURIComponent(runId) + '/resume', {}).then(function (x) { restore(); if (x.ok === false) carry.after(msg(x)); else { actsKey = ''; livePoke(w.id, 300); } });
+        };
+        buttons.push(carry);
+      }
+      if (r.youManage && !ended) buttons.push(stopRunButton(runId, w));
+      if (r.youManage) buttons.push(h('button', { class: 'btn small', text: 'Logs', onclick: function () { runLogs(runId, (r.workerName ? r.workerName + ' · ' : '') + r.title); } }));
+      if (buttons.length) parts.push(h('div', { class: 'row', style: 'gap:8px' }, buttons));
+      fill(acts, parts);
+    };
     var draw = function () {
       raw.textContent = state.showCommands ? 'Hide the commands' : 'Show the commands';
       var groups = groupActivity(items);
@@ -11243,7 +11290,7 @@ export const CONSOLE_JS = String.raw`
     fold.onclick = function () { opened = !opened; draw(); };
     var box = compact
       ? h('div', { class: 'stack', style: 'gap:6px' }, lead, h('div', { class: 'row', style: 'gap:12px;font-size:12.5px' }, count, fold, h('span', { style: 'margin-left:auto' }, raw)), list, empty)
-      : h('div', null, head_, h('div', { class: 'row', style: 'justify-content:flex-end;margin-bottom:6px' }, raw), list, empty);
+      : h('div', null, head_, acts, h('div', { class: 'row', style: 'justify-content:flex-end;margin-bottom:6px' }, raw), list, empty);
     var last = 0;
     var tick = function () {
       if (!box.isConnected && last) return;
@@ -11256,6 +11303,7 @@ export const CONSOLE_JS = String.raw`
           h('span', { class: 'badge ' + (ended ? (r.state === 'done' ? 'ok' : 'bad') : /^paused/.test(r.state) ? 'waiting' : 'working'), text: ended ? (r.state === 'done' ? 'Finished' : 'Ended') : /^paused/.test(r.state) ? 'Paused' : 'Running' }),
           h('span', { text: (r.workerName ? r.workerName + ' · ' : '') + 'step ' + r.step.index + ' of ' + r.step.total + ', ' + r.step.name.replace(/[-_]+/g, ' ') }),
           h('span', { class: 'faint', text: secs(Date.now() - r.startedAt) + (r.costUSD ? ' · ' + money(r.costUSD) : '') })));
+        if (!boxed) drawActs(r);
         if (!last) last = 1;
         x.activity.forEach(function (a) { last = Math.max(last, a.at); items.push(a); });
         draw();
@@ -12797,7 +12845,7 @@ export const CONSOLE_JS = String.raw`
     if (t.kind === 'watch' && t.watch && t.watch.changes) return 'Checks ' + (t.watch.tracked ? plural(t.watch.tracked.length, 'tracked item', 'tracked items') + ' in ' : '') + t.watch.server + ' every ' + t.watch.everyMinutes + ' min for a change to ' + t.watch.changes;
     if (t.kind === 'watch' && t.watch) return 'Checks ' + t.watch.server + ' (' + t.watch.tool + ') every ' + t.watch.everyMinutes + ' min for new items';
     if (t.kind === 'webhook') return 'When another system posts to its webhook';
-    if (t.kind === 'slack' && t.slack) return (t.slack.on === 'reaction' ? 'When someone reacts :' + t.slack.reaction + ': to a message' : t.slack.on === 'mention' ? 'When someone mentions the bot' : 'On each new message') + ' in #' + t.slack.channel + (t.slack.contains ? ' containing “' + t.slack.contains + '”' : '');
+    if (t.kind === 'slack' && t.slack) return (t.slack.on === 'reaction' ? 'When someone reacts :' + t.slack.reaction + ': to a message' : t.slack.on === 'listen' ? 'Listens and answers questions' : t.slack.on === 'mention' ? 'When someone mentions the bot' : 'On each new message') + ' in #' + t.slack.channel + (t.slack.contains ? ' containing “' + t.slack.contains + '”' : '');
     return 'On an event';
   }
 
@@ -12976,28 +13024,21 @@ export const CONSOLE_JS = String.raw`
       hookReachNote(function () { kind = 'watch'; drawKinds(); sync(); }));
     // Slack
     var channel = h('input', { type: 'text', placeholder: 'C012AB3CD', 'aria-label': 'Channel ID' });
-    var on = h('select', { 'aria-label': 'On' }, h('option', { value: 'message', text: 'each new message' }), h('option', { value: 'reaction', text: 'an emoji reaction' }));
+    // Listening is the usual one, so it comes first: the worker sits in the
+    // channel and answers what it can, and the rules for that are built in.
+    var on = h('select', { 'aria-label': 'On' }, h('option', { value: 'listen', text: 'listen and answer questions' }), h('option', { value: 'message', text: 'each new message' }), h('option', { value: 'reaction', text: 'an emoji reaction' }));
     var emoji = h('input', { type: 'text', placeholder: 'bug', 'aria-label': 'Emoji' });
     var contains = h('input', { type: 'text', placeholder: 'optional', 'aria-label': 'Only if it contains' });
     var emojiField = h('label', { class: 'field' }, 'Emoji', emoji);
-    on.onchange = function () { emojiField.style.display = on.value === 'reaction' ? '' : 'none'; };
+    var listenNote = h('p', { class: 'msg', style: 'margin:0', text: 'It reads every new message and stays quiet, answering in the thread only when someone asks something it can answer well from the product, its code and its tools. Chatter, announcements and questions it can’t answer are left alone. Nothing else to write: the box below is only for extras.' });
+    on.onchange = function () {
+      emojiField.style.display = on.value === 'reaction' ? '' : 'none';
+      listenNote.hidden = on.value !== 'listen';
+      if (typeof syncListen === 'function') syncListen();
+    };
     on.onchange();
-    // The usual Slack trigger: a passive observer. The worker reads every new
-    // message in a channel such as #acme-questions and stays silent,
-    // speaking up in the thread only when it can answer. Fills in what's
-    // blank; the channel ID is still theirs.
-    var askPreset = h('div', { class: 'stack', style: 'gap:4px' },
-      h('button', { type: 'button', class: 'linkish', style: 'align-self:flex-start', text: 'Sit in a channel and answer questions →', onclick: function () {
-        on.value = 'message'; on.onchange();
-        thread.checked = true;
-        if (!name.value.trim()) name.value = 'Listens in the channel';
-        if (!instructions.value.trim()) instructions.value = 'You are listening in this channel, not taking part. Stay silent unless this message asks something you can answer well from the product and its code. Then answer briefly in the thread and say where the answer comes from. For anything else (chatter, announcements, thanks, a question you can\u2019t answer with confidence, one someone is already handling), reply PASS and nothing is posted.';
-        channel.focus();
-      } }),
-      h('p', { class: 'faint', style: 'margin:0', text: 'Then: /invite @overgo in the channel, and paste its ID below (in Slack: the channel’s name → About → bottom, starts with C).' }));
-    askPreset.hidden = !!t;
-    parts.slack = h('div', { class: 'stack' }, askPreset, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)),
-      h('p', { class: 'faint', text: 'Invite the overgo bot to the channel first (/invite @overgo). On each new message it answers only when it has something worth saying, and passes on the rest. It waits until the person stops typing, so a question sent as a few messages is answered once. Mentions need no trigger: "@overgo" with a question reaches the right worker.' }));
+    parts.slack = h('div', { class: 'stack' }, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)), listenNote,
+      h('p', { class: 'faint', text: 'In Slack, the channel ID is at the bottom of the channel’s About tab and starts with C. Invite the overgo bot to the channel first (/invite @overgo). On each new message it answers only when it has something worth saying, and passes on the rest. It waits until the person stops typing, so a question sent as a few messages is answered once. Mentions need no trigger: "@overgo" with a question reaches the right worker.' }));
     var KINDS = [['watch', 'Something new or changed in a tool', 'A new ticket, deal or row, or one whose status changes, checked every few minutes. Works anywhere, inside a VPC too.'],
       ['webhook', 'Another system tells us', 'Jira, GitHub, a CRM or Zapier posts each event to a secret address.'],
       ['slack', 'Something happens in Slack', 'A new message, a mention, or an emoji reaction in a channel.']];
@@ -13015,9 +13056,18 @@ export const CONSOLE_JS = String.raw`
     var kindBody = h('div');
     var thread = h('input', { type: 'checkbox' });
     var threadRow = h('label', { class: 'toggle' }, thread, h('span', { text: 'Reply in the Slack thread it came from' }));
-    var sync = function () { kindBody.textContent = ''; kindBody.appendChild(parts[kind]); threadRow.style.display = kind === 'slack' ? '' : 'none'; };
+    // A listener always answers in the thread, and needs no instructions.
+    var syncListen = function () {
+      var listening = kind === 'slack' && on.value === 'listen';
+      if (listening) thread.checked = true;
+      thread.disabled = listening;
+      if (instructions) instructions.placeholder = listening ? 'Optional. e.g. For setup questions, link the docs page too.' : instructionsHint;
+    };
+    var sync = function () { kindBody.textContent = ''; kindBody.appendChild(parts[kind]); threadRow.style.display = kind === 'slack' ? '' : 'none'; syncListen(); };
     drawKinds(); sync();
-    var instructions = h('textarea', { 'aria-label': 'What to do with each one', placeholder: 'e.g. Triage the ticket: reproduce it if you can, label it, and say who owns it. If it’s small and clear, fix it and open a PR.', style: 'min-height:90px' });
+    var instructionsHint = 'e.g. Triage the ticket: reproduce it if you can, label it, and say who owns it. If it’s small and clear, fix it and open a PR.';
+    var instructions = h('textarea', { 'aria-label': 'What to do with each one', placeholder: instructionsHint, style: 'min-height:90px' });
+    syncListen();
     // Only an autonomous worker can be let off the OK: a trigger never gets
     // more say than its manager's own ask would.
     var mayStart = w.trust === 'autonomous';
@@ -13086,10 +13136,13 @@ export const CONSOLE_JS = String.raw`
       var when = kind === 'watch'
         ? 'Every ' + every.value + ' min, ' + w.name + ' asks ' + (server.value || 'a tool') + (call.value ? ' (' + call.value + ')' : '') + (fireOn.value === 'change' ? '. When ' + (field.value.trim() || 'a field') + ' changes on ' + (onlyTracked.checked ? 'an item you track' : 'an item') : '. For each new item')
         : kind === 'webhook' ? 'When another system posts an event to its secret address'
+        : on.value === 'listen' ? 'Listening in ' + (channel.value.trim() || 'a channel') + (contains.value.trim() ? ', to messages containing “' + contains.value.trim() + '”' : '')
         : 'On ' + (on.value === 'reaction' ? 'a :' + (emoji.value.trim() || 'emoji') + ': reaction' : on.value === 'mention' ? 'a mention of the bot' : 'each new message') + ' in ' + (channel.value.trim() || 'a channel') + (contains.value.trim() ? ' containing “' + contains.value.trim() + '”' : '');
       var notify = kind === 'watch' && fireOn.value === 'change' && plain.checked;
       var first = instructions.value.trim().split('\n')[0];
+      var listening = kind === 'slack' && on.value === 'listen';
       var what = notify ? 'it says what changed, with a link. No worker turn.'
+        : listening ? 'it answers the questions it can and stays quiet on the rest' + (first ? ' (also: “' + (first.length > 80 ? first.slice(0, 80) + '…' : first) + '”)' : '') + '.'
         : 'it does “' + (first.length > 120 ? first.slice(0, 120) + '…' : first || 'what you write in step 2') + '”, ' + (alone ? 'starting without asking' : 'once you OK it') + '.';
       var to = [itself.value.trim() ? itself.value.trim().replace(/[.]$/, '').toLowerCase() : null, postTo.value.trim() ? 'posts in ' + postTo.value.trim() : null, dmMe.checked ? 'DMs you' : null, kind === 'slack' && thread.checked ? 'replies in the thread' : null].filter(Boolean);
       says.textContent = when + ', ' + what + (to.length ? ' Then: ' + to.join(', ') + '.' : '') + ' At most ' + (Number(perDay.value) || 50) + ' a day.';

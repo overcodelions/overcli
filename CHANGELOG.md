@@ -27,7 +27,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Links in a trigger's Slack reply show their address** when the link text is something else.
 
 ### Added
-- **Sit in a Slack channel and answer questions.** On a new Slack trigger, **Sit in a channel and answer questions →** fills in the usual setup: each new message, answers in the thread, and instructions to stay quiet unless it can answer well. Then invite the bot and paste the channel's ID.
+- **Sit in a Slack channel and answer questions.** A Slack trigger can be set to **listen and answer questions**, now the first choice: the worker reads every new message and stays quiet, answering in the thread only when someone asks something it can answer well. The rules for that are built in, so instructions are optional extras, and it always answers in the thread. The form says where Slack shows a channel's ID. Overlap warnings treat it like "each new message".
 - **A run's logs in the console.** On a worker's Conversation tab, **Logs** beside Stop shows each step's attempts (when, outcome, how long, cost, error), the run's activity, and the server's log lines for that run, redacted, with Copy. Managers and admins only. A failed run also shows its error under "Stopped · Failed".
 - **Rename a worker.** Settings → General → Name. Its old name keeps working: asking for it by that name in Slack, `/worker` or as who it reports to still finds it, and its settings say what else it answers to. A name another worker has, or had, is refused. The rename goes in its history.
 - **Edit a team.** A team's name, what it does, its members and where it works can be changed from the console. A manager can take off only workers they manage; moving where the team works needs an admin or someone who manages everyone on it.
@@ -35,6 +35,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Copy a run's answer.** "What it found" has a Copy button, for the report as written or the summary.
 - **Run numbers.** Each worker's runs are numbered (#1, #2, …) in the console; runs from before show "Run".
 - **Slack trigger overlaps.** Saving a Slack trigger says when another trigger is set off the same way in the same channel, or the channel is another worker's home. It saves either way.
+- **Act on a run from its live view.** The side panel from the working chip, or **Watch**, says why a run is paused and offers what fits: the OK it's waiting for (Approve, Always allow, Turn down) or the answer it needs, **Carry on now** after a restart, and the error when a step failed. **Stop** and **Logs** are there for its manager or an admin.
 
 ### Changed
 - **The org console has a stronger structure:** a top bar, tabs, breadcrumbs and counts per section, with admin sections in the ☰ menu.
@@ -42,6 +43,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **A sealed tool's token rotated by hand in `~/.claude.json` is used straight away** while only the server writes that file, rather than after a restart.
 
 ### Fixed
+- **A step that only queries logs no longer asks for an OK.** A tool that runs a query over logs, metrics or traces (`execute_log_insights_query`, say) was read as a write because of "execute", so a trusted worker's log sweep stopped for approval every run. Only there do "execute" and "run" read as reads; `execute_sql_query` still asks.
 - **A follow-up in a workspace adds to the ticket's open pull request** instead of opening a second one beside it. The "same ticket, same branch" rule only worked for a single repo, so a fix asked for in a workspace (a reply to a red build, say) was pushed to a new branch with a new pull request. It now applies per workspace too, and falls back to the CI watcher's record of the branch once the earlier run is pruned.
 - **A flow step no longer fails before it starts.** The process started early for a step's participant was always relaunched on the step's first send, and the replaced process's last output was taken as the step finishing with nothing to show: "produced no output block", with the real answer arriving seconds later and ignored. Output from a replaced process is now ignored, and the early start launches the way the step does, so it's used rather than replaced.
 - **The server can stop workers' processes again** while workers run as their own user. It had no leave to signal another user's process, so every stop failed, and the failure was read as the live process closing: a step, or a CI fix handed back to its run, ended a moment after it started, and the relaunch came up without its tools or permission prompts. The image's entrypoint now hands the server `kill` as well, the start check requires it, and a turn still in progress is never ended by a stray "turn over".

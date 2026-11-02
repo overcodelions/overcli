@@ -485,7 +485,7 @@ function triggerInput(raw: unknown): Parameters<OrgService['createTrigger']>[2] 
         }
       : {}),
     ...(kind === 'slack'
-      ? { slack: { channel: text(s.channel, 20), on: s.on === 'mention' || s.on === 'reaction' ? s.on : 'message', ...(text(s.reaction, 60) ? { reaction: text(s.reaction, 60).replace(/:/g, '') } : {}), ...(text(s.contains, 200) ? { contains: text(s.contains, 200) } : {}) } }
+      ? { slack: { channel: text(s.channel, 20), on: s.on === 'mention' || s.on === 'reaction' || s.on === 'listen' ? s.on : 'message', ...(text(s.reaction, 60) ? { reaction: text(s.reaction, 60).replace(/:/g, '') } : {}), ...(text(s.contains, 200) ? { contains: text(s.contains, 200) } : {}) } }
       : {}),
     ...(kind === 'webhook' && text(t.webhook?.idPath, 120) ? { webhook: { idPath: text(t.webhook.idPath, 120) } } : {}),
   } as Parameters<OrgService['createTrigger']>[2];

@@ -187,11 +187,11 @@ export function registerOrgTools(server: McpServer, org: OrgService, caller: Org
         worker: z.string(),
         name: z.string().describe('e.g. "New bugs in Support Backlog"'),
         kind: z.enum(['watch', 'webhook', 'slack']),
-        instructions: z.string().describe('What to do with each event, in plain words.'),
+        instructions: z.string().describe('What to do with each event, in plain words. With slack on: listen, only extras (may be empty).'),
         watch: z
           .object({ server: z.string(), tool: z.string(), args: z.record(z.string(), z.unknown()).optional(), everyMinutes: z.number().int().min(5).optional(), itemsPath: z.string().optional(), idPath: z.string().optional() })
           .optional(),
-        slack: z.object({ channel: z.string(), on: z.enum(['message', 'mention', 'reaction']), reaction: z.string().optional(), contains: z.string().optional() }).optional(),
+        slack: z.object({ channel: z.string(), on: z.enum(['message', 'mention', 'reaction', 'listen']).describe('listen: sit in the channel and answer only questions it can, in the thread; instructions are optional extras'), reaction: z.string().optional(), contains: z.string().optional() }).optional(),
         deliverToSlackChannel: z.string().optional().describe('A channel ID to post each result in.'),
         replyInThread: z.boolean().optional(),
         workerDelivers: z.string().optional().describe('What the worker should do with the result itself, e.g. "Comment your triage on the ticket."'),

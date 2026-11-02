@@ -7,7 +7,8 @@
 //              directly, no model, and fire once per item not seen before.
 //              Works inside a VPC: nothing has to reach the server.
 //   webhook  — Jira, GitHub, a CRM or Zapier posts to a secret URL.
-//   slack    — a message, a mention or an emoji reaction in a channel.
+//   slack    — a message, a mention or an emoji reaction in a channel, or
+//              'listen': sit in a channel and answer only what's asked.
 //
 // Each event becomes a task for the worker (OrgService.startAsk), with the
 // event itself attached — so the trust ladder still applies: on probation it
@@ -75,7 +76,11 @@ export interface WorkerTrigger {
   /// worker works on its own (autonomous), and still within its launch cap.
   startsOnItsOwn?: boolean;
   webhook?: { tokenHash: string; idPath?: string };
-  slack?: { channel: string; on: 'message' | 'mention' | 'reaction'; reaction?: string; contains?: string };
+  /// `listen`: each new message, as `message`, but the worker sits in the
+  /// channel as a passive listener: it speaks up in the thread only to
+  /// answer a question it can, and the rules for that are built in, so the
+  /// instructions are only extras.
+  slack?: { channel: string; on: 'message' | 'mention' | 'reaction' | 'listen'; reaction?: string; contains?: string };
   createdBy: string;
   createdAt: number;
   /// Watch: ids already seen. The first poll only records what is there, so
@@ -189,7 +194,7 @@ export class TriggerService {
   /// Checked shape for a new or changed trigger. Returns the error, or null.
   validate(t: Partial<WorkerTrigger>): string | null {
     if (!t.name?.trim()) return 'Give the trigger a name, e.g. "New bugs in Support Backlog".';
-    if (!t.notifyOnly && !t.hand && (!t.instructions || t.instructions.trim().length < 10)) return 'Say what the worker should do with each one.';
+    if (!t.notifyOnly && !t.hand && !listens(t) && (!t.instructions || t.instructions.trim().length < 10)) return 'Say what the worker should do with each one.';
     if (t.kind === 'watch') {
       const w = t.watch;
       if (!w?.server || !w.tool) return 'Pick the tool to check, and what to call.';
@@ -219,6 +224,7 @@ export class TriggerService {
     if (rest.kind === 'slack' && rest.slack?.on === 'mention') return { ok: false, error: MENTION_REFUSED };
     const invalid = this.validate(rest);
     if (invalid) return { ok: false, error: invalid };
+    rest.deliver = inThread(rest);
     const token = input.kind === 'webhook' ? randomBytes(24).toString('base64url') : undefined;
     const trigger: WorkerTrigger = {
       ...rest,
@@ -250,6 +256,7 @@ export class TriggerService {
     }
     const invalid = this.validate(next);
     if (invalid) return { ok: false, error: invalid };
+    next.deliver = inThread(next);
     all[i] = next;
     this.deps.store.save(all);
     return { ok: true, trigger: next };
@@ -503,7 +510,7 @@ export class TriggerService {
       }
       // Someone typing a question over a few messages is one event, taken
       // once they pause. A burst under way takes the rest whatever they say.
-      if (s.on === 'message' && this.deps.quietMs) {
+      if ((s.on === 'message' || s.on === 'listen') && this.deps.quietMs) {
         const k = `${t.id}:${channel}:${ev.user ?? ''}`;
         if (!this.quiet.has(k) && s.contains && !text.toLowerCase().includes(s.contains.toLowerCase())) continue;
         took = true;
@@ -746,12 +753,31 @@ export function argsFor(watch: NonNullable<WorkerTrigger['watch']>): Record<stri
   return swap(watch.args ?? {}) as Record<string, unknown>;
 }
 
+/// What a listening worker is told before each message: the part a manager
+/// would otherwise have to know to write.
+export const LISTEN_RULES = [
+  'You are listening in this Slack channel, not taking part in it.',
+  'Stay silent unless this message asks something you can answer well from what you know: the product, its code, your tools and notes.',
+  'Then answer briefly, in the thread, and say where the answer comes from.',
+  "For anything else (chatter, an announcement, thanks, a question you can't answer with confidence, one someone is already handling), reply with only PASS: nothing is posted.",
+].join(' ');
+
+const listens = (t: Partial<WorkerTrigger>) => t.kind === 'slack' && t.slack?.on === 'listen';
+
+/// A listener answers in the thread it heard the question in, whatever
+/// else the trigger delivers to.
+const inThread = (t: Partial<WorkerTrigger>): Destination[] => {
+  const d = t.deliver ?? [];
+  return listens(t) && !d.some((x) => x.kind === 'thread') ? [...d, { kind: 'thread' }] : d;
+};
+
 function eventPrompt(t: WorkerTrigger, item: WatchItem): string {
   const source = t.kind === 'watch' ? (t.watch?.changes ? `a change to an item you track in ${t.watch.server}` : `a new item from ${t.watch?.server}`) : t.kind === 'webhook' ? 'an event posted to your webhook' : 'a Slack message';
   const details = JSON.stringify(item.data, null, 2);
   const yourself = t.deliver.filter((d): d is Extract<Destination, { kind: 'worker' }> => d.kind === 'worker').map((d) => d.text);
+  const extra = t.instructions?.trim();
   return [
-    t.instructions,
+    ...(listens(t) ? [LISTEN_RULES, ...(extra ? ['', `Also: ${extra}`] : [])] : [t.instructions]),
     '',
     `This was set off by ${source} ("${t.name}"):`,
     `Title (untrusted): ${item.title}`,
