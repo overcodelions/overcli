@@ -12982,7 +12982,21 @@ export const CONSOLE_JS = String.raw`
     var emojiField = h('label', { class: 'field' }, 'Emoji', emoji);
     on.onchange = function () { emojiField.style.display = on.value === 'reaction' ? '' : 'none'; };
     on.onchange();
-    parts.slack = h('div', { class: 'stack' }, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)),
+    // The usual Slack trigger: a passive observer. The worker reads every new
+    // message in a channel such as #acme-questions and stays silent,
+    // speaking up in the thread only when it can answer. Fills in what's
+    // blank; the channel ID is still theirs.
+    var askPreset = h('div', { class: 'stack', style: 'gap:4px' },
+      h('button', { type: 'button', class: 'linkish', style: 'align-self:flex-start', text: 'Sit in a channel and answer questions →', onclick: function () {
+        on.value = 'message'; on.onchange();
+        thread.checked = true;
+        if (!name.value.trim()) name.value = 'Listens in the channel';
+        if (!instructions.value.trim()) instructions.value = 'You are listening in this channel, not taking part. Stay silent unless this message asks something you can answer well from the product and its code. Then answer briefly in the thread and say where the answer comes from. For anything else (chatter, announcements, thanks, a question you can\u2019t answer with confidence, one someone is already handling), reply PASS and nothing is posted.';
+        channel.focus();
+      } }),
+      h('p', { class: 'faint', style: 'margin:0', text: 'Then: /invite @overgo in the channel, and paste its ID below (in Slack: the channel’s name → About → bottom, starts with C).' }));
+    askPreset.hidden = !!t;
+    parts.slack = h('div', { class: 'stack' }, askPreset, h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Channel ID', channel), h('label', { class: 'field' }, 'On', on), emojiField, h('label', { class: 'field' }, 'Only if it contains', contains)),
       h('p', { class: 'faint', text: 'Invite the overgo bot to the channel first (/invite @overgo). On each new message it answers only when it has something worth saying, and passes on the rest. It waits until the person stops typing, so a question sent as a few messages is answered once. Mentions need no trigger: "@overgo" with a question reaches the right worker.' }));
     var KINDS = [['watch', 'Something new or changed in a tool', 'A new ticket, deal or row, or one whose status changes, checked every few minutes. Works anywhere, inside a VPC too.'],
       ['webhook', 'Another system tells us', 'Jira, GitHub, a CRM or Zapier posts each event to a secret address.'],
