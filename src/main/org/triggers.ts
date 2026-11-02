@@ -156,9 +156,10 @@ const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const URL_RE = /https?:\/\/[^\s<>)"'\]]+/g;
 /// The worker's whole reply when there was nothing for it: nothing is posted.
 /// Also PASS with its reason after a dash or colon: "PASS — just chatter",
-/// "pass: an announcement". After a full stop only when written PASS in
-/// capitals ("PASS. Nothing to add"): "Pass. All checks are green" is a reply.
-const PASS_RE = /^\W*(?:[Pp][Aa][Ss][Ss]\b(?:\W*$|\W*?\s*[—–:-]\s)|PASS\.\s)/;
+/// "pass: an announcement". After a colon only as PASS or pass, and after a
+/// full stop only as PASS ("PASS. Nothing to add"): "Pass: all checks are
+/// green" and "Pass. All checks are green" are replies.
+const PASS_RE = /^\W*(?:[Pp][Aa][Ss][Ss]\b(?:\W*$|\W*?\s*[—–-]\s)|(?:PASS|pass)\b\W*?\s*:\s|PASS\.\s)/;
 const MENTION_REFUSED = "Mentions need no trigger: \"@overgo\" with the worker's name, or a question in its line of work, reaches it and it answers in the thread. To have it answer unasked, use each new message.";
 
 export class TriggerService {
@@ -629,7 +630,7 @@ export class TriggerService {
   ): Promise<string[]> {
     const deliveredTo: string[] = [];
     // The worker writes Markdown; Slack reads its own markup (*bold*, •).
-    const said = clip(slackMarkup(reply.trim()), 2800);
+    const said = clip(slackMarkup(reply.trim(), { showUrls: true }), 2800);
     const summary = `*${worker.name}* ${did} _${title}_${url ? ` (<${url}|source>)` : ''}\n${said}`;
     const as = { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) };
     for (const dest of t.deliver) {

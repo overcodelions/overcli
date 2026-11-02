@@ -13,7 +13,7 @@ import { credentialGitEnv } from '../org/repos';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { autoCommitIfDirty, detectBaseBranch, mergeAgent, pushBranch, removeWorktree, runGit } from '../git';
+import { autoCommitIfDirty, detectBaseBranch, mergeAgent, pushBranch, removeWorktree, runGit, runGitAsync } from '../git';
 
 export interface TaskRepo {
   /// The repo's name, for messages ("overgit").
@@ -236,11 +236,16 @@ export function pushTaskBranch(
   return pushBranch({ worktreePath: repo.worktreePath, branchName: code.branch, commitSubject: subject, env: credentialGitEnv(), noHooks: true });
 }
 
+/// How long fetching a lost task branch from origin may take.
+const RESTORE_FETCH_MS = 30_000;
+
 /// Put back any of the task's checkouts that went from disk — swept, or
 /// deleted by hand — from the task branch, here or on origin, at the same
 /// path so the task's record still holds. Fails only when the branch itself
-/// is gone, which leaves nothing to work on.
-export function restoreTaskBranch(code: TaskCode): Result<{ restored: string[] }> {
+/// is gone, which leaves nothing to work on. Async, the fetch bounded: it
+/// runs on the main process at a stage's launch, and a slow origin used to
+/// hold the whole app.
+export async function restoreTaskBranch(code: TaskCode): Promise<Result<{ restored: string[] }>> {
   const restored: string[] = [];
   for (const repo of code.repos) {
     if (fs.existsSync(repo.worktreePath)) continue;
@@ -249,7 +254,7 @@ export function restoreTaskBranch(code: TaskCode): Result<{ restored: string[] }
     runGit(['worktree', 'prune'], repo.projectPath);
     let local = branchExists(repo.projectPath, code.branch);
     if (!local) {
-      runGit(['fetch', 'origin', code.branch], repo.projectPath, credentialGitEnv());
+      await runGitAsync(['fetch', 'origin', code.branch], repo.projectPath, credentialGitEnv(), RESTORE_FETCH_MS);
       const remote = runGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${code.branch}`], repo.projectPath).exitCode === 0;
       // Gone everywhere. A task that never put a commit on it (a docs team
       // working in a repo) loses nothing by starting it again from the base;
@@ -260,7 +265,7 @@ export function restoreTaskBranch(code: TaskCode): Result<{ restored: string[] }
       if (!local) return { ok: false, error: `Could not bring back ${code.branch} in ${repo.name} from ${from}.` };
     }
     fs.mkdirSync(path.dirname(repo.worktreePath), { recursive: true });
-    const res = runGit(['worktree', 'add', repo.worktreePath, code.branch], repo.projectPath);
+    const res = await runGitAsync(['worktree', 'add', repo.worktreePath, code.branch], repo.projectPath);
     if (res.exitCode !== 0) return { ok: false, error: `Could not check ${code.branch} out again in ${repo.name}: ${(res.stderr || res.stdout).trim()}` };
     restored.push(repo.name);
   }

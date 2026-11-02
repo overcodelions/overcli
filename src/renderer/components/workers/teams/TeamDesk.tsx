@@ -3408,45 +3408,45 @@ function TeamRoom({
           <ContinuedNotice task={task} />
         ) : (
           <>
-        {(canDebate || unfolded > 0) && !workingOn && (
-          <div className="flex flex-wrap gap-2">
-            {canDebate && (
-              <button className={secondaryBtn} disabled={!!busy || sending} onClick={() => void roomContinue(task.id)}>
-                Keep debating
-              </button>
+            {(canDebate || unfolded > 0) && !workingOn && (
+              <div className="flex flex-wrap gap-2">
+                {canDebate && (
+                  <button className={secondaryBtn} disabled={!!busy || sending} onClick={() => void roomContinue(task.id)}>
+                    Keep debating
+                  </button>
+                )}
+                {unfolded > 0 && (
+                  <button
+                    className={secondaryBtn}
+                    disabled={!!busy || sending}
+                    title="Have the coordinator revise the pack with what this conversation settled. The current version is kept."
+                    onClick={() => void updatePack(task.id)}
+                  >
+                    Update the pack · {unfolded} exchange{unfolded === 1 ? "" : "s"} not in it
+                  </button>
+                )}
+              </div>
             )}
-            {unfolded > 0 && (
-              <button
-                className={secondaryBtn}
-                disabled={!!busy || sending}
-                title="Have the coordinator revise the pack with what this conversation settled. The current version is kept."
-                onClick={() => void updatePack(task.id)}
-              >
-                Update the pack · {unfolded} exchange{unfolded === 1 ? "" : "s"} not in it
-              </button>
-            )}
-          </div>
-        )}
-        <Composer
-          draftKey={draftKey}
-          variant="compact"
-          strongBorder
-          rootPath={rootPath}
-          autoFocus={focusSignal > 0}
-          focusSignal={focusSignal}
-          // Stays a normal input while someone answers: what you send waits
-          // its turn. The answer and its Stop live in the conversation above.
-          disabled={sending}
-          disabledPlaceholder="Sending…"
-          attachDisabled={busy ? `Attach files once ${busy.speaker} finishes answering — a question with files can't wait in line.` : undefined}
-          placeholder={
-            busy
-              ? `${busy.speaker} is answering — write anyway; it goes in when they finish.`
-              : (workingOn ??
-                "Ask the team, or ask someone to make or change something… e.g. @Lena redo the settings mockup against the real billing screen.")
-          }
-          onSend={send}
-        />
+            <Composer
+              draftKey={draftKey}
+              variant="compact"
+              strongBorder
+              rootPath={rootPath}
+              autoFocus={focusSignal > 0}
+              focusSignal={focusSignal}
+              // Stays a normal input while someone answers: what you send waits
+              // its turn. The answer and its Stop live in the conversation above.
+              disabled={sending}
+              disabledPlaceholder="Sending…"
+              attachDisabled={busy ? `Attach files once ${busy.speaker} finishes answering — a question with files can't wait in line.` : undefined}
+              placeholder={
+                busy
+                  ? `${busy.speaker} is answering — write anyway; it goes in when they finish.`
+                  : (workingOn ??
+                    "Ask the team, or ask someone to make or change something… e.g. @Lena redo the settings mockup against the real billing screen.")
+              }
+              onSend={send}
+            />
           </>
         )}
       </div>

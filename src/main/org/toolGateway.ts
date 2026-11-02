@@ -114,17 +114,31 @@ export function toolGatewayRootKey(dir: string): Buffer {
   return loadKey(dir);
 }
 
+/// Made only when there is no key file at all. One that can't be read, or
+/// isn't a key, is never replaced: what it sealed would be lost for good.
 function loadKey(dir: string): Buffer {
   const file = path.join(dir, 'tool-gateway.key');
+  let key: Buffer;
   try {
-    const key = fs.readFileSync(file);
-    if (key.length === 32) return key;
-  } catch {
-    // First start: made below.
+    key = fs.readFileSync(file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`can't read ${file} (${(err as Error).message}); the tool settings it sealed need it. Fix its access rather than deleting it.`);
+    }
+    key = randomBytes(32);
+    fs.mkdirSync(dir, { recursive: true });
+    // wx: a key another start made meanwhile wins, rather than being overwritten.
+    try {
+      fs.writeFileSync(file, key, { mode: 0o600, flag: 'wx' });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      return loadKey(dir);
+    }
+    return key;
   }
-  const key = randomBytes(32);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, key, { mode: 0o600 });
+  if (key.length !== 32) {
+    throw new Error(`${file} is ${key.length} bytes, not a 32-byte key; the tool settings it sealed need the original. Restore it from a backup, or move it and the gateway's vault files aside to start over.`);
+  }
   return key;
 }
 

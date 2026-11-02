@@ -1245,6 +1245,24 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         });
       },
     },
+    {
+      method: 'POST',
+      path: /^\/api\/teams\/([^/]+)\/edit$/,
+      handle: (c, b, [id]) =>
+        org.editTeam(c, decodeURIComponent(id), {
+          ...(typeof b.name === 'string' ? { name: b.name.slice(0, 80) } : {}),
+          ...(typeof b.purpose === 'string' ? { purpose: b.purpose.slice(0, 1000) } : {}),
+          ...(Array.isArray(b.members)
+            ? {
+                members: (b.members as unknown[]).flatMap((m) => {
+                  const r = m && typeof m === 'object' ? (m as Record<string, unknown>) : null;
+                  return r && typeof r.workerId === 'string' ? [{ workerId: r.workerId, role: typeof r.role === 'string' ? r.role.slice(0, 200) : '' }] : [];
+                }),
+              }
+            : {}),
+          ...(typeof b.workIn === 'string' || b.workIn === null ? { workIn: b.workIn as string | null } : {}),
+        }),
+    },
     { method: 'POST', path: /^\/api\/teams\/([^/]+)\/refresh$/, handle: (c, b, [id]) => org.setTeamKnowledgeRefresh(c, decodeURIComponent(id), typeof b.mode === 'string' ? b.mode : '') },
     { method: 'POST', path: /^\/api\/teams\/([^/]+)\/disband$/, handle: (c, _b, [id]) => org.disbandTeam(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/teams\/([^/]+)\/delete$/, handle: (c, _b, [id]) => org.deleteTeam(c, decodeURIComponent(id)) },
@@ -1419,6 +1437,14 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       handle: (c, b, [name]) => {
         const values = b.values && typeof b.values === 'object' && !Array.isArray(b.values) ? Object.fromEntries(Object.entries(b.values as Record<string, unknown>).filter(([, v]) => typeof v === 'string')) as Record<string, string> : {};
         return org.updateToolSettings(c, decodeURIComponent(name), values);
+      },
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/admin\/tools\/([^/]+)\/edit$/,
+      handle: (c, b, [name]) => {
+        const env = b.env && typeof b.env === 'object' && !Array.isArray(b.env) ? Object.fromEntries(Object.entries(b.env as Record<string, unknown>).filter(([, v]) => typeof v === 'string')) as Record<string, string> : {};
+        return org.editTool(c, decodeURIComponent(name), { command: str(b.command), args: Array.isArray(b.args) ? b.args.filter((a): a is string => typeof a === 'string') : [], env });
       },
     },
     { method: 'POST', path: /^\/api\/admin\/tools\/([^/]+)\/remove$/, handle: (c, _b, [name]) => org.uninstallTool(c, decodeURIComponent(name)) },

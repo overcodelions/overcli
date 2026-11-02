@@ -72,6 +72,20 @@ describe('effectiveDiffBase', () => {
     expect(await effectiveDiffBase(dir, root)).toBe(theirs);
   });
 
+  it('moves with the branch once it merges main, though asked before', async () => {
+    const { dir, git, commit, root } = repo();
+    commit('mine.ts', 'my work');
+    git('checkout', 'main');
+    const theirs = commit('theirs.json', 'teammate work');
+    git('checkout', 'feature');
+    // Asked twice before the merge (the second from cache), then after it.
+    expect(await effectiveDiffBase(dir, root)).toBe(root);
+    expect(await effectiveDiffBase(dir, root)).toBe(root);
+    git('merge', '--no-edit', 'main');
+
+    expect(await effectiveDiffBase(dir, root)).toBe(theirs);
+  });
+
   it('starts after main when the branch was fast-forwarded to it', async () => {
     const { dir, git, commit, root } = repo();
     git('checkout', 'main');

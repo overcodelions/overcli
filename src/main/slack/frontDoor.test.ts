@@ -1299,6 +1299,7 @@ describe('following a thread', () => {
     'unsubscribe, thank you', 'unsubscribe me from this thread please', 'Unsubscribe.', 'can you stop pinging me?',
     "stop pinging me, I'll check myself", "unsubscribe, I've got it from here", 'stop notifying me, no need',
     "stop pinging me, I'd like to check it myself", "unsubscribe, I'd like to follow it myself",
+    'stop pinging me, I’ll check myself', 'don’t keep pinging me, I’ve got it',
   ])('stops notifications for "%s" without starting work', async (text) => {
     const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });
@@ -1331,6 +1332,7 @@ describe('following a thread', () => {
     "ping me when it's merged and seed the staging db", "ping me when it's merged and make it work on Safari", "ping me when it's merged and have it run nightly",
     "ping me when it's merged and see what breaks", "ping me when it's merged and tag the release", "ping me when it's merged and notify the team",
     "ping me when it's merged and kick off the release", "ping me when it's merged and trigger a new build",
+    "let me know when it's merged and the day after deploy it to prod", "ping me when it's merged and an hour later rerun the export",
   ])('preserves the work request in "%s"', async (text) => {
     const h = harness({ dm: true, reply: 'On it.', route: { workerId: 'w-triage', why: 'bugs' } });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: 'the export is broken', dm: false });

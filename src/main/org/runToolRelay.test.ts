@@ -97,6 +97,8 @@ describe('run tool relay', () => {
     // A tool's own cwd is kept; a run with none is started where the app is.
     expect(relayLaunch({ command: 'node', cwd: '/tool' }, { cwd: '/repo' }).cwd).toBe('/tool');
     expect(relayLaunch({ command: 'node' }, {}).cwd).toBeUndefined();
+    // A HOME of the server's own, when workers could write the shared one.
+    expect(relayLaunch({ command: 'npx' }, { cwd: '/data/tool-home', home: '/data/tool-home' }).env.HOME).toBe('/data/tool-home');
     const first = bindRunTools({ acme: db }, 'one', { cwd: '/repo' });
     const token = runToolRelayEnv('one');
     expect(runToolLaunch('one')).toEqual({ cwd: '/repo' });

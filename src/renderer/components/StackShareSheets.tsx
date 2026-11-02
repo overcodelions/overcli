@@ -6,6 +6,7 @@
 // should already have been told which three and why.
 
 import { useEffect, useMemo, useState } from 'react';
+import { loadsCode } from '@shared/machineValues';
 import type { ServiceSpec } from '@shared/services';
 import type { SharePreview, SharedRepoMatch, SharedStack } from '@shared/stackShare';
 import { useServicesStore } from '../servicesStore';
@@ -758,6 +759,15 @@ export function ImportStackSheet({ stacks, onClose }: { stacks: AddStack[]; onCl
               {incoming.stack.services.map((s) => {
                 const command = s.command.join(' ');
                 const check = s.ready.kind === 'command' ? s.ready.command.join(' ') : '';
+                // Options ride on the command line and variables become the
+                // process's environment: both run as much as the command does.
+                const options = (s.options ?? [])
+                  .filter((o) => o.enabled !== false)
+                  .map((o) => (o.value === undefined || o.value === '' ? o.key : `${o.key}=${o.value}`))
+                  .join(' ');
+                const env = Object.entries(s.config.inject ?? {});
+                const kept = env.filter(([k]) => !loadsCode(k)).map(([k, v]) => `${k}=${v}`).join(' ');
+                const withheld = env.filter(([k]) => loadsCode(k)).map(([k, v]) => `${k}=${v}`).join(' ');
                 return (
                   <div key={`${s.repo}/${s.name}`} className="flex min-h-[32px] items-start gap-2.5 border-t border-card px-3 py-1.5 first:border-t-0">
                     <span className="w-[140px] flex-shrink-0 truncate font-mono text-[11.5px] text-ink" title={s.name}>
@@ -767,6 +777,21 @@ export function ImportStackSheet({ stacks, onClose }: { stacks: AddStack[]; onCl
                       <span className="break-all font-mono text-[11px] text-ink-muted" title={command}>
                         {command}
                       </span>
+                      {options && (
+                        <span className="break-all font-mono text-[11px] text-ink-muted" title={options}>
+                          options: {options}
+                        </span>
+                      )}
+                      {kept && (
+                        <span className="break-all font-mono text-[11px] text-ink-muted" title={kept}>
+                          env: {kept}
+                        </span>
+                      )}
+                      {withheld && (
+                        <span className="break-all font-mono text-[11px] text-amber-700 dark:text-amber-300" title={withheld}>
+                          not added, loads code: <span className="line-through">{withheld}</span>
+                        </span>
+                      )}
                       {check && (
                         <span className="break-all font-mono text-[11px] text-ink-faint" title={check}>
                           ready when: {check}
@@ -778,7 +803,9 @@ export function ImportStackSheet({ stacks, onClose }: { stacks: AddStack[]; onCl
               })}
             </div>
             <div className="text-[11.5px] text-ink-muted">
-              These run on your machine when you start the service. Check them as you would a script someone sent you.
+              These run on your machine when you start the service, with their options and variables. Check them as you
+              would a script someone sent you. Variables that load code into a process (NODE_OPTIONS, LD_PRELOAD and the
+              like) are never added.
             </div>
           </div>
 

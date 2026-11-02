@@ -7,6 +7,7 @@ import {
   asWorkerUser,
   effectiveCaps,
   enableWorkerUser,
+  WORKERS_AS_SERVER,
   missingServerCaps,
   readProbe,
   setActiveWorkerUser,
@@ -89,9 +90,15 @@ describe('the startup check', () => {
     expect(readProbe('').ok).toBe(false);
   });
 
-  it('does nothing when the setting is off', async () => {
-    expect(await enableWorkerUser({ ...linux, env: {} })).toEqual({ ok: true, lines: [] });
+  it('runs workers as the server when the setting is off, and says so where it could be had', async () => {
+    expect(await enableWorkerUser({ ...linux, env: {} })).toEqual({ ok: true, lines: [WORKERS_AS_SERVER] });
+    expect(await enableWorkerUser({ ...linux, env: { OVERCLI_WORKER_UID: '' } })).toEqual({ ok: true, lines: [WORKERS_AS_SERVER] });
     expect(activeWorkerUser()).toBeNull();
+    expect(await enableWorkerUser({ ...linux, platform: 'darwin', env: {} })).toEqual({ ok: true, lines: [] });
+  });
+
+  it('refuses the root group for workers', () => {
+    expect(workerUserFrom({ OVERCLI_WORKER_UID: '1001', OVERCLI_WORKER_GID: '0' }, 1000)).toHaveProperty('error');
   });
 
   it('refuses to start, saying why, when the server cannot switch user', async () => {

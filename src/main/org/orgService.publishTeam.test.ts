@@ -196,6 +196,69 @@ describe('making a team on the server', () => {
     expect(h.teams.get(made.team.id)!.piecesAskFirst).toBeUndefined();
   });
 
+  it('lets a manager change what a team is and who is on it', () => {
+    const h = harness();
+    h.roster.set('a', worker('a', { manager: { name: 'Pat', slackUserId: PAT } }));
+    h.roster.set('b', worker('b', { manager: { name: 'Pat', slackUserId: PAT } }));
+    h.roster.set('c', worker('c', { manager: { name: 'Pat', slackUserId: PAT } }));
+    h.roster.set('d', worker('d', { manager: { name: 'Sam', slackUserId: SAM } }));
+    const made = h.svc.makeTeam(pat, { name: 'Pair', purpose: 'Writes launch notes.', budgetUSDPerTask: 30, members: [{ workerId: 'a', role: 'Writes' }, { workerId: 'b', role: 'Checks' }] });
+    if (!made.ok) throw new Error(made.error);
+    expect(h.svc.editTeam(pat, made.team.id, { name: 'Launch crew', purpose: 'Writes and checks every launch FAQ.' })).toEqual({ ok: true });
+    expect(h.teams.get(made.team.id)).toMatchObject({ name: 'Launch crew', purpose: 'Writes and checks every launch FAQ.' });
+    // Swap a member for one Pat manages; roles come along.
+    expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Leads' }, { workerId: 'c', role: 'Checks' }] })).toEqual({ ok: true });
+    expect(h.teams.get(made.team.id)!.members).toEqual([{ workerId: 'a', role: 'Leads' }, { workerId: 'c', role: 'Checks' }]);
+    // Not a worker Pat manages, a missing role, or fewer than two: refused.
+    expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Leads' }, { workerId: 'd', role: 'Checks' }] })).toMatchObject({ ok: false, error: expect.stringContaining("don't manage D") });
+    expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Leads' }, { workerId: 'c', role: ' ' }] })).toMatchObject({ ok: false });
+    expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Leads' }] })).toMatchObject({ ok: false, error: expect.stringContaining('at least two') });
+    expect(h.svc.editTeam(pat, made.team.id, { name: '  ' })).toMatchObject({ ok: false });
+    // Someone who manages no one on it can't change it.
+    expect(h.svc.editTeam(sam, made.team.id, { purpose: 'Something else.' })).toMatchObject({ ok: false });
+    expect(h.teams.get(made.team.id)!.purpose).toBe('Writes and checks every launch FAQ.');
+  });
+
+  it('lets a manager take off only their own workers, and move only a team they manage whole', () => {
+    const h = harness();
+    const ada: OrgCaller = { slackUserId: 'U0ACMEADA', name: 'Ada', admin: true };
+    h.roster.set('a', worker('a', { manager: { name: 'Pat', slackUserId: PAT } }));
+    h.roster.set('b', worker('b', { manager: { name: 'Pat', slackUserId: PAT } }));
+    h.roster.set('d', worker('d', { manager: { name: 'Sam', slackUserId: SAM } }));
+    const made = h.svc.makeTeam(ada, { name: 'Mixed', purpose: 'Writes launch notes.', budgetUSDPerTask: 30, members: [{ workerId: 'a', role: 'Writes' }, { workerId: 'b', role: 'Checks' }, { workerId: 'd', role: 'Reviews' }] });
+    if (!made.ok) throw new Error(made.error);
+    // Pat may drop Pat's own worker, not Sam's.
+    expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Writes' }, { workerId: 'b', role: 'Checks' }] })).toMatchObject({ ok: false, error: expect.stringContaining('take D off') });
+    expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Writes' }, { workerId: 'd', role: 'Reviews' }] })).toEqual({ ok: true });
+    // Where it works needs everyone's manager, or an admin; leaving it as it is doesn't.
+    expect(h.svc.editTeam(pat, made.team.id, { workIn: 'somewhere' })).toMatchObject({ ok: false, error: expect.stringContaining('where it works') });
+    expect(h.svc.editTeam(pat, made.team.id, { name: 'Mixed crew', workIn: null })).toEqual({ ok: true });
+    expect(h.svc.editTeam(ada, made.team.id, { members: [{ workerId: 'a', role: 'Writes' }, { workerId: 'b', role: 'Checks' }] })).toEqual({ ok: true });
+  });
+
+  it('renames a worker, keeps its old name finding it, and refuses a name in use', () => {
+    const h = harness();
+    h.roster.set('a', worker('a', { manager: { name: 'Pat', slackUserId: PAT } }));
+    h.roster.set('b', worker('b', { manager: { name: 'Pat', slackUserId: PAT } }));
+    const saved: Worker[] = [];
+    const svc = h.svc as unknown as { deps: { workers: { save: (w: Worker) => unknown } } };
+    svc.deps.workers.save = (w: Worker) => { saved.push(w); h.roster.set(w.id, w); return { ok: true, worker: w }; };
+    expect(h.svc.update(pat, 'a', { name: 'Scout' })).toMatchObject({ ok: true });
+    expect(h.roster.get('a')).toMatchObject({ name: 'Scout', formerNames: ['A'] });
+    expect(h.svc.resolve(pat, 'scout')?.id).toBe('a');
+    expect(h.svc.resolve(pat, 'A')?.id).toBe('a');
+    expect(h.audit.some((e) => /Renamed A to Scout/.test(JSON.stringify(e)))).toBe(true);
+    // Taken: another's name, or another's old name.
+    expect(h.svc.update(pat, 'b', { name: 'scout' })).toMatchObject({ ok: false, error: expect.stringContaining('already a worker called Scout') });
+    expect(h.svc.update(pat, 'b', { name: 'A' })).toMatchObject({ ok: false, error: expect.stringContaining('used to be called A') });
+    expect(h.svc.update(pat, 'b', { name: ' ' })).toMatchObject({ ok: false });
+    // Back to its old name: the alias goes, nothing is lost.
+    expect(h.svc.update(pat, 'a', { name: 'A' })).toMatchObject({ ok: true });
+    expect(h.roster.get('a')).toMatchObject({ name: 'A', formerNames: ['Scout'] });
+    // Someone who doesn't manage it can't rename it.
+    expect(h.svc.update(sam, 'a', { name: 'Other' })).toMatchObject({ ok: false });
+  });
+
   it('suggests a crew only from the workers the caller manages, and names the gaps', async () => {
     const h = harness();
     h.roster.set('a', worker('a', { manager: { name: 'Pat', slackUserId: PAT } }));

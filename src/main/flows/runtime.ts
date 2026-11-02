@@ -95,6 +95,8 @@ import {
   type WorkspaceMemberRef,
 } from '../../shared/flows/workspaceMembers';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
+import { nextRunNumber } from './runNumbers';
+import { host } from '../host';
 import { getWatchSource, parseWatchReport, type WatchTickReport } from './watch/source';
 import { notifyWatch } from './watch/notify';
 // Importing this registers the bundled watch source(s) with the registry as a
@@ -848,11 +850,15 @@ export class FlowRuntimeImpl {
           info.decisionNote = verdict.allow ? `Allowed: ${verdict.why}${verdict.lookup ? ', once its name resolves' : ''}.` : `Refused: ${verdict.why}.`;
           // A public name is resolved before the allow is sent: one that
           // points inside is refused after all, and the record says so.
+          // The card already went out marked allowed, so the settled label
+          // is sent again (same event id: the renderer replaces it).
           const { conversationId } = event;
+          const card = ev;
           void judgeFetchResolved(verdict).then((v) => {
-            if (v.allow !== verdict.allow) {
+            if (verdict.lookup) {
               info.decided = v.allow ? 'allow' : 'deny';
               info.decisionNote = v.allow ? `Allowed: ${v.why}.` : `Refused: ${v.why}.`;
+              this.emit({ type: 'stream', conversationId, events: [card] });
             }
             log('info', 'flows.permission', `${v.allow ? 'allowed' : 'refused'} WebFetch for run ${runId} (safe fetch: ${v.why})`);
             this.runner.respondPermission(conversationId, info.requestId, v.allow, undefined, undefined, undefined, v.allow ? undefined : v.note);
@@ -1338,6 +1344,7 @@ export class FlowRuntimeImpl {
       chainDepth: args.chainDepth,
       chainParentRunId: args.chainParentRunId,
       workerId: args.workerId,
+      ...(args.workerId ? { number: nextRunNumber(join(host().dataDir(), 'run-numbers.json'), args.workerId, this.runs.values()) } : {}),
       workerName: args.workerName,
       ...(args.team ? { team: args.team } : {}),
       ...(args.allowExternalActions ? { allowExternalActions: true } : {}),
@@ -1529,6 +1536,17 @@ export class FlowRuntimeImpl {
 
   getRun(runId: UUID): FlowRun | null {
     return this.runs.get(runId) ?? null;
+  }
+
+  /// The full body of what a step produced, as the run pane picks it (its
+  /// latest successful attempt, else the named artifact): the renderer only
+  /// holds a capped copy, and copy/open want all of it.
+  artifactBody(runId: UUID, stepId: string): string | null {
+    const run = this.runs.get(runId);
+    const step = run?.flowSnapshot.steps.find((s) => s.id === stepId);
+    if (!run || !step) return null;
+    const latest = [...run.attempts].reverse().find((a) => a.stepId === stepId && a.outcome === 'success');
+    return (latest?.artifact ?? run.artifacts[step.output])?.body ?? null;
   }
 
   /// Check out a single-project flow branch in its main project and keep the
@@ -2381,7 +2399,7 @@ export class FlowRuntimeImpl {
     deleteRunFromDisk(args.runId);
     clearAttachments(args.runId);
     // Tell the renderer so its in-memory `runs` map evicts in lockstep.
-    this.emit({ type: 'flowRunUpdate', run: { ...run, state: { kind: 'aborted' } } });
+    this.emit({ type: 'flowRunUpdate', run: forRenderer({ ...run, state: { kind: 'aborted' } }) });
     // Explicit delete only: tear down the worktree(s) the run forked. This
     // shells out to `git worktree remove`, which can take a second on a large
     // repo — but the run's metadata is already gone and the teardown is
@@ -5982,6 +6000,19 @@ export function treeChanged(incrementalDiff: string | null): boolean {
 export async function effectiveDiffBase(cwd: string, baselineCommit: string, baseBranch?: string): Promise<string> {
   const ref = await resolveBaseRef(cwd, baseBranch);
   if (!ref) return baselineCommit;
+  // The answer depends only on HEAD, the base's tip and the branch name: one
+  // call reads all three, and the answer is kept until one of them moves.
+  const tip = await runGitAsync(['rev-parse', 'HEAD', ref, '--abbrev-ref', 'HEAD', '--'], cwd);
+  const [headSha, refSha, abbrev] = tip.exitCode === 0 ? tip.stdout.split('\n').map((l) => l.trim()) : [];
+  const key = headSha && refSha && abbrev ? [cwd, baselineCommit, ref, headSha, refSha, abbrev].join('\0') : null;
+  const hit = key ? diffBaseCache.get(key) : undefined;
+  if (hit) return hit;
+  const from = await findDiffBase(cwd, baselineCommit, ref);
+  if (key) remember(diffBaseCache, key, from, DIFF_CACHE_MAX);
+  return from;
+}
+
+async function findDiffBase(cwd: string, baselineCommit: string, ref: string): Promise<string> {
   const current = await runGitAsync(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd);
   const branch = current.exitCode === 0 ? current.stdout.trim() : '';
   if (branch && (branch === ref || `origin/${branch}` === ref)) return baselineCommit;
@@ -5996,6 +6027,18 @@ export async function effectiveDiffBase(cwd: string, baselineCommit: string, bas
 /// after every step, and the answer (up to seven git calls) rarely changes.
 const baseRefCache = new Map<string, { ref: string | null; at: number }>();
 const BASE_REF_CACHE_MS = 60_000;
+/// Where a diff starts, by folder, baseline and the tips it was worked out
+/// from: a new commit on either side is a new key, so it can't go stale.
+const diffBaseCache = new Map<string, string>();
+/// Entries either cache keeps: one per folder a run diffs, with room to spare.
+const DIFF_CACHE_MAX = 256;
+
+/// Set `key`, keeping `cache` to `max` entries by dropping the oldest set.
+function remember<V>(cache: Map<string, V>, key: string, value: V, max: number): void {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > max) cache.delete(cache.keys().next().value as string);
+}
 
 /// The base branch as a ref `merge-base` accepts: the run's own base when it
 /// recorded one, else the remote default, else a local main/master.
@@ -6004,7 +6047,7 @@ async function resolveBaseRef(cwd: string, baseBranch?: string): Promise<string 
   const cached = baseRefCache.get(key);
   if (cached && Date.now() - cached.at < BASE_REF_CACHE_MS) return cached.ref;
   const ref = await findBaseRef(cwd, baseBranch);
-  baseRefCache.set(key, { ref, at: Date.now() });
+  remember(baseRefCache, key, { ref, at: Date.now() }, DIFF_CACHE_MAX);
   return ref;
 }
 
@@ -6104,23 +6147,50 @@ async function computeRunDiff(cwd: string, baselineCommit: string, baseBranch?: 
 /// froze the window. The full body stays here, on disk and in step inputs.
 export const RENDERER_ARTIFACT_MAX = 2 * 1024 * 1024;
 
-function capArtifact(a: FlowArtifact): FlowArtifact {
-  if (a.body.length <= RENDERER_ARTIFACT_MAX) return a;
-  const dropped = a.body.length - RENDERER_ARTIFACT_MAX;
+/// Most artifact text one run update carries in all. The per-artifact cap
+/// alone let a run with many large artifacts (each attempt keeps its own)
+/// clone N × 2 MiB on every update. Past it, a body is only the marker.
+export const RENDERER_RUN_ARTIFACTS_MAX = 8 * 1024 * 1024;
+
+function capArtifact(a: FlowArtifact, limit = RENDERER_ARTIFACT_MAX): FlowArtifact {
+  if (a.body.length <= limit) return a;
+  const dropped = a.body.length - limit;
   return {
     ...a,
     body:
-      a.body.slice(0, RENDERER_ARTIFACT_MAX) +
-      `\n\n[…${dropped.toLocaleString()} more characters not shown — too large to display]\n`,
+      a.body.slice(0, limit) +
+      `${limit > 0 ? '\n\n' : ''}[…${dropped.toLocaleString()} more characters not shown — too large to display]\n`,
   };
 }
 
-/// A copy of `run` safe to post to the renderer: artifact bodies capped so
-/// an oversized one can't stall the window.
+/// A copy of `run` safe to post to the renderer: artifact bodies capped,
+/// each and in total, so oversized ones can't stall the window. The budget
+/// goes first to what the run pane shows (each step's latest successful
+/// attempt, newest first), then the named artifacts, then older attempts. An artifact
+/// shared between an attempt and the map is charged once.
 export function forRenderer(run: FlowRun): FlowRun {
+  let budget = RENDERER_RUN_ARTIFACTS_MAX;
+  const capped = new Map<FlowArtifact, FlowArtifact>();
+  const cap = (a: FlowArtifact): FlowArtifact => {
+    let c = capped.get(a);
+    if (!c) {
+      const limit = Math.min(RENDERER_ARTIFACT_MAX, budget);
+      c = capArtifact(a, limit);
+      budget -= Math.min(a.body.length, limit);
+      capped.set(a, c);
+    }
+    return c;
+  };
+  const shownSteps = new Set<string>();
+  for (let i = run.attempts.length - 1; i >= 0; i--) {
+    const at = run.attempts[i];
+    if (!at.artifact || at.outcome !== 'success' || shownSteps.has(at.stepId)) continue;
+    shownSteps.add(at.stepId);
+    cap(at.artifact);
+  }
   const artifacts: Record<string, FlowArtifact> = {};
-  for (const [name, a] of Object.entries(run.artifacts)) artifacts[name] = capArtifact(a);
-  const attempts = run.attempts.map((at) => (at.artifact ? { ...at, artifact: capArtifact(at.artifact) } : at));
+  for (const [name, a] of Object.entries(run.artifacts)) artifacts[name] = cap(a);
+  const attempts = run.attempts.map((at) => (at.artifact ? { ...at, artifact: cap(at.artifact) } : at));
   return structuredClone({ ...run, artifacts, attempts });
 }
 

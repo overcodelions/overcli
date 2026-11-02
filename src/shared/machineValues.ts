@@ -15,12 +15,12 @@
 /// over a locator suffix: SECRET_ID is Vault AppRole's actual credential, not
 /// an identifier.
 const UNAMBIGUOUS = [
-  'password', 'passwd', 'pwd', 'passphrase', 'secret', 'credential', 'authorization', 'bearer',
+  'password', 'passwd', 'pwd', 'pw', 'passphrase', 'secret', 'credential', 'authorization', 'bearer',
 ];
 
 /// Words that only suggest one, and defer to a locator: AUTH_URL and
 /// SSH_KEY_PATH name where something lives, not what it is.
-const AMBIGUOUS = ['token', 'apikey', 'privatekey', 'auth', 'pass', 'private'];
+const AMBIGUOUS = ['token', 'apikey', 'privatekey', 'auth', 'pass', 'private', 'cookie'];
 
 /// What comes right before a trailing `key` when the key is a database, cache
 /// or queue key rather than a credential. Kept short on purpose: every word
@@ -67,6 +67,49 @@ export function isSecretName(name: string): boolean {
   // AWS_KEY_V2 is not.
   return parts.some((p, i) => p === 'key' && parts.some((q, j) => j !== i &&
     ['api', 'aws', 'secret', 'private', 'auth', 'credential', 'bearer'].includes(q)));
+}
+
+/// Whether the argument after `flag` is a credential: after a secret-named
+/// flag (`--password`, `--pw`), or after `-p`, the short password flag of
+/// most database clients, unless it is a number or a port map (`-p 5432`,
+/// `-p 8080:80`, `-p 3.12`), which is what `-p` means everywhere else.
+export function isSecretFlagValue(flag: string, value: string): boolean {
+  if (isSecretName(flag)) return true;
+  return flag === '-p' && !/^[\d.:]+(?:\/(?:tcp|udp))?$/.test(value);
+}
+
+/// `user:password@` in an address, with a scheme or without one
+/// (`postgresql://app:pw@db/prod`, `app:pw@db:5432`). An npm or git alias
+/// (`npm:acme-ui@2`) reads the same and is not one.
+const USER_PASSWORD = /(?:^|[\s=,;'"(]|:\/\/)([^\s:/@'"=,;]+):([^\s@/'"]+)@(?=[A-Za-z0-9[])/g;
+const ALIAS_SCHEMES = new Set(['npm', 'jsr', 'workspace', 'file', 'link', 'git', 'github', 'gitlab', 'bitbucket', 'portal', 'patch']);
+/// A query or fragment parameter: `?key=…`, `#token=…`, `&sig=…`.
+const URL_PARAM = /[?&#;]([A-Za-z0-9_.-]+)=/g;
+
+/// Whether some text carries a credential inside an address: a user and
+/// password, or a query or fragment parameter with a secret name
+/// (`…/sse#token=…`).
+export function holdsAddressCredential(text: string): boolean {
+  for (const m of text.matchAll(USER_PASSWORD)) if (!ALIAS_SCHEMES.has(m[1].toLowerCase())) return true;
+  for (const m of text.matchAll(URL_PARAM)) if (isSecretName(m[1]) || /^(?:sig|signature)$/i.test(m[1])) return true;
+  return false;
+}
+
+/// Environment variables that make a process load code nobody named in its
+/// command: a preload, a module path, interpreter flags, a shell's startup
+/// file, the program `git` runs for ssh. A shared stack setting one runs
+/// that code on Start without it ever showing in the command.
+const LOADS_CODE = new Set([
+  'NODE_OPTIONS', 'NODE_PATH', 'PATH', 'PYTHONSTARTUP', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONUSERBASE',
+  'PERL5OPT', 'PERL5LIB', 'PERLLIB', 'RUBYOPT', 'RUBYLIB', 'BASH_ENV', 'ENV', 'ZDOTDIR', 'PROMPT_COMMAND',
+  'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'GRADLE_OPTS', 'MAVEN_OPTS',
+  'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_EXEC_PATH', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM',
+]);
+const LOADS_CODE_PREFIX = /^(?:LD_|DYLD_|NPM_CONFIG_|GIT_CONFIG_(?:KEY|VALUE|COUNT|PARAMETERS))/;
+
+export function loadsCode(name: string): boolean {
+  const upper = name.toUpperCase();
+  return LOADS_CODE.has(upper) || LOADS_CODE_PREFIX.test(upper);
 }
 
 /// What a secret's value becomes anywhere it is shown: the Overrides tab, a

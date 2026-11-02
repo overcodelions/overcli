@@ -9,7 +9,10 @@
 #     src/main/org/workerUser.ts). The shared folders are opened to the
 #     worker's group, and the server keeps only the capabilities it needs to
 #     launch workers and look after what they write: setuid, setgid and
-#     dac_override. Workers get none.
+#     dac_override. Workers get none. They have to be ambient for node to
+#     keep them across exec, so every child would inherit them: the server
+#     starts everything else through setpriv, which drops them
+#     (src/main/org/childCaps.ts), and won't start holding them without it.
 #   Started as root, with only OVERCLI_TEST_UID: repo tests run as that user;
 #     the server keeps setuid and setgid.
 set -eu

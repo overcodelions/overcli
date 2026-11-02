@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fetchesChecked, judgeFetch, judgeFetchResolved, noteSeen, seedOnce, setLookup, setSafeFetch, urlKey } from './safeFetch';
 
 const on = (ownDomains: string[] = []) => setSafeFetch({ mode: () => 'safe', ownDomains: () => ownDomains });
@@ -69,6 +69,19 @@ describe('safe fetches', () => {
     expect(await judgeFetchResolved(fetch('r', 'https://wiki.acme.lan/page'))).toMatchObject({ allow: true });
     // A refusal is never resolved.
     expect(await judgeFetchResolved(fetch('r', 'https://own.example/made-up'))).toMatchObject({ allow: false });
+  });
+
+  it('leaves no lookup timer behind once the name resolves', async () => {
+    on();
+    setLookup(async () => ['93.184.216.34']);
+    noteSeen('r', 'https://vendor.example/a');
+    vi.useFakeTimers();
+    try {
+      expect(await judgeFetchResolved(fetch('r', 'https://vendor.example/a'))).toMatchObject({ allow: true });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('compares addresses without scheme, fragment or trailing slash, keeping the query', () => {

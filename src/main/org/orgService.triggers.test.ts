@@ -286,6 +286,16 @@ describe('a Slack trigger where something else already listens', () => {
     expect(h.triggers.all).toHaveLength(2);
   });
 
+  it('never names a private worker the caller can’t see, nor its trigger', () => {
+    const hidden: Worker = { ...northwind, manager: { name: 'Sam', slackUserId: sam.slackUserId! } };
+    const h = harness(fakeTriggers([msgTrigger({})]), {}, [hidden]);
+    const res = h.svc.createTrigger(pat, 'Triage', input('C0ACMEQS'));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.notes).toEqual([expect.stringContaining('Another worker already has a trigger'), expect.stringContaining('another worker’s home')]);
+    expect(res.notes!.join(' ')).not.toMatch(/Northwind/);
+  });
+
   it('says nothing about the worker’s own home channel, a paused trigger, or a different emoji', () => {
     const own = { ...triage, slackHomeChannels: ['C0ACMEQS'] };
     const h = harness(fakeTriggers([msgTrigger({ enabled: false }), msgTrigger({ id: 't8', slack: { channel: 'C0ACMEQS', on: 'reaction', reaction: 'bug' } })]), {}, [own]);

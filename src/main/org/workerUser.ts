@@ -44,6 +44,7 @@ export function workerUserFrom(env: NodeJS.ProcessEnv, serverUid: number | undef
   if (!/^\d+$/.test(uid)) return { error: `OVERCLI_WORKER_UID is "${uid.slice(0, 40)}", not a number. Set it to the numeric id of a user that cannot read the server's data directory.` };
   if (Number(uid) === 0) return { error: 'OVERCLI_WORKER_UID is 0, which is root. Set it to a user that cannot read the server\'s data directory.' };
   if (!/^\d+$/.test(gid)) return { error: `OVERCLI_WORKER_GID is "${gid.slice(0, 40)}", not a number. Set it to a numeric group id, or leave it out to use the user's id.` };
+  if (Number(gid) === 0) return { error: 'OVERCLI_WORKER_GID is 0, the root group. Set it to a group that cannot read the server\'s data directory.' };
   if (serverUid !== undefined && Number(uid) === serverUid) {
     return { error: `OVERCLI_WORKER_UID is ${uid}, the server's own user. Set it to a different user.` };
   }
@@ -51,6 +52,18 @@ export function workerUserFrom(env: NodeJS.ProcessEnv, serverUid: number | undef
 }
 
 let active: WorkerUser | null = null;
+let roots: string[] = [];
+
+/// The folders workers can write (HOME and SHARED_DATA_DIRS), once a worker
+/// user is on. The server's git in them runs as the worker (serverGit.ts).
+export function workerWritableRoots(): string[] {
+  return active ? roots : [];
+}
+
+/// Set with the worker user by `enableWorkerUser`; tests set it directly.
+export function setWorkerWritableRoots(next: string[]): void {
+  roots = [...next];
+}
 
 /// The worker user for this process, or null when workers run as the server.
 export function activeWorkerUser(): WorkerUser | null {
@@ -62,10 +75,10 @@ export function setActiveWorkerUser(user: WorkerUser | null): void {
   active = user;
 }
 
-/// `command args…` run as `user`. The shell step only sets the umask (the
-/// group keeps read and write, others get nothing) and then execs the
-/// command, so the pid, stdio and signals are the command's own.
-export function asWorkerUser(user: WorkerUser, command: string, args: readonly string[]): { command: string; args: string[] } {
+/// `command args…` run as `user`. The shell step only sets the umask (by
+/// default the group keeps read and write, others get nothing) and then
+/// execs the command, so the pid, stdio and signals are the command's own.
+export function asWorkerUser(user: WorkerUser, command: string, args: readonly string[], umask: '007' | '002' = '007'): { command: string; args: string[] } {
   return {
     command: SETPRIV,
     args: [
@@ -78,7 +91,7 @@ export function asWorkerUser(user: WorkerUser, command: string, args: readonly s
       '--',
       '/bin/sh',
       '-c',
-      'umask 007; exec "$@"',
+      `umask ${umask}; exec "$@"`,
       'overcli-worker',
       command,
       ...args,
@@ -212,6 +225,18 @@ export function probeTargets(dataDir: string, home: string): Pick<WorkerProbe, '
   };
 }
 
+export const WORKERS_AS_SERVER = 'warning: workers run as the server\'s own user, so a worker that runs shell commands can read the server\'s secrets. Set OVERCLI_WORKER_UID to run them as a user of their own (deploy/docs/security.md).';
+
+/// Check again, after the server has started, that the worker can read none
+/// of the secret files. The startup check skips those that don't exist yet,
+/// which on a new data volume is most of them. Lines are FAIL ones only.
+export async function reprobeWorkerSecrets(opts: { dataDir: string; home: string; exec?: ExecFile }): Promise<ProbeResult> {
+  if (!active) return { ok: true, lines: [] };
+  const { secrets } = probeTargets(opts.dataDir, opts.home);
+  const res = await runWorkerProbe(active, { secrets, writable: [], serverPid: process.pid }, opts.exec);
+  return { ok: res.ok, lines: res.lines.filter((l) => !l.startsWith('ok ')) };
+}
+
 /// Turn workers-as-their-own-user on for this server, after checking it can
 /// work: the setting, the host, the server's capabilities, then a probe run
 /// as the worker. Returns the lines to log, and ok: false when the server
@@ -231,7 +256,10 @@ export async function enableWorkerUser(opts: {
   const parsed = workerUserFrom(opts.env, 'serverUid' in opts ? opts.serverUid : process.getuid?.());
   if (parsed === undefined) {
     setActiveWorkerUser(null);
-    return { ok: true, lines: [] };
+    // Said at every start where it could be had: off is the server's own
+    // user, and a worker that runs shell commands can read its secrets.
+    const linux = (opts.platform ?? process.platform) === 'linux';
+    return { ok: true, lines: linux ? [WORKERS_AS_SERVER] : [] };
   }
   if ('error' in parsed) return { ok: false, lines: [parsed.error] };
   if ((opts.platform ?? process.platform) !== 'linux') return { ok: false, lines: ['OVERCLI_WORKER_UID only works on Linux. Unset it to run workers as the server.'] };
@@ -245,5 +273,6 @@ export async function enableWorkerUser(opts: {
   const lines = probe.lines.map((l) => `worker user ${parsed.uid}: ${l}`);
   if (!probe.ok) return { ok: false, lines: [...lines, 'OVERCLI_WORKER_UID is set but the check above failed, so the server will not start. Fix it, or unset OVERCLI_WORKER_UID to run workers as the server.'] };
   setActiveWorkerUser(parsed);
+  setWorkerWritableRoots(probeTargets(opts.dataDir, opts.home).writable);
   return { ok: true, lines: [...lines, `workers run as user ${parsed.uid} (group ${parsed.gid})`] };
 }
