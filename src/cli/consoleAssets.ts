@@ -112,6 +112,20 @@ code, pre { font-family: var(--mono); font-size: 12.5px; }
 .topbar { min-height: 56px; }
 .topbar .brand-slash { flex: none; margin: 0 -2px; font-size: 20px; font-weight: 400; line-height: 1; color: var(--faint); }
 .topbar .org { min-width: 0; font-weight: 700; font-size: 16px; letter-spacing: -0.01em; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search-wrap { position: relative; flex: 1 1 auto; max-width: 520px; display: flex; }
+.search-wrap .search { max-width: none; }
+.find-pop { position: absolute; left: 0; right: 0; top: calc(100% + 6px); max-height: 70vh; overflow: auto; padding: 4px 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: 0 12px 32px rgba(0,0,0,.18); z-index: 40; }
+.find-sec { padding: 10px 14px 4px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.find-row { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px 14px; background: transparent; border: 0; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.find-row.on { background: var(--panel-2); }
+.find-icon { background: var(--panel-2); color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+.find-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.find-title { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find-sub, .find-snip { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find-snip { color: var(--faint); }
+.find-note { padding: 10px 14px; margin: 0; font-size: 13px; }
+.find-foot { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+.find-foot .find-title { font-weight: 500; color: var(--muted); }
 .search { flex: 1 1 auto; max-width: 520px; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--line); color: var(--faint); }
 .search:focus-within { border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
 .search input { border: 0 !important; background: transparent !important; box-shadow: none !important; padding: 0; min-height: 0; font-size: 13.5px; }
@@ -695,7 +709,6 @@ pre.diff .da { color: var(--ok); } pre.diff .dd { color: var(--bad); } pre.diff 
 .t-turn { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; border-top: 1px dashed var(--line); }
 .t-replybar { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
 .t-compose { display: flex; flex-direction: column; gap: 8px; }
-.t-compose textarea { font: inherit; min-height: 64px; }
 .t-piece { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel-2); }
 .members { display: flex; flex-direction: column; gap: 4px; }
 .member { display: flex; gap: 10px; align-items: center; padding: 8px; border: 0; background: transparent; border-radius: var(--r); cursor: pointer; font: inherit; color: inherit; min-height: 44px; text-align: left; }
@@ -986,9 +999,23 @@ mark.on { background: var(--need); color: var(--need-ink); }
 .wl-original pre { max-height: none; }
 .wl-compose { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 14px; border-top: 1px solid var(--line); background: var(--panel); border-radius: 0 0 var(--r-lg) var(--r-lg); }
 .wl-compose .seg { align-self: flex-start; }
-.wl-compose-row { display: flex; gap: 8px; align-items: flex-end; }
-.wl-compose textarea { flex: 1; min-width: 0; resize: none; font: inherit; line-height: 1.45; min-height: 44px; max-height: 160px; }
-.wl-compose .btn { min-height: 44px; }
+.cbox { display: flex; flex-direction: column; border: 1px solid var(--field-line); background: var(--field); border-radius: var(--r); transition: border-color .12s, box-shadow .12s; }
+.cbox:hover { border-color: var(--muted); }
+.cbox:focus-within { border-color: var(--go); box-shadow: 0 0 0 3px var(--go-soft); }
+.cbox.drop { border-color: var(--go); border-style: dashed; }
+.cbox textarea, .cbox textarea:hover, .cbox textarea:focus { border: 0; background: none; box-shadow: none; resize: none; min-height: 44px; max-height: 220px; padding: 11px 12px 4px; line-height: 1.45; overflow-y: auto; }
+.cbox-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px 8px 6px; }
+.cbox-bar .btn { min-height: 32px; margin-left: auto; }
+.cbox-hint { font-size: 12px; }
+.cbox-attach { width: 32px; height: 32px; flex: none; border: 0; background: none; border-radius: 6px; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.cbox-attach:hover { background: var(--panel-2); color: var(--ink); }
+.cbox-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 8px 0; }
+.cbox-file { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; padding: 3px 3px 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); font-size: 12.5px; }
+.cbox-file img { width: 24px; height: 24px; object-fit: cover; border-radius: 3px; flex: none; }
+.cbox-file > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cbox-file button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 2px; display: inline-flex; border-radius: 4px; }
+.cbox-file button:hover { color: var(--ink); background: var(--panel); }
+@media (max-width: 720px) { .cbox-hint { display: none; } }
 .wl-detail-in > .wl-empty { border: 0; height: auto; flex: 1; background: none; }
 .chip.need:not([aria-pressed="true"]) { color: var(--need); border-color: color-mix(in srgb, var(--need) 40%, transparent); }
 .wl-oc { grid-row: span 2; align-self: start; width: 24px; height: 24px; margin-top: 1px; border-radius: 6px; display: flex; align-items: center; justify-content: center; background: var(--panel-2); color: var(--muted); }
@@ -1127,7 +1154,7 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .trig-form { gap: 14px; }
 .trig-head h1 { margin: 2px 0 0; font-size: 20px; font-weight: 600; }
 .trig-says { background: var(--go-soft); border-radius: var(--r-lg); padding: 16px 20px; display: flex; flex-direction: column; gap: 4px; }
-.trig-says p { margin: 0; font-size: 15px; line-height: 1.6; max-width: 820px; }
+.trig-says p { margin: 0; font-size: 15px; line-height: 1.6; }
 .trig-foot { position: sticky; bottom: 0; z-index: 2; background: var(--bg); padding-bottom: 14px; }
 .msg.need { background: var(--need-soft); color: var(--need); }
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
@@ -1460,7 +1487,7 @@ section.checking .checklist { opacity: 0.45; transition: opacity 0.15s; }
   .frame { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
   .topbar { position: static; flex-wrap: wrap; padding: 10px 16px; gap: 10px; }
   .topbar .brand { width: auto; }
-  .search { order: 3; flex-basis: 100%; max-width: none; }
+  .search-wrap { order: 3; flex-basis: 100%; max-width: none; }
   .search kbd, .top-link .lbl { display: none; }
   .brand { padding: 0 8px 0 0; }
   .brand-sub, .nav .sep { display: none; }
@@ -2000,7 +2027,6 @@ button.pi-file:hover, a.pi-file:hover { background: var(--panel-2); }
 .tt-detail[hidden] { display: none; }
 .tt-link { appearance: none; border: 0; background: none; padding: 4px 0; font: 600 12px var(--sans); color: var(--go); cursor: pointer; }
 .tt-ask { background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
-.tt-ask textarea.tt-askin { flex: 1; min-width: 0; min-height: 0; height: auto; resize: none; border: 0; background: transparent; outline: none; padding: 4px 0; font: inherit; font-size: 14px; line-height: 1.5; box-shadow: none; }
 .tt-try { appearance: none; font: inherit; font-size: 12px; color: var(--muted); padding: 4px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: none; cursor: pointer; }
 .tt-try:hover { color: var(--ink); border-color: var(--faint); }
 .tt-try:disabled { opacity: .55; cursor: default; color: var(--faint); border-color: var(--line-2); }
@@ -2179,6 +2205,7 @@ export const CONSOLE_JS = String.raw`
     chart: [['rect', 9, 3, 6, 5], ['rect', 3, 16, 6, 5], ['rect', 15, 16, 6, 5], ['path', 'M12 8v4M6 16v-4h12v4']],
     plus: [['circle', 12, 12, 9], ['path', 'M12 8v8M8 12h8']],
     x: [['path', 'M6 6l12 12M18 6L6 18']],
+    clip: [['path', 'M20.5 11.5l-8.3 8.3a5 5 0 0 1-7.1-7.1l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9']],
     tick: [['path', 'M5 12l5 5 9-10']],
     gear: [['circle', 12, 12, 3], ['path', 'M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1']],
     plug: [['path', 'M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4']],
@@ -2629,12 +2656,6 @@ export const CONSOLE_JS = String.raw`
   /// The chrome every page shares: whose org this is, a way to jump to any
   /// worker, and the two things that pull you back in (the inbox, Slack).
   function topBar(me) {
-    var find = h('input', { type: 'search', id: 'top-search', placeholder: 'Find a worker', 'aria-label': 'Find a worker', value: state.workersQuery || '' });
-    find.onkeydown = function (e) {
-      if (e.key === 'Enter') go('workers', { workersQuery: find.value.trim() });
-      if (e.key === 'Escape') find.blur();
-    };
-    var mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
     return h('header', { class: 'topbar' },
       // The org is the name here; overgo is the mark beside it and the foot
       // of the menu.
@@ -2642,7 +2663,7 @@ export const CONSOLE_JS = String.raw`
       h('div', { class: 'brand' }, brandMark(28), h('span', { class: 'brand-slash', 'aria-hidden': 'true', text: '/' }),
         h('button', { class: 'org crumb-link', text: me.org, title: 'Inbox', onclick: function () { go('today'); } }),
         h('span', { class: 'crumbs' }, chromeCrumbs())),
-      h('label', { class: 'search' }, icon('search', 15), find, h('kbd', { text: mac ? '⌘K' : 'Ctrl K' })),
+      finder(),
       h('div', { class: 'top-right' },
         workingPill(),
         me.canHire ? h('button', { class: 'btn go top-hire', 'aria-current': state.tab === 'hire' ? 'page' : null, onclick: function () { go('hire'); } }, icon('plus', 15), h('span', { class: 'lbl', text: 'Hire a worker' })) : null,
@@ -2651,6 +2672,86 @@ export const CONSOLE_JS = String.raw`
         h('button', { class: 'top-link top-bell', 'aria-label': 'Inbox', onclick: function () { go('today'); } }, icon('bell', 17),
           h('span', { class: 'count', 'data-count': 'today', hidden: !state.counts.today, text: state.counts.today ? String(state.counts.today) : '' })),
         userMenu(me)));
+  }
+
+  /// The top bar's finder. As you type: the workers, teams and processes
+  /// that match, and recent work that mentions it anywhere (its request, its
+  /// summary, its branch, what it produced). ↑↓ to move, ↵ to open.
+  var FIND_STATUS = { running: ['working', 'Running'], waiting: ['waiting', 'Waiting'], done: ['ok', 'Done'], failed: ['bad', 'Failed'], stopped: ['plain', 'Stopped'] };
+  function finder() {
+    var mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
+    var find = h('input', { type: 'search', id: 'top-search', placeholder: 'Search workers, teams, processes and work', 'aria-label': 'Search', autocomplete: 'off', role: 'combobox', 'aria-expanded': 'false', 'aria-controls': 'top-search-pop', value: state.findQuery || '' });
+    var pop = h('div', { class: 'find-pop', id: 'top-search-pop', role: 'listbox', hidden: true });
+    var rows = [], sel = -1, timer = null, seq = 0, shown = null;
+    function close() { pop.hidden = true; find.setAttribute('aria-expanded', 'false'); }
+    function open() { if (pop.firstChild) { pop.hidden = false; find.setAttribute('aria-expanded', 'true'); } }
+    function mark(i) {
+      sel = i;
+      rows.forEach(function (r, j) { r.el.classList.toggle('on', j === i); r.el.setAttribute('aria-selected', j === i ? 'true' : 'false'); });
+      if (rows[i]) rows[i].el.scrollIntoView({ block: 'nearest' });
+    }
+    function pick(r) { close(); find.blur(); r.open(); }
+    function row(lead, title, sub, snip, badge, openIt) {
+      var r = { open: openIt };
+      r.el = h('button', { type: 'button', class: 'find-row', role: 'option', 'aria-selected': 'false', onmousedown: function (e) { e.preventDefault(); }, onclick: function () { pick(r); }, onmouseenter: function () { mark(rows.indexOf(r)); } },
+        lead,
+        h('span', { class: 'find-text' },
+          h('span', { class: 'find-title', text: title }),
+          sub ? h('span', { class: 'find-sub', text: sub }) : null,
+          snip ? h('span', { class: 'find-snip', text: snip }) : null),
+        badge ? h('span', { class: 'badge ' + badge[0], text: badge[1] }) : null);
+      rows.push(r);
+      return r.el;
+    }
+    function section(label, items, build) {
+      return items.length ? [h('div', { class: 'find-sec', text: label })].concat(items.map(build)) : [];
+    }
+    function lead(name) { return h('span', { class: 'avatar s find-icon', 'aria-hidden': 'true' }, icon(name, 14)); }
+    function show(q, r) {
+      shown = q; rows = []; sel = -1;
+      if (!r || r.ok === false) { pop.replaceChildren(h('p', { class: 'muted find-note', text: (r && r.error) || "Couldn't search just now." })); return; }
+      var parts = [].concat(
+        section('Workers', r.workers, function (w) { return row(avatar(w.id, w.name, 's'), w.name, w.tagline, null, null, function () { openWorker(w.id); }); }),
+        section('Teams', r.teams, function (t) { return row(lead('team'), t.name, t.purpose, null, null, function () { go('team', { teamId: t.id }); }); }),
+        section('Processes', r.processes, function (p) { return row(lead('arrow'), p.name, p.purpose, null, null, function () { go('process', { processId: p.id }); }); }),
+        section('Recent work', r.work, function (x) {
+          var live = x.status === 'running' || x.status === 'waiting';
+          return row(avatar(x.workerId, x.workerName, 's'), x.title, x.workerName + (x.runNumber ? ' · #' + x.runNumber : '') + ' · ' + ago(x.at), x.snippet, FIND_STATUS[x.status],
+            function () { if (live) watchRun(x.runId, x.workerName + ' · ' + x.title); else openRun(x.runId); });
+        }));
+      if (!parts.length) parts.push(h('p', { class: 'muted find-note', text: 'Nothing matches “' + q + '” in the last 90 days.' }));
+      parts.push(h('div', { class: 'find-foot' }, row(lead('people'), 'Filter the Workers list by “' + q + '”', null, null, null, function () { go('workers', { workersQuery: q }); })));
+      pop.replaceChildren.apply(pop, parts);
+      mark(0);
+    }
+    function search() {
+      clearTimeout(timer); timer = null;
+      var q = find.value.trim(); state.findQuery = q;
+      if (q.length < 2) { seq++; shown = null; rows = []; pop.replaceChildren(); close(); return Promise.resolve(); }
+      var mine = ++seq;
+      if (shown == null) { pop.replaceChildren(h('p', { class: 'muted find-note', text: 'Searching…' })); open(); }
+      return api('GET', '/api/search?q=' + encodeURIComponent(q)).then(function (r) { if (mine === seq) { show(q, r); if (document.activeElement === find) open(); } },
+        function (err) { if (mine === seq) show(q, { ok: false, error: err && err.message }); });
+    }
+    find.oninput = function () { clearTimeout(timer); timer = setTimeout(search, 180); };
+    find.onfocus = function () { if (find.value.trim().length >= 2) { if (shown === find.value.trim()) open(); else search(); } };
+    find.onkeydown = function (e) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); open(); mark(Math.min(rows.length - 1, sel + 1)); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); mark(Math.max(0, sel - 1)); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        // Typed faster than the search: wait for it, then take the top hit.
+        if (shown !== find.value.trim()) search().then(function () { if (rows[0]) pick(rows[0]); });
+        else if (rows[sel] || rows[0]) pick(rows[sel] || rows[0]);
+      } else if (e.key === 'Escape') { if (!pop.hidden) close(); else find.blur(); }
+    };
+    var wrap = h('div', { class: 'search-wrap' }, h('label', { class: 'search' }, icon('search', 15), find, h('kbd', { text: mac ? '⌘K' : 'Ctrl K' })), pop);
+    function outside(e) {
+      if (!wrap.isConnected) { document.removeEventListener('mousedown', outside); return; }
+      if (!wrap.contains(e.target)) close();
+    }
+    document.addEventListener('mousedown', outside);
+    return wrap;
   }
 
   // ---- what's moving, everywhere --------------------------------------------
@@ -4415,27 +4516,29 @@ export const CONSOLE_JS = String.raw`
     if (!w.enabled) return null;
     var deciding = last.stage === 'deciding';
     var out = h('div', { 'aria-live': 'polite' });
-    var send = function (text, button) {
+    var send = function (text, button, files) {
       text = (text || '').trim();
-      if (!text) return;
+      if (!text && !(files && files.length)) return;
       var restore = busy(button, 'Sending…');
-      api('POST', '/api/ask', { worker: w.id, message: text, replyTo: t.id }).then(function (r) {
+      var body = { worker: w.id, message: text, replyTo: t.id };
+      if (files && files.length) body.files = files;
+      api('POST', '/api/ask', body).then(function (r) {
         restore();
         if (r.ok === false) { out.textContent = ''; out.appendChild(msg(r)); return; }
         delete drafts[t.id];
-        box.value = ''; form.hidden = true; open.hidden = false;
+        cb.clear(); form.hidden = true; open.hidden = false;
         out.textContent = ''; out.appendChild(msg(r, deciding ? 'Queued: ' + w.name + ' takes it once this answer is in.' : 'Sent.'));
         livePoke(w.id, 150);
       }, function () { restore(); });
     };
-    var box = h('textarea', { rows: '2', placeholder: deciding ? 'Add to it — ' + w.name + ' takes this once it has answered…' : 'Reply to ' + w.name + '…', 'aria-label': 'Reply in this thread' });
-    box.value = drafts[t.id] || '';
-    box.oninput = function () { drafts[t.id] = box.value; };
-    var go_ = h('button', { class: 'btn go small', text: 'Send' });
-    go_.onclick = function () { send(box.value, go_); };
-    box.onkeydown = function (e) { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!go_.disabled) send(box.value, go_); } };
-    var form = h('div', { class: 't-compose', hidden: !drafts[t.id] }, box, h('div', { class: 'row', style: 'justify-content:flex-end' }, go_));
-    var open = h('button', { class: 'linkish', style: 'color:var(--go);font-size:13.5px', text: 'Reply', onclick: function () { form.hidden = false; open.hidden = true; box.focus(); } });
+    var cb = composeBox({
+      label: 'Reply in this thread', files: true, out: out, value: drafts[t.id] || '',
+      placeholder: deciding ? 'Add to it — ' + w.name + ' takes this once it has answered…' : 'Reply to ' + w.name + '…',
+      onInput: function (v) { if (v) drafts[t.id] = v; else delete drafts[t.id]; },
+      onSend: function (text, files, button) { send(text, button, files); },
+    });
+    var form = h('div', { class: 't-compose', hidden: !drafts[t.id] }, cb.el);
+    var open = h('button', { class: 'linkish', style: 'color:var(--go);font-size:13.5px', text: 'Reply', onclick: function () { form.hidden = false; open.hidden = true; cb.input.focus(); } });
     if (drafts[t.id]) open.hidden = true;
     // One-tap answers about what to start go stale once it has started.
     var acted = (t.runs || []).some(function (r) { return r.startedAt && last.at && r.startedAt >= last.at; });
@@ -4631,15 +4734,112 @@ export const CONSOLE_JS = String.raw`
       return false;
     })[0] || null;
   }
+  /// The one box for writing to a worker or a team, the same everywhere: it
+  /// grows as you type, Enter (or ⌘Enter) sends, Shift+Enter starts a new
+  /// line. With o.files, pictures and text files ride along too (paperclip,
+  /// paste or drop), as the Slack door takes them: only where the route
+  /// reads them (/api/ask, see askFiles.ts).
+  /// o: { label, placeholder, sendText, value, files, cls, out, onInput(text), onSend(text, files, button) }
+  function composeBox(o) {
+    var out = o.out;
+    var input = h('textarea', { rows: '1', class: o.cls || null, 'aria-label': o.label, placeholder: o.placeholder || '' });
+    input.value = o.value || '';
+    var send = h('button', { class: 'btn go', text: o.sendText || 'Send' });
+    var files = [];
+    var fileList = h('div', { class: 'cbox-files', hidden: true });
+    var grow = function () { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight + 2, 220) + 'px'; };
+    var drawFiles = function () {
+      fileList.hidden = !files.length;
+      fileList.replaceChildren.apply(fileList, files.map(function (f, i) {
+        return h('span', { class: 'cbox-file', title: f.name },
+          f.data ? h('img', { src: f.data, alt: '' }) : icon('doc', 15),
+          h('span', { text: f.name }),
+          h('button', { type: 'button', 'aria-label': 'Remove ' + f.name, onclick: function () { files.splice(i, 1); drawFiles(); input.focus(); } }, icon('x', 13)));
+      }));
+    };
+    var addFiles = function (list) {
+      Array.prototype.forEach.call(list || [], function (f) {
+        var isImage = ASK_IMAGES.indexOf(f.type) >= 0;
+        var isText = !isImage && (/^text\//.test(f.type) || f.type === 'application/json' || ASK_TEXT_NAME.test(f.name || ''));
+        var say = function (e) { fill(out, [msg({ ok: false, error: e })]); };
+        if (!isImage && !isText) return say((f.name || 'That file') + ': attach a PNG, JPEG, GIF or WebP picture, or a text file.');
+        var count = files.filter(function (x) { return isImage ? !!x.data : x.text !== undefined; }).length;
+        if (isImage && count >= 4) return say('Attach at most 4 pictures.');
+        if (isText && count >= 3) return say('Attach at most 3 text files.');
+        if (isImage && f.size > 5000000) return say(f.name + ' is over 5 MB.');
+        if (isImage && files.reduce(function (n, x) { return n + (x.size || 0); }, 0) + f.size > 10000000) return say('Keep the pictures under 10 MB together.');
+        if (isText && f.size > 60000) return say(f.name + ' is too long to read in: keep text files under 60 KB.');
+        var reader = new FileReader();
+        reader.onload = function () {
+          var name = f.name || (isImage ? 'pasted picture' : 'file');
+          files.push(isImage ? { name: name, type: f.type, data: String(reader.result), size: f.size } : { name: name, text: String(reader.result) });
+          fill(out, []); drawFiles();
+        };
+        reader.onerror = function () { say('Couldn’t read ' + (f.name || 'that file') + '.'); };
+        if (isImage) reader.readAsDataURL(f); else reader.readAsText(f);
+      });
+    };
+    var attach = null, fileIn = null;
+    if (o.files) {
+      fileIn = h('input', { type: 'file', multiple: true, accept: ASK_ACCEPT, style: 'display:none', 'aria-hidden': 'true', tabindex: '-1' });
+      attach = h('button', { type: 'button', class: 'cbox-attach', 'aria-label': 'Attach files', title: 'Attach pictures or text files (or paste or drop them here)' }, icon('clip', 17));
+      attach.onclick = function () { fileIn.click(); };
+      fileIn.onchange = function () { addFiles(fileIn.files); fileIn.value = ''; };
+      input.onpaste = function (e) {
+        var items = (e.clipboardData && e.clipboardData.files) || [];
+        if (items.length) { e.preventDefault(); addFiles(items); }
+      };
+    }
+    input.oninput = function () { grow(); if (o.onInput) o.onInput(input.value); };
+    var box = h('div', { class: 'cbox' }, fileList, input,
+      h('div', { class: 'cbox-bar' }, attach, fileIn, h('span', { class: 'faint cbox-hint', text: 'Enter to send · Shift+Enter for a new line' }), send));
+    box.onclick = function (e) { if (e.target === box) input.focus(); };
+    if (o.files) {
+      box.ondragover = function (e) { e.preventDefault(); box.classList.add('drop'); };
+      box.ondragleave = function (e) { if (!box.contains(e.relatedTarget)) box.classList.remove('drop'); };
+      box.ondrop = function (e) { e.preventDefault(); box.classList.remove('drop'); addFiles(e.dataTransfer && e.dataTransfer.files); };
+    }
+    var submit = function () {
+      if (send.disabled) return;
+      var text = input.value.trim();
+      if (!text && !files.length) { input.focus(); return; }
+      o.onSend(text, files.map(function (f) { return f.data ? { name: f.name, type: f.type, data: f.data } : { name: f.name, text: f.text }; }), send);
+    };
+    send.onclick = submit;
+    input.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); } };
+    setTimeout(grow, 0);
+    return {
+      el: box, input: input, send: send,
+      clear: function () { input.value = ''; files = []; drawFiles(); grow(); if (o.onInput) o.onInput(''); },
+      set: function (text) { input.value = text; grow(); if (o.onInput) o.onInput(text); },
+    };
+  }
+
   function conversation(w) {
     // One box to talk to it, under the thread that's open: a reply to that
     // thread, or a new task. Built once and moved into each redraw, so what's
     // typed survives the thread changing under it.
     var cur = null;
     var mode = state.wlMode || 'reply';
-    var input = h('textarea', { rows: '2', 'aria-label': 'Message for ' + w.name });
     var out = h('div', { 'aria-live': 'polite' });
-    var send = h('button', { class: 'btn go', text: 'Send' });
+    var submit = function (text, files, send) {
+      var reply = cur && mode === 'reply';
+      var queued = reply && cur.stage === 'deciding';
+      var restore = busy(send, 'Sending…');
+      var body = { worker: w.id, message: text };
+      if (reply) body.replyTo = cur.id;
+      if (files.length) body.files = files;
+      api('POST', '/api/ask', body).then(function (r) {
+        restore(); out.textContent = '';
+        if (r.ok === false) { out.appendChild(msg(r)); return; }
+        cb.clear();
+        if (reply) { if (queued) out.appendChild(msg(r, 'Queued: ' + w.name + ' takes it once this answer is in.')); }
+        else { sel = 'ask:' + r.askId; state.wlSel = state.wlSel || {}; state.wlSel[w.id] = sel; }
+        livePoke(w.id, 150);
+      }, function () { restore(); });
+    };
+    var cb = composeBox({ label: 'Message for ' + w.name, files: true, out: out, onSend: submit });
+    var input = cb.input;
     var modeSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Where it goes' });
     var drawComposer = function () {
       var canReply = !!cur;
@@ -4652,25 +4852,8 @@ export const CONSOLE_JS = String.raw`
       input.placeholder = m === 'new' ? 'Give ' + w.name + ' a new task, or ask it something…'
         : deciding ? 'Add to it — ' + w.name + ' takes this once it has answered…' : 'Reply about this, or ask a follow-up…';
     };
-    var submit = function () {
-      var text = input.value.trim();
-      if (!text) { input.focus(); return; }
-      var reply = cur && mode === 'reply';
-      var queued = reply && cur.stage === 'deciding';
-      var restore = busy(send, 'Sending…');
-      api('POST', '/api/ask', reply ? { worker: w.id, message: text, replyTo: cur.id } : { worker: w.id, message: text }).then(function (r) {
-        restore(); out.textContent = '';
-        if (r.ok === false) { out.appendChild(msg(r)); return; }
-        input.value = '';
-        if (reply) { if (queued) out.appendChild(msg(r, 'Queued: ' + w.name + ' takes it once this answer is in.')); }
-        else { sel = 'ask:' + r.askId; state.wlSel = state.wlSel || {}; state.wlSel[w.id] = sel; }
-        livePoke(w.id, 150);
-      }, function () { restore(); });
-    };
-    send.onclick = submit;
-    input.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!send.disabled) submit(); } };
     var composer = w.enabled
-      ? h('div', { class: 'wl-compose' }, modeSeg, h('div', { class: 'wl-compose-row' }, input, send), out)
+      ? h('div', { class: 'wl-compose' }, modeSeg, cb.el, out)
       : h('div', { class: 'wl-compose' }, h('p', { class: 'muted', style: 'margin:0', text: w.name + ' is paused. Resume it to ask it things.' }));
     drawComposer();
 
@@ -5499,6 +5682,10 @@ export const CONSOLE_JS = String.raw`
   /// swimlane, a slide) drafted into one. Drop it, pick it or paste it, say
   /// what to change, and the editor opens with the draft, unsaved.
   var PI_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  /// What a question to a worker can carry: the Slack door's kinds (askFiles.ts).
+  var ASK_IMAGES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+  var ASK_TEXT_NAME = /\.(md|markdown|txt|csv|tsv|json|ya?ml|log|xml|html?)$/i;
+  var ASK_ACCEPT = ASK_IMAGES.concat(['text/*', 'application/json', '.md', '.markdown', '.txt', '.csv', '.tsv', '.json', '.yaml', '.yml', '.log', '.xml', '.html']).join(',');
   function fromImageDialog() {
     var picked = null, closed = false, working = false;
     var out = h('div', { 'aria-live': 'polite' });
@@ -8576,11 +8763,6 @@ export const CONSOLE_JS = String.raw`
         // The box to talk to the team, under every tab once there is a pack.
         var ask = null, askBox = null;
         if (talkable) {
-          askBox = h('textarea', { rows: '1', class: 'tt-askin', placeholder: 'e.g. @' + ((team.members || [])[0] ? team.members[0].name : 'Name') + ' redo this with the new numbers', 'aria-label': 'Ask the team, or one person, to change something', value: drafts[task.id] || '' });
-          // It grows with what you type, up to a few lines.
-          var fit = function () { askBox.style.height = 'auto'; askBox.style.height = Math.min(askBox.scrollHeight, 160) + 'px'; };
-          askBox.oninput = function () { drafts[task.id] = askBox.value; fit(); };
-          var askSend = h('button', { class: 'btn small go', text: 'Send' });
           // What just happened to something sent from here, said here: the
           // page's own status line is out of sight this far down.
           var askNote = h('div', { 'aria-live': 'polite' });
@@ -8589,21 +8771,21 @@ export const CONSOLE_JS = String.raw`
           // Sent from the keyboard or the button alike: the button says
           // "Sending…" and the box is held, so a second Enter can't ask
           // twice; once taken, the box empties and says where it went.
-          var send = function () {
-            var text = askBox.value.trim();
-            if (!text) { askBox.focus(); return; }
-            if (askSend.disabled) return;
-            askBox.readOnly = true;
-            post('/room', { text: text }, null, askSend).then(function (y) {
-              askBox.readOnly = false;
-              if (y.ok === false) return;
-              askBox.value = ''; drafts[task.id] = ''; fit(); state.taskTab = 'debate';
-              noteAsk(msg(y, room.busy ? 'Sent. It waits its turn: ' + (room.busy.speaker || 'someone') + ' is answering.' : 'Sent to the team.'));
-            }, function () { askBox.readOnly = false; });
-          };
-          askSend.onclick = send;
-          // Enter or ⌘↵ sends; Shift+Enter starts a new line.
-          askBox.onkeydown = function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
+          var askCb = composeBox({
+            label: 'Ask the team, or one person, to change something', cls: 'tt-askin', out: askNote, value: drafts[task.id] || '',
+            placeholder: 'e.g. @' + ((team.members || [])[0] ? team.members[0].name : 'Name') + ' redo this with the new numbers',
+            onInput: function (v) { drafts[task.id] = v; },
+            onSend: function (text, _files, askSend) {
+              askBox.readOnly = true;
+              post('/room', { text: text }, null, askSend).then(function (y) {
+                askBox.readOnly = false;
+                if (y.ok === false) return;
+                askCb.clear(); state.taskTab = 'debate';
+                noteAsk(msg(y, room.busy ? 'Sent. It waits its turn: ' + (room.busy.speaker || 'someone') + ' is answering.' : 'Sent to the team.'));
+              }, function () { askBox.readOnly = false; });
+            },
+          });
+          askBox = askCb.input;
           // Folding takes the coordinator a while after the request returns:
           // the button stays off and says so until the page redraws with the
           // room busy, which keeps it off from then on.
@@ -8618,10 +8800,10 @@ export const CONSOLE_JS = String.raw`
             }, function () { b.disabled = false; b.textContent = 'Fold in the debate'; });
           };
           var tries = [talked ? ['Fold in the debate', foldIn, true] : null]
-            .concat((team.members || []).slice(0, 3).map(function (m) { return ['@' + m.name, function () { askBox.value = '@' + m.name + ' ' + askBox.value.replace(/^@\S+\s*/, ''); drafts[task.id] = askBox.value; askBox.focus(); }]; })).filter(Boolean);
+            .concat((team.members || []).slice(0, 3).map(function (m) { return ['@' + m.name, function () { askCb.set('@' + m.name + ' ' + askBox.value.replace(/^@\S+\s*/, '')); askBox.focus(); }]; })).filter(Boolean);
           ask = h('div', { class: 'tt-ask' },
             h('label', { class: 'faint', text: 'Ask the team, or one person, to change something' }),
-            h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, askBox, askSend),
+            askCb.el,
             tries.length ? h('div', { class: 'row', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Try' }), tries.map(function (t) {
               // Folding waits for the room: someone answering can't be folded mid-sentence.
               var held = t[2] && !!room.busy;
@@ -8631,8 +8813,7 @@ export const CONSOLE_JS = String.raw`
         }
         var replyTo = function (name) {
           if (!askBox) return;
-          askBox.value = '@' + name + ' ' + askBox.value.replace(/^@\S+\s*/, '');
-          drafts[task.id] = askBox.value;
+          askCb.set('@' + name + ' ' + askBox.value.replace(/^@\S+\s*/, ''));
           askBox.focus();
           askBox.scrollIntoView({ block: 'center', behavior: 'smooth' });
         };
@@ -9616,19 +9797,22 @@ export const CONSOLE_JS = String.raw`
         api('GET', '/api/teams/' + encodeURIComponent(id) + '/page').then(function (y) { if (y.ok !== false && list.isConnected) draw(y); }, function () { timer = setTimeout(refresh, 10000); });
       };
       draw(x);
-      var input = h('textarea', { placeholder: 'What do you want back from ' + t.name + '?', 'aria-label': 'Task for ' + t.name, style: 'min-height:70px' });
       var out = h('div', { 'aria-live': 'polite' });
-      var give = h('button', { class: 'btn go', text: 'Give it the task', title: '⌘↵' });
-      give.onclick = function () {
-        if (input.value.trim().length < 10) { out.textContent = ''; out.appendChild(h('div', { class: 'msg err', text: 'Say a little more about the task.' })); input.focus(); return; }
-        var restore = busy(give, 'Sending…');
-        api('POST', '/api/teams/brief', { team: t.id, text: input.value }).then(function (r) {
-          restore(); out.textContent = ''; out.appendChild(msg(r, 'The coordinator is planning. Its questions or plan appear above and in Slack.'));
-          if (r.ok !== false) { input.value = ''; setTimeout(refresh, 800); }
-        });
-      };
-      var composer = t.canBrief ? card('teambrief', 'Give ' + t.name + ' a task', null, h('div', { class: 'stack', style: 'gap:10px' }, input,
-          h('div', { class: 'row' }, give, h('span', { class: 'faint', text: 'The coordinator asks what it needs, then proposes a plan for you to approve. ' + money(t.budgetUSDPerTask) + ' cap.' })), out))
+      var briefCb = composeBox({
+        label: 'Task for ' + t.name, out: out, sendText: 'Give it the task',
+        placeholder: 'What do you want back from ' + t.name + '?',
+        onSend: function (text, _files, give) {
+          if (text.length < 10) { out.textContent = ''; out.appendChild(h('div', { class: 'msg err', text: 'Say a little more about the task.' })); input.focus(); return; }
+          var restore = busy(give, 'Sending…');
+          api('POST', '/api/teams/brief', { team: t.id, text: text }).then(function (r) {
+            restore(); out.textContent = ''; out.appendChild(msg(r, 'The coordinator is planning. Its questions or plan appear above and in Slack.'));
+            if (r.ok !== false) { briefCb.clear(); setTimeout(refresh, 800); }
+          });
+        },
+      });
+      var input = briefCb.input;
+      var composer = t.canBrief ? card('teambrief', 'Give ' + t.name + ' a task', null, h('div', { class: 'stack', style: 'gap:10px' }, briefCb.el,
+          h('span', { class: 'faint', text: 'The coordinator asks what it needs, then proposes a plan for you to approve. ' + money(t.budgetUSDPerTask) + ' cap.' }), out))
         : h('p', { class: 'faint', text: 'Only people who manage someone on this team can give it work.' });
       var toComposer = function () { composer.scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(function () { input.focus(); }, 300); };
       if (state.teamFocusBrief && t.canBrief) { state.teamFocusBrief = false; setTimeout(toComposer, 150); }
@@ -11256,7 +11440,12 @@ export const CONSOLE_JS = String.raw`
       }
       if (r.youManage && !ended) buttons.push(stopRunButton(runId, w));
       if (r.youManage) buttons.push(h('button', { class: 'btn small', text: 'Logs', onclick: function () { runLogs(runId, (r.workerName ? r.workerName + ' · ' : '') + r.title); } }));
-      if (buttons.length) parts.push(h('div', { class: 'row', style: 'gap:8px' }, buttons));
+      // Out of the panel to the run's own page, or to the worker to talk it
+      // over: what someone opening a run from "working now" wants next.
+      var leave = function (then) { return function () { var shut = document.querySelector('#reader .reader-head [aria-label="Close"]'); if (shut) shut.click(); then(); }; };
+      buttons.push(h('button', { class: 'btn small', text: 'Open the run', onclick: leave(function () { openRun(runId); }) }));
+      if (r.workerId) buttons.push(h('button', { class: 'btn small', text: 'Talk to ' + w.name, onclick: leave(function () { openWorker(r.workerId); }) }));
+      if (buttons.length) parts.push(h('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, buttons));
       fill(acts, parts);
     };
     var draw = function () {
@@ -12743,7 +12932,7 @@ export const CONSOLE_JS = String.raw`
           h('span', { class: 'libfrom' }, avatar(x.workerId, x.workerName, 's'), h('span', { text: x.kind === 'task' || x.kind === 'file' ? (libOrigin(x).teamName || x.workerName) : x.workerName })),
           h('span', { class: 'badge ' + vis[1], title: x.visibleTo || '', text: vis[0] }),
           h('span', { class: 'faint libwhen', text: ago(x.at) }),
-          h('span', { class: 'librate' + (x.rating ? x.rating.useful ? ' yes' : ' no' : ''), text: x.status === 'failed' ? 'Failed' : x.rating ? (x.rating.useful ? 'Useful' : 'Not useful') : '' }));
+          h('span', { class: 'librate' + (x.rating ? x.rating.useful ? ' yes' : ' no' : ''), text: x.status === 'failed' ? 'Failed' : x.status === 'held' ? 'Waiting for you' : x.rating ? (x.rating.useful ? 'Useful' : 'Not useful') : '' }));
         if (opened[x.id]) detail.appendChild(libDetail(x));
         return h('div', null, row, detail);
       };
@@ -12845,7 +13034,7 @@ export const CONSOLE_JS = String.raw`
     if (t.kind === 'watch' && t.watch && t.watch.changes) return 'Checks ' + (t.watch.tracked ? plural(t.watch.tracked.length, 'tracked item', 'tracked items') + ' in ' : '') + t.watch.server + ' every ' + t.watch.everyMinutes + ' min for a change to ' + t.watch.changes;
     if (t.kind === 'watch' && t.watch) return 'Checks ' + t.watch.server + ' (' + t.watch.tool + ') every ' + t.watch.everyMinutes + ' min for new items';
     if (t.kind === 'webhook') return 'When another system posts to its webhook';
-    if (t.kind === 'slack' && t.slack) return (t.slack.on === 'reaction' ? 'When someone reacts :' + t.slack.reaction + ': to a message' : t.slack.on === 'listen' ? 'Listens and answers questions' : t.slack.on === 'mention' ? 'When someone mentions the bot' : 'On each new message') + ' in #' + t.slack.channel + (t.slack.contains ? ' containing “' + t.slack.contains + '”' : '');
+    if (t.kind === 'slack' && t.slack) return (t.slack.on === 'reaction' ? 'When someone reacts :' + t.slack.reaction + ': to a message' : t.slack.on === 'listen' ? 'Listens and answers questions' : t.slack.on === 'mention' ? 'When someone mentions the bot' : 'On each new message') + ' in #' + t.slack.channel + (t.slack.contains ? ' containing “' + t.slack.contains + '”' : '') + (t.rehearse ? ' · test mode' : '');
     return 'On an event';
   }
 
@@ -13056,6 +13245,28 @@ export const CONSOLE_JS = String.raw`
     var kindBody = h('div');
     var thread = h('input', { type: 'checkbox' });
     var threadRow = h('label', { class: 'toggle' }, thread, h('span', { text: 'Reply in the Slack thread it came from' }));
+    // Test mode: each answer comes to the manager first, to post or not.
+    // Say who that is, since it isn't whoever ticks the box, and say so
+    // plainly when no one can be reached.
+    // Who test-mode answers go to, in a few words.
+    var rehearseWho = function () {
+      if (!w.managerOnSlack) return 'no one yet (' + w.name + '’s manager isn’t on Slack)';
+      return state.me && state.me.slackUserId && state.me.slackUserId === w.managerSlackUserId ? 'you' : w.manager;
+    };
+    var rehearseTo = function () {
+      var settings = h('button', { type: 'button', class: 'linkish', text: w.name + '’s Settings', onclick: function () { go('worker', { workerId: w.id, workerTab: 'settings' }); } });
+      if (!w.managerOnSlack) return h('p', { class: 'msg need', style: 'margin:4px 0 0 26px' },
+        w.manager ? w.manager + ' isn’t linked to Slack, so test-mode answers have nowhere to go and none will post. Add their Slack member ID in ' : w.name + ' has no manager, so test-mode answers have nowhere to go and none will post. Set one in ', settings, '.');
+      var me = state.me && state.me.slackUserId && state.me.slackUserId === w.managerSlackUserId;
+      return h('p', { class: 'faint', style: 'margin:4px 0 0 26px;font-size:13px' },
+        'Answers go to ', h('b', { text: me ? 'you' : w.manager }), w.managerInherited ? ' (' + w.name + '’s manager, through its boss)' : ' (' + w.name + '’s manager)',
+        ' by Slack DM. Only they can post, set aside or change them. To change who, go to ', settings, '.');
+    };
+    var rehearse = h('input', { type: 'checkbox' });
+    var rehearseRow = h('div', { class: 'stack', style: 'gap:2px' },
+      h('label', { class: 'toggle' }, rehearse, h('span', { text: 'Test mode: send each answer to me first' })),
+      h('p', { class: 'faint', style: 'margin:0 0 0 26px;font-size:13px', text: 'Nothing reaches the channel yet. Each answer comes by Slack DM with Post it to the thread and Don’t post, with a note on what it stayed quiet on too. Reply under an answer to change it. Turn it off once you trust it.' }),
+      rehearseTo());
     // A listener always answers in the thread, and needs no instructions.
     var syncListen = function () {
       var listening = kind === 'slack' && on.value === 'listen';
@@ -13071,7 +13282,7 @@ export const CONSOLE_JS = String.raw`
       }
     };
     var instrTexts = null;
-    var sync = function () { kindBody.textContent = ''; kindBody.appendChild(parts[kind]); threadRow.style.display = kind === 'slack' ? '' : 'none'; syncListen(); };
+    var sync = function () { kindBody.textContent = ''; kindBody.appendChild(parts[kind]); threadRow.style.display = kind === 'slack' ? '' : 'none'; rehearseRow.style.display = kind === 'slack' ? '' : 'none'; syncListen(); };
     drawKinds(); sync();
     var instructionsHint = 'e.g. Triage the ticket: reproduce it if you can, label it, and say who owns it. If it’s small and clear, fix it and open a PR.';
     var instructions = h('textarea', { 'aria-label': 'What to do with each one', placeholder: instructionsHint, style: 'min-height:90px' });
@@ -13108,6 +13319,7 @@ export const CONSOLE_JS = String.raw`
     if (t) {
       name.value = t.name || '';
       instructions.value = t.instructions || '';
+      rehearse.checked = !!t.rehearse;
       perDay.value = String(t.maxPerDay || 50);
       // Kept as saved even while the worker isn't autonomous: it does nothing
       // then, and an unrelated edit shouldn't quietly clear it.
@@ -13153,8 +13365,8 @@ export const CONSOLE_JS = String.raw`
       var what = notify ? 'it says what changed, with a link. No worker turn.'
         : listening ? 'it answers the questions it can and stays quiet on the rest' + (first ? ' (also: “' + (first.length > 80 ? first.slice(0, 80) + '…' : first) + '”)' : '') + '.'
         : 'it does “' + (first.length > 120 ? first.slice(0, 120) + '…' : first || 'what you write in step 2') + '”, ' + (alone ? 'starting without asking' : 'once you OK it') + '.';
-      var to = [itself.value.trim() ? itself.value.trim().replace(/[.]$/, '').toLowerCase() : null, postTo.value.trim() ? 'posts in ' + postTo.value.trim() : null, dmMe.checked ? 'DMs you' : null, kind === 'slack' && thread.checked ? 'replies in the thread' : null].filter(Boolean);
-      says.textContent = when + ', ' + what + (to.length ? ' Then: ' + to.join(', ') + '.' : '') + ' At most ' + (Number(perDay.value) || 50) + ' a day.';
+      var to = [itself.value.trim() ? itself.value.trim().replace(/[.]$/, '').toLowerCase() : null, postTo.value.trim() ? 'posts in ' + postTo.value.trim() : null, dmMe.checked ? 'DMs you' : null, kind === 'slack' && thread.checked ? (rehearse.checked ? 'sends each answer to ' + rehearseWho() + ' first, to post in the thread or not' : 'replies in the thread') : null].filter(Boolean);
+      says.textContent = (kind === 'slack' && rehearse.checked ? 'Test mode. ' : '') + when + ', ' + what + (to.length ? ' Then: ' + to.join(', ') + '.' : '') + ' At most ' + (Number(perDay.value) || 50) + ' a day.';
     };
     var out = h('div', { 'aria-live': 'polite' });
     var save = h('button', { class: 'btn go', text: t ? 'Save changes' : 'Save trigger' });
@@ -13167,7 +13379,7 @@ export const CONSOLE_JS = String.raw`
       if (itself.value.trim()) deliver.push({ kind: 'worker', text: itself.value.trim() });
       if (dmMe.checked) deliver.push({ kind: 'dm' });
       var changes = kind === 'watch' && fireOn.value === 'change';
-      var trigger = { name: name.value.trim(), kind: kind, instructions: instructions.value.trim(), deliver: deliver, maxPerDay: Number(perDay.value) || 50, notifyOnly: changes && plain.checked, startsOnItsOwn: alone,
+      var trigger = { name: name.value.trim(), kind: kind, instructions: instructions.value.trim(), deliver: deliver, maxPerDay: Number(perDay.value) || 50, notifyOnly: changes && plain.checked, startsOnItsOwn: alone, rehearse: kind === 'slack' && rehearse.checked,
         watch: Object.assign({ server: server.value, tool: call.value, args: a, everyMinutes: Number(every.value), itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() },
           changes ? { changes: field.value.trim() } : {},
           changes && onlyTracked.checked ? { tracked: trackList.value.split(/[\s,]+/).map(function (x) { return x.trim(); }).filter(Boolean) } : {}),
@@ -13175,7 +13387,7 @@ export const CONSOLE_JS = String.raw`
         webhook: { idPath: hookId.value.trim() } };
       var restore = busy(save, 'Saving…');
       if (t) {
-        var patch = { name: trigger.name, instructions: trigger.instructions, deliver: deliver, maxPerDay: trigger.maxPerDay, notifyOnly: trigger.notifyOnly, startsOnItsOwn: trigger.startsOnItsOwn };
+        var patch = { name: trigger.name, instructions: trigger.instructions, deliver: deliver, maxPerDay: trigger.maxPerDay, notifyOnly: trigger.notifyOnly, startsOnItsOwn: trigger.startsOnItsOwn, rehearse: trigger.rehearse };
         if (kind === 'watch') patch.watch = trigger.watch;
         if (kind === 'slack') patch.slack = trigger.slack;
         api('POST', '/api/triggers/' + encodeURIComponent(t.id), { patch: patch }).then(function (x) {
@@ -13224,7 +13436,7 @@ export const CONSOLE_JS = String.raw`
         h('label', { class: 'field' }, 'The worker delivers it itself', itself),
         h('label', { class: 'field' }, 'Also post in a Slack channel', postTo),
         h('label', { class: 'toggle' }, dmMe, h('span', { text: 'DM me in Slack' })),
-        threadRow]),
+        threadRow, rehearseRow]),
       settingRow('Limit', 'Keeps cost in check if a tool floods it.', [h('label', { class: 'row', style: 'gap:10px;align-items:center;font-size:14px' }, 'At most', perDay, 'a day')]),
       t ? settingRow('Pause or remove', 'Pausing keeps it as it is. What it already delivered stays in the Library either way.', [
         h('div', { class: 'row' },

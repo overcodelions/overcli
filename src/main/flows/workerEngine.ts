@@ -249,6 +249,11 @@ export interface WorkerParker {
 export interface WorkerEngineDeps {
   parker: WorkerParker;
   isGitRepo: (projectPath: string) => boolean;
+  /// This host refuses writes from a worker that doesn't change code (the
+  /// server's `readsOnlyWorker`), so such a worker can safely read the repos
+  /// in place instead of checking out its own. Off (the desktop, which has no
+  /// such guard): every worker's own `runIn` decides.
+  readsInPlace?: boolean;
   emit: (event: MainToRendererEvent) => void;
   notify: (args: NotifyArgs) => void;
   now?: () => number;
@@ -1487,6 +1492,12 @@ export class WorkerEngine {
       .flowsFor(w.flowIds)
       .map((f) => ({ id: f.id, name: f.name }))
       .sort((a, b) => (b.id === usual ? 1 : 0) - (a.id === usual ? 1 : 0));
+  }
+
+  /// Whether its work changes code: said outright on the worker, or read off
+  /// the steps of its flows. Decides whether its runs get a worktree.
+  writesCode(w: Worker): boolean {
+    return isCodingWorker(w, this.deps.flowsFor?.(w.flowIds));
   }
 
   /// What this worker's work could change; empty when it only reads, and
@@ -2842,7 +2853,7 @@ export class WorkerEngine {
       'Look in it with Glob and Read (Glob that path with `**`), not shell commands:',
       'on a server, shell commands are often not allowed, and a refused `ls` is not',
       'an empty directory.',
-      ...(isCodingWorker(w) ? ['The server fetches each repo from origin before a run starts, so a run always begins from the latest code: never fetch or pull yourself, and don\'t warn that you couldn\'t.'] : []),
+      ...(this.writesCode(w) ? ['The server fetches each repo from origin before a run starts, so a run always begins from the latest code: never fetch or pull yourself, and don\'t warn that you couldn\'t.'] : []),
       `Work you FILED more than ${WORKER_COMPACTION_KEEP_DAYS} days ago is moved into an`,
       '`archive/` subfolder once a week. Notes and baselines you wrote yourself are never',
       'moved. Do not read `archive/` unless you specifically need something old.',
@@ -3985,7 +3996,12 @@ export class WorkerEngine {
   private effectiveRunIn(w: Worker, projectPath: string = w.projectPath): 'cwd' | 'worktree' {
     // A worker that doesn't change code reads the repos where they are: a
     // checkout of every repo for every question cost minutes and gigabytes.
-    if (!isCodingWorker(w)) return 'cwd';
+    // Only where something holds it to reads, though: said outright on the
+    // worker, or a host that refuses its writes (`readsInPlace`). Without
+    // that, "doesn't change code" is a guess, and a wrong guess put a ticket
+    // worker's edits straight onto the user's checked-out default branch.
+    if (w.writesCode === false) return 'cwd';
+    if (this.deps.readsInPlace && !this.writesCode(w)) return 'cwd';
     if (w.caps.runIn !== 'worktree') return 'cwd';
     return this.deps.isGitRepo(projectPath) ? 'worktree' : 'cwd';
   }

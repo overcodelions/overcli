@@ -119,6 +119,12 @@ function quote(text: string): string {
     .join('\n');
 }
 
+/// Under a trigger's test-mode answer, in its manager's DM.
+export const TRIGGER_POST_ACTION = 'overcli_trigger_post';
+export const TRIGGER_DROP_ACTION = 'overcli_trigger_drop';
+/// Under a trigger's over-the-limit notice: try what it skipped today.
+export const TRIGGER_RETRY_ACTION = 'overcli_trigger_retry';
+
 export class SlackBridge {
   private socket: SocketModeClient | null = null;
   private identity: SlackIdentity | null = null;
@@ -486,6 +492,28 @@ export class SlackBridge {
     this.frontDoor = door;
   }
 
+  /// Test-mode answers: Post it / Don't post under each, in its manager's DM.
+  private triggerReview: ((press: { post: boolean; deliverableId: string; user: string; channel: string; ts: string }) => Promise<void>) | null = null;
+
+  setTriggerReview(review: typeof this.triggerReview): void {
+    this.triggerReview = review;
+  }
+
+  /// Try the skipped ones now, under a trigger's over-the-limit notice.
+  private triggerRetry: ((press: { triggerId: string; user: string; channel: string; ts: string }) => Promise<void>) | null = null;
+
+  setTriggerRetry(retry: typeof this.triggerRetry): void {
+    this.triggerRetry = retry;
+  }
+
+  /// A reply under a test-mode card: its manager changing the answer. True
+  /// when it was one; the front door gets the rest.
+  private reviewReply: ((reply: { channel: string; threadTs: string; user: string; text: string }) => Promise<boolean>) | null = null;
+
+  setReviewReply(tap: typeof this.reviewReply): void {
+    this.reviewReply = tap;
+  }
+
   private async toFrontDoor(ev: { channel?: string; ts?: string; thread_ts?: string; user?: string; text?: string; files?: SlackFile[] }, dm: boolean): Promise<void> {
     if (!this.frontDoor || !ev.channel || !ev.ts || !ev.user) return;
     try {
@@ -574,6 +602,10 @@ export class SlackBridge {
       // A new DM: a request for whoever fits.
       route(waiting.length ? `the front door (${waiting.length} questions open here, so not taken as an answer)` : 'the front door (a new DM)');
       return this.toFrontDoor(ev, true);
+    }
+    if (this.reviewReply && ev.text?.trim() && (await this.reviewReply({ channel: ev.channel!, threadTs: ev.thread_ts, user: ev.user!, text: ev.text }))) {
+      route('a test-mode answer: its manager changing it');
+      return;
     }
     // A request's thread, where the work it started asks and gets approved:
     // a reply answers an open question, else carries on the conversation.
@@ -718,6 +750,23 @@ export class SlackBridge {
       const ts = m.message?.ts;
       const user = p.user?.id;
       if (channel && ts && user && action.value) await this.frontDoor.onChoice({ channel, messageTs: ts, threadTs: m.message?.thread_ts ?? ts, user, text: action.value });
+      return;
+    }
+    // Post it / Don't post under a test-mode answer.
+    if (action?.action_id === TRIGGER_RETRY_ACTION && this.triggerRetry) {
+      const m = (payload as { message?: { ts?: string }; channel?: { id?: string }; container?: { channel_id?: string } });
+      const channel = m.channel?.id ?? m.container?.channel_id;
+      const ts = m.message?.ts;
+      const user = p.user?.id;
+      if (channel && ts && user && action.value) await this.triggerRetry({ triggerId: action.value, user, channel, ts });
+      return;
+    }
+    if ((action?.action_id === TRIGGER_POST_ACTION || action?.action_id === TRIGGER_DROP_ACTION) && this.triggerReview) {
+      const m = (payload as { message?: { ts?: string }; channel?: { id?: string }; container?: { channel_id?: string } });
+      const channel = m.channel?.id ?? m.container?.channel_id;
+      const ts = m.message?.ts;
+      const user = p.user?.id;
+      if (channel && ts && user && action.value) await this.triggerReview({ post: action.action_id === TRIGGER_POST_ACTION, deliverableId: action.value, user, channel, ts });
       return;
     }
     if (action && this.commands?.handlesAction(action.action_id)) {

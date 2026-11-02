@@ -110,7 +110,7 @@ export function SettingsSheet({ initialSection }: { initialSection?: string } = 
           {section === 'flows' && <FlowsPane local={local} patch={patch} />}
           {section === 'services' && <ServicesSettingsPane local={local} patch={patch} />}
           {section === 'conversations' && <ConversationsPane />}
-          {section === 'autoTidy' && <AutoTidyPane />}
+          {section === 'autoTidy' && <AutoTidyPane local={local} patch={patch} />}
           {section === 'org' && (local.orgAlpha ? <OrgPane local={local} patch={patch} /> : <OrgIntro patch={patch} />)}
           {section === 'labs' && <LabsPane local={local} patch={patch} />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}

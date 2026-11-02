@@ -8,6 +8,8 @@ import { parseArgs, parseControlAddress } from './args';
 import type { OrgService } from '../main/org/orgService';
 import type { OrgCaller } from '../shared/org/policy';
 
+type SearchAnswer = { workers: unknown[]; teams: Array<{ id: string }>; work: unknown[] };
+
 const PAT: OrgCaller = { slackUserId: 'U0ACMEPAT', name: 'Pat', admin: false };
 
 /// Records which caller each call ran as, so the tests can prove the token,
@@ -21,6 +23,11 @@ function fakeOrg() {
       return [{ id: 'w1', name: 'Ana' }];
     },
     listWaiting: () => [],
+    teams: () => [{ id: 't1', name: 'Pricing desk', purpose: 'Keeps acme prices current', members: [{ name: 'Ana', role: 'lead' }] }],
+    searchWork: (c: OrgCaller, q: string, opts: unknown) => {
+      calls.push({ op: 'searchWork', caller: c.name, args: { q, opts } });
+      return [{ runId: 'r9', workerId: 'w1', workerName: 'Ana', title: 'Fix login', at: 1, status: 'done', snippet: 'ticket ACME-5589' }];
+    },
     report: (c: OrgCaller, days: number) => {
       calls.push({ op: 'report', caller: c.name, args: { days } });
       return { ok: true, report: { days } };
@@ -257,6 +264,20 @@ describe('control plane HTTP', () => {
       { op: 'report', caller: 'Pat', args: { days: 7 } },
       { op: 'report', caller: 'Pat', args: { days: 30 } },
     ]);
+  });
+
+  it('searches workers, teams and recent work as the caller, and answers nothing for an empty query', async () => {
+    const auth = { Authorization: 'Bearer ocli_good' };
+    expect(await (await fetch(`${base}/api/search?q=%20%20`, { headers: auth })).json()).toEqual({ ok: true, workers: [], teams: [], processes: [], work: [] });
+    expect(calls.some((c) => c.op === 'searchWork')).toBe(false);
+    const ana = (await (await fetch(`${base}/api/search?q=ANA`, { headers: auth })).json()) as SearchAnswer;
+    expect(ana.workers).toEqual([{ id: 'w1', name: 'Ana' }]);
+    expect(ana.teams).toEqual([{ id: 't1', name: 'Pricing desk', purpose: 'Keeps acme prices current' }]);
+    const prices = (await (await fetch(`${base}/api/search?q=acme%20prices`, { headers: auth })).json()) as SearchAnswer;
+    expect(prices.workers).toEqual([]);
+    expect(prices.teams.map((t: { id: string }) => t.id)).toEqual(['t1']);
+    expect(prices.work[0]).toMatchObject({ runId: 'r9', status: 'done' });
+    expect(calls.filter((c) => c.op === 'searchWork').at(-1)).toEqual({ op: 'searchWork', caller: 'Pat', args: { q: 'acme prices', opts: { limit: 20 } } });
   });
 
   it("passes a worker's runs and feed paging through, leaving absent or junk numbers undefined", async () => {

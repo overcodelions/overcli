@@ -161,6 +161,17 @@ describe('runawayProducers', () => {
 });
 
 describe('describeRules', () => {
+  it('says whether the rules run on their own', () => {
+    const on = describeRules({ ...DEFAULT_CLEANUP_RULES, autoRun: true });
+    expect(on).toMatch(/automatically/);
+    expect(on).not.toMatch(/confirm/);
+    expect(describeRules({ ...DEFAULT_CLEANUP_RULES, autoRun: false })).toMatch(/apply the rule/);
+    // Undecided — the default, and every settings file from before `autoRun`
+    // existed — asks before the first removal.
+    expect(DEFAULT_CLEANUP_RULES.autoRun).toBeUndefined();
+    expect(describeRules(DEFAULT_CLEANUP_RULES)).toMatch(/once you confirm/);
+  });
+
   it('says plainly when auto-tidy is off', () => {
     expect(describeRules({ ...DEFAULT_CLEANUP_RULES, retireAfterDays: 0 })).toMatch(/off/);
   });

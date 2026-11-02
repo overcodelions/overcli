@@ -3,9 +3,12 @@
 // Cleaning up by hand is the symptom. A worker on a nightly cadence makes a
 // worktree a night forever, so any surface that only lets you clear the pile
 // is a surface you visit again next week. These rules decide which finished
-// work has earned its exit, and Clean up applies them as a selection you
-// confirm — deliberately NOT as an unattended background delete.
+// work has earned its exit. With "Run on its own" on (the default) they are
+// applied on a timer — see cleanupScan.ts — and Clean up also offers them as
+// a pre-ticked selection.
 
+import { useState } from 'react';
+import type { AppSettings } from '@shared/types';
 import { useStore } from '../../store';
 import { Group, SheetActionButton } from './settingsChrome';
 import {
@@ -17,21 +20,70 @@ import {
   describeRules,
 } from '@shared/cleanupRules';
 
-export function AutoTidyPane() {
-  const settings = useStore((s) => s.settings);
-  const saveSettings = useStore((s) => s.saveSettings);
+/// Edits the Settings sheet's draft like every other pane — nothing is saved
+/// until the sheet's Save. Saving per click here used to reset that draft,
+/// throwing away unsaved edits made in the other panes.
+export function AutoTidyPane({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (delta: Partial<AppSettings>) => void;
+}) {
   const openSheet = useStore((s) => s.openSheet);
-  const rules = settings.cleanup ?? DEFAULT_CLEANUP_RULES;
+  const rules = local.cleanup ?? DEFAULT_CLEANUP_RULES;
 
-  const update = (patch: Partial<CleanupRules>) =>
-    void saveSettings({ ...settings, cleanup: { ...rules, ...patch } });
+  const update = (delta: Partial<CleanupRules>) => patch({ cleanup: { ...rules, ...delta } });
+  /// Turning removal on unattended is the one choice here that deletes
+  /// things later without asking, so it takes a second, explicit yes.
+  const [confirmingOn, setConfirmingOn] = useState(false);
+  const autoRunValue = rules.autoRun === true ? 1 : rules.autoRun === false ? 0 : 2;
 
   return (
     <div className="space-y-5">
       <Group
         title="Auto-tidy"
-        description="Which finished worktrees Clean up offers to retire on its own. Nothing is ever removed without the confirm step — these rules decide what arrives pre-ticked."
+        description="Which finished worktrees retire on their own. Only clean, merged worktrees are ever touched; the same rules decide what arrives pre-ticked in Clean up."
       >
+        <Row
+          label="Run on its own"
+          help="Checks a few minutes after launch, then every six hours. Ask first shows what is due and waits for a yes; On retires it without asking; Off means the rules only pre-tick rows in Clean up."
+        >
+          <Choices
+            options={[
+              { value: 2, label: 'Ask first' },
+              { value: 1, label: 'On' },
+              { value: 0, label: 'Off' },
+            ]}
+            value={autoRunValue}
+            onChange={(v) => {
+              if (v === 1 && rules.autoRun !== true) {
+                setConfirmingOn(true);
+                return;
+              }
+              setConfirmingOn(false);
+              update({ autoRun: v === 2 ? undefined : v === 1 });
+            }}
+          />
+        </Row>
+        {confirmingOn && (
+          <div className="text-xs text-amber-800 dark:text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2 flex items-center gap-3">
+            <span className="flex-1">
+              Retire finished worktrees without asking? Only clean, merged ones past the rule below
+              are removed; chats keep their conversation and every branch is kept.
+            </span>
+            <SheetActionButton
+              primary
+              label="Turn on"
+              onClick={() => {
+                setConfirmingOn(false);
+                update({ autoRun: true });
+              }}
+            />
+            <SheetActionButton label="Cancel" onClick={() => setConfirmingOn(false)} />
+          </div>
+        )}
+
         <Row
           label="Retire a finished worktree"
           help="Once its shift or run ended, its branch is merged into the base, and nothing is uncommitted."
@@ -84,8 +136,9 @@ export function AutoTidyPane() {
             decide about, however old it gets.
           </div>
           <div>
-            <span className="text-ink">Nothing is deleted in the background.</span> Auto-tidy picks
-            the rows; removing them is still a click and a confirm step in Clean up.
+            <span className="text-ink">No conversation is deleted in the background.</span> When
+            auto-tidy retires a chat&rsquo;s worktree it releases the tree and keeps the
+            conversation, and it always keeps the branch.
           </div>
         </div>
         <div>

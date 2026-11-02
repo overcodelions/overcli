@@ -285,3 +285,39 @@ describe('OrgService.runDetail', () => {
     expect(svc.runDetail(sam, 'hid').ok).toBe(true);
   });
 });
+
+describe('searching recent work', () => {
+  const report = { name: 'fix.md', body: 'Opened a pull request for ACME-5589: the login page now keeps the session.', producedAt: NOW - DAY, kind: 'markdown' };
+  const runs = [
+    flowRun('login', 'ana', NOW - DAY, { userPrompt: 'Look at ticket ACME-5589 please', artifacts: { fix: report }, number: 7 }),
+    flowRun('live', 'ana', NOW - 60_000, { userPrompt: 'Triage ACME-5589 again', state: { kind: 'running', currentStepId: 's' } }),
+    flowRun('old', 'ana', NOW - 120 * DAY, { userPrompt: 'ACME-5589 the first time' }),
+    flowRun('secret', 'cal', NOW - DAY, { userPrompt: 'ACME-5589 on the private worker' }),
+    flowRun('other', 'ana', NOW - DAY, { userPrompt: 'Weekly competitor sweep' }),
+  ];
+
+  it('finds runs by what their request or output mentions, newest first, running ones included', () => {
+    const hits = harness({ runs }).svc.searchWork(pat, 'acme-5589');
+    expect(hits.map((x) => [x.runId, x.status])).toEqual([
+      ['live', 'running'],
+      ['login', 'done'],
+    ]);
+    expect(hits[1]).toMatchObject({ runNumber: 7, workerName: 'Ana', title: 'Run login' });
+    expect(hits[1].snippet).toContain('ACME-5589');
+  });
+
+  it('needs every word, matches the run number, and ignores an empty query', () => {
+    const { svc } = harness({ runs });
+    expect(svc.searchWork(pat, 'acme-5589 session').map((x) => x.runId)).toEqual(['login']);
+    expect(svc.searchWork(pat, '#7').map((x) => x.runId)).toEqual(['login']);
+    expect(svc.searchWork(pat, '   ')).toEqual([]);
+  });
+
+  it("leaves out someone else's private worker, and reaches further back when asked", () => {
+    const { svc } = harness({ runs });
+    expect(svc.searchWork(pat, 'private')).toEqual([]);
+    expect(svc.searchWork(sam, 'private').map((x) => x.runId)).toEqual(['secret']);
+    expect(svc.searchWork(pat, 'first time')).toEqual([]);
+    expect(svc.searchWork(pat, 'first time', { days: 180 }).map((x) => x.runId)).toEqual(['old']);
+  });
+});

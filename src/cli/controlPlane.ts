@@ -22,6 +22,7 @@ import type { ProcessField, ProcessPerson, ProcessStage } from '../shared/org/pr
 import { processScheduleText, type ItemAction, type ProcessService } from '../main/org/processes';
 import { imageFromDataUrl, type ProcessDraftResult, type ProcessImageInput } from '../main/org/processDraft';
 import type { ModelIdResult } from '../main/backends/modelIdTest';
+import { MAX_ASK_BODY_BYTES, askFiles } from './askFiles';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -470,6 +471,7 @@ function triggerInput(raw: unknown): Parameters<OrgService['createTrigger']>[2] 
     maxPerDay: Number(t.maxPerDay) || 50,
     ...(t.notifyOnly === true ? { notifyOnly: true } : {}),
     ...(t.startsOnItsOwn === true ? { startsOnItsOwn: true } : {}),
+    ...(kind === 'slack' && t.rehearse === true ? { rehearse: true } : {}),
     ...(kind === 'watch'
       ? {
           watch: {
@@ -503,6 +505,7 @@ function triggerPatch(raw: unknown): Parameters<OrgService['updateTrigger']>[2] 
     ...(p.watch ? { watch: full.watch } : {}),
     ...(typeof p.notifyOnly === 'boolean' ? { notifyOnly: p.notifyOnly } : {}),
     ...(typeof p.startsOnItsOwn === 'boolean' ? { startsOnItsOwn: p.startsOnItsOwn } : {}),
+    ...(typeof p.rehearse === 'boolean' ? { rehearse: p.rehearse } : {}),
     ...(p.slack ? { slack: triggerInput({ kind: 'slack', slack: p.slack }).slack } : {}),
   };
 }
@@ -990,6 +993,46 @@ function modelTestRoutes(testModelIds?: ControlPlaneDeps['testModelIds']): Array
   ];
 }
 
+/// The top bar's finder. Its own routes so it can reach processes, which a
+/// control plane may not have.
+function searchRoutes(org: OrgService, processes?: ProcessService): Array<{ method: string; path: RegExp; handle: Handler }> {
+  return [
+    {
+      // The top bar's finder: workers, teams and processes by name or what
+      // they're for, and recent work by anything it mentions.
+      method: 'GET',
+      path: /^\/api\/search$/,
+      handle: (c, _b, _p, url) => {
+        const q = (url.searchParams.get('q') ?? '').trim().slice(0, 200);
+        const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+        if (!words.length) return { ok: true, workers: [], teams: [], processes: [], work: [] };
+        const has = (...parts: Array<string | undefined>) => {
+          const text = parts.filter(Boolean).join('\n').toLowerCase();
+          return words.every((w) => text.includes(w));
+        };
+        return {
+          ok: true,
+          workers: org
+            .listWorkers(c)
+            .filter((w) => has(w.name, w.tagline, w.manager, ...(w.formerNames ?? [])))
+            .slice(0, 8)
+            .map((w) => ({ id: w.id, name: w.name, tagline: w.tagline })),
+          teams: org
+            .teams(c)
+            .filter((t) => has(t.name, t.shortName, t.purpose, ...t.members.map((m) => m.name)))
+            .slice(0, 6)
+            .map((t) => ({ id: t.id, name: t.name, ...(t.purpose ? { purpose: t.purpose } : {}) })),
+          processes: (processes?.list(c) ?? [])
+            .filter((p) => has(p.name, p.shortName, p.purpose, p.about))
+            .slice(0, 6)
+            .map((p) => ({ id: p.id, name: p.name, ...(p.purpose ? { purpose: p.purpose } : {}) })),
+          work: org.searchWork(c, q, { limit: 20 }),
+        };
+      },
+    },
+  ];
+}
+
 function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => Promise<SlackPerson[]>, links: FileLinks = new FileLinks()): Array<{ method: string; path: RegExp; handle: Handler }> {
   const str = (v: unknown): string => (typeof v === 'string' ? v : '');
   const TRUST = new Set(['probation', 'trusted', 'autonomous']);
@@ -1373,7 +1416,22 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       method: 'POST',
       path: /^\/api\/ask$/,
       handle: (c, b) => {
-        const res = org.startAsk(c, str(b.worker), str(b.message), 'console', undefined, typeof b.replyTo === 'string' ? b.replyTo : undefined);
+        const files = askFiles(b.files);
+        if (!files.ok) return files;
+        const message = str(b.message).trim();
+        // Shown on the record as typed (or as what was attached); the worker
+        // gets the text files' contents too.
+        const said = message || (files.names.length ? `(Attached ${files.names.join(', ')})` : '');
+        const res = org.startAsk(
+          c,
+          str(b.worker),
+          (message || said) + files.text,
+          'console',
+          files.attachments.length ? files.attachments : undefined,
+          typeof b.replyTo === 'string' ? b.replyTo : undefined,
+          undefined,
+          said,
+        );
         return res.ok ? { ok: true, askId: res.askId } : res;
       },
     },
@@ -1565,6 +1623,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
     ...apiRoutes(deps.org, deps.access, deps.slackPeople, links),
     ...(deps.connections ? connectionRoutes(deps.connections) : []),
     ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess) : []),
+    ...searchRoutes(deps.org, deps.processes),
     ...slackRoutes(deps.slackConversations),
     ...modelTestRoutes(deps.testModelIds),
   ];
@@ -1768,7 +1827,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           let body: Record<string, unknown> = {};
           if (req.method === 'POST') {
             try {
-              const parsed = await readBody(req, path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : MAX_BODY_BYTES);
+              const parsed = await readBody(req, path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : path === '/api/ask' ? MAX_ASK_BODY_BYTES : MAX_BODY_BYTES);
               body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
             } catch {
               return send(res, 400, { ok: false, error: 'Send a JSON object.' });

@@ -601,8 +601,27 @@ export const WORKER_DEMOTE_REJECTION_STREAK = 3;
 /// A worker pointed at a repo or a workspace: its work lands as pushed
 /// branches, a person opens the pull request, and the server keeps it off the
 /// default branch and runs the repo's tests before each push.
-export function isCodingWorker(w: Pick<Worker, 'flowIds'> & Partial<Pick<Worker, 'writesCode'>>): boolean {
-  return w.writesCode ?? w.flowIds.some((id) => id.startsWith('org-pr-'));
+///
+/// `flows`: the steps of the worker's flows, when the caller can load them.
+/// The `org-pr-` prefix only names the server's own PR flows; a worker on any
+/// other flow that edits code (solve-ticket's build and tests steps) read as
+/// one that only reads, and its runs edited the user's checked-out branch in
+/// place instead of a worktree.
+export function isCodingWorker(
+  w: Pick<Worker, 'flowIds'> & Partial<Pick<Worker, 'writesCode'>>,
+  flows?: Array<{ stepTools?: Array<{ role?: string }> }>,
+): boolean {
+  if (w.writesCode !== undefined) return w.writesCode;
+  return w.flowIds.some((id) => id.startsWith('org-pr-')) || (flows ?? []).some((f) => flowWritesCode(f.stepTools ?? []));
+}
+
+/// Roles whose job is changing code. A writer's or editor's step also gets
+/// Write and Edit, for a document, so the tools alone don't say it.
+const CODE_WRITING_ROLES = new Set(['implementer', 'test-writer', 'debugger']);
+
+/// Whether a flow has a step that changes code.
+export function flowWritesCode(steps: Array<{ role?: string }>): boolean {
+  return steps.some((s) => !!s.role && CODE_WRITING_ROLES.has(s.role));
 }
 
 export function workerAutoApproveCap(w: Pick<Worker, 'trust' | 'caps'> & Partial<Pick<Worker, 'flowIds' | 'writesCode'>>): number {

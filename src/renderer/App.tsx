@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { installAutoTidy } from './components/sheets/cleanupScan';
 import { anyBackendReady, useStore } from './store';
 import { useConversation } from './hooks';
 import { findConversation } from './conversationLookup';
@@ -47,6 +48,7 @@ import { FileEditorPane } from './components/FileEditorPane';
 import { CompareView } from './components/CompareView';
 import { useWorkersStore } from './workersStore';
 import { UpdateToast } from './components/UpdateToast';
+import { AutoTidyPrompt } from './components/AutoTidyPrompt';
 import { fileEditorRootFor } from './fileEditorRoot';
 
 const SIDEBAR_MIN = 200;
@@ -201,6 +203,9 @@ export function App() {
 
   // Explorers in windows of their own, and their tabs coming back on close.
   useEffect(() => useExplorerPopoutStore.getState().init(), []);
+
+  // Finished worktrees retire on the auto-tidy rules — see cleanupScan.
+  useEffect(() => installAutoTidy(), []);
 
   // Re-check which finished runs still have unreviewed work when the window
   // regains focus — reviewing means leaving this app, so coming back is when
@@ -800,6 +805,7 @@ export function App() {
       </div>
       <SheetHost />
       <UpdateToast />
+      <AutoTidyPrompt />
     </div>
   );
 }

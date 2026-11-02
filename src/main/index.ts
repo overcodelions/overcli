@@ -310,6 +310,25 @@ let servicesManager: ServicesManager | null = null;
 const pendingServiceLines = new Map<string, { workspaceId: string; serviceId: string; lines: string[] }>();
 let serviceLinesFlush: NodeJS.Immediate | undefined;
 
+// Since Electron 43, file dialogs open in Downloads when no defaultPath is
+// given. Open them where the user last picked something this session (their
+// home folder before that), and put a bare suggested filename in that folder.
+let lastDialogDir = os.homedir();
+function dialogDefaultPath(defaultPath?: string): string {
+  if (!defaultPath) return lastDialogDir;
+  return path.isAbsolute(defaultPath) ? defaultPath : path.join(lastDialogDir, defaultPath);
+}
+async function showOpenDialog(win: BrowserWindow, opts: Electron.OpenDialogOptions) {
+  const res = await dialog.showOpenDialog(win, { ...opts, defaultPath: dialogDefaultPath(opts.defaultPath) });
+  if (!res.canceled && res.filePaths[0]) lastDialogDir = path.dirname(res.filePaths[0]);
+  return res;
+}
+async function showSaveDialog(win: BrowserWindow, opts: Electron.SaveDialogOptions) {
+  const res = await dialog.showSaveDialog(win, { ...opts, defaultPath: dialogDefaultPath(opts.defaultPath) });
+  if (!res.canceled && res.filePath) lastDialogDir = path.dirname(res.filePath);
+  return res;
+}
+
 /// Whoever is at this desktop, as the org layer knows people: the app's owner,
 /// with every right. Named after the manager on their crew who carries their
 /// Slack id, when there is one; else just "You".
@@ -1377,7 +1396,7 @@ export function registerIpc(): void {
 
   ipcMain.handle('fs:pickDirectory', async () => {
     if (!mainWindow) return null;
-    const res = await dialog.showOpenDialog(mainWindow, {
+    const res = await showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'multiSelections'],
     });
     if (res.canceled || res.filePaths.length === 0) return null;
@@ -2141,7 +2160,7 @@ export function registerIpc(): void {
   ipcMain.handle('machine:clearCache', (_e, { kind, port }) => clearCache(kind, port));
   ipcMain.handle('services:importFile', async () => {
     if (!mainWindow) return null;
-    const res = await dialog.showOpenDialog(mainWindow, {
+    const res = await showOpenDialog(mainWindow, {
       title: 'Import services from a file',
       properties: ['openFile', 'showHiddenFiles'],
     });
@@ -2154,7 +2173,7 @@ export function registerIpc(): void {
   );
   ipcMain.handle('services:saveShare', async (_e, { text, name }: { text: string; name: string }) => {
     if (!mainWindow) return false;
-    const res = await dialog.showSaveDialog(mainWindow, {
+    const res = await showSaveDialog(mainWindow, {
       title: 'Save shared stack',
       defaultPath: `${String(name).replace(/[^A-Za-z0-9_-]+/g, '-') || 'stack'}.overcli-stack.json`,
       filters: [{ name: 'Shared stack', extensions: ['json'] }],
@@ -2165,7 +2184,7 @@ export function registerIpc(): void {
   });
   ipcMain.handle('services:readShared', async () => {
     if (!mainWindow) return null;
-    const res = await dialog.showOpenDialog(mainWindow, {
+    const res = await showOpenDialog(mainWindow, {
       title: 'Import a shared stack',
       properties: ['openFile'],
       filters: [{ name: 'Shared stack', extensions: ['json'] }],
@@ -2183,7 +2202,7 @@ export function registerIpc(): void {
   );
   ipcMain.handle('services:pickFolder', async (_e, { title }: { title: string }) => {
     if (!mainWindow) return null;
-    const res = await dialog.showOpenDialog(mainWindow, { title, properties: ['openDirectory'] });
+    const res = await showOpenDialog(mainWindow, { title, properties: ['openDirectory'] });
     return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0];
   });
   // Checked again here, not trusted from the sheet: what it holds becomes
@@ -3116,7 +3135,7 @@ export function registerIpc(): void {
       }),
     });
     if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
-    const res = await dialog.showSaveDialog(mainWindow, {
+    const res = await showSaveDialog(mainWindow, {
       title: `Share ${worker.name}`,
       defaultPath: share.filename,
       filters: [{ name: 'Worker', extensions: ['yaml', 'yml'] }],
@@ -3348,7 +3367,7 @@ export function registerIpc(): void {
   });
   ipcMain.handle('ci:saveFile', async (_e, { defaultName, contents }) => {
     if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
-    const res = await dialog.showSaveDialog(mainWindow, {
+    const res = await showSaveDialog(mainWindow, {
       title: `Save ${defaultName}`,
       defaultPath: defaultName,
     });
@@ -3363,7 +3382,7 @@ export function registerIpc(): void {
   ipcMain.handle('workers:import', (_e, { yaml }) => receiveWorkerYaml(yaml));
   ipcMain.handle('workers:importFromFile', async () => {
     if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
-    const res = await dialog.showOpenDialog(mainWindow, {
+    const res = await showOpenDialog(mainWindow, {
       title: 'Import a worker',
       properties: ['openFile'],
       filters: [{ name: 'Worker', extensions: ['yaml', 'yml'] }],

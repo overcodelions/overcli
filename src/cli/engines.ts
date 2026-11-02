@@ -256,6 +256,8 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
   workerEngine = new WorkerEngine({
     parker: orchestrator,
     isGitRepo: isGitRepoOrWorkspace,
+    // `readsOnlyWorker` below refuses a non-coding worker's writes here.
+    readsInPlace: true,
     emit,
     // Wrapped here rather than relying on the host: this notify goes to the
     // engine DIRECTLY and never passes through `host().notify`, so without
@@ -365,7 +367,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
   flowRuntime.skipsCheckpoints = (id) => workerEngine.get(id)?.caps.skipCheckpoints === true;
   flowRuntime.readsOnlyWorker = (id, projectPath) => {
     const w = workerEngine.get(id);
-    return !!w && !isCodingWorker(w) && isGitRepoOrWorkspace(w.projectPath || projectPath);
+    return !!w && !workerEngine.writesCode(w) && isGitRepoOrWorkspace(w.projectPath || projectPath);
   };
   flowRuntime.standingGrants = (id, flowId) =>
     (workerEngine.get(id)?.caps.alwaysAllow ?? []).filter((k) => k.startsWith(`${flowId}/`)).map((k) => `step:${k.slice(flowId.length + 1)}`);
@@ -557,7 +559,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   const updates = new UpdateCheck({ current: serverVersion(), enabled: () => process.env.OVERCLI_UPDATE_CHECK !== '0' });
   updates.start();
   const { org, commands, access, sso, triggers, connections, processes, frontDoor } = createOrgControl(
-    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, health: () => [updates.health()], version: () => updates.status(), ...(options.secrets ? { secrets: options.secrets } : {}) },
+    { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, sweepCheckouts: true, health: () => [updates.health()], version: () => updates.status(), ...(options.secrets ? { secrets: options.secrets } : {}) },
     slack,
   );
   slackCommands = commands;
