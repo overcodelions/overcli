@@ -58,7 +58,7 @@ import { draftHire, drafterDepsFor, saveDraftedHire } from '../main/org/hireDraf
 import { bindAllowList, refreshAllowList } from '../main/org/repoGrants';
 import { baseAllowList, configureAccess, noteRefusal } from '../main/org/workerAccess';
 import type { AccessLevel } from '../shared/org/access';
-import { BranchLander, LANDED_ARTIFACT, describe as describeLanded, landedBranches, type Landed } from '../main/org/landBranches';
+import { BranchLander, describe as describeLanded, type Landed } from '../main/org/landBranches';
 import { flowRunTitle, type FlowRun } from '../shared/flows/schema';
 import { runRepoTests } from './repoTests';
 import { credentialGitEnv, type ConnectedRepo } from '../main/org/repos';
@@ -67,6 +67,7 @@ import { setSafeFetch } from '../main/safeFetch';
 import { setWebReadsTrusted } from '../main/flows/trustedCommands';
 import { loadOrgPolicy, orgDir, fileHandbook, jsonOrgStore } from '../main/org/orgStores';
 import { CiWatcher, continueBranchOf, type CiWatch } from '../main/org/ciWatch';
+import { continueBranchFor } from '../main/org/continueBranch';
 import { openPullRequest } from '../main/org/prOpen';
 import { openIm, postMessage } from '../main/slack/slackApi';
 import { guardCredentials } from '../main/org/credentialGuard';
@@ -77,7 +78,7 @@ import { useRemoteToolVault } from '../main/org/tools';
 import { readClaudeMcpServers, restoreClaudeStdioEnv, sealClaudeStdioEnv, useClaudeEnvVault, writeMcpServer, type McpServerConfig } from '../main/mcpConfig';
 import { log } from '../main/diagnostics';
 import { serverShapedFlow } from '../main/org/serverFlow';
-import { ticketFlowId, ticketFlowYaml, ticketKey, ticketOf, ticketPrompt, trackerOf } from '../main/org/ticketFollowUp';
+import { ticketFlowId, ticketFlowYaml, ticketOf, ticketPrompt, trackerOf } from '../main/org/ticketFollowUp';
 import { parseFlowYaml } from '../shared/flows/yaml';
 import type { SecretsService } from '../main/org/secrets/service';
 import { teamHireJobDescription } from '../shared/flows/team';
@@ -592,48 +593,23 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // and ticket) starts on that change's branch, and its push adds to it
   // (BranchLander.builtOn), so the open pull request gets the new commits.
   // Not once the branch is merged or gone: then it starts fresh.
-  orchestrator.continueBranch = async ({ projectPath, workerId, title, prompt }) => {
+  orchestrator.continueBranch = (args) => {
     const list = org.repoList({ name: 'overcli', admin: true });
-    const all = list.ok ? (list as { repos: ConnectedRepo[] }).repos : [];
-    const spaces = list.ok ? (list as { workspaces: Array<{ rootPath: string; repos: string[] }> }).workspaces : [];
-    // Still there on origin, and not merged yet: worth building on.
-    const open = async (repo: ConnectedRepo, branch: string) => {
-      await serverGit(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], repo.path);
-      const there = await serverGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`], repo.path);
-      if (!there.ok) return false;
-      const merged = await serverGit(['merge-base', '--is-ancestor', `refs/remotes/origin/${branch}`, `refs/remotes/origin/${repo.defaultBranch}`], repo.path);
-      return !merged.ok;
-    };
-    // A CI fix names its branch outright (ciWatch.ts). In a workspace each
-    // repo starts on it where it has it, and from its default branch where not.
-    // Only a branch the watcher asked this worker to fix counts: the marker
-    // in any other prompt (a ticket's text, a request) would push the run's
-    // work into someone else's pull request.
-    const marked = continueBranchOf(prompt);
-    const ws = spaces.find((w) => w.rootPath === projectPath);
-    const here = ws ? ws.repos : all.filter((r) => r.path === projectPath).map((r) => r.name);
-    const named = marked && ci.fixAskedOn(workerId, marked, here) ? marked : null;
-    if (ws) {
-      if (!named) return null;
-      for (const r of all.filter((x) => ws.repos.includes(x.name))) if (await open(r, named)) return named;
-      return null;
-    }
-    const repo = all.find((r) => r.path === projectPath);
-    if (!repo) return null;
-    let branch = named ?? undefined;
-    if (!branch) {
-      // Otherwise the ticket finds the branch an earlier run pushed for it:
-      // the ticket its title names, never one its ask only mentions (a
-      // duplicate, the ticket it was cloned from), whose pull request this
-      // run's work would land in.
-      const ticket = ticketKey(title);
-      if (!ticket) return null;
-      const earlier = flowRuntime
-        .listRuns()
-        .find((r) => r.workerId === workerId && r.projectPath === projectPath && !r.workspaceWorktrees?.length && !!r.artifacts?.[LANDED_ARTIFACT] && ticketOf(r) === ticket);
-      branch = earlier ? landedBranches(earlier.artifacts![LANDED_ARTIFACT]!.body ?? '')[0] : undefined;
-    }
-    return branch && (await open(repo, branch)) ? branch : null;
+    return continueBranchFor(args, {
+      repos: () => (list.ok ? (list as { repos: ConnectedRepo[] }).repos : []),
+      workspaces: () => (list.ok ? (list as { workspaces: Array<{ rootPath: string; repos: string[] }> }).workspaces : []),
+      runs: () => flowRuntime.listRuns(),
+      ciWatches: () => ci.list(),
+      fixAskedOn: (workerId, branch, repos) => ci.fixAskedOn(workerId, branch, repos),
+      // Still there on origin, and not merged yet: worth building on.
+      open: async (repo, branch) => {
+        await serverGit(['fetch', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], repo.path);
+        const there = await serverGit(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`], repo.path);
+        if (!there.ok) return false;
+        const merged = await serverGit(['merge-base', '--is-ancestor', `refs/remotes/origin/${branch}`, `refs/remotes/origin/${repo.defaultBranch}`], repo.path);
+        return !merged.ok;
+      },
+    });
   };
   // What the repo's own CI says about each pushed commit: a red build goes
   // back to the worker to fix on the same branch, a few rounds at most.

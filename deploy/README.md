@@ -177,7 +177,7 @@ docker build -f deploy/Dockerfile -t overcli-org \
 
 `JDKS` installs Amazon Corretto at `/opt/jdk/<version>`. The first one listed is `JAVA_HOME`. A repo that needs another one names it, for example `org.gradle.java.home=/opt/jdk/8` in its `gradle.properties`, or a test command that starts `JAVA_HOME=/opt/jdk/8 ./gradlew test`. Workers run what the console's Permissions let them (`--max-access shell` and the commands listed there). The repo's test command runs on the server before each push (see above).
 
-A worker can't fetch or push itself, because the host token stays in the server. Before each run the server fetches every branch, so a follow-up on an open pull request reads its branch from `origin/`, and the server pushes the result back onto it.
+A worker can't fetch or push itself, because the host token stays in the server. Before each run the server fetches every branch, so a follow-up on an open pull request reads its branch from `origin/`, and the server pushes the result back onto it. A run counts as a follow-up when its title names the same ticket as a change the same worker pushed earlier, in the same repo or workspace, and that branch is still open: the server knows the branch from its own records (the earlier run, or the CI watcher), never from a branch or ticket the request only mentions. Once the branch is merged or gone, the next run starts fresh.
 
 ### Asking from Slack
 
