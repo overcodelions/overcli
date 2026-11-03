@@ -25,7 +25,9 @@ import {
   formatSize,
   groupKeyFor,
   isActionable,
+  pickRetirable,
   planCleanup,
+  stillRetirable,
   type CleanupPlan,
 } from './cleanup';
 
@@ -205,13 +207,18 @@ export async function removeUnits(args: {
     }
   }
   for (const convId of plan.removeAgentIds) {
+    // Unattended: main checks the tree again at the moment of removal.
     const res = args.releaseChats
-      ? await store.releaseWorktree(convId, { keepBranch })
+      ? await store.releaseWorktree(convId, { keepBranch, unattended: true })
       : await store.removeAgent(convId, { keepBranch });
+    const named = (text: string) => {
+      const e = selected.find((x) => x.claim?.convId === convId);
+      return `${e?.claim?.title ?? e?.worktreePath ?? convId}: ${text}`;
+    };
     if (!res.ok) {
-      if (res.error) warnings.push(res.error);
+      if (res.error) warnings.push(named(res.error));
       kept.push(...pathsFor((e) => e.claim?.convId === convId));
-    } else if (res.warning) warnings.push(res.warning);
+    } else if (res.warning) warnings.push(named(res.warning));
   }
   if (!args.releaseChats) {
     for (const convId of plan.removeAdoptedIds) await store.removeConversation(convId);
@@ -248,19 +255,7 @@ export async function runAutoTidy(): Promise<AutoTidyReport | null> {
   try {
     const entries = await startScan({ measureSizes: false });
     if (!entries) return null;
-    const pick = new Set(
-      retirable(entries, rules, (e) => groupKeyFor(e).key, entryAgeAt, Date.now()).map(
-        (e) => e.worktreePath,
-      ),
-    );
-    const selected = entries.filter(
-      (e) =>
-        pick.has(e.worktreePath) &&
-        e.bucket === 'reclaimable' &&
-        // A tree a chat borrowed takes that chat with it when removed — never
-        // something a timer gets to decide.
-        !(e.claim?.adoptedConvIds?.length ?? 0),
-    );
+    const selected = pickRetirable(entries, rules, Date.now());
     if (selected.length === 0) {
       const report = { at: Date.now(), removed: 0, freedKb: 0, warnings: [] };
       useCleanupScan.setState({ lastAutoTidy: report });
@@ -277,10 +272,10 @@ export async function runAutoTidy(): Promise<AutoTidyReport | null> {
   }
 }
 
-async function retire(selected: WorktreeSweepEntry[], all: WorktreeSweepEntry[]): Promise<AutoTidyReport> {
+async function retire(selected: WorktreeSweepEntry[], all: WorktreeSweepEntry[], warnings: string[] = []): Promise<AutoTidyReport> {
   const res = await removeUnits({ selected, all, keepBranch: true, releaseChats: true });
   pruneRemoved(res.attempted, res.kept);
-  const report = { at: Date.now(), removed: res.removed, freedKb: res.freedKb, warnings: res.warnings };
+  const report = { at: Date.now(), removed: res.removed, freedKb: res.freedKb, warnings: [...warnings, ...res.warnings] };
   useCleanupScan.setState({ lastAutoTidy: report });
   return report;
 }
@@ -299,7 +294,18 @@ export async function confirmAutoTidy(): Promise<AutoTidyReport | null> {
   if (!pending) return null;
   useCleanupScan.setState({ autoTidying: true });
   try {
-    return await retire(pending.selected, pending.all);
+    // The prompt may have sat for hours: a chat could have been resumed in one
+    // of these trees since. Scan again and retire only what is still safe.
+    const entries = await startScan({ measureSizes: false });
+    if (!entries) return null;
+    const { selected, kept: changed } = stillRetirable(pending.selected, entries, rulesNow(), Date.now());
+    const warnings = changed > 0 ? [`${changed} worktree${changed === 1 ? '' : 's'} changed since you were asked and ${changed === 1 ? 'was' : 'were'} kept.`] : [];
+    if (selected.length === 0) {
+      const report = { at: Date.now(), removed: 0, freedKb: 0, warnings };
+      useCleanupScan.setState({ lastAutoTidy: report });
+      return report;
+    }
+    return await retire(selected, entries, warnings);
   } finally {
     useCleanupScan.setState({ autoTidying: false });
   }

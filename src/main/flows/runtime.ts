@@ -3275,7 +3275,7 @@ export class FlowRuntimeImpl {
       sandboxFsWrites: this.sandboxFlowWrites(),
       allowedDirs: this.runAllowedDirs(run),
       model: effectiveParticipantModel(run, participantId),
-      permissionMode: this.resolvePermissionMode(run, step),
+      permissionMode: this.resolvePermissionMode(run, step, participant.backend),
       chrome: this.browseFor(run, participant.backend),
       reviewBackend: null,
       reviewMode: null,
@@ -4631,10 +4631,13 @@ export class FlowRuntimeImpl {
     return true;
   }
 
-  private resolvePermissionMode(run: FlowRun, step: FlowStep): PermissionMode {
+  private resolvePermissionMode(run: FlowRun, step: FlowStep, backend: Backend = resolveStepModel(run.flowSnapshot, step).backend): PermissionMode {
     // A reader works in the shared repos: every call that isn't plainly a
     // read must reach the check below, whatever the step or its trust say.
-    if (run.readsOnly) return 'acceptEdits';
+    // Codex's exec transport asks nothing (its approval is `never`,
+    // permissionRules.ts), so its edits would never reach that check: there
+    // only the sandbox holds, and a reader's is read-only.
+    if (run.readsOnly) return backend === 'codex' ? 'plan' : 'acceptEdits';
     if (step.permissionMode) return step.permissionMode;
     // Flows are designed to run unattended — the user has already opted
     // into "automate this whole pipeline".

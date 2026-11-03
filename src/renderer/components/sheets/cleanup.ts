@@ -11,6 +11,7 @@
 // module only decides what goes in which group and what a selection would
 // actually do, which is the part worth testing.
 
+import { retirable, type CleanupRules } from '@shared/cleanupRules';
 import type {
   Conversation,
   UUID,
@@ -457,4 +458,20 @@ export function formatAge(at: number, now: number): string | null {
   if (days < 30) return `${days}d ago`;
   const months = Math.floor(days / 30);
   return months === 1 ? '1mo ago' : `${months}mo ago`;
+}
+
+/// What an unattended pass may retire: what the rules say, among the safe
+/// rows, and never a tree a chat borrowed (removing it takes that chat
+/// with it, which is not a timer's to decide).
+export function pickRetirable(entries: WorktreeSweepEntry[], rules: CleanupRules, now: number): WorktreeSweepEntry[] {
+  const pick = new Set(retirable(entries, rules, (e) => groupKeyFor(e).key, entryAgeAt, now).map((e) => e.worktreePath));
+  return entries.filter((e) => pick.has(e.worktreePath) && e.bucket === 'reclaimable' && !(e.claim?.adoptedConvIds?.length ?? 0));
+}
+
+/// Of the trees someone was asked about, the ones a fresh scan still says
+/// may go: a tree that gained changes, a chat, or a claim since is kept.
+export function stillRetirable(asked: WorktreeSweepEntry[], fresh: WorktreeSweepEntry[], rules: CleanupRules, now: number): { selected: WorktreeSweepEntry[]; kept: number } {
+  const want = new Set(asked.map((e) => e.worktreePath));
+  const selected = pickRetirable(fresh, rules, now).filter((e) => want.has(e.worktreePath));
+  return { selected, kept: want.size - selected.length };
 }

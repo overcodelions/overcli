@@ -2021,6 +2021,10 @@ export interface IPCInvokeMap {
     /// where the work is already merged and the branch is just noise.
     keepBranch?: boolean;
     sessionId?: string;
+    /// Nobody is watching (auto-tidy): the tree is checked again at the
+    /// moment of removal, and kept if its chat is running or it has changes.
+    unattended?: boolean;
+    conversationId?: UUID;
   }) => { ok: boolean; error?: string; warning?: string };
   'git:checkoutAgentLocally': (args: {
     projectPath: string;

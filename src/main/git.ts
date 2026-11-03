@@ -1307,6 +1307,45 @@ export function removeWorktree(args: {
   return { ok: true };
 }
 
+/// Release: drop a chat's tree, keep the conversation (the renderer's
+/// `git:releaseWorktree`). Unattended (auto-tidy), the scan that picked the
+/// tree is older than this moment: a chat may have resumed in it since. So
+/// a turn in flight keeps it, and git is left to refuse a tree with changes
+/// (no --force). The session re-homing is the same move
+/// `git:checkoutAgentLocally` makes and for the same reason: the
+/// conversation's cwd becomes the project root, and a Claude session file
+/// left under the worktree's slug would be unreachable from there.
+export async function releaseWorktree(
+  args: {
+    projectPath: string;
+    worktreePath: string;
+    branchName: string | null;
+    keepBranch?: boolean;
+    sessionId?: string;
+    unattended?: boolean;
+    conversationId?: string;
+  },
+  deps: {
+    turnPending: (conversationId: string) => boolean;
+    migrateSession: (args: { worktreePath: string; projectPath: string; sessionId: string }) => void;
+  },
+): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  if (args.unattended && args.conversationId && deps.turnPending(args.conversationId)) {
+    return { ok: false, error: 'kept: its chat is running' };
+  }
+  const res = await removeWorktreeAsync({
+    projectPath: args.projectPath,
+    worktreePath: args.worktreePath,
+    branchName: args.keepBranch === false ? (args.branchName ?? '') : '',
+    ...(args.unattended ? { force: false } : {}),
+  });
+  if (!res.ok) return res;
+  if (args.sessionId) {
+    deps.migrateSession({ worktreePath: args.worktreePath, projectPath: args.projectPath, sessionId: args.sessionId });
+  }
+  return res;
+}
+
 /// Async sibling of `removeWorktree`. `removeWorktree` shells out via the
 /// blocking `runGit`/`spawnSync`, which freezes the main-process thread for
 /// the whole `git worktree remove --force` — noticeable as a UI beachball on
@@ -1317,13 +1356,18 @@ export async function removeWorktreeAsync(args: {
   projectPath: string;
   worktreePath: string;
   branchName: string;
+  /// Default true. Without it git itself refuses a tree with modified or
+  /// untracked files, at the moment of removal: what an unattended remove
+  /// wants, since whatever it was told about the tree is by then old news.
+  force?: boolean;
 }): Promise<{ ok: boolean; error?: string; warning?: string }> {
   const res = await runGitAsync(
-    ['worktree', 'remove', '--force', args.worktreePath],
+    ['worktree', 'remove', ...(args.force === false ? [] : ['--force']), args.worktreePath],
     args.projectPath,
   );
   if (res.exitCode !== 0) {
-    return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
+    const error = res.stderr.trim() || res.stdout.trim();
+    return { ok: false, error: /modified or untracked/i.test(error) ? 'kept: it has changes that were not there when you were asked' : error };
   }
   if (args.branchName) {
     const safe = await runGitAsync(['branch', '-d', args.branchName], args.projectPath);

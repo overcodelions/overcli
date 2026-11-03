@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildTodaySpine } from './todaySpine';
-import { earlierDays, finishedJobs, hourBuckets } from './todayLayout';
+import { earlierDays, finishedJobs, foldBatchRows, hourBuckets } from './todayLayout';
 import type { QueueRow, WorkQueue } from './workQueue';
 
 const HOUR = 3_600_000;
@@ -69,5 +69,24 @@ describe('earlierDays', () => {
   it('stops at the limit, keeping the most recent', () => {
     const rows = Array.from({ length: 5 }, (_, i) => row(`r${i}`, at(-2 - i)));
     expect(earlierDays(rows, NOW, 7, 2).flatMap((g) => g.rows.map((r) => r.key))).toEqual(['r0', 'r1']);
+  });
+});
+
+describe('foldBatchRows', () => {
+  it("folds a shift's jobs under its newest one, and leaves single jobs, team pieces and other shifts alone", () => {
+    const team = { teamId: 'T', teamName: 'T', taskId: 'x' };
+    const rows = [
+      row('s56:c', at(6), { orchestrationId: 's56' }),
+      row('s57:a', at(5, 50), { orchestrationId: 's57' }),
+      row('s56:b', at(5, 40), { orchestrationId: 's56' }),
+      row('s56:a', at(5, 30), { orchestrationId: 's56' }),
+      row('t:a', at(5), { orchestrationId: 't', team }),
+      row('t:b', at(4), { orchestrationId: 't', team }),
+      row('loose', at(3)),
+    ];
+    const { folded, under } = foldBatchRows(rows);
+    expect([...folded]).toEqual(['s56:b', 's56:a']);
+    expect([...under.keys()]).toEqual(['s56:c']);
+    expect(under.get('s56:c')!.map((r) => r.key)).toEqual(['s56:b', 's56:a']);
   });
 });

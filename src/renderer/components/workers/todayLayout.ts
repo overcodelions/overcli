@@ -81,3 +81,25 @@ export function earlierDays(
       rows,
     }));
 }
+
+/// A shift or errand that split into several jobs is ONE thing in the inbox:
+/// you asked once (or the schedule did), and three rows for it read like three
+/// separate deliveries. The newest job leads, and the shift's other jobs fold
+/// under it. `rows` must be newest first. Team pieces, wrap-ups and answer
+/// groups have their own folding and are left alone.
+export function foldBatchRows(rows: QueueRow[]): { folded: Set<string>; under: Map<string, QueueRow[]> } {
+  const lead = new Map<string, QueueRow>();
+  const under = new Map<string, QueueRow[]>();
+  const folded = new Set<string>();
+  for (const row of rows) {
+    if (!row.orchestrationId || row.team || row.wrapUpOf || row.answers) continue;
+    const head = lead.get(row.orchestrationId);
+    if (!head) {
+      lead.set(row.orchestrationId, row);
+      continue;
+    }
+    under.set(head.key, [...(under.get(head.key) ?? []), row]);
+    folded.add(row.key);
+  }
+  return { folded, under };
+}

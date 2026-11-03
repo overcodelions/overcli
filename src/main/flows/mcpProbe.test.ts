@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
 
 vi.mock('../diagnostics', () => ({ log: vi.fn() }));
+vi.mock('../org/secrets/service', () => ({ stripSecrets: (env: NodeJS.ProcessEnv) => Object.fromEntries(Object.entries(env).filter(([k]) => k !== 'ACME_SERVER_SECRET')) }));
 
-import { probeClaudeMcp } from './mcpProbe';
+import { probeClaudeMcp, probeLaunch } from './mcpProbe';
+import { setActiveWorkerUser } from '../org/workerUser';
 import { seenMcpServers, seenMcpTools, setMcpSeenFileForTests } from './mcpToolCache';
 
 function fakeProc() {
@@ -66,5 +68,25 @@ describe('probeClaudeMcp', () => {
     proc.emit('exit', 0);
     await Promise.all([a, b]);
     expect(spawnFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts Claude in a folder of its own, without the server's secrets, as the worker when there is one", () => {
+    const launch = probeLaunch('claude', ['-p', 'ok'], { PATH: '/usr/bin', ACME_SERVER_SECRET: 'k' });
+    try {
+      // Not HOME, not a repo: nothing a worker could have planted there loads.
+      expect(launch.cwd).not.toBe(os.homedir());
+      expect(fs.readdirSync(launch.cwd)).toEqual([]);
+      expect(fs.statSync(launch.cwd).mode & 0o777).toBe(0o755);
+      expect(launch.env).toEqual({ PATH: '/usr/bin' });
+      expect(launch).toMatchObject({ command: 'claude', args: ['-p', 'ok'] });
+      setActiveWorkerUser({ uid: 1001, gid: 1001 });
+      const asWorker = probeLaunch('claude', ['-p', 'ok'], {});
+      fs.rmSync(asWorker.cwd, { recursive: true, force: true });
+      expect(asWorker.command).toMatch(/setpriv$/);
+      expect(asWorker.args).toEqual(expect.arrayContaining(['--reuid=1001', '--no-new-privs', 'claude', '-p', 'ok']));
+    } finally {
+      setActiveWorkerUser(null);
+      fs.rmSync(launch.cwd, { recursive: true, force: true });
+    }
   });
 });

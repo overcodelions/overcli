@@ -1,8 +1,8 @@
 // No capabilities for anything the server starts (Linux, `overcli serve`).
 //
 // With OVERCLI_WORKER_UID (or OVERCLI_TEST_UID) the entrypoint hands the
-// server setuid, setgid and dac_override as ambient capabilities: the only
-// way a node process keeps them across exec. Ambient capabilities pass to
+// server setuid, setgid, dac_override and kill as ambient capabilities: the
+// only way a node process keeps them across exec. Ambient capabilities pass to
 // every child, though: git in a cloned repo, a relayed MCP package, a
 // Services process, repo tests. Any of them could read every file in the
 // container or become root.
@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { stripSecrets } from './secrets';
 import { serverGitLaunch } from './serverGit';
-import { SETPRIV, activeWorkerUser, asWorkerUser, workerWritableRoots } from './workerUser';
+import { SETPRIV, activeWorkerUser, asWorkerUser, switchableUsers, workerWritableRoots } from './workerUser';
 
 export const DROP_CAPS = ['--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', '--'] as const;
 
@@ -29,15 +29,20 @@ export function ambientCaps(status: string): bigint {
   return m ? BigInt(`0x${m[1]}`) : 0n;
 }
 
-/// Whether `args` to setpriv are a worker launch: a switch to a user other
-/// than root that drops every capability on the way (asWorkerUser).
-export function isWorkerLaunch(args: readonly string[]): boolean {
+/// Whether `args` to setpriv are a worker launch: a switch to one of the
+/// users the server may become (the worker user, active or about to be
+/// checked, or the repo-test user), no other, that drops every capability
+/// on the way (asWorkerUser). With none configured, nothing is.
+export function isWorkerLaunch(args: readonly string[], users: ReadonlyArray<{ uid: number; gid: number }> = [...(activeWorkerUser() ? [activeWorkerUser()!] : []), ...switchableUsers()]): boolean {
   const end = args.indexOf('--');
   const flags = end < 0 ? args : args.slice(0, end);
-  return flags.some((a) => /^--reuid=[1-9]\d*$/.test(a))
-    && flags.some((a) => /^--regid=[1-9]\d*$/.test(a))
-    && !flags.some((a) => /^--(?:ruid|euid|rgid|egid)=/.test(a))
-    && ['--clear-groups', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs'].every((f) => flags.includes(f));
+  if (!['--clear-groups', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs'].every((f) => flags.includes(f))) return false;
+  if (flags.some((a) => /^--(?:ruid|euid|rgid|egid)=/.test(a))) return false;
+  return users.some((u) =>
+    u.uid > 0 && u.gid > 0
+    && flags.includes(`--reuid=${u.uid}`)
+    && flags.includes(`--regid=${u.gid}`)
+    && !flags.some((a) => /^--(?:reuid|regid)=/.test(a) && a !== `--reuid=${u.uid}` && a !== `--regid=${u.gid}`));
 }
 
 /// `file args…` as it should start: through setpriv with no capabilities,
@@ -45,6 +50,13 @@ export function isWorkerLaunch(args: readonly string[]): boolean {
 export function withoutCaps(file: string, args: readonly string[]): { file: string; args: string[] } {
   if (file === SETPRIV && isWorkerLaunch(args)) return { file, args: [...args] };
   return { file: SETPRIV, args: [...DROP_CAPS, file, ...args] };
+}
+
+/// What runs instead of a git command the server refused (serverGit.ts):
+/// something that fails the way git would, with the reason on stderr.
+export function refusedGitLaunch(keys: string[], dir = 'this repo'): { file: string; args: string[] } {
+  const why = `overcli: not running git in ${dir}: its own config sets ${keys.join(', ')}, which could send the server's credentials elsewhere or start a program. Look in its .git/config, its worktree's config.worktree, and any file they include.`;
+  return { file: '/bin/sh', args: ['-c', 'printf "%s\\n" "$1" >&2; exit 128', 'overcli-refused-git', why] };
 }
 
 /// Whether `file` names a program that exists, looked up the way exec does:
@@ -108,6 +120,10 @@ export function launchFor(file: string, argv: readonly string[], cwd: string, en
     return { file: w.command, args: w.args, env: stripSecrets(env) as NodeJS.ProcessEnv };
   }
   if (git?.as === 'server') return { ...withoutCaps(file, git.args), env: { ...env, ...git.env } };
+  if (git?.as === 'refused') {
+    const refused = refusedGitLaunch(git.keys, git.dir);
+    return withoutCaps(refused.file, refused.args);
+  }
   return withoutCaps(file, argv);
 }
 

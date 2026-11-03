@@ -1164,6 +1164,9 @@ describe('selectedClaudeMcpConfig', () => {
       // Workers run as the server: nothing to defend against, as before.
       expect(Object.keys(relayedTools(servers, { db: servers.db }))).toEqual(['jira', 'planted', 'remote', 'db']);
       setActiveWorkerUser({ uid: 1001, gid: 1001 });
+      // The database tool is no exception: unpinned, it is the worker's to start.
+      expect(relayedTools(servers, { db: servers.db })).toEqual({ jira: pinned, remote: servers.remote });
+      mcpMocks.pinned = { jira: pinned, db: { command: 'overdb' } };
       expect(relayedTools(servers, { db: servers.db })).toEqual({ jira: pinned, remote: servers.remote, db: servers.db });
     } finally {
       setActiveWorkerUser(null);

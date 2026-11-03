@@ -343,7 +343,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
         flowId: flow.id,
         runIn,
         maxConcurrent: 1,
-        origin: workerOrigin(worker, 'errand', errand),
+        origin: workerOrigin({ ...worker, writesCode: workerEngine.writesCode(worker) }, 'errand', errand),
         note: `Investigate: ${request.replace(/\s+/g, ' ').slice(0, 300)}`,
         autoLaunch: launch,
       });
@@ -365,9 +365,17 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
   flowRuntime.setToolScopes((id) => effectiveScopes(workerEngine.get(id)?.toolScopes, loadOrgPolicy().policy.toolDefaults));
   workerEngine.handbook = () => fileHandbook.read();
   flowRuntime.skipsCheckpoints = (id) => workerEngine.get(id)?.caps.skipCheckpoints === true;
+  // Judged by the folder the run works in (a team piece runs in the team's
+  // repo, whatever the worker's own folder is), falling back to the worker's.
   flowRuntime.readsOnlyWorker = (id, projectPath) => {
     const w = workerEngine.get(id);
-    return !!w && !workerEngine.writesCode(w) && isGitRepoOrWorkspace(w.projectPath || projectPath);
+    return !!w && !workerEngine.writesCode(w) && isGitRepoOrWorkspace(projectPath || w.projectPath);
+  };
+  // Where a queued batch runs is decided again at launch (orchestrator):
+  // the worker's flows may have gained a step that edits code since.
+  orchestrator.runInNow = (id, projectPath) => {
+    const w = workerEngine.get(id);
+    return w ? workerEngine.runInFor(w, projectPath) : null;
   };
   flowRuntime.standingGrants = (id, flowId) =>
     (workerEngine.get(id)?.caps.alwaysAllow ?? []).filter((k) => k.startsWith(`${flowId}/`)).map((k) => `step:${k.slice(flowId.length + 1)}`);

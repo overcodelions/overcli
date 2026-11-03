@@ -3,6 +3,7 @@
 // everything moving, whatever kind it is. The words and the order come
 // from todayBoard.ts; this only draws them.
 
+import { Fragment, useEffect, useState } from 'react';
 import { SectionLabel } from './NowSection';
 import { elapsedLabel } from './nowCards';
 import type { BoardKind, FlightRow, OtherNeed, TrackSeg } from './todayBoard';
@@ -148,13 +149,62 @@ export function InFlightSection({
           <SectionLabel>In flight</SectionLabel>
           <div className="mt-1 flex flex-col">
             {rows.map((row) => (
-              <FlightLine key={row.key} row={row} now={now} selected={isSelected(row)} onOpen={() => onOpen(row)} />
+              <Fragment key={row.key}>
+                <FlightLine row={row} now={now} selected={isSelected(row)} onOpen={() => onOpen(row)} />
+                {row.more && <FlightMore rows={row.more} noun={row.moreOf ?? 'shift'} now={now} isSelected={isSelected} onOpen={onOpen} />}
+              </Fragment>
             ))}
           </div>
         </>
       )}
       {upNext && <p className="mt-1 truncate px-3 text-[11.5px] text-ink-faint" title={upNext}>{upNext}</p>}
     </section>
+  );
+}
+
+/// A shift's other jobs, folded under the one leading it. Opens by itself
+/// when one of them is the one you have open.
+function FlightMore({
+  rows,
+  noun,
+  now,
+  isSelected,
+  onOpen,
+}: {
+  rows: FlightRow[];
+  noun: 'shift' | 'errand';
+  now: number;
+  isSelected: (row: FlightRow) => boolean;
+  onOpen: (row: FlightRow) => void;
+}) {
+  const holdsOpen = rows.some(isSelected);
+  const [open, setOpen] = useState(holdsOpen);
+  useEffect(() => {
+    if (holdsOpen) setOpen(true);
+  }, [holdsOpen]);
+  const queued = rows.filter((r) => r.now === 'Queued').length;
+  const moving = rows.length - queued;
+  const parts = [moving > 0 ? `${moving} working` : '', queued > 0 ? `${queued} queued` : ''].filter(Boolean);
+  return (
+    <div className="mb-1 ml-[22px] border-l border-card pl-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 rounded px-2 py-1 text-left text-[11.5px] text-ink-faint hover:text-ink-muted"
+      >
+        <svg width="9" height="9" viewBox="0 0 16 16" aria-hidden className={'transition-transform ' + (open ? 'rotate-90' : '')}>
+          <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+        {rows.length} more from this {noun} · {parts.join(' · ')}
+      </button>
+      {open && (
+        <div className="flex flex-col">
+          {rows.map((row) => (
+            <FlightLine key={row.key} row={row} now={now} selected={isSelected(row)} onOpen={() => onOpen(row)} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

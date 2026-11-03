@@ -43,10 +43,12 @@ export async function continueBranchFor(
   if (!repos.length) return null;
   const names = repos.map((r) => r.name);
 
-  // A branch that's still open in one of this place's repos.
+  // A branch that's still open in one of this place's repos: the first, in
+  // the order given, asked about all at once rather than one fetch at a time.
   const firstOpen = async (branches: string[]): Promise<string | null> => {
-    for (const b of [...new Set(branches)]) for (const r of repos) if (await deps.open(r, b)) return b;
-    return null;
+    const unique = [...new Set(branches)];
+    const open = await Promise.all(unique.map(async (b) => (await Promise.all(repos.map((r) => deps.open(r, b)))).some(Boolean)));
+    return unique.find((_, i) => open[i]) ?? null;
   };
 
   // A CI fix names its branch outright, and counts only when the watcher
@@ -59,14 +61,16 @@ export async function continueBranchFor(
   if (!ticket) return null;
 
   // The branches earlier runs for that ticket landed here, newest first. A
-  // workspace run works in a folder of its own (sourceProjectPath is the
-  // workspace); a repo run, in a worktree of the repo itself.
+  // workspace run works in a folder of its own, and a repo run in a worktree
+  // of the repo: either way `sourceProjectPath` is the place, and
+  // `projectPath` only once the worktree is gone and the run re-pointed.
   const landed = deps
     .runs()
     .filter(
       (r) =>
         r.workerId === args.workerId &&
-        (ws ? !!r.workspaceWorktrees?.length && (r.sourceProjectPath ?? r.projectPath) === args.projectPath : !r.workspaceWorktrees?.length && r.projectPath === args.projectPath) &&
+        (ws ? !!r.workspaceWorktrees?.length : !r.workspaceWorktrees?.length) &&
+        (r.sourceProjectPath ?? r.projectPath) === args.projectPath &&
         !!r.artifacts?.[LANDED_ARTIFACT] &&
         ticketOf(r) === ticket,
     )

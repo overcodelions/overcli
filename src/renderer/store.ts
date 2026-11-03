@@ -471,7 +471,7 @@ interface StoreState {
   /// and the next turn runs in the project checkout.
   releaseWorktree(
     id: UUID,
-    opts?: { keepBranch?: boolean },
+    opts?: { keepBranch?: boolean; unattended?: boolean },
   ): Promise<{ ok: boolean; error?: string; warning?: string }>;
   /// Auto-commit the dirty worktree, stash any project-side changes,
   /// remove the worktree (keeping the branch), switch the project repo
@@ -2761,6 +2761,7 @@ export const useStore = create<StoreState>((set, get) => ({
       branchName: conv.branchName ?? null,
       keepBranch,
       sessionId: conv.sessionId,
+      ...(opts?.unattended ? { unattended: true, conversationId: id } : {}),
     });
     if (!res.ok) {
       // Same reasoning as `removeAgent`: a tree we failed to remove must stay

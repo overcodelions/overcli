@@ -1500,6 +1500,18 @@ export class WorkerEngine {
     return isCodingWorker(w, this.deps.flowsFor?.(w.flowIds));
   }
 
+  /// The worker with that judgment written on it, for the shared helpers
+  /// that can't read its flows (workerOrigin, workerAutoApproveCap): one
+  /// answer to "does it change code", wherever it is asked.
+  private judged(w: Worker): Worker {
+    return { ...w, writesCode: this.writesCode(w) };
+  }
+
+  /// Where this worker's run goes, as of now (effectiveRunIn).
+  runInFor(w: Worker, projectPath: string = w.projectPath): 'cwd' | 'worktree' {
+    return this.effectiveRunIn(w, projectPath);
+  }
+
   /// What this worker's work could change; empty when it only reads, and
   /// then anyone allowed to ask it may have it run (`whatItChanges`).
   changesOf(id: UUID): string[] {
@@ -1662,7 +1674,7 @@ export class WorkerEngine {
     const grant = [...new Set([...(args.externalActionGrant ?? []), ...planGrant])];
     const res = await this.deps.parker.parkDirect({
       origin: (() => {
-        const { allowExternalActions: _member, ...base } = workerOrigin(w, 'errand', label);
+        const { allowExternalActions: _member, ...base } = workerOrigin(this.judged(w), 'errand', label);
         return {
           ...base,
           team: args.team,
@@ -1701,7 +1713,7 @@ export class WorkerEngine {
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     const res = await this.deps.parker.parkDirect({
-      origin: { ...workerOrigin(w, 'errand', args.title), followUp: args.kind },
+      origin: { ...workerOrigin(this.judged(w), 'errand', args.title), followUp: args.kind },
       projectPath: w.projectPath,
       prompt: args.prompt,
       title: args.title,
@@ -1735,7 +1747,7 @@ export class WorkerEngine {
       flowId = piece.flowId;
     }
     const res = await this.deps.parker.parkDirect({
-      origin: workerOrigin(w, 'errand', args.title),
+      origin: workerOrigin(this.judged(w), 'errand', args.title),
       projectPath: w.projectPath,
       prompt: this.buildDirectPrompt(w, args.prompt, { files: false }),
       title: `${w.name}: ${args.title}`,
@@ -2128,7 +2140,7 @@ export class WorkerEngine {
 
     const rejected = this.journal.rejectedTitles(w.id);
     const runIn = this.effectiveRunIn(w);
-    const autoCap = workerAutoApproveCap(w);
+    const autoCap = workerAutoApproveCap(this.judged(w));
 
     // The planning turn can run for minutes; tell the renderer the shift is
     // live so the row shows work happening instead of nothing. Cleared in
@@ -2213,7 +2225,7 @@ export class WorkerEngine {
     manual = false,
   ): ReturnType<WorkerParker['parkProposal']> {
     return this.deps.parker.parkProposal({
-      origin: workerOrigin(w, 'shift'),
+      origin: workerOrigin(this.judged(w), 'shift'),
       projectPath: w.projectPath,
       prompt: this.withToolProblems(w, this.buildShiftPrompt(w, sequence, rejected, previousPlannedAt, manual)),
       flowId: defaultFlowOf(w),
@@ -2265,7 +2277,7 @@ export class WorkerEngine {
     const entryId = this.errandEntryId(w.id, at);
     const title = errandLabel(work);
     const res = await this.deps.parker.parkDirect({
-      origin: workerOrigin(w, 'errand', work),
+      origin: workerOrigin(this.judged(w), 'errand', work),
       projectPath: w.projectPath,
       prompt: this.buildDirectPrompt(w, work),
       title,
@@ -2365,7 +2377,7 @@ export class WorkerEngine {
     const fire = (resumeSessionId?: string) => {
       const warm = !!resumeSessionId;
       return this.deps.parker.parkProposal({
-        origin: workerOrigin(w, 'errand', errand, from),
+        origin: workerOrigin(this.judged(w), 'errand', errand, from),
         projectPath: w.projectPath,
         // The pace directives lead every turn, warm or cold: they are two
         // lines, and a resumed session drifting back to essays because we
@@ -2392,7 +2404,7 @@ export class WorkerEngine {
         // a sentence. Anyone else asking proposes, and waits for an OK.
         // Someone else asking a worker that only reads: the same, since
         // nothing it can do needs its manager's say (`changesOf`).
-        ...((!from && !untrusted) || mayLaunch) && workerAutoApproveCap(w) > 0 ? { autoApprove: { maxItems: workerAutoApproveCap(w) } } : {},
+        ...((!from && !untrusted) || mayLaunch) && workerAutoApproveCap(this.judged(w)) > 0 ? { autoApprove: { maxItems: workerAutoApproveCap(this.judged(w)) } } : {},
         model: w.heartbeatModel,
         backend: w.heartbeatBackend,
         maxItems: w.caps.maxItemsPerShift,
@@ -2481,7 +2493,7 @@ export class WorkerEngine {
       // the manager). The flow only reads, but a run still spends its budget
       // and minutes, and on Asks first nothing starts alone. Its owner at the
       // desktop desk is right there, so theirs starts as it always has.
-      const launch = (atDesk === true && !from) || (((!from && !untrusted) || mayLaunch === true) && workerAutoApproveCap(w) > 0);
+      const launch = (atDesk === true && !from) || (((!from && !untrusted) || mayLaunch === true) && workerAutoApproveCap(this.judged(w)) > 0);
       const built = await this.deps.generatedFlow({
         worker: w,
         errand,
@@ -3851,7 +3863,7 @@ export class WorkerEngine {
     if (this.deps.parker.list().some((b) => b.origin?.kind === 'worker' && b.origin.wrapUpOf === o.id)) return;
     this.wrappingUp.add(o.id);
 
-    const origin = { ...workerOrigin(w, 'shift'), wrapUpOf: o.id };
+    const origin = { ...workerOrigin(this.judged(w), 'shift'), wrapUpOf: o.id };
     void this.buildWrapUpPrompt(w, o)
       .then((prompt) =>
         this.deps.parker.parkDirect({

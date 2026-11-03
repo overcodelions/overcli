@@ -1,21 +1,76 @@
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
-import { DROP_CAPS, ambientCaps, dropCapsFromChildren, findable, guardChildCaps, isWorkerLaunch, normalize, withoutCaps } from './childCaps';
+import { DROP_CAPS, ambientCaps, dropCapsFromChildren, findable, guardChildCaps, isWorkerLaunch, launchFor, normalize, refusedGitLaunch, withoutCaps } from './childCaps';
+import { setActiveWorkerUser, setWorkerWritableRoots, switchableUsers } from './workerUser';
 import { SETPRIV, asWorkerUser } from './workerUser';
 
 const status = (amb: string) => `Name:\tnode\nCapEff:\t00000000000000c2\nCapAmb:\t${amb}\n`;
 
 describe('capabilities for what the server starts', () => {
+  it('fails a refused git the way git would, saying why', () => {
+    const r = refusedGitLaunch(['http.proxy'], '/data/repos/acme-web');
+    const res = spawnSync(r.file, r.args, { encoding: 'utf8' });
+    expect(res.status).toBe(128);
+    expect(res.stderr).toContain('/data/repos/acme-web');
+    expect(res.stderr).toContain('http.proxy');
+    expect(res.stderr).toContain('config.worktree');
+  });
+
+  it('never starts a network git the repo config would steer: launchFor puts the refusal in its place', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-refuse-launch-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: dir });
+      spawnSync('git', ['config', 'http.proxy', 'http://evil.example:8080'], { cwd: dir });
+      setActiveWorkerUser({ uid: 1001, gid: 1001 });
+      setWorkerWritableRoots([dir]);
+      const launch = launchFor('git', ['fetch', 'origin'], dir, process.env);
+      expect(launch.args).toContain('overcli-refused-git');
+      expect(launch.args).not.toContain('fetch');
+      // A clean repo's fetch runs, hardened, as the server.
+      spawnSync('git', ['config', '--unset', 'http.proxy'], { cwd: dir });
+      const clean = launchFor('git', ['fetch', 'origin'], dir, process.env);
+      expect(clean.args).toContain('fetch');
+      expect(clean.args).toContain('protocol.allow=never');
+    } finally {
+      setActiveWorkerUser(null);
+      setWorkerWritableRoots([]);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reads the ambient set', () => {
     expect(ambientCaps(status('00000000000000c2'))).toBe(0xc2n);
     expect(ambientCaps(status('0000000000000000'))).toBe(0n);
     expect(ambientCaps('Name:\tnode\n')).toBe(0n);
   });
 
-  it('starts everything through setpriv with no capabilities, except a worker launch', () => {
+  it('starts everything through setpriv with no capabilities, except the worker user\'s own launch', () => {
     expect(withoutCaps('git', ['status'])).toEqual({ file: SETPRIV, args: [...DROP_CAPS, 'git', 'status'] });
     const worker = asWorkerUser({ uid: 1001, gid: 1001 }, 'claude', ['-p']);
-    expect(withoutCaps(worker.command, worker.args)).toEqual({ file: worker.command, args: worker.args });
+    // No worker user: nothing is a worker launch, however it is spelled.
+    expect(isWorkerLaunch(worker.args, [])).toBe(false);
+    expect(isWorkerLaunch(worker.args, [{ uid: 1001, gid: 1001 }])).toBe(true);
+    // Another non-root user is not the worker: a launch naming it is wrapped like anything else.
+    expect(isWorkerLaunch(asWorkerUser({ uid: 1002, gid: 1001 }, 'sh', []).args, [{ uid: 1001, gid: 1001 }])).toBe(false);
+    expect(isWorkerLaunch(asWorkerUser({ uid: 1001, gid: 1002 }, 'sh', []).args, [{ uid: 1001, gid: 1001 }])).toBe(false);
+    // The repo-test user is the other one the server may become.
+    expect(isWorkerLaunch(asWorkerUser({ uid: 1002, gid: 1002 }, 'sh', []).args, [{ uid: 1001, gid: 1001 }, { uid: 1002, gid: 1002 }])).toBe(true);
+    // Before the start check has passed, the configured worker user already counts: the check is such a launch.
+    // Ids no runner's own user has: one equal to the server's uid is refused (workerUserFrom), and CI runs as 1001.
+    expect(switchableUsers({ OVERCLI_WORKER_UID: '64001', OVERCLI_TEST_UID: '64002', OVERCLI_TEST_GID: '64003' })).toEqual([{ uid: 64001, gid: 64001 }, { uid: 64002, gid: 64003 }]);
+    expect(switchableUsers({ OVERCLI_WORKER_UID: '0', OVERCLI_TEST_UID: 'x' })).toEqual([]);
+    expect(switchableUsers({})).toEqual([]);
+    setActiveWorkerUser({ uid: 1001, gid: 1001 });
+    try {
+      expect(withoutCaps(worker.command, worker.args)).toEqual({ file: worker.command, args: worker.args });
+      expect(withoutCaps(SETPRIV, asWorkerUser({ uid: 1002, gid: 1002 }, 'sh', []).args).args.slice(0, DROP_CAPS.length)).toEqual([...DROP_CAPS]);
+    } finally {
+      setActiveWorkerUser(null);
+    }
   });
 
   it('wraps a setpriv that would switch to root, or keep its capabilities', () => {
@@ -25,7 +80,7 @@ describe('capabilities for what the server starts', () => {
       ['--reuid=1001', '--regid=1001', '--euid=0', '--clear-groups', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs', '--', 'sh'],
       ['--', 'sh', '--reuid=1001', '--regid=1001', '--clear-groups', '--inh-caps=-all', '--ambient-caps=-all', '--no-new-privs'],
     ]) {
-      expect(isWorkerLaunch(args)).toBe(false);
+      expect(isWorkerLaunch(args, [{ uid: 1001, gid: 1001 }])).toBe(false);
       expect(withoutCaps(SETPRIV, args).args.slice(0, DROP_CAPS.length)).toEqual([...DROP_CAPS]);
     }
   });
