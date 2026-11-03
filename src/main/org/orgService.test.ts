@@ -837,7 +837,7 @@ describe('stopping a worker’s run', () => {
 });
 
 describe('a run\u2019s logs', () => {
-  it('are for its manager or an admin, with secrets taken out', () => {
+  it('are for its manager or an admin, with secrets taken out', async () => {
     const failed = {
       ...paused('needsInput'),
       conversationIds: { primary: 'conv-acme' },
@@ -852,8 +852,8 @@ describe('a run\u2019s logs', () => {
     };
     deps.runActivity = () => [{ at: 3, kind: 'error', text: 'tool failed' }];
 
-    expect(h.svc.runLogs({ slackUserId: SAM, name: 'Sam', admin: false }, 'run-1')).toMatchObject({ ok: false });
-    const res = h.svc.runLogs({ slackUserId: PAT, name: 'Pat', admin: false }, 'run-1');
+    expect(await h.svc.runLogs({ slackUserId: SAM, name: 'Sam', admin: false }, 'run-1')).toMatchObject({ ok: false });
+    const res = await h.svc.runLogs({ slackUserId: PAT, name: 'Pat', admin: false }, 'run-1');
     expect(res).toMatchObject({
       ok: true,
       attempts: [{ stepId: 'write', outcome: 'error', error: expect.stringContaining('produced no <output') }],

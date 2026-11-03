@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Conversation, WorktreeSweepEntry } from '@shared/types';
+import { DEFAULT_CLEANUP_RULES } from '@shared/cleanupRules';
 import {
   conversationClaims,
   entryAgeAt,
@@ -8,8 +9,10 @@ import {
   groupEntries,
   groupKeyFor,
   isActionable,
+  pickRetirable,
   planCleanup,
   planRelease,
+  stillRetirable,
   totalsFor,
 } from './cleanup';
 
@@ -352,5 +355,39 @@ describe('formatSize', () => {
     expect(formatSize(512)).toBe('512 KB');
     expect(formatSize(2048)).toBe('2 MB');
     expect(formatSize(3 * 1024 * 1024)).toBe('3.0 GB');
+  });
+});
+
+describe('auto-tidy: pickRetirable and stillRetirable', () => {
+  const rules = { ...DEFAULT_CLEANUP_RULES, retireAfterDays: 7, keepPerProducer: 0, autoRun: true };
+  const old = (over: Partial<WorktreeSweepEntry>) => entry({ lastCommitAt: NOW - 30 * DAY, isMergedIntoBase: true, dirtyFiles: 0, commitsAhead: 0, ...over });
+
+  it('retires only safe, rule-chosen trees nobody borrowed', () => {
+    const picked = pickRetirable(
+      [
+        old({ worktreePath: '/wt/a' }),
+        old({ worktreePath: '/wt/dirty', bucket: 'foreign', dirtyFiles: 2 }),
+        old({ worktreePath: '/wt/borrowed', claim: { kind: 'conversation', convId: 'c', title: 't', adoptedConvIds: ['c2'] } as WorktreeSweepEntry['claim'] }),
+        old({ worktreePath: '/wt/young', lastCommitAt: NOW - DAY }),
+      ],
+      rules,
+      NOW,
+    ).map((e) => e.worktreePath);
+    expect(picked).toEqual(['/wt/a']);
+  });
+
+  it('after a yes, keeps every asked tree a fresh scan no longer clears, and counts them', () => {
+    const asked = [old({ worktreePath: '/wt/a' }), old({ worktreePath: '/wt/b' }), old({ worktreePath: '/wt/c' })];
+    const fresh = [
+      old({ worktreePath: '/wt/a' }),
+      // Resumed since: uncommitted work now.
+      old({ worktreePath: '/wt/b', bucket: 'foreign', dirtyFiles: 1 }),
+      // Gone from the scan (removed by hand): nothing to retire.
+      // A tree that was not asked about never joins, however retirable.
+      old({ worktreePath: '/wt/new' }),
+    ];
+    const res = stillRetirable(asked, fresh, rules, NOW);
+    expect(res.selected.map((e) => e.worktreePath)).toEqual(['/wt/a']);
+    expect(res.kept).toBe(2);
   });
 });

@@ -114,13 +114,14 @@ export function log(level: LogLevel, scope: string, message: string, err?: unkno
 /// The last `limit` lines of the session log (the rotated file, then the
 /// current one) that `match` keeps. For a run's Logs view, which picks out
 /// the lines naming its id and its conversations.
-export function readSessionLog(match: (line: string) => boolean, limit: number): string[] {
+export async function readSessionLog(match: (line: string) => boolean, limit: number): Promise<string[]> {
   const filePath = getLogFilePath();
   const out: string[] = [];
   for (const f of [`${filePath}${ROTATED_SESSION_LOG_SUFFIX}`, filePath]) {
     let text = '';
     try {
-      text = fs.readFileSync(f, 'utf-8');
+      // Up to a couple of MB per file: read without holding the event loop.
+      text = await fs.promises.readFile(f, 'utf-8');
     } catch {
       continue;
     }

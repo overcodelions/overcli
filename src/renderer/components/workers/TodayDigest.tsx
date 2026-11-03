@@ -20,7 +20,7 @@ import { clearStateOf, useTodayCleared } from './todayCleared';
 import { SectionLabel } from './NowSection';
 import { elapsedLabel, latestExchange, waitingLine } from './nowCards';
 import { clockStamp, type TodaySpine } from './todaySpine';
-import { hourBuckets } from './todayLayout';
+import { foldBatchRows, hourBuckets } from './todayLayout';
 import { workerNow, type WorkerNow } from './workerBoard';
 import { workerTagline } from '@shared/flows/worker';
 import { describeFundingBlock, fundingFor } from '@shared/flows/treasury';
@@ -345,7 +345,7 @@ export function InboxList({
   const cleared = useTodayCleared((s) => s.cleared);
   const clear = useTodayCleared((s) => s.clear);
   const restore = useTodayCleared((s) => s.restore);
-  const [undo, setUndo] = useState<{ key: string; title: string } | null>(null);
+  const [undo, setUndo] = useState<{ keys: string[]; title: string } | null>(null);
   useEffect(() => {
     if (!undo) return;
     const t = window.setTimeout(() => setUndo(null), 6000);
@@ -360,9 +360,12 @@ export function InboxList({
   const nested = (row: QueueRow) => !row.wrapUpOf && !!row.orchestrationId && wrapped.has(row.orchestrationId);
   const childrenOf = (row: QueueRow) =>
     row.wrapUpOf ? listed.filter((r) => !r.wrapUpOf && r.orchestrationId === row.wrapUpOf) : [];
-  const clearRow = (row: QueueRow, title: string) => {
-    clear(row.key);
-    setUndo({ key: row.key, title });
+  // Clearing a shift's lead clears the jobs folded under it: they are one
+  // entry on the page, so they are read together.
+  const clearRow = (row: QueueRow, title: string, under: QueueRow[] = []) => {
+    const keys = [row.key, ...under.map((r) => r.key)];
+    for (const key of keys) clear(key);
+    setUndo({ keys, title });
   };
   // The crew's list shows a team task as ONE row — the task is what you
   // asked for; its pieces are how it got made — with the pieces folded under
@@ -407,13 +410,19 @@ export function InboxList({
       return true;
     });
   };
+  // A shift that split into several jobs (and has no wrap-up) is one entry:
+  // its newest job leads and the rest fold under it.
+  const folds = new Map(groups.map((group) => [group.label, foldBatchRows(entriesOf(group))]));
   const nothing =
     model.needs.length + board.needs.length + board.flight.length + model.working.length + model.done.length + model.quiet.length + model.earlier.length === 0;
   return (
     <div className="flex flex-col gap-5">
       <TodayHeader
         model={model}
-        unread={model.done.filter((r) => clearStateOf(cleared, r.key, r.at) !== 'cleared').length}
+        unread={
+          model.done.filter((r) => clearStateOf(cleared, r.key, r.at) !== 'cleared' && !folds.get('Today')?.folded.has(r.key))
+            .length
+        }
         workerId={workerId}
         needsCount={needsList.length}
         inFlight={board.flight.length}
@@ -483,7 +492,9 @@ export function InboxList({
             <section key={group.label} className="flex flex-col gap-0.5">
               <SectionLabel>{group.label}</SectionLabel>
               <div className="mt-1 flex flex-col">
-                {entriesOf(group).map((row) =>
+                {entriesOf(group)
+                  .filter((row) => !folds.get(group.label)?.folded.has(row.key))
+                  .map((row) =>
                   row.team && teamPieces.has(row.team.taskId) ? (
                     <TeamTaskEntry
                       key={`team:${row.team.taskId}`}
@@ -514,8 +525,30 @@ export function InboxList({
                         selected={isOpen('done', row.key)}
                         onOpen={() => onOpen({ kind: 'done', key: row.key })}
                         back={clearStateOf(cleared, row.key, row.at) === 'back'}
-                        onClear={group.label === 'Working' ? undefined : (title) => clearRow(row, title)}
+                        onClear={
+                          group.label === 'Working'
+                            ? undefined
+                            : (title) => clearRow(row, title, folds.get(group.label)?.under.get(row.key))
+                        }
                       />
+                      {folds.get(group.label)?.under.has(row.key) && (
+                        <ShiftItems
+                          rows={folds.get(group.label)!.under.get(row.key)!}
+                          label={`more from this ${row.task === 'errand' ? 'errand' : 'shift'}`}
+                          renderRow={(child) => (
+                            <ListEntry
+                              key={child.key}
+                              row={child}
+                              digest={model.digest[child.key]}
+                              file={model.filed[child.key] ?? null}
+                              showDay={group.label !== 'Working' && group.label !== 'Today'}
+                              selected={isOpen('done', child.key)}
+                              onOpen={() => onOpen({ kind: 'done', key: child.key })}
+                            />
+                          )}
+                          openKey={open?.kind === 'done' ? open.key : null}
+                        />
+                      )}
                       {row.wrapUpOf && (
                         <ShiftItems
                           rows={childrenOf(row)}
@@ -556,7 +589,7 @@ export function InboxList({
       )}
       {undo && (
         <div
-          key={undo.key}
+          key={undo.keys[0]}
           role="status"
           className="today-toast sticky z-10 flex items-center gap-3 rounded-xl border px-4 py-3 shadow-2xl"
           style={{
@@ -577,7 +610,7 @@ export function InboxList({
           </span>
           <button
             onClick={() => {
-              restore(undo.key);
+              for (const key of undo.keys) restore(key);
               setUndo(null);
             }}
             className="shrink-0 rounded-md px-3 py-1.5 text-[13px] font-semibold hover:opacity-90"

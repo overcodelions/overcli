@@ -59,6 +59,11 @@ export interface FlightRow {
   stuck: boolean;
   startedAt: number;
   target: BoardTarget;
+  /// The same shift's other jobs, folded under this one: a shift that split
+  /// into three jobs is one thing in flight, not three.
+  more?: FlightRow[];
+  /// What the folded jobs came from, for the fold's label.
+  moreOf?: 'shift' | 'errand';
 }
 
 export interface TodayBoard {
@@ -279,11 +284,9 @@ export function buildTodayBoard({
     });
   }
 
-  for (const row of working) {
-    // A team's piece is drawn as its task.
-    if (groupTeams && row.team && pinnedTasks.has(row.team.taskId)) continue;
+  const workerRow = (row: QueueRow): FlightRow => {
     const track = workerTrack(row);
-    flight.push({
+    return {
       kind: 'worker',
       key: `worker:${row.key}`,
       title: row.title,
@@ -293,7 +296,27 @@ export function buildTodayBoard({
       stuck: track.includes('stuck'),
       startedAt: row.at,
       target: { kind: 'run', rowKey: row.key },
-    });
+    };
+  };
+  // One shift's jobs travel together: the one moving leads (a stuck one
+  // before it), and the jobs still queued behind it fold under it.
+  const batches = new Map<string, QueueRow[]>();
+  for (const row of working) {
+    // A team's piece is drawn as its task.
+    if (groupTeams && row.team && pinnedTasks.has(row.team.taskId)) continue;
+    if (!row.orchestrationId || row.team) {
+      flight.push(workerRow(row));
+      continue;
+    }
+    const batch = batches.get(row.orchestrationId) ?? [];
+    batch.push(row);
+    batches.set(row.orchestrationId, batch);
+  }
+  for (const batch of batches.values()) {
+    const rows = sortFlight(batch.map(workerRow));
+    const lead = rows.find((r) => r.stuck) ?? rows.find((r) => r.now !== 'Queued') ?? rows[0];
+    const more = rows.filter((r) => r !== lead);
+    flight.push(more.length ? { ...lead, more, moreOf: batch[0].task === 'errand' ? 'errand' : 'shift' } : lead);
   }
 
   return { needs: needs.sort((a, b) => a.at - b.at), flight: sortFlight(flight), pinnedTasks };

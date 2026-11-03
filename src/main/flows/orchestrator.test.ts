@@ -712,6 +712,26 @@ describe('OrchestratorImpl runIn', () => {
     expect(h.started[0].baseBranch).toBeUndefined();
   });
 
+  it("puts a cwd batch in a worktree after all when its worker's run would get one now", async () => {
+    const origin = { kind: 'worker', workerId: 'w1', workerName: 'Dev', task: 'shift' } as never;
+    const batch = (h: ReturnType<typeof makeHarness>) => h.engine.startBatch({ title: 'b', projectPath: '/proj', runIn: 'cwd', maxConcurrent: 1, items: items(1), origin });
+    // Its flows gained a step that edits code since it was queued: a worktree, off the default branch.
+    const moved = makeHarness();
+    moved.engine.runInNow = (workerId, projectPath) => (workerId === 'w1' && projectPath === '/proj' ? 'worktree' : 'cwd');
+    await batch(moved);
+    expect(moved.started[0]).toMatchObject({ runIn: 'worktree', baseBranch: undefined, workerId: 'w1' });
+    // Still a reader, or an explicit in-place preference: as queued.
+    const stays = makeHarness();
+    stays.engine.runInNow = () => 'cwd';
+    await batch(stays);
+    expect(stays.started[0].runIn).toBe('cwd');
+    // Not a worker's batch: never asked.
+    const person = makeHarness();
+    person.engine.runInNow = () => { throw new Error('asked'); };
+    await person.engine.startBatch({ title: 'b', projectPath: '/proj', runIn: 'cwd', maxConcurrent: 1, items: items(1) });
+    expect(person.started[0].runIn).toBe('cwd');
+  });
+
   it('serializes a cwd batch even when the caller asks for concurrency', async () => {
     const h = makeHarness();
     // Two agents in one working tree would edit the same files underneath each

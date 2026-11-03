@@ -8,8 +8,12 @@
 // it prints before it ever calls the model, and stop it there.
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { log } from '../diagnostics';
+import { stripSecrets } from '../org/secrets/service';
+import { workerLaunch } from '../org/workerUser';
 import { recordMcpSeen, seenMcpServers } from './mcpToolCache';
 
 /// Servers can take a while to boot (an npx install, an OAuth refresh), and
@@ -20,8 +24,37 @@ let inFlight: Promise<boolean> | null = null;
 
 type SpawnFn = (command: string, args: string[]) => ChildProcess;
 
-const defaultSpawn: SpawnFn = (command, args) =>
-  spawn(command, args, { cwd: os.homedir(), env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
+/// Where the probe starts: an empty folder of its own, made for this probe
+/// and removed after it. Never HOME or a repo: on a server those are
+/// folders workers can write, and a `.mcp.json` planted there would be
+/// loaded by the probe. Readable by the worker user, which the probe runs
+/// as when there is one.
+function probeDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-mcp-probe-'));
+  fs.chmodSync(dir, 0o755);
+  return dir;
+}
+
+/// Claude, started as a worker's would be: as the worker user when there is
+/// one (whatever its config makes it run, runs as the worker), with the
+/// server's secrets out of its environment, in a folder of the probe's own.
+export function probeLaunch(command: string, args: string[], env: NodeJS.ProcessEnv = process.env): { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv } {
+  return { ...workerLaunch(command, args), cwd: probeDir(), env: stripSecrets(env) };
+}
+
+const defaultSpawn: SpawnFn = (command, args) => {
+  const { cwd, ...launch } = probeLaunch(command, args);
+  const proc = spawn(launch.command, launch.args, { cwd, env: launch.env, stdio: ['ignore', 'pipe', 'ignore'] });
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    fs.rm(cwd, { recursive: true, force: true }, () => {});
+  };
+  proc.once('error', cleanup);
+  proc.once('close', cleanup);
+  return proc;
+};
 
 /// What Claude reports at start-up, before any model call: each MCP server
 /// with its status, and every tool. Null if it never got that far.

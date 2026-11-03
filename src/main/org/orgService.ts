@@ -849,7 +849,7 @@ export interface OrgServiceDeps extends OverdbDeps {
   runActivity?(runId: UUID, after: number): Array<{ at: number; kind: 'tool' | 'said' | 'error' | 'denied'; text: string }>;
   /// The server log's lines that name any of `needles` (a run's id, its
   /// conversations), the last `limit` of them. For a run's Logs view.
-  sessionLog?(needles: string[], limit: number): string[];
+  sessionLog?(needles: string[], limit: number): string[] | Promise<string[]>;
   /// Setups people published from their desktops, waiting on an admin.
   /// Absent: kept in memory only.
   setupOffers?: { load(): { offers: SetupOffer[] }; save(value: { offers: SetupOffer[] }): void };
@@ -2127,6 +2127,9 @@ export class OrgService {
 
   private memoryAsks: AskRecord[] = [];
   private asksRestored = false;
+  /// searchWork's lowercased artifact text per run, newest use last.
+  private searchCache = new Map<string, { key: string; hay: string; at: number }>();
+  private searchCacheChars = 0;
   private readonly bootAt = Date.now();
 
   private allAsks(): AskRecord[] {
@@ -3946,6 +3949,54 @@ export class OrgService {
     return this.workItems(workers, this.now() - days * 86_400_000, Math.min(200, opts.limit ?? 60));
   }
 
+  /// How much of each artifact a search reads, and how much text the cache
+  /// holds in all.
+  static readonly SEARCH_ARTIFACT_CHARS = 200_000;
+  static readonly SEARCH_CACHE_CHARS = 32_000_000;
+
+  /// Lowercased artifact text for a run, rebuilt only when its artifacts
+  /// change: in count, in length, or in place (an edit keeps the length but
+  /// moves `producedAt`). A search reads runs newest first and stops at its
+  /// limit, so the newest runs are what every search reads: when the cache
+  /// is full a newer run takes the place of the oldest ones kept, and an
+  /// older run than any kept isn't kept (a scan past the cap would rebuild
+  /// it every time anyway). A deleted run makes room too (pruneSearchCache).
+  private artifactHay(r: FlowRun): string {
+    const arts = Object.values(r.artifacts ?? {});
+    const key = `${r.state.kind}:${arts.length}:${arts.reduce((n, a) => n + (a.body?.length ?? 0), 0)}:${arts.reduce((n, a) => Math.max(n, a.producedAt ?? 0), 0)}`;
+    const hit = this.searchCache.get(r.id);
+    if (hit?.key === key) return hit.hay;
+    if (hit) {
+      this.searchCache.delete(r.id);
+      this.searchCacheChars -= hit.hay.length;
+    }
+    const hay = arts.map((a) => (a.body ?? '').slice(0, OrgService.SEARCH_ARTIFACT_CHARS)).join('\n').toLowerCase();
+    while (hay.length > OrgService.SEARCH_CACHE_CHARS - this.searchCacheChars) {
+      let oldest: [string, { hay: string; at: number }] | null = null;
+      for (const e of this.searchCache) if (!oldest || e[1].at < oldest[1].at) oldest = e;
+      if (!oldest || oldest[1].at >= r.createdAt) return hay;
+      this.searchCache.delete(oldest[0]);
+      this.searchCacheChars -= oldest[1].hay.length;
+    }
+    this.searchCache.set(r.id, { key, hay, at: r.createdAt });
+    this.searchCacheChars += hay.length;
+    return hay;
+  }
+
+  /// Forget the cached text of runs the search no longer lists.
+  private pruneSearchCache(live: Set<string>): void {
+    for (const [id, old] of this.searchCache) {
+      if (live.has(id)) continue;
+      this.searchCache.delete(id);
+      this.searchCacheChars -= old.hay.length;
+    }
+  }
+
+  /// What the cache holds, for tests.
+  searchCacheStats(): { runs: number; chars: number } {
+    return { runs: this.searchCache.size, chars: this.searchCacheChars };
+  }
+
   /// Recent runs the caller can see that mention every word of `query` in
   /// their title, request, summary, branch or output: a ticket number, a
   /// customer, a repo. Newest first, and running ones too.
@@ -3957,8 +4008,9 @@ export class OrgService {
     const visible = new Map(roster.filter((w) => canSee(policy, roster, w.id, caller)).map((w) => [w.id, w]));
     const since = this.now() - Math.min(365, Math.max(1, opts.days ?? 90)) * 86_400_000;
     const limit = Math.min(50, Math.max(1, opts.limit ?? 20));
-    const runs = this.deps.runs
-      .listRuns()
+    const all = this.deps.runs.listRuns();
+    this.pruneSearchCache(new Set(all.map((r) => r.id)));
+    const runs = all
       .filter((r) => r.workerId && visible.has(r.workerId) && r.createdAt >= since)
       .sort((a, b) => b.createdAt - a.createdAt);
     const hits: WorkSearchHit[] = [];
@@ -3968,15 +4020,16 @@ export class OrgService {
       // What the row already shows, and what it doesn't: a match in the
       // second gets a snippet so you can see why the run came up.
       const shown = [title, flowRunTitle(r), r.number ? `#${r.number}` : '', w.name].join('\n');
-      const hidden = [
-        r.branchName ?? '',
-        r.userPrompt ?? '',
-        r.digest?.summary ?? '',
-        ...(r.digest?.points ?? []),
-        ...Object.values(r.artifacts ?? {}).map((a) => (a.body ?? '').slice(0, 200_000)),
-      ].join('\n');
-      const hay = `${shown}\n${hidden}`.toLowerCase();
-      if (!words.every((x) => hay.includes(x))) continue;
+      const cheap = [r.branchName ?? '', r.userPrompt ?? '', r.digest?.summary ?? '', ...(r.digest?.points ?? [])].join('\n');
+      const cheapHay = `${shown}\n${cheap}`.toLowerCase();
+      const rest = words.filter((x) => !cheapHay.includes(x));
+      if (rest.length) {
+        const hay = this.artifactHay(r);
+        if (!rest.every((x) => hay.includes(x))) continue;
+      }
+      const hidden = rest.length
+        ? [cheap, ...Object.values(r.artifacts ?? {}).map((a) => (a.body ?? '').slice(0, OrgService.SEARCH_ARTIFACT_CHARS))].join('\n')
+        : cheap;
       const snippet = OrgService.snippet(hidden, words.filter((x) => !shown.toLowerCase().includes(x)).concat(words));
       hits.push({
         runId: r.id,
@@ -4188,12 +4241,12 @@ export class OrgService {
   /// attempt with how it ended and why, what the run did, and the server's
   /// log lines for the run and its conversations. Secrets are taken out of
   /// all of it, whatever the org's rule for answers.
-  runLogs(caller: OrgCaller, runId: UUID): Result<{
+  async runLogs(caller: OrgCaller, runId: UUID): Promise<Result<{
     run: { id: UUID; title: string; state: string; workerName?: string; startedAt: number };
     attempts: Array<{ stepId: string; startedAt: number; endedAt?: number; outcome?: string; error?: string; conversationId?: string; costUSD?: number }>;
     activity: Array<{ at: number; kind: string; text: string }>;
     log: string[];
-  }> {
+  }>> {
     const r = this.deps.runs.getRun(runId);
     if (!r?.workerId) return { ok: false, error: 'No worker run by that id.' };
     const policy = this.policy();
@@ -4215,7 +4268,7 @@ export class OrgService {
         ...(a.costUSD ? { costUSD: a.costUSD } : {}),
       })),
       activity: (this.deps.runActivity?.(runId, 0) ?? []).slice(-500).map((a) => ({ at: a.at, kind: a.kind, text: clean(a.text) })),
-      log: (this.deps.sessionLog?.([r.id, ...convs], 500) ?? []).map((l) => clean(l).slice(0, 4000)),
+      log: ((await this.deps.sessionLog?.([r.id, ...convs], 500)) ?? []).map((l) => clean(l).slice(0, 4000)),
     };
   }
 

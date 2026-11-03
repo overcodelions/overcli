@@ -34,6 +34,7 @@ import {
   promoteReviewWorktree,
   switchProjectToBranch,
   switchBranch,
+  releaseWorktree,
   removeWorktreeAsync,
   checkoutAgentLocally,
   detectBaseBranch,
@@ -1766,26 +1767,11 @@ export function registerIpc(): void {
   ipcMain.handle('transcripts:scanOrphans', () => scanOrphanTranscripts());
   ipcMain.handle('transcripts:removeOrphans', (_e, args) => removeOrphanTranscripts(args));
   ipcMain.handle('git:conversationWorktreeStates', (_e, args) => conversationWorktreeStates(args));
-  // Release: drop the tree, keep the conversation. The session re-homing is
-  // the same move `git:checkoutAgentLocally` makes and for the same reason —
-  // the conversation's cwd becomes the project root, and a Claude session
-  // file left under the worktree's slug would be unreachable from there.
-  ipcMain.handle('git:releaseWorktree', async (_e, args) => {
-    const res = await removeWorktreeAsync({
-      projectPath: args.projectPath,
-      worktreePath: args.worktreePath,
-      branchName: args.keepBranch === false ? (args.branchName ?? '') : '',
-    });
-    if (!res.ok) return res;
-    if (args.sessionId) {
-      migrateClaudeSessionCwd({
-        worktreePath: args.worktreePath,
-        projectPath: args.projectPath,
-        sessionId: args.sessionId,
-      });
-    }
-    return res;
-  });
+  // Release: drop the tree, keep the conversation (git.ts releaseWorktree).
+  ipcMain.handle('git:releaseWorktree', (_e, args) => releaseWorktree(args, {
+    turnPending: (id) => runner?.isTurnPending(id) ?? false,
+    migrateSession: migrateClaudeSessionCwd,
+  }));
   ipcMain.handle('git:checkoutAgentLocally', (_e, args) => {
     const res = checkoutAgentLocally(args);
     if (!res.ok) return res;

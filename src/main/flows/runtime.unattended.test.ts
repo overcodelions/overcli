@@ -37,7 +37,7 @@ function step(over: Partial<FlowStep> = {}): FlowStep {
   };
 }
 
-function flow(backend: 'claude' | 'ollama' = 'claude'): Flow {
+function flow(backend: 'claude' | 'ollama' | 'codex' = 'claude'): Flow {
   return {
     id: 'f',
     name: 'F',
@@ -52,7 +52,7 @@ function flow(backend: 'claude' | 'ollama' = 'claude'): Flow {
 /// `resolvePermissionMode` is private and the class is 5000 lines; building a
 /// real instance with stub deps is cheaper and truer than carving an export
 /// out of it. Nothing the method touches comes from the constructor.
-function modeFor(runPatch: Partial<FlowRun>, s: FlowStep = step()): string {
+function modeFor(runPatch: Partial<FlowRun>, s: FlowStep = step(), backend: 'claude' | 'ollama' | 'codex' = 'claude'): string {
   const rt = new FlowRuntimeImpl(
     {} as never,
     () => {},
@@ -60,7 +60,7 @@ function modeFor(runPatch: Partial<FlowRun>, s: FlowStep = step()): string {
     () => DEFAULT_SETTINGS,
     () => [],
   );
-  const run = { flowSnapshot: flow(), ...runPatch } as FlowRun;
+  const run = { flowSnapshot: flow(backend), ...runPatch } as FlowRun;
   return (rt as unknown as { resolvePermissionMode(r: FlowRun, st: FlowStep): string })
     .resolvePermissionMode(run, s);
 }
@@ -76,6 +76,15 @@ describe('resolvePermissionMode', () => {
 
   it('still clamps a worker with no external-action grant', () => {
     expect(modeFor({ workerId: 'w' })).toBe('acceptEdits');
+  });
+
+  it("keeps a reader's calls checkable: the broker on Claude, the read-only sandbox on Codex", () => {
+    // On Claude every write reaches the reader check (observeEvent), so
+    // acceptEdits is what wires it. Codex's exec transport asks nothing, so
+    // workspace-write would let a reader edit the shared checkout unchecked.
+    expect(modeFor({ workerId: 'w', readsOnly: true, allowExternalActions: true })).toBe('acceptEdits');
+    expect(modeFor({ workerId: 'w', readsOnly: true, allowExternalActions: true }, step(), 'codex')).toBe('plan');
+    expect(modeFor({ workerId: 'w', readsOnly: true }, step({ permissionMode: 'bypassPermissions' }), 'codex')).toBe('plan');
   });
 
   it('leaves an explicitly granted unattended run alone', () => {

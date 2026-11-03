@@ -250,6 +250,11 @@ export class OrchestratorImpl {
   /// A worker's run that follows up a change already pushed starts on that
   /// change's branch (the server's, see engines). Null: the usual base.
   continueBranch?: (args: { projectPath: string; workerId: string; title: string; prompt: string }) => Promise<string | null>;
+  /// Where a worker's run would be put now (workerEngine.runInFor). A batch
+  /// queued to run in place whose worker has since gained a step that edits
+  /// code gets a worktree after all, or its edits land on the checked-out
+  /// branch unguarded. Null: as queued.
+  runInNow?: (workerId: string, projectPath: string) => 'cwd' | 'worktree' | null;
   private batches = new Map<UUID, Orchestration>();
   /// childRunId → orchestrationId, so `onRunUpdate` can route a terminal
   /// run back to its batch in O(1).
@@ -915,11 +920,14 @@ export class OrchestratorImpl {
         // Batches persisted before `runIn` existed have it undefined — they
         // were all worktree batches, so that's the default. A shared batch's
         // runs are worktree runs that adopt rather than fork.
-        const runIn: 'cwd' | 'worktree' = o.runIn === 'cwd' ? 'cwd' : 'worktree';
+        const worker = o.origin?.kind === 'worker' ? o.origin : undefined;
+        // Decided when the batch was queued, and checked again now that it
+        // launches (see `runInNow`).
+        const movedToWorktree = o.runIn === 'cwd' && !!worker && this.runInNow?.(worker.workerId, o.projectPath) === 'worktree';
+        const runIn: 'cwd' | 'worktree' = o.runIn === 'cwd' && !movedToWorktree ? 'cwd' : 'worktree';
         let baseBranch = runIn === 'cwd' ? undefined : (next.baseBranch ?? o.baseBranch);
         // A team piece forks off its task branch; name it after that branch
         // rather than whatever ticket key the member's prompt happens to quote.
-        const worker = o.origin?.kind === 'worker' ? o.origin : undefined;
         const adoptWorktrees = runIn === 'cwd' ? undefined : o.adoptWorktrees;
         const continued =
           runIn === 'worktree' && !baseBranch && !adoptWorktrees && worker && !worker.team && this.continueBranch

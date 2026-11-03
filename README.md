@@ -21,7 +21,7 @@
   <img alt="status" src="https://img.shields.io/badge/status-beta-orange" />
   <a href="https://github.com/overcodelions/overcli/releases/latest"><img alt="version" src="https://img.shields.io/github/v/release/overcodelions/overcli?sort=semver" /></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" />
-  <img alt="electron" src="https://img.shields.io/badge/electron-41-47848F" />
+  <img alt="electron" src="https://img.shields.io/badge/electron-45-47848F" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-green" />
 </p>
 
@@ -270,7 +270,7 @@ src/
     App.tsx, components/, store.ts (Zustand), theme.ts, hooks.ts
 ```
 
-**Tech** — Electron 41, React 18, TypeScript, Vite, Tailwind, Zustand.
+**Tech** — Electron 45, React 18, TypeScript, Vite, Tailwind, Zustand.
 
 ### How a turn flows
 

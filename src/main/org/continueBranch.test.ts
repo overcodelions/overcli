@@ -109,6 +109,13 @@ describe('continueBranchFor in a repo', () => {
     expect(await continueBranchFor({ projectPath: API.path, workerId: 'w1', title: 'ACME-123: Follow up', prompt: '' }, d)).toBe('feature/ACME-123-keep-audit-records-ab12cd');
   });
 
+  it('finds the branch while the run still sits in its worktree', async () => {
+    // Until the worktree is swept, the run's projectPath is the worktree, not the repo.
+    const run = { ...wsRun({ landed: LANDED }), projectPath: '/home/.overcli/worktrees/acme-api/ACME-123', sourceProjectPath: API.path, workspaceWorktrees: undefined } as unknown as FlowRun;
+    const d = deps({ runs: () => [run], openBranches: { 'acme-api': ['feature/ACME-123-keep-audit-records-ab12cd'] } });
+    expect(await continueBranchFor({ projectPath: API.path, workerId: 'w1', title: 'ACME-123: Follow up', prompt: '' }, d)).toBe('feature/ACME-123-keep-audit-records-ab12cd');
+  });
+
   it("doesn't take a workspace run's branch for a repo run", async () => {
     const d = deps({ runs: () => [wsRun({ landed: LANDED, sourceProjectPath: API.path })], openBranches: { 'acme-api': ['feature/ACME-123-keep-audit-records-ab12cd'] } });
     expect(await continueBranchFor({ projectPath: API.path, workerId: 'w1', title: 'ACME-123: Follow up', prompt: '' }, d)).toBeNull();

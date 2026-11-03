@@ -287,7 +287,7 @@ describe('OrgService.runDetail', () => {
 });
 
 describe('searching recent work', () => {
-  const report = { name: 'fix.md', body: 'Opened a pull request for ACME-5589: the login page now keeps the session.', producedAt: NOW - DAY, kind: 'markdown' };
+  const report = { name: 'fix.md', body: 'Opened a pull request for ACME-5589: the login page now keeps the session.', producedAt: NOW - DAY, kind: 'markdown' as const, producedByStepId: 's' };
   const runs = [
     flowRun('login', 'ana', NOW - DAY, { userPrompt: 'Look at ticket ACME-5589 please', artifacts: { fix: report }, number: 7 }),
     flowRun('live', 'ana', NOW - 60_000, { userPrompt: 'Triage ACME-5589 again', state: { kind: 'running', currentStepId: 's' } }),
@@ -311,6 +311,40 @@ describe('searching recent work', () => {
     expect(svc.searchWork(pat, 'acme-5589 session').map((x) => x.runId)).toEqual(['login']);
     expect(svc.searchWork(pat, '#7').map((x) => x.runId)).toEqual(['login']);
     expect(svc.searchWork(pat, '   ')).toEqual([]);
+  });
+
+  it('sees an artifact edited in place, forgets deleted runs, and holds a bounded amount of text', () => {
+    const live: FlowRun[] = [flowRun('a', 'ana', NOW - DAY, { artifacts: { r: { ...report, body: 'status: open', producedAt: NOW - DAY } } })];
+    const { svc } = harness({ runs: live });
+    expect(svc.searchWork(pat, 'open').map((x) => x.runId)).toEqual(['a']);
+    // Same length, new words: the cached text must not answer for it.
+    live[0].artifacts = { r: { ...report, body: 'status: done', producedAt: NOW } };
+    expect(svc.searchWork(pat, 'open')).toEqual([]);
+    expect(svc.searchWork(pat, 'done').map((x) => x.runId)).toEqual(['a']);
+    // Text beyond the old 50,000-character cut still finds the run.
+    live[0].artifacts = { r: { ...report, body: `${'x'.repeat(120_000)} needle`, producedAt: NOW + 1 } };
+    expect(svc.searchWork(pat, 'needle').map((x) => x.runId)).toEqual(['a']);
+    // A run that is gone takes its text with it.
+    live.length = 0;
+    expect(svc.searchWork(pat, 'needle')).toEqual([]);
+    expect(svc.searchCacheStats()).toEqual({ runs: 0, chars: 0 });
+    // Many large runs: the newest fill the cache, the rest are read uncached, and a second search changes nothing.
+    for (let i = 0; i < 400; i++) live.push(flowRun(`big${i}`, 'ana', NOW - DAY - i, { artifacts: { r: { ...report, body: 'y'.repeat(OrgService.SEARCH_ARTIFACT_CHARS), producedAt: NOW } } }));
+    expect(svc.searchWork(pat, 'zzz')).toEqual([]);
+    const stats = svc.searchCacheStats();
+    expect(stats.chars).toBeLessThanOrEqual(OrgService.SEARCH_CACHE_CHARS);
+    expect(stats.runs).toBe(Math.floor(OrgService.SEARCH_CACHE_CHARS / OrgService.SEARCH_ARTIFACT_CHARS));
+    expect(svc.searchWork(pat, 'zzz')).toEqual([]);
+    expect(svc.searchCacheStats()).toEqual(stats);
+    // A new run arrives: it takes the place of the oldest kept, so the newest stay cached as time goes on.
+    live.unshift(flowRun('fresh', 'ana', NOW - 1000, { artifacts: { r: { ...report, body: `${'v'.repeat(OrgService.SEARCH_ARTIFACT_CHARS - 6)} vivid`, producedAt: NOW } } }));
+    expect(svc.searchWork(pat, 'vivid').map((x) => x.runId)).toEqual(['fresh']);
+    expect(svc.searchCacheStats()).toEqual(stats);
+    expect(svc.searchWork(pat, 'vivid').map((x) => x.runId)).toEqual(['fresh']);
+    // One run bigger than the whole cache is searched but never kept, and throws nothing out.
+    live.unshift(flowRun('huge', 'ana', NOW - 500, { artifacts: Object.fromEntries(Array.from({ length: 170 }, (_, i) => [`a${i}`, { ...report, body: 'w'.repeat(OrgService.SEARCH_ARTIFACT_CHARS), producedAt: NOW }])) }));
+    expect(svc.searchWork(pat, 'www').map((x) => x.runId)).toEqual(['huge']);
+    expect(svc.searchCacheStats().chars).toBeLessThanOrEqual(OrgService.SEARCH_CACHE_CHARS);
   });
 
   it("leaves out someone else's private worker, and reaches further back when asked", () => {

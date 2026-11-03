@@ -10,9 +10,10 @@
 // Same seam as the tool gateway's per-run keys (toolGateway.ts), and on the
 // same two launch paths in runner.ts.
 
-import type { McpServerConfig } from '../mcpConfig';
+import { pinnedClaudeTool, type McpServerConfig } from '../mcpConfig';
 import { OVERDB_TOOL } from '../../shared/overdbConnection';
 import { bindRunTools } from './runToolRelay';
+import { activeWorkerUser } from './workerUser';
 
 let workerOf: (conversationId: string) => string | undefined = () => undefined;
 
@@ -34,11 +35,26 @@ export function boundOverdbTool(configured: () => Record<string, McpServerConfig
   return Object.keys(tools).length ? bindRunTools(tools, conversationId) : {};
 }
 
+/// The overdb command the server may start for a run: only when the run's
+/// own config names the tool (an allowlist that leaves it out gets nothing).
+/// While workers run as a user of their own they can write the config, and
+/// a repo brings its own `.mcp.json` that may reuse the tool's name: only
+/// the entry the server pinned when it saved the tool counts then
+/// (mcpConfig.ts pinnedClaudeTool), never what now sits under the name. A
+/// tool the server never saved is left to the worker's CLI, which starts it
+/// as the worker.
+function overdbLaunch(configured: () => Record<string, McpServerConfig>): McpServerConfig | undefined {
+  const config = configured()[OVERDB_TOOL];
+  if (!config) return undefined;
+  if (activeWorkerUser()) return pinnedClaudeTool(OVERDB_TOOL);
+  return typeof config.command === 'string' ? config : undefined;
+}
+
 /// App-only source configuration. Collect this with gateway tools before
 /// registering the complete relay session; inspecting it has no side effects.
 export function overdbToolsForRun(configured: () => Record<string, McpServerConfig>, conversationId: string): Record<string, McpServerConfig> {
-  const config = configured()[OVERDB_TOOL];
-  return config && typeof config.command === 'string' ? { [OVERDB_TOOL]: bound(config, conversationId) } : {};
+  const config = overdbLaunch(configured);
+  return config ? { [OVERDB_TOOL]: bound(config, conversationId) } : {};
 }
 
 /// For a run on an allowlisted config: bind the overdb entry in place.
@@ -50,8 +66,8 @@ export function bindOverdbInConfig(configJson: string, conversationId: string): 
   } catch {
     return configJson;
   }
-  const config = parsed.mcpServers?.[OVERDB_TOOL];
-  if (!config || typeof config.command !== 'string') return configJson;
+  const config = overdbLaunch(() => parsed.mcpServers ?? {});
+  if (!config) return configJson;
   parsed.mcpServers![OVERDB_TOOL] = bindRunTools({ [OVERDB_TOOL]: bound(config, conversationId) }, conversationId)[OVERDB_TOOL];
   return JSON.stringify(parsed);
 }

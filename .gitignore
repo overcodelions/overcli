@@ -35,6 +35,7 @@ example-registry/
 
 # Release-readiness audit reports are working notes, not source.
 release-readiness-*.md
+/report.md
 
 # Deployment secrets
 deploy/.env

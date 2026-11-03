@@ -172,6 +172,23 @@ describe('buildTodayBoard', () => {
     expect(board.needs[1].target).toEqual({ kind: 'team', taskId: 'a', teamId: 'team-acme' });
   });
 
+  it("draws a shift's jobs as one row: the one moving leads and the queued ones fold under it", () => {
+    const board = buildTodayBoard({
+      working: [
+        row('s61:b', { at: T0 + 2 * MIN, orchestrationId: 's61', task: 'shift', status: 'queued' }),
+        row('s61:c', { at: T0 + 2 * MIN, orchestrationId: 's61', task: 'shift', status: 'queued' }),
+        row('s61:a', { at: T0, orchestrationId: 's61', task: 'shift', steps: [{ id: 'scope', state: 'done' }, { id: 'lens', state: 'current' }] }),
+        row('solo', { at: T0 + MIN, orchestrationId: 'e1', task: 'errand' }),
+      ],
+      tasks: {},
+      processes: [],
+    });
+    expect(board.flight.map((r) => r.key)).toEqual(['worker:solo', 'worker:s61:a']);
+    expect(board.flight[0].more).toBeUndefined();
+    expect(board.flight[1]).toMatchObject({ now: 'Step 2 of 2 · lens', moreOf: 'shift' });
+    expect(board.flight[1].more!.map((r) => r.key)).toEqual(['worker:s61:b', 'worker:s61:c']);
+  });
+
   it('lists everything moving, stuck first then newest, with a track per stage', () => {
     const board = buildTodayBoard({
       working: [

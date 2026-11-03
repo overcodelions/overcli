@@ -51,6 +51,20 @@ export function workerUserFrom(env: NodeJS.ProcessEnv, serverUid: number | undef
   return { uid: Number(uid), gid: Number(gid) };
 }
 
+/// The users the server may switch a process to: the worker user the
+/// environment names (whether or not the start check has passed yet: the
+/// check itself is such a launch), and the repo-test user. Anything else a
+/// setpriv argv names is not the server's to become (childCaps.ts).
+export function switchableUsers(env: NodeJS.ProcessEnv = process.env): WorkerUser[] {
+  const out: WorkerUser[] = [];
+  const worker = workerUserFrom(env);
+  if (worker && !('error' in worker)) out.push(worker);
+  const uid = env.OVERCLI_TEST_UID?.trim();
+  const gid = env.OVERCLI_TEST_GID?.trim() || uid;
+  if (uid && gid && /^\d+$/.test(uid) && /^\d+$/.test(gid) && Number(uid) > 0 && Number(gid) > 0) out.push({ uid: Number(uid), gid: Number(gid) });
+  return out;
+}
+
 let active: WorkerUser | null = null;
 let roots: string[] = [];
 

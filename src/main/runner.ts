@@ -734,7 +734,14 @@ export function relayedTools(servers: Record<string, McpServerConfig>, databases
   const isolated = !!activeWorkerUser();
   const out: Record<string, McpServerConfig> = {};
   for (const [name, config] of Object.entries(servers)) {
-    if (name in databases) { out[name] = config; continue; }
+    if (name in databases) {
+      // The database tool's entry is already the pinned one, bound to the
+      // run (overdbBinding.ts). Checked again here: nothing a worker can
+      // write may reach the relay under this name either.
+      if (isolated && !pinnedClaudeTool(name)) continue;
+      out[name] = config;
+      continue;
+    }
     if (isolated) {
       const pinned = pinnedClaudeTool(name);
       if (pinned) { out[name] = pinned; continue; }
