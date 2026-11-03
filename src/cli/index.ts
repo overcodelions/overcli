@@ -12,7 +12,6 @@
 // enforces that; the packaged CLI runs under plain node, where importing it
 // throws at require time and would take every command down with it.
 
-import fs from 'node:fs';
 import path from 'node:path';
 
 import { HELP, parseArgs } from './args';
@@ -21,16 +20,7 @@ import { mcpCommand } from './mcpServer';
 import { orgCommand, projectsCommand, teamsPushCommand, tokensCommand, workersPushCommand } from './setup';
 import { serveCommand } from './serve';
 import { workersAuditCommand } from './workers';
-
-function version(): string {
-  try {
-    // Two levels up from dist/cli/, and from src/cli/ when run through tsx.
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf-8'));
-    return String(pkg.version ?? 'unknown');
-  } catch {
-    return 'unknown';
-  }
-}
+import { version } from './version';
 
 export async function main(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv);

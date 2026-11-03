@@ -19,7 +19,7 @@ control: nobody has signed in yet. Open this once to sign in as the first admin:
 
 Open it, and you're the admin. Then, in the console:
 
-1. **Setup → Readiness:** this says what's missing.
+1. **Setup → Readiness:** this says what's missing. Start with **Who the org is**: the org's name, the console address and the time zone. It opens by itself on a new server.
 2. **Hire** a worker, or publish one from the desktop app: turn on **Settings → Labs → Org workers · alpha**, then go to **Settings → Your org**, sign in with `http://localhost:7420`, and use **Publish to your org** on a worker.
 3. **Ask it something** from its page.
 
@@ -27,14 +27,14 @@ Secrets you set on **Setup → Secrets** are kept in an encrypted file in the se
 
 ### Add Slack (optional)
 
-1. At api.slack.com/apps, create an app **from a manifest** and paste `src/main/slack/slack-app-manifest.yml`. Install it to a test workspace.
-2. On **Setup → Secrets**, set `OVERCLI_SLACK_BOT_TOKEN` (xoxb-…) and `OVERCLI_SLACK_APP_TOKEN` (xapp-…).
-3. Run the server with `OVERCLI_SLACK_ENABLED=1 npm run dev:serve`.
-4. Say who the org is, so Slack knows who's an admin:
-   ```sh
-   node dist/cli/index.js org init --name "Acme" --admin <your Slack member ID> --slack-team <workspace ID> --url http://localhost:7420
-   ```
-5. DM the app "what can you do?", or mention it in a channel it's in.
+1. Run the server with `OVERCLI_SLACK_ENABLED=1 npm run dev:serve`. The Docker compose file sets this for you.
+2. In the console, open **Connect → Slack** and press **Create the app in Slack**. Slack opens with overgo's manifest filled in. Install it to a test workspace.
+3. On **Setup → Secrets**, paste the bot token (`OVERCLI_SLACK_BOT_TOKEN`, xoxb-…) and the app-level token (`OVERCLI_SLACK_APP_TOKEN`, xapp-…). Slack connects within a few seconds, with no restart.
+4. On **Setup → Readiness**, open **Who the org is** and save. That pins the org to your Slack workspace, so the bot never answers another one.
+5. On **People**, use **Link your Slack**, so Slack knows you're an admin.
+6. DM the app "what can you do?", or mention it in a channel it's in.
+
+Prefer a script? `overcli org init --name "Acme" --admin <your Slack member ID> --slack-team <workspace ID> --url http://localhost:7420` does steps 4 and 5 in one go, and the tokens can go in the environment instead of Setup → Secrets.
 
 Don't run two servers, or the desktop app's Slack bridge, on the same Slack app: they take each other's replies.
 

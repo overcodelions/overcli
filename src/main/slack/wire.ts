@@ -21,7 +21,7 @@ import { SsoService, SSO_CLIENT_SECRET_ENV } from '../org/sso';
 import { ConnectionsService } from '../org/connections';
 import { ToolSignIn } from '../org/toolSignIn';
 import { installTool, installedToolUrl } from '../org/tools';
-import { downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
+import { unescapeSlack, downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
 import { answerGeneral, routeRequest } from './frontDoorRoute';
 import { libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
@@ -149,6 +149,8 @@ export function createOrgControl(
     },
     linkManagers: (name, id, slackName) => org.linkManagers(name, id, slackName),
     updateOrg: (mutate) => updateOrgFile(mutate),
+    orgFileExists: () => loadOrgPolicy().fromFile,
+    slackTeamId: () => slack.teamId(),
     record: (caller, what) =>
       fileAuditStore.append({ at: Date.now(), by: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}), what }),
     slack: {
@@ -467,7 +469,7 @@ export function createOrgControl(
       },
       botUserId: () => slack.botUserId(),
     },
-    tellOwner: async (workerId, text, choices) => {
+    tellOwner: async (workerId, text, choices, replyTo) => {
       const bot = configuredSlackToken('bot');
       const to = org.managerSlackId(workerId);
       const w = engines.workerEngine.roster().find((x) => x.id === workerId);
@@ -483,7 +485,7 @@ export function createOrgControl(
       }
       // A reply in that DM is for the worker, with the DM as its context, and
       // the answers it offered are one tap each there.
-      frontDoor.adopt(res.data.channel, res.data.ts, { id: w.id, name: w.name });
+      frontDoor.adopt(res.data.channel, res.data.ts, { id: w.id, name: w.name }, replyTo);
       await frontDoor.offer(res.data.channel, res.data.ts, w.name, choices).catch(() => undefined);
       return true;
     },
@@ -768,13 +770,13 @@ export function createOrgControl(
       const res = org.briefTeam(caller, teamId, brief);
       return res.ok ? { ok: true, queued: res.task.status === 'queued' } : res;
     },
-    ask: (caller, workerId, text, attachments, conversation, said) => {
-      const started = org.startAsk(caller, workerId, text, 'slack', attachments, undefined, conversation, said);
+    ask: (caller, workerId, text, attachments, conversation, said, replyTo) => {
+      const started = org.startAsk(caller, workerId, text, 'slack', attachments, replyTo, conversation, said === undefined ? undefined : unescapeSlack(said));
       return started.ok ? { ok: true, done: started.done } : started;
     },
     handBack: (askId) => org.handBack(askId),
     continueRun: (caller, orchestrationId, text, attachments, conversation, said) => {
-      const went = org.continueRun(caller, orchestrationId, text, { via: 'slack', attachments, conversation, said });
+      const went = org.continueRun(caller, orchestrationId, text, { via: 'slack', attachments, conversation, ...(said === undefined ? {} : { said: unescapeSlack(said) }) });
       return went ? { ok: true, done: went.done } : null;
     },
     progress: (id) => org.errandProgress(id),

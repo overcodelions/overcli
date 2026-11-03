@@ -53,7 +53,7 @@ So on AWS the job is to put `/data` on a durable disk, snapshot it, and run exac
    export OVERCLI_DATA=/srv/overcli-data
    docker compose -f deploy/docker-compose.yml up -d
    ```
-   Change the compose port mapping to `"7420:7420"` so the load balancer can reach it. The instance's security group should allow 7420 only from the ALB.
+   Change the compose port mapping to `"7420:7420"` so the load balancer can reach it. The instance's security group should allow 7420 only from the ALB. If you turn on metrics (`OVERCLI_METRICS=0.0.0.0:9464`), publish 9464 too and allow it only from your Prometheus or collector. See *Metrics* in the operator guide.
 8. **HTTPS.** Put an internal ALB in front with an ACM certificate, a target group on 7420, and the health check on `/healthz`. Set `OVERCLI_TRUST_PROXY=1` in `.env`, and `publicUrl` in `org.json` to the ALB's name (e.g. `https://overgo.acme.internal`).
 9. **Egress.** Through a NAT gateway: `slack.com`, `wss-primary.slack.com`, `wss-backup.slack.com`, your git host, and package registries if your tools use `npx` or `uvx`. `uvx` also fetches its Python from `github.com` the first time.
 

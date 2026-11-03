@@ -77,6 +77,8 @@ export interface ServeOptions {
   /// Serve the org control plane — MCP at /mcp and the web console at / —
   /// on this address. Absent: no listener at all, as before.
   control?: { host: string; port: number };
+  /// Serve Prometheus metrics at /metrics on this address. Off when absent.
+  metrics?: { host: string; port: number };
 }
 
 /// `overcli tokens`: who may call the control plane.
@@ -228,7 +230,7 @@ function allowToolWarnings(permissions: PermissionPolicy, allowTools: string[]):
 /// The flags `serve` accepts. Everything else `run` takes is about a single
 /// file-shaped run and has no meaning for a process that outlives every run
 /// it starts, so those are refused by name rather than silently ignored.
-const SERVE_FLAGS = new Set(['--state-dir', '--permissions', '--allow-tool', '--control', '--max-access']);
+const SERVE_FLAGS = new Set(['--state-dir', '--permissions', '--allow-tool', '--control', '--metrics', '--max-access']);
 
 function parseServe(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
   const opts: ServeOptions = { permissions: 'deny', allowTools: [] };
@@ -273,6 +275,12 @@ function parseServe(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailu
         const control = parseControlAddress(value);
         if ('error' in control) return { ok: false, error: control.error };
         opts.control = control;
+        break;
+      }
+      case '--metrics': {
+        const metrics = parseControlAddress(value, '--metrics', 9464);
+        if ('error' in metrics) return { ok: false, error: metrics.error };
+        opts.metrics = metrics;
         break;
       }
       case '--max-access': {
@@ -434,13 +442,13 @@ function parseWorkers(rest: string[]): { ok: true; args: ParsedArgs } | ParseFai
 
 /// `7420`, `:7420` or `host:7420`. A bare port listens on loopback only: a
 /// control plane open to the network is a choice someone types, not a default.
-export function parseControlAddress(raw: string): { host: string; port: number } | { error: string } {
+export function parseControlAddress(raw: string, flag = '--control', example = 7420): { host: string; port: number } | { error: string } {
   const value = raw.trim();
   const at = value.lastIndexOf(':');
   const host = at > 0 ? value.slice(0, at).replace(/^\[|\]$/g, '') : '127.0.0.1';
   const port = Number(at >= 0 ? value.slice(at + 1) : value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return { error: `--control wants a port or host:port, e.g. 7420 or 0.0.0.0:7420 (got "${raw}").` };
+    return { error: `${flag} wants a port or host:port, e.g. ${example} or 0.0.0.0:${example} (got "${raw}").` };
   }
   return { host, port };
 }
@@ -762,6 +770,11 @@ SERVE OPTIONS
                          (/overgo join) or the app; scripts use a token
                          from overcli tokens create. The first start prints
                          a one-time link for the first admin.
+  --metrics ADDR         Serve Prometheus metrics at /metrics on their own
+                         port: runs, waits on people, queues, spend, failing
+                         tools. A bare port (9464) listens on loopback.
+                         $OVERCLI_METRICS_TOKEN, if set, is required as a
+                         bearer token.
 
   Only one daemon may hold a --state-dir at a time; a second refuses rather
   than double-firing every schedule. Ctrl-C or SIGTERM shuts it down and

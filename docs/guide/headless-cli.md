@@ -48,6 +48,8 @@ Runs your saved schedules and standing workers with no window. Pass `--state-dir
 
 Add `--control 7420` for the org server: a web console at `/`, MCP at `/mcp`, a JSON API at `/api`, all behind tokens from `overcli tokens create`. A bare port listens on localhost only.
 
+Add `--metrics 9464` to serve Prometheus metrics at `/metrics` on a port of their own: runs, waits on people, queues, spend and failing tools. `$OVERCLI_METRICS_TOKEN`, if set, is required as a bearer token.
+
 ## Use it from another agent
 
 ```json

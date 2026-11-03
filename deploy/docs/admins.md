@@ -6,7 +6,11 @@ Setup is one page at a time, picked from the list beside it: **Readiness**; **Or
 
 ## Setup → Readiness
 
-A checklist of what the server needs: a model, Slack, a place to work, the tools workers list, people. Each missing item says how to fix it.
+A checklist of what the server needs: who the org is, a model, Slack, a place to work, the tools workers list, people. Each missing item says how to fix it.
+
+**Who the org is** comes first, and opens by itself on a new server: the org's name, the console address (where links sent from Slack point) and the time zone schedules run in. Saving writes `org.json`, starting narrow, so only admins hire until you change it under the rules. With Slack connected, saving also pins the org to that Slack workspace, so the bot never answers another one; if Slack is later connected to a different workspace, this item turns red. If you signed in before Slack was connected, **Link your Slack** on People makes you an admin in Slack too.
+
+Below it, **Storage** shows what's using the disk, and **Metrics** says whether the server's Prometheus metrics are on. When they're off, it gives the two lines for `deploy/.env` that turn them on. When they're on, it says when they were last scraped, warns if something was turned away for a wrong token or nothing has scraped for a while, and gives a scrape config for this server to copy. **Show what it sends** shows the real numbers the server would send right now, exactly as Prometheus gets them, even before metrics are turned on. See [Metrics](../README.md#metrics) in the operator guide.
 
 ## Setup → From desktops
 
@@ -302,6 +306,7 @@ Every Monday at 9am in the org's time zone, overgo DMs a short week in review:
 
 - **Back up the data volume.** It's everything: workers, journals, the Library, sign-ins, rules, encrypted secrets.
 - **Run one server per Slack app.** A second one on the same tokens takes replies meant for the first.
+- **Watch it from your monitoring.** Set `OVERCLI_METRICS=0.0.0.0:9464` and a Prometheus (or an OpenTelemetry collector) inside the network can scrape `/metrics`: runs going and what they're waiting on, approvals left waiting, spend against budgets, queues and failing tools. See [Metrics](../README.md#metrics) in the operator guide.
 - **Upgrade** by running the new image on the same volume: set `OVERCLI_VERSION` in `deploy/.env` (a minor version like `0.23` takes fixes as they come), then `docker compose pull && docker compose up -d`. **Setup → Readiness** says what version runs and when a newer one is out. Everything lives on the volume, so nothing is lost:
   - runs cut short carry on by themselves;
   - a question a worker was still answering is asked again;

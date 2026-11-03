@@ -249,6 +249,10 @@ interface DoorThread {
   /// whoever ran its last step, as the next turn of that conversation
   /// (`FrontDoorDeps.continueRun`).
   done?: { orchestrationId: string; at: number; workerId?: string };
+  /// The work thread on the worker's page this Slack thread is about (a
+  /// trigger's DM to the manager, `ask:<id>`): what's said here is a reply
+  /// there, as the console's "Reply to this", so both read as one conversation.
+  replyTo?: string;
   at: number;
 }
 
@@ -558,7 +562,7 @@ export interface FrontDoorDeps {
   /// The workers this person may ask, running ones only.
   workers(caller: OrgCaller): FrontDoorWorker[];
   /// `conversation`: the thread, as a key, so the worker keeps one conversation per thread.
-  ask(caller: OrgCaller, workerId: string, text: string, attachments: Attachment[], conversation?: string, said?: string): Started;
+  ask(caller: OrgCaller, workerId: string, text: string, attachments: Attachment[], conversation?: string, said?: string, replyTo?: string): Started;
   /// A follow-up in a thread whose handed-off work has finished, said to
   /// whoever ran the work's last step, in its conversation: a chat, not a
   /// new errand. Null: it can't take it (the caller may not drive that work,
@@ -935,10 +939,14 @@ export class FrontDoor {
   /// answer, an approval it settled): a reply there is for that worker, and
   /// reads the thread as its context, rather than starting over with "who
   /// should take this?".
-  adopt(channel: string, threadTs: string, worker: { id: string; name: string }): void {
+  adopt(channel: string, threadTs: string, worker: { id: string; name: string }, replyTo?: string): void {
     const key = `${channel}:${threadTs}`;
     const known = this.state.threads.find((t) => t.key === key);
     if (known) {
+      if (replyTo && known.workerId === worker.id && !known.replyTo) {
+        known.replyTo = replyTo;
+        this.save();
+      }
       // A thread left on "who should take this?" (or "is it one of these?")
       // when nobody picked: it's this worker's now.
       if (!known.workerId && !known.room) {
@@ -951,7 +959,7 @@ export class FrontDoor {
       }
       return;
     }
-    this.state.threads.push({ key, workerId: worker.id, workerName: worker.name, at: this.now() });
+    this.state.threads.push({ key, workerId: worker.id, workerName: worker.name, ...(replyTo ? { replyTo } : {}), at: this.now() });
     this.save();
   }
 
@@ -1638,7 +1646,8 @@ export class FrontDoor {
   /// More for the worker on a thread: the work it handed off has finished,
   /// so whoever did it carries on; otherwise the worker itself.
   private async carryOn(req: FrontDoorRequest, key: string, caller: OrgCaller, worker: FrontDoorWorker, known: DoorThread, text: string): Promise<void> {
-    if (known.done && this.deps.continueRun && (!known.done.workerId || known.done.workerId === worker.id)) {
+    // A thread about work on the worker's page replies there, not to a run.
+    if (known.done && !known.replyTo && this.deps.continueRun && (!known.done.workerId || known.done.workerId === worker.id)) {
       const went = await this.continueRun(req, key, caller, worker, known.done.orchestrationId, text, req.files ?? []);
       if (went) return;
     }
@@ -1759,7 +1768,8 @@ export class FrontDoor {
       followUp ? '' : 'If this plainly isn\'t something your job or tools cover, reply with only `NOT_MINE:` and one short line on why, and the request goes to someone else. If you can help at all, help.',
     ].filter(Boolean).join('\n');
     this.begin(key);
-    const started = this.deps.ask(caller, worker.id, prompt, context.images, `slack:${key}`, text);
+    const replyTo = this.state.threads.find((t) => t.key === key && t.workerId === worker.id)?.replyTo;
+    const started = this.deps.ask(caller, worker.id, prompt, context.images, `slack:${key}`, text, replyTo);
     if (!started.ok) {
       this.end(key);
       await say(started.error);

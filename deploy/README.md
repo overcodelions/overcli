@@ -65,7 +65,7 @@ To build it yourself instead (to change the code, say): `docker build -f deploy/
 In `deploy/.env`:
 
 - **The model.** Workers run through the Claude Code CLI inside the container. Give it `ANTHROPIC_API_KEY`, or Bedrock (`CLAUDE_CODE_USE_BEDROCK=1` and AWS credentials, ideally from the instance role), or Vertex. For Codex, set `OPENAI_API_KEY`: the published image has it. The console's Admin page shows which models are signed in.
-- **Slack** (optional). Create an app from `src/main/slack/slack-app-manifest.yml` and put its bot token (`xoxb-`) and app-level token (`xapp-`, scope `connections:write`) in `.env`.
+- **Slack** (optional). Nothing to do here: once the server is up, the console's **Connect → Slack** makes the app for you, and you paste its two tokens on **Setup → Secrets**, where they're kept encrypted. Putting `OVERCLI_SLACK_BOT_TOKEN` (`xoxb-`) and `OVERCLI_SLACK_APP_TOKEN` (`xapp-`, scope `connections:write`) in `.env` works too, for a setup you script.
 
 ## 2. Start it
 
@@ -78,13 +78,17 @@ On first start it creates a **Workers** folder on the volume as the default plac
 
 ## 3. Say who the org is
 
+Open the first-admin link from the log. On a new server, **Setup → Readiness** opens **Who the org is**: the org's name, the console address and the time zone. Save it. With Slack connected, saving also pins the org to that Slack workspace, and **Link your Slack** on People makes you an admin in Slack too.
+
+From a terminal instead, for a setup you script:
+
 ```sh
 docker compose -f deploy/docker-compose.yml exec overcli overcli org init --name "Acme" --admin U012AB3CD --slack-team T012AB3CD \
   --url https://overgo.acme.internal:7420 --timezone America/New_York
 docker compose -f deploy/docker-compose.yml exec overcli overcli org show
 ```
 
-This writes `/data/org.json`. It names the org (in the console, Slack and MCP), pins the Slack workspace (the bridge refuses a token from any other), and holds the rules. After the first admin signs in, change the rules from the console (**Admin → Change the rules**) or from Claude (`set_org_rules`); each change is checked and written to the decision log. Editing the file by hand works too, and applies without a restart. `deploy/org.example.json` has every field:
+Either way, this writes `/data/org.json`. It names the org (in the console, Slack and MCP), pins the Slack workspace (the bridge refuses a token from any other), and holds the rules. After the first admin signs in, change the rules from the console (**Admin → Change the rules**) or from Claude (`set_org_rules`); each change is checked and written to the decision log. Editing the file by hand works too, and applies without a restart. `deploy/org.example.json` has every field:
 
 | Field | Meaning |
 |---|---|
@@ -316,6 +320,7 @@ Slack needs no inbound route. The bridge uses Socket Mode, so the container dial
 | Egress 443 | `api.anthropic.com`, or Bedrock or Vertex via a private endpoint | The model |
 | Egress | your git host | Repos |
 | Ingress 7420 | only from where people use the console and MCP | Control plane |
+| Ingress 9464 | only from your Prometheus or collector, if metrics are on | Metrics |
 
 Three ways to expose the control plane, strictest first:
 
@@ -332,3 +337,34 @@ The compose file binds 7420 to loopback and sets `OVERCLI_PUBLISHED_ON_LOOPBACK=
 - **Back up `/data`.** It holds every worker, journal, run, token hash, `org.json`, ratings and the decision log (`org/audit.jsonl`).
 - **Permissions.** `--permissions deny` lets worker runs use no tools; the compose file uses an allow-list, and `--max-access shell` lets an admin choose up to listed shell commands on **Setup → Permissions**. Raise or lower it there. External actions (push, send, publish) still stop for the manager's approval until the worker is trusted with them. Trust is raised from the worker's page when its record earns it.
 - **Logs.** stdout carries startup, Slack connection and control plane messages.
+
+### Metrics
+
+Set `OVERCLI_METRICS=0.0.0.0:9464` (or `--metrics`) and the server serves Prometheus metrics at `/metrics` on that port, separately from the console. It's off by default. Nothing is sent anywhere: a Prometheus inside the network scrapes it, or an OpenTelemetry collector does through its `prometheus` receiver, which suits Fargate and other places where nothing scrapes containers.
+
+Worker names and spend appear in the output. Keep the port on the private network, and set `OVERCLI_METRICS_TOKEN` to require `Authorization: Bearer <token>` where the network isn't one team's.
+
+| Metric | What it tells you |
+|---|---|
+| `overcli_runs_in_progress{worker,state}` | Runs not over yet: `working`, or waiting on `approval`, a `question`, a `failure`, a restart (`interrupted`) or a `held` batch |
+| `overcli_runs_waiting_oldest_seconds{state}` | How long the longest wait on a person has gone on. Alert on approvals left for hours |
+| `overcli_runs_finished_total{worker,outcome}` | Runs that ended: `done`, `failed`, `stopped` |
+| `overcli_run_cost_usd_total{worker}` | What those runs cost |
+| `overcli_run_duration_seconds{worker}` | How long they took (histogram) |
+| `overcli_worker_queue_depth{worker}` | Work waiting for a worker to be free |
+| `overcli_worker_spend_month_usd{worker}`, `overcli_worker_budget_month_usd{worker}` | Spend this month against the budget |
+| `overcli_asks_in_progress`, `overcli_hires_awaiting_approval` | Questions being answered; hires waiting on an approver |
+| `overcli_tool_errors_in_a_row{tool,kind}` | Tools failing now (`auth`, `gone`, `failing`), as on Setup → Tools |
+| `overcli_up`, `overcli_build_info{version}`, `overcli_workers` | The server is up, its version, how many workers |
+
+The counters start from zero when the server starts, which Prometheus treats as a reset, so `rate()` and `increase()` work across restarts.
+
+A Prometheus scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: overgo
+    static_configs:
+      - targets: ["overgo.acme.internal:9464"]
+    # authorization: { credentials: "<OVERCLI_METRICS_TOKEN>" }
+```

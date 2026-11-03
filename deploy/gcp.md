@@ -41,7 +41,7 @@ Replace the container freely; keep `/data` on a persistent disk and snapshot it.
    export OVERCLI_DATA=/srv/overcli-data
    docker compose -f deploy/docker-compose.yml up -d
    ```
-   Change the compose port mapping to `"7420:7420"`. A firewall rule should allow 7420 only from the load balancer's proxy subnet.
+   Change the compose port mapping to `"7420:7420"`. A firewall rule should allow 7420 only from the load balancer's proxy subnet. If you turn on metrics (`OVERCLI_METRICS=0.0.0.0:9464`), publish 9464 too and allow it only from your Prometheus or collector. See *Metrics* in the operator guide.
 8. **HTTPS.** Use an internal Application Load Balancer with a managed or self-managed certificate. Back it with an unmanaged instance group holding the VM, port 7420, health check `/healthz`. Set `OVERCLI_TRUST_PROXY=1`, and `publicUrl` in `org.json`.
 9. **Egress.** Through Cloud NAT: Slack, your git host, and package registries for `npx`/`uvx` tools.
 

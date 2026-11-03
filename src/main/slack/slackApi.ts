@@ -326,3 +326,10 @@ export async function openView(botToken: string, triggerId: string, view: unknow
 export function escapeMrkdwn(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+/// What a person typed in Slack, as they typed it: Slack sends `&`, `<` and
+/// `>` as entities. Only for showing it (an ask's title): a worker's prompt
+/// keeps them escaped, so pasted text can't pass for markup there.
+export function unescapeSlack(text: string): string {
+  return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}

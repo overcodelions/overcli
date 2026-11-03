@@ -10,6 +10,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
   const asked: string[] = [];
   const startsFlags: boolean[] = [];
   const posts: string[] = [];
+  const ownerReplyTo: Array<string | undefined> = [];
   const fullPosts: string[] = [];
   const postedAs: Array<string | undefined> = [];
   const calls: unknown[] = [];
@@ -58,8 +59,9 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
     },
     ...(opts.owner
       ? {
-          tellOwner: async (workerId: string, text: string) => {
+          tellOwner: async (workerId: string, text: string, _choices?: string[], replyTo?: string) => {
             posts.push(`owner:${workerId}:${text.split('\n')[0]}`);
+            ownerReplyTo.push(replyTo);
             return true;
           },
         }
@@ -85,6 +87,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
     calls,
     reviews,
     notices,
+    ownerReplyTo,
     setReply: (r: string) => (reply = r),
     deliverables: () => deliverables,
     triggers: () => triggers,
@@ -174,6 +177,8 @@ describe('watch triggers', () => {
       const told = h.posts.filter((p) => p.startsWith('owner:'));
       expect(told).toEqual([fail ? 'owner:triage:*Triage* could not finish _ACME-2: Login loops_ from _New bugs_: Out of turns' : 'owner:triage:*Triage* handled _ACME-2: Login loops_']);
       if (!fail) expect(h.deliverables()[0].deliveredTo).toContain('its manager');
+      // A reply in that DM is a reply to the work on the worker's page.
+      expect(h.ownerReplyTo).toEqual(['ask:a1']);
     }
   });
 

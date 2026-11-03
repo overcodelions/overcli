@@ -4,6 +4,15 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Changed
+- **Linking an admin's Slack makes them an admin in Slack.** An admin who signed in with the first-admin link before Slack was connected, then used **Link your Slack** on People, is now added to `org.json`'s admins, so Slack's approvals and `/hire` know them.
+- **The docs set Slack up through the console:** Connect → Slack makes the app, and its tokens go on Setup → Secrets. `.env` and `overcli org init` remain for scripted setups.
+
+### Added
+- **Set up the org from the console.** Setup → Readiness starts with **Who the org is**, which opens by itself on a new server: the name, the console address and the time zone, saved to `org.json` with no `overcli org init` and no terminal. With Slack connected, saving pins the org to that workspace, and the item turns red if Slack is later connected to another one.
+- **Prometheus metrics for the server.** Set `OVERCLI_METRICS=0.0.0.0:9464` (or `--metrics`) and `/metrics` reports runs in progress and what they're waiting on, the longest wait on an approval or question, runs finished with their cost and length, each worker's queue and its spend against its budget, asks and hires waiting, and failing tools. It's on its own port, off by default, and needs no inbound internet; `OVERCLI_METRICS_TOKEN` adds a bearer token. See *Metrics* in `deploy/README.md`.
+- **Setup → Readiness has a Metrics card.** It says whether metrics are on and when they were last scraped, and warns about a wrong token, a stalled scraper or a loopback-only address. When they're off, it gives the two lines that turn them on; when they're on, a scrape config for this server to copy. **Show what it sends** previews the live output, even while metrics are off.
+
 ## [0.24.5] - 2026-11-02
 
 ### Upgrading

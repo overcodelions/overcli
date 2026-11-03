@@ -167,7 +167,9 @@ export interface TriggerDeps {
   /// Tell whoever answers for the worker (its manager, up the chain) what it
   /// did on an event, in a DM whose thread goes back to the worker: "the
   /// tests fail" said there reaches it. False: no one to tell, or it failed.
-  tellOwner?(workerId: string, text: string, choices?: string[]): Promise<boolean>;
+  /// `replyTo`: the work thread on the worker's page it is about (`ask:<id>`),
+  /// so a reply in the DM is a reply there, as the console's "Reply to this".
+  tellOwner?(workerId: string, text: string, choices?: string[], replyTo?: string): Promise<boolean>;
   /// Test mode: show the worker's manager an answer it would post, with
   /// buttons to post it (`release`) or not (`drop`). False: no one to show.
   /// `inThread`: a revised answer, under the card it revises. Gives where
@@ -689,7 +691,7 @@ export class TriggerService {
     void started.done.then(async (res) => {
       if (!res.ok) {
         this.putDeliverable({ ...d, status: 'failed', error: res.error, doneAt: this.now() });
-        await this.deps.tellOwner?.(t.workerId, `*${worker.name}* could not finish _${item.title}_${item.url ? ` (<${item.url}|source>)` : ''} from _${t.name}_: ${res.error}\nReply here to have it try again.`);
+        await this.deps.tellOwner?.(t.workerId, `*${worker.name}* could not finish _${item.title}_${item.url ? ` (<${item.url}|source>)` : ''} from _${t.name}_: ${res.error}\nReply here to have it try again.`, undefined, `ask:${started.askId}`);
         return;
       }
       const rehearsing = rehearses(t) && !!thread;
@@ -707,7 +709,7 @@ export class TriggerService {
       // It started work and will come back: say so, or the thread looks
       // like it gave up after "I'm looking into it".
       const said = res.launched > 0 && thread ? `${res.reply.trim()}\n\n${WORKING_NOTE}` : res.reply;
-      const deliveredTo = await this.deliver(t, worker, 'handled', item.title, item.url, said, thread, res.choices);
+      const deliveredTo = await this.deliver(t, worker, 'handled', item.title, item.url, said, thread, res.choices, true, started.askId);
       this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, deliveredTo, doneAt: this.now() });
       if (listens(t) && thread && deliveredTo.includes('the Slack thread')) this.rememberThread(t.id, `${thread.channel}:${thread.ts}`);
     });
@@ -776,7 +778,7 @@ export class TriggerService {
     if (!t || !worker) return { ok: false, error: 'Its trigger or worker is gone.' };
     // Claimed first, so a double press can't post it twice.
     this.putDeliverable({ ...d, status: 'working' });
-    const deliveredTo = await this.deliver(t, worker, 'handled', d.title, d.source.url, d.result, d.thread, undefined, false);
+    const deliveredTo = await this.deliver(t, worker, 'handled', d.title, d.source.url, d.result, d.thread, undefined, false, d.askId);
     if (!deliveredTo.length) {
       this.putDeliverable({ ...d, status: 'held' });
       return { ok: false, error: 'It could not be posted. Is the bot still in the channel?' };
@@ -811,7 +813,7 @@ export class TriggerService {
         const as = { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) };
         await this.deps.slack.post(d.thread.channel, `_I couldn't finish looking into this, so there's no answer from me this time. I've told my manager._`, d.thread.ts, as);
       }
-      await this.deps.tellOwner?.(t.workerId, `*${worker.name}* finished the work for _${d.title}_${d.source.url ? ` (<${d.source.url}|source>)` : ''} but couldn't write up what it found: ${res.error}\nReply here to have it try again.`);
+      await this.deps.tellOwner?.(t.workerId, `*${worker.name}* finished the work for _${d.title}_${d.source.url ? ` (<${d.source.url}|source>)` : ''} but couldn't write up what it found: ${res.error}\nReply here to have it try again.`, undefined, `ask:${askId}`);
       return;
     }
     if (PASS_RE.test(res.reply)) return;
@@ -821,7 +823,7 @@ export class TriggerService {
       await this.hold(t, worker, { ...rest, id: randomUUID(), at: this.now(), result: res.reply, links: [...new Set(res.reply.match(URL_RE) ?? [])].slice(0, 10), deliveredTo: [] }, d.title, false);
       return;
     }
-    const deliveredTo = await this.deliver(t, worker, 'finished', d.title, d.source.url, res.reply, d.thread);
+    const deliveredTo = await this.deliver(t, worker, 'finished', d.title, d.source.url, res.reply, d.thread, undefined, true, askId);
     if (listens(t) && d.thread && deliveredTo.includes('the Slack thread')) this.rememberThread(t.id, `${d.thread.channel}:${d.thread.ts}`);
     const links = [...new Set([...d.links, ...(res.reply.match(URL_RE) ?? [])])].slice(0, 10);
     this.putDeliverable({ ...d, result: d.result ? `${d.result}\n\n---\n\n${res.reply}` : res.reply, links, deliveredTo: [...new Set([...d.deliveredTo, ...deliveredTo])], doneAt: this.now() });
@@ -839,6 +841,8 @@ export class TriggerService {
     thread?: { channel: string; ts: string },
     choices?: string[],
     tell = true,
+    /// The ask the event started: the manager's DM replies under its thread.
+    askId?: string,
   ): Promise<string[]> {
     const deliveredTo: string[] = [];
     // The worker writes Markdown; Slack reads its own markup (*bold*, •).
@@ -851,7 +855,7 @@ export class TriggerService {
       if (dest.kind === 'worker') deliveredTo.push(dest.text);
       if (dest.kind === 'dm' && this.deps.slack?.dm && (await this.deps.slack.dm(dest.slackUserId, summary))) deliveredTo.push('a DM');
     }
-    if (tell && (await this.deps.tellOwner?.(t.workerId, `${summary}\n_From ${t.name}. Reply here if something's off, failing tests, a change to make, and ${worker.name} picks it up._`, choices))) deliveredTo.push('its manager');
+    if (tell && (await this.deps.tellOwner?.(t.workerId, `${summary}\n_From ${t.name}. Reply here if something's off, failing tests, a change to make, and ${worker.name} picks it up._`, choices, askId ? `ask:${askId}` : undefined))) deliveredTo.push('its manager');
     return deliveredTo;
   }
 

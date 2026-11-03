@@ -47,6 +47,9 @@ services:
     # drop OVERCLI_PUBLISHED_ON_LOOPBACK above.
     ports:
       - "127.0.0.1:7420:7420"
+      # Prometheus metrics: set OVERCLI_METRICS=0.0.0.0:9464 (and, outside one
+      # team's network, OVERCLI_METRICS_TOKEN) in .env, then publish the port.
+      # - "127.0.0.1:9464:9464"
 
 volumes:
   overcli-data:

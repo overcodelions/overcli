@@ -15,6 +15,7 @@
 // over Socket Mode, which the daemon dials out to. Put it behind the VPN, or
 // behind an HTTPS ingress when claude.ai connectors need to reach it.
 
+import type { MetricsStatus } from './metricsServer';
 import { parseCron } from '../shared/flows/cron';
 import { scheduleText } from '../main/org/orgService';
 import { PROCESS_LIBRARY, libraryProcess, suggestTeamFor } from '../shared/org/processLibrary';
@@ -90,6 +91,10 @@ export interface ControlPlaneDeps {
   /// Setup → Model ids' Test: one tiny prompt per id on the server's model
   /// provider (modelIdTest.ts). Absent: the page says it can't test here.
   testModelIds?: (models: string[]) => Promise<ModelIdResult[]>;
+  /// Whether /metrics is on, for Setup → Readiness. Absent: shown as off.
+  metrics?: () => MetricsStatus;
+  /// What /metrics would send now, for Readiness's preview. Absent: no preview.
+  metricsText?: () => string;
   log: (line: string) => void;
   /// Injected for tests; production reads the token file.
   authenticate?: (token: string | undefined) => OrgCaller | null;
@@ -170,6 +175,9 @@ function accessRoutes(org: OrgService, access: AccessService, slackPeople?: () =
   const money = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
   return [
     { method: 'GET', path: /^\/api\/admin\/invites$/, handle: (c) => access.invites(c) },
+    // Who the org is (org.json's name, address, time zone, Slack workspace).
+    { method: 'GET', path: /^\/api\/admin\/org-setup$/, handle: (c) => access.orgSetup(c) },
+    { method: 'POST', path: /^\/api\/admin\/org-setup$/, handle: (c, b) => access.setupOrg(c, b) },
     // Link this sign-in to its Slack account; Slack asks that person to confirm.
     { method: 'POST', path: /^\/api\/me\/slack$/, handle: (c, b) => access.linkSlackStart(c, str(b.slackUserId)) },
     {
@@ -966,6 +974,24 @@ function slackRoutes(convos?: SlackConversations): Array<{ method: string; path:
 /// Setup → Model ids' Test. Each id is a real model call, so admins only,
 /// one batch at a time each, and a few batches a minute.
 const MAX_MODEL_TESTS = 40;
+/// Setup → Readiness's Metrics card: on or off, and whether anything scrapes it.
+function metricsRoutes(metrics?: ControlPlaneDeps['metrics'], text?: ControlPlaneDeps['metricsText']): Array<{ method: string; path: RegExp; handle: Handler }> {
+  const admin = (c: OrgCaller) => isAdmin(loadOrgPolicy().policy, c);
+  return [
+    {
+      method: 'GET',
+      path: /^\/api\/admin\/metrics\/preview$/,
+      handle: (c) =>
+        !admin(c) ? { ok: false, error: 'Only admins can see the server’s metrics.' } : text ? { ok: true, text: text() } : { ok: false, error: 'This server can’t show its metrics.' },
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/admin\/metrics$/,
+      handle: (c) => (isAdmin(loadOrgPolicy().policy, c) ? { ok: true, ...(metrics?.() ?? { on: false, token: false }) } : { ok: false, error: 'Only admins can see the server’s metrics settings.' }),
+    },
+  ];
+}
+
 function modelTestRoutes(testModelIds?: ControlPlaneDeps['testModelIds']): Array<{ method: string; path: RegExp; handle: Handler }> {
   const testing = new Set<string>();
   const allow = rateLimiter(6);
@@ -1625,7 +1651,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
     ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess) : []),
     ...searchRoutes(deps.org, deps.processes),
     ...slackRoutes(deps.slackConversations),
-    ...modelTestRoutes(deps.testModelIds),
+    ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText),
   ];
   const open = [
     ...(deps.access ? publicRoutes(deps.access) : []),

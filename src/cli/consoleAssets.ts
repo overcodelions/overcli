@@ -14378,16 +14378,70 @@ export const CONSOLE_JS = String.raw`
   }
 
   /// Rechecked: drawn again by Check again, so the header says it just ran.
+  /// Who the org is: org.json's name, address and time zone, from the
+  /// console instead of overcli org init. Saving also pins the Slack
+  /// workspace the bot is connected to, and makes you an admin in Slack.
+  function orgSetupForm(os) {
+    var guessTz = '';
+    try { guessTz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* older browsers */ }
+    var name = h('input', { type: 'text', value: os.name, placeholder: 'Acme', 'aria-label': 'Org name' });
+    var url = h('input', { type: 'text', value: os.publicUrl || location.origin, placeholder: 'https://overgo.acme.internal' });
+    var tz = h('input', { type: 'text', value: os.timezone || guessTz, placeholder: 'America/New_York' });
+    var out = h('div', { 'aria-live': 'polite' });
+    var note = function (text, bad) { return h('p', { class: 'faint', style: 'font-size:13px;margin:0' + (bad ? ';color:var(--bad)' : ''), text: text }); };
+    var slackNote = os.slackMismatch
+      ? note('overgo is connected to a different Slack workspace (' + os.slackConnectedTo + ') than the one this org is pinned to (' + os.slackTeamId + '), so Slack is refused. Use the right workspace’s tokens on Setup → Secrets.', true)
+      : os.slackTeamId ? note('Pinned to Slack workspace ' + os.slackTeamId + ': the bot never answers another workspace.')
+      : os.slackConnectedTo ? note('Saving pins the org to the Slack workspace overgo is connected to (' + os.slackConnectedTo + '), so the bot never answers another workspace.')
+      : note('Slack isn’t connected yet. Once it is, come back and save again to pin this org to its workspace.');
+    var meNote = os.meInSlack ? null : h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap' },
+      note(os.slackConnectedTo ? 'You signed in without Slack, so Slack doesn’t know you’re an admin. Link your Slack on People.' : 'Once Slack is connected, link your Slack on People so Slack knows you’re an admin.'),
+      os.slackConnectedTo ? h('button', { class: 'btn small', text: 'Link your Slack', onclick: function () { go('people'); } }) : null);
+    var save = h('button', { class: 'btn go small', text: os.exists ? 'Save' : 'Set up ' + (os.name || 'the org') });
+    save.onclick = function () {
+      var restore = busy(save, 'Saving…');
+      api('POST', '/api/admin/org-setup', { name: name.value, publicUrl: url.value, timezone: tz.value }).then(function (r) {
+        restore();
+        if (r.ok === false) { out.textContent = ''; out.appendChild(msg(r)); return; }
+        state.setupTab = 'ready'; render();
+      });
+    };
+    name.oninput = function () { if (!os.exists) save.textContent = 'Set up ' + (name.value.trim() || 'the org'); };
+    return h('div', { class: 'stack', style: 'gap:10px;padding:14px 16px;border:1px solid var(--line);border-radius:10px' },
+      h('b', { text: os.exists ? 'Who the org is' : 'Say who the org is' }),
+      os.exists ? null : note('It names the org in the console, Slack and Claude, and sets the time zone schedules run in. Until it’s set, only admins can hire.'),
+      h('div', { class: 'grid2' },
+        h('label', { class: 'field' }, 'Name', name),
+        h('label', { class: 'field' }, 'Console address', url),
+        h('label', { class: 'field' }, 'Time zone', tz)),
+      note('The console address is where links sent from Slack point. Use the address people reach this server at, not localhost, unless you’re trying it on this machine.'),
+      slackNote, meNote,
+      h('div', { class: 'row', style: 'gap:10px' }, save), out);
+  }
+
   function readiness(rechecked) {
-    return Promise.all([api('GET', '/api/admin/health'), api('GET', '/api/tools'), api('GET', '/api/projects'), api('GET', '/api/admin/people'), api('GET', '/api/admin/requests')]).then(function (r) {
+    return Promise.all([api('GET', '/api/admin/health'), api('GET', '/api/tools'), api('GET', '/api/projects'), api('GET', '/api/admin/people'), api('GET', '/api/admin/requests'), api('GET', '/api/admin/org-setup')]).then(function (r) {
       var hl = r[0], tl = r[1], places = r[2] || [], ppl = r[3], req = r[4];
+      var os = r[5] && r[5].ok !== false ? r[5].org : null;
+      var orgBox = h('div');
+      if (os && !os.exists) orgBox.appendChild(orgSetupForm(os));
       if (hl.ok === false) return [msg(hl)];
       var item = function (name) { return hl.items.filter(function (i) { return i.name === name; })[0]; };
       var model = item('Models'), slack = item('Slack'), sso = item('Company sign-in');
       var missing = tl.ok === false ? [] : tl.missing;
       var people = ppl.ok === false ? [] : ppl.people;
       var asking = req.ok === false ? 0 : req.requests.length;
+      var orgOk = !!(os && os.exists && os.name && !os.slackMismatch && !(os.slackConnectedTo && !os.slackTeamId));
+      var orgDetail = !os ? 'Checking…'
+        : !os.exists ? 'Not set yet. Until it is, only admins can hire, and Slack doesn’t know who the admins are.'
+        : os.slackMismatch ? 'Slack is connected to a different workspace than this org is pinned to, so Slack is refused.'
+        : [os.name || 'No name', os.timezone || 'the server’s time zone', os.slackTeamId ? 'Slack workspace pinned' : os.slackConnectedTo ? 'Slack workspace not pinned yet' : null].filter(Boolean).join(' · ');
       var checks = [
+        { ok: orgOk, title: 'Who the org is', detail: orgDetail, optional: false, bad: !!(os && os.slackMismatch),
+          action: os ? [os.exists ? (orgOk ? 'Change' : 'Fix it') : 'Set it up', function () {
+            if (orgBox.firstChild) { orgBox.textContent = ''; return; }
+            orgBox.appendChild(orgSetupForm(os)); var first = orgBox.querySelector('input'); if (first) first.focus();
+          }] : null },
         { ok: !!(model && model.ok), title: 'A model to think with', detail: model ? model.detail : 'Checking…', optional: false },
         { ok: !!(slack && slack.ok), title: 'Slack, for questions and approvals', detail: slack ? slack.detail : 'Not connected.', optional: false,
           action: slack && slack.ok ? null : ['How to connect it', function () { go('connect', { connectTab: 'slack' }); }] },
@@ -14420,8 +14474,72 @@ export const CONSOLE_JS = String.raw`
             h('span', { class: c.ok ? 'ck-ok' : c.bad ? 'ck-bad' : 'ck-off', style: 'flex:none;display:inline-flex' }, icon(c.ok ? 'check' : 'alert', 20)),
             h('span', null, h('span', { style: 'font-weight:550', text: c.title + (c.optional ? ' (optional)' : '') }), h('span', { class: 'faint', style: c.bad ? 'color:var(--bad)' : '', text: c.detail })),
             c.action ? h('button', { class: 'btn small' + (c.bad ? ' bad' : ''), text: c.action[0], onclick: c.action[1] }) : null);
-        }))), storagePanel()];
+        })), orgBox), storagePanel(), metricsPanel()];
     });
+  }
+
+  /// Whether /metrics is on, and whether anything scrapes it: with the two
+  /// lines that turn it on, or a scrape config for this server. Turning it on
+  /// is the operator's (.env and a restart): the port opens at start.
+  function metricsPanel() {
+    var body = h('div', { class: 'stack', style: 'gap:10px' }, h('p', { class: 'faint', text: 'Checking…' }));
+    var sec = h('section', { class: 'panel pad stack', 'aria-labelledby': 'metrics' },
+      h('div', { class: 'spread' }, h('h2', { id: 'metrics', class: 'section-title', style: 'font-size:18px', text: 'Metrics' }),
+        h('a', { class: 'btn small quiet', href: '/docs/operator#metrics', target: '_blank', rel: 'noopener', text: 'What’s in them ↗' })), body);
+    var note = function (text, bad) { return h('p', { class: 'faint', style: 'font-size:13px;margin:0' + (bad ? ';color:var(--bad)' : ''), text: text }); };
+    var status = function (ok, text) {
+      return h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' },
+        h('span', { class: ok ? 'ck-ok' : 'ck-off', style: 'flex:none;display:inline-flex' }, icon(ok ? 'check' : 'alert', 18)),
+        h('span', { style: 'font-weight:550', text: text }));
+    };
+    // What /metrics would send right now: real numbers, read through the
+    // console, so it works before the port is open.
+    var preview = function () {
+      var out = h('div', { class: 'stack', style: 'gap:6px' });
+      var b = h('button', { class: 'btn small quiet', text: 'Show what it sends' });
+      b.onclick = function () {
+        if (out.firstChild) { out.textContent = ''; b.textContent = 'Show what it sends'; return; }
+        var restore = busy(b, 'Reading…');
+        api('GET', '/api/admin/metrics/preview').then(function (r) {
+          restore();
+          out.textContent = '';
+          if (r.ok === false) { out.appendChild(msg(r)); return; }
+          b.textContent = 'Hide';
+          append(out, [
+            h('div', { class: 'code' }, h('pre', { style: 'max-height:320px;overflow:auto;font-size:12px', text: r.text })),
+            note('The server’s numbers right now, exactly as Prometheus gets them. Read ' + clock(Date.now()) + '.')]);
+        });
+      };
+      return h('div', { class: 'stack', style: 'gap:8px' }, h('div', null, b), out);
+    };
+    api('GET', '/api/admin/metrics').then(function (m) {
+      body.textContent = '';
+      if (m.ok === false) { body.appendChild(msg(m)); return; }
+      if (!m.on) {
+        append(body, [
+          status(false, m.error ? 'Metrics didn’t start' : 'Off'),
+          m.error ? note(m.error, true) : null,
+          note('Let your monitoring watch the server: runs and what they’re waiting on, approvals left waiting, each worker’s queue and spend against its budget, and failing tools. A Prometheus inside your network scrapes it, or an OpenTelemetry collector does. Nothing is sent out.'),
+          note('To turn it on, add these to deploy/.env. The token is optional; use it unless only your team can reach the network.'),
+          codeBlock('OVERCLI_METRICS=0.0.0.0:9464\nOVERCLI_METRICS_TOKEN=<a long random string>'),
+          note('Then publish port 9464 in the compose file, reachable only from your monitoring, and restart the server: docker compose up -d --force-recreate.'),
+          preview()]);
+        return;
+      }
+      var fresh = m.lastScrapeAt && Date.now() - m.lastScrapeAt < 10 * 60000;
+      var refused = m.lastRefusedAt && (!m.lastScrapeAt || m.lastRefusedAt > m.lastScrapeAt);
+      var target = location.hostname + ':' + m.port;
+      append(body, [
+        status(!!fresh, 'On, at :' + m.port + '/metrics' + (m.lastScrapeAt ? ' · last scraped ' + ago(m.lastScrapeAt) : ' · not scraped yet')),
+        refused ? note('Something tried ' + ago(m.lastRefusedAt) + ' without the right token and was turned away. Check the token in your scrape config.', true) : null,
+        m.lastScrapeAt && !fresh ? note('Nothing has scraped it for a while. Is your Prometheus still pointed here?', true) : null,
+        m.loopback ? note('It listens on loopback only, so nothing outside the server can reach it. Use 0.0.0.0:' + m.port + ' in OVERCLI_METRICS to let your monitoring in.', true) : null,
+        note(m.token ? 'A bearer token is required (OVERCLI_METRICS_TOKEN).' : 'No token: anyone who can reach the port can read worker names and spend. Keep it on the private network, or set OVERCLI_METRICS_TOKEN.', !m.token),
+        m.lastScrapeAt ? null : note('Point your Prometheus at it:'),
+        codeBlock('scrape_configs:\n  - job_name: overgo\n    static_configs:\n      - targets: ["' + target + '"]' + (m.token ? '\n    authorization:\n      credentials: <OVERCLI_METRICS_TOKEN>' : '')),
+        preview()]);
+    });
+    return sec;
   }
 
   /// What's using the server's disk: checkouts, connected repos and the
@@ -15246,7 +15364,9 @@ export const CONSOLE_JS = String.raw`
             Promise.all([api('GET', '/api/tools'), api('GET', '/api/workers').catch(function () { return null; })]).then(function (rr) {
               var nt = rr[0] && rr[0].tools ? rr[0].tools.filter(function (x) { return x.name === t.name; })[0] : null;
               if (Array.isArray(rr[1])) { workers.length = 0; rr[1].forEach(function (w) { workers.push(w); }); }
-              if (nt) { Object.assign(t, nt); draw(); manage(t); } else { var rd = document.getElementById('reader'); if (rd) rd.remove(); render(); }
+              // Replace, not merge: a field the server now leaves out (trouble
+              // once marked fixed, a sign-in, a service-account mark) goes too.
+              if (nt) { Object.keys(t).forEach(function (k) { delete t[k]; }); Object.assign(t, nt); draw(); manage(t); } else { var rd = document.getElementById('reader'); if (rd) rd.remove(); render(); }
             });
           };
           var parts = toolPanelParts(t, workers, { canEdit: r.canEdit, give: give, reopen: reopen, level: level, teams: teams });
