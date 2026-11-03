@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.24.5] - 2026-11-02
+
 ### Upgrading
 - **Taking the new `deploy/docker-compose.yml` turns on workers as a user of their own.** It starts the container as root (`user: "0"`) and sets `OVERCLI_WORKER_UID=1001`. Keeping your old compose file and pulling only the image changes nothing. Set `OVERCLI_WORKER_UID=` (empty) in `.env` to keep running workers as the server.
 - **Move a tool's credential files from `/data/home` to `/data/tool-home`.** Saved tools now start with `HOME=/data/tool-home`, so a mount like `~/.aws-overcli:/data/home/.aws:ro` is no longer seen, and the tool fails as if the file were missing. Mount it at `/data/tool-home/.aws` instead.
@@ -1246,7 +1248,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.4...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.5...HEAD
+[0.24.5]: https://github.com/overcodelions/overcli/compare/v0.24.4...v0.24.5
 [0.24.4]: https://github.com/overcodelions/overcli/compare/v0.24.3...v0.24.4
 [0.24.3]: https://github.com/overcodelions/overcli/compare/v0.24.2...v0.24.3
 [0.24.2]: https://github.com/overcodelions/overcli/compare/v0.24.1...v0.24.2
