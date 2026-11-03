@@ -60,7 +60,8 @@ describe('capabilities for what the server starts', () => {
     // The repo-test user is the other one the server may become.
     expect(isWorkerLaunch(asWorkerUser({ uid: 1002, gid: 1002 }, 'sh', []).args, [{ uid: 1001, gid: 1001 }, { uid: 1002, gid: 1002 }])).toBe(true);
     // Before the start check has passed, the configured worker user already counts: the check is such a launch.
-    expect(switchableUsers({ OVERCLI_WORKER_UID: '1001', OVERCLI_TEST_UID: '1002', OVERCLI_TEST_GID: '1003' })).toEqual([{ uid: 1001, gid: 1001 }, { uid: 1002, gid: 1003 }]);
+    // Ids no runner's own user has: one equal to the server's uid is refused (workerUserFrom), and CI runs as 1001.
+    expect(switchableUsers({ OVERCLI_WORKER_UID: '64001', OVERCLI_TEST_UID: '64002', OVERCLI_TEST_GID: '64003' })).toEqual([{ uid: 64001, gid: 64001 }, { uid: 64002, gid: 64003 }]);
     expect(switchableUsers({ OVERCLI_WORKER_UID: '0', OVERCLI_TEST_UID: 'x' })).toEqual([]);
     expect(switchableUsers({})).toEqual([]);
     setActiveWorkerUser({ uid: 1001, gid: 1001 });
