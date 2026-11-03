@@ -338,7 +338,9 @@ export class AccessService {
         return { ok: false, error: 'The console address should be a full address, like https://overgo.acme.internal.' };
       }
       if (u.protocol !== 'https:' && u.protocol !== 'http:') return { ok: false, error: 'The console address should start with https://.' };
-      publicUrl = `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+      let pathname = u.pathname;
+      while (pathname.endsWith('/')) pathname = pathname.slice(0, -1);
+      publicUrl = `${u.origin}${pathname}`;
     }
     const existed = this.deps.orgFileExists?.() ?? true;
     const team = this.deps.slackTeamId?.() ?? null;

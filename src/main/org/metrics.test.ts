@@ -145,6 +145,14 @@ describe('the metrics listener', () => {
     expect((await fetch(`${base}/elsewhere`, { headers: { Authorization: 'Bearer s3cret' } })).status).toBe(404);
     expect(seen).toEqual([false, false, true]);
   });
+
+  it('turns away a header of whitespace quickly', async () => {
+    const base = await serve('s3cret');
+    const started = Date.now();
+    const res = await fetch(`${base}/metrics`, { headers: { Authorization: `bearer\t${'\t'.repeat(8000)}x` } });
+    expect(res.status).toBe(401);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
 });
 
 describe('--metrics', () => {

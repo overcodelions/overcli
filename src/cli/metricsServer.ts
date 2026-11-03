@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 
 import type { ServerMetrics } from '../main/org/metrics';
+import { bearer } from './controlPlane';
 
 export const METRICS_CONTENT_TYPE = 'text/plain; version=0.0.4; charset=utf-8';
 
@@ -44,7 +45,9 @@ export function createMetricsServer(
       return;
     }
     if (want) {
-      const given = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '')?.[1]?.trim() ?? '';
+      // The control plane's prefix check: a regex here backtracks on a header
+      // of whitespace, before the token is even compared.
+      const given = bearer(req) ?? '';
       const got = crypto.createHash('sha256').update(given).digest();
       if (!crypto.timingSafeEqual(got, want)) {
         opts.onScrape?.(false);
