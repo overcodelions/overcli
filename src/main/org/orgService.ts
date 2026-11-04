@@ -4744,6 +4744,16 @@ export class OrgService {
   /// reused build is never older than the last of them.
   private changes = 0;
 
+  /// What the server's /metrics reports beside runs and spend (metrics.ts):
+  /// org-wide counts, no caller, nothing anyone could act on.
+  opsCounts(): { hiresAwaiting: number; asksWorking: number; toolTrouble: ToolTrouble[] } {
+    return {
+      hiresAwaiting: this.deps.hires.list().filter((h) => h.status === 'awaitingApproval').length,
+      asksWorking: this.allAsks().filter((a) => a.status === 'working').length,
+      toolTrouble: this.deps.toolHealth?.list() ?? [],
+    };
+  }
+
   /// Runs of this worker still under way, newest first.
   /// Every run going now on the workers this person can see, newest first:
   /// for the Inbox's "in flight".

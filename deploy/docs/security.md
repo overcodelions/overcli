@@ -110,6 +110,7 @@ What it doesn't cover yet:
 
 - **The server makes outbound connections only:** Slack (Socket Mode), the model provider, your git host, and the tools you install. It needs no public address.
 - **People reach the console and MCP** over your VPN or an internal load balancer with HTTPS. The desktop app and CLI insist on https for anything but `localhost`.
+- **Metrics,** when turned on, are served on a port of their own and show worker names and spend. Keep that port reachable only from your monitoring, and set `OVERCLI_METRICS_TOKEN` to require a bearer token where the network isn't one team's.
 - **Webhooks** need the server reachable from the sender. Watches don't, so prefer them inside a private network.
 
 ## What it isn't

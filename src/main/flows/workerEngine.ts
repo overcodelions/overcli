@@ -694,6 +694,15 @@ export class WorkerEngine {
   /// month's spend. Derived on every call for the same reason the scorecard
   /// is: a cached allocation and the run-summary log would eventually
   /// disagree, and the one that gates spending has to be the true one.
+  /// Work waiting for each worker to be free: answers waiting for a slot or
+  /// a shift, and shifts waiting for answers. For the server's /metrics.
+  waitingCount(): Map<UUID, number> {
+    const out = new Map<UUID, number>();
+    for (const [id, list] of this.waiters) if (list.length) out.set(id, list.length);
+    for (const [id, n] of this.queuedBehind) out.set(id, Math.max(out.get(id) ?? 0, n));
+    return out;
+  }
+
   treasury(): { treasury: Treasury; allocation: TreasuryAllocation } {
     return {
       treasury: { ...this.pool },

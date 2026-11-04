@@ -33,7 +33,7 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
   const uploads: string[] = [];
   const edits: Array<{ ts: string; text: string }> = [];
   let statusN = 0;
-  const asks: Array<{ workerId: string; text: string; attachments: Attachment[]; conversation?: string; said?: string }> = [];
+  const asks: Array<{ workerId: string; text: string; attachments: Attachment[]; conversation?: string; said?: string; replyTo?: string }> = [];
   let routed = 0;
   const related: Array<Array<{ title: string; who: string }> | undefined> = [];
   const candidates: string[][] = [];
@@ -82,8 +82,8 @@ function harness(opts: { workers?: FrontDoorWorker[]; reply?: string; proposed?:
           },
         }
       : {}),
-    ask: (_c, workerId, text, attachments, conversation, said) => {
-      asks.push({ workerId, text, attachments, conversation, said });
+    ask: (_c, workerId, text, attachments, conversation, said, replyTo) => {
+      asks.push({ workerId, text, attachments, conversation, said, ...(replyTo ? { replyTo } : {}) });
       if (opts.slow && asks.length > 1) return { ok: true, done: new Promise<never>(() => {}) };
       return { ok: true, done: gated({ ok: true as const, reply: opts.replies?.[workerId] ?? opts.reply ?? 'On it.', askId: 'ask-1', ...(opts.proposed ? { proposed: opts.proposed } : {}), ...(opts.orchestrationId ? { orchestrationId: opts.orchestrationId } : {}) }) };
     },
@@ -291,6 +291,22 @@ describe('the front door', () => {
     expect(h.posts).toEqual([`D0ACME@1.0: [as Triage] ${openerFor('D0ACME:1.0')}`, 'D0ACME@1.0: [as Triage] Done — the button is in.']);
     expect(h.removed).toEqual(['status.1']);
     expect(h.routed()).toBe(0);
+  });
+
+  it("replies under the work a trigger's DM is about, every time it is replied to", async () => {
+    const h = harness({ reply: 'Because off now means no captcha.', orchestrationId: 'o-1', continueRun: () => ({ ok: true, reply: 'From the run step.' }) });
+    h.door.adopt('D0ACMEMGR', '5.0', { id: 'w-triage', name: 'Triage' }, 'ask:a1');
+    await h.door.onMessage({ channel: 'D0ACMEMGR', ts: '5.1', threadTs: '5.0', user: 'U0ACMEPAT', text: 'why is the data fix needed?', dm: true });
+    await tick();
+    await h.door.onMessage({ channel: 'D0ACMEMGR', ts: '5.2', threadTs: '5.0', user: 'U0ACMEPAT', text: 'and is it safe to run twice?', dm: true });
+    await tick();
+    expect(h.asks.map((a) => a.replyTo)).toEqual(['ask:a1', 'ask:a1']);
+    expect(h.continued).toEqual([]);
+    expect(h.asks[0]).toMatchObject({ workerId: 'w-triage', conversation: 'slack:D0ACMEMGR:5.0' });
+    // A plain DM, about nothing on the worker's page, replies to nothing.
+    await h.door.onMessage({ channel: 'D0ACME', ts: '6.0', user: 'U0ACMEPAT', text: 'Triage, add an export button', dm: true });
+    await tick();
+    expect(h.asks.at(-1)!.replyTo).toBeUndefined();
   });
 
   it('asks a model, falls back on clear words when it cannot, else asks the person', async () => {

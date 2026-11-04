@@ -104,6 +104,10 @@ export interface AccessDeps {
   /// Everyone signs in through the identity provider: invite links no longer
   /// sign anyone in (bar the first admin's), though they still carry a role.
   ssoRequired?(): boolean;
+  /// Whether org.json exists yet. Absent: taken as there.
+  orgFileExists?(): boolean;
+  /// The Slack workspace the bot is connected to now. Absent or null: not connected.
+  slackTeamId?(): string | null;
   /// Slack, when it is connected. Each returns whether the DM went.
   slack?: {
     dmInvite(invite: Invite, link: string, org: string): Promise<boolean>;
@@ -113,6 +117,25 @@ export interface AccessDeps {
     dmLinkSlack?(slackUserId: string, linkId: string, signedInAs: string, org: string): Promise<boolean>;
   };
   now?(): number;
+}
+
+/// Setup → Readiness's "Who the org is": org.json's identity, and how it
+/// lines up with the Slack workspace the bot is connected to.
+export interface OrgSetupView {
+  exists: boolean;
+  name: string;
+  timezone: string;
+  publicUrl: string;
+  /// The workspace org.json is pinned to.
+  slackTeamId?: string;
+  /// The workspace the bot is connected to now. Null: not connected.
+  slackConnectedTo: string | null;
+  /// Connected to a workspace other than the pinned one: the bridge refuses it.
+  slackMismatch: boolean;
+  /// Admins org.json names by Slack member id.
+  admins: number;
+  /// Whether the person looking is known in Slack (an admin there too).
+  meInSlack: boolean;
 }
 
 /// The rules the Admin page may change. Admins, allowances and roles of
@@ -248,8 +271,101 @@ export class AccessService {
     const name = slackName?.trim().slice(0, 80) || undefined;
     const signIns = this.deps.tokens.link?.(p.name, p.admin, p.slackUserId, name) ?? 0;
     const workers = this.deps.linkManagers?.(p.name, p.slackUserId, name) ?? 0;
+    // An admin who signed in before Slack was connected is an admin in Slack
+    // too, once linked: org.json's admins are who Slack asks.
+    if (p.admin && !this.deps.policy().admins.includes(p.slackUserId)) {
+      try {
+        this.deps.updateOrg((raw) => {
+          const admins = Array.isArray(raw.admins) ? raw.admins.filter((a): a is string => typeof a === 'string') : [];
+          if (!admins.includes(p.slackUserId)) raw.admins = [...admins, p.slackUserId];
+        });
+      } catch {
+        // A broken org.json is left as it is; Readiness says so.
+      }
+    }
     this.deps.record?.({ name: name ?? p.name, slackUserId: p.slackUserId, admin: p.admin }, `Linked the sign-in "${p.name}" to <@${p.slackUserId}> (${signIns} sign-in${signIns === 1 ? '' : 's'}, ${workers} worker${workers === 1 ? '' : 's'} managed).`);
     return { ok: true, name: name ?? p.name, was: p.name, signIns, workers };
+  }
+
+  // ---- WHO THE ORG IS ----------------------------------------------------
+
+  orgSetup(caller: OrgCaller): Result<{ org: OrgSetupView }> {
+    const denied = this.requireAdmin(caller);
+    if (denied) return { ok: false, error: denied };
+    const p = this.deps.policy();
+    const connected = this.deps.slackTeamId?.() ?? null;
+    return {
+      ok: true,
+      org: {
+        exists: this.deps.orgFileExists?.() ?? true,
+        name: p.name ?? '',
+        timezone: p.timezone ?? '',
+        publicUrl: p.publicUrl ?? '',
+        ...(p.slackTeamId ? { slackTeamId: p.slackTeamId } : {}),
+        slackConnectedTo: connected,
+        slackMismatch: !!(connected && p.slackTeamId && connected !== p.slackTeamId),
+        admins: p.admins.length,
+        meInSlack: !!caller.slackUserId,
+      },
+    };
+  }
+
+  /// Write who the org is, from the console: what `overcli org init` does,
+  /// without a terminal. A new org.json starts narrow (only admins hire). The
+  /// Slack workspace is pinned to the one the bot is connected to, if none is
+  /// yet, and the admin saving it joins the admins when Slack knows them.
+  setupOrg(caller: OrgCaller, input: Record<string, unknown>): Result<{ org: OrgSetupView }> {
+    const denied = this.requireAdmin(caller);
+    if (denied) return { ok: false, error: denied };
+    const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+    const name = text(input.name);
+    if (!name) return { ok: false, error: 'Give the org a name.' };
+    if (name.length > 80) return { ok: false, error: 'Keep the name under 80 characters.' };
+    const timezone = text(input.timezone);
+    if (timezone) {
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: timezone });
+      } catch {
+        return { ok: false, error: `“${timezone}” isn’t a time zone. Use one like America/New_York or Europe/London.` };
+      }
+    }
+    let publicUrl = text(input.publicUrl);
+    if (publicUrl) {
+      let u: URL;
+      try {
+        u = new URL(publicUrl);
+      } catch {
+        return { ok: false, error: 'The console address should be a full address, like https://overgo.acme.internal.' };
+      }
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') return { ok: false, error: 'The console address should start with https://.' };
+      let pathname = u.pathname;
+      while (pathname.endsWith('/')) pathname = pathname.slice(0, -1);
+      publicUrl = `${u.origin}${pathname}`;
+    }
+    const existed = this.deps.orgFileExists?.() ?? true;
+    const team = this.deps.slackTeamId?.() ?? null;
+    let pinned = false;
+    try {
+      this.deps.updateOrg((raw) => {
+        if (!Object.keys(raw).length) Object.assign(raw, { hirers: [], budgetAllowanceUSD: 50, approvers: [], teams: {}, roles: [] });
+        raw.name = name;
+        if (timezone) raw.timezone = timezone;
+        else delete raw.timezone;
+        if (publicUrl) raw.publicUrl = publicUrl;
+        else delete raw.publicUrl;
+        if (!raw.slackTeamId && team) {
+          raw.slackTeamId = team;
+          pinned = true;
+        }
+        const admins = Array.isArray(raw.admins) ? raw.admins.filter((a): a is string => typeof a === 'string') : [];
+        if (caller.slackUserId && !admins.includes(caller.slackUserId)) admins.push(caller.slackUserId);
+        raw.admins = admins;
+      });
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    this.deps.record?.(caller, `${existed ? 'Changed who the org is' : 'Set up the org'}: ${name}${pinned ? `, pinned to Slack workspace ${team}` : ''}.`);
+    return this.orgSetup(caller);
   }
 
   /// "No, that's not me": the request goes, and nothing changes.

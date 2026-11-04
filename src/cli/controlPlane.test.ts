@@ -686,3 +686,41 @@ describe('model id test', () => {
     expect(res).toEqual({ ok: false, error: expect.stringMatching(/isn’t set up/) });
   });
 });
+
+describe('Setup → Readiness metrics', () => {
+  it('tells admins whether metrics are on, never the token, and turns everyone else away', async () => {
+    const { org: o } = fakeOrg();
+    const plane = createControlPlane({
+      org: o,
+      log: () => {},
+      metrics: () => ({ on: true, port: 9464, loopback: false, token: true, lastScrapeAt: 1_800_000_000_000 }),
+      metricsText: () => 'overcli_up 1\n',
+      authenticate: (t) => (t === 'ocli_admin' ? { slackUserId: 'U0ACMEADM', name: 'Ada', admin: true } : t === 'ocli_good' ? PAT : null),
+    });
+    await listenControlPlane(plane, { host: '127.0.0.1', port: 0 });
+    const at = `http://127.0.0.1:${(plane.address() as AddressInfo).port}`;
+    try {
+      const admin = await (await fetch(`${at}/api/admin/metrics`, { headers: { Authorization: 'Bearer ocli_admin' } })).json();
+      expect(admin).toEqual({ ok: true, on: true, port: 9464, loopback: false, token: true, lastScrapeAt: 1_800_000_000_000 });
+      const other = await (await fetch(`${at}/api/admin/metrics`, { headers: { Authorization: 'Bearer ocli_good' } })).json();
+      expect(other).toMatchObject({ ok: false });
+      const shown = await (await fetch(`${at}/api/admin/metrics/preview`, { headers: { Authorization: 'Bearer ocli_admin' } })).json();
+      expect(shown).toEqual({ ok: true, text: 'overcli_up 1\n' });
+      const hidden = await (await fetch(`${at}/api/admin/metrics/preview`, { headers: { Authorization: 'Bearer ocli_good' } })).json();
+      expect(hidden).toMatchObject({ ok: false });
+    } finally {
+      plane.close();
+    }
+  });
+
+  it('says off when the server has no metrics', async () => {
+    const plane = createControlPlane({ org: fakeOrg().org, log: () => {}, authenticate: () => ({ slackUserId: 'U0ACMEADM', name: 'Ada', admin: true }) });
+    await listenControlPlane(plane, { host: '127.0.0.1', port: 0 });
+    try {
+      const res = await (await fetch(`http://127.0.0.1:${(plane.address() as AddressInfo).port}/api/admin/metrics`, { headers: { Authorization: 'Bearer x' } })).json();
+      expect(res).toEqual({ ok: true, on: false, token: false });
+    } finally {
+      plane.close();
+    }
+  });
+});

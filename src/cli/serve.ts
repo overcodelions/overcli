@@ -22,6 +22,9 @@ import { fileAuditStore, listTokens, loadOrgPolicy, orgPolicyPath } from '../mai
 import { startHousekeeping } from '../main/org/housekeeping';
 import type { OrgCaller } from '../shared/org/policy';
 import { createControlPlane, listenControlPlane } from './controlPlane';
+import { createMetricsServer, type MetricsStatus } from './metricsServer';
+import { ServerMetrics } from '../main/org/metrics';
+import { version } from './version';
 import { ensureDefaultProject } from '../main/org/defaultProject';
 import { parseControlAddress, type ServeOptions } from './args';
 import { EXIT } from './run';
@@ -223,6 +226,51 @@ export function startDaemon(
   void ensureDefaultProject().then((dir) => {
     if (dir) deps.out(`projects: none registered, so workers will work in ${dir}. Add repos with overcli projects add.`);
   });
+  // Prometheus metrics, on a port of their own. $OVERCLI_METRICS is the
+  // container-friendly spelling of --metrics. Setup → Readiness reads
+  // metricsStatus, so it's settled before the control plane starts.
+  let metricsServer: http.Server | null = null;
+  const metricsToken = process.env.OVERCLI_METRICS_TOKEN?.trim() || undefined;
+  let metricsStatus: MetricsStatus = { on: false, token: !!metricsToken };
+  const metricsAt = opts.metrics ?? (process.env.OVERCLI_METRICS ? parseControlAddress(process.env.OVERCLI_METRICS, '$OVERCLI_METRICS', 9464) : undefined);
+  // Built either way: Setup → Readiness previews what /metrics would send
+  // even while the port is off. One instance, so the console and Prometheus
+  // count each finished run once between them.
+  const metrics = new ServerMetrics({
+    workers: () => engines.workerEngine.roster(),
+    spentThisMonth: () => engines.workerEngine.spendThisMonth(),
+    runs: () => engines.flowRuntime.listRuns(),
+    waiting: () => engines.workerEngine.waitingCount(),
+    counts: () => engines.org.opsCounts(),
+    version,
+  });
+  if (metricsAt && 'error' in metricsAt) {
+    metricsStatus = { ...metricsStatus, error: metricsAt.error };
+    deps.out(`metrics: not started — ${metricsAt.error}`);
+  } else if (metricsAt) {
+    const loopback = ['127.0.0.1', '::1', 'localhost'].includes(metricsAt.host);
+    metricsServer = createMetricsServer(metrics, {
+      ...(metricsToken ? { token: metricsToken } : {}),
+      log: deps.out,
+      onScrape: (ok) => {
+        metricsStatus = { ...metricsStatus, ...(ok ? { lastScrapeAt: Date.now() } : { lastRefusedAt: Date.now() }) };
+      },
+    });
+    listenControlPlane(metricsServer, metricsAt).then(
+      () => {
+        metricsStatus = { ...metricsStatus, on: true, port: metricsAt.port, loopback };
+        const any = ['0.0.0.0', '::', ''].includes(metricsAt.host);
+        const shown = any ? 'localhost' : metricsAt.host.includes(':') ? `[${metricsAt.host}]` : metricsAt.host;
+        deps.out(`metrics: http://${shown}:${metricsAt.port}/metrics${metricsToken ? ' (bearer token required)' : ''}`);
+      },
+      (err: unknown) => {
+        const why = err instanceof Error ? err.message : String(err);
+        metricsStatus = { ...metricsStatus, error: `Couldn't listen on ${metricsAt.host}:${metricsAt.port}: ${why}` };
+        deps.out(`metrics: could not listen on ${metricsAt.host}:${metricsAt.port} — ${why}`);
+      },
+    );
+  }
+
   // The org control plane: MCP at /mcp, the console at /. $OVERCLI_CONTROL
   // is the container-friendly spelling of --control.
   let control: http.Server | null = null;
@@ -232,6 +280,8 @@ export function startDaemon(
   } else if (controlAt) {
     const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, processes: engines.processes, slackConversations: engines.slackConversations,
       draftProcess: (input) => draftProcessFromImage(drafterDepsFor(engines.runner), input), slackPeople: slackDirectory(), log: deps.out,
+      metrics: () => metricsStatus,
+      metricsText: () => metrics.render(),
       testModelIds: (models) => {
         const bin = resolveBackendPath('claude', Store.load().settings.backendPaths.claude);
         return testModelIds(models, { bin, env: buildBackendEnv(process.env, bin), provider: modelProvider() });
@@ -258,7 +308,7 @@ export function startDaemon(
             });
         }
         const policy = loadOrgPolicy();
-        if (!policy.fromFile) deps.out(`control: no ${orgPolicyPath()} — run overcli org init. Until then nobody but admin tokens may hire.`);
+        if (!policy.fromFile) deps.out(`control: no ${orgPolicyPath()} yet — set it up in the console (Setup → Readiness → Who the org is), or run overcli org init. Until then only admins may hire.`);
       },
       (err: unknown) => deps.out(`control: could not listen on ${controlAt.host}:${controlAt.port} — ${err instanceof Error ? err.message : String(err)}`),
     );
@@ -334,6 +384,7 @@ export function startDaemon(
     secrets?.stop();
     engines.triggers.stop();
     control?.close();
+    metricsServer?.close();
     try {
       engines.dispose();
     } finally {
