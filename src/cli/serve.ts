@@ -278,7 +278,7 @@ export function startDaemon(
   if (controlAt && 'error' in controlAt) {
     deps.out(`control: not started — $OVERCLI_CONTROL: ${controlAt.error}`);
   } else if (controlAt) {
-    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, processes: engines.processes, slackConversations: engines.slackConversations,
+    const server = createControlPlane({ org: engines.org, access: engines.access, sso: engines.sso, connections: engines.connections, triggers: engines.triggers, processes: engines.processes, testSystems: engines.testSystems, slackConversations: engines.slackConversations,
       draftProcess: (input) => draftProcessFromImage(drafterDepsFor(engines.runner), input), slackPeople: slackDirectory(), log: deps.out,
       metrics: () => metricsStatus,
       metricsText: () => metrics.render(),
@@ -342,6 +342,9 @@ export function startDaemon(
   const handBack = setInterval(() => engines.org.handBackDue(), 30_000);
   // Workers whose onboarding notes are a week old learn again.
   const relearn = setInterval(() => engines.org.refreshKnowledgeDue(), 30 * 60_000);
+  // Workers in trouble, a change that backfired, a test that finished.
+  const tuningWatch = setInterval(() => void engines.org.tuningWatchDue(), 30 * 60_000);
+  tuningWatch.unref?.();
 
   const everyone: OrgCaller = { name: 'overcli', admin: true };
   const housekeeping = startHousekeeping({
@@ -380,6 +383,7 @@ export function startDaemon(
     clearInterval(keepAlive);
     clearInterval(handBack);
     clearInterval(relearn);
+    clearInterval(tuningWatch);
     housekeeping.stop();
     secrets?.stop();
     engines.triggers.stop();

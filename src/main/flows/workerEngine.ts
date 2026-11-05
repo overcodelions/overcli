@@ -332,6 +332,8 @@ export interface WorkerEngineDeps {
   /// The org's default scope for each tool (toolScope.ts), under the
   /// worker's own. Absent: only the worker's own.
   toolDefaults?: () => ToolScopes | undefined;
+  /// The tools a worker's role brings (shared/org/roleTools.ts). Absent: none.
+  roleTools?: (w: Worker) => string[];
   /// This worker's runs still going (running or paused), so a planning turn
   /// knows what is already under way. Without it, a question asked while a
   /// run was mid-flight proposed the same work again.
@@ -1549,8 +1551,16 @@ export class WorkerEngine {
 
   private mcpServersOf(w: Worker): string[] | undefined {
     const shared = this.deps.sharedMcpServers?.() ?? [];
-    if (!shared.length || w.mcpServers === undefined) return w.mcpServers;
-    return [...new Set([...(w.mcpServers ?? []), ...shared])];
+    const role = this.deps.roleTools?.(w) ?? [];
+    if ((!shared.length && !role.length) || w.mcpServers === undefined) return w.mcpServers;
+    return [...new Set([...(w.mcpServers ?? []), ...shared, ...role])];
+  }
+
+  /// What a batch carries of its role: the role's tools, and whether it may
+  /// use them in runs it starts on its own.
+  roleOrigin(w: Worker): { roleTools?: string[]; roleToolsAlways?: boolean } {
+    const roleTools = this.deps.roleTools?.(w) ?? [];
+    return roleTools.length ? { roleTools, ...(w.caps.roleToolsAlways ? { roleToolsAlways: true } : {}) } : {};
   }
 
   /// The planning turn this worker is in, if any: since when, and for what.
@@ -1683,7 +1693,7 @@ export class WorkerEngine {
     const grant = [...new Set([...(args.externalActionGrant ?? []), ...planGrant])];
     const res = await this.deps.parker.parkDirect({
       origin: (() => {
-        const { allowExternalActions: _member, ...base } = workerOrigin(this.judged(w), 'errand', label);
+        const { allowExternalActions: _member, ...base } = { ...workerOrigin(this.judged(w), 'errand', label), ...this.roleOrigin(w) };
         return {
           ...base,
           team: args.team,
@@ -1722,7 +1732,7 @@ export class WorkerEngine {
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     const res = await this.deps.parker.parkDirect({
-      origin: { ...workerOrigin(this.judged(w), 'errand', args.title), followUp: args.kind },
+      origin: { ...{ ...workerOrigin(this.judged(w), 'errand', args.title), ...this.roleOrigin(w) }, followUp: args.kind },
       projectPath: w.projectPath,
       prompt: args.prompt,
       title: args.title,
@@ -1739,6 +1749,30 @@ export class WorkerEngine {
   /// version of its flow, as a team piece runs, with nothing to plan or
   /// approve. Its planning turn doesn't hold the flow's tools, so "look this
   /// up and say how" has to run here to see what a tool really answers.
+  /// A test run from its Tuning tab: a flow, on a past job's prompt, as it is.
+  /// FlowRun.trial says what it may not do.
+  async trial(id: UUID, args: { title: string; prompt: string; flowId: string }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
+    if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
+    const allocation = this.allocate(this.now());
+    const funding = fundingFor(allocation, id);
+    if (funding && !funding.funded) return { ok: false, error: describeFundingBlock(funding, allocation) };
+    const res = await this.deps.parker.parkDirect({
+      origin: { ...workerOrigin(this.judged(w), 'errand', args.title), ...this.roleOrigin(w), trial: true },
+      projectPath: w.projectPath,
+      prompt: args.prompt,
+      title: `${w.name}: ${args.title}`,
+      flowId: args.flowId,
+      runIn: this.effectiveRunIn(w),
+      maxConcurrent: 1,
+      autoLaunch: true,
+      note: 'A test run of a proposed change.',
+    });
+    if (!res.ok) return res;
+    return { ok: true, orchestrationId: res.orchestrationId };
+  }
+
   async lookup(id: UUID, args: { title: string; prompt: string }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'That worker is no longer on the crew.' };
@@ -1756,7 +1790,7 @@ export class WorkerEngine {
       flowId = piece.flowId;
     }
     const res = await this.deps.parker.parkDirect({
-      origin: workerOrigin(this.judged(w), 'errand', args.title),
+      origin: { ...workerOrigin(this.judged(w), 'errand', args.title), ...this.roleOrigin(w) },
       projectPath: w.projectPath,
       prompt: this.buildDirectPrompt(w, args.prompt, { files: false }),
       title: `${w.name}: ${args.title}`,
@@ -2234,7 +2268,7 @@ export class WorkerEngine {
     manual = false,
   ): ReturnType<WorkerParker['parkProposal']> {
     return this.deps.parker.parkProposal({
-      origin: workerOrigin(this.judged(w), 'shift'),
+      origin: { ...workerOrigin(this.judged(w), 'shift'), ...this.roleOrigin(w) },
       projectPath: w.projectPath,
       prompt: this.withToolProblems(w, this.buildShiftPrompt(w, sequence, rejected, previousPlannedAt, manual)),
       flowId: defaultFlowOf(w),
@@ -2286,7 +2320,7 @@ export class WorkerEngine {
     const entryId = this.errandEntryId(w.id, at);
     const title = errandLabel(work);
     const res = await this.deps.parker.parkDirect({
-      origin: workerOrigin(this.judged(w), 'errand', work),
+      origin: { ...workerOrigin(this.judged(w), 'errand', work), ...this.roleOrigin(w) },
       projectPath: w.projectPath,
       prompt: this.buildDirectPrompt(w, work),
       title,
@@ -2386,7 +2420,7 @@ export class WorkerEngine {
     const fire = (resumeSessionId?: string) => {
       const warm = !!resumeSessionId;
       return this.deps.parker.parkProposal({
-        origin: workerOrigin(this.judged(w), 'errand', errand, from),
+        origin: { ...workerOrigin(this.judged(w), 'errand', errand, from), ...this.roleOrigin(w) },
         projectPath: w.projectPath,
         // The pace directives lead every turn, warm or cold: they are two
         // lines, and a resumed session drifting back to essays because we
@@ -3647,6 +3681,8 @@ export class WorkerEngine {
   /// files (see `refileRunDeliverables`).
   private fileRunDeliverables(w: Worker, o: Orchestration, item: OrchestrationItem, title: string): boolean {
     if (o.origin?.kind !== 'worker') return false;
+    // A test run's results stay on its own page.
+    if (o.origin.trial) return false;
     if (!item.runId || !this.deps.deliverablesFor) return false;
     const artifacts = this.deps.deliverablesFor(item.runId);
     if (artifacts.length === 0) return false;
@@ -3872,7 +3908,7 @@ export class WorkerEngine {
     if (this.deps.parker.list().some((b) => b.origin?.kind === 'worker' && b.origin.wrapUpOf === o.id)) return;
     this.wrappingUp.add(o.id);
 
-    const origin = { ...workerOrigin(this.judged(w), 'shift'), wrapUpOf: o.id };
+    const origin = { ...{ ...workerOrigin(this.judged(w), 'shift'), ...this.roleOrigin(w) }, wrapUpOf: o.id };
     void this.buildWrapUpPrompt(w, o)
       .then((prompt) =>
         this.deps.parker.parkDirect({

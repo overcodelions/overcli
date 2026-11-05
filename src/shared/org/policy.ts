@@ -72,6 +72,8 @@ export interface OrgPolicy {
   toolDefaults?: ToolScopes;
   /// Whether making a worker visible to the whole org needs an admin.
   orgVisibilityNeedsAdmin: boolean;
+  /// overgo looks for trouble in workers' runs by itself (OrgService.tuningWatchDue).
+  tuningWatch: boolean;
   /// Whether a worker on the org's server must ask before it reads the web
   /// (WebSearch, WebFetch). Off by default: research is most of what
   /// workers do, and a manager asked before every page stops reading them.
@@ -147,6 +149,7 @@ export const DEFAULT_ORG_POLICY: OrgPolicy = {
   approvers: [],
   teams: {},
   orgVisibilityNeedsAdmin: true,
+  tuningWatch: true,
   webNeedsApproval: false,
   webFetch: 'safe',
   ownDomains: [],
@@ -343,6 +346,7 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
         return Object.keys(out).length ? { toolDefaults: out } : {};
       })(),
       orgVisibilityNeedsAdmin: r.orgVisibilityNeedsAdmin !== false,
+      tuningWatch: r.tuningWatch !== false,
       ...(() => {
         const set = r.webFetch === 'ask' || r.webFetch === 'safe' || r.webFetch === 'any' ? r.webFetch : undefined;
         if (r.webFetch !== undefined && !set) warnings.push('webFetch must be "ask", "safe" or "any".');

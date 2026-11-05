@@ -2,6 +2,7 @@
 // `overcli serve`, so a team task runs the same on a desktop and on the org's
 // box. Moved out of index.ts, unchanged, for that reason.
 
+import { runEvidenceFiles } from './runEvidence';
 import os from 'node:os';
 import type { MainToRendererEvent, UUID } from '../../shared/types';
 import type { Worker } from '../../shared/flows/worker';
@@ -86,6 +87,12 @@ export function runDeliverablesFor(
     for (const file of looseSyntheticRootFiles(run.projectPath, {
       since: run.createdAt,
     })) {
+      if (seen.has(file.name)) continue;
+      seen.add(file.name);
+      out.push({ name: file.name, sourcePath: file.path, bytes: file.bytes });
+    }
+    // And what a tool kept for it: the screenshots of an app it tested.
+    for (const file of runEvidenceFiles(run.id)) {
       if (seen.has(file.name)) continue;
       seen.add(file.name);
       out.push({ name: file.name, sourcePath: file.path, bytes: file.bytes });

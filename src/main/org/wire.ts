@@ -29,6 +29,8 @@ import type { ServerVersion } from './updateCheck';
 import { draftHire, drafterDepsFor, saveDraftedHire } from './hireDraft';
 import { findOverlap } from './hireOverlap';
 import { rewriteJob } from './jobRewrite';
+import { reviewWork } from './workerReview';
+import { fileTuningWatchStart, fileWorkerReviewStore } from './orgStores';
 import { pickPicture } from './pickPicture';
 import { oneShotDraftText, reviseFlowFromPrompt } from '../flows/drafter';
 import { resolveWorkPlace } from './defaultProject';
@@ -60,7 +62,7 @@ import path from 'node:path';
 
 export interface OrgEngines {
   runner: RunnerManager;
-  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork' | 'runNote' | 'chatWithRun'>;
+  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'beforeFork' | 'runNote' | 'chatWithRun' | 'runIdForConversation'>;
   orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem' | 'list' | 'approveBatch'>;
   workerEngine: WorkerEngine;
   /// A getter: the app builds teams after the plane.
@@ -303,6 +305,7 @@ export function createOrgService(
       },
       flowsOf: (id) => workerEngine.flowsOf(id),
       lookup: (id, args) => workerEngine.lookup(id, args),
+      trial: (id, args) => workerEngine.trial(id, args),
       journalFor: (id) => workerEngine.journalFor(id),
       remember: (id, text) => workerEngine.remember(id, text),
       forgetNote: (id, entryId) => workerEngine.forgetNote(id, entryId),
@@ -328,6 +331,13 @@ export function createOrgService(
     draft: (args) => draftHire({ runner, ...args }),
     overlap: (job, workers) => findOverlap(drafterDepsFor(runner), job, workers),
     rewriteJob: (args) => rewriteJob(drafterDepsFor(runner), args),
+    reviewWork: (input) => reviewWork(drafterDepsFor(runner), input),
+    reviews: fileWorkerReviewStore,
+    tuningWatchStart: fileTuningWatchStart,
+    saveTrialFlow: (flow) => {
+      const saved = saveFlow({ flow, target: 'generated' });
+      return saved.ok ? { ok: true } : saved;
+    },
     reviseFlow: ({ flow, ask }) => reviseFlowFromPrompt({ yaml: serializeFlow(flow), instruction: ask, id: flow.id }, drafterDepsFor(runner)),
     pickPicture: (worker, taken) =>
       pickPicture(

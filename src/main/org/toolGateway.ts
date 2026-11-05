@@ -21,6 +21,7 @@
 // so can a worker running shell commands as that user until workers run as a
 // user of their own (deploy/docs/security.md).
 
+import { SERVER_TOOL } from '../../shared/org/roleTools';
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -62,6 +63,37 @@ export interface ToolGatewayDeps {
   onCall?(call: { tool: string; call: string; who: string; allowed: boolean }): void;
   log?(message: string): void;
   fetchImpl?: typeof fetch;
+  /// Send a worker's message through the server's Slack (the built-in
+  /// `notify`). Absent: the built-in tool isn't offered.
+  notify?(req: { conversationId: string; workerName?: string; to: string; message: string }): Promise<{ ok: true; sentTo: string } | { ok: false; error: string }>;
+}
+
+/// The most messages one run may send, and the longest.
+export const MAX_NOTIFY_PER_RUN = 5;
+export const MAX_NOTIFY_CHARS = 3000;
+
+const NOTIFY_TOOL = {
+  name: 'notify',
+  description:
+    'Send a short Slack message to a person or a channel, from you, through the server: to say your work is done, or that you need someone. ' +
+    'You never need a Slack token. "to" is "manager" (your manager), a person’s name or Slack member id (U…), or the id of a channel the bot is in (C…). ' +
+    `At most ${MAX_NOTIFY_PER_RUN} messages a run; each is recorded.`,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      to: { type: 'string', description: 'manager, a person’s name or Slack member id, or a channel id.' },
+      message: { type: 'string', description: 'What to say. Plain text; Slack formatting and links work.' },
+    },
+    required: ['to', 'message'],
+  },
+};
+
+/// The built-in tool for a worker's run, bound to its conversation: none
+/// when the gateway isn't running, can't send, or the run isn't a worker's.
+export function builtinGatewayTools(conversationId: string): Record<string, McpServerConfig> {
+  const gw = active;
+  if (!gw || !gw.offersBuiltin(conversationId)) return {};
+  return { [SERVER_TOOL]: { type: 'http', url: `${gw.base()}${SERVER_TOOL}`, headers: { Authorization: `Bearer ${gw.keyFor(conversationId)}` } } };
 }
 
 type Doc = { tools: Record<string, VaultedTool> };
@@ -312,6 +344,11 @@ export class ToolGateway {
     return Object.keys(this.doc.tools);
   }
 
+  /// Whether a run gets the built-in tool: it can send, and the run is a worker's.
+  offersBuiltin(conversationId: string): boolean {
+    return !!this.deps.notify && !!this.deps.callerFor?.(conversationId);
+  }
+
   /// The config the CLIs see for a vaulted tool.
   entry(name: string): McpServerConfig {
     return { type: 'http', url: `${this.base()}${encodeURIComponent(name)}`, headers: { Authorization: `Bearer ${this.keyFor()}` } };
@@ -347,6 +384,7 @@ export class ToolGateway {
     try {
       const match = /^\/t\/([^/?]+)/.exec(req.url ?? '');
       const name = match ? decodeURIComponent(match[1]) : '';
+      if (name === SERVER_TOOL && this.deps.notify) return await this.builtin(req, res, reply);
       const tool = this.doc.tools[name];
       if (!tool) return reply(404, { error: 'No such tool.' });
       const who = this.verify(req.headers.authorization);
@@ -397,6 +435,73 @@ export class ToolGateway {
       this.deps.log?.(`tool gateway: ${req.method} ${req.url} failed: ${err instanceof Error ? err.message : String(err)}`);
       reply(502, { error: 'The tool could not be reached.' });
     }
+  }
+
+  /// Messages each run has sent through `notify`.
+  private readonly notified = new Map<string, number>();
+
+  /// The server's own tool, answered here rather than forwarded: MCP over
+  /// HTTP, one JSON reply per request. Only a run key may use it.
+  private async builtin(req: http.IncomingMessage, res: http.ServerResponse, reply: (status: number, body: unknown) => void): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(req.method === 'DELETE' ? 200 : 405, { Allow: 'POST' });
+      res.end();
+      return;
+    }
+    const who = this.verify(req.headers.authorization);
+    const conversationId = who?.conversationId;
+    const caller = conversationId ? this.callerOf(conversationId) : undefined;
+    if (!conversationId || (!caller && !this.issued.has(conversationId))) return reply(401, { error: 'Only a worker’s run may use this.' });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += (chunk as Buffer).length;
+      if (size > MAX_BODY_BYTES) return reply(413, { error: 'Too large.' });
+      chunks.push(chunk as Buffer);
+    }
+    let msg: { id?: unknown; method?: unknown; params?: Record<string, unknown> };
+    try {
+      msg = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      return reply(200, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error.' } });
+    }
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return reply(200, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'One request at a time.' } });
+    // A notification: nothing to answer.
+    if (msg.id === undefined) {
+      res.writeHead(202);
+      res.end();
+      return;
+    }
+    const ok = (result: unknown) => reply(200, { jsonrpc: '2.0', id: msg.id, result });
+    const said = (text: string, isError = false) => ok({ content: [{ type: 'text', text }], ...(isError ? { isError: true } : {}) });
+    if (msg.method === 'initialize') {
+      const asked = msg.params?.protocolVersion;
+      return ok({ protocolVersion: typeof asked === 'string' ? asked : '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: SERVER_TOOL, version: '1' } });
+    }
+    if (msg.method === 'ping') return ok({});
+    if (msg.method === 'tools/list') return ok({ tools: [NOTIFY_TOOL] });
+    if (msg.method !== 'tools/call') return reply(200, { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found.' } });
+    const call = msg.params?.name;
+    const args = (msg.params?.arguments && typeof msg.params.arguments === 'object' ? msg.params.arguments : {}) as Record<string, unknown>;
+    if (call !== 'notify') return said(`No call named ${String(call)} here.`, true);
+    const label = caller?.workerName ?? `run ${conversationId.slice(0, 8)}`;
+    const full = `mcp__${mcpServerKey(SERVER_TOOL)}__notify`;
+    if (!inToolScope(caller?.scopes, full)) {
+      this.deps.onCall?.({ tool: SERVER_TOOL, call: 'notify', who: label, allowed: false });
+      return said(scopeRefusal(caller?.scopes, full, caller?.workerName ?? 'This worker'), true);
+    }
+    const to = typeof args.to === 'string' ? args.to.trim() : '';
+    const message = typeof args.message === 'string' ? args.message.trim() : '';
+    if (!to || !message) return said('Say who to tell ("to") and what to say ("message").', true);
+    if (message.length > MAX_NOTIFY_CHARS) return said(`Keep it under ${MAX_NOTIFY_CHARS} characters, and link to the details.`, true);
+    const count = this.notified.get(conversationId) ?? 0;
+    if (count >= MAX_NOTIFY_PER_RUN) return said(`This run has sent ${MAX_NOTIFY_PER_RUN} messages, the most one run may.`, true);
+    this.deps.onCall?.({ tool: SERVER_TOOL, call: 'notify', who: label, allowed: true });
+    const sent = await this.deps.notify!({ conversationId, ...(caller?.workerName ? { workerName: caller.workerName } : {}), to, message });
+    if (!sent.ok) return said(sent.error, true);
+    this.notified.set(conversationId, count + 1);
+    if (this.notified.size > MAX_ISSUED) this.notified.delete(this.notified.keys().next().value!);
+    return said(`Sent to ${sent.sentTo} in Slack.`);
   }
 
   /// The worker behind a run's key. Kept once seen, so a key held past its

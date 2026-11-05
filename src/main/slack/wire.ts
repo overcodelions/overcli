@@ -20,8 +20,12 @@ import { SlackCommands, type TeamCardRef } from './slackCommands';
 import { SsoService, SSO_CLIENT_SECRET_ENV } from '../org/sso';
 import { ConnectionsService } from '../org/connections';
 import { ToolSignIn } from '../org/toolSignIn';
-import { installTool, installedToolUrl } from '../org/tools';
-import { unescapeSlack, downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
+import { installTool, installedToolUrl, uninstallTool } from '../org/tools';
+import { TestSystemsService, testSystemsServerScript } from '../org/testSystems';
+import { checkSystem, discoverSystem } from '../org/testSystemsServer';
+import { TEST_SYSTEMS_FILE, TEST_SYSTEMS_VERSION, TEST_SYSTEMS_TOOL, type TestSystemsFile } from '../../shared/testSystems';
+import { makeNotifyPerson, type NotifyPerson } from './notifyPerson';
+import { listPeople, unescapeSlack, downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
 import { answerGeneral, routeRequest } from './frontDoorRoute';
 import { libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
@@ -50,6 +54,8 @@ import { changesOfRun } from '../org/runChanges';
 /// watched channel answers unasked, and can wait for a slower typist.
 const QUIET_MS = 5000;
 const WATCHED_QUIET_MS = 12_000;
+/// A watched channel's message that already reads as a whole question.
+const QUICK_QUIET_MS = 4000;
 
 /// Whoever else is in a channel: someone with no access of their own. What
 /// they can see is what a reply in the channel may draw on.
@@ -59,7 +65,7 @@ const EVERYONE: OrgCaller = { name: 'everyone in the channel', admin: false };
 const CANDIDATES_TTL_MS = 60_000;
 
 export function createSlackBridge(engines: {
-  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun'>;
+  flowRuntime: Pick<FlowRuntimeImpl, 'getRun' | 'listRuns' | 'steerRun' | 'resumeRun' | 'abortRun' | 'runIdForConversation'>;
   orchestrator: Pick<OrchestratorImpl, 'get' | 'rejectItem'>;
   workerEngine: Pick<WorkerEngine, 'roster'>;
   onStatus?: (status: SlackBridgeStatus) => void;
@@ -93,6 +99,9 @@ export function createSlackBridge(engines: {
 /// The org control plane and its Slack commands, built together because each
 /// needs the other: hires waiting on approval are announced in Slack, and the
 /// Slack commands act through the control plane.
+/// A worker's run telling someone in Slack, through the server.
+export type { NotifyPerson } from './notifyPerson';
+
 export function createOrgControl(
   engines: OrgEngines,
   slack: SlackBridge,
@@ -100,7 +109,7 @@ export function createOrgControl(
   /// in the workspace. The desktop: its owner only (`slackOwnerId`), since
   /// the work runs on their laptop and their model account.
   options: { frontDoorOwner?: () => string | undefined } = {},
-): { org: OrgService; commands: SlackCommands; access: AccessService; sso: SsoService; triggers: TriggerService; frontDoor: FrontDoor; connections: ConnectionsService; processes: ProcessService } {
+): { org: OrgService; commands: SlackCommands; access: AccessService; sso: SsoService; triggers: TriggerService; frontDoor: FrontDoor; connections: ConnectionsService; processes: ProcessService; testSystems: TestSystemsService; notifyPerson: NotifyPerson } {
   let commands: SlackCommands | null = null;
   // What workers say to people is scrubbed of credentials, by the org's rule:
   // the patterns, the environment's secrets, and every stored one whatever
@@ -315,6 +324,27 @@ export function createOrgControl(
     },
     signIn: (person) => access.signInWithSso(person),
   });
+  // Apps workers QA, signed in by the test-systems tool (testSystems.ts).
+  const testSystemsStore = jsonOrgStore<TestSystemsFile>(TEST_SYSTEMS_FILE, () => ({ version: TEST_SYSTEMS_VERSION, systems: [] }));
+  const testSystems = new TestSystemsService({
+    load: () => testSystemsStore.load(),
+    save: (f) => testSystemsStore.save(f),
+    file: () => path.join(orgDir(), TEST_SYSTEMS_FILE),
+    isAdmin: (c) => isAdmin(loadOrgPolicy().policy, c),
+    tools: {
+      install: (input) => installTool(input),
+      uninstall: (name) => uninstallTool(name),
+      env: () => {
+        const env = readClaudeMcpServers()[TEST_SYSTEMS_TOOL]?.env;
+        if (!env || typeof env !== 'object' || Array.isArray(env)) return {};
+        return Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => typeof e[1] === 'string'));
+      },
+    },
+    serverScript: testSystemsServerScript,
+    check: checkSystem,
+    discover: discoverSystem,
+    record: (caller, what) => fileAuditStore.append({ at: Date.now(), by: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}), what }),
+  });
   // Work moving between teams and people's decisions. A team stage briefs
   // its team as the stage's owner; a people stage DMs its deciders.
   const processes = new ProcessService({
@@ -408,6 +438,8 @@ export function createOrgControl(
   triggers = new TriggerService({
     // A question typed over a few messages is answered once, as one.
     quietMs: WATCHED_QUIET_MS,
+    quickQuietMs: QUICK_QUIET_MS,
+    progress: (id) => org.errandProgress(id),
     handTo: (hand, ev) => {
       const brief = ev.url ? `${ev.text}\n\nSource: ${ev.url}` : ev.text;
       if (hand.kind === 'process') {
@@ -430,7 +462,7 @@ export function createOrgControl(
     ask: (workerId, triggerName, text, startsOnItsOwn) => {
       const started = org.startAsk({ name: triggerName, admin: true }, workerId, text, 'trigger', undefined, undefined, undefined, undefined, false, startsOnItsOwn);
       return started.ok
-        ? { ok: true, askId: started.askId, done: started.done.then((r) => (r.ok ? { ok: true as const, reply: r.reply, launched: r.launched, ...(r.choices?.length ? { choices: r.choices } : {}) } : r)) }
+        ? { ok: true, askId: started.askId, done: started.done.then((r) => (r.ok ? { ok: true as const, reply: r.reply, launched: r.launched, ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.orchestrationId ? { orchestrationId: r.orchestrationId } : {}) } : r)) }
         : started;
     },
     toolConfig: (name) => readClaudeMcpServers()[name] ?? null,
@@ -445,6 +477,25 @@ export function createOrgControl(
         if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(bot, { channel, text: text.startsWith(`*${as.name}*`) ? text : `*${as.name}:* ${text}`, ...(threadTs ? { threadTs } : {}) });
         if (!res.ok) log('warn', 'slack', `A trigger could not post to ${channel}: ${res.error}`);
         return res.ok;
+      },
+      postTs: async (channel, text, threadTs, as, blocks) => {
+        const bot = configuredSlackToken('bot');
+        if (!bot || !slack.teamId()) return null;
+        const who = as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {};
+        let res = await postMessage(bot, { channel, text, threadTs, ...who, ...(blocks ? { blocks } : {}) });
+        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(bot, { channel, text, threadTs, ...(blocks ? { blocks } : {}) });
+        return res.ok ? res.data.ts : null;
+      },
+      update: async (channel, ts, text, blocks) => {
+        const bot = configuredSlackToken('bot');
+        if (!bot) return false;
+        const res = await updateMessage(bot, { channel, ts, text, blocks: blocks?.length ? blocks : [{ type: 'section', text: { type: 'mrkdwn', text } }] });
+        return res.ok;
+      },
+      remove: async (channel, ts) => {
+        const bot = configuredSlackToken('bot');
+        if (!bot) return false;
+        return (await deleteMessage(bot, { channel, ts })).ok;
       },
       message: async (channel, ts) => {
         const bot = configuredSlackToken('bot');
@@ -893,5 +944,21 @@ export function createOrgControl(
   });
   slack.setFrontDoor(frontDoor);
   frontDoor.start();
-  return { org, commands, access, sso, triggers, frontDoor, connections, processes };
+  org.setTellManager((workerId, text) => triggers.tell(workerId, text));
+  // A worker's message to a person or a channel, sent here (the tool
+  // gateway's built-in notify): the bot's token never reaches a worker.
+  const notifyPerson = makeNotifyPerson({
+    botToken: () => configuredSlackToken('bot'),
+    teamId: () => slack.teamId(),
+    workerFor: (conversationId) => {
+      const runId = engines.flowRuntime.runIdForConversation(conversationId);
+      const run = runId ? engines.flowRuntime.getRun(runId) : null;
+      return (run?.workerId ? engines.workerEngine.get(run.workerId) : undefined) ?? undefined;
+    },
+    managerSlackId: (id) => org.managerSlackId(id),
+    listPeople: (bot) => listPeople(bot),
+    postMessage: (bot, post) => postMessage(bot, post),
+    audit: (entry) => fileAuditStore.append(entry),
+  });
+  return { org, commands, access, sso, triggers, frontDoor, connections, processes, testSystems, notifyPerson };
 }

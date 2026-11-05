@@ -35,7 +35,10 @@ export interface CatalogTool extends ToolTemplate {
   withToken?: TokenWay;
 }
 
-export type TokenWay = Pick<CatalogTool, 'kind' | 'command' | 'args' | 'url' | 'envKeys' | 'headerKeys' | 'docs' | 'settings'>;
+export type TokenWay = Pick<CatalogTool, 'kind' | 'command' | 'args' | 'url' | 'envKeys' | 'headerKeys' | 'docs' | 'settings'> & {
+  /// What the key way can't do that signing in can: said beside its button.
+  keyNote?: string;
+};
 
 const keyCommand = (cmd: string[], envKeys: string[], docs: string, settings?: Record<string, string>): TokenWay => ({
   kind: 'command',
@@ -190,9 +193,12 @@ export const TOOL_CATALOG: CatalogTool[] = [
     blurb: 'Features, notes and insights, specs and documents: read and update them.',
     category: 'Work tracking',
     docs: 'https://productboard.com/integrations/mcp-server',
-    withToken: keyCommand(['npx', '-y', '@tomgutt/productboard-mcp@2.0.0'], ['PRODUCTBOARD_ACCESS_TOKEN'], 'https://github.com/tomgutt/tg-productboard-mcp', {
-      PRODUCTBOARD_ACCESS_TOKEN: 'A public API access token (Productboard → Integrations → Public API). This is a community server, not Productboard’s own.',
-    }),
+    withToken: {
+      ...keyCommand(['npx', '-y', '@tomgutt/productboard-mcp@2.0.0'], ['PRODUCTBOARD_ACCESS_TOKEN'], 'https://github.com/tomgutt/tg-productboard-mcp', {
+        PRODUCTBOARD_ACCESS_TOKEN: 'A public API access token (Productboard → Integrations → Public API). This is a community server, not Productboard’s own.',
+      }),
+      keyNote: 'With a key it only reads: it can’t create notes or insights, or change anything.',
+    },
   }),
   // The same workspace through Productboard's public API with a token, as
   // its own tool: Productboard's server only signs people in, and a token
@@ -203,7 +209,7 @@ export const TOOL_CATALOG: CatalogTool[] = [
   // runs with the org's token, and a newer one could do anything with it.
   command('productboard-api', ['npx', '-y', '@tomgutt/productboard-mcp@2.0.0'], ['PRODUCTBOARD_ACCESS_TOKEN'], {
     title: 'Productboard (API token)',
-    blurb: 'Features, notes, companies and releases through the public API v2, with a token. A community server, not Productboard’s own.',
+    blurb: 'Read features, notes, companies and releases through the public API v2, with a token. It only reads: it can’t create notes or insights. A community server, not Productboard’s own.',
     category: 'Work tracking',
     docs: 'https://github.com/tomgutt/tg-productboard-mcp',
     settings: { PRODUCTBOARD_ACCESS_TOKEN: 'A public API access token (Productboard → Integrations → Public API), made by a Productboard admin' },

@@ -110,6 +110,8 @@ What it doesn't cover yet:
 
 - **The server makes outbound connections only:** Slack (Socket Mode), the model provider, your git host, and the tools you install. It needs no public address.
 - **People reach the console and MCP** over your VPN or an internal load balancer with HTTPS. The desktop app and CLI insist on https for anything but `localhost`.
+- **Workers message people through the server.** The built-in notify call is answered inside the server, which sends the Slack message itself and records it; workers never hold the bot's token, and a run sends at most five.
+- **Apps to test** keep their test accounts sealed with the tools' secrets. The server signs in itself; workers get a signed-in browser without the tools that read cookies, storage or request headers, or run code in the page, and credentials are only sent to the app's own address or its feature environments' pattern. Use test accounts with the least access, on non-production environments.
 - **Metrics,** when turned on, are served on a port of their own and show worker names and spend. Keep that port reachable only from your monitoring, and set `OVERCLI_METRICS_TOKEN` to require a bearer token where the network isn't one team's.
 - **Webhooks** need the server reachable from the sender. Watches don't, so prefer them inside a private network.
 

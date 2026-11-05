@@ -49,3 +49,36 @@ describe('tool health', () => {
     expect(personOf('jira-integration')).toBeNull();
   });
 });
+
+describe('a file a tool would not write', () => {
+  it('is the call’s fault, not a sign-in problem', () => {
+    expect(classifyToolError('### Error\nError: File access denied: /data/projects/x.png is outside allowed roots. Allowed roots: /tmp/a')).toBe('failing');
+    expect(classifyToolError('401 Unauthorized')).toBe('auth');
+  });
+});
+
+describe('a browser tool’s errors', () => {
+  const report = '### Error\nProvide either "text" or "regex" to search for.\n### Page\n- Page URL: https://app.acme.dev/x\n- HTTP status: 403\n### Events\n- New console entries: tmp/a.log';
+
+  it('aren’t a sign-in problem because the page it was on said 403', () => {
+    expect(classifyToolError(report)).toBe('failing');
+    expect(classifyToolError(report, 'test-systems')).toBe('failing');
+    expect(classifyToolError('### Error\nHTTP 403 Forbidden\n### Page\n- x')).toBe('auth');
+  });
+
+  it('are a sign-in problem for apps to test only when a test account can’t sign in', () => {
+    expect(classifyToolError('Still on Billing’s sign-in page 30 seconds after signing in.', 'test-systems')).toBe('auth');
+    expect(classifyToolError('Billing has no test account yet.', 'test-systems')).toBe('auth');
+    expect(classifyToolError('Timeout waiting for 403 Forbidden text', 'test-systems')).toBe('failing');
+  });
+
+  it('don’t raise an alarm on one bad call, and keep the page out of what’s said', () => {
+    const alerts: unknown[] = [];
+    const h = new ToolHealth({ load: () => [], save: () => {}, alert: (t) => alerts.push(t), now: () => 1 });
+    h.observe({ tool: 'test-systems', ok: false, text: report, worker: 'Robin' });
+    expect(alerts).toEqual([]);
+    for (let i = 0; i < FAILING_AFTER; i++) h.observe({ tool: 'test-systems', ok: false, text: report, worker: 'Robin' });
+    expect(alerts).toHaveLength(1);
+    expect(h.list()[0].lastError).not.toContain('HTTP status');
+  });
+});

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { McpServerConfig } from '../mcpConfig';
-import { bindOverdbInConfig, boundOverdbTool, overdbToolsForRun, useOverdbWorkerLookup } from './overdbBinding';
+import { bindOverdbInConfig, boundOverdbTool, overdbToolsForRun, useFormerNamesLookup, useOverdbWorkerLookup } from './overdbBinding';
 import { closeRunToolRelay } from './runToolRelay';
 import { setActiveWorkerUser } from './workerUser';
 
@@ -49,3 +49,25 @@ describe('the overdb tool, told whose run it serves', () => {
     expect(bindOverdbInConfig(noDb, 'c')).toBe(noDb);
   });
 });
+
+describe('the test-systems tool, told whose run it serves', () => {
+  it('is bound like overdb: only when the run names it, with the worker and conversation', () => {
+    useOverdbWorkerLookup(() => 'QA Bot');
+    const configured: Record<string, McpServerConfig> = { 'test-systems': { command: 'node', args: ['testSystemsServer.js'], env: { OVERCLI_TS_BILLING_PASSWORD: 'x' } }, other: { command: 'x' } };
+    const tools = overdbToolsForRun(() => configured, 'conv-ts');
+    expect(Object.keys(tools)).toEqual(['test-systems']);
+    expect(tools['test-systems'].env).toMatchObject({ OVERCLI_TS_BILLING_PASSWORD: 'x', OVERCLI_CONVERSATION: 'conv-ts', OVERCLI_WORKER: 'QA Bot' });
+    expect(overdbToolsForRun(() => ({ other: { command: 'x' } }), 'conv-ts')).toEqual({});
+  });
+});
+
+describe('the test-systems tool after a rename', () => {
+  it('is told the names its worker went by', () => {
+    useOverdbWorkerLookup(() => 'Quinn');
+    useFormerNamesLookup(() => ['Robin']);
+    const tools = overdbToolsForRun(() => ({ 'test-systems': { command: 'node', args: ['testSystemsServer.js'] } }), 'conv-rename');
+    expect(tools['test-systems'].env).toMatchObject({ OVERCLI_WORKER: 'Quinn', OVERCLI_WORKER_FORMER: 'Robin' });
+    useFormerNamesLookup(() => []);
+  });
+});
+

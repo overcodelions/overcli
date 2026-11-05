@@ -16,6 +16,7 @@
 // and People can list and revoke each one. Codes are random and stored as
 // hashes; pairing secrets live in memory for ten minutes and no longer.
 
+import { STARTER_ROLES, asCatalogRole, starterRole, type StarterRole } from '../../shared/org/starterRoles';
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { isAdmin, parseOrgPolicy, type OrgCaller, type OrgPolicy, type OrgRole, type OrgSso, type WebFetchMode } from '../../shared/org/policy';
 import { isSlackUserId } from '../../shared/flows/worker';
@@ -141,7 +142,7 @@ export interface OrgSetupView {
 /// The rules the Admin page may change. Admins, allowances and roles of
 /// people are set from People; the Slack workspace only with `org init`.
 export const EDITABLE_RULES = [
-  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
+  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'tuningWatch', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
   'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'prSavedMultiplier', 'prSavedMinHours', 'retentionDays', 'sso', 'people', 'fleet',
   'redactSecrets', 'providerModels', 'workerAccess',
 ] as const;
@@ -154,6 +155,7 @@ export interface EditableRules {
   budgetAllowanceUSD: number;
   approvers: string[];
   orgVisibilityNeedsAdmin: boolean;
+  tuningWatch: boolean;
   webNeedsApproval: boolean;
   webFetch: WebFetchMode;
   ownDomains: string[];
@@ -285,6 +287,38 @@ export class AccessService {
     }
     this.deps.record?.({ name: name ?? p.name, slackUserId: p.slackUserId, admin: p.admin }, `Linked the sign-in "${p.name}" to <@${p.slackUserId}> (${signIns} sign-in${signIns === 1 ? '' : 's'}, ${workers} worker${workers === 1 ? '' : 's'} managed).`);
     return { ok: true, name: name ?? p.name, was: p.name, signIns, workers };
+  }
+
+  // ---- STARTER ROLES -----------------------------------------------------
+
+  /// The three ready-made roles, and whether each is in the catalog yet.
+  starterRoles(): { ok: true; roles: Array<StarterRole & { inCatalog: boolean }> } {
+    const have = new Set(this.deps.policy().roles.map((r) => r.name.toLowerCase()));
+    return { ok: true, roles: STARTER_ROLES.map((r) => ({ ...r, tools: [...r.tools], inCatalog: have.has(r.name.toLowerCase()) })) };
+  }
+
+  /// Put a starter role in the catalog, as the org's own role from then on.
+  addStarterRole(caller: OrgCaller, name: string): Result<{ role: string }> {
+    const denied = this.requireAdmin(caller);
+    if (denied) return { ok: false, error: denied };
+    const starter = starterRole(name);
+    if (!starter) return { ok: false, error: 'No starter role by that name.' };
+    let already = false;
+    try {
+      this.deps.updateOrg((raw) => {
+        const roles = Array.isArray(raw.roles) ? (raw.roles as Array<Record<string, unknown>>) : [];
+        if (roles.some((r) => typeof r?.name === 'string' && r.name.toLowerCase() === starter.name.toLowerCase())) {
+          already = true;
+          return;
+        }
+        raw.roles = [...roles, asCatalogRole(starter)];
+      });
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (already) return { ok: false, error: `The catalog already has a role called ${starter.name}.` };
+    this.deps.record?.(caller, `Added the starter role ${starter.name} to the role catalog.`);
+    return { ok: true, role: starter.name };
   }
 
   // ---- WHO THE ORG IS ----------------------------------------------------
@@ -625,6 +659,7 @@ export class AccessService {
         budgetAllowanceUSD: p.budgetAllowanceUSD,
         approvers: p.approvers,
         orgVisibilityNeedsAdmin: p.orgVisibilityNeedsAdmin,
+        tuningWatch: p.tuningWatch,
         webNeedsApproval: p.webNeedsApproval,
         webFetch: p.webFetch,
         ownDomains: p.ownDomains,
