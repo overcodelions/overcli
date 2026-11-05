@@ -26,7 +26,7 @@ import type { Worker } from '../../shared/flows/worker';
 import type { TeamTask } from '../../shared/flows/team';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { MainToRendererEvent } from '../../shared/types';
-import { escapeMrkdwn, fetchMessage, openIm, openView, postMessage, updateMessage, uploadFile, userName, type FetchLike } from './slackApi';
+import { escapeMrkdwn, fetchMessage, isMissingScope, openIm, openView, postMessage, updateMessage, uploadFile, userName, type FetchLike } from './slackApi';
 import { HIRE_EDIT_VIEW, TEAM_EDIT_VIEW, WORKER_EDIT_VIEW, hireEditView, readHireEdit, readWorkerEdit, workerEditView, readTeamEdit, teamEditView, type EditMeta, type TeamDraftForm } from './editForms';
 import { DEFAULT_TEAM_CHECKPOINTS } from '../../shared/flows/team';
 import type { ProcessPerson } from '../../shared/org/process';
@@ -51,12 +51,15 @@ import {
   type SendBackMeta,
 } from './processSlack';
 import { deliverResults, finishedText, slackMarkup, type PostAs } from './deliver';
-import { TEAM_ACCEPT_ACTION, TEAM_CONTINUE_ACTION, TEAM_PIECE_APPROVE_ACTION, TEAM_PIECE_RETRY_ACTION, stageNote, stagesDone, teamCard, type PieceLook } from './teamCard';
+import { aboutTarget, looseName, processCard, teamCard as aboutTeamCard, workerCard, type AboutCard } from './aboutCards';
+import { TEAM_ACCEPT_ACTION, TEAM_CONTINUE_ACTION, TEAM_PIECE_APPROVE_ACTION, TEAM_PIECE_RETRY_ACTION, pieceSummary, stageNote, stagesDone, teamCard, type PieceLook } from './teamCard';
 
 export const HIRE_CONFIRM_ACTION = 'overcli_hire_confirm';
 export const HIRE_CANCEL_ACTION = 'overcli_hire_cancel';
 export const HIRE_APPROVE_ACTION = 'overcli_hire_approve';
 export const HIRE_REJECT_ACTION = 'overcli_hire_reject';
+export const ABOUT_SHARE_ACTION = 'overcli_about_share';
+type AboutKind = 'worker' | 'team' | 'process';
 export const TEAM_APPROVE_ACTION = 'overcli_team_approve';
 export { TEAM_CONTINUE_ACTION };
 export const TEAM_CANCEL_ACTION = 'overcli_team_cancel';
@@ -131,9 +134,23 @@ export interface SlackCommandsDeps {
 }
 
 /// A team task's card in Slack, and what the thread under it was last told.
+/// A reply that is only a word to call it off, not an answer or feedback.
+const STOP_WORDS = /^(never\s?mind|nvm|cancel|stop|forget it|scrap it)(\s+(it|this|that|the task))?[\s.!]*$/i;
+
+/// One reply answers every question: numbered lines go to their questions;
+/// anything else answers them all at once.
+function answersFrom(text: string): string[] {
+  const numbered = text.split(/\n+/).map((l) => /^\s*(\d+)[.)]\s*(.+)$/.exec(l)).filter((m): m is RegExpExecArray => !!m);
+  return numbered.length ? numbered.sort((a, b) => Number(a[1]) - Number(b[1])).map((m) => m[2]) : [text];
+}
+
 export interface TeamCardRef {
   channel: string;
   ts: string;
+  /// The thread the card sits in, when it's a reply in a channel thread. Its
+  /// own notes and files go there too: Slack threads hang off the first
+  /// message. Absent: the card starts its own thread.
+  threadTs?: string;
   /// Stages the thread has heard finish.
   told: number;
   at: number;
@@ -145,6 +162,8 @@ export interface TeamCardRef {
 /// Edits to one card are at least this far apart: a stage can send a burst
 /// of updates, and Slack limits how often one message may change.
 const CARD_EVERY_MS = 4000;
+/// As much of a member's piece as is read for its opening line.
+const PIECE_FILE_BYTES = 200_000;
 
 /// A shift's last update replayed after a restart is older than this, and its
 /// manager was told when it happened.
@@ -200,6 +219,11 @@ export class SlackCommands {
   /// The last state of each team task the requester was told about, so a
   /// stream of progress updates turns into one DM per thing that needs them.
   private toldTeam = new Map<string, string>();
+  /// A team's messages already posted to its thread, and the posts in flight.
+  private toldRoom = new Map<string, Set<string>>();
+  private toldPieces = new Map<string, Set<string>>();
+  private roomLine = new Map<string, Promise<void>>();
+  private readonly startedAt = Date.now();
 
   constructor(private readonly deps: SlackCommandsDeps) {}
 
@@ -257,12 +281,21 @@ export class SlackCommands {
     const who = opts.as ? { username: opts.as.name, ...(opts.as.iconUrl ? { iconUrl: opts.as.iconUrl } : {}) } : {};
     let posted = await postMessage(bot, { ...post, ...who }, this.deps.fetchImpl);
     // An app installed before it could post under another name: as itself.
-    if (!posted.ok && opts.as && posted.error === 'missing_scope') posted = await postMessage(bot, post, this.deps.fetchImpl);
+    if (!posted.ok && opts.as && isMissingScope(posted.error)) posted = await postMessage(bot, post, this.deps.fetchImpl);
     if (!posted.ok) {
       this.deps.log('warn', `Could not send a DM: ${posted.error}`);
       return null;
     }
     return posted.data;
+  }
+
+  /// A team task's message: in the channel thread it was asked in, or to the
+  /// person who asked. A thread that can't be posted to (the bot was removed,
+  /// say) falls back to the DM, so the task isn't left waiting on nobody.
+  private async teamPost(task: TeamTask, to: string, text: string, opts: { blocks?: unknown[]; threadTs?: string; broadcast?: boolean; as?: PostAs }): Promise<{ channel: string; ts: string } | null> {
+    if (!task.slackThread) return this.dm(to, text, opts);
+    const { threadTs: _card, broadcast: _broadcast, ...rest } = opts;
+    return (await this.dm(to, text, { ...rest, inThread: task.slackThread })) ?? this.dm(to, text, rest);
   }
 
   /// A worker or team, as Slack messages are posted under: its name, and its
@@ -301,6 +334,10 @@ export class SlackCommands {
     if (!procs) return this.respond(responseUrl, 'Processes are not running on this server.');
     const me: ProcessPerson = { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) };
     const listed = procs.list(caller);
+    // Only when it names a process: "/idea a page this is all about" is an idea.
+    const aboutProc = aboutTarget(text);
+    const namedProc = aboutProc ? this.findProcess(caller, aboutProc) : null;
+    if (namedProc) return this.respondAbout(caller, 'process', namedProc.id, responseUrl);
     const parsed = parseIdea(text, listed);
     if (!parsed) {
       const mine = procs.mine(me);
@@ -319,6 +356,91 @@ export class SlackCommands {
     const short = res.process.shortName;
     const tip = short && !usedShortName(text, short) ? ` Next time, \`/idea ${short} …\` goes straight there.` : '';
     return this.respond(responseUrl, `In: _${escapeMrkdwn(res.item.title)}_ starts at *${escapeMrkdwn(res.process.stages[0].name)}* in ${escapeMrkdwn(res.process.name)}. I’ll tell you as it moves. \`/idea\` shows where it is.${tip}`);
+  }
+
+  // ---- ABOUT --------------------------------------------------------------
+
+  private findProcess(caller: OrgCaller, nameOrId: string) {
+    const listed = this.deps.processes?.()?.list(caller) ?? [];
+    const want = nameOrId.trim().toLowerCase();
+    return listed.find((p) => p.id === nameOrId || p.name.toLowerCase() === want || p.shortName === want) ?? listed.find((p) => looseName(p.name) === looseName(nameOrId)) ?? null;
+  }
+
+  /// A card, as this person may see it. Null when it's no one they can see.
+  private aboutCard(caller: OrgCaller, kind: AboutKind, id: string): AboutCard | null {
+    const { org } = this.deps;
+    if (kind === 'worker') {
+      const got = org.getWorker(caller, id);
+      if (!got.ok) return null;
+      const w = got.worker;
+      const picture = org.pictureOf?.(w.id);
+      return workerCard({
+        name: w.name,
+        ...(w.tagline ? { tagline: w.tagline } : {}),
+        job: got.jobDescription,
+        ...(w.manager ? { manager: w.manager } : {}),
+        tools: w.tools.filter((t) => t.ok).map((t) => t.name),
+        paused: !w.enabled,
+        ...(picture ? { picture } : {}),
+        recent: got.recent.map((e) => e.title || e.kind),
+      });
+    }
+    if (kind === 'team') {
+      const t = org.teamAbout(caller, id);
+      return t ? aboutTeamCard(t) : null;
+    }
+    const p = this.findProcess(caller, id);
+    if (!p) return null;
+    // A process hides who does each stage from people outside it, so these
+    // are only filled in where the listing kept them.
+    const teams = new Map(org.teams(caller).map((t) => [t.id, t.name]));
+    const workers = new Map(org.listWorkers(caller).map((w) => [w.id, w.name]));
+    return processCard({
+      name: p.name,
+      ...(p.shortName ? { shortName: p.shortName } : {}),
+      ...(p.purpose ? { purpose: p.purpose } : {}),
+      owner: p.owner.name,
+      active: p.active,
+      canStart: p.canStart,
+      stages: p.stages.map((s, i) => {
+        const deciders = (s.approvers ?? []).map((a) => a.name).concat((s.approverGroups ?? []).map((g) => g.name));
+        const who = s.kind === 'team' ? (s.teamId ? teams.get(s.teamId) : undefined) : s.kind === 'worker' ? (s.workerId ? workers.get(s.workerId) : undefined) : deciders.join(', ') || undefined;
+        return { name: s.name, kind: s.kind, ...(s.mode === 'input' ? { input: true } : {}), ...(who ? { who } : {}), ...(s.owner?.name ? { lead: s.owner.name } : {}), here: p.byStage[i] ?? 0 };
+      }),
+    });
+  }
+
+  /// "What is Launch Team?" asked of the front door: its card, when the name is
+  /// a process, a team or a worker this person can see. Null otherwise, and
+  /// the question is routed like any other.
+  aboutFor(caller: OrgCaller, name: string): AboutCard | null {
+    const proc = this.findProcess(caller, name);
+    if (proc) return this.aboutCard(caller, 'process', proc.id);
+    const team = this.deps.org.teamAbout(caller, name);
+    if (team) return aboutTeamCard(team);
+    const worker = this.deps.org.resolve(caller, name);
+    return worker ? this.aboutCard(caller, 'worker', worker.id) : null;
+  }
+
+  /// A card only the person asking sees, with a way to show it to the channel.
+  private async respondAbout(caller: OrgCaller, kind: AboutKind, id: string, responseUrl?: string): Promise<void> {
+    const card = this.aboutCard(caller, kind, id);
+    if (!card) return this.respond(responseUrl, 'I can’t find that one.');
+    return this.respond(responseUrl, card.text, [...card.blocks, { type: 'actions', elements: [button('Share in channel', ABOUT_SHARE_ACTION, `${kind}:${id}`)] }]);
+  }
+
+  /// The card, into the channel the person pressed the button in, drawn again
+  /// as they see it now.
+  private async shareAbout(caller: OrgCaller, value: string, channel: string | undefined, responseUrl?: string): Promise<void> {
+    const at = value.indexOf(':');
+    const kind = value.slice(0, at);
+    const bot = this.deps.botToken();
+    if ((kind !== 'worker' && kind !== 'team' && kind !== 'process') || !bot || !channel) return;
+    const card = this.aboutCard(caller, kind, value.slice(at + 1));
+    if (!card) return this.respond(responseUrl, 'I can’t find that one any more.');
+    const posted = await postMessage(bot, { channel, text: card.text, blocks: [...card.blocks, context(`Shared by ${escapeMrkdwn(caller.name)}`)] }, this.deps.fetchImpl);
+    if (!posted.ok) return this.respond(responseUrl, /not_in_channel|channel_not_found/.test(posted.error) ? 'I’m not in this channel. Invite me with `/invite @overgo`, then share it again.' : `I couldn’t share it: ${posted.error}`);
+    return this.respond(responseUrl, 'Shared.');
   }
 
   /// A process telling someone something, with the decision buttons when a
@@ -419,6 +541,10 @@ export class SlackCommands {
     }
     const made = /^new\b[:\s]*(.*)$/is.exec(text);
     if (made) return this.newTeam(caller, made[1].trim(), responseUrl);
+    // Only when it names a team: "/team lt what is this about" is a task.
+    const aboutTeam = aboutTarget(text);
+    const namedTeam = aboutTeam ? org.teamAbout(caller, aboutTeam) : null;
+    if (namedTeam) return this.respondAbout(caller, 'team', namedTeam.id, responseUrl);
     // `/team pd what you want back`: a short name needs no colon.
     const first = /^(\S+)\s+([\s\S]+)$/.exec(text);
     const short = first ? org.teams(caller).find((t) => t.shortName === first[1].toLowerCase()) : undefined;
@@ -544,6 +670,7 @@ export class SlackCommands {
       const res = org.trackItem(caller, worker.id, rest.trim().split(/\s+/)[0], verb === 'track');
       return this.respond(responseUrl, res.ok ? `${verb === 'track' ? 'Tracking' : 'Stopped tracking'} ${rest.trim().split(/\s+/)[0]}. ${res.worker} tracks ${res.tracked} on “${res.trigger}”.` : res.error);
     }
+    if (verb === 'about' && !rest.trim()) return this.respondAbout(caller, 'worker', worker.id, responseUrl);
     // "/worker Vantage what do you know about …" is an ask without the word.
     if (verb && verb !== 'pause' && verb !== 'resume' && verb !== 'ask' && verb !== 'changes' && !(verb === 'edit' && !rest.trim())) {
       verb = 'ask';
@@ -571,7 +698,7 @@ export class SlackCommands {
       const dm = await this.dm(caller.slackUserId!, `Changes in "${found.title}": ${changesSummary(ch)}`);
       const bot = this.deps.botToken();
       if (dm && bot) {
-        const up = await uploadFile(bot, { channel: dm.channel, threadTs: dm.ts, filename: `${worker.name.replace(/[^\w.-]+/g, '-')}-changes.diff`, bytes: Buffer.from(changesAsDiff(ch)) }, this.deps.fetchImpl);
+        const up = await uploadFile(bot, { channel: dm.channel, threadTs: dm.ts, filename: `${worker.name.replace(/[^\w.-]+/g, '-')}-changes.diff`, bytes: Buffer.from(changesAsDiff(ch)), as: this.asOf(worker.id, worker.name) }, this.deps.fetchImpl);
         if (!up.ok) this.deps.log('warn', `Could not attach the diff: ${up.error}`);
       }
       return;
@@ -929,6 +1056,148 @@ export class SlackCommands {
     return this.onThreadReply({ ...event, thread_ts: threadTs }, teamId);
   }
 
+  /// What a team's coordinator says in a thread, under the team's name and
+  /// picture. `task`: the team, when it's known.
+  private async teamReply(channel: string, threadTs: string, text: string, task: { teamId: string; teamName: string } | undefined): Promise<void> {
+    if (!task) {
+      await this.reply(channel, threadTs, text);
+      return;
+    }
+    await this.dm('', text, { as: this.asOf(task.teamId, task.teamName), inThread: { channel, threadTs } });
+  }
+
+  /// "Nevermind" in a task's thread stops it, for whoever may. Anyone else
+  /// is told who can.
+  private async stopFromThread(event: { channel?: string; thread_ts?: string; user?: string }, taskId: string, task: { teamId: string; teamName: string } | undefined): Promise<boolean> {
+    const res = this.deps.org.decideTeamTask(this.caller(event.user!), taskId, { kind: 'cancel' });
+    await this.teamReply(event.channel!, event.thread_ts!, res.ok ? 'Stopped. Work already written stays in its folder.' : res.error, task);
+    return res.ok;
+  }
+
+  /// A team task as Slack knows it, for its name and picture.
+  private teamOfTask(caller: OrgCaller, taskId: string): { teamId: string; teamName: string } | undefined {
+    return typeof this.deps.org.teamTasks === 'function' ? this.deps.org.teamTasks(caller).find((t) => t.id === taskId) : undefined;
+  }
+
+  /// A reply in the channel thread of a team's task: feedback while it works,
+  /// and once it's delivered, a message to its room, whose answers come back
+  /// here. A reply naming someone else first is people talking, and is left
+  /// alone. False when there's no task here or it can't take it, so the
+  /// bridge routes it as usual.
+  async talkInThread(event: { channel?: string; thread_ts?: string; user?: string; text?: string }, teamId: unknown): Promise<boolean> {
+    if (!event.channel || !event.thread_ts || !event.user || !this.fromOurTeam(teamId)) return false;
+    const thread = { channel: event.channel, threadTs: event.thread_ts };
+    const task = this.deps.org.teamTaskInThread(thread);
+    if (!task) return false;
+    const text = (event.text ?? '').trim();
+    if (!text || text.startsWith('<@')) return true;
+    if (STOP_WORDS.test(text) && task.status !== 'done' && task.status !== 'failed' && task.status !== 'cancelled' && task.status !== 'review') {
+      await this.stopFromThread(event, task.id, task);
+      return true;
+    }
+    const res = this.deps.org.talkInTeamThread(this.caller(event.user), thread, text);
+    if (!res.ok) {
+      await this.teamReply(event.channel, event.thread_ts, res.error, task);
+      return true;
+    }
+    if (res.heard && res.queued) await this.teamReply(event.channel, event.thread_ts, 'They’re finishing a reply. Yours is next.', task);
+    if (res.heard && res.noted) await this.teamReply(event.channel, event.thread_ts, res.replanned ? 'Thanks, the coordinator is changing the plan with that.' : 'Thanks, the team will take that into account in the work it starts next.', task);
+    return res.heard;
+  }
+
+  /// A team's conversation, into the channel thread its task was asked in:
+  /// each message under its speaker's own name and picture, in order. Only
+  /// what's said since this app started, so a restart doesn't post it again,
+  /// and not what people said, which Slack already shows.
+  private roomToThread(task: TeamTask, to: string): void {
+    const thread = task.slackThread;
+    if (!thread || !task.room?.messages.length) return;
+    const told = this.toldRoom.get(task.id) ?? new Set<string>();
+    this.toldRoom.set(task.id, told);
+    const fresh = task.room.messages.filter((m) => !told.has(m.id) && m.speaker.kind !== 'you' && !m.failed && !!m.text.trim() && m.at >= this.startedAt);
+    if (!fresh.length) return;
+    for (const m of fresh) told.add(m.id);
+    this.inLine(task, async () => {
+      for (const m of fresh) {
+        const as = m.speaker.kind === 'member' ? this.asOf(m.speaker.workerId, m.speaker.name) : this.asOf(task.teamId, task.teamName);
+        const said = slackMarkup(clip(m.text, 2800));
+        await this.dm(to, said, { as, inThread: thread, blocks: [section(said)] });
+      }
+    });
+  }
+
+  /// Each member's piece as it ends, into the channel thread: a line or two
+  /// under its own name and picture, so the thread shows who did what while
+  /// the work runs. Once per run of a piece, so a retry speaks again. Pieces
+  /// already over when this app first sees a task (after a restart) were told.
+  private piecesToThread(task: TeamTask, to: string): void {
+    const thread = task.slackThread;
+    if (!thread) return;
+    const settled = task.stages.flatMap((stage, index) =>
+      stage.assignments.filter((a) => a.status === 'done' || a.status === 'failed').map((a) => ({ stage, index, a, key: `${index}:${a.workerId}:${a.runId ?? ''}:${a.status}` })),
+    );
+    const told = this.toldPieces.get(task.id);
+    if (!told) {
+      this.toldPieces.set(task.id, new Set(settled.map((p) => p.key)));
+      return;
+    }
+    const fresh = settled.filter((p) => !told.has(p.key));
+    if (!fresh.length) return;
+    for (const p of fresh) told.add(p.key);
+    this.inLine(task, async () => {
+      for (const { stage, index, a } of fresh) {
+        const said = a.status === 'failed' ? `:x: I couldn't finish this${a.error ? `: ${clip(a.error, 300)}` : '.'}` : (pieceSummary(a.runId ? this.deps.pieceLook?.(a.runId)?.said : undefined, this.pieceFileText(task.id, a.file)) ?? 'My part is done.');
+        const line = slackMarkup(said);
+        await this.dm(to, line, { as: this.asOf(a.workerId, a.workerName), inThread: thread, blocks: [section(line), context(`Stage ${index + 1} · ${escapeMrkdwn(clip(stage.title, 120))}`)] });
+      }
+    });
+  }
+
+  /// The text of a member's piece, when it's a kind that has any.
+  private pieceFileText(taskId: string, name: string | undefined): string | undefined {
+    if (!name || !/\.(md|markdown|txt)$/i.test(name)) return undefined;
+    return this.deps.teamFile?.(taskId, name, PIECE_FILE_BYTES)?.toString('utf8');
+  }
+
+  /// Posts for one task's thread, one after another, so they read in order.
+  private inLine(task: TeamTask, post: () => Promise<void>): void {
+    const line = (this.roomLine.get(task.id) ?? Promise.resolve()).then(post);
+    this.roomLine.set(task.id, line.catch((err: unknown) => this.deps.log('warn', `Could not post to ${task.teamName}'s thread: ${String(err)}`)));
+  }
+
+  /// A reply in a channel thread where a team asked its questions: anyone
+  /// there can answer. Replying to another person (it starts with their name)
+  /// is talking it over, and is left alone. False when no questions wait here,
+  /// so the bridge routes it as usual.
+  async answerInThread(event: { channel?: string; thread_ts?: string; user?: string; text?: string }, teamId: unknown): Promise<boolean> {
+    if (!event.channel || !event.thread_ts || !event.user || !this.fromOurTeam(teamId)) return false;
+    const key = `${event.channel}:${event.thread_ts}`;
+    const taskId = this.teamThreads.get(key);
+    if (!taskId) return false;
+    const text = (event.text ?? '').trim();
+    if (!text || text.startsWith('<@')) return true;
+    const team = typeof this.deps.org.teamTaskInThread === 'function' ? this.deps.org.teamTaskInThread({ channel: event.channel, threadTs: event.thread_ts }) : undefined;
+    if (STOP_WORDS.test(text)) {
+      if (await this.stopFromThread(event, taskId, team)) {
+        this.teamThreads.delete(key);
+        this.keepTeamThreads();
+      }
+      return true;
+    }
+    const res = this.deps.org.answerTeamFromThread(this.caller(event.user), taskId, { channel: event.channel, threadTs: event.thread_ts }, answersFrom(text));
+    if (res.ok && !res.answered) {
+      this.teamThreads.delete(key);
+      this.keepTeamThreads();
+      return false;
+    }
+    await this.teamReply(event.channel, event.thread_ts, res.ok ? 'Thanks, the coordinator is planning with that.' : res.error, team);
+    if (res.ok) {
+      this.teamThreads.delete(key);
+      this.keepTeamThreads();
+    }
+    return true;
+  }
+
   /// A reply in a hire interview thread. Returns false when the thread is not
   /// one of ours, so the bridge can ignore it.
   async onThreadReply(event: { channel?: string; thread_ts?: string; user?: string; text?: string }, teamId: unknown): Promise<boolean> {
@@ -937,12 +1206,16 @@ export class SlackCommands {
     if (taskId && event.user && this.fromOurTeam(teamId)) {
       const text = (event.text ?? '').trim();
       if (!text) return true;
-      // One reply answers every question: numbered lines go to their
-      // questions; anything else answers them all at once.
-      const numbered = text.split(/\n+/).map((l) => /^\s*(\d+)[.)]\s*(.+)$/.exec(l)).filter((m): m is RegExpExecArray => !!m);
-      const answers = numbered.length ? numbered.sort((a, b) => Number(a[1]) - Number(b[1])).map((m) => m[2]) : [text];
-      const res = this.deps.org.decideTeamTask(this.caller(event.user), taskId, { kind: 'answer', answers });
-      await this.reply(event.channel!, event.thread_ts!, res.ok ? 'Thanks — the coordinator is planning with that.' : res.error);
+      const team = this.teamOfTask(this.caller(event.user), taskId);
+      if (STOP_WORDS.test(text)) {
+        if (await this.stopFromThread(event, taskId, team)) {
+          this.teamThreads.delete(key);
+          this.keepTeamThreads();
+        }
+        return true;
+      }
+      const res = this.deps.org.decideTeamTask(this.caller(event.user), taskId, { kind: 'answer', answers: answersFrom(text) });
+      await this.teamReply(event.channel!, event.thread_ts!, res.ok ? 'Thanks — the coordinator is planning with that.' : res.error, team);
       if (res.ok) {
         this.teamThreads.delete(key);
         this.keepTeamThreads();
@@ -987,6 +1260,7 @@ export class SlackCommands {
       actionId === HIRE_CANCEL_ACTION ||
       actionId === HIRE_APPROVE_ACTION ||
       actionId === HIRE_REJECT_ACTION ||
+      actionId === ABOUT_SHARE_ACTION ||
       actionId === TEAM_APPROVE_ACTION ||
       actionId === TEAM_CONTINUE_ACTION ||
       actionId === TEAM_CANCEL_ACTION ||
@@ -1023,6 +1297,7 @@ export class SlackCommands {
       trigger_id?: string;
       channel?: { id?: string };
       message?: { ts?: string; thread_ts?: string };
+      response_url?: string;
     };
     const action = p.actions?.[0];
     if (!p.user?.id || !action?.value || !this.fromOurTeam(p.team?.id)) return;
@@ -1038,6 +1313,8 @@ export class SlackCommands {
     switch (action.action_id) {
       case OPEN_LINK_ACTION:
         return;
+      case ABOUT_SHARE_ACTION:
+        return this.shareAbout(caller, action.value, channel, p.response_url);
       case PROC_APPROVE_ACTION:
       case PROC_STOP_ACTION: {
         const procs = this.deps.processes?.();
@@ -1298,7 +1575,8 @@ export class SlackCommands {
           if (channel && threadTs) await this.reply(channel, threadTs, res.error);
           return;
         }
-        await settle(kind === 'approve' ? 'Plan approved — the team is on it.' : kind === 'continue' ? 'Carrying on.' : 'Task cancelled.');
+        const next = (res as { queued?: boolean }).queued;
+        await settle(kind === 'approve' ? (next ? 'Plan approved. It goes next, when the team finishes the task it’s on.' : 'Plan approved — the team is on it.') : kind === 'continue' ? (next ? 'OK. It carries on when the team finishes the task it’s on.' : 'Carrying on.') : 'Task cancelled.');
         return;
       }
       case HIRE_APPROVE_ACTION:
@@ -1354,6 +1632,7 @@ export class SlackCommands {
     if (!to || !bot) return;
     this.toldFinished.add(o.id);
     const name = o.origin.workerName;
+    const sharedAs = this.asOf(o.origin.workerId, name);
     const head = await this.dm(to, finishedText(name, p, this.deps.libraryUrl?.() ?? null).replace(/\*/g, ''), {
       blocks: [section(clip(finishedText(escapeMrkdwn(name), { ...p, items: p.items.map((i) => ({ ...i, title: escapeMrkdwn(i.title) })) }, this.deps.libraryUrl?.() ?? null), 2900)), context('From its scheduled run.')],
       as: this.asOf(o.origin.workerId, name),
@@ -1364,7 +1643,7 @@ export class SlackCommands {
       {
         post: (channel, text, threadTs) => postMessage(bot, { channel, text, threadTs }, this.deps.fetchImpl),
         upload: async (channel, threadTs, filename, bytes) => {
-          const res = await uploadFile(bot, { channel, threadTs, filename, bytes }, this.deps.fetchImpl);
+          const res = await uploadFile(bot, { channel, threadTs, filename, bytes, as: sharedAs }, this.deps.fetchImpl);
           if (!res.ok) this.deps.log('warn', `Could not attach ${filename} to ${name}'s shift DM: ${res.error}`);
           return res.ok;
         },
@@ -1431,6 +1710,8 @@ export class SlackCommands {
     const to = task.requestedBy?.slackUserId ?? this.deps.policy().admins[0];
     if (!to || !this.deps.botToken()) return;
     void this.teamCardFor(task, to);
+    this.piecesToThread(task, to);
+    this.roomToThread(task, to);
     const state =
       task.status === 'waiting' ? `waiting:${task.waiting?.reason}:${task.stageIndex}` : `${task.status}:${task.stageIndex}`;
     const previous = this.toldTeam.get(task.id);
@@ -1451,28 +1732,32 @@ export class SlackCommands {
         : '';
     const title = escapeMrkdwn(task.title ?? clip(task.brief, 80));
     const team = escapeMrkdwn(task.teamName);
+    // In a channel, nothing tells them it's their turn but their name.
+    const you = task.slackThread ? `<@${to}> ` : '';
     let posted: { channel: string; ts: string } | null = null;
     if (task.status === 'questions' && task.questions?.length) {
-      posted = await this.dm(to, `${task.teamName} has questions about "${task.title ?? task.brief}"`, {
+      posted = await this.teamPost(task, to, `${task.teamName} has questions about "${task.title ?? task.brief}"`, {
         as: this.asOf(task.teamId, task.teamName),
         blocks: [
           section(`*${team}* has a few questions before it plans _${title}_`),
           section(task.questions.map((q, i) => `${i + 1}. ${escapeMrkdwn(q)}`).join('\n')),
-          context('Reply in this thread. Number your answers to match, or write one answer for all of them.'),
+          context(`${task.slackThread ? 'Anyone here can answer: reply' : 'Reply'} in this thread. Number your answers to match, or write one answer for all of them.`),
         ],
       });
       if (posted) {
-        this.teamThreads.set(`${posted.channel}:${posted.ts}`, task.id);
+        // In a channel thread, replies carry the thread's first message.
+        const root = posted.channel === task.slackThread?.channel ? task.slackThread.threadTs : posted.ts;
+        this.teamThreads.set(`${posted.channel}:${root}`, task.id);
         this.keepTeamThreads();
       }
     } else if (task.status === 'proposed') {
       const stages = task.stages.map((s, i) => `${i + 1}. ${escapeMrkdwn(s.title)}`).join('\n');
-      posted = await this.dm(to, `${task.teamName}'s plan for "${task.title ?? task.brief}" is ready`, {
+      posted = await this.teamPost(task, to, `${task.teamName}'s plan for "${task.title ?? task.brief}" is ready`, {
         as: this.asOf(task.teamId, task.teamName),
         blocks: [
-          section(`*${team}* has a plan for _${title}_${task.planNote ? `\n${quote(clip(task.planNote, 1200))}` : ''}`),
+          section(`${you}*${team}* has a plan for _${title}_${task.planNote ? `\n${quote(clip(task.planNote, 1200))}` : ''}`),
           ...(stages ? [section(stages)] : []),
-          context(`Budget: up to $${task.budgetUSD} for this task.`),
+          context(`Budget: up to $${task.budgetUSD} for this task.${task.slackThread ? ' Only the person who asked, or an admin, can approve it.' : ''}`),
           {
             type: 'actions',
             elements: [button('Approve the plan', TEAM_APPROVE_ACTION, task.id, 'primary'), button('Cancel', TEAM_CANCEL_ACTION, task.id)],
@@ -1480,11 +1765,11 @@ export class SlackCommands {
         ],
       });
     } else if (task.status === 'waiting' && task.waiting && task.waiting.reason !== 'away') {
-      posted = await this.dm(to, `${task.teamName} is waiting on you`, {
+      posted = await this.teamPost(task, to, `${task.teamName} is waiting on you`, {
         as: this.asOf(task.teamId, task.teamName),
         ...(this.cardOf(task.id) ? { threadTs: this.cardOf(task.id)!.ts } : {}),
         blocks: [
-          section(`*${team}* stopped on _${title}_\n${escapeMrkdwn(clip(task.waiting.message, 1200))}`),
+          section(`${you}*${team}* stopped on _${title}_\n${escapeMrkdwn(clip(task.waiting.message, 1200))}`),
           {
             type: 'actions',
             elements: [button('Carry on', TEAM_CONTINUE_ACTION, task.id, 'primary'), button('Cancel the task', TEAM_CANCEL_ACTION, task.id, 'danger')],
@@ -1495,17 +1780,17 @@ export class SlackCommands {
       // An edited card notifies nobody: the moment it needs you is a message
       // of its own, in the card's thread and shown in the conversation too.
       const card = this.cardOf(task.id);
-      posted = await this.dm(to, `${task.teamName}'s pack for "${task.title ?? task.brief}" is ready for your review`, {
+      posted = await this.teamPost(task, to, `${task.teamName}'s pack for "${task.title ?? task.brief}" is ready for your review`, {
         as: this.asOf(task.teamId, task.teamName),
         ...(card ? { threadTs: card.ts, broadcast: true } : {}),
         blocks: [
-          section(`*${team}* finished _${title}_ and is holding it for your review.\n${slackMarkup(clip(summary, 1500))}`),
+          section(`${you}*${team}* finished _${title}_ and is holding it for your review.\n${slackMarkup(clip(summary, 1500))}`),
           { type: 'actions', elements: [button('Accept', TEAM_ACCEPT_ACTION, task.id, 'primary')] },
           context(`The report is attached in this thread${task.pack.files.length ? ` (${escapeMrkdwn(task.pack.files.map((f) => f.split('/').pop()).join(', '))})` : ''}. To ask for changes, open the task in the console.`),
         ],
       });
     } else if (task.status === 'done' && task.pack) {
-      posted = await this.dm(to, `${task.teamName} finished "${task.title ?? task.brief}"`, {
+      posted = await this.teamPost(task, to, `${task.teamName} finished "${task.title ?? task.brief}"`, {
         as: this.asOf(task.teamId, task.teamName),
         ...(this.cardOf(task.id) ? { threadTs: this.cardOf(task.id)!.ts } : {}),
         blocks: [
@@ -1573,12 +1858,18 @@ export class SlackCommands {
     try {
       const bot = this.deps.botToken();
       if (!bot) return;
-      const drawn = teamCard(task, { now, consoleUrl: this.deps.libraryUrl?.() ?? null, ...(this.deps.pieceLook ? { look: (id: string) => this.deps.pieceLook!(id) } : {}) });
+      // In a channel, a run's raw last step (a command, a ticket) isn't for
+      // everyone there: the members say what they did as each piece ends.
+      const look = (id: string): PieceLook | null => {
+        const seen = this.deps.pieceLook!(id);
+        return seen && task.slackThread ? (seen.reaches ? { reaches: seen.reaches } : {}) : seen;
+      };
+      const drawn = teamCard(task, { now, consoleUrl: this.deps.libraryUrl?.() ?? null, ...(this.deps.pieceLook ? { look } : {}) });
       const ended = task.status === 'done' || task.status === 'failed' || task.status === 'cancelled';
       if (!card) {
-        const posted = await this.dm(to, drawn.text, { blocks: drawn.blocks, as: this.asOf(task.teamId, task.teamName) });
+        const posted = await this.teamPost(task, to, drawn.text, { blocks: drawn.blocks, as: this.asOf(task.teamId, task.teamName) });
         if (!posted) return;
-        this.cards![task.id] = { channel: posted.channel, ts: posted.ts, told: stagesDone(task), at: now, ...(ended ? { done: true } : {}) };
+        this.cards![task.id] = { channel: posted.channel, ts: posted.ts, ...(posted.channel === task.slackThread?.channel ? { threadTs: task.slackThread.threadTs } : {}), told: stagesDone(task), at: now, ...(ended ? { done: true } : {}) };
         this.saveCards();
         if ((task.status === 'done' || task.status === 'review') && task.pack) await this.attachPack(bot, this.cards![task.id], task);
         return;
@@ -1587,7 +1878,7 @@ export class SlackCommands {
       // Each stage that has ended since, said in the thread.
       const finished = task.stages.map((s, i) => ({ s, i })).filter(({ s }) => s.status === 'done' || s.status === 'skipped' || s.status === 'failed');
       for (const { i } of finished.slice(card.told)) {
-        await postMessage(bot, { channel: card.channel, threadTs: card.ts, text: stageNote(task, i) }, this.deps.fetchImpl);
+        await this.dm(to, stageNote(task, i), { as: this.asOf(task.teamId, task.teamName), inThread: { channel: card.channel, threadTs: card.threadTs ?? card.ts } });
       }
       Object.assign(card, { told: Math.max(card.told, finished.length), at: now, ...(ended ? { done: true } : {}) });
       this.saveCards();
@@ -1612,7 +1903,7 @@ export class SlackCommands {
       if (sent >= 5 || !/\.(md|markdown|txt|csv|json|html?|pdf|png|jpe?g|docx|pptx|xlsx)$/i.test(name)) continue;
       const bytes = this.deps.teamFile?.(task.id, name, 10_000_000);
       if (!bytes) continue;
-      const res = await uploadFile(bot, { channel: card.channel, threadTs: card.ts, filename: name.split('/').pop() ?? name, bytes }, this.deps.fetchImpl);
+      const res = await uploadFile(bot, { channel: card.channel, threadTs: card.threadTs ?? card.ts, filename: name.split('/').pop() ?? name, bytes, as: this.asOf(task.teamId, task.teamName) }, this.deps.fetchImpl);
       if (res.ok) sent++;
       else this.deps.log('warn', `Could not attach ${name} to ${task.teamName}'s card: ${res.error}`);
     }
@@ -1866,6 +2157,7 @@ const HELP = [
   '`/worker` — the workers you can see',
   '`/worker waiting` — questions, approvals and proposed work waiting on you',
   '`/worker <name>` — one worker',
+  '`/worker <name> about`, `/team <name> about`, `/idea <name> about` — a card on what it is and how to use it, to share in a channel',
   '`/worker <name> <text>` — ask it to do something',
   '`/worker <name> pause` / `resume`',
   '`/worker <name> learn` — have it go through its tools and learn what its job needs',

@@ -38,6 +38,7 @@ import {
   buildCoordinatorStageMessage,
   buildMemberStagePrompt,
   buildTeamPlanMessage,
+  pastWorkOf,
   isMemberStage,
   handoffSteps,
   orderHandoffByPlan,
@@ -532,6 +533,7 @@ export class TeamEngine {
     projectPath?: string | null,
     opts: {
       requestedBy?: TeamTask['requestedBy'];
+      slackThread?: TeamTask['slackThread'];
       forcePlan?: boolean;
       startFrom?: string;
       /// An earlier task this one picks up from: its files come along.
@@ -567,6 +569,7 @@ export class TeamEngine {
       teamName: team.name,
       brief,
       ...(opts.requestedBy ? { requestedBy: opts.requestedBy } : {}),
+      ...(opts.slackThread ? { slackThread: opts.slackThread } : {}),
       ...(opts.forcePlan ? { forcePlan: true } : {}),
       ...(workIn ? { projectPath: workIn } : {}),
       ...(opts.startFrom ? { startFrom: opts.startFrom } : {}),
@@ -658,6 +661,7 @@ export class TeamEngine {
     const ask = text.trim() || `Carry on from Pack v${from.pack.version ?? 1}.`;
     const res = this.brief(from.teamId, ask, [], from.projectPath ?? null, {
       ...(from.requestedBy ? { requestedBy: from.requestedBy } : {}),
+      ...(from.slackThread ? { slackThread: from.slackThread } : {}),
       ...(from.code?.branch ? { startFrom: from.code.branch } : {}),
       forcePlan: true,
       continueFrom: { task: from, conversation: !!opts.conversation },
@@ -698,7 +702,7 @@ export class TeamEngine {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'That task no longer exists.' };
     if (!task.answered) return { ok: false, error: 'Only an answered question can be planned again.' };
-    return this.brief(task.teamId, task.brief, [], task.projectPath ?? null, { ...(task.requestedBy ? { requestedBy: task.requestedBy } : {}), forcePlan: true });
+    return this.brief(task.teamId, task.brief, [], task.projectPath ?? null, { ...(task.requestedBy ? { requestedBy: task.requestedBy } : {}), ...(task.slackThread ? { slackThread: task.slackThread } : {}), forcePlan: true });
   }
 
   private saveKnowledge(team: Team, knowledge: Team['knowledge']): void {
@@ -734,7 +738,8 @@ export class TeamEngine {
   private startNextTask(teamId: UUID): void {
     const tasks = [...this.tasks.values()].filter((t) => t.teamId === teamId);
     if (tasks.some((t) => blocksNewTask(t))) return;
-    const next = tasks.filter((t) => t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt)[0];
+    // Someone already cleared these, so they go first.
+    const next = tasks.filter((t) => t.status === 'queued').sort((a, b) => Number(!!b.resumes) - Number(!!a.resumes) || a.createdAt - b.createdAt)[0];
     if (!next) return;
     const team = this.teams.get(teamId);
     const workers = this.deps.workers();
@@ -743,6 +748,18 @@ export class TeamEngine {
     if (invalid || paused.length > 0) {
       // Not started, and said why: it stays first in line until it can start.
       log('info', 'teams', `Queued task ${next.id} can't start yet: ${invalid ?? `${paused.map((w) => w.name).join(', ')} paused`}`);
+      return;
+    }
+    if (next.resumes) {
+      const how = next.resumes;
+      next.resumes = undefined;
+      if (how === 'approved') {
+        this.startApproved(next);
+        return;
+      }
+      next.status = 'running';
+      this.persist(next);
+      this.advance(next.id);
       return;
     }
     if (next.kind === 'learn') {
@@ -816,6 +833,7 @@ export class TeamEngine {
           project: task.projectPath ? this.projectName(task.projectPath) : undefined,
           repair,
           ...(knowledge ? { knowledge } : {}),
+          pastWork: pastWorkOf([...this.tasks.values()].filter((t) => t.teamId === task.teamId), task.id),
           allowAnswer,
           ...(task.continuesFrom ? { continuesFrom: task.continuesFrom } : {}),
         });
@@ -909,19 +927,37 @@ export class TeamEngine {
   // Tasks: run
   // -------------------------------------------------------------------------
 
-  approve(taskId: UUID): Result {
+  /// `queued`: the team is on another task now, so this one goes next.
+  approve(taskId: UUID): Result<{ queued?: boolean }> {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'That task no longer exists.' };
     if (task.status !== 'proposed') return { ok: false, error: 'There is no plan waiting for approval.' };
+    if (this.teamAtWork(task)) {
+      task.resumes = 'approved';
+      task.status = 'queued';
+      this.persist(task);
+      return { ok: true, queued: true };
+    }
+    this.startApproved(task);
+    return { ok: true };
+  }
+
+  /// Whether another of the team's tasks is doing work now. One thinking
+  /// about a plan doesn't count: that's a short turn, and nothing it does
+  /// gets in this one's way.
+  private teamAtWork(task: TeamTask): boolean {
+    return [...this.tasks.values()].some((t) => t.id !== task.id && t.teamId === task.teamId && t.status !== 'planning' && blocksNewTask(t));
+  }
+
+  private startApproved(task: TeamTask): void {
     task.status = 'running';
     task.stageIndex = 0;
     this.openCode(task);
     this.persist(task);
     // Approving a plan that hires approves the hires: they join the crew,
     // then the first stage runs.
-    if (unhired(task).length > 0) void this.hireForPlan(taskId);
-    else this.advance(taskId);
-    return { ok: true };
+    if (unhired(task).length > 0) void this.hireForPlan(task.id);
+    else this.advance(task.id);
   }
 
   /// Hire the members the approved plan needs, then start it. A hire that
@@ -1012,7 +1048,7 @@ export class TeamEngine {
 
   /// Carry on from a `waiting` task: past a checkpoint, past the budget with
   /// more money, or past a stage that failed (keeping what did finish).
-  continueTask(taskId: UUID, opts: { extraBudgetUSD?: number } = {}): Result {
+  continueTask(taskId: UUID, opts: { extraBudgetUSD?: number } = {}): Result<{ queued?: boolean }> {
     const task = this.tasks.get(taskId);
     if (!task) return { ok: false, error: 'That task no longer exists.' };
     if (task.status !== 'waiting' || !task.waiting) return { ok: false, error: 'This task is not waiting on you.' };
@@ -1056,6 +1092,13 @@ export class TeamEngine {
         break;
     }
     task.waiting = undefined;
+    // The team moved on to another task while this one waited: it goes next.
+    if (!task.stages[task.stageIndex]?.fromRoom && this.teamAtWork(task)) {
+      task.resumes = 'carryOn';
+      task.status = 'queued';
+      this.persist(task);
+      return { ok: true, queued: true };
+    }
     task.status = 'running';
     this.persist(task);
     this.advance(taskId);
@@ -2189,7 +2232,9 @@ export class TeamEngine {
 
   /// Ask the team something. `@Name` picks who answers; otherwise the
   /// coordinator routes the question.
-  roomAsk(taskId: UUID, text: string, attachments: Attachment[] = []): Result<{ queued?: boolean }> {
+  /// `feedback`: from someone other than the person who asked. The team talks
+  /// it over, but it never starts work or changes the pack: that stays theirs.
+  roomAsk(taskId: UUID, text: string, attachments: Attachment[] = [], opts: { feedback?: boolean } = {}): Result<{ queued?: boolean }> {
     const task = this.tasks.get(taskId);
     const question = text.trim();
     if (!question) return { ok: false, error: 'Ask the team something.' };
@@ -2199,7 +2244,7 @@ export class TeamEngine {
     // Files can't wait, so a question with files still has to.
     if (task && this.roomTalking(task) && !attachments.length) {
       const room = (task.room ??= { messages: [] });
-      room.queue = [...(room.queue ?? []), { text: question, at: this.now() }].slice(-20);
+      room.queue = [...(room.queue ?? []), { text: question, at: this.now(), ...(opts.feedback ? { feedback: true } : {}) }].slice(-20);
       this.persist(task);
       return { ok: true, queued: true };
     }
@@ -2220,6 +2265,7 @@ export class TeamEngine {
       // Even a question to someone by name is routed: "@Lena redo the
       // designs" is work to hand off, not something to answer.
       route: true,
+      ...(opts.feedback ? { feedback: true } : {}),
     });
     return { ok: true };
   }
@@ -2429,7 +2475,7 @@ export class TeamEngine {
     task.room!.queue = task.room!.queue!.slice(1);
     for (const c of task.comments ?? []) if (c.outcome === 'waiting' && next.text.endsWith(c.text)) c.outcome = 'asked';
     this.persist(task);
-    this.roomAsk(taskId, next.text);
+    this.roomAsk(taskId, next.text, [], next.feedback ? { feedback: true } : {});
   }
 
   private roomReady(task: TeamTask | undefined, opts: { duringRoomWork?: boolean } = {}): string | null {
@@ -2472,6 +2518,8 @@ export class TeamEngine {
       rounds: Array<'answer' | 'respond'>;
       attachments?: string[];
       route: boolean;
+      /// Someone else's feedback: anything that would start work stops here.
+      feedback?: boolean;
     },
   ): Promise<void> {
     const key = `room:${taskId}`;
@@ -2501,6 +2549,13 @@ export class TeamEngine {
         });
         if (this.stopped(taskId)) return;
         const reply = routed.ok ? parseRouteReply(routed.text, members) : { kind: 'route' as const, workerIds: [] };
+        // It stays in the conversation, so it counts when the pack is next
+        // updated or the person who asked picks it up.
+        if (args.feedback && (reply.kind === 'work' || reply.kind === 'pack')) {
+          const who = task.requestedBy?.name ?? 'Whoever asked for this task';
+          this.pushMessage(task, { kind: 'coordinator' }, `Noted as feedback, so nothing has started. ${who} can ask for it here if they want it done.`, { exchange: args.exchange });
+          return;
+        }
         if (reply.kind === 'work') {
           this.proposeWork(task, args.exchange, reply.work);
           return;

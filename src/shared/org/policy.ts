@@ -54,6 +54,10 @@ export interface OrgPolicy {
   /// What one person's workers may cost each month in total before a new
   /// hire needs an approver. Zero means every hire needs one.
   budgetAllowanceUSD: number;
+  /// What one person may spend a month of a worker that isn't theirs, per
+  /// worker: their asks stop there, and they're warned at `alertAtPercent`.
+  /// Absent: $100 (`otherPeopleLimit`). 0: no limit.
+  otherPeopleLimitUSD?: number;
   /// Per-person allowances that override `budgetAllowanceUSD`.
   allowances: Record<string, number>;
   /// Who decides hires over an allowance. Empty falls back to the admins.
@@ -330,6 +334,7 @@ export function parseOrgPolicy(raw: unknown): { policy: OrgPolicy; warnings: str
       admins: ids('admins'),
       hirers,
       budgetAllowanceUSD: num('budgetAllowanceUSD', 0),
+      ...(r.otherPeopleLimitUSD !== undefined ? { otherPeopleLimitUSD: num('otherPeopleLimitUSD', DEFAULT_OTHER_PEOPLE_LIMIT_USD) } : {}),
       allowances,
       approvers: ids('approvers'),
       teams,
@@ -498,6 +503,14 @@ export function committedBudget(roster: readonly Pick<Worker, 'id' | 'manager' |
   return roster
     .filter((w) => managerFor(roster, w.id)?.slackUserId === slackUserId)
     .reduce((sum, w) => sum + (Number.isFinite(w.budgetUSDPerMonth) ? w.budgetUSDPerMonth : 0), 0);
+}
+
+const DEFAULT_OTHER_PEOPLE_LIMIT_USD = 100;
+
+/// The limit on someone using a worker that isn't theirs. Null: none.
+export function otherPeopleLimit(policy: Pick<OrgPolicy, 'otherPeopleLimitUSD'>): number | null {
+  const v = policy.otherPeopleLimitUSD ?? DEFAULT_OTHER_PEOPLE_LIMIT_USD;
+  return v > 0 ? v : null;
 }
 
 export function allowanceFor(policy: OrgPolicy, slackUserId: string): number {

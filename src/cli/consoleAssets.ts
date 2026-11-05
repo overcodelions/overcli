@@ -3345,23 +3345,29 @@ export const CONSOLE_JS = String.raw`
   /// coordinator's questions, the plan to approve, or a stop to clear.
   /// A tail, when given, sits at the right end of the controls' own button
   /// row (the card's spend and Open), so the card has one footer, not three.
+  /// Whether this person can settle what a task is waiting on: whoever asked,
+  /// or an admin on the page that says so (canSteer), though it isn't theirs.
+  function taskWaitsOnCaller(t) {
+    return !!t.waitingOnYou || (!!t.canSteer && ['answers', 'plan', 'checkpoint', 'budget', 'failed'].indexOf(t.needs) >= 0);
+  }
   function teamTaskControls(t, out, after, tail) {
     var right = function () { return tail ? h('span', { class: 'row', style: 'gap:12px;margin-left:auto;flex-wrap:nowrap' }, tail) : null; };
     var act = function (body, okText) {
       return function () {
-        api('POST', '/api/team-tasks/' + encodeURIComponent(t.id), body).then(function (r) { out.textContent = ''; out.appendChild(msg(r, okText)); if (r.ok !== false) after(); });
+        api('POST', '/api/team-tasks/' + encodeURIComponent(t.id), body).then(function (r) { out.textContent = ''; out.appendChild(msg(r, r.queued ? 'OK. It goes next, when the team finishes the task it’s on.' : okText)); if (r.ok !== false) after(); });
       };
     };
     var controls = null;
-    if (t.waitingOnYou && t.needs === 'answers') {
+    var acts = taskWaitsOnCaller(t);
+    if (acts && t.needs === 'answers') {
       var boxes = (t.questions || []).map(function (q) { return { q: q, ta: h('textarea', { 'aria-label': q, placeholder: 'Your answer', style: 'min-height:56px' }) }; });
       controls = h('div', { class: 'stack' }, boxes.map(function (b) { return h('div', { class: 'qa' }, h('div', { class: 'quote', style: 'font-size:15.5px', text: b.q }), b.ta); }),
         h('p', { class: 'faint', style: 'margin:0;font-size:13px', text: 'Answer what you can. One left blank takes the assumption in brackets.' }),
         h('div', { class: 'row', style: 'align-items:center' }, h('button', { class: 'btn go', text: 'Send answers', title: '⌘↵', onclick: function () {
           act({ kind: 'answer', answers: boxes.map(function (b) { return b.ta.value; }) }, 'Sent. The coordinator is planning.')();
         } }), h('button', { class: 'btn danger', text: 'Cancel the task', onclick: act({ kind: 'cancel' }, 'Cancelled.') }), right()));
-    } else if (t.waitingOnYou && t.needs === 'plan') {
-      var fb = h('input', { type: 'text', placeholder: 'Or say what to change', 'aria-label': 'Changes to the plan' });
+    } else if (acts && t.needs === 'plan') {
+      var fb =h('input', { type: 'text', placeholder: 'Or say what to change', 'aria-label': 'Changes to the plan' });
       controls = h('div', { class: 'stack' },
         t.planNote ? h('div', { class: 'quote', style: 'font-size:15.5px', text: t.planNote }) : null,
         h('div', { class: 'row', style: 'align-items:center' },
@@ -3370,7 +3376,7 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'inline-form' }, fb, h('button', { class: 'btn', text: 'Ask for changes', onclick: function () { if (fb.value.trim()) act({ kind: 'revise', feedback: fb.value }, 'Sent back to the coordinator.')(); } })));
     } else if (t.status === 'queued') {
       controls = h('div', { class: 'row', style: 'align-items:center' }, h('button', { class: 'btn small', text: 'Take it out of the queue', onclick: act({ kind: 'cancel' }, 'Taken out. The team won’t start it.') }), right());
-    } else if (t.waitingOnYou) {
+    } else if (acts) {
       controls = h('div', { class: 'stack' },
         t.waitingMessage ? h('p', { class: 'why', text: t.waitingMessage }) : null,
         h('div', { class: 'row', style: 'align-items:center' },
@@ -5876,6 +5882,7 @@ export const CONSOLE_JS = String.raw`
       var action = h('div', { class: 'row' },
         h('button', { class: 'btn', onclick: function () { go('proclib', { libId: null }); } }, icon('library', 16), 'Process library'),
         h('button', { class: 'btn', onclick: fromImageDialog }, icon('image', 16), 'From an image'),
+        h('button', { class: 'btn', text: 'Import YAML', onclick: function () { processYamlDialog(null); } }),
         h('button', { class: 'btn go', onclick: function () { go('processedit', { processId: null }); } }, icon('plus', 16), 'New process'));
       if (!list.length) return [head('Processes', intro, action), emptyState('No processes yet.', 'Start from the library: eleven ways SaaS teams commonly run work across teams, from idea to launch to incident postmortems. Each suggests which of your teams fits each stage.', h('button', { class: 'btn go', text: 'Browse the process library', onclick: function () { go('proclib', { libId: null }); } }))];
       var cards = list.map(function (p) {
@@ -5933,6 +5940,96 @@ export const CONSOLE_JS = String.raw`
   var ASK_IMAGES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
   var ASK_TEXT_NAME = /\.(md|markdown|txt|csv|tsv|json|ya?ml|log|xml|html?)$/i;
   var ASK_ACCEPT = ASK_IMAGES.concat(['text/*', 'application/json', '.md', '.markdown', '.txt', '.csv', '.tsv', '.json', '.yaml', '.yml', '.log', '.xml', '.html']).join(',');
+  /// A process as YAML: what it is now to read or copy, and where to change it
+  /// or paste one in. Nothing saves here: the editor opens with the result.
+  /// p: the process it stands for; none, for a new one.
+  function processYamlDialog(p) {
+    yamlDialog({
+      title: p ? p.name + ' as YAML' : 'Import a process from YAML',
+      intro: 'Teams, workers and people go by name. Nothing is saved until you check it in the editor, and anything that isn’t here yet is flagged there.',
+      placeholder: 'name: Idea to launch\\npurpose: What it takes in and what comes out\\nstages:\\n  - name: Product and brief\\n    team: Product Team\\n    lead: Your Name\\n    job: What this stage does.\\n  - name: Go or no-go\\n    decide: [Your Name]\\n  - name: Ticketing\\n    worker: A Worker',
+      openText: p ? 'Open the changes in the editor' : 'Open in the editor',
+      load: p ? '/api/processes/' + encodeURIComponent(p.id) + '/yaml' : null,
+      copyable: !!p,
+      read: function (yaml) { return api('POST', '/api/processes/from-yaml', Object.assign({ yaml: yaml }, p ? { processId: p.id } : {})); },
+      opened: function (x, yaml) {
+        state.processImport = { draft: x.draft, notes: x.notes || [], missing: x.missing, yaml: yaml, processId: p ? p.id : null };
+        if (p && state.tab === 'processedit' && state.processId === p.id) render();
+        else go('processedit', { processId: p ? p.id : null, processFrom: null });
+      },
+    });
+  }
+
+  /// A team as YAML. Importing opens Make a team filled in; a team that
+  /// exists is only shown, to copy to another server or keep in a repo.
+  function teamYamlDialog(t) {
+    yamlDialog({
+      title: t ? t.name + ' as YAML' : 'Import a team from YAML',
+      intro: t ? 'Its members go by name, and its workers don’t come with it: bring those over first. Who was picked to give it tasks stays here.' : 'Its members go by name, and need to exist here first. Nothing is made until you check it in the form.',
+      placeholder: 'name: Design Team\\npurpose: What the team does\\nmembers:\\n  - worker: A Worker\\n    role: What they do on this team\\nbudget_per_task: 50\\ncheckpoints:\\n  ask_first: true\\n  final_review: true',
+      openText: t ? null : 'Open in the form',
+      load: t ? '/api/teams/' + encodeURIComponent(t.id) + '/yaml' : null,
+      copyable: !!t,
+      read: function (yaml) { return api('POST', '/api/teams/from-yaml', { yaml: yaml }); },
+      // Nobody it names is here, so there's no form to open yet.
+      refuse: function (x) { return x.draft.members.length ? null : 'None of its members are here: ' + x.missing.workers.join(', ') + '. Hire or bring them over first, then import this again.'; },
+      opened: function (x) {
+        state.newTeamPrefill = { name: x.draft.name, purpose: x.draft.purpose || '', imported: { draft: x.draft, notes: x.notes || [], missing: x.missing } };
+        go('newteam', { teamRunId: null });
+      },
+    });
+  }
+
+  /// YAML in a box: what something is now, or room to paste one. o.read turns
+  /// it into a draft, and o.opened takes it from there. Nothing saves here.
+  function yamlDialog(o) {
+    var box = h('textarea', { rows: '20', spellcheck: 'false', 'aria-label': 'YAML', placeholder: o.placeholder, style: 'font-family:var(--mono);font-size:12.5px;width:100%;box-sizing:border-box' });
+    var out = h('div', { 'aria-live': 'polite' });
+    var open = o.openText ? h('button', { class: 'btn go', text: o.openText }) : null;
+    var copy = h('button', { class: 'btn', text: 'Copy', onclick: function () { if (navigator.clipboard) navigator.clipboard.writeText(box.value).then(function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy'; }, 1500); }); } });
+    var scrim = h('div', { class: 'scrim' });
+    var close = function () { scrim.remove(); document.removeEventListener('keydown', onKey); };
+    var onKey = function (e) { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    scrim.onclick = function (e) { if (e.target === scrim) close(); };
+    if (open) open.onclick = function () {
+      var restore = busy(open, 'Reading it…');
+      o.read(box.value).then(function (x) {
+        restore();
+        if (x.ok === false) { fill(out, [msg(x)]); return; }
+        var no = o.refuse ? o.refuse(x) : null;
+        if (no) { fill(out, [msg({ ok: false, error: no })]); return; }
+        close();
+        o.opened(x, box.value);
+      }, function (e) { restore(); fill(out, [msg({ ok: false, error: String((e && e.message) || e) })]); });
+    };
+    append(scrim, h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'yaml-title' },
+      h('div', null, h('h2', { id: 'yaml-title', text: o.title }), h('p', { class: 'muted', style: 'margin-top:4px', text: o.intro })),
+      box, out,
+      h('div', { class: 'row', style: 'justify-content:flex-end' }, h('button', { class: 'btn quiet', text: open ? 'Cancel' : 'Close', onclick: close }), o.copyable ? copy : null, open)));
+    document.body.appendChild(scrim);
+    if (o.load) api('GET', o.load).then(function (x) { if (x.ok === false) fill(out, [msg(x)]); else if (!box.value) box.value = x.yaml; });
+    setTimeout(function () { box.focus(); }, 0);
+  }
+
+  /// What a file names that isn't on this server, and a way to set each up in
+  /// another tab, so what's in front of you stays. recheck: read it again.
+  function yamlMissingRow(missing, recheck) {
+    var m = missing || {};
+    var parts = [[m.workers, 'worker', 'workers'], [m.teams, 'team', 'teams'], [m.people, 'person', 'people'], [m.places, 'repo or workspace', 'repos or workspaces']]
+      .filter(function (x) { return x[0] && x[0].length; });
+    if (!parts.length) return null;
+    var tab = function (hash) { return function () { window.open(location.pathname + location.search + '#' + hash, '_blank'); }; };
+    return h('div', { class: 'stack', style: 'gap:8px;margin-top:8px' },
+      h('b', { text: 'To save this, these need to exist here first:' }),
+      h('ul', { style: 'margin:0;padding-left:18px' }, parts.map(function (x) { return h('li', { text: plural(x[0].length, x[1], x[2]) + ': ' + x[0].join(', ') }); })),
+      h('div', { class: 'row', style: 'gap:8px' },
+        m.workers && m.workers.length ? h('button', { type: 'button', class: 'btn small', text: 'Hire a worker', onclick: tab('hire') }) : null,
+        m.teams && m.teams.length ? h('button', { type: 'button', class: 'btn small', text: 'Make a team', onclick: tab('newteam') }) : null,
+        m.places && m.places.length ? h('button', { type: 'button', class: 'btn small', text: 'Connect a repo', onclick: tab('setup') }) : null,
+        recheck ? h('button', { type: 'button', class: 'btn small go', text: 'Check again', onclick: recheck }) : null));
+  }
+
   function fromImageDialog() {
     var picked = null, closed = false, working = false;
     var out = h('div', { 'aria-live': 'polite' });
@@ -6339,6 +6436,7 @@ export const CONSOLE_JS = String.raw`
           p.purpose ? h('p', { class: 'page-sub', text: p.purpose }) : null,
           busyMode ? null : summary),
         h('div', { class: 'row' },
+          p.canSteer ? h('button', { class: 'btn', text: 'YAML', title: 'See it as a file, or change it by pasting one', onclick: function () { processYamlDialog(p); } }) : null,
           p.canSteer ? h('button', { class: 'btn', text: 'Edit', onclick: function () { go('processedit', { processId: p.id }); } }) : null,
           busyMode && p.canStart !== false ? h('button', { class: 'btn go', onclick: function () { submitToProcess(p, function (item) { go('process', { processId: p.id, processItem: item.id }); }); } }, icon('plus', 16), 'Put something in') : null));
 
@@ -7218,7 +7316,7 @@ export const CONSOLE_JS = String.raw`
         if (mine !== seq) return;
         var has = function (n) { return !term || n.toLowerCase().indexOf(term) >= 0; };
         var groups = opts.onGroup ? d.groups.filter(function (g) { return has(g.name); }) : [];
-        var people = d.people.filter(function (p) { return has(p.name); }).slice(0, 8);
+        var people = d.people.filter(function (p) { return has(p.name) || (p.handle && has(p.handle)); }).slice(0, 8);
         var items = [];
         if (groups.length) items.push(h('div', { class: 'pp-head', text: 'Groups' }));
         groups.forEach(function (g) {
@@ -7227,7 +7325,7 @@ export const CONSOLE_JS = String.raw`
             function () { choose(opts.onGroup, { id: g.id, name: g.name }); }));
         });
         if (people.length) items.push(h('div', { class: 'pp-head', text: 'People' }));
-        people.forEach(function (p) { items.push(option(h('span', { class: 'pp-main' }, avatar(p.slackUserId, p.name, 's'), h('span', { class: 'pp-text' }, h('b', { text: p.name }))), null, function () { choose(pick, p); })); });
+        people.forEach(function (p) { items.push(option(h('span', { class: 'pp-main' }, avatar(p.slackUserId, p.name, 's'), h('span', { class: 'pp-text' }, h('b', { text: p.name }), p.handle && p.handle !== p.name ? h('span', { class: 'pp-sub', text: '@' + p.handle }) : null)), null, function () { choose(pick, p); })); });
         var shown = function (extra) {
           var all = items.concat(extra);
           if (term.length >= 2) all.push(option(h('span', { class: 'pp-main' }, h('span', { class: 'pp-text' }, h('b', { text: 'Use “' + q.value.trim() + '”' }), h('span', { class: 'pp-sub', text: 'Not in Slack, so no DMs' }))), null, function () { choose(pick, { name: q.value.trim() }); }));
@@ -7475,6 +7573,10 @@ export const CONSOLE_JS = String.raw`
     // opens with it once.
     var fromPicture = editing ? null : state.processDraft;
     state.processDraft = null;
+    // A process read from YAML (processYamlDialog), unsaved: the editor opens
+    // with it once, over the process it replaces if there is one.
+    var imported = state.processImport;
+    state.processImport = null;
     return Promise.all([editing ? api('GET', '/api/processes/' + encodeURIComponent(state.processId)) : Promise.resolve(null), api('GET', '/api/teams'),
       api('GET', '/api/process-library').catch(function () { return {}; }), from ? api('GET', '/api/process-library/' + encodeURIComponent(from)) : Promise.resolve(null),
       api('GET', '/api/workers').catch(function () { return []; }), api('GET', '/api/repos').catch(function () { return { ok: false }; })]).then(function (r) {
@@ -7519,6 +7621,12 @@ export const CONSOLE_JS = String.raw`
             return st;
           }) };
       } else model = { name: '', purpose: '', owner: { name: me.name, slackUserId: me.slackUserId }, stages: [] };
+      if (imported) {
+        var d = imported.draft;
+        // What the file leaves out stays as it was.
+        model = Object.assign(model, { name: d.name, stages: d.stages, shortName: d.shortName || model.shortName || '', purpose: d.purpose || model.purpose || '', about: d.about || model.about },
+          d.owner ? { owner: d.owner } : {}, d.access ? { access: d.access } : {}, d.codeIn !== undefined ? { codeIn: d.codeIn || '' } : {});
+      }
       // A new process is its owner's alone until they open it up.
       if (!model.access) model.access = { who: 'private' };
       // What the library says each stage needs: the crew for a team, who decides.
@@ -7848,13 +7956,25 @@ export const CONSOLE_JS = String.raw`
       return [
         h('header', { class: 'pm-head' },
           h('div', { style: 'flex:1 1 420px;min-width:0' },
-            (setChrome([['Processes', function () { go('processes'); }], [editing ? p.name : fromPicture ? 'New, from a picture' : 'New']]), null),
+            (setChrome([['Processes', function () { go('processes'); }], [editing ? p.name : imported ? 'New, from YAML' : fromPicture ? 'New, from a picture' : 'New']]), null),
             name, purpose, short.node),
           h('div', { class: 'stack', style: 'gap:8px;align-items:flex-end' },
             h('div', { class: 'pm-owner' }, h('span', { class: 'faint', text: 'Owner' }),
               personSlot('Change the owner', function () { return model.owner; }, function (x) { if (x) { model.owner = x; drawAccess(); } }, ''),
               accWrap),
             codeRow())),
+        imported ? h('div', { class: 'msg' + (imported.notes.length ? ' need' : ''), role: 'status' },
+          h('b', { text: imported.notes.length ? 'Read from YAML, with things to check. Nothing is saved yet.' : 'Read from YAML. Check it, then save.' }),
+          imported.notes.length ? h('ul', { style: 'margin:6px 0 0;padding-left:18px' }, imported.notes.map(function (n) { return h('li', { text: n }); })) : null,
+          yamlMissingRow(imported.missing, function (e) {
+            var restore = busy(e.target, 'Checking…');
+            api('POST', '/api/processes/from-yaml', Object.assign({ yaml: imported.yaml }, imported.processId ? { processId: imported.processId } : {})).then(function (x) {
+              restore();
+              if (x.ok === false) { out.textContent = ''; out.appendChild(msg(x)); return; }
+              state.processImport = { draft: x.draft, notes: x.notes || [], missing: x.missing, yaml: imported.yaml, processId: imported.processId };
+              render();
+            });
+          })) : null,
         pictureBanner(),
         h('section', { class: 'pm-mapcard', 'aria-label': 'The process map' },
           h('div', { class: 'pm-legend' },
@@ -7889,7 +8009,7 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'tmmeta' }, h('span', { class: 'tmlive' }, h('span', { class: 'livedot' }), run.status === 'needsYou' ? 'Needs you' : 'Hiring')));
       });
       var action = state.me && state.me.canHire && workers.length >= 2
-        ? h('button', { class: 'btn go', onclick: openMaker }, icon('plus', 16), 'Make a team')
+        ? h('div', { class: 'row' }, h('button', { class: 'btn', text: 'Import YAML', onclick: function () { teamYamlDialog(null); } }), h('button', { class: 'btn go', onclick: openMaker }, icon('plus', 16), 'Make a team'))
         : null;
       if (!teams.length && makingCards.length) return [head('Teams', intro, action), h('div', { class: 'tmgrid' }, makingCards)];
       if (!teams.length) return [head('Teams', intro, action), emptyState('No teams you can see yet.', 'Make one from workers already here, or publish one you built in the overcli app: open the team and press Publish to your org.')];
@@ -8071,13 +8191,15 @@ export const CONSOLE_JS = String.raw`
       var workers = all.filter(function (w) { return w.enabled && (w.youManage || state.me.admin); })
         .sort(function (a, b) { return (b.youManage ? 1 : 0) - (a.youManage ? 1 : 0) || a.name.localeCompare(b.name); });
       var back = function () { go('teams'); };
-      if (workers.length < 2) return [head('Make a team', 'A team needs at least two workers you manage.', null, 'Teams'), emptyState('Not enough workers yet.', 'Hire another worker, then come back to put them together.')];
+      if (workers.length < 1) return [head('Make a team', 'A team needs at least one worker you manage.', null, 'Teams'), emptyState('No workers yet.', 'Hire a worker, then come back to put a team together.')];
 
       var picked = {}, roles = {}, order = [], gaps = [];
       var checks = { askFirst: true, reviewBeforeChallenge: false, finalReview: true, approveRoomWork: true };
       var name = h('input', { type: 'text', placeholder: 'Product', 'aria-label': 'Team name', maxlength: '80' });
       var purpose = h('input', { type: 'text', placeholder: 'What the team produces, and for whom', 'aria-label': 'What the team does', maxlength: '500' });
       // From a process stage that needs a team: its name and job to start from.
+      // From a team's YAML, the rest of it too (teamYamlDialog).
+      var importedTeam = state.newTeamPrefill && state.newTeamPrefill.imported;
       if (state.newTeamPrefill) { name.value = state.newTeamPrefill.name || ''; purpose.value = state.newTeamPrefill.purpose || ''; state.newTeamPrefill = null; }
       var budget = h('input', { type: 'number', min: '1', step: '1', value: '50', 'aria-label': 'Budget per task in dollars', style: 'width:110px' });
       var workIn = places.repos.length ? h('select', { 'aria-label': 'Where the team works' },
@@ -8095,6 +8217,27 @@ export const CONSOLE_JS = String.raw`
       var find = h('input', { type: 'search', placeholder: 'Find a worker', 'aria-label': 'Find a worker', style: 'width:220px' });
 
       var byId = function (id) { return workers.filter(function (w) { return w.id === id; })[0]; };
+      // On or off the crew, in the order they were picked.
+      var toggle = function (id, on) {
+        if (on && !picked[id]) { picked[id] = true; order.push(id); }
+        if (!on && picked[id]) { delete picked[id]; delete roles[id]; order = order.filter(function (x) { return x !== id; }); }
+        draw();
+      };
+      // What the file says, as far as it fits who you can put on a team here.
+      if (importedTeam) {
+        var fromFile = importedTeam.draft;
+        (fromFile.members || []).forEach(function (m) {
+          if (byId(m.workerId)) { picked[m.workerId] = true; order.push(m.workerId); roles[m.workerId] = m.role; }
+          else importedTeam.notes.push(m.name + ' is on the team in the file, but is paused here or isn’t yours to add.');
+        });
+        if (fromFile.budgetUSDPerTask) budget.value = String(fromFile.budgetUSDPerTask);
+        if (fromFile.checkpoints) Object.assign(checks, fromFile.checkpoints);
+        if (fromFile.workIn && workIn) workIn.value = fromFile.workIn;
+        append(suggestOut, h('div', { class: 'msg' + (importedTeam.notes.length || (importedTeam.missing.workers || []).length ? ' need' : ''), role: 'status' },
+          h('b', { text: importedTeam.notes.length ? 'Read from YAML, with things to check. Nothing is made yet.' : 'Read from YAML. Check it, then make the team.' }),
+          importedTeam.notes.length ? h('ul', { style: 'margin:6px 0 0;padding-left:18px' }, importedTeam.notes.map(function (n) { return h('li', { text: n }); })) : null,
+          yamlMissingRow(importedTeam.missing, null)));
+      }
       // The pool to pick from: equal-height cards, each tagline cut to two lines.
       var drawCards = function () {
         var words = find.value.trim().toLowerCase();
@@ -8165,8 +8308,8 @@ export const CONSOLE_JS = String.raw`
         var toHire = state.me.canHire ? gaps.length : 0;
         count.textContent = (order.length ? order.length + ' on the team' : 'None picked yet') + (toHire ? ' · ' + toHire + ' to hire' : '');
         var n = name.value.trim(), total = order.length + toHire;
-        summary.textContent = !n ? 'Give the team a name.' : total < 2 ? n + ' needs at least two members.' : n + ': ' + plural(order.length, 'member', 'members') + (toHire ? ' and ' + toHire + ' to hire' : '') + '.';
-        make.disabled = !name.value.trim() || order.length + (state.me.canHire ? gaps.length : 0) < 2;
+        summary.textContent = !n ? 'Give the team a name.' : total < 1 ? n + ' needs at least one member.' : n + ': ' + plural(order.length, 'member', 'members') + (toHire ? ' and ' + toHire + ' to hire' : '') + '.';
+        make.disabled = !name.value.trim() || order.length + (state.me.canHire ? gaps.length : 0) < 1;
       };
       find.oninput = drawCards;
       name.oninput = draw; purpose.oninput = drawPreview; budget.oninput = drawPreview;
@@ -8212,7 +8355,25 @@ export const CONSOLE_JS = String.raw`
           members: order.map(function (id) { return { workerId: id, role: roles[id].trim() }; }), hires: hires }).then(function (x) {
           restore();
           if (x.ok === false) { fill(out, [msg(x)]); return; }
-          if (x.run.status === 'done' && x.run.team) { go('team', { teamId: x.run.team.id }); return; }
+          if (x.run.status === 'done' && x.run.team) {
+            var made = x.run.team.id;
+            var open = function () { go('team', { teamId: made }); };
+            // What a new team takes after it's made, from its file.
+            var rest = {};
+            if (importedTeam) {
+              var f = importedTeam.draft;
+              if (f.shortName) rest.shortName = f.shortName;
+              if (f.guidance) rest.guidance = f.guidance;
+              if (f.whoCanBrief) rest.whoCanBrief = f.whoCanBrief;
+              if (f.piecesAskFirst !== undefined) rest.piecesAskFirst = f.piecesAskFirst;
+            }
+            if (!Object.keys(rest).length) { open(); return; }
+            api('POST', '/api/teams/' + encodeURIComponent(made) + '/settings', rest).then(function (y) {
+              if (y.ok === false) { fill(out, [msg({ ok: false, error: 'The team is made, but some of its file didn’t apply: ' + y.error }), h('button', { class: 'btn', text: 'Open the team', onclick: open })]); return; }
+              open();
+            }, open);
+            return;
+          }
           if (x.run.status === 'failed') { fill(out, [msg({ ok: false, error: x.run.error })]); return; }
           writeSession(TEAM_RUN_KEY, x.run.id);
           go('newteam', { teamRunId: x.run.id });
@@ -8917,7 +9078,9 @@ export const CONSOLE_JS = String.raw`
           var restore = button ? busy(button, label || 'Sending…') : function () {};
           return api('POST', '/api/team-tasks/' + encodeURIComponent(task.id) + path, body || {}).then(function (y) {
             restore();
-            fill(out, y.ok === false ? msg(y) : okText ? msg(y, okText) : null);
+            // Only a decision on the task itself: the room has a queue of its own.
+            var goesNext = path === '' && y.queued;
+            fill(out, y.ok === false ? msg(y) : goesNext ? msg(y, 'OK. It goes next, when the team finishes the task it’s on.') : okText ? msg(y, okText) : null);
             if (y.ok !== false) { fastUntil = Date.now() + 120000; setTimeout(refresh, 800); }
             return y;
           });
@@ -8933,7 +9096,8 @@ export const CONSOLE_JS = String.raw`
           review && task.canSteer ? ['Accept the pack', function (e) { post('', { kind: 'accept' }, 'Accepted. The task is done.'); }] : null,
           ['Open the shared folder', function () { go('teamfiles', { taskId: task.id }); }],
           bs.long ? ['Read the whole brief', function () { openReader('The brief', task.title || '', function (put) { put([md(task.brief)]); }); }] : null,
-          active && task.canSteer ? ['Stop the task', function () { if (confirm('Stop this task? Work already written stays in its folder.')) post('', { kind: 'cancel' }, 'Stopped.'); }, true] : null,
+          active && task.canSteer ? ['Stop the task', function () { if (confirm('Stop this task? Work already written stays in its folder.' + (task.queuedBehind ? ' The next queued task starts right after.' : ''))) post('', { kind: 'cancel' }, 'Stopped.'); }, true] : null,
+          active && task.canSteer && task.queuedBehind ? ['Stop this and the ' + plural(task.queuedBehind, 'queued task', 'queued tasks'), function () { if (confirm('Stop this task and clear what’s queued behind it? Work already written stays in its folder.')) post('/stop-all', {}, 'Stopped, and the queue is clear.'); }, true] : null,
         ]);
         var cur = task.stagesDetail.filter(function (s) { return s.current; })[0];
         var faces = (team.members || []).slice(0, 6);
@@ -8961,6 +9125,9 @@ export const CONSOLE_JS = String.raw`
         };
         // In review the band below is the whole of it; the controls are for questions, a plan or a checkpoint.
         var controls = review ? null : teamTaskControls(task, out, refresh);
+        var acts = taskWaitsOnCaller(task);
+        var waitsOn = task.requestedBy || 'whoever asked';
+        var turn = task.waitingOnYou ? 'Your turn: ' : 'Waiting on ' + waitsOn + ': ';
         if (!room.busy && review && task.canSteer) {
           var head = 'Version ' + version + ', ' + plural(pack.files.length, 'file', 'files') + '.';
           var keep = canKeepDebating(task) ? h('button', { class: 'btn', text: 'Keep debating', onclick: function (e) { post('/room/continue', {}, 'Another round: the team is weighing in.', e.target); setTab('debate'); } }) : null;
@@ -8975,17 +9142,21 @@ export const CONSOLE_JS = String.raw`
           } else {
             band = bandRow('need', 'check', 'Your turn: the pack is ready to review', head, [h('button', { class: 'btn go', text: 'Review v' + version, onclick: function () { setTab('pack'); } })]);
           }
-        } else if (!room.busy && task.waitingOnYou && task.needs === 'answers') {
+        } else if (!room.busy && acts && task.needs === 'answers') {
           var nq = (task.questions || []).length;
-          band = bandRow('need', 'check', 'Your turn: the coordinator has ' + plural(nq, 'question', 'questions'), 'Answer what you can before it plans. Leave one blank and the coordinator decides.', null, h('div', { class: 'tt-bandbody' }, controls, aboutRow(task)));
-        } else if (!room.busy && task.waitingOnYou && task.needs === 'plan') {
+          band = bandRow('need', 'check', turn + 'the coordinator has ' + plural(nq, 'question', 'questions'), (task.waitingOnYou ? '' : 'You can answer as an admin. ') + 'Answer what you can before it plans. Leave one blank and the coordinator decides.', null, h('div', { class: 'tt-bandbody' }, controls, aboutRow(task)));
+        } else if (!room.busy && acts && task.needs === 'plan') {
           var crew = {};
           task.stagesDetail.forEach(function (s) { s.pieces.forEach(function (p) { crew[p.workerId] = 1; }); });
-          band = bandRow('need', 'check', 'Your turn: approve the plan', plural(task.stagesDetail.length, 'stage', 'stages') + ' with ' + plural(Object.keys(crew).length, 'member', 'members') + '. Nothing runs until you approve.', [
+          band = bandRow('need', 'check', turn + 'approve the plan', plural(task.stagesDetail.length, 'stage', 'stages') + ' with ' + plural(Object.keys(crew).length, 'member', 'members') + '. Nothing runs until you approve.', [
             h('button', { class: 'btn go', text: 'Approve and start', onclick: decide({ kind: 'approve' }, 'Approved. The team is on it.') }),
             h('button', { class: 'btn', text: 'Read the plan first', onclick: function () { setTab('plan'); } })]);
-        } else if (!room.busy && task.waitingOnYou) {
-          band = bandRow('need', 'check', task.needs === 'budget' ? 'Your turn: the task reached its budget' : task.needs === 'checkpoint' ? 'Your turn: a checkpoint' : 'Your turn: a stage needs you', '', null, controls ? h('div', { class: 'tt-bandbody' }, controls) : null);
+        } else if (!room.busy && acts) {
+          band = bandRow('need', 'check', turn + (task.needs === 'budget' ? 'the task reached its budget' : task.needs === 'checkpoint' ? 'a checkpoint' : 'a stage needs you'), '', null, controls ? h('div', { class: 'tt-bandbody' }, controls) : null);
+        } else if (!room.busy && task.needs === 'answers' && (task.questions || []).length) {
+          // Anyone who can see the task can see what it's waiting to hear.
+          band = bandRow('need', 'check', turn + 'the coordinator has ' + plural(task.questions.length, 'question', 'questions'), 'Only they, or an admin, can answer here.', null,
+            h('div', { class: 'tt-bandbody' }, h('ol', { style: 'margin:0;padding-left:20px' }, task.questions.map(function (q) { return h('li', { text: q }); }))));
         } else if (!room.busy && task.piecesNeedYou) {
           band = bandRow('need', 'check', 'Your turn: ' + plural(task.piecesNeedYou, 'step waits', 'steps wait') + ' for your OK', cur ? 'At ' + (cur.title || cur.label) + '.' : '', [h('button', { class: 'btn go', text: 'See what they need', onclick: function () { setTab('plan'); } })]);
         }
@@ -9174,13 +9345,13 @@ export const CONSOLE_JS = String.raw`
           body = h('div', { class: 'stack', style: 'gap:14px' },
             task.status === 'planning' ? thinking('The coordinator is planning.') : null,
             !done && task.nowSentence ? h('p', { class: 'muted', style: 'margin:0', text: task.nowSentence }) : null,
-            task.waitingOnYou && task.needs === 'plan' && controls ? h('div', { class: 'pi-card' }, h('span', { class: 'label pi-need', text: 'The plan, waiting on you' }), controls, aboutRow(task)) : null,
+            acts && task.needs === 'plan' && controls ? h('div', { class: 'pi-card' }, h('span', { class: 'label pi-need', text: task.waitingOnYou ? 'The plan, waiting on you' : 'The plan, waiting on ' + waitsOn }), controls, aboutRow(task)) : null,
             stagesList,
             h('div', { class: 'pi-card stack', style: 'gap:8px' },
               h('span', { class: 'label', text: 'What ' + (asker === 'You' ? 'you' : asker) + ' asked for · ' + when(task.createdAt) }),
               h('div', { class: 'pi-sum', style: 'color:var(--ink)' }, md(task.brief)),
               qa.length ? h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'label', text: 'Your answers' }), qa.map(function (p) { return h('div', { class: 'pi-handed' }, h('b', { text: p[0] }), h('span', { class: 'muted', text: p[1] })); })) : null),
-            task.planNote && !(task.waitingOnYou && task.needs === 'plan') ? h('div', { class: 'pi-card stack', style: 'gap:8px' }, h('span', { class: 'label', text: 'The plan' }), md(task.planNote), aboutRow(task)) : null);
+            task.planNote && !(acts && task.needs === 'plan') ? h('div', { class: 'pi-card stack', style: 'gap:8px' }, h('span', { class: 'label', text: 'The plan' }), md(task.planNote), aboutRow(task)) : null);
         }
 
         // ---- Beside it: what changed in the pack, and who did what.
@@ -9784,7 +9955,7 @@ export const CONSOLE_JS = String.raw`
   }
 
   /// Who is on a team and what each does on it: change a role, take someone
-  /// off, add a worker. Saved together; a team keeps at least two.
+  /// off, add a worker. Saved together; a team keeps at least one.
   function teamMembersEdit(t) {
     var rows = t.members.map(function (m) { return { workerId: m.workerId, name: m.name, role: m.role || '' }; });
     var list = h('div', { class: 'jl-notelist' });
@@ -9802,7 +9973,7 @@ export const CONSOLE_JS = String.raw`
       list.replaceChildren.apply(list, rows.map(function (r, i) {
         var role = h('input', { type: 'text', maxlength: '200', value: r.role, 'aria-label': r.name + '’s role on the team', disabled: !t.canChange });
         role.oninput = function () { r.role = role.value; dirty.hidden = false; };
-        var off = t.canChange ? h('button', { class: 'btn small', text: 'Remove', disabled: rows.length <= 2, title: rows.length <= 2 ? 'A team needs at least two members.' : null, onclick: function () { rows.splice(i, 1); dirty.hidden = false; draw(); fillPick(); } }) : null;
+        var off = t.canChange ? h('button', { class: 'btn small', text: 'Remove', disabled: rows.length <= 1, title: rows.length <= 1 ? 'A team needs at least one member.' : null, onclick: function () { rows.splice(i, 1); dirty.hidden = false; draw(); fillPick(); } }) : null;
         return h('div', { class: 'tm-edit' },
           h('button', { class: 'tm-who', type: 'button', onclick: function () { openWorker(r.workerId); } }, avatar(r.workerId, r.name, 's'), h('b', { text: r.name })),
           role, off);
@@ -10079,7 +10250,7 @@ export const CONSOLE_JS = String.raw`
             h('aside', { class: 'narrow stack', style: 'gap:16px' },
               teamKnows(t, refresh),
               card('teammembers', 'Members · ' + t.members.length, null, membersBox, true),
-              card('teamsetup', 'Setup', h('button', { class: 'linkish', text: 'Settings', onclick: function () { state.teamTab = 'settings'; render(); } }), h('div', { class: 'stack', style: 'gap:6px;padding:12px 18px;font-size:13.5px' },
+              card('teamsetup', 'Setup', h('span', { class: 'row', style: 'gap:12px;flex-wrap:nowrap' }, t.canChange ? h('button', { class: 'linkish', text: 'YAML', title: 'See it as a file, to copy to another server', onclick: function () { teamYamlDialog(t); } }) : null, h('button', { class: 'linkish', text: 'Settings', onclick: function () { state.teamTab = 'settings'; render(); } })), h('div', { class: 'stack', style: 'gap:6px;padding:12px 18px;font-size:13.5px' },
                 h('span', null, h('span', { class: 'faint', text: 'Who can give it tasks: ' }), t.audience ? 'picked people, groups or roles' : t.whoCanBrief === 'org' ? 'everyone' : t.whoCanBrief === 'team' ? 'its managers’ teams' : 'its members’ managers'),
                 h('span', null, h('span', { class: 'faint', text: 'Checks in with you: ' }), String(['askFirst', 'reviewBeforeChallenge', 'finalReview', 'approveRoomWork'].filter(function (k) { return t.checkpoints[k]; }).length) + ' of 4 points'),
                 h('span', null, h('span', { class: 'faint', text: 'Budget: ' }), money(t.budgetUSDPerTask) + ' a task'),
@@ -11285,7 +11456,7 @@ export const CONSOLE_JS = String.raw`
         h('div', { class: 'stack' },
           h('label', { class: 'toggle' }, everyone, h('span', { text: 'Everyone with access may hire' })),
           hirers.node,
-          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Allowance per person (USD a month)', allowance)),
+          h('p', { class: 'faint', style: 'margin:0;font-size:13px' }, 'What each person’s workers may cost before a hire needs approval is on ', h('button', { type: 'button', class: 'linkish', text: 'Spending', onclick: function () { go('setup', { setupTab: 'spending' }); } }), '.'),
           h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Tools any hire may have without approval. Any other tool, a manager asks an admin for.' }), cleared.node),
           h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Approves hires over an allowance (none ticked: the admins)' }), approvers.node),
           h('label', { class: 'toggle' }, visAdmin, h('span', { text: 'Making a worker visible to everyone needs an admin' })),
@@ -11293,21 +11464,25 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Opening web pages', webMode), h('label', { class: 'field' }, 'Your own sites (always open)', ownSites)),
           h('p', { class: 'faint', style: 'font-size:13px', text: 'Safe fetches keep research free while stopping a worker from writing what it knows into an address: it opens a page only when the address came from a search result, the request, or a page it read. The server’s own and private addresses are never opened. Workers set to act on their own fetch freely.' })),
         function () {
-          return { hirers: everyone.checked ? '*' : hirers.value(), budgetAllowanceUSD: Number(allowance.value || 0), approvers: approvers.value(), orgVisibilityNeedsAdmin: visAdmin.checked, tuningWatch: tuneWatch.checked, webFetch: webMode.value, webNeedsApproval: null, ownDomains: list(ownSites.value), allowedMcpServers: cleared.value() };
+          return { hirers: everyone.checked ? '*' : hirers.value(), approvers: approvers.value(), orgVisibilityNeedsAdmin: visAdmin.checked, tuningWatch: tuneWatch.checked, webFetch: webMode.value, webNeedsApproval: null, ownDomains: list(ownSites.value), allowedMcpServers: cleared.value() };
         });
 
       // Spending.
       var cap = h('input', { type: 'number', min: '1', step: '1', value: R.orgBudgetUSD == null ? '' : String(R.orgBudgetUSD), placeholder: 'No cap' });
       var alertAt = h('input', { type: 'number', min: '0', max: '100', step: '5', value: String(R.alertAtPercent) });
+      // 0 is saved as none, and shown empty; never set means the $100 default.
+      var otherLimit = h('input', { type: 'number', min: '0', step: '1', value: R.otherPeopleLimitUSD === 0 ? '' : String(R.otherPeopleLimitUSD == null ? 100 : R.otherPeopleLimitUSD), placeholder: 'No limit' });
       // How Reports value a pull request: a multiple of the agent time, with a floor.
       var prMult = h('input', { type: 'number', min: '1', max: '50', step: '0.5', value: String(R.prSavedMultiplier) });
       var prMin = h('input', { type: 'number', min: '0.25', max: '24', step: '0.25', value: String(R.prSavedMinHours) });
       var spending = ruleSection('Spending', 'A cap on what every worker together may cost in a month, and when to warn people they are getting close.',
         h('div', { class: 'stack', style: 'gap:14px' },
           h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Org-wide budget (USD a month)', cap), h('label', { class: 'field' }, 'Warn at (% of a budget; 0 for never)', alertAt)),
+          h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Limit per person on a worker that isn’t theirs (USD a month; empty for no limit)', otherLimit),
+            h('label', { class: 'field' }, 'Default allowance: what one person’s workers may be budgeted before a hire or raise needs approval (USD a month)', allowance)),
           h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Time saved by a pull request (× its agent time)', prMult), h('label', { class: 'field' }, 'At least (hours per pull request)', prMin)),
           h('p', { class: 'faint', style: 'font-size:13px', text: 'Reports estimate a person’s time saved at 1.5× agent time. A run that opened a pull request counts at the multiple above instead, and never less than the hours. Opened, not merged: a declined one still counts.' })),
-        function () { return { orgBudgetUSD: numOrNull(cap), alertAtPercent: Number(alertAt.value || 0), prSavedMultiplier: Number(prMult.value) || null, prSavedMinHours: Number(prMin.value) || null }; });
+        function () { return { orgBudgetUSD: numOrNull(cap), alertAtPercent: Number(alertAt.value || 0), otherPeopleLimitUSD: Number(otherLimit.value || 0), budgetAllowanceUSD: Number(allowance.value || 0), prSavedMultiplier: Number(prMult.value) || null, prSavedMinHours: Number(prMin.value) || null }; });
 
       // Records.
       var keep = h('input', { type: 'number', min: '7', step: '1', value: R.retentionDays == null ? '' : String(R.retentionDays), placeholder: 'Forever' });
@@ -11626,7 +11801,8 @@ export const CONSOLE_JS = String.raw`
       if (typeof only === 'string' && parts[only]) {
         var sec = parts[only];
         [].slice.call(sec.children, 0, sec._sub ? 2 : 1).forEach(function (el) { el.remove(); });
-        return [head(sec._title, sec._sub)].concat(only === 'teams' ? [rosterPanel(people, R.teams)] : []).concat([sec]);
+        // Under the spending rules, who has what: every manager and their workers.
+        return [head(sec._title, sec._sub)].concat(only === 'teams' ? [rosterPanel(people, R.teams)] : []).concat([sec]).concat(only === 'spending' ? [budgetsByManager()] : []);
       }
       return [head('Rules', 'What people may do with the workers. Changes apply at once, and each is written to the decision log.', null),
         identity, hiring, spending, teams, roles, records, permissions, redaction, models, signin, servers];
@@ -12782,13 +12958,158 @@ export const CONSOLE_JS = String.raw`
   /// Workers or Slack: which report the Reports page shows.
   function reportSwitch() {
     var on = state.reportView || 'workers';
-    return h('div', { class: 'seg', role: 'group', 'aria-label': 'Report' }, [['workers', 'Workers'], ['slack', 'Slack'], ['watching', 'Watching']].map(function (o) {
+    return h('div', { class: 'seg', role: 'group', 'aria-label': 'Report' }, [['workers', 'Workers'], ['spend', 'Spend'], ['slack', 'Slack'], ['watching', 'Watching']].map(function (o) {
       return h('button', { 'aria-pressed': on === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.reportView = o[0]; render(); } });
     }));
   }
 
+  /// Every worker's budget times a factor, in whole dollars. Never below what
+  /// it has already spent this month, which would stop it on the spot.
+  function scaledBudgets(workers, factor) {
+    return workers.map(function (w) {
+      return { id: w.id, name: w.name, from: w.capUSD, to: Math.max(1, Math.ceil(w.spentUSD), Math.round(w.capUSD * factor)) };
+    }).filter(function (c) { return c.to !== c.from; });
+  }
+
+  /// The org's budgets for an admin: each manager's allowance against what
+  /// they've committed, and each worker's budget, editable where they stand.
+  /// Who used the money is on Reports.
+  function budgetsByManager() {
+    var box = h('section', { class: 'panel pad stack' }, h('h2', { class: 'section-title', text: 'Budgets by manager' }), thinking('Adding it up…'));
+    var saving = function (input, note, send) {
+      input.onchange = function () {
+        note.className = 'faint'; note.textContent = 'Saving…';
+        send(input.value.trim()).then(function (x) {
+          if (x.ok === false) { note.className = 'msg err'; note.textContent = x.error; return; }
+          draw();
+        }, function (e) { note.className = 'msg err'; note.textContent = String((e && e.message) || e); });
+      };
+    };
+    var amount = function (value, label, placeholder) {
+      return h('input', { type: 'number', min: '0', step: '1', value: value == null ? '' : String(Math.round(value * 100) / 100), placeholder: placeholder || '', 'aria-label': label, style: 'width:90px' });
+    };
+    var draw = function () {
+      return api('GET', '/api/spend?all=1').then(function (s) {
+        if (s.ok === false) { fill(box, [h('h2', { class: 'section-title', text: 'Budgets by manager' }), msg(s)]); return; }
+        var byId = {};
+        s.workers.forEach(function (w) { byId[w.id] = w; });
+        var over = s.budgetUSD && s.capsUSD > s.budgetUSD;
+        // Every worker at once: says what would change, then changes it.
+        var bulkOut = h('span', { 'aria-live': 'polite', style: 'font-size:13px' });
+        var applyAll = function (button, factor, what) {
+          var changes = scaledBudgets(s.workers, factor);
+          if (!changes.length) { bulkOut.className = 'faint'; bulkOut.textContent = 'Nothing to change.'; return; }
+          var after = s.capsUSD + changes.reduce(function (sum, c) { return sum + c.to - c.from; }, 0);
+          if (!confirm(what + '\\n\\nThis changes ' + plural(changes.length, 'worker', 'workers') + ', and budgets go from ' + money(s.capsUSD) + ' to ' + money(after) + ' in total. No budget goes below what that worker has already spent.')) return;
+          var restore = busy(button, 'Changing…');
+          changes.reduce(function (chain, c) {
+            return chain.then(function (failed) {
+              return api('POST', '/api/workers/' + encodeURIComponent(c.id) + '/update', { patch: { budgetUSDPerMonth: c.to } }).then(function (x) { return x.ok === false ? failed.concat(c.name) : failed; }, function () { return failed.concat(c.name); });
+            });
+          }, Promise.resolve([])).then(function (failed) {
+            restore();
+            if (failed.length) { bulkOut.className = 'msg err'; bulkOut.textContent = 'Couldn’t change: ' + failed.join(', ') + '.'; return; }
+            draw();
+          });
+        };
+        var percent = h('input', { type: 'number', step: '1', placeholder: '-10', 'aria-label': 'Change every worker’s budget by this percent', style: 'width:80px' });
+        var byPercent = h('button', { type: 'button', class: 'btn small', text: 'Change all', onclick: function () {
+          var p = Number(percent.value);
+          if (!p || p <= -100) { bulkOut.className = 'msg err'; bulkOut.textContent = 'Say a percent, like 10 or -10.'; return; }
+          applyAll(byPercent, 1 + p / 100, 'Change every worker’s budget by ' + p + '%?');
+        } });
+        var toFit = over ? h('button', { type: 'button', class: 'btn small go', text: 'Fit budgets to ' + money(s.budgetUSD), onclick: function () {
+          applyAll(toFit, s.budgetUSD / s.capsUSD, 'Scale every worker’s budget down to fit the ' + money(s.budgetUSD) + ' org budget?');
+        } }) : null;
+        var bulk = s.workers.length ? h('div', { class: 'row', style: 'gap:10px;align-items:center' }, toFit, h('span', { class: 'faint', style: 'font-size:13px' }, 'Every worker’s budget by'), percent, h('span', { class: 'faint', style: 'font-size:13px' }, '%'), byPercent, bulkOut) : null;
+        var rows = (s.managers || []).map(function (m) {
+          var note = h('span', { 'aria-live': 'polite', style: 'font-size:13px' });
+          var allow = null;
+          if (!m.exempt) {
+            allow = amount(m.ownAllowance ? m.allowanceUSD : null, 'Allowance for ' + m.name, money(m.allowanceUSD) + ' (default)');
+            saving(allow, note, function (v) { return api('POST', '/api/admin/people/allowance', { slackUserId: m.slackUserId, allowanceUSD: v === '' ? null : Number(v) }); });
+          }
+          var workers = m.workerIds.map(function (id) { return byId[id]; }).filter(Boolean).map(function (w) {
+            var wNote = h('span', { 'aria-live': 'polite', style: 'font-size:13px' });
+            var cap = amount(w.capUSD, 'Monthly budget for ' + w.name);
+            saving(cap, wNote, function (v) {
+              if (!(Number(v) > 0)) return Promise.resolve({ ok: false, error: 'A budget must be above zero.' });
+              return api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/update', { patch: { budgetUSDPerMonth: Number(v) } });
+            });
+            var hot = w.paceUSD != null && w.capUSD > 0 && w.paceUSD > w.capUSD;
+            return h('div', { class: 'row', style: 'gap:10px;padding:6px 0 6px 18px;align-items:center' },
+              avatar(w.id, w.name, 's'),
+              h('button', { class: 'linkish', style: 'min-width:120px;text-align:left', text: w.name, onclick: function () { go('worker', { workerId: w.id, workerTab: 'settings' }); } }),
+              h('span', { class: 'faint', style: 'font-size:13px' }, 'Budget $'), cap,
+              h('span', { class: 'faint', style: 'font-size:13px', text: money(w.spentUSD) + ' spent' + (w.paceUSD != null ? ' · on pace for ' + money(w.paceUSD) : '') + (hot ? ', over its budget' : '') + (w.enabled ? '' : ' · paused') }),
+              wNote);
+          });
+          return h('details', { open: true, style: 'border-top:1px solid var(--line);padding:10px 0' },
+            h('summary', { style: 'cursor:pointer' }, h('b', { text: m.name }),
+              h('span', { class: 'faint', style: 'margin-left:10px;font-size:13px', text: plural(m.workerIds.length, 'worker', 'workers') + ' · budgets ' + money(m.capsUSD) + ' · spent ' + money(m.spentUSD) + (m.paceUSD != null ? ' · on pace for ' + money(m.paceUSD) : '') })),
+            h('div', { class: 'stack', style: 'gap:6px;margin-top:8px' },
+              allow ? h('div', { class: 'row', style: 'gap:10px;align-items:center;padding-left:18px' }, h('span', { class: 'faint', style: 'font-size:13px' }, 'Allowance $'), allow, h('span', { class: 'faint', style: 'font-size:13px', text: 'Empty uses the default.' }), note)
+                : h('p', { class: 'faint', style: 'margin:0;padding-left:18px;font-size:13px', text: m.slackUserId ? 'An admin, so no allowance applies.' : 'Not linked to Slack, so no allowance applies and they can’t be reached there. Give these workers a manager on Slack.' }),
+              m.over ? h('p', { class: 'msg need', style: 'margin:0 0 0 18px', text: 'Budgets are ' + money(m.capsUSD - m.allowanceUSD) + ' over their ' + money(m.allowanceUSD) + ' allowance. What’s running keeps running, but their next hire or raise needs approval.' }) : null,
+              workers));
+        });
+        fill(box, [h('h2', { class: 'section-title', text: 'Budgets by manager' }),
+          h('p', { class: 'hint', style: 'font-size:13px', text: 'What each manager may commit, and what each worker may spend a month. Who used the money is on Reports, under Spend.' }),
+          h('p', { style: 'margin:0', text: 'Worker budgets add up to ' + money(s.capsUSD) + (s.budgetUSD ? ', against an org budget of ' + money(s.budgetUSD) : '') + '. ' + money(s.spentUSD) + ' spent this month.' }),
+          over ? h('p', { class: 'msg need', style: 'margin:0', text: 'That’s ' + money(s.capsUSD - s.budgetUSD) + ' more than the org budget.' }) : null,
+          bulk,
+          rows.length ? h('div', null, rows) : h('p', { class: 'muted', text: 'No workers yet.' })]);
+      }, function (e) { fill(box, [msg({ ok: false, error: String((e && e.message) || e) })]); });
+    };
+    draw();
+    return box;
+  }
+
+  /// Spend this month: how much, whether it fits, where it's heading, and for
+  /// each worker who used it. Costs land on the worker that ran the work.
+  function viewSpend() {
+    var all = !!state.spendAll;
+    return api('GET', '/api/spend' + (all ? '?all=1' : '')).then(function (s) {
+      if (s.ok === false) return [msg(s)];
+      var rate = function (spent, cap) { return cap > 0 && spent >= cap ? ' high' : ''; };
+      var bar = function (spent, cap) {
+        return h('div', { class: 'meter' + rate(spent, cap), role: 'img', 'aria-label': money(spent) + ' of ' + money(cap) }, h('span', { style: 'width:' + (cap > 0 ? Math.min(100, (spent / cap) * 100) : 0).toFixed(0) + '%' }));
+      };
+      var isOrg = s.scope === 'all';
+      var seg = h('div', { class: 'page-actions' }, reportSwitch(), s.canSeeAll ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Whose workers' }, [[false, 'My workers'], [true, 'Everyone’s']].map(function (o) {
+        return h('button', { 'aria-pressed': isOrg === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.spendAll = o[0]; render(); } });
+      })) : null);
+      var over = s.budgetUSD && s.capsUSD > s.budgetUSD;
+      var top = card('spendtop', isOrg ? 'Org spend this month' : 'My workers this month', null, h('div', { class: 'stack', style: 'gap:8px' },
+        h('span', { class: 'big', style: 'font-size:20px;font-family:var(--sans);font-weight:700', text: money(s.spentUSD) + (s.budgetUSD ? ' of ' + money(s.budgetUSD) : '') }),
+        s.budgetUSD ? bar(s.spentUSD, s.budgetUSD) : null,
+        h('span', { class: 'faint', text: [s.paceUSD != null ? 'On pace for ' + money(s.paceUSD) : null, 'Worker budgets add up to ' + money(s.capsUSD)].filter(Boolean).join(' · ') }),
+        over ? h('p', { class: 'msg need', style: 'margin:0', text: 'Worker budgets add up to ' + money(s.capsUSD - s.budgetUSD) + ' more than ' + (isOrg ? 'the org budget' : 'your allowance') + '. Lower one on its Settings tab if that isn’t what you want.' }) : null,
+        s.budgetUSD ? null : (isOrg ? null : h('span', { class: 'faint', text: 'You have no allowance set, so there’s no total to compare against.' }))));
+      var rows = s.workers.map(function (w) {
+        var used = w.users.map(function (u) { return u.label + ' ' + money(u.spentUSD); });
+        if (w.otherUSD >= 0.005) used.push((w.users.length ? 'Its schedule, its own work or not recorded ' : 'Its schedule, its own work or not recorded ') + money(w.otherUSD));
+        var hot = w.capUSD > 0 && w.paceUSD != null && w.paceUSD > w.capUSD;
+        return h('div', { class: 'stack', style: 'gap:4px;padding:12px 18px;border-top:1px solid var(--line)' },
+          h('div', { class: 'row', style: 'gap:10px;flex-wrap:nowrap' }, avatar(w.id, w.name, 's'),
+            h('button', { class: 'linkish', style: 'font-weight:600', text: w.name, onclick: function () { go('worker', { workerId: w.id, workerTab: 'settings' }); } }),
+            w.enabled ? null : h('span', { class: 'badge', text: 'Paused' }),
+            h('span', { style: 'margin-left:auto;white-space:nowrap', text: money(w.spentUSD) + ' of ' + money(w.capUSD) })),
+          bar(w.spentUSD, w.capUSD),
+          w.paceUSD != null ? h('span', { class: hot ? 'msg need' : 'faint', style: 'font-size:13px', text: 'On pace for ' + money(w.paceUSD) + (hot ? ', over its budget' : '') }) : null,
+          used.length ? h('span', { class: 'faint', style: 'font-size:13px', text: 'Used by: ' + used.join(' · ') }) : h('span', { class: 'faint', style: 'font-size:13px', text: 'Nothing spent yet this month.' }),
+          isOrg && w.manager ? h('span', { class: 'faint', style: 'font-size:13px', text: 'Manager: ' + w.manager + (w.managerOnSlack ? '' : ' (not linked to Slack)') }) : null);
+      });
+      var limit = s.limitUSD === null ? 'No limit on people using a worker that isn’t theirs.' : 'Someone using a worker that isn’t theirs is warned at ' + s.alertAtPercent + '% of ' + money(s.limitUSD) + ' a month, per worker, and stopped at the limit.';
+      return [head('Reports', 'Who your workers’ budgets went on, and where the month is heading.', seg), top,
+        card('spendlist', 'By worker · ' + s.workers.length, null, rows.length ? h('div', null, rows) : h('p', { class: 'muted', style: 'padding:12px 18px', text: 'You don’t manage any workers yet.' }), true),
+        h('p', { class: 'faint', text: limit + ' Spend is finished runs’ model cost, charged to the worker that ran them. Planning and chat turns aren’t included, so short answers cost more than this shows. Runs from before this page existed show as not recorded.' })];
+    });
+  }
+
   function viewReports() {
     var days = state.reportDays == null ? 30 : state.reportDays;
+    if (state.reportView === 'spend') return viewSpend();
     if (state.reportView === 'slack') return viewSlackReport(days);
     // Built at once, its rows filled as they load; handed back like the rest.
     if (state.reportView === 'watching') return Promise.resolve(viewWatching());
@@ -13296,7 +13617,7 @@ export const CONSOLE_JS = String.raw`
     return { kind: 'run', runId: x.runId, workerName: x.workerName, how: 'other' };
   }
   // Each kind as an icon in its own colour; its name is in the row's label.
-  var LIB_KIND = { task: ['team', 'go', 'Team task'], work: ['doc', 'info', 'Report'], event: ['bolt', 'violet', 'Trigger'], file: ['library', 'need', 'Kept file'], answer: ['slack', 'ok', 'Answer'] };
+  var LIB_KIND = { document: ['doc', 'info', 'Document'], task: ['team', 'go', 'Team task'], work: ['doc', 'info', 'Report'], event: ['bolt', 'violet', 'Trigger'], file: ['library', 'need', 'Kept file'], answer: ['slack', 'ok', 'Answer'] };
   var RUN_HOW = { schedule: 'On its schedule', runNow: 'Run now', trigger: 'Set off by a trigger', asked: 'Started by a question', other: 'A run' };
   // Private is the default, so it reads quietly; wider sharing gets colour.
   var LIB_VIS = { 'private': ['Only its manager', ''], team: ['Its team', 'working'], org: ['Everyone', 'ok'] };
@@ -13315,7 +13636,7 @@ export const CONSOLE_JS = String.raw`
     // The newest LIB_MAX come down at once and are filtered here. Past that,
     // a search asks the server, which looks through everything.
     var LIB_MAX = 500, LIB_PAGE = 50;
-    return Promise.all([api('GET', '/api/library?limit=' + LIB_MAX), api('GET', '/api/workers'), api('GET', '/api/teams').catch(function () { return []; })]).then(function (r) {
+    return Promise.all([api('GET', '/api/library?documents=1&limit=' + LIB_MAX), api('GET', '/api/workers'), api('GET', '/api/teams').catch(function () { return []; })]).then(function (r) {
       var newest = Array.isArray(r[0]) ? r[0] : r[0].items || [], workers = r[1], teams = Array.isArray(r[2]) ? r[2] : [];
       var all = newest, more = newest.length >= LIB_MAX, asked = '', askTimer = null;
       var tab = state.libTab || 'all';
@@ -13329,9 +13650,12 @@ export const CONSOLE_JS = String.raw`
       var q = h('input', { type: 'search', placeholder: 'Search everything delivered', 'aria-label': 'Search the Library' });
       var body = h('div', { class: 'librows' });
       var foot = h('div', { class: 'tfoot' });
-      var TABS = [['all', 'Everything', function () { return true; }], ['task', 'Team tasks', function (x) { return x.kind === 'task'; }],
-        ['report', 'Reports', function (x) { return x.kind === 'work' || x.kind === 'event'; }], ['file', 'Kept files', function (x) { return x.kind === 'file'; }],
-        ['answer', 'Answers', function (x) { return x.kind === 'answer'; }]];
+      // Documents are the task's files over again, so Everything lists them only
+      // when you're looking for something. A quick reply isn't delivered work,
+      // and a team learning its job isn't anything anyone asked for.
+      var TABS = [['all', 'Everything', function (x) { return x.kind !== 'document' || searchWords().length > 0; }], ['task', 'Team tasks', function (x) { return x.kind === 'task' && !x.answered && !x.learning; }],
+        ['document', 'Documents', function (x) { return x.kind === 'document' || x.kind === 'file'; }], ['report', 'Reports', function (x) { return x.kind === 'work' || x.kind === 'event'; }],
+        ['answer', 'Answers', function (x) { return x.kind === 'answer' || !!x.answered; }]];
       var tabsEl = h('div', { class: 'tabs', role: 'group', 'aria-label': 'Show' });
       var searchWords = function () { return q.value.trim().toLowerCase().split(/\s+/).filter(function (w) { return w.length > 1; }); };
       var draw = function () {
@@ -13343,7 +13667,7 @@ export const CONSOLE_JS = String.raw`
             clearTimeout(askTimer);
             if (!text) all = newest;
             else askTimer = setTimeout(function () {
-              api('GET', '/api/library?limit=' + LIB_MAX + '&q=' + encodeURIComponent(text)).then(function (y) { if (asked === text && Array.isArray(y)) { all = y; draw(); } });
+              api('GET', '/api/library?documents=1&limit=' + LIB_MAX + '&q=' + encodeURIComponent(text)).then(function (y) { if (asked === text && Array.isArray(y)) { all = y; draw(); } });
             }, 300);
           }
         }
@@ -13389,7 +13713,7 @@ export const CONSOLE_JS = String.raw`
             marked(name, words, h('span', { class: 'libtitle' })),
             h('span', { class: 'libsrc' }, h('span', { class: 'libtag ' + k[1], text: src[0] }), marked(src[1], words, h('b')), src[2] ? marked('· ' + src[2], words, h('span')) : null),
             snip ? h('span', { class: 'libsnip' }, h('span', { class: 'libwhere', text: where }), marked(snip, words, h('span'))) : where ? h('span', { class: 'libsnip' }, h('span', { class: 'libwhere', text: where })) : null),
-          h('span', { class: 'libfrom' }, avatar(x.workerId, x.workerName, 's'), h('span', { text: x.kind === 'task' || x.kind === 'file' ? (libOrigin(x).teamName || x.workerName) : x.workerName })),
+          h('span', { class: 'libfrom' }, avatar(x.workerId, x.workerName, 's'), h('span', { text: x.kind === 'task' || x.kind === 'file' || x.kind === 'document' ? (libOrigin(x).teamName || x.workerName) : x.workerName })),
           h('span', { class: 'badge ' + vis[1], title: x.visibleTo || '', text: vis[0] }),
           h('span', { class: 'faint libwhen', text: ago(x.at) }),
           h('span', { class: 'librate' + (x.rating ? x.rating.useful ? ' yes' : ' no' : ''), text: x.status === 'failed' ? 'Failed' : x.status === 'held' ? 'Waiting for you' : x.rating ? (x.rating.useful ? 'Useful' : 'Not useful') : '' }));
@@ -13423,7 +13747,7 @@ export const CONSOLE_JS = String.raw`
             }, function () { show(x.body); });
           }, 'read/' + encodeURIComponent(x.id));
         };
-        var rate = x.kind === 'answer' || x.kind === 'task' || x.status !== 'delivered' ? null : h('span', { class: 'row', style: 'gap:6px;margin-left:auto' }, h('span', { class: 'faint', text: 'Useful?' }),
+        var rate = x.kind === 'answer' || x.kind === 'task' || x.kind === 'document' || x.status !== 'delivered' ? null : h('span', { class: 'row', style: 'gap:6px;margin-left:auto' }, h('span', { class: 'faint', text: 'Useful?' }),
           [true, false].map(function (useful) {
             return h('button', { class: 'btn small icon', 'aria-label': useful ? 'Useful' : 'Not useful', 'aria-pressed': x.rating && x.rating.useful === useful ? 'true' : 'false', onclick: function () {
               var path = x.kind === 'event' ? '/api/library/' + encodeURIComponent(x.id) + '/rate' : '/api/rate';
@@ -13462,7 +13786,7 @@ export const CONSOLE_JS = String.raw`
               h('button', { class: 'btn small go', text: 'Open the task', onclick: function () { openTask(o.taskId); } }),
               x.workingFiles ? h('button', { class: 'btn small', text: 'Open its folder · ' + plural(x.workingFiles, 'working file', 'working files'), onclick: function () { go('teamfiles', { taskId: o.taskId }); } }) : null,
               x.body ? h('button', { class: 'btn small quiet', text: 'Read the summary', onclick: reader }) : null));
-        } else if (x.kind === 'file') {
+        } else if (x.kind === 'file' || x.kind === 'document') {
           var fname = (x.source && x.source.file) || x.title;
           parts.push(h('div', { class: 'row' },
             h('button', { class: 'btn small go', text: 'Read it', onclick: function () { go('teamfiles', { taskId: o.taskId, teamFilePick: fname }); } }),
@@ -13587,6 +13911,8 @@ export const CONSOLE_JS = String.raw`
       h('label', { class: 'toggle' }, plain, h('span', null, h('b', { text: 'Just tell me what changed' }), h('span', { class: 'faint', style: 'display:block;font-size:12.5px', text: '“ACME-412 moved from In review to Done”, with a link. No worker turn, so nothing to pay while it’s quiet. Off: the worker gets each change to act on.' }))));
     var syncFire = function () {
       changeBox.hidden = fireOn.value !== 'change';
+      // A draft finds new items; a change watch's search needs {{ids}} too.
+      draftBox.hidden = fireOn.value === 'change';
       trackList.closest('label').hidden = !onlyTracked.checked;
       instrStep.hidden = fireOn.value === 'change' && plain.checked;
     };
@@ -13601,10 +13927,52 @@ export const CONSOLE_JS = String.raw`
       api('POST', '/api/triggers/test', { watch: { server: server.value, tool: call.value, args: a, everyMinutes: 15, itemsPath: itemsPath.value.trim(), idPath: idPath.value.trim() } }).then(function (x) {
         restore(); testOut.textContent = '';
         if (x.ok === false) { testOut.appendChild(msg(x)); return; }
-        append(testOut, [h('p', { class: 'faint', text: 'It sees ' + plural(x.items.length, 'item', 'items') + ' now. These are skipped when it starts; it acts on new ones after.' }),
-          h('ul', { style: 'margin:6px 0 0;padding-left:18px;font-size:13.5px' }, x.items.slice(0, 8).map(function (i) { return h('li', { text: i.title }); }))]);
+        append(testOut, seenNow(x.items));
       });
     };
+    var seenNow = function (items) {
+      return [h('p', { class: 'faint', text: 'It sees ' + plural(items.length, 'item', 'items') + ' now. These are skipped when it starts; it acts on new ones after.' }),
+        h('ul', { style: 'margin:6px 0 0;padding-left:18px;font-size:13.5px' }, items.slice(0, 8).map(function (i) { return h('li', { text: i.title }); }))];
+    };
+    // Say what to catch and the worker works out the search: it looks up the
+    // real names in the tool and tries it, and the form fills in to check.
+    // Nothing saves until the person does. A look-up takes minutes, so it
+    // starts here and is asked after.
+    var wish = h('textarea', { 'aria-label': 'What to catch', placeholder: 'e.g. New bugs in the Support Backlog that aren’t done yet', style: 'min-height:48px' });
+    var draftBtn = h('button', { type: 'button', class: 'btn', text: 'Draft it' });
+    var draftOut = h('div', { 'aria-live': 'polite' });
+    var fillDraft = function (d) {
+      args.value = JSON.stringify(d.args || {}, null, 2);
+      itemsPath.value = ''; idPath.value = '';
+      if (![].some.call(server.options, function (o) { return o.value === d.server; })) server.appendChild(h('option', { value: d.server, text: d.server }));
+      server.value = d.server; wantCall = d.tool; server.onchange();
+      if (!name.value.trim() && d.name) name.value = d.name;
+      testOut.textContent = ''; draftOut.textContent = '';
+      append(draftOut, [d.means ? h('p', { text: d.means }) : null, h('p', { class: 'faint', text: 'Filled in below. Check it, then save.' })].concat(seenNow(d.items)).concat(
+        d.listed ? [] : [h('p', { class: 'msg need', text: 'This answers in one block rather than a list, so it can’t tell new items apart: it would set off whenever anything in the answer changes.' })]));
+    };
+    var askDraft = function (id, restore) {
+      // The form was closed: the draft is left for no one.
+      if (!save.isConnected) { restore(); return; }
+      api('GET', '/api/trigger-drafts/' + encodeURIComponent(id)).then(function (x) {
+        if (x.ok === false) { restore(); draftOut.textContent = ''; draftOut.appendChild(msg(x)); return; }
+        if (!x.done) { setTimeout(function () { askDraft(id, restore); }, 4000); return; }
+        restore(); fillDraft(x.draft);
+      }).catch(function (e) { restore(); draftOut.textContent = ''; draftOut.appendChild(h('div', { class: 'msg err', text: e.message })); });
+    };
+    draftBtn.onclick = function () {
+      var restore = busy(draftBtn, w.name + ' is looking…');
+      draftOut.textContent = '';
+      api('POST', '/api/workers/' + encodeURIComponent(w.id) + '/trigger-drafts', { description: wish.value }).then(function (x) {
+        if (x.ok === false) { restore(); draftOut.appendChild(msg(x)); return; }
+        draftOut.appendChild(h('p', { class: 'faint', text: 'This usually takes a minute or two. You can fill in the rest while it works.' }));
+        askDraft(x.draftId, restore);
+      }).catch(function (e) { restore(); draftOut.appendChild(h('div', { class: 'msg err', text: e.message })); });
+    };
+    var draftBox = h('div', { class: 'stack', style: 'gap:8px' },
+      h('label', { class: 'field' }, 'Describe what to catch', wish),
+      h('div', { class: 'row', style: 'align-items:center;gap:12px' }, draftBtn, h('span', { class: 'faint', style: 'font-size:12.5px', text: w.name + ' finds the search in your tools and fills in the fields below for you to check. It counts as a run. Know the search already? Skip this.' })),
+      draftOut);
     api('GET', '/api/tools').then(function (r) {
       server.textContent = '';
       var tools = r.ok === false ? [] : r.tools;
@@ -13673,6 +14041,7 @@ export const CONSOLE_JS = String.raw`
       syncQuery();
     };
     parts.watch = h('div', { class: 'stack' },
+      draftBox,
       h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Tool', server), h('label', { class: 'field' }, 'What to ask it', call)),
       preset,
       queryField, argsInline,

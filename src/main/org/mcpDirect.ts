@@ -146,6 +146,12 @@ function firstArray(v: unknown, depth = 0): unknown[] | null {
   return null;
 }
 
+/// Whether an answer has a list in it. Without one, `itemsFrom` takes the
+/// whole answer as one item, which sets a watch off whenever any of it changes.
+export function answersWithList(call: { json: unknown }): boolean {
+  return firstArray(call.json) !== null;
+}
+
 function hash(text: string): string {
   let h = 2166136261;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);

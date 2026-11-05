@@ -17,6 +17,46 @@ describe('the console script', () => {
   });
 });
 
+describe('a Setup page', () => {
+  it('keeps its rules: it strips their title, so nothing may wrap them', () => {
+    // Wrapped once, the title strip took the whole rules section with it.
+    expect(CONSOLE_JS).not.toMatch(/\bspending = h\(/);
+    expect(CONSOLE_JS).toContain("concat([sec]).concat(only === 'spending' ? [budgetsByManager()] : [])");
+  });
+});
+
+describe('picking a team’s crew', () => {
+  // The check above only asks that a name exists somewhere in the script, and
+  // other pages have a toggle of their own, so the form's own went missing
+  // unnoticed and clicking a worker did nothing. Run it for real.
+  const from = CONSOLE_JS.indexOf("      var byId = function (id) { return workers.filter(");
+  const to = CONSOLE_JS.indexOf('      // What the file says, as far as it fits who you can put on a team here.');
+  const crew = () =>
+    new Function('workers', 'draw', `var picked = {}, roles = {}, order = [];\n${CONSOLE_JS.slice(from, to)}\nreturn { toggle: toggle, state: function () { return { picked: picked, roles: roles, order: order }; }, setRole: function (id, r) { roles[id] = r; } };`)(
+      [{ id: 'a' }, { id: 'b' }],
+      () => {},
+    ) as { toggle(id: string, on: boolean): void; state(): { picked: Record<string, boolean>; roles: Record<string, string>; order: string[] }; setRole(id: string, r: string): void };
+
+  it('defines toggle in the form itself', () => {
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    expect(CONSOLE_JS.slice(from, to)).toContain('var toggle = function (id, on)');
+  });
+
+  it('puts a worker on the crew, once, in the order picked, and takes them off again', () => {
+    const c = crew();
+    c.toggle('b', true);
+    c.toggle('a', true);
+    c.toggle('b', true);
+    expect(c.state().order).toEqual(['b', 'a']);
+    c.setRole('b', 'Architect');
+    c.toggle('b', false);
+    expect(c.state().order).toEqual(['a']);
+    expect(c.state().picked).toEqual({ a: true });
+    expect(c.state().roles).toEqual({});
+  });
+});
+
 describe('what a run did, in plain words', () => {
   // The grouping functions alone, cut from the script and run here.
   const from = CONSOLE_JS.indexOf('  var ACT_HOST');
@@ -106,5 +146,35 @@ describe('the inbox, as pieces of work', () => {
     const ws = workSteps([note, fired, fix]);
     expect(ws.steps.map((x) => x.title)).toEqual(['ACME-5: bug', 'ACME-5: fix', 'ACME-5: comment']);
     expect((ws.ended - ws.began) / 60000).toBe(12);
+  });
+});
+
+describe('changing every worker’s budget at once', () => {
+  const from = CONSOLE_JS.indexOf('  function scaledBudgets(');
+  const to = CONSOLE_JS.indexOf('  /// The org’s budgets for an admin') >= 0 ? CONSOLE_JS.indexOf('  /// The org’s budgets for an admin') : CONSOLE_JS.indexOf("  /// The org's budgets for an admin");
+  const scaled = new Function(`${CONSOLE_JS.slice(from, to)}; return scaledBudgets;`)() as (w: Array<{ id: string; name: string; capUSD: number; spentUSD: number }>, f: number) => Array<{ id: string; to: number; from: number }>;
+  const worker = (id: string, capUSD: number, spentUSD = 0) => ({ id, name: id, capUSD, spentUSD });
+
+  it('scales each to whole dollars', () => {
+    expect(scaled([worker('a', 100), worker('b', 50)], 0.9).map((c) => [c.id, c.to])).toEqual([['a', 90], ['b', 45]]);
+  });
+
+  it('never goes below what a worker has spent, or below a dollar', () => {
+    expect(scaled([worker('a', 100, 95.5)], 0.5)[0].to).toBe(96);
+    expect(scaled([worker('a', 1)], 0.1)).toEqual([]);
+    expect(scaled([worker('a', 10)], 0.01)[0].to).toBe(1);
+  });
+
+  it('leaves out what wouldn’t change', () => {
+    expect(scaled([worker('a', 100)], 1)).toEqual([]);
+  });
+
+  it('gets close to an org budget, within rounding', () => {
+    const caps = [20, 480.03, 336.81, 50, 15, 50, 15, 20, 15, 15, 10, 15].map((c, i) => worker(String(i), c));
+    const total = caps.reduce((sum, w) => sum + w.capUSD, 0);
+    const changes = scaled(caps, 1000 / total);
+    const after = caps.reduce((sum, w) => sum + (changes.find((c) => c.id === w.id)?.to ?? w.capUSD), 0);
+    expect(after).toBeGreaterThan(990);
+    expect(after).toBeLessThan(1010);
   });
 });

@@ -38,6 +38,8 @@ export interface ProcessTaskLook {
   status: 'planning' | 'questions' | 'proposed' | 'running' | 'waiting' | 'review' | 'done' | 'failed' | 'cancelled' | 'queued';
   title?: string;
   pack?: { summary: string; files: string[] };
+  /// The team talked after writing its pack, and the pack doesn't have it yet.
+  discussed?: boolean;
   /// The task's code branch, when it changed code.
   branch?: string;
   error?: string;
@@ -50,7 +52,7 @@ export interface ProcessDeps {
   teams(): Array<{ id: string; name: string; owner?: ProcessPerson }>;
   task(taskId: string): ProcessTaskLook | null;
   /// Give a team the stage's work, asked by the stage's owner.
-  brief(teamId: string, text: string, requestedBy: ProcessPerson, code?: { projectPath: string; startFrom?: string }): Result<{ taskId: string }>;
+  brief(teamId: string, text: string, requestedBy: ProcessPerson, code?: { projectPath: string; startFrom?: string }, slackThread?: { channel: string; threadTs: string }): Result<{ taskId: string }>;
   /// The workers a stage may use, with who manages each. Absent: no worker stages.
   workers?(): Array<{ id: string; name: string; owner?: ProcessPerson }>;
   /// How far someone reaches a worker: they manage it (or are an admin), may
@@ -684,6 +686,8 @@ export class ProcessService {
       fromItemId?: string;
       /// The person putting it in is an admin.
       byAdmin?: boolean;
+      /// The channel thread it came from, for its team stages to work in.
+      slackThread?: { channel: string; threadTs: string };
     },
   ): Result<{ item: ProcessItem; process: ProcessDef }> {
     const s = this.load();
@@ -710,6 +714,7 @@ export class ProcessService {
       source: input.source,
       ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       ...(input.fromItemId ? { fromItemId: input.fromItemId } : {}),
+      ...(input.slackThread ? { slackThread: input.slackThread } : {}),
       stageIndex: 0,
       status: 'active',
       artifacts: [],
@@ -1104,7 +1109,7 @@ export class ProcessService {
             ...(item.branch ? { startFrom: item.branch } : {}),
           }
         : undefined;
-      const res = this.deps.brief(stage.teamId!, stageBrief(def, item, index, this.artifactFiles(item)), owner, code);
+      const res = this.deps.brief(stage.teamId!, stageBrief(def, item, index, this.artifactFiles(item)), owner, code, item.slackThread);
       if (!res.ok) {
         item.stageNote = 'Not started';
         this.block(def, item, `The team couldn’t take it: ${res.error}`);
@@ -1237,7 +1242,9 @@ export class ProcessService {
           taskId: item.taskId,
           title: task.title ?? stage.name,
           summary: task.pack?.summary ?? 'The team finished without a pack.',
-          files: byWorker ? [] : (task.pack?.files ?? []),
+          // What was agreed after the pack was written goes on too, whether
+          // or not anyone folded it in before signing off.
+          files: byWorker ? [] : [...(task.pack?.files ?? []), ...(task.discussed ? ['conversation.md'] : [])],
           ...(task.branch ? { branch: task.branch } : {}),
         };
         if (task.branch && def.codeIn) item.branch = task.branch;

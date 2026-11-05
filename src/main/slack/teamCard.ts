@@ -75,6 +75,34 @@ function standing(task: TeamTask): string {
 export interface PieceLook {
   last?: { text: string; at: number };
   reaches?: string[];
+  /// The last thing the member said, whatever it did after.
+  said?: string;
+}
+
+const SUMMARY_CHARS = 280;
+
+/// What a member says in the thread when its piece is done, in a line or two:
+/// its own closing words, else the opening of the file it wrote. Null when
+/// there's neither.
+export function pieceSummary(said: string | undefined, file: string | undefined): string | null {
+  const text = said?.replace(/\s+/g, ' ').trim() || openingOf(file ?? '');
+  if (!text) return null;
+  if (text.length <= SUMMARY_CHARS) return text;
+  // At a sentence's end when one falls late enough to say something.
+  const cut = text.slice(0, SUMMARY_CHARS);
+  const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+  return end > 60 ? cut.slice(0, end + 1) : clip(text, SUMMARY_CHARS);
+}
+
+/// A document's first paragraph of prose: past any front matter, headings,
+/// tables and code.
+function openingOf(doc: string): string {
+  const body = doc.replace(/^---\n[\s\S]*?\n---\n/, '').replace(/```[\s\S]*?(```|$)/g, '');
+  for (const block of body.split(/\n\s*\n/)) {
+    const prose = block.split('\n').filter((l) => l.trim() && !/^\s*(#|\||>|-{3,}|={3,})/.test(l));
+    if (prose.length) return prose.join(' ').replace(/\s+/g, ' ').trim();
+  }
+  return '';
 }
 
 const ago = (ms: number) => (ms < 60_000 ? 'just now' : `${took(ms)} ago`);

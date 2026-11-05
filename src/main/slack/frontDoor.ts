@@ -15,6 +15,7 @@
 // on disk.
 
 import { GREETING, GREETING_REPLY, SELF_ASK, STATUS_ASK, selfReply, withoutHello } from './statusReply';
+import { askedAbout, type AboutCard } from './aboutCards';
 import type { Attachment } from '../../shared/types';
 import type { OrgCaller } from '../../shared/org/policy';
 import type { TeamRoom } from '../../shared/flows/team';
@@ -36,6 +37,8 @@ export interface FrontDoorRequest {
   text: string;
   files?: SlackFile[];
   dm: boolean;
+  /// It @-mentions the bot, rather than being a plain reply in a thread.
+  mentioned?: boolean;
   /// Earlier messages folded into this one (said while a reply was being
   /// written), left out of the thread it is sent with: they are its text.
   also?: string[];
@@ -360,7 +363,8 @@ export interface FrontDoorState {
 }
 
 type Answered = { ok: true; reply: string; proposed?: number; orchestrationId?: string; choices?: string[]; askId?: string } | { ok: false; error: string };
-type Started = { ok: true; done: Promise<Answered> } | { ok: false; error: string };
+/// `warning`: said in the thread as it starts, such as nearing a limit.
+type Started = { ok: true; done: Promise<Answered>; warning?: string } | { ok: false; error: string };
 
 function minutes(ms: number): string {
   const m = Math.max(1, Math.round(ms / 60_000));
@@ -587,9 +591,10 @@ export interface FrontDoorDeps {
   track?(caller: OrgCaller, workerId: string, itemId: string, on: boolean): string | { worker: string; tracked: number };
   /// The teams this person may give work to. Absent: requests go to workers only.
   teams?(caller: OrgCaller): FrontDoorTeam[];
-  /// Give a team a task. Its questions, plan and progress go to the person in a DM.
+  /// Give a team a task. Its questions, plan and progress go to `thread`, the
+  /// channel thread it was asked in; without one, to the person in a DM.
   /// `queued`: the team is on another task and starts this one after it.
-  briefTeam?(caller: OrgCaller, teamId: string, brief: string): { ok: true; queued?: boolean } | { ok: false; error: string };
+  briefTeam?(caller: OrgCaller, teamId: string, brief: string, thread?: { channel: string; threadTs: string }): { ok: true; queued?: boolean } | { ok: false; error: string };
   /// "How are we doing?": what's waiting on them, who's working, what landed,
   /// said by the door itself. Absent: it's routed like any request.
   status?(caller: OrgCaller): string;
@@ -600,7 +605,10 @@ export interface FrontDoorDeps {
   /// The processes this person can put work into. Absent: none offered.
   processes?(caller: OrgCaller): FrontDoorProcess[];
   /// Put the request into a process as a new item.
-  submitProcess?(caller: OrgCaller, processId: string, brief: string): { ok: true; title: string; process: string; stage: string } | { ok: false; error: string };
+  /// A card on a worker, team or process this person can see, by name.
+  aboutCard?(caller: OrgCaller, name: string): AboutCard | null;
+  /// `thread`: the channel thread it came from, for its team stages to work in.
+  submitProcess?(caller: OrgCaller, processId: string, brief: string, thread?: { channel: string; threadTs: string }): { ok: true; title: string; process: string; stage: string } | { ok: false; error: string };
   /// Finished work this person can see that may already answer a question:
   /// strong matches are offered before routing, `weak` ones only tell the
   /// router who made something related. Absent: every request is routed.
@@ -636,7 +644,7 @@ export interface FrontDoorDeps {
     /// The last messages in a channel before a top-level mention, oldest first.
     recent?(channel: string, beforeTs: string, limit: number): Promise<SlackMessage[]>;
     download(url: string, maxBytes: number): Promise<Buffer | null>;
-    upload(channel: string, threadTs: string, filename: string, bytes: Buffer): Promise<boolean>;
+    upload(channel: string, threadTs: string, filename: string, bytes: Buffer, as?: PostAs): Promise<boolean>;
     /// A message with buttons (the one-tap answers). Absent: they aren't offered.
     postBlocks?(channel: string, text: string, blocks: unknown[], threadTs: string): Promise<boolean>;
     /// Replace a message's text and drop its buttons.
@@ -1198,12 +1206,21 @@ export class FrontDoor {
     }
     // An item in a process is followed by DM and /idea, not here.
     if (known?.workerId?.startsWith(PROCESS_ID)) {
-      if (text) await say(`That's in ${known.workerName ?? 'the process'} now. You'll get a DM as it moves; \`/idea\` shows where it is.`);
+      // A channel thread is people talking it over: only a word to the bot
+      // gets a reply. What's for a team working here doesn't reach this.
+      if (!req.dm && !req.mentioned) return;
+      if (text) await say(`That's in ${known.workerName ?? 'the process'} now. ${req.dm ? '' : 'Its team stages work in this thread. '}You'll get a DM as it moves; \`/idea\` shows where it is.`);
       return;
     }
-    // A team's task talks to the person in their DMs, not here.
     if (known?.workerId?.startsWith(TEAM_ID)) {
-      if (text) await say(`That's ${known.workerName ?? 'the team'}'s task now. Answer its questions and approve its plan in your DMs from me; to change the brief, open the task in the console.`);
+      // A channel thread is people talking it over: only a word to the bot
+      // gets a reply. Answers to the team's questions don't reach here.
+      if (!req.dm && !req.mentioned) return;
+      if (text) {
+        await say(req.dm
+          ? `That's ${known.workerName ?? 'the team'}'s task now. Answer its questions and approve its plan in your DMs from me; to change the brief, open the task in the console.`
+          : `That's ${known.workerName ?? 'the team'}'s task now. Its questions, plan and results come to this thread, and it takes replies here as feedback. To change the brief, open the task in the console.`);
+      }
       return;
     }
     // More for the worker already on it.
@@ -1233,6 +1250,14 @@ export class FrontDoor {
     // About the door itself: answered here, even with no one to route to.
     if (!known && SELF_ASK.test(withoutHello(text))) {
       await say(selfReply(workers));
+      return;
+    }
+    // "What is Launch Team?": its card, when that's a name they can see. Anything
+    // else that merely sounds like it goes on to be routed.
+    const askedName = !known ? askedAbout(withoutHello(text)) : null;
+    const aboutCard = askedName ? this.deps.aboutCard?.(caller, askedName) : null;
+    if (aboutCard) {
+      if (!this.deps.slack.postTs || !(await this.deps.slack.postTs(req.channel, aboutCard.text, req.threadTs ?? req.ts, undefined, aboutCard.blocks))) await say(aboutCard.text);
       return;
     }
     if (!workers.length) {
@@ -1710,7 +1735,7 @@ export class FrontDoor {
         sharedTexts(context.texts),
         context.others.length ? `\nAlso shared there: ${context.others.join('; ')}` : '',
       ].filter(Boolean).join('\n');
-      const res = this.deps.submitProcess!(caller, worker.id.slice(PROCESS_ID.length), brief);
+      const res = this.deps.submitProcess!(caller, worker.id.slice(PROCESS_ID.length), brief, req.dm ? undefined : { channel: req.channel, threadTs: root });
       if (!res.ok) {
         await say(res.error);
         return;
@@ -1720,7 +1745,7 @@ export class FrontDoor {
       else this.state.threads.push({ key, workerId: worker.id, workerName: res.process, at: this.now() });
       this.save();
       this.note(key, `Put into ${res.process}`, 'handed', undefined, { who: res.process, team: true });
-      await say(`In: _${res.title}_ goes into *${res.process}*${why ? ` (${why})` : ''}, starting at *${res.stage}*. You'll get a DM each time it moves; \`/idea\` shows where it is.${shortTip(req, worker, '/idea')}`);
+      await say(`In: _${res.title}_ goes into *${res.process}*${why ? ` (${why})` : ''}, starting at *${res.stage}*. ${req.dm ? '' : 'Its team stages work here in this thread, and anyone in it can weigh in. '}You'll get a DM each time it moves; \`/idea\` shows where it is.${shortTip(req, worker, '/idea')}`);
       return;
     }
     if (worker.id.startsWith(TEAM_ID)) {
@@ -1732,7 +1757,7 @@ export class FrontDoor {
         sharedTexts(context.texts),
         context.others.length || context.images.length ? `\nAlso shared there: ${[...context.others, ...files.filter((f) => IMAGE_TYPES.has(f.mimetype ?? '')).map((f) => f.name ?? 'a screenshot')].join('; ')}` : '',
       ].filter(Boolean).join('\n');
-      const res = this.deps.briefTeam!(caller, worker.id.slice(TEAM_ID.length), brief);
+      const res = this.deps.briefTeam!(caller, worker.id.slice(TEAM_ID.length), brief, req.dm ? undefined : { channel: req.channel, threadTs: root });
       if (!res.ok) {
         await say(res.error);
         return;
@@ -1742,6 +1767,17 @@ export class FrontDoor {
       else this.state.threads.push({ key, workerId: worker.id, workerName: worker.name, at: this.now() });
       this.save();
       this.note(key, `${worker.name} took it as a team task`, 'handed', undefined, { who: worker.name });
+      const next = req.dm
+        ? 'its coordinator will DM you anything it needs to know, then a plan to approve.'
+        : `its coordinator will ask here if it needs to know anything, and anyone in this thread can answer. Then <@${req.user}> gets a plan to approve.`;
+      if (!req.dm) {
+        await say(
+          (res.queued
+            ? `*${worker.name}* will take this as a team task${why ? ` (${why})` : ''}. It's finishing another one first, so this is next in line. When it starts, ${next}`
+            : `*${worker.name}* has this as a team task${why ? ` (${why})` : ''}. Before it starts, ${next}`) + (followUp ? '' : shortTip(req, worker, '/team')),
+        );
+        return;
+      }
       await say(
         (res.queued
           ? `*${worker.name}* will take this as a team task${why ? ` (${why})` : ''}. It's finishing another one first, so this is next in line. When it starts, its coordinator will DM you anything it needs to know, then a plan to approve.`
@@ -1775,6 +1811,7 @@ export class FrontDoor {
       await say(started.error);
       return;
     }
+    if (started.warning) await say(`:warning: ${started.warning}`);
     const existing = this.state.threads.find((t) => t.key === key);
     if (existing) Object.assign(existing, { workerId: worker.id, workerName: worker.name, at: this.now() });
     else this.state.threads.push({ key, workerId: worker.id, workerName: worker.name, at: this.now() });
@@ -2148,7 +2185,7 @@ export class FrontDoor {
   private io(): DeliverIo {
     return {
       post: (c, t, ts, as) => this.deps.slack.post(c, t, ts, as),
-      upload: (c, ts, n, b) => this.deps.slack.upload(c, ts, n, b),
+      upload: (c, ts, n, b, as) => this.deps.slack.upload(c, ts, n, b, as),
       readFile: (p, max) => this.deps.readFile(p, max),
       ...(this.deps.workerFile ? { workerFile: (id: string, p: string, max: number) => this.deps.workerFile!(id, p, max) } : {}),
     };
@@ -2209,7 +2246,7 @@ export class FrontDoor {
     }
     const done = finishedText(f.workerName, p, this.deps.libraryUrl());
     await this.deps.slack.post(f.channel, done, f.threadTs);
-    await deliverResults(this.io(), f.channel, f.threadTs, f.workerName, p);
+    await deliverResults(this.io(), f.channel, f.threadTs, f.workerName, p, { name: f.workerName, ...(f.avatarUrl ? { iconUrl: f.avatarUrl } : {}) });
     await this.notify(f.channel, f.threadTs, f.workerName, done);
   }
 }

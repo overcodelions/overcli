@@ -21,6 +21,8 @@ import { parseCron } from '../shared/flows/cron';
 import { scheduleText } from '../main/org/orgService';
 import { PROCESS_LIBRARY, libraryProcess, suggestTeamFor } from '../shared/org/processLibrary';
 import type { ProcessField, ProcessPerson, ProcessStage } from '../shared/org/process';
+import { processFromYaml, processToYaml, type ProcessYamlNames } from '../shared/org/processYaml';
+import { teamFromYaml, teamToYaml } from '../shared/org/teamYaml';
 import { processScheduleText, type ItemAction, type ProcessService } from '../main/org/processes';
 import { imageFromDataUrl, type ProcessDraftResult, type ProcessImageInput } from '../main/org/processDraft';
 import type { ModelIdResult } from '../main/backends/modelIdTest';
@@ -200,6 +202,7 @@ function accessRoutes(org: OrgService, access: AccessService, slackPeople?: () =
       handle: (c, b, [id], _u, base) => access.decideRequest(c, id, b.approve === true, base, role(b.role)),
     },
     { method: 'POST', path: /^\/api\/admin\/people\/role$/, handle: (c, b) => access.setRole(c, str(b.slackUserId), role(b.role), money(b.allowanceUSD)) },
+    { method: 'POST', path: /^\/api\/admin\/people\/allowance$/, handle: (c, b) => access.setAllowance(c, str(b.slackUserId), typeof b.allowanceUSD === 'number' ? b.allowanceUSD : null) },
     { method: 'POST', path: /^\/api\/admin\/people\/signout$/, handle: (c, b) => access.signOutEverywhere(c, str(b.slackUserId)) },
     { method: 'POST', path: /^\/api\/admin\/open-join$/, handle: (c, b) => access.setOpenJoin(c, b.on === true) },
     { method: 'GET', path: /^\/api\/admin\/rules$/, handle: (c) => access.rules(c) },
@@ -542,6 +545,24 @@ function cookieValue(header: string | undefined, name: string): string | undefin
 /// A person's own accounts: list, connect (Google's consent page, with a
 /// cookie tying the sign-in to this browser) and disconnect.
 /// A person as a form sends one: a name, and their Slack id when known.
+/// People the org knows, then anyone else in its Slack, one entry each. Two
+/// people can share a name: a file naming them is flagged, and the picker
+/// tells them apart by their handle.
+export function mergePeople(known: ReadonlyArray<{ name: string; slackUserId: string }>, slack: readonly SlackPerson[]): Array<{ name: string; slackUserId: string; handle?: string }> {
+  const handles = new Map(slack.map((p) => [p.id, p.handle]));
+  const seen = new Set(known.map((p) => p.slackUserId));
+  return [
+    ...known.map((p) => ({ ...p, ...(handles.get(p.slackUserId) ? { handle: handles.get(p.slackUserId)! } : {}) })),
+    ...slack.filter((p) => !seen.has(p.id)).map((p) => ({ name: p.name, slackUserId: p.id, ...(p.handle ? { handle: p.handle } : {}) })),
+  ].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/// The repos and workspaces connected here, by name, for a file that names one.
+function placeNames(org: OrgService, c: OrgCaller): string[] {
+  const places = org.repoList(c);
+  return places.ok ? [...places.repos.map((r) => r.name), ...places.workspaces.map((w) => w.name)] : [];
+}
+
 function personInput(raw: unknown): ProcessPerson | undefined {
   const p = raw as { name?: unknown; slackUserId?: unknown } | null;
   const name = typeof p?.name === 'string' ? p.name.trim().slice(0, 120) : '';
@@ -606,7 +627,7 @@ function stagesInput(raw: unknown): ProcessStage[] {
 
 /// Processes: define them, put items in, decide and steer. Intake is a
 /// trigger that hands each event to the process instead of a worker.
-function processRoutes(processes: ProcessService, triggers: TriggerService | undefined, org: OrgService, draftProcess?: ControlPlaneDeps['draftProcess']): Array<{ method: string; path: RegExp; handle: Handler }> {
+function processRoutes(processes: ProcessService, triggers: TriggerService | undefined, org: OrgService, draftProcess?: ControlPlaneDeps['draftProcess'], slackPeople?: ControlPlaneDeps['slackPeople']): Array<{ method: string; path: RegExp; handle: Handler }> {
   // One picture at a time per person: each is a minute of the model's time.
   const drafting = new Set<string>();
   const intakeOf = (id: string) =>
@@ -632,6 +653,25 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
     const repo = places.repos.find((r) => r.name === name);
     const ws = places.workspaces.find((w) => w.name === name);
     return repo ? { name: repo.name, path: repo.path } : ws ? { name: ws.name, path: ws.rootPath } : `No connected repo or workspace called ${name}.`;
+  };
+  // Who can be picked: people the org already knows, and anyone else in its
+  // Slack, so someone can lead a stage or decide without joining first. A
+  // lead only ever acts through Slack. Slack being down just means fewer names.
+  const pickable = async () => {
+    const dir = org.directory();
+    const slack = slackPeople ? await slackPeople().catch(() => []) : [];
+    return { ...dir, people: mergePeople(dir.people, slack) };
+  };
+  // The names a process file can use, as this person may see them.
+  const yamlNames = async (c: OrgCaller): Promise<ProcessYamlNames> => {
+    const dir = await pickable();
+    return {
+      teams: org.teams(c).map((t) => ({ id: t.id, name: t.name })),
+      workers: org.listWorkers(c).map((w) => ({ id: w.id, name: w.name })),
+      people: dir.people,
+      groups: dir.groups.map((g) => ({ id: g.id, name: g.name })),
+      places: placeNames(org, c),
+    };
   };
   const save = (c: OrgCaller, b: Record<string, unknown>, id?: string) => {
     const code = codeIn(c, b.codeIn);
@@ -711,7 +751,7 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
       },
     },
     // Who can be picked to lead a stage or decide at one.
-    { method: 'GET', path: /^\/api\/directory$/, handle: () => ({ ok: true, ...org.directory(), roles: AUDIENCE_ROLES.map(([id, name]) => ({ id, name })) }) },
+    { method: 'GET', path: /^\/api\/directory$/, handle: async () => ({ ok: true, ...(await pickable()), roles: AUDIENCE_ROLES.map(([id, name]) => ({ id, name })) }) },
     // The library: ways SaaS teams commonly run work, to start from.
     { method: 'GET', path: /^\/api\/process-library$/, handle: () => ({ ok: true, library: PROCESS_LIBRARY }) },
     {
@@ -769,6 +809,30 @@ function processRoutes(processes: ProcessService, triggers: TriggerService | und
       },
     },
     { method: 'POST', path: /^\/api\/processes$/, handle: (c, b) => save(c, b) },
+    // A process read from its file, not saved: the editor opens with it, and
+    // saving is the same save as any other. `processId`: the one it replaces,
+    // whose stages keep their ids by name.
+    {
+      method: 'POST',
+      path: /^\/api\/processes\/from-yaml$/,
+      handle: async (c, b) => {
+        const id = typeof b.processId === 'string' ? b.processId : '';
+        const existing = id ? processes.get(c, id) : null;
+        if (existing && (!existing.ok || !existing.process.canSteer)) return { ok: false, error: `Only its owner or an admin can change this process.` };
+        return processFromYaml(typeof b.yaml === 'string' ? b.yaml : '', { ...(await yamlNames(c)), ...(existing?.ok ? { existingStages: existing.process.stages } : {}) });
+      },
+    },
+    // Its file, for whoever could change it: only they see who does each stage.
+    {
+      method: 'GET',
+      path: /^\/api\/processes\/([^/]+)\/yaml$/,
+      handle: async (c, _b, [id]) => {
+        const res = processes.get(c, decodeURIComponent(id));
+        if (!res.ok) return res;
+        if (!res.process.canSteer) return { ok: false, error: 'Only its owner or an admin can export this process.' };
+        return { ok: true, name: res.process.name, yaml: processToYaml(res.process, await yamlNames(c)) };
+      },
+    },
     // A process drafted from a picture of one, not saved: the editor opens
     // with it. Anyone who may make a process may draft one.
     {
@@ -1262,6 +1326,24 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         return org.startTeamRun(c, { ...teamInput(b), hires });
       },
     },
+    // A team read from its file, not made: the Make a team form opens with it.
+    {
+      method: 'POST',
+      path: /^\/api\/teams\/from-yaml$/,
+      handle: (c, b) => teamFromYaml(typeof b.yaml === 'string' ? b.yaml : '', { workers: org.listWorkers(c).map((w) => ({ id: w.id, name: w.name })), places: placeNames(org, c) }),
+    },
+    // Its file, for whoever could change it.
+    {
+      method: 'GET',
+      path: /^\/api\/teams\/([^/]+)\/yaml$/,
+      handle: (c, _b, [id]) => {
+        const res = org.teamPage(c, decodeURIComponent(id));
+        if (!res.ok) return res;
+        if (!res.team.canChange) return { ok: false, error: 'Only someone who can change this team can export it.' };
+        return { ok: true, name: res.team.name, yaml: teamToYaml(res.team) };
+      },
+    },
+    { method: 'GET', path: /^\/api\/spend$/, handle: (c, _b, _p, url) => org.spendView(c, { all: url.searchParams.get('all') === '1' }) },
     { method: 'GET', path: /^\/api\/teams\/runs$/, handle: (c) => ({ ok: true, runs: org.teamRunsFor(c) }) },
     { method: 'GET', path: /^\/api\/teams\/runs\/([^/]+)$/, handle: (c, _b, [id]) => org.teamRun(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/teams\/runs\/([^/]+)\/retry$/, handle: (c, b, [id]) => org.retryTeamRunHire(c, decodeURIComponent(id), str(b.key)) },
@@ -1413,6 +1495,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       },
     },
     { method: 'GET', path: /^\/api\/team-tasks$/, handle: (c) => org.teamTasks(c) },
+    { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/stop-all$/, handle: (c, _b, [id]) => org.stopTeamWork(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/teams\/brief$/, handle: (c, b) => org.briefTeam(c, str(b.team), str(b.text)) },
     // A finished task's team: ask it something, another round, or the pack
     // rewritten with what it said (only the picked changes, when given).
@@ -1521,6 +1604,8 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       handle: (c, _b, [id], url) => org.exportWorker(c, decodeURIComponent(id), { learned: url.searchParams.get('learned') === '1', journal: url.searchParams.get('journal') === '1' }),
     },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/triggers$/, handle: (c, b, [id]) => org.createTrigger(c, decodeURIComponent(id), triggerInput(b.trigger)) },
+    { method: 'POST', path: /^\/api\/workers\/([^/]+)\/trigger-drafts$/, handle: (c, b, [id]) => org.startTriggerDraft(c, decodeURIComponent(id), typeof b.description === 'string' ? b.description : '') },
+    { method: 'GET', path: /^\/api\/trigger-drafts\/([^/]+)$/, handle: (c, _b, [id]) => org.triggerDraft(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/triggers\/test$/, handle: (c, b) => org.testWatch(c, triggerInput({ kind: 'watch', watch: b.watch }).watch!) },
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/check$/, handle: (c, _b, [id]) => org.checkTriggerNow(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/triggers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.removeTrigger(c, decodeURIComponent(id)) },
@@ -1534,7 +1619,8 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
         return org.library(c, {
           ...(url.searchParams.get('worker') ? { workerId: url.searchParams.get('worker')! } : {}),
           ...(url.searchParams.get('q') ? { query: url.searchParams.get('q')!.slice(0, 200) } : {}),
-          ...(kind === 'task' || kind === 'work' || kind === 'event' || kind === 'file' || kind === 'answer' ? { kind } : {}),
+          ...(kind === 'task' || kind === 'work' || kind === 'event' || kind === 'file' || kind === 'answer' || kind === 'document' ? { kind } : {}),
+          ...(url.searchParams.get('documents') === '1' ? { documents: true } : {}),
           ...(visibility === 'private' || visibility === 'team' || visibility === 'org' ? { visibility } : {}),
           ...(numParam(url, 'limit') ? { limit: Math.max(1, numParam(url, 'limit')!) } : {}),
         });
@@ -1697,7 +1783,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
   const routes = [
     ...apiRoutes(deps.org, deps.access, deps.slackPeople, links),
     ...(deps.connections ? connectionRoutes(deps.connections) : []),
-    ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess) : []),
+    ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess, deps.slackPeople) : []),
     ...searchRoutes(deps.org, deps.processes),
     ...slackRoutes(deps.slackConversations),
     ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText), ...(deps.testSystems ? testSystemRoutes(deps.testSystems) : []),

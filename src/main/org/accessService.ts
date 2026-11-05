@@ -142,6 +142,7 @@ export interface OrgSetupView {
 /// The rules the Admin page may change. Admins, allowances and roles of
 /// people are set from People; the Slack workspace only with `org init`.
 export const EDITABLE_RULES = [
+  'otherPeopleLimitUSD',
   'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'tuningWatch', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
   'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'prSavedMultiplier', 'prSavedMinHours', 'retentionDays', 'sso', 'people', 'fleet',
   'redactSecrets', 'providerModels', 'workerAccess',
@@ -164,6 +165,8 @@ export interface EditableRules {
   teams: Record<string, string[]>;
   roles: OrgRole[];
   orgBudgetUSD: number | null;
+  /// Null: never set, so the $100 default. 0: no limit.
+  otherPeopleLimitUSD: number | null;
   alertAtPercent: number;
   prSavedMultiplier: number;
   prSavedMinHours: number;
@@ -583,6 +586,23 @@ export class AccessService {
     });
   }
 
+  /// Someone's own allowance, from Spending. Null: back to the org's default.
+  /// Their role stays as it is.
+  setAllowance(caller: OrgCaller, slackUserId: string, allowanceUSD: number | null): Result {
+    const denied = this.requireAdmin(caller);
+    if (denied) return { ok: false, error: denied };
+    if (!isSlackUserId(slackUserId)) return { ok: false, error: 'That person has no Slack member ID, so there is no allowance to set.' };
+    if (allowanceUSD !== null && (!Number.isFinite(allowanceUSD) || allowanceUSD < 0)) return { ok: false, error: 'An allowance is an amount of dollars, 0 or more.' };
+    this.deps.updateOrg((raw) => {
+      const allowances = raw.allowances && typeof raw.allowances === 'object' ? { ...(raw.allowances as Record<string, number>) } : {};
+      if (allowanceUSD === null) delete allowances[slackUserId];
+      else allowances[slackUserId] = allowanceUSD;
+      raw.allowances = allowances;
+    });
+    this.deps.record?.(caller, allowanceUSD === null ? `Put ${slackUserId} back on the default allowance.` : `Set ${slackUserId}'s allowance to $${allowanceUSD}.`);
+    return { ok: true };
+  }
+
   /// Change what someone can do, from People.
   setRole(caller: OrgCaller, slackUserId: string, role: PersonRole, allowanceUSD?: number): Result<{ role: PersonRole; note?: string }> {
     const denied = this.requireAdmin(caller);
@@ -657,6 +677,7 @@ export class AccessService {
         timezone: p.timezone ?? '',
         hirers: p.hirers,
         budgetAllowanceUSD: p.budgetAllowanceUSD,
+        otherPeopleLimitUSD: p.otherPeopleLimitUSD ?? null,
         approvers: p.approvers,
         orgVisibilityNeedsAdmin: p.orgVisibilityNeedsAdmin,
         tuningWatch: p.tuningWatch,

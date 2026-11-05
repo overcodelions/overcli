@@ -1,6 +1,7 @@
 // A worker's message to a person or a channel, sent by the server (the tool
 // gateway's built-in notify): the bot's token never reaches a worker.
 
+import { isMissingScope } from './slackApi';
 import type { SlackPerson, SlackPost, SlackResult } from './slackApi';
 
 export type NotifyPerson = (req: { conversationId: string; workerName?: string; to: string; message: string }) => Promise<{ ok: true; sentTo: string } | { ok: false; error: string }>;
@@ -52,7 +53,7 @@ export function makeNotifyPerson(deps: NotifyPersonDeps): NotifyPerson {
     }
     let res = await deps.postMessage(bot, { channel, text: req.message, username: w.name, ...(w.avatarUrl ? { iconUrl: w.avatarUrl } : {}) });
     // An app installed before it could post under another name: as itself, the worker's name in front.
-    if (!res.ok && res.error === 'missing_scope') res = await deps.postMessage(bot, { channel, text: `*${w.name}:* ${req.message}` });
+    if (!res.ok && isMissingScope(res.error)) res = await deps.postMessage(bot, { channel, text: `*${w.name}:* ${req.message}` });
     if (!res.ok) return { ok: false, error: `Slack didn’t take it (${res.error}). For a channel, the bot may need inviting.` };
     deps.audit({ at: Date.now(), by: w.name, what: `${w.name} messaged ${label} in Slack: “${req.message.split(/\s+/).join(' ').slice(0, 120)}”` });
     return { ok: true, sentTo: label };

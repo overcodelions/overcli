@@ -755,6 +755,134 @@ describe('TeamEngine', () => {
     expect(tasks.find((t) => t.id === three.task.id)!.status).toBe('cancelled');
   });
 
+  describe('a task waiting on a person', () => {
+    const seeded = (id: string, over: Partial<TeamTask>): TeamTask => ({
+      id,
+      teamId: 'team-1',
+      teamName: 'Discovery',
+      brief: id,
+      status: 'queued',
+      createdAt: 0,
+      updatedAt: 0,
+      stages: [],
+      stageIndex: 0,
+      spentUSD: 0,
+      budgetUSD: 12,
+      folder: `/data/team-files/${id}`,
+      files: [],
+      ...over,
+    });
+    const piece = { workerId: 'maya', workerName: 'Maya', ask: 'x', status: 'pending' as const };
+    const planned = { stages: [{ kind: 'contribute' as const, title: 'W', assignments: [piece], status: 'pending' as const }] };
+    // Busy for real: a task seeded as running has no run behind it, and
+    // starting up marks it failed.
+    const toApprove = (id: string) => seeded(id, { status: 'proposed', createdAt: 5, ...planned });
+    const of = (h: ReturnType<typeof makeHarness>, id: string) => h.engine.list().tasks.find((t) => t.id === id)!;
+    const setBusy = async (h: ReturnType<typeof makeHarness>, id: string) => {
+      expect(h.engine.approve(id)).toEqual({ ok: true });
+      await flush();
+      expect(of(h, id).status).toBe('running');
+    };
+
+    it.each([
+      ['questions', { status: 'questions', questions: ['Which?'] }],
+      ['a plan to approve', { status: 'proposed', ...planned }],
+      ['a checkpoint', { status: 'waiting', ...planned, waiting: { reason: 'checkpoint', message: 'OK?' } }],
+    ] as Array<[string, Partial<TeamTask>]>)('doesn’t hold up a new request while it waits on %s', async (_what, over) => {
+      const h = makeHarness({ seedTeams: [team()], seedTasks: [seeded('asks', over)], turns: [] });
+      h.engine.start();
+      const next = h.engine.brief('team-1', 'next');
+      if (!next.ok) throw new Error(next.error);
+      expect(next.task.status).toBe('planning');
+    });
+
+    it('lets what was queued behind it start, including after a restart', async () => {
+      const h = makeHarness({ seedTeams: [team()], seedTasks: [seeded('asks', { status: 'questions', questions: ['Which?'], createdAt: 1 }), seeded('behind', { createdAt: 2 })], turns: [] });
+      h.engine.start();
+      await flush();
+      expect(of(h, 'behind').status).not.toBe('queued');
+      expect(of(h, 'asks').status).toBe('questions');
+    });
+
+    it('still holds the line while the team works', async () => {
+      const h = makeHarness({ seedTeams: [team()], seedTasks: [toApprove('busy')], turns: [] });
+      h.engine.start();
+      await setBusy(h, 'busy');
+      const next = h.engine.brief('team-1', 'next');
+      if (!next.ok) throw new Error(next.error);
+      expect(next.task.status).toBe('queued');
+    });
+
+    it('goes next, ahead of what hasn’t started, when approved while the team is busy', async () => {
+      // Asked for after the one still in line, so only being approved puts it first.
+      const h = makeHarness({ seedTeams: [team()], seedTasks: [seeded('asks', { status: 'proposed', createdAt: Number.MAX_SAFE_INTEGER, ...planned }), toApprove('busy')], turns: [] });
+      h.engine.start();
+      await setBusy(h, 'busy');
+      const earlier = h.engine.brief('team-1', 'earlier');
+      if (!earlier.ok) throw new Error(earlier.error);
+      expect(earlier.task.status).toBe('queued');
+      expect(h.engine.approve('asks')).toEqual({ ok: true, queued: true });
+      expect(of(h, 'asks')).toMatchObject({ status: 'queued', resumes: 'approved' });
+      expect(h.engine.cancel('busy')).toEqual({ ok: true });
+      await flush();
+      // Its plan ran rather than being planned all over again.
+      expect(of(h, 'asks').resumes).toBeUndefined();
+      expect(of(h, 'asks').status).not.toBe('queued');
+      expect(of(h, 'asks').status).not.toBe('planning');
+      expect(of(h, earlier.task.id).status).toBe('queued');
+    });
+
+    it('starts straight away when approved and the team is free', async () => {
+      const h = makeHarness({ seedTeams: [team()], seedTasks: [seeded('asks', { status: 'proposed', ...planned })], turns: [] });
+      h.engine.start();
+      expect(h.engine.approve('asks')).toEqual({ ok: true });
+      expect(of(h, 'asks').status).not.toBe('queued');
+    });
+
+    it('carries on from where it stopped once the team is free', async () => {
+      const stages = [{ kind: 'contribute' as const, title: 'W', assignments: [{ ...piece, status: 'done' as const }], status: 'done' as const }, ...planned.stages];
+      const h = makeHarness({ seedTeams: [team()], seedTasks: [seeded('asks', { status: 'waiting', stages, stageIndex: 1, waiting: { reason: 'checkpoint', message: 'OK?' } }), toApprove('busy')], turns: [] });
+      h.engine.start();
+      await setBusy(h, 'busy');
+      expect(h.engine.continueTask('asks')).toEqual({ ok: true, queued: true });
+      expect(of(h, 'asks')).toMatchObject({ status: 'queued', resumes: 'carryOn', stageIndex: 1 });
+      expect(of(h, 'asks').waiting).toBeUndefined();
+      h.engine.cancel('busy');
+      await flush();
+      expect(of(h, 'asks').resumes).toBeUndefined();
+      expect(of(h, 'asks').status).not.toBe('queued');
+      expect(of(h, 'asks').status).not.toBe('planning');
+      expect(of(h, 'asks').stageIndex).toBeGreaterThanOrEqual(1);
+    });
+
+    it('can be stopped while it waits its turn', async () => {
+      const h = makeHarness({ seedTeams: [team()], seedTasks: [seeded('asks', { status: 'proposed', ...planned }), toApprove('busy')], turns: [] });
+      h.engine.start();
+      await setBusy(h, 'busy');
+      expect(h.engine.approve('asks')).toEqual({ ok: true, queued: true });
+      expect(h.engine.cancel('asks')).toEqual({ ok: true });
+      h.engine.cancel('busy');
+      await flush();
+      expect(of(h, 'asks').status).toBe('cancelled');
+    });
+  });
+
+  it('remembers the Slack thread a task was asked in, and carries it when planned again', async () => {
+    const h = makeHarness({ seedTeams: [team()], turns: ['<team_answer>Here.</team_answer>', PLAN] });
+    h.engine.start();
+    const slackThread = { channel: 'C0ACME', threadTs: '100.1' };
+    const asked = h.engine.brief('team-1', 'a question', [], undefined, { slackThread });
+    if (!asked.ok) throw new Error(asked.error);
+    expect(asked.task.slackThread).toEqual(slackThread);
+    await flush();
+    const again = h.engine.planAsTask(asked.task.id);
+    if (!again.ok) throw new Error(again.error);
+    expect(again.task.slackThread).toEqual(slackThread);
+    const plain = h.engine.brief('team-1', 'no thread');
+    if (!plain.ok) throw new Error(plain.error);
+    expect(plain.task.slackThread).toBeUndefined();
+  });
+
   it('re-runs a coordinator stage that a restart interrupted', async () => {
     const seeded: TeamTask = {
       id: 'task-9',
@@ -784,7 +912,7 @@ describe('TeamEngine', () => {
   it('validates and saves teams, and will not delete one mid-task', async () => {
     const h = makeHarness({ turns: [] });
     h.engine.start();
-    expect(h.engine.save({ name: 'Solo', members: [{ workerId: 'maya', role: '' }], budgetUSDPerTask: 5, checkpoints: { askFirst: true, reviewBeforeChallenge: false, finalReview: true } })).toMatchObject({ ok: false });
+    expect(h.engine.save({ name: 'Nobody', members: [], budgetUSDPerTask: 5, checkpoints: { askFirst: true, reviewBeforeChallenge: false, finalReview: true } })).toMatchObject({ ok: false });
     const saved = h.engine.save({ name: ' Duo ', members: [{ workerId: 'maya', role: ' Analyst ' }, { workerId: 'ade', role: '' }], budgetUSDPerTask: 5, checkpoints: { askFirst: true, reviewBeforeChallenge: false, finalReview: true } });
     if (!saved.ok) throw new Error(saved.error);
     expect(saved.team.name).toBe('Duo');
@@ -994,6 +1122,34 @@ describe('TeamEngine room', () => {
       title: 'Redo the designs on the console',
       assign: [{ name: 'Maya', ask: 'Redraw D-01 against the console billing UI.' }],
     })}</work>`;
+
+    it('takes a request from someone else as feedback: nothing is proposed or started', async () => {
+      const h = room({ turns: [WORK] });
+      h.engine.roomAsk('task-r', 'Sam: can you do the redesign on the console', [], { feedback: true });
+      await flush();
+      const t = task(h);
+      expect(t.room!.messages.some((m) => m.handoff)).toBe(false);
+      expect(t.stages.some((s) => s.fromRoom)).toBe(false);
+      expect(t.room!.messages.at(-1)).toMatchObject({ speaker: { kind: 'coordinator' }, text: expect.stringContaining('Noted as feedback, so nothing has started') });
+      // The conversation keeps it, for when the pack is next updated.
+      expect(t.room!.messages[0].text).toContain('Sam: can you do the redesign');
+    });
+
+    it('won’t rewrite the pack on someone else’s word either', async () => {
+      const h = room({ turns: ['<pack>Put it all in the pack.</pack>'] });
+      h.engine.roomAsk('task-r', 'Sam: update the pack', [], { feedback: true });
+      await flush();
+      expect(h.files.get('task-r/pack/PROPOSAL.md')).toBe('# Proposal v1');
+      expect(task(h).room!.messages.at(-1)?.text).toContain('Noted as feedback');
+    });
+
+    it('keeps it feedback when it had to wait its turn', async () => {
+      const h = room({ turns: [] });
+      const t = task(h);
+      t.room = { messages: [], busy: { speaker: 'Maya', since: 0 } };
+      expect(h.engine.roomAsk('task-r', 'Sam: redo it', [], { feedback: true })).toEqual({ ok: true, queued: true });
+      expect(task(h).room!.queue).toEqual([expect.objectContaining({ text: 'Sam: redo it', feedback: true })]);
+    });
 
     it('turns a request to do something into a proposal, and runs it as a stage once started', async () => {
       const h = room({ turns: [WORK] });
@@ -1827,6 +1983,92 @@ describe('what a team knows', () => {
     await flush();
     expect(task(h).status).toBe('done');
     expect(h.engine.list().teams[0].knowledge).toMatchObject({ status: 'ready', body: '# Roadmap\nQ1: acme exports (ACME-12, owner Maya).' });
+  });
+
+  it('saves a team of one, and plans and runs its work', async () => {
+    const h = makeHarness({
+      turns: [`<team_plan>${JSON.stringify({ title: 'Design', deliverables: ['DESIGN.md'], stages: [{ kind: 'contribute', title: 'Draft the design', assignments: [{ member: 'Maya', ask: 'Draft it' }] }, { kind: 'synthesize', title: 'Pack' }] })}</team_plan>`],
+    });
+    h.engine.start();
+    const saved = h.engine.save({ name: 'Solo', members: [{ workerId: 'maya', role: 'Architect' }], budgetUSDPerTask: 5, checkpoints: { askFirst: false, reviewBeforeChallenge: false, finalReview: true } });
+    if (!saved.ok) throw new Error(saved.error);
+    const asked = h.engine.brief(saved.team.id, 'Design the queue');
+    if (!asked.ok) throw new Error(asked.error);
+    await flush();
+    expect(task(h)).toMatchObject({ status: 'proposed', title: 'Design' });
+    expect(h.engine.approve(asked.task.id)).toEqual({ ok: true });
+    await flush();
+    expect(task(h).status).toBe('running');
+    expect(task(h).stages[0].assignments.map((a) => a.workerName)).toEqual(['Maya']);
+  });
+
+  it('lets a team of one debate its pack, with no one to answer but itself', async () => {
+    const seeded: TeamTask = {
+      id: 'task-solo',
+      teamId: 'team-1',
+      teamName: 'Discovery',
+      brief: 'x',
+      status: 'review',
+      createdAt: 0,
+      updatedAt: 0,
+      stages: [],
+      stageIndex: 0,
+      spentUSD: 0,
+      budgetUSD: 12,
+      folder: '/data/team-files/task-solo',
+      files: [],
+      pack: { summary: 'The design.', files: ['pack/DESIGN.md'] },
+    };
+    const h = makeHarness({
+      seedTeams: [team({ members: [{ workerId: 'maya', role: 'Architect' }] })],
+      seedTasks: [seeded],
+      turns: ['<route>["Maya"]</route>', 'Agreed: use a queue.'],
+      memberReplies: ['Use a queue here.', 'PASS'],
+    });
+    h.files.set('task-solo/pack/DESIGN.md', '# Design');
+    h.engine.start();
+    expect(h.engine.roomAsk('task-solo', 'Should this be a queue?')).toEqual({ ok: true });
+    await flush();
+    const room = task(h).room!;
+    expect(room.busy).toBeNull();
+    expect(room.messages.map((m) => m.text)).toContain('Use a queue here.');
+  });
+
+  it('answers “what have you made?” from its own records, without running anything', async () => {
+    const past = (id: string, over: Partial<TeamTask>): TeamTask => ({
+      id,
+      teamId: 'team-1',
+      teamName: 'Discovery',
+      brief: id,
+      status: 'done',
+      createdAt: 0,
+      updatedAt: 0,
+      finishedAt: 1_000,
+      stages: [],
+      stageIndex: 0,
+      spentUSD: 0,
+      budgetUSD: 12,
+      folder: `/data/team-files/${id}`,
+      files: [],
+      ...over,
+    });
+    const h = makeHarness({
+      seedTeams: [team()],
+      seedTasks: [
+        past('brief', { title: 'Brief for offline mode', pack: { summary: 'Offline mode, first release.', files: ['pack/brief-offline.md'] } }),
+        past('elsewhere', { teamId: 'team-2', title: 'Another team’s brief', pack: { summary: 'Theirs.', files: [] } }),
+      ],
+      turns: ['<team_answer>One so far: **Brief for offline mode**.</team_answer>'],
+    });
+    h.engine.start();
+    const asked = h.engine.brief('team-1', 'which briefs have been produced?');
+    if (!asked.ok) throw new Error(asked.error);
+    await flush();
+    expect(h.turnMessages[0]).toContain('WHAT THE TEAM HAS PRODUCED');
+    expect(h.turnMessages[0]).toContain('Brief for offline mode · delivered · files: brief-offline.md · Offline mode, first release.');
+    expect(h.turnMessages[0]).not.toContain('Another team’s brief');
+    expect(h.turnMessages[0]).toContain('what the team has produced already answers this');
+    expect(h.engine.list().tasks.find((t) => t.id === asked.task.id)).toMatchObject({ status: 'done', answered: true });
   });
 
   it('answers straight from what it knows, files the answer, and can ask it again as work', async () => {

@@ -514,7 +514,7 @@ export class SlackBridge {
     this.reviewReply = tap;
   }
 
-  private async toFrontDoor(ev: { channel?: string; ts?: string; thread_ts?: string; user?: string; text?: string; files?: SlackFile[] }, dm: boolean): Promise<void> {
+  private async toFrontDoor(ev: { type?: string; channel?: string; ts?: string; thread_ts?: string; user?: string; text?: string; files?: SlackFile[] }, dm: boolean): Promise<void> {
     if (!this.frontDoor || !ev.channel || !ev.ts || !ev.user) return;
     try {
       await this.frontDoor.onMessage({
@@ -524,6 +524,7 @@ export class SlackBridge {
         user: ev.user,
         text: ev.text ?? '',
         ...(ev.files?.length ? { files: ev.files } : {}),
+        ...(ev.type === 'app_mention' ? { mentioned: true } : {}),
         dm,
       });
     } catch (err) {
@@ -564,6 +565,19 @@ export class SlackBridge {
       if (asking) {
         route(`answers the question for run ${asking.runId}`);
         return this.answer(asking, { ...ev, text: this.withoutMention(ev.text) });
+      }
+      // A team's task in this thread: anyone there can answer its questions,
+      // and talk to it once it can talk.
+      if (ev.thread_ts) {
+        const bare = { ...ev, text: this.withoutMention(ev.text) };
+        if (await this.commands?.answerInThread(bare, p.team_id)) {
+          route("answers a team's questions");
+          return;
+        }
+        if (await this.commands?.talkInThread(bare, p.team_id)) {
+          route("talks to a team's room");
+          return;
+        }
       }
       if (ev.type === 'app_mention') {
         route('the front door (a mention)');

@@ -29,7 +29,7 @@ export interface PostAs {
 
 export interface DeliverIo {
   post(channel: string, text: string, threadTs: string, as?: PostAs): Promise<unknown>;
-  upload(channel: string, threadTs: string, filename: string, bytes: Buffer): Promise<boolean>;
+  upload(channel: string, threadTs: string, filename: string, bytes: Buffer, as?: PostAs): Promise<boolean>;
   readFile(path: string, maxBytes: number): Buffer | null;
   /// A file a worker's reply names, if it is inside that worker's own files
   /// (symlinks resolved): a reply is model text, and must not be able to send
@@ -168,17 +168,17 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
   else if (files.length) await io.post(channel, `${lead}${slackMarkup(clip(body, SLACK_LONG_REPLY))}\n\n_More in ${files.map((f) => f.name).join(', ')}._`, threadTs, as);
   else {
     await io.post(channel, `${lead}${slackMarkup(clip(body, 1200))}\n\n_The full answer is attached._`, threadTs, as);
-    await io.upload(channel, threadTs, filename, Buffer.from(body, 'utf8'));
+    await io.upload(channel, threadTs, filename, Buffer.from(body, 'utf8'), as);
   }
-  for (const f of files) await io.upload(channel, threadTs, f.name, f.bytes);
+  for (const f of files) await io.upload(channel, threadTs, f.name, f.bytes, as);
   return held.map((f) => ({ path: f.path, name: f.name }));
 }
 
 /// Into the thread under the finished message: the answer itself (the last
 /// artifact), then the files the work wrote — a rendered report, its data.
 /// A change's answer is its summary and test results; a merged PR speaks for
-/// itself. Returns how many files went up.
-export async function deliverResults(io: DeliverIo, channel: string, threadTs: string, workerName: string, p: ErrandProgress): Promise<number> {
+/// itself. Returns how many files went up. `as`: who the files go up as.
+export async function deliverResults(io: DeliverIo, channel: string, threadTs: string, workerName: string, p: ErrandProgress, as?: PostAs): Promise<number> {
   const answer = [...p.files].reverse().find((x) => x.body && !x.sourcePath);
   if (answer?.body && !prLinks(p).length) await deliverText(io, channel, threadTs, workerName, answer.body, `${slug(answer.name)}.md`);
   let sent = 0;
@@ -186,7 +186,7 @@ export async function deliverResults(io: DeliverIo, channel: string, threadTs: s
     if (sent >= MAX_UPLOADS || !file.sourcePath || !UPLOADABLE.test(file.sourcePath)) continue;
     const bytes = io.readFile(file.sourcePath, MAX_UPLOAD_BYTES);
     if (!bytes) continue;
-    if (await io.upload(channel, threadTs, file.name.split('/').pop() ?? file.name, bytes)) sent++;
+    if (await io.upload(channel, threadTs, file.name.split('/').pop() ?? file.name, bytes, as)) sent++;
   }
   return sent;
 }

@@ -1,6 +1,7 @@
 // Build the org control plane over the engines — shared by the app and
 // `overcli serve`, like the Slack bridge, so both enforce one set of rules.
 
+import { workerRunCostsSince } from '../flows/runSummaryLog';
 import os from 'node:os';
 import { checkoutHealth, discardCheckouts, folderBytes, keptCheckouts, sweepWorktrees, volumeOf } from './worktreeSweep';
 import type { StorageReport } from './orgService';
@@ -310,6 +311,10 @@ export function createOrgService(
       remember: (id, text) => workerEngine.remember(id, text),
       forgetNote: (id, entryId) => workerEngine.forgetNote(id, entryId),
       spentThisMonth: () => workerEngine.spendThisMonth(),
+      runCostsThisMonth: () => {
+        const d = new Date();
+        return workerRunCostsSince(new Date(d.getFullYear(), d.getMonth(), 1).getTime());
+      },
       workerNames: () => workerEngine.workerNames(),
     },
     runs: {

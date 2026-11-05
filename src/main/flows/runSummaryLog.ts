@@ -33,6 +33,9 @@ export interface RunSummary {
   /// Set when a Worker shift launched the run — the key the per-worker
   /// budget rollup groups by.
   workerId?: string;
+  /// The batch that launched it, which says why it ran: whose ask, for the
+  /// "used by" on spend. Absent on lines written before this field existed.
+  parentOrchestrationId?: string;
   /// The project/workspace root the run logically belongs to, per
   /// `flowRunOwnerPath`. A worktree/coordinator run's own `projectPath`
   /// is a throwaway directory, so without this the stats rollup can't
@@ -106,6 +109,7 @@ export function summarizeRun(run: FlowRun): RunSummary | null {
     wallClockMs,
     terminalAt,
     workerId: run.workerId,
+    ...(run.parentOrchestrationId ? { parentOrchestrationId: run.parentOrchestrationId } : {}),
     ownerPath: flowRunOwnerPath(run),
   };
 }
@@ -162,6 +166,13 @@ export function workerSpendByWorkerSince(sinceMs: number): Map<string, number> {
     out.set(s.workerId, (out.get(s.workerId) ?? 0) + s.costUSD);
   }
   return out;
+}
+
+/// Each worker run's cost since then, with what launched it.
+export function workerRunCostsSince(sinceMs: number): Array<{ id: string; workerId: string; costUSD: number; parentOrchestrationId?: string }> {
+  return loadRunSummaries().flatMap((s) =>
+    s.workerId && s.terminalAt >= sinceMs ? [{ id: s.id, workerId: s.workerId, costUSD: s.costUSD, ...(s.parentOrchestrationId ? { parentOrchestrationId: s.parentOrchestrationId } : {}) }] : [],
+  );
 }
 
 function loadRunSummariesRaw(): RunSummary[] {

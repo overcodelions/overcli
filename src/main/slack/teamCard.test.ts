@@ -3,7 +3,33 @@ import type { TeamTask } from '../../shared/flows/team';
 import { DEFAULT_ORG_POLICY } from '../../shared/org/policy';
 import type { OrgService } from '../org/orgService';
 import { SlackCommands, type TeamCardRef } from './slackCommands';
-import { TEAM_ACCEPT_ACTION, TEAM_PIECE_APPROVE_ACTION, bar, stageNote, teamCard, took } from './teamCard';
+import { TEAM_ACCEPT_ACTION, TEAM_PIECE_APPROVE_ACTION, bar, pieceSummary, stageNote, teamCard, took } from './teamCard';
+
+describe('what a member says when its piece is done', () => {
+  it('is its own closing words, on one line', () => {
+    expect(pieceSummary('Found three competitors.\n\nThe report is filed.', '# Ignored')).toBe('Found three competitors. The report is filed.');
+  });
+
+  it('stops at a sentence when it runs long, else clips', () => {
+    const first = 'Found three competitors with offline mode and compared what each one charges for it.';
+    const long = pieceSummary(`${first} ${'More detail follows here. '.repeat(20)}`, undefined)!;
+    expect(long.length).toBeLessThanOrEqual(280);
+    expect(long.endsWith('.')).toBe(true);
+    const unbroken = pieceSummary('x'.repeat(400), undefined)!;
+    expect(unbroken).toHaveLength(280);
+    expect(unbroken.endsWith('…')).toBe(true);
+  });
+
+  it('falls back on the opening prose of its file', () => {
+    expect(pieceSummary(undefined, '---\ntitle: Report\n---\n# Report\n\n| a | b |\n\n```\ncode\n```\n\nOffline mode matters\nto most customers.\n\nMore.')).toBe('Offline mode matters to most customers.');
+    expect(pieceSummary('  ', 'First paragraph.')).toBe('First paragraph.');
+  });
+
+  it('has nothing to say with neither', () => {
+    expect(pieceSummary(undefined, undefined)).toBeNull();
+    expect(pieceSummary('', '# Only a heading')).toBeNull();
+  });
+});
 
 const T0 = 1_000_000;
 const PAT = 'U0ACMEPAT';
@@ -95,7 +121,7 @@ describe('the card in Slack', () => {
       const method = url.split('/').pop()!;
       const body = typeof init.body === 'string' && init.body.startsWith('{') ? JSON.parse(init.body) : {};
       calls.push({ method, body });
-      const json = method === 'conversations.open' ? { ok: true, channel: { id: 'D0PAT' } } : method === 'chat.postMessage' ? { ok: true, channel: 'D0PAT', ts: `400.${++ts}` } : { ok: true };
+      const json = method === 'files.getUploadURLExternal' ? { ok: true, upload_url: 'https://files.slack.example/up', file_id: 'F1' } : method === 'conversations.open' ? { ok: true, channel: { id: 'D0PAT' } } : method === 'chat.postMessage' ? { ok: true, channel: 'D0PAT', ts: `400.${++ts}` } : { ok: true };
       return new Response(JSON.stringify(json));
     };
     const cmds = new SlackCommands({
@@ -141,6 +167,10 @@ describe('the card in Slack', () => {
     const asked = s.calls.filter((c) => c.method === 'files.getUploadURLExternal');
     expect(asked).toHaveLength(1);
     expect(s.stored().t1).toMatchObject({ attached: true, done: true });
+    // The report goes up under the team's name, not the app's.
+    const shared = s.calls.filter((c) => c.method === 'files.completeUploadExternal');
+    expect(shared).toHaveLength(1);
+    expect((shared[0].body as { username?: string }).username).toBe(review.teamName);
   });
 
   it('says a pack is ready for review as a reply shown in the conversation, with Accept', async () => {
