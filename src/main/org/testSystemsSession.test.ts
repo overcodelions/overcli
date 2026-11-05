@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { credentialEnv, extraEnv, type TestSystem } from '../../shared/testSystems';
-import { MAX_SIGN_INS_AGAIN, TestSystemsSession, pageUrlOf, parseSetCookies, resultValue, screenshotName, type BrowserChild, type ToolResult } from './testSystemsSession';
+import { MAX_SIGN_INS_AGAIN, TestSystemsSession, jsLiteral, pageUrlOf, parseSetCookies, resultValue, screenshotName, type BrowserChild, type ToolResult } from './testSystemsSession';
 
 const billing: TestSystem = {
   id: 'billing',
@@ -43,6 +43,16 @@ function session(systems: TestSystem[], browser: BrowserChild, more: { worker?: 
     ...more,
   });
 }
+
+describe('a value in the sign-in script', () => {
+  it('stays the same value, and can’t break out of its quotes', () => {
+    for (const v of ['pa"ss\\word', "it's", '</script><script>alert(1)</script>', 'a\nb', 'x\u2028y\u2029z', 'button:has-text("Log In")', '#a > .b']) {
+      const literal = jsLiteral(v);
+      expect(literal).not.toMatch(/[<>\u2028\u2029\n]/);
+      expect(new Function(`return ${literal}`)()).toBe(v);
+    }
+  });
+});
 
 describe('the test-systems tool', () => {
   it('passes through only safe browsing, and refuses the rest', async () => {

@@ -101,6 +101,13 @@ export const SAFE_BROWSER_TOOLS = new Set([
   'browser_verify_list_visible', 'browser_verify_text_visible', 'browser_verify_value', 'browser_close',
 ]);
 
+/// A value as a string literal in a script run in the browser. JSON keeps it
+/// inside its quotes, and these characters are escaped as well so the text can
+/// never close a surrounding script or end a line, wherever the script ends up.
+export function jsLiteral(value: string): string {
+  return JSON.stringify(value).replace(/[<>\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
 /// How long a sign-in gets to leave the sign-in page.
 const SIGN_IN_WAIT_MS = 30_000;
 /// Where a sign-in page says what went wrong.
@@ -456,7 +463,7 @@ export class TestSystemsSession {
     if (!user || !password) return { ok: false, error: `${open.system.name} has no test account yet. An admin sets one on Setup → Apps to test.` };
     const codeSecret = s.codeField ? this.deps.secret(e.code) : undefined;
     const code = codeSecret ? totp(codeSecret, this.now()) : undefined;
-    const q = JSON.stringify;
+    const q = jsLiteral;
     const out = signedOutPath(open.system);
     // The extra fields, in order: a secret one's value from the env.
     const extras: string[] = [];
