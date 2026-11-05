@@ -9,6 +9,7 @@
 // Tokens are stored hashed: the file is a list of who holds access, never the
 // access itself, so a leaked state directory does not leak a working token.
 
+import type { ReviewSuggestion } from './workerReview';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -384,6 +385,53 @@ export const fileRatingStore: RatingStore = {
     // The newest few thousand are plenty for "was it useful"; older ones
     // already live on as notes in the workers' journals.
     writeAtomic(path.join(orgDir(), 'ratings.json'), ratings.slice(-5000));
+  },
+};
+
+// ---- WORKER REVIEWS --------------------------------------------------------
+
+/// One "Review its work": what it found, and what became of each suggestion.
+export interface WorkerReview {
+  id: string;
+  workerId: string;
+  at: number;
+  by: string;
+  complaint?: string;
+  summary: string;
+  /// Started by overgo, on what it noticed: the reason, in words.
+  auto?: string;
+  suggestions: Array<
+    ReviewSuggestion & {
+      state?: 'applied' | 'dismissed';
+      note?: string;
+      appliedAt?: number;
+      /// Its manager was told this change looks to have made things worse.
+      worseToldAt?: number;
+      /// The fix overgo wrote and tried on a past job by itself.
+      tested?: {
+        yaml: string;
+        orchestrationId: string;
+        beforeRunId: string;
+        at: number;
+        result?: { before?: unknown; after?: unknown; held: number; error?: string };
+      };
+    }
+  >;
+  looked: { runs: number; answers: number };
+}
+
+export interface WorkerReviewStore {
+  list(): WorkerReview[];
+  save(reviews: WorkerReview[]): void;
+}
+
+export const fileWorkerReviewStore: WorkerReviewStore = {
+  list() {
+    const raw = readJson(path.join(orgDir(), 'worker-reviews.json'));
+    return Array.isArray(raw) ? (raw as WorkerReview[]) : [];
+  },
+  save(reviews) {
+    writeAtomic(path.join(orgDir(), 'worker-reviews.json'), reviews.slice(-500));
   },
 };
 

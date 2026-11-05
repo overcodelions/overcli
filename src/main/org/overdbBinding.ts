@@ -12,6 +12,7 @@
 
 import { pinnedClaudeTool, type McpServerConfig } from '../mcpConfig';
 import { OVERDB_TOOL } from '../../shared/overdbConnection';
+import { TEST_SYSTEMS_TOOL } from '../../shared/testSystems';
 import { bindRunTools } from './runToolRelay';
 import { activeWorkerUser } from './workerUser';
 
@@ -22,10 +23,25 @@ export function useOverdbWorkerLookup(fn: (conversationId: string) => string | u
   workerOf = fn;
 }
 
-function bound(config: McpServerConfig, conversationId: string): McpServerConfig {
+let runFilesOf: (conversationId: string) => string | undefined = () => undefined;
+let formerNamesOf: (conversationId: string) => string[] = () => [];
+
+/// The names a run's worker went by before, for test-systems' who-may-open.
+export function useFormerNamesLookup(fn: (conversationId: string) => string[]): void {
+  formerNamesOf = fn;
+}
+
+/// Where a run's evidence goes (runEvidence.ts), for the test-systems tool's screenshots.
+export function useRunFilesLookup(fn: (conversationId: string) => string | undefined): void {
+  runFilesOf = fn;
+}
+
+function bound(config: McpServerConfig, conversationId: string, name: string = OVERDB_TOOL): McpServerConfig {
   const worker = workerOf(conversationId);
+  const files = name === TEST_SYSTEMS_TOOL ? runFilesOf(conversationId) : undefined;
+  const former = name === TEST_SYSTEMS_TOOL ? formerNamesOf(conversationId).filter((n) => !n.includes('\n')) : [];
   const env = config.env && typeof config.env === 'object' && !Array.isArray(config.env) ? config.env : {};
-  return { ...config, env: { ...env, OVERCLI_CONVERSATION: conversationId, ...(worker ? { OVERCLI_WORKER: worker } : {}) } };
+  return { ...config, env: { ...env, OVERCLI_CONVERSATION: conversationId, ...(worker ? { OVERCLI_WORKER: worker } : {}), ...(files ? { OVERCLI_RUN_FILES: files } : {}), ...(former.length ? { OVERCLI_WORKER_FORMER: former.join('\n') } : {}) } };
 }
 
 /// For a run on the whole config: the overdb entry again, bound, to pass as
@@ -43,18 +59,28 @@ export function boundOverdbTool(configured: () => Record<string, McpServerConfig
 /// (mcpConfig.ts pinnedClaudeTool), never what now sits under the name. A
 /// tool the server never saved is left to the worker's CLI, which starts it
 /// as the worker.
-function overdbLaunch(configured: () => Record<string, McpServerConfig>): McpServerConfig | undefined {
-  const config = configured()[OVERDB_TOOL];
+///
+/// The test-systems tool (testSystems.ts) is the same kind: a command the
+/// server wrote, holding credentials in its sealed env, told whose run it is
+/// (its apps say which workers may open them).
+const SERVER_TOOLS = [OVERDB_TOOL, TEST_SYSTEMS_TOOL];
+
+function overdbLaunch(configured: () => Record<string, McpServerConfig>, name: string = OVERDB_TOOL): McpServerConfig | undefined {
+  const config = configured()[name];
   if (!config) return undefined;
-  if (activeWorkerUser()) return pinnedClaudeTool(OVERDB_TOOL);
+  if (activeWorkerUser()) return pinnedClaudeTool(name);
   return typeof config.command === 'string' ? config : undefined;
 }
 
 /// App-only source configuration. Collect this with gateway tools before
 /// registering the complete relay session; inspecting it has no side effects.
 export function overdbToolsForRun(configured: () => Record<string, McpServerConfig>, conversationId: string): Record<string, McpServerConfig> {
-  const config = overdbLaunch(configured);
-  return config ? { [OVERDB_TOOL]: bound(config, conversationId) } : {};
+  const out: Record<string, McpServerConfig> = {};
+  for (const name of SERVER_TOOLS) {
+    const config = overdbLaunch(configured, name);
+    if (config) out[name] = bound(config, conversationId, name);
+  }
+  return out;
 }
 
 /// For a run on an allowlisted config: bind the overdb entry in place.
@@ -66,8 +92,8 @@ export function bindOverdbInConfig(configJson: string, conversationId: string): 
   } catch {
     return configJson;
   }
-  const config = overdbLaunch(() => parsed.mcpServers ?? {});
-  if (!config) return configJson;
-  parsed.mcpServers![OVERDB_TOOL] = bindRunTools({ [OVERDB_TOOL]: bound(config, conversationId) }, conversationId)[OVERDB_TOOL];
+  const tools = overdbToolsForRun(() => parsed.mcpServers ?? {}, conversationId);
+  if (!Object.keys(tools).length) return configJson;
+  Object.assign(parsed.mcpServers!, bindRunTools(tools, conversationId));
   return JSON.stringify(parsed);
 }

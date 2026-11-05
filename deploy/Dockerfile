@@ -105,6 +105,21 @@ RUN apt-get update \
 # uvx fetches a tool and the Python it needs on first use, into the cache
 # under HOME on the volume, so later starts reuse them.
 COPY --from=uv /uv /uvx /usr/local/bin/
+# Apps to test (src/main/org/testSystemsServer.ts) drive Playwright's own
+# Chromium: installed here with the system libraries it needs, at the
+# Playwright version the pinned Playwright MCP uses (PLAYWRIGHT_FOR_MCP there),
+# where the server and workers can read it. About 400 MB; leave it out with
+# --build-arg INSTALL_BROWSER=0.
+ARG INSTALL_BROWSER=1
+ARG PLAYWRIGHT_VERSION=1.65.0-alpha-2026-10-30
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
+      apt-get update \
+      && npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
+      && chmod -R a+rX /opt/ms-playwright \
+      && rm -rf /var/lib/apt/lists/* \
+      && npm cache clean --force; \
+    fi
 
 WORKDIR /app
 COPY --from=build /src/package.json ./package.json

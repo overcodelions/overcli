@@ -437,6 +437,18 @@ export interface FlowRun {
   /// Tools this unattended run may use, intersected with each step's own
   /// `tools:`. See FlowRuntimeStartArgs.unattendedAllowedTools.
   unattendedAllowedTools?: string[];
+  /// Its worker's role tools (server names). In a worker run with no grant
+  /// for external actions, a call of one is allowed when `roleToolsCleared`:
+  /// a person approved the run, or its manager always allows them.
+  roleTools?: string[];
+  roleToolsCleared?: boolean;
+  /// A person approved this worker run before it started.
+  launchApproved?: boolean;
+  /// A test run, from a worker's Tuning tab: a change tried on a past job.
+  /// It only reads: any call that would change something outside is refused
+  /// and kept in `trialHeld` for its manager to read. See `trialAllowsMcp`.
+  trial?: boolean;
+  trialHeld?: Array<{ tool: string; input: string }>;
   /// Tools a worker run asked for and was refused because its step does not
   /// list them, in the order first asked. What the person adds to the
   /// worker's flow for the work to go through next time.

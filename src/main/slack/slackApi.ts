@@ -6,6 +6,7 @@
 // observer path, and a Slack outage must never take a worker's run down.
 
 import { scrubOutboundFile, scrubOutboundText } from '../secretScrub';
+import { slackIcon } from '../../shared/flows/avatars';
 
 export const SLACK_API_BASE = 'https://slack.com/api';
 
@@ -284,7 +285,7 @@ export async function postMessage(
       ...(post.blocks ? { blocks: post.blocks } : {}),
       ...(post.threadTs ? { thread_ts: post.threadTs } : {}),
       ...(post.username ? { username: post.username } : {}),
-      ...(post.iconUrl ? { icon_url: post.iconUrl } : {}),
+      ...(post.iconUrl ? { icon_url: slackIcon(post.iconUrl) } : {}),
       ...(post.threadTs && post.broadcast ? { reply_broadcast: true } : {}),
       // A worker's question must read as the question, not as a preview card
       // of whatever link it happened to quote.

@@ -129,7 +129,7 @@ import { activeWorkerUser, shareWithWorkers, workerLaunch } from './org/workerUs
 import { withShellToolchain } from './services/shellEnv';
 import { runEnv } from './runEnv';
 import { credentialDenyRules } from './org/credentialGuard';
-import { bindToolGateway, boundGatewayTools } from './org/toolGateway';
+import { bindToolGateway, boundGatewayTools, builtinGatewayTools } from './org/toolGateway';
 import { overdbToolsForRun } from './org/overdbBinding';
 import { type RunLaunch, bindRunTools, closeRunToolRelay, releaseRunTools, runToolRelayEnv } from './org/runToolRelay';
 
@@ -808,9 +808,11 @@ export function selectedClaudeMcpConfig(
   const allowlist = effectiveMcpAllowlist(args.mcpAllowlist);
   if (allowlist) {
     const raw = bindToolGateway(buildClaudeMcpConfigArg(allowlist, args.cwd) ?? '', args.conversationId);
-    if (!raw) { bindRunTools({}, args.conversationId); return ''; }
+    // The server's own tool on a worker's run (toolGateway.ts), beside its allowlist.
+    const builtin = builtinGatewayTools(args.conversationId);
+    if (!raw && !Object.keys(builtin).length) { bindRunTools({}, args.conversationId); return ''; }
     try {
-      const configured: Record<string, McpServerConfig> = JSON.parse(raw).mcpServers ?? {};
+      const configured: Record<string, McpServerConfig> = { ...(raw ? JSON.parse(raw).mcpServers ?? {} : {}), ...builtin };
       const databases = overdbToolsForRun(() => configured, args.conversationId);
       const servers: Record<string, McpServerConfig> = { ...configured, ...databases };
       const relay = relayedTools(servers, databases);
@@ -825,6 +827,7 @@ export function selectedClaudeMcpConfig(
     ...sealedClaudeTools(readClaudeMcpServers(args.cwd)),
     ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), args.conversationId),
     ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), args.conversationId),
+    ...builtinGatewayTools(args.conversationId),
   };
   return Object.keys(bound).length ? JSON.stringify({ mcpServers: bindRunTools(bound, args.conversationId, relayLaunchFor(args, profileDir)) }) : '';
 }
@@ -2254,6 +2257,7 @@ export class RunnerManager {
         ...sealedClaudeTools(readClaudeMcpServers(args.cwd)),
         ...boundGatewayTools(() => readClaudeMcpServers(args.cwd), convId),
         ...overdbToolsForRun(() => readClaudeMcpServers(args.cwd), convId),
+        ...builtinGatewayTools(convId),
       }, convId, relayLaunchFor(args)) as ClaudeSdkStartOptions['mcpServers'],
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in

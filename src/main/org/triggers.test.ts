@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { itemsFrom } from './mcpDirect';
-import { TriggerService, eventItem, type Deliverable, type WorkerTrigger } from './triggers';
+import { TriggerService, eventItem, readsAsQuestion, type Deliverable, type WorkerTrigger } from './triggers';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail?: string; owner?: boolean; quietMs?: number; launched?: number; reviewer?: boolean } = {}) {
+function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail?: string; owner?: boolean; quietMs?: number; quickQuietMs?: number; launched?: number; reviewer?: boolean; live?: boolean } = {}) {
+  const cards: string[] = [];
+  let progress: unknown = null;
   let triggers: WorkerTrigger[] = [];
   let deliverables: Deliverable[] = [];
   const asked: string[] = [];
@@ -21,6 +23,8 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
   let now = new Date(2026, 9, 20, 12).getTime();
   const svc = new TriggerService({
     ...(opts.quietMs ? { quietMs: opts.quietMs } : {}),
+    ...(opts.quickQuietMs ? { quickQuietMs: opts.quickQuietMs } : {}),
+    ...(opts.live ? { progress: () => progress as never, liveEveryMs: 5 } : {}),
     store: { list: () => structuredClone(triggers), save: (all) => (triggers = structuredClone(all)) },
     deliverables: { list: () => structuredClone(deliverables), save: (all) => (deliverables = structuredClone(all)) },
     worker: (id) => (id === 'triage' ? { id, name: 'Triage', enabled: !opts.paused, avatarUrl: 'https://img.example/triage.png' } : null),
@@ -30,7 +34,7 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
       return {
         ok: true,
         askId: `a${asked.length}`,
-        done: Promise.resolve(opts.fail ? { ok: false as const, error: opts.fail } : { ok: true as const, reply: reply ?? 'Triaged. Fix in https://github.com/acme/app/pull/42', launched: opts.launched ?? 0 }),
+        done: Promise.resolve(opts.fail ? { ok: false as const, error: opts.fail } : { ok: true as const, reply: reply ?? 'Triaged. Fix in https://github.com/acme/app/pull/42', launched: opts.launched ?? 0, ...(opts.launched ? { orchestrationId: 'o1' } : {}) }),
       };
     },
     toolConfig: (name) => (name === 'jira' ? { command: 'npx' } : null),
@@ -52,6 +56,22 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
         { user: 'U1', text: 'and for partner uploads too?' },
       ],
       botUserId: () => 'U0ACMEBOT',
+      ...(opts.live
+        ? {
+            postTs: async (channel: string, text: string, threadTs: string, as?: { name: string }, blocks?: unknown[]) => {
+              cards.push(`post ${channel}@${threadTs} as ${as?.name}: ${text}${blocks?.length ? ' [blocks]' : ''}`);
+              return '7.1';
+            },
+            update: async (_c: string, ts: string, text: string, blocks?: unknown[]) => {
+              cards.push(`edit ${ts}: ${text}${blocks?.length ? ` [${JSON.stringify(blocks)}]` : ''}`);
+              return true;
+            },
+            remove: async (_c: string, ts: string) => {
+              cards.push(`remove ${ts}`);
+              return true;
+            },
+          }
+        : {}),
       dm: async (user, text) => {
         posts.push(`dm:${user}:${text}`);
         return true;
@@ -93,6 +113,8 @@ function harness(opts: { items?: unknown; paused?: boolean; reply?: string; fail
     triggers: () => triggers,
     setItems: (v: unknown) => (toolResult = v),
     advance: (ms: number) => (now += ms),
+    cards,
+    setProgress: (p: unknown) => (progress = p),
   };
 }
 
@@ -277,6 +299,33 @@ describe('slack triggers', () => {
     }
   });
 
+  it('picks up a message that reads as a whole question sooner', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ reply: 'Answered.', quietMs: 12_000, quickQuietMs: 4000 });
+      const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'listen' }, deliver: [] });
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '4.1', text: 'How does lead routing work - specifically the AI pieces' });
+      await vi.advanceTimersByTimeAsync(4100);
+      expect(h.asked).toHaveLength(1);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U2', ts: '4.5', text: 'the export page' });
+      await vi.advanceTimersByTimeAsync(4100);
+      expect(h.asked).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(h.asked).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('knows what reads as a whole question', () => {
+    expect(readsAsQuestion(['the export page is blank?'])).toBe(true);
+    expect(readsAsQuestion(['How does lead routing work'])).toBe(true);
+    expect(readsAsQuestion(['anyone know where the templates live'])).toBe(true);
+    expect(readsAsQuestion(['so the export page', 'is blank'])).toBe(false);
+    expect(readsAsQuestion(['   '])).toBe(false);
+  });
+
   describe('listening in a channel', () => {
     const listen = (instructions = '') => ({ ...watch(), instructions, kind: 'slack' as const, watch: undefined, slack: { channel: 'C0ACMESUP', on: 'listen' as const }, deliver: [] });
 
@@ -332,9 +381,11 @@ describe('slack triggers', () => {
       expect(h.deliverables()[0].thread).toEqual({ channel: 'C0ACMESUP', ts: '6.1' });
       await h.svc.handedBack('a1', { ok: true, reply: 'The approve and decline emails are fixed HTML files in the deal service.' });
       expect(h.posts).toEqual([
-        "C0ACMESUP@6.1:I'm sending one read-only code run to find where the templates live.",
+        "C0ACMESUP@6.1:_⏳ Working on it. I'll post the answer in this thread, usually within a few minutes._",
         'C0ACMESUP@6.1:The approve and decline emails are fixed HTML files in the deal service.',
       ]);
+      // Its reasoning is its manager's, not the thread's.
+      expect(h.deliverables()[0].result).toContain("I'm sending one read-only code run");
       expect(h.deliverables()[0].result).not.toContain('Working on it');
       expect(h.deliverables()[0].deliveredTo).toContain('the Slack thread');
       expect(h.triggers()[0].threads).toEqual(['C0ACMESUP:6.1']);
@@ -346,10 +397,82 @@ describe('slack triggers', () => {
       if (!made.ok) throw new Error(made.error);
       await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'where is the template?' });
       await tick();
-      expect(h.posts).toEqual(['C0ACMESUP@6.1:Looking in the code.']);
-      expect(h.fullPosts[0]).toContain("⏳ Working on it. I'll post the answer in this thread");
+      expect(h.posts).toEqual(["C0ACMESUP@6.1:_⏳ Working on it. I'll post the answer in this thread, usually within a few minutes._"]);
       await h.svc.handedBack('a1', { ok: false, error: 'Out of turns' });
       expect(h.posts[1]).toMatch(/^C0ACMESUP@6\.1:_I couldn't finish looking into this/);
+    });
+
+    it('shows a live card that follows the work, instead of its reasoning, and swaps it for the answer', async () => {
+      const h = harness({ reply: 'Someone asked about routing; sending it to the code explorer.', launched: 1, live: true });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'how does lead routing work?' });
+      await tick();
+      expect(h.posts).toEqual([]);
+      expect(h.cards[0]).toMatch(/^post C0ACMESUP@6\.1 as Triage: _.+…_ \[blocks\]$/);
+      expect(h.deliverables()[0]).toMatchObject({ live: { channel: 'C0ACMESUP', ts: '7.1' }, deliveredTo: ['the Slack thread'] });
+      h.setProgress({ done: false, items: [{ title: 'Explore', status: 'running', said: 'Reading the routing rules', step: { index: 1, total: 1, name: 'explore' } }], files: [] });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(h.cards.some((c) => c.startsWith('edit 7.1:') && c.includes('Reading the routing rules'))).toBe(true);
+      h.setProgress({ done: true, items: [{ title: 'Explore', status: 'done' }], files: [] });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(h.cards.at(-1)).toMatch(/^edit 7\.1: :white_check_mark: Done in under a minute\. Writing up the answer…$/);
+      const edits = h.cards.length;
+      await new Promise((r) => setTimeout(r, 20));
+      expect(h.cards).toHaveLength(edits);
+      await h.svc.handedBack('a1', { ok: true, reply: 'It scores each partner against the supplier’s rules.' });
+      await tick();
+      expect(h.posts).toEqual(['C0ACMESUP@6.1:It scores each partner against the supplier’s rules.']);
+      expect(h.cards.at(-1)).toBe('remove 7.1');
+      expect(h.triggers()[0].threads).toEqual(['C0ACMESUP:6.1']);
+    });
+
+    it('says on the card when the work couldn’t finish', async () => {
+      const h = harness({ reply: 'Sending it to the code explorer.', launched: 1, live: true });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'how does lead routing work?' });
+      await tick();
+      await h.svc.handedBack('a1', { ok: false, error: 'Out of turns' });
+      await tick();
+      expect(h.cards.at(-1)).toBe('edit 7.1: :warning: I couldn’t finish looking into this.');
+      expect(h.posts[0]).toMatch(/^C0ACMESUP@6\.1:_I couldn't finish looking into this/);
+      h.svc.stop();
+    });
+
+    it('answers a question asked again from what it found last time', async () => {
+      const h = harness({ reply: 'Sending it to the code explorer.', launched: 1 });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'How does lead routing pick a partner?' });
+      await tick();
+      await h.svc.handedBack('a1', { ok: true, reply: 'Each partner is scored against the supplier’s routing rules, and the best match gets the lead.' });
+      expect(h.deliverables()[0].answer).toBe('Each partner is scored against the supplier’s routing rules, and the best match gets the lead.');
+      h.advance(2 * 24 * 60 * 60 * 1000);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U2', ts: '8.1', text: 'how does lead routing choose the partner?' });
+      await tick();
+      expect(h.asked[1]).toContain('ANSWERS YOU GAVE RECENTLY');
+      expect(h.asked[1]).toContain('Each partner is scored against the supplier’s routing rules');
+      expect(h.asked[1]).toContain('Start no run for it.');
+      // Something else entirely: nothing from before.
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U3', ts: '9.1', text: 'where are the deal approval email templates?' });
+      await tick();
+      expect(h.asked[2]).not.toContain('ANSWERS YOU GAVE RECENTLY');
+    });
+
+    it('keeps an answer given straight away, and reads one kept before answers were', async () => {
+      const h = harness({ reply: 'Every 15 minutes, from the indexer schedule.' });
+      const made = h.svc.create(listen());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '6.1', text: 'how often does collateral get indexed?' });
+      await tick();
+      expect(h.deliverables()[0].answer).toBe('Every 15 minutes, from the indexer schedule.');
+      const old = { ...h.deliverables()[0], id: 'old', answer: undefined, title: 'How does partner tiering work?', result: 'Sending it to the explorer.\n\n---\n\nTiers come from points earned on deals.' };
+      h.deliverables().push(old);
+      expect(h.svc.pastAnswers('triage', 'how is partner tiering worked out')).toEqual([{ question: 'How does partner tiering work?', answer: 'Tiers come from points earned on deals.', at: expect.any(Number) }]);
+      expect(h.svc.pastAnswers('someone-else', 'how is partner tiering worked out')).toEqual([]);
+      h.advance(31 * 24 * 60 * 60 * 1000);
+      expect(h.svc.pastAnswers('triage', 'how is partner tiering worked out')).toEqual([]);
     });
 
     it('adds no working note when it answered straight away', async () => {

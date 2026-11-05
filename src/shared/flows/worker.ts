@@ -55,6 +55,11 @@ export interface WorkerCaps {
   /// Steps its manager said it may always run without asking, as
   /// `flowId/stepId`: a standing "yes" to the same approval every day.
   alwaysAllow?: string[];
+  /// Use its role's tools in runs it starts on its own, as well as in runs a
+  /// person approved. Its manager's call. Absent: only in approved runs.
+  roleToolsAlways?: boolean;
+  /// Don't look for trouble in its work by itself (OrgService.tuningWatchDue).
+  tuningWatchOff?: boolean;
   runIn: 'worktree' | 'cwd';
   /// Let worker-owned runs cross the runtime's push/message/service-update
   /// boundary without a per-step approval. Optional so workers persisted by
@@ -201,6 +206,11 @@ export interface Worker {
   /// How much of each tool it may use, by server name: read only, or only
   /// some calls. A tool with no entry is the whole tool. See toolScope.ts.
   toolScopes?: ToolScopes;
+  /// Its role in the org's catalog (OrgRole.name). The role's tools come
+  /// with it (shared/org/roleTools.ts), less `roleToolsOff`. Absent: none.
+  role?: string;
+  /// Tools of its role turned off for this worker.
+  roleToolsOff?: string[];
   /// The job needs to read or operate web pages. Its planning turns (desk
   /// errands and shift planning) and every run it launches start with the
   /// browser switch on — Claude in Chrome on

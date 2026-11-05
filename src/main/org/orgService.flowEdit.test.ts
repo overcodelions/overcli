@@ -116,6 +116,18 @@ describe('how a worker works, changed by saying so', () => {
     expect(h.saved[0].steps.map((x) => x.id)).toEqual(['plan', 'change', 'check']);
   });
 
+  it('undoes an applied step change from its suggestion, in one go', async () => {
+    const h = harness([worker('triage')], [fix], addCheck);
+    const s = await h.svc.suggestFlow(pat, 'Triage', 'fix', 'check it before you finish');
+    if (!s.ok) throw new Error(s.error);
+    h.svc.saveFlowEdit(pat, 'Triage', 'fix', s.yaml, false);
+    let reviews = [{ id: 'a', workerId: [...h.workers.keys()][0], at: 0, by: 'Pat', summary: '', looked: { runs: 0, answers: 0 }, suggestions: [{ id: 's1', area: 'flow', flowId: 'fix', title: 'T', why: '', change: 'C', runs: [], state: 'applied', appliedAt: 0 }] }];
+    (h.svc as unknown as { deps: Record<string, unknown> }).deps.reviews = { list: () => reviews, save: (r: typeof reviews) => (reviews = structuredClone(r)) };
+    expect(h.svc.undoSuggestion(pat, 'Triage', 'a', 's1')).toEqual({ ok: true });
+    expect(h.saved.at(-1)!.steps.map((x) => x.id)).toEqual(['plan', 'change']);
+    expect(reviews[0].suggestions[0].state).toBe('dismissed');
+  });
+
   it('gives it its own copy of a flow others run, unless told to change it for everyone', async () => {
     const h = harness([worker('triage'), worker('scout')], [fix], addCheck);
     const s = await h.svc.suggestFlow(pat, 'Triage', 'fix', 'check it');

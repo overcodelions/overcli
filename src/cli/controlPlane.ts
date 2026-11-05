@@ -16,6 +16,7 @@
 // behind an HTTPS ingress when claude.ai connectors need to reach it.
 
 import type { MetricsStatus } from './metricsServer';
+import type { TestSystemsService } from '../main/org/testSystems';
 import { parseCron } from '../shared/flows/cron';
 import { scheduleText } from '../main/org/orgService';
 import { PROCESS_LIBRARY, libraryProcess, suggestTeamFor } from '../shared/org/processLibrary';
@@ -46,7 +47,7 @@ import { fleetStatus, fleetTokensFile, fleetUrlProblem, loadFleetTokens, saveFle
 import { host } from '../main/host';
 import { Store } from '../main/store';
 import type { ScheduleTrigger } from '../shared/flows/schedule';
-import { PICTURE_TONES, avatarChoices, searchPictures } from '../shared/flows/avatars';
+import { DRAWN_GROUPS, PICTURE_TONES, avatarChoices, drawnForSearch, searchPictures } from '../shared/flows/avatars';
 import { FLUENT_EMOJI } from '../shared/flows/fluentEmoji';
 import type { AccessService, PersonRole } from '../main/org/accessService';
 import type { SlackPerson } from '../main/slack/slackApi';
@@ -91,6 +92,8 @@ export interface ControlPlaneDeps {
   /// Setup → Model ids' Test: one tiny prompt per id on the server's model
   /// provider (modelIdTest.ts). Absent: the page says it can't test here.
   testModelIds?: (models: string[]) => Promise<ModelIdResult[]>;
+  /// Setup → Apps to test. Absent: the page says it isn't on this server.
+  testSystems?: TestSystemsService;
   /// Whether /metrics is on, for Setup → Readiness. Absent: shown as off.
   metrics?: () => MetricsStatus;
   /// What /metrics would send now, for Readiness's preview. Absent: no preview.
@@ -175,6 +178,9 @@ function accessRoutes(org: OrgService, access: AccessService, slackPeople?: () =
   const money = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
   return [
     { method: 'GET', path: /^\/api\/admin\/invites$/, handle: (c) => access.invites(c) },
+    // Starter roles: the ready-made Developer, QA and Analyst, and adding one to the catalog.
+    { method: 'GET', path: /^\/api\/roles\/starters$/, handle: () => access.starterRoles() },
+    { method: 'POST', path: /^\/api\/roles\/starters\/add$/, handle: (c, b) => access.addStarterRole(c, str(b.name)) },
     // Who the org is (org.json's name, address, time zone, Slack workspace).
     { method: 'GET', path: /^\/api\/admin\/org-setup$/, handle: (c) => access.orgSetup(c) },
     { method: 'POST', path: /^\/api\/admin\/org-setup$/, handle: (c, b) => access.setupOrg(c, b) },
@@ -974,6 +980,18 @@ function slackRoutes(convos?: SlackConversations): Array<{ method: string; path:
 /// Setup → Model ids' Test. Each id is a real model call, so admins only,
 /// one batch at a time each, and a few batches a minute.
 const MAX_MODEL_TESTS = 40;
+/// Setup → Apps to test: admins only, checked in the service.
+function testSystemRoutes(systems: TestSystemsService): Array<{ method: string; path: RegExp; handle: Handler }> {
+  const s = (v: unknown): string => (typeof v === 'string' ? v : '');
+  return [
+    { method: 'GET', path: /^\/api\/admin\/test-systems$/, handle: (c) => systems.list(c) },
+    { method: 'POST', path: /^\/api\/admin\/test-systems\/discover$/, handle: (c, b) => systems.discover(c, s(b.url), s(b.username)) },
+    { method: 'POST', path: /^\/api\/admin\/test-systems$/, handle: (c, b) => systems.save(c, { system: b.system, credentials: b.credentials, previousId: b.previousId }) },
+    { method: 'POST', path: /^\/api\/admin\/test-systems\/([a-z0-9-]+)\/remove$/, handle: (c, _b, [id]) => systems.remove(c, id) },
+    { method: 'POST', path: /^\/api\/admin\/test-systems\/([a-z0-9-]+)\/test$/, handle: (c, b, [id]) => systems.test(c, id, s(b.environment)) },
+  ];
+}
+
 /// Setup → Readiness's Metrics card: on or off, and whether anything scrapes it.
 function metricsRoutes(metrics?: ControlPlaneDeps['metrics'], text?: ControlPlaneDeps['metricsText']): Array<{ method: string; path: RegExp; handle: Handler }> {
   const admin = (c: OrgCaller) => isAdmin(loadOrgPolicy().policy, c);
@@ -1175,6 +1193,33 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       method: 'POST',
       path: /^\/api\/workers\/([^/]+)\/suggest-job$/,
       handle: (c, b, [id]) => org.suggestJob(c, decodeURIComponent(id), str(b.ask), typeof b.job === 'string' ? b.job : undefined),
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/review$/,
+      handle: (c, b, [id]) => org.reviewWorkerWork(c, decodeURIComponent(id), str(b.complaint).slice(0, 2000)),
+    },
+    { method: 'GET', path: /^\/api\/workers\/([^/]+)\/tuning$/, handle: (c, _b, [id]) => org.workerTuning(c, decodeURIComponent(id)) },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/reviews\/([^/]+)\/suggestions\/([^/]+)$/,
+      handle: (c, b, [id, review, suggestion]) =>
+        b.state === 'applied' || b.state === 'dismissed' ? org.markSuggestion(c, decodeURIComponent(id), decodeURIComponent(review), decodeURIComponent(suggestion), b.state) : { ok: false, error: 'Say applied or dismissed.' },
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/reviews\/([^/]+)\/suggestions\/([^/]+)\/undo$/,
+      handle: (c, _b, [id, review, suggestion]) => org.undoSuggestion(c, decodeURIComponent(id), decodeURIComponent(review), decodeURIComponent(suggestion)),
+    },
+    {
+      method: 'POST',
+      path: /^\/api\/workers\/([^/]+)\/tuning\/try$/,
+      handle: (c, b, [id]) => org.tryFlowChange(c, decodeURIComponent(id), { flowId: str(b.flowId), runId: str(b.runId), ...(typeof b.yaml === 'string' ? { yaml: b.yaml } : {}) }),
+    },
+    {
+      method: 'GET',
+      path: /^\/api\/workers\/([^/]+)\/tuning\/try\/([^/]+)$/,
+      handle: (c, _b, [id, run], url) => org.trialResult(c, decodeURIComponent(id), decodeURIComponent(run), url.searchParams.get('before') ?? undefined),
     },
     { method: 'GET', path: /^\/api\/workers\/([^/]+)\/how-it-works$/, handle: (c, _b, [id]) => org.workerFlows(c, decodeURIComponent(id)) },
     {
@@ -1496,7 +1541,7 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       },
     },
     { method: 'GET', path: /^\/api\/library\/([^/]+)$/, handle: (c, _b, [id]) => org.libraryItem(c, decodeURIComponent(id)) },
-    { method: 'POST', path: /^\/api\/library\/([^/]+)\/rate$/, handle: (c, b, [id]) => org.rateDeliverable(c, decodeURIComponent(id), b.useful === true) },
+    { method: 'POST', path: /^\/api\/library\/([^/]+)\/rate$/, handle: (c, b, [id]) => org.rateDeliverable(c, decodeURIComponent(id), b.useful === true, typeof b.note === 'string' ? b.note : undefined) },
     { method: 'POST', path: /^\/api\/admin\/tools\/check$/, handle: (c) => org.checkTools(c) },
     {
       method: 'POST',
@@ -1561,15 +1606,19 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       // Fluent pictures by search (the picks with none), or drawn avatars.
       handle: (_c, _b, _p, url) =>
         url.searchParams.get('kind') === 'drawn'
-          ? { ok: true, choices: avatarChoices(() => randomBytes(6).toString('hex')) }
+          ? { ok: true, groups: DRAWN_GROUPS.map((g) => ({ id: g.id, label: g.label })), choices: avatarChoices(() => randomBytes(6).toString('hex'), url.searchParams.get('group') ?? undefined) }
           : {
               ok: true,
-              choices: searchPictures(
-                FLUENT_EMOJI,
-                (url.searchParams.get('q') ?? '').slice(0, 60),
-                48,
-                PICTURE_TONES.find((t) => t === url.searchParams.get('tone')),
-              ).map((p) => ({ style: p.name, url: p.url })),
+              choices: [
+                // A search for a kind or style of drawn picture: those first.
+                ...drawnForSearch((url.searchParams.get('q') ?? '').slice(0, 60), () => randomBytes(6).toString('hex')),
+                ...searchPictures(
+                  FLUENT_EMOJI,
+                  (url.searchParams.get('q') ?? '').slice(0, 60),
+                  48,
+                  PICTURE_TONES.find((t) => t === url.searchParams.get('tone')),
+                ).map((p) => ({ style: p.name, url: p.url })),
+              ],
             },
     },
     { method: 'POST', path: /^\/api\/workers\/([^/]+)\/picture\/pick$/, handle: (c, _b, [id]) => org.pickWorkerPicture(c, decodeURIComponent(id)) },
@@ -1651,7 +1700,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
     ...(deps.processes ? processRoutes(deps.processes, deps.triggers, deps.org, deps.draftProcess) : []),
     ...searchRoutes(deps.org, deps.processes),
     ...slackRoutes(deps.slackConversations),
-    ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText),
+    ...modelTestRoutes(deps.testModelIds), ...metricsRoutes(deps.metrics, deps.metricsText), ...(deps.testSystems ? testSystemRoutes(deps.testSystems) : []),
   ];
   const open = [
     ...(deps.access ? publicRoutes(deps.access) : []),

@@ -1,3 +1,6 @@
+import type { NotifyPerson } from '../main/slack/wire';
+import { runEvidenceDir } from '../main/flows/runEvidence';
+import { roleToolsFor } from '../shared/org/roleTools';
 import fs from 'node:fs';
 // Building the same engines the app builds, without the app.
 //
@@ -16,6 +19,7 @@ import fs from 'node:fs';
 
 import { isCodingWorker } from '../shared/flows/worker';
 import type { ProcessService } from '../main/org/processes';
+import type { TestSystemsService } from '../main/org/testSystems';
 import path from 'node:path';
 import { RunActivity } from '../main/flows/runActivity';
 import { workerFilesDir } from '../main/flows/workerFiles';
@@ -84,7 +88,7 @@ import type { SecretsService } from '../main/org/secrets/service';
 import { teamHireJobDescription } from '../shared/flows/team';
 import type { OrgService } from '../main/org/orgService';
 import type { AccessService } from '../main/org/accessService';
-import { useOverdbWorkerLookup } from '../main/org/overdbBinding';
+import { useOverdbWorkerLookup, useRunFilesLookup, useFormerNamesLookup } from '../main/org/overdbBinding';
 
 export interface HeadlessEngines {
   runner: RunnerManager;
@@ -124,6 +128,8 @@ export interface DaemonEngines extends HeadlessEngines {
   /// Workers acting on business events. Started by `serve`.
   triggers: TriggerService;
   processes: ProcessService;
+  /// Setup → Apps to test.
+  testSystems: TestSystemsService;
   /// What people asked in Slack and what came of it, for the console.
   slackConversations: SlackConversations;
 }
@@ -293,6 +299,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     // Tools the org gives every worker (Setup → Tools → Who can use it).
     sharedMcpServers: () => loadOrgPolicy().policy.sharedMcpServers ?? [],
     toolDefaults: () => loadOrgPolicy().policy.toolDefaults,
+    roleTools: (w) => roleToolsFor(w, loadOrgPolicy().policy.roles),
     activeRuns: (workerId) => flowRuntime.listRuns().filter((r) => r.workerId === workerId && (r.state.kind === 'running' || r.state.kind === 'paused')),
     // Copied from index.ts: which flows a worker has, so its planning turn
     // can send each candidate to the one that fits. Without it every item
@@ -343,7 +350,7 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
         flowId: flow.id,
         runIn,
         maxConcurrent: 1,
-        origin: workerOrigin({ ...worker, writesCode: workerEngine.writesCode(worker) }, 'errand', errand),
+        origin: { ...workerOrigin({ ...worker, writesCode: workerEngine.writesCode(worker) }, 'errand', errand), ...workerEngine.roleOrigin(worker) },
         note: `Investigate: ${request.replace(/\s+/g, ' ').slice(0, 300)}`,
         autoLaunch: launch,
       });
@@ -511,8 +518,21 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   guardCredentials(host().dataDir());
   const toolFile = { read: () => readClaudeMcpServers(), write: (name: string, c: McpServerConfig) => writeMcpServer('claude', name, c) };
   let gateway: ToolGateway | null = null;
+  // The org's Slack sender for the gateway's notify, set once the org is up.
+  let notifyFromRun: NotifyPerson | null = null;
   // Whose run the overdb tool is serving, for its query log (overdbBinding.ts).
   useOverdbWorkerLookup((id) => flowRuntime.workerForConversation(id)?.workerName);
+  // Where test-systems keeps a run's screenshots: with the run, not in its repo.
+  useRunFilesLookup((id) => {
+    const runId = flowRuntime.runIdForConversation(id);
+    return runId ? runEvidenceDir(runId) : undefined;
+  });
+  // A renamed worker still opens the apps that name it by an old name.
+  useFormerNamesLookup((id) => {
+    const runId = flowRuntime.runIdForConversation(id);
+    const workerId = runId ? flowRuntime.getRun(runId)?.workerId : undefined;
+    return (workerId ? workerEngine.get(workerId)?.formerNames : undefined) ?? [];
+  });
   // Command tools' env is sealed, and their launches pinned, with the gateway
   // on, and always while workers run as a user of their own: they can read
   // and write ~/.claude.json, so it must hold no token and say nothing the
@@ -543,6 +563,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
         callerFor: (id) => flowRuntime.workerForConversation(id),
         onCall: (c) => log(c.allowed ? 'info' : 'warn', 'org.tools', `${c.who} ${c.allowed ? 'called' : 'was refused'} ${c.tool}.${c.call}`),
         log: (message) => log('warn', 'org.tools', message),
+        notify: (req) => (notifyFromRun ? notifyFromRun(req) : Promise.resolve({ ok: false as const, error: 'Slack isn’t set up on this server, so nothing was sent.' })),
       },
       toolFile,
     ).then(
@@ -566,11 +587,12 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
   // The server's version, and whether a newer release is out (Readiness).
   const updates = new UpdateCheck({ current: serverVersion(), enabled: () => process.env.OVERCLI_UPDATE_CHECK !== '0' });
   updates.start();
-  const { org, commands, access, sso, triggers, connections, processes, frontDoor } = createOrgControl(
+  const { org, commands, access, sso, triggers, connections, processes, testSystems, frontDoor, notifyPerson } = createOrgControl(
     { runner: engines.runner, flowRuntime, orchestrator, workerEngine, teams: () => teams, runActivity: engines.runActivity, sweepCheckouts: true, health: () => [updates.health()], version: () => updates.status(), ...(options.secrets ? { secrets: options.secrets } : {}) },
     slack,
   );
   slackCommands = commands;
+  notifyFromRun = notifyPerson;
 
   // A finished repo or workspace run's change, committed and pushed by the
   // server (landBranches.ts).
@@ -777,6 +799,7 @@ export function buildDaemonEngines(options: EngineOptions): DaemonEngines {
     connections,
     triggers,
     processes,
+    testSystems,
     slackConversations: slackConversations({
       log: () => frontDoor.conversations(),
       stats: () => frontDoor.stats(),

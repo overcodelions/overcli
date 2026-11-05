@@ -201,6 +201,12 @@ export interface Orchestration {
         /// Outside tools you approved for this batch's runs: see
         /// FlowRuntimeStartArgs.externalActionGrant.
         externalActionGrant?: string[];
+        /// The worker's role tools (server names), and whether it may use
+        /// them in runs nobody approved (`WorkerCaps.roleToolsAlways`).
+        roleTools?: string[];
+        roleToolsAlways?: boolean;
+        /// A test run from its Tuning tab: FlowRun.trial.
+        trial?: boolean;
         /// Snapshot of `Worker.browser`: the batch's runs launch with the
         /// browser switch on. Absent means off.
         browser?: boolean;

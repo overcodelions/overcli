@@ -145,6 +145,34 @@ The server needs overdb's built `dist` folder. The Docker image keeps it at `/op
 
 Rows a worker reads go to the model and can end up wherever that worker posts: Slack, a ticket, a pull request. Give the overdb tool to workers whose output stays where the data may go, and point production at a read replica.
 
+## Setup → Apps to test
+
+Apps workers can QA in a browser that's already signed in: a worker that checks a feature on its ticket's environment, say, or walks the main journeys after a release. Workers reach them through the **test-systems** tool, which you give them on Setup → Tools like any other.
+
+**Discover** fills most of this in: type the app's address (its sign-in page, or any page that links to it) and the server opens it in a browser. It finds the username and password fields and the sign-in button, presses Next past a username-only screen, picks up a code field and any extra fields, and tries the usual health check paths (`/health`, `/healthz`, `/api/health`, `/status`, `/ping`). If signing in leaves for another site, such as your identity provider, it says so. Nothing is saved, and no password is typed; check what it filled in, add the test account and any extra fields' values, then save.
+
+For each app:
+
+- **Address:** its usual environment, e.g. `https://staging.billing.acme.dev`.
+- **Feature environments** (optional): an address with `{env}` in its host, e.g. `https://{env}.feature.billing.acme.dev`. A worker names the ticket key or branch (`BILL-123` becomes `bill-123`), or passes the address the deploy gave. An address that doesn't fit the pattern is refused, so a test account is never sent anywhere else.
+- **Health check** (optional): a path such as `/health`, waited on until it answers before anything else, so a feature environment still deploying isn't reported as broken.
+- **How to sign in:**
+  - **Login page:** the server fills the username and password fields and presses the sign-in button, found by CSS selectors (`#email`, `button[type=submit]`). With an authenticator secret and a code field, it types the six-digit code too, on the same page or the next.
+    - **Extra fields,** for anything else the page wants, such as a company code, a region or a "remember me" box: up to six, each with a name, a selector, and whether to type into it, pick an option or tick it. A value is plain (`acme-qa`) or **secret**, kept sealed like the password. They're filled after the username, in the order listed.
+    - **Next button,** for a login over two screens (username, then Next, then password): pressed after the username and any extra fields, then the server waits for the password field.
+  - **Test login endpoint:** the server POSTs `{ username, password }` to a path such as `/test/login`, with an endpoint key as a bearer token if you set one, and loads the session the endpoint sets: its cookies, or a `token` it returns put in local storage under the key you name. Asking your app team for an endpoint like this in non-production environments is the most reliable way, and works with SSO and MFA.
+  - **None,** for an environment that needs no sign-in.
+- **What to check:** the journeys to walk, what working looks like, and what never to touch. The worker reads it when it opens the app.
+- **Who may open it:** worker names, or every worker with the tool.
+
+**Workers never see the credentials.** The username, password, authenticator secret and endpoint key are kept sealed with the server's tool secrets and never shown again; the page shows only whether each is set. The server signs in, and the worker gets ordinary browsing (open pages, click, type, take screenshots, check text). The browser tools that could read a session back out, such as cookies, local storage, running code in the page and a request's headers, are kept for the server. Anything that looks like a password in what the browser reports is replaced with `[hidden]`.
+
+**Sessions that run out are signed in again.** Every time a worker opens an app it signs in fresh. When a page later lands on the sign-in page (the **signed-out page**, which defaults to the login page), the server signs in again and reopens the page, up to three times per open, then tells the worker the account isn't staying signed in.
+
+Screenshots a worker takes are kept with the run (on its page under Files) in the server's tool folder, `/data/tool-home/run-evidence/<run>/`, and the worker is given that path, so a ticket tool such as `mcp-atlassian` can attach them; it only uploads files from its own folder. Workers can't open or change them there.
+
+**Test** opens the app as a worker would, on the environment you type, and says whether it got in. Use a test account with the least access it needs, on non-production environments only. The Docker image comes with the Chromium this uses (leave it out with `--build-arg INSTALL_BROWSER=0`, about 400 MB); the first use fetches Playwright MCP from the npm registry. Running the server outside the image, install the browser once with `npx playwright install --with-deps chromium`.
+
 ## Setup → Secrets
 
 Every secret the server uses, with why it's needed and how to get one. Values go in and are never shown again; changes apply at once and are recorded by name in the decision log. Where they're kept depends on `OVERCLI_SECRETS`:
@@ -183,6 +211,30 @@ Every worker's shell and every repo's test command gets that version's `bin` fir
 **Remove** deletes it from the volume. A version a repo is set to can't be removed until that repo picks another.
 
 Baked-in toolchains (`--build-arg JDKS=…` or `EXTRA_APT_PACKAGES`, see the [deploy README](../README.md)) still work; whatever is installed here comes first on `PATH`.
+
+## Starter roles
+
+Three ready-made roles, so a new org can hire without writing a job first:
+
+- **Developer:** takes a ticket, changes the code, runs the tests and opens a pull request, then fixes CI failures on it. Needs a repo on Setup → Repos & workspaces.
+- **QA:** opens a ticket's feature environment signed in, through the `test-systems` tool, walks the journeys the ticket affects and reports each problem with steps and screenshots. Needs an app on Setup → Apps to test.
+- **Analyst:** answers questions from your databases through the `overdb` tool, read-only, and shows the query behind every number. Needs a database on Setup → Databases.
+
+They appear on the Hire page until they're in the catalog. **Add to the catalog** (admins) makes one the org's own role, and **Setup → Role catalog** lists them under **Starter roles**, where **Add** does the same and shows the role to change. From then on it's an ordinary catalog role: edit its job, tools and budget like any other, and hires from it follow the same allowances and approvals.
+
+### A worker's role
+
+A worker hired from a catalog role keeps it, and any worker can be given one on its page under **Access → Role**. The role's tools come with it in every run, including the one-off work it plans when someone asks it something, so no flow step has to list them. On its page, its manager can turn one of them off for that worker, or narrow one under **Tools** like any tool.
+
+Trust still decides when they're used. A call that only reads always goes through. Anything else goes through in a run a person approved (on probation, every run waits for its manager's approval first), in any run when its manager turns on **Always allow its role's tools**, and always for an autonomous worker. Otherwise the call is refused and the worker says what it was about to do. Changing a role's tools in the catalog changes them for every worker with that role; each keeps its own job.
+
+With its role's tools cleared for a run (a person approved it, **Always allow its role's tools** is on, or it's autonomous), a step whose only way outside is its role's tools starts without asking: one that comments on a ticket through the role's Jira tool, say. A step that also lists the shell, or a tool outside its role, still asks, as does a shipping step.
+
+Each step of a worker's run is told which tools its role gives it, and what the common ones are for, so a flow written before the role (or before a tool existed) still uses them.
+
+### Workers telling people
+
+Every worker run has the server's own **overgo** tool, with one call, **notify**: a short Slack message to the worker's manager, a person by name or Slack member ID, or a channel by its ID (the bot must be in it). The server sends it, as the worker; the bot's token never reaches the worker. It's an outside action, so it follows the same rule as role tools: allowed in a run a person approved, in any run with **Always allow its role's tools**, and always for an autonomous worker. At most five messages a run, and each one is written to the decision log. It needs the tool gateway, which the Docker image turns on.
 
 ## Setup → Handbook
 
@@ -316,3 +368,15 @@ Every Monday at 9am in the org's time zone, overgo DMs a short week in review:
 - **Logs** go to stdout: startup, Slack, the secrets store, the control plane.
 
 The [operator's guide](../README.md) covers the container itself.
+
+## Tune a worker
+
+Each worker has a **Tuning** tab, for its manager or an admin. The number on it is how many answers were marked not useful since its last review. A thumbs-down on an answer asks what was wrong, and that shows here.
+
+**How it's doing** is counted from its runs, with no model turn. It says whether it's getting better, comparing the runs either side of its last change, or recent runs with earlier ones. It needs three runs each side. Each run shows as a bar of time working and time waiting between steps. Long waits usually mean a step is stopping for approval. *Ran clean* means a run finished, no tool was refused and nobody marked it not useful. It doesn't check that the answer was right: ratings do that.
+
+**Review its work** reads its last 10 runs and 12 answers and suggests what to change. Say what's wrong in the box first if you've seen something: that comes first. Each suggestion names the runs that show it, and what it would change: the job, a flow's steps, its notes, an app's guide or a tool. Job, steps and notes open with the change written in, and nothing is saved until you read it and save. A review is one model turn, only when someone asks for one, and it's kept.
+
+**Watch for trouble.** Every 30 minutes overgo checks each worker's runs since its last review. If 3 runs had tools refused, 2 failed, 3 spent most of their time waiting, or 2 pieces of work were marked not useful, it runs a review, tries the first fix to its steps on a past job as a test run, and tells its manager in Slack. That's at most once a week for a worker, and it spends that worker's budget. It only proposes: nothing changes until a person applies it. It also tells the manager if an applied change looks to have made things worse, and **Undo** on that suggestion puts it back. Turn it off per worker on its Tuning tab.
+
+**Try a change before keeping it.** A change to a flow's steps can be tried on a past job, and the results are shown beside that job's. A test run only reads, and uses the app under test. A call that would update a ticket or message someone is refused and shown to you, and a server-opened pull request step is left out. It uses budget like any run. The app under test is not protected: a test can change data there, as the real run could, so point **Apps to test** at test environments. A flow with steps on anything but Claude can't be test-run, because only Claude's calls can be held back.

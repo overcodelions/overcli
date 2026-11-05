@@ -15,6 +15,9 @@
 // proposes, trusted it acts. Every event and what came of it is a Deliverable:
 // the Library, the value numbers and "came in" all read from those.
 
+import { contentWords, score } from '../slack/existingWork';
+import { liveCard, openerFor, trailLine, type LiveCard } from '../slack/frontDoor';
+import type { ErrandProgress } from './orgService';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -126,6 +129,11 @@ export interface Deliverable {
   /// The Slack thread it came from: where the finished work goes too, when
   /// the first answer only said what it was about to do.
   thread?: { channel: string; ts: string };
+  /// A listener's answer as posted in the thread: what a later question
+  /// like it can be answered from.
+  answer?: string;
+  /// A listener's live card in that thread while its work runs.
+  live?: { channel: string; ts: string; since: number };
   /// Test mode: the message it answered (untrusted), for a revision.
   asked?: string;
   /// Skipped for the daily limit: the event, kept so its manager can have
@@ -134,7 +142,7 @@ export interface Deliverable {
   /// Test mode: the DM card its manager reviews it on. Replies in that
   /// card's thread revise the answer.
   review?: { channel: string; ts: string };
-  rating?: { useful: boolean; by: string };
+  rating?: { useful: boolean; by: string; note?: string; at?: number };
 }
 
 export interface TriggerDeps {
@@ -147,7 +155,7 @@ export interface TriggerDeps {
   /// Hand the worker a task; the answer arrives on `done`. `startsOnItsOwn`:
   /// the trigger's manager let what it finds start without an OK.
   ask(workerId: string, triggerName: string, text: string, startsOnItsOwn: boolean):
-    | { ok: true; askId: string; done: Promise<{ ok: true; reply: string; launched: number; choices?: string[] } | { ok: false; error: string }> }
+    | { ok: true; askId: string; done: Promise<{ ok: true; reply: string; launched: number; choices?: string[]; orchestrationId?: string } | { ok: false; error: string }> }
     | { ok: false; error: string };
   toolConfig(name: string): McpServerConfig | null;
   callTool(config: McpServerConfig, tool: string, args: Record<string, unknown>): Promise<ToolCall>;
@@ -160,6 +168,12 @@ export interface TriggerDeps {
     thread?(channel: string, threadTs: string): Promise<Array<{ user?: string; name?: string; text: string }> | null>;
     /// A DM to one person. Absent: DM destinations are skipped.
     dm?(slackUserId: string, text: string): Promise<boolean>;
+    /// Post and give the message's ts, with blocks: the live card a
+    /// listener shows in the thread while its work runs. Absent: a line
+    /// saying it's on it, not edited.
+    postTs?(channel: string, text: string, threadTs: string, as?: { name: string; iconUrl?: string }, blocks?: unknown[]): Promise<string | null>;
+    update?(channel: string, ts: string, text: string, blocks?: unknown[]): Promise<boolean>;
+    remove?(channel: string, ts: string): Promise<boolean>;
     /// The bot's own member id: a message that @-mentions it is the front
     /// door's, not a trigger's.
     botUserId?(): string | null;
@@ -185,6 +199,13 @@ export interface TriggerDeps {
   /// What they send meanwhile is one event. Each message starts the wait
   /// again. Absent or 0: each message is its own.
   quietMs?: number;
+  /// The wait when what they've sent already reads as a whole question
+  /// (ends in "?", or opens like one): shorter, so it's picked up sooner.
+  quickQuietMs?: number;
+  /// How work an event started is going, for the live card in the thread.
+  progress?(orchestrationId: string): ErrandProgress | null;
+  /// How often the live card is redrawn. Default 4 s.
+  liveEveryMs?: number;
 }
 
 export const MIN_WATCH_MINUTES = 5;
@@ -209,6 +230,9 @@ export class TriggerService {
   /// Messages in a watched channel from someone still typing, by trigger,
   /// channel and person: handed on as one once they pause.
   private quiet = new Map<string, { triggerId: string; channel: string; ts: string; threadTs?: string; user?: string; texts: string[]; ids: string[]; timer?: ReturnType<typeof setTimeout> }>();
+
+  /// Live cards being kept up to date, by deliverable id.
+  private live = new Map<string, ReturnType<typeof setInterval>>();
 
   constructor(private readonly deps: TriggerDeps) {}
 
@@ -337,6 +361,8 @@ export class TriggerService {
   }
 
   stop(): void {
+    for (const timer of this.live.values()) clearInterval(timer);
+    this.live.clear();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
@@ -594,7 +620,8 @@ export class TriggerService {
     g.texts.push(text);
     g.ids.push(id);
     if (g.timer) clearTimeout(g.timer);
-    g.timer = setTimeout(() => this.settle(k), this.deps.quietMs);
+    const wait = this.deps.quickQuietMs && readsAsQuestion(g.texts) ? Math.min(this.deps.quickQuietMs, this.deps.quietMs ?? Infinity) : this.deps.quietMs;
+    g.timer = setTimeout(() => this.settle(k), wait);
     g.timer.unref?.();
     this.quiet.set(k, g);
   }
@@ -683,7 +710,8 @@ export class TriggerService {
       if (first) void this.tellLimit(t, worker.name, item.title);
       return null;
     }
-    const started = this.deps.ask(t.workerId, t.name, eventPrompt(t, item), t.startsOnItsOwn === true);
+    const past = listens(t) ? this.pastAnswers(t.workerId, questionOf(item)) : [];
+    const started = this.deps.ask(t.workerId, t.name, eventPrompt(t, item, past), t.startsOnItsOwn === true);
     if (!started.ok) return skip(started.error);
     const d: Deliverable = { ...base, askId: started.askId, ...(thread ? { thread } : {}), ...(rehearses(t) ? { asked: eventText(item) } : {}) };
     this.putDeliverable(d);
@@ -706,11 +734,25 @@ export class TriggerService {
         await this.hold(t, worker, { ...d, result: res.reply, links }, item.title, res.launched > 0);
         return;
       }
+      // A listener that started work: its reply is its reasoning, for its
+      // manager. The thread gets a card that follows the work instead, then
+      // the answer; without one, a line saying it's on it.
+      if (res.launched > 0 && thread && listens(t)) {
+        const as = { name: worker.name, ...(worker.avatarUrl ? { iconUrl: worker.avatarUrl } : {}) };
+        const live = await this.showLive(d, thread, as, res.orchestrationId);
+        const inThread = live || (await this.deps.slack?.post(thread.channel, WORKING_NOTE, thread.ts, as));
+        const told = await this.deliver({ ...t, deliver: t.deliver.filter((x) => x.kind !== 'thread') }, worker, 'handled', item.title, item.url, res.reply, thread, res.choices, true, started.askId);
+        const deliveredTo = inThread ? ['the Slack thread', ...told] : told;
+        this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, deliveredTo, doneAt: this.now(), ...(live ? { live } : {}) });
+        if (inThread) this.rememberThread(t.id, `${thread.channel}:${thread.ts}`);
+        return;
+      }
       // It started work and will come back: say so, or the thread looks
       // like it gave up after "I'm looking into it".
       const said = res.launched > 0 && thread ? `${res.reply.trim()}\n\n${WORKING_NOTE}` : res.reply;
       const deliveredTo = await this.deliver(t, worker, 'handled', item.title, item.url, said, thread, res.choices, true, started.askId);
-      this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, deliveredTo, doneAt: this.now() });
+      const answered = listens(t) && !res.launched && deliveredTo.includes('the Slack thread');
+      this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, deliveredTo, doneAt: this.now(), ...(answered ? { answer: res.reply.trim() } : {}) });
       if (listens(t) && thread && deliveredTo.includes('the Slack thread')) this.rememberThread(t.id, `${thread.channel}:${thread.ts}`);
     });
     return d;
@@ -731,6 +773,11 @@ export class TriggerService {
     const shown = await this.deps.review?.(t.workerId, d.id, `_Test mode · ${t.name}:_ *${worker.name}* would answer _${title}_ with:\n${said}${working ? '\n_It also started work. Its answer comes here too when it is done._' : ''}\n_Reply in this thread to change it._`);
     if (!shown) this.putDeliverable({ ...held, status: 'failed', error: `Test mode, but no one to check it with: give ${worker.name} a manager with a Slack member ID.` });
     else this.putDeliverable({ ...held, review: shown });
+  }
+
+  /// A word to a worker's manager, from something other than a trigger.
+  tell(workerId: string, text: string): Promise<boolean> {
+    return this.deps.tellOwner?.(workerId, text) ?? Promise.resolve(false);
   }
 
   /// Test mode: the held answer whose review card this DM thread is under.
@@ -796,6 +843,87 @@ export class TriggerService {
     return true;
   }
 
+  /// What this worker already answered in a channel it listens in, closest
+  /// to `question` first: a question asked again is answered from these in
+  /// seconds, not worked out again. The last 30 days, at most two.
+  pastAnswers(workerId: string, question: string): PastAnswer[] {
+    const words = contentWords(question);
+    if (words.length < 2) return [];
+    const now = this.now();
+    const candidates = this.deps.deliverables
+      .list()
+      .filter((d) => d.workerId === workerId && d.thread && d.status === 'delivered' && d.source.kind === 'slack')
+      .flatMap((d) => {
+        const t = d.source.triggerId ? this.get(d.source.triggerId) : undefined;
+        const answer = d.answer ?? (t && listens(t) ? finishedPart(d.result) : undefined);
+        return answer && !PASS_RE.test(answer) ? [{ d, answer, at: d.doneAt ?? d.at }] : [];
+      });
+    return candidates
+      .map((c) => ({ c, s: score(words, { hit: { kind: 'worker', title: c.d.title, who: '', at: c.at }, body: `${c.d.title}\n${c.answer}` }, now) }))
+      .filter((x): x is { c: (typeof candidates)[number]; s: NonNullable<ReturnType<typeof score>> } => !!x.s && x.s.coverage >= 0.5 && x.s.matched >= 2)
+      .sort((a, b) => b.s.rank - a.s.rank)
+      .slice(0, 2)
+      .map(({ c }) => ({ question: c.d.title, answer: c.answer, at: c.at }));
+  }
+
+  /// The card a listener shows in the thread while the work it started
+  /// runs: what it is doing, step by step, edited in place (the front door's
+  /// card). Null when Slack can't take one.
+  private async showLive(d: Deliverable, thread: { channel: string; ts: string }, as: { name: string; iconUrl?: string }, orchestrationId?: string): Promise<Deliverable['live'] | null> {
+    const slack = this.deps.slack;
+    if (!slack?.postTs || !slack.update) return null;
+    const since = this.now();
+    const card: LiveCard = { opener: openerFor(`${thread.channel}:${thread.ts}`) };
+    const first = liveCard(card, null, since);
+    const ts = await slack.postTs(thread.channel, first.text, thread.ts, as, first.blocks).catch(() => null);
+    if (!ts) return null;
+    const live = { channel: thread.channel, ts, since };
+    if (!orchestrationId || !this.deps.progress) return live;
+    let drawn = JSON.stringify(first.blocks);
+    let busy = false;
+    const timer = setInterval(() => {
+      if (busy) return;
+      const p = this.deps.progress?.(orchestrationId) ?? null;
+      if (!p) return;
+      const said = p.items.find((i) => i.status === 'running' && i.said)?.said;
+      const line = said ? trailLine(said) : '';
+      if (line && card.trail?.at(-1) !== line) card.trail = [...(card.trail ?? []), line].slice(-4);
+      if (p.done) {
+        clearInterval(timer);
+        this.live.delete(d.id);
+        busy = true;
+        void slack.update!(live.channel, live.ts, `:white_check_mark: Done in ${took(this.now() - since)}. Writing up the answer…`, []).catch(() => false);
+        return;
+      }
+      const next = liveCard(card, p, this.now(), since);
+      if (JSON.stringify(next.blocks) === drawn) return;
+      busy = true;
+      void slack.update!(live.channel, live.ts, next.text, next.blocks)
+        .then((ok) => {
+          if (ok) drawn = JSON.stringify(next.blocks);
+        })
+        .catch(() => false)
+        .finally(() => {
+          busy = false;
+        });
+    }, this.deps.liveEveryMs ?? 4000);
+    timer.unref?.();
+    this.live.set(d.id, timer);
+    return live;
+  }
+
+  /// The work is back: the card goes once the answer follows it, or says
+  /// it couldn't finish.
+  private endLive(d: Deliverable, answered: boolean): void {
+    const timer = this.live.get(d.id);
+    if (timer) clearInterval(timer);
+    this.live.delete(d.id);
+    if (!d.live || !this.deps.slack) return;
+    const { channel, ts } = d.live;
+    if (answered) void this.deps.slack.remove?.(channel, ts).catch(() => false);
+    else void this.deps.slack.update?.(channel, ts, ':warning: I couldn’t finish looking into this.', []).catch(() => false);
+  }
+
   /// The work an event's ask started has finished, and the worker has said
   /// what it found (OrgService.handBack): that goes where its first answer
   /// went, the Slack thread included, as the rest of the same story, since
@@ -805,6 +933,7 @@ export class TriggerService {
     const t = d?.source.triggerId ? this.get(d.source.triggerId) : undefined;
     const worker = d ? this.deps.worker(d.workerId) : null;
     if (!d || !t || !worker) return;
+    this.endLive(d, res.ok && !PASS_RE.test(res.reply));
     if (!res.ok) {
       // The thread was told an answer is coming (and only then): don't leave
       // it waiting. In test mode that is only so once its manager released
@@ -826,7 +955,7 @@ export class TriggerService {
     const deliveredTo = await this.deliver(t, worker, 'finished', d.title, d.source.url, res.reply, d.thread, undefined, true, askId);
     if (listens(t) && d.thread && deliveredTo.includes('the Slack thread')) this.rememberThread(t.id, `${d.thread.channel}:${d.thread.ts}`);
     const links = [...new Set([...d.links, ...(res.reply.match(URL_RE) ?? [])])].slice(0, 10);
-    this.putDeliverable({ ...d, result: d.result ? `${d.result}\n\n---\n\n${res.reply}` : res.reply, links, deliveredTo: [...new Set([...d.deliveredTo, ...deliveredTo])], doneAt: this.now() });
+    this.putDeliverable({ ...d, result: d.result ? `${d.result}\n\n---\n\n${res.reply}` : res.reply, links, deliveredTo: [...new Set([...d.deliveredTo, ...deliveredTo])], doneAt: this.now(), ...(listens(t) && deliveredTo.includes('the Slack thread') ? { answer: res.reply.trim() } : {}) });
   }
 
   /// A worker's answer to an event, out to where the trigger sends it and to
@@ -913,10 +1042,10 @@ export class TriggerService {
     return this.deps.deliverables.list();
   }
 
-  rate(id: string, useful: boolean, by: string): boolean {
+  rate(id: string, useful: boolean, by: string, note?: string): boolean {
     const d = this.deps.deliverables.list().find((x) => x.id === id);
     if (!d) return false;
-    this.putDeliverable({ ...d, rating: { useful, by } });
+    this.putDeliverable({ ...d, rating: { useful, by, at: this.now(), ...(note ? { note } : {}) } });
     return true;
   }
 
@@ -994,6 +1123,40 @@ const rehearses = (t: WorkerTrigger) => t.rehearse === true && t.kind === 'slack
 
 const listens = (t: Partial<WorkerTrigger>) => t.kind === 'slack' && t.slack?.on === 'listen';
 
+export interface PastAnswer {
+  question: string;
+  answer: string;
+  at: number;
+}
+
+/// The question a Slack event asks: the message itself, else its title.
+function questionOf(item: WatchItem): string {
+  const text = (item.data as { text?: unknown } | undefined)?.text;
+  return typeof text === 'string' && text.trim() ? text : item.title;
+}
+
+/// From before answers were kept on their own: the finished work's answer
+/// after the first reply, or the reply itself when it answered straight away.
+function finishedPart(result: string | undefined): string | undefined {
+  if (!result) return undefined;
+  const parts = result.split('\n\n---\n\n');
+  return parts.length > 1 ? parts.at(-1) : undefined;
+}
+
+/// What someone has sent so far already reads as a whole question: it ends
+/// in a question mark, or opens the way a question does.
+export function readsAsQuestion(texts: string[]): boolean {
+  const all = texts.join('\n').trim();
+  if (!all) return false;
+  if (/\?\s*$/.test(all)) return true;
+  return /^(?:how|what|why|when|where|who|whose|which|can|could|does|do|did|is|are|was|were|should|would|will|has|have|any(?:one|body))\b/i.test(all);
+}
+
+function took(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  return m < 1 ? 'under a minute' : m === 1 ? '1 min' : `${m} min`;
+}
+
 /// A listener answers in the thread it heard the question in, whatever
 /// else the trigger delivers to.
 const inThread = (t: Partial<WorkerTrigger>): Destination[] => {
@@ -1050,7 +1213,7 @@ function revisePrompt(t: WorkerTrigger, d: Deliverable, feedback: string): strin
   ].join('\n');
 }
 
-function eventPrompt(t: WorkerTrigger, item: WatchItem): string {
+function eventPrompt(t: WorkerTrigger, item: WatchItem, past: PastAnswer[] = []): string {
   const source = t.kind === 'watch' ? (t.watch?.changes ? `a change to an item you track in ${t.watch.server}` : `a new item from ${t.watch?.server}`) : t.kind === 'webhook' ? 'an event posted to your webhook' : 'a Slack message';
   const details = JSON.stringify(item.data, null, 2);
   const yourself = t.deliver.filter((d): d is Extract<Destination, { kind: 'worker' }> => d.kind === 'worker').map((d) => d.text);
@@ -1068,6 +1231,15 @@ function eventPrompt(t: WorkerTrigger, item: WatchItem): string {
     untrusted(details.length > 6000 ? details.slice(0, 6000) + '\n… (cut)' : details),
     '</untrusted-data>',
     ...(yourself.length ? ['', `When it's done: ${yourself.join(' ')}`] : []),
+    ...(past.length
+      ? [
+          '',
+          'ANSWERS YOU GAVE RECENTLY to questions like this one, in your channels:',
+          ...past.map((a, i) => `[${i + 1}] ${new Date(a.at).toDateString()}. Asked (untrusted): ${untrusted(a.question.slice(0, 300))}\nYou answered:\n${a.answer.slice(0, 3000)}`),
+          'If one of these already answers this question, answer from it now, in the thread, the way your job says to: say in a few words when you looked into it and offer to look again. Start no run for it.',
+          "Work it out as usual only if they don't answer it, or only partly, or it asks about something that may have changed since, or the person asks you to look again.",
+        ]
+      : []),
     '',
     'Reply with what you did and the result, briefly and with any links: your reply is shared with the team.',
     'If this is not one for you, or there is nothing worth saying (chatter, an announcement, already answered), reply with only PASS: nothing is posted.',

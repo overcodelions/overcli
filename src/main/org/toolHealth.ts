@@ -5,6 +5,8 @@
 // sign-in failure, or a run of errors, raises it with the admins, and the
 // next call that works clears it.
 
+import { TEST_SYSTEMS_TOOL } from '../../shared/testSystems';
+
 export type ToolTroubleKind = 'auth' | 'gone' | 'failing';
 
 export interface ToolTrouble {
@@ -19,10 +21,23 @@ export interface ToolTrouble {
   alertedAt?: number;
 }
 
+/// An error without the page a browser tool appends after it.
+function withoutPageReport(text: string): string {
+  const at = text.search(/^#{1,4} (?:Page|Events|Ran Playwright code)\b/m);
+  return at >= 0 ? text.slice(0, at) : text;
+}
+
 /// What an error says about the tool, not the call: a key or access problem,
 /// an API that is gone, or something else (a bad argument, a timeout).
-export function classifyToolError(text: string): ToolTroubleKind {
-  const t = text.slice(0, 2000);
+export function classifyToolError(text: string, tool?: string): ToolTroubleKind {
+  // A browser tool reports on the page it's on: a 403 there is that page's, not
+  // the tool's key.
+  const t = withoutPageReport(text).slice(0, 2000);
+  // The apps-to-test tool has no key of its own: only a test account that
+  // can't sign in is a sign-in problem.
+  if (tool === TEST_SYSTEMS_TOOL) return /Still on .* sign-in page|has no test account|has no value for|Signing in to .* failed/i.test(t) ? 'auth' : 'failing';
+  // A file a tool wouldn't write where it was asked: the call's fault, not the tool's key.
+  if (/outside (the )?allowed roots|file access denied|\bEACCES\b|\bENOENT\b|no such file/i.test(t)) return 'failing';
   if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid[ _-]?(api[ _-]?)?(token|key|credentials)|(token|key|credentials?) (has |have )?(expired|revoked)|authentication (failed|required)|not authenticated|access denied|permission denied/i.test(t)) return 'auth';
   if (/\b410\b|\bgone\b|deprecated|no longer (available|supported)|has been (retired|removed|sunset)|end[- ]of[- ]life/i.test(t)) return 'gone';
   return 'failing';
@@ -62,18 +77,18 @@ export class ToolHealth {
       return;
     }
     const now = this.now();
-    const kind = classifyToolError(o.text);
+    const kind = classifyToolError(o.text, o.tool);
     const was = at >= 0 ? this.all[at] : undefined;
     // A run of errors that went quiet for hours starts over.
     const fresh = !was || now - was.lastAt > FAILING_WINDOW_MS;
     const t: ToolTrouble = fresh
-      ? { tool: o.tool, kind, since: now, lastAt: now, count: 1, lastError: o.text.slice(0, 300), workers: o.worker ? [o.worker] : [] }
+      ? { tool: o.tool, kind, since: now, lastAt: now, count: 1, lastError: withoutPageReport(o.text).slice(0, 300), workers: o.worker ? [o.worker] : [] }
       : {
           ...was!,
           kind: was!.kind === 'failing' ? kind : was!.kind,
           lastAt: now,
           count: was!.count + 1,
-          lastError: o.text.slice(0, 300),
+          lastError: withoutPageReport(o.text).slice(0, 300),
           workers: o.worker && !was!.workers.includes(o.worker) ? [...was!.workers, o.worker].slice(-10) : was!.workers,
         };
     if (at >= 0) this.all[at] = t;

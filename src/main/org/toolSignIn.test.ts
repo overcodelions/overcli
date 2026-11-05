@@ -129,6 +129,39 @@ describe('ToolSignIn', () => {
     expect(pasted.ok && new URL(pasted.url).searchParams.get('client_id')).toBe('made-by-admin');
   });
 
+  it('says what the service said when it won’t register overgo', async () => {
+    const svc = service();
+    const refusing = (answer: () => Response | Promise<Response>) => ({ ...svc, fetchImpl: (async (url: string, init?: RequestInit) => (url === `${AS}/register` ? answer() : svc.fetchImpl(url, init))) as typeof svc.fetchImpl });
+    const start = (answer: () => Response | Promise<Response>, base: string) => harness(refusing(answer)).signIn.start(admin, { name: 'acme', url: MCP, base });
+    const json = (v: unknown) => new Response(JSON.stringify(v), { status: 400 });
+
+    // A return address services don't take: that's the thing to fix.
+    const http = await start(() => json({ error: 'invalid_redirect_uri', error_description: 'Redirect must be\nhttps or localhost' }), 'http://0.0.0.0:7420');
+    expect(http).toMatchObject({ ok: false });
+    if (http.ok) throw new Error('registered');
+    expect(http.error).toContain('it said “Redirect must be https or localhost”');
+    expect(http.error).toContain('http://0.0.0.0:7420');
+    expect(http.error).toContain('Open this console on localhost');
+    expect(http.error).not.toContain('make an OAuth app');
+
+    // A good address: making an app by hand is what's left.
+    const https = await start(() => json({ error: 'access_denied' }), BASE);
+    if (https.ok) throw new Error('registered');
+    expect(https.error).toContain('it said “access_denied”');
+    expect(https.error).toContain('make an OAuth app there');
+    expect(https.error).toContain(`${BASE}/oauth/tools/callback`);
+
+    // Not its OAuth error: a status, and none of the page it sent.
+    const page = await start(() => new Response('<html>Forbidden</html>', { status: 403 }), BASE);
+    if (page.ok) throw new Error('registered');
+    expect(page.error).toContain('it answered 403');
+    expect(page.error).not.toContain('<html>');
+
+    const down = await start(() => Promise.reject(new Error('ECONNRESET')), BASE);
+    if (down.ok) throw new Error('registered');
+    expect(down.error).toContain('it couldn’t be reached');
+  });
+
   it('renews a token close to running out and rewrites the header', async () => {
     const svc = service();
     const h = harness(svc);

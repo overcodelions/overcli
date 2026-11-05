@@ -964,6 +964,11 @@ export class OrchestratorImpl {
                 workerName: o.origin.workerName,
                 allowExternalActions: o.origin.allowExternalActions,
                 ...(o.origin.externalActionGrant?.length ? { externalActionGrant: o.origin.externalActionGrant } : {}),
+                // Its role's tools: cleared in a run a person approved, or
+                // when its manager always allows them.
+                ...(o.origin.roleTools?.length ? { roleTools: o.origin.roleTools, roleToolsCleared: o.origin.roleToolsAlways === true || !o.autoLaunched } : {}),
+                ...(!o.autoLaunched ? { launchApproved: true } : {}),
+                ...(o.origin.trial ? { trial: true } : {}),
                 ...(o.origin.browser ? { chrome: true } : {}),
                 ...(o.origin.team
                   ? { team: { teamId: o.origin.team.teamId, teamName: o.origin.team.teamName, taskId: o.origin.team.taskId } }

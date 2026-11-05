@@ -140,6 +140,21 @@ interface Flow {
   at: number;
 }
 
+/// Why a service wouldn't register overgo, and what to do. A return address
+/// services don't take comes first: making an app by hand wouldn't help that.
+export function registrationRefused(host: string, redirectUri: string, why = 'it gave no reason'): string {
+  let back: URL | null = null;
+  try {
+    back = new URL(redirectUri);
+  } catch {
+    // Said below without the address.
+  }
+  if (back && back.protocol === 'http:' && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(back.hostname)) {
+    return `${host} wouldn’t register overgo: ${why}. overgo gave it ${back.origin} as its return address, and services only take https:// or localhost. Open this console on localhost, or give it an https address (publicUrl in org.json), and try again.`;
+  }
+  return `${host} wouldn’t register overgo: ${why}. You can make an OAuth app there instead, with the return address ${redirectUri}, and use its client ID under “Use an OAuth app you made”.`;
+}
+
 export class ToolSignIn {
   private flows = new Map<string, Flow>();
   private view: Record<string, SignInSummary> = {};
@@ -248,6 +263,23 @@ export class ToolSignIn {
     } catch {
       return null;
     }
+  }
+
+  /// Ask to register as an app. When it won't, what the service said, for
+  /// the admin: its OAuth error if it sent one, else the status.
+  private async register(endpoint: string, body: string): Promise<{ reg?: Record<string, unknown>; why?: string }> {
+    let res: Response;
+    try {
+      res = await this.fetch(endpoint, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body });
+    } catch {
+      return { why: 'it couldn’t be reached' };
+    }
+    const sent = (await res.json().catch(() => null)) as unknown;
+    const doc = sent && typeof sent === 'object' && !Array.isArray(sent) ? (sent as Record<string, unknown>) : undefined;
+    if (res.ok && doc) return { reg: doc };
+    const said = [doc?.error_description, doc?.error].find((x) => typeof x === 'string' && x.trim()) as string | undefined;
+    const reason = said?.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200);
+    return { why: reason ? `it said “${reason}”` : `it answered ${res.status}` };
   }
 
   /// The authorization server's metadata, at each place the spec allows.
@@ -360,13 +392,10 @@ export class ToolSignIn {
     } catch {
       // keep the plain name
     }
-    const reg = await this.json(as.registrationEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_name: host, redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }),
-    });
+    const asked = await this.register(as.registrationEndpoint, JSON.stringify({ client_name: host, redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }));
+    const reg = asked.reg;
     const clientId = typeof reg?.client_id === 'string' ? reg.client_id : '';
-    if (!clientId) return { ok: false, error: `${new URL(as.issuer).host} would not register overgo as an app. Make an OAuth app there and paste its client ID instead.` };
+    if (!clientId) return { ok: false, error: registrationRefused(new URL(as.issuer).host, redirectUri, asked.why) };
     const secret = typeof reg?.client_secret === 'string' ? reg.client_secret : undefined;
     const said = typeof reg?.token_endpoint_auth_method === 'string' ? reg.token_endpoint_auth_method : secret ? 'client_secret_basic' : 'none';
     const client: Client = { issuer: as.issuer, redirectUri, clientId, ...(secret ? { clientSecret: secret } : {}), authMethod: said === 'client_secret_post' ? 'post' : said === 'none' || !secret ? 'none' : 'basic' };
