@@ -30,7 +30,7 @@ import { draftHire, drafterDepsFor, saveDraftedHire } from './hireDraft';
 import { findOverlap } from './hireOverlap';
 import { rewriteJob } from './jobRewrite';
 import { reviewWork } from './workerReview';
-import { fileWorkerReviewStore } from './orgStores';
+import { fileTuningWatchStart, fileWorkerReviewStore } from './orgStores';
 import { pickPicture } from './pickPicture';
 import { oneShotDraftText, reviseFlowFromPrompt } from '../flows/drafter';
 import { resolveWorkPlace } from './defaultProject';
@@ -333,6 +333,7 @@ export function createOrgService(
     rewriteJob: (args) => rewriteJob(drafterDepsFor(runner), args),
     reviewWork: (input) => reviewWork(drafterDepsFor(runner), input),
     reviews: fileWorkerReviewStore,
+    tuningWatchStart: fileTuningWatchStart,
     saveTrialFlow: (flow) => {
       const saved = saveFlow({ flow, target: 'generated' });
       return saved.ok ? { ok: true } : saved;

@@ -53,7 +53,7 @@ import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
 import { copyFlowId, describeFlowEdit, holdFlowEdit, stepsOf, type FlowStepView } from './flowEdit';
 import { defaultWorkerPicture, initialsPicture } from '../../shared/flows/avatars';
 import { readActivity, type ReviewInput, type ReviewResult, type ReviewedAnswer, type ReviewedRun } from './workerReview';
-import type { WorkerReview, WorkerReviewStore } from './orgStores';
+import type { TuningWatchStartStore, WorkerReview, WorkerReviewStore } from './orgStores';
 import { SERVER_PR_STEP } from './serverFlow';
 import { aroundChange, impactLine, scoreRuns, watchReasons, type ScoredRun, type TuningScore } from '../../shared/org/tuningScore';
 import { describeScope, mcpServerKey, parseToolScope, withinScope, type ToolScope, type ToolScopes } from '../../shared/flows/toolScope';
@@ -1012,6 +1012,8 @@ export interface OrgServiceDeps extends OverdbDeps {
   reviewWork?(input: ReviewInput): Promise<ReviewResult | null>;
   /// Its reviews, kept for the Tuning tab. Absent: none are kept.
   reviews?: WorkerReviewStore;
+  /// When the watch for trouble began. Absent: all its runs count.
+  tuningWatchStart?: TuningWatchStartStore;
   /// Save a test run's flow among the generated ones (FlowRun.trial).
   saveTrialFlow?(flow: Flow): { ok: true } | { ok: false; error: string };
   /// Say something to a worker's manager, in Slack. False: no one to tell.
@@ -5048,7 +5050,7 @@ export class OrgService {
 
   /// The Tuning tab: what's happened since its last review, what people said,
   /// its reviews, and the past jobs a change could be tried on.
-  workerTuning(caller: OrgCaller, idOrName: string): Result<{ watching: boolean; score: TuningScore; signals: { notUseful: number; refused: number; runs: number; longestIdle: number; longestMinutes: number }; said: Array<{ text: string; who: string; at: number }>; reviews: WorkerReview[]; runs: Array<{ id: string; number: number; title: string; flowId: string; outcome: string; at: number }> }> {
+  workerTuning(caller: OrgCaller, idOrName: string): Result<{ watching: boolean; orgWatching: boolean; score: TuningScore; signals: { notUseful: number; refused: number; runs: number; longestIdle: number; longestMinutes: number }; said: Array<{ text: string; who: string; at: number }>; reviews: WorkerReview[]; runs: Array<{ id: string; number: number; title: string; flowId: string; outcome: string; at: number }> }> {
     const found = this.managed(caller, idOrName);
     if (!found.ok) return found;
     const w = found.worker;
@@ -5063,6 +5065,7 @@ export class OrgService {
     return {
       ok: true,
       watching: !w.caps.tuningWatchOff,
+      orgWatching: this.policy().tuningWatch,
       score,
       signals: { notUseful: said.length, refused: seen.reduce((n, x) => n + x.refused, 0), runs: seen.filter((x) => x.refused > 0).length, longestIdle: longest?.waitedMinutes ?? 0, longestMinutes: longest?.minutes ?? 0 },
       said: [...said, ...this.notUseful(w.id, 0).filter((x) => x.at <= since)].filter((x) => x.text !== 'Marked not useful.').slice(0, 8),
@@ -5204,6 +5207,18 @@ export class OrgService {
   /// proposes and tries; it changes nothing. Only a person applies a change.
   async tuningWatchDue(): Promise<void> {
     if (this.tuningBusy || !this.deps.reviewWork || !this.deps.reviews) return;
+    // Off for the org: nothing goes out, and turning it on again starts afresh.
+    if (!this.policy().tuningWatch) {
+      if (this.deps.tuningWatchStart?.get() != null) this.deps.tuningWatchStart.set(null);
+      return;
+    }
+    // Only runs from here on count: history from before it was watching, like
+    // trouble long since fixed, isn't a reason to look.
+    let startedAt = this.deps.tuningWatchStart?.get() ?? null;
+    if (startedAt === null && this.deps.tuningWatchStart) {
+      startedAt = this.now();
+      this.deps.tuningWatchStart.set(startedAt);
+    }
     this.tuningBusy = true;
     try {
       const workers = this.deps.workers.roster().filter((w) => w.enabled && !w.caps.tuningWatchOff);
@@ -5211,7 +5226,7 @@ export class OrgService {
         await this.tellOfBackfires(w);
         await this.tellOfFinishedTests(w);
       }
-      for (const w of workers) if (await this.lookIntoTrouble(w)) break;
+      for (const w of workers) if (await this.lookIntoTrouble(w, startedAt ?? 0)) break;
     } finally {
       this.tuningBusy = false;
     }
@@ -5264,11 +5279,11 @@ export class OrgService {
 
   /// A review if it has run into trouble, at most one a week, and a test of the
   /// fix when one changes its steps. True if it started one.
-  private async lookIntoTrouble(w: Worker): Promise<boolean> {
+  private async lookIntoTrouble(w: Worker, startedAt: number): Promise<boolean> {
     const reviews = this.reviewsOf(w.id);
     const lastAuto = reviews.find((r) => r.auto);
     if (lastAuto && this.now() - lastAuto.at < AUTO_REVIEW_EVERY_MS) return false;
-    const since = reviews[0]?.at ?? 0;
+    const since = Math.max(reviews[0]?.at ?? 0, startedAt);
     const score = this.tuningScore(w.id, reviews);
     const reasons = watchReasons(score.runs.filter((r) => r.at > since), this.notUseful(w.id, since).length);
     if (!reasons.length) return false;

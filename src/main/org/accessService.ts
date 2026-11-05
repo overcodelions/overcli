@@ -142,7 +142,7 @@ export interface OrgSetupView {
 /// The rules the Admin page may change. Admins, allowances and roles of
 /// people are set from People; the Slack workspace only with `org init`.
 export const EDITABLE_RULES = [
-  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
+  'name', 'publicUrl', 'timezone', 'hirers', 'budgetAllowanceUSD', 'approvers', 'orgVisibilityNeedsAdmin', 'tuningWatch', 'webNeedsApproval', 'webFetch', 'ownDomains', 'serviceAccounts',
   'allowedMcpServers', 'sharedMcpServers', 'teams', 'roles', 'orgBudgetUSD', 'alertAtPercent', 'prSavedMultiplier', 'prSavedMinHours', 'retentionDays', 'sso', 'people', 'fleet',
   'redactSecrets', 'providerModels', 'workerAccess',
 ] as const;
@@ -155,6 +155,7 @@ export interface EditableRules {
   budgetAllowanceUSD: number;
   approvers: string[];
   orgVisibilityNeedsAdmin: boolean;
+  tuningWatch: boolean;
   webNeedsApproval: boolean;
   webFetch: WebFetchMode;
   ownDomains: string[];
@@ -658,6 +659,7 @@ export class AccessService {
         budgetAllowanceUSD: p.budgetAllowanceUSD,
         approvers: p.approvers,
         orgVisibilityNeedsAdmin: p.orgVisibilityNeedsAdmin,
+        tuningWatch: p.tuningWatch,
         webNeedsApproval: p.webNeedsApproval,
         webFetch: p.webFetch,
         ownDomains: p.ownDomains,

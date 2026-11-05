@@ -11272,6 +11272,7 @@ export const CONSOLE_JS = String.raw`
       var allowance = h('input', { type: 'number', min: '0', step: '1', value: String(R.budgetAllowanceUSD) });
       var approvers = peoplePicker(people, R.approvers, 'Who approves hires over an allowance');
       var visAdmin = h('input', { type: 'checkbox', checked: R.orgVisibilityNeedsAdmin });
+      var tuneWatch = h('input', { type: 'checkbox', checked: R.tuningWatch !== false });
       // How workers open web pages: ask, safe (only addresses they were shown,
       // and the org's own sites), or anything.
       var webMode = h('select', { 'aria-label': 'Opening web pages' },
@@ -11288,10 +11289,11 @@ export const CONSOLE_JS = String.raw`
           h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Tools any hire may have without approval. Any other tool, a manager asks an admin for.' }), cleared.node),
           h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'faint', text: 'Approves hires over an allowance (none ticked: the admins)' }), approvers.node),
           h('label', { class: 'toggle' }, visAdmin, h('span', { text: 'Making a worker visible to everyone needs an admin' })),
+          h('label', { class: 'toggle' }, tuneWatch, h('span', { text: 'Watch workers for trouble: review them, try a fix and tell their manager, at most once a week each. It uses their budget and never applies a change.' })),
           h('div', { class: 'grid2' }, h('label', { class: 'field' }, 'Opening web pages', webMode), h('label', { class: 'field' }, 'Your own sites (always open)', ownSites)),
           h('p', { class: 'faint', style: 'font-size:13px', text: 'Safe fetches keep research free while stopping a worker from writing what it knows into an address: it opens a page only when the address came from a search result, the request, or a page it read. The server’s own and private addresses are never opened. Workers set to act on their own fetch freely.' })),
         function () {
-          return { hirers: everyone.checked ? '*' : hirers.value(), budgetAllowanceUSD: Number(allowance.value || 0), approvers: approvers.value(), orgVisibilityNeedsAdmin: visAdmin.checked, webFetch: webMode.value, webNeedsApproval: null, ownDomains: list(ownSites.value), allowedMcpServers: cleared.value() };
+          return { hirers: everyone.checked ? '*' : hirers.value(), budgetAllowanceUSD: Number(allowance.value || 0), approvers: approvers.value(), orgVisibilityNeedsAdmin: visAdmin.checked, tuningWatch: tuneWatch.checked, webFetch: webMode.value, webNeedsApproval: null, ownDomains: list(ownSites.value), allowedMcpServers: cleared.value() };
         });
 
       // Spending.
@@ -15802,6 +15804,7 @@ export const CONSOLE_JS = String.raw`
     var results = h('div', { class: 'stack', style: 'gap:14px', 'aria-live': 'polite' }, thinking('Loading…'));
     var board = h('div', null, thinking('Loading…'));
     var watch = h('input', { type: 'checkbox', checked: true });
+    var watchOff = h('p', { class: 'faint', hidden: true, style: 'margin:8px 0 0;font-size:12.5px', text: 'It’s off for the whole org. An admin can turn it on under Setup → Hiring.' });
     watch.onchange = function () { post('/update', { patch: { tuningWatch: watch.checked } }); };
 
     // Kept on the server, and the scoreboard then marks the change.
@@ -16151,6 +16154,8 @@ export const CONSOLE_JS = String.raw`
         shown = (x.reviews || [])[0] || null;
         fill(board, x.score ? tuningBoard(x.score, openRun) : null);
         watch.checked = x.watching !== false;
+        watch.disabled = x.orgWatching === false;
+        watchOff.hidden = x.orgWatching !== false;
         drawSide(); drawResults();
       });
     };
@@ -16175,7 +16180,7 @@ export const CONSOLE_JS = String.raw`
         card('tuwrong', 'What’s wrong?', null, [h('div', { class: 'stack', style: 'gap:10px' }, complaint, h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:center' }, go, h('span', { class: 'faint', style: 'font-size:12.5px', text: 'Enter to review · Shift or ⌘+Enter for a new line' })))]),
         card('tusaid', 'What people said', null, [said], true),
         card('tupast', 'Reviews', null, [past], true),
-        card('tuwatch', 'Watch for trouble', null, [h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;align-items:flex-start;font-size:13.5px' }, watch, h('span', { text: 'When its runs keep hitting trouble, overgo reviews them, tries a fix on a past job and tells you in Slack. At most once a week. It never applies a change by itself.' }))])),
+        card('tuwatch', 'Watch for trouble', null, [h('label', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;align-items:flex-start;font-size:13.5px' }, watch, h('span', { text: 'When its runs keep hitting trouble, overgo reviews them, tries a fix on a past job and tells you in Slack. At most once a week, and only runs from after it started watching count. It never applies a change by itself.' })), watchOff])),
       h('div', { style: 'min-width:0' }, card('tufound', 'What its work shows', null, [results]))));
   }
 

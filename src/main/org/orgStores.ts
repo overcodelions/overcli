@@ -425,6 +425,22 @@ export interface WorkerReviewStore {
   save(reviews: WorkerReview[]): void;
 }
 
+/// When overgo began watching workers for trouble: runs from before it don't count.
+export interface TuningWatchStartStore {
+  get(): number | null;
+  set(at: number | null): void;
+}
+
+export const fileTuningWatchStart: TuningWatchStartStore = {
+  get() {
+    const raw = readJson(path.join(orgDir(), 'tuning-watch.json')) as { startedAt?: unknown } | null;
+    return typeof raw?.startedAt === 'number' ? raw.startedAt : null;
+  },
+  set(at) {
+    writeAtomic(path.join(orgDir(), 'tuning-watch.json'), at === null ? {} : { startedAt: at });
+  },
+};
+
 export const fileWorkerReviewStore: WorkerReviewStore = {
   list() {
     const raw = readJson(path.join(orgDir(), 'worker-reviews.json'));

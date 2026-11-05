@@ -880,6 +880,39 @@ describe('watching a worker for trouble', () => {
     expect(old.reviewed()).toBe(1);
   });
 
+  it('doesn’t count runs from before it started watching', async () => {
+    let startedAt: number | null = 2500;
+    const h = setup({ runs: 4, bad: ['r1', 'r2', 'r3', 'r4'] });
+    (h.svc as unknown as { deps: Record<string, unknown> }).deps.tuningWatchStart = { get: () => startedAt, set: (at: number | null) => (startedAt = at) };
+    await h.svc.tuningWatchDue();
+    expect(h.reviewed()).toBe(0);
+    startedAt = 0;
+    await h.svc.tuningWatchDue();
+    expect(h.reviewed()).toBe(1);
+  });
+
+  it('notes when it first started, so old trouble isn’t a reason to look', async () => {
+    let startedAt: number | null = null;
+    const h = setup({ runs: 4, bad: ['r1', 'r2', 'r3', 'r4'] });
+    (h.svc as unknown as { deps: Record<string, unknown> }).deps.tuningWatchStart = { get: () => startedAt, set: (at: number | null) => (startedAt = at) };
+    await h.svc.tuningWatchDue();
+    expect(startedAt).toBe(10_000_000_000);
+    expect(h.reviewed()).toBe(0);
+  });
+
+  it('does nothing at all when it’s off for the org, and starts afresh when it’s on again', async () => {
+    let startedAt: number | null = 1;
+    const h = setup({ runs: 4, bad: ['r1', 'r2', 'r3', 'r4'] });
+    const deps = (h.svc as unknown as { deps: Record<string, unknown> }).deps as { policy: () => unknown; tuningWatchStart: unknown };
+    deps.tuningWatchStart = { get: () => startedAt, set: (at: number | null) => (startedAt = at) };
+    const policy = deps.policy;
+    deps.policy = () => ({ ...(policy() as object), tuningWatch: false });
+    await h.svc.tuningWatchDue();
+    expect(h.reviewed()).toBe(0);
+    expect(h.told).toEqual([]);
+    expect(startedAt).toBeNull();
+  });
+
   it('tells its manager once when an applied change backfired, with enough runs either side', async () => {
     const applied = (appliedAt: number): WorkerReview => ({ id: 'a', workerId: 'open', at: 1, by: 'Pat', summary: '', looked: { runs: 0, answers: 0 }, suggestions: [{ id: 's1', area: 'job', title: 'The change', why: '', change: 'C', runs: [], state: 'applied', appliedAt }] });
     const backfired = setup({ runs: 6, reviews: [applied(3500)], bad: ['r4', 'r5', 'r6'], suggestions: [] });
