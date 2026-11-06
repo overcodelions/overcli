@@ -22,6 +22,12 @@ export interface FlowStepView {
   /// It acts outside the server, so it asks first.
   external: boolean;
   onlyIfChanged: boolean;
+  /// Where a failed or rejected step sends the work, and how many times,
+  /// before it stops for someone. Earlier step = a loop; itself = a retry.
+  onFail?: { to: string; label: string; times: number };
+  /// A second model checks this step. `rounds` only for back-and-forth:
+  /// a plain review's round count is fixed by the runner.
+  critic?: { rounds?: number };
 }
 
 /// "run_tests" → "Run tests".
@@ -39,6 +45,8 @@ export function stepsOf(flow: Pick<Flow, 'steps'>): FlowStepView[] {
     checkpoint: i > 0 && s.pauseBefore === true,
     external: resolveStepEffect(s) === 'external',
     onlyIfChanged: s.onlyIfChanged === true,
+    ...(s.onFail?.action === 'goto' ? { onFail: { to: s.onFail.target, label: stepLabel({ id: s.onFail.target }), times: s.onFail.maxRetries } } : {}),
+    ...(s.rebound ? { critic: s.rebound.mode === 'collab' ? { rounds: s.rebound.maxIters } : {} } : {}),
   }));
 }
 

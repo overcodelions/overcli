@@ -17,6 +17,37 @@ describe('the console script', () => {
   });
 });
 
+describe('the loops in a flow', () => {
+  const from = CONSOLE_JS.indexOf('function flowLoops(steps)');
+  const to = CONSOLE_JS.indexOf('// What a step does when its work');
+  const loops = (steps: Array<{ id: string; label?: string; onFail?: { to: string; label?: string; times: number } }>) =>
+    new Function('steps', `${CONSOLE_JS.slice(from, to)}\nreturn flowLoops(steps);`)(steps) as { lanes: number; loops: Array<{ top: number; bottom: number; lane: number; times: number }> };
+  const send = (id: string, target: string, times = 2) => ({ id, onFail: { to: target, times } });
+
+  it('finds a step that sends work back to an earlier one', () => {
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    const r = loops([{ id: 'plan' }, { id: 'build' }, send('review', 'build'), { id: 'push' }]);
+    expect(r.lanes).toBe(1);
+    expect(r.loops[0]).toMatchObject({ top: 1, bottom: 2, lane: 0, times: 2 });
+  });
+
+  it('draws nothing for a retry of itself, a jump forward, or a step that is gone', () => {
+    expect(loops([send('a', 'a'), send('b', 'c'), { id: 'c' }, send('d', 'nope')]).lanes).toBe(0);
+  });
+
+  it('keeps loops that touch or overlap apart, with the shorter one nearest the steps', () => {
+    const nested = loops([{ id: 'a' }, { id: 'b' }, send('c', 'b'), send('d', 'a')]);
+    expect(nested.lanes).toBe(2);
+    expect(nested.loops.map((l) => [l.top, l.lane])).toEqual([[1, 0], [0, 1]]);
+    expect(loops([{ id: 'a' }, send('b', 'a'), send('c', 'b')]).lanes).toBe(2);
+  });
+
+  it('lets loops that never meet share a lane', () => {
+    expect(loops([{ id: 'a' }, send('b', 'a'), { id: 'c' }, send('d', 'c')]).lanes).toBe(1);
+  });
+});
+
 describe('a Setup page', () => {
   it('keeps its rules: it strips their title, so nothing may wrap them', () => {
     // Wrapped once, the title strip took the whole rules section with it.

@@ -31,6 +31,20 @@ describe('a flow changed by saying so', () => {
     ]);
   });
 
+  it('carries the loops: where a step sends work back, and who checks it', () => {
+    const steps = stepsOf(flow([
+      step('plan', { rebound: { critic: { backend: 'claude', model: 'm' }, mode: 'review', maxIters: 3 } }),
+      step('draft', { rebound: { critic: { backend: 'claude', model: 'm' }, mode: 'collab', maxIters: 3 } }),
+      step('build'),
+      step('run_review', { onFail: { action: 'goto', target: 'build', maxRetries: 2 } }),
+      step('ship', { onFail: { action: 'pause' } }),
+    ]));
+    expect(steps[0].critic).toEqual({});
+    expect(steps[1].critic).toEqual({ rounds: 3 });
+    expect(steps[3].onFail).toEqual({ to: 'build', label: 'Build', times: 2 });
+    expect(steps[4].onFail).toBeUndefined();
+  });
+
   it('takes a new step built from tools it already had, and says so', () => {
     const after = flow([step('plan'), step('change'), step('check', { onlyIfChanged: true }), push]);
     const held = holdFlowEdit(before, after, { admin: false });
