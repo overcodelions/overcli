@@ -102,12 +102,19 @@ function groupNameFor(kind: CleanupGroupKind, claim: WorktreeClaim | undefined):
   }
 }
 
+/// The thing a tree belongs to as a whole: a run's trees are one unit.
+export function unitKeyFor(entry: WorktreeSweepEntry): string {
+  return entry.claim?.runId ?? entry.worktreePath;
+}
+
 function subtitleFor(kind: CleanupGroupKind, entries: WorktreeSweepEntry[]): string {
   const projects = [...new Set(entries.map((e) => e.projectName))];
   const where = projects.length === 1 ? projects[0] : `${projects.length} projects`;
   switch (kind) {
-    case 'worker':
-      return `${where} · ${entries.length} shift${entries.length === 1 ? '' : 's'}`;
+    case 'worker': {
+      const shifts = new Set(entries.map(unitKeyFor)).size;
+      return `${where} · ${shifts} shift${shifts === 1 ? '' : 's'}`;
+    }
     case 'flow': {
       const schedule = entries.find((e) => e.claim?.scheduleName)?.claim?.scheduleName;
       return schedule ? `${where} · runs on ${schedule}` : where;
@@ -299,6 +306,8 @@ export interface CleanupPlan {
   /// Runs to delete — takes the run row, its tree and its participant
   /// conversations with it.
   removeRunIds: UUID[];
+  /// Parked runs: their chosen trees go, and the run stays to be answered.
+  retireRunTrees: Array<{ runId: UUID; worktreePaths: string[] }>;
   /// Agent conversations to delete — `removeAgent` removes the tree and the
   /// conversation as one unit.
   removeAgentIds: UUID[];
@@ -348,6 +357,7 @@ export function planCleanup(
 ): CleanupPlan {
   const plan: CleanupPlan = {
     removeRunIds: [],
+    retireRunTrees: [],
     removeAgentIds: [],
     removeAdoptedIds: [],
     sweepEntries: [],
@@ -380,6 +390,13 @@ export function planCleanup(
         plan.removeAdoptedIds.push(id);
         plan.conversationCount++;
       }
+    }
+    if (claim?.runId && claim.parked) {
+      const runId = claim.runId;
+      const listed = plan.retireRunTrees.find((r) => r.runId === runId);
+      if (listed) listed.worktreePaths.push(entry.worktreePath);
+      else plan.retireRunTrees.push({ runId, worktreePaths: [entry.worktreePath] });
+      continue;
     }
     if (claim?.runId) {
       // A workspace run holds several trees. Selecting two of them must not
@@ -464,8 +481,21 @@ export function formatAge(at: number, now: number): string | null {
 /// rows, and never a tree a chat borrowed (removing it takes that chat
 /// with it, which is not a timer's to decide).
 export function pickRetirable(entries: WorktreeSweepEntry[], rules: CleanupRules, now: number): WorktreeSweepEntry[] {
-  const pick = new Set(retirable(entries, rules, (e) => groupKeyFor(e).key, entryAgeAt, now).map((e) => e.worktreePath));
-  return entries.filter((e) => pick.has(e.worktreePath) && e.bucket === 'reclaimable' && !(e.claim?.adoptedConvIds?.length ?? 0));
+  const pick = new Set(retirable(entries, rules, (e) => groupKeyFor(e).key, entryAgeAt, now, unitKeyFor).map((e) => e.worktreePath));
+  const picked = entries.filter((e) => pick.has(e.worktreePath) && e.bucket === 'reclaimable' && !(e.claim?.adoptedConvIds?.length ?? 0));
+  // A parked run keeps one tree to resume from (see `retireRunWorktrees`).
+  // Holding it back here means it isn't reported as refused every pass.
+  const heldBack = new Set<string>();
+  for (const e of picked) {
+    const runId = e.claim?.parked ? e.claim.runId : undefined;
+    if (!runId || heldBack.has(runId)) continue;
+    const owned = entries.filter((x) => x.claim?.runId === runId);
+    if (owned.every((x) => pick.has(x.worktreePath))) {
+      heldBack.add(runId);
+      heldBack.add(owned[owned.length - 1].worktreePath);
+    }
+  }
+  return picked.filter((e) => !heldBack.has(e.worktreePath));
 }
 
 /// Of the trees someone was asked about, the ones a fresh scan still says
@@ -474,4 +504,26 @@ export function stillRetirable(asked: WorktreeSweepEntry[], fresh: WorktreeSweep
   const want = new Set(asked.map((e) => e.worktreePath));
   const selected = pickRetirable(fresh, rules, now).filter((e) => want.has(e.worktreePath));
   return { selected, kept: want.size - selected.length };
+}
+
+export interface AutoTidyReport {
+  at: number;
+  removed: number;
+  freedKb: number;
+  warnings: string[];
+  /// Trees it chose but couldn't retire. Never "nothing was due".
+  kept?: number;
+}
+
+export function describeAutoTidy(report: AutoTidyReport | null, measured: boolean): string | null {
+  if (!report) return null;
+  const kept = report.kept ?? 0;
+  const keptNote = kept > 0 ? `Kept ${kept} worktree${kept === 1 ? '' : 's'} that changed or hold work.` : '';
+  if (report.removed === 0) return keptNote ? `Auto-tidy retired nothing. ${keptNote}` : 'Auto-tidy ran — nothing was due to retire.';
+  return (
+    `Auto-tidy retired ${report.removed} worktree${report.removed === 1 ? '' : 's'}` +
+    (measured && report.freedKb > 0 ? `, freed ${formatSize(report.freedKb)}` : '') +
+    '.' +
+    (keptNote ? ` ${keptNote}` : '')
+  );
 }

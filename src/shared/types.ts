@@ -733,6 +733,11 @@ export interface WorktreeClaim {
   /// When this unit last did anything. Ages a row that has no commits to be
   /// dated by.
   activeAt?: number;
+  /// A run paused on someone: live, but not doing anything.
+  waiting?: boolean;
+  /// A workspace run paused so long it may give up clean trees, keeping the
+  /// run. Only ever trees: its question is still waiting.
+  parked?: boolean;
   /// Conversations that BORROWED this tree (`adoptedWorktree`) rather than
   /// owning it. Removing the tree has to take these rows with it, or they're
   /// left pointing at a directory that no longer exists.
@@ -1958,6 +1963,8 @@ export interface IPCInvokeMap {
     /// Claims from the renderer's conversations. Main adds the flow
     /// runtime's run claims before scanning.
     claims: WorktreeClaim[];
+    /// Days before a paused workspace run counts as parked. Absent: never.
+    parkedAfterDays?: number;
     /// `'auto'` (the default) measures disk only on installs small enough
     /// for it to be worth the wait; `true` forces it, `false` skips it. The
     /// `du` per worktree is most of the scan's time and decides nothing —
@@ -2635,6 +2642,9 @@ export interface IPCInvokeMap {
           unmergedCommits: number;
         }>;
       };
+  'flows:retireRunWorktrees': (args: { runId: UUID; worktreePaths: string[] }) =>
+    | { ok: true; removed: string[]; kept: Array<{ worktreePath: string; reason: string }> }
+    | { ok: false; error: string };
   'flows:listRegistries': () => FlowRegistry[];
   'flows:upsertRegistry': (args: {
     registry: FlowRegistry;

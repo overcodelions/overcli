@@ -21,7 +21,7 @@ import type { OrgCaller } from '../../shared/org/policy';
 import type { TeamRoom } from '../../shared/flows/team';
 import { usedShortName } from '../../shared/shortName';
 import type { ErrandProgress } from '../org/orgService';
-import { escapeMrkdwn, type SlackFile, type SlackMessage } from './slackApi';
+import { escapeMrkdwn, slackAttachments, type SlackFile, type SlackMessage } from './slackApi';
 import { deliverResults, deliverText, finishedText, SLACK_BUDGET, slackMarkup, slug, type DeliverIo, type PostAs } from './deliver';
 import { isLookup, whenText, type ExistingHit } from './existingWork';
 
@@ -594,7 +594,7 @@ export interface FrontDoorDeps {
   /// Give a team a task. Its questions, plan and progress go to `thread`, the
   /// channel thread it was asked in; without one, to the person in a DM.
   /// `queued`: the team is on another task and starts this one after it.
-  briefTeam?(caller: OrgCaller, teamId: string, brief: string, thread?: { channel: string; threadTs: string }): { ok: true; queued?: boolean } | { ok: false; error: string };
+  briefTeam?(caller: OrgCaller, teamId: string, brief: string, thread?: { channel: string; threadTs: string }, attachments?: Attachment[]): { ok: true; queued?: boolean } | { ok: false; error: string };
   /// "How are we doing?": what's waiting on them, who's working, what landed,
   /// said by the door itself. Absent: it's routed like any request.
   status?(caller: OrgCaller): string;
@@ -666,6 +666,8 @@ export interface FrontDoorDeps {
   readFile(path: string, maxBytes: number): Buffer | null;
   /// See `DeliverIo.workerFile`.
   workerFile?(workerId: string, path: string, maxBytes: number): Buffer | null;
+  /// See `DeliverIo.workerFolder`.
+  workerFolder?(workerId: string, path: string): string[] | null;
   store: { load(): FrontDoorState; save(state: FrontDoorState): void };
   log(message: string): void;
   now?(): number;
@@ -1749,15 +1751,17 @@ export class FrontDoor {
       return;
     }
     if (worker.id.startsWith(TEAM_ID)) {
-      // A team task: the thread is its brief. Screenshots can't ride along
-      // yet, so they're named with their links like any other file.
+      // A team task: the thread is its brief, and what was shared with this
+      // message goes in its folder. Anything older is named, with its link.
+      const shared = await slackAttachments(files, (url, max) => this.deps.slack.download(url, max));
+      if (shared.failed.length) await say(`I couldn't pass on ${shared.failed.join(', ')}. Add ${shared.failed.length === 1 ? 'it' : 'them'} on the task's page.`);
       const brief = [
         text,
         context.thread ? `\n${CONTEXT_HEAD[context.where]}\n${context.thread}` : '',
         sharedTexts(context.texts),
         context.others.length || context.images.length ? `\nAlso shared there: ${[...context.others, ...files.filter((f) => IMAGE_TYPES.has(f.mimetype ?? '')).map((f) => f.name ?? 'a screenshot')].join('; ')}` : '',
       ].filter(Boolean).join('\n');
-      const res = this.deps.briefTeam!(caller, worker.id.slice(TEAM_ID.length), brief, req.dm ? undefined : { channel: req.channel, threadTs: root });
+      const res = this.deps.briefTeam!(caller, worker.id.slice(TEAM_ID.length), brief, req.dm ? undefined : { channel: req.channel, threadTs: root }, shared.attachments as Attachment[]);
       if (!res.ok) {
         await say(res.error);
         return;
@@ -2188,6 +2192,7 @@ export class FrontDoor {
       upload: (c, ts, n, b, as) => this.deps.slack.upload(c, ts, n, b, as),
       readFile: (p, max) => this.deps.readFile(p, max),
       ...(this.deps.workerFile ? { workerFile: (id: string, p: string, max: number) => this.deps.workerFile!(id, p, max) } : {}),
+      ...(this.deps.workerFolder ? { workerFolder: (id: string, p: string) => this.deps.workerFolder!(id, p) } : {}),
     };
   }
 

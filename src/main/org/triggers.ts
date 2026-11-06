@@ -542,7 +542,10 @@ export class TriggerService {
   /// Every Slack event the bridge sees that isn't a DM to the bot.
   /// True when a trigger took the event, so the front door leaves it alone.
   async slackEvent(ev: { type?: string; channel?: string; user?: string; bot_id?: string; subtype?: string; text?: string; ts?: string; thread_ts?: string; reaction?: string; item?: { channel?: string; ts?: string } }): Promise<boolean> {
-    if (ev.bot_id || ev.subtype) return false;
+    // A message with a screenshot is a `file_share`, and a thread reply also
+    // sent to the channel a `thread_broadcast`: both are someone saying
+    // something. Every other subtype is an edit, a join or the like.
+    if (ev.bot_id || (ev.subtype && ev.subtype !== 'file_share' && ev.subtype !== 'thread_broadcast')) return false;
     const triggers = this.deps.store.list().filter((t) => t.enabled && t.kind === 'slack' && t.slack);
     let took = false;
     for (const t of triggers) {
@@ -564,9 +567,11 @@ export class TriggerService {
       } else {
         // New messages only; a reply in a thread is a conversation, not an
         // event. But a thread a listener answered in is one it's part of:
-        // what's said there next may be for it.
+        // what's said there next may be for it. So is one that names it.
         if (ev.type !== 'message' || ev.channel !== s.channel || !ev.ts) continue;
-        if (ev.thread_ts && !(s.on === 'listen' && (t.threads ?? []).includes(`${ev.channel}:${ev.thread_ts}`))) continue;
+        // A picture with no words: there's nothing here it can read yet.
+        if (!(ev.text ?? '').trim()) continue;
+        if (ev.thread_ts && !(s.on === 'listen' && ((t.threads ?? []).includes(`${ev.channel}:${ev.thread_ts}`) || namesWorker(this.deps.worker(t.workerId)?.name, ev.text ?? '')))) continue;
         const bot = this.deps.slack?.botUserId?.();
         if (bot && (ev.text ?? '').includes(`<@${bot}>`)) continue;
         channel = ev.channel;
@@ -598,7 +603,7 @@ export class TriggerService {
   /// back into that thread.
   private async fireMessage(t: WorkerTrigger, m: { id: string; channel: string; ts: string; text: string; user?: string; threadTs?: string }): Promise<void> {
     const title = m.text.split('\n')[0].slice(0, 140) || 'A Slack message';
-    const data: Record<string, unknown> = { channel: m.channel, ts: m.ts, text: m.text, user: m.user, ...(m.threadTs ? { followUp: true } : {}) };
+    const data: Record<string, unknown> = { channel: m.channel, ts: m.ts, text: m.text, user: m.user, ...(m.threadTs ? { followUp: true, ...((t.threads ?? []).includes(`${m.channel}:${m.threadTs}`) ? {} : { named: true }) } : {}) };
     // The thread is for the worker's prompt: not fetched for a message the
     // daily limit will skip anyway (fire decides; this only saves the call,
     // and a retry fetches it then).
@@ -730,6 +735,13 @@ export class TriggerService {
         return;
       }
       const links = [...new Set(res.reply.match(URL_RE) ?? [])].slice(0, 10);
+      // Test mode, a listener that started work: its reply is only its
+      // reasoning, which a thread would never see. Nothing to check until the
+      // work comes back (handedBack holds that).
+      if (rehearsing && res.launched > 0 && listens(t)) {
+        this.putDeliverable({ ...d, status: 'delivered', result: res.reply, links, doneAt: this.now() });
+        return;
+      }
       if (rehearsing) {
         await this.hold(t, worker, { ...d, result: res.reply, links }, item.title, res.launched > 0);
         return;
@@ -1110,6 +1122,25 @@ export const LISTEN_RULES = [
 /// Under a first answer that started work: the rest is on its way.
 export const WORKING_NOTE = "_⏳ Working on it. I'll post the answer in this thread, usually within a few minutes._";
 
+/// Whether a reply in a thread is calling on this worker by name: as written
+/// anywhere ("what does Ada think"), or in any case when it opens the message
+/// ("ada, thoughts?"). A worker called Triage isn't called on by every
+/// mention of triage.
+export function namesWorker(name: string | undefined, text: string): boolean {
+  if (!name?.trim()) return false;
+  const n = name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^\\p{L}\\p{N}_])${n}($|[^\\p{L}\\p{N}_])`, 'u').test(text)
+    || new RegExp(`^\\s*((hey|hi|hello|ok|okay)[\\s,]+)?${n}($|[^\\p{L}\\p{N}_])`, 'iu').test(text);
+}
+
+/// Told beside LISTEN_RULES when the message is a reply in a thread that
+/// names a listener that hasn't spoken there yet.
+export const NAMED_RULES = [
+  'This message is a reply in a Slack thread and it names you, so someone may be asking you directly; the thread so far is in the details.',
+  'Answer what it asks of you, using that thread.',
+  'Reply with only PASS if it only mentions you without asking you anything.',
+].join(' ');
+
 /// Told beside LISTEN_RULES when the message is a reply in a thread the
 /// listener already answered in.
 export const FOLLOW_UP_RULES = [
@@ -1220,7 +1251,7 @@ function eventPrompt(t: WorkerTrigger, item: WatchItem, past: PastAnswer[] = [])
   const extra = t.instructions?.trim();
   return [
     ...(listens(t)
-      ? [LISTEN_RULES, ...((item.data as { followUp?: unknown } | undefined)?.followUp ? [FOLLOW_UP_RULES] : []), ...(extra ? ['', `Also: ${extra}`] : [])]
+      ? [LISTEN_RULES, ...((item.data as { followUp?: unknown; named?: unknown } | undefined)?.named ? [NAMED_RULES] : (item.data as { followUp?: unknown } | undefined)?.followUp ? [FOLLOW_UP_RULES] : []), ...(extra ? ['', `Also: ${extra}`] : [])]
       : [t.instructions]),
     '',
     `This was set off by ${source} ("${t.name}"):`,

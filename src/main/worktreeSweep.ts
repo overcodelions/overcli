@@ -18,6 +18,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { runGitAsync, detectBaseBranchAsync, removeWorktreeAsync } from './git';
 import { log } from './diagnostics';
+import { pooled } from './pooled';
 import type {
   WorktreeClaim,
   WorktreeSweepEntry,
@@ -153,19 +154,6 @@ export function indexClaims(claims: WorktreeClaim[]): Map<string, WorktreeClaim>
 /// Run `tasks` with at most `limit` in flight. The scan fans out four cheap
 /// git/du calls per worktree across potentially hundreds of trees; without a
 /// cap that is thousands of concurrent subprocesses.
-async function pooled<T>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> {
-  const results = new Array<T>(tasks.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
-    for (;;) {
-      const i = next++;
-      if (i >= tasks.length) return;
-      results[i] = await tasks[i]();
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
 
 /// Apparent disk usage in KB. Best-effort — a `du` failure reports 0 rather
 /// than failing the scan, since size is informational.

@@ -152,6 +152,10 @@ describe('today', () => {
     expect(t.delivered.map((d) => d.title)).toEqual(['Report 2', 'Report 1', 'Report 0']);
     expect(t.crew).toEqual([{ id: 'luke', name: 'Luke', state: 'waiting', nextShiftAt: NOW + 3_600_000, spentUSD: 5, budgetUSDPerMonth: 20 }]);
     expect(t.spend).toMatchObject({ spentUSD: 5, allowanceUSD: 100, committedUSD: 20 });
+    expect(h.svc.whoami(pat)).toMatchObject({ allowanceUSD: 100, committedUSD: 20 });
+    // Hires and raises don't hold an admin to an allowance, so none is shown.
+    expect(h.svc.today(admin).spend.allowanceUSD).toBeUndefined();
+    expect(h.svc.whoami(admin).allowanceUSD).toBeUndefined();
   });
 
   it('shows approvers the hires waiting on them, but not their own', () => {
@@ -289,6 +293,23 @@ describe('teams', () => {
 });
 
 describe('admin views', () => {
+  it('lists someone who has only used a team from Slack, with what they asked of it', () => {
+    const task = { id: 't1', teamId: 'team', teamName: 'Pricing', brief: 'x', requestedBy: { name: 'Sam', slackUserId: 'U0ACMESAM' }, status: 'done', stages: [], stageIndex: 0, spentUSD: 0, budgetUSD: 10, createdAt: NOW - 1000, updatedAt: NOW, files: [] };
+    const h = harness({ policy: { budgetAllowanceUSD: 25, hirers: '*' }, teams: { teams: [], tasks: [task as never] } });
+    const res = h.svc.people(admin);
+    const sam = res.ok ? res.people.find((p) => p.name === 'Sam') : undefined;
+    expect(sam).toMatchObject({ slackUserId: 'U0ACMESAM', role: 'Hirer', allowanceUSD: 25, workers: 0, asked: 1, askedOf: ['Pricing'], lastSeen: NOW - 1000, devices: [] });
+  });
+
+  it('counts anyone in the Slack workspace as able to hire under an open rule, and only then', () => {
+    const slackOnly = { name: 'Sam', slackUserId: 'U0ACMESAM', admin: false };
+    const open = harness({ policy: { hirers: '*' } }).svc;
+    expect(open.whoami(slackOnly).canHire).toBe(true);
+    const listed = harness({ policy: { hirers: [PAT] } }).svc;
+    expect(listed.whoami(slackOnly).canHire).toBe(false);
+    expect(open.whoami({ name: 'No Slack', admin: false }).canHire).toBe(false);
+  });
+
   it('lists people with their workers and spend, for admins only', () => {
     const h = harness({ roster: [worker('luke', { manager: { name: 'Pat', slackUserId: PAT } })], policy: { budgetAllowanceUSD: 100 } });
     expect(h.svc.people(pat).ok).toBe(false);

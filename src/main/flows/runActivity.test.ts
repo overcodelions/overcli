@@ -21,6 +21,26 @@ describe('run activity', () => {
   let dir = '';
   afterEach(() => dir && fs.rmSync(dir, { recursive: true, force: true }));
 
+  it('names a refused command in one line, and keeps a refusal with its own reason', () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-activity-'));
+    const a = new RunActivity((c) => (c === 'c1' ? 'r1' : undefined), { dir, keepDays: () => 7 });
+    const deny = (toolName: string, input: unknown) => ({ timestamp: 2_000, kind: { type: 'permissionRequest', info: { decided: 'deny', toolName, toolInput: JSON.stringify(input) } } });
+    const refused = (content: string) => ({ timestamp: 2_001, kind: { type: 'toolResult', results: [{ isError: true, content }] } });
+    a.observe(stream([
+      deny('Bash', { command: 'git add spec.md && git commit -q' }),
+      refused('Refused by policy, not by a person: that shell command is not one this work may run without approval.'),
+      deny('WebFetch', { url: 'https://vendor.example/a' }),
+      refused('Refused by policy, not by a person: that fetch named no web address.'),
+      deny('mcp__tracker__update', { id: 1 }),
+    ] as never));
+    expect(a.list('r1').map((x) => [x.kind, x.text])).toEqual([
+      ['denied', 'Not allowed: git add spec.md && git commit -q'],
+      ['denied', 'Not allowed: https://vendor.example/a'],
+      ['error', 'Refused by policy, not by a person: that fetch named no web address.'],
+      ['denied', 'Not allowed: mcp__tracker__update'],
+    ]);
+  });
+
   it('records what a run did, keeps it across a restart, and lets it go after the org keeps things', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-activity-'));
     const a = new RunActivity((c) => (c === 'c1' ? 'r1' : undefined), { dir, keepDays: () => 7 });

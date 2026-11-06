@@ -48,6 +48,153 @@ describe('the loops in a flow', () => {
   });
 });
 
+describe('the two rows of the chrome', () => {
+  const below = (crumbs: string[][]) => {
+    const from = CONSOLE_JS.indexOf('function crumbsBelow(crumbs)');
+    const to = CONSOLE_JS.indexOf('function chromeCrumbs(x)');
+    return new Function('crumbs', `${CONSOLE_JS.slice(from, to)}\nreturn crumbsBelow(crumbs);`)(crumbs) as string[][];
+  };
+
+  it('leaves the section to the top row, and names what is inside it', () => {
+    expect(below([['Workers'], ['Ada']])).toEqual([['Ada']]);
+    expect(below([['Teams'], ['Product'], ['A task'], ['Shared folder']])).toEqual([['Product'], ['A task'], ['Shared folder']]);
+  });
+
+  it('scrolls to the open tab, not to the name before the tabs', () => {
+    // The name is marked as the current page too, so any [aria-current] finds it first.
+    expect(CONSOLE_JS).toContain(`next.querySelector(':scope > button[aria-current="page"]')`);
+  });
+
+  it('brings an open tab into view, and leaves one that already is', () => {
+    const from = CONSOLE_JS.indexOf('function tabScroll(left, row, tab)');
+    const to = CONSOLE_JS.indexOf('// Pinned things sit under the chrome');
+    const scroll = (left: number, tab: { left: number; right: number }) =>
+      new Function('left', 'tab', `${CONSOLE_JS.slice(from, to)}\nreturn tabScroll(left, { left: 0, right: 390 }, tab);`)(left, tab) as number;
+    expect(scroll(0, { left: 40, right: 120 })).toBe(0);
+    expect(scroll(0, { left: 800, right: 900 })).toBe(655);
+    expect(scroll(300, { left: -200, right: -100 })).toBe(0);
+  });
+
+  it('opens what belongs to the org from its name, for admins only', () => {
+    const from = CONSOLE_JS.indexOf('function orgMenu(me)');
+    const to = CONSOLE_JS.indexOf('  var WORKER_TABS = [');
+    const stub = "var go = function () {}, navFor = function () { return 'x'; }, navBadges = function () { return null; }, icon = function () { return 'icon'; }, state = { tab: 'x' };";
+    const h = (tag: string, attrs: Record<string, unknown>) => ({ tag, attrs });
+    const run = (items: unknown[]) => new Function('h', 'adminItems', 'navMenu', `${stub}\n${CONSOLE_JS.slice(from, to)}\nreturn orgMenu({ org: 'Acme' });`)(
+      h, () => items, (btn: unknown, list: unknown, cls: string) => ({ menu: cls, list, btn })) as Record<string, any>;
+    const setup = { id: 'setup', label: 'Setup' };
+    expect(run([setup])).toMatchObject({ menu: 'org-wrap', list: [setup] });
+    expect(run([])).toMatchObject({ tag: 'button', attrs: { text: 'Acme', title: 'Inbox' } });
+  });
+
+  it('gives the org pages tabs for each other, ahead of any path a page sets', () => {
+    const row = CONSOLE_JS.slice(CONSOLE_JS.indexOf('function chromeRow()'), CONSOLE_JS.indexOf('function sectionItems()'));
+    expect(row.indexOf("'aria-label': 'Organization'")).toBeGreaterThan(-1);
+    expect(row.indexOf("'aria-label': 'Organization'")).toBeLessThan(row.indexOf('liveCtx()'));
+  });
+
+  it('ignores the row of a page that finished loading after you left it', () => {
+    const from = CONSOLE_JS.indexOf('function setChrome(crumbs, tabs, current, pick, label)');
+    const to = CONSOLE_JS.indexOf('function liveCtx()');
+    const run = (tab: string, crumb: string) => {
+      const state = { tab };
+      const chrome = new Function('state', `var chromeCtx = null, syncChromeRow = function () {};
+        var ctxKey = function () { return 'k'; };
+        var navFor = function (t) { return ({ worker: 'workers', process: 'processes' })[t] || t; };
+        var sectionItems = function () { return [{ id: 'workers', label: 'Workers' }, { id: 'processes', label: 'Processes' }]; }, adminItems = function () { return []; };
+        ${CONSOLE_JS.slice(from, to)}
+        return function (c) { setChrome(c); return chromeCtx; };`)(state) as (c: string[][]) => unknown;
+      return chrome([[crumb], ['x']]);
+    };
+    expect(run('process', 'Workers')).toBeNull();
+    expect(run('worker', 'Workers')).not.toBeNull();
+    expect(run('process', 'Processes')).not.toBeNull();
+    // A crumb that isn't a section can't be judged by it.
+    expect(run('read', 'Somewhere else')).not.toBeNull();
+  });
+
+  it('keeps a lone crumb', () => {
+    expect(below([['Library']])).toEqual([['Library']]);
+  });
+
+  it('keeps the chrome height in step when the row changes after loading', () => {
+    // Pinned things read --chrome-h, and the second row comes and goes with
+    // the page, after render() has measured it.
+    const from = CONSOLE_JS.indexOf('function syncChromeRow()');
+    expect(CONSOLE_JS.slice(from, from + 600)).toContain('syncChromeHeight();');
+    expect(CONSOLE_JS).toContain('    syncChromeRow();\n  }\n  function liveCtx()');
+  });
+});
+
+describe('who can reach a team or process', () => {
+  const fn = (name: string, end: string) => {
+    const from = CONSOLE_JS.indexOf(`function ${name}(`);
+    return new Function(`${CONSOLE_JS.slice(from, CONSOLE_JS.indexOf(end, from))}\nreturn ${name};`)() as (x: unknown) => string;
+  };
+
+  it('says who a process really takes work from', () => {
+    const words = fn('processStarters', 'function picturePicker(');
+    expect(words({ whoStarts: { who: 'everyone', groups: [] } })).toBe('Anyone can put work in');
+    expect(words({ whoStarts: { who: 'private', groups: [] } })).toBe('Only its owner can put work in');
+    expect(words({ whoStarts: { who: 'team', groups: ['Support'] } })).toBe('Support can put work in');
+    expect(words({ whoStarts: { who: 'people', groups: [] } })).toBe('Picked people can put work in');
+  });
+
+  it('says who a team takes tasks from, as its settings have it', () => {
+    const words = fn('teamBriefers', '/// Who may put work into a process.');
+    expect(words({ picked: true })).toBe('Picked people can give it tasks');
+    expect(words({ whoCanBrief: 'org' })).toBe('Anyone can give it tasks');
+    expect(words({ whoCanBrief: 'managers' })).toBe('Its members’ managers can give it tasks');
+  });
+
+  it('no longer claims anyone can use a process from Slack', () => {
+    expect(CONSOLE_JS).not.toContain('Slack, by anyone');
+    expect(CONSOLE_JS).not.toContain("detail: 'anyone in the org'");
+  });
+});
+
+describe('the tabs of a team and a process', () => {
+  const from = CONSOLE_JS.indexOf('var TEAM_VIEWS = ');
+  const to = CONSOLE_JS.indexOf('\n  }\n', CONSOLE_JS.indexOf('function hashFor()'));
+  const hash = (state: Record<string, unknown>) =>
+    new Function('state', `${CONSOLE_JS.slice(from, to)}\n  }\nreturn hashFor();`)(state) as string;
+
+  it('keeps a tab in the address, and leaves out the one it opens on', () => {
+    expect(hash({ tab: 'team', teamId: 't1' })).toBe('team/t1');
+    expect(hash({ tab: 'team', teamId: 't1', teamTab: 'reach' })).toBe('team/t1/reach');
+    expect(hash({ tab: 'process', processId: 'p1' })).toBe('process/p1');
+    expect(hash({ tab: 'process', processId: 'p1', processView: 'how' })).toBe('process/p1/how');
+  });
+
+  it('puts an open item in the address ahead of the tab behind it', () => {
+    expect(hash({ tab: 'process', processId: 'p1', processView: 'how', processItem: 'i1' })).toBe('process/p1/i1');
+  });
+
+  it('starts a different team or process on its first tab', () => {
+    const go = CONSOLE_JS.slice(CONSOLE_JS.indexOf('function go(tab, extra)'), CONSOLE_JS.indexOf('function openWorker(id)'));
+    expect(go).toContain('extra.teamId !== state.teamId) state.teamTab = null');
+    expect(go).toContain('extra.processId !== state.processId) state.processView = null');
+  });
+
+  it('keeps a team or process row in place while a new tab loads', () => {
+    const key = CONSOLE_JS.slice(CONSOLE_JS.indexOf('function ctxKey()'), CONSOLE_JS.indexOf('function setChrome('));
+    expect(key).toContain("state.tab === 'team' ? 't:' + state.teamId");
+    expect(key).toContain("state.tab === 'process' ? 'p:' + state.processId");
+  });
+
+  it('has moved how to reach a team out of its settings', () => {
+    const settings = CONSOLE_JS.slice(CONSOLE_JS.indexOf('function teamSettingsView(t)'), CONSOLE_JS.indexOf('function viewTeam()'));
+    expect(settings).not.toContain("reachView('team'");
+  });
+});
+
+describe('saving several tuning changes', () => {
+  it('drops what saved, so another press only tries what failed', () => {
+    expect(CONSOLE_JS).toContain('saves.splice(saves.indexOf(one), 1);');
+    expect(CONSOLE_JS).toContain("'Save the remaining '");
+  });
+});
+
 describe('a Setup page', () => {
   it('keeps its rules: it strips their title, so nothing may wrap them', () => {
     // Wrapped once, the title strip took the whole rules section with it.

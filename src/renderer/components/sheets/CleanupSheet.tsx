@@ -300,7 +300,7 @@ export function CleanupSheet() {
           {entries && !scanning && <span className="ml-2">· {describeRules(rules)}</span>}
           {autoTidying && <span className="ml-2">· Auto-tidy is running…</span>}
           {!autoTidying && lastAutoTidy && (
-            <span className="ml-2">
+            <span className="ml-2" title={lastAutoTidy.warnings.join('\n') || undefined}>
               · {describeAutoTidy(lastAutoTidy, measuredSizes)} ({formatAge(lastAutoTidy.at, now) ?? 'just now'})
             </span>
           )}
@@ -335,7 +335,7 @@ export function CleanupSheet() {
             tone="live"
             label="Still live"
             count={totals.live}
-            sub="Working right now"
+            sub="Running or waiting on you"
             active={bucket === 'live'}
             onClick={() => setBucket(bucket === 'live' ? 'all' : 'live')}
           />
@@ -883,7 +883,7 @@ function EntryRow({
           actionable
             ? undefined
             : entry.bucket === 'live'
-              ? 'Working right now'
+              ? (entry.claim?.waiting ? 'Waiting on you' : 'Working right now')
               : 'Outside ~/.overcli/worktrees — not ours to remove'
         }
       />
@@ -915,7 +915,7 @@ function EntryRow({
 
 function StateBadge({ entry }: { entry: WorktreeSweepEntry }) {
   if (entry.bucket === 'live') {
-    return <span className="text-[10px] text-accent shrink-0">working now</span>;
+    return <span className="text-[10px] text-accent shrink-0">{entry.claim?.waiting ? 'waiting on you' : 'working now'}</span>;
   }
   if (entry.bucket === 'foreign') {
     return <span className="text-[10px] text-ink-faint shrink-0">not ours</span>;

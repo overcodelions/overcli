@@ -44,6 +44,16 @@ export const WARN_CHOICES = [10, 25, 50, 0] as const;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/// A paused run is someone's unanswered question, so it waits at least this
+/// long however short the retire rule is.
+export const MIN_PARKED_DAYS = 14;
+
+/// How long a paused workspace run sits before its clean trees may retire.
+/// Undefined when the rules are off.
+export function parkedAfterDays(rules: CleanupRules): number | undefined {
+  return rules.retireAfterDays > 0 ? Math.max(rules.retireAfterDays, MIN_PARKED_DAYS) : undefined;
+}
+
 /// Which entries the rules would retire, given a grouping key per entry (the
 /// cleanup module's `groupKeyFor` supplies it, so producer identity is
 /// defined in exactly one place).
@@ -57,6 +67,10 @@ export function retirable(
   keyOf: (entry: WorktreeSweepEntry) => string,
   ageOf: (entry: WorktreeSweepEntry) => number,
   now: number,
+  /// What "the newest N" counts. A workspace run is one shift however many
+  /// repos it holds, so its trees are kept or let go together. Defaults to
+  /// each tree on its own.
+  unitOf: (entry: WorktreeSweepEntry) => string = (e) => e.worktreePath,
 ): WorktreeSweepEntry[] {
   if (rules.retireAfterDays <= 0) return [];
   const cutoff = now - rules.retireAfterDays * DAY_MS;
@@ -73,13 +87,22 @@ export function retirable(
 
   const out: WorktreeSweepEntry[] = [];
   for (const list of byProducer.values()) {
-    const ordered = [...list].sort((a, b) => ageOf(b) - ageOf(a));
-    for (const entry of ordered.slice(Math.max(0, rules.keepPerProducer))) {
-      const at = ageOf(entry);
-      // An undated entry is never retired automatically. We can't say how old
-      // it is, and "we couldn't tell" is not grounds for deleting something.
-      if (at === 0 || at >= cutoff) continue;
-      out.push(entry);
+    const units = new Map<string, WorktreeSweepEntry[]>();
+    for (const entry of [...list].sort((a, b) => ageOf(b) - ageOf(a))) {
+      const key = unitOf(entry);
+      const unit = units.get(key);
+      if (unit) unit.push(entry);
+      else units.set(key, [entry]);
+    }
+    // Sorted newest first, so units arrive ordered by their newest tree.
+    for (const unit of [...units.values()].slice(Math.max(0, rules.keepPerProducer))) {
+      for (const entry of unit) {
+        const at = ageOf(entry);
+        // An undated entry is never retired automatically. We can't say how old
+        // it is, and "we couldn't tell" is not grounds for deleting something.
+        if (at === 0 || at >= cutoff) continue;
+        out.push(entry);
+      }
     }
   }
   return out;

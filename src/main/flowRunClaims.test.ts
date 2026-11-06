@@ -106,3 +106,42 @@ describe('flowRunClaims', () => {
     expect(without.activeAt).toBe(1_000);
   });
 });
+
+describe('flowRunClaims: parked runs', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = 100 * DAY;
+  const members = [
+    { name: 'a', projectPath: '/p/a', worktreePath: '/wt/a', branchName: 'agent/x' },
+    { name: 'b', projectPath: '/p/b', worktreePath: '/wt/b', branchName: 'agent/x' },
+  ];
+  const paused = (over: Partial<FlowRun> = {}) =>
+    run({
+      id: 'r',
+      state: { kind: 'paused', nextStepId: 's', reason: 'needsInput' },
+      workspaceWorktrees: members,
+      sourceProjectPath: '/workspace',
+      createdAt: NOW - 30 * DAY,
+      ...over,
+    });
+  const claim = (r: FlowRun, parkedAfterMs: number | undefined = 14 * DAY) => flowRunClaims([r], { parkedAfterMs, now: NOW })[0];
+
+  it('stays busy without a threshold, or before reaching it', () => {
+    expect(claim(paused(), 0)).toMatchObject({ busy: true, waiting: true });
+    expect(claim(paused({ lastUserTurnAt: NOW - DAY }))).toMatchObject({ busy: true, waiting: true });
+  });
+
+  it('parks a long-paused workspace run', () => {
+    expect(claim(paused())).toMatchObject({ busy: false, waiting: true, parked: true, finished: false });
+  });
+
+  it('dates the pause by the last step, not by when the run began', () => {
+    const attempts = [{ stepId: 's', startedAt: NOW - 2 * DAY, endedAt: NOW - DAY }] as FlowRun['attempts'];
+    expect(claim(paused({ attempts })).busy).toBe(true);
+  });
+
+  it('never parks a run that could not get its trees back', () => {
+    expect(claim(paused({ sourceProjectPath: undefined })).busy).toBe(true);
+    expect(claim(paused({ adoptedWorktree: true })).busy).toBe(true);
+    expect(claim(paused({ workspaceWorktrees: [members[0]] })).busy).toBe(true);
+  });
+});

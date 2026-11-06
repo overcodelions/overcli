@@ -10,6 +10,7 @@ import {
   groupKeyFor,
   isActionable,
   pickRetirable,
+  describeAutoTidy,
   planCleanup,
   planRelease,
   stillRetirable,
@@ -389,5 +390,46 @@ describe('auto-tidy: pickRetirable and stillRetirable', () => {
     const res = stillRetirable(asked, fresh, rules, NOW);
     expect(res.selected.map((e) => e.worktreePath)).toEqual(['/wt/a']);
     expect(res.kept).toBe(2);
+  });
+});
+
+describe('parked runs and what auto-tidy reports', () => {
+  const rules = { ...DEFAULT_CLEANUP_RULES, retireAfterDays: 7, keepPerProducer: 0, autoRun: true };
+  const tree = (name: string, over: Partial<WorktreeSweepEntry> = {}, parked = true) =>
+    entry({
+      worktreePath: `/wt/${name}`,
+      lastCommitAt: NOW - 30 * DAY,
+      claim: { worktreePath: `/wt/${name}`, kind: 'run', title: 'Run', runId: 'r1', activeAt: NOW - 30 * DAY, parked },
+      ...over,
+    });
+
+  it('holds one tree back when a parked run could otherwise lose them all', () => {
+    const picked = pickRetirable([tree('a'), tree('b'), tree('c')], rules, NOW).map((e) => e.worktreePath);
+    expect(picked).toEqual(['/wt/a', '/wt/b']);
+  });
+
+  it('holds nothing back once a parked tree is staying anyway', () => {
+    const picked = pickRetirable([tree('a'), tree('b', { bucket: 'has-work', dirtyFiles: 1 })], rules, NOW);
+    expect(picked.map((e) => e.worktreePath)).toEqual(['/wt/a']);
+  });
+
+  it('plans a parked run as trees to give up, never as a run to delete', () => {
+    const plan = planCleanup([tree('a'), tree('b')]);
+    expect(plan.removeRunIds).toEqual([]);
+    expect(plan.retireRunTrees).toEqual([{ runId: 'r1', worktreePaths: ['/wt/a', '/wt/b'] }]);
+    expect(plan.worktreeCount).toBe(2);
+  });
+
+  it('still plans a finished run as a whole', () => {
+    const plan = planCleanup([tree('a', {}, false)]);
+    expect(plan.removeRunIds).toEqual(['r1']);
+    expect(plan.retireRunTrees).toEqual([]);
+  });
+
+  it('does not call a refused batch "nothing due"', () => {
+    const base = { at: NOW, freedKb: 0, warnings: [] };
+    expect(describeAutoTidy({ ...base, removed: 0 }, false)).toBe('Auto-tidy ran — nothing was due to retire.');
+    expect(describeAutoTidy({ ...base, removed: 0, kept: 2 }, false)).toBe('Auto-tidy retired nothing. Kept 2 worktrees that changed or hold work.');
+    expect(describeAutoTidy({ ...base, removed: 3, kept: 1 }, false)).toBe('Auto-tidy retired 3 worktrees. Kept 1 worktree that changed or hold work.');
   });
 });

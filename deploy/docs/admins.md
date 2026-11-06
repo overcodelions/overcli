@@ -2,7 +2,7 @@
 
 Admins set the server up and keep it healthy. Most of this lives on the console's **Setup** page, with people and the decision log on **People** and **Activity**.
 
-Setup is one page at a time, picked from the list beside it: **Readiness**; **Organization** (General, People & teams, Sign-in, Records); **Workers** (Hiring, Role catalog, Handbook, Spending); and **Connections** (Tools, Secrets, Repos & workspaces, From desktops, Other servers). On a phone the list is a menu above the page. Each page saves on its own, and **Save** waits until something changed.
+Setup is one page at a time, picked from the list beside it: **Readiness**; **Organization** (General, Groups, Sign-in, Records); **Workers** (Hiring, Role catalog, Handbook, Spending); and **Connections** (Tools, Secrets, Repos & workspaces, From desktops, Other servers). On a phone the list is a menu above the page. Each page saves on its own, and **Save** waits until something changed.
 
 ## Setup → Readiness
 
@@ -286,9 +286,9 @@ People can save a team's files into their own Google Drive, as themselves. There
 
 ## Setup → Rules, spending and sign-in
 
-The org's rules, kept in `org.json` on the volume (or set by Claude with `set_org_rules`). Every change is checked and logged. They're spread across Setup's pages: the org's name, address and time zone on **General**; teams on **People & teams**; who may hire, approvals, visibility and web pages on **Hiring**; roles on **Role catalog**; the org budget on **Spending**; what workers may do on **Permissions**; credentials kept out of answers on **Secrets in answers**; Bedrock and Vertex model ids on **Model ids**; how long records are kept on **Records**; company sign-in on **Sign-in**.
+The org's rules, kept in `org.json` on the volume (or set by Claude with `set_org_rules`). Every change is checked and logged. They're spread across Setup's pages: the org's name, address and time zone on **General**; teams on **Groups**; who may hire, approvals, visibility and web pages on **Hiring**; roles on **Role catalog**; the org budget on **Spending**; what workers may do on **Permissions**; credentials kept out of answers on **Secrets in answers**; Bedrock and Vertex model ids on **Model ids**; how long records are kept on **Records**; company sign-in on **Sign-in**.
 
-- **Who may hire:** everyone, or a list of people.
+- **Who may hire:** anyone in your Slack workspace, or a list of people.
 - **Allowances:** what one person's workers may cost a month before a hire needs an approver; per-person overrides; who the approvers are.
 - **Org budget:** what all workers together may cost a month. At the cap, scheduled runs stop until the month turns. Warnings go out at `alertAtPercent` (80% by default).
 - **Tools any hire may have without approval:** tick them from the installed tools. Managers give these to their workers at once; any other tool, they ask an admin for (see [Tool requests](#tool-requests)).
@@ -335,6 +335,7 @@ Copy the ids from the Bedrock or Vertex console. The aliases Claude Code resolve
 
 ## People
 
+- **Who's listed:** anyone let in, anyone who manages a worker, and anyone who has asked a worker or team, including people who only use Slack. Each shows what they've asked and of whom, and you can set their role and allowance there.
 - **Invite:** pick someone from Slack. They get a one-time link by DM, or you copy it.
 - **Join requests:** `/overgo join` in Slack lands here for you to let in, or lets people straight in with `openJoin`. `/overcli join` still works for Slack apps installed before the rename.
 - **Roles:** member, hirer, approver, admin.

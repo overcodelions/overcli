@@ -60,7 +60,7 @@ const SAFE_FLAGS: Record<string, RegExp> = {
   tail: /^(-[nc]\d*|-\d+|-[qvf]|--lines=\d+|--bytes=\d+)$/,
   wc: /^-[lwcmL]+$/,
   echo: /^-[neE]+$/,
-  grep: /^(-[iwvcnlLhHrRsoqEFxz]+|-[ABCm]\d*|-e|-f|--include=.*|--exclude=.*|--exclude-dir=.*|--color(=\w+)?)$/,
+  grep: /^(-[iwvcnlLhHrRsoqEFxzI]+|-[ABCm]\d*|-e|-f|--include=.*|--exclude=.*|--exclude-dir=.*|--color(=\w+)?)$/,
   rg: /^(-[inlwvcFSsuHNo]+|-[ABCm]\d*|-[gteT]|--hidden|--files|--no-ignore|--line-number|--ignore-case|--fixed-strings|--count|--files-with-matches|--glob=.*|--type=.*|--context=\d+)$/,
   find: /^-(name|iname|type|path|ipath|maxdepth|mindepth|size|mtime|newer|print|print0|not|o|a|empty|regex|L)$/,
   stat: /^(-[Lt]+|-c|--format=.*|--printf=.*)$/,
@@ -279,7 +279,10 @@ function hasTrickyWord(command: string): boolean {
   while ((m = re.exec(command))) {
     const t = m[0];
     if (/^'[^']*'$/.test(t)) continue;
-    if (/^"[^"\\$`]*"$/.test(t)) continue;
+    // Double quotes keep a backslash as it is unless it escapes one of these:
+    // "a\|b" is the text a\|b, a search pattern. Only `$`, a backtick or an
+    // unescaped quote could make the word mean anything else.
+    if (/^"(?:[^"\\$`]|\\[^$`"\\\n])*"$/.test(t)) continue;
     if (/["'\\$`]/.test(t)) return true;
   }
   return false;
