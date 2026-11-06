@@ -48,6 +48,14 @@ describe('process routes', () => {
     workingNow: () => [{ kind: 'deciding', id: 'deciding:w-tri', at: 2, title: 'Working out how to answer', detail: 'a question', workerId: 'w-tri', workerName: 'Triage' }, { kind: 'run', id: 'run:r1', at: 1, title: 'Weekly site audit', detail: 'step 2 of 3, crawl pages', workerId: 'w-owen', workerName: 'Owen' }],
     runningNow: () => [{ workerId: 'w-owen', workerName: 'Owen', run: { runId: 'r1', title: 'Weekly site audit', startedAt: 1, step: { index: 2, total: 3, name: 'crawl-pages' }, finished: ['plan'], state: 'working' } }],
     teamTasks: () => [],
+    teams: () => [{ id: 't-product', name: 'Product' }],
+    spendView: (c: OrgCaller, opts: { all?: boolean }) => ({ ok: true, who: c.name, all: !!opts.all }),
+    stopTeamWork: (c: OrgCaller, id: string) => ({ ok: true, who: c.name, id }),
+    library: (_c: OrgCaller, opts: { documents?: boolean; kind?: string }) => [{ documents: !!opts.documents, kind: opts.kind ?? null }],
+    listWorkers: () => [],
+    directory: () => ({ people: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }], groups: [] }),
+    repoList: () => ({ ok: true, repos: [{ name: 'acme-repo', path: '/x' }], workspaces: [] }),
+    teamPage: (c: OrgCaller) => ({ ok: true, team: { id: 't-product', name: 'Product', budgetUSDPerTask: 50, canChange: c === PAT, checkpoints: { askFirst: true, finalReview: true }, members: [{ name: 'Lena', role: 'Writes' }] } }),
   };
   const as = (who: OrgCaller) => ({ Authorization: `Bearer ${who === PAT ? 'ocli_pat' : 'ocli_riley'}`, 'Content-Type': 'application/json' });
   const call = async (who: OrgCaller, method: string, p: string, body?: unknown) =>
@@ -58,6 +66,7 @@ describe('process routes', () => {
       org: org as never,
       processes,
       triggers: triggerSvc,
+      slackPeople: async () => [{ id: 'U0ACMESAM', name: 'Sam', handle: 'sam' }, { id: 'U0ACMEHOLLY', name: 'Holly Ng', handle: 'holly' }],
       log: () => {},
       authenticate: (t) => (t === 'ocli_pat' ? PAT : t === 'ocli_riley' ? RILEY : null),
     });
@@ -67,6 +76,76 @@ describe('process routes', () => {
 
   afterAll(() => {
     server.close();
+  });
+
+  describe('as a YAML file', () => {
+    // Named to sort last: other tests here read the first process listed.
+    const FILE = 'name: Zed from a file\naccess: everyone\nstages:\n  - name: Write\n    team: Product\n  - name: Decide\n    decide: [Sam]\n    send_back_to: Write\n';
+
+    it('reads one without saving anything, and flags what it can’t match', async () => {
+      const before = state.processes.length;
+      const read = await call(PAT, 'POST', '/api/processes/from-yaml', { yaml: `${FILE}  - name: Extra\n    team: Nobody\n` });
+      expect(read).toMatchObject({ ok: true, draft: { name: 'Zed from a file', stages: [{ kind: 'team', teamId: 't-product' }, { kind: 'people', approvers: [{ name: 'Sam', slackUserId: 'U0ACMESAM' }] }, { name: 'Extra' }] } });
+      expect(read.notes.join(' ')).toContain('no team called Nobody');
+      expect(state.processes).toHaveLength(before);
+      expect(await call(PAT, 'POST', '/api/processes/from-yaml', { yaml: 'name: [' })).toMatchObject({ ok: false, error: expect.stringContaining('valid YAML') });
+    });
+
+    it('saves what it read, comes back out the same, and keeps stage ids on the way back in', async () => {
+      const read = await call(PAT, 'POST', '/api/processes/from-yaml', { yaml: FILE });
+      const made = await call(PAT, 'POST', '/api/processes', read.draft);
+      expect(made).toMatchObject({ ok: true, process: { name: 'Zed from a file', access: { who: 'everyone' } } });
+      const out = await call(PAT, 'GET', `/api/processes/${made.process.id}/yaml`);
+      expect(out.yaml).toContain('team: Product');
+      expect(out.yaml).toContain('send_back_to: Write');
+      expect(out.yaml).not.toContain('t-product');
+      const back = await call(PAT, 'POST', '/api/processes/from-yaml', { yaml: out.yaml, processId: made.process.id });
+      expect(back.draft.stages.map((s: { id: string }) => s.id)).toEqual(made.process.stages.map((s: { id: string }) => s.id));
+    });
+
+    it('lets anyone in Slack be picked, once each, without joining first', async () => {
+      const dir = await call(PAT, 'GET', '/api/directory');
+      expect(dir.people).toEqual([{ name: 'Holly Ng', slackUserId: 'U0ACMEHOLLY', handle: 'holly' }, { name: 'Sam', slackUserId: 'U0ACMESAM', handle: 'sam' }]);
+      const read = await call(PAT, 'POST', '/api/processes/from-yaml', { yaml: 'name: Zed led\naccess: { who: people, people: [Holly Ng] }\nstages:\n  - name: A\n    team: Product\n    lead: Holly Ng\n  - name: B\n    decide: [holly]\n' });
+      expect(read.notes).toEqual([]);
+      expect(read.draft.stages[0].owner).toEqual({ name: 'Holly Ng', slackUserId: 'U0ACMEHOLLY' });
+      expect(read.draft.stages[1].approvers).toEqual([{ name: 'Holly Ng', slackUserId: 'U0ACMEHOLLY' }]);
+      expect(read.draft.access).toMatchObject({ who: 'people', people: [{ slackUserId: 'U0ACMEHOLLY' }] });
+    });
+
+    it('passes the spend, stop and Library routes what was asked', async () => {
+      expect(await call(PAT, 'GET', '/api/spend?all=1')).toEqual({ ok: true, who: 'Pat', all: true });
+      expect(await call(PAT, 'GET', '/api/spend')).toEqual({ ok: true, who: 'Pat', all: false });
+      expect(await call(PAT, 'POST', '/api/team-tasks/t%201/stop-all', {})).toEqual({ ok: true, who: 'Pat', id: 't 1' });
+      expect(await call(PAT, 'GET', '/api/library?documents=1')).toEqual([{ documents: true, kind: null }]);
+      expect(await call(PAT, 'GET', '/api/library')).toEqual([{ documents: false, kind: null }]);
+      expect(await call(PAT, 'GET', '/api/library?kind=document')).toEqual([{ documents: false, kind: 'document' }]);
+    });
+
+    it('says what a file needs that isn’t on this server', async () => {
+      const read = await call(PAT, 'POST', '/api/processes/from-yaml', { yaml: 'name: Zed new env\ncode_in: gone-repo\nstages:\n  - name: A\n    team: Gone Team\n  - name: B\n    worker: Gone Worker\n' });
+      expect(read.missing).toEqual({ teams: ['Gone Team'], workers: ['Gone Worker'], people: [], places: ['gone-repo'] });
+      // It can't be saved like that.
+      expect(await call(PAT, 'POST', '/api/processes', read.draft)).toMatchObject({ ok: false, error: expect.stringContaining('Pick the team') });
+    });
+
+    it('does a team’s file the same way, for whoever can change the team', async () => {
+      const out = await call(PAT, 'GET', '/api/teams/t-product/yaml');
+      expect(out.yaml).toContain('worker: Lena');
+      expect(await call(RILEY, 'GET', '/api/teams/t-product/yaml')).toMatchObject({ ok: false });
+      const read = await call(PAT, 'POST', '/api/teams/from-yaml', { yaml: 'name: New\nmembers:\n  - worker: Ghost\n' });
+      expect(read).toMatchObject({ ok: true, draft: { name: 'New', members: [] }, missing: { workers: ['Ghost'] } });
+    });
+
+    it('is only for whoever can change the process', async () => {
+      const read = await call(PAT, 'POST', '/api/processes/from-yaml', { yaml: FILE.replace('Zed from a file', 'Zed not for Riley') });
+      const made = await call(PAT, 'POST', '/api/processes', read.draft);
+      expect(await call(RILEY, 'GET', `/api/processes/${made.process.id}/yaml`)).toMatchObject({ ok: false });
+      expect(await call(RILEY, 'POST', '/api/processes/from-yaml', { yaml: FILE, processId: made.process.id })).toMatchObject({ ok: false });
+      // A file can't make anyone a process's owner on their own say-so.
+      const forged = await call(RILEY, 'POST', '/api/processes', { ...read.draft, name: 'Forged', owner: { name: 'Sam', slackUserId: 'U0ACMESAM' } });
+      expect(forged.ok).toBe(false);
+    });
   });
 
   it('makes a process, takes an item in, and lets the owner but not others change it', async () => {

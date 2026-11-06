@@ -11,7 +11,7 @@ const someone: OrgCaller = { name: 'Riley', slackUserId: 'U0RILEY', admin: false
 function harness() {
   let state: ProcessState = { processes: [], items: [] };
   const tasks = new Map<string, ProcessTaskLook>();
-  const briefs: Array<{ teamId: string; text: string; by: string; taskId: string; code?: { projectPath: string; startFrom?: string } }> = [];
+  const briefs: Array<{ teamId: string; text: string; by: string; taskId: string; code?: { projectPath: string; startFrom?: string }; thread?: { channel: string; threadTs: string } }> = [];
   const told: Array<{ to: string; text: string; decide: boolean }> = [];
   const cancelled: string[] = [];
   const asked: Array<{ workerId: string; text: string; by: string; askId: string; trusted: boolean }> = [];
@@ -26,9 +26,9 @@ function harness() {
       { id: 't-build', name: 'Build', owner: { name: 'Lee', slackUserId: 'U0LEE' } },
     ],
     task: (id) => tasks.get(id) ?? null,
-    brief: (teamId, text, by, code) => {
+    brief: (teamId, text, by, code, thread) => {
       const taskId = `task-${++n}`;
-      briefs.push({ teamId, text, by: by.name, taskId, ...(code ? { code } : {}) });
+      briefs.push({ teamId, text, by: by.name, taskId, ...(code ? { code } : {}), ...(thread ? { thread } : {}) });
       tasks.set(taskId, { status: 'planning' });
       return { ok: true, taskId };
     },
@@ -68,6 +68,40 @@ function harness() {
 }
 
 describe('processes', () => {
+  it('works in the channel thread it came from, at every team stage', () => {
+    const h = harness();
+    const made = h.make();
+    if (!made.ok) throw new Error(made.error);
+    const thread = { channel: 'C0ACME', threadTs: '100.1' };
+    const sub = h.svc.submit({ name: 'Riley', slackUserId: 'U0RILEY' }, made.process.id, { brief: 'Let customers export reports to CSV', source: 'slack', slackThread: thread });
+    if (!sub.ok) throw new Error(sub.error);
+    expect(h.briefs[0].thread).toEqual(thread);
+    expect(h.state().items[0].slackThread).toEqual(thread);
+    const quiet = h.svc.submit({ name: 'Riley', slackUserId: 'U0RILEY' }, made.process.id, { brief: 'Something from a DM', source: 'slack' });
+    if (!quiet.ok) throw new Error(quiet.error);
+    expect(h.briefs[1].thread).toBeUndefined();
+  });
+
+  it('hands on what was agreed after the pack was written, when the pack doesn’t have it', () => {
+    const h = harness();
+    const made = h.make();
+    if (!made.ok) throw new Error(made.error);
+    h.svc.submit({ name: 'Riley', slackUserId: 'U0RILEY' }, made.process.id, { brief: 'Let customers export reports to CSV', source: 'slack' });
+    h.tasks.set('task-1', { status: 'done', pack: { summary: 'The brief.', files: ['pack/BRIEF.md'] }, discussed: true });
+    h.svc.poll();
+    expect(h.state().items[0].artifacts[0].files).toEqual(['pack/BRIEF.md', 'conversation.md']);
+  });
+
+  it('hands on the pack alone when it already has what was said', () => {
+    const h = harness();
+    const made = h.make();
+    if (!made.ok) throw new Error(made.error);
+    h.svc.submit({ name: 'Riley', slackUserId: 'U0RILEY' }, made.process.id, { brief: 'Let customers export reports to CSV', source: 'slack' });
+    h.tasks.set('task-1', { status: 'done', pack: { summary: 'The brief.', files: ['pack/BRIEF.md'] } });
+    h.svc.poll();
+    expect(h.state().items[0].artifacts[0].files).toEqual(['pack/BRIEF.md']);
+  });
+
   it('moves an item through team and people stages, handing each pack on', () => {
     const h = harness();
     const made = h.make();

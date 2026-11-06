@@ -1113,9 +1113,22 @@ describe('making a team with a new hire', () => {
     expect(h.svc.library(pat).some((x) => x.kind === 'task')).toBe(false);
   });
 
-  it('won’t make a one-member team while the hire waits', async () => {
+  it('makes a one-member team while the hire waits, for the hire to join', async () => {
     const h = harness({ roster: [mine('vantage')], policy: { hirers: '*', budgetAllowanceUSD: 10, approvers: [BOSS] }, teams: true });
     const res = await h.svc.makeTeamWithHires(pat, { name: 'Product', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Drafts' }], hires: [hire] });
+    expect(res).toMatchObject({ ok: true, team: { name: 'Product' } });
+    expect(h.teams.size).toBe(1);
+  });
+
+  it('makes a team of one with no hires at all', async () => {
+    const h = harness({ roster: [mine('vantage')], policy: { hirers: '*' }, teams: true });
+    const res = await h.svc.makeTeamWithHires(pat, { name: 'Architecture', budgetUSDPerTask: 50, members: [{ workerId: 'vantage', role: 'Chief architect' }], hires: [] });
+    expect(res).toMatchObject({ ok: true, team: { name: 'Architecture' } });
+  });
+
+  it('won’t make a team with no one on it while the hire waits', async () => {
+    const h = harness({ roster: [mine('vantage')], policy: { hirers: '*', budgetAllowanceUSD: 10, approvers: [BOSS] }, teams: true });
+    const res = await h.svc.makeTeamWithHires(pat, { name: 'Product', budgetUSDPerTask: 50, members: [], hires: [hire] });
     expect(res).toMatchObject({ ok: false, error: expect.stringContaining('waiting on an approver') });
     expect(h.teams.size).toBe(0);
   });
@@ -1245,5 +1258,93 @@ describe('a run\'s last word, as progress', () => {
     expect(plainSaid('<output name="release_contents.md"> # Acme release 2026-10-25: release contents\n## 1. Release identification\n- **Release:** Jira fix version `2026-10-25`. It exists in both ACME and BETA.'))
       .toBe('Release: Jira fix version 2026-10-25. It exists in both ACME and BETA.');
     expect(plainSaid('Reading the ACME board now.')).toBe('Reading the ACME board now.');
+  });
+});
+
+describe('spend on a worker, and who it went on', () => {
+  const PERSON = 'U0ACMERILEY';
+  const riley: OrgCaller = { slackUserId: PERSON, name: 'Riley', admin: false };
+  const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
+  const shared = worker('shared', { manager: { name: 'Pat', slackUserId: PAT }, visibility: 'org', budgetUSDPerMonth: 50 });
+  const setUp = (policy: Partial<OrgPolicy>, cost: number) => {
+    const h = harness({ roster: [shared], policy, launches: 1 });
+    const deps = (h.svc as unknown as { deps: { workers: { runCostsThisMonth: unknown; spentThisMonth: unknown } } }).deps.workers;
+    deps.runCostsThisMonth = () => [{ id: 'r1', workerId: 'shared', costUSD: cost, parentOrchestrationId: 'o' }, { id: 'r2', workerId: 'shared', costUSD: 3 }];
+    deps.spentThisMonth = () => new Map([['shared', cost + 3]]);
+    return h;
+  };
+  const spendSome = async (h: ReturnType<typeof setUp>, who = riley) => {
+    const first = h.svc.startAsk(who, 'shared', 'start something');
+    if (!first.ok) throw new Error(first.error);
+    await first.done;
+  };
+
+  it('lets someone ask freely below the limit', async () => {
+    const h = setUp({}, 10);
+    await spendSome(h);
+    const next = h.svc.startAsk(riley, 'shared', 'more');
+    expect(next).toMatchObject({ ok: true });
+    expect(next.ok && next.warning).toBeFalsy();
+  });
+
+  it('warns at 80% of the default $100', async () => {
+    const h = setUp({ alertAtPercent: 80 }, 85);
+    await spendSome(h);
+    const next = h.svc.startAsk(riley, 'shared', 'more');
+    expect(next).toMatchObject({ ok: true, warning: expect.stringContaining('$85.00 of your $100 limit') });
+  });
+
+  it('stops them at the limit, naming who can help', async () => {
+    const h = setUp({ otherPeopleLimitUSD: 20 }, 20);
+    await spendSome(h);
+    expect(h.svc.startAsk(riley, 'shared', 'more')).toMatchObject({ ok: false, error: expect.stringContaining('$20.00 of your $20 limit') });
+    expect(h.svc.startAsk(riley, 'shared', 'more')).toMatchObject({ error: expect.stringContaining('Pat') });
+  });
+
+  it('has no limit when it’s set to none', async () => {
+    const h = setUp({ otherPeopleLimitUSD: 0 }, 5000);
+    await spendSome(h);
+    expect(h.svc.startAsk(riley, 'shared', 'more')).toMatchObject({ ok: true });
+  });
+
+  it('never limits the worker’s own manager, or someone else’s spend', async () => {
+    const h = setUp({ otherPeopleLimitUSD: 20 }, 500);
+    await spendSome(h, pat);
+    expect(h.svc.startAsk(pat, 'shared', 'more').ok).toBe(true);
+    expect(h.svc.startAsk({ slackUserId: 'U0ACMEOTHER', name: 'Other', admin: false }, 'shared', 'more').ok).toBe(true);
+  });
+
+  it('shows the manager who used it, and only their workers', async () => {
+    const h = setUp({}, 10);
+    await spendSome(h);
+    const mine = h.svc.spendView(pat);
+    expect(mine).toMatchObject({ ok: true, scope: 'mine', canSeeAll: false, spentUSD: 13, capsUSD: 50, limitUSD: 100 });
+    if (!mine.ok) throw new Error(mine.error);
+    expect(mine.workers[0]).toMatchObject({ name: shared.name, capUSD: 50, spentUSD: 13, users: [{ label: 'Riley', spentUSD: 10 }], otherUSD: 3 });
+    const theirs = h.svc.spendView(riley, { all: true });
+    expect(theirs).toMatchObject({ ok: true, scope: 'mine', workers: [] });
+  });
+});
+
+describe('budgets by manager, for an admin', () => {
+  const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
+  const boss: OrgCaller = { slackUserId: 'U0ACMEBOSS', name: 'Bo', admin: true };
+  const h = () => harness({
+    roster: [worker('a', { manager: { name: 'Pat', slackUserId: PAT }, budgetUSDPerMonth: 30 }), worker('b', { manager: { name: 'Pat', slackUserId: PAT }, budgetUSDPerMonth: 30 }), worker('c', { manager: { name: 'Browser' }, budgetUSDPerMonth: 15 })],
+    policy: { admins: ['U0ACMEBOSS'], budgetAllowanceUSD: 20 },
+  });
+
+  it('groups the org’s workers by who answers for them', () => {
+    const view = h().svc.spendView(boss, { all: true });
+    if (!view.ok) throw new Error(view.error);
+    expect(view.scope).toBe('all');
+    expect(view.managers?.map((m) => [m.name, m.capsUSD, m.allowanceUSD, m.over, m.exempt])).toEqual([['Pat', 60, 20, true, false], ['Browser', 15, undefined, false, true]]);
+  });
+
+  it('is only for the org’s view, and not for a manager’s own', () => {
+    const view = h().svc.spendView(pat, { all: true });
+    if (!view.ok) throw new Error(view.error);
+    expect(view.scope).toBe('mine');
+    expect(view.managers).toBeUndefined();
   });
 });

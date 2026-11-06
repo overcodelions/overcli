@@ -125,6 +125,7 @@ Connect Claude Code, Claude Desktop or Codex to `<server>/mcp` with your key. Wh
 | `/team new <what it's for>` | Make a team from your workers: a suggested crew comes by DM |
 | `/hire <the job>` | Hire a worker |
 | `/idea [process:] <the idea>` | Put an idea into a process, or see where yours are |
+| `/worker <name> about`, `/team <name> about`, `/idea <name> about` | A card on what it is, who is in it and how to use it, shown only to you, with **Share in channel**. Asking `@overgo what is Launch Team?` shows it in the thread |
 | `/overgo digest` | Your week with your workers so far (it also comes every Monday at 9) |
 | `/overgo join` | Ask to be let in |
 

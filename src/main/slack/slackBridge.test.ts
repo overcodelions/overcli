@@ -451,3 +451,68 @@ describe('SlackBridge inbound', () => {
     expect(h.bridge.getStatus().connected).toBe(true);
   });
 });
+
+describe('a reply in the channel thread of a team’s task', () => {
+  const said = (text: string, over: Record<string, unknown> = {}) => ({
+    type: 'events_api',
+    envelope_id: 'e1',
+    payload: { team_id: TEAM, event: { type: 'message', channel_type: 'channel', channel: 'C0ACME', user: 'U0ACMESAM', ts: '100.5', thread_ts: '100.1', text, ...over } },
+  });
+  const setUp = async (answers: boolean, talks: boolean) => {
+    const h = harness({ runs: [] });
+    const asked: Array<[string, string | undefined]> = [];
+    const toDoor: Array<{ text: string; mentioned?: boolean }> = [];
+    h.bridge.setCommands({
+      answerInThread: async (ev: { text?: string }) => { asked.push(['answer', ev.text]); return answers; },
+      talkInThread: async (ev: { text?: string }) => { asked.push(['talk', ev.text]); return talks; },
+      answerLoneTeamQuestion: async () => false,
+      onThreadReply: async () => false,
+      handlesAction: () => false,
+    } as never);
+    h.bridge.setFrontDoor({ owns: () => true, adopt: () => {}, onMessage: async (r: { text: string; mentioned?: boolean }) => { toDoor.push(r); } } as never);
+    await h.bridge.start();
+    return { h, asked, toDoor };
+  };
+
+  it('answers the team’s questions first, and goes no further', async () => {
+    const t = await setUp(true, true);
+    await t.h.bridge.onEnvelope(said('1. US'));
+    expect(t.asked).toEqual([['answer', '1. US']]);
+    expect(t.toDoor).toEqual([]);
+  });
+
+  it('then talks to the team, and goes no further', async () => {
+    const t = await setUp(false, true);
+    await t.h.bridge.onEnvelope(said('Customers care about the UK.'));
+    expect(t.asked.map((a) => a[0])).toEqual(['answer', 'talk']);
+    expect(t.toDoor).toEqual([]);
+  });
+
+  it('leaves the rest to the front door', async () => {
+    const t = await setUp(false, false);
+    await t.h.bridge.onEnvelope(said('thanks all'));
+    expect(t.toDoor.map((r) => r.text)).toEqual(['thanks all']);
+    expect(t.toDoor[0].mentioned).toBeUndefined();
+  });
+
+  it('takes the mention off a reply that names the bot, once, and says it was a mention', async () => {
+    const t = await setUp(false, false);
+    await t.h.bridge.onEnvelope(said('<@U0BOT> nevermind'));
+    expect(t.asked).toEqual([]);
+    await t.h.bridge.onEnvelope(said('<@U0BOT> nevermind', { type: 'app_mention' }));
+    expect(t.asked).toEqual([['answer', 'nevermind'], ['talk', 'nevermind']]);
+    expect(t.toDoor[0].mentioned).toBe(true);
+  });
+
+  it('never treats a message outside a thread as being for a team', async () => {
+    const t = await setUp(true, true);
+    await t.h.bridge.onEnvelope(said('philip, want to test something', { thread_ts: undefined }));
+    expect(t.asked).toEqual([]);
+  });
+
+  it('ignores another workspace', async () => {
+    const t = await setUp(true, true);
+    await t.h.bridge.onEnvelope({ ...said('x'), payload: { ...said('x').payload, team_id: 'T0OTHER' } });
+    expect(t.asked).toEqual([]);
+  });
+});

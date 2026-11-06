@@ -207,7 +207,13 @@ describe('the front door', () => {
     await one.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> idea: CSV export for reports', dm: false });
     expect(one.items).toEqual([{ processId: 'p-ideas', brief: 'CSV export for reports' }]);
     expect(one.posts[0]).toContain('goes into *Idea to launch*, starting at *PR/FAQ*');
+    expect(one.posts[0]).toContain('Its team stages work here in this thread');
+    // People talking in the thread are left to it; a word to the bot is answered.
+    const posted = one.posts.length;
     await one.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'and PDF too', dm: false });
+    expect(one.items).toHaveLength(1);
+    expect(one.posts).toHaveLength(posted);
+    await one.door.onMessage({ channel: 'C0ACME', ts: '1.2', threadTs: '1.0', user: 'U1', text: '<@B0BOT> and PDF too', dm: false, mentioned: true });
     expect(one.items).toHaveLength(1);
     expect(one.posts.at(-1)).toContain("That's in Idea to launch now.");
 
@@ -905,17 +911,59 @@ describe('teams at the front door', () => {
     expect(chosen.briefs).toEqual([{ teamId: 'tm-see', brief: 'if the CSV export still works on Safari' }]);
   });
 
-  it('gives a request that names a team to it as a team task, and says the questions come by DM', async () => {
+  it('gives a request that names a team to it as a team task, and says it will follow up in the thread', async () => {
     const h = harness({ teams: [PRODUCT] });
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> the Product team, write a PR/FAQ for offline mode', dm: false });
     expect(h.asks).toHaveLength(0);
     expect(h.briefs).toEqual([{ teamId: 'tm-product', brief: 'write a PR/FAQ for offline mode' }]);
     expect(h.posts[0]).toContain('*Product* has this as a team task');
-    expect(h.posts[0]).toContain('DM you anything it needs to know');
-    // A later reply in the thread is pointed at the DMs, not sent to a worker.
+    expect(h.posts[0]).toContain('anyone in this thread can answer');
+    expect(h.posts[0]).toContain('<@U1> gets a plan to approve');
+    // People talking in the thread are left to it, and nothing goes to a worker.
     await h.door.onMessage({ channel: 'C0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'also cover pricing', dm: false });
     expect(h.asks).toHaveLength(0);
+    expect(h.posts).toHaveLength(1);
+    // A word to the bot is answered, and says where the task talks.
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.2', threadTs: '1.0', user: 'U1', text: '<@B0BOT> also cover pricing', dm: false, mentioned: true });
+    expect(h.asks).toHaveLength(0);
     expect(h.posts[1]).toContain("That's Product's task now");
+    expect(h.posts[1]).toContain('this thread');
+  });
+
+  describe('asked what something is', () => {
+    const withCards = () => {
+      const h = harness({ teams: [PRODUCT] });
+      const asked: string[] = [];
+      (h.door as unknown as { deps: { aboutCard: unknown } }).deps.aboutCard = (_c: unknown, name: string) => {
+        asked.push(name);
+        return name === 'Product' ? { text: 'About Product', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '*Product*' } }] } : null;
+      };
+      return { ...h, asked };
+    };
+
+    it('answers with its card, starting no work', async () => {
+      const h = withCards();
+      await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> what is Product?', dm: false });
+      expect(h.asked).toEqual(['Product']);
+      expect(h.briefs).toEqual([]);
+      expect(h.asks).toHaveLength(0);
+      expect(h.posts.join('\n')).toContain('*Product*');
+    });
+
+    it('routes it like anything else when that isn’t a name', async () => {
+      const h = withCards();
+      await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> what is the churn rate?', dm: false });
+      expect(h.asked).toEqual(['the churn rate']);
+      expect(h.posts.join('\n')).not.toContain('*Product*\n');
+    });
+  });
+
+  it('keeps a team task asked for in a DM in the DMs', async () => {
+    const h = harness({ teams: [PRODUCT] });
+    await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U1', text: 'the Product team, write a PR/FAQ for offline mode', dm: true });
+    expect(h.posts[0]).toContain('DM you anything it needs to know');
+    await h.door.onMessage({ channel: 'D0ACME', ts: '1.1', threadTs: '1.0', user: 'U1', text: 'also cover pricing', dm: true });
+    expect(h.posts[1]).toContain('in your DMs');
   });
 
   it('lets the router pick a team, and the thread travels as its brief', async () => {
@@ -1632,5 +1680,40 @@ describe('a follow-up the worker is slow to answer', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('where work asked for in a channel lives', () => {
+  const spyOn = (h: { door: unknown }, dep: 'briefTeam' | 'submitProcess') => {
+    const deps = (h.door as { deps: Record<string, (...a: unknown[]) => unknown> }).deps;
+    const real = deps[dep];
+    const threads: unknown[] = [];
+    deps[dep] = (...a: unknown[]) => {
+      threads.push(a[3]);
+      return real(...a);
+    };
+    return threads;
+  };
+  const TEAMS = { id: 'tm-launch', name: 'Launch', members: [], canBrief: true };
+
+  it('gives a team the channel thread, by its first message', async () => {
+    const h = harness({ teams: [TEAMS] } as never);
+    const threads = spyOn(h, 'briefTeam');
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> the Launch team, write a brief', dm: false });
+    expect(threads).toEqual([{ channel: 'C0ACME', threadTs: '1.0' }]);
+  });
+
+  it('keeps a team to DMs when it was asked for in one', async () => {
+    const h = harness({ teams: [TEAMS] } as never);
+    const threads = spyOn(h, 'briefTeam');
+    await h.door.onMessage({ channel: 'D0ACME', ts: '1.0', user: 'U1', text: 'the Launch team, write a brief', dm: true });
+    expect(threads).toEqual([undefined]);
+  });
+
+  it('gives a process the channel thread too', async () => {
+    const h = harness({ processes: [{ id: 'p-ideas', name: 'Idea to launch', purpose: 'Ideas', firstStage: 'Brief' }] } as never);
+    const threads = spyOn(h, 'submitProcess');
+    await h.door.onMessage({ channel: 'C0ACME', ts: '1.0', user: 'U1', text: '<@B0BOT> idea: CSV export', dm: false });
+    expect(threads).toEqual([{ channel: 'C0ACME', threadTs: '1.0' }]);
   });
 });

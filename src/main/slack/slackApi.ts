@@ -18,6 +18,12 @@ export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
 export type SlackResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
+/// Whether a call failed because the app lacks a permission. `slackCall` says
+/// which method failed in its error, so compare with this rather than `===`.
+export function isMissingScope(error: string): boolean {
+  return /\bmissing_scope\b/.test(error);
+}
+
 export async function slackCall<T extends object>(
   method: string,
   token: string,
@@ -217,7 +223,10 @@ export async function downloadFile(botToken: string, url: string, maxBytes: numb
 /// bytes there, then share the file.
 export async function uploadFile(
   botToken: string,
-  args: { channel: string; threadTs?: string; filename: string; bytes: Buffer; title?: string },
+  /// `as`: shared under this name and face instead of the app's, as a post can
+  /// be. Needs `chat:write.customize`; an app installed before it had that
+  /// shares as itself, so the file still arrives.
+  args: { channel: string; threadTs?: string; filename: string; bytes: Buffer; title?: string; as?: { name: string; iconUrl?: string } },
   fetchImpl: FetchLike = fetch,
 ): Promise<SlackResult<{ fileId: string }>> {
   const bytes = scrubOutboundFile(args.filename, args.bytes);
@@ -229,12 +238,10 @@ export async function uploadFile(
   } catch (err) {
     return { ok: false, error: `Slack upload: ${String(err)}` };
   }
-  const done = await slackCall<{ files?: unknown[] }>(
-    'files.completeUploadExternal',
-    botToken,
-    { files: [{ id: slot.data.file_id, title: args.title ?? args.filename }], channel_id: args.channel, ...(args.threadTs ? { thread_ts: args.threadTs } : {}) },
-    fetchImpl,
-  );
+  const share = { files: [{ id: slot.data.file_id, title: args.title ?? args.filename }], channel_id: args.channel, ...(args.threadTs ? { thread_ts: args.threadTs } : {}) };
+  const who = args.as ? { username: args.as.name, ...(args.as.iconUrl ? { icon_url: slackIcon(args.as.iconUrl) } : {}) } : {};
+  let done = await slackCall<{ files?: unknown[] }>('files.completeUploadExternal', botToken, { ...share, ...who }, fetchImpl);
+  if (!done.ok && args.as && isMissingScope(done.error)) done = await slackCall<{ files?: unknown[] }>('files.completeUploadExternal', botToken, share, fetchImpl);
   return done.ok ? { ok: true, data: { fileId: slot.data.file_id } } : done;
 }
 

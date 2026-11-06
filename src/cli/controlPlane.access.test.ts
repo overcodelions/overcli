@@ -68,6 +68,12 @@ describe('invites over HTTP', () => {
     expect((await post(`/api/join/${code}`, {})).ok).toBe(false);
   });
 
+  it('keeps setting one person\'s allowance to admins, and clears it with an empty one', async () => {
+    expect(await post('/api/admin/people/allowance', { slackUserId: 'U0ACMEPAT', allowanceUSD: 40 }, 'ocli_pat')).toMatchObject({ ok: false });
+    expect(await post('/api/admin/people/allowance', { slackUserId: 'U0ACMEPAT', allowanceUSD: 40 }, 'ocli_admin')).toMatchObject({ ok: true });
+    expect(await post('/api/admin/people/allowance', { slackUserId: 'U0ACMEPAT' }, 'ocli_admin')).toMatchObject({ ok: true });
+  });
+
   it('keeps invites and roles to admins', async () => {
     expect((await post('/api/admin/invites', { name: 'X', role: 'admin' }, 'ocli_pat')).ok).toBe(false);
     expect((await fetch(`${base}/api/admin/invites`)).status).toBe(401);

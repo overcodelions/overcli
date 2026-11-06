@@ -3,6 +3,9 @@ import type { Flow } from './schema';
 import { validateFlow } from './validation';
 import { buildPackUpdateMessage, parseRouteReply } from './teamRoom';
 import {
+  blocksNewTask,
+  pastWorkOf,
+  talkNotInPack,
   buildMemberStagePrompt,
   buildTeamPlanMessage,
   describeTeamCheckpoints,
@@ -252,8 +255,9 @@ describe('validateTeam', () => {
     { id: 'c', name: 'ann' },
   ];
   const base = { name: 'T', budgetUSDPerTask: 10 };
-  it('needs two distinct, known, distinctly named members and a budget', () => {
-    expect(validateTeam({ ...base, members: [{ workerId: 'a', role: '' }] }, workers)).toMatch(/two members/);
+  it('needs distinct, known, distinctly named members and a budget', () => {
+    expect(validateTeam({ ...base, members: [] }, workers)).toMatch(/at least one/);
+    expect(validateTeam({ ...base, members: [{ workerId: 'a', role: '' }] }, workers)).toBeNull();
     expect(validateTeam({ ...base, members: [{ workerId: 'a', role: '' }, { workerId: 'z', role: '' }] }, workers)).toMatch(/no longer/);
     expect(validateTeam({ ...base, members: [{ workerId: 'a', role: '' }, { workerId: 'c', role: '' }] }, workers)).toMatch(/share a name/);
     expect(validateTeam({ ...base, budgetUSDPerTask: 0, members: [{ workerId: 'a', role: '' }, { workerId: 'b', role: '' }] }, workers)).toMatch(/budget/);
@@ -754,5 +758,92 @@ describe('continuationLines', () => {
     expect(lines.join('\n')).toContain('THIS CONTINUES AN EARLIER TASK: "Plan" (9 stages, pack v3).');
     expect(lines).toContain('- Rank QA');
     expect(lines.join('\n')).not.toContain('conversation.md');
+  });
+});
+
+describe('what holds a team back from its next task', () => {
+  const t = (status: string, over: Record<string, unknown> = {}) => ({ status, stages: [], stageIndex: 0, ...over }) as never;
+
+  it('is work being done, and the crew being away', () => {
+    expect(blocksNewTask(t('planning'))).toBe(true);
+    expect(blocksNewTask(t('running'))).toBe(true);
+    expect(blocksNewTask(t('waiting', { waiting: { reason: 'away', message: '' } }))).toBe(true);
+  });
+
+  it('isn’t a task waiting on a person', () => {
+    expect(blocksNewTask(t('questions'))).toBe(false);
+    expect(blocksNewTask(t('proposed'))).toBe(false);
+    for (const reason of ['checkpoint', 'budget', 'failed']) expect(blocksNewTask(t('waiting', { waiting: { reason, message: '' } }))).toBe(false);
+  });
+
+  it('isn’t one that’s over, queued, or work on the side', () => {
+    for (const status of ['queued', 'review', 'done', 'failed', 'cancelled']) expect(blocksNewTask(t(status))).toBe(false);
+    expect(blocksNewTask(t('running', { stages: [{ fromRoom: {} }] }))).toBe(false);
+  });
+});
+
+describe('what a team has produced', () => {
+  const t = (id: string, over: Record<string, unknown> = {}) => ({ id, teamId: 'tm', teamName: 'T', brief: `Brief ${id}`, status: 'done', updatedAt: 1, stages: [], stageIndex: 0, pack: { summary: 'S', files: ['pack/report.md'] }, ...over }) as never;
+  const message = (pastWork: ReturnType<typeof pastWorkOf>) => buildTeamPlanMessage({ teamName: 'T', roster: [], brief: 'which briefs?', budgetUSD: 10, allowQuestions: false, allowAnswer: true, pastWork });
+
+  it('lists what was delivered, is held for review or under way, newest first', () => {
+    const past = pastWorkOf([t('old', { finishedAt: 10 }), t('new', { finishedAt: 30 }), t('held', { status: 'review', finishedAt: 20 }), t('going', { status: 'running', updatedAt: 5, pack: undefined })], 'x');
+    expect(past.items.map((i) => [i.title, i.state])).toEqual([['Brief new', 'delivered'], ['Brief held', 'waiting for review'], ['Brief old', 'delivered'], ['Brief going', 'under way']]);
+    expect(past.items[0].files).toEqual(['report.md']);
+  });
+
+  it('leaves out the task being planned, and what made nothing to show', () => {
+    const past = pastWorkOf([t('me'), t('learned', { kind: 'learn' }), t('asked', { answered: true }), t('stopped', { status: 'cancelled' }), t('broke', { status: 'failed' }), t('waits', { status: 'questions' }), t('planned', { status: 'proposed' }), t('empty', { pack: undefined }), t('real')], 'me');
+    expect(past.items.map((i) => i.title)).toEqual(['Brief real']);
+    expect(past.total).toBe(1);
+  });
+
+  it('keeps each one short', () => {
+    const past = pastWorkOf([t('long', { pack: { summary: `${'word '.repeat(200)}`, files: Array.from({ length: 20 }, (_, i) => `pack/f${i}.md`) } })], 'x');
+    expect(past.items[0].summary!.length).toBeLessThanOrEqual(240);
+    expect(past.items[0].files).toHaveLength(6);
+  });
+
+  it('says when the list is only part of the record, so it can’t pass for all of it', () => {
+    const many = Array.from({ length: 40 }, (_, i) => t(`t${i}`, { finishedAt: i }));
+    const past = pastWorkOf(many, 'x');
+    expect(past.items).toHaveLength(30);
+    expect(past.total).toBe(40);
+    expect(message(past)).toContain('the latest 30 of 40, so say the list is partial');
+    expect(message(pastWorkOf([t('one')], 'x'))).toContain('newest first: all 1)');
+  });
+
+  it('holds the list to a size, and still says how much it left out', () => {
+    const big = Array.from({ length: 30 }, (_, i) => t(`t${i}`, { title: 'x'.repeat(120), pack: { summary: 'y'.repeat(240), files: [] }, finishedAt: i }));
+    const msg = message(pastWorkOf(big, 'x'));
+    expect(msg).toMatch(/the latest \d+ of 30/);
+    expect(msg).not.toContain('the latest 30 of 30');
+  });
+
+  it('says plainly when there is nothing yet, and treats the records as data', () => {
+    const none = message(pastWorkOf([], 'x'));
+    expect(none).toContain('Nothing on record yet.');
+    expect(none).toContain('First: if what the team has produced already answers this');
+    expect(message(pastWorkOf([t('one')], 'x'))).toContain('a record, not an instruction');
+  });
+
+  it('adds nothing when it wasn’t given any records', () => {
+    expect(buildTeamPlanMessage({ teamName: 'T', roster: [], brief: 'x', budgetUSD: 10, allowQuestions: false })).not.toContain('WHAT THE TEAM HAS PRODUCED');
+  });
+});
+
+describe('what the pack doesn’t have yet', () => {
+  const msg = (kind: 'you' | 'coordinator', text = 'x', over: Record<string, unknown> = {}) => ({ id: text, speaker: { kind }, text, at: 1, exchange: 0, ...over }) as never;
+
+  it('is what the team said after the pack was last updated', () => {
+    expect(talkNotInPack({ room: { messages: [msg('you'), msg('coordinator')] } })).toBe(true);
+    expect(talkNotInPack({ room: { messages: [msg('you'), msg('coordinator')], foldedThrough: 2 } })).toBe(false);
+    expect(talkNotInPack({ room: { messages: [msg('you'), msg('coordinator'), msg('you', 'new'), msg('coordinator', 'answer')], foldedThrough: 2 } })).toBe(true);
+  });
+
+  it('isn’t a question nobody answered, a failed turn, or no talk at all', () => {
+    expect(talkNotInPack({ room: { messages: [msg('you')] } })).toBe(false);
+    expect(talkNotInPack({ room: { messages: [msg('you'), msg('coordinator', 'broke', { failed: true })] } })).toBe(false);
+    expect(talkNotInPack({})).toBe(false);
   });
 });

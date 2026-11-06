@@ -209,6 +209,9 @@ export interface ProcessItem {
   sourceUrl?: string;
   /// Reopened from a finished item: "Verify found a problem with this".
   fromItemId?: string;
+  /// The Slack channel thread it was put in from: its team stages work there,
+  /// in front of everyone in it. Absent: they talk to each stage's lead by DM.
+  slackThread?: { channel: string; threadTs: string };
   stageIndex: number;
   status: ProcessItemStatus;
   /// The team task working the current stage.

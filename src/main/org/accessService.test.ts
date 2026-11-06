@@ -239,6 +239,28 @@ describe('signing people out', () => {
 void DEFAULT_ORG_POLICY;
 
 describe('rules from the console', () => {
+  it('sets one person’s allowance without touching their role, and clears it', () => {
+    const h = harness({});
+    expect(h.svc.setAllowance(pat, PAT, 500).ok).toBe(false);
+    expect(h.svc.setAllowance(admin, 'not an id', 5).ok).toBe(false);
+    expect(h.svc.setAllowance(admin, PAT, -1).ok).toBe(false);
+    const before = JSON.stringify({ admins: h.raw().admins, approvers: h.raw().approvers, hirers: h.raw().hirers });
+    expect(h.svc.setAllowance(admin, PAT, 40).ok).toBe(true);
+    expect(h.raw().allowances).toMatchObject({ [PAT]: 40 });
+    expect(JSON.stringify({ admins: h.raw().admins, approvers: h.raw().approvers, hirers: h.raw().hirers })).toBe(before);
+    expect(h.svc.setAllowance(admin, PAT, null).ok).toBe(true);
+    expect((h.raw().allowances as Record<string, number>)[PAT]).toBeUndefined();
+  });
+
+  it('keeps the limit on people using someone else’s worker, including none', () => {
+    const h = harness({});
+    expect(h.svc.setRules(admin, { otherPeopleLimitUSD: 25 })).toMatchObject({ ok: true, rules: { otherPeopleLimitUSD: 25 } });
+    expect(h.svc.setRules(admin, { otherPeopleLimitUSD: 0 })).toMatchObject({ ok: true, rules: { otherPeopleLimitUSD: 0 } });
+    expect(h.raw()).toMatchObject({ otherPeopleLimitUSD: 0 });
+    expect(h.svc.setRules(admin, { otherPeopleLimitUSD: 'lots' })).toMatchObject({ ok: false });
+    expect(h.svc.setRules(pat, { otherPeopleLimitUSD: 1 }).ok).toBe(false);
+  });
+
   it('changes what it is given, refuses what would not read back, and logs it', () => {
     const h = harness({ teams: { old: [PAT] } });
     expect(h.svc.setRules(pat, { hirers: '*' }).ok).toBe(false);

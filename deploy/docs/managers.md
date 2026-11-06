@@ -63,6 +63,7 @@ On the worker's page:
 - **Schedule:** "weekdays at 9", "every 4 hours". The next run is shown, and **Run now** runs it immediately.
 - **Triggers** (the Triggers tab): work that starts when something happens.
   - **Watch:** checks a tool every 5–60 minutes, such as a Jira search or a CRM view, and acts once on each new item. The first check only notes what's already there. **Try it now** shows what it sees before you save.
+    - **Don't know the query?** Describe what to catch in plain words and press **Draft it**. The worker looks up the real names in the tool, tries a search, and fills in the form with what it would find, usually in a minute or two. It counts as a run, and nothing is saved until you save. The tool has to be installed on Setup → Tools, and the call has to be one that only reads.
     - **Or a change to an item:** set it off by a change to one field, such as a ticket's status, rather than a new item. Turn on **Only items I track**, and put `{{ids}}` in the tool's arguments, for example `"jql": "key in ({{ids}})"`. Add tickets on the Triggers tab, or in Slack with `@overgo Watcher, track ACME-412`, `stop tracking ACME-412`, or `/worker Watcher track ACME-412`. With **Just tell me what changed**, you get "ACME-412 moved from In review to Done" and a link, with no worker turn, so a quiet day costs nothing.
     - **Inside a VPC:** a watch checks outward, so nothing needs to reach the server. It only needs outbound access to the tool's API.
   - **Webhook:** a secret address for GitHub, Jira automation or Zapier to post to.
@@ -112,7 +113,9 @@ Every worker also reads your org's **handbook**, which an admin keeps on Setup �
 - **Answering in Slack:** how many people it answers at once, each in their own thread. Each answer counts against its budget.
 - **How it works:** the flow its work goes through, unless you name another of its flows when you ask ("use solve-ticket"). Shown when it has more than one.
 - **History:** every change to its job, tools, trust and settings, newest first, with who made it and **The job then**. **Restore** puts it back to that version. Restoring follows the same rules as changing it by hand, so it can't give the worker anything you couldn't, such as a trust level only an admin sets. The last 50 versions of each worker are kept; the page shows the newest 15.
-- **Budget:** what it may spend a month. You're warned at 80%, and scheduled runs stop at the limit until the month turns. A raise over your allowance goes to an approver.
+- **Budget:** what it may spend a month. You're warned at 80%, and scheduled runs stop at the limit until the month turns. A raise over your allowance goes to an approver. **Reports → Spend** shows each worker's month, where it's heading and who used it.
+- **People using it:** work someone asks for is charged to this worker's budget, not theirs. Each person can spend up to a limit per worker each month, $100 unless an admin changes it in the org's rules (empty for no limit). They're warned in Slack as they near it, and their asks stop at it. The worker's manager, admins, triggers and process stages aren't limited this way.
+- **Setup → Spending** (admins) is where the budgets live: the org budget, the default allowance, and every manager and worker, editable in place. An allowance only decides when a new hire or a raise needs approval: raising or lowering it never stops what's already running.
 - **Pause** stops everything it would start, without losing its journal.
 
 Tools, trust, standing approvals and checkpoints are on the [Access](#access) tab.
@@ -127,7 +130,9 @@ A team is several workers plus a coordinator. Give it a task from the console's 
 
 You can give a team work if you manage one of its members.
 
-**A team takes one task at a time.** Give it another while it's busy and the new task waits as **Up next**, starting when the current one ends. Tasks start in the order they were given. Take a waiting task out of the line from the team's page.
+**A team knows what it has made.** Ask "which briefs have you produced?" and its coordinator answers from the team's own task records, its latest 30 at most, with no plan and no stages. It says so when the list is only part of the record.
+
+**A team works on one task at a time.** Give it another while it's busy and the new task waits as **Up next**, starting when the current one ends. Tasks start in the order they were given. A task waiting on a person, for answers, a plan approval or a checkpoint, doesn't hold up the line. When that person clears it and the team is on something else, it goes next, ahead of tasks that haven't started. Take a waiting task out of the line from the team's page.
 
 **A member's check is skipped when there's no code to check.** The check after a member's piece is a step marked `only_if_changed: true`, and any flow step can be. It's skipped, with any approval it would have asked for, when the run has changed nothing in its repo (or in any repo of its workspace) since it started but notes. Notes are Markdown (`.md`, `.markdown`) and `.txt` files, except a `.txt` a build, test or server reads: `requirements*.txt`, anything under a `requirements/` folder, `constraints*.txt`, `CMakeLists.txt`, `runtime.txt`, `apt.txt`, `packages.txt`, `version.txt`, `robots.txt`, `ads.txt`, `app-ads.txt`, `security.txt`, and anything under a `testdata/`, `test_data/`, `fixtures/`, `__snapshots__/`, `snapshots/`, `golden/` or `resources/` folder count as code. Edits, commits and new files count; files your `.gitignore` covers don't. Renames and deletions count by every path they touch, so `auth.ts` renamed to `auth.md`, or deleted, is a code change. When the change can't be measured (the run has no git baseline, or git fails), the step runs.
 
@@ -139,6 +144,7 @@ You can give a team work if you manage one of its members.
   - reading the draft before it's challenged
   - reviewing the result
   - approving follow-up work
+- **Asking a team in a channel:** `@overgo` a team in a channel and it works in that thread, in front of everyone there. Its questions, plan, progress and results post in the thread, and anyone in it can answer the questions. As each member finishes its part, it says what it did in a line or two, under its own name and picture. A reply that starts by naming someone else is treated as people talking, not an answer. Only the person who asked, or an admin, can approve the plan or accept the result. While it works, a reply in the thread is feedback: the work it starts next takes it into account, and a plan waiting for approval is planned again with it. Once the work is delivered, replies go to the team's conversation, and each member answers under its own name and picture. Feedback from anyone but the person who asked never starts work or changes the delivered pack. To stop a task, the person who asked can reply just "stop", "cancel" or "nevermind" in its thread. Stopping a task starts the next one queued for that team; to clear the queue too, use **Stop this and the queued tasks** in the task's **…** menu. `/team` and DMs stay private: those tasks talk to you by DM.
 - **In Slack:** `/team new writes PR/FAQs for new features`. overgo DMs you a suggested crew, with **Make the team**, **Change it** and **Cancel** buttons. **Change it** opens a form for the name, what the team does, its budget per task, where it checks in with you, and who can ask its new hires.
 
 A `/hire` offer in Slack has **Change it** too. It opens a form for the worker's name, budget, who can ask it, its tools, the repo it works in, and who it reports to.
@@ -152,9 +158,14 @@ A process moves one piece of work through several teams and people's decisions, 
 
 **From an image** (on **Processes** and in the library) starts one from a picture: a flowchart, a swimlane or a slide you found online. Drop it in, pick the file or paste it, and add a note if you want something changed ("use our Product Team for design"). Reading it takes a minute or so. Each box becomes a stage, decision diamonds and approvals become people who decide, rework or reject arrows say where work is sent back, and waits or "weekly" steps become waits and repeats. Where one of your teams or workers clearly fits a stage it's filled in; otherwise the stage says who the picture names ("Legal reviewer") so you can pick. The editor opens with the draft, unsaved, with what the reading was unsure of (a parallel branch it put in order, steps it left out past twelve) and the picture to keep open beside it. Nothing is saved until you make the process. Pictures are PNG, JPEG, WebP or GIF, under 5 MB.
 
+**From YAML.** **Import YAML** on **Processes** starts one from a file, and **YAML** on a process shows it as one, to copy or change. Teams, workers and people go by name. It opens in the editor and nothing saves until you do, with anything it couldn't match flagged at the top. A stage keeps its place by its name, so items already in it stay there.
+
+Moving to a new server? Bring things over in this order: workers (**Export** on each, without secrets), then teams (**YAML** on a team, then **Import YAML** on **Teams**), then connect the repos, then processes. Importing lists anything not there yet, with **Check again** once you've set it up. A team's file leaves out who was picked to give it tasks, since those are people on the old server.
+
 Each stage is one of two kinds:
 
 - **A team.** It's briefed with the stage's job, the original request, and what every earlier stage produced, pack files included. The team works as it always does: questions, a plan to approve, its pack to sign off. Those go to the stage's lead: the person you name, or else the team's manager. The item moves on when the lead signs off the pack.
+  An item put in with `@overgo` in a channel works in that thread at every team stage: questions, plans, progress and results post there, and anyone in it can weigh in, while the stage's lead still approves and signs off. An item from `/idea` or the console talks to each lead by DM. If the team talked after writing its pack and the pack wasn't updated, that conversation goes on to the next stage too.
 - **People who decide.** They get a DM with **Approve**, **Send back…** and **Stop it**, and the same buttons are on the console. Any one of them can decide. **Send back** asks what needs to change and returns the item to the team stage before (or the stage you pick), briefed with that note.
 
 Who owns what:

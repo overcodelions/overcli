@@ -11,7 +11,8 @@ import { roleNamed, roleToolsFor } from '../../shared/org/roleTools';
 import { KITS, type KitDef, type KitId, type Toolchain, type ToolchainService } from './toolchains';
 import { collectKnownSecretValues, redactSecrets, scrubOutbound } from '../secretScrub';
 import type { LoginResult } from './toolLogin';
-import { generalize, readShape, readToolCall, setupPrompt } from './watchSetup';
+import { draftPrompt, generalize, readDraft, readShape, readToolCall, setupPrompt } from './watchSetup';
+import { limitState, managerBudgets, paceFor, personSpendOn, usersByWorker, type ManagerBudget, type RunCost, type WorkerUser } from '../../shared/org/spendView';
 import { randomUUID } from 'node:crypto';
 import type { Flow, FlowRun, FlowRunState } from '../../shared/flows/schema';
 import { applyFlowModelUpgrade, planFlowModelUpgrade, shortModelChangeLabel } from '../../shared/flows/modelUpgrade';
@@ -42,6 +43,7 @@ import {
   committedBudget,
   hireDecision,
   isAdmin,
+  otherPeopleLimit,
   type OrgCaller,
   type OrgPolicy,
   type OrgRole, inAudience, type Audience } from '../../shared/org/policy';
@@ -56,11 +58,11 @@ import { readActivity, type ReviewInput, type ReviewResult, type ReviewedAnswer,
 import type { TuningWatchStartStore, WorkerReview, WorkerReviewStore } from './orgStores';
 import { SERVER_PR_STEP } from './serverFlow';
 import { aroundChange, impactLine, scoreRuns, watchReasons, type ScoredRun, type TuningScore } from '../../shared/org/tuningScore';
-import { describeScope, mcpServerKey, parseToolScope, withinScope, type ToolScope, type ToolScopes } from '../../shared/flows/toolScope';
+import { describeScope, inToolScope, mcpServerKey, parseToolScope, withinScope, type ToolScope, type ToolScopes } from '../../shared/flows/toolScope';
 import { answerOptions, projectMonthEnd, trustReadiness, workerState, type TrustReadiness, type WorkerState } from '../../shared/org/insights';
 import type { Team, TeamCheckpoints, TeamComment, TeamHandoff, TeamRosterDraft, TeamStageKind, TeamTask } from '../../shared/flows/team';
 import { resolveShortNames } from '../../shared/shortName';
-import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive } from '../../shared/flows/team';
+import { DEFAULT_TEAM_CHECKPOINTS, TEAM_GUIDANCE_MAX, TEAM_MAX_MEMBERS, TEAM_STAGE_LABEL, handoffSteps, isMemberStage, isTaskActive, pastWorkOf } from '../../shared/flows/team';
 import { CARRIED_LIMITS, parseWorkerYaml, type PortableTrigger, type WorkerCarried } from '../../shared/flows/workerYaml';
 import type { Attachment, Backend, UUID } from '../../shared/types';
 import type { DraftedHire, HireDraftResult } from './hireDraft';
@@ -76,7 +78,7 @@ import type { ModelProvider, SecretStatus } from './secrets/service';
 import type { ToolTrouble } from './toolHealth';
 import { HANDBOOK_MAX, WORKER_VERSIONS_KEPT } from './orgStores';
 import type { AskRecord, AskStore, AuditEntry, AuditStore, HireStore, KeptFile, PublishedState, PublishedStore, Rating, RatingStore, SavedFile, TeamFileStore, TeamPublishShape, ToolRequest, ToolRequestStore, WorkerConfig, WorkerVersion, WorkerVersionStore } from './orgStores';
-import type { ToolCall } from './mcpDirect';
+import { answersWithList, itemsFrom, type ToolCall } from './mcpDirect';
 import { classifyServer, fileTitle, isText, listFolder, linkFrom, mimeFor, pickUploadTool, readInFolder, slugFor, uploadArgs, type DestinationKind } from './teamFiles';
 import { buildZip, type ZipEntry } from './zip';
 import { personKey } from './connections';
@@ -392,6 +394,8 @@ export interface TeamTaskDetail extends TeamTaskSummary {
   };
   /// The caller asked for it (or is an admin): may answer, approve, talk to the team and update the pack.
   canSteer: boolean;
+  /// The team's queued tasks after this one that the caller could also stop.
+  queuedBehind: number;
   stagesDetail: Array<{
     title: string;
     label: string;
@@ -561,14 +565,19 @@ export type LibraryOrigin =
   | { kind: 'errand'; askId: string; workerId: string; workerName: string; askedBy: string; question: string; via?: 'console' | 'slack' | 'mcp' | 'app' }
   | { kind: 'task'; teamId: string; teamName: string; taskId: string; taskTitle: string; stage?: { index: number; title: string } };
 
-export type LibraryKind = 'event' | 'work' | 'file' | 'answer' | 'task';
+export type LibraryKind = 'event' | 'work' | 'file' | 'answer' | 'task' | 'document';
 
 export interface LibraryItem {
   id: string;
   /// event: delivered on a trigger; work: a finished run; file: a team
   /// task's file someone kept; answer: an errand's reply; task: a finished
-  /// team task, its pieces folded in.
+  /// team task, its pieces folded in; document: one file of what a team
+  /// delivered, listed only for whoever asks for them.
   kind: LibraryKind;
+  /// A task the coordinator answered straight away: a reply, not delivered work.
+  answered?: boolean;
+  /// A team going through its tools to learn its job.
+  learning?: boolean;
   origin: LibraryOrigin;
   /// Who can see it: the source worker's setting, or a team's.
   visibility: WorkerVisibility;
@@ -790,6 +799,9 @@ export interface OrgServiceDeps extends OverdbDeps {
     /// A note out of it (`WorkerEngine.forgetNote`).
     forgetNote?(id: UUID, entryId: string): Result;
     spentThisMonth(): Map<UUID, number>;
+    /// Each run's cost this month, with what launched it. Absent: nobody's
+    /// use of a worker can be traced, so no limit on it applies.
+    runCostsThisMonth?(): RunCost[];
     workerNames(): string[];
   };
   runs: {
@@ -841,7 +853,7 @@ export interface OrgServiceDeps extends OverdbDeps {
   report?(sinceMs: number): WorkerReport;
   teams?: {
     list(): { teams: Team[]; tasks: TeamTask[] };
-    brief(teamId: UUID, text: string, attachments: [], projectPath: undefined, opts: { requestedBy?: TeamTask['requestedBy'] }): Result<{ task: TeamTask }>;
+    brief(teamId: UUID, text: string, attachments: [], projectPath: undefined, opts: { requestedBy?: TeamTask['requestedBy']; slackThread?: TeamTask['slackThread'] }): Result<{ task: TeamTask }>;
     /// Learn (or refresh) what the team knows. Absent: not offered.
     learn?(teamId: UUID, opts: { requestedBy?: TeamTask['requestedBy'] }): Result<{ task: TeamTask }>;
     /// Ask an answered question again, as work.
@@ -853,9 +865,9 @@ export interface OrgServiceDeps extends OverdbDeps {
     /// Delete a team and every task it ran, files and all.
     remove?(teamId: UUID): Result;
     answer(taskId: UUID, answers: string[]): Result;
-    approve(taskId: UUID): Result;
+    approve(taskId: UUID): Result<{ queued?: boolean }>;
     revise(taskId: UUID, feedback: string): Result;
-    continueTask(taskId: UUID): Result;
+    continueTask(taskId: UUID): Result<{ queued?: boolean }>;
     cancel(taskId: UUID): Result;
     /// Run one member's failed piece of the current stage again.
     retryPiece?(taskId: UUID, workerId: UUID): Result;
@@ -866,7 +878,7 @@ export interface OrgServiceDeps extends OverdbDeps {
     accept?(taskId: UUID): Result;
     /// The room: ask the team, another round on the last question, and the
     /// pack rewritten with what was said (or only the picked `changes`).
-    roomAsk?(taskId: UUID, text: string): Result<{ queued?: boolean }>;
+    roomAsk?(taskId: UUID, text: string, attachments?: [], opts?: { feedback?: boolean }): Result<{ queued?: boolean }>;
     roomContinue?(taskId: UUID): Result;
     updatePack?(taskId: UUID, opts: { changes?: string[] }): Result;
     /// Push the task branch from one of its repos.
@@ -1241,6 +1253,23 @@ const LEARN_WAIT_MS = 30 * 60 * 1000;
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
 const LOOKUP_POLL_MS = 3000;
+const TRIGGER_DRAFT_MAX_CHARS = 1000;
+/// How long a draft stays to be collected: past any look-up's wait.
+const TRIGGER_DRAFT_KEEP_MS = 60 * 60 * 1000;
+
+/// A search a worker worked out for a trigger, tried for real, for a person
+/// to check and save.
+export interface TriggerDraft {
+  server: string;
+  tool: string;
+  args: Record<string, unknown>;
+  name?: string;
+  /// What the search finds, in the worker's words.
+  means?: string;
+  items: Array<{ id: string; title: string; url?: string }>;
+  /// False when the answer has no list, so it can't tell new items apart.
+  listed: boolean;
+}
 
 export interface ErrandProgress {
   done: boolean;
@@ -1292,7 +1321,7 @@ export interface TeamPublishInput {
 function checkTeamPublish(input: TeamPublishInput): string | null {
   if (!LOCAL_ID.test(input.localId)) return 'That team has no id overcli can use.';
   if (!input.name.trim()) return 'Give the team a name.';
-  if (input.members.length < 2) return 'A team needs at least two members.';
+  if (input.members.length < 1) return 'A team needs at least one member.';
   if (input.members.length > TEAM_MAX_MEMBERS) return `A team can have at most ${TEAM_MAX_MEMBERS} members.`;
   if (!Number.isFinite(input.budgetUSDPerTask) || input.budgetUSDPerTask <= 0) return 'Set a budget per task above $0.';
   const ids = new Set<string>();
@@ -1919,12 +1948,18 @@ export class OrgService {
     /// The trigger's own "starts on its own". No longer decides anything: an
     /// autonomous worker's triggers always start alone (see `startsAlone`).
     _triggerStarts = false,
-  ): Result<{ askId: string; done: Promise<Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }>> }> {
+  ): Result<{ askId: string; warning?: string; done: Promise<Result<{ reply: string; launched: number; proposed: number; askId: string; orchestrationId?: string; choices?: string[] }>> }> {
     const w = this.resolve(caller, idOrName);
     if (!w) return { ok: false, error: NOT_FOUND };
     if (!w.enabled) return { ok: false, error: `${w.name} is paused.` };
     if (!text.trim()) return { ok: false, error: `What should ${w.name} do?` };
     const manages = via !== 'trigger' && !proposal && canManage(this.policy(), this.deps.workers.roster(), w.id, caller);
+    // Someone using a worker that isn't theirs, on its manager's budget. A
+    // trigger or a process stage was set up by someone who could.
+    const use = !manages && via !== 'trigger' && !proposal ? this.useOfWorker(w, caller) : null;
+    if (use?.state === 'stop') {
+      return { ok: false, error: `You've used ${use.text} on ${w.name} this month, so it can't take more from you until next month. ${managerFor(this.deps.workers.roster(), w.id)?.name ?? 'Its manager'} or an admin can help.` };
+    }
     // A worker that only reads answers anyone allowed to ask it, as it would
     // its manager: nothing it can do needs the manager's say.
     const readsOnly = !manages && via !== 'trigger' && !proposal && (this.deps.workers.changesOf?.(w.id) ?? ['unknown']).length === 0;
@@ -1959,7 +1994,110 @@ export class OrgService {
     };
     this.putAsk(record);
     const done = this.finishAsk(record, this.deps.workers.runErrand(w.id, from + context + text, attachments?.length ? attachments : undefined, conversation, !manages, readsOnly || startsAlone));
-    return { ok: true, askId: record.id, done };
+    return { ok: true, askId: record.id, done, ...(use?.state === 'warn' ? { warning: `You've used ${use.text} on ${w.name} this month. It stops taking work from you at the limit.` } : {}) };
+  }
+
+  /// Who has cost each worker what this month, as far as it can be traced.
+  private workerUsers(): Map<UUID, WorkerUser[]> {
+    const runs = this.deps.workers.runCostsThisMonth?.() ?? [];
+    if (!runs.length) return new Map();
+    const teamRuns = (this.deps.teams?.list().tasks ?? []).flatMap((t) =>
+      t.stages.flatMap((s) => s.assignments.flatMap((a) => (a.runId ? [{ runId: a.runId, teamName: t.teamName, ...(t.requestedBy ? { by: t.requestedBy.name, ...(t.requestedBy.slackUserId ? { slackUserId: t.requestedBy.slackUserId } : {}) } : {}) }] : []))),
+    );
+    return usersByWorker(runs, this.allAsks().map((a) => ({ workerId: a.workerId, by: a.by, ...(a.slackUserId ? { slackUserId: a.slackUserId } : {}), ...(a.orchestrationId ? { orchestrationId: a.orchestrationId } : {}) })), teamRuns);
+  }
+
+  /// Where someone stands on a worker that isn't theirs. Null: no limit here.
+  private useOfWorker(w: Worker, caller: OrgCaller): { state: 'ok' | 'warn' | 'stop'; text: string } | null {
+    const policy = this.policy();
+    const limit = otherPeopleLimit(policy);
+    if (limit === null || !this.deps.workers.runCostsThisMonth) return null;
+    const spent = personSpendOn(this.workerUsers().get(w.id), caller);
+    return { state: limitState(spent, limit, policy.alertAtPercent), text: `$${spent.toFixed(2)} of your $${limit} limit` };
+  }
+
+  /// A person's workers, or for an admin everyone's, and who is using them.
+  /// Only finished runs' model cost counts: planning and chat turns don't
+  /// report one, so the page says so.
+  spendView(caller: OrgCaller, opts: { all?: boolean } = {}): Result<{
+    scope: 'mine' | 'all';
+    canSeeAll: boolean;
+    budgetUSD?: number;
+    capsUSD: number;
+    spentUSD: number;
+    paceUSD?: number;
+    limitUSD: number | null;
+    alertAtPercent: number;
+    workers: Array<{ id: UUID; name: string; capUSD: number; spentUSD: number; paceUSD?: number; enabled: boolean; manager?: string; managerOnSlack: boolean; users: WorkerUser[]; otherUSD: number }>;
+    /// By who answers for them, on the org's view.
+    managers?: ManagerBudget[];
+  }> {
+    const policy = this.policy();
+    const roster = this.deps.workers.roster();
+    const admin = isAdmin(policy, caller);
+    const isMine = (w: Worker) => {
+      const boss = managerFor(roster, w.id);
+      return caller.slackUserId ? boss?.slackUserId === caller.slackUserId : !!boss && boss.name === caller.name;
+    };
+    const mine = roster.filter(isMine);
+    // Someone who answers for no workers of their own has only the org to see.
+    const all = admin && (!!opts.all || !mine.length);
+    const shown = all ? roster : mine;
+    const spent = this.deps.workers.spentThisMonth();
+    const users = this.workerUsers();
+    const now = this.now();
+    const workers = shown
+      .map((w) => {
+        const used = users.get(w.id) ?? [];
+        const spentUSD = spent.get(w.id) ?? 0;
+        const pace = paceFor(spentUSD, now);
+        const boss = managerFor(roster, w.id);
+        return {
+          id: w.id,
+          name: w.name,
+          capUSD: w.budgetUSDPerMonth,
+          spentUSD,
+          ...(pace !== null ? { paceUSD: pace } : {}),
+          enabled: w.enabled,
+          ...(boss?.name ? { manager: boss.name } : {}),
+          managerOnSlack: !!boss?.slackUserId,
+          users: used,
+          otherUSD: Math.max(0, spentUSD - used.reduce((sum, u) => sum + u.spentUSD, 0)),
+        };
+      })
+      .sort((a, b) => b.spentUSD - a.spentUSD || a.name.localeCompare(b.name));
+    const spentUSD = workers.reduce((sum, w) => sum + w.spentUSD, 0);
+    const pace = paceFor(spentUSD, now);
+    const allowance = !all && caller.slackUserId ? allowanceFor(policy, caller.slackUserId) : 0;
+    const budget = all ? policy.orgBudgetUSD : allowance;
+    return {
+      ok: true,
+      scope: all ? 'all' : 'mine',
+      canSeeAll: admin,
+      ...(budget ? { budgetUSD: budget } : {}),
+      capsUSD: workers.reduce((sum, w) => sum + w.capUSD, 0),
+      spentUSD,
+      ...(pace !== null ? { paceUSD: pace } : {}),
+      limitUSD: otherPeopleLimit(policy),
+      alertAtPercent: policy.alertAtPercent,
+      workers,
+      ...(all
+        ? {
+            managers: managerBudgets(
+              workers.map((w) => {
+                const id = managerFor(roster, w.id)?.slackUserId;
+                return { ...w, ...(id ? { managerSlackUserId: id } : {}) };
+              }),
+              {
+                allowanceFor: (id) => allowanceFor(policy, id),
+                ownAllowance: (id) => policy.allowances[id] !== undefined,
+                isAdmin: (id) => policy.admins.includes(id),
+              },
+              now,
+            ),
+          }
+        : {}),
+    };
   }
 
   /// An ask's answer arriving: recorded, handed to whoever follows it, and
@@ -2933,6 +3071,93 @@ export class OrgService {
     return res.ok ? { ok: true, items: res.items.slice(0, 25).map((i) => ({ id: i.id, title: i.title, ...(i.url ? { url: i.url } : {}) })) } : res;
   }
 
+  /// Drafts being worked out, by id. A look-up takes minutes, longer than a
+  /// request can be trusted to stay open, so the form starts one and asks
+  /// after it. Nothing here saves a trigger: the form fills in for a person.
+  private triggerDrafts = new Map<string, { owner: string; workerId: UUID; description: string; startedAt: number; result?: Result<{ draft: TriggerDraft }> }>();
+
+  /// "New bugs in the support backlog", turned into the search that finds
+  /// them by a worker that can look in the tracker. Its run costs what a
+  /// look-up costs, so it starts only when someone asks.
+  startTriggerDraft(caller: OrgCaller, idOrName: string, description: string): Result<{ draftId: string }> {
+    const s = this.triggerSvc();
+    if (!s) return { ok: false, error: 'Triggers run on the org server.' };
+    const found = this.managed(caller, idOrName);
+    if (!found.ok) return found;
+    const text = description.trim();
+    if (!text) return { ok: false, error: 'Say what you want it to catch first.' };
+    if (text.length > TRIGGER_DRAFT_MAX_CHARS) return { ok: false, error: `Keep it under ${TRIGGER_DRAFT_MAX_CHARS} characters.` };
+    const w = this.listWorkers(caller).find((x) => x.id === found.worker.id);
+    if (!w || !this.deps.workers.lookup) return { ok: false, error: "This server can't run a look-up for it." };
+    const callable = w.tools.filter((t) => t.ok && s.canCall(t.name)).map((t) => t.name);
+    if (!callable.length) {
+      return { ok: false, error: `${w.name} has no tool a trigger can call on its own. Add one on Setup → Tools and give ${w.name} access. A connector from its own Claude account only works inside its runs.` };
+    }
+    for (const [id, job] of this.triggerDrafts) {
+      if (this.now() - job.startedAt > TRIGGER_DRAFT_KEEP_MS) this.triggerDrafts.delete(id);
+    }
+    const owner = caller.slackUserId ?? caller.name;
+    for (const [id, job] of this.triggerDrafts) {
+      if (job.owner !== owner || job.workerId !== w.id || job.result) continue;
+      if (job.description === text) return { ok: true, draftId: id };
+      return { ok: false, error: `${w.name} is still working out your last one. Give it a minute.` };
+    }
+    const draftId = randomUUID();
+    const job: { owner: string; workerId: UUID; description: string; startedAt: number; result?: Result<{ draft: TriggerDraft }> } = { owner, workerId: w.id, description: text, startedAt: this.now() };
+    this.triggerDrafts.set(draftId, job);
+    this.record(caller, `Asked ${w.name} to draft a trigger.`);
+    void this.workOutDraft(w, s, callable, text)
+      .catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) }))
+      .then((result) => { job.result = result; });
+    return { ok: true, draftId };
+  }
+
+  /// A draft as it stands, for the person who asked for it.
+  triggerDraft(caller: OrgCaller, draftId: string): Result<{ done: false } | { done: true; draft: TriggerDraft }> {
+    const job = this.triggerDrafts.get(draftId);
+    if (!job || job.owner !== (caller.slackUserId ?? caller.name)) return { ok: false, error: 'That draft is gone. Try again.' };
+    if (!job.result) return { ok: true, done: false };
+    return job.result.ok ? { ok: true, done: true, draft: job.result.draft } : job.result;
+  }
+
+  private async workOutDraft(
+    w: { id: UUID; name: string; tools: Array<{ name: string; ok: boolean; scope?: ToolScope }> },
+    s: TriggerService,
+    callable: string[],
+    description: string,
+  ): Promise<Result<{ draft: TriggerDraft }>> {
+    const fail = (why: string): Result<never> => ({ ok: false, error: `${w.name} couldn't draft this: ${why}` });
+    const ran = await this.deps.workers.lookup!(w.id, { title: 'Drafting a trigger', prompt: draftPrompt(description, callable) });
+    if (!ran.ok) return fail(ran.error);
+    const answer = await this.lookupAnswer(ran.orchestrationId);
+    if (!answer.ok) return fail(answer.error);
+    const call = readDraft(answer.text, w.tools.map((t) => t.name));
+    if (!call.ok) return fail(call.why);
+    if (!callable.includes(call.server)) return fail(`it used ${call.server}, which a trigger can't call on its own.`);
+    // The worker read outside text before answering, and the check below runs
+    // with this server's own sign-in, so only a call that reads, and that the
+    // worker is allowed, is made on its word.
+    const full = `mcp__${mcpServerKey(call.server)}__${call.tool}`;
+    const scope = w.tools.find((t) => t.name === call.server)?.scope;
+    if (!isReadOnlyMcpTool(full) || (scope && !inToolScope({ [call.server]: scope }, full))) {
+      return fail(`it picked ${call.tool}, which isn't a call it can only read with, so it wasn't run. Pick the search by hand.`);
+    }
+    const res = await s.probe(call.server, call.tool, call.args);
+    if (!res.ok) return fail(res.error);
+    return {
+      ok: true,
+      draft: {
+        server: call.server,
+        tool: call.tool,
+        args: call.args,
+        ...(call.name ? { name: call.name } : {}),
+        ...(call.means ? { means: call.means } : {}),
+        items: itemsFrom(res).slice(0, 25).map((i) => ({ id: i.id, title: i.title, ...(i.url ? { url: i.url } : {}) })),
+        listed: answersWithList(res),
+      },
+    };
+  }
+
   async serverTools(caller: OrgCaller, name: string): Promise<Result<{ tools: Array<{ name: string; description?: string }> }>> {
     if (!this.deps.serverTools) return { ok: false, error: 'Tools cannot be listed here.' };
     if (!canHire(this.policy(), caller) && !isAdmin(this.policy(), caller)) return { ok: false, error: 'Only people who manage workers can list a tool’s calls.' };
@@ -2948,7 +3173,8 @@ export class OrgService {
   /// can see it.
   library(
     caller: OrgCaller,
-    opts: { workerId?: string; query?: string; limit?: number; kind?: LibraryKind; visibility?: WorkerVisibility } = {},
+    /// `documents`: each file teams delivered as an item of its own too.
+    opts: { workerId?: string; query?: string; limit?: number; kind?: LibraryKind; visibility?: WorkerVisibility; documents?: boolean } = {},
   ): LibraryItem[] {
     const roster = this.deps.workers.roster();
     const policy = this.policy();
@@ -3144,6 +3370,8 @@ export class OrgService {
         return {
           id: `task:${t.id}`,
           kind: 'task',
+          ...(t.answered ? { answered: true } : {}),
+          ...(t.kind === 'learn' ? { learning: true } : {}),
           origin: { kind: 'task', teamId: t.teamId, teamName: t.teamName, taskId: t.id, taskTitle: title },
           ...teamSeenBy(t.teamId, t.teamName),
           pack: { files: packFiles.map((name) => ({ name, writtenBy: origins.get(name)?.writtenBy?.name ?? null })) },
@@ -3185,7 +3413,37 @@ export class OrgService {
           ...(r ? { rating: { useful: r.useful, by: r.by } } : {}),
         };
       });
-    return [...fromEvents, ...fromWork, ...fromAnswers, ...fromTasks, ...fromFiles]
+    // What teams delivered, file by file: not a reply or a learning pass, and
+    // not one someone kept, which is listed already. Read when it's opened.
+    const keptNames = new Set(this.keptFiles().map((k) => `${k.taskId}/${k.name}`));
+    const fromDocuments: LibraryItem[] = !opts.documents && opts.kind !== 'document'
+      ? []
+      : teamData.tasks
+          .filter((t) => teamsSeen.has(t.teamId) && (t.status === 'done' || t.status === 'review') && !t.answered && t.kind !== 'learn')
+          .flatMap((t) => {
+            const origins = this.fileOrigins(t);
+            return (t.pack?.files ?? [])
+              .filter((name) => !keptNames.has(`${t.id}/${name}`))
+              .map((name): LibraryItem => {
+                const who = origins.get(name)?.writtenBy;
+                const stage = origins.get(name)?.stage;
+                return {
+                  id: `document:${t.id}:${name}`,
+                  kind: 'document',
+                  origin: { kind: 'task', teamId: t.teamId, teamName: t.teamName, taskId: t.id, taskTitle: taskTitle(t), ...(stage ? { stage } : {}) },
+                  ...teamSeenBy(t.teamId, t.teamName),
+                  workerId: who?.workerId ?? '',
+                  workerName: who?.name ?? t.teamName,
+                  at: t.finishedAt ?? t.pack?.updatedAt ?? t.updatedAt,
+                  title: name.split('/').pop() ?? name,
+                  status: 'delivered',
+                  links: [],
+                  deliveredTo: [],
+                  source: { kind: 'team' as const, teamId: t.teamId, teamName: t.teamName, taskId: t.id, file: name },
+                };
+              });
+          });
+    return [...fromEvents, ...fromWork, ...fromAnswers, ...fromTasks, ...fromFiles, ...fromDocuments]
       .filter((x) => !opts.workerId || x.workerId === opts.workerId)
       .filter((x) => !opts.kind || x.kind === opts.kind)
       .filter((x) => !opts.visibility || x.visibility === opts.visibility)
@@ -3197,8 +3455,12 @@ export class OrgService {
   /// One Library item in full. The list carries a preview (a run's report is
   /// cut at 6,000 characters there); reading it fetches the whole thing.
   libraryItem(caller: OrgCaller, id: string): Result<{ item: LibraryItem }> {
-    const item = this.library(caller, { limit: 500 }).find((x) => x.id === id);
+    const item = this.library(caller, { limit: 500, documents: id.startsWith('document:') }).find((x) => x.id === id);
     if (!item) return { ok: false, error: 'Nothing in the Library by that id that you can see.' };
+    if (item.kind === 'document' && item.source.kind === 'team' && item.source.file) {
+      const file = this.teamTaskFile(caller, item.source.taskId, item.source.file);
+      return file.ok ? { ok: true, item: { ...item, body: file.body } } : file;
+    }
     if (item.kind === 'work' && item.runId) {
       const run = this.deps.runs.getRun(item.runId);
       const full = run ? OrgService.newestArtifact(run) : undefined;
@@ -6820,10 +7082,10 @@ export class OrgService {
     const hired = run.hires.filter((h) => h.state === 'hired');
     const members = [...run.input.members, ...hired.map((h) => ({ workerId: run.workerIds[h.key], role: h.role }))];
     const end = (status: 'done' | 'failed', error?: string) => Object.assign(run, { status, finishedAt: this.now(), ...(error ? { error } : {}) });
-    if (members.length < 2) {
+    if (members.length < 1) {
       const waiting = run.hires.filter((h) => h.state === 'waiting');
-      const why = waiting.length ? `${waiting.map((h) => h.name).join(' and ')} ${waiting.length === 1 ? 'is' : 'are'} waiting on an approver` : 'nobody else is on it';
-      return void end('failed', `A team needs two members to start, and ${why}. Add another of your workers, or make the team once the hire is approved.`);
+      const why = waiting.length ? `${waiting.map((h) => h.name).join(' and ')} ${waiting.length === 1 ? 'is' : 'are'} waiting on an approver` : 'nobody is on it';
+      return void end('failed', `A team needs a member to start, and ${why}. Add one of your workers, or make the team once the hire is approved.`);
     }
     const made = this.makeTeam(run.caller, { ...run.input, members });
     if (!made.ok) return void end('failed', made.error);
@@ -6974,7 +7236,7 @@ export class OrgService {
       const removedOthers = team.members.filter((m) => !kept.has(m.workerId) && !this.managesOrAdmin(caller, m.workerId));
       if (removedOthers.length) return { ok: false, error: `Only ${removedOthers.length === 1 ? 'its' : 'their'} manager or an admin can take ${removedOthers.map((m) => this.deps.workers.get(m.workerId)?.name ?? 'a worker').join(', ')} off ${team.name}.` };
       if (patch.members.some((m) => !m.role.trim())) return { ok: false, error: 'Say what each member does on the team.' };
-      if (patch.members.length < 2) return { ok: false, error: 'A team needs at least two members.' };
+      if (patch.members.length < 1) return { ok: false, error: 'A team needs at least one member.' };
       if (new Set(patch.members.map((m) => m.workerId)).size !== patch.members.length) return { ok: false, error: 'Each worker can be on a team once.' };
       members = patch.members.map((m) => ({ workerId: m.workerId, role: m.role.trim().slice(0, 200) }));
     }
@@ -7297,9 +7559,9 @@ export class OrgService {
         : task.status === 'planning'
         ? `${task.teamName}'s coordinator is planning "${summary.title}".`
         : task.status === 'questions'
-          ? `${task.teamName}'s coordinator has ${task.questions?.length ?? 0} question${task.questions?.length === 1 ? '' : 's'} for you before it plans.`
+          ? `${task.teamName}'s coordinator has ${task.questions?.length ?? 0} question${task.questions?.length === 1 ? '' : 's'} for ${summary.waitingOnYou ? 'you' : (task.requestedBy?.name ?? 'whoever asked')} before it plans.`
           : task.status === 'proposed'
-            ? `${task.teamName} is waiting for your OK on the plan for "${summary.title}".`
+            ? `${task.teamName} is waiting for ${summary.waitingOnYou ? 'your' : `${task.requestedBy?.name ?? 'whoever asked'}'s`} OK on the plan for "${summary.title}".`
             : asking.length
               ? `${names(asking)} ${asking.length === 1 ? 'is' : 'are'} waiting for your OK (stage ${task.stageIndex + 1} of ${stages.length}, ${cur.label.toLowerCase()}).`
               : task.status === 'running' && cur
@@ -7354,6 +7616,7 @@ export class OrgService {
           }
         : {}),
       canSteer: this.askedForTask(task, caller) || isAdmin(this.policy(), caller),
+      queuedBehind: (this.deps.teams?.list().tasks ?? []).filter((t) => t.teamId === task.teamId && t.id !== task.id && t.status === 'queued' && (this.askedForTask(t, caller) || isAdmin(this.policy(), caller))).length,
       stagesDetail: stages,
       nowSentence,
     };
@@ -7744,8 +8007,41 @@ export class OrgService {
       .slice(0, 40);
   }
 
+  /// What a team's card shows, for whoever can see the team: who is on it,
+  /// how it works, what it's on and what it has made lately. No money.
+  teamAbout(caller: OrgCaller, idOrName: string): { id: UUID; name: string; shortName?: string; purpose?: string; picture?: string; members: Array<{ name: string; role: string; picture?: string }>; asksFirst: boolean; reviews: boolean; working?: string; latest: Array<{ title: string; at: number }> } | null {
+    const teams = this.deps.teams;
+    if (!teams) return null;
+    const loose = (s: string) => s.trim().toLowerCase().replace(/^the\s+/, '').replace(/\s+team$/, '');
+    const want = idOrName.trim().toLowerCase();
+    const seen = this.teams(caller);
+    const row = seen.find((t) => t.id === idOrName || t.name.toLowerCase() === want || t.shortName === want) ?? seen.find((t) => loose(t.name) === loose(idOrName));
+    const all = teams.list();
+    const team = row && all.teams.find((t) => t.id === row.id);
+    if (!row || !team) return null;
+    const tasks = all.tasks.filter((t) => t.teamId === team.id);
+    const past = pastWorkOf(tasks, '');
+    const picture = this.pictureOf(team.id);
+    const working = past.items.find((i) => i.state === 'under way')?.title;
+    return {
+      id: row.id,
+      name: row.name,
+      ...(row.shortName ? { shortName: row.shortName } : {}),
+      ...(row.purpose ? { purpose: row.purpose } : {}),
+      ...(picture ? { picture } : {}),
+      members: team.members.map((m, i) => {
+        const face = this.pictureOf(m.workerId);
+        return { name: row.members[i]?.name ?? 'a former worker', role: m.role, ...(face ? { picture: face } : {}) };
+      }),
+      asksFirst: team.checkpoints.askFirst,
+      reviews: team.checkpoints.finalReview,
+      ...(working ? { working } : {}),
+      latest: past.items.filter((i) => i.state === 'delivered').slice(0, 3).map((i) => ({ title: i.title, at: i.at })),
+    };
+  }
+
   /// Give a team a task. Anyone who manages one of its members may.
-  briefTeam(caller: OrgCaller, teamIdOrName: string, text: string): Result<{ task: TeamTaskSummary }> {
+  briefTeam(caller: OrgCaller, teamIdOrName: string, text: string, slackThread?: TeamTask['slackThread']): Result<{ task: TeamTaskSummary }> {
     if (!this.deps.teams) return { ok: false, error: 'Teams are not running on this server.' };
     const key = teamIdOrName.trim().toLowerCase();
     const team = this.teams(caller).find((t) => t.id === teamIdOrName || t.name.toLowerCase() === key) ?? this.teams(caller).find((t) => t.shortName === key);
@@ -7753,6 +8049,7 @@ export class OrgService {
     if (!team.canBrief) return { ok: false, error: `You can't give ${team.name} tasks. Ask someone who manages one of its members to open it up on the team's page.` };
     const res = this.deps.teams.brief(team.id, text, [], undefined, {
       requestedBy: { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) },
+      ...(slackThread ? { slackThread } : {}),
     });
     if (!res.ok) return res;
     this.record(caller, `Gave ${team.name} a task: "${text.trim().slice(0, 120)}".`);
@@ -7930,6 +8227,76 @@ export class OrgService {
       this.record(caller, `${verb} ${task.teamName}'s task "${task.title ?? task.brief.slice(0, 60)}".`);
     }
     return res;
+  }
+
+  /// Stop a team's task and what's queued behind it. Stopping a task alone
+  /// starts the next one in line, which reads as the team carrying on. The
+  /// queue goes first, so nothing starts in between. Someone else's queued
+  /// task stays, unless the caller is an admin.
+  stopTeamWork(caller: OrgCaller, taskId: UUID): Result<{ stopped: number }> {
+    const teams = this.deps.teams;
+    if (!teams) return { ok: false, error: 'Teams are not running on this server.' };
+    const all = teams.list().tasks;
+    const task = all.find((t) => t.id === taskId);
+    if (!task) return { ok: false, error: 'No team task with that id.' };
+    const may = (t: TeamTask) => this.askedForTask(t, caller) || isAdmin(this.policy(), caller);
+    if (!may(task)) return { ok: false, error: 'Only the person who asked for this task, or an admin, can stop it.' };
+    let stopped = 0;
+    for (const t of all) {
+      if (t.teamId === task.teamId && t.id !== task.id && t.status === 'queued' && may(t) && teams.cancel(t.id).ok) stopped++;
+    }
+    const res = teams.cancel(task.id);
+    if (!res.ok) return res;
+    this.record(caller, `Stopped ${task.teamName}'s task "${task.title ?? task.brief.slice(0, 60)}"${stopped ? ` and ${stopped} queued behind it` : ''}.`);
+    return { ok: true, stopped: stopped + 1 };
+  }
+
+  /// The team task a Slack channel thread belongs to: the newest, if several.
+  teamTaskInThread(thread: { channel: string; threadTs: string }): TeamTask | undefined {
+    return (this.deps.teams?.list().tasks ?? [])
+      .filter((t) => t.slackThread?.channel === thread.channel && t.slackThread.threadTs === thread.threadTs)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+  }
+
+  /// Talk to a team in the channel thread of its task. It's a shared
+  /// conversation, so anyone there can, named when it isn't the person who
+  /// asked. Once the work is delivered it goes to the team's room; while it
+  /// runs it's feedback the coming pieces and stages take into account (`noted`),
+  /// and a plan waiting for its OK is planned again with it (`replanned`).
+  /// What someone else says never starts work: the plan still waits on the
+  /// person who asked, and the room won't hand work off on their word.
+  /// `heard` false: the task is over, or the team can't take it.
+  talkInTeamThread(caller: OrgCaller, thread: { channel: string; threadTs: string }, text: string): Result<{ heard: boolean; queued?: boolean; noted?: boolean; replanned?: boolean }> {
+    const teams = this.deps.teams;
+    const task = this.teamTaskInThread(thread);
+    if (!teams || !task) return { ok: true, heard: false };
+    const own = this.askedForTask(task, caller);
+    const name = `${task.teamName} in the Slack thread of "${task.title ?? task.brief.slice(0, 60)}"`;
+    const room = teams.roomAsk?.(task.id, own ? text : `${caller.name}: ${text}`, [], own ? {} : { feedback: true });
+    if (room?.ok) {
+      this.record(caller, `Talked to ${name}.`);
+      return { ok: true, heard: true, ...(room.queued ? { queued: true } : {}) };
+    }
+    if (!isTaskActive(task.status) || !teams.comment) return { ok: true, heard: false };
+    const noted = teams.comment(task.id, { text: own ? text : `Feedback from ${caller.name}, who is following in the channel and didn't ask for this task: ${text}` });
+    if (!noted.ok) return { ok: true, heard: false };
+    this.record(caller, `Gave feedback to ${name}.`);
+    return { ok: true, heard: true, noted: true, ...(noted.comment.outcome === 'replanned' ? { replanned: true } : {}) };
+  }
+
+  /// A team's questions answered in the channel thread it asked them in. It's
+  /// a shared conversation, so anyone there can answer, named when it isn't
+  /// the person who asked. The plan that comes of it still waits on that
+  /// person, so an answer here can shape the work but never start it.
+  /// `answered` false: this thread has no questions waiting.
+  answerTeamFromThread(caller: OrgCaller, taskId: UUID, thread: { channel: string; threadTs: string }, answers: string[]): Result<{ answered: boolean }> {
+    const teams = this.deps.teams;
+    const task = teams?.list().tasks.find((t) => t.id === taskId);
+    if (!teams || !task || task.status !== 'questions' || task.slackThread?.channel !== thread.channel || task.slackThread.threadTs !== thread.threadTs) return { ok: true, answered: false };
+    const res = teams.answer(taskId, this.askedForTask(task, caller) ? answers : answers.map((a) => `${caller.name}: ${a}`));
+    if (!res.ok) return res;
+    this.record(caller, `Answered ${task.teamName}'s task "${task.title ?? task.brief.slice(0, 60)}" in its Slack thread.`);
+    return { ok: true, answered: true };
   }
 
   /// The page that opens a pull request from `branch`, for a connected repo.

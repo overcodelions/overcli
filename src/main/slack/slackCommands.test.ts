@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_ORG_POLICY } from '../../shared/org/policy';
 import type { OrgService, HireSummary } from '../org/orgService';
 import { HIRE_APPROVE_ACTION, HIRE_ASK_TOOLS_ACTION, HIRE_CONFIRM_ACTION, JOIN_LETIN_ACTION, PROPOSALS_APPROVE_ACTION, PROPOSALS_SKIP_ACTION, SlackCommands, TEAM_APPROVE_ACTION, TEAM_MAKE_ACTION, HIRE_EDIT_ACTION, type SlackCommandsDeps } from './slackCommands';
@@ -348,6 +348,296 @@ describe('team tasks in Slack', () => {
       budgetUSD: 40,
       ...over,
     }) as never;
+
+  describe('asked for in a channel thread', () => {
+    const slackThread = { channel: 'C0ACME', threadTs: '100.1' };
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    const sent = (posts: Array<{ url: string; body: any }>) => posts.filter((p) => p.url.endsWith('chat.postMessage'));
+
+    it('asks there, and takes anyone’s reply in the thread as the answers', async () => {
+      const answered: unknown[] = [];
+      const { cmds, posts } = harness({
+        answerTeamFromThread: (c, id, thread, answers) => {
+          answered.push([c.slackUserId, id, thread, answers]);
+          return { ok: true, answered: true };
+        },
+      });
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread }) });
+      await settle();
+      expect(sent(posts)).toHaveLength(1);
+      expect(sent(posts)[0].body).toMatchObject({ channel: 'C0ACME', thread_ts: '100.1' });
+      expect(JSON.stringify(sent(posts)[0].body.blocks)).toContain('Anyone here can answer');
+
+      expect(await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: 'U0ACMESAM', text: '1. US\n2. Team' }, TEAM)).toBe(true);
+      expect(answered).toEqual([['U0ACMESAM', 't1', slackThread, ['US', 'Team']]]);
+      // Answered once: the next message there is just people talking.
+      expect(await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: 'U0ACMESAM', text: 'and one more thing' }, TEAM)).toBe(false);
+      expect(answered).toHaveLength(1);
+    });
+
+    it('leaves people talking to each other alone, and other threads and workspaces too', async () => {
+      const answerTeamFromThread = vi.fn(() => ({ ok: true as const, answered: true }));
+      const { cmds } = harness({ answerTeamFromThread });
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread }) });
+      await settle();
+      expect(await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: '<@U0ACMESAM> what do you think?' }, TEAM)).toBe(true);
+      expect(await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '999.9', user: PAT, text: 'US' }, TEAM)).toBe(false);
+      expect(await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: 'US' }, 'T0OTHER')).toBe(false);
+      expect(answerTeamFromThread).not.toHaveBeenCalled();
+    });
+
+    it('hands the reply back when the questions have moved on', async () => {
+      const { cmds, posts } = harness({ answerTeamFromThread: () => ({ ok: true, answered: false }) });
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread }) });
+      await settle();
+      const before = sent(posts).length;
+      expect(await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: 'US' }, TEAM)).toBe(false);
+      expect(sent(posts)).toHaveLength(before);
+    });
+
+    it('posts the plan there, naming who has to approve it', async () => {
+      const { cmds, posts } = harness({});
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread, status: 'proposed', stages: [{ title: 'Gather', assignments: [] }] }) });
+      await settle();
+      const plan = sent(posts)[0];
+      expect(plan.body).toMatchObject({ channel: 'C0ACME', thread_ts: '100.1' });
+      expect(JSON.stringify(plan.body.blocks)).toContain(`<@${PAT}>`);
+      expect(JSON.stringify(plan.body.blocks)).toContain('Only the person who asked');
+    });
+
+    it('posts the conversation there once, each under its speaker’s name and picture, and not what people said', async () => {
+      const { cmds, posts } = harness({ pictureOf: (id: string) => `https://acme.example/${id}.png` } as never);
+      const at = Date.now() + 1000;
+      const room = (...messages: unknown[]) => ({ messages });
+      const you = { id: 'm1', speaker: { kind: 'you' }, text: 'What about pricing?', at, exchange: 0 };
+      const lena = { id: 'm2', speaker: { kind: 'member', workerId: 'w-lena', name: 'Lena' }, text: 'Pricing looks fine.', at, exchange: 0 };
+      const lead = { id: 'm3', speaker: { kind: 'coordinator' }, text: 'Agreed.', at, exchange: 0 };
+      const broke = { id: 'm4', speaker: { kind: 'member', workerId: 'w-sam', name: 'Sam' }, text: 'Turn failed', at, exchange: 0, failed: true };
+      const old = { id: 'm0', speaker: { kind: 'coordinator' }, text: 'From before a restart', at: 1, exchange: 0 };
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread, status: 'done', room: room(old, you, lena) }) });
+      await settle();
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread, status: 'done', room: room(old, you, lena, lead, broke) }) });
+      await settle();
+      await settle();
+      const said = sent(posts).filter((p) => p.body.username);
+      expect(said.map((p) => [p.body.username, p.body.text])).toEqual([['Lena', 'Pricing looks fine.'], ['Pricing', 'Agreed.']]);
+      expect(said[0].body).toMatchObject({ channel: 'C0ACME', thread_ts: '100.1' });
+      expect(said[0].body.icon_url).toContain('w-lena');
+      expect(said[1].body.icon_url).toContain('team-1');
+    });
+
+    describe('while the work runs', () => {
+      const piece = (over: Record<string, unknown>) => ({ workerId: 'w-lena', workerName: 'Lena', ask: 'Research', status: 'running', runId: 'run-1', ...over });
+      const running = (assignments: unknown[], over: Record<string, unknown> = {}) => task({ slackThread, status: 'running', updatedAt: Date.now(), stages: [{ title: 'Gather evidence', status: 'running', assignments }], ...over });
+      const says = (posts: Array<{ url: string; body: any }>) => sent(posts).filter((p) => p.body.username === 'Lena');
+      const deps = (over: Record<string, unknown> = {}) => ({ pieceLook: () => ({ said: 'Found three competitors.', last: { text: 'Ran curl https://secret.acme.example', at: Date.now() } }), ...over });
+      const setUp = (d: Record<string, unknown> = deps()) => harness({ pictureOf: (id: string) => `https://acme.example/${id}.png` } as never, undefined, d as never);
+
+      it('has each member say what it did under its own name and picture, once', async () => {
+        const { cmds, posts } = setUp();
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({})]) });
+        await settle();
+        expect(says(posts)).toHaveLength(0);
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'done' })]) });
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'done' })]) });
+        await settle();
+        await settle();
+        expect(says(posts)).toHaveLength(1);
+        expect(says(posts)[0].body).toMatchObject({ channel: 'C0ACME', thread_ts: '100.1', text: 'Found three competitors.' });
+        expect(says(posts)[0].body.icon_url).toContain('w-lena');
+        expect(JSON.stringify(says(posts)[0].body.blocks)).toContain('Stage 1 · Gather evidence');
+      });
+
+      it('says so when a piece fails, and again for a retry that finishes', async () => {
+        const { cmds, posts } = setUp();
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({})]) });
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'failed', error: 'The run failed.' })]) });
+        await settle();
+        await settle();
+        expect(says(posts)[0].body.text).toContain("couldn't finish this: The run failed.");
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'done', runId: 'run-2' })]) });
+        await settle();
+        await settle();
+        expect(says(posts)).toHaveLength(2);
+        expect(says(posts)[1].body.text).toBe('Found three competitors.');
+      });
+
+      it('falls back on its file, then a plain line', async () => {
+        const withFile = setUp({ pieceLook: () => null, teamFile: () => Buffer.from('# Report\n\nOffline mode matters.') });
+        withFile.cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({})]) });
+        withFile.cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'done', file: 'lena.md' })]) });
+        await settle();
+        await settle();
+        expect(says(withFile.posts)[0].body.text).toBe('Offline mode matters.');
+        const bare = setUp({ pieceLook: () => null });
+        bare.cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({})]) });
+        bare.cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'done' })]) });
+        await settle();
+        await settle();
+        expect(says(bare.posts)[0].body.text).toBe('My part is done.');
+      });
+
+      it('doesn’t repeat pieces already over after a restart', async () => {
+        const { cmds, posts } = setUp();
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'done' })]) });
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'done' })]) });
+        await settle();
+        await settle();
+        expect(says(posts)).toHaveLength(0);
+      });
+
+      it('keeps a run’s raw last step off the card in a channel, but not in a DM', async () => {
+        const inChannel = setUp();
+        inChannel.cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({})]) });
+        await settle();
+        expect(JSON.stringify(sent(inChannel.posts))).not.toContain('secret.acme.example');
+        const inDm = setUp();
+        inDm.cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({})], { slackThread: undefined }) });
+        await settle();
+        expect(JSON.stringify(sent(inDm.posts))).toContain('secret.acme.example');
+      });
+
+      it('stays out of the channel and quiet in a DM task', async () => {
+        const { cmds, posts } = setUp();
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({})], { slackThread: undefined }) });
+        cmds.onEvent({ type: 'teamTaskUpdate', task: running([piece({ status: 'done' })], { slackThread: undefined }) });
+        await settle();
+        await settle();
+        expect(says(posts)).toHaveLength(0);
+      });
+    });
+
+    it('keeps a task with no thread out of any channel', async () => {
+      const { cmds, posts } = harness({});
+      const lena = { id: 'm2', speaker: { kind: 'member', workerId: 'w-lena', name: 'Lena' }, text: 'Pricing looks fine.', at: Date.now() + 1000, exchange: 0 };
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ status: 'done', room: { messages: [lena] } }) });
+      await settle();
+      expect(sent(posts).filter((p) => p.body.text === 'Pricing looks fine.')).toHaveLength(0);
+    });
+
+    it('answers under the team’s name and picture, not overgo’s', async () => {
+      const { cmds, posts } = harness({
+        pictureOf: (id: string) => `https://acme.example/${id}.png`,
+        teamTaskInThread: (() => ({ id: 't1', teamId: 'team-1', teamName: 'Pricing', status: 'questions' })) as never,
+        answerTeamFromThread: () => ({ ok: true, answered: true }),
+      } as never);
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread }) });
+      await settle();
+      await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: 'US' }, TEAM);
+      expect(sent(posts).at(-1)!.body).toMatchObject({ channel: 'C0ACME', thread_ts: '100.1', username: 'Pricing', text: expect.stringContaining('planning with that') });
+      expect(sent(posts).at(-1)!.body.icon_url).toContain('team-1');
+    });
+
+    it('takes “nevermind” as stopping the task, not as an answer', async () => {
+      const decided: unknown[] = [];
+      const answerTeamFromThread = vi.fn(() => ({ ok: true as const, answered: true }));
+      const { cmds, posts } = harness({
+        answerTeamFromThread,
+        teamTaskInThread: (() => ({ id: 't1', teamId: 'team-1', teamName: 'Pricing', status: 'questions' })) as never,
+        decideTeamTask: (_c, id, action) => { decided.push([id, action]); return { ok: true }; },
+      });
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread }) });
+      await settle();
+      expect(await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: 'Nevermind.' }, TEAM)).toBe(true);
+      expect(decided).toEqual([['t1', { kind: 'cancel' }]]);
+      expect(answerTeamFromThread).not.toHaveBeenCalled();
+      expect(sent(posts).at(-1)!.body.text).toContain('Stopped.');
+    });
+
+    it('only takes it as stopping from someone who may, and not when it’s part of an answer', async () => {
+      const decided: unknown[] = [];
+      const answered: unknown[] = [];
+      const { cmds, posts } = harness({
+        answerTeamFromThread: (_c, _id, _t, a) => { answered.push(a); return { ok: true, answered: true }; },
+        teamTaskInThread: (() => ({ id: 't1', teamId: 'team-1', teamName: 'Pricing', status: 'questions' })) as never,
+        decideTeamTask: (_c, id, action) => { decided.push([id, action]); return { ok: false, error: 'Only the person who asked for this task, or an admin, can steer it.' }; },
+      });
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread }) });
+      await settle();
+      await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: 'U0ACMESAM', text: 'stop' }, TEAM);
+      expect(sent(posts).at(-1)!.body.text).toContain('Only the person who asked');
+      // Still asking: a refused stop leaves the questions open.
+      await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: 'Stop selling the old plan' }, TEAM);
+      expect(answered).toEqual([['Stop selling the old plan']]);
+    });
+
+    it('stops a running task on the word while it works, but not one already delivered', async () => {
+      const decide = vi.fn(() => ({ ok: true as const }));
+      const talk = vi.fn(() => ({ ok: true as const, heard: true }));
+      let status = 'running';
+      const { cmds } = harness({
+        teamTaskInThread: (() => ({ id: 't1', teamId: 'team-1', teamName: 'Pricing', status })) as never,
+        decideTeamTask: decide,
+        talkInTeamThread: talk,
+      });
+      await cmds.talkInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: 'cancel the task' }, TEAM);
+      expect(decide).toHaveBeenCalledWith(expect.anything(), 't1', { kind: 'cancel' });
+      expect(talk).not.toHaveBeenCalled();
+      decide.mockClear();
+      status = 'done';
+      await cmds.talkInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: 'stop' }, TEAM);
+      expect(decide).not.toHaveBeenCalled();
+      expect(talk).toHaveBeenCalled();
+    });
+
+    it('tells whoever gave feedback while the team works that it was heard', async () => {
+      let replanned = false;
+      const { cmds, posts } = harness({
+        teamTaskInThread: (() => ({ id: 't1' })) as never,
+        talkInTeamThread: () => ({ ok: true, heard: true, noted: true, ...(replanned ? { replanned: true } : {}) }),
+      });
+      const reply = { channel: 'C0ACME', thread_ts: '100.1', user: 'U0ACMESAM', text: 'Customers care most about the UK.' };
+      expect(await cmds.talkInThread(reply, TEAM)).toBe(true);
+      expect(sent(posts).at(-1)!.body).toMatchObject({ channel: 'C0ACME', thread_ts: '100.1', text: expect.stringContaining('work it starts next') });
+      replanned = true;
+      expect(await cmds.talkInThread(reply, TEAM)).toBe(true);
+      expect(sent(posts).at(-1)!.body.text).toContain('changing the plan');
+    });
+
+    it('sends a reply to the team once it can talk, and leaves it when it can’t', async () => {
+      const talked: unknown[] = [];
+      let heard = true;
+      const { cmds, posts } = harness({
+        teamTaskInThread: ((t: { threadTs: string }) => (t.threadTs === '100.1' ? { id: 't1' } : undefined)) as never,
+        talkInTeamThread: (c, _t, text) => {
+          talked.push([c.slackUserId, text]);
+          return { ok: true, heard };
+        },
+      });
+      const reply = { channel: 'C0ACME', thread_ts: '100.1', user: 'U0ACMESAM', text: 'Can we also cover Team?' };
+      expect(await cmds.talkInThread(reply, TEAM)).toBe(true);
+      expect(talked).toEqual([['U0ACMESAM', 'Can we also cover Team?']]);
+      expect(await cmds.talkInThread({ ...reply, text: `<@${PAT}> thoughts?` }, TEAM)).toBe(true);
+      expect(await cmds.talkInThread({ ...reply, thread_ts: '999.9' }, TEAM)).toBe(false);
+      expect(talked).toHaveLength(1);
+      heard = false;
+      expect(await cmds.talkInThread(reply, TEAM)).toBe(false);
+      expect(sent(posts)).toHaveLength(0);
+    });
+
+    it('keeps its progress in the thread, not hanging off the card', async () => {
+      const { cmds, posts } = harness({});
+      const stage = (status: string) => ({ title: 'Gather', status, assignments: [] });
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread, status: 'running', stages: [stage('running')], updatedAt: 1 }) });
+      await settle();
+      expect(sent(posts)[0].body).toMatchObject({ channel: 'C0ACME', thread_ts: '100.1' });
+      cmds.onEvent({ type: 'teamTaskUpdate', task: task({ slackThread, status: 'failed', stages: [stage('done')], updatedAt: 2 }) });
+      await settle();
+      const notes = sent(posts).slice(1);
+      expect(notes.length).toBeGreaterThan(0);
+      for (const n of notes) expect(n.body.thread_ts).toBe('100.1');
+    });
+  });
+
+  it('keeps a task with no thread in the requester’s DMs', async () => {
+    const { cmds, posts } = harness({});
+    cmds.onEvent({ type: 'teamTaskUpdate', task: task({ status: 'proposed', stages: [{ title: 'Gather' }] }) });
+    await new Promise((r) => setTimeout(r, 0));
+    const plan = posts.filter((p) => p.url.endsWith('chat.postMessage'))[0];
+    expect(plan.body.channel).not.toBe('C0ACME');
+    expect(plan.body.thread_ts).toBeUndefined();
+    expect(JSON.stringify(plan.body.blocks)).not.toContain(`<@${PAT}>`);
+  });
 
   it('asks the requester the questions once, and takes a numbered reply as the answers', async () => {
     const decided: unknown[] = [];

@@ -25,7 +25,9 @@ import { TestSystemsService, testSystemsServerScript } from '../org/testSystems'
 import { checkSystem, discoverSystem } from '../org/testSystemsServer';
 import { TEST_SYSTEMS_FILE, TEST_SYSTEMS_VERSION, TEST_SYSTEMS_TOOL, type TestSystemsFile } from '../../shared/testSystems';
 import { makeNotifyPerson, type NotifyPerson } from './notifyPerson';
-import { listPeople, unescapeSlack, downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
+import { talkNotInPack } from '../../shared/flows/team';
+import type { AboutCard } from './aboutCards';
+import { isMissingScope, listPeople, unescapeSlack, downloadFile, fetchMessage, fetchRecent, openIm, fetchThread, deleteMessage, lookupByEmail, openView, permalink, postMessage, slackRead, updateMessage, uploadFile } from './slackApi';
 import { FrontDoor, type FrontDoorState, type FrontDoorWorker } from './frontDoor';
 import { answerGeneral, routeRequest } from './frontDoorRoute';
 import { libraryCandidates, matchExisting, matchWork, whenText, type WorkCandidate } from './existingWork';
@@ -280,9 +282,11 @@ export function createOrgControl(
     pieceLook: (runId) => {
       const run = engines.flowRuntime.getRun(runId);
       if (!run) return null;
-      const said = engines.runActivity?.list(runId).filter((x) => x.kind === 'tool' || x.kind === 'said').at(-1);
+      const activity = engines.runActivity?.list(runId) ?? [];
+      const said = activity.filter((x) => x.kind === 'tool' || x.kind === 'said').at(-1);
+      const words = activity.filter((x) => x.kind === 'said').at(-1)?.text;
       const waitingOn = run.state.kind === 'paused' ? run.flowSnapshot.steps.find((s) => s.id === (run.state as { nextStepId?: string }).nextStepId) : undefined;
-      return { ...(said ? { last: { text: said.text, at: said.at } } : {}), ...(waitingOn ? { reaches: reachesOutside(waitingOn) } : {}) };
+      return { ...(said ? { last: { text: said.text, at: said.at } } : {}), ...(words ? { said: words } : {}), ...(waitingOn ? { reaches: reachesOutside(waitingOn) } : {}) };
     },
     // A file in the task's own folder, by a plain name, links resolved.
     teamFile: (taskId, name, maxBytes) => {
@@ -365,15 +369,16 @@ export function createOrgControl(
         status: t.status,
         ...(t.title ? { title: t.title } : {}),
         ...(t.pack ? { pack: { summary: t.pack.summary, files: t.pack.files } } : {}),
+        ...(talkNotInPack(t) ? { discussed: true } : {}),
         ...(t.code?.branch ? { branch: t.code.branch } : {}),
         ...(t.error ? { error: t.error } : {}),
         ...(t.waiting ? { waiting: t.waiting.message } : {}),
       };
     },
-    brief: (teamId, text, by, code) => {
+    brief: (teamId, text, by, code, slackThread) => {
       const teams = engines.teams?.();
       if (!teams) return { ok: false, error: 'Teams are not running here.' };
-      const res = teams.brief(teamId, text, [], code?.projectPath, { requestedBy: by, ...(code?.startFrom ? { startFrom: code.startFrom } : {}) });
+      const res = teams.brief(teamId, text, [], code?.projectPath, { requestedBy: by, ...(code?.startFrom ? { startFrom: code.startFrom } : {}), ...(slackThread ? { slackThread } : {}) });
       return res.ok ? { ok: true, taskId: res.task.id } : res;
     },
     readFile: (taskId, name) => {
@@ -474,7 +479,7 @@ export function createOrgControl(
         let res = await postMessage(bot, { channel, text, ...(threadTs ? { threadTs } : {}), ...(as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {}) });
         // An app installed before it could post under another name: as
         // itself, the worker's name in front unless the text already leads with it.
-        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(bot, { channel, text: text.startsWith(`*${as.name}*`) ? text : `*${as.name}:* ${text}`, ...(threadTs ? { threadTs } : {}) });
+        if (!res.ok && as && isMissingScope(res.error)) res = await postMessage(bot, { channel, text: text.startsWith(`*${as.name}*`) ? text : `*${as.name}:* ${text}`, ...(threadTs ? { threadTs } : {}) });
         if (!res.ok) log('warn', 'slack', `A trigger could not post to ${channel}: ${res.error}`);
         return res.ok;
       },
@@ -483,7 +488,7 @@ export function createOrgControl(
         if (!bot || !slack.teamId()) return null;
         const who = as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {};
         let res = await postMessage(bot, { channel, text, threadTs, ...who, ...(blocks ? { blocks } : {}) });
-        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(bot, { channel, text, threadTs, ...(blocks ? { blocks } : {}) });
+        if (!res.ok && as && isMissingScope(res.error)) res = await postMessage(bot, { channel, text, threadTs, ...(blocks ? { blocks } : {}) });
         return res.ok ? res.data.ts : null;
       },
       update: async (channel, ts, text, blocks) => {
@@ -529,7 +534,7 @@ export function createOrgControl(
       if (!im.ok) return false;
       const icon = w.avatarUrl ?? initialsPicture(w.id, w.name);
       let res = await postMessage(bot, { channel: im.data, text, username: w.name, ...(icon ? { iconUrl: icon } : {}) });
-      if (!res.ok && res.error === 'missing_scope') res = await postMessage(bot, { channel: im.data, text });
+      if (!res.ok && isMissingScope(res.error)) res = await postMessage(bot, { channel: im.data, text });
       if (!res.ok) {
         log('warn', 'slack', `A trigger could not tell ${w.name}'s manager: ${res.error}`);
         return false;
@@ -553,7 +558,7 @@ export function createOrgControl(
         { type: 'actions', elements: [{ type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Try the skipped ones now' }, action_id: TRIGGER_RETRY_ACTION, value: triggerId }] },
       ];
       let res = await postMessage(bot, { channel: im.data, text, blocks, username: w.name, ...(icon ? { iconUrl: icon } : {}) });
-      if (!res.ok && res.error === 'missing_scope') res = await postMessage(bot, { channel: im.data, text, blocks });
+      if (!res.ok && isMissingScope(res.error)) res = await postMessage(bot, { channel: im.data, text, blocks });
       if (!res.ok) log('warn', 'slack', `A trigger's limit notice could not reach ${w.name}'s manager: ${res.error}`);
       return res.ok;
     },
@@ -574,7 +579,7 @@ export function createOrgControl(
         ] },
       ];
       let res = await postMessage(bot, { channel: im.data, text, blocks, ...thread, username: w.name, ...(icon ? { iconUrl: icon } : {}) });
-      if (!res.ok && res.error === 'missing_scope') res = await postMessage(bot, { channel: im.data, text, blocks, ...thread });
+      if (!res.ok && isMissingScope(res.error)) res = await postMessage(bot, { channel: im.data, text, blocks, ...thread });
       if (!res.ok) {
         log('warn', 'slack', `A test-mode answer could not reach ${w.name}'s manager: ${res.error}`);
         return null;
@@ -703,8 +708,9 @@ export function createOrgControl(
     // Only those the person may start: the router never offers one they can't.
     processes: (caller) =>
       processes.list(caller).filter((p) => p.stages.length && p.canStart).map((p) => ({ id: p.id, name: p.name, ...(p.shortName ? { shortName: p.shortName, ...(p.shortNameAuto ? { shortNameAuto: true } : {}) } : {}), ...(p.purpose ? { purpose: p.purpose } : {}), firstStage: p.stages[0].name })),
-    submitProcess: (caller, processId, brief) => {
-      const res = processes.submit({ name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) }, processId, { brief, source: 'slack' });
+    aboutCard: (caller, name): AboutCard | null => commands?.aboutFor(caller, name) ?? null,
+    submitProcess: (caller, processId, brief, thread) => {
+      const res = processes.submit({ name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) }, processId, { brief, source: 'slack', ...(thread ? { slackThread: thread } : {}) });
       return res.ok ? { ok: true, title: res.item.title, process: res.process.name, stage: res.process.stages[0].name } : res;
     },
     status: (caller) => statusReply(org.today(caller), loadOrgPolicy().policy.publicUrl, processes.waitingOn(caller)),
@@ -817,13 +823,13 @@ export function createOrgControl(
       const res = org.trackItem(caller, workerId, itemId, on);
       return res.ok ? { worker: res.worker, tracked: res.tracked } : res.error;
     },
-    briefTeam: (caller, teamId, brief) => {
-      const res = org.briefTeam(caller, teamId, brief);
+    briefTeam: (caller, teamId, brief, thread) => {
+      const res = org.briefTeam(caller, teamId, brief, thread);
       return res.ok ? { ok: true, queued: res.task.status === 'queued' } : res;
     },
     ask: (caller, workerId, text, attachments, conversation, said, replyTo) => {
       const started = org.startAsk(caller, workerId, text, 'slack', attachments, replyTo, conversation, said === undefined ? undefined : unescapeSlack(said));
-      return started.ok ? { ok: true, done: started.done } : started;
+      return started.ok ? { ok: true, done: started.done, ...(started.warning ? { warning: started.warning } : {}) } : started;
     },
     handBack: (askId) => org.handBack(askId),
     continueRun: (caller, orchestrationId, text, attachments, conversation, said) => {
@@ -840,7 +846,7 @@ export function createOrgControl(
         let res = await postMessage(token, { channel, text, threadTs, ...(as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {}) });
         // An app installed before it could post under another name: as
         // itself, the worker's name written in front instead.
-        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(token, { channel, text: `*${as.name}:* ${text}`, threadTs });
+        if (!res.ok && as && isMissingScope(res.error)) res = await postMessage(token, { channel, text: `*${as.name}:* ${text}`, threadTs });
         if (!res.ok) log('warn', 'slack', `The front door could not post to ${channel}: ${res.error}`);
         return res.ok;
       },
@@ -892,13 +898,13 @@ export function createOrgControl(
         if (!token) return null;
         const who = as ? { username: as.name, ...(as.iconUrl ? { iconUrl: as.iconUrl } : {}) } : {};
         let res = await postMessage(token, { channel, text, threadTs, ...who, ...(blocks ? { blocks } : {}) });
-        if (!res.ok && as && res.error === 'missing_scope') res = await postMessage(token, { channel, text, threadTs, ...(blocks ? { blocks } : {}) });
+        if (!res.ok && as && isMissingScope(res.error)) res = await postMessage(token, { channel, text, threadTs, ...(blocks ? { blocks } : {}) });
         return res.ok ? res.data.ts : null;
       },
-      upload: async (channel, threadTs, filename, bytes) => {
+      upload: async (channel, threadTs, filename, bytes, as) => {
         const token = bot();
         if (!token) return false;
-        const res = await uploadFile(token, { channel, threadTs, filename, bytes });
+        const res = await uploadFile(token, { channel, threadTs, filename, bytes, ...(as ? { as } : {}) });
         if (!res.ok) log('warn', 'slack', `The front door could not attach ${filename}: ${res.error}`);
         return res.ok;
       },

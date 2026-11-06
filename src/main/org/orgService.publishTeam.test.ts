@@ -152,9 +152,9 @@ describe('publishing a team', () => {
     expect(h.audit.at(-1)?.what).toBe('The team Launch crew was not made: Cy was turned down.');
   });
 
-  it('refuses a short team, a caller who may not hire, and someone else changing it', () => {
+  it('refuses a team with no one on it, a caller who may not hire, and someone else changing it', () => {
     const h = harness({ budgetAllowanceUSD: 100 });
-    expect(h.svc.publishTeam(pat, launch({ members: [member('local-ada', 'Ada')] })).ok).toBe(false);
+    expect(h.svc.publishTeam(pat, launch({ members: [] })).ok).toBe(false);
     expect(harness({ hirers: [] }).svc.publishTeam(pat, launch()).ok).toBe(false);
     h.svc.publishTeam(pat, launch());
     expect(h.svc.publishTeam(sam, launch())).toMatchObject({ ok: false, error: expect.stringContaining('already on the org') });
@@ -212,7 +212,7 @@ describe('making a team on the server', () => {
     // Not a worker Pat manages, a missing role, or fewer than two: refused.
     expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Leads' }, { workerId: 'd', role: 'Checks' }] })).toMatchObject({ ok: false, error: expect.stringContaining("don't manage D") });
     expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Leads' }, { workerId: 'c', role: ' ' }] })).toMatchObject({ ok: false });
-    expect(h.svc.editTeam(pat, made.team.id, { members: [{ workerId: 'a', role: 'Leads' }] })).toMatchObject({ ok: false, error: expect.stringContaining('at least two') });
+    expect(h.svc.editTeam(pat, made.team.id, { members: [] })).toMatchObject({ ok: false, error: expect.stringContaining('at least one') });
     expect(h.svc.editTeam(pat, made.team.id, { name: '  ' })).toMatchObject({ ok: false });
     // Someone who manages no one on it can't change it.
     expect(h.svc.editTeam(sam, made.team.id, { purpose: 'Something else.' })).toMatchObject({ ok: false });
