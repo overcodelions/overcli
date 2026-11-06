@@ -1686,6 +1686,13 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .ntflow.cards li > .ntools { margin: 0; justify-content: flex-end; max-width: 50%; }
 .ntflow.cards li.added { border-color: color-mix(in srgb, var(--go) 40%, transparent); }
 .ntflow.cards li.gone { border-style: dashed; background: none; }
+/* Where a step sends work back: an arrow up the side, into the step it lands on. */
+.ntflow.cards.looped { display: grid; column-gap: 0; row-gap: 8px; }
+.ntflow.cards li.ntloop { display: block; padding: 0; margin: 19px 0 19px 14px; background: none; border: 1.5px solid color-mix(in srgb, var(--go) 70%, transparent); border-right: 0; border-radius: 8px 0 0 8px; }
+.ntflow.cards li.ntloop::before { content: none; }
+.ntflow.cards li.ntloop::after { content: ""; position: absolute; top: -4.75px; right: 0; border-left: 6px solid var(--go); border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
+.ntloop-n { position: absolute; left: -0.75px; top: 50%; transform: translate(-50%, -50%); padding: 0 5px; border-radius: 99px; background: var(--panel); color: var(--go); font-size: 11px; font-weight: 700; line-height: 16px; }
+.ntloop-note { color: var(--go); }
 .flow-draft { border: 1px solid color-mix(in srgb, var(--go) 35%, transparent); background: color-mix(in srgb, var(--go) 5%, transparent); border-radius: var(--r-lg); padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; }
 .flow-draft summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
 .signbox { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel-2); display: flex; flex-direction: column; gap: 10px; }
@@ -16046,22 +16053,71 @@ export const CONSOLE_JS = String.raw`
     });
     return order.map(function (w) { return { word: w, tools: by[w] }; });
   }
+  // The steps that send work back to an earlier one, each given a lane beside
+  // the list. Lane 0 is nearest the steps, and the shortest loops take it, so
+  // an inner loop sits inside the one around it. Loops that touch or overlap
+  // never share a lane. A retry of itself, or a jump forward, isn't drawn.
+  function flowLoops(steps) {
+    var at = {};
+    steps.forEach(function (s, i) { at[s.id] = i; });
+    var loops = [];
+    steps.forEach(function (s, i) {
+      var to = s.onFail ? at[s.onFail.to] : undefined;
+      if (typeof to === 'number' && to < i) loops.push({ top: to, bottom: i, times: s.onFail.times, from: s.label, to: s.onFail.label });
+    });
+    loops.sort(function (a, b) { return (a.bottom - a.top) - (b.bottom - b.top) || a.top - b.top; });
+    var lanes = [];
+    loops.forEach(function (l) {
+      var n = 0;
+      while ((lanes[n] || []).some(function (o) { return l.top <= o.bottom && o.top <= l.bottom; })) n++;
+      (lanes[n] = lanes[n] || []).push(l);
+      l.lane = n;
+    });
+    return { loops: loops, lanes: lanes.length };
+  }
+  // What a step does when its work isn't right, in words.
+  function loopNotes(s, steps) {
+    var notes = [];
+    if (s.critic) notes.push(s.critic.rounds ? 'Goes back and forth with a second model, up to ' + plural(s.critic.rounds, 'round', 'rounds') : 'A second model checks it');
+    if (s.onFail) {
+      var to = -1, me = steps.indexOf(s);
+      steps.forEach(function (o, i) { if (o.id === s.onFail.to) to = i; });
+      var what = s.onFail.to === s.id ? 'Tries again if it fails' : to > me ? 'Jumps to ' + s.onFail.label + ' if it fails' : 'Sends it back to ' + s.onFail.label + ' if it fails';
+      notes.push(what + ', up to ' + plural(s.onFail.times, 'time', 'times') + ', then stops for someone');
+    }
+    return notes;
+  }
   // A flow's steps in plain words: where it stops for someone, what asks,
-  // and what it uses. mark(step) tags a proposal's steps against the old
-  // ones ('added', 'changed'); gone lists the steps it takes out.
+  // where it loops, and what it uses. mark(step) tags a proposal's steps
+  // against the old ones ('added', 'changed'); gone lists the steps it takes out.
   function flowStepList(steps, mark, gone) {
-    var row = function (s, n, kind) {
+    var shape = flowLoops(steps), lanes = shape.lanes;
+    var row = function (s, n, kind, at) {
       var notes = [];
       if (s.checkpoint) notes.push('Stops for someone first');
       if (s.external) notes.push('Asks before acting outside');
       if (s.onlyIfChanged) notes.push('Skipped when nothing changed');
       var tag = kind === 'added' ? h('span', { class: 'tag go', text: 'New' }) : kind === 'changed' ? h('span', { class: 'tag', text: 'Changed' }) : kind === 'gone' ? h('span', { class: 'tag', text: 'Taken out' }) : null;
       var tools = kind === 'gone' || !(s.tools || []).length ? null : h('span', { class: 'ntools' }, toolWords(s.tools).map(function (t) { return h('span', { class: 'tag', title: t.tools.join(', '), text: t.word }); }));
-      return h('li', { class: kind || '' }, h('span', { class: 'ntnum' + (s.checkpoint ? ' you' : ''), text: kind === 'gone' ? '–' : String(n) }),
+      var loops = kind === 'gone' ? [] : loopNotes(s, steps);
+      var attrs = { class: kind || '' };
+      if (lanes) attrs.style = 'grid-column:' + (lanes + 1) + ';grid-row:' + at;
+      return h('li', attrs, h('span', { class: 'ntnum' + (s.checkpoint ? ' you' : ''), text: kind === 'gone' ? '–' : String(n) }),
         h('span', { class: 'stack', style: 'gap:2px' }, h('span', { class: 'row', style: 'gap:8px' }, h('b', { text: s.label }), tag),
-          notes.length && kind !== 'gone' ? h('span', { class: 'faint', text: notes.join(' · ') }) : null), tools);
+          notes.length && kind !== 'gone' ? h('span', { class: 'faint', text: notes.join(' · ') }) : null,
+          loops.map(function (t) { return h('span', { class: 'ntloop-note' }, h('span', { 'aria-hidden': 'true', text: '↺ ' }), t); })), tools);
     };
-    return h('ol', { class: 'ntflow cards' }, steps.map(function (s, i) { return row(s, i + 1, mark ? mark(s) : ''); }).concat((gone || []).map(function (s) { return row(s, 0, 'gone'); })));
+    var rows = steps.map(function (s, i) { return row(s, i + 1, mark ? mark(s) : '', i + 1); }).concat((gone || []).map(function (s, i) { return row(s, 0, 'gone', steps.length + i + 1); }));
+    if (!lanes) return h('ol', { class: 'ntflow cards' }, rows);
+    // The return arrows share the list's grid, so each runs from the step that
+    // sends work back to the step it lands on, however tall those rows get.
+    // They come first so the last step stays the list's last child. The words
+    // on the step say the same thing to a screen reader.
+    var rails = shape.loops.map(function (l) {
+      return h('li', { class: 'ntloop', 'aria-hidden': 'true', title: l.from + ' can send work back to ' + l.to + ', up to ' + plural(l.times, 'time', 'times'), style: 'grid-column:' + (lanes - l.lane) + ' / ' + (lanes + 1) + ';grid-row:' + (l.top + 1) + ' / ' + (l.bottom + 2) },
+        h('span', { class: 'ntloop-n', text: '×' + l.times }));
+    });
+    return h('ol', { class: 'ntflow cards looped', style: 'grid-template-columns:repeat(' + lanes + ',28px) minmax(0,1fr)' }, rails.concat(rows));
   }
 
   // How its work goes, step by step; its manager says what should change
@@ -16602,7 +16658,7 @@ export const CONSOLE_JS = String.raw`
           f.steps.forEach(function (s) { was[s.id] = s; });
           var kept = {};
           x.steps.forEach(function (s) { if (was[s.id]) kept[s.id] = true; });
-          var same = function (a, b) { return a.label === b.label && a.checkpoint === b.checkpoint && a.external === b.external && a.onlyIfChanged === b.onlyIfChanged && (a.tools || []).join() === (b.tools || []).join(); };
+          var same = function (a, b) { return a.label === b.label && a.checkpoint === b.checkpoint && a.external === b.external && a.onlyIfChanged === b.onlyIfChanged && (a.tools || []).join() === (b.tools || []).join() && JSON.stringify(a.onFail || null) === JSON.stringify(b.onFail || null) && JSON.stringify(a.critic || null) === JSON.stringify(b.critic || null); };
           var mark = function (s) { var o = was[s.id]; return !o ? 'added' : same(o, s) ? '' : 'changed'; };
           var goneSteps = f.steps.filter(function (s) { return !kept[s.id]; });
           var list = flowStepList(x.steps, mark, goneSteps);
