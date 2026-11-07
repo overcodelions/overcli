@@ -604,7 +604,7 @@ describe('team tasks in Slack', () => {
           answerTeamFromThread: ((_c: unknown, _t: unknown, _th: unknown, answers: string[]) => (answered.push(answers), { ok: true, answered: true })) as never,
         },
         undefined,
-        { fetchImpl: (async (url: string) => (String(url).includes('files.slack.com') ? new Response('pdf', { headers: { 'content-type': 'application/pdf' } }) : new Response(JSON.stringify({ ok: true, ts: '1.1', channel: 'C0ACME' }), { headers: { 'content-type': 'application/json' } }))) as never },
+        { fetchImpl: (async (url: string) => (new URL(String(url)).hostname === 'files.slack.com' ? new Response('pdf', { headers: { 'content-type': 'application/pdf' } }) : new Response(JSON.stringify({ ok: true, ts: '1.1', channel: 'C0ACME' }), { headers: { 'content-type': 'application/json' } }))) as never },
       );
       (cmds as unknown as { teamThreads: Map<string, string> }).teamThreads.set('C0ACME:100.1', 't1');
       const files = [{ id: 'F1', name: 'gap.pdf', mimetype: 'application/pdf', size: 3, url_private: 'https://files.slack.com/gap.pdf' }];

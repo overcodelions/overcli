@@ -252,7 +252,7 @@ export function suggestTeamFor<T extends { id: string; name: string; purpose?: s
   let best: { team: T; score: number } | null = null;
   for (const t of teams) {
     const hay = ` ${[t.name, t.purpose ?? '', ...(t.members ?? []).map((m) => m.role ?? '')].join(' ').toLowerCase()} `;
-    const hit = (w: string) => new RegExp(`[^a-z]${w.replace(/[/]/g, '\\/')}`).test(hay);
+    const hit = (w: string) => new RegExp(`[^a-z]${w.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}`).test(hay);
     const subjectHits = subject.filter(hit).length;
     if (!subjectHits) continue;
     const score = subjectHits * 2 + roles.filter(hit).length;
