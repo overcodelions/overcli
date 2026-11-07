@@ -75,7 +75,7 @@ import {
   restoreVersionFile,
 } from './versions';
 import { commitAllAsync, readVersionDiff } from './git';
-import { scanWorktrees, sweepWorktrees, conversationWorktreeStates } from './worktreeSweep';
+import { scanWorktrees, sweepWorktrees, missingManagedWorktrees, conversationWorktreeStates } from './worktreeSweep';
 import { flowRunClaims } from './flowRunClaims';
 import { scanOrphanTranscripts, removeOrphanTranscripts } from './transcriptSweep';
 import { computeStatsOffThread, stopStatsWorker } from './statsService';
@@ -1766,6 +1766,7 @@ export function registerIpc(): void {
     );
   });
   ipcMain.handle('git:sweepWorktrees', (_e, args) => sweepWorktrees(args));
+  ipcMain.handle('git:missingWorktrees', (_e, args) => missingManagedWorktrees(args.paths));
   ipcMain.handle('transcripts:scanOrphans', () => scanOrphanTranscripts());
   ipcMain.handle('transcripts:removeOrphans', (_e, args) => removeOrphanTranscripts(args));
   ipcMain.handle('git:conversationWorktreeStates', (_e, args) => conversationWorktreeStates(args));
@@ -2697,9 +2698,9 @@ export function registerIpc(): void {
     if (!flowRuntime) return { ok: false, error: 'Flow runtime not initialized.' } as const;
     return flowRuntime.retireRunWorktrees(args);
   });
-  ipcMain.handle('flows:deleteRun', (_e, args) => {
+  ipcMain.handle('flows:deleteRun', async (_e, args) => {
     if (!flowRuntime) return { ok: false, error: 'Flow runtime not initialized.' } as const;
-    const result = flowRuntime.deleteRun(args);
+    const result = await flowRuntime.deleteRunChecked({ runId: args.runId, force: args.force, keepUnmergedBranches: args.keepUnmergedBranches });
     if (result.ok) {
       emitToRenderer({ type: 'flowRunDeleted', runId: args.runId });
     }

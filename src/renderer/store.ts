@@ -43,6 +43,7 @@ import {
   InitRepoFailure,
 } from '@shared/types';
 import { buildResponseModePrompt } from './responseMode';
+import { withoutMissingWorktree } from './missingWorktree';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { effortForBackend } from '@shared/effort';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
@@ -460,6 +461,8 @@ interface StoreState {
       /// branch is free to keep and a deleted one is only recoverable
       /// through the reflog — the tree is the thing taking up the disk.
       keepBranch?: boolean;
+      /// Clean up's rule: delete the branch only if git calls it merged.
+      keepUnmergedBranch?: boolean;
     },
   ): Promise<{ ok: boolean; error?: string; warning?: string }>;
   /// Drop an agent conversation's worktree while KEEPING the conversation.
@@ -471,8 +474,11 @@ interface StoreState {
   /// and the next turn runs in the project checkout.
   releaseWorktree(
     id: UUID,
-    opts?: { keepBranch?: boolean; unattended?: boolean },
+    opts?: { keepBranch?: boolean; keepUnmergedBranch?: boolean; unattended?: boolean },
   ): Promise<{ ok: boolean; error?: string; warning?: string }>;
+  /// Clear the worktree from conversations whose tree is already gone from
+  /// disk (removed by an older delete, or by hand). Returns how many changed.
+  forgetMissingWorktrees(ids: UUID[]): Promise<number>;
   /// Auto-commit the dirty worktree, stash any project-side changes,
   /// remove the worktree (keeping the branch), switch the project repo
   /// onto that branch, and demote the conversation from agent to a normal
@@ -2649,6 +2655,7 @@ export const useStore = create<StoreState>((set, get) => ({
               projectPath: p.path,
               worktreePath: m.worktreePath,
               branchName: m.branchName,
+              ...(opts?.keepUnmergedBranch ? { keepUnmerged: true } : {}),
             });
             if (res.warning) warnings.push(`${p.name}: ${res.warning}`);
             if (!res.ok) {
@@ -2688,6 +2695,7 @@ export const useStore = create<StoreState>((set, get) => ({
         // branch delete — it's the same path review agents take, since they
         // live on a detached HEAD with no branch to delete.
         branchName: opts?.keepBranch ? '' : (conv.branchName ?? ''),
+        ...(opts?.keepUnmergedBranch ? { keepUnmerged: true } : {}),
         worktreePath: conv.worktreePath,
       });
       if (res.warning) warnings.push(res.warning);
@@ -2738,6 +2746,20 @@ export const useStore = create<StoreState>((set, get) => ({
     };
   },
 
+  async forgetMissingWorktrees(ids) {
+    let changed = 0;
+    for (const id of ids) {
+      const hit = findConvWithProjectPath(get(), id);
+      // A coordinator's tree is its members'; each member is checked itself.
+      if (!hit?.conv.worktreePath || hit.conv.workspaceAgentMemberIds?.length) continue;
+      await releaseRuntime(id);
+      mutateConversation(set, get, id, (c) => withoutMissingWorktree(c));
+      changed++;
+    }
+    if (changed > 0) await saveConversationState(get);
+    return changed;
+  },
+
   async releaseWorktree(id, opts) {
     const hit = findConvWithProjectPath(get(), id);
     if (!hit?.ownerProjectPath) return { ok: false, error: 'conversation not found' };
@@ -2754,12 +2776,13 @@ export const useStore = create<StoreState>((set, get) => ({
     if (conv.workspaceAgentMemberIds && conv.workspaceAgentMemberIds.length > 0) {
       return { ok: false, error: 'release a workspace agent from its own review sheet' };
     }
-    const keepBranch = opts?.keepBranch ?? true;
+    const keepBranch = opts?.keepUnmergedBranch ? false : (opts?.keepBranch ?? true);
     const res = await window.overcli.invoke('git:releaseWorktree', {
       projectPath: ownerProjectPath,
       worktreePath: conv.worktreePath,
       branchName: conv.branchName ?? null,
       keepBranch,
+      ...(opts?.keepUnmergedBranch ? { keepUnmerged: true } : {}),
       sessionId: conv.sessionId,
       ...(opts?.unattended ? { unattended: true, conversationId: id } : {}),
     });
@@ -2778,7 +2801,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // The branch is where the work went. Keep the pointer when the branch
       // survived, drop it when we deleted it so nothing claims a branch that
       // is gone.
-      if (keepBranch) return rest;
+      if (keepBranch || res.branchKept) return rest;
       const { branchName: _br, ...noBranch } = rest;
       return noBranch;
     });

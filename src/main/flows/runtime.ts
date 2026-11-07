@@ -94,6 +94,7 @@ import {
 import { branchSlugFromPrompt } from './branchName';
 import { launchProgressMessage, launchTimingSummary, MAX_CONCURRENT_WORKTREE_FORKS } from './launchProgress';
 import { pooled } from '../pooled';
+import { landedOnBase } from '../squashMerged';
 import { coordinatorRootPath, ensureCoordinatorSymlinkRoot, removeCoordinatorSymlinkRoot } from '../workspace';
 import {
   pendingWorkspaceMembers,
@@ -2247,6 +2248,7 @@ export class FlowRuntimeImpl {
   /// count against either.
   private runDirtyWorktrees(
     run: FlowRun,
+    landed?: ReadonlySet<string>,
   ): Array<{
     name: string;
     worktreePath: string;
@@ -2264,7 +2266,7 @@ export class FlowRuntimeImpl {
       const status = runGit(['status', '--porcelain'], worktreePath);
       if (status.exitCode !== 0) continue;
       const fileCount = countPorcelainFiles(status.stdout);
-      const unmergedCommits = base
+      const unmergedCommits = base && !landed?.has(worktreePath)
         ? parseCommitCount(runGit(['rev-list', '--count', `${base}..HEAD`], worktreePath))
         : 0;
       if (fileCount > 0 || unmergedCommits > 0) {
@@ -2298,7 +2300,7 @@ export class FlowRuntimeImpl {
       if (countPorcelainFiles(status.stdout) > 0) return true;
       if (!base) continue;
       const ahead = await runGitAsync(['rev-list', '--count', `${base}..HEAD`], worktreePath);
-      if (parseCommitCount(ahead) > 0) return true;
+      if (parseCommitCount(ahead) > 0 && !(await landedOnBase(worktreePath, 'HEAD', base))) return true;
     }
     return false;
   }
@@ -2311,7 +2313,7 @@ export class FlowRuntimeImpl {
   /// gone. Mirrors the agent-conversation cleanup in `removeAgent`. Runs
   /// async (and is fired without awaiting from `deleteRun`) so the git
   /// worktree teardown never blocks the delete round-trip or freezes the UI.
-  private async removeRunWorktrees(run: FlowRun): Promise<void> {
+  private async removeRunWorktrees(run: FlowRun, landed?: ReadonlySet<string>, keepUnmerged = false): Promise<void> {
     // A throwaway run folder — or worktrees the run only borrowed, which
     // belong to the team task: only the run's own symlink root goes.
     if (run.scratchRoot || run.adoptedWorktree) {
@@ -2326,7 +2328,10 @@ export class FlowRuntimeImpl {
           const res = await removeWorktreeAsync({
             projectPath: m.projectPath,
             worktreePath: m.worktreePath,
-            branchName: m.branchName,
+            // A landed branch stays: git can't vouch for it, so deleting it
+            // would take `branch -D`, and a patch match can't rule out a revert.
+            branchName: !keepUnmerged && landed?.has(m.worktreePath) ? '' : m.branchName,
+            keepUnmerged,
           });
           if (!res.ok && res.error) {
             log('warn', 'flows.deleteRun', `worktree remove failed for ${m.name}: ${res.error}`);
@@ -2354,7 +2359,8 @@ export class FlowRuntimeImpl {
         const res = await removeWorktreeAsync({
           projectPath,
           worktreePath: run.worktreePath,
-          branchName: run.branchName ?? '',
+          branchName: !keepUnmerged && landed?.has(run.worktreePath) ? '' : run.branchName ?? '',
+          keepUnmerged,
         });
         if (!res.ok && res.error) {
           log('warn', 'flows.deleteRun', `worktree remove failed: ${res.error}`);
@@ -2370,8 +2376,8 @@ export class FlowRuntimeImpl {
   /// Give up some of a workspace run's worktrees and keep the run: how a clean
   /// tree is cleared when another tree in the run holds work. Each tree is
   /// checked again here, at the moment of removal, and git is left to refuse
-  /// one that changed (no --force). A branch is deleted only if the tree never
-  /// moved off its starting commit, so nothing committed can go with it.
+  /// one that changed (no --force). A branch is deleted only if git calls it
+  /// merged, so nothing committed can go with it.
   /// Resuming re-creates what a paused run gave up (`adoptWorkspaceMembers`).
   async retireRunWorktrees(args: { runId: UUID; worktreePaths: string[] }): Promise<
     | { ok: true; removed: string[]; kept: Array<{ worktreePath: string; reason: string }> }
@@ -2421,7 +2427,8 @@ export class FlowRuntimeImpl {
           ? run.baseBranch
           : await detectBaseBranchAsync(member.projectPath);
         const ahead = await runGitAsync(['rev-list', '--count', `${base}..HEAD`], member.worktreePath);
-        if (ahead.exitCode !== 0 || ahead.stdout.trim() !== '0') {
+        const landed = ahead.exitCode === 0 && ahead.stdout.trim() !== '0' && (await landedOnBase(member.worktreePath, 'HEAD', base));
+        if (ahead.exitCode !== 0 || (ahead.stdout.trim() !== '0' && !landed)) {
           keep(`it has commits that aren't on ${base}`);
           continue;
         }
@@ -2429,7 +2436,8 @@ export class FlowRuntimeImpl {
       const res = await removeWorktreeAsync({
         projectPath: member.projectPath,
         worktreePath: member.worktreePath,
-        branchName: untouched ? member.branchName : '',
+        branchName: member.branchName,
+        keepUnmerged: true,
         force: false,
       });
       if (!res.ok) {
@@ -2464,7 +2472,25 @@ export class FlowRuntimeImpl {
   /// stop, then removes any git worktree(s) the run forked. Used by the
   /// library's "Delete run" affordance — an explicit user action, distinct
   /// from `pruneOldRuns` auto-eviction which leaves worktrees in place.
-  deleteRun(args: { runId: UUID; force?: boolean }):
+  /// `deleteRun`, after asking which of the run's trees have already landed.
+  /// That can take a moment on a long-lived branch, so it's kept off the
+  /// synchronous delete.
+  async deleteRunChecked(args: { runId: UUID; force?: boolean; keepUnmergedBranches?: boolean }): Promise<ReturnType<FlowRuntimeImpl['deleteRun']>> {
+    const run = this.runs.get(args.runId);
+    const landed = new Set<string>();
+    if (run?.baseBranch) {
+      const base = run.baseBranch;
+      await mapWithConcurrency(runWorktreeTargets(run), UNREVIEWED_SCAN_CONCURRENCY, async ({ worktreePath }) => {
+        const ahead = await runGitAsync(['rev-list', '--count', `${base}..HEAD`], worktreePath);
+        if (parseCommitCount(ahead) > 0 && (await landedOnBase(worktreePath, 'HEAD', base))) landed.add(worktreePath);
+      });
+    }
+    return this.deleteRun({ ...args, landed });
+  }
+
+  /// `keepUnmergedBranches` is Clean up's rule for every kind of tree: a branch
+  /// goes only if git calls it merged, so its commits are never force-deleted.
+  deleteRun(args: { runId: UUID; force?: boolean; landed?: ReadonlySet<string>; keepUnmergedBranches?: boolean }):
     | { ok: true }
     | { ok: false; error: string }
     | {
@@ -2495,7 +2521,7 @@ export class FlowRuntimeImpl {
     // `removeRunWorktrees` below un-forced is what would let its
     // `git branch -d` → `-D` fallback destroy those commits silently.
     if (!args.force) {
-      const dirty = this.runDirtyWorktrees(run);
+      const dirty = this.runDirtyWorktrees(run, args.landed);
       if (dirty.length > 0) {
         return { ok: false, needsConfirm: true, dirty };
       }
@@ -2563,7 +2589,7 @@ export class FlowRuntimeImpl {
     // repo — but the run's metadata is already gone and the teardown is
     // best-effort, so fire it in the background rather than making the delete
     // round-trip (and the UI) wait on it. Errors are logged inside.
-    void this.removeRunWorktrees(run).catch((err) => {
+    void this.removeRunWorktrees(run, args.landed, args.keepUnmergedBranches === true).catch((err) => {
       log('error', 'flows.deleteRun', 'worktree teardown failed', err);
     });
     return { ok: true };

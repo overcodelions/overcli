@@ -14,11 +14,13 @@
 // App state only decides whether something is still *spoken for*.
 
 import * as os from 'os';
+import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { runGitAsync, detectBaseBranchAsync, removeWorktreeAsync } from './git';
 import { log } from './diagnostics';
 import { pooled } from './pooled';
+import { landedOnBase } from './squashMerged';
 import type {
   WorktreeClaim,
   WorktreeSweepEntry,
@@ -32,6 +34,13 @@ import type {
 /// surface those so the accounting is honest, but never offer to delete them.
 export function managedWorktreeRoot(): string {
   return path.join(os.homedir(), '.overcli', 'worktrees');
+}
+
+/// Of these conversation worktrees, the ones under the managed root that are
+/// no longer on disk. Anywhere else is never ours to call gone: a path outside
+/// it may sit on a drive that just isn't mounted.
+export function missingManagedWorktrees(paths: readonly string[]): string[] {
+  return [...new Set(paths)].filter((p) => isUnderManagedRoot(p) && !fs.existsSync(p));
 }
 
 function isUnderManagedRoot(worktreePath: string): boolean {
@@ -246,7 +255,7 @@ async function inspect(args: {
   }
   // A branch with no name is a detached review worktree: nothing in the ref
   // tables can speak for it, so it keeps its own `git log`.
-  const isMergedIntoBase = args.branchName ? args.facts.merged.has(args.branchName) : true;
+  const mergedByHistory = args.branchName ? args.facts.merged.has(args.branchName) : true;
   const datedFromRefs = args.branchName
     ? args.facts.committedAt.get(args.branchName)
     : undefined;
@@ -256,7 +265,7 @@ async function inspect(args: {
     // Only unmerged branches need counting: `classifyWorktree` reads
     // `commitsAhead` solely to catch work that is ahead AND unmerged, so a
     // merged branch's count changes no answer and is not worth a process.
-    args.branchName && !isMergedIntoBase
+    args.branchName && !mergedByHistory
       ? runGitAsync(['rev-list', '--count', `${args.baseBranch}..${args.branchName}`], args.projectPath)
       : Promise.resolve({ stdout: '0', stderr: '', exitCode: 0 }),
     args.measureSizes ? duKb(args.worktreePath) : Promise.resolve(0),
@@ -276,6 +285,14 @@ async function inspect(args: {
       : status.stdout.split('\n').filter((l) => l.trim().length > 0).length;
   const commitsAhead =
     ahead.exitCode === 0 ? Number.parseInt(ahead.stdout.trim(), 10) || 0 : 0;
+  // History says unmerged, but the work may have landed as a squash, or the
+  // local base may be behind origin. Only clean trees: it can't change the
+  // answer for one with uncommitted files.
+  const isMergedIntoBase =
+    mergedByHistory ||
+    (dirtyFiles === 0 &&
+      commitsAhead > 0 &&
+      !!(await landedOnBase(args.projectPath, `refs/heads/${args.branchName}`, args.baseBranch)));
   const commitSeconds =
     lastCommit.exitCode === 0 ? Number.parseInt(lastCommit.stdout.trim(), 10) : NaN;
   return {
@@ -576,6 +593,8 @@ export async function sweepWorktrees(args: {
         projectPath: entry.projectPath,
         worktreePath: entry.worktreePath,
         branchName: protectedBranch ? '' : (entry.branchName ?? ''),
+        // Clean up's rule: a branch with commits git can't vouch for stays.
+        keepUnmerged: true,
       });
       if (!res.ok) {
         failures.push({ worktreePath: entry.worktreePath, error: res.error ?? 'unknown error' });

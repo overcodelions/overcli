@@ -1,0 +1,127 @@
+/* The launch screen, shown inside #root until React mounts and replaces it.
+ *
+ * One moment, built from the mark itself: overcli's logo is a prompt under an
+ * overline, "over" + "cli". Here the overline draws across and uncovers the
+ * name as it goes, then a light travels along it for as long as the app takes
+ * to start. That travelling light is the only progress indicator: there's no
+ * real progress to report before the bundle runs (the CSP allows no inline
+ * script), so nothing pretends to count.
+ *
+ * Always dark: the window opens on the dark surface whatever the theme. */
+
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 200 800;
+  /* Bundled, so it's ready almost at once; block keeps the name from
+     flashing in the system face first. */
+  font-display: block;
+  src: url('./fonts/BricolageGrotesque-latin.woff2') format('woff2');
+}
+
+.boot {
+  --boot-ink: #e8e8ee;
+  --boot-faint: #666670;
+  --boot-light: #7c8bff;
+  --boot-draw: 720ms;
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--boot-ink);
+  -webkit-app-region: drag;
+}
+
+/* The lockup sits a touch above centre, where the eye expects a title. */
+.boot__lockup {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 19px;
+  padding-top: 27px;
+  margin-bottom: 6vh;
+}
+
+.boot__prompt {
+  width: 40px;
+  height: 38px;
+  overflow: visible;
+  flex: none;
+}
+.boot__prompt polyline {
+  fill: none;
+  stroke: currentColor;
+  /* In the viewBox's units: 58 of 290, the icon's own proportion. */
+  stroke-width: 58;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: boot-stroke 520ms cubic-bezier(0.65, 0, 0.35, 1) 120ms forwards;
+}
+
+.boot__name {
+  font-family: 'Bricolage Grotesque', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 60px;
+  line-height: 1;
+  font-weight: 600;
+  font-variation-settings: 'opsz' 96, 'wdth' 100;
+  letter-spacing: -0.022em;
+  /* Uncovered left to right, in step with the overline above it. */
+  clip-path: inset(-20% 100% -20% 0);
+  animation: boot-uncover var(--boot-draw) cubic-bezier(0.65, 0, 0.35, 1) 180ms forwards;
+}
+
+/* The overline: the same weight as the prompt's stroke, spanning the lockup. */
+.boot__line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: currentColor;
+  transform-origin: left center;
+  transform: scaleX(0);
+  animation: boot-draw var(--boot-draw) cubic-bezier(0.65, 0, 0.35, 1) 180ms forwards;
+}
+.boot__line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 38%;
+  background: linear-gradient(90deg, transparent, var(--boot-light) 45%, #c9d0ff 50%, var(--boot-light) 55%, transparent);
+  transform: translateX(-110%);
+  animation: boot-travel 1600ms cubic-bezier(0.45, 0, 0.25, 1) calc(var(--boot-draw) + 380ms) infinite;
+}
+
+.boot__version {
+  position: absolute;
+  left: 24px;
+  bottom: 20px;
+  font: 500 11px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: var(--boot-faint);
+  opacity: 0;
+  animation: boot-appear 400ms ease-out 700ms forwards;
+}
+
+@keyframes boot-stroke { to { stroke-dashoffset: 0; } }
+@keyframes boot-draw { to { transform: scaleX(1); } }
+@keyframes boot-uncover { to { clip-path: inset(-20% 0 -20% 0); } }
+@keyframes boot-travel { to { transform: translateX(290%); } }
+@keyframes boot-appear { to { opacity: 1; } }
+@keyframes boot-glow { 50% { opacity: 0.6; } }
+
+/* The app arrives over the same surface rather than snapping in. */
+#root > :not(.boot) { animation: boot-appear 180ms ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .boot__prompt polyline { animation: none; stroke-dashoffset: 0; }
+  .boot__name { animation: none; clip-path: none; }
+  .boot__line { animation: none; transform: none; }
+  .boot__line::after { animation: none; display: none; }
+  .boot__line { animation: boot-glow 2.4s ease-in-out infinite; }
+  .boot__version { animation: none; opacity: 1; }
+  #root > :not(.boot) { animation: none; }
+}

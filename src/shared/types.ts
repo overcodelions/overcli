@@ -676,6 +676,8 @@ export interface WorktreeStatus {
   /// Worktree branch is already merged into its base branch (nothing to
   /// re-merge). Computed from `merge-base --is-ancestor`.
   isMergedIntoBase: boolean;
+  /// Landed as a squash: the base has the same change in a commit of its own.
+  squashMerged?: boolean;
   /// Whatever branch the main project checkout is currently on. `null`
   /// means detached HEAD or a git error.
   currentProjectBranch: string | null;
@@ -1947,10 +1949,10 @@ export interface IPCInvokeMap {
     cwd: string;
     targetBranch: string;
   }) => { ok: true; message: string; stashed: boolean } | { ok: false; error: string };
-  'git:removeWorktree': (args: { projectPath: string; worktreePath: string; branchName: string }) => {
+  'git:removeWorktree': (args: { projectPath: string; worktreePath: string; branchName: string; keepUnmerged?: boolean }) => {
     ok: boolean;
     error?: string;
-    warning?: string;
+    warning?: string; branchKept?: boolean;
   };
   /// Scan every project for worktrees and classify them for cleanup. The
   /// renderer passes the worktree paths its conversations still claim; main
@@ -1993,6 +1995,8 @@ export interface IPCInvokeMap {
   /// Claude transcript folders left behind by worktrees that are gone.
   /// Read-only; `transcripts:removeOrphans` is the destructive half and
   /// re-derives everything rather than trusting what this returned.
+  /// Conversation worktrees under ~/.overcli/worktrees that are gone from disk.
+  'git:missingWorktrees': (args: { paths: string[] }) => string[];
   'transcripts:scanOrphans': () => {
     entries: OrphanTranscriptEntry[];
     scannedAt: number;
@@ -2027,12 +2031,14 @@ export interface IPCInvokeMap {
     /// Default true. Deleting the branch as well is offered for the case
     /// where the work is already merged and the branch is just noise.
     keepBranch?: boolean;
+    /// With `keepBranch: false`: keep a branch git won't call merged.
+    keepUnmerged?: boolean;
     sessionId?: string;
     /// Nobody is watching (auto-tidy): the tree is checked again at the
     /// moment of removal, and kept if its chat is running or it has changes.
     unattended?: boolean;
     conversationId?: UUID;
-  }) => { ok: boolean; error?: string; warning?: string };
+  }) => { ok: boolean; error?: string; warning?: string; branchKept?: boolean };
   'git:checkoutAgentLocally': (args: {
     projectPath: string;
     worktreePath: string;
@@ -2629,7 +2635,7 @@ export interface IPCInvokeMap {
   /// `unmergedCommits` stay separate because they are lost by different
   /// mechanisms — the worktree removal takes the files, the branch delete
   /// takes the commits — and the dialog names both.
-  'flows:deleteRun': (args: { runId: UUID; force?: boolean }) =>
+  'flows:deleteRun': (args: { runId: UUID; force?: boolean; keepUnmergedBranches?: boolean }) =>
     | { ok: true }
     | { ok: false; error: string }
     | {

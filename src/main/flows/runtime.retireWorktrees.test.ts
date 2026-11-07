@@ -40,7 +40,7 @@ function member(name: string) {
   return { name, projectPath: repo, worktreePath, branchName: 'agent/x', commit: git(repo, 'rev-parse', 'HEAD') };
 }
 
-function runtimeWith(members: ReturnType<typeof member>[], state: FlowRun['state']) {
+function runtimeWith(members: ReturnType<typeof member>[], state: FlowRun['state'], over: Partial<FlowRun> = {}) {
   const run = {
     id: RUN_ID,
     flowId: 'flow',
@@ -55,6 +55,7 @@ function runtimeWith(members: ReturnType<typeof member>[], state: FlowRun['state
     attempts: [],
     workspaceWorktrees: members.map(({ commit: _c, ...m }) => m),
     baselineCommitsByMember: Object.fromEntries(members.map((m) => [m.name, { path: m.worktreePath, commit: m.commit }])),
+    ...over,
   } as unknown as FlowRun;
   seeded.runs = [run];
   const runtime = new FlowRuntimeImpl(
@@ -105,7 +106,7 @@ describe('retireRunWorktrees', () => {
     expect(memberNames(runtime)).toEqual(['dirty', 'ahead']);
   });
 
-  it('keeps the branch of a clean tree whose commits reached the base', async () => {
+  it('deletes the branch of a clean tree merged into the base', async () => {
     const merged = member('merged');
     const other = member('other');
     writeFileSync(join(merged.worktreePath, 'feature.txt'), 'work\n');
@@ -118,7 +119,7 @@ describe('retireRunWorktrees', () => {
 
     if (!res.ok) throw new Error(res.error);
     expect(res.removed).toEqual([merged.worktreePath]);
-    expect(git(merged.projectPath, 'branch', '--list', 'agent/x')).toContain('agent/x');
+    expect(git(merged.projectPath, 'branch', '--list', 'agent/x')).toBe('');
   });
 
   it('leaves a paused run one tree to resume from', async () => {
@@ -164,3 +165,94 @@ describe('retireRunWorktrees', () => {
     expect(existsSync(a.worktreePath)).toBe(true);
   });
 });
+
+describe('a squash-merged run', () => {
+  /// Two commits on the tree's branch, squashed into the repo's base.
+  function squashed(name: string) {
+    const m = member(name);
+    writeFileSync(join(m.worktreePath, 'feature.txt'), 'one\n');
+    git(m.worktreePath, 'add', '-A');
+    git(m.worktreePath, 'commit', '-qm', 'one');
+    writeFileSync(join(m.worktreePath, 'feature.txt'), 'one\ntwo\n');
+    git(m.worktreePath, 'add', '-A');
+    git(m.worktreePath, 'commit', '-qm', 'two');
+    git(m.projectPath, 'merge', '-q', '--squash', 'agent/x');
+    git(m.projectPath, 'commit', '-qm', 'Merged in x');
+    return m;
+  }
+  function ahead(name: string) {
+    const m = member(name);
+    writeFileSync(join(m.worktreePath, 'feature.txt'), 'real work\n');
+    git(m.worktreePath, 'add', '-A');
+    git(m.worktreePath, 'commit', '-qm', 'real work');
+    return m;
+  }
+  const done = { kind: 'done' } as FlowRun['state'];
+  const base = { baseBranch: 'master' };
+
+  it('is not unreviewed, but a run with unmerged work still is', async () => {
+    expect(await runtimeWith([squashed('a')], done, base).unreviewedDoneRunIds()).toEqual([]);
+    expect(await runtimeWith([ahead('b')], done, base).unreviewedDoneRunIds()).toEqual([RUN_ID]);
+  });
+
+  it('deletes without asking and keeps the landed branch', async () => {
+    const a = squashed('a');
+    const runtime = runtimeWith([a], done, base);
+    expect(await runtime.deleteRunChecked({ runId: RUN_ID as never })).toEqual({ ok: true });
+    await vi.waitFor(() => expect(existsSync(a.worktreePath)).toBe(false));
+    expect(git(a.projectPath, 'branch', '--list', 'agent/x')).toContain('agent/x');
+  });
+
+  it('still asks when one tree in the run holds unmerged work', async () => {
+    const a = squashed('a');
+    const b = ahead('b');
+    const res = await runtimeWith([a, b], done, base).deleteRunChecked({ runId: RUN_ID as never });
+    if (res.ok || !('needsConfirm' in res)) throw new Error('expected needsConfirm');
+    expect(res.dirty.map((d) => d.name)).toEqual(['b']);
+    expect(existsSync(a.worktreePath)).toBe(true);
+  });
+
+  it('gives up its landed tree alone, keeping the branch', async () => {
+    const a = squashed('a');
+    const b = ahead('b');
+    const res = await runtimeWith([a, b], done, base).retireRunWorktrees({
+      runId: RUN_ID as never,
+      worktreePaths: [a.worktreePath, b.worktreePath],
+    });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.removed).toEqual([a.worktreePath]);
+    expect(res.kept.map((k) => k.worktreePath)).toEqual([b.worktreePath]);
+    expect(git(a.projectPath, 'branch', '--list', 'agent/x')).toContain('agent/x');
+  });
+});
+
+describe('deleting a run from Clean up', () => {
+  const done = { kind: 'done' } as FlowRun['state'];
+  function ahead(name: string) {
+    const m = member(name);
+    writeFileSync(join(m.worktreePath, 'feature.txt'), 'real work\n');
+    git(m.worktreePath, 'add', '-A');
+    git(m.worktreePath, 'commit', '-qm', 'real work');
+    return m;
+  }
+
+  it('keeps a branch with commits and deletes an empty one', async () => {
+    const a = ahead('a');
+    const b = member('b');
+    const runtime = runtimeWith([a, b], done, { baseBranch: 'master' });
+    const res = await runtime.deleteRunChecked({ runId: RUN_ID as never, force: true, keepUnmergedBranches: true });
+    expect(res).toEqual({ ok: true });
+    await vi.waitFor(() => expect(existsSync(b.worktreePath)).toBe(false));
+    await vi.waitFor(() => expect(git(b.projectPath, 'branch', '--list', 'agent/x')).toBe(''));
+    expect(existsSync(a.worktreePath)).toBe(false);
+    expect(git(a.projectPath, 'branch', '--list', 'agent/x')).toContain('agent/x');
+  });
+
+  it('a delete from elsewhere still deletes them', async () => {
+    const a = ahead('a');
+    const runtime = runtimeWith([a], done, { baseBranch: 'master' });
+    expect(await runtime.deleteRunChecked({ runId: RUN_ID as never, force: true })).toEqual({ ok: true });
+    await vi.waitFor(() => expect(git(a.projectPath, 'branch', '--list', 'agent/x')).toBe(''));
+  });
+});
+

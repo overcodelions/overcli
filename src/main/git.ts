@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { InitRepoFailure, RemoteKind, WorktreeStatus } from '../shared/types';
+import { landedOnBase } from './squashMerged';
 
 export interface GitResult {
   stdout: string;
@@ -1321,6 +1322,7 @@ export async function releaseWorktree(
     worktreePath: string;
     branchName: string | null;
     keepBranch?: boolean;
+    keepUnmerged?: boolean;
     sessionId?: string;
     unattended?: boolean;
     conversationId?: string;
@@ -1329,7 +1331,7 @@ export async function releaseWorktree(
     turnPending: (conversationId: string) => boolean;
     migrateSession: (args: { worktreePath: string; projectPath: string; sessionId: string }) => void;
   },
-): Promise<{ ok: boolean; error?: string; warning?: string }> {
+): Promise<{ ok: boolean; error?: string; warning?: string ; branchKept?: boolean }> {
   if (args.unattended && args.conversationId && deps.turnPending(args.conversationId)) {
     return { ok: false, error: 'kept: its chat is running' };
   }
@@ -1337,6 +1339,7 @@ export async function releaseWorktree(
     projectPath: args.projectPath,
     worktreePath: args.worktreePath,
     branchName: args.keepBranch === false ? (args.branchName ?? '') : '',
+    ...(args.keepUnmerged ? { keepUnmerged: true } : {}),
     ...(args.unattended ? { force: false } : {}),
   });
   if (!res.ok) return res;
@@ -1360,7 +1363,10 @@ export async function removeWorktreeAsync(args: {
   /// untracked files, at the moment of removal: what an unattended remove
   /// wants, since whatever it was told about the tree is by then old news.
   force?: boolean;
-}): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  /// Delete the branch only if git calls it merged (`branch -d`); keep one with
+  /// commits git can't vouch for instead of force-deleting it. Clean up's rule.
+  keepUnmerged?: boolean;
+}): Promise<{ ok: boolean; error?: string; warning?: string; branchKept?: boolean }> {
   const res = await runGitAsync(
     ['worktree', 'remove', ...(args.force === false ? [] : ['--force']), args.worktreePath],
     args.projectPath,
@@ -1373,6 +1379,7 @@ export async function removeWorktreeAsync(args: {
     const safe = await runGitAsync(['branch', '-d', args.branchName], args.projectPath);
     if (safe.exitCode !== 0) {
       const stderr = (safe.stderr || safe.stdout).trim();
+      if (/not fully merged/i.test(stderr) && args.keepUnmerged) return { ok: true, branchKept: true };
       if (/not fully merged/i.test(stderr)) {
         await runGitAsync(['branch', '-D', args.branchName], args.projectPath);
         return {
@@ -1869,11 +1876,18 @@ export async function worktreeStatus(args: {
   // equals base, so it's trivially an ancestor — which both mislabels it and
   // disables the merge button even though there are uncommitted changes to
   // land.
+  // Commits ahead with nothing pending may still have landed: a squash merge
+  // leaves no history for the checks above to see.
+  const landed =
+    commitsAhead > 0 && !hasUncommittedChanges
+      ? await landedOnBase(args.worktreePath, 'HEAD', args.baseBranch)
+      : null;
   const isMergedIntoBase =
-    isAncestor.exitCode === 0 &&
-    commitsAhead === 0 &&
-    !hasUncommittedChanges &&
-    filesChanged === 0;
+    !!landed ||
+    (isAncestor.exitCode === 0 &&
+      commitsAhead === 0 &&
+      !hasUncommittedChanges &&
+      filesChanged === 0);
 
   const currentProjectBranch =
     projectBranch.exitCode === 0 && projectBranch.stdout.trim()
@@ -1892,6 +1906,7 @@ export async function worktreeStatus(args: {
     commitsAhead,
     hasUncommittedChanges,
     isMergedIntoBase,
+    ...(landed === 'squash' ? { squashMerged: true } : {}),
     currentProjectBranch,
     remoteKind,
     mainTreeDirtyFiles,

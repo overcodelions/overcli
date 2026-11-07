@@ -11,8 +11,8 @@
 // on a timer, so finished work retires without anyone opening the sheet. It
 // only ever acts on what `retirable` returns — entries the scan proved
 // clean and merged — and it is gentler than the sheet's Remove: a chat's
-// worktree is RELEASED (the conversation stays), and branches are always
-// kept.
+// worktree is RELEASED (the conversation stays), and a branch with commits
+// git can't call merged is kept.
 
 import { create } from 'zustand';
 import type { OrphanTranscriptEntry, UUID, WorktreeSweepEntry } from '@shared/types';
@@ -124,6 +124,20 @@ export function startScan(opts?: { measureSizes?: boolean | 'auto' }): Promise<W
         measureSizes: opts?.measureSizes ?? 'auto',
         parkedAfterDays: parkedAfterDays(rulesNow()),
       });
+      // Conversations still pointing at a tree that's gone (an older delete
+      // took it, or it went by hand) are pointed back at their project.
+      const running = runningById();
+      const pointing = [...ps, ...ws].flatMap((o) =>
+        (o.conversations ?? []).flatMap((c) => (c.worktreePath && !running[c.id] ? [{ id: c.id, path: c.worktreePath }] : [])),
+      );
+      void window.overcli
+        .invoke('git:missingWorktrees', { paths: pointing.map((c) => c.path) })
+        .then((gone) => {
+          const set = new Set(gone);
+          const ids = pointing.filter((c) => set.has(c.path)).map((c) => c.id);
+          return ids.length ? useStore.getState().forgetMissingWorktrees(ids) : 0;
+        })
+        .catch(() => 0);
       // Cheap enough to ride along with every scan: a handful of file stats
       // per folder, no git and no `du`.
       void window.overcli
@@ -174,10 +188,9 @@ export function pruneRemoved(removedPaths: string[], keptPaths: string[] = []) {
 export async function removeUnits(args: {
   selected: WorktreeSweepEntry[];
   all: WorktreeSweepEntry[];
-  keepBranch: boolean;
   releaseChats?: boolean;
 }): Promise<{ removed: number; freedKb: number; warnings: string[]; kept: string[]; attempted: string[] }> {
-  const { selected, keepBranch } = args;
+  const { selected } = args;
   const store = useStore.getState();
   const plan: CleanupPlan = planCleanup(selected, args.all);
   const warnings: string[] = [];
@@ -201,7 +214,7 @@ export async function removeUnits(args: {
     // every tree that run owns is in this selection. Unattended, never: the
     // guard always gets the final say.
     const force = !args.releaseChats && !plan.runsHoldingMore.includes(runId);
-    const res = await window.overcli.invoke('flows:deleteRun', { runId, force });
+    const res = await window.overcli.invoke('flows:deleteRun', { runId, force, keepUnmergedBranches: true });
     if (!res.ok) {
       const title = selected.find((e) => e.claim?.runId === runId)?.claim?.title ?? runId;
       warnings.push(
@@ -229,8 +242,8 @@ export async function removeUnits(args: {
   for (const convId of plan.removeAgentIds) {
     // Unattended: main checks the tree again at the moment of removal.
     const res = args.releaseChats
-      ? await store.releaseWorktree(convId, { keepBranch, unattended: true })
-      : await store.removeAgent(convId, { keepBranch });
+      ? await store.releaseWorktree(convId, { keepUnmergedBranch: true, unattended: true })
+      : await store.removeAgent(convId, { keepUnmergedBranch: true });
     const named = (text: string) => {
       const e = selected.find((x) => x.claim?.convId === convId);
       return `${e?.claim?.title ?? e?.worktreePath ?? convId}: ${text}`;
@@ -247,7 +260,7 @@ export async function removeUnits(args: {
     const res = await window.overcli.invoke('git:sweepWorktrees', {
       entries: plan.sweepEntries.map((e) => ({
         ...e,
-        branchName: keepBranch ? null : e.branchName,
+        branchName: e.branchName,
       })),
     });
     for (const f of res.failures) {
@@ -293,7 +306,7 @@ export async function runAutoTidy(): Promise<AutoTidyReport | null> {
 }
 
 async function retire(selected: WorktreeSweepEntry[], all: WorktreeSweepEntry[], warnings: string[] = []): Promise<AutoTidyReport> {
-  const res = await removeUnits({ selected, all, keepBranch: true, releaseChats: true });
+  const res = await removeUnits({ selected, all, releaseChats: true });
   pruneRemoved(res.attempted, res.kept);
   const report = { at: Date.now(), removed: res.removed, freedKb: res.freedKb, warnings: [...warnings, ...res.warnings], kept: res.kept.length };
   useCleanupScan.setState({ lastAutoTidy: report });
