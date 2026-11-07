@@ -4,20 +4,22 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-07
+
+### Upgrading
+- **The `UV_VERSION` Docker build setting is gone.** The Dockerfile's base images, including the `uv` one, are now pinned by digest and kept current by Dependabot. A build that passes `--build-arg UV_VERSION=…` still works but the value is ignored.
+
+### Security
+- **The Docker image's base images are pinned by digest,** so a rebuild can't silently pick up a different image under the same tag.
+- **Dependencies patched:** `@hono/node-server` 2.x, `mermaid` 12.x, and `minimatch` 11.x under the desktop packager. `npm audit` reports no vulnerabilities.
+- **A team-matching word can't act as a pattern.** Every special character is escaped now, so `c++` no longer throws and `a.b` no longer matches more than it says.
+
 ### Added
 - **A Tuning tab on every worker.** Say what's wrong (or nothing), and overgo reads its recent runs and answers and suggests up to five changes to its job, steps, notes, an app's guide or its tools, each with the runs that show it. Nothing changes until its manager reads and applies one, and reviews are kept. A thumbs-down on an answer now asks what was wrong, and shows up here.
 - **A scoreboard on the Tuning tab.** A plain verdict on whether a worker is getting better, how often its runs go cleanly and how long they take, each run as a bar of working and waiting time with its changes marked, and where the time goes by step. An applied suggestion says what it did once enough runs have ended: "0 of 5 runs had tools refused (was 3 of 10); waiting down from 25 min to 2 min". Reviews look for speed as well as quality.
 - **overgo watches for trouble.** When a worker's runs keep having tools refused, failing or waiting, or its work is marked not useful, overgo reviews it, tries a fix to its steps on a past job, and tells its manager in Slack, at most once a week. It never applies a change by itself, and only runs from after it started watching count. If an applied change looks to have made things worse, it says so, and **Undo** puts it back. An admin can turn it off for the org under Setup → Hiring, and each worker has an off switch on its Tuning tab.
 - **Apply a review's suggestions together.** Its job, step and notes changes are written in at once, for one read and one save. App guides and tools stay for a person.
 - **Try a change on a past job before keeping it.** A test run shows its results beside that job's. It only reads and uses the app under test: a call that would update a ticket or message someone is refused and shown to you.
-
-### Changed
-- **A new worker starts with a pixel robot for its picture.** It's there as soon as it's hired, with no model turn. **Pick one for me** and the picture picker still change it, and workers that already have a picture keep it.
-- **The drawn pictures are DiceBear's public-domain styles, by kind.** Filter by People, Robots, Pixel & voxel, Playful or Abstract, or search for a kind or a style. **Draw more** adds to the grid. In Slack, they sit on a dark background.
-- **Linking an admin's Slack makes them an admin in Slack.** An admin who signed in with the first-admin link before Slack was connected, then used **Link your Slack** on People, is now added to `org.json`'s admins, so Slack's approvals and `/hire` know them.
-- **The docs set Slack up through the console:** Connect → Slack makes the app, and its tokens go on Setup → Secrets. `.env` and `overcli org init` remain for scripted setups.
-
-### Added
 - **Workers can tell people in Slack.** Every worker run has the server's built-in **overgo** tool with a **notify** call: a message to its manager, a person, or a channel, sent by the server as the worker, recorded in the decision log, at most five a run, under the same trust rule as role tools. Each step is also told what its role's tools are for, so older flows use them, and a step whose only way outside is its role's tools no longer stops for approval when they're cleared.
 - **Workers have a role, and its tools come with it.** A worker hired from a catalog role keeps it, and any worker can be given one under Access → Role. The role's tools are in every run it does, including the work it plans when asked, with no flow step listing them: in runs a person approved, in any run with **Always allow its role's tools**, and always when autonomous. Its manager can turn one off for that worker or narrow it like any tool. The Role catalog is now a list with each role edited in place.
 - **Starter roles: Developer, QA and Analyst.** The Hire page offers them until they're in the catalog; an admin adds one in a click (or starts from one on Setup → Role catalog), and it becomes the org's own role, under the usual allowances and approvals.
@@ -25,6 +27,41 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - **Set up the org from the console.** Setup → Readiness starts with **Who the org is**, which opens by itself on a new server: the name, the console address and the time zone, saved to `org.json` with no `overcli org init` and no terminal. With Slack connected, saving pins the org to that workspace, and the item turns red if Slack is later connected to another one.
 - **Prometheus metrics for the server.** Set `OVERCLI_METRICS=0.0.0.0:9464` (or `--metrics`) and `/metrics` reports runs in progress and what they're waiting on, the longest wait on an approval or question, runs finished with their cost and length, each worker's queue and its spend against its budget, asks and hires waiting, and failing tools. It's on its own port, off by default, and needs no inbound internet; `OVERCLI_METRICS_TOKEN` adds a bearer token. See *Metrics* in `deploy/README.md`.
 - **Setup → Readiness has a Metrics card.** It says whether metrics are on and when they were last scraped, and warns about a wrong token, a stalled scraper or a loopback-only address. When they're off, it gives the two lines that turn them on; when they're on, a scrape config for this server to copy. **Show what it sends** previews the live output, even while metrics are off.
+- **Teams work in Slack threads.** A team asked for with a mention works in that thread: its questions, plan, progress, results and files post there under the team's name and picture, and each member says what it did as its part ends. Anyone there can answer questions and give feedback; only the requester or an admin approves, accepts or starts more work. A process item keeps one thread across its team stages. Anyone in Slack can be picked as a lead.
+- **Processes and teams import and export as YAML,** by name, and an import lists what isn't on the server yet.
+- **`about` cards in Slack** explain a worker, team or process.
+- **Draft a watch trigger from plain words,** and the Library has a Documents tab.
+- **Spend is clearer.** Reports shows who used each worker's budget and where the month is heading. People using a worker that isn't theirs have a per-worker limit, $100 by default, with a warning at the alert share. Setup → Spending holds every budget, editable in place, with one click to fit them to the org budget or change them all by a percent.
+- **The Job tab shows where a flow loops.** A step that sends work back gets an arrow up the side into the step it lands on, with its retry count, and says so in words: "Sends it back to Build if it fails, up to 2 times, then stops for someone". Second-model checks, self-retries and forward jumps get a line of text. A worker's run history shows the same.
+- **Teams and processes have tabs.** Teams get Tasks, How to reach and Settings; processes get Items, How it works, How to reach and Settings. Each tab has its own address. A team task's box sits at the top of Tasks and takes documents, including PDFs.
+- **People lists everyone who has asked a worker or team,** including people who only use Slack.
+- **A new launch screen.** The prompt draws, the overline sweeps across and uncovers the name, and a light travels along it while the app starts, with the version in the corner. Reduced motion gets a still lockup.
+
+### Changed
+- **A new worker starts with a pixel robot for its picture.** It's there as soon as it's hired, with no model turn. **Pick one for me** and the picture picker still change it, and workers that already have a picture keep it.
+- **The drawn pictures are DiceBear's public-domain styles, by kind.** Filter by People, Robots, Pixel & voxel, Playful or Abstract, or search for a kind or a style. **Draw more** adds to the grid. In Slack, they sit on a dark background.
+- **Linking an admin's Slack makes them an admin in Slack.** An admin who signed in with the first-admin link before Slack was connected, then used **Link your Slack** on People, is now added to `org.json`'s admins, so Slack's approvals and `/hire` know them.
+- **The docs set Slack up through the console:** Connect → Slack makes the app, and its tokens go on Setup → Secrets. `.env` and `overcli org init` remain for scripted setups.
+- **The console keeps its main nav in view.** Sections stay in the top row, with the current worker, team or process and its tabs below. The org name opens Setup, People and Activity. It works on phones, with 44px tap targets and fields that don't make iOS zoom.
+- **Renames in the console:** "Asks first" is "Asks before work" and "People & teams" is "Groups". Admins see no allowance. A refusal is one muted line naming the command, and saving several tuning changes says what saved and retries only the rest.
+- **Listening workers hear more.** They pick up messages with attachments and join a thread when named. In test mode they do the work quietly and the manager gets one card with the real answer.
+- **Slack files reach team tasks** from thread replies, answers and new requests, and naming a folder of a worker's files attaches what's in it. A reply under a task's DM card goes to its team instead of starting a new task, and a question goes to the worker whose job is answering questions.
+- **Team queues keep moving.** A waiting task no longer holds up the queue and goes next once cleared. "Stop" or "nevermind" stops a task, with an option to clear its queue too. Teams answer what they've already made from their own records, and a team can have one member.
+- **Squash-merged work reads as merged** in the flow badge, the review sheets, Clean up, auto-tidy and run deletion. Origin's copy of the base is checked first, so a local base that's behind no longer hides a merge. Squash-merged worktrees retire under the normal age rules; their branches are kept.
+- **Clean up has one branch rule.** The "Keep the branches" checkbox is gone: a branch git calls merged, or one with no commits, is deleted with its worktree, and a branch with commits is kept. Only local branches are ever deleted.
+- **Clean up's buttons say what they do.** **Free** removes only what holds no work, releasing chat worktrees and keeping the conversations, as auto-tidy does. **Delete…** is the old remove, behind its confirm. A line by the buttons spells out what Free will do.
+- **A paused workspace run can give up its clean worktrees** after at least 14 days, keeping the run. Workspace launches check out at most 8 repos at once and name the ones still going.
+
+### Fixed
+- Picking workers on Make a team threw an error for every worker.
+- A team's "Who can give it tasks" setting didn't save.
+- The fallback for Slack installs without permission to post under other names never ran, and files posted under the app's name.
+- Admins got no controls on a task waiting on someone else.
+- Safe fetches refused every page instead of reading the address.
+- Replies from anyone but the person who asked weren't kept as feedback on the server.
+- A page that finished loading after you'd left could set the wrong tabs.
+- A worker's notes could end mid-line, and a refresh didn't see all of them.
+- Conversations whose worktree under `~/.overcli/worktrees` is gone are pointed back at their project on each scan.
 
 ## [0.24.5] - 2026-11-02
 
@@ -1270,7 +1307,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.24.5...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/overcodelions/overcli/compare/v0.24.5...v0.25.0
 [0.24.5]: https://github.com/overcodelions/overcli/compare/v0.24.4...v0.24.5
 [0.24.4]: https://github.com/overcodelions/overcli/compare/v0.24.3...v0.24.4
 [0.24.3]: https://github.com/overcodelions/overcli/compare/v0.24.2...v0.24.3
