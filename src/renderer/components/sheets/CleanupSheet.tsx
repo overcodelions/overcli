@@ -38,7 +38,6 @@ import {
   groupEntries,
   isActionable,
   planCleanup,
-  planRelease,
   totalsFor,
 } from './cleanup';
 
@@ -53,8 +52,6 @@ export function CleanupSheet() {
   const workspaces = useStore((s) => s.workspaces);
   const runners = useAllRunners();
   const openSheet = useStore((s) => s.openSheet);
-  const releaseWorktree = useStore((s) => s.releaseWorktree);
-  const setConversationHidden = useStore((s) => s.setConversationHidden);
   const rules = useStore((s) => s.settings.cleanup) ?? DEFAULT_CLEANUP_RULES;
 
   // The scan and its selection live outside the sheet so they survive it
@@ -77,7 +74,6 @@ export function CleanupSheet() {
     'all',
   );
   const [groupMode, setGroupMode] = useState<CleanupGroupMode>('producer');
-  const [keepBranch, setKeepBranch] = useState(true);
   /// Sizes cost a `du` walk per worktree and are most of the wait. Left on
   /// `'auto'`, the scan measures them on installs small enough for it to be
   /// worth it and reports counts on the ones where it isn't — see
@@ -133,7 +129,14 @@ export function CleanupSheet() {
     () => planCleanup(selectedEntries, entries ?? []),
     [selectedEntries, entries],
   );
-  const release = useMemo(() => planRelease(selectedEntries), [selectedEntries]);
+  // What "Free" acts on: the safe rows only, so it can never touch work.
+  const safeSelected = useMemo(() => selectedEntries.filter((e) => e.bucket === 'reclaimable'), [selectedEntries]);
+  const freePlan = useMemo(() => planCleanup(safeSelected, entries ?? []), [safeSelected, entries]);
+  const chatsKept = useMemo(
+    () => new Set(safeSelected.flatMap((e) => (e.claim?.kind === 'conversation' && e.claim.convId ? [e.claim.convId] : []))).size,
+    [safeSelected],
+  );
+  const heldSelected = selectedEntries.length - safeSelected.length;
   const runaways = useMemo(() => runawayProducers(groups, rules), [groups, rules]);
   const hiddenSelected = useMemo(() => {
     const shown = new Set(visible.map((e) => e.worktreePath));
@@ -170,7 +173,7 @@ export function CleanupSheet() {
     setError(null);
     setResult(null);
     try {
-      const res = await removeUnits({ selected: selectedEntries, all: entries ?? [], keepBranch });
+      const res = await removeUnits({ selected: selectedEntries, all: entries ?? [] });
       setResult(
         `Removed ${res.removed} worktree${res.removed === 1 ? '' : 's'}` +
           (res.freedKb > 0 && measuredSizes ? `, freed ${formatSize(res.freedKb)}` : '') +
@@ -187,36 +190,23 @@ export function CleanupSheet() {
     }
   };
 
-  /// Drop the trees, keep the transcripts.
-  const runRelease = async () => {
+  /// Free up space the way auto-tidy does: only what holds no work, a chat
+  /// keeps its conversation (its tree is released), and a run holding work
+  /// elsewhere gives up just these trees. Deleting more is `runRemove`.
+  const runFree = async () => {
     setWorking(true);
     setError(null);
     setResult(null);
-    const warnings: string[] = [];
     try {
-      const kept: string[] = [];
-      for (const convId of release.releaseIds) {
-        const res = await releaseWorktree(convId, { keepBranch });
-        if (!res.ok) {
-          if (res.error) warnings.push(res.error);
-          kept.push(
-            ...selectedEntries.filter((e) => e.claim?.convId === convId).map((e) => e.worktreePath),
-          );
-        } else if (res.warning) warnings.push(res.warning);
-      }
-      const releasedCount = release.releaseIds.length - new Set(kept).size;
+      const res = await removeUnits({ selected: safeSelected, all: entries ?? [], releaseChats: true });
       setResult(
-        `Released ${releasedCount} worktree${releasedCount === 1 ? '' : 's'}` +
-          (release.freedKb > 0 && measuredSizes ? `, freed ${formatSize(release.freedKb)}` : '') +
-          '. The conversations stayed.',
+        `Freed ${res.removed} worktree${res.removed === 1 ? '' : 's'}` +
+          (res.freedKb > 0 && measuredSizes ? ` (${formatSize(res.freedKb)})` : '') +
+          (chatsKept > 0 ? `. ${chatsKept} chat${chatsKept === 1 ? '' : 's'} kept their conversation.` : '.'),
       );
-      if (warnings.length > 0) setError(`Finished with warnings:\n${warnings.join('\n')}`);
-      pruneRemoved(
-        selectedEntries
-          .filter((e) => e.claim?.convId && release.releaseIds.includes(e.claim.convId))
-          .map((e) => e.worktreePath),
-        kept,
-      );
+      if (res.warnings.length > 0) setError(`Finished with warnings:\n${res.warnings.join('\n')}`);
+      pruneRemoved(res.attempted, res.kept);
+      setCleanupSelection([]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -224,27 +214,26 @@ export function CleanupSheet() {
     }
   };
 
-  const runArchive = async () => {
-    setWorking(true);
-    setError(null);
-    try {
-      const ids = selectedEntries
-        .map((e) => e.claim?.convId)
-        .filter((id): id is UUID => !!id && !(runningById[id] ?? false));
-      for (const id of ids) await setConversationHidden(id, true);
-      setResult(`Archived ${ids.length} conversation${ids.length === 1 ? '' : 's'}.`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setWorking(false);
-    }
-  };
+  const n = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+  const freeSummary = [
+    `${n(freePlan.worktreeCount, 'worktree')} go`,
+    chatsKept > 0 ? `${n(chatsKept, 'chat')} stay` : '',
+    heldSelected > 0 ? `${heldSelected} holding work or running stay` : '',
+    'branches with commits stay',
+  ].filter(Boolean).join(' · ');
+  const freeLabel =
+    measuredSizes && freePlan.freedKb > 0 ? `Free ${formatSize(freePlan.freedKb)}` : `Free ${n(freePlan.worktreeCount, 'worktree')}`;
+  const deleteLabel =
+    plan.conversationCount > 0
+      ? `Delete ${n(plan.conversationCount, 'chat')} and worktrees…`
+      : plan.runCount > 0
+        ? `Delete ${n(plan.runCount, 'run')} and worktrees…`
+        : `Delete ${n(plan.worktreeCount, 'worktree')}…`;
 
   if (view === 'confirm') {
     return (
       <ConfirmView
         plan={plan}
-        keepBranch={keepBranch}
         working={working}
         onBack={() => setView('list')}
         onConfirm={() => void runRemove()}
@@ -500,55 +489,31 @@ export function CleanupSheet() {
         <div className="flex flex-col gap-0.5 min-w-0">
           <div className="text-xs">
             <span className="font-medium">{plan.worktreeCount} selected</span>
-            <span className="text-ink-muted">
-              {' '}
-              {measuredSizes ? ` · frees ${formatSize(plan.freedKb)}` : ''}
-              {plan.conversationCount > 0 && ` · ${plan.conversationCount} conversations close`}
-              {plan.runCount > 0 && ` · ${plan.runCount} runs removed`}
-            </span>
+            <span className="text-ink-muted">{measuredSizes && plan.freedKb > 0 ? ` · ${formatSize(plan.freedKb)}` : ''}</span>
           </div>
-          <div className="text-[11px]">
-            {plan.withWorkCount > 0 ? (
-              <span className="text-red-700 dark:text-red-300">
-                {plan.withWorkCount} of these hold uncommitted or unmerged work.
-              </span>
-            ) : plan.worktreeCount > 0 ? (
-              <span className="text-green-700 dark:text-green-300">Nothing selected holds uncommitted work.</span>
-            ) : (
+          <div className="text-[11px] text-ink-muted">
+            {plan.worktreeCount === 0 ? (
               <span className="text-ink-faint">Tick a group or a row to act on it.</span>
+            ) : (
+              <span
+                title="Free removes worktrees that hold no work. Chats keep their conversation, a run still holding work keeps its record, and a branch with commits git can't call merged is kept."
+              >
+                Free: {freeSummary}
+              </span>
             )}
           </div>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-[11px] text-ink-muted mr-1">
-            <input
-              type="checkbox"
-              checked={keepBranch}
-              onChange={(e) => setKeepBranch(e.target.checked)}
-              className="h-3.5 w-3.5 accent-accent"
-              disabled={working}
-            />
-            Keep the branches
-          </label>
           <SheetActionButton
-            label={
-              working
-                ? 'Releasing…'
-                : `Release worktree only${release.releaseIds.length ? ` (${release.releaseIds.length})` : ''}`
-            }
-            onClick={() => void runRelease()}
-            disabled={working || release.releaseIds.length === 0}
-          />
-          <SheetActionButton
-            label="Archive"
-            onClick={() => void runArchive()}
-            disabled={working || plan.conversationCount === 0}
+            label={deleteLabel}
+            onClick={() => setView('confirm')}
+            disabled={working || plan.worktreeCount === 0}
           />
           <SheetActionButton
             primary
-            label={`Review & remove${plan.worktreeCount ? ` ${plan.worktreeCount}` : ''}`}
-            onClick={() => setView('confirm')}
-            disabled={working || plan.worktreeCount === 0}
+            label={working ? 'Freeing…' : freeLabel}
+            onClick={() => void runFree()}
+            disabled={working || freePlan.worktreeCount === 0}
           />
           <SheetActionButton label="Close" onClick={() => openSheet(null)} disabled={working} />
         </div>
@@ -949,13 +914,11 @@ function StateBadge({ entry }: { entry: WorktreeSweepEntry }) {
 /// which is the whole difference between a deliberate cleanup and a leap.
 function ConfirmView({
   plan,
-  keepBranch,
   working,
   onBack,
   onConfirm,
 }: {
   plan: ReturnType<typeof planCleanup>;
-  keepBranch: boolean;
   working: boolean;
   onBack: () => void;
   onConfirm: () => void;
@@ -1018,12 +981,8 @@ function ConfirmView({
           <div className="rounded-lg border border-card overflow-hidden">
             <ConfirmRow
               tone="good"
-              title={keepBranch ? 'Every branch' : 'Merged branches only'}
-              sub={
-                keepBranch
-                  ? 'the trees go, the branches stay — the work is still reachable by name'
-                  : 'unmerged branches are force-deleted and only recoverable through the reflog'
-              }
+              title="Branches with commits"
+              sub="kept, including squash-merged ones git can't vouch for — empty and merged branches are deleted with their trees"
             />
             {busy.length > 0 && (
               <ConfirmRow

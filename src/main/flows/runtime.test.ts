@@ -98,6 +98,9 @@ vi.mock('../git', () => ({
   runGitAsync: async (args: string[], cwd?: string) => {
     if (args[0] === 'rev-parse' && args[1] === 'HEAD')
       return { stdout: 'baseline-sha\n', stderr: '', exitCode: 0 };
+    // Nothing here has landed on its base (see squashMerged.ts).
+    if (args[0] === 'merge-base' && args[1] === '--is-ancestor')
+      return { stdout: '', stderr: '', exitCode: 1 };
     // Same cwd-keyed dirty/clean fixture as `runGit` below — the unreviewed
     // scan runs on the async path, so a mock that answered clean for
     // everything here would make its assertions vacuous.
