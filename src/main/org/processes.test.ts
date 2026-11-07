@@ -573,6 +573,7 @@ describe('processes', () => {
     expect(got.teams).toEqual([]);
     expect(got.workers).toEqual([]);
     expect(JSON.stringify(got.process)).not.toContain('U0PAT');
+    expect(got.process.whoStarts).toEqual(seen.whoStarts);
     // In it but not steering: everything but the code's path.
     const sam = h.svc.get(judge, made.process.id);
     if (!sam.ok) throw new Error(sam.error);

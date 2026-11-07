@@ -627,6 +627,27 @@ describe('TeamEngine', () => {
     expect(h.commissions[2].workerId).toBe('rook');
   });
 
+  it('keeps who may give a team tasks, through its own edits and other ones', () => {
+    const h = makeHarness({ seedTeams: [team({ guidance: 'Ade checks the numbers last.' })] });
+    h.engine.start();
+    const t = team();
+    const base = { id: t.id, name: t.name, members: t.members, budgetUSDPerTask: 20, checkpoints: t.checkpoints };
+    const now = () => h.engine.list().teams.find((x: { id: string }) => x.id === t.id);
+    h.engine.save({ ...base, whoCanBrief: 'org' });
+    expect(now()?.whoCanBrief).toBe('org');
+    // An edit that doesn't mention it leaves it alone.
+    h.engine.save({ ...base, purpose: 'Changed' });
+    expect(now()?.whoCanBrief).toBe('org');
+    h.engine.save({ ...base, audience: { people: ['U0PAT'] } });
+    expect(now()?.audience).toEqual({ people: ['U0PAT'] });
+    h.engine.save(base);
+    expect(now()?.audience).toEqual({ people: ['U0PAT'] });
+    // Both cleared when said outright, as the settings page does.
+    h.engine.save({ ...base, whoCanBrief: 'managers', audience: undefined });
+    expect(now()?.whoCanBrief).toBeUndefined();
+    expect(now()?.audience).toBeUndefined();
+  });
+
   it('keeps a team\'s guidance through an edit that leaves it out, and clears it when emptied', () => {
     const h = makeHarness({ seedTeams: [team({ guidance: 'Ade checks the numbers last.' })] });
     h.engine.start();
@@ -981,6 +1002,7 @@ describe('TeamEngine room', () => {
       turns: ['<route>["Maya", "Ade"]</route>', 'Agreed: OCR first.'],
       memberReplies: ['Market says Spain first.', 'OCR is the hard part, Maya.', 'PASS', 'Ade is right about OCR.'],
     });
+    expect(h.engine.addFiles('task-r', [{ id: 'f', mimeType: 'application/pdf', dataBase64: 'eA==', label: 'gap.pdf' }])).toEqual({ ok: true, names: ['attachments/gap.pdf'] });
     expect(h.engine.roomAsk('task-r', 'What is the riskiest part?')).toEqual({ ok: true });
     await flush();
     expect(said(h)).toEqual([

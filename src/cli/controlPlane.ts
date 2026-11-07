@@ -15,6 +15,7 @@
 // over Socket Mode, which the daemon dials out to. Put it behind the VPN, or
 // behind an HTTPS ingress when claude.ai connectors need to reach it.
 
+import type { Attachment } from '../shared/types';
 import type { MetricsStatus } from './metricsServer';
 import type { TestSystemsService } from '../main/org/testSystems';
 import { parseCron } from '../shared/flows/cron';
@@ -63,6 +64,26 @@ import { FileLinks, fileHeaders } from './fileLinks';
 /// A request body larger than this is refused unread. Every legitimate body
 /// here is a short JSON object.
 const MAX_BODY_BYTES = 1_000_000;
+/// A task for a team, with the documents it should work from: 25 MB of files,
+/// a third bigger once they're base64.
+const MAX_TEAM_BRIEF_BYTES = 36_000_000;
+const MAX_TEAM_BRIEF_FILES = 10;
+
+/// Files sent with a task for a team, as data URLs from the console.
+export function teamBriefFiles(raw: unknown): { ok: true; attachments: Attachment[] } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, attachments: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: 'Those files could not be read.' };
+  if (raw.length > MAX_TEAM_BRIEF_FILES) return { ok: false, error: `Attach at most ${MAX_TEAM_BRIEF_FILES} files.` };
+  const attachments: Attachment[] = [];
+  for (const [i, f] of raw.entries()) {
+    const file = (f ?? {}) as { name?: unknown; data?: unknown };
+    const name = typeof file.name === 'string' && file.name.trim() ? file.name.trim().slice(0, 200) : `file-${i + 1}`;
+    const m = typeof file.data === 'string' ? /^data:([^;,]*)(?:;[^,;]*)*;base64,([A-Za-z0-9+/=]+)$/.exec(file.data) : null;
+    if (!m) return { ok: false, error: `${name} could not be read.` };
+    attachments.push({ id: `file-${i + 1}`, mimeType: m[1] || 'application/octet-stream', dataBase64: m[2], label: name, size: Math.floor((m[2].length * 3) / 4) });
+  }
+  return { ok: true, attachments };
+}
 /// A published worker or team carries its flows whole; only signed-in
 /// callers get this far.
 const MAX_PUBLISH_BYTES = 16_000_000;
@@ -1496,7 +1517,14 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'GET', path: /^\/api\/team-tasks$/, handle: (c) => org.teamTasks(c) },
     { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/stop-all$/, handle: (c, _b, [id]) => org.stopTeamWork(c, decodeURIComponent(id)) },
-    { method: 'POST', path: /^\/api\/teams\/brief$/, handle: (c, b) => org.briefTeam(c, str(b.team), str(b.text)) },
+    {
+      method: 'POST',
+      path: /^\/api\/teams\/brief$/,
+      handle: (c, b) => {
+        const files = teamBriefFiles(b.files);
+        return files.ok ? org.briefTeam(c, str(b.team), str(b.text), undefined, files.attachments) : files;
+      },
+    },
     // A finished task's team: ask it something, another round, or the pack
     // rewritten with what it said (only the picked changes, when given).
     { method: 'POST', path: /^\/api\/team-tasks\/([^/]+)\/room$/, handle: (c, b, [id]) => org.teamRoom(c, decodeURIComponent(id), { kind: 'ask', text: str(b.text).slice(0, 8000) }) },
@@ -1988,7 +2016,7 @@ export function createControlPlane(deps: ControlPlaneDeps): http.Server {
           let body: Record<string, unknown> = {};
           if (req.method === 'POST') {
             try {
-              const parsed = await readBody(req, path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : path === '/api/ask' ? MAX_ASK_BODY_BYTES : MAX_BODY_BYTES);
+              const parsed = await readBody(req, path.startsWith('/api/publish') ? MAX_PUBLISH_BYTES : path === '/api/teams/brief' ? MAX_TEAM_BRIEF_BYTES : path === '/api/processes/draft-from-image' ? MAX_IMAGE_BODY_BYTES : path === '/api/ask' ? MAX_ASK_BODY_BYTES : MAX_BODY_BYTES);
               body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
             } catch {
               return send(res, 400, { ok: false, error: 'Send a JSON object.' });

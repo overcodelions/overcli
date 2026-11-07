@@ -156,3 +156,21 @@ describe('estimateTidyCandidates', () => {
     expect(count).toBe(0);
   });
 });
+
+describe('estimateTidyCandidates: workspace runs', () => {
+  it('keeps the newest run whole and counts every tree of the rest', () => {
+    const trees = (id: string) =>
+      ['a', 'b', 'c'].map((r) => ({ name: r, projectPath: `/p/${r}`, worktreePath: `/wt/${id}/${r}`, branchName: 'x' }));
+    const count = estimateTidyCandidates({
+      rules: { ...DEFAULT_CLEANUP_RULES, keepPerProducer: 1 },
+      now: NOW,
+      owners: [],
+      runningById: {},
+      runs: [
+        run({ id: 'new', createdAt: NOW - 20 * DAY, workspaceWorktrees: trees('new') }),
+        run({ id: 'old', createdAt: NOW - 40 * DAY, workspaceWorktrees: trees('old') }),
+      ],
+    });
+    expect(count).toBe(3);
+  });
+});

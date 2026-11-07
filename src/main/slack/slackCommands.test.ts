@@ -594,6 +594,51 @@ describe('team tasks in Slack', () => {
       expect(sent(posts).at(-1)!.body.text).toContain('changing the plan');
     });
 
+    it('keeps files sent as an answer to the team’s questions, and names them in the answer', async () => {
+      const saved: unknown[] = [];
+      const answered: string[][] = [];
+      const { cmds } = harness(
+        {
+          teamTaskInThread: (() => undefined) as never,
+          addTeamFiles: ((id: string, files: Array<{ label: string }>) => (saved.push([id, files.map((f) => f.label)]), { ok: true, names: files.map((f) => `attachments/${f.label}`) })) as never,
+          answerTeamFromThread: ((_c: unknown, _t: unknown, _th: unknown, answers: string[]) => (answered.push(answers), { ok: true, answered: true })) as never,
+        },
+        undefined,
+        { fetchImpl: (async (url: string) => (String(url).includes('files.slack.com') ? new Response('pdf', { headers: { 'content-type': 'application/pdf' } }) : new Response(JSON.stringify({ ok: true, ts: '1.1', channel: 'C0ACME' }), { headers: { 'content-type': 'application/json' } }))) as never },
+      );
+      (cmds as unknown as { teamThreads: Map<string, string> }).teamThreads.set('C0ACME:100.1', 't1');
+      const files = [{ id: 'F1', name: 'gap.pdf', mimetype: 'application/pdf', size: 3, url_private: 'https://files.slack.com/gap.pdf' }];
+      expect(await cmds.answerInThread({ channel: 'C0ACME', thread_ts: '100.1', user: PAT, text: 'Here they are.', files }, TEAM)).toBe(true);
+      expect(saved).toEqual([['t1', ['gap.pdf']]]);
+      expect(answered[0].join(' ')).toContain('attachments/gap.pdf');
+      expect(answered[0].join(' ')).toContain('Here they are.');
+    });
+
+    it('takes a reply under a task’s DM card to the team, and gives the task that thread', async () => {
+      const linked: unknown[] = [];
+      const talked: unknown[] = [];
+      let thread: { channel: string; threadTs: string } | undefined;
+      const { cmds } = harness(
+        {
+          teamTaskInThread: (() => (thread ? { id: 't1' } : undefined)) as never,
+          linkTeamThread: ((id: string, t: { channel: string; threadTs: string }) => (linked.push([id, t]), (thread = t), { ok: true })) as never,
+          talkInTeamThread: (_c, _t, text) => (talked.push(text), { ok: true, heard: true }),
+        },
+        undefined,
+        { teamCards: { load: () => ({ t1: { channel: 'D0ACME', ts: '200.1', told: 0, at: 1 } }), save: () => {} } },
+      );
+      const reply = { channel: 'D0ACME', thread_ts: '200.1', user: PAT, text: 'Cut the routing rules.' };
+      expect(await cmds.onThreadReply(reply, TEAM)).toBe(true);
+      expect(linked).toEqual([['t1', { channel: 'D0ACME', threadTs: '200.1' }]]);
+      expect(talked).toEqual(['Cut the routing rules.']);
+      // Already its thread: no second link.
+      expect(await cmds.onThreadReply(reply, TEAM)).toBe(true);
+      expect(linked).toHaveLength(1);
+      expect(talked).toHaveLength(2);
+      // Under something else in the same DM: not the team's.
+      expect(await cmds.onThreadReply({ ...reply, thread_ts: '999.9' }, TEAM)).toBe(false);
+    });
+
     it('sends a reply to the team once it can talk, and leaves it when it can’t', async () => {
       const talked: unknown[] = [];
       let heard = true;

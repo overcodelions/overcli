@@ -823,8 +823,8 @@ export function createOrgControl(
       const res = org.trackItem(caller, workerId, itemId, on);
       return res.ok ? { worker: res.worker, tracked: res.tracked } : res.error;
     },
-    briefTeam: (caller, teamId, brief, thread) => {
-      const res = org.briefTeam(caller, teamId, brief, thread);
+    briefTeam: (caller, teamId, brief, thread, attachments) => {
+      const res = org.briefTeam(caller, teamId, brief, thread, attachments);
       return res.ok ? { ok: true, queued: res.task.status === 'queued' } : res;
     },
     ask: (caller, workerId, text, attachments, conversation, said, replyTo) => {
@@ -941,6 +941,17 @@ export function createOrgControl(
         if (!real.startsWith(root + path.sep)) return null;
         const st = fs.statSync(real);
         return st.isFile() && st.size <= maxBytes ? fs.readFileSync(real) : null;
+      } catch {
+        return null;
+      }
+    },
+    workerFolder: (workerId, folder) => {
+      try {
+        const root = fs.realpathSync(workerFilesDir(workerId));
+        const real = fs.realpathSync(folder);
+        // Inside its files, not the whole of them.
+        if (!real.startsWith(root + path.sep) || !fs.statSync(real).isDirectory()) return null;
+        return fs.readdirSync(real, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name);
       } catch {
         return null;
       }

@@ -68,6 +68,9 @@ describe('isReadOnlyBashCommand', () => {
     'wc -l src/*.ts 2>/dev/null',
     'head -50 README.md',
     'grep -rn foo src',
+    'grep -n "a\\|b" src/a.ts',
+    'git grep -n -i "reject\\|decline" -- src',
+    'grep -rIl --include=*.{js,ts} -i foo src | head -5',
     'sort -rn a.txt',
     'git log --oneline -n 5 --author "Pat" -- src',
     'git diff --stat --cached',
@@ -121,6 +124,10 @@ describe('isReadOnlyBashCommand', () => {
     'git --config-env=core.pager=X log',
     'git diff --output=/tmp/x',
     'git diff --ext-diff',
+    'grep "a\\$(touch x)b" f',
+    'grep "a\\`touch x\\`b" f',
+    'grep "a$(touch x)b" f',
+    'grep "a\\"b" f',
     'git grep -Osh foo',
     // git takes any unambiguous prefix of a long flag, so only flags spelled
     // out in full are accepted.

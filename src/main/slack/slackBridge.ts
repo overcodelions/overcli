@@ -628,6 +628,12 @@ export class SlackBridge {
       route(`answers the question for run ${asking.runId}`);
       return this.answer(asking, { ...ev, text: this.withoutMention(ev.text) });
     }
+    // Under a team task's card, before anything else can claim the thread: it
+    // goes to the team, not out as a new request for that team.
+    if (await this.commands?.talkUnderCard({ ...ev, text: this.withoutMention(ev.text) }, p.team_id)) {
+      route("a reply under a team task's card");
+      return;
+    }
     if (this.frontDoor?.owns(ev.channel!, ev.thread_ts)) {
       route('the front door (its thread)');
       return this.toFrontDoor(ev, true);

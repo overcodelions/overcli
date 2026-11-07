@@ -179,6 +179,26 @@ export interface SlackFile {
   permalink?: string;
 }
 
+const MAX_SLACK_ATTACHMENTS = 10;
+const MAX_SLACK_ATTACHMENT_BYTES = 25_000_000;
+
+/// Files someone shared in Slack, as attachments work can read. `failed`: the
+/// names that didn't come through (too many, too big, no access), to say so
+/// rather than losing them quietly.
+export async function slackAttachments(
+  files: SlackFile[],
+  download: (url: string, maxBytes: number) => Promise<Buffer | null>,
+): Promise<{ attachments: Array<{ id: string; mimeType: string; dataBase64: string; label?: string; size?: number }>; failed: string[] }> {
+  const attachments: Array<{ id: string; mimeType: string; dataBase64: string; label?: string; size?: number }> = [];
+  const failed: string[] = [];
+  for (const f of files) {
+    const bytes = attachments.length < MAX_SLACK_ATTACHMENTS && f.url_private && (f.size ?? 0) <= MAX_SLACK_ATTACHMENT_BYTES ? await download(f.url_private, MAX_SLACK_ATTACHMENT_BYTES).catch(() => null) : null;
+    if (bytes) attachments.push({ id: f.id, mimeType: f.mimetype || 'application/octet-stream', dataBase64: bytes.toString('base64'), label: f.name, size: bytes.length });
+    else failed.push(f.name || 'a file');
+  }
+  return { attachments, failed };
+}
+
 export interface SlackMessage {
   ts: string;
   user?: string;

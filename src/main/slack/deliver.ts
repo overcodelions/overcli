@@ -9,12 +9,14 @@ import { escapeMrkdwn } from './slackApi';
 export const SLACK_TEXT_MAX = 2800;
 /// How long an answer in a Slack thread runs: past this nobody reads it, and
 /// the detail belongs in a file or the trace.
-export const SLACK_BUDGET = 'Write for Slack: the first sentence is the answer, in bold. Then at most three short bullets, about 90 words in all. Leave out how you found it; the steps are kept for anyone who asks. Longer detail goes in a file.';
+export const SLACK_BUDGET = 'Write for Slack: the first sentence is the answer, in bold. Then at most three short bullets, about 90 words in all. Leave out how you found it; the steps are kept for anyone who asks. Longer detail goes in a file. To send someone a file you made, give its full path, or its folder\'s for several: those go up with your answer. Never say a file was shared or attached otherwise.';
 /// Past this a reply is summarized in the thread and attached whole; up to
 /// it, posted whole (Slack folds a long message behind "Show more").
 export const SLACK_LONG_REPLY = 10_000;
 const MAX_UPLOAD_BYTES = 10_000_000;
 const MAX_UPLOADS = 5;
+/// A folder a reply names is a package someone asked for: room for all of it.
+const MAX_FOLDER_UPLOADS = 8;
 /// What Slack previews or people open: documents, pages, data and images.
 /// A document written to be read, rather than data or a page to open.
 const WRITTEN = /\.(md|markdown|txt)$/i;
@@ -35,6 +37,10 @@ export interface DeliverIo {
   /// (symlinks resolved): a reply is model text, and must not be able to send
   /// Slack whatever it names on the server. Absent: named files stay text.
   workerFile?(workerId: string, path: string, maxBytes: number): Buffer | null;
+  /// The names of the files directly in a folder a worker's reply names, if
+  /// it is a folder inside that worker's own files. Each is still read through
+  /// `workerFile`. Absent: a named folder stays text.
+  workerFolder?(workerId: string, path: string): string[] | null;
 }
 
 export function clip(text: string, max: number): string {
@@ -101,6 +107,27 @@ export function pathsInReply(text: string): string[] {
   return [...new Set(found)].filter((p) => UPLOADABLE.test(p) && !p.split('/').includes('..'));
 }
 
+/// Folders a reply names by absolute path, without the trailing slash.
+export function foldersInReply(text: string): string[] {
+  const found = text.match(/\/(?:[\w.@%+~-]+\/)+[\w.@%+~-]*/g) ?? [];
+  return [...new Set(found.map((p) => p.replace(/\/$/, '')))].filter((p) => !/\.[A-Za-z0-9]{1,8}$/.test(p) && !p.split('/').includes('..'));
+}
+
+/// The files to send from a named folder: the ones the reply names first, then
+/// the rest by name. What Slack can show, nothing hidden.
+export function folderPicks(names: string[], text: string): string[] {
+  const usable = names.filter((n) => UPLOADABLE.test(n) && !n.startsWith('.')).sort();
+  return [...usable.filter((n) => text.includes(n)), ...usable.filter((n) => !text.includes(n))];
+}
+
+/// "Files are in /data/…/x/" once they're attached: no path nobody can open.
+function folderAttached(body: string, folder: string): string {
+  const at = folder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return body
+    .replace(new RegExp(`\\b(files?|they|it|everything)\\s+(are|is)\\s+(?:in|at|under)\\s+\`?${at}/?\`?`, 'gi'), '$1 $2 attached')
+    .replace(new RegExp(`\`?${at}/?\`?`, 'g'), 'the attached files');
+}
+
 export function slug(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50) || 'answer';
 }
@@ -152,6 +179,26 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
   const held = hold ? found.filter((f) => WRITTEN.test(f.name)) : [];
   const files = found.filter((f) => !held.includes(f));
   let body = text.trim() || 'Done.';
+  // A folder is a package, not a write-up of the answer: it goes up whole,
+  // whatever `hold` says about a single document.
+  let leftOut = 0;
+  if (workerId && io.workerFile && io.workerFolder) {
+    for (const folder of foldersInReply(text)) {
+      const names = io.workerFolder(workerId, folder);
+      if (!names) continue;
+      const picks = folderPicks(names, text);
+      const sendable = picks.flatMap((name) => {
+        if (files.length >= MAX_FOLDER_UPLOADS || files.some((f) => f.name === name)) return [];
+        const bytes = io.workerFile!(workerId, `${folder}/${name}`, MAX_UPLOAD_BYTES);
+        if (!bytes) return [];
+        const file = { path: `${folder}/${name}`, name, bytes };
+        files.push(file);
+        return [file];
+      });
+      leftOut += picks.length - sendable.length;
+      if (sendable.length) body = folderAttached(body, folder);
+    }
+  }
   for (const f of held) {
     body = body
       .split('\n')
@@ -171,6 +218,7 @@ export async function deliverText(io: DeliverIo, channel: string, threadTs: stri
     await io.upload(channel, threadTs, filename, Buffer.from(body, 'utf8'), as);
   }
   for (const f of files) await io.upload(channel, threadTs, f.name, f.bytes, as);
+  if (leftOut > 0) await io.post(channel, `_${leftOut === 1 ? '1 more file' : `${leftOut} more files`} on ${workerName}'s Files tab._`, threadTs, as);
   return held.map((f) => ({ path: f.path, name: f.name }));
 }
 

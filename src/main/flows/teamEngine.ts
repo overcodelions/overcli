@@ -440,6 +440,10 @@ export class TeamEngine {
     const prior = input.id ? this.teams.get(input.id) : undefined;
     if (input.id && !prior) return { ok: false, error: 'That team no longer exists.' };
     const now = this.now();
+    // Absent from the input: kept. An edit of its members doesn't change who
+    // may give it tasks; `audience: undefined` clears the picked ones.
+    const whoCanBrief = input.whoCanBrief ?? prior?.whoCanBrief;
+    const audience = 'audience' in input ? input.audience : prior?.audience;
     const projectPath = input.projectPath?.trim() || undefined;
     if (projectPath && this.deps.projects && !this.deps.projects().some((p) => p.path === projectPath)) {
       return { ok: false, error: 'That project is no longer in Overcli. Pick another, or let members work in their own.' };
@@ -467,6 +471,8 @@ export class TeamEngine {
       ...(projectPath ? { projectPath } : {}),
       ...(projectPath && input.ownProjectOnly ? { ownProjectOnly: true } : {}),
       ...(input.piecesAskFirst === false ? { piecesAskFirst: false } : {}),
+      ...(whoCanBrief && whoCanBrief !== 'managers' ? { whoCanBrief } : {}),
+      ...(audience ? { audience } : {}),
       members,
       budgetUSDPerTask: Math.round(input.budgetUSDPerTask * 100) / 100,
       checkpoints: draft.checkpoints!,
@@ -2423,6 +2429,27 @@ export class TeamEngine {
       rounds: ['respond'],
       route: false,
     });
+    return { ok: true };
+  }
+
+  /// Files for a task, into its shared folder, when they can't come with a
+  /// message right now: the team is mid-answer, or still working.
+  addFiles(taskId: UUID, attachments: Attachment[]): Result<{ names: string[] }> {
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'That task no longer exists.' };
+    const names = this.saveAttachments(task, attachments);
+    this.persist(task);
+    return { ok: true, names };
+  }
+
+  /// Give a task with no thread one: its card in a DM, once someone replies
+  /// under it. From then on it talks there. One it already has stays.
+  linkSlackThread(taskId: UUID, thread: { channel: string; threadTs: string }): Result {
+    const task = this.tasks.get(taskId);
+    if (!task) return { ok: false, error: 'That task no longer exists.' };
+    if (task.slackThread) return { ok: false, error: 'That task already has a thread.' };
+    task.slackThread = thread;
+    this.persist(task);
     return { ok: true };
   }
 

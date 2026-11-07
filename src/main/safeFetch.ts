@@ -177,9 +177,24 @@ export async function judgeFetchResolved(verdict: FetchVerdict): Promise<FetchVe
   };
 }
 
+/// The address a WebFetch call names. A permission request carries its input
+/// as JSON text (parsers/claude.ts), and anything that reads it as an object
+/// finds no address at all.
+function fetchUrl(input: unknown): unknown {
+  let value = input;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+  return value && typeof value === 'object' ? (value as { url?: unknown }).url : undefined;
+}
+
 /// Whether a WebFetch call may go, for the run or turn under `key`.
 export function judgeFetch(key: string, input: unknown): FetchVerdict {
-  const raw = input && typeof input === 'object' ? (input as { url?: unknown }).url : undefined;
+  const raw = fetchUrl(input);
   const refuse = (why: string, note: string): FetchVerdict => ({
     allow: false,
     why,

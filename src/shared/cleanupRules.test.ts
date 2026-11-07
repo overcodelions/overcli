@@ -3,6 +3,7 @@ import type { WorktreeSweepEntry } from './types';
 import {
   DEFAULT_CLEANUP_RULES,
   describeRules,
+  parkedAfterDays,
   retirable,
   runawayProducers,
 } from './cleanupRules';
@@ -179,5 +180,29 @@ describe('describeRules', () => {
   it('describes the active rule in days', () => {
     expect(describeRules(DEFAULT_CLEANUP_RULES)).toContain('7 days old');
     expect(describeRules({ ...DEFAULT_CLEANUP_RULES, retireAfterDays: 1 })).toContain('a day old');
+  });
+});
+
+describe('retirable: a workspace run is one unit', () => {
+  const rules = { retireAfterDays: 7, keepPerProducer: 1, warnAtCount: 25 };
+  const tree = (runId: string, repo: string, daysAgo: number) =>
+    shift('w', daysAgo, { worktreePath: `/wt/${runId}/${repo}`, claim: { worktreePath: `/wt/${runId}/${repo}`, kind: 'run', title: 'Shift', workerId: 'w', runId } });
+  const unitOf = (e: WorktreeSweepEntry) => e.claim?.runId ?? e.worktreePath;
+
+  it('keeps the newest N runs whole, not the newest N trees', () => {
+    const entries = [tree('new', 'a', 30), tree('new', 'b', 30), tree('new', 'c', 30), tree('old', 'a', 40), tree('old', 'b', 40)];
+    const picked = retirable(entries, rules, keyOf, ageOf, NOW, unitOf).map((e) => e.worktreePath);
+    expect(picked.sort()).toEqual(['/wt/old/a', '/wt/old/b']);
+  });
+
+  it('still counts trees without a unit function', () => {
+    const entries = [tree('new', 'a', 30), tree('new', 'b', 30)];
+    expect(retirable(entries, rules, keyOf, ageOf, NOW)).toHaveLength(1);
+  });
+
+  it('waits at least the minimum for a paused run, and not at all when off', () => {
+    expect(parkedAfterDays({ ...rules, retireAfterDays: 7 })).toBe(14);
+    expect(parkedAfterDays({ ...rules, retireAfterDays: 30 })).toBe(30);
+    expect(parkedAfterDays({ ...rules, retireAfterDays: 0 })).toBeUndefined();
   });
 });

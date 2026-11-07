@@ -92,6 +92,8 @@ import {
   worktreeNameTaken,
 } from '../git';
 import { branchSlugFromPrompt } from './branchName';
+import { launchProgressMessage, launchTimingSummary, MAX_CONCURRENT_WORKTREE_FORKS } from './launchProgress';
+import { pooled } from '../pooled';
 import { coordinatorRootPath, ensureCoordinatorSymlinkRoot, removeCoordinatorSymlinkRoot } from '../workspace';
 import {
   pendingWorkspaceMembers,
@@ -2363,6 +2365,98 @@ export class FlowRuntimeImpl {
         log('error', 'flows.deleteRun', 'worktree remove threw', err);
       }
     }
+  }
+
+  /// Give up some of a workspace run's worktrees and keep the run: how a clean
+  /// tree is cleared when another tree in the run holds work. Each tree is
+  /// checked again here, at the moment of removal, and git is left to refuse
+  /// one that changed (no --force). A branch is deleted only if the tree never
+  /// moved off its starting commit, so nothing committed can go with it.
+  /// Resuming re-creates what a paused run gave up (`adoptWorkspaceMembers`).
+  async retireRunWorktrees(args: { runId: UUID; worktreePaths: string[] }): Promise<
+    | { ok: true; removed: string[]; kept: Array<{ worktreePath: string; reason: string }> }
+    | { ok: false; error: string }
+  > {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    const working = () => run.state.kind === 'running' || run.state.kind === 'watching';
+    if (working()) return { ok: false, error: 'The run is working.' };
+    if (run.adoptedWorktree || run.scratchRoot || !run.workspaceWorktrees?.length) {
+      return { ok: false, error: 'This run has no worktrees of its own to give up one at a time.' };
+    }
+    if (run.state.kind === 'paused' && !run.sourceProjectPath) {
+      return { ok: false, error: 'This paused run could not get its worktrees back on resume.' };
+    }
+    const removed: string[] = [];
+    const kept: Array<{ worktreePath: string; reason: string }> = [];
+    for (const worktreePath of args.worktreePaths) {
+      const keep = (reason: string): void => {
+        kept.push({ worktreePath, reason });
+      };
+      const members: NonNullable<FlowRun['workspaceWorktrees']> = run.workspaceWorktrees;
+      const member = members.find((m) => resolve(m.worktreePath) === resolve(worktreePath));
+      if (!member) {
+        keep('it does not belong to this run');
+        continue;
+      }
+      if (working()) {
+        keep('the run started working');
+        continue;
+      }
+      // Adoption copies a sibling's branch name, so a paused run needs one left.
+      if (run.state.kind === 'paused' && run.workspaceWorktrees.length <= 1) {
+        keep('a paused run keeps one so it can resume');
+        continue;
+      }
+      const status = await runGitAsync(['status', '--porcelain'], member.worktreePath);
+      if (status.exitCode !== 0 || status.stdout.trim()) {
+        keep('it has uncommitted changes');
+        continue;
+      }
+      const head = await runGitAsync(['rev-parse', 'HEAD'], member.worktreePath);
+      const baseline = run.baselineCommitsByMember?.[member.name]?.commit;
+      const untouched = head.exitCode === 0 && !!baseline && head.stdout.trim() === baseline;
+      if (!untouched) {
+        const base = run.baseBranch && (await baseBranchExistsAsync(member.projectPath, run.baseBranch))
+          ? run.baseBranch
+          : await detectBaseBranchAsync(member.projectPath);
+        const ahead = await runGitAsync(['rev-list', '--count', `${base}..HEAD`], member.worktreePath);
+        if (ahead.exitCode !== 0 || ahead.stdout.trim() !== '0') {
+          keep(`it has commits that aren't on ${base}`);
+          continue;
+        }
+      }
+      const res = await removeWorktreeAsync({
+        projectPath: member.projectPath,
+        worktreePath: member.worktreePath,
+        branchName: untouched ? member.branchName : '',
+        force: false,
+      });
+      if (!res.ok) {
+        keep(res.error ?? 'git refused to remove it');
+        continue;
+      }
+      if (res.warning) log('warn', 'flows.retireRunWorktrees', `${member.name}: ${res.warning}`);
+      run.workspaceWorktrees = members.filter((m) => m !== member);
+      if (run.baselineCommitsByMember?.[member.name]) {
+        const { [member.name]: _gone, ...rest } = run.baselineCommitsByMember;
+        run.baselineCommitsByMember = rest;
+      }
+      removed.push(worktreePath);
+    }
+    if (removed.length > 0) {
+      // The farm is a running step's cwd: leave it alone if one has started.
+      if (!working()) {
+        const linked = ensureCoordinatorSymlinkRoot(
+          run.id,
+          run.workspaceWorktrees.map((m) => ({ name: m.name, worktreePath: m.worktreePath })),
+        );
+        if (!linked.ok) log('warn', 'flows.retireRunWorktrees', `relink failed: ${linked.error}`);
+      }
+      this.emitRunUpdate(run);
+      this.checkpoint(run);
+    }
+    return { ok: true, removed, kept };
   }
 
   /// Permanently remove a run from memory + disk. Aborts it first if
@@ -4878,15 +4972,23 @@ export class FlowRuntimeImpl {
         args.name,
         branchPrefix,
       );
-      // Mint every member's worktree CONCURRENTLY. They're independent
-      // repos, so a serial loop just stacked each repo's (potentially
-      // multi-second) `git worktree add` end to end; running them in
-      // parallel makes the whole launch take as long as the SLOWEST single
-      // repo rather than the sum. The async runner also keeps the rest of
-      // the app responsive while they check out.
+      // Mint the members' worktrees concurrently, a bounded number at a time.
+      // They're independent repos, so a serial loop would stack each
+      // (potentially multi-second) `git worktree add` end to end, but a
+      // large workspace shouldn't start every checkout on one disk at once.
+      // The async runner also keeps the app responsive while they check out.
       let done = 0;
-      const results = await Promise.all(
-        members.map(async (p) => {
+      const pending = new Set(members.map((p) => p.name));
+      const timings: Array<{ name: string; ms: number }> = [];
+      const startedAt = Date.now();
+      this.emitLaunchProgress(args.projectPath, {
+        completed: 0,
+        total: members.length,
+        message: `Preparing ${members.length} worktrees…`,
+      });
+      const results = await pooled(
+        members.map((p) => async () => {
+          const memberStartedAt = Date.now();
           // A shared base is a HINT across N independent repos, not a
           // contract. The launcher only offers names that exist in every
           // member (BaseBranchSelect intersects the lists), but a stored
@@ -4914,16 +5016,18 @@ export class FlowRuntimeImpl {
             baseBranch,
             branchPrefix,
           });
+          pending.delete(p.name);
+          timings.push({ name: p.name, ms: Date.now() - memberStartedAt });
           this.emitLaunchProgress(args.projectPath, {
             completed: ++done,
             total: members.length,
-            message: r.ok
-              ? `Prepared worktree for ${p.name}`
-              : `Worktree failed for ${p.name}`,
+            message: launchProgressMessage({ justFinished: p.name, ok: r.ok, pending: [...pending] }),
           });
           return { p, r };
         }),
+        MAX_CONCURRENT_WORKTREE_FORKS,
       );
+      log('info', 'flows', launchTimingSummary(timings, Date.now() - startedAt));
       const failed = results.find((x) => !x.r.ok);
       if (failed && !failed.r.ok) {
         return {

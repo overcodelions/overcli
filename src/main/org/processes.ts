@@ -253,6 +253,13 @@ export class ProcessService {
   /// A process as this caller may see it: whole to its owner and admins;
   /// without the code's path to the others in it; as an outline to everyone
   /// else.
+  /// Who may put work in, to show: the kind and the teams, never the people
+  /// named, which the outline keeps from most callers.
+  private whoStarts(def: ProcessDef): { who: ProcessAudience; groups: string[] } {
+    const access = accessOf(def);
+    return { who: access.who, groups: (access.groups ?? []).map((g) => g.name) };
+  }
+
   private shownTo(caller: OrgCaller, def: ProcessDef, all = this.seesAll(caller, def), shortNames = this.shortNames()): ProcessDef {
     const short = shortNames.get(def.id);
     const named = short ? { ...def, shortName: short, ...(def.shortName ? {} : { shortNameAuto: true }) } : def;
@@ -347,9 +354,7 @@ export class ProcessService {
           byStage: p.stages.map((_, n) => live.filter((i) => i.stageIndex === n).length),
           canSteer: this.steers(caller, p),
           canStart: this.mayStart(caller, p),
-          // Who may put work in, for its card: the kind and the teams, never
-          // the people named, which the outline keeps from most callers.
-          whoStarts: { who: accessOf(p).who, groups: (accessOf(p).groups ?? []).map((g) => g.name) },
+          whoStarts: this.whoStarts(p),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -359,7 +364,7 @@ export class ProcessService {
     caller: OrgCaller,
     id: string,
   ): Result<{
-    process: ProcessDef & { canSteer: boolean; canStart: boolean };
+    process: ProcessDef & { canSteer: boolean; canStart: boolean; whoStarts: { who: ProcessAudience; groups: string[] } };
     items: ProcessItemView[];
     teams: Array<{ id: string; name: string }>;
     workers: Array<{ id: string; name: string }>;
@@ -379,7 +384,7 @@ export class ProcessService {
     const used = new Set(def.stages.map((st) => st.workerId).filter(Boolean));
     return {
       ok: true,
-      process: { ...this.shownTo(caller, def, all), canSteer: this.steers(caller, def), canStart: this.mayStart(caller, def) },
+      process: { ...this.shownTo(caller, def, all), canSteer: this.steers(caller, def), canStart: this.mayStart(caller, def), whoStarts: this.whoStarts(def) },
       items,
       teams: all ? this.deps.teams().map((t) => ({ id: t.id, name: t.name })) : [],
       workers: (all ? (this.deps.workers?.() ?? []) : [])

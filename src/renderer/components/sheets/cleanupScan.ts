@@ -16,12 +16,15 @@
 
 import { create } from 'zustand';
 import type { OrphanTranscriptEntry, UUID, WorktreeSweepEntry } from '@shared/types';
-import { DEFAULT_CLEANUP_RULES, retirable, type CleanupRules } from '@shared/cleanupRules';
+import { DEFAULT_CLEANUP_RULES, parkedAfterDays, retirable, type CleanupRules } from '@shared/cleanupRules';
 import { useStore } from '../../store';
 import { getAllRunners } from '../../runnersStore';
 import {
   conversationClaims,
+  describeAutoTidy,
   entryAgeAt,
+  unitKeyFor,
+  type AutoTidyReport,
   formatSize,
   groupKeyFor,
   isActionable,
@@ -31,12 +34,7 @@ import {
   type CleanupPlan,
 } from './cleanup';
 
-export interface AutoTidyReport {
-  at: number;
-  removed: number;
-  freedKb: number;
-  warnings: string[];
-}
+export { describeAutoTidy, type AutoTidyReport };
 
 interface CleanupScanState {
   entries: WorktreeSweepEntry[] | null;
@@ -90,7 +88,7 @@ export function ruleSelection(entries: WorktreeSweepEntry[], rules: CleanupRules
   if (rules.retireAfterDays <= 0) {
     return entries.filter((e) => e.bucket === 'reclaimable').map((e) => e.worktreePath);
   }
-  return retirable(entries, rules, (e) => groupKeyFor(e).key, entryAgeAt, Date.now()).map(
+  return retirable(entries, rules, (e) => groupKeyFor(e).key, entryAgeAt, Date.now(), unitKeyFor).map(
     (e) => e.worktreePath,
   );
 }
@@ -124,6 +122,7 @@ export function startScan(opts?: { measureSizes?: boolean | 'auto' }): Promise<W
         projects: ps.map((p) => ({ path: p.path, name: p.name })),
         claims: conversationClaims([...ps, ...ws], runningById()),
         measureSizes: opts?.measureSizes ?? 'auto',
+        parkedAfterDays: parkedAfterDays(rulesNow()),
       });
       // Cheap enough to ride along with every scan: a handful of file stats
       // per folder, no git and no `du`.
@@ -189,7 +188,14 @@ export async function removeUnits(args: {
   const pathsFor = (match: (e: WorktreeSweepEntry) => boolean) =>
     selected.filter(match).map((e) => e.worktreePath);
 
+  const retireTrees = [...plan.retireRunTrees];
   for (const runId of plan.removeRunIds) {
+    // Unattended, a run that owns more than these trees gives up just these:
+    // one tree holding work must not keep its clean siblings on disk.
+    if (args.releaseChats && plan.runsHoldingMore.includes(runId)) {
+      retireTrees.push({ runId, worktreePaths: pathsFor((e) => e.claim?.runId === runId) });
+      continue;
+    }
     // `force` bypasses the flow runtime's own guard against deleting a run
     // whose worktrees hold unreviewed work. It is only ours to pass when
     // every tree that run owns is in this selection. Unattended, never: the
@@ -205,6 +211,20 @@ export async function removeUnits(args: {
       );
       kept.push(...pathsFor((e) => e.claim?.runId === runId));
     }
+  }
+  for (const { runId, worktreePaths } of retireTrees) {
+    const title = selected.find((e) => e.claim?.runId === runId)?.claim?.title ?? runId;
+    const res = await window.overcli.invoke('flows:retireRunWorktrees', { runId, worktreePaths });
+    if (!res.ok) {
+      warnings.push(`${title}: ${res.error}`);
+      kept.push(...worktreePaths);
+      continue;
+    }
+    const reasons = [...new Set(res.kept.map((k) => k.reason))];
+    if (reasons.length > 0) {
+      warnings.push(`${title}: kept ${res.kept.length} worktree${res.kept.length === 1 ? '' : 's'}: ${reasons.join('; ')}`);
+    }
+    kept.push(...res.kept.map((k) => k.worktreePath));
   }
   for (const convId of plan.removeAgentIds) {
     // Unattended: main checks the tree again at the moment of removal.
@@ -275,7 +295,7 @@ export async function runAutoTidy(): Promise<AutoTidyReport | null> {
 async function retire(selected: WorktreeSweepEntry[], all: WorktreeSweepEntry[], warnings: string[] = []): Promise<AutoTidyReport> {
   const res = await removeUnits({ selected, all, keepBranch: true, releaseChats: true });
   pruneRemoved(res.attempted, res.kept);
-  const report = { at: Date.now(), removed: res.removed, freedKb: res.freedKb, warnings: [...warnings, ...res.warnings] };
+  const report = { at: Date.now(), removed: res.removed, freedKb: res.freedKb, warnings: [...warnings, ...res.warnings], kept: res.kept.length };
   useCleanupScan.setState({ lastAutoTidy: report });
   return report;
 }
@@ -323,16 +343,6 @@ export function autoRunEnabled(rules: CleanupRules): boolean {
   // Undecided and already told "not now" this session.
   if (rules.autoRun !== true && consentDeferred) return false;
   return true;
-}
-
-export function describeAutoTidy(report: AutoTidyReport | null, measured: boolean): string | null {
-  if (!report) return null;
-  if (report.removed === 0) return 'Auto-tidy ran — nothing was due to retire.';
-  return (
-    `Auto-tidy retired ${report.removed} worktree${report.removed === 1 ? '' : 's'}` +
-    (measured && report.freedKb > 0 ? `, freed ${formatSize(report.freedKb)}` : '') +
-    '.'
-  );
 }
 
 /// First pass a few minutes after launch (startup is busy enough), then

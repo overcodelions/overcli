@@ -401,7 +401,10 @@ export function createOrgService(
       comment: (taskId, input) => engines.teams?.()?.comment(taskId, input) ?? { ok: false, error: 'Teams are not running.' },
       redoPiece: (taskId, workerId, note) => engines.teams?.()?.redoPiece(taskId, workerId, note) ?? { ok: false, error: 'Teams are not running.' },
       accept: (taskId) => engines.teams?.()?.accept(taskId) ?? { ok: false, error: 'Teams are not running.' },
-      roomAsk: (taskId, text) => engines.teams?.()?.roomAsk(taskId, text) ?? { ok: false, error: 'Teams are not running.' },
+      // All of it: `feedback` is what keeps someone who didn't ask from starting work.
+      roomAsk: (taskId, text, attachments, opts) => engines.teams?.()?.roomAsk(taskId, text, attachments ?? [], opts) ?? { ok: false, error: 'Teams are not running.' },
+      addFiles: (taskId, attachments) => engines.teams?.()?.addFiles(taskId, attachments) ?? { ok: false, error: 'Teams are not running.' },
+      linkSlackThread: (taskId, thread) => engines.teams?.()?.linkSlackThread(taskId, thread) ?? { ok: false, error: 'Teams are not running.' },
       roomContinue: (taskId) => engines.teams?.()?.roomContinue(taskId) ?? { ok: false, error: 'Teams are not running.' },
       updatePack: (taskId, opts) => engines.teams?.()?.updatePack(taskId, opts) ?? { ok: false, error: 'Teams are not running.' },
       learn: (teamId, opts) => engines.teams?.()?.learn(teamId, opts) ?? { ok: false, error: 'Teams are not running.' },

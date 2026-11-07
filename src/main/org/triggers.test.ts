@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { itemsFrom } from './mcpDirect';
-import { TriggerService, eventItem, readsAsQuestion, type Deliverable, type WorkerTrigger } from './triggers';
+import { TriggerService, eventItem, namesWorker, readsAsQuestion, type Deliverable, type WorkerTrigger } from './triggers';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -318,6 +318,59 @@ describe('slack triggers', () => {
     }
   });
 
+  it('hears a message with a screenshot, and not the edits and joins around it', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ reply: 'Answered.', quietMs: 5000 });
+      const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'listen' }, deliver: [] });
+      if (!made.ok) throw new Error(made.error);
+      const said = { type: 'message', channel: 'C0ACMESUP', user: 'U1' };
+      expect(await h.svc.slackEvent({ ...said, ts: '7.1', subtype: 'file_share', text: 'Is there a way to change this text?' })).toBe(true);
+      await vi.advanceTimersByTimeAsync(5100);
+      expect(h.asked).toHaveLength(1);
+      // A picture alone says nothing it can read, and these aren't anyone speaking.
+      expect(await h.svc.slackEvent({ ...said, ts: '7.2', subtype: 'file_share', text: '' })).toBe(false);
+      expect(await h.svc.slackEvent({ ...said, ts: '7.3', subtype: 'message_changed', text: 'edited' })).toBe(false);
+      expect(await h.svc.slackEvent({ ...said, ts: '7.4', subtype: 'channel_join', text: 'joined' })).toBe(false);
+      await vi.advanceTimersByTimeAsync(5100);
+      expect(h.asked).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('joins a thread it has not spoken in when someone names it, and follows it from then on', async () => {
+    const h = harness({ reply: 'Yes, under Settings.' });
+    const made = h.svc.create({ ...watch(), kind: 'slack', watch: undefined, slack: { channel: 'C0ACMESUP', on: 'listen' }, deliver: [] });
+    if (!made.ok) throw new Error(made.error);
+    const said = { type: 'message', channel: 'C0ACMESUP', user: 'U1', thread_ts: '8.1' };
+    expect(await h.svc.slackEvent({ ...said, ts: '8.2', text: 'I think it is under Settings' })).toBe(false);
+    expect(h.asked).toHaveLength(0);
+    expect(await h.svc.slackEvent({ ...said, ts: '8.3', text: 'Triage, what do you think?' })).toBe(true);
+    await tick();
+    expect(h.asked).toHaveLength(1);
+    expect(h.asked[0]).toContain('it names you');
+    expect(h.asked[0]).not.toContain('you already answered in');
+    expect(h.posts).toEqual(['C0ACMESUP@8.1:Yes, under Settings.']);
+    // Part of the thread now: no name needed, and it's told so.
+    expect(await h.svc.slackEvent({ ...said, ts: '8.4', text: 'and for partners?' })).toBe(true);
+    await tick();
+    expect(h.asked[1]).toContain('you already answered in');
+  });
+
+  it('tells being called on from a word that happens to match', () => {
+    expect(namesWorker('Ada', 'Ada, what do you think?')).toBe(true);
+    expect(namesWorker('Ada', 'ada, what do you think?')).toBe(true);
+    expect(namesWorker('Ada', 'hey ada can you look')).toBe(true);
+    expect(namesWorker('Ada', 'what does Ada think?')).toBe(true);
+    expect(namesWorker('Ada', 'canada is closed today')).toBe(false);
+    expect(namesWorker('Ada', 'Canada is closed today')).toBe(false);
+    expect(namesWorker('Triage', 'we should triage these first')).toBe(false);
+    expect(namesWorker('Triage', 'Triage, can you pick this up?')).toBe(true);
+    expect(namesWorker('C++ bot', 'C++ bot, thoughts?')).toBe(true);
+    expect(namesWorker(undefined, 'Ada, thoughts?')).toBe(false);
+  });
+
   it('knows what reads as a whole question', () => {
     expect(readsAsQuestion(['the export page is blank?'])).toBe(true);
     expect(readsAsQuestion(['How does lead routing work'])).toBe(true);
@@ -608,18 +661,32 @@ describe('slack triggers', () => {
       expect(h.posts.some((p) => p.startsWith('owner:') && p.includes('Out of turns'))).toBe(true);
     });
 
-    it('tells the thread when the work fails after its manager released the first answer', async () => {
-      const h = harness({ reply: 'Looking in the code.', launched: 1, owner: true });
+    it('does the work quietly, then holds only what it found', async () => {
+      const h = harness({ reply: "This needs a code check, so I'm sending one read-only run.", launched: 1, owner: true });
       const made = h.svc.create(rehearsing());
       if (!made.ok) throw new Error(made.error);
       await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.10', text: 'where is the template?' });
       await tick();
+      // Its reasoning goes nowhere: not to the thread, and not up for posting.
+      expect(h.reviews).toEqual([]);
+      expect(h.posts).toEqual([]);
+      await h.svc.handedBack('a1', { ok: true, reply: 'It lives in templates/confirm.html.' });
+      expect(h.reviews).toHaveLength(1);
+      expect(h.reviews[0].text).toContain('It lives in templates/confirm.html.');
+      expect(h.reviews[0].text).not.toContain('code check');
+      expect(h.reviews[0].text).not.toContain('It also started work');
       expect(await h.svc.release(h.reviews[0].id)).toEqual({ ok: true });
-      expect(h.posts.filter((p) => p.startsWith('C0ACMESUP@'))).toEqual(['C0ACMESUP@8.10:Looking in the code.']);
-      await h.svc.handedBack('a1', { ok: false, error: 'Out of turns' });
-      // The thread heard an answer was coming, so it hears it isn't; its manager too.
-      expect(h.posts.filter((p) => p.startsWith('C0ACMESUP@'))[1]).toMatch(/^C0ACMESUP@8\.10:_I couldn't finish looking into this/);
-      expect(h.posts.some((p) => p.startsWith('owner:') && p.includes('Out of turns'))).toBe(true);
+      expect(h.posts.filter((p) => p.startsWith('C0ACMESUP@'))).toEqual(['C0ACMESUP@8.10:It lives in templates/confirm.html.']);
+    });
+
+    it('still holds an answer it gave straight away', async () => {
+      const h = harness({ reply: 'Under Settings.', owner: true });
+      const made = h.svc.create(rehearsing());
+      if (!made.ok) throw new Error(made.error);
+      await h.svc.slackEvent({ type: 'message', channel: 'C0ACMESUP', user: 'U1', ts: '8.11', text: 'where is the template?' });
+      await tick();
+      expect(h.reviews).toHaveLength(1);
+      expect(h.reviews[0].text).toContain('Under Settings.');
     });
 
     const rehearsing = () => ({ ...watch(), instructions: '', kind: 'slack' as const, watch: undefined, slack: { channel: 'C0ACMESUP', on: 'listen' as const }, deliver: [], rehearse: true });

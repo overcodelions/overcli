@@ -26,7 +26,8 @@ import type { Worker } from '../../shared/flows/worker';
 import type { TeamTask } from '../../shared/flows/team';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { MainToRendererEvent } from '../../shared/types';
-import { escapeMrkdwn, fetchMessage, isMissingScope, openIm, openView, postMessage, updateMessage, uploadFile, userName, type FetchLike } from './slackApi';
+import { downloadFile, escapeMrkdwn, fetchMessage, isMissingScope, openIm, openView, postMessage, slackAttachments, updateMessage, uploadFile, userName, type FetchLike, type SlackFile } from './slackApi';
+import type { Attachment } from '../../shared/types';
 import { HIRE_EDIT_VIEW, TEAM_EDIT_VIEW, WORKER_EDIT_VIEW, hireEditView, readHireEdit, readWorkerEdit, workerEditView, readTeamEdit, teamEditView, type EditMeta, type TeamDraftForm } from './editForms';
 import { DEFAULT_TEAM_CHECKPOINTS } from '../../shared/flows/team';
 import type { ProcessPerson } from '../../shared/org/process';
@@ -558,7 +559,7 @@ export class SlackCommands {
       responseUrl,
       (res.task.status === 'queued'
         ? `${res.task.teamName} is busy on another task, so this one is next in line. Its coordinator will DM you when it starts.`
-        : `${res.task.teamName} is on it. Its coordinator will DM you with questions or a plan to approve.`) + tip,
+        : `${res.task.teamName} is on it. Its coordinator will DM you with questions or a plan to approve.`) + tip + ` Have files for it? A slash command can't carry them: DM me \`${res.task.teamName}: …\` with them attached, or reply with them under the task's card.`,
     );
   }
 
@@ -988,7 +989,7 @@ export class SlackCommands {
     }
     if (trust && trust !== w.trust) {
       const res = org.setTrust(caller, workerId, trust);
-      if (res.ok) said.push(`how much it does alone (${({ probation: 'asks first', trusted: 'trusted', autonomous: 'on its own' } as const)[trust]})`);
+      if (res.ok) said.push(`how much it does alone (${({ probation: 'asks before work', trusted: 'trusted', autonomous: 'on its own' } as const)[trust]})`);
       else failed.push(res.error);
     }
     if (!caller.slackUserId) return;
@@ -1038,7 +1039,7 @@ export class SlackCommands {
   /// A DM sent beside a team's questions rather than in their thread: taken
   /// as the answer when they're the only team questions waiting in this DM.
   /// False when there are none, or several, so the bridge routes it as usual.
-  async answerLoneTeamQuestion(event: { channel?: string; user?: string; text?: string; ts?: string }, teamId: unknown): Promise<boolean> {
+  async answerLoneTeamQuestion(event: { channel?: string; user?: string; text?: string; ts?: string; files?: SlackFile[] }, teamId: unknown): Promise<boolean> {
     if (!event.channel || !event.user) return false;
     // Only questions still waiting: a task that moved on (answered in the
     // console, cancelled, planned without them) leaves its thread behind,
@@ -1084,18 +1085,21 @@ export class SlackCommands {
   /// here. A reply naming someone else first is people talking, and is left
   /// alone. False when there's no task here or it can't take it, so the
   /// bridge routes it as usual.
-  async talkInThread(event: { channel?: string; thread_ts?: string; user?: string; text?: string }, teamId: unknown): Promise<boolean> {
+  async talkInThread(event: { channel?: string; thread_ts?: string; user?: string; text?: string; files?: SlackFile[] }, teamId: unknown): Promise<boolean> {
     if (!event.channel || !event.thread_ts || !event.user || !this.fromOurTeam(teamId)) return false;
     const thread = { channel: event.channel, threadTs: event.thread_ts };
     const task = this.deps.org.teamTaskInThread(thread);
     if (!task) return false;
     const text = (event.text ?? '').trim();
-    if (!text || text.startsWith('<@')) return true;
+    const shared = event.files ?? [];
+    if ((!text && !shared.length) || text.startsWith('<@')) return true;
     if (STOP_WORDS.test(text) && task.status !== 'done' && task.status !== 'failed' && task.status !== 'cancelled' && task.status !== 'review') {
       await this.stopFromThread(event, task.id, task);
       return true;
     }
-    const res = this.deps.org.talkInTeamThread(this.caller(event.user), thread, text);
+    const attachments = await this.sharedFiles(event.channel, event.thread_ts, shared, task);
+    if (!text && !attachments.length) return true;
+    const res = this.deps.org.talkInTeamThread(this.caller(event.user), thread, text || 'Here are some files for this.', attachments as Attachment[]);
     if (!res.ok) {
       await this.teamReply(event.channel, event.thread_ts, res.error, task);
       return true;
@@ -1103,6 +1107,45 @@ export class SlackCommands {
     if (res.heard && res.queued) await this.teamReply(event.channel, event.thread_ts, 'They’re finishing a reply. Yours is next.', task);
     if (res.heard && res.noted) await this.teamReply(event.channel, event.thread_ts, res.replanned ? 'Thanks, the coordinator is changing the plan with that.' : 'Thanks, the team will take that into account in the work it starts next.', task);
     return res.heard;
+  }
+
+  /// A reply under a team task's card in someone's DM goes to the team, for a
+  /// task asked for without a channel thread: that's the only place they could
+  /// say anything in Slack. The card's thread becomes the task's, so the answers
+  /// come back under it. False when it isn't under a card.
+  async talkUnderCard(event: { channel?: string; thread_ts?: string; user?: string; text?: string; files?: SlackFile[] }, teamId: unknown): Promise<boolean> {
+    if (!event.channel || !event.thread_ts || !event.user || !this.fromOurTeam(teamId)) return false;
+    this.cardOf('');
+    const card = Object.entries(this.cards ?? {}).find(([, c]) => c.channel === event.channel && c.ts === event.thread_ts && !c.threadTs);
+    if (!card) return false;
+    const thread = { channel: event.channel, threadTs: event.thread_ts };
+    if (!this.deps.org.teamTaskInThread(thread) && !this.deps.org.linkTeamThread(card[0], thread).ok) return false;
+    return this.talkInThread(event, teamId);
+  }
+
+  /// Files shared in Slack, as attachments. Says in the thread which couldn't
+  /// come through rather than losing them quietly.
+  private async sharedFiles(channel: string, threadTs: string, files: SlackFile[], task: { teamId: string; teamName: string } | undefined): Promise<Attachment[]> {
+    if (!files.length) return [];
+    const bot = this.deps.botToken();
+    const { attachments, failed } = await slackAttachments(files, async (url, max) => {
+      if (!bot) return null;
+      const got = await downloadFile(bot, url, max, this.deps.fetchImpl);
+      return got.ok ? got.data : null;
+    });
+    if (failed.length) await this.teamReply(channel, threadTs, `I couldn't pass on ${failed.join(', ')}. Add ${failed.length === 1 ? 'it' : 'them'} on the task's page, or paste what matters here.`, task);
+    return attachments as Attachment[];
+  }
+
+  /// An answer to a team's questions, with any files sent along it put in the
+  /// task's folder and named, so the coordinator plans knowing they're there.
+  private async answerWithFiles(event: { channel?: string; thread_ts?: string; text?: string; files?: SlackFile[] }, taskId: string, task: { teamId: string; teamName: string } | undefined): Promise<string> {
+    const text = (event.text ?? '').trim();
+    const attachments = await this.sharedFiles(event.channel!, event.thread_ts!, event.files ?? [], task);
+    if (!attachments.length) return text;
+    const saved = this.deps.org.addTeamFiles(taskId, attachments);
+    if (!saved.ok || !saved.names.length) return text;
+    return `${text}${text ? '\n\n' : ''}Attached, in the task's shared folder: ${saved.names.join(', ')}`;
   }
 
   /// A team's conversation, into the channel thread its task was asked in:
@@ -1169,13 +1212,13 @@ export class SlackCommands {
   /// there can answer. Replying to another person (it starts with their name)
   /// is talking it over, and is left alone. False when no questions wait here,
   /// so the bridge routes it as usual.
-  async answerInThread(event: { channel?: string; thread_ts?: string; user?: string; text?: string }, teamId: unknown): Promise<boolean> {
+  async answerInThread(event: { channel?: string; thread_ts?: string; user?: string; text?: string; files?: SlackFile[] }, teamId: unknown): Promise<boolean> {
     if (!event.channel || !event.thread_ts || !event.user || !this.fromOurTeam(teamId)) return false;
     const key = `${event.channel}:${event.thread_ts}`;
     const taskId = this.teamThreads.get(key);
     if (!taskId) return false;
     const text = (event.text ?? '').trim();
-    if (!text || text.startsWith('<@')) return true;
+    if ((!text && !event.files?.length) || text.startsWith('<@')) return true;
     const team = typeof this.deps.org.teamTaskInThread === 'function' ? this.deps.org.teamTaskInThread({ channel: event.channel, threadTs: event.thread_ts }) : undefined;
     if (STOP_WORDS.test(text)) {
       if (await this.stopFromThread(event, taskId, team)) {
@@ -1184,7 +1227,7 @@ export class SlackCommands {
       }
       return true;
     }
-    const res = this.deps.org.answerTeamFromThread(this.caller(event.user), taskId, { channel: event.channel, threadTs: event.thread_ts }, answersFrom(text));
+    const res = this.deps.org.answerTeamFromThread(this.caller(event.user), taskId, { channel: event.channel, threadTs: event.thread_ts }, answersFrom(await this.answerWithFiles(event, taskId, team)));
     if (res.ok && !res.answered) {
       this.teamThreads.delete(key);
       this.keepTeamThreads();
@@ -1200,12 +1243,12 @@ export class SlackCommands {
 
   /// A reply in a hire interview thread. Returns false when the thread is not
   /// one of ours, so the bridge can ignore it.
-  async onThreadReply(event: { channel?: string; thread_ts?: string; user?: string; text?: string }, teamId: unknown): Promise<boolean> {
+  async onThreadReply(event: { channel?: string; thread_ts?: string; user?: string; text?: string; files?: SlackFile[] }, teamId: unknown): Promise<boolean> {
     const key = `${event.channel}:${event.thread_ts}`;
     const taskId = this.teamThreads.get(key) ?? (event.user ? await this.teamQuestionThread(event, this.caller(event.user)) : undefined);
     if (taskId && event.user && this.fromOurTeam(teamId)) {
       const text = (event.text ?? '').trim();
-      if (!text) return true;
+      if (!text && !event.files?.length) return true;
       const team = this.teamOfTask(this.caller(event.user), taskId);
       if (STOP_WORDS.test(text)) {
         if (await this.stopFromThread(event, taskId, team)) {
@@ -1214,7 +1257,7 @@ export class SlackCommands {
         }
         return true;
       }
-      const res = this.deps.org.decideTeamTask(this.caller(event.user), taskId, { kind: 'answer', answers: answersFrom(text) });
+      const res = this.deps.org.decideTeamTask(this.caller(event.user), taskId, { kind: 'answer', answers: answersFrom(await this.answerWithFiles(event, taskId, team)) });
       await this.teamReply(event.channel!, event.thread_ts!, res.ok ? 'Thanks — the coordinator is planning with that.' : res.error, team);
       if (res.ok) {
         this.teamThreads.delete(key);
@@ -1222,6 +1265,7 @@ export class SlackCommands {
       }
       return true;
     }
+    if (await this.talkUnderCard(event, teamId)) return true;
     const hireId = this.hireThreads.get(key);
     if (!hireId || !event.user || !this.fromOurTeam(teamId)) return false;
     const caller = this.caller(event.user);

@@ -72,6 +72,18 @@ export function describeTool(name: string, inputJSON: string): string {
   return name;
 }
 
+/// The line a shell refusal comes back with. It says nothing the line above it
+/// doesn't, once that one names the command. A refusal with a reason of its
+/// own (a fetch, a tool) keeps its line: that reason is the thing to read.
+const SHELL_REFUSAL = /^Refused by policy, not by a person: (?:that shell command|this worker reads code)/;
+
+/// What was refused: the command or address itself where there is one.
+function refusedText(tool: string, input: string): string {
+  if (tool !== 'Bash' && tool !== 'WebFetch') return `Not allowed: ${tool}`;
+  const said = describeTool(tool, input).replace(/^(?:Ran|Opened) /, '');
+  return `Not allowed: ${said.trim() ? said : tool}`;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SAFE_ID = /^[A-Za-z0-9_-]{1,80}$/;
 
@@ -133,9 +145,9 @@ export class RunActivity {
         if (k.info.text.trim()) this.push(runId, { at, kind: 'said', text: clip(k.info.text, 400) });
         for (const t of k.info.toolUses) this.push(runId, { at, kind: 'tool', text: describeTool(t.name, t.inputJSON) });
       } else if (k.type === 'toolResult') {
-        for (const r of k.results) if (r.isError) this.push(runId, { at, kind: 'error', text: clip(r.content, 200) });
+        for (const r of k.results) if (r.isError && !SHELL_REFUSAL.test(r.content)) this.push(runId, { at, kind: 'error', text: clip(r.content, 200) });
       } else if (k.type === 'permissionRequest' && k.info.decided === 'deny') {
-        this.push(runId, { at, kind: 'denied', text: `Not allowed: ${k.info.toolName}` });
+        this.push(runId, { at, kind: 'denied', text: refusedText(k.info.toolName, k.info.toolInput) });
       }
     }
   }

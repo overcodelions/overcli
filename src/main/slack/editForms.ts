@@ -182,7 +182,7 @@ const JOB_MAX = 3000;
 
 /// The trust levels, as the console's ladder names them.
 const TRUST: Array<[WorkerTrustLevel, string]> = [
-  ['probation', 'Asks first: proposes, you say go'],
+  ['probation', 'Asks before work: answers questions, you say go on the rest'],
   ['trusted', 'Trusted: starts its own work, asks before acting outside'],
   ['autonomous', 'On its own: acts outside without asking'],
 ];

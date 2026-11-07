@@ -10,6 +10,17 @@ afterEach(() => {
 });
 
 describe('safe fetches', () => {
+  it('reads the address from a permission request, which carries its input as JSON text', () => {
+    on();
+    noteSeen('json', 'https://vendor.example/pricing');
+    const asked = (url: string) => judgeFetch('json', JSON.stringify({ url, prompt: 'summarize' }, null, 2));
+    expect(asked('https://vendor.example/pricing')).toMatchObject({ allow: true });
+    // The address is read, so it's refused for what it is, not for having none.
+    expect(asked('https://elsewhere.example/a')).toMatchObject({ allow: false, why: expect.stringContaining('elsewhere.example') });
+    expect(judgeFetch('json', 'not json')).toMatchObject({ allow: false, why: 'no address' });
+    expect(judgeFetch('json', '{}')).toMatchObject({ allow: false, why: 'no address' });
+  });
+
   it('only checks on a server that asked for it', () => {
     expect(fetchesChecked()).toBe(false);
     on();

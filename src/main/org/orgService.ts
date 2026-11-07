@@ -699,6 +699,9 @@ export interface PersonRow {
   lastSeen?: number;
   /// Where they are signed in: one entry per token.
   devices: Array<{ id: string; where: string; lastUsedAt?: number }>;
+  /// What they've asked for from Slack and elsewhere: how often, of whom.
+  asked?: number;
+  askedOf?: string[];
 }
 
 /// A tool a hire wants that this server has no install of.
@@ -853,7 +856,7 @@ export interface OrgServiceDeps extends OverdbDeps {
   report?(sinceMs: number): WorkerReport;
   teams?: {
     list(): { teams: Team[]; tasks: TeamTask[] };
-    brief(teamId: UUID, text: string, attachments: [], projectPath: undefined, opts: { requestedBy?: TeamTask['requestedBy']; slackThread?: TeamTask['slackThread'] }): Result<{ task: TeamTask }>;
+    brief(teamId: UUID, text: string, attachments: Attachment[], projectPath: undefined, opts: { requestedBy?: TeamTask['requestedBy']; slackThread?: TeamTask['slackThread'] }): Result<{ task: TeamTask }>;
     /// Learn (or refresh) what the team knows. Absent: not offered.
     learn?(teamId: UUID, opts: { requestedBy?: TeamTask['requestedBy'] }): Result<{ task: TeamTask }>;
     /// Ask an answered question again, as work.
@@ -878,7 +881,11 @@ export interface OrgServiceDeps extends OverdbDeps {
     accept?(taskId: UUID): Result;
     /// The room: ask the team, another round on the last question, and the
     /// pack rewritten with what was said (or only the picked `changes`).
-    roomAsk?(taskId: UUID, text: string, attachments?: [], opts?: { feedback?: boolean }): Result<{ queued?: boolean }>;
+    roomAsk?(taskId: UUID, text: string, attachments?: Attachment[], opts?: { feedback?: boolean }): Result<{ queued?: boolean }>;
+    /// Files into a task's shared folder, apart from any message.
+    addFiles?(taskId: UUID, attachments: Attachment[]): Result<{ names: string[] }>;
+    /// Give a task with no thread one (its card in a DM).
+    linkSlackThread?(taskId: UUID, thread: { channel: string; threadTs: string }): Result;
     roomContinue?(taskId: UUID): Result;
     updatePack?(taskId: UUID, opts: { changes?: string[] }): Result;
     /// Push the task branch from one of its repos.
@@ -5882,7 +5889,7 @@ export class OrgService {
     const next = { ...k };
     if (patch.body !== undefined) {
       const body = patch.body.trim();
-      if (body.length > 10_000) return { ok: false, error: 'Keep it under 10,000 characters: it reads all of it every run.' };
+      if (body.length > KNOWLEDGE_MAX) return { ok: false, error: `Keep it under 10,000 characters, because it reads all of it every run. It's ${body.length.toLocaleString('en-US')} now.` };
       next.body = body;
       next.status = 'ready';
       next.updatedAt = this.now();
@@ -6316,7 +6323,7 @@ export class OrgService {
       spend: {
         spentUSD,
         projectedUSD: projectMonthEnd(spentUSD, new Date(this.now())),
-        ...(caller.slackUserId
+        ...(caller.slackUserId && !isAdmin(policy, caller)
           ? { allowanceUSD: allowanceFor(policy, caller.slackUserId), committedUSD: committedBudget(roster, caller.slackUserId) }
           : {}),
       },
@@ -7193,8 +7200,9 @@ export class OrgService {
       checkpoints: { ...DEFAULT_TEAM_CHECKPOINTS, ...(team.checkpoints ?? {}), ...(patch.checkpoints ?? {}) },
       ...(patch.budgetUSDPerTask !== undefined ? { budgetUSDPerTask: Math.round(patch.budgetUSDPerTask * 100) / 100 } : {}),
       ...((patch.piecesAskFirst ?? team.piecesAskFirst !== false) ? {} : { piecesAskFirst: false }),
-      ...(who !== 'managers' ? { whoCanBrief: who } : {}),
-      ...(audience ? { audience } : {}),
+      // Said outright, either way: the engine keeps what isn't mentioned.
+      whoCanBrief: who,
+      audience,
       ...(patch.guidance !== undefined ? { guidance: patch.guidance } : {}),
       ...(patch.shortName !== undefined ? { shortName: patch.shortName } : {}),
       ...((patch.avatarUrl === undefined ? team.avatarUrl : patch.avatarUrl?.trim()) ? { avatarUrl: (patch.avatarUrl === undefined ? team.avatarUrl : patch.avatarUrl!.trim())! } : {}),
@@ -8041,13 +8049,13 @@ export class OrgService {
   }
 
   /// Give a team a task. Anyone who manages one of its members may.
-  briefTeam(caller: OrgCaller, teamIdOrName: string, text: string, slackThread?: TeamTask['slackThread']): Result<{ task: TeamTaskSummary }> {
+  briefTeam(caller: OrgCaller, teamIdOrName: string, text: string, slackThread?: TeamTask['slackThread'], attachments: Attachment[] = []): Result<{ task: TeamTaskSummary }> {
     if (!this.deps.teams) return { ok: false, error: 'Teams are not running on this server.' };
     const key = teamIdOrName.trim().toLowerCase();
     const team = this.teams(caller).find((t) => t.id === teamIdOrName || t.name.toLowerCase() === key) ?? this.teams(caller).find((t) => t.shortName === key);
     if (!team) return { ok: false, error: 'No team by that name that you can see.' };
     if (!team.canBrief) return { ok: false, error: `You can't give ${team.name} tasks. Ask someone who manages one of its members to open it up on the team's page.` };
-    const res = this.deps.teams.brief(team.id, text, [], undefined, {
+    const res = this.deps.teams.brief(team.id, text, attachments, undefined, {
       requestedBy: { name: caller.name, ...(caller.slackUserId ? { slackUserId: caller.slackUserId } : {}) },
       ...(slackThread ? { slackThread } : {}),
     });
@@ -8258,6 +8266,17 @@ export class OrgService {
       .sort((a, b) => b.createdAt - a.createdAt)[0];
   }
 
+  /// Files someone gave a team along with an answer, into the task's folder.
+  addTeamFiles(taskId: UUID, attachments: Attachment[]): Result<{ names: string[] }> {
+    return this.deps.teams?.addFiles?.(taskId, attachments) ?? { ok: false, error: 'Teams are not running on this server.' };
+  }
+
+  /// A reply under a team task's card in a DM: that thread becomes the task's,
+  /// so the rest of the conversation happens there. Only for a task with none.
+  linkTeamThread(taskId: UUID, thread: { channel: string; threadTs: string }): Result {
+    return this.deps.teams?.linkSlackThread?.(taskId, thread) ?? { ok: false, error: 'Teams are not running on this server.' };
+  }
+
   /// Talk to a team in the channel thread of its task. It's a shared
   /// conversation, so anyone there can, named when it isn't the person who
   /// asked. Once the work is delivered it goes to the team's room; while it
@@ -8266,19 +8285,29 @@ export class OrgService {
   /// What someone else says never starts work: the plan still waits on the
   /// person who asked, and the room won't hand work off on their word.
   /// `heard` false: the task is over, or the team can't take it.
-  talkInTeamThread(caller: OrgCaller, thread: { channel: string; threadTs: string }, text: string): Result<{ heard: boolean; queued?: boolean; noted?: boolean; replanned?: boolean }> {
+  talkInTeamThread(caller: OrgCaller, thread: { channel: string; threadTs: string }, text: string, attachments: Attachment[] = []): Result<{ heard: boolean; queued?: boolean; noted?: boolean; replanned?: boolean }> {
     const teams = this.deps.teams;
     const task = this.teamTaskInThread(thread);
     if (!teams || !task) return { ok: true, heard: false };
     const own = this.askedForTask(task, caller);
     const name = `${task.teamName} in the Slack thread of "${task.title ?? task.brief.slice(0, 60)}"`;
-    const room = teams.roomAsk?.(task.id, own ? text : `${caller.name}: ${text}`, [], own ? {} : { feedback: true });
+    const said = own ? text : `${caller.name}: ${text}`;
+    const opts = own ? {} : { feedback: true };
+    let room = teams.roomAsk?.(task.id, said, attachments, opts);
+    // Files can't wait in the room's queue, and work under way has no room:
+    // they go in the shared folder, and what's said names them.
+    let filed = '';
+    if (!room?.ok && attachments.length) {
+      const saved = teams.addFiles?.(task.id, attachments);
+      if (saved?.ok && saved.names.length) filed = `\n\nAttached, in the task's shared folder: ${saved.names.join(', ')}`;
+      if (filed) room = teams.roomAsk?.(task.id, `${said}${filed}`, [], opts);
+    }
     if (room?.ok) {
       this.record(caller, `Talked to ${name}.`);
       return { ok: true, heard: true, ...(room.queued ? { queued: true } : {}) };
     }
     if (!isTaskActive(task.status) || !teams.comment) return { ok: true, heard: false };
-    const noted = teams.comment(task.id, { text: own ? text : `Feedback from ${caller.name}, who is following in the channel and didn't ask for this task: ${text}` });
+    const noted = teams.comment(task.id, { text: `${own ? text : `Feedback from ${caller.name}, who is following in the channel and didn't ask for this task: ${text}`}${filed}` });
     if (!noted.ok) return { ok: true, heard: false };
     this.record(caller, `Gave feedback to ${name}.`);
     return { ok: true, heard: true, noted: true, ...(noted.comment.outcome === 'replanned' ? { replanned: true } : {}) };
@@ -8422,6 +8451,20 @@ export class OrgService {
       row.spentUSD += spent.get(w.id) ?? 0;
       rows.set(key(m), row);
     }
+    // Whoever has used a worker or a team, signed in or not: anyone in the
+    // Slack workspace can, and an admin should see who has. A trigger isn't a
+    // person, and has no Slack id here.
+    const used = (who: { name: string; slackUserId?: string }, of: string, at: number) => {
+      if (!who.slackUserId) return;
+      const row: PersonRow = rows.get(who.slackUserId) ?? { name: who.name, slackUserId: who.slackUserId, allowanceUSD: allowanceFor(policy, who.slackUserId), role: roleOf(who.slackUserId), workers: 0, spentUSD: 0, devices: [] };
+      row.asked = (row.asked ?? 0) + 1;
+      row.askedOf = [...new Set([...(row.askedOf ?? []), of])];
+      const seen = Math.max(row.lastSeen ?? 0, at);
+      if (seen) row.lastSeen = seen;
+      rows.set(who.slackUserId, row);
+    };
+    for (const a of this.allAsks()) if (a.via !== 'trigger' && a.slackUserId) used({ name: a.by, slackUserId: a.slackUserId }, a.workerName, a.at);
+    for (const t of this.deps.teams?.list().tasks ?? []) if (t.requestedBy?.slackUserId) used({ name: t.requestedBy.name, slackUserId: t.requestedBy.slackUserId }, t.teamName, t.createdAt);
     return { ok: true, people: [...rows.values()].sort((a, b) => a.name.localeCompare(b.name)) };
   }
 
@@ -8504,7 +8547,8 @@ export class OrgService {
       ...(v ? { version: v.version } : {}),
       // Upgrading is an operator's job, so only admins hear a release is out.
       ...(v?.newer && admin ? { newer: v.newer } : {}),
-      ...(caller.slackUserId
+      // An admin has no allowance: their hires and raises aren't held to one.
+      ...(caller.slackUserId && !admin
         ? { allowanceUSD: allowanceFor(policy, caller.slackUserId), committedUSD: committedBudget(roster, caller.slackUserId) }
         : {}),
     };
@@ -8567,19 +8611,31 @@ export function learnPrompt(w: Pick<Worker, 'name' | 'mcpServers'>, before?: str
     '- who does what: owners, assignees, teams you see again and again;',
     '- where things live: documents, dashboards, repos, links you will need;',
     '- anything that surprised you or that a newcomer would get wrong.',
-    before ? `\nYour notes from last time are below. Check them against what you see now: keep what still holds, fix what changed, drop what's gone.\n\n<previous>\n${before.slice(0, 6000)}\n</previous>` : '',
+    before ? `\nYour notes from last time are below. Check them against what you see now: keep what still holds, fix what changed, drop what's gone.\n\n<previous>\n${before}\n</previous>` : '',
     '',
-    'Then write your notes as markdown, under 1,500 words, with short headed sections and exact names, keys and links. Facts you checked, not guesses: mark anything you could not confirm.',
+    `Then write your notes as markdown, under ${KNOWLEDGE_AIM.toLocaleString('en-US')} characters (about 1,200 words), with short headed sections and exact names, keys and links. You read all of it every run, and your manager adds to it, so leave out what you can look up quickly. Facts you checked, not guesses: mark anything you could not confirm.`,
     'Put the notes between <knowledge> and </knowledge>, and nothing else inside.',
   ].filter((l) => l !== '').join('\n');
 }
+
+/// The most a worker's notes may run to, and what it's asked to aim for, so
+/// there's room left for what its manager adds.
+const KNOWLEDGE_MAX = 10_000;
+const KNOWLEDGE_AIM = 8_000;
 
 /// The notes from an onboarding reply: what's inside <knowledge>, or the
 /// whole reply when it forgot the tags.
 export function readKnowledge(text: string): string | null {
   const m = /<knowledge>([\s\S]*?)<\/knowledge>/i.exec(text);
   const body = (m ? m[1] : text).trim();
-  return body.length >= 40 ? body.slice(0, 10_000) : null;
+  if (body.length < 40) return null;
+  if (body.length <= KNOWLEDGE_MAX) return body;
+  // Too long: it ends at the last whole section or line that fits, not partway
+  // through a sentence that reads as if it were complete.
+  const fits = body.slice(0, KNOWLEDGE_MAX);
+  const section = fits.lastIndexOf('\n#');
+  const end = section > KNOWLEDGE_MAX / 2 ? section : fits.lastIndexOf('\n');
+  return (end > 0 ? fits.slice(0, end) : fits).trim();
 }
 
 /// What's using the server's disk (`OrgService.storage`). Bytes; null when

@@ -31,6 +31,8 @@ const SYSTEM = [
   'A question about how something in the product works or was built (a module, a feature\'s behaviour, its logic,',
   'who wrote the code) needs a worker that reads that code: prefer one whose "Reads code" covers it. A tracker',
   'search only shows who touched tickets about it, not how it works.',
+  'When more than one worker reads that code, a question goes to the one whose job is answering questions,',
+  'not one whose job is producing designs or documents.',
   'Some entries are PROCESSES. Pick a process only when the request is a new item of the kind it takes in',
   '(a new idea for an idea process, a bug report for a bug process); never for a question about something.',
   'You may also be given recent work that may be related, each with the team or worker that made it.',

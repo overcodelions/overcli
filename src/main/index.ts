@@ -1757,7 +1757,9 @@ export function registerIpc(): void {
   ipcMain.handle('git:scanWorktrees', (_e, args) => {
     const claims: WorktreeClaim[] = [
       ...(args.claims ?? []),
-      ...flowRunClaims(flowRuntime ? flowRuntime.listRuns() : []),
+      ...flowRunClaims(flowRuntime ? flowRuntime.listRuns() : [], {
+        parkedAfterMs: args.parkedAfterDays ? args.parkedAfterDays * 24 * 60 * 60 * 1000 : undefined,
+      }),
     ];
     return scanWorktrees({ projects: args.projects, claims, measureSizes: args.measureSizes }, (p) =>
       emitToRenderer({ type: 'worktreeScanProgress', ...p }),
@@ -2691,6 +2693,10 @@ export function registerIpc(): void {
     flowRuntime ? flowRuntime.archiveRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
   ipcMain.handle('flows:listWatchSources', () => listWatchSources());
+  ipcMain.handle('flows:retireRunWorktrees', (_e, args) => {
+    if (!flowRuntime) return { ok: false, error: 'Flow runtime not initialized.' } as const;
+    return flowRuntime.retireRunWorktrees(args);
+  });
   ipcMain.handle('flows:deleteRun', (_e, args) => {
     if (!flowRuntime) return { ok: false, error: 'Flow runtime not initialized.' } as const;
     const result = flowRuntime.deleteRun(args);

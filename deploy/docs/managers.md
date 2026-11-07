@@ -21,12 +21,12 @@ The worker's **Access** tab shows this as **How much it does alone**:
 
 | Level | What it does on its own |
 |---|---|
-| **Asks first** (probation) | It proposes each run's work, and everything that reaches outside the server waits for you. New workers start here. |
+| **Asks before work** (probation) | It answers questions it can answer by reading, which doesn't need your OK. Anything more it proposes first, and everything that reaches outside the server waits for you. New workers start here. |
 | **Trusted** | It starts its own runs, and still asks before anything that changes something outside the server: a ticket, a message, a push. |
 | **On its own** (autonomous) | It starts its own work and acts outside the server without asking. Only an admin can set this. |
 
 - **Moving up:** your call. **Trust it to start its own work** (or, for an admin, **Let it act on its own**). The ladder marks a level **ready** when its record supports it, such as enough approved work and few rejections, but you can move it up before then.
-- **Moving down:** **Back to asks first**, or automatic: three rejections in a row drop it a level; approving anything resets the count.
+- **Moving down:** **Back to asks before work**, or automatic: three rejections in a row drop it a level; approving anything resets the count.
 
 ## Access
 
@@ -69,7 +69,7 @@ On the worker's page:
   - **Webhook:** a secret address for GitHub, Jira automation or Zapier to post to.
     The sender posts from the internet, so it can't reach a console that only answers inside your network, even on an https address. When the console's address only resolves to private addresses, the form says so and offers a watch instead, which only calls out.
   - **Slack:** a new message, a mention, or an emoji reaction (🐛) in a channel.
-    - **Listen and answer questions:** the worker sits in the channel and stays quiet, answering in the thread only when someone asks something it can answer well. The rules for that are built in, so there's nothing to write: instructions are only for extras. Invite the bot first (`/invite @overgo`).
+    - **Listen and answer questions:** the worker sits in the channel and stays quiet, answering in the thread only when someone asks something it can answer well. It hears messages with screenshots too, though it only reads their words for now. It follows a thread once it has answered there, and joins one when someone names it in a reply ("Ada, what do you think?"). The rules for that are built in, so there's nothing to write: instructions are only for extras. Invite the bot first (`/invite @overgo`).
 
     - **Test mode** (Slack triggers): each answer comes to you by DM first, with **Post it to the thread** and **Don't post**, and you hear what it stayed quiet on too. Reply under an answer to change it ("shorter", "link the docs", "leave this one"): the new version comes back with the same buttons. Nothing reaches the channel until you post it. Turn it off once you trust it.
 
@@ -144,7 +144,7 @@ You can give a team work if you manage one of its members.
   - reading the draft before it's challenged
   - reviewing the result
   - approving follow-up work
-- **Asking a team in a channel:** `@overgo` a team in a channel and it works in that thread, in front of everyone there. Its questions, plan, progress and results post in the thread, and anyone in it can answer the questions. As each member finishes its part, it says what it did in a line or two, under its own name and picture. A reply that starts by naming someone else is treated as people talking, not an answer. Only the person who asked, or an admin, can approve the plan or accept the result. While it works, a reply in the thread is feedback: the work it starts next takes it into account, and a plan waiting for approval is planned again with it. Once the work is delivered, replies go to the team's conversation, and each member answers under its own name and picture. Feedback from anyone but the person who asked never starts work or changes the delivered pack. To stop a task, the person who asked can reply just "stop", "cancel" or "nevermind" in its thread. Stopping a task starts the next one queued for that team; to clear the queue too, use **Stop this and the queued tasks** in the task's **…** menu. `/team` and DMs stay private: those tasks talk to you by DM.
+- **Asking a team in a channel:** `@overgo` a team in a channel and it works in that thread, in front of everyone there. Its questions, plan, progress and results post in the thread, and anyone in it can answer the questions. As each member finishes its part, it says what it did in a line or two, under its own name and picture. A reply that starts by naming someone else is treated as people talking, not an answer. Only the person who asked, or an admin, can approve the plan or accept the result. While it works, a reply in the thread is feedback: the work it starts next takes it into account, and a plan waiting for approval is planned again with it. Once the work is delivered, replies go to the team's conversation, and each member answers under its own name and picture. A task asked for outside a channel works the same way through its card in your DMs: reply under the card. Feedback from anyone but the person who asked never starts work or changes the delivered pack. To stop a task, the person who asked can reply just "stop", "cancel" or "nevermind" in its thread. Stopping a task starts the next one queued for that team; to clear the queue too, use **Stop this and the queued tasks** in the task's **…** menu. `/team` and DMs stay private: those tasks talk to you by DM.
 - **In Slack:** `/team new writes PR/FAQs for new features`. overgo DMs you a suggested crew, with **Make the team**, **Change it** and **Cancel** buttons. **Change it** opens a form for the name, what the team does, its budget per task, where it checks in with you, and who can ask its new hires.
 
 A `/hire` offer in Slack has **Change it** too. It opens a form for the worker's name, budget, who can ask it, its tools, the repo it works in, and who it reports to.
@@ -177,13 +177,13 @@ Who owns what:
 **Who can see and start it.** Set under **Owner** in the editor:
 
 - **Private**: only its owner, whoever made it, and admins. This is where every new process starts.
-- **A team**: the members of the teams you pick (the org’s teams on **Setup → People & teams**), as they are at the time. Someone who joins the team can start it; someone who leaves can't.
+- **A team**: the members of the teams you pick (the org’s teams on **Setup → Groups**), as they are at the time. Someone who joins the team can start it; someone who leaves can't.
 - **Certain people**: the people you name, and anyone in a group you add.
 - **Everyone**: anyone in the org. Processes made before this setting existed start here, as they worked before.
 
 The person who made a process always keeps access, even after it's handed to another owner. People in its stages see the work that reaches them, but can only start items if they're in its audience. Anyone else doesn't see the process at all: it's not on the Processes page, `/idea` doesn't know it, and `@overgo` never routes a request into it. Schedules, watches and posted events keep putting work in whatever the setting, because they were set up by someone who steers the process. Someone who put an item in before the process was narrowed still follows that item.
 
-Work comes in from `/idea` in Slack (`/idea Idea to launch: CSV export for reports`; `/idea` alone shows where yours are), from `@overgo` (`@overgo idea: CSV export`, `@overgo Bug report to fix: the export button is greyed out`, or a request the router judges to be a new item for a process), from **Put something in** on the console, from every new message in a Slack channel, or from events posted to a secret URL. It can also start items **on a schedule** (every week, every weekday, the 1st of each month, the first day of each quarter: "Quarterly roadmap · Jan 1, 2027"), or **watch a tool**: each new ticket, deal or row a tool call returns goes in, checked every few minutes from inside your network. Set these up under **How work comes in** on the process's page.
+Work comes in from `/idea` in Slack (`/idea Idea to launch: CSV export for reports`; `/idea` alone shows where yours are), from `@overgo` (`@overgo idea: CSV export`, `@overgo Bug report to fix: the export button is greyed out`, or a request the router judges to be a new item for a process), from **Put something in** on the console, from every new message in a Slack channel, or from events posted to a secret URL. It can also start items **on a schedule** (every week, every weekday, the 1st of each month, the first day of each quarter: "Quarterly roadmap · Jan 1, 2027"), or **watch a tool**: each new ticket, deal or row a tool call returns goes in, checked every few minutes from inside your network. Set these up under **How work comes in** on the process's **How to reach** tab.
 
 A team or worker stage can **wait** (start two weeks after the stage before, when there's adoption to read) and **repeat** (weekly, four times, each run building on the last) before the item moves on. The board says when a waiting stage starts; its owner can **Start now**.
 
