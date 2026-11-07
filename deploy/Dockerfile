@@ -18,7 +18,7 @@ ARG DEBIAN_MIRROR=
 FROM ghcr.io/astral-sh/uv:0.8.0@sha256:5778d479c0fd7995fedd44614570f38a9d849256851f2786c451c220d7bd8ccd AS uv
 
 # ---- overdb: just its main-process code, compiled; no Electron, no UI -----
-FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS overdb-clone
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS overdb-clone
 ARG OVERDB_REF
 ARG DEBIAN_MIRROR
 RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i -e "s#deb.debian.org/debian-security#security.debian.org/debian-security#" -e "s#deb.debian.org/debian\$#${DEBIAN_MIRROR}/debian#" /etc/apt/sources.list.d/debian.sources; fi
@@ -31,7 +31,7 @@ RUN apt-get update \
 FROM scratch AS overdb-src
 COPY --from=overdb-clone /overdb/ /
 
-FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS overdb
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS overdb
 WORKDIR /overdb
 # Electron is a dev dependency for its types; its 100 MB binary is never run.
 ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
@@ -47,7 +47,7 @@ COPY --from=overdb-src src ./src
 RUN npx tsc -p tsconfig.main.json && npm prune --omit=dev && rm -rf src
 
 # ---- build: compile the CLI (tsc) with dev dependencies, then drop them ----
-FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS build
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS build
 ARG DEBIAN_MIRROR
 RUN if [ -n "$DEBIAN_MIRROR" ]; then sed -i -e "s#deb.debian.org/debian-security#security.debian.org/debian-security#" -e "s#deb.debian.org/debian\$#${DEBIAN_MIRROR}/debian#" /etc/apt/sources.list.d/debian.sources; fi
 # node-pty is a dependency of the desktop app and compiles on install.
@@ -65,7 +65,7 @@ COPY src ./src
 RUN npm run build:main && npm prune --omit=dev
 
 # ---- runtime ---------------------------------------------------------------
-FROM node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
+FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370
 # git for worktrees; ssh for git remotes; the model CLIs are what every
 # worker turn runs. Claude Code always; Codex when INSTALL_CODEX=1. Pin the
 # versions for reproducible images: --build-arg CLAUDE_CODE_VERSION=<x.y.z>.
