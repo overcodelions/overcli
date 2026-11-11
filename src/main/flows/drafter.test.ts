@@ -850,7 +850,7 @@ describe('models from the wrong family are retargeted, not rejected', () => {
     await draftFlowFromPrompt({ description: 'Make a flow' }, claudeDeps());
 
     const sys = mockQuery.mock.calls[0][0].options.systemPrompt as string;
-    expect(sys).toContain('claude-opus-5, claude-opus-4-8, claude-fable-5-1');
+    expect(sys).toContain('claude-opus-5, claude-opus-4-8, claude-fable-5-2, claude-fable-5-1');
     expect(sys).toContain('`gpt-*` ids run ONLY on backend `codex`');
     expect(sys).toContain('there is no "gpt-5"');
   });

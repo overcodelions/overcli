@@ -12,6 +12,7 @@ import { log } from '../diagnostics';
 import type { ProcessDef, ProcessPerson, ProcessStage } from '../../shared/org/process';
 import type { ToolTemplate } from './tools';
 import type { ConnectionPush } from '../../shared/overdbConnection';
+import type { ApiPush } from '../../shared/overapiProject';
 
 export const ORG_TOKEN_KEY = 'org-control-token';
 export const ORG_TOKEN_ENV = 'OVERCLI_ORG_TOKEN';
@@ -255,6 +256,23 @@ export async function publishOverdbConnectionToOrg(
     return { ok: false, error: res.error, retry: !answered || res.status === 404 };
   }
   return { ok: true, message: `${push.connection.name} is on the org server, waiting for an admin to finish it under Setup → Databases.` };
+}
+
+/// An API overapi published (src/shared/overapiProject.ts). The whole push
+/// goes: the server needs the environment and the secret names as well as
+/// the project. `retry` as for a database.
+export async function publishOverapiProjectToOrg(
+  base: string,
+  token: string,
+  push: ApiPush,
+): Promise<{ ok: true; message: string } | { ok: false; error: string; retry: boolean }> {
+  const res = await call<{ waiting: boolean }>(base, token, 'POST', '/api/publish/overapi-project', { push });
+  if (!res.ok) {
+    const answered = res.status !== undefined && res.status !== 401 && res.status < 500;
+    // A 404 is a server too old to take APIs: worth trying again once it is updated.
+    return { ok: false, error: res.error, retry: !answered || res.status === 404 };
+  }
+  return { ok: true, message: `${push.project.title || push.project.name} is on the org server, waiting for an admin to finish it under Setup → APIs.` };
 }
 
 async function callPublic<T>(base: string, path: string, body: unknown): Promise<{ ok: true; data: T } | { ok: false; error: string }> {

@@ -134,3 +134,64 @@ export function paceFor(spentUSD: number, now: number): number | null {
   if (elapsed < 2 * 86_400_000) return null;
   return spentUSD * ((end - start) / elapsed);
 }
+
+/// A run's cost and when it finished.
+export interface DatedRunCost {
+  workerId: string;
+  costUSD: number;
+  at: number;
+}
+
+export interface SpendDay {
+  /// The viewer's calendar day, YYYY-MM-DD.
+  date: string;
+  totalUSD: number;
+  /// Largest first.
+  byWorker: Array<{ workerId: string; costUSD: number }>;
+}
+
+/// The longest range the chart draws, in days.
+export const MAX_SPEND_DAYS = 366;
+
+const DAY_MS = 86_400_000;
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+/// The instants a range of the viewer's days covers. `tzOffsetMin` is as
+/// `Date#getTimezoneOffset` gives it: minutes behind UTC (New York is 300).
+/// Null when the dates aren't real, run backwards or span too long.
+export function spendDayWindow(from: string, to: string, tzOffsetMin: number): { fromMs: number; toMs: number; days: number } | null {
+  if (!YMD.test(from) || !YMD.test(to) || !Number.isFinite(tzOffsetMin) || Math.abs(tzOffsetMin) > 14 * 60) return null;
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return null;
+  if (new Date(a).toISOString().slice(0, 10) !== from || new Date(b).toISOString().slice(0, 10) !== to) return null;
+  const days = Math.round((b - a) / DAY_MS) + 1;
+  if (days > MAX_SPEND_DAYS) return null;
+  const shift = tzOffsetMin * 60_000;
+  return { fromMs: a + shift, toMs: b + DAY_MS + shift, days };
+}
+
+/// Spend per day over the range, every day present (a quiet day is zero).
+export function spendByDay(runs: readonly DatedRunCost[], from: string, to: string, tzOffsetMin: number): SpendDay[] {
+  const win = spendDayWindow(from, to, tzOffsetMin);
+  if (!win) return [];
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const days = new Map<string, Map<string, number>>();
+  const order: string[] = [];
+  for (let i = 0; i < win.days; i++) {
+    const d = new Date(start + i * DAY_MS).toISOString().slice(0, 10);
+    order.push(d);
+    days.set(d, new Map());
+  }
+  for (const r of runs) {
+    if (r.at < win.fromMs || r.at >= win.toMs) continue;
+    const d = new Date(r.at - tzOffsetMin * 60_000).toISOString().slice(0, 10);
+    const per = days.get(d);
+    if (per) per.set(r.workerId, (per.get(r.workerId) ?? 0) + r.costUSD);
+  }
+  return order.map((date) => {
+    const per = days.get(date)!;
+    const byWorker = [...per].map(([workerId, costUSD]) => ({ workerId, costUSD })).sort((x, y) => y.costUSD - x.costUSD);
+    return { date, totalUSD: byWorker.reduce((n, w) => n + w.costUSD, 0), byWorker };
+  });
+}

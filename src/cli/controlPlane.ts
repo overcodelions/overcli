@@ -365,6 +365,15 @@ export function privateChannel(req: Pick<http.IncomingMessage, 'socket' | 'heade
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 }
 
+/// An API's secrets as typed into Setup → APIs: variable names to values,
+/// nothing else, at sane sizes.
+function stringMap(v: unknown): Record<string, string> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  return Object.fromEntries(
+    Object.entries(v as Record<string, unknown>).filter(([k, x]) => /^[A-Z_][A-Z0-9_]{0,100}$/.test(k) && typeof x === 'string' && x.length <= 8000).slice(0, 50) as Array<[string, string]>,
+  );
+}
+
 /// A desktop's setup, as sent: kept to plain shapes and sane sizes.
 function setupInput(b: Record<string, unknown>): SetupPublishInput {
   const s = (v: unknown, max: number) => (typeof v === 'string' && v.length <= max ? v : undefined);
@@ -1334,6 +1343,15 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
     },
     { method: 'POST', path: /^\/api\/overdb\/offers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.databases.dismissOverdbOffer(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/overdb\/connections\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.databases.removeOverdbConnection(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/publish\/overapi-project$/, handle: (c, b) => org.apis.publish(c, { push: b.push }) },
+    { method: 'GET', path: /^\/api\/overapi$/, handle: (c) => org.apis.list(c) },
+    {
+      method: 'POST',
+      path: /^\/api\/overapi\/offers\/([^/]+)\/approve$/,
+      handle: (c, b, [id], _u, _base, secure) => org.apis.approve(c, decodeURIComponent(id), { allowWrites: b.allowWrites === true, secrets: stringMap(b.secrets) }, secure),
+    },
+    { method: 'POST', path: /^\/api\/overapi\/offers\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.apis.dismissOffer(c, decodeURIComponent(id)) },
+    { method: 'POST', path: /^\/api\/overapi\/apis\/([^/]+)\/remove$/, handle: (c, _b, [id]) => org.apis.remove(c, decodeURIComponent(id)) },
     {
       method: 'POST',
       path: /^\/api\/teams$/,
@@ -1365,6 +1383,14 @@ function apiRoutes(org: OrgService, access?: AccessService, slackPeople?: () => 
       },
     },
     { method: 'GET', path: /^\/api\/spend$/, handle: (c, _b, _p, url) => org.spendView(c, { all: url.searchParams.get('all') === '1' }) },
+    {
+      method: 'GET',
+      path: /^\/api\/spend\/days$/,
+      handle: (c, _b, _p, url) => {
+        const q = url.searchParams;
+        return org.spendDaysView(c, { all: q.get('all') === '1', from: q.get('from') ?? '', to: q.get('to') ?? '', tzOffsetMin: Number(q.get('tz') ?? '0'), ...(q.get('worker') ? { workerId: q.get('worker')! } : {}) });
+      },
+    },
     { method: 'GET', path: /^\/api\/teams\/runs$/, handle: (c) => ({ ok: true, runs: org.teamRunsFor(c) }) },
     { method: 'GET', path: /^\/api\/teams\/runs\/([^/]+)$/, handle: (c, _b, [id]) => org.teamRun(c, decodeURIComponent(id)) },
     { method: 'POST', path: /^\/api\/teams\/runs\/([^/]+)\/retry$/, handle: (c, b, [id]) => org.retryTeamRunHire(c, decodeURIComponent(id), str(b.key)) },

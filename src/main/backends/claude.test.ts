@@ -288,6 +288,20 @@ describe('claudeBackend.buildEnvelope', () => {
     expect(parsed.message.content[1]).toEqual({ type: 'text', text: 'see this' });
   });
 
+  it('puts a slash command ahead of the images so the CLI still expands it', () => {
+    const env = claudeBackend.buildEnvelope(
+      {
+        ...baseArgs,
+        prompt: '/design make this calmer',
+        attachments: [{ id: 'a1', label: 'x.png', mimeType: 'image/png', dataBase64: 'AAAA' }],
+      },
+      noMcpCtx,
+    );
+    const content = JSON.parse(env).message.content;
+    expect(content[0]).toEqual({ type: 'text', text: '/design make this calmer' });
+    expect(content[1].type).toBe('image');
+  });
+
   it('falls back to "(no text)" when prompt is empty but images exist', () => {
     const env = claudeBackend.buildEnvelope(
       {

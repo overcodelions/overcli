@@ -175,6 +175,14 @@ export function workerRunCostsSince(sinceMs: number): Array<{ id: string; worker
   );
 }
 
+/// Each worker run's cost and when it finished, for runs that ended in
+/// [fromMs, toMs): the spend-by-day chart.
+export function workerRunCostsBetween(fromMs: number, toMs: number): Array<{ workerId: string; costUSD: number; at: number }> {
+  return loadRunSummaries().flatMap((s) =>
+    s.workerId && s.terminalAt >= fromMs && s.terminalAt < toMs ? [{ workerId: s.workerId, costUSD: s.costUSD, at: s.terminalAt }] : [],
+  );
+}
+
 function loadRunSummariesRaw(): RunSummary[] {
   const p = filePath();
   if (!fs.existsSync(p)) return [];

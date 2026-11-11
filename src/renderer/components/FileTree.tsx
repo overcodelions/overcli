@@ -13,6 +13,30 @@ function pathsIntersect(x: string, y: string): boolean {
   return x === y || x.startsWith(y + '/') || y.startsWith(x + '/');
 }
 
+// The root header's refresh / terminal / reveal buttons. Accent-tinted,
+// with an icon and a label, so they read clearly against the dark header.
+const HEADER_BUTTON =
+  'flex h-6 shrink-0 items-center gap-1 rounded border border-accent/50 bg-accent/15 px-1.5 text-[11px] font-medium text-accent hover:bg-accent/30 hover:border-accent';
+
+function HeaderIcon({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={'shrink-0 ' + className}
+    >
+      {children}
+    </svg>
+  );
+}
+
 /// Lazily-loaded file tree rooted at the current conversation's project
 /// (or worktree) directory. Reuses the main-process `fs:listFiles` IPC
 /// which already walks the tree skipping `node_modules`, `.git`, build
@@ -257,29 +281,39 @@ export const FileTree = memo(function FileTree({
           title="Refresh file list"
           aria-label="Refresh file list"
           className={
-            'flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card ' +
-            (refreshing ? 'opacity-40' : '')
+            HEADER_BUTTON + (refreshing ? ' opacity-60' : '')
           }
         >
-          ⟳
+          <HeaderIcon className={refreshing ? 'animate-spin' : ''}>
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <polyline points="21 3 21 9 15 9" />
+          </HeaderIcon>
+          Refresh
         </button>
         <button
           type="button"
           onClick={async (e) => setActionError(await openTerminalHere(rootPath, e.shiftKey))}
           title="Open a terminal in this folder (⇧-click for the system terminal)"
           aria-label="Open a terminal in this folder"
-          className="flex h-5 shrink-0 items-center justify-center rounded px-1 font-mono text-[10px] text-ink-faint hover:text-ink hover:bg-card"
+          className={HEADER_BUTTON}
         >
-          &gt;_
+          <HeaderIcon>
+            <polyline points="5 8 9 12 5 16" />
+            <line x1="12" y1="16" x2="19" y2="16" />
+          </HeaderIcon>
+          Terminal
         </button>
         <button
           type="button"
           onClick={() => window.overcli.invoke('fs:openPath', rootPath)}
           title="Open folder in Finder/Explorer"
           aria-label="Open folder in Finder/Explorer"
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card"
+          className={HEADER_BUTTON}
         >
-          ⤢
+          <HeaderIcon>
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          </HeaderIcon>
+          Reveal
         </button>
       </div>
       <div className="px-3 py-2 border-b border-card">

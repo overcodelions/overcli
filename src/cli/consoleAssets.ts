@@ -1358,6 +1358,29 @@ label.field > input, label.field > select, label.field > textarea { font-weight:
 .meter { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
 .meter > span { display: block; height: 100%; background: var(--go); border-radius: 3px; }
 .meter.high > span { background: var(--need); }
+/* Spend by day: one series, so one hue and no legend; bars meet the
+   baseline square and round off at the top. */
+.sd-wrap { position: relative; padding-left: 52px; margin-top: 4px; }
+.sd-plot { position: relative; height: 180px; display: flex; align-items: flex-end; gap: 2px; border-bottom: 1px solid var(--line-2); }
+.sd-plot.dense { gap: 1px; }
+.sd-plot:focus-visible { outline: 2px solid var(--go); outline-offset: 6px; border-radius: 4px; }
+.sd-col { position: relative; z-index: 1; flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; border-radius: 4px 4px 0 0; }
+.sd-col.on { background: var(--go-soft); }
+.sd-bar { display: block; width: 100%; max-width: 28px; margin: 0 auto; background: var(--go); border-radius: 4px 4px 0 0; }
+.sd-plot.dense .sd-bar { border-radius: 2px 2px 0 0; }
+.sd-plot.hovering .sd-col:not(.on) .sd-bar { opacity: 0.55; }
+.sd-grid { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--line); pointer-events: none; }
+.sd-ylab { position: absolute; left: -52px; width: 44px; text-align: right; font-size: 11.5px; color: var(--faint); transform: translateY(-50%); pointer-events: none; }
+.sd-x { position: relative; height: 18px; margin-top: 6px; }
+.sd-x span { position: absolute; transform: translateX(-50%); font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.sd-x span.first { transform: none; }
+.sd-x span.last { transform: translateX(-100%); }
+.sd-tip { position: absolute; z-index: 5; top: -8px; transform: translate(-50%, -100%); min-width: 170px; max-width: 260px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28); font-size: 12.5px; pointer-events: none; }
+.sd-tip .sd-tip-row { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
+.sd-tip b { color: var(--ink); }
+.sd-table { width: 100%; font-size: 13px; }
+.sd-table td, .sd-table th { padding: 4px 8px; text-align: left; }
+.sd-table td.num, .sd-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .big { font-family: var(--serif); font-size: 28px; line-height: 1.1; }
 .thinking { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); }
 .dots { display: inline-flex; gap: 4px; }
@@ -1601,7 +1624,12 @@ dl.rules dt { color: var(--muted); } dl.rules dd { margin: 0; text-align: right;
 .manage td { padding: 14px 18px 18px; }
 .devices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .devices li { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-.select-sm { width: auto; min-height: 34px; padding: 4px 8px; font-size: 13px; }
+.select-sm { width: auto; min-height: 32px; padding: 4px 30px 4px 10px; font-size: 13px; background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; }
+/* The People table's "Can" column: one width for every role so the column
+   reads as a column, and a fixed role (no Slack account) inset to line up
+   with the selects' text. */
+.role-select { width: 152px; }
+.role-static { display: inline-block; width: 152px; padding: 0 11px; font-size: 13px; color: var(--muted); }
 .toggle { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; cursor: pointer; }
 .toggle input { margin-top: 3px; }
 .scrim { position: fixed; inset: 0; background: rgba(12, 16, 26, 0.5); display: flex; align-items: flex-start; justify-content: center; padding: 56px 16px; overflow-y: auto; z-index: 10; }
@@ -10846,9 +10874,11 @@ export const CONSOLE_JS = String.raw`
   var ROLE_OF = { Admin: 'admin', Approver: 'approver', Hirer: 'hirer', Member: 'member' };
 
   function roleSelect(value, label) {
-    return h('select', { class: 'select-sm', 'aria-label': label }, ['member', 'hirer', 'approver', 'admin'].map(function (r) {
-      return h('option', { value: r, text: ROLE_LABEL[r], selected: r === value });
+    var sel = h('select', { class: 'select-sm role-select', 'aria-label': label, title: ROLE_HELP[value] }, ['member', 'hirer', 'approver', 'admin'].map(function (r) {
+      return h('option', { value: r, text: ROLE_LABEL[r], title: ROLE_HELP[r], selected: r === value });
     }));
+    sel.addEventListener('change', function () { sel.title = ROLE_HELP[sel.value] || ''; });
+    return sel;
   }
 
   function viewPeople() {
@@ -11021,7 +11051,7 @@ export const CONSOLE_JS = String.raw`
   function personRows(p, everyone) {
     var pct = p.allowanceUSD ? Math.min(100, (p.spentUSD / p.allowanceUSD) * 100) : 0;
     var manage = h('tr', { class: 'manage', hidden: true });
-    var role = p.slackUserId ? roleSelect(ROLE_OF[p.role] || 'member', 'What ' + p.name + ' can do') : h('span', { class: 'muted', text: p.role });
+    var role = p.slackUserId ? roleSelect(ROLE_OF[p.role] || 'member', 'What ' + p.name + ' can do') : h('span', { class: 'role-static', title: ROLE_HELP[ROLE_OF[p.role]] || '', text: p.role });
     var out = h('div');
     if (p.slackUserId) {
       role.onchange = function () {
@@ -13222,6 +13252,144 @@ export const CONSOLE_JS = String.raw`
     return box;
   }
 
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function ymd(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+  function spendDay(s, long) {
+    var p = s.split('-');
+    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString(undefined, long ? { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' } : { day: 'numeric', month: 'short' });
+  }
+  /// The next round number at or above v (1, 2, 2.5 or 5 times a power of ten).
+  function niceMax(v) {
+    if (!(v > 0)) return 1;
+    var e = Math.pow(10, Math.floor(Math.log(v) / Math.LN10));
+    var m = [1, 2, 2.5, 5, 10].filter(function (x) { return x * e >= v - 1e-9; })[0];
+    return m * e;
+  }
+  var SPEND_PRESETS = [['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['month', 'This month']];
+  /// The days a range choice covers, in the viewer's calendar.
+  function spendRange(r) {
+    var today = new Date(), to = ymd(today);
+    if (r.preset === 'custom') return { from: r.from || to, to: r.to || to };
+    if (r.preset === 'month') return { from: ymd(new Date(today.getFullYear(), today.getMonth(), 1)), to: to };
+    var n = Number(r.preset) || 30;
+    return { from: ymd(new Date(today.getFullYear(), today.getMonth(), today.getDate() - (n - 1))), to: to };
+  }
+
+  /// Spend per day over a range, for the workers the spend page shows or one
+  /// of them. Built at once and filled as it loads.
+  function spendOverTime(all) {
+    if (!state.spendRange) state.spendRange = { preset: '30' };
+    var today = ymd(new Date());
+    var cur = spendRange(state.spendRange);
+    var fromIn = h('input', { type: 'date', 'aria-label': 'From', value: cur.from, max: today, style: 'width:auto;min-height:32px;padding:4px 8px;font-size:13px' });
+    var toIn = h('input', { type: 'date', 'aria-label': 'To', value: cur.to, max: today, style: 'width:auto;min-height:32px;padding:4px 8px;font-size:13px' });
+    var segBtns = SPEND_PRESETS.map(function (o) {
+      return h('button', { type: 'button', text: o[1], onclick: function () {
+        state.spendRange = { preset: o[0] };
+        var c = spendRange(state.spendRange); fromIn.value = c.from; toIn.value = c.to;
+        syncSeg(); draw();
+      } });
+    });
+    var syncSeg = function () { segBtns.forEach(function (b, i) { b.setAttribute('aria-pressed', state.spendRange.preset === SPEND_PRESETS[i][0] ? 'true' : 'false'); }); };
+    syncSeg();
+    var pickDates = function () {
+      if (!fromIn.value || !toIn.value) return;
+      if (fromIn.value > toIn.value) { var t = fromIn.value; fromIn.value = toIn.value; toIn.value = t; }
+      state.spendRange = { preset: 'custom', from: fromIn.value, to: toIn.value };
+      syncSeg(); draw();
+    };
+    fromIn.onchange = pickDates; toIn.onchange = pickDates;
+    var who = h('select', { class: 'select-sm', 'aria-label': 'Whose spend' }, h('option', { value: '', text: all ? 'Every worker' : 'All my workers' }));
+    who.onchange = function () { state.spendWorker = who.value; draw(); };
+    var controls = h('div', { class: 'row', style: 'gap:10px;flex-wrap:wrap;align-items:center' },
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'Range' }, segBtns),
+      h('div', { class: 'row', style: 'gap:6px;align-items:center;font-size:13px' }, fromIn, h('span', { class: 'faint', text: 'to' }), toIn),
+      who);
+    var body = h('div', null, h('p', { class: 'faint', text: 'Loading…' }));
+    var seq = 0;
+    var draw = function () {
+      var mine = ++seq;
+      var rg = spendRange(state.spendRange);
+      var q = '?from=' + rg.from + '&to=' + rg.to + '&tz=' + new Date(rg.to + 'T12:00:00').getTimezoneOffset() + (all ? '&all=1' : '') + (state.spendWorker ? '&worker=' + encodeURIComponent(state.spendWorker) : '');
+      api('GET', '/api/spend/days' + q).then(function (s) {
+        if (mine !== seq) return;
+        if (s.ok === false) { fill(body, [msg(s)]); return; }
+        if (who.options.length === 1) s.workers.forEach(function (w) { who.appendChild(h('option', { value: w.id, text: w.name })); });
+        who.value = state.spendWorker || '';
+        fill(body, spendDaysChart(s));
+      }, function (e) { if (mine === seq) fill(body, [msg({ ok: false, error: String((e && e.message) || e) })]); });
+    };
+    draw();
+    return card('spenddays', 'Spend by day', null, h('div', { class: 'stack', style: 'gap:14px' }, controls, body));
+  }
+
+  function spendDaysChart(s) {
+    var days = s.days, n = days.length;
+    var names = {};
+    s.workers.forEach(function (w) { names[w.id] = w.name; });
+    var peak = days.reduce(function (b, d) { return !b || d.totalUSD > b.totalUSD ? d : b; }, null);
+    var spentDays = days.filter(function (d) { return d.totalUSD >= 0.005; }).length;
+    var summary = h('div', { class: 'row', style: 'gap:14px;flex-wrap:wrap;align-items:baseline' },
+      h('span', { class: 'big', style: 'font-size:20px;font-family:var(--sans);font-weight:700', text: money(s.totalUSD) }),
+      h('span', { class: 'faint', text: [spendDay(s.from) + ' to ' + spendDay(s.to) + ' (' + plural(n, 'day', 'days') + ')', 'about ' + money(s.totalUSD / n) + ' a day', spentDays ? 'most on ' + spendDay(peak.date) + ', ' + money(peak.totalUSD) : null].filter(Boolean).join(' · ') }));
+    if (!spentDays) return [summary, h('p', { class: 'muted', style: 'margin:10px 0 0', text: 'Nothing spent in this range.' })];
+    var top = niceMax(peak.totalUSD);
+    var plot = h('div', { class: 'sd-plot' + (n > 60 ? ' dense' : ''), tabindex: '0', role: 'img',
+      'aria-label': 'Spend by day, ' + spendDay(s.from) + ' to ' + spendDay(s.to) + ': ' + money(s.totalUSD) + ' in all, the most ' + money(peak.totalUSD) + ' on ' + spendDay(peak.date) + '. Use the arrow keys to read each day, or show the table.' });
+    [0, 0.5, 1].forEach(function (f) {
+      plot.appendChild(h('div', { class: 'sd-grid', style: 'bottom:' + (f * 100) + '%' }));
+      plot.appendChild(h('span', { class: 'sd-ylab', style: 'top:' + ((1 - f) * 100) + '%', text: money(top * f) }));
+    });
+    var tip = h('div', { class: 'sd-tip', hidden: true });
+    var cols = days.map(function (d, i) {
+      var pct = d.totalUSD >= 0.005 ? Math.max(1.5, (d.totalUSD / top) * 100) : 0;
+      var col = h('div', { class: 'sd-col' }, h('span', { class: 'sd-bar', style: 'height:' + pct.toFixed(2) + '%' }));
+      col.onmouseenter = function () { show(i); };
+      plot.appendChild(col);
+      return col;
+    });
+    plot.appendChild(tip);
+    var at = -1;
+    var show = function (i) {
+      if (at >= 0) cols[at].classList.remove('on');
+      at = i;
+      var d = days[i], col = cols[i];
+      col.classList.add('on');
+      plot.classList.add('hovering');
+      var rows = d.byWorker.slice(0, 4).map(function (w) { return h('div', { class: 'sd-tip-row' }, h('span', { text: names[w.workerId] || 'A worker no longer here' }), h('span', { text: money(w.costUSD) })); });
+      if (d.byWorker.length > 4) rows.push(h('div', { class: 'faint', text: plural(d.byWorker.length - 4, 'more worker', 'more workers') }));
+      fill(tip, [h('div', { class: 'sd-tip-row', style: 'margin-bottom:' + (rows.length ? '4px' : '0') }, h('b', { text: spendDay(d.date, true) }), h('b', { text: money(d.totalUSD) })), rows.length ? rows : h('div', { class: 'faint', text: 'Nothing spent.' })]);
+      tip.hidden = false;
+      var mid = col.offsetLeft + col.offsetWidth / 2, half = tip.offsetWidth / 2, w = plot.clientWidth;
+      tip.style.left = Math.min(Math.max(mid, half), w - half) + 'px';
+    };
+    var hide = function () { if (at >= 0) cols[at].classList.remove('on'); at = -1; tip.hidden = true; plot.classList.remove('hovering'); };
+    plot.onmouseleave = hide;
+    plot.onblur = hide;
+    plot.onkeydown = function (e) {
+      var next = e.key === 'ArrowRight' ? Math.min(n - 1, at + 1) : e.key === 'ArrowLeft' ? Math.max(0, at < 0 ? n - 1 : at - 1) : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : e.key === 'Escape' ? -1 : null;
+      if (next === null) return;
+      e.preventDefault();
+      if (next < 0) hide(); else show(next);
+    };
+    // A handful of dates under the bars, the first and last always.
+    var step = Math.max(1, Math.ceil(n / 7));
+    var xs = h('div', { class: 'sd-x', 'aria-hidden': 'true' });
+    days.forEach(function (d, i) {
+      var last = i === n - 1;
+      if (i % step && !last) return;
+      if (!last && n - 1 - i < step / 2 && i) return;
+      xs.appendChild(h('span', { class: i === 0 ? 'first' : last ? 'last' : '', style: 'left:' + (i === 0 ? 0 : last ? 100 : ((i + 0.5) / n) * 100) + '%', text: spendDay(d.date) }));
+    });
+    var table = h('details', null, h('summary', { class: 'faint', style: 'cursor:pointer;font-size:13px', text: 'Show as a table' }),
+      h('table', { class: 'sd-table' }, h('thead', null, h('tr', null, h('th', { text: 'Day' }), h('th', { class: 'num', text: 'Spend' }), h('th', { text: 'Most of it' }))),
+        h('tbody', null, days.slice().reverse().map(function (d) {
+          var w = d.byWorker[0];
+          return h('tr', null, h('td', { text: spendDay(d.date, true) }), h('td', { class: 'num', text: money(d.totalUSD) }), h('td', { class: 'faint', text: w ? (names[w.workerId] || 'A worker no longer here') + ' ' + money(w.costUSD) : '' }));
+        }))));
+    return [summary, h('div', { class: 'sd-wrap' }, plot, xs), table];
+  }
+
   /// Spend this month: how much, whether it fits, where it's heading, and for
   /// each worker who used it. Costs land on the worker that ran the work.
   function viewSpend() {
@@ -13234,7 +13402,7 @@ export const CONSOLE_JS = String.raw`
       };
       var isOrg = s.scope === 'all';
       var seg = h('div', { class: 'page-actions' }, reportSwitch(), s.canSeeAll ? h('div', { class: 'seg', role: 'group', 'aria-label': 'Whose workers' }, [[false, 'My workers'], [true, 'Everyone’s']].map(function (o) {
-        return h('button', { 'aria-pressed': isOrg === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.spendAll = o[0]; render(); } });
+        return h('button', { 'aria-pressed': isOrg === o[0] ? 'true' : 'false', text: o[1], onclick: function () { state.spendAll = o[0]; state.spendWorker = ''; render(); } });
       })) : null);
       var over = s.budgetUSD && s.capsUSD > s.budgetUSD;
       var top = card('spendtop', isOrg ? 'Org spend this month' : 'My workers this month', null, h('div', { class: 'stack', style: 'gap:8px' },
@@ -13258,7 +13426,7 @@ export const CONSOLE_JS = String.raw`
           isOrg && w.manager ? h('span', { class: 'faint', style: 'font-size:13px', text: 'Manager: ' + w.manager + (w.managerOnSlack ? '' : ' (not linked to Slack)') }) : null);
       });
       var limit = s.limitUSD === null ? 'No limit on people using a worker that isn’t theirs.' : 'Someone using a worker that isn’t theirs is warned at ' + s.alertAtPercent + '% of ' + money(s.limitUSD) + ' a month, per worker, and stopped at the limit.';
-      return [head('Reports', 'Who your workers’ budgets went on, and where the month is heading.', seg), top,
+      return [head('Reports', 'Who your workers’ budgets went on, and where the month is heading.', seg), top, spendOverTime(isOrg),
         card('spendlist', 'By worker · ' + s.workers.length, null, rows.length ? h('div', null, rows) : h('p', { class: 'muted', style: 'padding:12px 18px', text: 'You don’t manage any workers yet.' }), true),
         h('p', { class: 'faint', text: limit + ' Spend is finished runs’ model cost, charged to the worker that ran them. Planning and chat turns aren’t included, so short answers cost more than this shows. Runs from before this page existed show as not recorded.' })];
     });
@@ -14268,7 +14436,7 @@ export const CONSOLE_JS = String.raw`
     };
     var rehearse = h('input', { type: 'checkbox' });
     var rehearseRow = h('div', { class: 'stack', style: 'gap:2px' },
-      h('label', { class: 'toggle' }, rehearse, h('span', { text: 'Test mode: send each answer to me first' })),
+      h('label', { class: 'toggle' }, rehearse, h('span', { text: 'Test mode: send each answer to ' + (w.managerOnSlack ? rehearseWho() : w.name + '’s manager') + ' first' })),
       h('p', { class: 'faint', style: 'margin:0 0 0 26px;font-size:13px', text: 'Nothing reaches the channel yet. Each answer comes by Slack DM with Post it to the thread and Don’t post, with a note on what it stayed quiet on too. Reply under an answer to change it. Turn it off once you trust it.' }),
       rehearseTo());
     // A listener always answers in the thread, and needs no instructions.
@@ -14523,6 +14691,7 @@ export const CONSOLE_JS = String.raw`
       ['toolchains', 'Toolchains', 'Java, Node, Python, Go or any archive, for workers and repo tests. Downloaded onto the server: no rebuild, no restart.'],
       ['repos', 'Repos & workspaces', 'Repos workers can change, and workspaces that group them.'],
       ['databases', 'Databases', 'Databases published from overdb that workers can read through the overdb tool. Read-only, with every query logged.'],
+      ['apis', 'APIs', 'APIs published from overapi, each a tool workers can call. Read-only unless you allow writes.'],
       ['systems', 'Apps to test', 'Apps workers can open in a browser that’s already signed in, to QA them on the environment a ticket names.'],
       ['offers', 'From desktops', 'Setups people published from the overcli app, to connect and install.'],
       ['servers', 'Other servers', 'Other overcli servers in the company, to watch from Activity.']] }
@@ -14530,7 +14699,7 @@ export const CONSOLE_JS = String.raw`
   // The old Rules tab's address opens its first page.
   var SETUP_OLD = { rules: 'general' };
   var SETUP_RULES = { general: 1, teams: 1, signin: 1, records: 1, hiring: 1, roles: 1, spending: 1, servers: 1, redaction: 1, models: 1, permissions: 1 };
-  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
+  var SETUP_LEARN = { offers: 'setup--from-desktops', ready: 'setup--readiness', tools: 'setup--tools', repos: 'setup--repos', databases: 'setup--databases', apis: 'setup--apis', systems: 'setup--apps-to-test', secrets: 'setup--secrets', toolchains: 'setup--toolchains', handbook: 'setup--handbook', permissions: 'setup--permissions', redaction: 'setup--secrets-in-answers', models: 'setup--model-ids' };
   function viewSetup() {
     if (SETUP_OLD[state.setupTab]) state.setupTab = SETUP_OLD[state.setupTab];
     var tab = state.setupTab || 'ready', page = null, group = null;
@@ -14561,7 +14730,7 @@ export const CONSOLE_JS = String.raw`
     var headNode = head(page[1], page[2],
       h('a', { class: 'btn small', href: '/docs/admins#' + learn, target: '_blank', rel: 'noopener', text: 'Learn more ↗' }), null);
     setChrome([['Setup', function () { go('setup', { setupTab: 'ready' }); }]].concat(group ? [[group]] : [], [[page[1]]]));
-    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
+    var body = tab === 'offers' ? viewOffers() : tab === 'tools' ? viewTools() : tab === 'repos' ? viewRepos() : tab === 'databases' ? viewDatabases() : tab === 'apis' ? viewApis() : tab === 'systems' ? viewSystems() : tab === 'secrets' ? viewSecrets() : tab === 'toolchains' ? viewToolchains() : tab === 'handbook' ? viewHandbook() : SETUP_RULES[tab] ? viewRules(tab) : readiness();
     return body.then(function (nodes) {
       return [h('div', { class: 'setup' }, rail, h('div', { class: 'setup-body' }, narrow, headNode, tab === 'ready' ? nodes : nodes.slice(1)))];
     });
@@ -15174,6 +15343,91 @@ export const CONSOLE_JS = String.raw`
         section('Waiting', x.offers.map(offerRow)),
         section('Set up · workers reach these through the overdb tool', x.connections.map(liveRow)),
         q && q.ok !== false && q.queries.length ? section('Recent queries by workers · no rows are kept', q.queries.slice(0, 50).map(queryRow)) : null,
+        out].filter(Boolean);
+    });
+  }
+
+  /// Setup → APIs: APIs people published from overapi, each served to
+  /// workers as a tool of its own (overapi-<name>). A waiting one shows what
+  /// it would let workers do — its tools by safety — with the choice of
+  /// read-only (the default) or writes, and a field per secret its
+  /// environment reads. Secrets go in and are never shown again: the page
+  /// only learns which are kept.
+  function viewApis() {
+    return api('GET', '/api/overapi').then(function (x) {
+      var top = head('APIs');
+      if (x.ok === false) return [top, msg(x)];
+      var out = h('div', { 'aria-live': 'polite' });
+      var after = function (r, okText) { out.textContent = ''; out.appendChild(msg(r, okText)); if (r.ok !== false) setTimeout(render, 700); };
+      var SAFETY = { read: 'read', write: 'write', destructive: 'destructive' };
+      var counts = function (tools) {
+        var reads = tools.filter(function (t) { return t.safety === 'read'; }).length;
+        return plural(reads, 'read', 'reads') + ' · ' + plural(tools.length - reads, 'write or destructive tool', 'write or destructive tools');
+      };
+      var toolList = function (tools, writes) {
+        return h('details', null,
+          h('summary', { class: 'faint', style: 'cursor:pointer;font-size:12px;width:max-content', text: counts(tools) }),
+          h('div', { class: 'stack', style: 'gap:2px;margin-top:6px' }, tools.map(function (t) {
+            var hidden = t.safety !== 'read' && !writes;
+            return h('span', { class: 'row', style: 'gap:8px;font-size:12px' + (hidden ? ';opacity:.55' : '') },
+              h('span', { class: 'tag' + (t.safety === 'destructive' ? ' bad' : t.safety === 'write' ? ' need' : ''), text: SAFETY[t.safety] || t.safety }),
+              h('span', { class: 'mono', text: t.name }),
+              h('span', { class: 'faint mono', text: t.method + ' ' + t.path }));
+          })));
+      };
+      var offerRow = function (o) {
+        var p = o.push.project;
+        var writesOk = o.allowWrites && o.tools.some(function (t) { return t.safety !== 'read'; });
+        // Read-only unless the admin picks writes; the server never allows more than was published.
+        var ro = h('input', { type: 'radio', name: 'overapi-writes-' + o.id, checked: true });
+        var rw = h('input', { type: 'radio', name: 'overapi-writes-' + o.id, disabled: !writesOk });
+        var choice = h('div', { class: 'row', role: 'radiogroup', 'aria-label': 'What workers may do with ' + p.name, style: 'gap:16px;font-size:13px' },
+          h('label', { class: 'row', style: 'gap:6px' }, ro, 'Read-only'),
+          h('label', { class: 'row', style: 'gap:6px' + (writesOk ? '' : ';opacity:.55'), title: writesOk ? null : 'Published read-only, or it has no write tools' }, rw, 'Allow writes'));
+        var kept = o.kept || [];
+        var fields = o.push.secrets.map(function (name) {
+          var input = h('input', { type: 'password', autocomplete: 'off', placeholder: kept.indexOf(name) >= 0 ? name + ' (kept: leave empty)' : o.moved.length ? 'Changed ' + o.moved.join(', ') + ': ' + name + ' again' : name, 'aria-label': name + ' for ' + p.name });
+          input.dataset.name = name;
+          return input;
+        });
+        var approve = h('button', { class: 'btn go small', text: o.replaces ? 'Update' : 'Set up', disabled: !x.cli });
+        approve.onclick = function () {
+          var secrets = {};
+          fields.forEach(function (f) { if (f.value) secrets[f.dataset.name] = f.value; });
+          var restore = busy(approve, 'Setting up…');
+          api('POST', '/api/overapi/offers/' + encodeURIComponent(o.id) + '/approve', { allowWrites: rw.checked, secrets: secrets }).then(function (r) { restore(); after(r, (p.title || p.name) + ' is ready for workers, as the overapi-' + p.name + ' tool.'); });
+        };
+        var dismiss = h('button', { class: 'linkish', style: 'font-size:13px', text: 'Dismiss', onclick: function () { api('POST', '/api/overapi/offers/' + encodeURIComponent(o.id) + '/remove', {}).then(function (y) { after(y, 'Dismissed.'); }); } });
+        return h('div', { class: 'srow', style: 'align-items:flex-start' },
+          h('div', { class: 'stack', style: 'gap:6px;min-width:0;flex:1' },
+            h('span', { class: 'row', style: 'gap:8px' }, h('b', { text: p.title || p.name }), h('span', { class: 'tag', text: o.push.env }), h('span', { class: 'faint', text: 'from ' + o.by + ' · ' + ago(o.at) })),
+            h('span', { class: 'faint mono', text: o.baseUrl }),
+            toolList(o.tools, true),
+            o.moved.length ? h('span', { class: 'faint', style: 'font-size:12px', text: 'Its ' + o.moved.join(' and ') + ' changed since it was set up, so its secrets must be typed again.' }) : null,
+            choice,
+            fields.length ? h('div', { class: 'stack', style: 'gap:6px;max-width:420px' }, fields) : null),
+          h('span', { class: 'row', style: 'gap:10px' }, dismiss, approve));
+      };
+      var liveRow = function (a) {
+        var remove = h('button', { class: 'linkish', style: 'font-size:13px', text: 'Remove' });
+        remove.onclick = function () { api('POST', '/api/overapi/apis/' + encodeURIComponent(a.name) + '/remove', {}).then(function (y) { after(y, a.title + ' is removed.'); }); };
+        return h('div', { class: 'srow', style: 'align-items:flex-start' },
+          h('div', { class: 'stack', style: 'gap:2px;min-width:0' },
+            h('span', { class: 'row', style: 'gap:8px' }, h('b', { text: a.title }), h('span', { class: 'tag', text: a.env }), h('span', { class: 'tag' + (a.allowWrites ? ' need' : ''), text: a.allowWrites ? 'writes allowed' : 'read-only' }), h('span', { class: 'faint mono', text: 'overapi-' + a.name })),
+            h('span', { class: 'faint mono', text: a.baseUrl }),
+            toolList(a.tools, a.allowWrites),
+            a.missing.length ? h('span', { class: 'faint', style: 'font-size:12px', text: 'Missing ' + a.missing.join(', ') + ': publish it again from overapi, then set it up with them.' }) : null),
+          remove);
+      };
+      // A heading bar, then the rows in their own box so the first one drops its top line.
+      var section = function (title, rows) { return rows.length ? h('section', { class: 'panel' }, h('div', { class: 'sec-head' }, h('h2', { class: 'label', text: title })), h('div', null, rows)) : null; };
+      if (!x.offers.length && !x.apis.length) {
+        return [top, emptyState('No APIs yet.', 'In overapi, choose Publish to your org’s server. It lands here for you to finish, and workers given its overapi- tool can then call it. Read-only unless you allow writes.')];
+      }
+      return [top,
+        x.cli ? null : h('div', { class: 'banner', role: 'status', text: 'overapi isn’t installed on this server, so nothing here can be set up yet. Put overapi’s dist folder on the server and set OVERAPI_CLI to its dist/cli/index.js.' }),
+        section('Waiting', x.offers.map(offerRow)),
+        section('Set up · each is a tool of its own, overapi-<name>', x.apis.map(liveRow)),
         out].filter(Boolean);
     });
   }

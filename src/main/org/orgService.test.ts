@@ -1326,6 +1326,45 @@ describe('spend on a worker, and who it went on', () => {
   });
 });
 
+describe('spend by day', () => {
+  const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
+  const boss: OrgCaller = { slackUserId: 'U0ACMEBOSS', name: 'Bo', admin: true };
+  const setUp = () => {
+    const h = harness({
+      roster: [worker('a', { manager: { name: 'Pat', slackUserId: PAT } }), worker('c', { manager: { name: 'Someone' } })],
+      policy: { admins: ['U0ACMEBOSS'] },
+    });
+    const deps = (h.svc as unknown as { deps: { workers: { runCostsBetween: unknown } } }).deps.workers;
+    deps.runCostsBetween = () => [
+      { workerId: 'a', costUSD: 2, at: Date.parse('2026-11-02T12:00:00Z') },
+      { workerId: 'c', costUSD: 5, at: Date.parse('2026-11-02T13:00:00Z') },
+    ];
+    return h;
+  };
+  const range = { from: '2026-11-01', to: '2026-11-03', tzOffsetMin: 0 };
+
+  it('shows a manager only their own workers’ spend', () => {
+    const view = setUp().svc.spendDaysView(pat, range);
+    if (!view.ok) throw new Error(view.error);
+    expect(view.totalUSD).toBe(2);
+    expect(view.days.map((d) => d.totalUSD)).toEqual([0, 2, 0]);
+    expect(view.workers.map((w) => w.id)).toEqual(['a']);
+  });
+
+  it('shows an admin everyone’s, or one worker', () => {
+    const h = setUp();
+    const all = h.svc.spendDaysView(boss, { ...range, all: true });
+    expect(all).toMatchObject({ ok: true, scope: 'all', totalUSD: 7 });
+    expect(h.svc.spendDaysView(boss, { ...range, all: true, workerId: 'c' })).toMatchObject({ ok: true, totalUSD: 5 });
+  });
+
+  it('won’t show a worker that isn’t theirs, or a bad range', () => {
+    const h = setUp();
+    expect(h.svc.spendDaysView(pat, { ...range, workerId: 'c' }).ok).toBe(false);
+    expect(h.svc.spendDaysView(pat, { ...range, from: '2026-11-04' }).ok).toBe(false);
+  });
+});
+
 describe('budgets by manager, for an admin', () => {
   const pat: OrgCaller = { slackUserId: PAT, name: 'Pat', admin: false };
   const boss: OrgCaller = { slackUserId: 'U0ACMEBOSS', name: 'Bo', admin: true };

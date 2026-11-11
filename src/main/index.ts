@@ -97,6 +97,7 @@ import { FileSearchCoordinator } from './fileSearch';
 import { closeAllTreeWatchers, noteRelistCost, unwatchTree, watchTree } from './fileTreeWatch';
 import { HandoffInbox, defaultInboxDir } from './handoffInbox';
 import { ConnectionsInbox, defaultConnectionsDir } from './overdbInbox';
+import { ApisInbox, defaultApisDir } from './overapiInbox';
 import { loadWorkLog } from './work/workLog';
 import { lookupPrs } from './work/prLookup';
 import { searchPrompts, warmPromptIndex } from './work/promptIndex';
@@ -196,6 +197,7 @@ import {
   publishTeamToOrg,
   publishSetupToOrg,
   publishOverdbConnectionToOrg,
+  publishOverapiProjectToOrg,
   publishToOrg,
   redeemInvite,
   signOutAt,
@@ -304,6 +306,7 @@ let orgService: OrgService | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
 let handoffInbox: HandoffInbox | null = null;
 let connectionsInbox: ConnectionsInbox | null = null;
+let apisInbox: ApisInbox | null = null;
 /// Long-lived service processes, one supervisor per workspace. Built lazily
 /// because most sessions never open the Services pane, and because it needs
 /// the host's data directory, which is installed at boot.
@@ -1005,7 +1008,10 @@ export function registerIpc(): void {
     try {
       const ok = host().secrets.set(ORG_TOKEN_KEY, token?.trim() || null);
       // A pasted token is a sign-in like the others: send what was waiting on one.
-      if (ok && token?.trim()) void connectionsInbox?.retry();
+      if (ok && token?.trim()) {
+        void connectionsInbox?.retry();
+        void apisInbox?.retry();
+      }
       return ok ? { ok } : { ok, error: 'This build cannot store secrets — set $OVERCLI_ORG_TOKEN instead.' };
     } catch (err) {
       return { ok: false, error: String(err) };
@@ -1044,6 +1050,7 @@ export function registerIpc(): void {
       if (failed) return { ok: false, error: failed };
       emitToRenderer({ type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url });
       void connectionsInbox?.retry();
+      void apisInbox?.retry();
       return { ok: true, signedIn: true, org: res.data.org, name: res.data.name };
     }
     const base = normalizeOrgUrl(url);
@@ -1111,7 +1118,10 @@ export function registerIpc(): void {
             ? { type: 'orgSignIn', outcome: 'failed', error: failed }
             : { type: 'orgSignIn', outcome: 'signedIn', org: res.data.org, name: res.data.name, orgServerUrl: base.url },
         );
-        if (!failed) void connectionsInbox?.retry();
+        if (!failed) {
+          void connectionsInbox?.retry();
+          void apisInbox?.retry();
+        }
       } else {
         emitToRenderer({ type: 'orgSignIn', outcome: res.data.status });
       }
@@ -4430,6 +4440,35 @@ function startConnectionsInbox(): void {
   }
 }
 
+/// Open `~/.overcli/inbox/apis` — APIs overapi publishes to the org — and
+/// push what is there. The same as the connections inbox above: making the
+/// folder is what tells overapi this app can take them.
+function startApisInbox(): void {
+  const signInFirst = { ok: false as const, error: 'Sign this app in to your org first: Settings → Your org.', retry: true };
+  apisInbox = new ApisInbox(
+    defaultApisDir(),
+    async (push) => {
+      const raw = Store.load().settings.orgServerUrl;
+      if (!raw) return signInFirst;
+      const url = normalizeOrgUrl(raw);
+      if (!url.ok) return { ok: false, error: url.error, retry: true };
+      const token = configuredOrgToken();
+      if (!token) return signInFirst;
+      return publishOverapiProjectToOrg(url.url, token, push);
+    },
+    {
+      pushed: (push, message) => host().notify({ title: `${push.project.title || push.project.name} sent to your org`, body: message }),
+      waiting: (push, error) => log('info', 'overapiInbox', `${push.project.name} is waiting: ${error}`),
+      rejected: (name, reason) => host().notify({ title: 'An API from overapi was not sent', body: `${name}: ${reason}` }),
+    },
+  );
+  try {
+    apisInbox.start();
+  } catch (e) {
+    log('warn', 'apisInbox.start', 'Could not open the APIs inbox', e);
+  }
+}
+
 async function clearDevHttpCache(): Promise<void> {
   if (!isDev) return;
   try {
@@ -4472,6 +4511,7 @@ app.whenReady().then(() => {
   registerIpc();
   startHandoffInbox();
   startConnectionsInbox();
+  startApisInbox();
   // Build the Work search's prompt index once the window is up, so the first
   // search doesn't pay for reading every transcript.
   setTimeout(() => warmPromptIndex(), 20_000);
@@ -4716,6 +4756,7 @@ app.on('before-quit', (event) => {
   closeAllTreeWatchers();
   handoffInbox?.dispose();
   connectionsInbox?.dispose();
+  apisInbox?.dispose();
   // Drop the pending timers so a quit can't fire a schedule or a worker
   // shift into a runtime that's already tearing its subprocesses down.
   scheduler?.dispose();
