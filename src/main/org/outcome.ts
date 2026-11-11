@@ -12,15 +12,18 @@ const FILLER = /^(?:sure|ok(?:ay)?|hi|hello|hey|thanks|thank you|great|got it|do
 
 /// Markdown stripped to the words.
 function plain(s: string): string {
-  return s
+  let out = s
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/[*_`~]+/g, '')
-    .replace(/<[^>]+>/g, '')
-    // Stray angle brackets too, so a nested tag can't survive the pass above.
-    .replace(/[<>]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/[*_`~]+/g, '');
+  // Tags off until none are left, so one nested in another can't survive a
+  // single pass; then any stray angle bracket.
+  let before: string;
+  do {
+    before = out;
+    out = out.replace(/<[^<>]*>/g, '');
+  } while (out !== before);
+  return out.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 /// A one-line outcome worth showing, or undefined.
