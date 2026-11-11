@@ -17,6 +17,8 @@ function plain(s: string): string {
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/[*_`~]+/g, '')
     .replace(/<[^>]+>/g, '')
+    // Stray angle brackets too, so a nested tag can't survive the pass above.
+    .replace(/[<>]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
